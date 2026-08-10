@@ -1,5 +1,5 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
@@ -10,8 +10,10 @@ use sacp::schema::{
     TerminalOutputResponse, WaitForTerminalExitRequest, WaitForTerminalExitResponse,
 };
 use tokio::io::{AsyncRead, AsyncReadExt};
-use tokio::sync::{watch, Mutex, Notify};
+use tokio::sync::{watch, Mutex, Notify, RwLock};
 use tokio::task::JoinHandle;
+
+use crate::terminal::manager::resolve_shell;
 
 type TerminalMap = HashMap<String, Arc<TerminalInstance>>;
 const DEFAULT_OUTPUT_BYTE_LIMIT: u64 = 1_000_000;
@@ -390,6 +392,31 @@ async fn own_terminal_process(terminal: Arc<TerminalInstance>, mut child: tokio:
         .send_replace(TerminalCompletion::Exited(exit_status));
 }
 
+/// Shared, hot-swappable default shell for ACP terminal requests.
+///
+/// The setting is owned by [`crate::acp::manager::ConnectionManager`] and
+/// cloned into every connection runtime. Reading it when a terminal is created
+/// means a change in General Settings also affects already-running model
+/// sessions.
+#[derive(Clone, Default)]
+pub struct TerminalShellRuntimeConfig {
+    inner: Arc<RwLock<Option<String>>>,
+}
+
+impl TerminalShellRuntimeConfig {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub async fn snapshot(&self) -> Option<String> {
+        self.inner.read().await.clone()
+    }
+
+    pub async fn set(&self, default_shell: Option<String>) {
+        *self.inner.write().await = default_shell;
+    }
+}
+
 pub struct TerminalRuntime {
     terminals: Mutex<TerminalMap>,
     /// Base environment merged into every spawned terminal command before
@@ -407,6 +434,10 @@ pub struct TerminalRuntime {
     /// process cwd (often "/" on desktop, the dev crate dir in development).
     /// `None` leaves the process cwd inherited (legacy behavior).
     default_cwd: Option<PathBuf>,
+    /// The current General Settings default shell. Structured ACP requests
+    /// still direct-exec real programs, while shell command lines and shell
+    /// builtins use this selected shell as their fallback.
+    default_shell: TerminalShellRuntimeConfig,
 }
 
 #[derive(Debug, Clone)]
@@ -428,6 +459,7 @@ impl TerminalRuntime {
             terminals: Mutex::new(HashMap::new()),
             base_env,
             default_cwd: None,
+            default_shell: TerminalShellRuntimeConfig::new(),
         }
     }
 
@@ -435,6 +467,17 @@ impl TerminalRuntime {
     /// does not specify its own `cwd`. Chainable after `with_base_env`.
     pub fn with_default_cwd(mut self, default_cwd: Option<PathBuf>) -> Self {
         self.default_cwd = default_cwd;
+        self
+    }
+
+    /// Use a shared General Settings shell value for ACP terminal fallbacks.
+    /// The config is read at command creation time so existing connections pick
+    /// up setting changes without being restarted.
+    pub fn with_default_shell_config(
+        mut self,
+        default_shell: TerminalShellRuntimeConfig,
+    ) -> Self {
+        self.default_shell = default_shell;
         self
     }
 
@@ -514,14 +557,15 @@ impl TerminalRuntime {
         // as unrunnable (`NotFound`, or `InvalidFilename` when the whole line is
         // longer than the OS path limit — grok crams `<shell> -lc "<script>"`
         // into `command`, so a multi-KB heredoc exceeds PATH_MAX and the direct
-        // exec fails with ENAMETOOLONG, not ENOENT) AND the request looks like a
-        // whole shell line crammed into `command` (empty args + embedded
-        // whitespace, the shape CodeBuddy and grok send) do we retry through the
-        // platform shell so its `&&`, pipes, `$VAR`, and globs evaluate. A path
-        // that long can never be a real executable, so rerouting it is always at
-        // least as correct. Deciding off a real failed spawn — rather than a
-        // pre-spawn `which` guess that runs in codeg's own cwd/env — means we
-        // never reroute a command that would otherwise have run.
+        // exec fails with ENAMETOOLONG, not ENOENT) do we retry through a shell.
+        // Whole shell lines (empty args + embedded whitespace, the shape
+        // CodeBuddy and grok send) always qualify. A configured default shell
+        // additionally qualifies a no-argv shell builtin such as PowerShell's
+        // `Get-ChildItem`. A path that long can never be a real executable, so
+        // rerouting it is always at least as correct. Deciding off a real failed
+        // spawn — rather than a pre-spawn `which` guess that runs in codeg's own
+        // cwd/env — means we never reroute a command that would otherwise have
+        // run.
         //
         // A spawn the kernel refuses with `ETXTBSY` is retried in place instead
         // (see `spawn_retrying_exec_busy`): the program *is* runnable, it is
@@ -532,6 +576,13 @@ impl TerminalRuntime {
         direct.args(&request.args);
         self.configure_command(&mut direct, &request);
 
+        let configured_shell = self.default_shell.snapshot().await;
+        // A structured ACP request normally names an executable plus argv, so
+        // preserve direct execution for it. If an explicit shell is selected,
+        // also let no-argv shell builtins (for example PowerShell's
+        // `Get-ChildItem`) fall back through that shell after direct exec fails.
+        let can_retry_through_shell = request.args.is_empty()
+            && (request.command.contains(char::is_whitespace) || configured_shell.is_some());
         let spawned = crate::process::spawn_retrying_exec_busy(|| direct.spawn()).await;
         let mut child = match spawned {
             Ok(child) => child,
@@ -539,10 +590,10 @@ impl TerminalRuntime {
                 if matches!(
                     err.kind(),
                     std::io::ErrorKind::NotFound | std::io::ErrorKind::InvalidFilename
-                ) && request.args.is_empty()
-                    && request.command.contains(char::is_whitespace) =>
+                ) && can_retry_through_shell =>
             {
-                let mut shell = shell_wrapped_command(&request.command);
+                let shell = configured_shell.unwrap_or_else(resolve_shell);
+                let mut shell = shell_wrapped_command(&shell, &request.command);
                 self.configure_command(&mut shell, &request);
                 shell.spawn().map_err(|err| {
                     TerminalRuntimeError::Internal(format!(
@@ -782,23 +833,24 @@ where
     }
 }
 
-/// Wrap a full shell command line so it executes through the platform shell.
-/// Used when an agent passes an entire command line in `command` with empty
-/// `args` (see `create_terminal`); the shell preserves the `&&`, pipes,
-/// `$VAR`, and globs the agent's line relies on. Reuses `tokio_command` so the
-/// shell still inherits codeg's UTF-8 env and Windows program normalization.
-#[cfg(not(windows))]
-fn shell_wrapped_command(line: &str) -> tokio::process::Command {
-    let mut command = crate::process::tokio_command("/bin/sh");
-    command.arg("-c").arg(line);
-    command
-}
+/// Wrap a command line through the configured shell. This matches the shell
+/// semantics used by the built-in terminal instead of hard-coding `/bin/sh` or
+/// `cmd.exe` for model tool calls.
+fn shell_wrapped_command(shell: &str, line: &str) -> tokio::process::Command {
+    let shell_name = Path::new(shell)
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or(shell)
+        .to_ascii_lowercase();
+    let mut command = crate::process::tokio_command(shell);
 
-#[cfg(windows)]
-fn shell_wrapped_command(line: &str) -> tokio::process::Command {
-    let comspec = std::env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".to_string());
-    let mut command = crate::process::tokio_command(comspec);
-    command.arg("/C").arg(line);
+    if shell_name.contains("pwsh") || shell_name.contains("powershell") {
+        command.args(["-NoLogo", "-NoProfile", "-Command", line]);
+    } else if shell_name == "cmd" || shell_name == "cmd.exe" {
+        command.args(["/D", "/S", "/C", line]);
+    } else {
+        command.arg("-c").arg(line);
+    }
     command
 }
 
@@ -866,6 +918,41 @@ fn decode_available_utf8(pending: &mut Vec<u8>) -> String {
         pending.drain(..consumed);
     }
     output
+}
+
+#[cfg(test)]
+mod shell_config_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn default_shell_config_hot_swaps() {
+        let config = TerminalShellRuntimeConfig::new();
+        assert_eq!(config.snapshot().await, None);
+
+        config.set(Some("pwsh.exe".to_string())).await;
+        assert_eq!(config.snapshot().await.as_deref(), Some("pwsh.exe"));
+    }
+
+    #[test]
+    fn powershell_fallback_uses_the_selected_executable() {
+        let command = shell_wrapped_command("pwsh.exe", "Get-ChildItem");
+        let std_command = command.as_std();
+        let args: Vec<_> = std_command
+            .get_args()
+            .map(|value| value.to_string_lossy().to_string())
+            .collect();
+
+        assert_eq!(std_command.get_program().to_string_lossy(), "pwsh.exe");
+        assert_eq!(
+            args,
+            vec![
+                "-NoLogo".to_string(),
+                "-NoProfile".to_string(),
+                "-Command".to_string(),
+                "Get-ChildItem".to_string(),
+            ]
+        );
+    }
 }
 
 #[cfg(all(test, unix))]
@@ -967,6 +1054,49 @@ mod tests {
             .expect("get output");
         runtime.release_all_for_session(session_id.0.as_ref()).await;
         out.output
+    }
+
+    /// The shell handle is shared with a live connection, so changing General
+    /// Settings after the agent connects affects its next shell command.
+    #[tokio::test]
+    async fn shell_fallback_uses_the_live_selected_shell() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let shell = dir.path().join("selected-shell");
+        std::fs::write(
+            &shell,
+            "#!/bin/sh\nprintf '%s\\n' selected-shell\nexec /bin/sh \"$@\"\n",
+        )
+        .expect("write shell");
+        let mut permissions = std::fs::metadata(&shell)
+            .expect("shell metadata")
+            .permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&shell, permissions).expect("make shell executable");
+
+        let config = TerminalShellRuntimeConfig::new();
+        let runtime = TerminalRuntime::with_base_env(BTreeMap::new())
+            .with_default_shell_config(config.clone());
+        config
+            .set(Some(shell.to_string_lossy().to_string()))
+            .await;
+
+        let session_id = SessionId::new("selected-shell".to_string());
+        let request = CreateTerminalRequest::new(
+            session_id.clone(),
+            "printf 'command-output\\n'".to_string(),
+        );
+        let output = run_and_capture(&runtime, &session_id, request).await;
+
+        assert!(
+            output.contains("selected-shell"),
+            "configured shell did not run; got:\n{output}"
+        );
+        assert!(
+            output.contains("command-output"),
+            "configured shell did not execute the command; got:\n{output}"
+        );
     }
 
     /// A `terminal/create` that omits `cwd` defaults to the runtime's

@@ -36,7 +36,9 @@ use crate::acp::file_system_runtime::{FileSystemRuntime, FileSystemRuntimeError,
 use crate::acp::registry::{self, AgentDistribution};
 use crate::acp::session_state::SessionState;
 use crate::acp::stderr_tail::{summarize_parser_error, StderrTail, TailScope};
-use crate::acp::terminal_runtime::{TerminalRuntime, TerminalRuntimeError};
+use crate::acp::terminal_runtime::{
+    TerminalRuntime, TerminalRuntimeError, TerminalShellRuntimeConfig,
+};
 use crate::acp::types::{
     AcpEvent, AvailableCommandInfo, ConnectionInfo, ConnectionStatus, GrokEffortSpec,
     PermissionOptionInfo, PlanEntryInfo, PromptCapabilitiesInfo, PromptInputBlock,
@@ -1154,6 +1156,7 @@ pub async fn spawn_agent_connection(
     preferred_mode_id: Option<String>,
     preferred_config_values: BTreeMap<String, String>,
     delegation_injection: Option<DelegationInjection>,
+    terminal_shell_config: TerminalShellRuntimeConfig,
 ) -> Result<tokio::sync::oneshot::Receiver<()>, AcpError> {
     // Create the authoritative session state up front. Subsequent emit_with_state
     // calls write through this state and increment its seq counter so the first
@@ -1317,6 +1320,7 @@ pub async fn spawn_agent_connection(
             emitter_clone.clone(),
             Arc::clone(&state_clone),
             terminal_base_env,
+            terminal_shell_config,
             preferred_mode_id,
             preferred_config_values,
             delegation_injection,
@@ -3170,6 +3174,7 @@ async fn run_connection(
     emitter: EventEmitter,
     state: Arc<RwLock<SessionState>>,
     terminal_base_env: BTreeMap<String, String>,
+    terminal_shell_config: TerminalShellRuntimeConfig,
     preferred_mode_id: Option<String>,
     preferred_config_values: BTreeMap<String, String>,
     delegation_injection: Option<DelegationInjection>,
@@ -3188,7 +3193,9 @@ async fn run_connection(
     // `terminal/create` without a `cwd` (e.g. CodeBuddy) runs in the folder the
     // conversation runs in rather than codeg's own process cwd.
     let terminal_runtime = Arc::new(
-        TerminalRuntime::with_base_env(terminal_base_env).with_default_cwd(Some(cwd.clone())),
+        TerminalRuntime::with_base_env(terminal_base_env)
+            .with_default_cwd(Some(cwd.clone()))
+            .with_default_shell_config(terminal_shell_config),
     );
     let cwd_string = cwd.to_string_lossy().to_string();
     tracing::info!("[ACP] fs policy {}", fs_policy.describe());
