@@ -1709,7 +1709,8 @@
       },
       "alerts": {
         "title": "アラート",
-        "empty": "アラートなし"
+        "empty": "アラートなし",
+        "details": "詳細"
       },
       "stats": {
         "conversations": "{count} 件の会話",
@@ -2498,9 +2499,10 @@
           "turnFailedMaxTurnRequests": "{agent} がこのターンで許可された最大リクエスト数に達しました。",
           "turnFailedUnknown": "{agent} が不明な停止理由でターンを終了しました。",
           "grokModelSwitchIncompatibleAgent": "{agent} は既存の会話ではこのモデルに切り替えられません。新しいセッションを開始して使用してください。",
-          "turnFailedEmpty": "{agent} は応答を生成せずにターンを終了しました。詳細を展開してエージェントの出力を確認してください。",
-          "turnFailedEmptyProtocol": "{agent} の出力を codeg が解析できませんでした。エージェントのバージョンがプロトコルと一致していない可能性があります。詳細を展開して確認してください。",
-          "turnFailedEmptyMetadata": "{agent} はこのターンでステータス更新（計画 / モード / 使用量）のみを送信し、応答はありませんでした。詳細を展開して確認してください。"
+          "turnFailedEmpty": "{agent} は応答を生成せずにターンを終了しました。",
+          "turnFailedEmptyProtocol": "{agent} の出力を codeg が解析できませんでした。エージェントのバージョンがプロトコルと一致していない可能性があります。",
+          "turnFailedEmptyMetadata": "{agent} はこのターンでステータス更新（計画 / モード / 使用量）のみを送信し、応答はありませんでした。",
+          "detailsInAlerts": "ステータスバーのアラートを開き、詳細を展開するとエージェントの出力を確認できます。"
         },
         "unableReadAgentConfig": "エージェント設定を読み取れません: {message}",
         "connectFailedTitle": "{agent} の接続に失敗しました",

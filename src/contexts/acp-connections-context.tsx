@@ -3583,18 +3583,31 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
           })()
 
           // Backend-supplied diagnostic evidence (agent stderr tail, unparsed
-          // update counts), already redacted and bounded there. The alert's
-          // `detail` slot already carries the localized message, so append
-          // below it — `StatusBarAlerts` renders that slot `whitespace-pre-wrap`.
-          const evidence = e.details?.trim()
-          const alertDetail = evidence
-            ? `${localizedMessage}\n\n${evidence}`
-            : localizedMessage
+          // update counts), already redacted and bounded there. It rides its
+          // own alert slot rather than being concatenated into `detail`, so
+          // `StatusBarAlerts` can put it behind a real expander instead of
+          // dumping a stderr wall into the alert list. Whitespace-only details
+          // collapse to `undefined` so every consumer below (tooltip pointer,
+          // alert slot, re-attach dedup) agrees there is nothing to show.
+          const evidence = e.details?.trim() || undefined
 
           // `conn.error` feeds the composer status tooltip — keep it the
-          // one-line localized message, never the multi-line evidence.
-          dispatch({ type: "ERROR", contextKey, message: localizedMessage })
-          pushAlertRef.current("error", t("eventErrorTitle"), alertDetail)
+          // one-line localized message, never the multi-line evidence. The
+          // tooltip has no room for a disclosure, so when there IS evidence,
+          // say where it can be opened; otherwise the message would point at
+          // an expander the user can't find (and, with no evidence, one that
+          // wouldn't be worth finding).
+          const tooltipMessage = evidence
+            ? `${localizedMessage} ${t("backendErrors.detailsInAlerts")}`
+            : localizedMessage
+          dispatch({ type: "ERROR", contextKey, message: tooltipMessage })
+          pushAlertRef.current(
+            "error",
+            t("eventErrorTitle"),
+            localizedMessage,
+            undefined,
+            evidence
+          )
           // Remember what we surfaced so the snapshot path doesn't repeat it
           // when this client re-attaches.
           if (evidence) {
@@ -3784,7 +3797,9 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
       pushAlertRef.current(
         "error",
         t("eventErrorTitle"),
-        patch.lastError ? `${patch.lastError}\n\n${evidence}` : evidence
+        patch.lastError ?? undefined,
+        undefined,
+        evidence
       )
     },
     [t]

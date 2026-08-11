@@ -1709,7 +1709,8 @@
       },
       "alerts": {
         "title": "Warnungen",
-        "empty": "Keine Warnungen"
+        "empty": "Keine Warnungen",
+        "details": "Details"
       },
       "stats": {
         "conversations": "{count} Konversationen",
@@ -2498,9 +2499,10 @@
           "turnFailedMaxTurnRequests": "{agent} hat die maximale Anzahl zulässiger Anfragen für diese Runde erreicht.",
           "turnFailedUnknown": "{agent} hat die Runde mit einem unbekannten Stoppgrund beendet.",
           "grokModelSwitchIncompatibleAgent": "{agent} kann in einer bestehenden Unterhaltung nicht zu diesem Modell wechseln. Starte eine neue Sitzung, um es zu verwenden.",
-          "turnFailedEmpty": "{agent} hat die Runde ohne jegliche Antwort beendet. Öffnen Sie die Details, um die Ausgabe des Agents zu sehen.",
-          "turnFailedEmptyProtocol": "{agent} hat eine Ausgabe erzeugt, die codeg nicht auswerten konnte — die Agent-Version passt möglicherweise nicht zum Protokoll. Öffnen Sie die Details für mehr.",
-          "turnFailedEmptyMetadata": "{agent} hat in dieser Runde nur Statusaktualisierungen gesendet (Plan / Modus / Verbrauch) und keine Antwort. Öffnen Sie die Details für mehr."
+          "turnFailedEmpty": "{agent} hat die Runde ohne jegliche Antwort beendet.",
+          "turnFailedEmptyProtocol": "{agent} hat eine Ausgabe erzeugt, die codeg nicht auswerten konnte — die Agent-Version passt möglicherweise nicht zum Protokoll.",
+          "turnFailedEmptyMetadata": "{agent} hat in dieser Runde nur Statusaktualisierungen gesendet (Plan / Modus / Verbrauch) und keine Antwort.",
+          "detailsInAlerts": "Öffnen Sie die Warnungen in der Statusleiste und klappen Sie die Details auf, um die Ausgabe des Agents zu sehen."
         },
         "unableReadAgentConfig": "Agenten-Konfiguration kann nicht gelesen werden: {message}",
         "connectFailedTitle": "{agent} Verbindung fehlgeschlagen",

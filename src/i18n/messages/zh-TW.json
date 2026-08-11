@@ -1709,7 +1709,8 @@
       },
       "alerts": {
         "title": "警示",
-        "empty": "暫無警示資訊"
+        "empty": "暫無警示資訊",
+        "details": "詳情"
       },
       "stats": {
         "conversations": "{count} 個會話",
@@ -2498,9 +2499,10 @@
           "turnFailedMaxTurnRequests": "{agent} 已達到此輪回覆允許的最大請求次數。",
           "turnFailedUnknown": "{agent} 以未知的停止原因結束了此輪回覆。",
           "grokModelSwitchIncompatibleAgent": "{agent} 無法在既有對話中切換到該模型，請新建工作階段以使用它。",
-          "turnFailedEmpty": "{agent} 此輪沒有產生任何回覆就結束了。展開詳情查看代理輸出。",
-          "turnFailedEmptyProtocol": "{agent} 此輪的輸出 codeg 無法解析，可能是代理版本與協定不相符。展開詳情查看。",
-          "turnFailedEmptyMetadata": "{agent} 此輪只收到狀態更新（計畫 / 模式 / 用量），沒有收到任何回覆。展開詳情查看。"
+          "turnFailedEmpty": "{agent} 此輪沒有產生任何回覆就結束了。",
+          "turnFailedEmptyProtocol": "{agent} 此輪的輸出 codeg 無法解析，可能是代理版本與協定不相符。",
+          "turnFailedEmptyMetadata": "{agent} 此輪只收到狀態更新（計畫 / 模式 / 用量），沒有收到任何回覆。",
+          "detailsInAlerts": "在狀態列的「警示」中展開詳情，即可查看代理輸出。"
         },
         "unableReadAgentConfig": "無法讀取 Agent 設定：{message}",
         "connectFailedTitle": "{agent} 連線失敗",

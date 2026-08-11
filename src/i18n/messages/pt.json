@@ -1709,7 +1709,8 @@
       },
       "alerts": {
         "title": "Alertas",
-        "empty": "Sem alertas"
+        "empty": "Sem alertas",
+        "details": "Detalhes"
       },
       "stats": {
         "conversations": "{count} conversas",
@@ -2498,9 +2499,10 @@
           "turnFailedMaxTurnRequests": "{agent} atingiu o número máximo de solicitações permitidas para este turno.",
           "turnFailedUnknown": "{agent} encerrou o turno com um motivo de parada desconhecido.",
           "grokModelSwitchIncompatibleAgent": "{agent} não pode mudar para esse modelo em uma conversa existente. Inicie uma nova sessão para usá-lo.",
-          "turnFailedEmpty": "{agent} encerrou o turno sem produzir nenhuma resposta. Expanda os detalhes para ver a saída do agente.",
-          "turnFailedEmptyProtocol": "{agent} produziu uma saída que o codeg não conseguiu analisar — a versão do agente pode não corresponder ao protocolo. Expanda os detalhes para saber mais.",
-          "turnFailedEmptyMetadata": "{agent} enviou apenas atualizações de status neste turno (plano / modo / uso) e nenhuma resposta. Expanda os detalhes para saber mais."
+          "turnFailedEmpty": "{agent} encerrou o turno sem produzir nenhuma resposta.",
+          "turnFailedEmptyProtocol": "{agent} produziu uma saída que o codeg não conseguiu analisar — a versão do agente pode não corresponder ao protocolo.",
+          "turnFailedEmptyMetadata": "{agent} enviou apenas atualizações de status neste turno (plano / modo / uso) e nenhuma resposta.",
+          "detailsInAlerts": "Abra os alertas na barra de status e expanda os detalhes para ver a saída do agente."
         },
         "unableReadAgentConfig": "Não foi possível ler a configuração do agente: {message}",
         "connectFailedTitle": "Falha na conexão de {agent}",

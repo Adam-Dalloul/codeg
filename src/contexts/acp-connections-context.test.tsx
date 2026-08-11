@@ -1459,7 +1459,7 @@ describe("empty-turn error diagnostics", () => {
     })
   })
 
-  it("appends details to the alert but keeps them out of conn.error and the OS notification", async () => {
+  it("routes details to the alert's evidence slot, keeping them out of detail, conn.error and the OS notification", async () => {
     const handlers = await connectOwner()
     h.pushAlert.mockClear()
     h.sendSystemNotification.mockClear()
@@ -1476,15 +1476,19 @@ describe("empty-turn error diagnostics", () => {
       details,
     })
 
-    // The alert's detail slot carries the localized line AND the evidence.
+    // The evidence rides its own slot so `StatusBarAlerts` can put it behind an
+    // expander; the always-visible detail slot stays the localized line.
     const alertCalls = h.pushAlert.mock.calls
-    const [, , alertDetail] = alertCalls[alertCalls.length - 1]!
-    expect(alertDetail).toContain("backendErrors.turnFailedEmptyProtocol")
-    expect(alertDetail).toContain("Error: 401 Unauthorized")
+    const [, , alertDetail, , alertEvidence] =
+      alertCalls[alertCalls.length - 1]!
+    expect(alertDetail).toBe("backendErrors.turnFailedEmptyProtocol")
+    expect(alertEvidence).toBe(details)
 
-    // `conn.error` feeds the composer tooltip — one line only.
+    // `conn.error` feeds the composer tooltip — the localized line plus a
+    // pointer at the only surface that can expand the evidence, never the
+    // evidence itself.
     expect(h.store!.getConnection(TAB)!.error).toBe(
-      "backendErrors.turnFailedEmptyProtocol"
+      "backendErrors.turnFailedEmptyProtocol backendErrors.detailsInAlerts"
     )
 
     // Notification centers persist their payload outside the app.
@@ -1508,8 +1512,15 @@ describe("empty-turn error diagnostics", () => {
     })
 
     const alertCalls = h.pushAlert.mock.calls
-    const [, , alertDetail] = alertCalls[alertCalls.length - 1]!
+    const [, , alertDetail, , alertEvidence] =
+      alertCalls[alertCalls.length - 1]!
     expect(alertDetail).toBe("backendErrors.turnFailedEmpty")
+    expect(alertEvidence).toBeUndefined()
+    // Nothing to expand, so the tooltip must not send the user looking for an
+    // expander.
+    expect(h.store!.getConnection(TAB)!.error).toBe(
+      "backendErrors.turnFailedEmpty"
+    )
   })
 })
 
@@ -1631,8 +1642,12 @@ describe("HYDRATE_FROM_SNAPSHOT last_error recovery", () => {
     } as unknown as LiveSessionSnapshot)
 
     const alertCalls = h.pushAlert.mock.calls
-    const [, , alertDetail] = alertCalls[alertCalls.length - 1]!
-    expect(alertDetail).toContain("Error: 401 Unauthorized")
+    const [, , alertDetail, , alertEvidence] =
+      alertCalls[alertCalls.length - 1]!
+    expect(alertDetail).toBe(
+      "agent ended the turn without producing any response."
+    )
+    expect(alertEvidence).toBe(details)
     // The tooltip string stays the single-line message.
     expect(h.store!.getConnection(TAB)!.error).toBe(
       "agent ended the turn without producing any response."

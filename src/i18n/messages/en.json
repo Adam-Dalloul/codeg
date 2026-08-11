@@ -1709,7 +1709,8 @@
       },
       "alerts": {
         "title": "Alerts",
-        "empty": "No alerts"
+        "empty": "No alerts",
+        "details": "Details"
       },
       "stats": {
         "conversations": "{count} conversations",
@@ -2498,9 +2499,10 @@
           "turnFailedMaxTurnRequests": "{agent} reached the maximum number of allowed requests for this turn.",
           "turnFailedUnknown": "{agent} ended the turn with an unrecognized stop reason.",
           "grokModelSwitchIncompatibleAgent": "{agent} can't switch to that model in an existing conversation. Start a new session to use it.",
-          "turnFailedEmpty": "{agent} ended the turn without producing any response. Expand the details to see the agent's output.",
-          "turnFailedEmptyProtocol": "{agent} produced output that codeg could not parse — the agent version may not match the protocol. Expand the details to see more.",
-          "turnFailedEmptyMetadata": "{agent} sent only status updates this turn (plan / mode / usage) and no reply. Expand the details to see more."
+          "turnFailedEmpty": "{agent} ended the turn without producing any response.",
+          "turnFailedEmptyProtocol": "{agent} produced output that codeg could not parse — the agent version may not match the protocol.",
+          "turnFailedEmptyMetadata": "{agent} sent only status updates this turn (plan / mode / usage) and no reply.",
+          "detailsInAlerts": "Open Alerts in the status bar and expand the details to see the agent's output."
         },
         "unableReadAgentConfig": "Unable to read Agent config: {message}",
         "connectFailedTitle": "{agent} connection failed",
