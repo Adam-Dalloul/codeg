@@ -57,8 +57,13 @@ export function TaskList({
           )}
         >
           <div className={TASK_LIST_CELLS.status}>{t("listColStatus")}</div>
+          {/* pl-5 clears the rows' agent-mark gutter (14px mark + 6px gap), so
+              the heading sits over the titles rather than over their icons. */}
           <div
-            className={cn(TASK_LIST_CELLS.title, "flex items-center gap-1.5")}
+            className={cn(
+              TASK_LIST_CELLS.title,
+              "flex items-center gap-1.5 pl-5"
+            )}
           >
             {t("listColTask")}
             <span className="rounded-full bg-muted/70 px-1.5 py-0.5 text-[0.625rem] font-medium leading-none tabular-nums">

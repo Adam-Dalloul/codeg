@@ -911,15 +911,30 @@ pub async fn update_folder_alias_core(
         .ok_or_else(|| AppCommandError::not_found("Folder not found"))
 }
 
+/// The folder's default agent is the last layer a work task inherits from, and
+/// the task views resolve it live rather than freezing it on the row — so a
+/// change here changes what every inheriting task reports, and the boards have
+/// to be told. Nothing else emits for this column, so without the nudge they
+/// would keep drawing the previous agent's mark until an unrelated task event
+/// happened by. `Settings` is the same signal the folder's task settings send
+/// for the layer directly above this one.
 pub async fn update_folder_default_agent_core(
+    emitter: &EventEmitter,
     db: &AppDatabase,
     folder_id: i32,
     default_agent_type: Option<crate::models::agent::AgentType>,
 ) -> Result<FolderDetail, AppCommandError> {
-    folder_service::update_folder_default_agent(&db.conn, folder_id, default_agent_type)
-        .await
-        .map_err(AppCommandError::from)?
-        .ok_or_else(|| AppCommandError::not_found("Folder not found"))
+    let detail =
+        folder_service::update_folder_default_agent(&db.conn, folder_id, default_agent_type)
+            .await
+            .map_err(AppCommandError::from)?
+            .ok_or_else(|| AppCommandError::not_found("Folder not found"))?;
+    crate::web::event_bridge::emit_event(
+        emitter,
+        crate::web::event_bridge::WORK_TASK_CHANGED_EVENT,
+        crate::web::event_bridge::WorkTaskChange::Settings { folder_id },
+    );
+    Ok(detail)
 }
 
 // ---------------------------------------------------------------------------
@@ -1058,11 +1073,18 @@ pub async fn update_folder_alias(
 #[cfg(feature = "tauri-runtime")]
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
 pub async fn update_folder_default_agent(
+    app: tauri::AppHandle,
     db: tauri::State<'_, AppDatabase>,
     folder_id: i32,
     default_agent_type: Option<crate::models::agent::AgentType>,
 ) -> Result<FolderDetail, AppCommandError> {
-    update_folder_default_agent_core(&db, folder_id, default_agent_type).await
+    update_folder_default_agent_core(
+        &EventEmitter::Tauri(app),
+        &db,
+        folder_id,
+        default_agent_type,
+    )
+    .await
 }
 
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
@@ -7546,18 +7568,41 @@ branch refs/heads/main";
 
     #[tokio::test]
     async fn update_folder_default_agent_core_set_then_clear() {
+        use crate::web::event_bridge::{WebEventBroadcaster, WORK_TASK_CHANGED_EVENT};
+        use std::sync::Arc;
+
         let db = fresh_in_memory_db().await;
         let entry = add_folder_to_history_core(&db, "/tmp/codeg-agent-test".into())
             .await
             .expect("add");
-        let set = update_folder_default_agent_core(&db, entry.id, Some(AgentType::ClaudeCode))
-            .await
-            .expect("set agent");
+        let broadcaster = Arc::new(WebEventBroadcaster::new());
+        let mut rx = broadcaster.subscribe();
+        let emitter = EventEmitter::test_web_only(broadcaster.clone());
+
+        let set =
+            update_folder_default_agent_core(&emitter, &db, entry.id, Some(AgentType::ClaudeCode))
+                .await
+                .expect("set agent");
         assert_eq!(set.default_agent_type, Some(AgentType::ClaudeCode));
-        let cleared = update_folder_default_agent_core(&db, entry.id, None)
+        // The default is the last layer a work task inherits, and the boards
+        // resolve it live — so the change has to reach them (web clients
+        // included) rather than wait for an unrelated task event.
+        let evt = rx.try_recv().expect("default agent should nudge the tasks");
+        assert_eq!(evt.channel, WORK_TASK_CHANGED_EVENT);
+        assert_eq!(evt.payload["kind"], "settings");
+        assert_eq!(evt.payload["folder_id"], entry.id);
+
+        let cleared = update_folder_default_agent_core(&emitter, &db, entry.id, None)
             .await
             .expect("clear agent");
         assert_eq!(cleared.default_agent_type, None);
+        // Clearing it changes the inherited value just as much as setting it.
+        assert_eq!(
+            rx.try_recv()
+                .expect("clearing should nudge too")
+                .payload["kind"],
+            "settings"
+        );
     }
 
     #[tokio::test]

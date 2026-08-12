@@ -332,6 +332,13 @@ export function TaskDetailSheet({
     [run]
   )
 
+  // Conversation truth first — that is the agent that actually ran. Before its
+  // detail lands (and for a task that has never run) the list's own resolution
+  // stands in, so the glyph here is the one the board and the list already
+  // showed for this task rather than a placeholder that changes on load.
+  const agentType =
+    convAgentType ?? task?.agent_type ?? task?.config?.agent_type ?? null
+
   // Snapshot first (it carries the model the run actually used); otherwise the
   // resolved agent's display name, so a task that simply follows the folder's
   // defaults still names its agent beside the icon.
@@ -339,17 +346,14 @@ export function TaskDetailSheet({
     const snap = task?.config?.label_snapshot
     const name =
       snap?.agent_label ??
-      (convAgentType ? (getAgentLabel(convAgentType) ?? convAgentType) : null)
+      (agentType ? (getAgentLabel(agentType) ?? agentType) : null)
     if (!name) return null
     const model = snap?.config_labels?.model
     return model ? `${name} · ${model}` : name
-  }, [task, convAgentType])
+  }, [task, agentType])
 
   if (!task) return null
 
-  // Conversation truth first; a task that overrides the folder default carries
-  // its own agent, and before the detail lands that override is all we have.
-  const agentType = convAgentType ?? task.config?.agent_type ?? null
   // The same resolution, plus a folder default and the worktree path, for the
   // composer's commands / skills / file references.
   const composerTarget = followUpComposerTarget({

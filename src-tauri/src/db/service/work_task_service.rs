@@ -61,6 +61,7 @@ fn to_info(m: work_task::Model) -> WorkTaskInfo {
         sort_order: m.sort_order,
         worktree_folder_id: m.worktree_folder_id,
         worktree_missing: false, // stamped by the command layer (needs disk + folder rows)
+        agent_type: None,        // stamped by the command layer (needs folder settings)
         conversation_id: m.conversation_id,
         connection_id: m.connection_id,
         base_branch: m.base_branch,

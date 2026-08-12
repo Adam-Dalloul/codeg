@@ -25,6 +25,14 @@ pub struct WorkTaskInfo {
     /// can only fail.
     #[serde(default)]
     pub worktree_missing: bool,
+    /// Wire name of the agent that runs — or ran — this task, resolved with
+    /// the engine's own layering. Stamped by the list/get commands (the row
+    /// stores only an optional override; the inherited value lives in the
+    /// folder's settings), so the board and the list can draw its mark beside
+    /// the title without a lookup per card. `None` = nothing configured
+    /// anywhere, which is also the one case the engine refuses to launch.
+    #[serde(default)]
+    pub agent_type: Option<String>,
     pub conversation_id: Option<i32>,
     /// Live ACP connection of the current generation — the transcript viewer
     /// attaches by it. Only meaningful while the task is running/awaiting;

@@ -158,6 +158,27 @@ describe("TaskRow", () => {
     expect(screen.getByText("installing deps")).toBeTruthy()
   })
 
+  it("marks the row with the agent the task runs under", () => {
+    const { unmount } = renderRow(task({ agent_type: "codex" }))
+    expect(screen.getByTitle("Codex")).toBeInTheDocument()
+    unmount()
+
+    // A payload that never passed through the list's resolution still has the
+    // task's own override to go on.
+    renderRow(
+      task({
+        agent_type: null,
+        config: {
+          prompt_blocks: [],
+          display_text: "",
+          agent_type: "gemini",
+          config_values: {},
+        },
+      })
+    )
+    expect(screen.getByTitle("Gemini CLI")).toBeInTheDocument()
+  })
+
   it("badges a deleted worktree, but not a task that never had one", () => {
     const { unmount } = renderRow(
       task({ status: "done", worktree_folder_id: null })

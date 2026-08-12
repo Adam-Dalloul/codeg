@@ -192,3 +192,18 @@ describe("TaskCard worktree-removed badge", () => {
     expect(screen.queryByText("Worktree removed")).toBeNull()
   })
 })
+
+describe("TaskCard agent mark", () => {
+  it("names the agent the task runs under", () => {
+    renderCard(task({ agent_type: "claude_code" }))
+    expect(screen.getByTitle("Claude Code")).toBeInTheDocument()
+  })
+
+  it("draws a placeholder when no agent is configured anywhere", () => {
+    // The engine refuses to launch this state; the card still has to lay out
+    // its title the way every other card does.
+    renderCard(task({ agent_type: null }))
+    expect(screen.queryByTitle("Claude Code")).toBeNull()
+    expect(screen.getByText("Answer the question")).toBeInTheDocument()
+  })
+})

@@ -2,6 +2,7 @@
 
 import { useTranslations } from "next-intl"
 import {
+  Bot,
   CalendarClock,
   Check,
   CircleAlert,
@@ -10,6 +11,7 @@ import {
   FolderX,
   Loader2,
 } from "lucide-react"
+import { AgentIcon } from "@/components/agent-icon"
 import { Button } from "@/components/ui/button"
 import { formatRelative } from "@/components/conversations/sidebar-conversation-grouping"
 import { formatScheduleFull, formatScheduleShort } from "@/lib/task-schedule"
@@ -234,6 +236,45 @@ export function WorktreeRemovedChip({ task }: { task: WorkTask }) {
 }
 
 /**
+ * The mark of the agent on this task, drawn beside the title in BOTH views —
+ * which agent is on a task belongs to the task, so the board and the list must
+ * answer it identically. The backend resolves it the way the engine does at
+ * launch (see `agent_type`), so a task that simply inherits its folder's
+ * settings still shows the mark it will actually run under; `config.agent_type`
+ * covers a payload that reached the client without that stamp.
+ *
+ * Sized to the title's line rather than framed like the detail sheet's glyph: a
+ * row or card carries one, and at this density a bare mark reads as part of the
+ * title instead of as another chip. Left to name itself through the mark's own
+ * `<title>`, as every other AgentIcon in the app is — the words for it are in
+ * the detail sheet, beside a glyph big enough to deserve them.
+ *
+ * The box is drawn even when no agent is configured anywhere (the one state the
+ * engine refuses to launch): both views align their titles on it, and a
+ * placeholder is worth more than a column that shifts row to row.
+ */
+export function TaskAgentMark({
+  task,
+  className,
+}: {
+  task: WorkTask
+  className?: string
+}) {
+  const agentType = task.agent_type ?? task.config?.agent_type ?? null
+  if (!agentType) {
+    return (
+      <Bot
+        className={cn("size-3.5 shrink-0 text-muted-foreground/40", className)}
+        aria-hidden="true"
+      />
+    )
+  }
+  return (
+    <AgentIcon agentType={agentType} className={cn("size-3.5", className)} />
+  )
+}
+
+/**
  * The planned start of a to-do task. Primary-tinted rather than muted: it is
  * the one thing on a pending card that says something WILL happen, and it is
  * how a card that looks idle explains itself.
@@ -318,7 +359,11 @@ export function TaskCard({
       )}
     >
       <div className="flex items-start justify-between gap-2">
-        <span className="min-w-0 break-words text-[0.8125rem] font-medium leading-snug">
+        {/* mt-[0.125rem] rides the mark on the FIRST line of a title that
+            wraps — items-start would otherwise hang it off the block's top
+            edge, half a line above the text it belongs to. */}
+        <TaskAgentMark task={task} className="mt-[0.125rem]" />
+        <span className="min-w-0 flex-1 break-words text-[0.8125rem] font-medium leading-snug">
           {task.title}
         </span>
         <StatusChip task={task} />

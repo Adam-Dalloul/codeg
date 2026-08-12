@@ -1377,6 +1377,11 @@ export interface WorkTask {
    *  directory is gone from disk. Merge cannot run; review offers "complete"
    *  instead. Absent = false (stamped by the list/get commands). */
   worktree_missing?: boolean
+  /** The agent that runs — or ran — this task, resolved by the list/get
+   *  commands the way the engine resolves it at launch (the conversation that
+   *  actually ran, else the task's override, else the folder's task settings,
+   *  else the folder default). Absent/null = nothing configured anywhere. */
+  agent_type?: AgentType | null
   conversation_id: number | null
   /** Live ACP connection of the current generation; stale after a settle —
    *  gate on status before attaching. */
