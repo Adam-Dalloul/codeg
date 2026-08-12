@@ -1718,6 +1718,8 @@
       "tokens": {
         "contextWindowUsageAria": "Kontextfenster-Nutzung",
         "contextWindow": "Kontextfenster",
+        "outputSpeedAria": "Geschätzte Ausgabegeschwindigkeit",
+        "outputSpeedTooltip": "Geschätzte Ausgabegeschwindigkeit (Text + Denken)",
         "usedMax": "Verwendet / Max",
         "tokenUsage": "Token-Nutzung",
         "input": "Eingabe",

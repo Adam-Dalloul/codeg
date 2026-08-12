@@ -1718,6 +1718,8 @@
       "tokens": {
         "contextWindowUsageAria": "Uso de la ventana de contexto",
         "contextWindow": "Ventana de contexto",
+        "outputSpeedAria": "Velocidad de salida estimada",
+        "outputSpeedTooltip": "Velocidad de salida estimada (texto + razonamiento)",
         "usedMax": "Usado / Máx",
         "tokenUsage": "Uso de tokens",
         "input": "Entrada",

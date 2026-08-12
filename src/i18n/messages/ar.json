@@ -1718,6 +1718,8 @@
       "tokens": {
         "contextWindowUsageAria": "استخدام نافذة السياق",
         "contextWindow": "نافذة السياق",
+        "outputSpeedAria": "السرعة التقديرية للإخراج",
+        "outputSpeedTooltip": "السرعة التقديرية للإخراج (نص + تفكير)",
         "usedMax": "المستخدم / الحد الأقصى",
         "tokenUsage": "استخدام الرموز",
         "input": "إدخال",

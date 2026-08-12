@@ -1718,6 +1718,8 @@
       "tokens": {
         "contextWindowUsageAria": "上下文窗口使用率",
         "contextWindow": "上下文窗口",
+        "outputSpeedAria": "估算输出速度",
+        "outputSpeedTooltip": "估算输出速度（正文 + 思考）",
         "usedMax": "已用 / 上限",
         "tokenUsage": "Token 用量",
         "input": "输入",
