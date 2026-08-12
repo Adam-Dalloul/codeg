@@ -3055,7 +3055,19 @@ export interface GitStashEntry {
 
 export type FileTreeNode =
   | { kind: "file"; name: string; path: string }
-  | { kind: "dir"; name: string; path: string; children: FileTreeNode[] }
+  | {
+      kind: "dir"
+      name: string
+      path: string
+      children: FileTreeNode[]
+      /**
+       * The directory is a symlink on disk. Omitted (rather than `false`) for
+       * ordinary directories to keep the broadcast tree snapshot small. The
+       * backend does not descend through links, so `children` arrives empty
+       * and the panel lazy-loads it on expand.
+       */
+      symlink?: boolean
+    }
 
 /** Flat gitignore-aware workspace entry returned by `list_workspace_files`. */
 export interface WorkspaceFileEntry {
