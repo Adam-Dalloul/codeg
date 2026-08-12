@@ -136,6 +136,7 @@ import {
   OpenCodeConnectDialog,
   OpenCodeCustomProviderDialog,
 } from "@/components/settings/opencode-connect-dialog"
+import { OpenCodePermissionsSection } from "@/components/settings/opencode-permissions-section"
 import { AgentDiagnosticsDialog } from "@/components/settings/agent-diagnostics-dialog"
 import {
   buildConnectedModelOptions,
@@ -9434,6 +9435,19 @@ supports_websockets = true`}
                         </div>
                       )}
                     </div>
+
+                    {/*
+                      The editor owns the `permission` key and hands back a
+                      whole rewritten document, so it goes through the same
+                      path as the raw JSON box below — draft-only, like the
+                      model fields above, with the card's Save button doing
+                      the write to opencode.json.
+                    */}
+                    <OpenCodePermissionsSection
+                      configText={selectedDraft.configText}
+                      onChange={handleConfigTextChange}
+                      disabled={selectedIsSavingConfig}
+                    />
 
                     <div className="space-y-1.5">
                       <label className="text-[11px] text-muted-foreground">
