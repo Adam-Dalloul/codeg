@@ -576,7 +576,7 @@
       "draftTitle": "Nouveau MCP",
       "draftDescription": "Renseignez un Server ID et une configuration pour créer un serveur MCP local.",
       "serverIdLabel": "ID du serveur",
-      "serverIdPlaceholder": "Server ID (ex. my-mcp)",
+      "serverIdPlaceholder": "ID du serveur (ex. my-mcp)",
       "typeHint": "Types pris en charge : stdio, http (alias : streamable-http, streamableHttp), sse. env n'est utilisé que par stdio ; pour les MCP distants, utilisez headers pour transporter les jetons d'authentification.",
       "envOnRemoteWarning": "env détecté sur un MCP distant. Seul stdio utilise env ; les MCP distants transportent les jetons d'authentification via headers, donc env sera ignoré à l'enregistrement."
     },
@@ -759,7 +759,7 @@
       "permissionModeLabel": "Mode d'autorisation",
       "permissionModeDefault": "Demander avant d'exécuter (par défaut)",
       "permissionModeForce": "Tout exécuter (--force)",
-      "permissionModeHint": "Run Everything lance les sessions avec --force : tous les appels d'outils sont autorisés automatiquement sauf les règles de refus, sans confirmation (une politique d'organisation peut le limiter aux règles d'autorisation). S'applique aux nouvelles sessions.",
+      "permissionModeHint": "Tout exécuter lance les sessions avec --force : tous les appels d'outils sont autorisés automatiquement sauf les règles de refus, sans confirmation (une politique d'organisation peut le limiter aux règles d'autorisation). S'applique aux nouvelles sessions.",
       "optionDefault": "Défaut (non défini)",
       "sandboxLabel": "Bac à sable",
       "sandboxEnabled": "Activé",
@@ -3117,7 +3117,7 @@
         "other": "Autre",
         "otherPlaceholder": "Saisissez votre réponse…",
         "singleSelect": "Unique",
-        "multiSelect": "Choix multiple",
+        "multiSelect": "Multiple",
         "skip": "Ignorer",
         "next": "Suivant",
         "submit": "Envoyer",
@@ -3209,8 +3209,8 @@
     "conversationContextBar": {
       "folderTitle": "Dossier de travail",
       "branchTitle": "Branche de travail",
-      "searchFolder": "Rechercher un dossier…",
-      "searchBranch": "Rechercher une branche…",
+      "searchFolder": "Rechercher un dossier...",
+      "searchBranch": "Rechercher une branche...",
       "noFolders": "Aucun dossier",
       "noBranches": "Aucune branche",
       "noBranch": "(aucune branche)",
@@ -3220,10 +3220,10 @@
       "merge": "Fusionner",
       "toasts": {
         "folderChanged": "Basculé vers {name}",
-        "openFolderFailed": "Échec de l’ouverture du dossier",
+        "openFolderFailed": "Échec de l'ouverture du dossier",
         "switchedToChatMode": "Basculé en mode discussion",
-        "openStashFailed": "Échec de l’ouverture de la fenêtre de remisage",
-        "openMergeFailed": "Échec de l’ouverture de la fenêtre de fusion"
+        "openStashFailed": "Échec de l'ouverture de la fenêtre de remisage",
+        "openMergeFailed": "Échec de l'ouverture de la fenêtre de fusion"
       }
     },
     "cloneDialog": {
@@ -3920,8 +3920,8 @@
     "empty": "Aucune connexion distante",
     "searchPlaceholder": "Rechercher un espace de travail distant",
     "orderFailed": "Échec de l’enregistrement de l’ordre des espaces de travail distants",
-    "dragSort": "Faire glisser pour réordonner",
-    "dragSortConnection": "Faire glisser pour réordonner {name}",
+    "dragSort": "Glisser pour trier",
+    "dragSortConnection": "Glisser pour trier {name}",
     "newConnection": "Nouvelle connexion",
     "loading": "Chargement",
     "loadingConnection": "Chargement de la connexion distante",
