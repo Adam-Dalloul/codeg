@@ -811,6 +811,7 @@
       "approvalPolicy_untrusted": "Nicht vertrauenswürdig – nur bekannt sichere Lesebefehle laufen ohne Nachfrage",
       "approvalPolicy_never": "Nie – keinerlei Freigabeabfragen",
       "approvalPolicy_granular": "Granular – pro Abfragetyp festlegen",
+      "approvalPolicyUntrustedAcpWarning": "Für „untrusted“ gibt es unter den drei Freigabe-Voreinstellungen des ACP-Adapters keine Entsprechung, daher fallen codeg-Sitzungen auf „auf Anfrage“ zurück: Das Modell entscheidet dann selbst, wann es fragt, und Befehle, die die Sandbox ohnehin erlaubt, fragen nicht mehr nach. Schränke stattdessen unten den Sandbox-Modus ein.",
       "granularHint": "Aus bedeutet, dass Anfragen dieser Art automatisch abgelehnt statt angezeigt werden.",
       "granular_sandbox_approval": "Rechteerweiterung für Shell-Befehle",
       "granular_rules": "Abfragen aus Execpolicy-Regeln",
@@ -823,6 +824,7 @@
       "sandboxMode_workspace-write": "Workspace-Schreibzugriff",
       "sandboxMode_danger-full-access": "Vollzugriff (keine Sandbox)",
       "sandboxModeHint": "Unter Windows wird Workspace-Schreibzugriff auf Nur-Lesen herabgestuft, sofern die experimentelle Windows-Sandbox von codex nicht aktiviert ist.",
+      "sandboxModeSeedsPresetHint": "codeg leitet daraus auch die anfängliche Freigabe-Voreinstellung der Sitzung ab — anders als die Freigaberichtlinie wirkt es also auch auf normale Anfragen. Die im Eingabefeld gewählte Voreinstellung hat weiterhin Vorrang.",
       "writableRootsLabel": "Zusätzliche beschreibbare Ordner",
       "writableRootsHint": "Ein absoluter Pfad pro Zeile, zusätzlich zum Arbeitsverzeichnis.",
       "sandboxRootsRelativeError": "Muss ein absoluter Pfad sein – codex löst relative Angaben unter ~/.codex auf: {path}",
@@ -2769,6 +2771,7 @@
       },
       "permissionDialog": {
         "subtitle": "Agent fordert Berechtigung an, um diesen Zug fortzusetzen.",
+        "queuedCount": "+{count} wartend",
         "kindFallbackTool": "Tool",
         "command": "Befehl",
         "cwd": "Arbeitsverzeichnis: {cwd}",

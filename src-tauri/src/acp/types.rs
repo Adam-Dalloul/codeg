@@ -125,7 +125,24 @@ pub enum AcpEvent {
         request_id: String,
         tool_call: serde_json::Value,
         options: Vec<PermissionOptionInfo>,
+        /// How many FURTHER permission requests are queued behind this card.
+        ///
+        /// Only one card is on screen at a time (see `PermissionQueue`), so
+        /// without this the user cannot tell "the agent is waiting on me once"
+        /// from "…three more times" — which is what made the dropped-approval
+        /// bug read as a hang. Always 0 on a freshly-admitted card (a card is
+        /// only published when the screen is free, i.e. nothing was waiting);
+        /// non-zero only when this card was PROMOTED and others still trail it.
+        /// Additive: `#[serde(default)]` keeps older persisted envelopes
+        /// deserializable.
+        #[serde(default)]
+        queued: u32,
     },
+    /// The number of queued-behind requests changed WITHOUT the visible card
+    /// changing — i.e. a new request arrived while another was already on
+    /// screen, which publishes no `PermissionRequest` of its own. Without this,
+    /// the `queued` count on the card already delivered would go stale.
+    PermissionQueueDepth { depth: u32 },
     /// User responded to (or the connection drained) a previously-pending
     /// permission request. The responder.respond() side of the SACP exchange
     /// is RPC-only, so without this event downstream consumers (pet snapshot,

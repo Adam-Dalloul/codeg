@@ -811,6 +811,7 @@
       "approvalPolicy_untrusted": "غير موثوق — تُنفَّذ تلقائيًا أوامر القراءة الآمنة المعروفة فقط",
       "approvalPolicy_never": "أبدًا — بدون أي طلبات موافقة",
       "approvalPolicy_granular": "تفصيلي — اختر حسب نوع الطلب",
+      "approvalPolicyUntrustedAcpWarning": "لا يوجد مكافئ لـ untrusted بين إعدادات الموافقة الثلاثة في محوّل ACP، لذا تعود جلسات codeg إلى «عند الطلب»: يقرّر النموذج حينها متى يسأل، وتتوقف الأوامر التي تسمح بها البيئة المعزولة أصلاً عن طلب التأكيد. قيّد وضع العزل أدناه بدلاً من ذلك.",
       "granularHint": "الإيقاف يعني رفض هذا النوع من الطلبات تلقائيًا بدلًا من عرضه عليك.",
       "granular_sandbox_approval": "تصعيد صلاحيات أوامر الصدفة",
       "granular_rules": "مطالبات قواعد execpolicy",
@@ -823,6 +824,7 @@
       "sandboxMode_workspace-write": "الكتابة في مساحة العمل",
       "sandboxMode_danger-full-access": "وصول كامل (بدون عزل)",
       "sandboxModeHint": "على Windows، تُخفَّض الكتابة في مساحة العمل إلى قراءة فقط ما لم تُفعَّل بيئة العزل التجريبية الخاصة بـ codex.",
+      "sandboxModeSeedsPresetHint": "يستخدم codeg هذا أيضاً لتحديد إعداد الموافقة الأولي للجلسة، لذا فإنه — بخلاف سياسة الموافقة — يؤثر على الطلبات العادية. ويظل الإعداد المختار في مربع الإدخال هو الأسبق.",
       "writableRootsLabel": "مجلدات إضافية قابلة للكتابة",
       "writableRootsHint": "مسار مطلق واحد في كل سطر، إضافةً إلى مجلد العمل.",
       "sandboxRootsRelativeError": "يجب أن يكون مسارًا مطلقًا — يحسم codex المسارات النسبية داخل ~/.codex: {path}",
@@ -2769,6 +2771,7 @@
       },
       "permissionDialog": {
         "subtitle": "يطلب الوكيل إذنًا لمتابعة هذا الدور.",
+        "queuedCount": "+{count} في الانتظار",
         "kindFallbackTool": "أداة",
         "command": "أمر",
         "cwd": "دليل العمل: {cwd}",

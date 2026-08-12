@@ -811,6 +811,7 @@
       "approvalPolicy_untrusted": "未信頼 — 安全と分かっている読み取り専用コマンドのみ自動実行",
       "approvalPolicy_never": "確認しない — 承認プロンプトを一切出さない",
       "approvalPolicy_granular": "詳細設定 — プロンプト種別ごとに指定",
+      "approvalPolicyUntrustedAcpWarning": "ACP アダプターの 3 つの承認プリセットに untrusted に相当するものはないため、codeg のセッションは「要求時」にフォールバックします。その場合はモデルが尋ねるタイミングを決め、サンドボックスが既に許可しているコマンドは確認されなくなります。代わりに下のサンドボックスモードで制限してください。",
       "granularHint": "オフにすると、その種類の要求は表示されずに自動で拒否されます。",
       "granular_sandbox_approval": "シェルコマンドの権限昇格",
       "granular_rules": "Execpolicy ルールのプロンプト",
@@ -823,6 +824,7 @@
       "sandboxMode_workspace-write": "ワークスペース書き込み",
       "sandboxMode_danger-full-access": "フルアクセス（サンドボックスなし）",
       "sandboxModeHint": "Windows では、codex の実験的 Windows サンドボックスが無効な場合、ワークスペース書き込みは読み取り専用に降格されます。",
+      "sandboxModeSeedsPresetHint": "codeg はこれをセッションの初期承認プリセットにも反映するため、承認ポリシーとは異なり通常のプロンプトにも効きます。入力欄のプリセットが指定されている場合はそちらが優先されます。",
       "writableRootsLabel": "追加の書き込み可能フォルダ",
       "writableRootsHint": "作業ディレクトリに加えて許可する絶対パスを 1 行に 1 つ。",
       "sandboxRootsRelativeError": "絶対パスである必要があります — codex は相対パスを ~/.codex 基準で解決します: {path}",
@@ -2769,6 +2771,7 @@
       },
       "permissionDialog": {
         "subtitle": "エージェントがこのターンを続行するための許可を要求しています。",
+        "queuedCount": "他 {count} 件待機中",
         "kindFallbackTool": "ツール",
         "command": "コマンド",
         "cwd": "作業ディレクトリ: {cwd}",

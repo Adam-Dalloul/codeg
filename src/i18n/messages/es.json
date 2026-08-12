@@ -811,6 +811,7 @@
       "approvalPolicy_untrusted": "No confiable: solo se ejecutan sin supervisión los comandos de solo lectura seguros",
       "approvalPolicy_never": "Nunca: sin ninguna solicitud de aprobación",
       "approvalPolicy_granular": "Granular: elige por tipo de solicitud",
+      "approvalPolicyUntrustedAcpWarning": "Untrusted no tiene equivalente entre los tres ajustes de aprobación del adaptador ACP, así que las sesiones de codeg recurren a «a petición»: el modelo decide entonces cuándo preguntar y los comandos que la zona aislada ya permite dejan de pedir confirmación. Restringe mejor el modo de aislamiento de abajo.",
       "granularHint": "Desactivado significa que ese tipo de solicitud se rechaza automáticamente en vez de mostrártela.",
       "granular_sandbox_approval": "Escalados de comandos de shell",
       "granular_rules": "Avisos de reglas de execpolicy",
@@ -823,6 +824,7 @@
       "sandboxMode_workspace-write": "Escritura en el espacio de trabajo",
       "sandboxMode_danger-full-access": "Acceso total (sin sandbox)",
       "sandboxModeHint": "En Windows, la escritura en el espacio de trabajo baja a solo lectura salvo que actives el sandbox experimental de Windows de codex.",
+      "sandboxModeSeedsPresetHint": "codeg también lo traduce al ajuste de aprobación inicial de la sesión, así que —a diferencia de la política de aprobación— sí afecta a las peticiones normales. El ajuste elegido en el editor sigue teniendo prioridad.",
       "writableRootsLabel": "Carpetas adicionales con escritura",
       "writableRootsHint": "Una ruta absoluta por línea, además del directorio de trabajo.",
       "sandboxRootsRelativeError": "Debe ser una ruta absoluta: codex resuelve las rutas relativas dentro de ~/.codex: {path}",
@@ -2769,6 +2771,7 @@
       },
       "permissionDialog": {
         "subtitle": "El agente solicita permiso para continuar este turno.",
+        "queuedCount": "+{count} en espera",
         "kindFallbackTool": "herramienta",
         "command": "Comando",
         "cwd": "Directorio de trabajo: {cwd}",

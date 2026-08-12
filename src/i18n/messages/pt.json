@@ -811,6 +811,7 @@
       "approvalPolicy_untrusted": "Não confiável — só comandos de leitura reconhecidos como seguros rodam sem confirmação",
       "approvalPolicy_never": "Nunca — nenhum pedido de aprovação",
       "approvalPolicy_granular": "Granular — escolha por tipo de solicitação",
+      "approvalPolicyUntrustedAcpWarning": "Untrusted não tem equivalente entre os três presets de aprovação do adaptador ACP, então as sessões do codeg voltam para \"quando solicitado\": o modelo passa a decidir quando perguntar, e comandos que o sandbox já permite deixam de pedir confirmação. Restrinja o modo de sandbox abaixo em vez disso.",
       "granularHint": "Desligado significa que esse tipo de solicitação é recusado automaticamente em vez de exibido a você.",
       "granular_sandbox_approval": "Escalonamentos de comandos de shell",
       "granular_rules": "Avisos de regras do execpolicy",
@@ -823,6 +824,7 @@
       "sandboxMode_workspace-write": "Escrita no espaço de trabalho",
       "sandboxMode_danger-full-access": "Acesso total (sem sandbox)",
       "sandboxModeHint": "No Windows, a escrita no espaço de trabalho é rebaixada para somente leitura, a menos que o sandbox experimental do Windows do codex esteja ativado.",
+      "sandboxModeSeedsPresetHint": "O codeg também usa isto para o preset de aprovação inicial da sessão, portanto — ao contrário da política de aprovação — ele afeta os prompts comuns. O preset escolhido no editor continua tendo prioridade.",
       "writableRootsLabel": "Pastas graváveis extras",
       "writableRootsHint": "Um caminho absoluto por linha, além do diretório de trabalho.",
       "sandboxRootsRelativeError": "Precisa ser um caminho absoluto — o codex resolve caminhos relativos dentro de ~/.codex: {path}",
@@ -2769,6 +2771,7 @@
       },
       "permissionDialog": {
         "subtitle": "O agente solicita permissão para continuar este turno.",
+        "queuedCount": "+{count} aguardando",
         "kindFallbackTool": "ferramenta",
         "command": "Comando",
         "cwd": "Diretório de trabalho: {cwd}",

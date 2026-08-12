@@ -811,6 +811,7 @@
       "approvalPolicy_untrusted": "仅信任只读 — 只有已知安全的只读命令免批准",
       "approvalPolicy_never": "从不询问 — 完全不弹审批",
       "approvalPolicy_granular": "精细控制 — 按提示类型分别设置",
+      "approvalPolicyUntrustedAcpWarning": "ACP 适配器只有三种审批预设，untrusted 无对应项，codeg 会话会退回「按需询问」——此时由模型自行决定何时询问，沙箱本就允许的命令不再询问。请改用下方的沙箱模式收紧。",
       "granularHint": "关闭表示该类请求被自动拒绝，而不是弹给你确认。",
       "granular_sandbox_approval": "Shell 命令越权申请",
       "granular_rules": "Execpolicy 规则提示",
@@ -823,6 +824,7 @@
       "sandboxMode_workspace-write": "可写工作区",
       "sandboxMode_danger-full-access": "完全放开（无沙箱）",
       "sandboxModeHint": "在 Windows 上，未开启 codex 的实验性 Windows 沙箱时，可写工作区会被降级为只读。",
+      "sandboxModeSeedsPresetHint": "codeg 还会用它推导会话的初始审批预设，因此与审批策略不同，它对普通提问同样生效。输入框中选择的预设仍会覆盖它。",
       "writableRootsLabel": "额外可写目录",
       "writableRootsHint": "每行一个绝对路径，作为工作目录之外的额外可写位置。",
       "sandboxRootsRelativeError": "必须是绝对路径 — codex 会把相对路径解析到 ~/.codex 下：{path}",
@@ -2769,6 +2771,7 @@
       },
       "permissionDialog": {
         "subtitle": "Agent 请求继续当前轮次的权限。",
+        "queuedCount": "还有 {count} 项待审批",
         "kindFallbackTool": "工具",
         "command": "命令",
         "cwd": "工作目录：{cwd}",

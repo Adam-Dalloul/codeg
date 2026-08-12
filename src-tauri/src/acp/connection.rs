@@ -143,13 +143,43 @@ fn apply_grok_env_policy(merged: &mut Vec<(String, String)>, runtime_env: &BTree
 /// silently stripping codeg-mcp and with it ask_user_question / delegation /
 /// feedback / session_info. The late `retain` + `push` makes the override win
 /// over any user `runtime_env` twin, so the injection is guaranteed to survive.
-fn apply_codex_env_policy(agent_type: AgentType, merged: &mut Vec<(String, String)>) {
+/// Codex launch env policy. `initial_agent_mode` is the preset resolved from
+/// `~/.codex/config.toml` by `codex_launch_initial_agent_mode` — passed in rather
+/// than read here so this stays pure (and so its tests don't depend on whatever
+/// `~/.codex/config.toml` the developer happens to have).
+fn apply_codex_env_policy(
+    agent_type: AgentType,
+    merged: &mut Vec<(String, String)>,
+    initial_agent_mode: Option<&str>,
+) {
     if agent_type != AgentType::Codex {
         return;
     }
     let key = "DISABLE_MCP_CONFIG_FILTERING";
     merged.retain(|(k, _)| k != key);
     merged.push((key.to_string(), "true".to_string()));
+
+    // Make `~/.codex/config.toml`'s sandbox/approval choice mean something.
+    // codex-acp re-sends its own approvalPolicy + sandboxPolicy every turn from
+    // an `AgentMode` seeded once per session, so without this the user's config
+    // is silently overridden by the adapter's default `agent` preset (#442).
+    // Same shape as Grok's `--permission-mode` launch flag.
+    //
+    // A pre-existing value in the runtime env WINS: that is an explicit
+    // user-set key, a stronger signal than a config-file inference. A
+    // `preferred_mode_id` / `config_values["mode"]` still overrides this after
+    // connect via `set_config_option` — explicit choice > config inference.
+    let mode_key = "INITIAL_AGENT_MODE";
+    if merged
+        .iter()
+        .any(|(k, v)| k == mode_key && !v.trim().is_empty())
+    {
+        return;
+    }
+    if let Some(mode) = initial_agent_mode {
+        merged.retain(|(k, _)| k != mode_key);
+        merged.push((mode_key.to_string(), mode.to_string()));
+    }
 }
 
 /// Prepend `dir` to the PATH entry of `env`, seeding from `fallback_path` when
@@ -788,7 +818,15 @@ async fn build_agent(
                 crate::commands::acp::seed_pi_workspace_trust(cwd, runtime_env);
             }
             let mut merged_env = merge_agent_env(env, runtime_env);
-            apply_codex_env_policy(agent_type, &mut merged_env);
+            // Resolve the config-derived preset HERE (like Grok's
+            // `grok_launch_permission_mode` below) so the policy helper stays a
+            // pure function over the env list.
+            let codex_initial_mode = if agent_type == AgentType::Codex {
+                crate::commands::acp::codex_launch_initial_agent_mode()
+            } else {
+                None
+            };
+            apply_codex_env_policy(agent_type, &mut merged_env, codex_initial_mode.as_deref());
             // codex-acp 1.0.0 honors APP_SERVER_LOGS as a directory for its
             // adapter-side logs. Surface it only under CODEG_ACP_DEBUG so
             // default runs are unchanged; a directory-creation failure silently
@@ -1432,8 +1470,19 @@ enum PendingPermission {
     },
 }
 
-impl PendingPermission {
+/// What [`PermissionQueue`] needs from a parked responder. Abstracted into a
+/// trait ONLY so the queue stays a pure state machine that unit tests can drive:
+/// sacp's `Responder` has private fields and no public constructor, so a real
+/// [`PendingPermission`] cannot be built outside a live ACP connection.
+trait PermissionResponder {
     /// Resolve with the user's chosen option id.
+    fn respond_selected(self, option_id: String);
+    /// Resolve as cancelled — the turn ended / connection tore down before the
+    /// user chose.
+    fn respond_cancelled(self);
+}
+
+impl PermissionResponder for PendingPermission {
     fn respond_selected(self, option_id: String) {
         match self {
             PendingPermission::Acp(responder) => {
@@ -1453,8 +1502,6 @@ impl PendingPermission {
         }
     }
 
-    /// Resolve as cancelled — the turn ended / connection tore down before the
-    /// user chose.
     fn respond_cancelled(self) {
         match self {
             PendingPermission::Acp(responder) => {
@@ -1472,8 +1519,310 @@ impl PendingPermission {
     }
 }
 
-/// Shared state for pending permission responders.
-type PendingPermissions = Arc<tokio::sync::Mutex<HashMap<String, PendingPermission>>>;
+/// A permission card that is waiting for its turn on screen. Holds exactly the
+/// three fields `AcpEvent::PermissionRequest` carries, so promoting a queued
+/// entry is a move, not a rebuild.
+struct QueuedPermission {
+    request_id: String,
+    tool_call: serde_json::Value,
+    options: Vec<PermissionOptionInfo>,
+}
+
+/// What [`PermissionQueue::resolve`] decided.
+struct ResolvedPermission {
+    /// `false` when `request_id` was not ours (already answered, drained, or a
+    /// stale client) — the caller must then emit nothing at all.
+    answered: bool,
+    /// The card promoted onto the screen by this answer, if any.
+    next: Option<QueuedPermission>,
+}
+
+/// Per-connection permission state: the blocked responders AND the display
+/// queue, under ONE lock.
+///
+/// Why they must share a lock (#442): the responder map used to be the only
+/// state, and every `session/request_permission` emitted its card immediately.
+/// But a card is a SINGLE slot both in the snapshot
+/// (`SessionState.pending_permission`) and in the frontend reducer
+/// (`conn.pendingPermission`), so N concurrent requests collapsed to the last
+/// one — the earlier `request_id`s were no longer referenced by any client, so
+/// no `RespondPermission` could ever arrive for them and their responders sat
+/// parked until teardown, blocking the agent's tool calls forever (a work task
+/// then sat at `awaiting_input` because its outstanding-request set kept the
+/// orphan keys). Codex issues these concurrently: codex-acp forwards each
+/// `item/commandExecution/requestApproval` to its own `session/request_permission`
+/// and serializes only its notification queue, not approvals.
+///
+/// So: queue instead of overwrite — one card at a time, FIFO, nothing lost.
+/// Splitting the responder map from the queue would leave a real interleaving
+/// (the request handler runs on sacp's dispatch task, `Cancel` on the
+/// conversation task, so they interleave at every `.await`):
+///
+/// ```text
+/// handler: insert responder for P
+/// cancel : drain responders; clear queue      <- P's responder is gone
+/// handler: enqueue P; emit PermissionRequest(P)   <- clickable but inert card,
+///                                                   and `showing = P` wedges
+///                                                   every later request
+/// ```
+///
+/// Re-checking "is P still in the responder map" before emitting does NOT close
+/// that window (a drain can still land between the check and the publish). One
+/// lock covering both, with the emit performed INSIDE it (see
+/// [`admit_permission`]), makes "responder exists" and "card is on screen"
+/// atomic with respect to a drain.
+///
+/// Invariant, upheld by all three methods: every id in `showing`/`waiting` has a
+/// live entry in `responders`, and every `responders` key is either `showing` or
+/// in `waiting`. That makes "queued card whose responder is gone"
+/// unrepresentable, so promotion never has to skip dead entries.
+///
+/// LOCK ORDER: this mutex is always acquired BEFORE `SessionState`'s `RwLock`,
+/// never after. `emit_with_state` takes the state lock internally, so publishing
+/// while holding this mutex is the sanctioned direction; nothing may acquire
+/// this mutex while already holding a `SessionState` guard.
+struct PermissionQueue<R = PendingPermission> {
+    responders: HashMap<String, R>,
+    /// The card currently published to clients. `None` = nothing on screen.
+    showing: Option<String>,
+    waiting: VecDeque<QueuedPermission>,
+}
+
+// Hand-written rather than derived: `#[derive(Default)]` would demand
+// `R: Default`, which a responder never is.
+impl<R> Default for PermissionQueue<R> {
+    fn default() -> Self {
+        Self {
+            responders: HashMap::new(),
+            showing: None,
+            waiting: VecDeque::new(),
+        }
+    }
+}
+
+impl<R: PermissionResponder> PermissionQueue<R> {
+    /// Register a blocked responder and its card. Returns the card to publish
+    /// NOW — the newcomer itself when the screen was free, otherwise `None`
+    /// (it waits its turn).
+    fn admit(&mut self, responder: R, card: QueuedPermission) -> Option<QueuedPermission> {
+        self.responders.insert(card.request_id.clone(), responder);
+        if self.showing.is_none() {
+            self.showing = Some(card.request_id.clone());
+            Some(card)
+        } else {
+            self.waiting.push_back(card);
+            None
+        }
+    }
+
+    /// Answer `request_id` and advance the screen.
+    ///
+    /// Unknown / already-answered ids are an idempotent no-op (`answered:
+    /// false`) — two clients racing the same card must not double-respond to a
+    /// responder that has already been consumed.
+    fn resolve(&mut self, request_id: &str, option_id: String) -> ResolvedPermission {
+        let Some(pending) = self.responders.remove(request_id) else {
+            return ResolvedPermission {
+                answered: false,
+                next: None,
+            };
+        };
+        pending.respond_selected(option_id);
+        if self.showing.as_deref() == Some(request_id) {
+            let next = self.waiting.pop_front();
+            self.showing = next.as_ref().map(|c| c.request_id.clone());
+            ResolvedPermission {
+                answered: true,
+                next,
+            }
+        } else {
+            // Defensive: a stale client answered a card that never reached the
+            // screen. Drop its queue entry too, or promoting it later would
+            // surface a card with no responder — the state the invariant above
+            // exists to forbid.
+            self.waiting.retain(|c| c.request_id != request_id);
+            ResolvedPermission {
+                answered: true,
+                next: None,
+            }
+        }
+    }
+
+    /// Cancel every blocked responder and clear the queue. Returns the id of the
+    /// card that was on screen, which the caller MUST follow with a compensating
+    /// `PermissionResolved` — otherwise that card stays up on every client with
+    /// no live responder behind it, and a work task keeps its outstanding-request
+    /// key forever (the pre-existing idle-`Cancel` ghost, #442).
+    ///
+    /// Queued cards need no compensation: they were never published, so no
+    /// client rendered them and `track_request` never counted them.
+    fn drain(&mut self) -> Option<String> {
+        for (_, pending) in self.responders.drain() {
+            pending.respond_cancelled();
+        }
+        self.waiting.clear();
+        self.showing.take()
+    }
+
+    /// How many cards are waiting BEHIND the one on screen.
+    fn waiting_len(&self) -> usize {
+        self.waiting.len()
+    }
+}
+
+/// Shared per-connection permission state (responders + display queue).
+type PendingPermissions = Arc<tokio::sync::Mutex<PermissionQueue>>;
+
+/// Register a blocked permission responder and publish its card if the screen is
+/// free. The emit happens INSIDE the queue lock — see [`PermissionQueue`] for why
+/// that is load-bearing rather than incidental.
+async fn admit_permission(
+    perms: &PendingPermissions,
+    state: &Arc<RwLock<SessionState>>,
+    emitter: &EventEmitter,
+    responder: PendingPermission,
+    card: QueuedPermission,
+) {
+    let mut queue = perms.lock().await;
+    let request_id = card.request_id.clone();
+    match queue.admit(responder, card) {
+        Some(card) => {
+            tracing::info!(
+                "[ACP] permission {} shown (waiting={})",
+                card.request_id,
+                queue.waiting_len()
+            );
+            // `queued` is 0 by construction here: a card is only published when
+            // the screen was free, which means nothing was waiting.
+            emit_with_state(
+                state,
+                emitter,
+                AcpEvent::PermissionRequest {
+                    request_id: card.request_id,
+                    tool_call: card.tool_call,
+                    options: card.options,
+                    queued: 0,
+                },
+            )
+            .await;
+        }
+        None => {
+            let depth = queue.waiting_len();
+            tracing::info!(
+                "[ACP] permission {request_id} queued behind {:?} (waiting={depth})",
+                queue.showing,
+            );
+            // The visible card did not change, so nothing republishes it — send
+            // a depth-only update or its "N more waiting" hint goes stale.
+            emit_with_state(
+                state,
+                emitter,
+                AcpEvent::PermissionQueueDepth {
+                    depth: depth as u32,
+                },
+            )
+            .await;
+        }
+    }
+}
+
+/// Answer a permission card and promote the next one.
+///
+/// Publish order is deliberate: `PermissionRequest(next)` goes out BEFORE
+/// `PermissionResolved(request_id)`. Both clears are id-checked
+/// (`SessionState::apply_event`, and the frontend's `PERMISSION_CLEARED`), so the
+/// trailing resolve is a no-op against the newly-shown card rather than wiping
+/// it. It also keeps a work task's outstanding-request set from transiently
+/// emptying, which would otherwise flip the row `awaiting_input → running →
+/// awaiting_input` on every single approval.
+async fn resolve_permission(
+    perms: &PendingPermissions,
+    state: &Arc<RwLock<SessionState>>,
+    emitter: &EventEmitter,
+    request_id: String,
+    option_id: String,
+) {
+    let mut queue = perms.lock().await;
+    let resolved = queue.resolve(&request_id, option_id);
+    if !resolved.answered {
+        return;
+    }
+    if let Some(card) = resolved.next {
+        let depth = queue.waiting_len();
+        tracing::info!(
+            "[ACP] permission {} promoted after {request_id} (waiting={depth})",
+            card.request_id,
+        );
+        emit_with_state(
+            state,
+            emitter,
+            AcpEvent::PermissionRequest {
+                request_id: card.request_id,
+                tool_call: card.tool_call,
+                options: card.options,
+                // Unlike a fresh admit this can be non-zero: promotion happens
+                // with the rest of the queue still behind it.
+                queued: depth as u32,
+            },
+        )
+        .await;
+    }
+    emit_with_state(state, emitter, AcpEvent::PermissionResolved { request_id }).await;
+}
+
+/// Cancel every pending permission on this connection and clear the on-screen
+/// card via a compensating `PermissionResolved`.
+///
+/// Mirrors `ConnectionManager::compensate_if_question_drained`, which solves the
+/// same "broadcast card outlives its backend waiter" problem for questions.
+async fn drain_permissions(
+    perms: &PendingPermissions,
+    state: &Arc<RwLock<SessionState>>,
+    emitter: &EventEmitter,
+) {
+    let mut queue = perms.lock().await;
+    drain_permissions_locked(&mut queue, state, emitter).await;
+}
+
+/// Drain, then publish `follow_up`, WITHOUT releasing the queue lock in between.
+///
+/// The two must be atomic whenever `follow_up` is `TurnComplete`, because
+/// `SessionState::apply_event` nulls `pending_permission` on that event
+/// unconditionally. With a plain drain followed by a separate emit, an
+/// `admit_permission` landing in the gap (the request handler runs on sacp's
+/// dispatch task, this on the conversation task) would publish its card and set
+/// `showing`, and then `TurnComplete` would silently un-display it on every
+/// client — leaving a live responder behind an id nobody can answer, and wedging
+/// every LATER permission behind it for the life of the connection. That is the
+/// exact failure mode this queue exists to prevent.
+///
+/// Holding the lock across both makes an in-flight admit wait until the turn has
+/// ended; its card then lands on an empty queue and displays normally as the
+/// out-of-turn request it now is.
+async fn drain_permissions_then_emit(
+    perms: &PendingPermissions,
+    state: &Arc<RwLock<SessionState>>,
+    emitter: &EventEmitter,
+    follow_up: AcpEvent,
+) {
+    let mut queue = perms.lock().await;
+    drain_permissions_locked(&mut queue, state, emitter).await;
+    emit_with_state(state, emitter, follow_up).await;
+}
+
+/// Shared body of the two drains above. Emits the compensating
+/// `PermissionResolved` for whatever was on screen; queued cards were never
+/// published, so they need none.
+async fn drain_permissions_locked(
+    queue: &mut PermissionQueue,
+    state: &Arc<RwLock<SessionState>>,
+    emitter: &EventEmitter,
+) {
+    if let Some(request_id) = queue.drain() {
+        tracing::info!("[ACP] permission {request_id} cancelled by drain");
+        emit_with_state(state, emitter, AcpEvent::PermissionResolved { request_id }).await;
+    }
+}
 
 fn map_session_modes(mode_state: &SessionModeState) -> SessionModeStateInfo {
     SessionModeStateInfo {
@@ -3326,7 +3675,8 @@ async fn run_connection(
     // agent output, to attach evidence to the synthesized error.
     stderr_tail: Arc<StderrTail>,
 ) -> Result<(), AcpError> {
-    let pending_perms: PendingPermissions = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+    let pending_perms: PendingPermissions =
+        Arc::new(tokio::sync::Mutex::new(PermissionQueue::default()));
     // `terminal_base_env` already filtered to just the credential helper
     // keys upstream — see `spawn_agent_connection` for the rationale and
     // why we don't forward the full agent runtime_env here.
@@ -4771,17 +5121,15 @@ async fn handle_elicitation_request(
                     meta: None,
                 })
                 .collect();
-            perms.lock().await.insert(
-                request_id.clone(),
+            admit_permission(
+                perms,
+                state,
+                emitter,
                 PendingPermission::CodexElicitation {
                     responder,
                     approval,
                 },
-            );
-            emit_with_state(
-                state,
-                emitter,
-                AcpEvent::PermissionRequest {
+                QueuedPermission {
                     request_id,
                     tool_call,
                     options,
@@ -4987,15 +5335,12 @@ async fn handle_permission_request(
         }
     }
 
-    perms
-        .lock()
-        .await
-        .insert(request_id.clone(), PendingPermission::Acp(responder));
-
-    emit_with_state(
+    admit_permission(
+        perms,
         state,
         emitter,
-        AcpEvent::PermissionRequest {
+        PendingPermission::Acp(responder),
+        QueuedPermission {
             request_id,
             tool_call: tool_call_value,
             options,
@@ -6898,7 +7243,19 @@ async fn run_conversation_loop<'a>(
                                     if reason_str == "end_turn" {
                                         journal_turn_span(&mut turn_timing_probe, conn_id, &sid.0).await;
                                     }
-                                    emit_with_state(
+                                    // The turn is over, so any card still parked
+                                    // here is moot — `TurnComplete` clears
+                                    // `pending_permission` from the snapshot
+                                    // unconditionally. Drain and emit as ONE
+                                    // critical section so the queue can't keep a
+                                    // `showing` id that no `RespondPermission`
+                                    // will ever match, which would wedge the
+                                    // queue and stop every LATER permission on
+                                    // this connection from displaying. A no-op on
+                                    // the normal path (an agent blocked on
+                                    // approval does not end its turn).
+                                    drain_permissions_then_emit(
+                                        perms,
                                         state,
                                         emitter,
                                         AcpEvent::TurnComplete {
@@ -6986,7 +7343,11 @@ async fn run_conversation_loop<'a>(
                                 current_session_model_id(state).await,
                             )
                             .await;
-                            emit_with_state(
+                            // Same wedge guard as the StopReason-message exit
+                            // above — see that comment for why the drain and the
+                            // event must share one critical section.
+                            drain_permissions_then_emit(
+                                perms,
                                 state,
                                 emitter,
                                 AcpEvent::TurnComplete {
@@ -7028,15 +7389,10 @@ async fn run_conversation_loop<'a>(
                                     request_id,
                                     option_id,
                                 }) => {
-                                    if let Some(pending) = perms.lock().await.remove(&request_id) {
-                                        pending.respond_selected(option_id);
-                                        emit_with_state(
-                                            state,
-                                            emitter,
-                                            AcpEvent::PermissionResolved { request_id },
-                                        )
-                                        .await;
-                                    }
+                                    resolve_permission(
+                                        perms, state, emitter, request_id, option_id,
+                                    )
+                                    .await;
                                 }
                                 Some(ConnectionCommand::SetMode { mode_id }) => {
                                     let req = SetSessionModeRequest::new(sid.clone(), mode_id.clone());
@@ -7169,16 +7525,19 @@ async fn run_conversation_loop<'a>(
                                         .await;
                                     tracked_terminal_tool_calls.clear();
                                     // Also cancel any pending permission requests
-                                    let mut locked = perms.lock().await;
-                                    for (_, pending) in locked.drain() {
-                                        pending.respond_cancelled();
-                                    }
-                                    drop(locked);
-                                    // Immediately emit TurnComplete so the frontend
-                                    // transitions out of "prompting" and the user can
-                                    // send new messages.  Don't wait for the agent --
-                                    // it may be slow to respond or not respond at all.
-                                    emit_with_state(
+                                    // (queued ones included), clearing the card
+                                    // that was on screen, and immediately emit
+                                    // TurnComplete so the frontend transitions out
+                                    // of "prompting" and the user can send new
+                                    // messages. Don't wait for the agent -- it may
+                                    // be slow to respond or not respond at all.
+                                    // One critical section for the same reason as
+                                    // the turn-end exits: a request admitted
+                                    // between the two would be published and then
+                                    // silently un-displayed by TurnComplete,
+                                    // wedging the queue.
+                                    drain_permissions_then_emit(
+                                        perms,
                                         state,
                                         emitter,
                                         AcpEvent::TurnComplete {
@@ -7259,10 +7618,7 @@ async fn run_conversation_loop<'a>(
                                         .release_all_for_session(sid.0.as_ref())
                                         .await;
                                     tracked_terminal_tool_calls.clear();
-                                    let mut locked = perms.lock().await;
-                                    for (_, pending) in locked.drain() {
-                                        pending.respond_cancelled();
-                                    }
+                                    drain_permissions(perms, state, emitter).await;
                                     disconnect_requested = true;
                                     break;
                                 }
@@ -7306,11 +7662,7 @@ async fn run_conversation_loop<'a>(
                 request_id,
                 option_id,
             }) => {
-                if let Some(pending) = perms.lock().await.remove(&request_id) {
-                    pending.respond_selected(option_id);
-                    emit_with_state(state, emitter, AcpEvent::PermissionResolved { request_id })
-                        .await;
-                }
+                resolve_permission(perms, state, emitter, request_id, option_id).await;
             }
             Some(ConnectionCommand::SetMode { mode_id }) => {
                 if let Err(e) = set_session_mode(session, state, emitter, mode_id).await {
@@ -7396,11 +7748,15 @@ async fn run_conversation_loop<'a>(
                 terminal_runtime
                     .release_all_for_session(sid.0.as_ref())
                     .await;
-                let mut locked = perms.lock().await;
-                for (_, pending) in locked.drain() {
-                    pending.respond_cancelled();
-                }
-                drop(locked);
+                // Unlike the mid-turn Cancel branch, this one does NOT emit
+                // `TurnComplete` (there is no turn), so nothing else would ever
+                // clear the on-screen permission card — before the compensating
+                // `PermissionResolved` inside `drain_permissions`, an idle Cancel
+                // left a card up on every client with its responder already
+                // cancelled (clicking it did nothing) and pinned a work task at
+                // `awaiting_input` forever, because `PermissionResolved` was only
+                // emitted from the `RespondPermission` path.
+                drain_permissions(perms, state, emitter).await;
                 // Cascade-cancel any pending delegations owned by this parent.
                 // Reached when Cancel arrives between prompts (idle path); the
                 // inner Cancel handler covers mid-prompt. Both must trigger
@@ -9709,6 +10065,246 @@ mod tests {
         }
     }
 
+    // ── PermissionQueue (#442) ──────────────────────────────────────────────
+    //
+    // The queue is what stops N concurrent `session/request_permission`s from
+    // collapsing into the single card slot and stranding the losers' responders
+    // forever. Driven here through a stub responder because sacp's `Responder`
+    // has private fields and no public constructor.
+
+    /// How a stubbed responder was settled. `Ord` so the drain assertions can
+    /// sort — `HashMap::drain` yields an arbitrary order.
+    #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
+    enum StubSettled {
+        Selected,
+        Cancelled,
+    }
+
+    /// Records `(request_id, how)` into a shared log when settled, so a test can
+    /// assert that EVERY parked responder was answered exactly once — the whole
+    /// point of the queue is that none is silently dropped.
+    struct StubResponder {
+        request_id: String,
+        log: Arc<std::sync::Mutex<Vec<(String, StubSettled)>>>,
+    }
+
+    impl PermissionResponder for StubResponder {
+        fn respond_selected(self, _option_id: String) {
+            self.log
+                .lock()
+                .unwrap()
+                .push((self.request_id, StubSettled::Selected));
+        }
+
+        fn respond_cancelled(self) {
+            self.log
+                .lock()
+                .unwrap()
+                .push((self.request_id, StubSettled::Cancelled));
+        }
+    }
+
+    type StubLog = Arc<std::sync::Mutex<Vec<(String, StubSettled)>>>;
+
+    /// Admit `id` into `queue`; returns the card the queue says to publish now.
+    fn admit_stub(
+        queue: &mut PermissionQueue<StubResponder>,
+        log: &StubLog,
+        id: &str,
+    ) -> Option<QueuedPermission> {
+        queue.admit(
+            StubResponder {
+                request_id: id.to_string(),
+                log: Arc::clone(log),
+            },
+            QueuedPermission {
+                request_id: id.to_string(),
+                tool_call: serde_json::json!({ "toolCallId": id }),
+                options: vec![],
+            },
+        )
+    }
+
+    fn stub_queue() -> (PermissionQueue<StubResponder>, StubLog) {
+        (
+            PermissionQueue::default(),
+            Arc::new(std::sync::Mutex::new(Vec::new())),
+        )
+    }
+
+    #[test]
+    fn permission_queue_shows_only_the_first_of_concurrent_requests() {
+        let (mut q, log) = stub_queue();
+        // The regression itself: three approvals arrive back-to-back (codex
+        // running parallel shell commands). Before the queue, each emit
+        // overwrote the last and the first two became unanswerable.
+        let first = admit_stub(&mut q, &log, "a").expect("first request must be shown");
+        assert_eq!(first.request_id, "a");
+        assert!(
+            admit_stub(&mut q, &log, "b").is_none(),
+            "a second concurrent request must queue, not replace the visible card"
+        );
+        assert!(admit_stub(&mut q, &log, "c").is_none());
+        assert_eq!(q.waiting_len(), 2);
+        assert_eq!(q.showing.as_deref(), Some("a"));
+        assert!(log.lock().unwrap().is_empty(), "nothing settled yet");
+    }
+
+    #[test]
+    fn permission_queue_promotes_in_fifo_order_and_settles_every_responder() {
+        let (mut q, log) = stub_queue();
+        admit_stub(&mut q, &log, "a");
+        admit_stub(&mut q, &log, "b");
+        admit_stub(&mut q, &log, "c");
+
+        let after_a = q.resolve("a", "allow".into());
+        assert!(after_a.answered);
+        assert_eq!(
+            after_a.next.map(|c| c.request_id).as_deref(),
+            Some("b"),
+            "answering the visible card must promote the FIFO head"
+        );
+        let after_b = q.resolve("b", "allow".into());
+        assert_eq!(after_b.next.map(|c| c.request_id).as_deref(), Some("c"));
+        let after_c = q.resolve("c", "allow".into());
+        assert!(after_c.answered);
+        assert!(after_c.next.is_none(), "queue drained, nothing left to show");
+        assert_eq!(q.showing, None);
+        assert_eq!(q.waiting_len(), 0);
+
+        // Every one of the three agent tool calls got an answer — the bug was
+        // that two of them never did.
+        let settled = log.lock().unwrap().clone();
+        assert_eq!(
+            settled,
+            vec![
+                ("a".to_string(), StubSettled::Selected),
+                ("b".to_string(), StubSettled::Selected),
+                ("c".to_string(), StubSettled::Selected),
+            ]
+        );
+    }
+
+    #[test]
+    fn permission_queue_ignores_unknown_and_duplicate_answers() {
+        let (mut q, log) = stub_queue();
+        admit_stub(&mut q, &log, "a");
+        admit_stub(&mut q, &log, "b");
+
+        let unknown = q.resolve("nope", "allow".into());
+        assert!(
+            !unknown.answered,
+            "an unknown id must not advance the queue (the caller emits nothing)"
+        );
+        assert_eq!(q.showing.as_deref(), Some("a"));
+
+        assert!(q.resolve("a", "allow".into()).answered);
+        // Two clients racing the same card: the second answer must not consume
+        // an already-settled responder or promote a second time.
+        let again = q.resolve("a", "reject".into());
+        assert!(!again.answered);
+        assert_eq!(q.showing.as_deref(), Some("b"));
+        assert_eq!(log.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn permission_queue_answering_a_queued_card_removes_it_from_the_queue() {
+        // Defensive path: a stale client answers a card that never reached the
+        // screen. Its queue entry must go too, or promoting it later would show
+        // a card whose responder is already consumed.
+        let (mut q, log) = stub_queue();
+        admit_stub(&mut q, &log, "a");
+        admit_stub(&mut q, &log, "b");
+        admit_stub(&mut q, &log, "c");
+
+        let out = q.resolve("b", "allow".into());
+        assert!(out.answered);
+        assert!(
+            out.next.is_none(),
+            "answering a non-visible card must not change what is on screen"
+        );
+        assert_eq!(q.showing.as_deref(), Some("a"));
+        assert_eq!(q.waiting_len(), 1);
+
+        assert_eq!(
+            q.resolve("a", "allow".into()).next.map(|c| c.request_id),
+            Some("c".to_string()),
+            "the dead entry must be skipped by removal, not by a promote-time check"
+        );
+    }
+
+    #[test]
+    fn permission_queue_drain_cancels_all_and_reports_the_visible_card() {
+        let (mut q, log) = stub_queue();
+        admit_stub(&mut q, &log, "a");
+        admit_stub(&mut q, &log, "b");
+        admit_stub(&mut q, &log, "c");
+
+        assert_eq!(
+            q.drain().as_deref(),
+            Some("a"),
+            "the visible card must be reported so the caller can emit a \
+             compensating PermissionResolved — without it the card lingers on \
+             every client with no live responder (the idle-Cancel ghost)"
+        );
+        assert_eq!(q.showing, None);
+        assert_eq!(q.waiting_len(), 0);
+
+        let mut settled = log.lock().unwrap().clone();
+        settled.sort();
+        assert_eq!(
+            settled,
+            vec![
+                ("a".to_string(), StubSettled::Cancelled),
+                ("b".to_string(), StubSettled::Cancelled),
+                ("c".to_string(), StubSettled::Cancelled),
+            ],
+            "queued responders must be cancelled too, not leaked"
+        );
+    }
+
+    #[test]
+    fn permission_queue_drain_with_nothing_shown_needs_no_compensation() {
+        let (mut q, _log) = stub_queue();
+        assert!(
+            q.drain().is_none(),
+            "an empty queue must not emit a spurious PermissionResolved"
+        );
+    }
+
+    #[test]
+    fn permission_queue_admits_again_after_drain() {
+        // The TurnComplete wedge guard: if a drain left `showing` set, every
+        // later permission on this connection would queue behind a card that can
+        // never be answered — reproducing the very symptom being fixed.
+        let (mut q, log) = stub_queue();
+        admit_stub(&mut q, &log, "a");
+        admit_stub(&mut q, &log, "b");
+        q.drain();
+
+        let fresh = admit_stub(&mut q, &log, "c");
+        assert_eq!(
+            fresh.map(|c| c.request_id).as_deref(),
+            Some("c"),
+            "a post-drain request must be shown immediately"
+        );
+        assert_eq!(q.showing.as_deref(), Some("c"));
+    }
+
+    #[test]
+    fn permission_queue_admit_then_drain_never_leaves_an_inert_card() {
+        // The interleaving that motivated putting the responder map and the
+        // queue under ONE lock: admit publishes a card, a Cancel drains, and the
+        // card must be reported for compensation rather than left up.
+        let (mut q, log) = stub_queue();
+        let shown = admit_stub(&mut q, &log, "a").expect("shown");
+        assert_eq!(q.drain().as_deref(), Some(shown.request_id.as_str()));
+        assert_eq!(
+            log.lock().unwrap().clone(),
+            vec![("a".to_string(), StubSettled::Cancelled)]
+        );
+    }
+
     #[test]
     fn grok_ask_ext_request_routes_and_parses_captured_wire_shape() {
         use sacp::JsonRpcMessage;
@@ -10223,7 +10819,7 @@ mod tests {
         // Codex gets the flag injected so codex-acp never drops the injected
         // `codeg-mcp` server on a config.toml name collision.
         let mut env = vec![("PATH".to_string(), "/usr/bin".to_string())];
-        apply_codex_env_policy(AgentType::Codex, &mut env);
+        apply_codex_env_policy(AgentType::Codex, &mut env, None);
         assert!(env
             .iter()
             .any(|(k, v)| k == "DISABLE_MCP_CONFIG_FILTERING" && v == "true"));
@@ -10233,7 +10829,7 @@ mod tests {
             "DISABLE_MCP_CONFIG_FILTERING".to_string(),
             "false".to_string(),
         )];
-        apply_codex_env_policy(AgentType::Codex, &mut with_twin);
+        apply_codex_env_policy(AgentType::Codex, &mut with_twin, None);
         let hits: Vec<_> = with_twin
             .iter()
             .filter(|(k, _)| k == "DISABLE_MCP_CONFIG_FILTERING")
@@ -10246,12 +10842,61 @@ mod tests {
     fn codex_env_policy_is_noop_for_other_agents() {
         for agent in [AgentType::Grok, AgentType::ClaudeCode, AgentType::Gemini] {
             let mut env = vec![("PATH".to_string(), "/usr/bin".to_string())];
-            apply_codex_env_policy(agent, &mut env);
+            apply_codex_env_policy(agent, &mut env, Some("read-only"));
             assert!(
                 !env.iter().any(|(k, _)| k == "DISABLE_MCP_CONFIG_FILTERING"),
                 "{agent:?} must not receive the codex-only flag"
             );
+            assert!(
+                !env.iter().any(|(k, _)| k == "INITIAL_AGENT_MODE"),
+                "{agent:?} must not receive codex's approval preset"
+            );
         }
+    }
+
+    #[test]
+    fn codex_env_policy_injects_the_config_derived_approval_preset() {
+        // Without this, codex-acp seeds its default `agent` preset and re-sends
+        // that approvalPolicy every turn, so the user's ~/.codex/config.toml
+        // sandbox/approval choice is dead (#442).
+        let mut env = vec![("PATH".to_string(), "/usr/bin".to_string())];
+        apply_codex_env_policy(AgentType::Codex, &mut env, Some("read-only"));
+        assert!(env
+            .iter()
+            .any(|(k, v)| k == "INITIAL_AGENT_MODE" && v == "read-only"));
+
+        // Nothing mappable → stay out of the way entirely, leaving codex-acp's
+        // own default rather than pinning a preset the user never chose.
+        let mut none = vec![("PATH".to_string(), "/usr/bin".to_string())];
+        apply_codex_env_policy(AgentType::Codex, &mut none, None);
+        assert!(!none.iter().any(|(k, _)| k == "INITIAL_AGENT_MODE"));
+    }
+
+    #[test]
+    fn codex_env_policy_lets_an_explicit_env_preset_win_over_the_config() {
+        // An explicit runtime-env key is a stronger signal than a config-file
+        // inference, so it must NOT be clobbered (and must not be duplicated).
+        let mut env = vec![(
+            "INITIAL_AGENT_MODE".to_string(),
+            "agent-full-access".to_string(),
+        )];
+        apply_codex_env_policy(AgentType::Codex, &mut env, Some("read-only"));
+        let hits: Vec<_> = env
+            .iter()
+            .filter(|(k, _)| k == "INITIAL_AGENT_MODE")
+            .collect();
+        assert_eq!(hits.len(), 1, "no duplicate key");
+        assert_eq!(hits[0].1, "agent-full-access");
+
+        // A blank twin carries no intent, so the config-derived value fills it.
+        let mut blank = vec![("INITIAL_AGENT_MODE".to_string(), "  ".to_string())];
+        apply_codex_env_policy(AgentType::Codex, &mut blank, Some("read-only"));
+        let hits: Vec<_> = blank
+            .iter()
+            .filter(|(k, _)| k == "INITIAL_AGENT_MODE")
+            .collect();
+        assert_eq!(hits.len(), 1, "blank twin replaced, not duplicated");
+        assert_eq!(hits[0].1, "read-only");
     }
 
     #[test]

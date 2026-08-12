@@ -567,6 +567,7 @@ mod tests {
                 request_id: "r1".into(),
                 tool_call: serde_json::json!({}),
                 options: vec![],
+                queued: 0,
             },
         ));
         assert_eq!(compute_pet_state(&s), PetState::Waiting);
@@ -687,6 +688,7 @@ mod tests {
                 request_id: "r1".into(),
                 tool_call: serde_json::json!({}),
                 options: vec![],
+                queued: 0,
             },
         ));
         assert_eq!(compute_pet_state(&s), PetState::Waiting);
@@ -737,6 +739,7 @@ mod tests {
                 request_id: "r1".into(),
                 tool_call: serde_json::json!({}),
                 options: vec![],
+                queued: 0,
             },
         ));
         s.apply(&env(
@@ -745,6 +748,7 @@ mod tests {
                 request_id: "r2".into(),
                 tool_call: serde_json::json!({}),
                 options: vec![],
+                queued: 0,
             },
         ));
         assert_eq!(s.pending_permissions.len(), 2);
@@ -783,6 +787,7 @@ mod tests {
                 request_id: "r1".into(),
                 tool_call: serde_json::json!({}),
                 options: vec![],
+                queued: 0,
             },
         ));
         assert_eq!(compute_pet_state(&s), PetState::Waiting);
@@ -812,6 +817,7 @@ mod tests {
                 request_id: "r1".into(),
                 tool_call: serde_json::json!({}),
                 options: vec![],
+                queued: 0,
             },
         ));
         s.apply(&env(
@@ -844,6 +850,7 @@ mod tests {
                 request_id: "r1".into(),
                 tool_call: serde_json::json!({}),
                 options: vec![],
+                queued: 0,
             },
         ));
         assert_eq!(compute_pet_state(&s), PetState::Waiting);
@@ -1070,6 +1077,7 @@ mod tests {
                 request_id: "r1".into(),
                 tool_call: serde_json::json!({}),
                 options: vec![],
+                queued: 0,
             },
             AcpEvent::PermissionResolved {
                 request_id: "r1".into(),

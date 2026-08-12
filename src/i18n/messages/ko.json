@@ -811,6 +811,7 @@
       "approvalPolicy_untrusted": "신뢰 안 함 — 안전이 확인된 읽기 전용 명령만 자동 실행",
       "approvalPolicy_never": "묻지 않음 — 승인 창을 전혀 띄우지 않음",
       "approvalPolicy_granular": "세부 설정 — 프롬프트 종류별로 지정",
+      "approvalPolicyUntrustedAcpWarning": "ACP 어댑터의 세 가지 승인 프리셋에는 untrusted에 해당하는 항목이 없으므로 codeg 세션은 \"요청 시\"로 대체됩니다. 이 경우 모델이 물어볼 시점을 스스로 정하며, 샌드박스가 이미 허용한 명령은 더 이상 확인하지 않습니다. 대신 아래 샌드박스 모드로 제한하세요.",
       "granularHint": "끄면 해당 종류의 요청은 표시되지 않고 자동으로 거부됩니다.",
       "granular_sandbox_approval": "셸 명령 권한 상승",
       "granular_rules": "Execpolicy 규칙 프롬프트",
@@ -823,6 +824,7 @@
       "sandboxMode_workspace-write": "워크스페이스 쓰기",
       "sandboxMode_danger-full-access": "전체 접근(샌드박스 없음)",
       "sandboxModeHint": "Windows에서는 codex의 실험적 Windows 샌드박스를 켜지 않으면 워크스페이스 쓰기가 읽기 전용으로 낮아집니다.",
+      "sandboxModeSeedsPresetHint": "codeg는 이 값으로 세션의 초기 승인 프리셋도 정하므로, 승인 정책과 달리 일반 프롬프트에도 적용됩니다. 입력창에서 선택한 프리셋이 이를 덮어씁니다.",
       "writableRootsLabel": "추가 쓰기 가능 폴더",
       "writableRootsHint": "작업 디렉터리 외에 허용할 절대 경로를 한 줄에 하나씩.",
       "sandboxRootsRelativeError": "절대 경로여야 합니다 — codex는 상대 경로를 ~/.codex 기준으로 해석합니다: {path}",
@@ -2769,6 +2771,7 @@
       },
       "permissionDialog": {
         "subtitle": "에이전트가 이 턴을 계속하기 위한 권한을 요청합니다.",
+        "queuedCount": "{count}건 대기 중",
         "kindFallbackTool": "도구",
         "command": "명령",
         "cwd": "작업 디렉터리: {cwd}",

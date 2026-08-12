@@ -154,6 +154,11 @@ pub struct PendingPermissionState {
     pub tool_call: serde_json::Value,
     pub options: Vec<crate::acp::types::PermissionOptionInfo>,
     pub created_at: DateTime<Utc>,
+    /// Requests queued behind this card, kept live by `PermissionQueueDepth` so
+    /// a client attaching mid-turn sees the same "N more waiting" hint as one
+    /// that was live for the original event.
+    #[serde(default)]
+    pub queued: u32,
 }
 
 /// 上下文 / 模型用量。
@@ -729,6 +734,7 @@ impl SessionState {
                 request_id,
                 tool_call,
                 options,
+                queued,
             } => {
                 let tc_id = extract_tool_call_id(tool_call);
                 self.pending_permission = Some(PendingPermissionState {
@@ -737,7 +743,16 @@ impl SessionState {
                     tool_call: tool_call.clone(),
                     options: options.clone(),
                     created_at: Utc::now(),
+                    queued: *queued,
                 });
+            }
+            AcpEvent::PermissionQueueDepth { depth } => {
+                // Depth-only update: the visible card is unchanged, so touch
+                // nothing else. A no-op when no card is up (a late depth event
+                // after a drain must not resurrect one).
+                if let Some(pending) = self.pending_permission.as_mut() {
+                    pending.queued = *depth;
+                }
             }
             AcpEvent::PermissionResolved { request_id } => {
                 // Drop the snapshot's pending_permission iff the resolved
@@ -2481,6 +2496,7 @@ mod tests {
             request_id: "p-1".into(),
             tool_call: serde_json::json!({"toolCallId": "tc-1", "title": "danger"}),
             options: vec![],
+            queued: 0,
         });
         assert!(s.live_message.is_some());
         assert!(s.pending_permission.is_some());
@@ -2829,6 +2845,7 @@ mod tests {
             request_id: "p-1".into(),
             tool_call: serde_json::json!({"toolCallId": "tc-1"}),
             options: vec![],
+            queued: 0,
         });
         assert!(s.pending_permission.is_some());
 
@@ -2842,6 +2859,33 @@ mod tests {
     }
 
     #[test]
+    fn permission_queue_depth_updates_the_visible_card_only() {
+        // A request arriving behind the visible card publishes no
+        // `PermissionRequest` of its own, so the depth-only event is what keeps
+        // the card's "N more waiting" hint from going stale — including for a
+        // client that attaches mid-turn and hydrates from this snapshot.
+        let mut s = fresh_state();
+        s.apply_event(&AcpEvent::PermissionRequest {
+            request_id: "p-1".into(),
+            tool_call: serde_json::json!({"toolCallId": "tc-1"}),
+            options: vec![],
+            queued: 0,
+        });
+        s.apply_event(&AcpEvent::PermissionQueueDepth { depth: 2 });
+        let p = s.pending_permission.as_ref().expect("card still up");
+        assert_eq!(p.queued, 2);
+        assert_eq!(p.request_id, "p-1", "depth must not change which card is up");
+    }
+
+    #[test]
+    fn permission_queue_depth_without_a_card_is_a_noop() {
+        // A depth event that lands after a drain must not resurrect a card.
+        let mut s = fresh_state();
+        s.apply_event(&AcpEvent::PermissionQueueDepth { depth: 3 });
+        assert!(s.pending_permission.is_none());
+    }
+
+    #[test]
     fn permission_resolved_stale_request_is_noop() {
         // A late `PermissionResolved` for an already-replaced request must
         // not wipe out the *new* outstanding permission — id mismatch is
@@ -2852,6 +2896,7 @@ mod tests {
             request_id: "p-2".into(),
             tool_call: serde_json::json!({"toolCallId": "tc-2"}),
             options: vec![],
+            queued: 0,
         });
 
         s.apply_event(&AcpEvent::PermissionResolved {
@@ -2883,6 +2928,7 @@ mod tests {
             request_id: "p-1".into(),
             tool_call: raw_tool_call.clone(),
             options: vec![],
+            queued: 0,
         });
         let p = s.pending_permission.as_ref().expect("permission set");
         assert_eq!(p.request_id, "p-1");

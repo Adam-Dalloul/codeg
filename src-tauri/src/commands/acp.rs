@@ -3849,6 +3849,90 @@ pub(crate) fn grok_launch_permission_mode() -> Option<String> {
     load_grok_config_toml_raw().and_then(|raw| grok_config_permission_mode(&raw))
 }
 
+/// Map a `~/.codex/config.toml` sandbox/approval pair onto the `INITIAL_AGENT_MODE`
+/// preset id codex-acp accepts (`read-only` / `agent` / `agent-full-access`).
+///
+/// ## Why this mapping has to exist at all
+///
+/// codex-acp re-sends its OWN `approvalPolicy` + `sandboxPolicy` on every
+/// `runTurn`, taken from an `AgentMode` seeded once per session from
+/// `INITIAL_AGENT_MODE` (default `agent` = `on-request` + `workspace-write`).
+/// So `approval_policy` / `sandbox_mode` in `config.toml` are **dead** for any
+/// codeg session — chat and work task alike — even though codeg's Codex panel
+/// reads, writes and fingerprints them (#442). This env var is the only
+/// launch-time channel that makes the user's own config mean anything, exactly
+/// like [`grok_launch_permission_mode`] above.
+///
+/// ## Why it keys off the sandbox
+///
+/// The sandbox is the only axis where guessing wrong ENLARGES access, so it
+/// alone selects the preset; `approval_policy` is demoted to a gate that can
+/// only PREVENT choosing full-access. Invariants:
+///
+/// 1. never widen the sandbox — the result is identical or tighter;
+/// 2. never select `never` (no approvals at all) unless the config already says
+///    exactly that.
+///
+/// ## What is deliberately NOT preserved
+///
+/// `untrusted` is not in codex-acp's vocabulary and cannot be preserved, so it
+/// lands on `on-request`. That is a RELAXATION, not a tightening: `untrusted`
+/// asks for everything outside its safe-list, whereas `on-request` lets the
+/// model decide when to escalate, so a sandbox-permitted write stops asking.
+/// The loss is inherent to the three presets and is NOT introduced here —
+/// injecting nothing (the previous behavior) yields `agent`, i.e. the same
+/// `on-request` PLUS a widened sandbox. Mapping is therefore strictly better on
+/// the sandbox axis and neutral on the approval axis; the panel discloses the
+/// approval loss to the user rather than pretending it away.
+fn codex_initial_agent_mode(settings: &CodexSandboxSettings) -> Option<&'static str> {
+    // `default_permissions` makes codex resolve everything through that named
+    // profile and IGNORE the root sandbox/approval keys entirely (the panel
+    // already warns about this). Those keys are therefore not the effective
+    // policy, and mapping them would be reading a source codex itself discards:
+    //
+    //     approval_policy = "never"
+    //     sandbox_mode = "danger-full-access"
+    //     default_permissions = ":read-only"
+    //
+    // codex runs that read-only, but the root keys alone say "full access, no
+    // approvals" — and because codex-acp re-sends the preset's policy on every
+    // turn, injecting `agent-full-access` here would actually GRANT it. Decline
+    // instead. codeg cannot resolve the profile, so it must not guess: this
+    // leaves codex-acp's own default preset, i.e. exactly the behavior that
+    // existed before this mapping (the residual gap between that default and a
+    // stricter profile is pre-existing and not something codeg can close without
+    // implementing codex's whole `[permissions]` resolution).
+    if settings.shadowed_by_default_permissions {
+        return None;
+    }
+    // `parse_codex_sandbox_settings` has already folded `on-failure` into
+    // `on-request` and dropped anything outside `CODEX_APPROVAL_POLICIES`.
+    let never = settings.approval_policy.as_deref() == Some("never");
+    match settings.sandbox_mode.as_deref() {
+        Some("read-only") => Some("read-only"),
+        Some("workspace-write") => Some("agent"),
+        // Full access is the one preset that removes approvals entirely, so it
+        // requires the config to say BOTH halves. A danger-full-access sandbox
+        // paired with any approval-requiring policy tightens to `agent` instead
+        // — narrower sandbox, and approvals still happen.
+        Some("danger-full-access") if never => Some("agent-full-access"),
+        Some("danger-full-access") => Some("agent"),
+        // No sandbox expressed → nothing to preserve, so stay out of the way and
+        // let codex-acp's own default stand. (codex-acp always sends an explicit
+        // sandboxPolicy anyway, so config.toml's sandbox DEFAULT never applies.)
+        _ => None,
+    }
+}
+
+/// The `INITIAL_AGENT_MODE` value codex-acp's launch should carry, derived from
+/// the global `~/.codex/config.toml`. Best-effort: a missing/unreadable/
+/// unmappable config yields `None`, leaving codex-acp's default preset in place.
+pub(crate) fn codex_launch_initial_agent_mode() -> Option<String> {
+    let raw = load_codex_config_toml_raw()?;
+    let settings = parse_codex_sandbox_settings(&raw);
+    codex_initial_agent_mode(&settings).map(str::to_string)
+}
+
 /// Merge the Grok panel's structured control values into the raw config.toml
 /// text, format-preservingly (comments/layout of unmanaged keys are kept). Each
 /// `Some(value)` sets its documented key; each `None` removes it. Returns the
@@ -11608,6 +11692,104 @@ mod tests {
         // unknown value it would then clobber.
         let s = parse_codex_sandbox_settings("approval_policy = \"on-failure\"\n");
         assert_eq!(s.approval_policy.as_deref(), Some("on-request"));
+    }
+
+    /// Map a config.toml body the way the launch path does.
+    fn initial_mode_for(toml: &str) -> Option<&'static str> {
+        codex_initial_agent_mode(&parse_codex_sandbox_settings(toml))
+    }
+
+    #[test]
+    fn codex_initial_agent_mode_never_widens_the_sandbox() {
+        // The invariant that matters: codex-acp's default preset is `agent`
+        // (workspace-write), so an explicitly read-only config used to be
+        // silently upgraded to writable. Every approval policy — including the
+        // ones that cannot be represented — must still land on `read-only`.
+        for policy in [
+            "",
+            "approval_policy = \"untrusted\"\n",
+            "approval_policy = \"on-request\"\n",
+            "approval_policy = \"on-failure\"\n",
+            "approval_policy = \"never\"\n",
+        ] {
+            let toml = format!("{policy}sandbox_mode = \"read-only\"\n");
+            assert_eq!(
+                initial_mode_for(&toml),
+                Some("read-only"),
+                "read-only sandbox must survive {policy:?}"
+            );
+        }
+        for policy in ["", "approval_policy = \"untrusted\"\n"] {
+            let toml = format!("{policy}sandbox_mode = \"workspace-write\"\n");
+            assert_eq!(initial_mode_for(&toml), Some("agent"));
+        }
+    }
+
+    #[test]
+    fn codex_initial_agent_mode_only_grants_full_access_on_an_exact_match() {
+        // `agent-full-access` is the one preset with approvalPolicy `never`, so
+        // it must never be inferred — both halves have to already say so.
+        assert_eq!(
+            initial_mode_for(
+                "approval_policy = \"never\"\nsandbox_mode = \"danger-full-access\"\n"
+            ),
+            Some("agent-full-access")
+        );
+        // Sandbox says full access but approvals are still wanted: tighten the
+        // sandbox to workspace-write rather than dropping approvals.
+        for policy in [
+            "",
+            "approval_policy = \"on-request\"\n",
+            "approval_policy = \"untrusted\"\n",
+        ] {
+            let toml = format!("{policy}sandbox_mode = \"danger-full-access\"\n");
+            assert_eq!(
+                initial_mode_for(&toml),
+                Some("agent"),
+                "must not remove approvals for {policy:?}"
+            );
+        }
+        // `never` alone must NOT reach for full access — that would widen the
+        // sandbox from whatever codex-acp would otherwise use.
+        assert_eq!(initial_mode_for("approval_policy = \"never\"\n"), None);
+    }
+
+    #[test]
+    fn codex_initial_agent_mode_declines_when_default_permissions_shadows_the_root_keys() {
+        // codex resolves through the named profile and ignores the root keys, so
+        // mapping them would hand the session a policy the config never asked
+        // for. The nastiest case: a read-only profile with stale permissive root
+        // keys would be GRANTED full access + no approvals, because codex-acp
+        // re-sends the preset's policy every turn.
+        assert_eq!(
+            initial_mode_for(
+                "approval_policy = \"never\"\nsandbox_mode = \"danger-full-access\"\n\
+                 default_permissions = \":read-only\"\n"
+            ),
+            None,
+            "must not widen a shadowed config"
+        );
+        // Declining is unconditional — even when the root keys look harmless,
+        // they are not what codex is using.
+        for body in [
+            "sandbox_mode = \"read-only\"\ndefault_permissions = \":read-only\"\n",
+            "sandbox_mode = \"workspace-write\"\ndefault_permissions = \":full-access\"\n",
+        ] {
+            assert_eq!(initial_mode_for(body), None, "shadowed: {body:?}");
+        }
+    }
+
+    #[test]
+    fn codex_initial_agent_mode_stays_out_of_the_way_without_a_sandbox() {
+        // Nothing expressed → nothing to preserve; leave codex-acp's own default
+        // alone rather than pinning a preset the user never chose.
+        assert_eq!(initial_mode_for(""), None);
+        assert_eq!(initial_mode_for("model = \"gpt-5\"\n"), None);
+        assert_eq!(initial_mode_for("approval_policy = \"untrusted\"\n"), None);
+        // Unknown/malformed sandbox values are dropped by the parser, so they
+        // behave like "unset" rather than mapping to something arbitrary.
+        assert_eq!(initial_mode_for("sandbox_mode = \"wide-open\"\n"), None);
+        assert_eq!(initial_mode_for("this is not toml\n"), None);
     }
 
     #[test]

@@ -1748,10 +1748,26 @@ export type AcpEvent =
       request_id: string
       tool_call: unknown
       options: PermissionOptionInfo[]
+      /**
+       * How many FURTHER permission requests are queued behind this card. Only
+       * one card shows at a time, so this is what tells the user "the agent is
+       * waiting on me three more times" instead of leaving the rest looking
+       * like a hang. Optional: absent on pre-#442 persisted envelopes.
+       */
+      queued?: number
     }
   | {
       type: "permission_resolved"
       request_id: string
+    }
+  | {
+      /**
+       * Depth-only update: a new request queued up behind the visible card,
+       * which publishes no `permission_request` of its own. Without this the
+       * card's `queued` count would go stale.
+       */
+      type: "permission_queue_depth"
+      depth: number
     }
   | {
       type: "turn_complete"
@@ -2099,6 +2115,8 @@ export interface PendingPermissionState {
   tool_call: unknown
   options: PermissionOptionInfo[]
   created_at: string
+  /** Requests queued behind this card; kept live by `permission_queue_depth`. */
+  queued?: number
 }
 
 /**

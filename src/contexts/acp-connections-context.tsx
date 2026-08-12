@@ -123,6 +123,8 @@ export interface PendingPermission {
   request_id: string
   tool_call: unknown
   options: PermissionOptionInfo[]
+  /** Requests queued behind this card (only one shows at a time). */
+  queued?: number
 }
 
 /** In-flight user prompt carried on a connection (from a `user_message` event
@@ -436,6 +438,12 @@ type Action =
       fallback_title: string
       fallback_kind: string
       options: PermissionOptionInfo[]
+      queued?: number
+    }
+  | {
+      type: "PERMISSION_QUEUE_DEPTH"
+      contextKey: string
+      depth: number
     }
   | {
       type: "PERMISSION_CLEARED"
@@ -1931,6 +1939,25 @@ function connectionsReducer(
           request_id: action.request_id,
           tool_call: permissionToolCall,
           options: action.options,
+          queued: action.queued,
+        },
+      })
+      return next
+    }
+
+    case "PERMISSION_QUEUE_DEPTH": {
+      // Depth-only: a request queued up behind the visible card, which emits no
+      // PERMISSION_REQUEST of its own. No card up → nothing to annotate (a late
+      // depth event after a drain must not resurrect one).
+      const conn = state.get(action.contextKey)
+      if (!conn?.pendingPermission) return state
+      if (conn.pendingPermission.queued === action.depth) return state
+      const next = new Map(state)
+      next.set(action.contextKey, {
+        ...conn,
+        pendingPermission: {
+          ...conn.pendingPermission,
+          queued: action.depth,
         },
       })
       return next
@@ -3127,6 +3154,15 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
             requestId: e.request_id,
           })
           break
+        case "permission_queue_depth":
+          // A request queued up behind the visible card. Only the count on the
+          // already-rendered card changes, so no streaming flush is needed.
+          dispatch({
+            type: "PERMISSION_QUEUE_DEPTH",
+            contextKey,
+            depth: e.depth,
+          })
+          break
         case "question_request":
           // Agent called the blocking `ask_user_question` MCP tool. Flush any
           // queued streaming so the card renders against current content, then
@@ -3293,6 +3329,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
             fallback_title: t("toolFallbackTitle"),
             fallback_kind: "tool",
             options: e.options,
+            queued: e.queued,
           })
           // Send OS notification when permission approval is needed
           {

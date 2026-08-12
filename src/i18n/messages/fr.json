@@ -811,6 +811,7 @@
       "approvalPolicy_untrusted": "Non fiable — seules les commandes en lecture seule reconnues sûres s'exécutent sans validation",
       "approvalPolicy_never": "Jamais — aucune demande d'approbation",
       "approvalPolicy_granular": "Granulaire — au cas par cas selon le type",
+      "approvalPolicyUntrustedAcpWarning": "« Untrusted » n'a pas d'équivalent parmi les trois préréglages d'approbation de l'adaptateur ACP ; les sessions codeg retombent donc sur « à la demande » : le modèle décide alors quand demander, et les commandes que le bac à sable autorise déjà ne demandent plus rien. Restreignez plutôt le mode de bac à sable ci-dessous.",
       "granularHint": "Désactivé signifie que ce type de demande est refusé automatiquement au lieu de vous être présenté.",
       "granular_sandbox_approval": "Élévations pour commandes shell",
       "granular_rules": "Invites des règles execpolicy",
@@ -823,6 +824,7 @@
       "sandboxMode_workspace-write": "Écriture dans l'espace de travail",
       "sandboxMode_danger-full-access": "Accès complet (sans bac à sable)",
       "sandboxModeHint": "Sous Windows, l'écriture dans l'espace de travail est rétrogradée en lecture seule sauf si le bac à sable Windows expérimental de codex est activé.",
+      "sandboxModeSeedsPresetHint": "codeg s'en sert aussi pour le préréglage d'approbation initial de la session : contrairement à la politique d'approbation, il agit donc sur les requêtes ordinaires. Le préréglage choisi dans la zone de saisie reste prioritaire.",
       "writableRootsLabel": "Dossiers inscriptibles supplémentaires",
       "writableRootsHint": "Un chemin absolu par ligne, en plus du répertoire de travail.",
       "sandboxRootsRelativeError": "Doit être un chemin absolu — codex résout les chemins relatifs sous ~/.codex : {path}",
@@ -2769,6 +2771,7 @@
       },
       "permissionDialog": {
         "subtitle": "L'agent demande une autorisation pour continuer ce tour.",
+        "queuedCount": "+{count} en attente",
         "kindFallbackTool": "outil",
         "command": "Commande",
         "cwd": "Répertoire de travail : {cwd}",

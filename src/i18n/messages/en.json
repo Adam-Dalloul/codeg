@@ -811,6 +811,7 @@
       "approvalPolicy_untrusted": "Untrusted — only known-safe read-only commands run unattended",
       "approvalPolicy_never": "Never — no approval prompts at all",
       "approvalPolicy_granular": "Granular — choose per prompt type",
+      "approvalPolicyUntrustedAcpWarning": "Untrusted has no equivalent in the ACP adapter's three approval presets, so codeg sessions fall back to \"on request\" — the model then decides when to ask, and commands the sandbox already allows stop prompting. Tighten the sandbox mode below instead.",
       "granularHint": "Off means requests of that kind are auto-rejected instead of shown to you.",
       "granular_sandbox_approval": "Shell command escalations",
       "granular_rules": "Execpolicy rule prompts",
@@ -823,6 +824,7 @@
       "sandboxMode_workspace-write": "Workspace write",
       "sandboxMode_danger-full-access": "Full access (no sandbox)",
       "sandboxModeHint": "On Windows, workspace write is downgraded to read-only unless codex's experimental Windows sandbox is enabled.",
+      "sandboxModeSeedsPresetHint": "codeg also maps this onto the session's starting approval preset, so unlike approval policy it does reach ordinary prompts. The composer's preset still overrides it.",
       "writableRootsLabel": "Extra writable folders",
       "writableRootsHint": "One absolute path per line, in addition to the working directory.",
       "sandboxRootsRelativeError": "Must be an absolute path — codex resolves relative entries against ~/.codex: {path}",
@@ -2769,6 +2771,7 @@
       },
       "permissionDialog": {
         "subtitle": "Agent requests permission to continue this turn.",
+        "queuedCount": "+{count} waiting",
         "kindFallbackTool": "tool",
         "command": "Command",
         "cwd": "CWD: {cwd}",

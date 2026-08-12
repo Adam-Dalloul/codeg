@@ -8079,6 +8079,15 @@ export function AcpAgentSettings() {
                             ))}
                           </SelectContent>
                         </Select>
+                        {/* `untrusted` has no equivalent in codex-acp's three
+                            approval presets, so an ACP session cannot honor it
+                            (#442). Say so where the user picks it, rather than
+                            letting it look effective. */}
+                        {selectedDraft.codexApprovalPolicy === "untrusted" ? (
+                          <p className="text-[10px] text-yellow-500">
+                            {t("codex.approvalPolicyUntrustedAcpWarning")}
+                          </p>
+                        ) : null}
                       </div>
 
                       {selectedDraft.codexApprovalPolicy === "granular" ? (
@@ -8148,6 +8157,13 @@ export function AcpAgentSettings() {
                         </Select>
                         <p className="text-[10px] text-muted-foreground">
                           {t("codex.sandboxModeHint")}
+                        </p>
+                        {/* Sandbox mode is what codeg maps onto the session's
+                            starting approval preset (#442), so it reaches
+                            ordinary prompts even though approval_policy does
+                            not. Worth stating next to the control that does it. */}
+                        <p className="text-[10px] text-muted-foreground">
+                          {t("codex.sandboxModeSeedsPresetHint")}
                         </p>
                       </div>
 

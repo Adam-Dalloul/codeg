@@ -811,6 +811,7 @@
       "approvalPolicy_untrusted": "僅信任唯讀 — 只有已知安全的唯讀指令免批准",
       "approvalPolicy_never": "從不詢問 — 完全不彈審批",
       "approvalPolicy_granular": "精細控制 — 依提示類型分別設定",
+      "approvalPolicyUntrustedAcpWarning": "ACP 轉接器只有三種審批預設，untrusted 無對應項，codeg 工作階段會退回「按需詢問」——此時由模型自行決定何時詢問，沙箱本就允許的命令不再詢問。請改用下方的沙箱模式收緊。",
       "granularHint": "關閉表示該類請求會被自動拒絕，而不是彈給你確認。",
       "granular_sandbox_approval": "Shell 指令越權申請",
       "granular_rules": "Execpolicy 規則提示",
@@ -823,6 +824,7 @@
       "sandboxMode_workspace-write": "可寫工作區",
       "sandboxMode_danger-full-access": "完全開放（無沙箱）",
       "sandboxModeHint": "在 Windows 上，未開啟 codex 的實驗性 Windows 沙箱時，可寫工作區會被降級為唯讀。",
+      "sandboxModeSeedsPresetHint": "codeg 還會用它推導工作階段的初始審批預設，因此與審批策略不同，它對一般提問同樣生效。輸入框中選擇的預設仍會覆蓋它。",
       "writableRootsLabel": "額外可寫目錄",
       "writableRootsHint": "每行一個絕對路徑，作為工作目錄之外的額外可寫位置。",
       "sandboxRootsRelativeError": "必須是絕對路徑 — codex 會把相對路徑解析到 ~/.codex 底下：{path}",
@@ -2769,6 +2771,7 @@
       },
       "permissionDialog": {
         "subtitle": "Agent 請求繼續目前輪次的權限。",
+        "queuedCount": "還有 {count} 項待審批",
         "kindFallbackTool": "工具",
         "command": "命令",
         "cwd": "工作目錄：{cwd}",
