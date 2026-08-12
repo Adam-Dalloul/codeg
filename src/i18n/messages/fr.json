@@ -475,7 +475,7 @@
     },
     "toasts": {
       "loadFailed": "Échec du chargement de la Skill",
-      "openFolderFailed": "Échec de l’ouverture du dossier",
+      "openFolderFailed": "Échec de l'ouverture du dossier",
       "noSkillDirectory": "Aucun répertoire de Skills disponible pour l’agent actuel",
       "nameRequired": "Le nom de la Skill ne peut pas être vide",
       "updated": "Skill mise à jour",
@@ -1057,7 +1057,7 @@
     "selectModelProvider": "Sélectionner un fournisseur de modèle",
     "noModelProviderAvailable": "Aucun fournisseur de modèle configuré pour cet agent. Allez dans les paramètres des fournisseurs de modèle pour en ajouter un.",
     "claude": {
-      "authMode": "Mode d'authentification",
+      "authMode": "Mode d’authentification",
       "officialSubscription": "Abonnement officiel",
       "officialSubscriptionHint": "Utiliser l'abonnement officiel Anthropic, pas de clé API requise.",
       "mainModel": "Modèle principal",
@@ -1489,7 +1489,7 @@
         "importedAndUpdated": "{imported, plural, one {# session} other {# sessions}} importée(s), {updated, plural, one {# titre} other {# titres}} mis à jour, {skipped} ignorée(s)",
         "updatedTitles": "{updated, plural, one {# titre} other {# titres}} mis à jour, {skipped} ignorée(s)",
         "noNewSessionsFound": "Aucune nouvelle session trouvée ({skipped} ignorée(s))",
-        "importFailed": "Échec de l’import : {message}",
+        "importFailed": "Échec de l'import : {message}",
         "reviewCompleted": "{count, plural, one {# session en revue} other {# sessions en revue}} marquée(s) comme terminée(s)",
         "completeReviewFailed": "Échec de la finalisation des sessions en revue : {message}",
         "folderOpened": "Dossier {name} ouvert",
