@@ -22,7 +22,6 @@ import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group"
-import { Switch } from "@/components/ui/switch"
 import {
   Select,
   SelectContent,
@@ -33,10 +32,13 @@ import {
 } from "@/components/ui/select"
 import {
   acpInstallPiBinary,
+  acpPiListTrustEntries,
+  acpPiSetProjectTrust,
   acpUninstallPiBinary,
   acpUpdatePiConfig,
   acpValidatePiCommand,
   loadPiConfig,
+  type PiTrustEntry,
 } from "@/lib/api"
 import { useAgentInstallStream } from "@/hooks/use-agent-install-stream"
 import { PI_CONFIG_DIR_ENV } from "@/lib/pi-config"
@@ -46,21 +48,23 @@ import { cn, randomUUID } from "@/lib/utils"
 const PI_COMMAND_ENV = "PI_ACP_PI_COMMAND"
 const PI_SESSION_DIR_ENV = "PI_CODING_AGENT_SESSION_DIR"
 /**
- * Per-agent `env_json` flag gating launch-time workspace-trust seeding. Absent or
- * any value other than `"0"` ⇒ enabled (default on): when codeg connects pi to a
- * folder, the backend marks that folder trusted in pi's `trust.json` so pi loads
- * the project's local config/skills without a separate prompt. `"0"` disables.
- * Read by `seed_pi_workspace_trust` in the Rust launch path.
+ * LEGACY per-agent `env_json` flag that used to gate launch-time workspace-trust
+ * seeding. codeg no longer seeds pi's `trust.json` — auto-trusting the opened
+ * folder let a repo's own `.pi/extensions` execute at pi startup — so nothing
+ * reads this key any more; project trust is an explicit per-workspace decision
+ * (see `PiProjectTrustBanner` and the Project trust list below). It stays
+ * reserved so a `"0"` persisted by an older build keeps out of the raw env
+ * editor instead of resurfacing there as a user-defined variable.
  */
 const PI_TRUST_WORKSPACE_ENV = "PI_ACP_TRUST_WORKSPACE"
 
 /**
  * Reserved env keys the structured pi UI owns. pi-acp reads `PI_ACP_PI_COMMAND`
  * to pick which `pi` binary to spawn, and forwards `PI_CODING_AGENT_DIR` /
- * `PI_CODING_AGENT_SESSION_DIR` to it; `PI_ACP_TRUST_WORKSPACE` is consumed by
- * codeg's own launch path (never the child). These persist through the same
- * per-agent `env_json` path every other env var uses, so the structured UI needs
- * no bespoke storage — the launch pipeline already injects env_json.
+ * `PI_CODING_AGENT_SESSION_DIR` to it; `PI_ACP_TRUST_WORKSPACE` is the inert
+ * legacy key above. These persist through the same per-agent `env_json` path
+ * every other env var uses, so the structured UI needs no bespoke storage — the
+ * launch pipeline already injects env_json.
  */
 export const PI_RESERVED_ENV_KEYS = [
   PI_COMMAND_ENV,
@@ -434,12 +438,38 @@ export function PiConfigPanel({
   const [validating, setValidating] = useState(false)
   const [validation, setValidation] = useState<PiValidation>(null)
 
-  // Workspace trust (default on): seeded into pi's trust.json at launch so pi
-  // loads the opened folder's local config/skills without a separate prompt.
-  const [trustWorkspace, setTrustWorkspace] = useState(
-    () => (agent.env[PI_TRUST_WORKSPACE_ENV] ?? "1") !== "0"
+  // Project-trust decisions recorded in pi's `trust.json`, listed for review.
+  const [trustEntries, setTrustEntries] = useState<PiTrustEntry[] | null>(null)
+  const [revoking, setRevoking] = useState<string | null>(null)
+
+  const loadTrustEntries = useCallback(async () => {
+    try {
+      setTrustEntries(await acpPiListTrustEntries())
+    } catch (error) {
+      console.error("[Pi] list project trust failed", error)
+      setTrustEntries([])
+    }
+  }, [])
+
+  useEffect(() => {
+    void loadTrustEntries()
+  }, [loadTrustEntries])
+
+  const handleRevokeTrust = useCallback(
+    async (path: string) => {
+      setRevoking(path)
+      try {
+        await acpPiSetProjectTrust(path, null)
+        await loadTrustEntries()
+      } catch (error) {
+        console.error("[Pi] revoke project trust failed", error)
+        toast.error(t("toasts.savePiTrustFailed"))
+      } finally {
+        setRevoking(null)
+      }
+    },
+    [loadTrustEntries, t]
   )
-  const [savingTrust, setSavingTrust] = useState(false)
 
   const handleValidate = useCallback(async () => {
     const cmd = command.trim()
@@ -483,28 +513,6 @@ export function PiConfigPanel({
     onSaveEnv,
     t,
   ])
-
-  // Self-persisting toggle: write the flag straight to env_json on change. Default
-  // on ⇒ omit the key when enabling (absence = default), write "0" when disabling.
-  const handleToggleTrust = useCallback(
-    async (next: boolean) => {
-      setTrustWorkspace(next)
-      setSavingTrust(true)
-      const env = { ...agent.env }
-      if (next) delete env[PI_TRUST_WORKSPACE_ENV]
-      else env[PI_TRUST_WORKSPACE_ENV] = "0"
-      try {
-        await onSaveEnv(env, agent.enabled)
-      } catch (error) {
-        console.error("[Pi] save workspace trust failed", error)
-        setTrustWorkspace(!next)
-        toast.error(t("toasts.savePiTrustFailed"))
-      } finally {
-        setSavingTrust(false)
-      }
-    },
-    [agent.env, agent.enabled, onSaveEnv, t]
-  )
 
   return (
     <div className="space-y-4">
@@ -997,29 +1005,74 @@ export function PiConfigPanel({
         </div>
       </div>
 
-      {/* Workspace trust — auto-trust the folder codeg launches pi into */}
+      {/* Project trust — review/revoke the decisions in pi's trust.json.
+          A trusted folder lets that repo's `.pi/extensions` run at pi startup,
+          and the decision is inherited by every folder beneath it and honored by
+          the standalone `pi` CLI too, so it is worth being able to audit. Older
+          codeg builds auto-trusted every opened workspace; those entries are
+          indistinguishable from ones made inside pi, so they are listed for
+          review rather than pruned automatically. */}
       <div className="space-y-2 rounded-md border bg-muted/10 p-3">
-        <div className="flex items-start justify-between gap-3">
-          <div className="min-w-0">
-            <label
-              htmlFor="pi-trust-workspace"
-              className="flex items-center gap-1.5 text-xs font-medium"
-            >
-              <ShieldCheck className="h-3.5 w-3.5 text-muted-foreground" />
-              {t("pi.trustTitle")}
-            </label>
-            <p className="mt-1 text-[11px] text-muted-foreground">
-              {t("pi.trustDescription")}
-            </p>
+        <div className="min-w-0">
+          <div className="flex items-center gap-1.5 text-xs font-medium">
+            <ShieldCheck className="h-3.5 w-3.5 text-muted-foreground" />
+            {t("pi.projectTrustTitle")}
           </div>
-          <Switch
-            id="pi-trust-workspace"
-            checked={trustWorkspace}
-            onCheckedChange={handleToggleTrust}
-            disabled={savingTrust}
-          />
+          <p className="mt-1 text-[11px] text-muted-foreground">
+            {t("pi.projectTrustDescription")}
+          </p>
         </div>
-        <p className="text-[11px] text-muted-foreground">{t("pi.trustHint")}</p>
+
+        {trustEntries === null ? (
+          <p className="text-[11px] text-muted-foreground">
+            {t("pi.projectTrustLoading")}
+          </p>
+        ) : trustEntries.length === 0 ? (
+          <p className="text-[11px] text-muted-foreground">
+            {t("pi.projectTrustEmpty")}
+          </p>
+        ) : (
+          <ul className="space-y-1">
+            {trustEntries.map((entry) => (
+              <li
+                key={entry.path}
+                className="flex items-center gap-2 rounded border bg-background/60 px-2 py-1.5"
+              >
+                <span
+                  className={cn(
+                    "shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium",
+                    entry.trusted
+                      ? "bg-amber-500/15 text-amber-700 dark:text-amber-300"
+                      : "bg-muted text-muted-foreground"
+                  )}
+                >
+                  {entry.trusted
+                    ? t("pi.projectTrustTrusted")
+                    : t("pi.projectTrustDenied")}
+                </span>
+                <span
+                  className="min-w-0 flex-1 truncate font-mono text-[11px]"
+                  title={entry.path}
+                >
+                  {entry.path}
+                </span>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="h-6 shrink-0 px-2 text-[11px]"
+                  disabled={revoking === entry.path}
+                  onClick={() => void handleRevokeTrust(entry.path)}
+                >
+                  {revoking === entry.path ? (
+                    <Loader2 className="h-3 w-3 animate-spin" />
+                  ) : (
+                    t("pi.projectTrustRevoke")
+                  )}
+                </Button>
+              </li>
+            ))}
+          </ul>
+        )}
       </div>
     </div>
   )

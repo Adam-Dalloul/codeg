@@ -810,12 +810,29 @@ async fn build_agent(
                 if let Some(message) = pi_launch_preflight(runtime_env) {
                     return Err(AcpError::SdkNotInstalled(message));
                 }
-                // Trust the workspace codeg is launching pi into (default on, via
-                // the PI_ACP_TRUST_WORKSPACE env_json key) so pi loads the
-                // project's local config/skills without a redundant prompt. Gates
-                // config loading only, never execution; scoped, additive, and
-                // best-effort (never blocks the connect).
-                crate::commands::acp::seed_pi_workspace_trust(cwd, runtime_env);
+                // NOTE: codeg deliberately does NOT touch pi's `trust.json` here.
+                // It used to mark this workspace trusted on every launch, which
+                // made pi load the repo's own `.pi/*` — including `.pi/extensions`,
+                // JS/TS modules whose top level executes at pi startup with the
+                // user's permissions, before any prompt is sent. Because pi-acp
+                // spawns `pi --mode rpc` (no UI), pi's own default is to skip those
+                // resources, so the seeding was the sole reason they ran. Trust is
+                // now an explicit per-workspace decision surfaced in the UI
+                // (`acp_pi_set_project_trust`).
+                //
+                // Dropping the seeding does NOT retract the grants it already
+                // wrote: they persist in pi's user-level store and are inherited
+                // by every subdirectory, so a repo cloned into a folder some
+                // earlier session trusted is trusted before it is ever opened.
+                // Since pi resolves trust at startup and runs extensions
+                // immediately, an unconfirmed grant has to stop the launch here —
+                // a notice shown once the connection is up comes after the code it
+                // warns about has already run.
+                if let Some(message) =
+                    crate::commands::acp::pi_project_trust_launch_block(cwd, runtime_env)
+                {
+                    return Err(AcpError::PiProjectTrustRequired(message));
+                }
             }
             let mut merged_env = merge_agent_env(env, runtime_env);
             // Resolve the config-derived preset HERE (like Grok's

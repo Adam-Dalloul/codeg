@@ -193,8 +193,8 @@ fn raw_env_value(runtime_env: &BTreeMap<String, String>, key: &str) -> Option<Os
 /// Read a knob from the agent's `runtime_env` first, then codeg's process env,
 /// trimmed — for values compared as keywords, never as paths.
 ///
-/// Mirrors `PI_ACP_TRUST_WORKSPACE` (`commands::acp`): a codeg-only key that
-/// rides along in the per-agent `env_json`, so it is configurable per agent
+/// Mirrors `CODEG_ACP_HOST_TOOLS` (`acp::host_tools_policy`): a codeg-only key
+/// that rides along in the per-agent `env_json`, so it is configurable per agent
 /// from the existing settings UI without a new surface.
 ///
 /// `pub(crate)` so [`crate::acp::host_tools_policy`] resolves its own knob with

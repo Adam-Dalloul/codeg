@@ -5177,72 +5177,501 @@ fn pi_agent_dir_for_env(runtime_env: &BTreeMap<String, String>) -> PathBuf {
     }
 }
 
-/// Per-agent `env_json` key gating launch-time workspace-trust seeding for pi.
-/// Absent or any value other than `"0"` ⇒ enabled (default on); `"0"` disables.
-pub(crate) const PI_TRUST_WORKSPACE_ENV: &str = "PI_ACP_TRUST_WORKSPACE";
+// NOTE: the per-agent `env_json` key `PI_ACP_TRUST_WORKSPACE` used to gate
+// launch-time workspace-trust seeding here. codeg no longer seeds trust at all —
+// project trust is an explicit per-workspace decision now — so nothing on the
+// Rust side reads that key. The frontend still lists it as a reserved pi env key
+// so a `"0"` persisted by an older build stays out of the raw env editor instead
+// of resurfacing there as a user-defined variable.
 
-/// Seed pi's `trust.json` so the workspace codeg is launching pi into is trusted.
+/// The `<cwd>/.pi/` entries whose mere presence makes a project "trust-requiring"
+/// for pi. Mirrors pi's own `TRUST_REQUIRING_PROJECT_CONFIG_RESOURCES`
+/// (`core/trust-manager.js`, verified against pi 0.80.2).
 ///
-/// pi stores trust as a flat `{ "<canonical-dir>": true|false|null }` map and the
-/// nearest-ancestor entry decides whether it loads a project's local `.pi/*`
-/// config and `.agents/skills`. This gates ONLY config/skill loading, never tool
-/// execution — codeg has already authorized full execution in `cwd` by connecting
-/// an agent there, so trusting the same folder for config loading is consistent
-/// and removes a redundant, mid-connection trust prompt.
+/// This list is a mirror of another project's constant, so it can drift if pi
+/// adds a resource kind. It fails safe in both directions: under-detecting only
+/// means codeg stays quiet about resources pi would ignore anyway (pi's own
+/// non-interactive default is "don't load"), and over-detecting only costs one
+/// extra prompt. Neither direction can load a resource without the user's word.
+const PI_TRUST_REQUIRING_CONFIG_RESOURCES: [&str; 7] = [
+    "settings.json",
+    "extensions",
+    "skills",
+    "prompts",
+    "themes",
+    "SYSTEM.md",
+    "APPEND_SYSTEM.md",
+];
+
+/// One repo-shipped pi resource that only loads once the workspace is trusted.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PiProjectResource {
+    /// Absolute path pi would load.
+    pub path: String,
+    /// Stable, display-friendly kind (e.g. `.pi/extensions`, `.agents/skills`).
+    pub kind: String,
+    /// Whether loading this resource means executing repo-controlled code at pi
+    /// startup, as opposed to feeding it repo-controlled text. `.pi/extensions`
+    /// are JS/TS modules whose top level runs immediately, and `.pi/settings.json`
+    /// can make pi install project packages — the approval UI must say so plainly
+    /// rather than describing all of these as "config".
+    pub executes_code: bool,
+}
+
+/// pi keys `trust.json` by the directory's realpath. Mirror `realpathSync` with
+/// `fs::canonicalize`, dropping Windows' verbatim (`\\?\`) prefix — Node never
+/// emits that form, so leaving it on would produce keys pi can't match.
+/// Falls back to the path as given when it can't be resolved (e.g. missing dir),
+/// which keeps this usable for display.
+fn pi_canonical_path(path: &Path) -> PathBuf {
+    crate::paths::simplify_verbatim_path(&fs::canonicalize(path).unwrap_or_else(|_| path.into()))
+}
+
+/// List the repo-shipped pi resources in `cwd` that pi will only load once the
+/// workspace is trusted. Empty ⇒ pi trusts the project trivially (its
+/// `resolveProjectTrusted` returns `true` when nothing requires trust), so there
+/// is nothing to ask the user about.
 ///
-/// Guarantees: scoped (only `cwd`, never machine-wide), additive-only (never
-/// writes `false` or removes entries), idempotent (any existing entry for `cwd` —
-/// including a user's explicit `false`/`null` set in pi — is left untouched), and
-/// crash-safe for pi's file (a present-but-unparseable `trust.json` is never
-/// clobbered). Best-effort: every failure is logged at debug and swallowed so
-/// trust seeding can never block a connect. Honors `PI_CODING_AGENT_DIR` via
-/// `runtime_env`.
-pub(crate) fn seed_pi_workspace_trust(cwd: &Path, runtime_env: &BTreeMap<String, String>) {
-    // Default on: only an explicit "0" disables.
-    if runtime_env
-        .get(PI_TRUST_WORKSPACE_ENV)
-        .is_some_and(|v| v.trim() == "0")
-    {
-        return;
-    }
-    // pi keys trust by the realpath of the directory; mirror `realpathSync` with
-    // `fs::canonicalize`. A non-canonicalizable cwd can't be matched anyway.
-    let canonical = match fs::canonicalize(cwd) {
-        Ok(p) => p,
-        Err(e) => {
-            tracing::debug!("[pi] trust seed skipped: canonicalize {cwd:?} failed: {e}");
-            return;
+/// Mirrors pi's `hasTrustRequiringProjectResources`, but collects every match
+/// instead of returning on the first one so the approval UI can name the files.
+/// The emptiness of the result is equivalent to pi's boolean.
+pub(crate) fn pi_project_trust_resources(cwd: &Path) -> Vec<PiProjectResource> {
+    let mut found = Vec::new();
+    let start = pi_canonical_path(cwd);
+
+    let config_dir = start.join(".pi");
+    for entry in PI_TRUST_REQUIRING_CONFIG_RESOURCES {
+        let path = config_dir.join(entry);
+        if path.exists() {
+            found.push(PiProjectResource {
+                path: path.to_string_lossy().to_string(),
+                kind: format!(".pi/{entry}"),
+                // Extensions are modules pi imports (top-level code runs); project
+                // settings can pull in and install project packages.
+                executes_code: matches!(entry, "extensions" | "settings.json"),
+            });
         }
-    };
-    let key = canonical.to_string_lossy().to_string();
-    let path = pi_agent_dir_for_env(runtime_env).join("trust.json");
+    }
 
-    // Read pi's file strictly: a missing file is fine (we create one), but a file
-    // that exists yet doesn't parse to a JSON object must NOT be overwritten —
-    // that would destroy decisions codeg can't see.
-    let mut obj = match fs::read_to_string(&path) {
+    // pi also honors `.agents/skills` from `cwd` upward, EXCEPT the user's own
+    // `~/.agents/skills` (that is a user-scope store, not a repo's).
+    let user_agents_skills = pi_canonical_path(&home_dir_or_default())
+        .join(".agents")
+        .join("skills");
+    let mut current = start.as_path();
+    loop {
+        let candidate = current.join(".agents").join("skills");
+        if candidate != user_agents_skills && candidate.exists() {
+            found.push(PiProjectResource {
+                path: candidate.to_string_lossy().to_string(),
+                kind: ".agents/skills".to_string(),
+                executes_code: false,
+            });
+        }
+        match current.parent() {
+            Some(parent) if parent != current => current = parent,
+            _ => break,
+        }
+    }
+
+    found
+}
+
+/// Resolve the decision that actually applies to `cwd`, mirroring pi's
+/// `findNearestTrustEntry`: walk `cwd` upward and take the first entry whose
+/// value is a real boolean. A `null` entry does NOT stop the walk (pi only
+/// accepts `true`/`false`), which is how "clear this folder's decision and defer
+/// to an ancestor" works.
+///
+/// Returns the deciding path alongside the verdict so the UI can distinguish
+/// "this folder" from "inherited from a parent folder" — the inherited case is
+/// how a single seeded parent silently covered every repo beneath it.
+fn pi_nearest_trust_decision(trust_file: &Path, cwd: &Path) -> Option<(String, bool)> {
+    let map = read_json_object_or_empty(trust_file);
+    if map.is_empty() {
+        return None;
+    }
+    let mut current = pi_canonical_path(cwd);
+    loop {
+        let key = current.to_string_lossy().to_string();
+        if let Some(serde_json::Value::Bool(decision)) = map.get(&key) {
+            return Some((key, *decision));
+        }
+        match current.parent() {
+            Some(parent) if parent != current => current = parent.to_path_buf(),
+            _ => return None,
+        }
+    }
+}
+
+/// Effective project-trust state for one workspace, as shown in the approval UI.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PiProjectTrustState {
+    /// Canonical directory the decision is (or would be) keyed by.
+    pub workspace: String,
+    /// Repo-shipped resources gated by the decision. Empty ⇒ nothing to approve.
+    pub resources: Vec<PiProjectResource>,
+    /// The verdict in force, or `None` when no ancestor has decided yet — in which
+    /// case pi's non-interactive default applies and the resources stay unloaded.
+    pub decision: Option<bool>,
+    /// Which directory carries the deciding entry (may be an ancestor).
+    pub decided_at: Option<String>,
+    /// Absolute path of pi's `trust.json`, so the UI can point at the real file.
+    pub trust_file: String,
+    /// Whether the user has been shown, in this codeg, that this folder is
+    /// trusted. A grant with `acknowledged == false` is one nobody here has
+    /// confirmed — most likely written by the build that auto-trusted every
+    /// opened folder — and blocks the launch until it is answered.
+    pub acknowledged: bool,
+}
+
+/// codeg's own record of which trusted workspaces the user has confirmed.
+///
+/// Deliberately NOT stored in pi's `trust.json`: that file is pi's, has no field
+/// for this, and its entries carry no provenance — which is the whole problem.
+/// A flat `{ "<canonical dir>": true }` map in codeg's own home.
+fn pi_trust_ack_path() -> PathBuf {
+    crate::paths::codeg_home_dir().join("pi-project-trust-ack.json")
+}
+
+fn pi_trust_is_acknowledged_at(ack_file: &Path, workspace: &str) -> bool {
+    matches!(
+        read_json_object_or_empty(ack_file).get(workspace),
+        Some(serde_json::Value::Bool(true))
+    )
+}
+
+/// Record (or clear) the user's confirmation that `cwd` is trusted. Clearing
+/// matters: after a revoke, a later grant must be disclosed again rather than
+/// ride on a stale "already seen".
+fn pi_set_trust_acknowledged_at(
+    ack_file: &Path,
+    cwd: &Path,
+    acknowledged: bool,
+) -> Result<(), AcpError> {
+    let key = pi_canonical_path(cwd).to_string_lossy().to_string();
+    let mut obj = read_json_object_or_empty(ack_file);
+    if acknowledged {
+        obj.insert(key, serde_json::Value::Bool(true));
+    } else if obj.remove(&key).is_none() {
+        return Ok(());
+    }
+    write_json_object_pretty(ack_file, &obj)
+}
+
+/// One raw entry of pi's `trust.json`, for the settings-page review list.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PiTrustEntry {
+    pub path: String,
+    pub trusted: bool,
+}
+
+/// Resolve the pi agent dir the launch path will use: the per-agent `env_json`
+/// (BYO `PI_CODING_AGENT_DIR`) first, then the process env / `~/.pi/agent`.
+///
+/// The override only ever lands in the per-agent env, never codeg's own process
+/// env, so reading `std::env` here would silently target the wrong agent dir for
+/// BYO-pi users — the same trap the old launch-time seeding documented.
+async fn pi_agent_dir_from_db(db: &AppDatabase) -> PathBuf {
+    let setting = agent_setting_service::get_by_agent_type(&db.conn, AgentType::Pi)
+        .await
+        .ok()
+        .flatten();
+    let local_config_json = load_agent_local_config_json(AgentType::Pi);
+    let runtime_env = build_runtime_env_from_setting(
+        AgentType::Pi,
+        setting.as_ref(),
+        local_config_json.as_deref(),
+    );
+    pi_agent_dir_for_env(&runtime_env)
+}
+
+/// Project-trust state for `cwd` against explicit files. Split from the DB-backed
+/// command so it is directly unit-testable against a tempdir.
+fn pi_project_trust_state_at(
+    trust_file: &Path,
+    ack_file: &Path,
+    cwd: &Path,
+) -> PiProjectTrustState {
+    let decided = pi_nearest_trust_decision(trust_file, cwd);
+    let workspace = pi_canonical_path(cwd).to_string_lossy().to_string();
+    PiProjectTrustState {
+        acknowledged: pi_trust_is_acknowledged_at(ack_file, &workspace),
+        resources: pi_project_trust_resources(cwd),
+        decision: decided.as_ref().map(|(_, verdict)| *verdict),
+        decided_at: decided.map(|(path, _)| path),
+        trust_file: trust_file.to_string_lossy().to_string(),
+        workspace,
+    }
+}
+
+/// Refuse to launch pi into a folder whose trust grant nobody here has confirmed.
+///
+/// This has to run BEFORE the process starts, because pi resolves trust once at
+/// startup and executes `.pi/extensions` immediately: a warning shown after the
+/// connection is up has already been overtaken by the code it was warning about.
+/// Disclosing the grant post-hoc would have left every install that the old
+/// auto-seeding touched exposed on exactly the path that mattered — a repo cloned
+/// into a folder some earlier session trusted, opened for the first time.
+///
+/// Only an in-force `true` over real repo resources is blocked. An undecided or
+/// declined project is already safe (pi skips the resources), and an
+/// acknowledged one is the user's own answer.
+///
+/// Returns the message to fail the launch with, or `None` to proceed.
+pub(crate) fn pi_project_trust_launch_block(
+    cwd: &Path,
+    runtime_env: &BTreeMap<String, String>,
+) -> Option<String> {
+    let trust_file = pi_agent_dir_for_env(runtime_env).join("trust.json");
+    let state = pi_project_trust_state_at(&trust_file, &pi_trust_ack_path(), cwd);
+    if state.resources.is_empty() || state.decision != Some(true) || state.acknowledged {
+        return None;
+    }
+    let inherited = state
+        .decided_at
+        .as_deref()
+        .is_some_and(|at| at != state.workspace);
+    let via = if inherited {
+        format!(
+            " The grant comes from a parent folder ({}), so it covers this repository too.",
+            state.decided_at.as_deref().unwrap_or_default()
+        )
+    } else {
+        String::new()
+    };
+    Some(format!(
+        "pi is allowed to load this project's own files from {}, which lets the repository run its .pi/extensions at startup.{via} \
+         An earlier version of codeg granted this automatically when a folder was opened, so you may never have been asked. \
+         Review it in the project-trust notice above, or under Settings → Agents → Pi, then connect again.",
+        state.workspace
+    ))
+}
+
+pub(crate) async fn acp_pi_project_trust_state_core(
+    db: &AppDatabase,
+    workspace: String,
+) -> Result<PiProjectTrustState, AcpError> {
+    let trust_file = pi_agent_dir_from_db(db).await.join("trust.json");
+    // Not trimmed, for the same reason as the write path: a directory name may
+    // legitimately start or end with a space, and the state must describe the
+    // exact folder the caller named.
+    Ok(pi_project_trust_state_at(
+        &trust_file,
+        &pi_trust_ack_path(),
+        Path::new(&workspace),
+    ))
+}
+
+/// Record that the user has seen and kept an existing trust grant, so the launch
+/// gate stops blocking this folder. Writes only codeg's own record — pi's
+/// `trust.json` is untouched, because the grant itself is not changing.
+pub(crate) async fn acp_pi_acknowledge_project_trust_core(workspace: String) -> Result<(), AcpError> {
+    tokio::task::spawn_blocking(move || {
+        pi_set_trust_acknowledged_at(&pi_trust_ack_path(), Path::new(&workspace), true)
+    })
+    .await
+    .map_err(|e| AcpError::protocol(format!("trust acknowledgement task failed: {e}")))?
+}
+
+/// Record an explicit project-trust decision for `workspace` in pi's `trust.json`.
+///
+/// This is the ONLY place codeg writes into pi's trust store, and it runs solely
+/// from a user action in the approval UI. codeg used to write `true` here on every
+/// pi launch, which auto-approved repo-shipped `.pi/extensions` (arbitrary code at
+/// pi startup) and — because entries are inherited by every subdirectory and are
+/// read by the user's standalone `pi` CLI too — silently widened far past the
+/// session that triggered it.
+///
+/// `trusted`: `Some(true)`/`Some(false)` write that verdict for the exact
+/// canonical dir; `None` removes codeg's entry so the folder falls back to any
+/// ancestor decision, then to pi's own default (the revoke path).
+///
+/// Scoped to the one directory, and never clobbers a `trust.json` codeg can't
+/// parse — that file holds decisions the user made inside pi.
+pub(crate) async fn acp_pi_set_project_trust_core(
+    db: &AppDatabase,
+    workspace: String,
+    trusted: Option<bool>,
+) -> Result<(), AcpError> {
+    let path = pi_agent_dir_from_db(db).await.join("trust.json");
+    // The write takes pi's file lock and can sleep on contention, so keep it off
+    // the async worker. NOTE: `workspace` is NOT trimmed — leading/trailing
+    // spaces are legal in a directory name, and silently trimming them would key
+    // the decision to a different folder than the one being approved.
+    tokio::task::spawn_blocking(move || {
+        let cwd = Path::new(&workspace);
+        pi_write_trust_decision_at(&path, cwd, trusted)?;
+        // Any verdict here IS the user answering, so a granted folder is
+        // acknowledged by construction and must not re-block the launch. A
+        // declined or revoked one drops the record, so a future grant gets
+        // disclosed again instead of riding on a stale "already seen".
+        pi_set_trust_acknowledged_at(&pi_trust_ack_path(), cwd, trusted == Some(true))
+    })
+    .await
+    .map_err(|e| AcpError::protocol(format!("trust write task failed: {e}")))?
+}
+
+/// Serializes codeg's own trust writes. Two surfaces can issue them at once —
+/// the approval banner and the settings list's revoke buttons — and the write is
+/// a read-modify-write, so without this one call could drop the entry another
+/// just added. The cross-process lock below does not cover this: both callers
+/// live in one process.
+static PI_TRUST_WRITE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// How long a lock may sit untouched before it counts as abandoned by a crashed
+/// process. Mirrors `proper-lockfile`'s default `stale` window so codeg and pi
+/// agree on when a leftover lock stops holding everyone up.
+const PI_TRUST_LOCK_STALE: Duration = Duration::from_secs(10);
+
+/// pi guards `trust.json` with a `proper-lockfile` lock — a DIRECTORY at
+/// `<trust.json>.lock`, created with `mkdir` (atomic) — and takes it for its own
+/// reads *and* writes (`withTrustFileLock`, `core/trust-manager.js`). Held only
+/// for the read-modify-write below, and released on drop.
+struct PiTrustLock {
+    path: PathBuf,
+}
+
+impl Drop for PiTrustLock {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir(&self.path);
+    }
+}
+
+/// True when a lock directory is old enough that whoever made it is presumed
+/// gone. Unreadable metadata counts as stale: a lock we can't reason about must
+/// not wedge project-trust decisions forever.
+fn pi_trust_lock_is_stale(path: &Path) -> bool {
+    fs::metadata(path)
+        .and_then(|meta| meta.modified())
+        .map(|modified| modified.elapsed().unwrap_or_default() > PI_TRUST_LOCK_STALE)
+        .unwrap_or(true)
+}
+
+/// Take pi's cross-process trust lock, retrying on contention the way pi does
+/// (10 attempts, 20ms apart) before giving up. Honoring pi's own protocol is
+/// what keeps a decision written here from interleaving with one the user makes
+/// inside pi, and keeps pi from ever reading a half-written file.
+fn acquire_pi_trust_lock(trust_file: &Path) -> Result<PiTrustLock, AcpError> {
+    let mut name = trust_file.as_os_str().to_os_string();
+    name.push(".lock");
+    let path = PathBuf::from(name);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|e| AcpError::protocol(format!("create pi agent directory failed: {e}")))?;
+    }
+
+    for attempt in 1..=10 {
+        match fs::create_dir(&path) {
+            Ok(()) => return Ok(PiTrustLock { path }),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                if pi_trust_lock_is_stale(&path) {
+                    // Same tie-break proper-lockfile uses, so a lock orphaned by a
+                    // crash doesn't block every future decision.
+                    let _ = fs::remove_dir(&path);
+                    continue;
+                }
+                if attempt < 10 {
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+            }
+            Err(e) => {
+                return Err(AcpError::protocol(format!(
+                    "lock {} failed: {e}",
+                    path.display()
+                )));
+            }
+        }
+    }
+    Err(AcpError::protocol(format!(
+        "pi's trust store at {} is locked by another process; try again in a moment",
+        trust_file.display()
+    )))
+}
+
+/// Write one decision into `path`. Split from the command so it is directly
+/// unit-testable against a tempdir.
+///
+/// Blocking (it can sleep waiting for pi's lock), so async callers hand it to
+/// `spawn_blocking` rather than stalling a runtime worker.
+fn pi_write_trust_decision_at(
+    path: &Path,
+    cwd: &Path,
+    trusted: Option<bool>,
+) -> Result<(), AcpError> {
+    let key = pi_canonical_path(cwd).to_string_lossy().to_string();
+    // Poisoning only means some earlier writer panicked; the map it guards lives
+    // on disk, not in the mutex, so the lock is still usable.
+    let _serialized = PI_TRUST_WRITE_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _lock = acquire_pi_trust_lock(path)?;
+
+    // Strict read: a missing file is fine (we create one), but a file that exists
+    // and doesn't parse as a JSON object must NOT be rewritten from scratch.
+    // Surface that rather than silently doing nothing, so the user can go fix it.
+    let mut obj = match fs::read_to_string(path) {
         Ok(text) => match serde_json::from_str::<serde_json::Value>(&text) {
             Ok(serde_json::Value::Object(map)) => map,
             _ => {
-                tracing::debug!("[pi] trust seed skipped: {path:?} is not a JSON object");
-                return;
+                return Err(AcpError::protocol(format!(
+                    "pi's trust file at {} is not a JSON object; fix or remove it before changing project trust",
+                    path.display()
+                )));
             }
         },
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => serde_json::Map::new(),
         Err(e) => {
-            tracing::debug!("[pi] trust seed skipped: read {path:?} failed: {e}");
-            return;
+            return Err(AcpError::protocol(format!(
+                "read {} failed: {e}",
+                path.display()
+            )));
         }
     };
 
-    // Idempotent + respect any decision the user already made for this folder.
-    if obj.contains_key(&key) {
-        return;
+    match trusted {
+        Some(verdict) => {
+            obj.insert(key, serde_json::Value::Bool(verdict));
+        }
+        None => {
+            if obj.remove(&key).is_none() {
+                // Nothing of ours to clear (the decision came from an ancestor);
+                // don't create a file just to record an absence.
+                return Ok(());
+            }
+        }
     }
-    obj.insert(key, serde_json::Value::Bool(true));
-    if let Err(e) = write_json_object_pretty(&path, &obj) {
-        tracing::debug!("[pi] trust seed write failed for {path:?}: {e}");
-    }
+    write_json_object_pretty(path, &obj)
+}
+
+/// Every decision recorded in pi's `trust.json`, for the settings-page review
+/// list. Entries codeg auto-seeded before this became a user decision are
+/// indistinguishable from ones the user made inside pi (codeg never recorded
+/// provenance), so they are listed for review rather than pruned automatically —
+/// pruning would silently revoke the user's own approvals.
+pub(crate) async fn acp_pi_list_trust_entries_core(
+    db: &AppDatabase,
+) -> Result<Vec<PiTrustEntry>, AcpError> {
+    let path = pi_agent_dir_from_db(db).await.join("trust.json");
+    Ok(pi_trust_entries_at(&path))
+}
+
+/// Read decisions out of `path`. Split from the command so it is directly
+/// unit-testable against a tempdir.
+fn pi_trust_entries_at(path: &Path) -> Vec<PiTrustEntry> {
+    let mut entries = read_json_object_or_empty(path)
+        .into_iter()
+        .filter_map(|(path, value)| match value {
+            // `null` means "no decision" in pi; nothing to review or revoke.
+            serde_json::Value::Bool(trusted) => Some(PiTrustEntry { path, trusted }),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    entries.sort_by(|a, b| a.path.cmp(&b.path));
+    entries
 }
 
 /// Structured Pi config update from the settings UI. Writes pi's native files:
@@ -10138,6 +10567,49 @@ pub async fn acp_validate_pi_command(command: String) -> Result<PiCommandValidat
     Ok(acp_validate_pi_command_core(command))
 }
 
+/// Report which repo-shipped pi resources a workspace ships and whether any
+/// trust decision already covers it. Read-only. Desktop command; the web handler
+/// calls `acp_pi_project_trust_state_core` directly.
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn acp_pi_project_trust_state(
+    db: tauri::State<'_, AppDatabase>,
+    workspace: String,
+) -> Result<PiProjectTrustState, AcpError> {
+    acp_pi_project_trust_state_core(&db, workspace).await
+}
+
+/// Record (or clear, with `trusted: null`) an explicit project-trust decision in
+/// pi's `trust.json`. Only ever called from a user action in the approval UI.
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn acp_pi_set_project_trust(
+    db: tauri::State<'_, AppDatabase>,
+    workspace: String,
+    trusted: Option<bool>,
+) -> Result<(), AcpError> {
+    acp_pi_set_project_trust_core(&db, workspace, trusted).await
+}
+
+/// Record that the user reviewed an existing grant and chose to keep it, which
+/// clears the launch gate for that folder. Does not change pi's trust store.
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn acp_pi_acknowledge_project_trust(workspace: String) -> Result<(), AcpError> {
+    acp_pi_acknowledge_project_trust_core(workspace).await
+}
+
+/// List every decision in pi's `trust.json` so the settings page can review and
+/// revoke them — including any auto-seeded by codeg before trust became a user
+/// decision.
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn acp_pi_list_trust_entries(
+    db: tauri::State<'_, AppDatabase>,
+) -> Result<Vec<PiTrustEntry>, AcpError> {
+    acp_pi_list_trust_entries_core(&db).await
+}
+
 /// Launch Hermes's interactive setup in the OS terminal. `kind` selects the
 /// flow (`"setup"` → `hermes acp --setup`, `"model"` → `hermes model`); the
 /// exact command is constructed by the backend from the registry recipe (the
@@ -12351,141 +12823,545 @@ mod tests {
         assert!(grok_config_permission_mode("[ui]\npermission_mode = \"bogus\"\n").is_none());
     }
 
-    /// Build a `runtime_env` whose `PI_CODING_AGENT_DIR` points at `agent_dir`,
-    /// so trust seeding writes a tempdir's `trust.json` instead of `~/.pi/agent`.
-    fn pi_env_for(agent_dir: &Path) -> BTreeMap<String, String> {
-        let mut env = BTreeMap::new();
-        env.insert(
-            "PI_CODING_AGENT_DIR".to_string(),
-            agent_dir.to_string_lossy().to_string(),
-        );
-        env
+    fn touch(path: &Path) {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        fs::write(path, "x").unwrap();
     }
 
     fn canonical_key(dir: &Path) -> String {
-        fs::canonicalize(dir)
-            .expect("canonicalize")
-            .to_string_lossy()
-            .to_string()
+        pi_canonical_path(dir).to_string_lossy().to_string()
     }
 
+    /// A `runtime_env` whose `PI_CODING_AGENT_DIR` points at `agent_dir`, so the
+    /// launch gate reads a tempdir's `trust.json` instead of `~/.pi/agent`.
+    fn pi_env_for(agent_dir: &Path) -> BTreeMap<String, String> {
+        BTreeMap::from([(
+            "PI_CODING_AGENT_DIR".to_string(),
+            agent_dir.to_string_lossy().to_string(),
+        )])
+    }
+
+    fn resource_kinds(cwd: &Path) -> Vec<String> {
+        pi_project_trust_resources(cwd)
+            .into_iter()
+            .map(|r| r.kind)
+            .collect()
+    }
+
+    /// Every `.pi/*` entry pi gates behind project trust must be reported, so the
+    /// approval UI can name what it is about to let the repo load.
     #[test]
-    fn pi_trust_seed_creates_file_and_trusts_canonical_cwd() {
+    fn pi_trust_resources_detects_every_gated_pi_entry() {
+        for entry in PI_TRUST_REQUIRING_CONFIG_RESOURCES {
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let ws = tmp.path().join("ws");
+            let target = ws.join(".pi").join(entry);
+            // Directory-shaped entries and file-shaped ones both count.
+            if entry.contains('.') {
+                touch(&target);
+            } else {
+                fs::create_dir_all(&target).unwrap();
+            }
+
+            assert_eq!(
+                resource_kinds(&ws),
+                vec![format!(".pi/{entry}")],
+                "`.pi/{entry}` must be reported as a trust-gated resource",
+            );
+        }
+    }
+
+    /// `.pi/extensions` are modules whose top level runs at pi startup, and
+    /// `.pi/settings.json` can make pi install project packages. The approval UI
+    /// leans on this flag to say "this executes code" instead of calling it all
+    /// "config" — the exact confusion that produced the auto-trust bug.
+    #[test]
+    fn pi_trust_resources_flag_the_code_executing_kinds() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let agent_dir = tmp.path().join("agent");
-        let workspace = tmp.path().join("workspace");
-        fs::create_dir_all(&workspace).unwrap();
+        let ws = tmp.path().join("ws");
+        fs::create_dir_all(ws.join(".pi").join("extensions")).unwrap();
+        touch(&ws.join(".pi").join("settings.json"));
+        fs::create_dir_all(ws.join(".pi").join("prompts")).unwrap();
 
-        seed_pi_workspace_trust(&workspace, &pi_env_for(&agent_dir));
+        let by_kind = pi_project_trust_resources(&ws)
+            .into_iter()
+            .map(|r| (r.kind, r.executes_code))
+            .collect::<BTreeMap<_, _>>();
 
-        let map = read_json_object_or_empty(&agent_dir.join("trust.json"));
-        assert_eq!(
-            map.get(&canonical_key(&workspace)),
-            Some(&serde_json::Value::Bool(true)),
-            "the opened workspace must be marked trusted",
+        assert_eq!(by_kind.get(".pi/extensions"), Some(&true));
+        assert_eq!(by_kind.get(".pi/settings.json"), Some(&true));
+        assert_eq!(by_kind.get(".pi/prompts"), Some(&false));
+    }
+
+    /// A bare `.pi/` directory is not a project resource for pi, so codeg must not
+    /// prompt about it (`hasTrustRequiringProjectResources` ignores it too).
+    #[test]
+    fn pi_trust_resources_ignores_a_bare_pi_dir() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ws = tmp.path().join("ws");
+        fs::create_dir_all(ws.join(".pi")).unwrap();
+
+        assert!(pi_project_trust_resources(&ws).is_empty());
+    }
+
+    /// pi walks ancestors for `.agents/skills`, so a parent directory's store is
+    /// gated for this workspace too.
+    #[test]
+    fn pi_trust_resources_walks_ancestors_for_agents_skills() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let parent = tmp.path().join("parent");
+        let ws = parent.join("repo");
+        fs::create_dir_all(&ws).unwrap();
+        fs::create_dir_all(parent.join(".agents").join("skills")).unwrap();
+
+        assert_eq!(resource_kinds(&ws), vec![".agents/skills".to_string()]);
+    }
+
+    /// `~/.agents/skills` is the USER's own store, not a repo's — pi excludes it
+    /// from the trust decision and so must codeg, or every workspace under $HOME
+    /// would raise a bogus prompt.
+    #[test]
+    fn pi_trust_resources_excludes_the_user_agents_skills_store() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let home = tmp.path().join("home");
+        let ws = home.join("repo");
+        fs::create_dir_all(&ws).unwrap();
+        fs::create_dir_all(home.join(".agents").join("skills")).unwrap();
+
+        // `home_dir_or_default` reads HOME; pin it (and USERPROFILE, which
+        // `dirs::home_dir` prefers on Windows) for the duration of the check.
+        temp_env::with_vars(
+            [
+                ("HOME", Some(home.to_string_lossy().to_string())),
+                ("USERPROFILE", Some(home.to_string_lossy().to_string())),
+            ],
+            || {
+                assert!(
+                    pi_project_trust_resources(&ws).is_empty(),
+                    "the user's own ~/.agents/skills must not count as a repo resource",
+                );
+            },
         );
     }
 
+    /// The decision for the exact folder wins.
     #[test]
-    fn pi_trust_seed_preserves_existing_entries() {
+    fn pi_nearest_trust_decision_reads_the_exact_folder() {
         let tmp = tempfile::tempdir().expect("tempdir");
+        let ws = tmp.path().join("ws");
+        fs::create_dir_all(&ws).unwrap();
+        let trust = tmp.path().join("trust.json");
+        let mut map = serde_json::Map::new();
+        map.insert(canonical_key(&ws), serde_json::Value::Bool(false));
+        write_json_object_pretty(&trust, &map).unwrap();
+
+        assert_eq!(
+            pi_nearest_trust_decision(&trust, &ws),
+            Some((canonical_key(&ws), false)),
+        );
+    }
+
+    /// Inheritance is the amplifier that made the old auto-seed so wide: one
+    /// entry on a parent covers every repo beneath it, including repos cloned
+    /// later. The UI has to be able to show that, so resolution must report the
+    /// ancestor that actually decided.
+    #[test]
+    fn pi_nearest_trust_decision_inherits_from_an_ancestor() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let parent = tmp.path().join("projects");
+        let ws = parent.join("cloned-later");
+        fs::create_dir_all(&ws).unwrap();
+        let trust = tmp.path().join("trust.json");
+        let mut map = serde_json::Map::new();
+        map.insert(canonical_key(&parent), serde_json::Value::Bool(true));
+        write_json_object_pretty(&trust, &map).unwrap();
+
+        assert_eq!(
+            pi_nearest_trust_decision(&trust, &ws),
+            Some((canonical_key(&parent), true)),
+            "the deciding ancestor must be reported, not the workspace itself",
+        );
+    }
+
+    /// pi only honors real booleans; a `null` entry means "no decision here", so
+    /// the walk continues to the ancestor rather than stopping.
+    #[test]
+    fn pi_nearest_trust_decision_skips_null_entries() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let parent = tmp.path().join("projects");
+        let ws = parent.join("repo");
+        fs::create_dir_all(&ws).unwrap();
+        let trust = tmp.path().join("trust.json");
+        let mut map = serde_json::Map::new();
+        map.insert(canonical_key(&ws), serde_json::Value::Null);
+        map.insert(canonical_key(&parent), serde_json::Value::Bool(true));
+        write_json_object_pretty(&trust, &map).unwrap();
+
+        assert_eq!(
+            pi_nearest_trust_decision(&trust, &ws),
+            Some((canonical_key(&parent), true)),
+        );
+    }
+
+    /// No file, or no matching entry, means nobody has decided — pi's own
+    /// non-interactive default then applies and the resources stay unloaded.
+    #[test]
+    fn pi_nearest_trust_decision_is_none_without_a_match() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ws = tmp.path().join("ws");
+        fs::create_dir_all(&ws).unwrap();
+
+        assert_eq!(
+            pi_nearest_trust_decision(&tmp.path().join("missing.json"), &ws),
+            None,
+        );
+    }
+
+    /// The launch path no longer writes trust, so the ONLY way a workspace becomes
+    /// trusted is this explicit call. Both verdicts must be recordable — declining
+    /// is a real answer, not just "don't write anything".
+    #[test]
+    fn pi_set_project_trust_records_either_verdict() {
+        for verdict in [true, false] {
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let ws = tmp.path().join("ws");
+            fs::create_dir_all(&ws).unwrap();
+            let trust = tmp.path().join("agent").join("trust.json");
+
+            pi_write_trust_decision_at(&trust, &ws, Some(verdict)).unwrap();
+
+            assert_eq!(
+                read_json_object_or_empty(&trust).get(&canonical_key(&ws)),
+                Some(&serde_json::Value::Bool(verdict)),
+            );
+        }
+    }
+
+    /// Revoking removes codeg's entry so the folder falls back to any ancestor
+    /// decision and then to pi's default. Other users' decisions must survive.
+    #[test]
+    fn pi_set_project_trust_revoke_removes_only_our_entry() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ws = tmp.path().join("ws");
+        fs::create_dir_all(&ws).unwrap();
+        let trust = tmp.path().join("trust.json");
+        let mut map = serde_json::Map::new();
+        map.insert(canonical_key(&ws), serde_json::Value::Bool(true));
+        map.insert("/some/other".to_string(), serde_json::Value::Bool(true));
+        map.insert("/denied".to_string(), serde_json::Value::Bool(false));
+        write_json_object_pretty(&trust, &map).unwrap();
+
+        pi_write_trust_decision_at(&trust, &ws, None).unwrap();
+
+        let after = read_json_object_or_empty(&trust);
+        assert_eq!(after.get(&canonical_key(&ws)), None);
+        assert_eq!(after.get("/some/other"), Some(&serde_json::Value::Bool(true)));
+        assert_eq!(after.get("/denied"), Some(&serde_json::Value::Bool(false)));
+    }
+
+    /// Revoking a folder we never wrote (the decision is inherited) must not
+    /// create a trust file just to record an absence.
+    #[test]
+    fn pi_set_project_trust_revoke_is_a_noop_when_nothing_is_ours() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ws = tmp.path().join("ws");
+        fs::create_dir_all(&ws).unwrap();
+        let trust = tmp.path().join("agent").join("trust.json");
+
+        pi_write_trust_decision_at(&trust, &ws, None).unwrap();
+
+        assert!(!trust.exists());
+    }
+
+    /// Drive the launch gate with an isolated pi agent dir AND an isolated codeg
+    /// home (the acknowledgement store lives there, via `CODEG_HOME`).
+    fn launch_block_for(agent_dir: &Path, codeg_home: &Path, cwd: &Path) -> Option<String> {
+        temp_env::with_var(
+            "CODEG_HOME",
+            Some(codeg_home.to_string_lossy().to_string()),
+            || pi_project_trust_launch_block(cwd, &pi_env_for(agent_dir)),
+        )
+    }
+
+    /// Build a workspace shipping `.pi/extensions`, with `trust.json` saying what
+    /// `decision` says about the exact folder.
+    fn gated_workspace(tmp: &Path, decision: Option<bool>) -> (PathBuf, PathBuf, PathBuf) {
+        let ws = tmp.join("ws");
+        fs::create_dir_all(ws.join(".pi").join("extensions")).unwrap();
+        let agent_dir = tmp.join("agent");
+        fs::create_dir_all(&agent_dir).unwrap();
+        if let Some(verdict) = decision {
+            let mut map = serde_json::Map::new();
+            map.insert(canonical_key(&ws), serde_json::Value::Bool(verdict));
+            write_json_object_pretty(&agent_dir.join("trust.json"), &map).unwrap();
+        }
+        (ws, agent_dir, tmp.join("codeg-home"))
+    }
+
+    /// THE regression this whole change exists for on an upgraded install: pi
+    /// executes `.pi/extensions` at startup, so a grant nobody here confirmed —
+    /// written by the build that auto-trusted every opened folder — must stop the
+    /// launch. A notice shown after connecting would arrive after the code ran.
+    #[test]
+    fn pi_launch_is_blocked_by_an_unacknowledged_grant() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let (ws, agent_dir, home) = gated_workspace(tmp.path(), Some(true));
+
+        let blocked = launch_block_for(&agent_dir, &home, &ws);
+
+        assert!(blocked.is_some(), "an unconfirmed grant must not launch pi");
+        assert!(blocked.unwrap().contains(".pi/extensions"));
+    }
+
+    /// The same grant inherited from a parent — the shape that covers a repo
+    /// cloned into a previously-opened folder long after it was seeded, which is
+    /// the case a per-folder check alone would miss entirely.
+    #[test]
+    fn pi_launch_is_blocked_by_an_unacknowledged_ancestor_grant() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let parent = tmp.path().join("projects");
+        let ws = parent.join("cloned-later");
+        fs::create_dir_all(ws.join(".pi").join("extensions")).unwrap();
         let agent_dir = tmp.path().join("agent");
         fs::create_dir_all(&agent_dir).unwrap();
-        let workspace = tmp.path().join("ws");
-        fs::create_dir_all(&workspace).unwrap();
+        let mut map = serde_json::Map::new();
+        map.insert(canonical_key(&parent), serde_json::Value::Bool(true));
+        write_json_object_pretty(&agent_dir.join("trust.json"), &map).unwrap();
 
-        // Pre-existing decisions for unrelated folders must survive untouched.
-        let mut initial = serde_json::Map::new();
-        initial.insert("/some/other".to_string(), serde_json::Value::Bool(true));
-        initial.insert("/denied".to_string(), serde_json::Value::Bool(false));
-        write_json_object_pretty(&agent_dir.join("trust.json"), &initial).unwrap();
+        let blocked = launch_block_for(&agent_dir, &tmp.path().join("codeg-home"), &ws);
 
-        seed_pi_workspace_trust(&workspace, &pi_env_for(&agent_dir));
-
-        let map = read_json_object_or_empty(&agent_dir.join("trust.json"));
-        assert_eq!(map.get("/some/other"), Some(&serde_json::Value::Bool(true)));
-        assert_eq!(map.get("/denied"), Some(&serde_json::Value::Bool(false)));
-        assert_eq!(
-            map.get(&canonical_key(&workspace)),
-            Some(&serde_json::Value::Bool(true)),
-        );
-    }
-
-    #[test]
-    fn pi_trust_seed_respects_existing_false_and_is_idempotent() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let agent_dir = tmp.path().join("agent");
-        fs::create_dir_all(&agent_dir).unwrap();
-        let workspace = tmp.path().join("ws");
-        fs::create_dir_all(&workspace).unwrap();
-        let key = canonical_key(&workspace);
-        let env = pi_env_for(&agent_dir);
-
-        // The user explicitly distrusted this exact folder in pi: never overwrite.
-        let mut initial = serde_json::Map::new();
-        initial.insert(key.clone(), serde_json::Value::Bool(false));
-        write_json_object_pretty(&agent_dir.join("trust.json"), &initial).unwrap();
-
-        seed_pi_workspace_trust(&workspace, &env);
-        let map = read_json_object_or_empty(&agent_dir.join("trust.json"));
-        assert_eq!(
-            map.get(&key),
-            Some(&serde_json::Value::Bool(false)),
-            "an explicit deny must be preserved (additive-only)",
-        );
-
-        // Idempotent: seeding an already-trusted folder must not rewrite the file.
-        let mut trusted = serde_json::Map::new();
-        trusted.insert(key.clone(), serde_json::Value::Bool(true));
-        write_json_object_pretty(&agent_dir.join("trust.json"), &trusted).unwrap();
-        let mtime1 = fs::metadata(agent_dir.join("trust.json"))
-            .unwrap()
-            .modified()
-            .unwrap();
-        seed_pi_workspace_trust(&workspace, &env);
-        assert_eq!(
-            fs::metadata(agent_dir.join("trust.json"))
-                .unwrap()
-                .modified()
-                .unwrap(),
-            mtime1,
-            "a no-op seed must not rewrite trust.json",
-        );
-    }
-
-    #[test]
-    fn pi_trust_seed_disabled_writes_nothing() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let agent_dir = tmp.path().join("agent");
-        let workspace = tmp.path().join("ws");
-        fs::create_dir_all(&workspace).unwrap();
-
-        let mut env = pi_env_for(&agent_dir);
-        env.insert(PI_TRUST_WORKSPACE_ENV.to_string(), "0".to_string());
-        seed_pi_workspace_trust(&workspace, &env);
-
+        assert!(blocked.is_some());
         assert!(
-            !agent_dir.join("trust.json").exists(),
-            "a disabled toggle must not touch trust.json",
+            blocked.unwrap().contains("parent folder"),
+            "the message must name the inherited grant, not imply this folder was approved",
         );
     }
 
+    /// Once the user answers for the folder, it launches. Acknowledging records
+    /// only codeg's confirmation — pi's own grant is untouched.
     #[test]
-    fn pi_trust_seed_leaves_unparseable_file_untouched() {
+    fn pi_launch_proceeds_after_the_grant_is_acknowledged() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let agent_dir = tmp.path().join("agent");
-        fs::create_dir_all(&agent_dir).unwrap();
-        let workspace = tmp.path().join("ws");
-        fs::create_dir_all(&workspace).unwrap();
-        fs::write(agent_dir.join("trust.json"), "not json at all").unwrap();
+        let (ws, agent_dir, home) = gated_workspace(tmp.path(), Some(true));
+        let trust_before = fs::read_to_string(agent_dir.join("trust.json")).unwrap();
 
-        seed_pi_workspace_trust(&workspace, &pi_env_for(&agent_dir));
+        pi_set_trust_acknowledged_at(&home.join("pi-project-trust-ack.json"), &ws, true).unwrap();
 
+        assert_eq!(launch_block_for(&agent_dir, &home, &ws), None);
         assert_eq!(
             fs::read_to_string(agent_dir.join("trust.json")).unwrap(),
-            "not json at all",
-            "a present-but-unparseable trust.json must never be clobbered",
+            trust_before,
+            "acknowledging must not change pi's own trust store",
         );
+    }
+
+    /// Nothing to confirm: with no decision, or a declined one, pi already skips
+    /// the resources, so blocking would be pure friction.
+    #[test]
+    fn pi_launch_proceeds_when_no_grant_is_in_force() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        for decision in [None, Some(false)] {
+            let sub = tmp.path().join(format!("case{decision:?}"));
+            fs::create_dir_all(&sub).unwrap();
+            let (ws, agent_dir, home) = gated_workspace(&sub, decision);
+            assert_eq!(
+                launch_block_for(&agent_dir, &home, &ws),
+                None,
+                "decision {decision:?} must not block the launch",
+            );
+        }
+    }
+
+    /// A repo that ships nothing trust-gated is never blocked, however the folder
+    /// came to be trusted — there is nothing for the grant to load.
+    #[test]
+    fn pi_launch_proceeds_when_the_repo_ships_no_resources() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ws = tmp.path().join("plain");
+        fs::create_dir_all(&ws).unwrap();
+        let agent_dir = tmp.path().join("agent");
+        fs::create_dir_all(&agent_dir).unwrap();
+        let mut map = serde_json::Map::new();
+        map.insert(canonical_key(&ws), serde_json::Value::Bool(true));
+        write_json_object_pretty(&agent_dir.join("trust.json"), &map).unwrap();
+
+        assert_eq!(
+            launch_block_for(&agent_dir, &tmp.path().join("codeg-home"), &ws),
+            None,
+        );
+    }
+
+    /// Revoking must drop the confirmation too, or re-granting later would ride
+    /// on a stale "already seen" and skip the disclosure.
+    #[test]
+    fn pi_trust_acknowledgement_round_trips_and_clears() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ws = tmp.path().join("ws");
+        fs::create_dir_all(&ws).unwrap();
+        let ack = tmp.path().join("ack.json");
+
+        assert!(!pi_trust_is_acknowledged_at(&ack, &canonical_key(&ws)));
+        pi_set_trust_acknowledged_at(&ack, &ws, true).unwrap();
+        assert!(pi_trust_is_acknowledged_at(&ack, &canonical_key(&ws)));
+        pi_set_trust_acknowledged_at(&ack, &ws, false).unwrap();
+        assert!(!pi_trust_is_acknowledged_at(&ack, &canonical_key(&ws)));
+    }
+
+    /// The write is a read-modify-write, and two codeg surfaces (the approval
+    /// banner and the settings list's revoke buttons) can fire at once. Without
+    /// serialization each writer would persist the map it read, so the last one
+    /// to land silently drops every entry added since it read — losing a grant
+    /// the user just made, or resurrecting one they just revoked.
+    #[test]
+    fn pi_trust_concurrent_writes_do_not_lose_entries() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let trust = tmp.path().join("agent").join("trust.json");
+
+        let workspaces: Vec<PathBuf> = (0..8)
+            .map(|i| {
+                let ws = tmp.path().join(format!("ws{i}"));
+                fs::create_dir_all(&ws).unwrap();
+                ws
+            })
+            .collect();
+
+        std::thread::scope(|scope| {
+            for ws in &workspaces {
+                let trust = trust.clone();
+                scope.spawn(move || {
+                    pi_write_trust_decision_at(&trust, ws, Some(true)).expect("write");
+                });
+            }
+        });
+
+        // Every writer's entry survived, and the file is still parseable JSON —
+        // interleaved truncating writes would corrupt it.
+        let map = read_json_object_or_empty(&trust);
+        assert_eq!(map.len(), workspaces.len(), "an entry was lost: {map:?}");
+        for ws in &workspaces {
+            assert_eq!(
+                map.get(&canonical_key(ws)),
+                Some(&serde_json::Value::Bool(true)),
+            );
+        }
+    }
+
+    /// The lock must not outlive the operation, or the next decision — from codeg
+    /// or from pi, which takes the same lock — would stall until it goes stale.
+    #[test]
+    fn pi_trust_write_releases_the_lock() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ws = tmp.path().join("ws");
+        fs::create_dir_all(&ws).unwrap();
+        let trust = tmp.path().join("agent").join("trust.json");
+
+        pi_write_trust_decision_at(&trust, &ws, Some(true)).unwrap();
+
+        assert!(
+            !tmp.path().join("agent").join("trust.json.lock").exists(),
+            "the lock directory must be released when the write finishes",
+        );
+    }
+
+    /// pi holds this same lock while it reads or writes its store. When it is
+    /// held, codeg must back off and report it rather than write anyway — writing
+    /// through the lock is exactly the interleaving the lock exists to prevent.
+    #[test]
+    fn pi_trust_write_defers_to_a_lock_held_by_pi() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ws = tmp.path().join("ws");
+        fs::create_dir_all(&ws).unwrap();
+        let agent_dir = tmp.path().join("agent");
+        fs::create_dir_all(&agent_dir).unwrap();
+        let trust = agent_dir.join("trust.json");
+        fs::write(&trust, "{}\n").unwrap();
+        // Fresh (non-stale) lock, exactly as `proper-lockfile` leaves it.
+        fs::create_dir(agent_dir.join("trust.json.lock")).unwrap();
+
+        let err = pi_write_trust_decision_at(&trust, &ws, Some(true)).unwrap_err();
+
+        assert!(err.to_string().contains("locked by another process"));
+        assert_eq!(
+            fs::read_to_string(&trust).unwrap(),
+            "{}\n",
+            "a contended write must leave the store untouched",
+        );
+    }
+
+    /// A lock orphaned by a crash must not wedge project trust forever — pi
+    /// breaks the same tie by age, so codeg has to agree on when to steal it.
+    #[test]
+    fn pi_trust_lock_missing_or_unreadable_counts_as_stale() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        assert!(pi_trust_lock_is_stale(&tmp.path().join("nonexistent.lock")));
+        // A lock created just now is live, so it is honored rather than stolen.
+        let fresh = tmp.path().join("fresh.lock");
+        fs::create_dir(&fresh).unwrap();
+        assert!(!pi_trust_lock_is_stale(&fresh));
+    }
+
+    /// `trust.json` holds decisions the user made inside pi. If codeg can't parse
+    /// it, it must refuse loudly rather than rewrite the file from scratch.
+    #[test]
+    fn pi_set_project_trust_never_clobbers_an_unparseable_file() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ws = tmp.path().join("ws");
+        fs::create_dir_all(&ws).unwrap();
+        let trust = tmp.path().join("trust.json");
+        fs::write(&trust, "not json at all").unwrap();
+
+        let err = pi_write_trust_decision_at(&trust, &ws, Some(true)).unwrap_err();
+
+        assert!(err.to_string().contains("not a JSON object"));
+        assert_eq!(fs::read_to_string(&trust).unwrap(), "not json at all");
+    }
+
+    /// The settings list surfaces decisions for review/revoke — including ones an
+    /// older codeg auto-seeded. `null` entries carry no decision, so they are not
+    /// listed.
+    #[test]
+    fn pi_trust_entries_lists_decisions_sorted_and_skips_nulls() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let trust = tmp.path().join("trust.json");
+        let mut map = serde_json::Map::new();
+        map.insert("/b/repo".to_string(), serde_json::Value::Bool(true));
+        map.insert("/a/repo".to_string(), serde_json::Value::Bool(false));
+        map.insert("/c/repo".to_string(), serde_json::Value::Null);
+        write_json_object_pretty(&trust, &map).unwrap();
+
+        let entries = pi_trust_entries_at(&trust);
+
+        assert_eq!(
+            entries
+                .iter()
+                .map(|e| (e.path.as_str(), e.trusted))
+                .collect::<Vec<_>>(),
+            vec![("/a/repo", false), ("/b/repo", true)],
+        );
+    }
+
+    /// End-to-end shape of what the banner reads: a repo that ships an extension,
+    /// with nobody having decided yet, is exactly the case that must prompt.
+    #[test]
+    fn pi_project_trust_state_reports_undecided_repo_resources() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ws = tmp.path().join("ws");
+        fs::create_dir_all(ws.join(".pi").join("extensions")).unwrap();
+        let trust = tmp.path().join("trust.json");
+
+        let state = pi_project_trust_state_at(&trust, &tmp.path().join("ack.json"), &ws);
+
+        assert_eq!(state.decision, None, "nobody has decided yet");
+        assert_eq!(state.decided_at, None);
+        assert!(!state.acknowledged);
+        assert_eq!(
+            state.resources.iter().map(|r| &r.kind).collect::<Vec<_>>(),
+            vec![".pi/extensions"],
+        );
+        assert!(state.resources[0].executes_code);
+        assert_eq!(state.workspace, canonical_key(&ws));
     }
 
     #[test]

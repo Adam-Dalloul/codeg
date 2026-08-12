@@ -739,6 +739,81 @@ export async function acpValidatePiCommand(command: string): Promise<{
   return getTransport().call("acp_validate_pi_command", { command })
 }
 
+/** One repo-shipped pi resource that only loads once the workspace is trusted. */
+export type PiProjectResource = {
+  path: string
+  /** Display kind, e.g. `.pi/extensions`, `.agents/skills`. */
+  kind: string
+  /**
+   * True when loading it means running repo-controlled code at pi startup
+   * (`.pi/extensions` modules, `.pi/settings.json` project packages) rather than
+   * just feeding pi repo-controlled text.
+   */
+  executesCode: boolean
+}
+
+export type PiProjectTrustState = {
+  workspace: string
+  resources: PiProjectResource[]
+  /** `null` ⇒ nobody has decided, so pi leaves the resources unloaded. */
+  decision: boolean | null
+  /** Deciding directory — may be an ancestor of `workspace`. */
+  decidedAt: string | null
+  trustFile: string
+  /**
+   * Whether the user has confirmed this folder's grant in codeg. A trusted but
+   * unacknowledged folder is one an older build auto-trusted without asking, so
+   * the backend refuses to launch pi there until it is answered.
+   */
+  acknowledged: boolean
+}
+
+/**
+ * Which repo-shipped pi resources a workspace ships, and whether any trust
+ * decision already covers it. Read-only.
+ */
+export async function acpPiProjectTrustState(
+  workspace: string
+): Promise<PiProjectTrustState> {
+  return getTransport().call("acp_pi_project_trust_state", { workspace })
+}
+
+/**
+ * Record (`true`/`false`) or clear (`null`) a project-trust decision in pi's
+ * `trust.json`. The only path that writes trust — call it from an explicit user
+ * action, never automatically: a `true` here lets the repo's `.pi/extensions`
+ * execute at pi startup, is inherited by every subdirectory, and also applies to
+ * the user's standalone `pi` CLI.
+ */
+export async function acpPiSetProjectTrust(
+  workspace: string,
+  trusted: boolean | null
+): Promise<void> {
+  return getTransport().call("acp_pi_set_project_trust", { workspace, trusted })
+}
+
+/** One decision recorded in pi's `trust.json`. */
+export type PiTrustEntry = {
+  path: string
+  trusted: boolean
+}
+
+/**
+ * Record that the user reviewed an existing grant and chose to keep it, which
+ * clears the launch gate for that folder. Leaves pi's `trust.json` alone — the
+ * grant itself isn't changing, only codeg's record that it was confirmed.
+ */
+export async function acpPiAcknowledgeProjectTrust(
+  workspace: string
+): Promise<void> {
+  return getTransport().call("acp_pi_acknowledge_project_trust", { workspace })
+}
+
+/** Every decision in pi's `trust.json`, for review and revocation. */
+export async function acpPiListTrustEntries(): Promise<PiTrustEntry[]> {
+  return getTransport().call("acp_pi_list_trust_entries", {})
+}
+
 /**
  * Install the `pi` binary (`@earendil-works/pi-coding-agent`) globally via npm.
  * This is the prerequisite pi-acp spawns as `pi --mode rpc` — distinct from the
