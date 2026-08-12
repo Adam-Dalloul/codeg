@@ -19,6 +19,7 @@ import {
   selectPinnedWithReuse,
   selectRecentConversationsWithReuse,
   worktreeChildrenByParent,
+  worktreeHeaderLabel,
   type SidebarRow,
 } from "./sidebar-conversation-grouping"
 
@@ -242,6 +243,37 @@ describe("worktreeChildrenByParent", () => {
     worktreeChildrenByParent(top, folders)
     expect(top).toEqual([10])
     expect(folders.map((f) => f.id)).toEqual([10, 11])
+  })
+})
+
+describe("worktreeHeaderLabel", () => {
+  it("prefers the alias — where the seeded branch name lands", () => {
+    expect(worktreeHeaderLabel("task/49", "task/49", "codeg-task-49")).toBe(
+      "task/49"
+    )
+  })
+
+  it("lets a renamed worktree win over its branch", () => {
+    expect(
+      worktreeHeaderLabel("Payment rewrite", "task/49", "codeg-task-49")
+    ).toBe("Payment rewrite")
+  })
+
+  it("falls back to the branch, then the directory name", () => {
+    expect(worktreeHeaderLabel(null, "task/49", "codeg-task-49")).toBe(
+      "task/49"
+    )
+    expect(worktreeHeaderLabel(null, null, "codeg-task-49")).toBe(
+      "codeg-task-49"
+    )
+    // Blank-but-present values (a cleared alias round-tripping as "") must not
+    // win the fallback chain and blank out the row.
+    expect(worktreeHeaderLabel("  ", "  ", "codeg-task-49")).toBe(
+      "codeg-task-49"
+    )
+    expect(worktreeHeaderLabel(undefined, undefined, "codeg-task-49")).toBe(
+      "codeg-task-49"
+    )
   })
 })
 

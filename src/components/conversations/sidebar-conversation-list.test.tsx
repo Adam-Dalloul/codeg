@@ -914,6 +914,29 @@ describe("SidebarConversationList — worktree grouping (Show worktrees)", () =>
     expect(text).toContain("conv-21")
   })
 
+  it("labels a worktree sub-group with its alias, not the directory name", () => {
+    // What a worktree registered through `open_worktree_folder_core` looks like:
+    // the alias was seeded with the branch it was created on. `git_branch` on the
+    // folder row is never written by the folder flow, so without the alias every
+    // worktree fell back to its (long, derived) directory name.
+    const cur = useAppWorkspaceStore.getState()
+    const aliased = cur.allFolders.map((f) =>
+      f.id === 2
+        ? ({
+            ...f,
+            git_branch: null,
+            alias: "feature-x",
+          } as unknown as FolderDetail)
+        : f
+    )
+    useAppWorkspaceStore.setState({ folders: aliased, allFolders: aliased })
+    render(wtTree(true))
+
+    const text = document.body.textContent ?? ""
+    expect(text).toContain("feature-x")
+    expect(text).not.toContain("wt-feature")
+  })
+
   it("keeps the connector spine continuous through an empty worktree sub-group", () => {
     // Add a second worktree (folder 3) with NO conversations → it renders the
     // empty-folder hint. That empty row must still draw the container spine

@@ -695,6 +695,14 @@ pub async fn open_folder_core(
 /// repo groups under that one repo folder. An unknown / non-positive
 /// `source_folder_id` degrades to a top-level folder (`parent_id = None`) rather
 /// than erroring.
+///
+/// Also defaults the folder's display alias to the checked-out branch (see
+/// [`seed_worktree_alias`]) — a worktree's directory name (`codeg-task-49`,
+/// `codeg-automation-3-run-8`) says far less about it than the branch does, and
+/// this is the one place every worktree registration passes through: the branch
+/// dropdown's "new worktree", switch-to-branch landing on an unregistered
+/// checkout, the automation engine's per-run worktree, and the work-task
+/// engine's per-task worktree (fresh mint and re-create-from-branch alike).
 pub async fn open_worktree_folder_core(
     db: &AppDatabase,
     path: String,
@@ -711,10 +719,87 @@ pub async fn open_worktree_folder_core(
     let entry = folder_service::add_folder_with_parent(&db.conn, &path, parent_id)
         .await
         .map_err(AppCommandError::from)?;
+    seed_worktree_alias(db, entry.id, &path).await;
     folder_service::get_folder_by_id(&db.conn, entry.id)
         .await
         .map_err(AppCommandError::from)?
         .ok_or_else(|| AppCommandError::not_found("Folder not found after add"))
+}
+
+/// Default a worktree folder's alias to the branch checked out at `path`.
+///
+/// Best-effort in both directions, and deliberately silent:
+/// - The branch is read from the directory itself rather than threaded from the
+///   caller, so registrations that never knew a branch name (a pre-existing
+///   checkout the branch switcher just adopted) get labeled too, and the label
+///   can never disagree with what is actually checked out there.
+/// - A detached HEAD, a path that is gone, or git missing entirely all resolve to
+///   "no branch" and leave the folder unlabeled — the sidebar then falls back to
+///   the directory name exactly as before.
+/// - The write only lands when no alias is set yet (see
+///   [`folder_service::seed_folder_alias`]), so re-registering a worktree — a
+///   task retry, a re-created checkout — never overwrites a name the user chose.
+async fn seed_worktree_alias(db: &AppDatabase, folder_id: i32, path: &str) {
+    let Some(branch) = resolve_git_head(path).await.ok().and_then(|h| h.branch) else {
+        return;
+    };
+    if let Err(e) = folder_service::seed_folder_alias(&db.conn, folder_id, &branch).await {
+        tracing::warn!("[folders] could not seed folder {folder_id}'s alias from git: {e}");
+    }
+}
+
+/// Label every already-registered worktree folder that has no alias with the
+/// branch it currently has checked out — the one-shot startup counterpart of the
+/// seeding [`open_worktree_folder_core`] now does at registration time.
+///
+/// Without it the feature would only ever reach worktrees created from here on,
+/// leaving every worktree already in the sidebar showing its directory name.
+/// Each row is seeded through the same never-clobber path, so a worktree the
+/// user has already named is skipped, and one whose directory is gone (or is
+/// detached) simply stays unlabeled and is retried next launch — a handful of
+/// fast git failures, not a growing cost, since a successful seed removes the
+/// row from the work list for good.
+///
+/// Folders that are in the workspace when they get labeled are broadcast, so a
+/// client that fetched its folder list before this finished still updates in
+/// place. A closed folder is labeled just the same but deliberately NOT
+/// broadcast: `folder://changed` Upsert means "insert-or-replace in the open
+/// folder list", so announcing one would put a folder the user closed back in
+/// their sidebar. Whether it is open is read fresh at that moment rather than
+/// taken from the work list — walking every folder takes long enough (a git call
+/// each) for the user to close one in the middle — and reopening it later
+/// re-reads the row anyway, so the label still lands. Returns how many were
+/// labeled.
+pub async fn backfill_worktree_folder_aliases(emitter: &EventEmitter, db: &AppDatabase) -> usize {
+    let pending = match folder_service::list_worktree_folders_missing_alias(&db.conn).await {
+        Ok(rows) => rows,
+        Err(e) => {
+            tracing::warn!("[folders] worktree alias backfill could not list folders: {e}");
+            return 0;
+        }
+    };
+
+    let mut labeled = 0;
+    for (folder_id, path) in pending {
+        let Some(branch) = resolve_git_head(&path).await.ok().and_then(|h| h.branch) else {
+            continue;
+        };
+        match folder_service::seed_folder_alias(&db.conn, folder_id, &branch).await {
+            Ok(true) => {
+                labeled += 1;
+                if let Ok(Some(detail)) =
+                    folder_service::get_open_folder_by_id(&db.conn, folder_id).await
+                {
+                    emit_folder_upsert(emitter, detail);
+                }
+            }
+            Ok(false) => {}
+            Err(e) => {
+                tracing::warn!("[folders] worktree alias backfill failed for {folder_id}: {e}");
+            }
+        }
+    }
+    labeled
 }
 
 /// Open a folder into the workspace and announce it so the workspace window
@@ -6790,6 +6875,233 @@ mod tests {
         assert_eq!(
             wt.parent_id, None,
             "non-positive / unknown source degrades to a top-level folder"
+        );
+    }
+
+    /// The point of seeding: a worktree's directory name says far less about it
+    /// than the branch it holds, so registering one labels it by branch.
+    #[tokio::test]
+    async fn open_worktree_folder_core_labels_the_folder_with_its_branch() {
+        let db = fresh_in_memory_db().await;
+        let (_dir, repo, wt_path) = repo_with_worktree();
+        let root = open_folder_core(&db, repo).await.expect("root");
+
+        let wt = open_worktree_folder_core(&db, wt_path, root.id)
+            .await
+            .expect("worktree folder");
+
+        assert_eq!(
+            wt.alias.as_deref(),
+            Some("wt"),
+            "the fresh worktree folder is labeled with its checked-out branch"
+        );
+    }
+
+    /// Re-registering a worktree is routine — a task retry re-creating its
+    /// checkout, an automation re-resolving the same directory — and must never
+    /// undo the name the user gave it in the sidebar.
+    #[tokio::test]
+    async fn open_worktree_folder_core_keeps_a_user_alias_on_re_register() {
+        let db = fresh_in_memory_db().await;
+        let (_dir, repo, wt_path) = repo_with_worktree();
+        let root = open_folder_core(&db, repo).await.expect("root");
+        let wt = open_worktree_folder_core(&db, wt_path.clone(), root.id)
+            .await
+            .expect("worktree folder");
+        update_folder_alias_core(&db, wt.id, Some("Payment rewrite".into()))
+            .await
+            .expect("user renames it");
+
+        let again = open_worktree_folder_core(&db, wt_path, root.id)
+            .await
+            .expect("re-register the same worktree");
+
+        assert_eq!(again.id, wt.id, "same folder row");
+        assert_eq!(
+            again.alias.as_deref(),
+            Some("Payment rewrite"),
+            "the user's name survives re-registration"
+        );
+    }
+
+    /// The seed is best-effort: a directory git knows nothing about (or that is
+    /// gone entirely) still registers, just without a label — the sidebar then
+    /// falls back to the directory name as it always did.
+    #[tokio::test]
+    async fn open_worktree_folder_core_leaves_a_non_repo_unlabeled() {
+        let db = fresh_in_memory_db().await;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let plain = dir
+            .path()
+            .join("not-a-repo")
+            .to_str()
+            .expect("utf-8 path")
+            .to_string();
+        std::fs::create_dir_all(&plain).expect("mkdir");
+
+        let wt = open_worktree_folder_core(&db, plain, 0)
+            .await
+            .expect("registers anyway");
+
+        assert_eq!(wt.alias, None, "no branch to label it with");
+    }
+
+    /// Worktrees registered before seeding existed keep showing their directory
+    /// name forever without this — the whole reason the backfill exists.
+    #[tokio::test]
+    async fn backfill_labels_an_already_registered_worktree() {
+        let db = fresh_in_memory_db().await;
+        let (_dir, repo, wt_path) = repo_with_worktree();
+        let root = open_folder_core(&db, repo).await.expect("root");
+        let wt = open_worktree_folder_core(&db, wt_path, root.id)
+            .await
+            .expect("worktree folder");
+        // Back to the pre-seeding state: a worktree folder row with no alias.
+        update_folder_alias_core(&db, wt.id, None)
+            .await
+            .expect("clear the alias");
+
+        let labeled = backfill_worktree_folder_aliases(&test_emitter(), &db).await;
+
+        assert_eq!(labeled, 1);
+        assert_eq!(
+            get_folder_core(&db, wt.id)
+                .await
+                .expect("folder")
+                .alias
+                .as_deref(),
+            Some("wt")
+        );
+        assert_eq!(
+            get_folder_core(&db, root.id).await.expect("root").alias,
+            None,
+            "the root repo is not a worktree and is left alone"
+        );
+    }
+
+    /// A `folder://changed` Upsert means "insert-or-replace in the OPEN folder
+    /// list", so announcing a closed folder would put one the user removed from
+    /// the workspace back in their sidebar. Label it anyway — reopening it later
+    /// should already read as the branch — but stay silent about it.
+    #[tokio::test]
+    async fn backfill_labels_a_closed_worktree_without_announcing_it() {
+        use crate::web::event_bridge::WebEventBroadcaster;
+
+        let db = fresh_in_memory_db().await;
+        let (_dir, repo, wt_path) = repo_with_worktree();
+        let root = open_folder_core(&db, repo.clone()).await.expect("root");
+        let open_wt = open_worktree_folder_core(&db, wt_path, root.id)
+            .await
+            .expect("open worktree folder");
+        let (_dir2, repo2, wt_path2) = repo_with_worktree();
+        let root2 = open_folder_core(&db, repo2).await.expect("second root");
+        let closed_wt = open_worktree_folder_core(&db, wt_path2, root2.id)
+            .await
+            .expect("worktree folder to close");
+        // Back to the pre-seeding state for both, then close the second one the
+        // way the UI does (the row stays alive, just out of the workspace).
+        for id in [open_wt.id, closed_wt.id] {
+            update_folder_alias_core(&db, id, None)
+                .await
+                .expect("clear the alias");
+        }
+        let broadcaster = std::sync::Arc::new(WebEventBroadcaster::new());
+        let emitter = EventEmitter::test_web_only(broadcaster.clone());
+        remove_folder_from_workspace_core(&emitter, &db, closed_wt.id)
+            .await
+            .expect("close the folder");
+
+        // Subscribe only now, so the queue holds just the backfill's events.
+        let mut rx = broadcaster.subscribe();
+        let labeled = backfill_worktree_folder_aliases(&emitter, &db).await;
+
+        // Both rows get the label…
+        assert_eq!(labeled, 2);
+        for id in [open_wt.id, closed_wt.id] {
+            assert_eq!(
+                get_folder_core(&db, id).await.expect("folder").alias,
+                Some("wt".to_string()),
+                "every worktree row is labeled, open or not"
+            );
+        }
+        // …but only the open one is announced.
+        let mut announced = Vec::new();
+        while let Ok(evt) = rx.try_recv() {
+            if evt.channel == crate::web::event_bridge::FOLDER_CHANGED_EVENT {
+                let p = &*evt.payload;
+                if p["kind"] == "upsert" {
+                    announced.push(p["folder"]["id"].as_i64().unwrap_or(-1) as i32);
+                }
+            }
+        }
+        assert_eq!(
+            announced,
+            vec![open_wt.id],
+            "a closed folder must not be broadcast back into the sidebar"
+        );
+    }
+
+    /// The backfill decides whether to announce a folder by re-reading it, not
+    /// from the snapshot its work list was built from — otherwise closing a
+    /// folder while the backfill walks (one git call per folder, so the window is
+    /// real) still announces it and puts it back in the sidebar. This is that
+    /// re-read: the same id that was announceable a moment ago no longer is.
+    #[tokio::test]
+    async fn a_folder_closed_after_enumeration_is_no_longer_announceable() {
+        let db = fresh_in_memory_db().await;
+        let (_dir, repo, wt_path) = repo_with_worktree();
+        let root = open_folder_core(&db, repo).await.expect("root");
+        let wt = open_worktree_folder_core(&db, wt_path, root.id)
+            .await
+            .expect("worktree folder");
+
+        // Enumeration-time reading: open, so this row would be announced.
+        assert!(folder_service::get_open_folder_by_id(&db.conn, wt.id)
+            .await
+            .expect("query")
+            .is_some());
+
+        // The user closes it mid-walk.
+        remove_folder_from_workspace_core(&test_emitter(), &db, wt.id)
+            .await
+            .expect("close the folder");
+
+        assert!(
+            folder_service::get_open_folder_by_id(&db.conn, wt.id)
+                .await
+                .expect("query")
+                .is_none(),
+            "a folder closed since enumeration must not be announced"
+        );
+        // Still a live row the backfill may label — just silently.
+        assert!(get_folder_core(&db, wt.id).await.is_ok());
+    }
+
+    /// A second launch must be a no-op — both for folders it already labeled and
+    /// for ones the user has since named.
+    #[tokio::test]
+    async fn backfill_skips_folders_that_already_have_a_label() {
+        let db = fresh_in_memory_db().await;
+        let (_dir, repo, wt_path) = repo_with_worktree();
+        let root = open_folder_core(&db, repo).await.expect("root");
+        let wt = open_worktree_folder_core(&db, wt_path, root.id)
+            .await
+            .expect("worktree folder");
+        update_folder_alias_core(&db, wt.id, Some("Payment rewrite".into()))
+            .await
+            .expect("user renames it");
+
+        assert_eq!(
+            backfill_worktree_folder_aliases(&test_emitter(), &db).await,
+            0
+        );
+        assert_eq!(
+            get_folder_core(&db, wt.id)
+                .await
+                .expect("folder")
+                .alias
+                .as_deref(),
+            Some("Payment rewrite")
         );
     }
 

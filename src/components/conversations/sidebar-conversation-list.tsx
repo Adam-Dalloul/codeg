@@ -110,6 +110,7 @@ import {
   selectPinnedWithReuse,
   selectRecentConversationsWithReuse,
   worktreeChildrenByParent,
+  worktreeHeaderLabel,
   type SidebarRow,
 } from "./sidebar-conversation-grouping"
 import { useSubsessionSync } from "@/hooks/use-subsession-sync"
@@ -268,14 +269,14 @@ const FolderHeader = memo(function FolderHeader({
    * Which glyph + label this header renders:
    * - `repo` (default): a top-level repo / plain folder / repo container — the
    *   FolderOpen/FolderClosed glyph and the repo-name alias label.
-   * - `worktree`: a git worktree sub-group — the FolderGit2 glyph and the branch
-   *   label (`worktreeBranch`).
+   * - `worktree`: a git worktree sub-group — the FolderGit2 glyph and the
+   *   branch-first label (see {@link worktreeHeaderLabel}).
    * - `root`: a repo container's own-sessions sub-group — the FolderRoot glyph
    *   and a fixed, non-localized "root" label.
    */
   variant?: "repo" | "worktree" | "root"
-  /** The worktree's branch name (its own `git_branch`), shown as the label when
-   *  `variant === "worktree"`. Falls back to the folder name when absent. */
+  /** The worktree's branch name (its own `git_branch`), used as the label when
+   *  no alias is set. Falls back to the folder name when absent. */
   worktreeBranch?: string | null
 }) {
   // Own the translations here rather than receiving `t` as a prop: next-intl
@@ -392,7 +393,11 @@ const FolderHeader = memo(function FolderHeader({
                     )}
                   >
                     {variant === "worktree" ? (
-                      (worktreeBranch ?? folderName)
+                      worktreeHeaderLabel(
+                        folderAlias,
+                        worktreeBranch,
+                        folderName
+                      )
                     ) : variant === "root" ? (
                       // The container repo's own-sessions sub-group is labeled
                       // with a fixed, non-localized "root" (its glyph is

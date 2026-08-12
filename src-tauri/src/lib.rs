@@ -428,6 +428,27 @@ mod tauri_app {
                     });
                 }
 
+                // Label worktree folders registered before aliases were seeded at
+                // creation with the branch they have checked out, so the sidebar
+                // names them by branch rather than by their (long, derived)
+                // directory. Background, non-blocking; changed folders are
+                // broadcast, so a client that already fetched its folder list
+                // still picks them up.
+                {
+                    let db = db::AppDatabase {
+                        conn: app.state::<db::AppDatabase>().conn.clone(),
+                    };
+                    let emitter = web::event_bridge::EventEmitter::Tauri(app.handle().clone());
+                    tauri::async_runtime::spawn(async move {
+                        let n =
+                            crate::commands::folders::backfill_worktree_folder_aliases(&emitter, &db)
+                                .await;
+                        if n > 0 {
+                            tracing::info!("[folders] labeled {n} worktree folder(s) by branch");
+                        }
+                    });
+                }
+
                 // Start chat channel background tasks
                 {
                     let ccm = app.state::<ChatChannelManager>();
