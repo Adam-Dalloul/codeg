@@ -613,6 +613,10 @@
     "emptyNoAgent": "Aucun agent disponible.",
     "configManagement": "Gestion de configuration",
     "envVars": "Variables d'environnement",
+    "hostTools": {
+      "label": "Laisser l'agent gérer les fichiers et les commandes",
+      "description": "codeg cesse d'assurer l'accès aux fichiers et les commandes de terminal : l'agent les exécute dans son propre processus, là où son bac à sable et ses règles d'autorisation s'appliquent réellement. La délégation à d'autres agents est également désactivée, car elle ferait repasser le même travail par codeg. codeg n'ajoute aucun bac à sable, n'activez donc ceci que si l'agent en a un configuré."
+    },
     "nativeJsonConfig": "Configuration JSON native",
     "modelHintDefault": "Laissez vide pour utiliser le modèle système par défaut.",
     "generalConfigDescriptionClaude": "Prend en charge la configuration rapide de l'API URL, API Key et des modèles Claude, et synchronise avec la configuration JSON native.",

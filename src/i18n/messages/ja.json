@@ -613,6 +613,10 @@
     "emptyNoAgent": "利用可能なエージェントがありません。",
     "configManagement": "設定管理",
     "envVars": "環境変数",
+    "hostTools": {
+      "label": "ファイルとコマンドをエージェント自身に処理させる",
+      "description": "codeg がファイルアクセスとターミナルコマンドを代行しなくなり、エージェントが自身のプロセスで実行します。そうすることで初めて、エージェント自身のサンドボックスと権限ルールが適用されます。他のエージェントへの委任も無効になります（同じ処理が codeg 経由に戻ってしまうため）。codeg 自体はサンドボックスを提供しないため、エージェント側でサンドボックスを設定済みの場合にのみ有効にしてください。"
+    },
     "nativeJsonConfig": "ネイティブ JSON 設定",
     "modelHintDefault": "空欄の場合はシステム既定モデルを使用します。",
     "generalConfigDescriptionClaude": "API URL、API Key、Claude モデルをすばやく設定でき、ネイティブ JSON 設定と同期します。",

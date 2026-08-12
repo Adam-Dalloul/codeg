@@ -32,7 +32,10 @@ use tokio::sync::{mpsc, RwLock};
 
 use crate::acp::background_watch;
 use crate::acp::error::AcpError;
-use crate::acp::file_system_runtime::{FileSystemRuntime, FileSystemRuntimeError, FsAccessPolicy};
+use crate::acp::file_system_runtime::{
+    FileSystemRuntime, FileSystemRuntimeError, FsAccessPolicy, FS_POLICY_ENV,
+};
+use crate::acp::host_tools_policy::{HostToolsPolicy, HOST_TOOLS_ENV};
 use crate::acp::registry::{self, AgentDistribution};
 use crate::acp::session_state::SessionState;
 use crate::acp::stderr_tail::{summarize_parser_error, StderrTail, TailScope};
@@ -1231,6 +1234,12 @@ pub async fn spawn_agent_connection(
     // agent's state. Uses the same `launch_cwd` the process and ACP session get.
     let fs_policy = FsAccessPolicy::from_env(&launch_cwd, agent_type, &runtime_env);
 
+    // Whether codeg hosts the `fs/*` + `terminal/*` channels at all, or hands
+    // them back to the agent so the agent's OWN sandbox covers them (#436).
+    // Resolved here for the same reason as `fs_policy`: it reads the full
+    // per-agent `runtime_env`, which does not survive into `run_connection`.
+    let host_tools = HostToolsPolicy::from_env(&runtime_env);
+
     // Forward only the codeg git credential helper keys into the terminal
     // runtime — not the agent's API tokens or model provider credentials.
     // This makes `git fetch`/`git push` issued through the ACP
@@ -1321,6 +1330,7 @@ pub async fn spawn_agent_connection(
             preferred_config_values,
             delegation_injection,
             fs_policy,
+            host_tools,
             stderr_tail,
         )
         .await;
@@ -2578,7 +2588,13 @@ fn claude_raw_sdk_session_meta(
 /// gates. Extracted for testability — each gate is a documented product
 /// decision:
 ///
-/// - Everyone: filesystem read/write + terminal, for ACP tool execution.
+/// - Everyone, unless `host_tools` says otherwise: filesystem read/write +
+///   terminal, for ACP tool execution. Under
+///   [`HostToolsPolicy::Agent`] BOTH are withheld, which is not a narrowing of
+///   what the agent may do — it moves the doing back inside the agent's own
+///   process, where the agent's own OS sandbox and permission rules already
+///   apply (#436). Withholding one without the other buys nothing: the agent
+///   just reaches the same file through the channel it kept.
 /// - Codex only: form elicitation, so codex's native Plan-mode
 ///   `request_user_input` is delivered as `elicitation/create` (handled by
 ///   `handle_elicitation_request`) instead of being silently answered `{}`.
@@ -2598,12 +2614,18 @@ fn claude_raw_sdk_session_meta(
 ///   `claude_chunk_parent_tool_use_id`). The adapter checks strictly
 ///   `=== true`, and a pre-0.63 binary ignores the unknown key, so this is
 ///   inert everywhere it isn't understood.
-fn build_client_capabilities(agent_type: AgentType) -> ClientCapabilities {
-    let mut client_capabilities = ClientCapabilities::new().terminal(true).fs(
-        FileSystemCapabilities::new()
-            .read_text_file(true)
-            .write_text_file(true),
-    );
+fn build_client_capabilities(
+    agent_type: AgentType,
+    host_tools: HostToolsPolicy,
+) -> ClientCapabilities {
+    let mut client_capabilities = ClientCapabilities::new();
+    if host_tools.hosts_channels() {
+        client_capabilities = client_capabilities.terminal(true).fs(
+            FileSystemCapabilities::new()
+                .read_text_file(true)
+                .write_text_file(true),
+        );
+    }
     if agent_type == AgentType::Codex {
         client_capabilities = client_capabilities
             .elicitation(ElicitationCapabilities::new().form(ElicitationFormCapabilities::new()));
@@ -3053,6 +3075,7 @@ async fn inject_codeg_mcp(
     parent_connection_id: &str,
     working_dir: &Path,
     tasks_enabled: bool,
+    host_tools: HostToolsPolicy,
 ) -> Option<CompanionInjection> {
     // codeg-mcp carries BOTH the delegation tools and the live-feedback tool.
     // Inject it when EITHER feature is enabled; the `--features` arg tells the
@@ -3062,8 +3085,19 @@ async fn inject_codeg_mcp(
     // must get their reporting tools regardless of the settings toggles.
     let feedback_enabled = injection.feedback.is_enabled().await;
     let authoring = injection.authoring.snapshot().await;
+    // Delegation is a THIRD door into the same room as `fs/*` and `terminal/*`:
+    // `delegate_to_agent` has codeg spawn a second agent — in codeg's process
+    // tree, under ITS own (by default `Default`) policy — and hand its output
+    // back. A sandboxed agent that cannot read `.env` itself would just ask a
+    // sibling to read it. That defeats the boundary this switch advertises, for
+    // the same reason withholding only one of fs/terminal would, so `agent`
+    // withholds this group too. The other groups stay: they surface codeg's own
+    // state (feedback, ask, session info, task reporting), not arbitrary file
+    // or command execution on the user's machine.
+    let delegation_enabled =
+        injection.broker.config_snapshot().await.enabled && host_tools.hosts_channels();
     let flags = CompanionFeatureFlags {
-        delegation: injection.broker.config_snapshot().await.enabled,
+        delegation: delegation_enabled,
         feedback: feedback_enabled,
         ask: injection.ask.is_enabled().await,
         sessions: injection.sessions.is_enabled().await,
@@ -3286,6 +3320,7 @@ async fn run_connection(
     preferred_config_values: BTreeMap<String, String>,
     delegation_injection: Option<DelegationInjection>,
     fs_policy: FsAccessPolicy,
+    host_tools: HostToolsPolicy,
     // Connection-scoped agent stderr buffer, shared with the `with_debug`
     // callback installed by `build_agent`. Read only when a turn ends without
     // agent output, to attach evidence to the synthesized error.
@@ -3303,7 +3338,25 @@ async fn run_connection(
         TerminalRuntime::with_base_env(terminal_base_env).with_default_cwd(Some(cwd.clone())),
     );
     let cwd_string = cwd.to_string_lossy().to_string();
-    tracing::info!("[ACP] fs policy {}", fs_policy.describe());
+    // The connection's security posture in one place, so what a live session
+    // actually enforces is readable from the log rather than inferred.
+    tracing::info!(
+        "[ACP] fs policy {} | host tools {}",
+        fs_policy.describe(),
+        host_tools.describe()
+    );
+    // `strict` reads as a containment boundary and is not one while codeg also
+    // advertises `terminal`: an agent refused a read just `cat`s the file
+    // through the shell codeg runs for it (empirically what grok does). Say so
+    // rather than letting the knob's name do the promising.
+    if fs_policy.confines_reads() && host_tools.hosts_channels() {
+        tracing::warn!(
+            "[ACP] {FS_POLICY_ENV} confines the fs channel but codeg still advertises \
+             `terminal`, so an agent reaches the same paths through a shell — this is \
+             not a containment boundary. Set {HOST_TOOLS_ENV}=agent to hand file access \
+             and commands back to the agent, where its own sandbox applies."
+        );
+    }
     let file_system_runtime = Arc::new(FileSystemRuntime::with_policy(fs_policy));
 
     let conn_id = connection_id.clone();
@@ -3393,6 +3446,9 @@ async fn run_connection(
                 async move |req: ReadTextFileRequest,
                             responder: Responder<ReadTextFileResponse>,
                             _cx: ConnectionTo<Agent>| {
+                    if !host_tools.hosts_channels() {
+                        return refuse_unadvertised_channel(responder, "fs/read_text_file");
+                    }
                     respond_file_system_request(responder, runtime.read_text_file(req).await)?;
                     Ok(())
                 }
@@ -3405,6 +3461,9 @@ async fn run_connection(
                 async move |req: WriteTextFileRequest,
                             responder: Responder<WriteTextFileResponse>,
                             _cx: ConnectionTo<Agent>| {
+                    if !host_tools.hosts_channels() {
+                        return refuse_unadvertised_channel(responder, "fs/write_text_file");
+                    }
                     respond_file_system_request(responder, runtime.write_text_file(req).await)?;
                     Ok(())
                 }
@@ -3417,6 +3476,9 @@ async fn run_connection(
                 async move |req: CreateTerminalRequest,
                             responder: Responder<CreateTerminalResponse>,
                             _cx: ConnectionTo<Agent>| {
+                    if !host_tools.hosts_channels() {
+                        return refuse_unadvertised_channel(responder, "terminal/create");
+                    }
                     respond_terminal_request(responder, runtime.create_terminal(req).await)?;
                     Ok(())
                 }
@@ -3429,6 +3491,9 @@ async fn run_connection(
                 async move |req: TerminalOutputRequest,
                             responder: Responder<TerminalOutputResponse>,
                             _cx: ConnectionTo<Agent>| {
+                    if !host_tools.hosts_channels() {
+                        return refuse_unadvertised_channel(responder, "terminal/output");
+                    }
                     respond_terminal_request(responder, runtime.terminal_output(req).await)?;
                     Ok(())
                 }
@@ -3441,6 +3506,12 @@ async fn run_connection(
                 async move |req: WaitForTerminalExitRequest,
                             responder: Responder<WaitForTerminalExitResponse>,
                             cx: ConnectionTo<Agent>| {
+                    if !host_tools.hosts_channels() {
+                        // Refuse INLINE, before the spawn below: there is no
+                        // terminal to wait on, so answering immediately is
+                        // correct and keeps the refusal off the spawn path.
+                        return refuse_unadvertised_channel(responder, "terminal/wait_for_exit");
+                    }
                     // `terminal/wait_for_exit` blocks until the command exits,
                     // and sacp awaits request handlers INSIDE its single
                     // dispatch loop ("the loop awaits the handler to completion
@@ -3478,6 +3549,9 @@ async fn run_connection(
                 async move |req: KillTerminalRequest,
                             responder: Responder<KillTerminalResponse>,
                             _cx: ConnectionTo<Agent>| {
+                    if !host_tools.hosts_channels() {
+                        return refuse_unadvertised_channel(responder, "terminal/kill");
+                    }
                     respond_terminal_request(responder, runtime.kill_terminal(req).await)?;
                     Ok(())
                 }
@@ -3490,6 +3564,9 @@ async fn run_connection(
                 async move |req: ReleaseTerminalRequest,
                             responder: Responder<ReleaseTerminalResponse>,
                             _cx: ConnectionTo<Agent>| {
+                    if !host_tools.hosts_channels() {
+                        return refuse_unadvertised_channel(responder, "terminal/release");
+                    }
                     respond_terminal_request(responder, runtime.release_terminal(req).await)?;
                     Ok(())
                 }
@@ -3568,7 +3645,7 @@ async fn run_connection(
             let agent_name_for_log = registry::get_agent_meta(agent_type).name;
 
             let init_request = InitializeRequest::new(ProtocolVersion::LATEST)
-                .client_capabilities(build_client_capabilities(agent_type));
+                .client_capabilities(build_client_capabilities(agent_type, host_tools));
             // Bound the Initialize handshake so an outdated / incompatible
             // cached binary that never responds can't leave the frontend
             // stuck on "Connecting...". A healthy agent answers in <1s; we
@@ -3732,7 +3809,15 @@ async fn run_connection(
                     // task_progress / task_complete tool group.
                     let tasks_enabled =
                         { state.read().await.owner_window_label == "work_task" };
-                    inject_codeg_mcp(&mut mcp_servers, inj, &conn_id, &cwd, tasks_enabled).await
+                    inject_codeg_mcp(
+                        &mut mcp_servers,
+                        inj,
+                        &conn_id,
+                        &cwd,
+                        tasks_enabled,
+                        host_tools,
+                    )
+                    .await
                 } else {
                     None
                 }
@@ -4927,6 +5012,34 @@ fn respond_terminal_request<T: sacp::JsonRpcResponse>(
         Ok(response) => responder.respond(response),
         Err(error) => responder.respond_with_error(error.into_rpc_error()),
     }
+}
+
+/// Refuse a channel this launch never advertised
+/// ([`HostToolsPolicy::Agent`], #436). Withholding the capability is a
+/// DECLARATION; a non-conforming agent can still call the method, and if codeg
+/// then served it the whole switch would be a suggestion — the operation would
+/// land back in codeg's process, outside the agent's sandbox, which is exactly
+/// the bug. `method_not_found` is the honest wire answer: as far as this
+/// connection is concerned the method does not exist, which is what the agent
+/// was told on Initialize.
+fn refuse_unadvertised_channel<T: sacp::JsonRpcResponse>(
+    responder: Responder<T>,
+    method: &str,
+) -> Result<(), sacp::Error> {
+    tracing::warn!(
+        "[ACP] refusing {method}: {HOST_TOOLS_ENV}=agent, so this channel was never \
+         advertised — the agent must use its own (sandboxable) tools"
+    );
+    responder.respond_with_error(unadvertised_channel_error(method))
+}
+
+/// The error [`refuse_unadvertised_channel`] answers with. Split out because a
+/// `Responder` cannot be built outside a live connection, so this is the part
+/// of the refusal a unit test can pin; the wiring itself is covered end-to-end.
+fn unadvertised_channel_error(method: &str) -> sacp::Error {
+    sacp::Error::method_not_found().data(format!(
+        "codeg does not host {method} for this agent ({HOST_TOOLS_ENV}=agent)"
+    ))
 }
 
 fn respond_file_system_request<T: sacp::JsonRpcResponse>(
@@ -10320,7 +10433,8 @@ mod tests {
         // Serialize to inspect the wire shape — `_meta` is the serde rename
         // and the exact key path the adapters read.
         let caps_of = |agent: AgentType| {
-            serde_json::to_value(build_client_capabilities(agent)).expect("caps serialize")
+            serde_json::to_value(build_client_capabilities(agent, HostToolsPolicy::Default))
+                .expect("caps serialize")
         };
 
         // Claude Code: subagent-transcript opt-in (strict boolean true), and
@@ -10343,6 +10457,99 @@ mod tests {
         assert!(other.get("elicitation").is_none());
         assert_eq!(other["terminal"], serde_json::Value::Bool(true));
         assert_eq!(other["fs"]["readTextFile"], serde_json::Value::Bool(true));
+    }
+
+    #[test]
+    fn host_tools_agent_withholds_both_execution_channels() {
+        let caps_of = |agent: AgentType, host_tools: HostToolsPolicy| {
+            serde_json::to_value(build_client_capabilities(agent, host_tools))
+                .expect("caps serialize")
+        };
+
+        // #436: the whole point. An agent told codeg hosts neither channel
+        // does its own reads and runs its own shell, so its OS sandbox — the
+        // only control still working under `grok agent stdio` — covers them.
+        // BOTH must go: leaving either advertised hands the agent a way back
+        // into codeg's unsandboxed process for the same file.
+        //
+        // `ClientCapabilities` serializes its unset fields as explicit `false`
+        // rather than omitting them, so assert THAT shape — not absence. The
+        // two are equivalent on the wire, verified against grok 1.0.0 under a
+        // kernel `deny`: sending `{fs:{readTextFile:false,…},terminal:false}`
+        // produced the same outcome as omitting the keys entirely (local read →
+        // `EPERM`, every shell fallback blocked, `FsViolation` audited).
+        let withheld = caps_of(AgentType::Grok, HostToolsPolicy::Agent);
+        assert_eq!(withheld["terminal"], serde_json::Value::Bool(false));
+        assert_eq!(withheld["fs"]["readTextFile"], serde_json::Value::Bool(false));
+        assert_eq!(
+            withheld["fs"]["writeTextFile"],
+            serde_json::Value::Bool(false)
+        );
+
+        // Default is untouched — this is opt-in, and a regression here would
+        // silently break every agent's terminal.
+        let hosted = caps_of(AgentType::Grok, HostToolsPolicy::Default);
+        assert_eq!(hosted["terminal"], serde_json::Value::Bool(true));
+        assert_eq!(hosted["fs"]["readTextFile"], serde_json::Value::Bool(true));
+        assert_eq!(hosted["fs"]["writeTextFile"], serde_json::Value::Bool(true));
+
+        // The per-agent gates are about a DIFFERENT axis (which optional
+        // protocol surfaces each adapter understands) and must survive the
+        // withholding — dropping codex's elicitation would strand its Plan-mode
+        // `request_user_input`, and dropping claude's `_meta` would silently
+        // turn subagent transcripts back off.
+        let codex = caps_of(AgentType::Codex, HostToolsPolicy::Agent);
+        assert!(codex.get("elicitation").is_some());
+        assert_eq!(codex["terminal"], serde_json::Value::Bool(false));
+        let claude = caps_of(AgentType::ClaudeCode, HostToolsPolicy::Agent);
+        assert_eq!(
+            claude["_meta"]["subagent-transcript"],
+            serde_json::Value::Bool(true)
+        );
+        assert_eq!(claude["fs"]["readTextFile"], serde_json::Value::Bool(false));
+    }
+
+    #[test]
+    fn a_withheld_channel_is_refused_as_method_not_found() {
+        // Every channel codeg stops advertising must also stop being SERVED.
+        // Advertisement is a declaration; an agent that calls the method anyway
+        // (or a future adapter that ignores client capabilities) would otherwise
+        // land the operation back in codeg's unsandboxed process — the bug.
+        for method in [
+            "fs/read_text_file",
+            "fs/write_text_file",
+            "terminal/create",
+            "terminal/output",
+            "terminal/wait_for_exit",
+            "terminal/kill",
+            "terminal/release",
+        ] {
+            let error = unadvertised_channel_error(method);
+            assert_eq!(error.code, sacp::Error::method_not_found().code);
+            let text = error.to_string();
+            // The knob has to be named: a bare "Method not found" on a channel
+            // that worked yesterday reads as a codeg bug, not as a setting.
+            assert!(text.contains(method), "{text}");
+            assert!(text.contains(HOST_TOOLS_ENV), "{text}");
+        }
+    }
+
+    #[test]
+    fn strict_fs_policy_is_only_a_boundary_once_the_terminal_is_withheld() {
+        // Pins the condition behind the connect-time warning: `strict` gates
+        // reads, but that gate is walkable through a shell for as long as codeg
+        // serves one. The two knobs are orthogonal — this asserts the predicate
+        // pair the warning keys off, so the warning can't silently stop firing.
+        let strict = FsAccessPolicy::strict(Path::new("/workspace"));
+        assert!(strict.confines_reads());
+        assert!(HostToolsPolicy::Default.hosts_channels());
+        assert!(!HostToolsPolicy::Agent.hosts_channels());
+
+        // The default policy leaves reads open, so there is no false promise to
+        // warn about — only writes are rooted.
+        let permissive =
+            FsAccessPolicy::permissive(Path::new("/workspace"), AgentType::Grok, &BTreeMap::new());
+        assert!(!permissive.confines_reads());
     }
 
     #[test]
@@ -13370,6 +13577,7 @@ mod tests {
             "parent-conn",
             std::path::Path::new("/tmp"),
             false,
+            HostToolsPolicy::Default,
         )
         .await;
 
@@ -13446,6 +13654,43 @@ mod tests {
         assert!(disabled_builtins.is_empty());
 
         hydrate(&[]);
+    }
+
+    #[test]
+    fn host_tools_agent_also_withholds_the_delegation_group() {
+        // `delegate_to_agent` is the third door into the room `fs/*` and
+        // `terminal/*` open: it has codeg spawn a SECOND agent, in codeg's
+        // process tree under that agent's own policy, and relays its output
+        // back. Without this gate a sandboxed agent that cannot read `.env`
+        // itself just asks a sibling to read it, and the switch's promise is
+        // false. This pins the exact boolean `inject_codeg_mcp` computes.
+        let delegation_for = |broker_enabled: bool, host_tools: HostToolsPolicy| {
+            broker_enabled && host_tools.hosts_channels()
+        };
+        assert!(delegation_for(true, HostToolsPolicy::Default));
+        assert!(!delegation_for(true, HostToolsPolicy::Agent));
+        // The settings toggle still wins when it is the one saying no.
+        assert!(!delegation_for(false, HostToolsPolicy::Default));
+
+        // With delegation the only enabled group, withholding it must skip the
+        // companion entirely rather than launch it with an empty `--features`
+        // (which `CompanionFeatures::parse` would see as absent and default
+        // back to delegation-only — re-opening the hole).
+        let mut flags = CompanionFeatureFlags {
+            delegation: delegation_for(true, HostToolsPolicy::Agent),
+            ..CompanionFeatureFlags::default()
+        };
+        assert_eq!(companion_features_arg(flags), None);
+
+        // But the groups that only surface codeg's OWN state keep working —
+        // they execute nothing on the user's machine, so withholding them
+        // would cost function for no boundary.
+        flags.ask = true;
+        flags.feedback = true;
+        assert_eq!(
+            companion_features_arg(flags),
+            Some("feedback,ask".to_string())
+        );
     }
 
     // ─── companion_features_arg: inject/skip decision + --features value ──

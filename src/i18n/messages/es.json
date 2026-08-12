@@ -613,6 +613,10 @@
     "emptyNoAgent": "No hay agentes disponibles.",
     "configManagement": "Gestión de configuración",
     "envVars": "Variables de entorno",
+    "hostTools": {
+      "label": "Dejar que el agente gestione archivos y comandos",
+      "description": "codeg deja de atender el acceso a archivos y los comandos de terminal, de modo que el agente los ejecuta en su propio proceso, donde sí se aplican su sandbox y sus reglas de permisos. También se desactiva la delegación a otros agentes, ya que devolvería ese mismo trabajo a codeg. codeg no añade ningún sandbox propio, así que actívalo solo si el agente tiene uno configurado."
+    },
     "nativeJsonConfig": "Configuración JSON nativa",
     "modelHintDefault": "Déjalo vacío para usar el modelo predeterminado del sistema.",
     "generalConfigDescriptionClaude": "Admite configuración rápida de API URL, API Key y modelos de Claude, y sincroniza con la configuración JSON nativa.",

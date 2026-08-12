@@ -613,6 +613,10 @@
     "emptyNoAgent": "暂无可用 Agent。",
     "configManagement": "配置管理",
     "envVars": "环境变量",
+    "hostTools": {
+      "label": "由 Agent 自行处理文件与命令",
+      "description": "codeg 不再代为提供文件访问和终端命令，改由 Agent 在自己的进程中执行——只有这样它自带的沙箱与权限规则才会生效。同时会关闭向其他 Agent 委托，否则同样的操作又会绕回 codeg 执行。codeg 本身不提供沙箱，因此请仅在 Agent 已配置沙箱时开启。"
+    },
     "nativeJsonConfig": "原生 JSON 配置",
     "modelHintDefault": "留空则使用系统默认模型。",
     "generalConfigDescriptionClaude": "支持 API URL、API Key 与 Claude 模型快捷配置，并与原生 JSON 配置联动。",
