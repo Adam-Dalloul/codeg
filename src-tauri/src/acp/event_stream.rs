@@ -502,11 +502,13 @@ fn content_block_size(block: &crate::models::message::ContentBlock) -> usize {
             tool_use_id,
             tool_name,
             input_preview,
+            status,
             meta,
         } => {
             96 + opt_str_size(tool_use_id)
                 + json_str_len(tool_name)
                 + opt_str_size(input_preview)
+                + opt_str_size(status)
                 + opt_json_size(meta)
         }
         CB::ToolResult {
@@ -975,6 +977,7 @@ mod tests {
                     tool_use_id: Some("toolu_01ABC".into()),
                     tool_name: "Bash".into(),
                     input_preview: Some("{\"command\":\"pnpm build\"}".into()),
+                    status: None,
                     meta: Some(serde_json::json!({"codeg.delegation": {"status": "running"}})),
                 },
                 ContentBlock::ToolResult {

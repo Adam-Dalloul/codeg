@@ -490,8 +490,8 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             name: "Cline",
             description: "Autonomous coding agent CLI",
             distribution: AgentDistribution::Npx {
-                version: "3.0.50",
-                package: "cline@3.0.50",
+                version: "3.0.52",
+                package: "cline@3.0.52",
                 cmd: "cline",
                 args: &["--acp"],
                 env: &[],
@@ -504,39 +504,39 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             name: "OpenCode",
             description: "The open source coding agent",
             distribution: AgentDistribution::Binary {
-                version: "1.18.14",
+                version: "1.18.15",
                 cmd: "opencode",
                 args: &["acp"],
                 env: &[],
                 platforms: &[
                     PlatformBinary {
                         platform: "darwin-aarch64",
-                        url: "https://github.com/anomalyco/opencode/releases/download/v1.18.14/opencode-darwin-arm64.zip",
+                        url: "https://github.com/anomalyco/opencode/releases/download/v1.18.15/opencode-darwin-arm64.zip",
                         sha256: None,
                     },
                     PlatformBinary {
                         platform: "darwin-x86_64",
-                        url: "https://github.com/anomalyco/opencode/releases/download/v1.18.14/opencode-darwin-x64.zip",
+                        url: "https://github.com/anomalyco/opencode/releases/download/v1.18.15/opencode-darwin-x64.zip",
                         sha256: None,
                     },
                     PlatformBinary {
                         platform: "linux-aarch64",
-                        url: "https://github.com/anomalyco/opencode/releases/download/v1.18.14/opencode-linux-arm64.tar.gz",
+                        url: "https://github.com/anomalyco/opencode/releases/download/v1.18.15/opencode-linux-arm64.tar.gz",
                         sha256: None,
                     },
                     PlatformBinary {
                         platform: "linux-x86_64",
-                        url: "https://github.com/anomalyco/opencode/releases/download/v1.18.14/opencode-linux-x64.tar.gz",
+                        url: "https://github.com/anomalyco/opencode/releases/download/v1.18.15/opencode-linux-x64.tar.gz",
                         sha256: None,
                     },
                     PlatformBinary {
                         platform: "windows-aarch64",
-                        url: "https://github.com/anomalyco/opencode/releases/download/v1.18.14/opencode-windows-arm64.zip",
+                        url: "https://github.com/anomalyco/opencode/releases/download/v1.18.15/opencode-windows-arm64.zip",
                         sha256: None,
                     },
                     PlatformBinary {
                         platform: "windows-x86_64",
-                        url: "https://github.com/anomalyco/opencode/releases/download/v1.18.14/opencode-windows-x64.zip",
+                        url: "https://github.com/anomalyco/opencode/releases/download/v1.18.15/opencode-windows-x64.zip",
                         sha256: None,
                     },
                 ],
@@ -586,8 +586,8 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             name: "CodeBuddy",
             description: "Tencent Cloud's official AI coding assistant (ACP)",
             distribution: AgentDistribution::Npx {
-                version: "2.132.0",
-                package: "@tencent-ai/codebuddy-code@2.132.0",
+                version: "2.133.1",
+                package: "@tencent-ai/codebuddy-code@2.133.1",
                 cmd: "codebuddy",
                 args: &["--acp"],
                 env: &[],
@@ -600,8 +600,8 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             name: "Kimi Code",
             description: "Moonshot AI's official CLI coding assistant (ACP)",
             distribution: AgentDistribution::Npx {
-                version: "0.33.0",
-                package: "@moonshot-ai/kimi-code@0.33.0",
+                version: "0.34.0",
+                package: "@moonshot-ai/kimi-code@0.34.0",
                 cmd: "kimi",
                 args: &["acp"],
                 env: &[],
@@ -656,20 +656,31 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             // (It couldn't live here anyway: the launch env is serialized as
             // leading `KEY=value` argv and sacp's `parse_env_var` only accepts
             // `[A-Za-z0-9_]` env names, which npm's `@scope:registry` key is not.)
+            //
+            // 1.0.0 changes ONE thing that reaches codeg without any code change
+            // here: its `initialize` now advertises `sessionCapabilities.resume`
+            // (0.2.118 advertised only `list`), so reconnecting to an existing
+            // Grok session takes `connect_agent`'s resume → load → new chain at
+            // the FIRST rung instead of the second. Verified live against the
+            // 1.0.0 binary: `session/resume` restores conversation context, its
+            // reply carries the `_meta["x.ai/sessionConfig"]` and per-model
+            // `models` that the composer's selectors and context ring read, and
+            // prompting straight after it works. It also skips `session/load`'s
+            // history replay, which codeg only drained to discard.
             distribution: AgentDistribution::Npx {
-                version: "0.2.118",
-                package: "@xai-official/grok@0.2.118",
+                version: "1.0.0",
+                package: "@xai-official/grok@1.0.0",
                 cmd: "grok",
                 // Only the ACP subcommand lives here. Grok's ROOT-level launch
                 // flags (`--no-auto-update` always, `--permission-mode <value>`
                 // only for a non-default permission mode) MUST precede this
-                // subcommand — `grok agent stdio` itself rejects them (verified
-                // against 0.2.94/0.2.99: it only accepts --debug/--debug-file/
+                // subcommand — `grok agent stdio` itself rejects them (re-verified
+                // against 1.0.0: it still only accepts --debug/--debug-file/
                 // --leader-socket) — so `build_agent` inserts them ahead of these
                 // args rather than appending after.
                 args: &["agent", "stdio"],
                 env: &[],
-                // `@xai-official/grok@0.2.118` declares `engines.node: ">=20"`;
+                // `@xai-official/grok@1.0.0` declares `engines.node: ">=20"`;
                 // surface that in preflight so Node 18 isn't silently accepted.
                 node_required: Some("20.0.0"),
             },
@@ -878,20 +889,20 @@ mod tests {
         );
         assert_npx_version(
             AgentType::Cline,
-            "3.0.50",
-            "cline@3.0.50",
+            "3.0.52",
+            "cline@3.0.52",
             Some("22.0.0"),
         );
         assert_npx_version(
             AgentType::CodeBuddy,
-            "2.132.0",
-            "@tencent-ai/codebuddy-code@2.132.0",
+            "2.133.1",
+            "@tencent-ai/codebuddy-code@2.133.1",
             Some("22.0.0"),
         );
         assert_npx_version(
             AgentType::KimiCode,
-            "0.33.0",
-            "@moonshot-ai/kimi-code@0.33.0",
+            "0.34.0",
+            "@moonshot-ai/kimi-code@0.34.0",
             Some("22.19.0"),
         );
         assert_npx_version(
@@ -903,11 +914,11 @@ mod tests {
         assert_npx_version(AgentType::Pi, "0.0.33", "pi-acp@0.0.33", Some("22.0.0"));
         assert_npx_version(
             AgentType::Grok,
-            "0.2.118",
-            "@xai-official/grok@0.2.118",
+            "1.0.0",
+            "@xai-official/grok@1.0.0",
             Some("20.0.0"),
         );
-        assert_binary_version(AgentType::OpenCode, "1.18.14", "/releases/download/v1.18.14/");
+        assert_binary_version(AgentType::OpenCode, "1.18.15", "/releases/download/v1.18.15/");
         // Hermes rides the community npm bridge (upstream retired its PyPI
         // channel at 0.19.0; see the registry entry). The npm package version
         // tracks the upstream version 1:1, and the pin must stay EXACT — the

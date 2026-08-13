@@ -37,13 +37,49 @@ import {
   type AdaptedMessage,
 } from "@/lib/adapters/ai-elements-adapter"
 import { getConversation } from "@/lib/api"
-import type { AgentType } from "@/lib/types"
+import { toolStatusUnsettled } from "@/lib/tool-call-lifecycle"
+import type { AgentType, MessageTurn } from "@/lib/types"
 import { cn } from "@/lib/utils"
 
 /** Re-parse cadence while the parent card says the child is still working. The
  *  child appends to its transcript continuously; this is cheap (one file parse)
  *  and stops the moment the card settles or the dialog closes. */
 const LIVE_REFRESH_MS = 2000
+
+/**
+ * Calls the transcript itself says are still working, per turn index.
+ *
+ * Reading a RUNNING session's file is exactly the case the adapter's "a
+ * `tool_use` with no `tool_result` means the conversation ended, so it
+ * completed" rule gets wrong — and here it doesn't even apply: the grok parser
+ * pairs every call with a placeholder result and backfills it, so an unfinished
+ * call arrives MATCHED and lands in the settled branch. The parser's own
+ * `status` is the only honest signal, and it is used affirmatively: absent (any
+ * other agent) or already terminal leaves the call exactly where it was.
+ *
+ * Gated on `live` by the caller — a child that was interrupted keeps whatever
+ * status it was last given, so once the parent card settles the transcript's
+ * stale `in_progress` must stop producing a spinner nothing will ever clear.
+ */
+function inProgressToolCallsByTurn(
+  turns: MessageTurn[]
+): Map<number, Set<string>> {
+  const out = new Map<number, Set<string>>()
+  turns.forEach((turn, i) => {
+    const pending = new Set<string>()
+    for (const block of turn.blocks) {
+      if (
+        block.type === "tool_use" &&
+        block.tool_use_id &&
+        toolStatusUnsettled(block.status)
+      ) {
+        pending.add(block.tool_use_id)
+      }
+    }
+    if (pending.size > 0) out.set(i, pending)
+  })
+  return out
+}
 
 interface Props {
   open: boolean
@@ -104,10 +140,15 @@ export function SubagentSessionDialog({
         const detail = await getConversation(agentType, sessionId)
         if (!mountedRef.current || seq !== seqRef.current) return
         setMessages(
-          adaptMessageTurns(detail.turns, {
-            attachedResources: sharedT("attachedResources"),
-            toolCallFailed: sharedT("toolCallFailed"),
-          })
+          adaptMessageTurns(
+            detail.turns,
+            {
+              attachedResources: sharedT("attachedResources"),
+              toolCallFailed: sharedT("toolCallFailed"),
+            },
+            undefined,
+            live ? inProgressToolCallsByTurn(detail.turns) : undefined
+          )
         )
         setError(null)
       } catch (err) {
@@ -123,7 +164,7 @@ export function SubagentSessionDialog({
         if (mountedRef.current && initial) setLoading(false)
       }
     },
-    [agentType, sessionId, sharedT]
+    [agentType, sessionId, sharedT, live]
   )
 
   useEffect(() => {

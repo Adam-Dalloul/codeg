@@ -740,11 +740,13 @@ export function MessageListView({
     const streamingIndices = new Set<number>()
     const inProgressToolCallIdsByIndex = new Map<number, Set<string>>()
     timelineTurns.forEach((item, i) => {
-      if (item.phase === "streaming") {
-        streamingIndices.add(i)
-        if (item.inProgressToolCallIds && item.inProgressToolCallIds.size > 0) {
-          inProgressToolCallIdsByIndex.set(i, item.inProgressToolCallIds)
-        }
+      if (item.phase === "streaming") streamingIndices.add(i)
+      // Not gated on the streaming phase: a PERSISTED turn of a conversation
+      // that is still running (viewer without the live stream) also carries
+      // in-flight calls, marked by the store from the backend's
+      // `in_flight_user_turn_id`. Both phases feed the same adapter knob.
+      if (item.inProgressToolCallIds && item.inProgressToolCallIds.size > 0) {
+        inProgressToolCallIdsByIndex.set(i, item.inProgressToolCallIds)
       }
     })
     const allAdapted = turnAdapter.adapt(

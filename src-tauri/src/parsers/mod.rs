@@ -599,6 +599,12 @@ pub fn infer_context_window_max_tokens(model: Option<&str>) -> Option<u64> {
         //   general -fast (grok-4-fast) → 2M
         // Default any unknown grok model to the conservative 256K rather than
         // guessing high.
+        //
+        // This is the LAST resort. Grok publishes every model's real window —
+        // `availableModels[]._meta.totalContextTokens` on the wire, and
+        // `models_cache.json` / a BYO `[model.<id>].context_window` on disk — so
+        // both the live path and `grok::build_detail` consult those first and
+        // only land here for a model nothing on this machine names.
         if normalized.contains("4.5") {
             return Some(500_000);
         }
@@ -608,7 +614,10 @@ pub fn infer_context_window_max_tokens(model: Option<&str>) -> Option<u64> {
         if normalized.contains("code") || normalized.contains("build") {
             return Some(256_000);
         }
-        if normalized.contains("fast") {
+        // The 2M lane is grok's OWN `-fast` line. `grok-composer-2.5-fast` is
+        // Cursor's Composer, merely offered in grok's model list, and shares
+        // none of that capacity — it takes the conservative default below.
+        if normalized.contains("fast") && !normalized.contains("composer") {
             return Some(2_000_000);
         }
         return Some(256_000);
@@ -1447,6 +1456,12 @@ mod tests {
         assert_eq!(
             infer_context_window_max_tokens(Some("grok-4-fast")),
             Some(2_000_000)
+        );
+        // Cursor's Composer rides in grok's model list; the "fast" in its name
+        // must NOT put it on grok's own 2M lane.
+        assert_eq!(
+            infer_context_window_max_tokens(Some("grok-composer-2.5-fast")),
+            Some(256_000)
         );
         assert_eq!(
             infer_context_window_max_tokens(Some("grok-7-experimental")),

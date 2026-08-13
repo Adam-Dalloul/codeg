@@ -85,12 +85,13 @@ export function TaskTranscriptDialog({
 }
 
 /**
- * Resolve the session's agent BEFORE the viewer mounts. The live-event parser
- * is fixed by the attach latch below and never re-attached (a late change
- * would drop buffered events), so guessing here would render live chunks with
- * the wrong renderer. A per-task override is definitive and instant;
- * otherwise one conversation read returns the agent recorded at dispatch,
- * with the folder's default agent covering a failed read.
+ * Resolve the session's agent BEFORE the viewer mounts. It selects the parser
+ * every live chunk is rendered with, and it is a per-task setting (stable
+ * across the task's generations), so resolving it once up front — rather than
+ * guessing and refining later — is what keeps chunks off the wrong renderer.
+ * A per-task override is definitive and instant; otherwise one conversation
+ * read returns the agent recorded at dispatch, with the folder's default agent
+ * covering a failed read.
  */
 function TaskAgentResolver({ task }: { task: WorkTask }) {
   const folders = useAppWorkspaceStore((s) => s.folders)
@@ -181,36 +182,65 @@ function TaskTranscriptBody({
     [rounds, t]
   )
 
-  // Latched at mount: attach only when the task is live *now*, and keep the
-  // attach until the dialog closes. Re-deriving per render would detach the
-  // instant the provider refetch flips the task to review — racing the final
-  // turn-complete event the bridge needs to promote the live reply — and a
-  // task that settled long ago must not attach at all (on web that would open
-  // a per-connection stream for a connection the backend no longer has).
-  const [attach] = useState(() => ({
-    id: isLive(task) ? task.connection_id : null,
-    // Agent as resolved at open; a late refinement must not re-attach — it
-    // would drop buffered events.
-    agentType,
-  }))
-  const attachId = attach.id
+  // The connection to stream from, tracked FORWARD ONLY.
+  //
+  // This used to be latched at mount, which silently downgraded the dialog to a
+  // persisted-transcript reader for its whole lifetime whenever the latch came
+  // up empty — and then every unfinished tool call of the running turn rendered
+  // as settled (a `get_delegation_status` blocking on its sub-agent showed a
+  // green ✓ for the entire wait). Three ways it came up empty, all while the
+  // board still shows the task as 进行中 or otherwise live:
+  //   - the 进行中 column is `preparing | running` but `isLive` is
+  //     `running | awaiting_input | merging`, so a re-run generation sitting in
+  //     `preparing` (its conversation_id survives from the previous run, so
+  //     "查看会话" IS offered) latched null;
+  //   - `begin_merge` clears `connection_id` in the same update that sets
+  //     `merging`, so opening in that interval latched null;
+  //   - a dialog held open across a generation boundary kept the previous
+  //     connection, which `on_turn_complete` has already disconnected.
+  //
+  // Plain re-derivation is NOT the fix either — that was the reason for the
+  // latch: the moment the provider flips the task to review we would detach and
+  // race the final turn-complete the bridge needs to promote the live reply,
+  // and a long-settled task must never attach at all (on web that opens a
+  // per-connection stream for a connection the backend no longer has). So the
+  // id only ever moves FORWARD onto a new live connection and never falls back
+  // to null. `attachId` starts null for a task that is not live, so a settled
+  // task still attaches to nothing.
+  const liveConnectionId = isLive(task) ? task.connection_id : null
+  const [attachId, setAttachId] = useState<string | null>(liveConnectionId)
+  if (liveConnectionId !== null && liveConnectionId !== attachId) {
+    // Adjusting state during render (the React-sanctioned form) rather than in
+    // an effect: the attach below must see the new id on this very render, not
+    // one commit later.
+    setAttachId(liveConnectionId)
+  }
   const taskId = task.id
   useEffect(() => {
-    const id = attachId
-    if (id == null) return
+    if (attachId == null) return
     attachDelegationChild({
-      connectionId: id,
-      parentConnectionId: id,
+      connectionId: attachId,
+      parentConnectionId: attachId,
       parentToolUseId: `work-task-${taskId}`,
-      agentType: attach.agentType,
+      // Agent as resolved before this body mounted. It is a per-task setting,
+      // stable across generations, so re-attaching never needs a fresh read.
+      agentType,
       // Unlike a real delegation child (attached the moment it spawns), this
       // viewer opens onto a turn already in progress — hydrate its state
       // before routing or the desktop firehose would only show whatever the
       // agent happens to emit next.
       hydrate: true,
     })
-    return () => detachDelegationChild(id)
-  }, [attachId, attach, taskId, attachDelegationChild, detachDelegationChild])
+    // Detaches the PREVIOUS connection when the id moves to a new generation,
+    // and the current one when the dialog closes.
+    return () => detachDelegationChild(attachId)
+  }, [
+    attachId,
+    taskId,
+    agentType,
+    attachDelegationChild,
+    detachDelegationChild,
+  ])
 
   return (
     <div className="flex h-full min-h-0 flex-col">

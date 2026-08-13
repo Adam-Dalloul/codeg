@@ -1052,6 +1052,7 @@ fn build_turns(
                         input_preview: bounded_json_preview(
                             &serde_json::json!({ "command": command }),
                         ),
+                        status: None,
                         meta: None,
                     },
                     ContentBlock::ToolResult {
@@ -1413,6 +1414,7 @@ fn decode_tool_call(
         tool_use_id: Some(id.clone()),
         tool_name: tool.name,
         input_preview: tool.input.as_ref().and_then(bounded_json_preview_ref),
+        status: None,
         meta: None,
     });
     blocks.push(ContentBlock::ToolResult {

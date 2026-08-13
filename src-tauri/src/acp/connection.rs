@@ -40,7 +40,7 @@ use crate::acp::terminal_runtime::{
     TerminalRuntime, TerminalRuntimeError, TerminalShellRuntimeConfig,
 };
 use crate::acp::types::{
-    AcpEvent, AvailableCommandInfo, ConnectionInfo, ConnectionStatus, GrokEffortSpec,
+    AcpEvent, AvailableCommandInfo, ConnectionInfo, ConnectionStatus, GrokModelSpec,
     PermissionOptionInfo, PlanEntryInfo, PromptCapabilitiesInfo, PromptInputBlock,
     SessionConfigBooleanInfo, SessionConfigKindInfo, SessionConfigOptionInfo,
     SessionConfigSelectGroupInfo, SessionConfigSelectInfo, SessionConfigSelectOptionInfo,
@@ -1791,11 +1791,12 @@ fn grok_effort_description(id: &str) -> Option<&'static str> {
 }
 
 /// Parse Grok's raw top-level `models` (from a session-establishment response)
-/// into a per-`modelId` reasoning-effort spec map. Absent `models` /
-/// `availableModels` → empty map (caller falls back to the flat
-/// `x.ai/sessionConfig` effort list). Missing `_meta` fields degrade gracefully
-/// (`supports=false` / `default=None` / `options=[]`).
-fn parse_grok_effort_specs(models: Option<&serde_json::Value>) -> HashMap<String, GrokEffortSpec> {
+/// into a per-`modelId` spec map: reasoning-effort capability plus the model's
+/// own context window. Absent `models` / `availableModels` → empty map (caller
+/// falls back to the flat `x.ai/sessionConfig` effort list). Missing `_meta`
+/// fields degrade gracefully (`supports=false` / `default=None` / `options=[]` /
+/// `context_window=None`).
+fn parse_grok_model_specs(models: Option<&serde_json::Value>) -> HashMap<String, GrokModelSpec> {
     let mut out = HashMap::new();
     let Some(list) = models
         .and_then(|m| m.get("availableModels"))
@@ -1839,10 +1840,14 @@ fn parse_grok_effort_specs(models: Option<&serde_json::Value>) -> HashMap<String
         }
         out.insert(
             model_id.to_string(),
-            GrokEffortSpec {
+            GrokModelSpec {
                 options,
                 default,
                 supports,
+                context_window: meta
+                    .and_then(|x| x.get("totalContextTokens"))
+                    .and_then(|v| v.as_u64())
+                    .filter(|window| *window > 0),
             },
         );
     }
@@ -1859,7 +1864,7 @@ fn parse_grok_effort_specs(models: Option<&serde_json::Value>) -> HashMap<String
 /// default (or the first option).
 fn build_grok_effort_option(
     model_id: &str,
-    specs: &HashMap<String, GrokEffortSpec>,
+    specs: &HashMap<String, GrokModelSpec>,
 ) -> Option<SessionConfigOptionInfo> {
     let spec = specs.get(model_id)?;
     if !spec.supports {
@@ -1919,7 +1924,7 @@ fn build_grok_effort_option(
 fn set_grok_effort_selector_for_model(
     opts: &mut Vec<SessionConfigOptionInfo>,
     model_id: &str,
-    specs: &HashMap<String, GrokEffortSpec>,
+    specs: &HashMap<String, GrokModelSpec>,
 ) {
     opts.retain(|o| o.id != GROK_EFFORT_OPTION_ID);
     if let Some(effort) = build_grok_effort_option(model_id, specs) {
@@ -1938,7 +1943,7 @@ fn set_grok_effort_selector_for_model(
 /// frontend code. Returns `None` when there is no usable sessionConfig.
 fn synthesize_grok_config_options(
     meta: Option<&serde_json::Map<String, serde_json::Value>>,
-    specs: &HashMap<String, GrokEffortSpec>,
+    specs: &HashMap<String, GrokModelSpec>,
 ) -> Option<Vec<SessionConfigOptionInfo>> {
     let options = meta?
         .get("x.ai/sessionConfig")?
@@ -2167,7 +2172,7 @@ async fn apply_grok_preferred_options(
     session_id: &SessionId,
     opts: &mut Vec<SessionConfigOptionInfo>,
     preferred_config_values: &BTreeMap<String, String>,
-    specs: &HashMap<String, GrokEffortSpec>,
+    specs: &HashMap<String, GrokModelSpec>,
 ) {
     // Model preference — a pure `set_model` (no effort override). On success we
     // also re-point the effort selector at the newly-preferred model (grok ships
@@ -2251,6 +2256,113 @@ async fn current_grok_model_id(state: &Arc<RwLock<SessionState>>) -> Option<Stri
     current_grok_model_id_from_opts(&opts)
 }
 
+/// Context window for the session's CURRENT Grok model. One state read, done at
+/// turn start — the answer only changes on a model switch, which cannot happen
+/// mid-turn.
+///
+/// Resolution order mirrors `parsers::grok::build_detail` so the live ring and
+/// the re-parsed history never disagree about the denominator: what Grok
+/// reported for the model at session establishment, then its on-disk catalog
+/// (which is where a BYO endpoint's declared window lives — that one is often
+/// absent from the wire), then the id-shaped heuristic.
+///
+/// `None` is a real outcome, not just "no model selector": a BYO endpoint is
+/// keyed by whatever id the user typed (`[model.<id>]` holds the upstream
+/// model's name), so an id like `deepseek-chat` can miss the wire, the catalog,
+/// and every heuristic family at once. [`grok_window_change_usage`] is what
+/// keeps that from stranding a previous model's window on screen.
+async fn grok_current_model_context_window(state: &Arc<RwLock<SessionState>>) -> Option<u64> {
+    let (model, reported) = {
+        let st = state.read().await;
+        let model = current_grok_model_id_from_opts(st.config_options.as_deref()?)?;
+        let reported = st
+            .grok_model_specs
+            .as_ref()
+            .and_then(|specs| specs.get(&model))
+            .and_then(|spec| spec.context_window);
+        (model, reported)
+    };
+    // Lock released: the catalog lookup below touches the filesystem.
+    reported.or_else(|| {
+        grok_offline_context_window(&model, &crate::parsers::grok::resolve_grok_home_dir())
+    })
+}
+
+/// The window for `model` when Grok didn't report one on the wire: its on-disk
+/// catalog first, then the id-shaped heuristic. Split out of
+/// [`grok_current_model_context_window`] so the resolution order is testable
+/// against a fixture home instead of the host's real `~/.grok`.
+fn grok_offline_context_window(model: &str, grok_home: &Path) -> Option<u64> {
+    crate::parsers::grok::grok_catalog_context_window(grok_home, model)
+        .or_else(|| crate::parsers::infer_context_window_max_tokens(Some(model)))
+}
+
+/// The live pair to re-emit at turn start because the DENOMINATOR moved — the
+/// user switched model between turns — or `None` when nothing needs re-keying.
+///
+/// Two cases, and the second is why this exists at all:
+///   * the new model has a window → carry the cumulative count forward onto it,
+///     so the ring doesn't keep dividing by the previous model's window until
+///     this turn's first token-bearing update;
+///   * the new model has NO resolvable window (a BYO id that the wire, the
+///     catalog and the heuristic all decline to size) → hand the denominator
+///     back with `size: 0`, the frontend's own "unknown window" sentinel
+///     (`rawLiveSize > 0 ? … : null`), which drops the ring to the re-parsed
+///     session stats. This is what stops the previous model's window from
+///     surviving indefinitely on a turn that never reports a token count.
+///
+/// Note `size: 0` and not `used: 0` — the frontend's `USAGE_UPDATE` reducer
+/// *drops* a zero-`used` update whenever it already holds a positive one (a rule
+/// that exists for Claude Code's synthetic `/context` responses), so clearing
+/// via zeros would strand every attached client on the stale value while the
+/// backend snapshot moved on.
+fn grok_window_change_usage(window: Option<u64>, last: Option<(u64, u64)>) -> Option<(u64, u64)> {
+    let (used, last_size) = last?;
+    let size = window.unwrap_or(0);
+    (size != last_size).then_some((used, size))
+}
+
+/// The `(used, size)` a Grok update moves the context ring to, or `None` when
+/// there is nothing new to report.
+///
+/// Grok emits no ACP `usage_update` at all; it reports a CUMULATIVE token count
+/// for the session in the OUTER `params._meta.totalTokens` of ordinary
+/// `session/update` notifications (the same number
+/// `parsers::grok::GrokTurnMeta` folds into each turn's `usage.input_tokens`).
+/// That count IS the context "used", so pairing it with the model's window fills
+/// the composer ring live — previously it only moved once a turn had been
+/// written to disk and re-parsed.
+///
+/// `last` suppresses the repeats: the count rides nearly every chunk, but steps
+/// only a handful of times per turn. It keys on the WINDOW too, so a model
+/// switch still re-emits while the count sits still.
+///
+/// An unresolvable window reports `size: 0` rather than going silent — the
+/// frontend reads that as "unknown window" and sizes the ring from the re-parsed
+/// session stats, while the live count still tracks. Going silent instead would
+/// freeze whatever pair was last emitted (see [`grok_window_change_usage`]).
+fn grok_live_usage_step(
+    dispatch: &Dispatch,
+    agent_type: AgentType,
+    context_window: Option<u64>,
+    last: Option<(u64, u64)>,
+) -> Option<(u64, u64)> {
+    if agent_type != AgentType::Grok {
+        return None;
+    }
+    let size = context_window.unwrap_or(0);
+    let Dispatch::Notification(notification) = dispatch else {
+        return None;
+    };
+    let used = notification
+        .params
+        .get("_meta")?
+        .get("totalTokens")?
+        .as_u64()
+        .filter(|used| *used > 0)?;
+    (Some((used, size)) != last).then_some((used, size))
+}
+
 /// Route a composer config-option change for Grok. Both live selectors go
 /// through `session/set_model`: the model selector switches the model, and the
 /// reasoning-effort selector re-sends the current model with an
@@ -2293,7 +2405,7 @@ async fn set_grok_config_option(
         Ok(()) => {
             let (current, specs) = {
                 let g = state.read().await;
-                (g.config_options.clone(), g.grok_effort_specs.clone())
+                (g.config_options.clone(), g.grok_model_specs.clone())
             };
             if let Some(mut opts) = current {
                 if let Some(SessionConfigKindInfo::Select(sel)) = opts
@@ -2370,19 +2482,19 @@ async fn apply_and_emit_session_config_options(
     emitter: &EventEmitter,
     agent_type: AgentType,
     grok_meta: Option<&serde_json::Map<String, serde_json::Value>>,
-    grok_effort_specs: Option<&HashMap<String, GrokEffortSpec>>,
+    grok_model_specs: Option<&HashMap<String, GrokModelSpec>>,
     preferred_mode_id: Option<&str>,
     preferred_config_values: &BTreeMap<String, String>,
     initial_config_options: Vec<SessionConfigOption>,
 ) {
     if agent_type == AgentType::Grok {
-        let specs = grok_effort_specs.cloned().unwrap_or_default();
+        let specs = grok_model_specs.cloned().unwrap_or_default();
         if let Some(mut opts) = synthesize_grok_config_options(grok_meta, &specs) {
             // Cache the per-model effort map so a later model switch can rebuild
             // the effort selector for the target model (grok ships it only at
             // session birth). `None` when empty keeps the switch path on the
             // flat-fallback branch.
-            state.write().await.grok_effort_specs = (!specs.is_empty()).then(|| specs.clone());
+            state.write().await.grok_model_specs = (!specs.is_empty()).then(|| specs.clone());
             let session_id = session.session_id().clone();
             apply_grok_preferred_options(
                 cx,
@@ -3702,8 +3814,8 @@ async fn run_connection(
                             };
                             // Opportunistic: grok may include per-model effort data
                             // on resume; absent ⇒ empty specs ⇒ flat fallback.
-                            let grok_effort_specs = (agent_type == AgentType::Grok)
-                                .then(|| parse_grok_effort_specs(grok_models_raw.as_ref()));
+                            let grok_model_specs = (agent_type == AgentType::Grok)
+                                .then(|| parse_grok_model_specs(grok_models_raw.as_ref()));
                             let mut session = cx.attach_session(new_resp, Default::default())?;
 
                             // No drain: session/resume does not replay history,
@@ -3728,7 +3840,7 @@ async fn run_connection(
                                 &emitter_clone,
                                 agent_type,
                                 grok_meta.as_ref(),
-                                grok_effort_specs.as_ref(),
+                                grok_model_specs.as_ref(),
                                 preferred_mode_id.as_deref(),
                                 &preferred_config_values,
                                 initial_config_options.unwrap_or_default(),
@@ -4100,8 +4212,8 @@ async fn run_connection(
                         } else {
                             None
                         };
-                        let grok_effort_specs = (agent_type == AgentType::Grok)
-                            .then(|| parse_grok_effort_specs(grok_models_raw.as_ref()));
+                        let grok_model_specs = (agent_type == AgentType::Grok)
+                            .then(|| parse_grok_model_specs(grok_models_raw.as_ref()));
                         let mut session = cx.attach_session(new_resp, Default::default())?;
                         // Same conversation, new agent session: link the fresh
                         // transcript to the one the failed load was for, so the
@@ -4128,7 +4240,7 @@ async fn run_connection(
                             &emitter_clone,
                             agent_type,
                             grok_meta.as_ref(),
-                            grok_effort_specs.as_ref(),
+                            grok_model_specs.as_ref(),
                             preferred_mode_id.as_deref(),
                             &preferred_config_values,
                             initial_config_options.unwrap_or_default(),
@@ -4190,8 +4302,8 @@ async fn run_connection(
                 } else {
                     None
                 };
-                let grok_effort_specs = (agent_type == AgentType::Grok)
-                    .then(|| parse_grok_effort_specs(grok_models_raw.as_ref()));
+                let grok_model_specs = (agent_type == AgentType::Grok)
+                    .then(|| parse_grok_model_specs(grok_models_raw.as_ref()));
                 let mut session = cx.attach_session(new_resp, Default::default())?;
                 record_transcript_header(agent_type, &sid, &cwd.to_string_lossy());
                 emit_with_state(
@@ -4210,7 +4322,7 @@ async fn run_connection(
                     &emitter_clone,
                     agent_type,
                     grok_meta.as_ref(),
-                    grok_effort_specs.as_ref(),
+                    grok_model_specs.as_ref(),
                     preferred_mode_id.as_deref(),
                     &preferred_config_values,
                     initial_config_options.unwrap_or_default(),
@@ -5744,8 +5856,8 @@ async fn handle_fork_or_exit(
         None
     };
     // Opportunistic: grok may carry per-model effort data on a fork response.
-    let grok_effort_specs =
-        (agent_type == AgentType::Grok).then(|| parse_grok_effort_specs(fork_models_raw.as_ref()));
+    let grok_model_specs =
+        (agent_type == AgentType::Grok).then(|| parse_grok_model_specs(fork_models_raw.as_ref()));
     let mut session = cx.attach_session(new_resp, Default::default())?;
 
     // A fork is a new session id, hence a new transcript file. Its history
@@ -5768,7 +5880,7 @@ async fn handle_fork_or_exit(
         emitter,
         agent_type,
         grok_meta.as_ref(),
-        grok_effort_specs.as_ref(),
+        grok_model_specs.as_ref(),
         None,
         &BTreeMap::new(),
         initial_config_options.unwrap_or_default(),
@@ -6526,6 +6638,23 @@ async fn run_conversation_loop<'a>(
                 // background children legitimately span turns.
                 cb_state.grok_progress_eligible.clear();
                 cb_state.grok_pending_spawn_ids.clear();
+                // Grok's context ring needs the active model's window paired
+                // with the cumulative token count riding each update. Resolve it
+                // once here (the model can't change mid-turn) so the per-update
+                // peek below never touches the state lock. A switch since the
+                // last turn changes the denominator, so re-key the live pair to
+                // the new window right away rather than leaving the previous
+                // model's ring on screen until this turn's first token count.
+                if agent_type == AgentType::Grok {
+                    let window = grok_current_model_context_window(state).await;
+                    cb_state.grok_turn_context_window = window;
+                    if let Some((used, size)) =
+                        grok_window_change_usage(window, cb_state.grok_last_usage)
+                    {
+                        cb_state.grok_last_usage = Some((used, size));
+                        emit_with_state(state, emitter, AcpEvent::UsageUpdate { used, size }).await;
+                    }
+                }
 
                 // Read updates until turn completes.
                 // We must also listen for commands (e.g. RespondPermission)
@@ -6566,6 +6695,26 @@ async fn run_conversation_loop<'a>(
                                     // isn't misclassified as `"empty"` at turn end.
                                     if grok_ext_notification_is_turn_output(&dispatch, agent_type) {
                                         probe.saw_agent_output = true;
+                                    }
+                                    // Grok has no `usage_update` channel; its
+                                    // cumulative token count rides the outer
+                                    // `_meta` of ordinary updates. Peek it before
+                                    // the typed pipeline consumes the dispatch
+                                    // (which drops that `_meta`) so the composer
+                                    // ring tracks the turn as it streams.
+                                    if let Some((used, size)) = grok_live_usage_step(
+                                        &dispatch,
+                                        agent_type,
+                                        cb_state.grok_turn_context_window,
+                                        cb_state.grok_last_usage,
+                                    ) {
+                                        cb_state.grok_last_usage = Some((used, size));
+                                        emit_with_state(
+                                            state,
+                                            emitter,
+                                            AcpEvent::UsageUpdate { used, size },
+                                        )
+                                        .await;
                                     }
                                     if let Err(e) = MatchDispatch::new(dispatch)
                                         .if_notification(
@@ -8117,6 +8266,20 @@ struct CodeBuddyLiveState {
     /// (`subagent_finished` → BackgroundActivity) is unaffected — it targets
     /// promoted turns by design.
     grok_progress_eligible: HashSet<String>,
+    /// Context window of the model this Grok turn runs on, resolved ONCE at turn
+    /// start (`grok_current_model_context_window`) so the per-update usage peek
+    /// never takes the state lock on the streaming hot path. `None` for non-Grok
+    /// agents, and for a Grok model whose spec carried no `totalContextTokens`
+    /// — the ring then keeps falling back to the parsed per-turn stats.
+    grok_turn_context_window: Option<u64>,
+    /// Last `(used, size)` emitted as a live `UsageUpdate` on this connection.
+    /// Grok repeats its cumulative `totalTokens` on nearly every update (169 of
+    /// 189 in a real capture), so re-emitting each one would put a broadcast on
+    /// a per-chunk hot path for a number that changes a handful of times a turn.
+    /// The WINDOW is part of the key so a between-turn model switch re-emits
+    /// even when the token count hasn't moved yet — otherwise the ring would
+    /// keep dividing by the previous model's window.
+    grok_last_usage: Option<(u64, u64)>,
 }
 
 /// One announced-but-unpaired Grok `spawn_subagent` call. `description` /
@@ -10735,6 +10898,164 @@ mod tests {
         ));
     }
 
+    /// Grok's cumulative token count rides the OUTER `params._meta` of ordinary
+    /// updates — the only live context signal it offers, and one the typed
+    /// pipeline drops. The peek must read it there, hold its fire while the
+    /// number repeats, and stay silent without a window to divide by.
+    #[test]
+    fn grok_live_usage_step_reads_the_outer_meta_and_dedupes() {
+        let update = |meta: serde_json::Value| {
+            Dispatch::Notification(
+                UntypedMessage::new(
+                    "session/update",
+                    serde_json::json!({
+                        "sessionId": "s",
+                        "update": {
+                            "sessionUpdate": "agent_message_chunk",
+                            "content": {"type": "text", "text": "hi"}
+                        },
+                        "_meta": meta,
+                    }),
+                )
+                .unwrap(),
+            )
+        };
+        let streaming = update(serde_json::json!({"totalTokens": 4200, "agentTimestampMs": 3}));
+
+        assert_eq!(
+            grok_live_usage_step(&streaming, AgentType::Grok, Some(500_000), None),
+            Some((4200, 500_000))
+        );
+        // Same count again → nothing to say (the field rides nearly every chunk).
+        assert_eq!(
+            grok_live_usage_step(&streaming, AgentType::Grok, Some(500_000), Some((4200, 500_000))),
+            None
+        );
+        // A different prior value is a real step → emit.
+        assert_eq!(
+            grok_live_usage_step(&streaming, AgentType::Grok, Some(500_000), Some((3000, 500_000))),
+            Some((4200, 500_000))
+        );
+        // Same count but a NEW window (the user switched model between turns) →
+        // re-emit, or the ring would keep dividing by the old model's window.
+        assert_eq!(
+            grok_live_usage_step(&streaming, AgentType::Grok, Some(256_000), Some((4200, 500_000))),
+            Some((4200, 256_000))
+        );
+        // No resolvable window → still report the count, with the frontend's
+        // "unknown window" sentinel as the size, so the ring falls back to the
+        // parsed session stats instead of freezing on a previous model's window.
+        assert_eq!(
+            grok_live_usage_step(&streaming, AgentType::Grok, None, None),
+            Some((4200, 0))
+        );
+        assert_eq!(
+            grok_live_usage_step(&streaming, AgentType::Grok, None, Some((4200, 0))),
+            None
+        );
+        // `_meta` without the count, and a zero count, are both "no data".
+        assert_eq!(
+            grok_live_usage_step(
+                &update(serde_json::json!({"agentTimestampMs": 3})),
+                AgentType::Grok,
+                Some(500_000),
+                None
+            ),
+            None
+        );
+        assert_eq!(
+            grok_live_usage_step(
+                &update(serde_json::json!({"totalTokens": 0})),
+                AgentType::Grok,
+                Some(500_000),
+                None
+            ),
+            None
+        );
+        // Never fires for another agent — they have a real `usage_update`.
+        assert_eq!(
+            grok_live_usage_step(&streaming, AgentType::ClaudeCode, Some(500_000), None),
+            None
+        );
+    }
+
+    /// A model switch between turns moves the denominator, and the frontend's
+    /// reducer drops a `used == 0` update while it holds a positive one — so the
+    /// previous model's window has to be re-keyed at turn start, not cleared.
+    #[test]
+    fn grok_window_change_usage_rekeys_a_live_pair_to_the_new_window() {
+        // Same window (no switch) → nothing to do.
+        assert_eq!(
+            grok_window_change_usage(Some(500_000), Some((4200, 500_000))),
+            None
+        );
+        // Switched to a smaller-window model → carry the count, swap the window.
+        assert_eq!(
+            grok_window_change_usage(Some(256_000), Some((4200, 500_000))),
+            Some((4200, 256_000))
+        );
+        // Nothing emitted yet → nothing to re-key (the first real count will).
+        assert_eq!(grok_window_change_usage(Some(256_000), None), None);
+        // Switched to a BYO model nothing can size → relinquish the denominator
+        // with the "unknown window" sentinel. This is the case that would
+        // otherwise strand the previous model's window forever: no later update
+        // can correct it, and a zero-`used` clear would be dropped by the
+        // frontend reducer.
+        assert_eq!(
+            grok_window_change_usage(None, Some((4200, 500_000))),
+            Some((4200, 0))
+        );
+        // …and once relinquished, it stays relinquished (no event storm).
+        assert_eq!(grok_window_change_usage(None, Some((4200, 0))), None);
+        // Switching BACK to a sized model re-keys off the sentinel.
+        assert_eq!(
+            grok_window_change_usage(Some(500_000), Some((4200, 0))),
+            Some((4200, 500_000))
+        );
+    }
+
+    /// The offline half of the live resolver: Grok's own on-disk catalog, then
+    /// the id heuristic. A BYO endpoint is keyed by whatever id the user typed,
+    /// so this genuinely can come back empty — `grok_window_change_usage` is
+    /// what keeps that from stranding a stale window.
+    #[test]
+    fn grok_offline_context_window_falls_through_catalog_then_heuristic() {
+        let home = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            home.path().join("models_cache.json"),
+            r#"{"models":{"grok-4.5":{"info":{"context_window":500000}},
+                          "deepseek-chat":{"info":{"context_window":131072}}}}"#,
+        )
+        .expect("write catalog");
+        std::fs::write(
+            home.path().join("config.toml"),
+            "[model.\"my-byo\"]\nmodel = \"my-byo\"\ncontext_window = 64000\n",
+        )
+        .expect("write config");
+
+        // Catalog wins, including for a non-`grok` id.
+        assert_eq!(
+            grok_offline_context_window("deepseek-chat", home.path()),
+            Some(131_072)
+        );
+        // BYO block in config.toml is the second source.
+        assert_eq!(
+            grok_offline_context_window("my-byo", home.path()),
+            Some(64_000)
+        );
+        // Neither file names it, but the id is Grok-shaped → heuristic answers.
+        assert_eq!(
+            grok_offline_context_window("grok-9-unreleased", home.path()),
+            Some(256_000)
+        );
+        // Neither file names it AND the id belongs to no known family — the BYO
+        // case Codex flagged. `None` here is load-bearing, not a gap.
+        assert_eq!(
+            grok_offline_context_window("some-local-llama", home.path()),
+            None
+        );
+    }
+
     // ---- empty-turn diagnosis ----
 
     fn drop_err(msg: &str) -> String {
@@ -11439,6 +11760,7 @@ mod tests {
                     "modelId": "grok-4.5",
                     "name": "Grok 4.5",
                     "_meta": {
+                        "totalContextTokens": 500000,
                         "supportsReasoningEffort": true,
                         "reasoningEffort": "xhigh",
                         "reasoningEfforts": [
@@ -11458,28 +11780,38 @@ mod tests {
     }
 
     #[test]
-    fn parse_grok_effort_specs_reads_per_model_meta() {
-        let specs = parse_grok_effort_specs(Some(&grok_models_fixture()));
+    fn parse_grok_model_specs_reads_per_model_meta() {
+        let specs = parse_grok_model_specs(Some(&grok_models_fixture()));
         let g45 = specs.get("grok-4.5").expect("grok-4.5 present");
         assert!(g45.supports);
         assert_eq!(g45.default.as_deref(), Some("xhigh"));
         assert_eq!(g45.options.len(), 3);
         assert_eq!(g45.options[0].0, "high");
+        // Grok's own window rides the same per-model `_meta` — the number the
+        // context ring uses instead of inferring one from the model id.
+        assert_eq!(g45.context_window, Some(500_000));
         let fast = specs
             .get("grok-composer-2.5-fast")
             .expect("composer present");
         assert!(!fast.supports);
         assert!(fast.default.is_none());
         assert!(fast.options.is_empty());
+        // No `totalContextTokens` → no opinion (the id heuristic decides).
+        assert_eq!(fast.context_window, None);
+        // …and a zero window is "no opinion" too, never a ring divided by zero.
+        let zeroed = parse_grok_model_specs(Some(&serde_json::json!({
+            "availableModels": [{"modelId": "z", "_meta": {"totalContextTokens": 0}}]
+        })));
+        assert_eq!(zeroed["z"].context_window, None);
     }
 
     #[test]
-    fn parse_grok_effort_specs_absent_models_is_empty() {
-        assert!(parse_grok_effort_specs(None).is_empty());
-        assert!(parse_grok_effort_specs(Some(&serde_json::json!({}))).is_empty());
+    fn parse_grok_model_specs_absent_models_is_empty() {
+        assert!(parse_grok_model_specs(None).is_empty());
+        assert!(parse_grok_model_specs(Some(&serde_json::json!({}))).is_empty());
         // Missing `_meta` degrades to supports=false / default=None / options=[].
         let bare = serde_json::json!({ "availableModels": [{"modelId": "m1", "name": "M1"}] });
-        let specs = parse_grok_effort_specs(Some(&bare));
+        let specs = parse_grok_model_specs(Some(&bare));
         let m1 = specs.get("m1").expect("m1 present");
         assert!(!m1.supports);
         assert!(m1.default.is_none());
@@ -11488,7 +11820,7 @@ mod tests {
 
     #[test]
     fn build_grok_effort_option_injects_default_and_gates_supports() {
-        let specs = parse_grok_effort_specs(Some(&grok_models_fixture()));
+        let specs = parse_grok_model_specs(Some(&grok_models_fixture()));
         // grok-4.5: `xhigh` default is injected at the FRONT (not in the
         // switchable list), current = xhigh, with canonical labels.
         let effort = build_grok_effort_option("grok-4.5", &specs).expect("has effort");
@@ -11529,7 +11861,7 @@ mod tests {
             }),
         )
         .unwrap();
-        let specs = parse_grok_effort_specs(Some(&grok_models_fixture()));
+        let specs = parse_grok_model_specs(Some(&grok_models_fixture()));
         let opts = synthesize_grok_config_options(Some(&meta), &specs).expect("synthesize");
         assert_eq!(opts.len(), 2, "model + effort");
         let effort = opts
@@ -11555,7 +11887,7 @@ mod tests {
             }),
         )
         .unwrap();
-        let specs = parse_grok_effort_specs(Some(&grok_models_fixture()));
+        let specs = parse_grok_model_specs(Some(&grok_models_fixture()));
         let opts = synthesize_grok_config_options(Some(&meta), &specs).expect("synthesize");
         assert_eq!(opts.len(), 1);
         assert_eq!(opts[0].id, GROK_MODEL_OPTION_ID);
@@ -11563,7 +11895,7 @@ mod tests {
 
     #[test]
     fn set_grok_effort_selector_for_model_drops_and_adds() {
-        let specs = parse_grok_effort_specs(Some(&grok_models_fixture()));
+        let specs = parse_grok_model_specs(Some(&grok_models_fixture()));
         // Model + grok-4.5 effort → switching to the no-effort model DROPS effort.
         let mut opts = grok_model_options("grok-4.5");
         opts.push(build_grok_effort_option("grok-4.5", &specs).unwrap());

@@ -497,6 +497,7 @@ impl OpenCodeParser {
                             tool_use_id: call_id.clone(),
                             tool_name: "Agent".to_string(),
                             input_preview: Some(agent_input.to_string()),
+                            status: None,
                             meta: None,
                         });
 
@@ -564,6 +565,7 @@ impl OpenCodeParser {
                             tool_use_id: call_id.clone(),
                             tool_name: normalized.tool_name,
                             input_preview: normalized.input_preview,
+                            status: None,
                             meta: None,
                         });
 

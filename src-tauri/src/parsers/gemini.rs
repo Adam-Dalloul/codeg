@@ -568,6 +568,7 @@ impl GeminiParser {
                     tool_use_id: tool_use_id.clone(),
                     tool_name,
                     input_preview,
+                    status: None,
                     meta: None,
                 });
 

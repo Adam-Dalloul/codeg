@@ -447,6 +447,7 @@ fn parse_wire(path: &Path, agents_dir: Option<&Path>) -> WireParse {
                                     .unwrap_or("unknown")
                                     .to_string(),
                                 input_preview: tool_args_preview(event),
+                                status: None,
                                 meta: None,
                             },
                             ts,

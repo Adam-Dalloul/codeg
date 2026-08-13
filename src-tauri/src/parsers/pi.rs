@@ -444,6 +444,7 @@ fn parse_bash_execution(sp: &mut SessionParse, value: &Value, ts: DateTime<Utc>,
             tool_use_id: tool_use_id.clone(),
             tool_name: "bash".to_string(),
             input_preview: (!command.is_empty()).then_some(command),
+            status: None,
             meta: None,
         }],
         ts,
@@ -527,6 +528,7 @@ fn assistant_content_blocks(content: Option<&Value>) -> Vec<ContentBlock> {
                     tool_use_id,
                     tool_name,
                     input_preview: tool_arguments_preview(item.get("arguments")),
+                    status: None,
                     meta: None,
                 });
             }

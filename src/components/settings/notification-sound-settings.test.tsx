@@ -39,8 +39,11 @@ describe("NotificationSoundSettingsSection", () => {
     renderSection()
 
     expect(
-      screen.getByRole("switch", { name: /enable notification sounds/i })
+      screen.getByRole("switch", { name: /notification sounds/i })
     ).not.toBeChecked()
+    // With sounds off the section IS the master switch: the heading labels it,
+    // so there is no second row (nor a card around one) saying so again.
+    expect(screen.getAllByRole("switch")).toHaveLength(1)
     // The event catalogue is only meaningful once something can play.
     expect(screen.queryByText("Turn Complete")).not.toBeInTheDocument()
   })
@@ -49,7 +52,7 @@ describe("NotificationSoundSettingsSection", () => {
     renderSection()
 
     fireEvent.click(
-      screen.getByRole("switch", { name: /enable notification sounds/i })
+      screen.getByRole("switch", { name: /notification sounds/i })
     )
 
     expect(loadNotificationSoundPrefs().enabled).toBe(true)
@@ -93,7 +96,7 @@ describe("NotificationSoundSettingsSection", () => {
   it("follows a change made in another window", () => {
     renderSection()
     expect(
-      screen.getByRole("switch", { name: /enable notification sounds/i })
+      screen.getByRole("switch", { name: /notification sounds/i })
     ).not.toBeChecked()
 
     writeFromAnotherWindow({
@@ -103,7 +106,7 @@ describe("NotificationSoundSettingsSection", () => {
     })
 
     expect(
-      screen.getByRole("switch", { name: /enable notification sounds/i })
+      screen.getByRole("switch", { name: /notification sounds/i })
     ).toBeChecked()
     expect(screen.getByText("30%")).toBeInTheDocument()
   })

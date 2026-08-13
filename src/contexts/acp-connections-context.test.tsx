@@ -1891,6 +1891,84 @@ describe("delegation-child attach: mid-turn hydration", () => {
     expect(h.store!.getConnection(CHILD)?.lastAppliedSeq).toBe(8)
   })
 
+  it("re-seeds delegation bindings the hydrated snapshot carries", async () => {
+    // `delegation_started` is transient — never in the snapshot's event set and
+    // never replayed — so a viewer opening onto a turn that already delegated
+    // establishes no binding unless the snapshot's `active_delegations` is
+    // fanned out. Without this the work-task dialog's sub-agent cards lose
+    // their agent icon/label, the child's live sub-stream and the "待批准"
+    // badge. The other three snapshot consumers already did this; the desktop
+    // hydrate branch did not.
+    const active = [
+      {
+        parent_tool_use_id: "toolu_child",
+        child_connection_id: "child-conn",
+        child_conversation_id: 4242,
+        agent_type: "codex" as const,
+        task_preview: "review the diff",
+        task_id: "task-1",
+      },
+    ]
+    h.denormalizeSnapshot.mockReturnValue({
+      connectionId: CHILD,
+      status: "prompting",
+      sessionId: "sess-child",
+      modes: null,
+      configOptions: null,
+      availableCommands: null,
+      usage: null,
+      liveMessage: null,
+      pendingPermission: null,
+      pendingAskQuestion: null,
+      pendingUserMessage: null,
+      pendingPlanApproval: null,
+      promptCapabilities: null,
+      selectorsReady: false,
+      supportsFork: false,
+      configStale: false,
+      configStaleKind: null,
+      lastError: null,
+      eventSeq: 7,
+      activeDelegations: active,
+    })
+    await mountProvider()
+
+    await act(async () => {
+      attachChild(true)
+    })
+    await act(async () => {})
+
+    expect(h.buildDelegationSeedEnvelopes).toHaveBeenCalledWith(
+      CHILD,
+      active,
+      7
+    )
+  })
+
+  it("does not seed when the child detached while the snapshot was in flight", async () => {
+    let resolveSnapshot: (v: unknown) => void = () => {}
+    h.acpGetSessionSnapshot.mockImplementation(
+      () =>
+        new Promise((res) => {
+          resolveSnapshot = res
+        })
+    )
+    await mountProvider()
+
+    await act(async () => {
+      attachChild(true)
+    })
+    await act(async () => {
+      h.actions!.detachDelegationChild(CHILD)
+    })
+    await act(async () => {
+      resolveSnapshot({ connection_id: CHILD, event_seq: 7 })
+    })
+    await act(async () => {})
+
+    expect(h.buildDelegationSeedEnvelopes).not.toHaveBeenCalled()
+  })
+
   it("skips the snapshot for a spawn-time child attach", async () => {
     await mountProvider()
 

@@ -14,7 +14,7 @@ use crate::acp::plan_approval::PendingPlanApprovalState;
 use crate::acp::question::PendingQuestionState;
 use crate::acp::types::{
     AcpEvent, AvailableCommandInfo, ConfigStaleKind, ConnectionStatus, EventEnvelope,
-    GrokEffortSpec, PromptCapabilitiesInfo, SessionConfigOptionInfo, SessionModeStateInfo,
+    GrokModelSpec, PromptCapabilitiesInfo, SessionConfigOptionInfo, SessionModeStateInfo,
     ToolCallImageInfo,
 };
 use crate::models::agent::AgentType;
@@ -324,7 +324,7 @@ pub struct SessionState {
     /// selector for the target model on a mid-session model switch. `None` for
     /// non-Grok agents and when the response carried no `models` (flat fallback).
     /// Backend-internal — not serialized.
-    pub grok_effort_specs: Option<std::collections::HashMap<String, GrokEffortSpec>>,
+    pub grok_model_specs: Option<std::collections::HashMap<String, GrokModelSpec>>,
     pub prompt_capabilities: Option<PromptCapabilitiesInfo>,
     pub fork_supported: bool,
     pub available_commands: Vec<AvailableCommandInfo>,
@@ -495,7 +495,7 @@ impl SessionState {
             modes: None,
             current_mode: None,
             config_options: None,
-            grok_effort_specs: None,
+            grok_model_specs: None,
             prompt_capabilities: None,
             fork_supported: false,
             available_commands: Vec::new(),

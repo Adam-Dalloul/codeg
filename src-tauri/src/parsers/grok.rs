@@ -73,6 +73,64 @@ fn resolve_grok_home_from(grok_home_env: Option<OsString>, home_dir: Option<Path
         .unwrap_or_else(|| home_dir.unwrap_or_default().join(".grok"))
 }
 
+/// The context window Grok itself assigns to `model`, read from its own on-disk
+/// catalog — the authoritative number, and the same one the live ACP path gets
+/// from `availableModels[]._meta.totalContextTokens` (see
+/// `acp::connection::parse_grok_model_specs`).
+///
+/// Two sources, in precedence order:
+///   1. `$GROK_HOME/models_cache.json` — the catalog Grok fetches from its API
+///      and rewrites on every model refresh (`models.<id>.info.context_window`).
+///   2. `$GROK_HOME/config.toml` — a BYO endpoint's `[model.<id>].context_window`
+///      (see `commands::acp::apply_grok_custom_model`), which never appears in
+///      the fetched catalog.
+///
+/// `None` when neither names the model, and the caller falls back to
+/// [`infer_context_window_max_tokens`]'s name heuristic. Reading these beats
+/// guessing from the model id: a new Grok model, or a self-hosted one, gets its
+/// real window instead of the conservative default.
+///
+/// Shared with the live path (`acp::connection::grok_current_model_context_window`)
+/// so a session's ring reads the same denominator whether it comes from the wire
+/// or from re-parsed history.
+pub(crate) fn grok_catalog_context_window(home: &Path, model: &str) -> Option<u64> {
+    let read = |name: &str| fs::read_to_string(home.join(name)).ok();
+    read("models_cache.json")
+        .and_then(|raw| grok_context_window_from_models_cache(&raw, model))
+        .or_else(|| {
+            read("config.toml").and_then(|raw| grok_context_window_from_config_toml(&raw, model))
+        })
+}
+
+/// `models.<id>.info.context_window` from Grok's `models_cache.json`. Non-positive
+/// / missing / malformed → `None`.
+fn grok_context_window_from_models_cache(raw: &str, model: &str) -> Option<u64> {
+    serde_json::from_str::<Value>(raw)
+        .ok()?
+        .get("models")?
+        .get(model)?
+        .get("info")?
+        .get("context_window")?
+        .as_u64()
+        .filter(|window| *window > 0)
+}
+
+/// `[model.<id>].context_window` from Grok's `config.toml` — a BYO endpoint's
+/// declared window. Mirrors the read `commands::acp::parse_grok_settings` does
+/// for the settings panel. Non-positive / missing / malformed → `None`.
+fn grok_context_window_from_config_toml(raw: &str, model: &str) -> Option<u64> {
+    raw.parse::<toml::Table>()
+        .ok()?
+        .get("model")?
+        .as_table()?
+        .get(model)?
+        .as_table()?
+        .get("context_window")?
+        .as_integer()
+        .filter(|window| *window > 0)
+        .map(|window| window as u64)
+}
+
 /// Grok Build (xAI) stores each conversation as a **directory-per-session**,
 /// grouped by the (percent-encoded) working directory:
 ///
@@ -146,6 +204,17 @@ impl GrokParser {
     #[cfg(any(test, feature = "test-utils"))]
     pub fn with_base_dir(base_dir: PathBuf) -> Self {
         Self { base_dir }
+    }
+
+    /// Grok's data home — the parent of the `sessions/` tree this parser reads,
+    /// which is where its `models_cache.json` / `config.toml` live. Derived from
+    /// `base_dir` rather than re-resolving `GROK_HOME` so a fixture-scoped parser
+    /// stays inside its fixture instead of reading the host's real `~/.grok`.
+    fn grok_home(&self) -> PathBuf {
+        self.base_dir
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| self.base_dir.clone())
     }
 
     fn build_summary(&self, session_dir: &Path, session_id: &str) -> Option<ConversationSummary> {
@@ -246,10 +315,17 @@ impl GrokParser {
         // (mirrors gemini/kimi/opencode — the bare `compute_session_stats` leaves
         // the context fields `None`).
         let session_model = meta.model.as_deref().or(parsed.model.as_deref());
+        // Grok publishes each model's real window in its own on-disk catalog, so
+        // read that first and keep the id-shaped guess only as the fallback for
+        // a model neither file names.
+        let context_window = session_model.and_then(|model| {
+            grok_catalog_context_window(&self.grok_home(), model)
+                .or_else(|| infer_context_window_max_tokens(Some(model)))
+        });
         let session_stats = merge_context_window_stats(
             compute_session_stats(&parsed.turns),
             latest_turn_total_usage_tokens(&parsed.turns),
-            infer_context_window_max_tokens(session_model),
+            context_window,
         );
         let summary = self.summary_from(session_id, &meta, &parsed);
 
@@ -740,6 +816,13 @@ fn parse_updates(path: &Path) -> ParsedUpdates {
                     tool_use_id: Some(id.clone()),
                     tool_name,
                     input_preview,
+                    // Grok is the one agent whose transcript is read WHILE it is
+                    // being written (`SubagentSessionDialog` polls a running
+                    // `spawn_subagent` child's file), so it is the one agent
+                    // that has to say whether a call is still working. The
+                    // paired placeholder result below cannot answer that: it
+                    // stays `output_preview: None` for an empty completion too.
+                    status: grok_line_status(&v, update),
                     meta: None,
                 });
                 turn.blocks.push(ContentBlock::ToolResult {
@@ -756,7 +839,12 @@ fn parse_updates(path: &Path) -> ParsedUpdates {
             "tool_call_update" => {
                 let id = str_field(update, "toolCallId");
                 let output = update_tool_output(update);
-                let failed = update.get("status").and_then(Value::as_str) == Some("failed");
+                let status = grok_line_status(&v, update);
+                let failed = status.as_deref() == Some("failed");
+                // Cumulative updates: the latest STATED status wins, so a call
+                // that settles overwrites its own `pending`; a content-only
+                // update states nothing and leaves it standing.
+                apply_tool_status(assistant.as_mut(), &tool_result_idx, &id, status.as_deref());
                 apply_tool_result(assistant.as_mut(), &tool_result_idx, &id, output, failed);
             }
             "turn_completed" => {
@@ -801,6 +889,7 @@ fn parse_updates(path: &Path) -> ParsedUpdates {
                     tool_use_id: Some(id.clone()),
                     tool_name: "context_compaction".to_string(),
                     input_preview: None,
+                    status: None,
                     meta: Some(Value::Object(meta)),
                 });
                 turn.blocks.push(ContentBlock::ToolResult {
@@ -1135,6 +1224,31 @@ fn str_field(v: &Value, key: &str) -> String {
         .to_string()
 }
 
+/// The call's status as this LINE states it, read from wherever the wire
+/// actually put it.
+///
+/// Grok never sets `update.status` on the initial `tool_call` (486/486 in the
+/// real transcripts on this machine) and only sets it on TERMINAL
+/// `tool_call_update`s; the affirmative running value — `"Pending"` — lives in
+/// the line-level `params._meta.updateParams.status`, a SIBLING of
+/// `params.update`. Mid-run cumulative updates carry neither, which correctly
+/// yields `None` ("this line states nothing") so the last stated value stands.
+/// The inner field wins when both are present (terminal updates carry both);
+/// the result is lowercased so the persisted value space stays the model's
+/// documented `pending`/`in_progress`/`completed`/`failed` regardless of the
+/// meta's capitalized spelling (`"Pending"`, `"Completed"`, …).
+fn grok_line_status(line: &Value, update: &Value) -> Option<String> {
+    update
+        .get("status")
+        .and_then(Value::as_str)
+        .or_else(|| {
+            line.pointer("/params/_meta/updateParams/status")
+                .and_then(Value::as_str)
+        })
+        .filter(|s| !s.is_empty())
+        .map(str::to_ascii_lowercase)
+}
+
 /// Peel Grok's `use_tool` MCP envelope (`{tool_name, tool_input}`) into its inner
 /// `(tool_name, tool_input)`. Mirrors `connection.rs::unwrap_grok_use_tool` so the
 /// history and live paths classify Grok's MCP calls identically. Native tools
@@ -1305,6 +1419,42 @@ fn cap_json_string_values(value: &Value, cap: usize) -> Value {
                 .collect(),
         ),
         other => other.clone(),
+    }
+}
+
+/// Record the agent's own status on the `ToolUse` block correlated to `id`.
+///
+/// The `ToolUse` is pushed immediately before its placeholder `ToolResult` (see
+/// the `tool_call` arm), so it sits one slot earlier — but the slot is only
+/// written after its `tool_use_id` is confirmed to match, so a future change to
+/// that ordering degrades to "no status" (unknown) rather than to a status
+/// stamped on the wrong call. An absent status leaves the slot untouched: the
+/// last value the wire actually stated wins.
+fn apply_tool_status(
+    turn: Option<&mut MessageTurn>,
+    tool_result_idx: &std::collections::HashMap<String, usize>,
+    id: &str,
+    status: Option<&str>,
+) {
+    let Some(status) = status.filter(|s| !s.is_empty()) else {
+        return;
+    };
+    let Some(turn) = turn else { return };
+    let Some(&result_idx) = tool_result_idx.get(id) else {
+        return;
+    };
+    let Some(use_idx) = result_idx.checked_sub(1) else {
+        return;
+    };
+    if let Some(ContentBlock::ToolUse {
+        tool_use_id: Some(existing),
+        status: slot,
+        ..
+    }) = turn.blocks.get_mut(use_idx)
+    {
+        if existing == id {
+            *slot = Some(status.to_string());
+        }
     }
 }
 
@@ -1959,17 +2109,22 @@ mod tests {
         assert!(matches!(turns[1].role, TurnRole::Assistant));
     }
 
+    /// One turn whose stats live where Grok really puts them: model in
+    /// `update._meta.modelId`, cumulative `totalTokens` + timing in the OUTER
+    /// `params._meta`. Shared by the context-ring tests below.
+    const RING_UPDATES: &str = concat!(
+        r#"{"method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"hi"},"_meta":{"modelId":"grok-4.5-fast","promptIndex":0}},"_meta":{"turnStartMs":1000,"totalTokens":100}},"timestamp":1783584019}"#, "\n",
+        r#"{"method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"hello"}},"_meta":{"totalTokens":500,"agentTimestampMs":3000}},"timestamp":1783584024}"#, "\n",
+        r#"{"method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"turn_completed","stop_reason":"end_turn"},"_meta":{"agentTimestampMs":5000}},"timestamp":1783584024}"#, "\n",
+    );
+
     #[test]
     fn assistant_turn_carries_model_tokens_and_duration() {
         // Grok reports the footer's stats in two sibling metadata places the
         // loop must fold in: model in `update._meta.modelId`, and token total +
         // timing in the OUTER `params._meta` (`totalTokens` cumulative,
         // `turnStartMs` → `agentTimestampMs`).
-        let updates = concat!(
-            r#"{"method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"hi"},"_meta":{"modelId":"grok-4.5-fast","promptIndex":0}},"_meta":{"turnStartMs":1000,"totalTokens":100}},"timestamp":1783584019}"#, "\n",
-            r#"{"method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"hello"}},"_meta":{"totalTokens":500,"agentTimestampMs":3000}},"timestamp":1783584024}"#, "\n",
-            r#"{"method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"turn_completed","stop_reason":"end_turn"},"_meta":{"agentTimestampMs":5000}},"timestamp":1783584024}"#, "\n",
-        );
+        let updates = RING_UPDATES;
         let (_tmp, sessions) = fixture(SUMMARY, updates);
         let parser = GrokParser::with_base_dir(sessions);
         let detail = parser
@@ -1999,6 +2154,96 @@ mod tests {
             .context_window_usage_percent
             .expect("context window percent");
         assert!((pct - 0.1).abs() < 1e-6, "pct = {pct}");
+    }
+
+    /// Grok's own catalog outranks the id-shaped guess. The fixture's session
+    /// model (summary `current_model_id` = `grok-4.5`) would infer 500K from its
+    /// name, so a distinct cached window proves the ring read `models_cache.json`
+    /// and not the heuristic.
+    #[test]
+    fn context_window_prefers_groks_models_cache() {
+        let (tmp, sessions) = fixture(SUMMARY, RING_UPDATES);
+        write(
+            tmp.path(),
+            "models_cache.json",
+            r#"{"models":{"grok-4.5":{"info":{"context_window":314000}}}}"#,
+        );
+        let parser = GrokParser::with_base_dir(sessions);
+        let stats = parser
+            .get_conversation("019f45e3-e1ef-7690-a29f-fe2554382b49")
+            .unwrap()
+            .session_stats
+            .expect("session stats");
+        assert_eq!(stats.context_window_max_tokens, Some(314_000));
+    }
+
+    /// A BYO endpoint (`[model.<id>]` in `config.toml`) never appears in the
+    /// fetched catalog, so its declared window is the second source.
+    #[test]
+    fn context_window_falls_back_to_byo_config_toml() {
+        let (tmp, sessions) = fixture(SUMMARY, RING_UPDATES);
+        write(
+            tmp.path(),
+            "models_cache.json",
+            r#"{"models":{"some-other-model":{"info":{"context_window":999}}}}"#,
+        );
+        write(
+            tmp.path(),
+            "config.toml",
+            "[models]\ndefault = \"grok-4.5\"\n\n[model.\"grok-4.5\"]\nmodel = \"grok-4.5\"\ncontext_window = 123456\n",
+        );
+        let parser = GrokParser::with_base_dir(sessions);
+        let stats = parser
+            .get_conversation("019f45e3-e1ef-7690-a29f-fe2554382b49")
+            .unwrap()
+            .session_stats
+            .expect("session stats");
+        assert_eq!(stats.context_window_max_tokens, Some(123_456));
+    }
+
+    /// No catalog on disk (the common case for a machine that only ever ran
+    /// grok through codeg) → the name heuristic still supplies a window.
+    #[test]
+    fn context_window_falls_back_to_the_name_heuristic() {
+        let (_tmp, sessions) = fixture(SUMMARY, RING_UPDATES);
+        let parser = GrokParser::with_base_dir(sessions);
+        let stats = parser
+            .get_conversation("019f45e3-e1ef-7690-a29f-fe2554382b49")
+            .unwrap()
+            .session_stats
+            .expect("session stats");
+        assert_eq!(stats.context_window_max_tokens, Some(500_000));
+    }
+
+    #[test]
+    fn catalog_context_window_readers_reject_junk() {
+        // Real `models_cache.json` shape (trimmed) → the model's own window.
+        let cache = r#"{"grok_version":"1.0.0","models":{"grok-4.5":{"info":{
+            "id":"grok-4.5","context_window":500000,"agent_type":"grok-build-plan"},
+            "api_key":null}}}"#;
+        assert_eq!(
+            grok_context_window_from_models_cache(cache, "grok-4.5"),
+            Some(500_000)
+        );
+        // Unknown model / malformed JSON / non-positive window → no opinion.
+        assert_eq!(grok_context_window_from_models_cache(cache, "nope"), None);
+        assert_eq!(grok_context_window_from_models_cache("{oops", "grok-4.5"), None);
+        assert_eq!(
+            grok_context_window_from_models_cache(
+                r#"{"models":{"m":{"info":{"context_window":0}}}}"#,
+                "m"
+            ),
+            None
+        );
+        // Same for the BYO TOML block.
+        let toml = "[model.mine]\nmodel = \"mine\"\ncontext_window = 64000\n";
+        assert_eq!(grok_context_window_from_config_toml(toml, "mine"), Some(64_000));
+        assert_eq!(grok_context_window_from_config_toml(toml, "other"), None);
+        assert_eq!(grok_context_window_from_config_toml("[model", "mine"), None);
+        assert_eq!(
+            grok_context_window_from_config_toml("[model.mine]\ncontext_window = -1\n", "mine"),
+            None
+        );
     }
 
     #[test]
@@ -2634,5 +2879,67 @@ mod tests {
         let stats = results["call-s2"].as_ref().expect("stats on the real spawn");
         assert_eq!(stats.agent_type.as_deref(), Some("plan"));
         assert_eq!(stats.status.as_deref(), Some("completed"));
+    }
+
+    // ── per-call status: the only honest "is it still working?" signal ──────
+    //
+    // A grok sub-agent's transcript is read WHILE the child writes it
+    // (`SubagentSessionDialog` polls the file). The paired placeholder
+    // `ToolResult` cannot answer that question — it stays `output_preview:
+    // None` for an empty completion too, and `apply_tool_result` only backfills
+    // non-empty output — so the call's own status has to be recorded.
+
+    fn status_of<'a>(detail: &'a ConversationDetail, id: &str) -> Option<&'a str> {
+        detail
+            .turns
+            .iter()
+            .flat_map(|t| &t.blocks)
+            .find_map(|b| match b {
+                ContentBlock::ToolUse {
+                    tool_use_id: Some(tid),
+                    status,
+                    ..
+                } if tid == id => Some(status.as_deref()),
+                _ => None,
+            })
+            .expect("ToolUse block")
+    }
+
+    // The REAL wire shape, measured across every grok transcript on this
+    // machine (486 `tool_call` lines): the initial update NEVER carries
+    // `update.status`; the affirmative `"Pending"` sits in the LINE-level
+    // `params._meta.updateParams.status` (a sibling of `params.update`, with
+    // capitalized values). Terminal `tool_call_update`s carry both (inner
+    // lowercase + meta capitalized); mid-run cumulative updates carry neither.
+    const STATUS_UPDATES: &str = concat!(
+        r#"{"method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"tool_call","toolCallId":"c-run","title":"read_file","rawInput":{"target_file":"a.rs"}},"_meta":{"updateParams":{"toolCallId":"c-run","status":"Pending"}}},"timestamp":1784897790}"#, "\n",
+        r#"{"method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"tool_call","toolCallId":"c-done","title":"read_file","rawInput":{"target_file":"b.rs"}},"_meta":{"updateParams":{"toolCallId":"c-done","status":"Pending"}}},"timestamp":1784897791}"#, "\n",
+        r#"{"method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"tool_call_update","toolCallId":"c-done","content":[{"type":"content","content":{"type":"text","text":"partial"}}]}},"timestamp":1784897792}"#, "\n",
+        r#"{"method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"tool_call_update","toolCallId":"c-done","status":"completed","content":[{"type":"content","content":{"type":"text","text":"ok"}}]},"_meta":{"updateParams":{"toolCallId":"c-done","status":"Completed"}}},"timestamp":1784897793}"#, "\n",
+        r#"{"method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"tool_call","toolCallId":"c-empty","title":"write_file","rawInput":{"target_file":"c.rs"}},"_meta":{"updateParams":{"toolCallId":"c-empty","status":"Pending"}}},"timestamp":1784897794}"#, "\n",
+        r#"{"method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"tool_call_update","toolCallId":"c-empty","status":"completed"},"_meta":{"updateParams":{"toolCallId":"c-empty","status":"Completed"}}},"timestamp":1784897795}"#, "\n",
+        r#"{"method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"tool_call","toolCallId":"c-silent","title":"read_file","rawInput":{"target_file":"d.rs"}}},"timestamp":1784897796}"#, "\n",
+    );
+
+    #[test]
+    fn tool_use_records_the_calls_own_status() {
+        let (_tmp, sessions) = fixture(SUMMARY, STATUS_UPDATES);
+        let detail = GrokParser::with_base_dir(sessions)
+            .get_conversation("019f45e3-e1ef-7690-a29f-fe2554382b49")
+            .unwrap();
+
+        // Initial status comes from the line-level meta ("Pending", lowercased)
+        // — the inner update has none. This is the running call, and the status
+        // is the ONLY thing that says so: its placeholder result looks
+        // identical to an empty completion's.
+        assert_eq!(status_of(&detail, "c-run"), Some("pending"));
+        // A content-only update states no status and must not clear it; the
+        // terminal update then wins.
+        assert_eq!(status_of(&detail, "c-done"), Some("completed"));
+        // A completion carrying NO output is still a completion: this is the
+        // case that makes "empty output" useless as a liveness signal.
+        assert_eq!(status_of(&detail, "c-empty"), Some("completed"));
+        // Absent everywhere stays absent — unknown, never a guess.
+        assert_eq!(status_of(&detail, "c-silent"), None);
     }
 }

@@ -2688,6 +2688,54 @@ function timelinePrefixDepsEqual(
   )
 }
 
+/**
+ * Per-turn-index sets of tool_call ids that are STILL RUNNING inside a
+ * persisted transcript: every `tool_use` that follows the backend's in-flight
+ * prompt and whose `tool_result` hasn't been written yet.
+ *
+ * Matching is deliberately WITHIN a turn — the exact rule `adaptMessageTurn`
+ * uses (`buildToolResultMap(turn.blocks)`) — so the ids collected here are
+ * precisely the ones the adapter would otherwise paint as settled. Blocks
+ * without a `tool_use_id` are skipped: the adapter can't key them either.
+ *
+ * Returns an empty map when the backend reports no in-flight turn, or when the
+ * prompt it named isn't in this window (older history page) — the caller then
+ * behaves exactly as before.
+ */
+function collectInFlightPersistedToolCalls(
+  turns: MessageTurn[],
+  inFlightPromptId: string | null
+): Map<number, Set<string>> {
+  const out = new Map<number, Set<string>>()
+  if (inFlightPromptId === null) return out
+  const promptIdx = turns.findIndex(
+    (t) => t.role === "user" && t.id === inFlightPromptId
+  )
+  if (promptIdx === -1) return out
+  for (let i = promptIdx + 1; i < turns.length; i++) {
+    const turn = turns[i]
+    if (turn.role !== "assistant") continue
+    const settled = new Set<string>()
+    for (const block of turn.blocks) {
+      if (block.type === "tool_result" && block.tool_use_id) {
+        settled.add(block.tool_use_id)
+      }
+    }
+    const pending = new Set<string>()
+    for (const block of turn.blocks) {
+      if (
+        block.type === "tool_use" &&
+        block.tool_use_id &&
+        !settled.has(block.tool_use_id)
+      ) {
+        pending.add(block.tool_use_id)
+      }
+    }
+    if (pending.size > 0) out.set(i, pending)
+  }
+  return out
+}
+
 function computeTimelinePrefix(
   session: ConversationRuntimeSession,
   conversationId: number
@@ -2787,15 +2835,36 @@ function computeTimelinePrefix(
           (t, i) => i <= inFlightPromptIdx || t.role !== "assistant"
         )
 
+  // Tool calls of the round that is STILL RUNNING, per persisted turn index.
+  // A persisted turn is adapted with `isStreaming=false`, and the adapter's
+  // rule for a `tool_use` with no `tool_result` is "the conversation already
+  // ended, so it completed" — false for a conversation running RIGHT NOW that
+  // this client isn't streaming (a work-task viewer whose attach missed, a
+  // cross-client reader). A `get_delegation_status` poll blocking on its
+  // sub-agent then renders as a green ✓ for the whole wait.
+  //
+  // `in_flight_user_turn_id` is the backend's AFFIRMATIVE statement that a turn
+  // is running on this conversation's connection (stamped from the pending user
+  // message, cleared at TurnComplete) — never an inference from missing output,
+  // which is not evidence: an empty result still writes a `tool_result`, and a
+  // codex code-mode script that never `text()`s its call settles with none.
+  // Scoping to turns AFTER that prompt is what keeps an orphan left by an
+  // earlier interrupted round from re-acquiring a spinner it will never lose.
+  const inFlightToolCallIdsByIndex = collectInFlightPersistedToolCalls(
+    visiblePersistedTurns,
+    inFlightPromptId
+  )
+
   // Keys carry NO positional index: prepending older history (reverse
   // infinite scroll) must not shift the identity of already-present turns.
   // Post-dedup the (role, id) pair is unique per phase, so `phase + id` is
   // collision-free here.
   const persisted: ConversationTimelineTurn[] = visiblePersistedTurns.map(
-    (turn) => ({
+    (turn, i) => ({
       key: `persisted-${conversationId}-${turn.id}`,
       turn,
       phase: "persisted" as const,
+      inProgressToolCallIds: inFlightToolCallIdsByIndex.get(i),
     })
   )
 
