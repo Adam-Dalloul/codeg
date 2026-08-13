@@ -13,8 +13,6 @@ use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::sync::{watch, Mutex, Notify, RwLock};
 use tokio::task::JoinHandle;
 
-use crate::terminal::manager::resolve_shell;
-
 type TerminalMap = HashMap<String, Arc<TerminalInstance>>;
 const DEFAULT_OUTPUT_BYTE_LIMIT: u64 = 1_000_000;
 /// After the child process exits, wait up to this long for the stdout/stderr
@@ -592,7 +590,7 @@ impl TerminalRuntime {
                     std::io::ErrorKind::NotFound | std::io::ErrorKind::InvalidFilename
                 ) && can_retry_through_shell =>
             {
-                let shell = configured_shell.unwrap_or_else(resolve_shell);
+                let shell = configured_shell.unwrap_or_else(default_platform_shell);
                 let mut shell = shell_wrapped_command(&shell, &request.command);
                 self.configure_command(&mut shell, &request);
                 shell.spawn().map_err(|err| {
@@ -833,9 +831,29 @@ where
     }
 }
 
-/// Wrap a command line through the configured shell. This matches the shell
-/// semantics used by the built-in terminal instead of hard-coding `/bin/sh` or
-/// `cmd.exe` for model tool calls.
+/// Preserve the platform shell used by ACP before configurable shells were
+/// introduced. General Settings only changes this behavior after an explicit
+/// shell selection.
+#[cfg(not(windows))]
+fn default_platform_shell() -> String {
+    "/bin/sh".to_string()
+}
+
+#[cfg(windows)]
+fn default_platform_shell() -> String {
+    default_windows_platform_shell(std::env::var("COMSPEC").ok())
+}
+
+#[cfg(windows)]
+fn default_windows_platform_shell(comspec: Option<String>) -> String {
+    comspec
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "cmd.exe".to_string())
+}
+
+/// Wrap a command line through the configured shell, or the legacy platform
+/// shell when no preference has been selected.
 fn shell_wrapped_command(shell: &str, line: &str) -> tokio::process::Command {
     let shell_name = Path::new(shell)
         .file_name()
@@ -952,6 +970,26 @@ mod shell_config_tests {
                 "Get-ChildItem".to_string(),
             ]
         );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn unset_shell_keeps_the_legacy_posix_default() {
+        assert_eq!(default_platform_shell(), "/bin/sh");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn unset_shell_keeps_the_legacy_windows_default() {
+        assert_eq!(
+            default_windows_platform_shell(Some("  C:\\Windows\\System32\\cmd.exe  ".to_string())),
+            "C:\\Windows\\System32\\cmd.exe"
+        );
+        assert_eq!(
+            default_windows_platform_shell(Some("  ".to_string())),
+            "cmd.exe"
+        );
+        assert_eq!(default_windows_platform_shell(None), "cmd.exe");
     }
 }
 
