@@ -1,5 +1,5 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
@@ -12,6 +12,8 @@ use sacp::schema::{
 use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::sync::{watch, Mutex, Notify, RwLock};
 use tokio::task::JoinHandle;
+
+use crate::terminal::shell_flavor::{classify_shell_family, ShellFamily};
 
 type TerminalMap = HashMap<String, Arc<TerminalInstance>>;
 const DEFAULT_OUTPUT_BYTE_LIMIT: u64 = 1_000_000;
@@ -557,13 +559,13 @@ impl TerminalRuntime {
         // into `command`, so a multi-KB heredoc exceeds PATH_MAX and the direct
         // exec fails with ENAMETOOLONG, not ENOENT) do we retry through a shell.
         // Whole shell lines (empty args + embedded whitespace, the shape
-        // CodeBuddy and grok send) always qualify. A configured default shell
-        // additionally qualifies a no-argv shell builtin such as PowerShell's
-        // `Get-ChildItem`. A path that long can never be a real executable, so
-        // rerouting it is always at least as correct. Deciding off a real failed
-        // spawn — rather than a pre-spawn `which` guess that runs in codeg's own
-        // cwd/env — means we never reroute a command that would otherwise have
-        // run.
+        // CodeBuddy and grok send) always qualify. A bare no-argv command
+        // additionally qualifies when the fallback shell resolves names the OS
+        // cannot — PowerShell's `Get-ChildItem`, cmd's `dir`. A path that long
+        // can never be a real executable, so rerouting it is always at least as
+        // correct. Deciding off a real failed spawn — rather than a pre-spawn
+        // `which` guess that runs in codeg's own cwd/env — means we never
+        // reroute a command that would otherwise have run.
         //
         // A spawn the kernel refuses with `ETXTBSY` is retried in place instead
         // (see `spawn_retrying_exec_busy`): the program *is* runnable, it is
@@ -574,13 +576,22 @@ impl TerminalRuntime {
         direct.args(&request.args);
         self.configure_command(&mut direct, &request);
 
-        let configured_shell = self.default_shell.snapshot().await;
+        // Resolve the fallback shell before the spawn attempt so the retry
+        // decision can depend on which dialect it speaks. Keying off the shell
+        // family rather than "did the user configure something" means picking
+        // `/bin/sh` explicitly behaves exactly like leaving the setting on its
+        // default, which is the only defensible reading of that choice.
+        let fallback_shell = self
+            .default_shell
+            .snapshot()
+            .await
+            .unwrap_or_else(default_platform_shell);
         // A structured ACP request normally names an executable plus argv, so
-        // preserve direct execution for it. If an explicit shell is selected,
-        // also let no-argv shell builtins (for example PowerShell's
-        // `Get-ChildItem`) fall back through that shell after direct exec fails.
+        // preserve direct execution for it. Reconstructing argv as shell text
+        // needs shell-specific quoting, so argful requests never fall back.
         let can_retry_through_shell = request.args.is_empty()
-            && (request.command.contains(char::is_whitespace) || configured_shell.is_some());
+            && (request.command.contains(char::is_whitespace)
+                || classify_shell_family(&fallback_shell).resolves_bare_builtins());
         let spawned = crate::process::spawn_retrying_exec_busy(|| direct.spawn()).await;
         let mut child = match spawned {
             Ok(child) => child,
@@ -590,8 +601,7 @@ impl TerminalRuntime {
                     std::io::ErrorKind::NotFound | std::io::ErrorKind::InvalidFilename
                 ) && can_retry_through_shell =>
             {
-                let shell = configured_shell.unwrap_or_else(default_platform_shell);
-                let mut shell = shell_wrapped_command(&shell, &request.command);
+                let mut shell = shell_wrapped_command(&fallback_shell, &request.command);
                 self.configure_command(&mut shell, &request);
                 shell.spawn().map_err(|err| {
                     TerminalRuntimeError::Internal(format!(
@@ -853,21 +863,32 @@ fn default_windows_platform_shell(comspec: Option<String>) -> String {
 }
 
 /// Wrap a command line through the configured shell, or the legacy platform
-/// shell when no preference has been selected.
+/// shell when no preference has been selected. The agent's line is always a
+/// single argv element, never concatenated into a larger script.
+///
+/// Deliberately NOT here: a UTF-8 preamble for the Windows arms. This runtime
+/// decodes captured output as UTF-8 while Windows PowerShell 5.1 and cmd write
+/// redirected output in the OEM code page, so non-ASCII output can arrive
+/// garbled (`decode_available_utf8` renders it lossily rather than failing).
+/// The obvious fixes — `chcp 65001` for cmd, `[Console]::OutputEncoding` for
+/// PowerShell — both need a console, and `crate::process::tokio_command`
+/// spawns with `CREATE_NO_WINDOW`, so they would fail and add a diagnostic to
+/// the agent's captured output without changing the encoding. The built-in
+/// terminal can set them only because it runs its shell under a PTY. Fixing
+/// this needs a redirected-stream-aware approach, not a command-line preamble.
 fn shell_wrapped_command(shell: &str, line: &str) -> tokio::process::Command {
-    let shell_name = Path::new(shell)
-        .file_name()
-        .and_then(|value| value.to_str())
-        .unwrap_or(shell)
-        .to_ascii_lowercase();
     let mut command = crate::process::tokio_command(shell);
 
-    if shell_name.contains("pwsh") || shell_name.contains("powershell") {
-        command.args(["-NoLogo", "-NoProfile", "-Command", line]);
-    } else if shell_name == "cmd" || shell_name == "cmd.exe" {
-        command.args(["/D", "/S", "/C", line]);
-    } else {
-        command.arg("-c").arg(line);
+    match classify_shell_family(shell) {
+        ShellFamily::PowerShell => {
+            command.args(["-NoLogo", "-NoProfile", "-Command", line]);
+        }
+        ShellFamily::Cmd => {
+            command.args(["/D", "/S", "/C", line]);
+        }
+        ShellFamily::Posix => {
+            command.arg("-c").arg(line);
+        }
     }
     command
 }
@@ -951,16 +972,23 @@ mod shell_config_tests {
         assert_eq!(config.snapshot().await.as_deref(), Some("pwsh.exe"));
     }
 
+    fn wrapped_argv(shell: &str, line: &str) -> (String, Vec<String>) {
+        let command = shell_wrapped_command(shell, line);
+        let std_command = command.as_std();
+        (
+            std_command.get_program().to_string_lossy().to_string(),
+            std_command
+                .get_args()
+                .map(|value| value.to_string_lossy().to_string())
+                .collect(),
+        )
+    }
+
     #[test]
     fn powershell_fallback_uses_the_selected_executable() {
-        let command = shell_wrapped_command("pwsh.exe", "Get-ChildItem");
-        let std_command = command.as_std();
-        let args: Vec<_> = std_command
-            .get_args()
-            .map(|value| value.to_string_lossy().to_string())
-            .collect();
+        let (program, args) = wrapped_argv("pwsh.exe", "Get-ChildItem");
 
-        assert_eq!(std_command.get_program().to_string_lossy(), "pwsh.exe");
+        assert_eq!(program, "pwsh.exe");
         assert_eq!(
             args,
             vec![
@@ -969,6 +997,40 @@ mod shell_config_tests {
                 "-Command".to_string(),
                 "Get-ChildItem".to_string(),
             ]
+        );
+    }
+
+    /// A cmd-flavored shell gets cmd's own convention. Pinned because the
+    /// classifier's Windows fallthrough now routes unrecognized `COMSPEC`
+    /// values here rather than to POSIX `-c`.
+    ///
+    /// The line is passed verbatim as its own argv element — see
+    /// `shell_wrapped_command` for why no UTF-8 preamble is prepended.
+    #[test]
+    fn cmd_fallback_uses_the_cmd_convention_verbatim() {
+        let (program, args) = wrapped_argv("cmd.exe", "dir \"a b\"");
+
+        assert_eq!(program, "cmd.exe");
+        assert_eq!(
+            args,
+            vec![
+                "/D".to_string(),
+                "/S".to_string(),
+                "/C".to_string(),
+                "dir \"a b\"".to_string(),
+            ]
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn posix_fallback_passes_the_line_verbatim() {
+        let (program, args) = wrapped_argv("/bin/sh", "echo hi && echo bye");
+
+        assert_eq!(program, "/bin/sh");
+        assert_eq!(
+            args,
+            vec!["-c".to_string(), "echo hi && echo bye".to_string()]
         );
     }
 
@@ -1175,6 +1237,30 @@ mod tests {
         assert!(
             output.contains(request_canonical.to_string_lossy().as_ref()),
             "request cwd did not take precedence over the default; got:\n{output}"
+        );
+    }
+
+    /// Regression guard for the *selection* made in `create_terminal`, not
+    /// just for `default_platform_shell()` in isolation: with nothing
+    /// configured the fallback must be the POSIX platform shell, never the
+    /// host's login shell. Agents emit `sh` syntax while `$SHELL` may be
+    /// fish/csh/nu, which reject `export`, `2>&1`, and heredocs.
+    ///
+    /// `$0` names the shell that actually interpreted the line, so this fails
+    /// if the call site ever goes back to `resolve_shell()` — on a zsh host it
+    /// reports `/bin/zsh`.
+    #[tokio::test]
+    async fn unset_default_runs_the_platform_shell_not_the_login_shell() {
+        let runtime = TerminalRuntime::with_base_env(BTreeMap::new());
+
+        let session_id = SessionId::new("unset-default-shell".to_string());
+        let request =
+            CreateTerminalRequest::new(session_id.clone(), "echo \"ran-under=$0\"".to_string());
+        let output = run_and_capture(&runtime, &session_id, request).await;
+
+        assert!(
+            output.contains("ran-under=/bin/sh"),
+            "unset default did not run through /bin/sh; got:\n{output}"
         );
     }
 

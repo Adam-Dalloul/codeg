@@ -2,9 +2,9 @@ use sea_orm::DatabaseConnection;
 #[cfg(feature = "tauri-runtime")]
 use tauri::State;
 
-use crate::acp::terminal_runtime::TerminalShellRuntimeConfig;
 #[cfg(feature = "tauri-runtime")]
 use crate::acp::manager::ConnectionManager;
+use crate::acp::terminal_runtime::TerminalShellRuntimeConfig;
 use crate::app_error::AppCommandError;
 use crate::db::service::app_metadata_service;
 #[cfg(feature = "tauri-runtime")]

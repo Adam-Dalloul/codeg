@@ -308,6 +308,9 @@ export function GeneralSettings() {
                 })}
               </p>
             )}
+            <p className="text-[11px] text-muted-foreground leading-4">
+              {t("terminalAgentShellHint")}
+            </p>
 
             {selectedShellId === TERMINAL_SHELL_OPTION_CUSTOM && (
               <div className="space-y-2 pt-2">
