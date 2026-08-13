@@ -1767,7 +1767,16 @@
         "error": "Error de conexión",
         "disconnected": "Desconectado",
         "tooltip": "{agent}: {status}",
-        "tooltipError": "{agent}: {error}"
+        "tooltipError": "{agent}: {error}",
+        "title": "Conexión del agente",
+        "triggerAria": "Conexión del agente: {status}",
+        "workingDir": "Directorio de trabajo",
+        "sessionId": "ID de sesión",
+        "viewerNote": "Conectado a una sesión que pertenece a otro cliente: reconectar solo vuelve a adjuntar esta vista.",
+        "reconnectInterrupts": "Reconectar reinicia el agente e interrumpe el trabajo en curso.",
+        "reconnect": "Reconectar",
+        "reconnecting": "Reconectando...",
+        "reconnectUnavailable": "Aún no hay ninguna sesión a la que reconectar."
       },
       "tasks": {
         "title": "Tareas"

@@ -1767,7 +1767,16 @@
         "error": "連線異常",
         "disconnected": "未連線",
         "tooltip": "{agent}：{status}",
-        "tooltipError": "{agent}：{error}"
+        "tooltipError": "{agent}：{error}",
+        "title": "智慧體連線",
+        "triggerAria": "智慧體連線：{status}",
+        "workingDir": "工作目錄",
+        "sessionId": "工作階段 ID",
+        "viewerNote": "已接入其他用戶端擁有的工作階段——重新連線只會重新接入目前檢視。",
+        "reconnectInterrupts": "重新連線會重啟智慧體，並中斷進行中的工作。",
+        "reconnect": "重新連線",
+        "reconnecting": "正在重新連線...",
+        "reconnectUnavailable": "目前沒有可重新連線的工作階段。"
       },
       "tasks": {
         "title": "任務"

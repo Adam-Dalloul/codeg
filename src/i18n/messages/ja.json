@@ -1767,7 +1767,16 @@
         "error": "接続エラー",
         "disconnected": "未接続",
         "tooltip": "{agent}：{status}",
-        "tooltipError": "{agent}：{error}"
+        "tooltipError": "{agent}：{error}",
+        "title": "エージェント接続",
+        "triggerAria": "エージェント接続: {status}",
+        "workingDir": "作業ディレクトリ",
+        "sessionId": "セッション ID",
+        "viewerNote": "他のクライアントが所有するセッションに接続しています。再接続してもこのビューが接続し直されるだけです。",
+        "reconnectInterrupts": "再接続するとエージェントが再起動し、進行中の処理が中断されます。",
+        "reconnect": "再接続",
+        "reconnecting": "再接続中...",
+        "reconnectUnavailable": "再接続できるセッションがまだありません。"
       },
       "tasks": {
         "title": "タスク"

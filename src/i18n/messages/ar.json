@@ -1767,7 +1767,16 @@
         "error": "خطأ في الاتصال",
         "disconnected": "غير متصل",
         "tooltip": "{agent}: {status}",
-        "tooltipError": "{agent}: {error}"
+        "tooltipError": "{agent}: {error}",
+        "title": "اتصال الوكيل",
+        "triggerAria": "اتصال الوكيل: {status}",
+        "workingDir": "مجلد العمل",
+        "sessionId": "معرّف الجلسة",
+        "viewerNote": "متصل بجلسة يملكها عميل آخر — إعادة الاتصال تعيد ربط هذا العرض فقط.",
+        "reconnectInterrupts": "إعادة الاتصال تعيد تشغيل الوكيل وتقاطع العمل الجاري.",
+        "reconnect": "إعادة الاتصال",
+        "reconnecting": "جارٍ إعادة الاتصال...",
+        "reconnectUnavailable": "لا توجد جلسة لإعادة الاتصال بها بعد."
       },
       "tasks": {
         "title": "المهام"

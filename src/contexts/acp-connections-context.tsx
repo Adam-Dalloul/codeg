@@ -35,7 +35,10 @@ import {
 } from "@/lib/api"
 import { denormalizeSnapshot } from "@/lib/snapshot-denormalize"
 import { buildDelegationSeedEnvelopes } from "@/lib/delegation-seed"
-import { isConnectionBusy } from "@/lib/connection-teardown"
+import {
+  isConnectionBusy,
+  isConnectionGoneError,
+} from "@/lib/connection-teardown"
 import {
   getConversationIdByExternalIdFromStore,
   useConversationRuntimeStore,
@@ -599,6 +602,22 @@ type ConnectionsMap = Map<string, ConnectionState>
 const MAX_LIVE_TOOL_RAW_OUTPUT_CHARS = 200_000
 const MAX_BUFFERED_UNMAPPED_EVENTS_PER_CONNECTION = 64
 const MAX_BUFFERED_UNMAPPED_CONNECTIONS = 128
+/**
+ * How many times a user-driven `reconnect` will wait for an in-flight
+ * `connect()` on the same key before giving up and rebuilding anyway. Small on
+ * purpose: this only absorbs a connect that was already running (or the one
+ * connect() itself re-dispatches for a superseded request), and a key that
+ * keeps reconnecting on its own must not hang the button forever.
+ */
+const MAX_RECONNECT_SETTLE_WAITS = 3
+/**
+ * How long each of those waits will hold. A connect settles by resolving its
+ * IPC, so one that never answers would otherwise park the reconnect FOREVER —
+ * and a wedged connect is the very state this button is clicked from. Generous
+ * enough to cover a real agent spawn (the wait exists to let that finish);
+ * expiring just returns the button to the user to try again.
+ */
+const CONNECT_SETTLE_WAIT_TIMEOUT_MS = 15_000
 
 // Per-agentType cache for selectors (modes / configOptions).
 // Populated when real data arrives from the backend.
@@ -2403,7 +2422,17 @@ export interface AcpActionsValue {
     sessionId?: string,
     conversationId?: number
   ): Promise<void>
-  disconnect(contextKey: string): Promise<void>
+  /**
+   * Release the connection for `contextKey`. The LOCAL entry always goes away
+   * — a stranded one would make the next `connect()` take its "already
+   * connected" fast path onto a session that may be dead.
+   *
+   * Resolves `true` when the backend teardown is confirmed (including a
+   * connection that was already gone), `false` when it failed for any other
+   * reason and the agent process may still be alive. Callers that report a
+   * restart to the user gate on it; fire-and-forget teardowns ignore it.
+   */
+  disconnect(contextKey: string): Promise<boolean>
   /**
    * Release a connection whose SURFACE went away on its own (a preview tab
    * replaced by the next single-click in the sidebar) — never a user-intent
@@ -2513,6 +2542,33 @@ export interface AcpActionsValue {
    * own the backend process) — callers gate their "applied" confirmation on it.
    */
   reapplyConfig(contextKey: string): Promise<boolean>
+  /**
+   * User-driven reconnect for the composer's connection-status popover, usable
+   * in ANY state — unlike `reapplyConfig`, which only restarts a live owner.
+   *
+   *   * live owner  → disconnect + connect (a restart; a prompting turn dies
+   *     with the agent CLI, which is why the popover warns before offering it)
+   *   * viewer      → detach + re-run discovery, so it re-attaches (or spawns
+   *     its own agent if the previous owner is gone). Never `acpDisconnect`s.
+   *   * no entry    → connect with the params `connect()` last recorded for
+   *     this key, which is what makes the button work from `disconnected` /
+   *     `error`, where the store holds nothing at all.
+   *
+   * Returns `false` on a no-op: a delegation child (broker-owned) or a key we
+   * have no params for (never connected in this session).
+   */
+  reconnect(contextKey: string): Promise<boolean>
+  /**
+   * The params `reconnect(contextKey)` would use, or `null` when it would be a
+   * no-op. Lets the status popover name the agent and enable its button while
+   * NO connection exists. Non-reactive by design — the values only change when
+   * `connect()` runs, which also notifies the store.
+   */
+  getReconnectInfo(contextKey: string): {
+    agentType: AgentType
+    workingDir: string | null
+    sessionId: string | null
+  } | null
   /**
    * Dismiss the "restart to apply" banner for the current drift WITHOUT
    * restarting (client-local; the underlying `configStale` is untouched). A
@@ -2672,9 +2728,71 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
   // Guard against concurrent connect() calls
   const connectingKeysRef = useRef(new Set<string>())
   const pendingConnectRequestsRef = useRef(new Map<string, ConnectRequest>())
+  // Last params `connect()` was called with, per contextKey — kept AFTER the
+  // connection is gone (teardown removes the store entry entirely, so a
+  // `disconnected` / `error` composer has nothing left to reconnect from).
+  // Recorded even for attempts that fail, which is exactly the `error` case the
+  // status popover's Reconnect button has to serve.
+  //
+  // Backend-RESOLVED identity is folded back in as it arrives (see
+  // `rememberResolvedIdentity`): a new conversation connects with no sessionId
+  // at all, so the request as issued would reconnect into a FRESH session and
+  // silently abandon the conversation's history.
+  const lastConnectParamsRef = useRef(new Map<string, ConnectRequest>())
   // Keys whose disconnect was requested while connect was still in flight
   const abandonedKeysRef = useRef(new Set<string>())
+  // Resolvers waiting for an in-flight connect() on a key to settle. Only a
+  // user-driven `reconnect` uses this: connect() parks a same-parameter request
+  // in `pendingConnectRequestsRef` and its `finally` then DROPS it as a
+  // duplicate, so a reconnect landing mid-connect would vanish silently.
+  const connectSettledWaitersRef = useRef(new Map<string, Array<() => void>>())
   const connectRef = useRef<AcpActionsValue["connect"] | null>(null)
+
+  /**
+   * Fold backend-resolved identity into the remembered connect params.
+   *
+   * `connect()` records what the CALLER asked for, and for a new conversation
+   * that request carries no `sessionId` / `conversationId` — the backend mints
+   * them later and they only ever land on the store entry. But the entry is
+   * exactly what disappears when a connection is removed WITHOUT a user
+   * teardown (backend GC via `connection_gone`, the idle sweep, the unmount
+   * cleanup), which is the main way a composer ends up needing Reconnect. With
+   * only the original request left, that button would start a fresh ACP session
+   * instead of resuming the conversation.
+   *
+   * No-op when nothing was remembered for the key: `agentType` alone makes a
+   * request reconnectable, and it can only come from `connect()`.
+   */
+  const rememberResolvedIdentity = useCallback(
+    (
+      contextKey: string,
+      patch: { sessionId?: string; conversationId?: number }
+    ) => {
+      const remembered = lastConnectParamsRef.current.get(contextKey)
+      if (!remembered) return
+      lastConnectParamsRef.current.set(contextKey, { ...remembered, ...patch })
+    },
+    []
+  )
+
+  /**
+   * Snapshot the live entry's resolved identity into the remembered params
+   * immediately BEFORE that entry goes away.
+   *
+   * Identity reaches the entry by several routes — the `session_started` event,
+   * a snapshot hydrate on a cold attach (where the event was already consumed
+   * before this client attached, so it is never replayed), a replayed event —
+   * but it leaves by exactly one: the entry being removed. Capturing at the
+   * single exit covers every route in, including ones added later.
+   */
+  const captureIdentityBeforeRemoval = useCallback(
+    (contextKey: string) => {
+      const sessionId = storeRef.current.connections.get(contextKey)?.sessionId
+      if (!sessionId) return
+      rememberResolvedIdentity(contextKey, { sessionId })
+    },
+    [rememberResolvedIdentity]
+  )
 
   type ConnectBlockState =
     | { kind: "none"; reason: "" }
@@ -3352,6 +3470,10 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
             contextKey,
             sessionId: e.session_id,
           })
+          // The id that turns a later reconnect into a RESUME. It reaches us
+          // only here, and only the store entry holds it — which is precisely
+          // what a backend GC / idle sweep removes.
+          rememberResolvedIdentity(contextKey, { sessionId: e.session_id })
           break
         case "conversation_linked":
           // Backend just bound (or reaffirmed) the connection's DB conversation
@@ -3365,6 +3487,13 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
             conversationId: e.conversation_id,
             folderId: e.folder_id,
           })
+          // Same reason as session_started: a reconnect needs the conversation
+          // id to be able to attach as a viewer to a surviving owner.
+          if (e.conversation_id > 0) {
+            rememberResolvedIdentity(contextKey, {
+              conversationId: e.conversation_id,
+            })
+          }
           break
         case "session_modes": {
           flushStreamingQueue()
@@ -3721,6 +3850,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
       enqueueStreamingAction,
       flushPendingToolCallUpdates,
       flushStreamingQueue,
+      rememberResolvedIdentity,
       scheduleToolCallUpdateFlush,
       t,
       tChat,
@@ -3919,6 +4049,9 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
           // so the user sees the conversation tab go away rather than
           // staring at stale state forever.
           attachSubscriptionsRef.current.delete(contextKey)
+          // The composer that survives this is exactly the one whose Reconnect
+          // button has to resume the session rather than start a new one.
+          captureIdentityBeforeRemoval(contextKey)
           dispatch({ type: "CONNECTION_REMOVED", contextKey })
         },
       }
@@ -3927,7 +4060,12 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
       attachSubscriptionsRef.current.set(contextKey, activeSub)
       return activeSub
     },
-    [applyMappedEnvelope, dispatch, seedDelegationsFromSnapshot]
+    [
+      applyMappedEnvelope,
+      captureIdentityBeforeRemoval,
+      dispatch,
+      seedDelegationsFromSnapshot,
+    ]
   )
 
   // Tear down an attach subscription: detach the WS subscription so the
@@ -4130,12 +4268,15 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
         teardownAttachSubscription(contextKey)
         lastActivityRef.current.delete(contextKey)
         pendingUnmappedEventsRef.current.delete(connectionId)
+        // Reclaimed for idleness, not closed: the tab is still open and its
+        // Reconnect button must resume this session, not start a new one.
+        captureIdentityBeforeRemoval(contextKey)
         dispatch({ type: "CONNECTION_REMOVED", contextKey })
       }
     }, IDLE_SWEEP_INTERVAL_MS)
 
     return () => clearInterval(timer)
-  }, [dispatch, teardownAttachSubscription])
+  }, [captureIdentityBeforeRemoval, dispatch, teardownAttachSubscription])
 
   // Disconnect all on unmount
   useEffect(() => {
@@ -4291,6 +4432,10 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
         sessionId,
         conversationId,
       }
+      // Remember BEFORE the in-flight early return and before the preflight can
+      // throw: a connect that never produced a store entry is precisely when
+      // `reconnect()` has nothing else to go on.
+      lastConnectParamsRef.current.set(contextKey, request)
       if (connectingKeysRef.current.has(contextKey)) {
         pendingConnectRequestsRef.current.set(contextKey, request)
         return
@@ -4653,6 +4798,11 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
       } finally {
         connectingKeysRef.current.delete(contextKey)
         abandonedKeysRef.current.delete(contextKey)
+        const settledWaiters = connectSettledWaitersRef.current.get(contextKey)
+        if (settledWaiters) {
+          connectSettledWaitersRef.current.delete(contextKey)
+          for (const resolveWaiter of settledWaiters) resolveWaiter()
+        }
         const pendingRequest = pendingConnectRequestsRef.current.get(contextKey)
         if (pendingRequest) {
           pendingConnectRequestsRef.current.delete(contextKey)
@@ -4691,7 +4841,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
   connectRef.current = connect
 
   const disconnect = useCallback(
-    async (contextKey: string) => {
+    async (contextKey: string): Promise<boolean> => {
       pendingConnectRequestsRef.current.delete(contextKey)
       const conn = storeRef.current.connections.get(contextKey)
       if (!conn) {
@@ -4700,8 +4850,13 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
         if (connectingKeysRef.current.has(contextKey)) {
           abandonedKeysRef.current.add(contextKey)
         }
-        return
+        return true
       }
+      // Before either branch drops the entry: an explicit teardown is also how
+      // a `reconnect` starts, and the session it resumes may only ever have
+      // been known to the entry (cold attach hydrates it from the snapshot,
+      // never from a replayed `session_started`).
+      captureIdentityBeforeRemoval(contextKey)
       if (conn.isViewer) {
         // Viewer teardown: drop our read-only attachment WITHOUT
         // `acpDisconnect` — the backend connection belongs to another client,
@@ -4713,16 +4868,35 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
         pendingUnmappedEventsRef.current.delete(conn.connectionId)
         lastActivityRef.current.delete(contextKey)
         dispatch({ type: "CONNECTION_REMOVED", contextKey })
-        return
+        return true
       }
-      await acpDisconnect(conn.connectionId)
+      // A failed backend teardown must not strand the local entry: propagating
+      // would leak the attach subscription and leave an entry that makes the
+      // next `connect()` take its "already connected" fast path, which is
+      // exactly the dead session a user-driven `reconnect` has to rebuild. So
+      // the local release below is unconditional — the same policy the idle
+      // sweep and connect()'s own re-spawn teardown already apply.
+      //
+      // The OUTCOME still has to be honest, though. "Already gone" is a real
+      // teardown (another window reaped it, the agent died, the backend
+      // restarted); anything else may have left the agent process running, and
+      // a caller that announces "restarted" on one of those would be wrong —
+      // the follow-up connect can re-attach to the process it believed it had
+      // replaced. Report which happened and let the caller decide.
+      let tornDown = true
+      await acpDisconnect(conn.connectionId).catch((error: unknown) => {
+        if (isConnectionGoneError(error)) return
+        console.warn("[Acp] backend teardown failed, releasing locally:", error)
+        tornDown = false
+      })
       reverseMapRef.current.delete(conn.connectionId)
       teardownAttachSubscription(contextKey)
       lastActivityRef.current.delete(contextKey)
       pendingUnmappedEventsRef.current.delete(conn.connectionId)
       dispatch({ type: "CONNECTION_REMOVED", contextKey })
+      return tornDown
     },
-    [dispatch, teardownAttachSubscription]
+    [captureIdentityBeforeRemoval, dispatch, teardownAttachSubscription]
   )
 
   // Lifecycle release for a surface that vanished on its own — currently the
@@ -4756,16 +4930,142 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
       // Capture identity BEFORE teardown. `sessionId` is what makes the new
       // process resume this conversation (session/load) rather than start fresh.
       const { agentType, workingDir, sessionId } = conn
-      await disconnect(contextKey)
+      const tornDown = await disconnect(contextKey)
       await connect(
         contextKey,
         agentType,
         workingDir ?? undefined,
         sessionId ?? undefined
       )
-      return true
+      // Reconnect regardless — the user is left with a working connection
+      // either way — but an unconfirmed teardown means the old process may
+      // still be alive and holding the OLD config, and `connect()` can land
+      // right back on it. Returning false keeps the caller from showing an
+      // "applied" confirmation it can't stand behind.
+      return tornDown
     },
     [connect, disconnect]
+  )
+
+  // Params a reconnect would use: the LIVE connection wins (it carries what the
+  // backend actually resolved — notably a sessionId minted after connect), with
+  // the remembered request filling in what the store doesn't hold
+  // (conversationId, and everything at all once the entry is gone).
+  const resolveReconnectRequest = useCallback(
+    (contextKey: string): ConnectRequest | null => {
+      const conn = storeRef.current.connections.get(contextKey)
+      // Broker-owned: its lifetime is the parent's delegation_started /
+      // _completed pair, and disconnecting would kill a child the user never
+      // spawned. Bail before falling back to any remembered params.
+      if (conn?.isDelegationChild) return null
+      const remembered = lastConnectParamsRef.current.get(contextKey)
+      const agentType = conn?.agentType ?? remembered?.agentType
+      if (!agentType) return null
+      return {
+        agentType,
+        workingDir: conn?.workingDir ?? remembered?.workingDir ?? undefined,
+        sessionId: conn?.sessionId ?? remembered?.sessionId ?? undefined,
+        conversationId: remembered?.conversationId,
+      }
+    },
+    []
+  )
+
+  const getReconnectInfo = useCallback(
+    (contextKey: string) => {
+      const request = resolveReconnectRequest(contextKey)
+      if (!request) return null
+      return {
+        agentType: request.agentType,
+        workingDir: request.workingDir ?? null,
+        sessionId: request.sessionId ?? null,
+      }
+    },
+    [resolveReconnectRequest]
+  )
+
+  // Settle-point for an in-flight connect() on a key. Resolves `true` once that
+  // connect finishes (immediately when nothing is connecting), `false` if it
+  // has not answered within the timeout — a connect whose IPC never settles
+  // must not hold the caller forever.
+  const waitForConnectSettled = useCallback(
+    (contextKey: string): Promise<boolean> => {
+      if (!connectingKeysRef.current.has(contextKey))
+        return Promise.resolve(true)
+      return new Promise<boolean>((resolve) => {
+        const onSettled = () => {
+          clearTimeout(timer)
+          resolve(true)
+        }
+        const timer = setTimeout(() => {
+          // Drop our resolver so the abandoned wait can't accumulate on a key
+          // that keeps failing to settle — including the key itself once the
+          // last waiter gives up, since a connect that never answers would
+          // otherwise leave the empty list behind for good.
+          const waiters = connectSettledWaitersRef.current.get(contextKey)
+          const at = waiters?.indexOf(onSettled) ?? -1
+          if (waiters && at >= 0) waiters.splice(at, 1)
+          if (waiters?.length === 0) {
+            connectSettledWaitersRef.current.delete(contextKey)
+          }
+          resolve(false)
+        }, CONNECT_SETTLE_WAIT_TIMEOUT_MS)
+        const waiters = connectSettledWaitersRef.current.get(contextKey)
+        if (waiters) waiters.push(onSettled)
+        else connectSettledWaitersRef.current.set(contextKey, [onSettled])
+      })
+    },
+    []
+  )
+
+  const reconnect = useCallback(
+    async (contextKey: string): Promise<boolean> => {
+      // A connect() already in flight would SWALLOW this one: connect() parks a
+      // same-parameter request as pending and its `finally` discards it as a
+      // duplicate, so the button would spin once and change nothing — with no
+      // store entry yet, the teardown below wouldn't run either. Wait for the
+      // attempt to settle and then rebuild: the user asked for a new
+      // connection, not to join whatever is already running (they typically
+      // click precisely BECAUSE the connecting state is stuck).
+      //
+      // Bounded rather than looped-to-clear: a key that keeps reconnecting on
+      // its own must not hang the button forever, and one more contending
+      // connect is what connectingKeysRef already exists to serialise.
+      //
+      // Each wait is also time-bounded, because the connect this one is stuck
+      // behind may never answer at all. Rebuilding anyway would be worse than
+      // useless — connect() would park it as a duplicate and drop it — so give
+      // up and hand the button back instead of spinning on a wedged IPC.
+      for (let i = 0; i < MAX_RECONNECT_SETTLE_WAITS; i++) {
+        if (!connectingKeysRef.current.has(contextKey)) break
+        if (!(await waitForConnectSettled(contextKey))) return false
+      }
+      // Resolved AFTER the wait: the connect we just waited on may have minted
+      // the sessionId that makes this a resume rather than a fresh session.
+      const request = resolveReconnectRequest(contextKey)
+      if (!request) return false
+      // Tear down first even though connect() would: its "same params, still
+      // alive → no-op" fast path would otherwise swallow the whole thing, and
+      // this button exists precisely to rebuild a connection whose params did
+      // NOT change. `disconnect` detaches viewers without killing the owner's
+      // agent, so this stays safe for them too.
+      //
+      // An unconfirmed teardown is deliberately NOT fatal here: the local entry
+      // is released either way, and refusing to reconnect would strand the user
+      // on the dead connection this button exists to replace.
+      if (storeRef.current.connections.has(contextKey)) {
+        await disconnect(contextKey)
+      }
+      await connect(
+        contextKey,
+        request.agentType,
+        request.workingDir,
+        request.sessionId,
+        request.conversationId
+      )
+      return true
+    },
+    [connect, disconnect, resolveReconnectRequest, waitForConnectSettled]
   )
 
   const dismissConfigStale = useCallback(
@@ -4793,6 +5093,9 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
     // Context keys are reused across backends, so a surviving entry here would
     // suppress the first snapshot alert of an unrelated session.
     alertedErrorDetailsRef.current.clear()
+    // Same reuse hazard: remembered connect params must not let a reconnect
+    // resurrect the previous backend's session under a recycled key.
+    lastConnectParamsRef.current.clear()
     await Promise.all(promises)
     dispatch({ type: "REMOVE_ALL" })
   }, [dispatch, teardownAttachSubscription])
@@ -5106,6 +5409,8 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
       attachDelegationChild,
       detachDelegationChild,
       reapplyConfig,
+      reconnect,
+      getReconnectInfo,
       dismissConfigStale,
     }),
     [
@@ -5129,6 +5434,8 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
       attachDelegationChild,
       detachDelegationChild,
       reapplyConfig,
+      reconnect,
+      getReconnectInfo,
       dismissConfigStale,
     ]
   )

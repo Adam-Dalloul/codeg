@@ -1767,7 +1767,16 @@
         "error": "连接异常",
         "disconnected": "未连接",
         "tooltip": "{agent}：{status}",
-        "tooltipError": "{agent}：{error}"
+        "tooltipError": "{agent}：{error}",
+        "title": "智能体连接",
+        "triggerAria": "智能体连接：{status}",
+        "workingDir": "工作目录",
+        "sessionId": "会话 ID",
+        "viewerNote": "已接入其他客户端拥有的会话——重连只会重新接入当前视图。",
+        "reconnectInterrupts": "重连会重启智能体，并中断正在进行的工作。",
+        "reconnect": "重新连接",
+        "reconnecting": "正在重新连接...",
+        "reconnectUnavailable": "暂无可重连的会话。"
       },
       "tasks": {
         "title": "任务"

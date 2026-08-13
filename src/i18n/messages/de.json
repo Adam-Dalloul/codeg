@@ -1767,7 +1767,16 @@
         "error": "Verbindungsfehler",
         "disconnected": "Getrennt",
         "tooltip": "{agent}: {status}",
-        "tooltipError": "{agent}: {error}"
+        "tooltipError": "{agent}: {error}",
+        "title": "Agent-Verbindung",
+        "triggerAria": "Agent-Verbindung: {status}",
+        "workingDir": "Arbeitsverzeichnis",
+        "sessionId": "Sitzungs-ID",
+        "viewerNote": "Mit einer Sitzung verbunden, die einem anderen Client gehört – ein Neuverbinden hängt nur diese Ansicht erneut an.",
+        "reconnectInterrupts": "Neu verbinden startet den Agenten neu und unterbricht die laufende Arbeit.",
+        "reconnect": "Neu verbinden",
+        "reconnecting": "Verbinde neu...",
+        "reconnectUnavailable": "Noch keine Sitzung zum Neuverbinden."
       },
       "tasks": {
         "title": "Aufgaben"

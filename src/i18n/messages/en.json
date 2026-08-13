@@ -1767,7 +1767,16 @@
         "error": "Connection error",
         "disconnected": "Disconnected",
         "tooltip": "{agent} - {status}",
-        "tooltipError": "{agent} - {error}"
+        "tooltipError": "{agent} - {error}",
+        "title": "Agent connection",
+        "triggerAria": "Agent connection: {status}",
+        "workingDir": "Working directory",
+        "sessionId": "Session ID",
+        "viewerNote": "Attached to a session another client owns — reconnecting only re-attaches this view.",
+        "reconnectInterrupts": "Reconnecting restarts the agent and interrupts the work in progress.",
+        "reconnect": "Reconnect",
+        "reconnecting": "Reconnecting...",
+        "reconnectUnavailable": "Nothing to reconnect to yet."
       },
       "tasks": {
         "title": "Tasks"
