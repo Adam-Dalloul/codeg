@@ -25,6 +25,7 @@ use crate::acp::question::{
     build_outcome, QuestionAnswer, QuestionOutcome, QuestionSpec, RegisteredQuestion,
     SessionQuestionAccess,
 };
+use crate::acp::terminal_runtime::TerminalShellRuntimeConfig;
 use crate::acp::types::{
     AcpEvent, AgentOptionsSnapshot, ConfigStaleKind, ConnectionInfo, ConnectionStatus,
     ForkResultInfo, PromptCapabilitiesInfo, PromptInputBlock,
@@ -201,6 +202,10 @@ pub struct ConnectionManager {
     /// tests; in production initialized from env via
     /// `spawn_handshake_timeout_from_env`.
     spawn_handshake_timeout: Duration,
+    /// Shared General Settings shell used by ACP terminal fallbacks. Cloned
+    /// into each connection runtime so a setting update applies to existing
+    /// model sessions as well as newly spawned ones.
+    terminal_shell_config: TerminalShellRuntimeConfig,
     /// Delegation broker + token registry + UDS path installed during app
     /// bootstrap (`install_delegation`). When present, `spawn_agent` propagates
     /// the injection to `spawn_agent_connection`, which makes
@@ -262,6 +267,7 @@ impl ConnectionManager {
             connections: Arc::new(Mutex::new(HashMap::new())),
             spawn_locks: Arc::new(Mutex::new(HashMap::new())),
             spawn_handshake_timeout: spawn_handshake_timeout_from_env(),
+            terminal_shell_config: TerminalShellRuntimeConfig::new(),
             delegation_injection: Arc::new(std::sync::OnceLock::new()),
             probe_locks: Arc::new(Mutex::new(HashMap::new())),
             pending_questions: Arc::new(Mutex::new(HashMap::new())),
@@ -275,6 +281,7 @@ impl ConnectionManager {
             connections: self.connections.clone(),
             spawn_locks: self.spawn_locks.clone(),
             spawn_handshake_timeout: self.spawn_handshake_timeout,
+            terminal_shell_config: self.terminal_shell_config.clone(),
             delegation_injection: self.delegation_injection.clone(),
             probe_locks: self.probe_locks.clone(),
             pending_questions: self.pending_questions.clone(),
@@ -293,6 +300,13 @@ impl ConnectionManager {
         self.delegation_injection.get().cloned()
     }
 
+    /// Returns the shared terminal-shell setting consumed by ACP terminal
+    /// runtimes. Keeping the handle shared makes saves apply immediately to
+    /// connections that are already running.
+    pub fn terminal_shell_config(&self) -> TerminalShellRuntimeConfig {
+        self.terminal_shell_config.clone()
+    }
+
     /// Test-only constructor that overrides the spawn-handshake timeout.
     /// Production code should use `new()`.
     #[cfg(test)]
@@ -301,6 +315,7 @@ impl ConnectionManager {
             connections: Arc::new(Mutex::new(HashMap::new())),
             spawn_locks: Arc::new(Mutex::new(HashMap::new())),
             spawn_handshake_timeout: timeout,
+            terminal_shell_config: TerminalShellRuntimeConfig::new(),
             delegation_injection: Arc::new(std::sync::OnceLock::new()),
             probe_locks: Arc::new(Mutex::new(HashMap::new())),
             pending_questions: Arc::new(Mutex::new(HashMap::new())),
@@ -478,6 +493,7 @@ impl ConnectionManager {
             preferred_mode_id,
             preferred_config_values,
             self.delegation_snapshot(),
+            self.terminal_shell_config.clone(),
         )
         .await?;
 
