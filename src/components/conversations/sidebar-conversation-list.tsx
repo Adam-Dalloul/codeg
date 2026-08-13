@@ -900,10 +900,9 @@ export function SidebarConversationList({
     folderId: number
     folderName: string
   } | null>(null)
-  const [manageState, setManageState] = useState<{
-    folderId: number
-    folderName: string
-  } | null>(null)
+  // Folder the "manage conversations" dialog opens on — its initial scope; the
+  // dialog itself can then widen to the workspace or point at another folder.
+  const [manageFolderId, setManageFolderId] = useState<number | null>(null)
   const [cloneOpen, setCloneOpen] = useState(false)
   const [browserOpen, setBrowserOpen] = useState(false)
   // Folder whose links are being managed (context menu -> Linked folders).
@@ -1721,13 +1720,9 @@ export function SidebarConversationList({
     [folderIndex]
   )
 
-  const handleManageConversations = useCallback(
-    (folderId: number) => {
-      const name = folderIndex.get(folderId)?.name ?? String(folderId)
-      setManageState({ folderId, folderName: name })
-    },
-    [folderIndex]
-  )
+  const handleManageConversations = useCallback((folderId: number) => {
+    setManageFolderId(folderId)
+  }, [])
 
   const handleManageFolderLinks = useCallback(
     (folderId: number) => {
@@ -2677,12 +2672,11 @@ export function SidebarConversationList({
         </AlertDialogContent>
       </AlertDialog>
 
-      {manageState && (
+      {manageFolderId != null && (
         <ConversationManageDialog
           open
-          onOpenChange={(o) => !o && setManageState(null)}
-          folderId={manageState.folderId}
-          folderName={manageState.folderName}
+          onOpenChange={(o) => !o && setManageFolderId(null)}
+          folderId={manageFolderId}
         />
       )}
 
