@@ -3895,7 +3895,8 @@
       "emptyHint": "実行中、または対応が必要なセッションがここに表示されます。",
       "statusRunning": "実行中",
       "statusWaiting": "待機中",
-      "statusError": "エラー"
+      "statusError": "エラー",
+      "subAgentOf": "サブエージェント"
     },
     "menu": {
       "scale": "拡大率",

@@ -3907,7 +3907,8 @@
       "emptyHint": "正在运行或需要你处理的会话会显示在这里。",
       "statusRunning": "运行中",
       "statusWaiting": "等待中",
-      "statusError": "出错"
+      "statusError": "出错",
+      "subAgentOf": "子智能体"
     },
     "menu": {
       "scale": "缩放",

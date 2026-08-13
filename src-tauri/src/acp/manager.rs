@@ -2062,6 +2062,9 @@ impl ConnectionManager {
                 title: String::new(),
                 status: state.status.clone(),
                 pending,
+                // Same reason as `title`: resolving a delegation child's parent
+                // needs the DB. Filled by `pet_list_active_sessions_core`.
+                parent: None,
             });
         }
         out

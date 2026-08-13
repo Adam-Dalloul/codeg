@@ -3895,7 +3895,8 @@
       "emptyHint": "Les agents en cours et ceux qui vous attendent apparaissent ici.",
       "statusRunning": "En cours",
       "statusWaiting": "En attente",
-      "statusError": "Erreur"
+      "statusError": "Erreur",
+      "subAgentOf": "Sous-agent de"
     },
     "menu": {
       "scale": "Échelle",

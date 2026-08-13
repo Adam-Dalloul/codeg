@@ -8,6 +8,7 @@ use std::sync::Arc;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+use crate::acp::delegation::types::{BlockedKind, BlockedOn};
 use crate::acp::event_stream::{ConnectionEventStream, RecentEventsBuffer};
 use crate::acp::feedback::{FeedbackItem, FeedbackStatus};
 use crate::acp::plan_approval::PendingPlanApprovalState;
@@ -1196,6 +1197,67 @@ impl SessionState {
             ));
         }
 
+        None
+    }
+
+    /// The prompt this session is parked on, if any — a permission, an
+    /// `ask_user_question`, or a plan approval. `None` means nothing is waiting
+    /// on the user.
+    ///
+    /// Sibling of [`Self::latest_live_reply`] and read on the same
+    /// `get_delegation_status` path: for a delegation child, "blocked on the
+    /// user" and "working" are indistinguishable from the outside, and only the
+    /// former means the parent's poll should stop waiting (#447). Precedence
+    /// matches the frontend's: at most one of these surfaces at a time in
+    /// practice, and permission is the one agents raise most.
+    ///
+    /// `title` is a one-line label for whatever needs deciding, capped at
+    /// `max_chars`; it can be `None` when the prompt carries no usable text.
+    pub fn blocking_prompt(&self, max_chars: usize) -> Option<BlockedOn> {
+        if let Some(p) = self.pending_permission.as_ref() {
+            // Every producer serializes the ACP `ToolCall` (or mirrors its
+            // shape), so `title` is the one field reliably present. Absent /
+            // blank degrades to `None` rather than inventing a label.
+            let title = p
+                .tool_call
+                .get("title")
+                .and_then(|v| v.as_str())
+                .and_then(last_nonempty_line)
+                .map(|l| truncate_one_line(l, max_chars));
+            return Some(BlockedOn {
+                kind: BlockedKind::Permission,
+                request_id: p.request_id.clone(),
+                title,
+            });
+        }
+        if let Some(q) = self.pending_question.as_ref() {
+            let title = q
+                .questions
+                .first()
+                .map(|first| first.question.as_str())
+                .and_then(last_nonempty_line)
+                .map(|l| truncate_one_line(l, max_chars));
+            return Some(BlockedOn {
+                kind: BlockedKind::Question,
+                request_id: q.question_id.clone(),
+                title,
+            });
+        }
+        if let Some(a) = self.pending_plan_approval.as_ref() {
+            // The plan's FIRST line is its heading; the last line would be
+            // whatever the plan trails off with, which reads as nonsense here.
+            let title = a
+                .plan_markdown
+                .lines()
+                .map(str::trim)
+                .find(|l| !l.is_empty())
+                .map(|l| truncate_one_line(l, max_chars));
+            return Some(BlockedOn {
+                kind: BlockedKind::PlanApproval,
+                request_id: a.approval_id.clone(),
+                title,
+            });
+        }
         None
     }
 

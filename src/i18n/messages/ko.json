@@ -3895,7 +3895,8 @@
       "emptyHint": "실행 중이거나 사용자의 조치가 필요한 세션이 여기에 표시됩니다.",
       "statusRunning": "실행 중",
       "statusWaiting": "대기 중",
-      "statusError": "오류"
+      "statusError": "오류",
+      "subAgentOf": "하위 에이전트"
     },
     "menu": {
       "scale": "크기",

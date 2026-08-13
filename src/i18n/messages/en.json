@@ -3907,7 +3907,8 @@
       "emptyHint": "Running agents and ones that need you appear here.",
       "statusRunning": "Running",
       "statusWaiting": "Waiting",
-      "statusError": "Error"
+      "statusError": "Error",
+      "subAgentOf": "Sub-agent of"
     },
     "menu": {
       "scale": "Scale",

@@ -3895,7 +3895,8 @@
       "emptyHint": "تظهر هنا الوكلاء قيد التشغيل وتلك التي تحتاج إليك.",
       "statusRunning": "قيد التشغيل",
       "statusWaiting": "في الانتظار",
-      "statusError": "خطأ"
+      "statusError": "خطأ",
+      "subAgentOf": "وكيل فرعي لـ"
     },
     "menu": {
       "scale": "الحجم",

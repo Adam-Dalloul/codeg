@@ -3895,7 +3895,8 @@
       "emptyHint": "正在執行或需要你處理的工作階段會顯示在這裡。",
       "statusRunning": "執行中",
       "statusWaiting": "等待中",
-      "statusError": "發生錯誤"
+      "statusError": "發生錯誤",
+      "subAgentOf": "子智慧代理"
     },
     "menu": {
       "scale": "縮放",

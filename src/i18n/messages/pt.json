@@ -3895,7 +3895,8 @@
       "emptyHint": "Agentes em execução e os que precisam de você aparecem aqui.",
       "statusRunning": "Em execução",
       "statusWaiting": "Aguardando",
-      "statusError": "Erro"
+      "statusError": "Erro",
+      "subAgentOf": "Subagente de"
     },
     "menu": {
       "scale": "Escala",

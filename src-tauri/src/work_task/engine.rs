@@ -82,8 +82,18 @@ pub struct TaskEngine {
     index: Arc<Mutex<HashMap<String, (i32, i32)>>>,
     /// Outstanding blocking requests per task (`"q:<id>"`, `"p:<id>"`,
     /// `"a:<id>"` — namespaced so the three id spaces can't collide). Non-empty
-    /// set ⇔ awaiting_input.
+    /// set ⇔ awaiting_input. Requests raised by a delegation sub-agent are
+    /// additionally prefixed with the child's connection id
+    /// (`"<child_conn>#p:<id>"`) so [`TaskEngine::forget_delegation_child`] can
+    /// drop the whole group when that child goes away.
     awaiting: Arc<Mutex<HashMap<i32, HashSet<String>>>>,
+    /// `child_connection_id -> parent_connection_id` for delegation children of
+    /// a task run. A sub-agent's blocking prompts arrive on the CHILD's
+    /// connection, which is not in `index` — without this mapping they are
+    /// dropped and the board keeps saying "running" while the run is actually
+    /// parked on the user (#447). Populated from `DelegationStarted` (only for
+    /// connections that ARE task runs) and dropped on `DelegationCompleted`.
+    delegation_parents: Arc<Mutex<HashMap<String, String>>>,
     /// Tasks currently being launched (`queued`, then `preparing` in DB, but
     /// owned by an in-flight launch), mapped to their folder so the pump's
     /// concurrency accounting stays per-folder. Keeps the pump from
@@ -151,6 +161,7 @@ pub fn build_task_engine(
         data_dir,
         index: Arc::new(Mutex::new(HashMap::new())),
         awaiting: Arc::new(Mutex::new(HashMap::new())),
+        delegation_parents: Arc::new(Mutex::new(HashMap::new())),
         launching: Arc::new(Mutex::new(HashMap::new())),
         launch_token: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         setup_children: Arc::new(Mutex::new(HashMap::new())),
@@ -162,6 +173,40 @@ pub fn build_task_engine(
     });
     let _ = ENGINE.set(engine.clone());
     Some(engine)
+}
+
+/// Hard stop when walking `TaskEngine::delegation_parents` up to its run. Well
+/// above any usable `depth_limit` (the delegation config's, which bounds the
+/// real chain), so it only ever fires against a map that shouldn't exist —
+/// insurance against spinning, not a functional limit.
+const MAX_DELEGATION_CHAIN_HOPS: usize = 16;
+
+/// Build an engine WITHOUT taking the process-wide ownership lock or publishing
+/// it to the `ENGINE` cell, so a test can drive the instance methods (event
+/// handling, request tracking) directly. The subscriber loop is never started;
+/// tests feed `on_event` themselves.
+#[cfg(test)]
+fn test_engine(db: AppDatabase) -> Arc<TaskEngine> {
+    Arc::new(TaskEngine {
+        db,
+        manager: ConnectionManager::new(),
+        emitter: EventEmitter::Noop,
+        bus: Arc::new(InternalEventBus::new(Default::default())),
+        // An anonymous temp file, not a handle on `data_dir`: opening a
+        // DIRECTORY as a File succeeds on Unix but fails on Windows.
+        _engine_lock: tempfile::tempfile().expect("temp file"),
+        data_dir: std::env::temp_dir(),
+        index: Arc::new(Mutex::new(HashMap::new())),
+        awaiting: Arc::new(Mutex::new(HashMap::new())),
+        delegation_parents: Arc::new(Mutex::new(HashMap::new())),
+        launching: Arc::new(Mutex::new(HashMap::new())),
+        launch_token: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        setup_children: Arc::new(Mutex::new(HashMap::new())),
+        merging: Arc::new(Mutex::new(HashSet::new())),
+        task_locks: Arc::new(Mutex::new(HashMap::new())),
+        folder_locks: Arc::new(Mutex::new(HashMap::new())),
+        pump_locks: Arc::new(Mutex::new(HashMap::new())),
+    })
 }
 
 enum Ownership {
@@ -556,6 +601,7 @@ impl TaskEngine {
         if let Some(conn_id) = conn_id {
             let _ = self.manager.cancel(&self.db.conn, &conn_id).await;
             self.index.lock().await.remove(&conn_id);
+            self.forget_delegation_children_of(&conn_id).await;
             let _ = self.manager.disconnect(&conn_id).await;
         }
         self.awaiting.lock().await.remove(&task_id);
@@ -1472,7 +1518,188 @@ impl TaskEngine {
                 self.track_request(&env.connection_id, format!("a:{approval_id}"), false)
                     .await;
             }
+            // Both delegation events ride the PARENT's stream, so
+            // `env.connection_id` is the (possibly task-owning) parent and the
+            // child id is in the payload.
+            AcpEvent::DelegationStarted {
+                child_connection_id,
+                ..
+            } => {
+                // Scoped to task runs: a delegation from an ordinary chat tab
+                // has no board row to flip, and mapping it would grow this map
+                // for the life of the process. Resolved through
+                // `task_for_connection` rather than `index` alone so a nested
+                // delegation (a sub-agent delegating further) maps to the same
+                // run — its prompts block the task just as much.
+                if self.task_for_connection(&env.connection_id).await.is_some() {
+                    self.delegation_parents
+                        .lock()
+                        .await
+                        .insert(child_connection_id.clone(), env.connection_id.clone());
+                    // The broker starts the child's turn BEFORE announcing it
+                    // (`send_prompt_linked_for_delegation` precedes
+                    // `emit_started_if_real`), so a child that blocks
+                    // immediately raised its prompt while we had no mapping and
+                    // we dropped it. Recover from live state now that we do —
+                    // otherwise the board sits at `running` for a run that is
+                    // already parked on the user.
+                    self.backfill_child_blocking_prompts(child_connection_id)
+                        .await;
+                }
+            }
+            AcpEvent::DelegationCompleted {
+                child_connection_id,
+                ..
+            } => {
+                self.forget_delegation_child(child_connection_id).await;
+            }
             _ => {}
+        }
+    }
+
+    /// Resolve the task generation an event belongs to, and whether `conn_id` is
+    /// the run's OWN connection. A connection that isn't itself a task run may
+    /// still be a delegation child of one, in which case the run is its
+    /// parent's and the caller must namespace anything it records by
+    /// `conn_id` — see [`Self::track_request`].
+    ///
+    /// Walks the delegation chain rather than one hop: with `depth_limit > 1` a
+    /// sub-agent can delegate further, and a grandchild parked on a permission
+    /// blocks the run exactly as much as a direct child does. Bounded by
+    /// [`MAX_DELEGATION_CHAIN_HOPS`] so a malformed map can never spin.
+    ///
+    /// Never holds two of the engine's maps at once (each guard is a statement
+    /// temporary), matching the discipline the rest of these helpers keep.
+    async fn task_for_connection(&self, conn_id: &str) -> Option<((i32, i32), bool)> {
+        if let Some(entry) = self.index.lock().await.get(conn_id).copied() {
+            return Some((entry, true));
+        }
+        let mut cursor = conn_id.to_string();
+        for _ in 0..MAX_DELEGATION_CHAIN_HOPS {
+            let parent = self.delegation_parents.lock().await.get(&cursor).cloned()?;
+            if let Some(entry) = self.index.lock().await.get(&parent).copied() {
+                return Some((entry, false));
+            }
+            cursor = parent;
+        }
+        None
+    }
+
+    /// Detach `root`'s delegation-child mappings, transitively, and return every
+    /// connection id removed (`root` itself only when `include_root`).
+    ///
+    /// Transitive because a sub-agent may have delegated further: dropping only
+    /// the direct children would strand the deeper links, and — since
+    /// [`Self::task_for_connection`] deliberately doesn't prune as it walks —
+    /// nothing else would ever collect them.
+    ///
+    /// Terminates unconditionally: each iteration removes the entries it
+    /// enqueues, so the map strictly shrinks.
+    async fn detach_delegation_subtree(&self, root: &str, include_root: bool) -> Vec<String> {
+        let mut parents = self.delegation_parents.lock().await;
+        let mut detached = Vec::new();
+        let mut frontier = vec![root.to_string()];
+        while let Some(node) = frontier.pop() {
+            let children: Vec<String> = parents
+                .iter()
+                .filter(|(_, parent)| parent.as_str() == node)
+                .map(|(child, _)| child.clone())
+                .collect();
+            for child in children {
+                parents.remove(&child);
+                frontier.push(child.clone());
+                detached.push(child);
+            }
+        }
+        if include_root && parents.remove(root).is_some() {
+            detached.push(root.to_string());
+        }
+        detached
+    }
+
+    /// Track any blocking prompt the child is ALREADY parked on, reading its
+    /// live `SessionState` (authoritative, and updated independently of the
+    /// event bus). Idempotent: re-tracking a key already in the set is a
+    /// no-op insert, so a prompt we did see plus this backfill can't
+    /// double-count.
+    ///
+    /// Reads all three prompt kinds rather than the single top-precedence one,
+    /// so resolving whichever comes first can't empty the set while another is
+    /// still outstanding.
+    async fn backfill_child_blocking_prompts(&self, child_conn_id: &str) {
+        let Some(state) = self.manager.get_state(child_conn_id).await else {
+            return;
+        };
+        // Collect under the read lock, track after releasing it — `track_request`
+        // takes the engine's own maps and must not nest inside a session lock.
+        let keys: Vec<String> = {
+            let s = state.read().await;
+            let mut keys = Vec::new();
+            if let Some(p) = s.pending_permission.as_ref() {
+                keys.push(format!("p:{}", p.request_id));
+            }
+            if let Some(q) = s.pending_question.as_ref() {
+                keys.push(format!("q:{}", q.question_id));
+            }
+            if let Some(a) = s.pending_plan_approval.as_ref() {
+                keys.push(format!("a:{}", a.approval_id));
+            }
+            keys
+        };
+        for key in keys {
+            self.track_request(child_conn_id, key, true).await;
+        }
+    }
+
+    /// Drop every delegation-child mapping belonging to a retired run. Called
+    /// wherever a run leaves `index`; the run's outstanding-request set is
+    /// cleared wholesale by those same call sites.
+    async fn forget_delegation_children_of(&self, parent_conn_id: &str) {
+        // `parent_conn_id` is a run connection, never a key in this map.
+        self.detach_delegation_subtree(parent_conn_id, false).await;
+    }
+
+    /// Drop a finished delegation child (and anything it delegated in turn) plus
+    /// any blocking requests they left unanswered.
+    ///
+    /// The cleanup is the load-bearing half: a child torn down while a
+    /// permission was still pending (cancel, crash, parent teardown) would
+    /// otherwise leave its key in the task's outstanding set forever, pinning
+    /// the row at `awaiting_input` with nothing left that could ever resolve it.
+    /// Empties the set through the same flip path as `track_request` so the row
+    /// returns to `running`.
+    async fn forget_delegation_child(&self, child_conn_id: &str) {
+        // Resolve the run BEFORE detaching — afterwards the chain is gone.
+        let entry = self.task_for_connection(child_conn_id).await;
+        let detached = self.detach_delegation_subtree(child_conn_id, true).await;
+        let Some(((task_id, run_seq), _)) = entry else {
+            return;
+        };
+        let prefixes: Vec<String> = detached.iter().map(|c| format!("{c}#")).collect();
+        let emptied = {
+            let mut awaiting = self.awaiting.lock().await;
+            let Some(set) = awaiting.get_mut(&task_id) else {
+                return;
+            };
+            let before = set.len();
+            set.retain(|k| !prefixes.iter().any(|p| k.starts_with(p.as_str())));
+            if set.len() == before {
+                return; // nothing of this subtree's was outstanding
+            }
+            if set.is_empty() {
+                awaiting.remove(&task_id);
+                true
+            } else {
+                false
+            }
+        };
+        if emptied {
+            let flipped = work_task_service::flip_awaiting(&self.db.conn, task_id, run_seq, false)
+                .await
+                .unwrap_or(false);
+            if flipped {
+                self.emit_upsert(task_id);
+            }
         }
     }
 
@@ -1485,6 +1712,7 @@ impl TaskEngine {
         let summary = self.capture_summary(conn_id).await;
         self.index.lock().await.remove(conn_id);
         self.awaiting.lock().await.remove(&task_id);
+        self.forget_delegation_children_of(conn_id).await;
         let _ = self.manager.disconnect(conn_id).await;
 
         let task = work_task_service::get_model(&self.db.conn, task_id).await.ok();
@@ -1582,10 +1810,22 @@ impl TaskEngine {
 
     /// Track an outstanding blocking request and flip running ⇄ awaiting_input
     /// on the empty↔non-empty edges of the per-task set.
+    ///
+    /// `conn_id` may be the task's own connection or one of its delegation
+    /// children: a sub-agent parked on a permission blocks the run just as
+    /// surely as the top-level agent does, and is in fact harder to notice
+    /// (#447). A child's keys are prefixed with its connection id so
+    /// [`Self::forget_delegation_child`] can retract them as a group.
     async fn track_request(&self, conn_id: &str, key: String, outstanding: bool) {
-        let entry = { self.index.lock().await.get(conn_id).copied() };
-        let Some((task_id, run_seq)) = entry else {
+        let Some(((task_id, run_seq), is_own_connection)) =
+            self.task_for_connection(conn_id).await
+        else {
             return;
+        };
+        let key = if is_own_connection {
+            key
+        } else {
+            format!("{conn_id}#{key}")
         };
         let flip = {
             let mut awaiting = self.awaiting.lock().await;
@@ -2589,6 +2829,7 @@ impl TaskEngine {
             // status the TurnComplete was merely dropped — settle from it.
             self.index.lock().await.remove(&conn_id);
             self.awaiting.lock().await.remove(&task.id);
+            self.forget_delegation_children_of(&conn_id).await;
             let conv_status = match task.conversation_id {
                 Some(cid) => self.conversation_status(cid).await,
                 None => None,
@@ -4584,5 +4825,307 @@ mod tests {
             .join(format!("{}.lock", crate::db::database_file_name()));
         assert!(!automation_lock.exists());
         drop(guard);
+    }
+
+    // -- blocking prompts raised by a delegation sub-agent (#447) -----------
+
+    const PARENT_CONN: &str = "conn-task";
+    const CHILD_CONN: &str = "conn-child";
+
+    /// A task driven to `running` on `PARENT_CONN`, with the engine's live
+    /// index seeded as the launch path would. Returns `(engine, task_id)`.
+    async fn running_task() -> (Arc<TaskEngine>, i32) {
+        use crate::db::test_helpers::{fresh_in_memory_db, seed_folder};
+
+        let db = fresh_in_memory_db().await;
+        let folder_id = seed_folder(&db, "/tmp/task-deleg").await;
+        let conv =
+            conversation_service::create(&db.conn, folder_id, AgentType::ClaudeCode, None, None)
+                .await
+                .expect("conversation");
+        let task = work_task_service::create(
+            &db.conn,
+            crate::models::WorkTaskDraft {
+                folder_id,
+                title: "fix login".to_string(),
+                config: serde_json::json!({
+                    "display_text": "fix login",
+                    "prompt_blocks": [{ "type": "text", "text": "fix login" }],
+                }),
+            },
+        )
+        .await
+        .expect("task");
+        // Walk the real transition chain rather than writing the row directly,
+        // so the run_seq the engine flips against is the one the CAS minted.
+        let run_seq = work_task_service::claim_for_run(
+            &db.conn,
+            task.id,
+            WorkTaskStatus::Todo,
+            "test",
+        )
+        .await
+        .expect("claim")
+        .expect("claimed");
+        assert!(work_task_service::begin_setup(&db.conn, task.id, run_seq)
+            .await
+            .expect("begin_setup"));
+        assert!(
+            work_task_service::mark_running(&db.conn, task.id, run_seq, conv.id, PARENT_CONN)
+                .await
+                .expect("mark_running")
+        );
+
+        let engine = test_engine(db);
+        engine
+            .index
+            .lock()
+            .await
+            .insert(PARENT_CONN.into(), (task.id, run_seq));
+        (engine, task.id)
+    }
+
+    async fn status_of(engine: &TaskEngine, task_id: i32) -> WorkTaskStatus {
+        work_task_service::get_model(&engine.db.conn, task_id)
+            .await
+            .expect("task row")
+            .status
+    }
+
+    fn env(conn_id: &str, payload: AcpEvent) -> EventEnvelope {
+        EventEnvelope {
+            seq: 0,
+            connection_id: conn_id.to_string(),
+            payload,
+        }
+    }
+
+    fn delegation_started(parent: &str, child: &str) -> EventEnvelope {
+        env(
+            parent,
+            AcpEvent::DelegationStarted {
+                parent_connection_id: parent.into(),
+                parent_tool_use_id: "tu-1".into(),
+                child_connection_id: child.into(),
+                child_conversation_id: 1,
+                agent_type: AgentType::Codex,
+                task_preview: "run the tests".into(),
+                task_id: "task-1".into(),
+            },
+        )
+    }
+
+    fn delegation_completed(parent: &str, child: &str) -> EventEnvelope {
+        env(
+            parent,
+            AcpEvent::DelegationCompleted {
+                parent_connection_id: parent.into(),
+                parent_tool_use_id: "tu-1".into(),
+                child_connection_id: child.into(),
+                child_conversation_id: 1,
+                agent_type: AgentType::Codex,
+                result: crate::acp::types::DelegationResultSummary::Ok {
+                    duration_ms: 0,
+                    text_preview: None,
+                },
+            },
+        )
+    }
+
+    fn permission_request(conn: &str, request_id: &str) -> EventEnvelope {
+        env(
+            conn,
+            AcpEvent::PermissionRequest {
+                request_id: request_id.into(),
+                tool_call: serde_json::json!({}),
+                options: vec![],
+                queued: 0,
+            },
+        )
+    }
+
+    #[tokio::test]
+    async fn a_delegated_child_permission_flips_the_task_to_awaiting_input() {
+        // #447: the prompt arrives on the CHILD's connection, which is not in
+        // `index`. Before the parent lookup existed it was dropped outright and
+        // the board kept saying "running" for a run that was parked on the user.
+        let (engine, task_id) = running_task().await;
+        engine.on_event(&delegation_started(PARENT_CONN, CHILD_CONN)).await;
+        engine.on_event(&permission_request(CHILD_CONN, "r1")).await;
+
+        assert_eq!(status_of(&engine, task_id).await, WorkTaskStatus::AwaitingInput);
+
+        engine
+            .on_event(&env(
+                CHILD_CONN,
+                AcpEvent::PermissionResolved {
+                    request_id: "r1".into(),
+                },
+            ))
+            .await;
+        assert_eq!(status_of(&engine, task_id).await, WorkTaskStatus::Running);
+    }
+
+    #[tokio::test]
+    async fn a_child_torn_down_mid_permission_does_not_wedge_awaiting_input() {
+        // The failure this guards: a sub-agent cancelled/crashed while its
+        // permission was still pending leaves a key nothing can ever resolve,
+        // pinning the row at awaiting_input for the rest of the run.
+        let (engine, task_id) = running_task().await;
+        engine.on_event(&delegation_started(PARENT_CONN, CHILD_CONN)).await;
+        engine.on_event(&permission_request(CHILD_CONN, "r1")).await;
+        assert_eq!(status_of(&engine, task_id).await, WorkTaskStatus::AwaitingInput);
+
+        engine.on_event(&delegation_completed(PARENT_CONN, CHILD_CONN)).await;
+        assert_eq!(
+            status_of(&engine, task_id).await,
+            WorkTaskStatus::Running,
+            "an unanswerable request must not outlive its sub-agent"
+        );
+        assert!(engine.delegation_parents.lock().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_child_permission_does_not_clear_the_parents_own_block() {
+        // Both connections' keys live in one set, so they must be independently
+        // namespaced — otherwise resolving one would flip the row back while
+        // the other is still waiting.
+        let (engine, task_id) = running_task().await;
+        engine.on_event(&delegation_started(PARENT_CONN, CHILD_CONN)).await;
+        engine.on_event(&permission_request(PARENT_CONN, "r1")).await;
+        // Same request_id on the child: a plausible collision, since the two
+        // agents mint ids independently.
+        engine.on_event(&permission_request(CHILD_CONN, "r1")).await;
+
+        engine
+            .on_event(&env(
+                CHILD_CONN,
+                AcpEvent::PermissionResolved {
+                    request_id: "r1".into(),
+                },
+            ))
+            .await;
+        assert_eq!(
+            status_of(&engine, task_id).await,
+            WorkTaskStatus::AwaitingInput,
+            "the parent's own permission is still outstanding"
+        );
+
+        engine
+            .on_event(&env(
+                PARENT_CONN,
+                AcpEvent::PermissionResolved {
+                    request_id: "r1".into(),
+                },
+            ))
+            .await;
+        assert_eq!(status_of(&engine, task_id).await, WorkTaskStatus::Running);
+    }
+
+    #[tokio::test]
+    async fn a_permission_racing_ahead_of_delegation_started_is_recovered() {
+        // The broker starts the child's turn BEFORE announcing the delegation
+        // (`send_prompt_linked_for_delegation` precedes `emit_started_if_real`),
+        // so a child that blocks immediately raises its prompt while the engine
+        // still has no mapping for it — and drops it. Without the backfill the
+        // board sits at `running` for a run already parked on the user, which is
+        // the very bug #447 is about.
+        use crate::acp::session_state::PendingPermissionState;
+        use crate::models::agent::AgentType;
+        use crate::web::event_bridge::EventEmitter;
+
+        let (engine, task_id) = running_task().await;
+        engine
+            .manager
+            .insert_test_connection(CHILD_CONN, AgentType::Codex, None, EventEmitter::Noop)
+            .await;
+
+        // Permission arrives first and is dropped (no mapping yet).
+        engine.on_event(&permission_request(CHILD_CONN, "r1")).await;
+        assert_eq!(status_of(&engine, task_id).await, WorkTaskStatus::Running);
+
+        // The child's live state carries it regardless — that is what the
+        // backfill reads when the announcement finally lands.
+        {
+            let state = engine.manager.get_state(CHILD_CONN).await.expect("state");
+            let mut s = state.write().await;
+            s.pending_permission = Some(PendingPermissionState {
+                request_id: "r1".into(),
+                tool_call_id: "tc-1".into(),
+                tool_call: serde_json::json!({}),
+                options: vec![],
+                created_at: chrono::Utc::now(),
+                queued: 0,
+            });
+        }
+        engine.on_event(&delegation_started(PARENT_CONN, CHILD_CONN)).await;
+        assert_eq!(
+            status_of(&engine, task_id).await,
+            WorkTaskStatus::AwaitingInput
+        );
+
+        // The recovered key matches what a normal resolve retracts — otherwise
+        // the row would wedge at awaiting_input.
+        engine
+            .on_event(&env(
+                CHILD_CONN,
+                AcpEvent::PermissionResolved {
+                    request_id: "r1".into(),
+                },
+            ))
+            .await;
+        assert_eq!(status_of(&engine, task_id).await, WorkTaskStatus::Running);
+    }
+
+    #[tokio::test]
+    async fn a_nested_delegation_child_still_maps_to_the_run() {
+        // A sub-agent that delegates further blocks the task just as much, so
+        // the grandchild has to resolve through the chain rather than requiring
+        // its parent to be the run's own connection.
+        let (engine, task_id) = running_task().await;
+        engine.on_event(&delegation_started(PARENT_CONN, CHILD_CONN)).await;
+        engine.on_event(&delegation_started(CHILD_CONN, "conn-grandchild")).await;
+
+        engine
+            .on_event(&permission_request("conn-grandchild", "r1"))
+            .await;
+        assert_eq!(
+            status_of(&engine, task_id).await,
+            WorkTaskStatus::AwaitingInput
+        );
+    }
+
+    #[tokio::test]
+    async fn completing_a_child_retracts_its_whole_subtree() {
+        // The middle child finishing takes its own delegations down with it, so
+        // a grandchild's unanswered prompt must be retracted too — otherwise
+        // the row wedges at awaiting_input on a key nothing can resolve, and
+        // the grandchild's mapping is stranded in the map forever.
+        let (engine, task_id) = running_task().await;
+        engine.on_event(&delegation_started(PARENT_CONN, CHILD_CONN)).await;
+        engine.on_event(&delegation_started(CHILD_CONN, "conn-grandchild")).await;
+        engine
+            .on_event(&permission_request("conn-grandchild", "r1"))
+            .await;
+        assert_eq!(
+            status_of(&engine, task_id).await,
+            WorkTaskStatus::AwaitingInput
+        );
+
+        engine.on_event(&delegation_completed(PARENT_CONN, CHILD_CONN)).await;
+        assert_eq!(status_of(&engine, task_id).await, WorkTaskStatus::Running);
+        assert!(
+            engine.delegation_parents.lock().await.is_empty(),
+            "the grandchild's mapping must not be stranded"
+        );
+    }
+
+    #[tokio::test]
+    async fn delegations_from_a_non_task_connection_are_not_tracked() {
+        // A delegation from an ordinary chat tab has no board row to flip; the
+        // map must not grow for it.
+        let (engine, _task_id) = running_task().await;
+        engine.on_event(&delegation_started("conn-chat", "conn-other-child")).await;
+        assert!(engine.delegation_parents.lock().await.is_empty());
     }
 }

@@ -1690,6 +1690,25 @@ impl<R: PermissionResponder> PermissionQueue<R> {
 /// Shared per-connection permission state (responders + display queue).
 type PendingPermissions = Arc<tokio::sync::Mutex<PermissionQueue>>;
 
+/// `conn=<id> conv=<id>` for the permission log lines.
+///
+/// Whose permission a log line is about is not answerable from the request id
+/// alone, and the answer matters most exactly when it is a delegation
+/// sub-agent's — that connection has no tab, so a stall there is the one an
+/// operator is least able to see (#447). With the connection id here and
+/// `child_connection_id` on the `delegation_task` span, an external watchdog can
+/// join the two. `conv` is `-` until the row is bound.
+///
+/// Takes the `SessionState` read lock, so callers must hold the permission queue
+/// mutex — never the reverse (see [`PermissionQueue`]'s LOCK ORDER note).
+async fn permission_log_scope(state: &Arc<RwLock<SessionState>>) -> String {
+    let s = state.read().await;
+    match s.conversation_id {
+        Some(cid) => format!("conn={} conv={cid}", s.connection_id),
+        None => format!("conn={} conv=-", s.connection_id),
+    }
+}
+
 /// Register a blocked permission responder and publish its card if the screen is
 /// free. The emit happens INSIDE the queue lock — see [`PermissionQueue`] for why
 /// that is load-bearing rather than incidental.
@@ -1701,11 +1720,12 @@ async fn admit_permission(
     card: QueuedPermission,
 ) {
     let mut queue = perms.lock().await;
+    let scope = permission_log_scope(state).await;
     let request_id = card.request_id.clone();
     match queue.admit(responder, card) {
         Some(card) => {
             tracing::info!(
-                "[ACP] permission {} shown (waiting={})",
+                "[ACP] permission {} shown {scope} (waiting={})",
                 card.request_id,
                 queue.waiting_len()
             );
@@ -1726,7 +1746,7 @@ async fn admit_permission(
         None => {
             let depth = queue.waiting_len();
             tracing::info!(
-                "[ACP] permission {request_id} queued behind {:?} (waiting={depth})",
+                "[ACP] permission {request_id} queued {scope} behind {:?} (waiting={depth})",
                 queue.showing,
             );
             // The visible card did not change, so nothing republishes it — send
@@ -1764,10 +1784,16 @@ async fn resolve_permission(
     if !resolved.answered {
         return;
     }
+    // Pairs with the `shown` line: a watchdog reading only the raise side can't
+    // tell a permission the user answered in seconds from one that has been
+    // blocking the agent since. Resolved AFTER the idempotent no-op check, so a
+    // stale/duplicate answer costs no state read and logs nothing.
+    let scope = permission_log_scope(state).await;
+    tracing::info!("[ACP] permission {request_id} answered {scope}");
     if let Some(card) = resolved.next {
         let depth = queue.waiting_len();
         tracing::info!(
-            "[ACP] permission {} promoted after {request_id} (waiting={depth})",
+            "[ACP] permission {} promoted {scope} after {request_id} (waiting={depth})",
             card.request_id,
         );
         emit_with_state(
