@@ -1594,7 +1594,13 @@ export interface TokenUsageReport {
 
 export interface TokenUsageFolderFacet {
   folder_id: number
+  /** Compact display name: the alias when set, else the folder name. The filter
+   *  list renders `alias [ name ]` from `name` + `alias` instead. */
   label: string
+  /** The folder's real (on-disk) directory name, alias or not. */
+  name: string
+  /** User-set display alias, or null when unset. */
+  alias: string | null
   path: string
   parent_id: number | null
 }

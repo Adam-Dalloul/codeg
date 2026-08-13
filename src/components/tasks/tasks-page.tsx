@@ -12,7 +12,7 @@ import { createPortal } from "react-dom"
 import { Reorder, type PanInfo } from "motion/react"
 import { useTranslations } from "next-intl"
 import { toast } from "sonner"
-import { Folder, Funnel, Play, Plus, ListTodo, Tag } from "lucide-react"
+import { Funnel, Play, Plus, ListTodo, Tag } from "lucide-react"
 import { useTasksView } from "@/contexts/tasks-view-context"
 import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
 import {
@@ -36,6 +36,7 @@ import {
   saveTasksStatusFilter,
 } from "@/lib/tasks-board-filter-storage"
 import { WorkbenchPageTitle } from "@/components/workbench/workbench-page-title"
+import { FolderSelect } from "@/components/shared/folder-select"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
 import {
@@ -88,8 +89,6 @@ const EMPTY_LABEL_KEYS = {
   done: "emptyColDone",
 } as const satisfies Record<BoardColumnId, string>
 
-const ALL_FOLDERS = "__all__"
-
 /** The status select's "no filter" option — a sentinel, because Radix reserves
  *  the empty string for "no value chosen". */
 const ALL_STATUSES = "__all__"
@@ -134,7 +133,18 @@ export function TasksPage() {
     return map
   }, [folders])
 
-  const [folderFilter, setFolderFilter] = useState<number | null>(null)
+  const [selectedFolderFilter, setFolderFilter] = useState<number | null>(null)
+  // A folder can leave the workspace (closed, or removed) while it is the active
+  // filter. Fall back to "all" by derivation — no effect, the same guard the
+  // Automations list uses — so the board, the drag scope, the new-task prefill,
+  // the settings scope and the pill can never disagree about which folder is in
+  // effect: without it the pill would read "all folders" while everything below
+  // it still scoped to the folder that vanished.
+  const folderFilter =
+    selectedFolderFilter != null &&
+    !projectFolders.some((f) => f.id === selectedFolderFilter)
+      ? null
+      : selectedFolderFilter
   // Restored synchronously from localStorage: this page mounts only after a
   // client-side route switch (never prerendered), so there is no SSR markup to
   // mismatch — and the board paints with the remembered filter right away.
@@ -581,33 +591,17 @@ export function TasksPage() {
           anything — "new task" — is already the empty state's own button. */}
       {hasAnyTask && (
         <div className="flex shrink-0 flex-wrap items-center gap-2 px-4 pb-2 pt-4">
-          <Select
-            value={folderFilter == null ? ALL_FOLDERS : String(folderFilter)}
-            onValueChange={(v) =>
-              setFolderFilter(v === ALL_FOLDERS ? null : Number(v))
-            }
-          >
-            {/* Leads with a folder glyph like the Automations filter pill: "全部
-                文件夹" alone doesn't say WHICH axis the pill filters. */}
-            <SelectTrigger
-              size="sm"
-              className="h-8 w-auto min-w-0 max-w-[14rem] gap-1.5 rounded-full border-transparent bg-muted/70 px-3 text-[0.8125rem] font-medium shadow-none ws-msg-chip hover:bg-muted"
-            >
-              <Folder
-                className="size-3.5 text-muted-foreground"
-                aria-hidden="true"
-              />
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value={ALL_FOLDERS}>{t("allFolders")}</SelectItem>
-              {projectFolders.map((f) => (
-                <SelectItem key={f.id} value={String(f.id)}>
-                  {f.alias ?? f.name}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          {/* Searchable, and each row shows `alias [ name ]` over the folder's
+              path — the same list the new-conversation composer opens. Leads
+              with a folder glyph like the Automations filter pill: "全部文件夹"
+              alone doesn't say WHICH axis the pill filters. */}
+          <FolderSelect
+            folders={projectFolders}
+            value={folderFilter}
+            onChange={setFolderFilter}
+            allLabel={t("allFolders")}
+            onSelectAll={() => setFolderFilter(null)}
+          />
 
           {/* Same pill treatment as the folder select so the left cluster reads
               as one family of controls (the settings entry lives in the chrome

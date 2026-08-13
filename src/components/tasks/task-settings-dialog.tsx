@@ -49,13 +49,7 @@ import {
 } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import { Switch } from "@/components/ui/switch"
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select"
+import { FolderSelect } from "@/components/shared/folder-select"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Textarea } from "@/components/ui/textarea"
 import type { AgentType, WorkTaskFolderSettings } from "@/lib/types"
@@ -345,9 +339,15 @@ function TaskSettingsBody({
       <DialogHeader>
         <DialogTitle>{t("settingsTitle")}</DialogTitle>
         <DialogDescription>
-          {folder
-            ? t("settingsDescription", { folder: folder.name })
-            : t("settingsScopeGlobalHint")}
+          {/* Keyed off the scope, not off whether the folder resolves: a folder
+              that left the workspace while the dialog was open still owns the
+              row `save` writes to, so calling that "global defaults" would name
+              the wrong scope. It falls back to the id, like the picker. */}
+          {isGlobal
+            ? t("settingsScopeGlobalHint")
+            : t("settingsDescription", {
+                folder: folder?.name ?? `#${folderId}`,
+              })}
         </DialogDescription>
       </DialogHeader>
 
@@ -362,24 +362,19 @@ function TaskSettingsBody({
             <span className="text-xs font-medium text-muted-foreground">
               {t("settingsScope")}
             </span>
-            <Select
-              value={String(folderId)}
-              onValueChange={(v) => onScopeChange(Number(v))}
-            >
-              <SelectTrigger size="sm" className="w-60">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value={String(GLOBAL_SCOPE)}>
-                  {t("settingsScopeGlobal")}
-                </SelectItem>
-                {projectFolders.map((f) => (
-                  <SelectItem key={f.id} value={String(f.id)}>
-                    {f.alias ?? f.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            {/* The shared searchable picker: the global-defaults row rides in
+                as its pinned "all folders" entry, and each folder shows
+                `alias [ name ]` over its path. */}
+            <FolderSelect
+              variant="field"
+              className="h-8 w-60 max-w-none justify-between text-sm"
+              folders={projectFolders}
+              value={isGlobal ? null : folderId}
+              onChange={onScopeChange}
+              allLabel={t("settingsScopeGlobal")}
+              onSelectAll={() => onScopeChange(GLOBAL_SCOPE)}
+              title={t("settingsScope")}
+            />
           </div>
 
           {/* Folder scope: which source is in effect — following the global
