@@ -34,7 +34,7 @@ vi.mock("@/components/ai-elements/link-safety", () => ({
   useStreamdownLinkSafety: () => ({ enabled: false }),
 }))
 
-import { MessageResponse } from "./message"
+import { MessageResponse, normalizeMathDelimiters } from "./message"
 
 describe("MessageResponse", () => {
   it("applies marker styles so ordered Markdown lists render as lists", () => {
@@ -44,5 +44,35 @@ describe("MessageResponse", () => {
       "[&_ol]:list-decimal",
       "[&_ol]:pl-3"
     )
+  })
+})
+
+describe("normalizeMathDelimiters", () => {
+  it("normalizes \\[...\\] to $$...$$", () => {
+    expect(normalizeMathDelimiters("\\[ x^2 \\]")).toBe("$$ x^2 $$")
+  })
+
+  it("normalizes \\(...\\) to $$...$$", () => {
+    expect(normalizeMathDelimiters("\\( y \\)")).toBe("$$ y $$")
+  })
+
+  it("preserves currency values as plain text", () => {
+    const text = "Costs $25 direct and $13 elsewhere."
+    expect(normalizeMathDelimiters(text)).toBe(text)
+  })
+
+  it("preserves inline and fenced code blocks", () => {
+    expect(normalizeMathDelimiters("Use `$x` in `\\(y\\)`")).toBe(
+      "Use `$x` in `\\(y\\)`"
+    )
+    expect(normalizeMathDelimiters("```\n\\(a\\)\n```")).toBe(
+      "```\n\\(a\\)\n```"
+    )
+  })
+
+  it("normalizes mixed LaTeX and currency correctly", () => {
+    const input = "Costs $25 and the equation \\(x^2 + y^2\\)."
+    const expected = "Costs $25 and the equation $$x^2 + y^2$$."
+    expect(normalizeMathDelimiters(input)).toBe(expected)
   })
 })

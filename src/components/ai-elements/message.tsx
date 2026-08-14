@@ -344,8 +344,10 @@ export const MessageBranchPage = ({
 // / `/slash`-badging hooks were removed.
 export type MessageResponseProps = ComponentProps<typeof Streamdown>
 
-// remark-math only supports `$` delimiters. Convert LaTeX-style
-// `\[...\]` / `\(...\)` to `$$...$$` / `$...$` so they are recognized.
+// remark-math uses dollar delimiters.
+// `\[...\]` / `\(...\)` are normalized to `$$...$$`.
+// Single-dollar math is disabled so currency like "$25 ... $13"
+// cannot be misinterpreted as LaTeX.
 // Code blocks and inline code are preserved to avoid false positives.
 export function normalizeMathDelimiters(text: string): string {
   const saved: string[] = []
@@ -359,7 +361,7 @@ export function normalizeMathDelimiters(text: string): string {
   )
   const normalized = masked
     .replace(/\\\[([\s\S]*?)\\\]/g, (_m, inner: string) => `$$${inner}$$`)
-    .replace(/\\\(([\s\S]*?)\\\)/g, (_m, inner: string) => `$${inner}$`)
+    .replace(/\\\(([\s\S]*?)\\\)/g, (_m, inner: string) => `$$${inner}$$`)
   return normalized.replace(
     /\0CBLK(\d+)\0/g,
     (_m, i: string) => saved[Number(i)]

@@ -39,7 +39,7 @@ export type HeavyKind = "code" | "math" | "mermaid"
 // false positive merely pre-loads an engine that then no-ops, exactly matching
 // the previous always-loaded behavior; a false *negative* would silently drop
 // real rendering, so the math trigger is a superset (`$` OR the pre-normalized
-// `\[` / `\(` delimiters that `normalizeMathDelimiters` maps to `$`).
+// `\[` / `\(` delimiters that `normalizeMathDelimiters` maps to `$$`).
 
 const loaded: {
   code?: CodePlugin
@@ -166,7 +166,7 @@ export function detectHeavyPlugins(text: string): HeavyPluginNeeds {
     // Any fenced or indented block may want syntax highlighting.
     code: hasFence || hasIndentedCode,
     // `$` is remark-math's only delimiter; `normalizeMathDelimiters` rewrites
-    // `\[…]\` / `\(…\)` to `$$…$$` / `$…$`, but a caller may detect on the raw
+    // `\[…]\` / `\(…\)` to `$$…$$`, but a caller may detect on the raw
     // pre-normalized text, so treat those escapes as math triggers too. No such
     // token ⇒ remark-math is a no-op ⇒ katex is not needed.
     math: text.includes("$") || text.includes("\\[") || text.includes("\\("),
