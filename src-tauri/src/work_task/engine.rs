@@ -4326,7 +4326,7 @@ mod tests {
             ..task_row()
         };
 
-        let mut queue = vec![
+        let mut queue = [
             (intent(2), row(1)),
             (intent(1), row(3)),
             // Same instant as task 3 — id decides, exactly as the client does.
