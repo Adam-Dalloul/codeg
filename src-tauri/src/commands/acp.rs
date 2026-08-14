@@ -5237,6 +5237,15 @@ fn pi_canonical_path(path: &Path) -> PathBuf {
 /// instead of returning on the first one so the approval UI can name the files.
 /// The emptiness of the result is equivalent to pi's boolean.
 pub(crate) fn pi_project_trust_resources(cwd: &Path) -> Vec<PiProjectResource> {
+    pi_project_trust_resources_with_home(cwd, &home_dir_or_default())
+}
+
+/// `pi_project_trust_resources` with the user's home passed in rather than
+/// resolved, so the `~/.agents/skills` exclusion can be exercised against a
+/// fixture: `dirs::home_dir()` reads the `FOLDERID_Profile` known folder on
+/// Windows and ignores `HOME`/`USERPROFILE`, so pinning the env there cannot
+/// redirect it.
+fn pi_project_trust_resources_with_home(cwd: &Path, home: &Path) -> Vec<PiProjectResource> {
     let mut found = Vec::new();
     let start = pi_canonical_path(cwd);
 
@@ -5256,9 +5265,7 @@ pub(crate) fn pi_project_trust_resources(cwd: &Path) -> Vec<PiProjectResource> {
 
     // pi also honors `.agents/skills` from `cwd` upward, EXCEPT the user's own
     // `~/.agents/skills` (that is a user-scope store, not a repo's).
-    let user_agents_skills = pi_canonical_path(&home_dir_or_default())
-        .join(".agents")
-        .join("skills");
+    let user_agents_skills = pi_canonical_path(home).join(".agents").join("skills");
     let mut current = start.as_path();
     loop {
         let candidate = current.join(".agents").join("skills");
@@ -13070,19 +13077,24 @@ mod tests {
         fs::create_dir_all(&ws).unwrap();
         fs::create_dir_all(home.join(".agents").join("skills")).unwrap();
 
-        // `home_dir_or_default` reads HOME; pin it (and USERPROFILE, which
-        // `dirs::home_dir` prefers on Windows) for the duration of the check.
-        temp_env::with_vars(
-            [
-                ("HOME", Some(home.to_string_lossy().to_string())),
-                ("USERPROFILE", Some(home.to_string_lossy().to_string())),
-            ],
-            || {
-                assert!(
-                    pi_project_trust_resources(&ws).is_empty(),
-                    "the user's own ~/.agents/skills must not count as a repo resource",
-                );
-            },
+        // The home is injected rather than pinned through the env: on Windows
+        // `dirs::home_dir()` resolves the `FOLDERID_Profile` known folder and
+        // ignores `HOME`/`USERPROFILE`, so an env-pinned home would leave the real
+        // profile as the exclusion and report the fixture's store.
+        //
+        // Scope the assertion to the fixture as well — the ancestor walk climbs out
+        // of the tempdir into the machine's own directories, and on Windows the
+        // tempdir sits under that very profile dir.
+        let root = pi_canonical_path(tmp.path());
+        let from_fixture = pi_project_trust_resources_with_home(&ws, &home)
+            .into_iter()
+            .map(|resource| resource.path)
+            .filter(|path| Path::new(path).starts_with(&root))
+            .collect::<Vec<_>>();
+
+        assert!(
+            from_fixture.is_empty(),
+            "the user's own ~/.agents/skills must not count as a repo resource, got {from_fixture:?}",
         );
     }
 
