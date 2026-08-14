@@ -177,7 +177,7 @@ describe("useStreamdownPlugins", () => {
     expect(result.current.code).toBeUndefined()
     expect(result.current.mermaid).toBeUndefined()
     expect(mocks.createMathPlugin).toHaveBeenCalledWith({
-      singleDollarTextMath: true,
+      singleDollarTextMath: false,
     })
   })
 

@@ -110,7 +110,7 @@ function ensure(kind: HeavyKind): void {
   } else if (kind === "math") {
     import("@streamdown/math")
       .then((mod) => {
-        loaded.math = mod.createMathPlugin({ singleDollarTextMath: true })
+        loaded.math = mod.createMathPlugin({ singleDollarTextMath: false })
       })
       .catch(() => {})
       .finally(settle)
@@ -166,7 +166,7 @@ export function detectHeavyPlugins(text: string): HeavyPluginNeeds {
     // Any fenced or indented block may want syntax highlighting.
     code: hasFence || hasIndentedCode,
     // `$` is remark-math's only delimiter; `normalizeMathDelimiters` rewrites
-    // `\[…\]` / `\(…\)` to `$$…$$` / `$…$`, but a caller may detect on the raw
+    // `\[…]\` / `\(…\)` to `$$…$$` / `$…$`, but a caller may detect on the raw
     // pre-normalized text, so treat those escapes as math triggers too. No such
     // token ⇒ remark-math is a no-op ⇒ katex is not needed.
     math: text.includes("$") || text.includes("\\[") || text.includes("\\("),
@@ -193,7 +193,7 @@ export function useStreamdownPlugins(
   // Destructure to primitives so the effect and the returned `plugins` object
   // stay reference-stable across streaming batches. `needs` is a fresh object
   // every time `text` grows (~60/s for the live message), but its booleans
-  // rarely change; keying the effect and memo on the booleans avoids re-running
+  // rarely change; keying the effect and the memo on the booleans avoids re-running
   // the effect and — crucially — avoids handing Streamdown a new `plugins`
   // object on every token, which would churn its plugin-dependent memos.
   const { code: needCode, math: needMath, mermaid: needMermaid } = needs
