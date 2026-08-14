@@ -1794,8 +1794,6 @@
       "tokens": {
         "contextWindowUsageAria": "コンテキストウィンドウ使用率",
         "contextWindow": "コンテキストウィンドウ",
-        "outputSpeedAria": "推定出力速度",
-        "outputSpeedTooltip": "推定出力速度（テキスト + 思考）",
         "usedMax": "使用 / 最大",
         "tokenUsage": "トークン使用量",
         "input": "入力",
@@ -2931,7 +2929,8 @@
         "elapsedHours": "{value}時間",
         "elapsedMinutes": "{value}分",
         "elapsedSeconds": "{value}秒",
-        "toolUseCount": "{count} 回のツール使用"
+        "outputSpeedAria": "推定出力速度",
+        "outputSpeedTooltip": "推定出力速度（テキスト + 思考）"
       },
       "jsonTree": {
         "viewRaw": "生の JSON を表示",

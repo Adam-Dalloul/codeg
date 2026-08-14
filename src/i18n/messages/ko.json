@@ -1794,8 +1794,6 @@
       "tokens": {
         "contextWindowUsageAria": "컨텍스트 윈도우 사용량",
         "contextWindow": "컨텍스트 윈도우",
-        "outputSpeedAria": "예상 출력 속도",
-        "outputSpeedTooltip": "예상 출력 속도（텍스트 + 추론）",
         "usedMax": "사용 / 최대",
         "tokenUsage": "토큰 사용량",
         "input": "입력",
@@ -2931,7 +2929,8 @@
         "elapsedHours": "{value}시간",
         "elapsedMinutes": "{value}분",
         "elapsedSeconds": "{value}초",
-        "toolUseCount": "도구 {count}회 사용"
+        "outputSpeedAria": "예상 출력 속도",
+        "outputSpeedTooltip": "예상 출력 속도（텍스트 + 추론）"
       },
       "jsonTree": {
         "viewRaw": "원본 JSON 보기",

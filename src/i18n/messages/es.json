@@ -1794,8 +1794,6 @@
       "tokens": {
         "contextWindowUsageAria": "Uso de la ventana de contexto",
         "contextWindow": "Ventana de contexto",
-        "outputSpeedAria": "Velocidad de salida estimada",
-        "outputSpeedTooltip": "Velocidad de salida estimada (texto + razonamiento)",
         "usedMax": "Usado / Máx",
         "tokenUsage": "Uso de tokens",
         "input": "Entrada",
@@ -2931,7 +2929,8 @@
         "elapsedHours": "{value} h",
         "elapsedMinutes": "{value} min",
         "elapsedSeconds": "{value} s",
-        "toolUseCount": "{count, plural, one {# uso de herramienta} other {# usos de herramienta}}"
+        "outputSpeedAria": "Velocidad de salida estimada",
+        "outputSpeedTooltip": "Velocidad de salida estimada (texto + razonamiento)"
       },
       "jsonTree": {
         "viewRaw": "Ver JSON sin formato",

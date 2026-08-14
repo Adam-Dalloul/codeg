@@ -1794,8 +1794,6 @@
       "tokens": {
         "contextWindowUsageAria": "Kontextfenster-Nutzung",
         "contextWindow": "Kontextfenster",
-        "outputSpeedAria": "Geschätzte Ausgabegeschwindigkeit",
-        "outputSpeedTooltip": "Geschätzte Ausgabegeschwindigkeit (Text + Denken)",
         "usedMax": "Verwendet / Max",
         "tokenUsage": "Token-Nutzung",
         "input": "Eingabe",
@@ -2931,7 +2929,8 @@
         "elapsedHours": "{value} Std",
         "elapsedMinutes": "{value} Min",
         "elapsedSeconds": "{value} Sek",
-        "toolUseCount": "{count, plural, one {# Tool-Aufruf} other {# Tool-Aufrufe}}"
+        "outputSpeedAria": "Geschätzte Ausgabegeschwindigkeit",
+        "outputSpeedTooltip": "Geschätzte Ausgabegeschwindigkeit (Text + Denken)"
       },
       "jsonTree": {
         "viewRaw": "Rohes JSON anzeigen",

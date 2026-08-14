@@ -1794,8 +1794,6 @@
       "tokens": {
         "contextWindowUsageAria": "上下文視窗使用率",
         "contextWindow": "上下文視窗",
-        "outputSpeedAria": "估算輸出速度",
-        "outputSpeedTooltip": "估算輸出速度（正文 + 思考）",
         "usedMax": "已用 / 上限",
         "tokenUsage": "Token 用量",
         "input": "輸入",
@@ -2931,7 +2929,8 @@
         "elapsedHours": "{value} 小時",
         "elapsedMinutes": "{value} 分鐘",
         "elapsedSeconds": "{value} 秒",
-        "toolUseCount": "{count} 次工具呼叫"
+        "outputSpeedAria": "估算輸出速度",
+        "outputSpeedTooltip": "估算輸出速度（正文 + 思考）"
       },
       "jsonTree": {
         "viewRaw": "檢視原始 JSON",

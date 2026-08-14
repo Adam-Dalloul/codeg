@@ -1794,8 +1794,6 @@
       "tokens": {
         "contextWindowUsageAria": "استخدام نافذة السياق",
         "contextWindow": "نافذة السياق",
-        "outputSpeedAria": "السرعة التقديرية للإخراج",
-        "outputSpeedTooltip": "السرعة التقديرية للإخراج (نص + تفكير)",
         "usedMax": "المستخدم / الحد الأقصى",
         "tokenUsage": "استخدام الرموز",
         "input": "إدخال",
@@ -2931,7 +2929,8 @@
         "elapsedHours": "{value}س",
         "elapsedMinutes": "{value}د",
         "elapsedSeconds": "{value}ث",
-        "toolUseCount": "{count} استخدام للأداة"
+        "outputSpeedAria": "السرعة التقديرية للإخراج",
+        "outputSpeedTooltip": "السرعة التقديرية للإخراج (نص + تفكير)"
       },
       "jsonTree": {
         "viewRaw": "عرض JSON الخام",
