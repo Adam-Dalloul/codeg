@@ -289,6 +289,7 @@ export function GeneralSettings() {
                   })}
                 </span>
               ) : null}
+              <span className="mt-1 block">{t("terminalAgentShellHint")}</span>
             </>
           }
           htmlFor="terminal-default-shell"

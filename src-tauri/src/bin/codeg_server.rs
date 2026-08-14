@@ -334,6 +334,14 @@ async fn async_main() -> ExitCode {
         &chat_authoring_config,
     )
     .await;
+    // Keep ACP model terminal fallbacks aligned with the same default-shell
+    // preference used by the built-in terminal before accepting connections.
+    let terminal_shell_config = state.connection_manager.terminal_shell_config();
+    codeg_lib::commands::system_settings::apply_persisted_terminal_shell_config(
+        &state.db.conn,
+        &terminal_shell_config,
+    )
+    .await;
 
     // Spawn the delegation listener so companion processes can round-trip
     // through the broker. Path is PID-scoped, so the listener owns it for

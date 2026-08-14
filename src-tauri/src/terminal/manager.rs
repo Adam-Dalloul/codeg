@@ -1,13 +1,13 @@
 use std::collections::HashMap;
 use std::io::{Read, Write};
-#[cfg(target_os = "windows")]
-use std::path::Path;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 
 use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
 
 use super::error::TerminalError;
+#[cfg(target_os = "windows")]
+use super::shell_flavor::ShellFamily;
 use super::types::{TerminalEvent, TerminalInfo};
 use crate::web::event_bridge::EventEmitter;
 
@@ -70,22 +70,12 @@ enum WindowsShellFlavor {
 
 #[cfg(target_os = "windows")]
 fn detect_windows_shell_flavor(shell: &str) -> WindowsShellFlavor {
-    let shell_name = Path::new(shell)
-        .file_name()
-        .and_then(|value| value.to_str())
-        .unwrap_or(shell)
-        .to_ascii_lowercase();
-
-    if shell_name.contains("pwsh") || shell_name.contains("powershell") {
-        WindowsShellFlavor::PowerShell
-    } else if shell_name.contains("bash")
-        || shell_name.contains("zsh")
-        || shell_name.contains("fish")
-        || shell_name.ends_with("sh.exe")
-    {
-        WindowsShellFlavor::Posix
-    } else {
-        WindowsShellFlavor::Cmd
+    // Shares one classifier with the ACP terminal runtime so the two can't
+    // drift on what `COMSPEC` means — see `terminal::shell_flavor`.
+    match crate::terminal::shell_flavor::classify_shell_family(shell) {
+        ShellFamily::PowerShell => WindowsShellFlavor::PowerShell,
+        ShellFamily::Posix => WindowsShellFlavor::Posix,
+        ShellFamily::Cmd => WindowsShellFlavor::Cmd,
     }
 }
 
@@ -107,11 +97,7 @@ enum PosixShellFlavor {
 
 #[cfg(not(target_os = "windows"))]
 fn detect_posix_shell_flavor(shell: &str) -> PosixShellFlavor {
-    let name = std::path::Path::new(shell)
-        .file_name()
-        .and_then(|value| value.to_str())
-        .unwrap_or(shell)
-        .to_ascii_lowercase();
+    let name = crate::terminal::shell_flavor::shell_basename(shell);
 
     if matches!(
         name.as_str(),

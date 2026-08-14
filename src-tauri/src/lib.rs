@@ -428,6 +428,25 @@ mod tauri_app {
                     });
                 }
 
+                // Push the persisted default shell into the ACP terminal
+                // runtime BEFORE any background task that can spawn an agent
+                // (the chat-channel dispatcher below is one). The handle is
+                // read at terminal-create time, so a late seed would only ever
+                // be a narrow race — but "seeded before anything can connect"
+                // is cheap to guarantee here and matches server startup, which
+                // seeds before it binds.
+                {
+                    let db_for_shell = app.state::<db::AppDatabase>().conn.clone();
+                    let shell_config = app.state::<ConnectionManager>().terminal_shell_config();
+                    tauri::async_runtime::block_on(async move {
+                        crate::commands::system_settings::apply_persisted_terminal_shell_config(
+                            &db_for_shell,
+                            &shell_config,
+                        )
+                        .await;
+                    });
+                }
+
                 // Label worktree folders registered before aliases were seeded at
                 // creation with the branch they have checked out, so the sidebar
                 // names them by branch rather than by their (long, derived)
