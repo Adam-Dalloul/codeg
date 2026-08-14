@@ -51,6 +51,13 @@ pub struct WorkTaskInfo {
     /// `WorkTaskPreflight` snapshot (acceptance red/green light), if a
     /// preflight command ran for this review.
     pub preflight: Option<serde_json::Value>,
+    /// The merge this reviewed task is waiting to run — the user clicked merge
+    /// while another task of the same project was landing. `None` = not queued.
+    /// Carries the options wholesale, not just the instant: the board ranks the
+    /// queue by `queued_at`, and reopening the dialog on a queued task has to
+    /// show the commit message and worktree choice already parked rather than
+    /// silently replacing them with the defaults.
+    pub merge_queued: Option<WorkTaskQueuedMerge>,
     pub archived_at: Option<DateTime<Utc>>,
     /// Planned start of a to-do task (`None` = no plan). Cleared the moment the
     /// task is claimed, by the scheduler or by hand.
@@ -295,6 +302,23 @@ pub struct WorkTaskMergeState {
     /// The agent writes the commit message itself (`message` is empty then).
     #[serde(default)]
     pub auto_message: bool,
+}
+
+/// A merge the user asked for while the folder's one merge slot was busy,
+/// parked as JSON in `work_task.pending_merge` and dispatched by the folder's
+/// merge pump when the slot frees. Merges into one base branch can only run one
+/// at a time, so the queue is what lets a user accept a whole review column in
+/// one pass instead of babysitting each landing.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkTaskQueuedMerge {
+    /// The commit message the user typed; `None` = the agent writes it.
+    #[serde(default)]
+    pub message: Option<String>,
+    #[serde(default)]
+    pub delete_worktree: bool,
+    /// When the task took its place in line — the pump's ordering key, kept
+    /// across a re-queue so changing the options doesn't jump the line.
+    pub queued_at: DateTime<Utc>,
 }
 
 /// Outcome of the folder's preflight command for one review generation,

@@ -3157,17 +3157,25 @@ export async function workTaskCancel(
 }
 
 /** Dispatch the agent-driven merge (`message: null` = the agent writes the
- *  commit message itself); the outcome rides `task://changed` events. */
+ *  commit message itself); the outcome rides `task://changed` events.
+ *  Resolves `true` when the merge was QUEUED behind another landing of the same
+ *  project instead of started — merges are serial per project, so a second
+ *  acceptance takes a place in line rather than failing. */
 export async function workTaskMerge(
   id: number,
   message: string | null,
   deleteWorktree: boolean
-): Promise<void> {
+): Promise<boolean> {
   return getTransport().call("work_task_merge", {
     id,
     message,
     deleteWorktree,
   })
+}
+
+/** Withdraw a merge waiting in the project's queue; the task stays in review. */
+export async function workTaskMergeUnqueue(id: number): Promise<void> {
+  return getTransport().call("work_task_merge_unqueue", { id })
 }
 
 /** Finish a reviewed task that has nothing to merge (review → done), taking

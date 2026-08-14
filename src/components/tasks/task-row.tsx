@@ -11,6 +11,7 @@ import {
 import { formatRelative } from "@/components/conversations/sidebar-conversation-grouping"
 import { cn } from "@/lib/utils"
 import {
+  MergeQueuedChip,
   ScheduleChip,
   statusAccent,
   StatusChip,
@@ -57,6 +58,8 @@ interface TaskRowProps extends TaskActionHandlers {
   folderName: string | null
   /** Shared render-tick timestamp for relative times (refreshed by the page). */
   now: number
+  /** Place in line when this task is waiting to merge (see `mergeQueueRanks`). */
+  mergeQueueRank?: number
   onOpen: () => void
 }
 
@@ -85,6 +88,7 @@ export function TaskRow({
   task,
   folderName,
   now,
+  mergeQueueRank,
   onOpen,
   ...handlers
 }: TaskRowProps) {
@@ -168,8 +172,10 @@ export function TaskRow({
                 rare, and a dedicated column would cost every row its alignment
                 to serve a handful. Renders nothing when there is no plan. */}
             <ScheduleChip task={task} />
-            {/* Same reasoning: a deleted worktree is the exception, and the row
-                must say so wherever the board card would. */}
+            {/* Same reasoning: a queued merge and a deleted worktree are the
+                exception, and the row must say so wherever the board card
+                would. */}
+            <MergeQueuedChip task={task} rank={mergeQueueRank} />
             <WorktreeRemovedChip task={task} />
           </div>
           {note ? (

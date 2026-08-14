@@ -9,6 +9,7 @@ import {
   CircleCheck,
   CircleX,
   FolderX,
+  GitMerge,
   Loader2,
 } from "lucide-react"
 import { AgentIcon } from "@/components/agent-icon"
@@ -16,7 +17,7 @@ import { Button } from "@/components/ui/button"
 import { formatRelative } from "@/components/conversations/sidebar-conversation-grouping"
 import { formatScheduleFull, formatScheduleShort } from "@/lib/task-schedule"
 import { cn } from "@/lib/utils"
-import { worktreeWasRemoved } from "./task-acceptance"
+import { isMergeQueued, worktreeWasRemoved } from "./task-acceptance"
 import { buildTaskActions, type TaskActionItem } from "./task-actions"
 import type { TaskActionHandlers } from "./task-actions"
 import type { WorkTask } from "@/lib/types"
@@ -172,7 +173,42 @@ interface TaskCardProps extends TaskActionHandlers {
   folderName: string | null
   /** Shared render-tick timestamp for relative times (refreshed by the page). */
   now: number
+  /** Place in line when this task is waiting to merge (see `mergeQueueRanks`);
+   *  the page computes it, because a card cannot see its siblings. */
+  mergeQueueRank?: number
   onOpen: () => void
+}
+
+/**
+ * "Accepted, waiting for the project's merge slot." Merges into one base branch
+ * run one at a time, so a second acceptance takes a place in line instead of
+ * failing — and a row that says nothing about that reads as if the click was
+ * lost. Amber like the review states it sits among, with the rank spelled out
+ * whenever the page knows it (`第 2 位` is the difference between "queued" and
+ * "queued behind one other").
+ */
+export function MergeQueuedChip({
+  task,
+  rank,
+}: {
+  task: WorkTask
+  rank?: number
+}) {
+  const t = useTranslations("Tasks")
+  if (!isMergeQueued(task)) return null
+  const label =
+    rank != null && rank > 1
+      ? t("badgeMergeQueuedRank", { rank })
+      : t("badgeMergeQueued")
+  return (
+    <span
+      className="inline-flex min-w-0 max-w-full items-center gap-1 rounded-full bg-amber-500/10 px-1.5 py-0.5 text-[0.625rem] font-medium leading-none text-amber-600 dark:text-amber-400"
+      title={t("badgeMergeQueuedHint")}
+    >
+      <GitMerge className="size-2.5 shrink-0" aria-hidden="true" />
+      <span className="truncate">{label}</span>
+    </span>
+  )
 }
 
 /** The acceptance red/green light for a reviewed card. */
@@ -304,6 +340,7 @@ export function TaskCard({
   task,
   folderName,
   now,
+  mergeQueueRank,
   onOpen,
   ...handlers
 }: TaskCardProps) {
@@ -390,6 +427,7 @@ export function TaskCard({
         ) : null}
         {when ? <span className="shrink-0">{when}</span> : null}
         <ScheduleChip task={task} />
+        <MergeQueuedChip task={task} rank={mergeQueueRank} />
         <PreflightChip task={task} />
         <WorktreeRemovedChip task={task} />
         {task.cleanup_state === "failed" ? (

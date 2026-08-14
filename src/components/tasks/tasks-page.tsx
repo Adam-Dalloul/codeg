@@ -18,6 +18,7 @@ import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
 import {
   workTaskArchive,
   workTaskCreate,
+  workTaskMergeUnqueue,
   workTaskReorder,
   workTaskStart,
   workTaskUpdate,
@@ -59,6 +60,11 @@ import {
   groupTasksByColumn,
   type BoardColumnId,
 } from "./board-columns"
+import {
+  isFolderMerging,
+  isMergeQueued,
+  mergeQueueRanks,
+} from "./task-acceptance"
 import { TaskCancelDialog } from "./task-cancel-dialog"
 import { StatusChip, TaskCard } from "./task-card"
 import type { TaskActionHandlers } from "./task-actions"
@@ -298,6 +304,22 @@ export function TasksPage() {
     }
     return ordered
   }, [columns.todo, dragEnabled, dragOrder])
+  // Place in line for every task waiting on its project's merge slot. Computed
+  // over ALL tasks, not the visible ones: the queue is the project's, and a
+  // filtered board must not renumber it.
+  const queueRanks = useMemo(() => mergeQueueRanks(tasks), [tasks])
+  // The LIVE row behind the open merge dialog — read for its queue state only.
+  // The dialog itself keeps the captured `mergeTask`: it re-seeds its form
+  // whenever that object changes, and the provider hands out a fresh array on
+  // every refetch, so passing the live row would wipe a half-typed commit
+  // message the moment any task anywhere changed.
+  const mergeLiveTask = useMemo(
+    () =>
+      mergeTask == null
+        ? null
+        : (tasks.find((task) => task.id === mergeTask.id) ?? null),
+    [tasks, mergeTask]
+  )
   // The sheet renders the LIVE row from the provider so status flips (e.g.
   // merging → done) update in place while it is open.
   const detailTask = useMemo(
@@ -383,6 +405,7 @@ export function TasksPage() {
       onRequeue: () => openRestart(task, "requeue"),
       onViewSession: () => openSession(task),
       onMerge: () => openMerge(task),
+      onUnqueueMerge: () => void act(() => workTaskMergeUnqueue(task.id)),
       onComplete: () => openComplete(task),
       onArchive: () =>
         void act(() => workTaskArchive(task.id, task.archived_at == null)),
@@ -747,6 +770,7 @@ export function TasksPage() {
           tasks={listTasks}
           folderNames={folderNames}
           now={now}
+          mergeQueueRanks={queueRanks}
           filtered={statusFilter != null}
           onClearFilter={() => setStatusFilter(null)}
           onOpen={setDetailTaskId}
@@ -767,6 +791,7 @@ export function TasksPage() {
                   task={task}
                   folderName={folderNames.get(task.folder_id) ?? null}
                   now={now}
+                  mergeQueueRank={queueRanks.get(task.id)}
                   onOpen={() => {
                     // Swallow the click that closes a drag.
                     if (draggedRef.current) return
@@ -940,10 +965,17 @@ export function TasksPage() {
         }}
         onSchedule={openSchedule}
       />
+      {/* The queue state comes from the live row (a merge that starts while
+          the dialog is open turns "merge" into "queue"), the form from the
+          captured one — see `mergeLiveTask`. */}
       <TaskMergeDialog
         open={mergeOpen}
         onOpenChange={setMergeOpen}
         task={mergeTask}
+        folderMerging={
+          mergeTask != null && isFolderMerging(tasks, mergeTask.folder_id)
+        }
+        alreadyQueued={mergeLiveTask != null && isMergeQueued(mergeLiveTask)}
       />
       <TaskCompleteDialog
         open={completeOpen}

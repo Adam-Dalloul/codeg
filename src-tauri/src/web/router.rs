@@ -1325,6 +1325,10 @@ pub fn build_router(
             post(handlers::work_task::work_task_merge),
         )
         .route(
+            "/work_task_merge_unqueue",
+            post(handlers::work_task::work_task_merge_unqueue),
+        )
+        .route(
             "/work_task_complete",
             post(handlers::work_task::work_task_complete),
         )

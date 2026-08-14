@@ -16,6 +16,8 @@ interface TaskListProps {
   folderNames: Map<number, string>
   /** Shared render-tick timestamp for relative times (refreshed by the page). */
   now: number
+  /** task id → place in its project's merge queue (see `mergeQueueRanks`). */
+  mergeQueueRanks: Map<number, number>
   /** Whether a status filter is narrowing the list — drives the empty state's
    *  offer to clear it, instead of leaving a dead end. */
   filtered: boolean
@@ -39,6 +41,7 @@ export function TaskList({
   tasks,
   folderNames,
   now,
+  mergeQueueRanks,
   filtered,
   onClearFilter,
   onOpen,
@@ -110,6 +113,7 @@ export function TaskList({
                     task={task}
                     folderName={folderNames.get(task.folder_id) ?? null}
                     now={now}
+                    mergeQueueRank={mergeQueueRanks.get(task.id)}
                     onOpen={() => onOpen(task.id)}
                     {...handlersFor(task)}
                   />

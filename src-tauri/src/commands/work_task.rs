@@ -42,14 +42,14 @@ fn nudge_schedule() {
     }
 }
 
-/// Best-effort auto-merge nudge after a settings change: switching auto-merge
+/// Best-effort merge-pump nudge after a settings change: switching auto-merge
 /// on should drain the review backlog now, not at the next reconcile tick.
 /// Scope 0 is the global row, which any folder without its own row follows —
-/// that one sweeps every folder holding reviewed tasks.
-fn nudge_auto_merge(folder_id: i32) {
+/// that one pumps every folder holding reviewed tasks.
+fn nudge_merge_pump(folder_id: i32) {
     if let Some(engine) = crate::work_task::engine() {
         let scope = (folder_id != 0).then_some(folder_id);
-        tokio::spawn(async move { engine.sweep_auto_merge_backlog(scope).await });
+        tokio::spawn(async move { engine.sweep_merge_backlog(scope).await });
     }
 }
 
@@ -455,15 +455,40 @@ pub async fn work_task_cancel_core(id: i32, reason: Option<String>) -> Result<()
 /// review with a readable error). This awaits only the dispatch (validation +
 /// agent spawn), so refused merges surface directly in the dialog.
 /// `message: None` = the agent writes the commit message itself.
+///
+/// Returns `true` when the merge was QUEUED instead of started — the folder was
+/// already landing another task, and this one goes in as soon as that finishes.
 pub async fn work_task_merge_core(
     id: i32,
     message: Option<String>,
     delete_worktree: bool,
-) -> Result<(), DbError> {
+) -> Result<bool, DbError> {
     engine()?
         .merge_task(id, message, delete_worktree, false)
         .await
+        .map(|dispatch| dispatch.is_queued())
         .map_err(DbError::Validation)
+}
+
+/// Withdraw a merge that is waiting in the folder's queue (the task stays in
+/// review, untouched). Pure DB — no engine needed: the pump only ever reads
+/// intents that are still on the row.
+pub async fn work_task_merge_unqueue_core(
+    emitter: &EventEmitter,
+    db: &AppDatabase,
+    id: i32,
+) -> Result<(), DbError> {
+    if !work_task_service::unqueue_merge(&db.conn, id).await? {
+        return Err(DbError::Validation(
+            "this task is not waiting to merge".to_string(),
+        ));
+    }
+    emit_event(
+        emitter,
+        WORK_TASK_CHANGED_EVENT,
+        WorkTaskChange::Upsert { id },
+    );
+    Ok(())
 }
 
 /// Finish a reviewed task that has nothing to land (review → done, no merge),
@@ -585,7 +610,7 @@ pub async fn work_task_settings_set_core(
         WorkTaskChange::Settings { folder_id },
     );
     nudge_pump(folder_id);
-    nudge_auto_merge(folder_id);
+    nudge_merge_pump(folder_id);
     Ok(())
 }
 
@@ -605,7 +630,7 @@ pub async fn work_task_settings_delete_core(
     nudge_pump(folder_id);
     // Reverting to the global row can also switch auto-merge ON for this
     // folder (the global row may carry it) — same drain-now semantics.
-    nudge_auto_merge(folder_id);
+    nudge_merge_pump(folder_id);
     Ok(())
 }
 
@@ -788,8 +813,18 @@ pub async fn work_task_merge(
     id: i32,
     message: Option<String>,
     delete_worktree: bool,
-) -> Result<(), DbError> {
+) -> Result<bool, DbError> {
     work_task_merge_core(id, message, delete_worktree).await
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn work_task_merge_unqueue(
+    app: tauri::AppHandle,
+    db: tauri::State<'_, AppDatabase>,
+    id: i32,
+) -> Result<(), DbError> {
+    work_task_merge_unqueue_core(&EventEmitter::Tauri(app), &db, id).await
 }
 
 #[cfg(feature = "tauri-runtime")]

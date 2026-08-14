@@ -56,6 +56,7 @@ function renderRow(
     onRequeue: noop,
     onViewSession: noop,
     onMerge: noop,
+    onUnqueueMerge: noop,
     onComplete: noop,
     onArchive: noop,
     onEdit: noop,

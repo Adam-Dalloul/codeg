@@ -1400,6 +1400,11 @@ export interface WorkTask {
   /** Acceptance red/green light of the current review, if a preflight
    *  command ran. */
   preflight: WorkTaskPreflight | null
+  /** The merge this reviewed task is waiting to run — the user clicked merge
+   *  while another task of the same project was landing. Absent/null = not
+   *  queued; the rank comes from ordering the folder's queued tasks by
+   *  `queued_at`. */
+  merge_queued?: WorkTaskQueuedMerge | null
   archived_at: string | null
   /** Planned start of a to-do task (ISO); null = no plan. Consumed the moment
    *  the task is claimed, by the scheduler or by hand. */
@@ -1411,6 +1416,15 @@ export interface WorkTask {
   started_at: string | null
   settled_at: string | null
   finished_at: string | null
+}
+
+/** A merge parked on a reviewed task while its project lands another one. */
+export interface WorkTaskQueuedMerge {
+  /** The commit message the user typed; null = the agent writes it. */
+  message: string | null
+  delete_worktree: boolean
+  /** Place in line (ISO instant) — the order the engine's pump dispatches in. */
+  queued_at: string
 }
 
 /** Result of the folder's preflight command for one review generation. */
