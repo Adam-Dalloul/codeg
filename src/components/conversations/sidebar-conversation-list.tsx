@@ -110,7 +110,7 @@ import {
   selectPinnedWithReuse,
   selectRecentConversationsWithReuse,
   worktreeChildrenByParent,
-  worktreeHeaderLabel,
+  worktreeHeaderAlias,
   type SidebarRow,
 } from "./sidebar-conversation-grouping"
 import { useSubsessionSync } from "@/hooks/use-subsession-sync"
@@ -269,14 +269,15 @@ const FolderHeader = memo(function FolderHeader({
    * Which glyph + label this header renders:
    * - `repo` (default): a top-level repo / plain folder / repo container — the
    *   FolderOpen/FolderClosed glyph and the repo-name alias label.
-   * - `worktree`: a git worktree sub-group — the FolderGit2 glyph and the
-   *   branch-first label (see {@link worktreeHeaderLabel}).
+   * - `worktree`: a git worktree sub-group — the FolderGit2 glyph and the same
+   *   `alias [ name ]` label as a repo, with the branch standing in for the
+   *   alias (see {@link worktreeHeaderAlias}).
    * - `root`: a repo container's own-sessions sub-group — the FolderRoot glyph
    *   and a fixed, non-localized "root" label.
    */
   variant?: "repo" | "worktree" | "root"
-  /** The worktree's branch name (its own `git_branch`), used as the label when
-   *  no alias is set. Falls back to the folder name when absent. */
+  /** The worktree's branch name (its own `git_branch`), used as the alias when
+   *  none is set. Leaves the bare folder name when absent. */
   worktreeBranch?: string | null
 }) {
   // Own the translations here rather than receiving `t` as a prop: next-intl
@@ -393,11 +394,13 @@ const FolderHeader = memo(function FolderHeader({
                     )}
                   >
                     {variant === "worktree" ? (
-                      worktreeHeaderLabel(
-                        folderAlias,
-                        worktreeBranch,
-                        folderName
-                      )
+                      // Branch as the alias, directory as the name — the same
+                      // two-part label a repo header renders.
+                      <FolderAliasLabel
+                        name={folderName}
+                        alias={worktreeHeaderAlias(folderAlias, worktreeBranch)}
+                        bracketClassName="text-sidebar-foreground"
+                      />
                     ) : variant === "root" ? (
                       // The container repo's own-sessions sub-group is labeled
                       // with a fixed, non-localized "root" (its glyph is

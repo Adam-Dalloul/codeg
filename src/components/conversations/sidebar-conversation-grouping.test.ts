@@ -19,7 +19,7 @@ import {
   selectPinnedWithReuse,
   selectRecentConversationsWithReuse,
   worktreeChildrenByParent,
-  worktreeHeaderLabel,
+  worktreeHeaderAlias,
   type SidebarRow,
 } from "./sidebar-conversation-grouping"
 
@@ -246,34 +246,27 @@ describe("worktreeChildrenByParent", () => {
   })
 })
 
-describe("worktreeHeaderLabel", () => {
+describe("worktreeHeaderAlias", () => {
   it("prefers the alias — where the seeded branch name lands", () => {
-    expect(worktreeHeaderLabel("task/49", "task/49", "codeg-task-49")).toBe(
-      "task/49"
-    )
+    expect(worktreeHeaderAlias("task/49", "task/49")).toBe("task/49")
   })
 
   it("lets a renamed worktree win over its branch", () => {
-    expect(
-      worktreeHeaderLabel("Payment rewrite", "task/49", "codeg-task-49")
-    ).toBe("Payment rewrite")
+    expect(worktreeHeaderAlias("Payment rewrite", "task/49")).toBe(
+      "Payment rewrite"
+    )
   })
 
-  it("falls back to the branch, then the directory name", () => {
-    expect(worktreeHeaderLabel(null, "task/49", "codeg-task-49")).toBe(
-      "task/49"
-    )
-    expect(worktreeHeaderLabel(null, null, "codeg-task-49")).toBe(
-      "codeg-task-49"
-    )
+  it("falls back to the branch", () => {
+    expect(worktreeHeaderAlias(null, "task/49")).toBe("task/49")
+  })
+
+  it("gives up rather than inventing one, leaving the bare directory name", () => {
+    expect(worktreeHeaderAlias(null, null)).toBeNull()
     // Blank-but-present values (a cleared alias round-tripping as "") must not
-    // win the fallback chain and blank out the row.
-    expect(worktreeHeaderLabel("  ", "  ", "codeg-task-49")).toBe(
-      "codeg-task-49"
-    )
-    expect(worktreeHeaderLabel(undefined, undefined, "codeg-task-49")).toBe(
-      "codeg-task-49"
-    )
+    // win the chain and render `[ … ]` against an empty label.
+    expect(worktreeHeaderAlias("  ", "  ")).toBeNull()
+    expect(worktreeHeaderAlias(undefined, undefined)).toBeNull()
   })
 })
 

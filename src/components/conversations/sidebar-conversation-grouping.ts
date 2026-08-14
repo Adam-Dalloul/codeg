@@ -361,8 +361,14 @@ export function worktreeChildrenByParent(
 }
 
 /**
- * The label a worktree sub-group header shows, in preference order: the user
- * alias, the branch, then the directory name.
+ * The alias half of a worktree sub-group header, in preference order: the user
+ * alias, then the branch. `null` when it has neither.
+ *
+ * The header pairs it with the directory name through the same
+ * `FolderAliasLabel` a repo header uses, so a worktree reads
+ * `task/49 [ codeg-task-49 ]` — the branch is what identifies the worktree, and
+ * the directory is what identifies it on disk. With neither, `FolderAliasLabel`
+ * falls back to the bare directory name on its own.
  *
  * The alias leads because worktree folders get theirs seeded with the branch
  * they were created on (`open_worktree_folder_core`), which makes it the one
@@ -374,18 +380,12 @@ export function worktreeChildrenByParent(
  * a live readout, and `git_branch` seeds the store's branch map, where a stale
  * value would misreport what is checked out now. A user who renames the folder
  * still wins over both, since the alias is exactly where that rename lands.
- *
- * Unlike a repo header this deliberately does NOT append `[ directory ]`: the
- * row is already indented under its repo, and a worktree's directory name is a
- * derived, much longer restatement of the branch that would push the branch
- * itself out of the truncated width. The full path stays in the row's tooltip.
  */
-export function worktreeHeaderLabel(
+export function worktreeHeaderAlias(
   alias: string | null | undefined,
-  branch: string | null | undefined,
-  name: string
-): string {
-  return alias?.trim() || branch?.trim() || name
+  branch: string | null | undefined
+): string | null {
+  return alias?.trim() || branch?.trim() || null
 }
 
 // ── Flat row model (Phase 2 virtualization) ─────────────────────────────────
