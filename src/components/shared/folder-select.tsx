@@ -191,7 +191,13 @@ export function FolderSelect({
           />
           <span
             className={cn(
-              "min-w-0 truncate",
+              // `flex-1` + `text-start` only bite when a caller stretches the
+              // trigger past its content (a fixed-width filter column): the
+              // label takes the slack and stays left-aligned with the icon,
+              // instead of the whole icon/label/chevron group floating in the
+              // middle of the pill. At the default content width there is no
+              // slack, so nothing moves.
+              "min-w-0 flex-1 truncate text-start",
               !current && (placeholder || unresolved) && "text-muted-foreground"
             )}
           >

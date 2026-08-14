@@ -1,15 +1,25 @@
 "use client"
 
-import { useCallback, useEffect, useMemo, useState } from "react"
+import {
+  Fragment,
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+  type ReactNode,
+} from "react"
 import { useTranslations } from "next-intl"
 import { toast } from "sonner"
 import {
+  Bot,
   Check,
   CheckSquare,
   ChevronDown,
+  ChevronRight,
   GitBranch,
   ListChecks,
   Loader2,
+  Search,
   Square,
   Trash2,
 } from "lucide-react"
@@ -26,7 +36,6 @@ import { ScrollArea } from "@/components/ui/scroll-area"
 import { Skeleton } from "@/components/ui/skeleton"
 import {
   Command,
-  CommandEmpty,
   CommandGroup,
   CommandInput,
   CommandItem,
@@ -62,6 +71,12 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
 import { AgentIcon } from "@/components/agent-icon"
+import {
+  buildBranchTree,
+  expandedKeysForBranch,
+  type BranchTreeLeaf,
+  type BranchTreeNode,
+} from "@/lib/branch-tree"
 import {
   FolderSelect,
   type FolderSelectOption,
@@ -115,6 +130,42 @@ type BranchFilter =
 
 const ALL_BRANCHES: BranchFilter = { kind: "all" }
 
+/**
+ * Shared metrics for the four facet controls, so the folder picker, the branch
+ * popover and the two `Select`s read as one row of equal columns rather than
+ * three unrelated widgets.
+ *
+ * `w-full max-w-none` is the load-bearing part: `FolderSelect`'s `field`
+ * variant is content-sized (`w-auto max-w-[16rem]`), which made the row's
+ * columns — and, before the search box moved to its own line, the search box
+ * itself — resize every time the picked folder's name changed length.
+ */
+const FACET_TRIGGER_CLASS = "h-9 w-full min-w-0 max-w-none text-sm"
+
+/**
+ * Same, for the two native `Select` triggers: they ship a 16px chevron at full
+ * muted strength where the folder and branch popovers beside them use a 14px
+ * one at 60%. `>svg` is the chevron alone — the selected value's own glyph
+ * renders deeper, inside the value slot.
+ */
+const FACET_SELECT_TRIGGER_CLASS = cn(
+  FACET_TRIGGER_CLASS,
+  "[&>svg]:size-3.5 [&>svg]:text-muted-foreground/60"
+)
+
+/**
+ * A status dot in the same 14px slot the other facets' glyphs occupy — on its
+ * own it is 8px, which would start the status label a few pixels left of every
+ * other label in the row.
+ */
+function StatusGlyph({ status }: { status?: ConversationStatus }) {
+  return (
+    <span className="flex size-3.5 items-center justify-center">
+      <ConversationStatusDot status={status} />
+    </span>
+  )
+}
+
 /** One branch the current rows actually use, and how many of them use it. */
 interface BranchOption {
   name: string
@@ -144,13 +195,98 @@ function formatRelative(iso: string): string {
 }
 
 /**
- * The branch facet: a searchable list of the branches the matched conversations
- * actually ran on, each with its count, plus pinned "all branches" and (when
- * some conversation has none) "no branch" rows.
+ * Left padding for a branch row at `depth`, measured from `CommandItem`'s own
+ * `px-2` base so the tree's first level lines up with the pinned rows above it.
+ * Deliberately not `branchRowPaddingLeft` from the shared tree renderer: that
+ * base is tuned to the dropdown selectors' roomier `rounded-xl py-2` rows.
+ */
+function branchRowIndent(depth: number): string {
+  return `${0.5 + depth * 0.75}rem`
+}
+
+/**
+ * The prefix-grouped branch rows. Group headers are `CommandItem`s like the
+ * leaves rather than plain buttons, so arrow keys reach them and Enter folds
+ * them — cmdk only navigates its own items, and the shared
+ * `BranchTreeCollapsible` renderer (built for Radix dropdowns) would drop its
+ * triggers out of this list's keyboard path.
+ */
+function BranchTreeRows({
+  nodes,
+  depth,
+  expanded,
+  onToggleGroup,
+  renderLeaf,
+}: {
+  nodes: readonly BranchTreeNode[]
+  depth: number
+  expanded: ReadonlySet<string>
+  onToggleGroup: (key: string) => void
+  renderLeaf: (leaf: BranchTreeLeaf, depth: number) => ReactNode
+}) {
+  return (
+    <>
+      {nodes.map((node) => {
+        if (node.type === "leaf") {
+          return <Fragment key={node.key}>{renderLeaf(node, depth)}</Fragment>
+        }
+        // Folded by default, like the other branch selectors: a repo whose
+        // `task/` group runs to fifty worktrees would otherwise bury `main`
+        // below a scroll. The count on the header says what is inside, and
+        // typing flattens the whole tree anyway.
+        const open = expanded.has(node.key)
+        return (
+          <Fragment key={node.key}>
+            <CommandItem
+              // Group keys are `g <scope> <prefix>` and a git ref can't contain
+              // a space, so they never collide with a leaf's branch name.
+              value={node.key}
+              onSelect={() => onToggleGroup(node.key)}
+              style={{ paddingLeft: branchRowIndent(depth) }}
+            >
+              <ChevronRight
+                className={cn(
+                  "h-4 w-4 text-muted-foreground transition-transform",
+                  open && "rotate-90"
+                )}
+              />
+              <span dir="ltr" className="min-w-0 flex-1 truncate text-start">
+                {node.label}
+              </span>
+              <span className="shrink-0 text-xs text-muted-foreground tabular-nums">
+                {node.count}
+              </span>
+            </CommandItem>
+            {open ? (
+              <BranchTreeRows
+                nodes={node.children}
+                depth={depth + 1}
+                expanded={expanded}
+                onToggleGroup={onToggleGroup}
+                renderLeaf={renderLeaf}
+              />
+            ) : null}
+          </Fragment>
+        )
+      })}
+    </>
+  )
+}
+
+/**
+ * The branch facet: the branches the matched conversations actually ran on,
+ * each with its count, plus pinned "all branches" and (when some conversation
+ * has none) "no branch" rows.
  *
  * Shaped like the shared `FolderSelect` — a command palette in a popover — for
  * the same reason: a repo accumulates far more branches than a plain `Select`
- * can show without scrolling blindly.
+ * can show without scrolling blindly. Branches are prefix-grouped on `/` with
+ * the same `buildBranchTree` the three git selectors use, so `task/49` and
+ * `task/50` fold under one `task/` header here too.
+ *
+ * Filtering is ours rather than cmdk's (`shouldFilter={false}`): a typed query
+ * has to flatten the tree — a collapsed group can't offer a match it isn't
+ * rendering — which is exactly what the other branch selectors do.
  */
 function BranchFilterSelect({
   value,
@@ -167,6 +303,8 @@ function BranchFilterSelect({
 }) {
   const t = useTranslations("Folder.sidebar.manageConversations")
   const [open, setOpen] = useState(false)
+  const [query, setQuery] = useState("")
+  const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set())
 
   const label =
     value.kind === "all"
@@ -180,16 +318,93 @@ function BranchFilterSelect({
     onChange(next)
   }
 
+  const toggleGroup = useCallback((key: string) => {
+    setExpanded((prev) => {
+      const next = new Set(prev)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
+      return next
+    })
+  }, [])
+
+  const nodes = useMemo(
+    () =>
+      buildBranchTree(
+        branches.map((b) => ({ full: b.name, display: b.name })),
+        "facet"
+      ),
+    [branches]
+  )
+  const countByBranch = useMemo(
+    () => new Map(branches.map((b) => [b.name, b.count])),
+    [branches]
+  )
+
+  const q = query.trim().toLowerCase()
+  // Searching flattens: full names, so a hit under `task/` still reads as the
+  // branch it is once its group header is gone.
+  const matches = useMemo(
+    () => (q ? branches.filter((b) => b.name.toLowerCase().includes(q)) : []),
+    [branches, q]
+  )
+  const noBranchLabel = t("branchNone")
+  const showNoBranch =
+    noBranchCount > 0 && (!q || noBranchLabel.toLowerCase().includes(q))
+  const nothingMatched = q !== "" && matches.length === 0 && !showNoBranch
+
+  /** One branch row. `label` is the remainder under its group; `fullName` is
+   *  the ref the facet actually filters by. */
+  const renderLeaf = (leaf: BranchTreeLeaf, depth: number) => (
+    <CommandItem
+      value={leaf.fullName}
+      onSelect={() => select({ kind: "branch", name: leaf.fullName })}
+      style={{ paddingLeft: branchRowIndent(depth) }}
+    >
+      <GitBranch className="h-4 w-4" />
+      <span dir="ltr" className="min-w-0 flex-1 truncate text-start">
+        {leaf.label}
+      </span>
+      <span className="shrink-0 text-xs text-muted-foreground tabular-nums">
+        {countByBranch.get(leaf.fullName)}
+      </span>
+      {value.kind === "branch" && value.name === leaf.fullName ? (
+        <Check className="h-4 w-4 shrink-0" />
+      ) : null}
+    </CommandItem>
+  )
+
   return (
-    <Popover open={open} onOpenChange={setOpen}>
+    <Popover
+      open={open}
+      onOpenChange={(next) => {
+        setOpen(next)
+        if (!next) return
+        // Each open starts from the whole tree, not from the last search. Reset
+        // on the way IN rather than out: picking a row closes the popover by
+        // setting `open` directly, which Radix never reports back here.
+        setQuery("")
+        // Folds reset per open too, except along the path to whatever is picked
+        // — reopening onto a checkmark hidden inside a collapsed group reads as
+        // "nothing is selected".
+        setExpanded(
+          new Set(
+            value.kind === "branch"
+              ? expandedKeysForBranch(nodes, value.name)
+              : []
+          )
+        )
+      }}
+    >
       <PopoverTrigger asChild>
         <Button
           type="button"
           variant="outline"
           size="sm"
           title={label}
+          // Looks only — the caller owns the metrics, so this trigger sizes
+          // with the rest of the facet row.
           className={cn(
-            "h-9 justify-between gap-1.5 rounded-4xl border-input bg-input/30 px-3 text-sm font-normal hover:bg-input/50 dark:hover:bg-input/50",
+            "justify-between gap-1.5 rounded-4xl border-input bg-input/30 px-3 font-normal hover:bg-input/50 dark:hover:bg-input/50",
             className
           )}
         >
@@ -211,18 +426,20 @@ function BranchFilterSelect({
         </Button>
       </PopoverTrigger>
       <PopoverContent align="start" className="w-64 overflow-hidden p-0">
-        <Command className="rounded-2xl">
-          <CommandInput placeholder={t("branchSearchPlaceholder")} />
+        <Command className="rounded-2xl" shouldFilter={false}>
+          <CommandInput
+            value={query}
+            onValueChange={setQuery}
+            placeholder={t("branchSearchPlaceholder")}
+          />
           <CommandList>
-            <CommandEmpty>{t("noMatchingBranches")}</CommandEmpty>
             {/* Pinned above the (scrolling) branches, like the folder picker's
                 "all folders" row: clearing the facet must never require
-                scrolling back up, so it is force-mounted under any search. */}
+                scrolling back up, and it survives any search. */}
             <div className="sticky top-0 z-10 bg-popover">
-              <CommandGroup forceMount>
+              <CommandGroup>
                 <CommandItem
                   value="__all_branches__"
-                  forceMount
                   onSelect={() => select(ALL_BRANCHES)}
                 >
                   <GitBranch className="h-4 w-4" />
@@ -236,18 +453,20 @@ function BranchFilterSelect({
               </CommandGroup>
               <CommandSeparator />
             </div>
+            {nothingMatched ? (
+              <div className="py-6 text-center text-sm">
+                {t("noMatchingBranches")}
+              </div>
+            ) : null}
             <CommandGroup>
-              {noBranchCount > 0 ? (
+              {showNoBranch ? (
                 <CommandItem
-                  // cmdk matches the query against `value` only, so the row's
-                  // own (localized) label goes in beside the sentinel — it is
-                  // the only text the user can see to type.
-                  value={`__no_branch__ ${t("branchNone")}`}
+                  value="__no_branch__"
                   onSelect={() => select({ kind: "none" })}
                 >
                   <GitBranch className="h-4 w-4 opacity-50" />
                   <span className="min-w-0 flex-1 truncate text-muted-foreground">
-                    {t("branchNone")}
+                    {noBranchLabel}
                   </span>
                   <span className="shrink-0 text-xs text-muted-foreground tabular-nums">
                     {noBranchCount}
@@ -257,27 +476,29 @@ function BranchFilterSelect({
                   ) : null}
                 </CommandItem>
               ) : null}
-              {branches.map((b) => (
-                <CommandItem
-                  key={b.name}
-                  value={b.name}
-                  onSelect={() => select({ kind: "branch", name: b.name })}
-                >
-                  <GitBranch className="h-4 w-4" />
-                  <span
-                    dir="ltr"
-                    className="min-w-0 flex-1 truncate text-start"
-                  >
-                    {b.name}
-                  </span>
-                  <span className="shrink-0 text-xs text-muted-foreground tabular-nums">
-                    {b.count}
-                  </span>
-                  {value.kind === "branch" && value.name === b.name ? (
-                    <Check className="h-4 w-4 shrink-0" />
-                  ) : null}
-                </CommandItem>
-              ))}
+              {q ? (
+                matches.map((b) => (
+                  <Fragment key={b.name}>
+                    {renderLeaf(
+                      {
+                        type: "leaf",
+                        fullName: b.name,
+                        label: b.name,
+                        key: b.name,
+                      },
+                      0
+                    )}
+                  </Fragment>
+                ))
+              ) : (
+                <BranchTreeRows
+                  nodes={nodes}
+                  depth={0}
+                  expanded={expanded}
+                  onToggleGroup={toggleGroup}
+                  renderLeaf={renderLeaf}
+                />
+              )}
             </CommandGroup>
           </CommandList>
         </Command>
@@ -597,16 +818,25 @@ export function ConversationManageDialog({
             <DialogTitle>{t("title")}</DialogTitle>
           </DialogHeader>
 
-          {/* Facets: free text and the folder scope on top (both need width),
-              the three narrow ones underneath. */}
+          {/* Facets: free text owns the top line — it is the one that wants
+              every pixel — and the four narrowing controls line up as equal
+              columns beneath it, ordered coarse to fine. */}
           <div className="flex flex-col gap-2">
-            <div className="flex items-center gap-2">
+            <div className="relative">
+              <Search
+                className="pointer-events-none absolute start-3 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground"
+                aria-hidden="true"
+              />
               <Input
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
                 placeholder={t("searchPlaceholder")}
-                className="h-9 min-w-0 flex-1"
+                className="h-9 ps-9"
               />
+            </div>
+            {/* Four across once the dialog is at its `max-w-3xl` width, 2x2
+                below that. */}
+            <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
               <FolderSelect
                 folders={folderOptions}
                 value={scopeFolderId}
@@ -614,26 +844,32 @@ export function ConversationManageDialog({
                 allLabel={t("folderFilterAll")}
                 onSelectAll={() => handleScopeChange(null)}
                 variant="field"
-                className="h-9 text-sm"
+                className={FACET_TRIGGER_CLASS}
               />
-            </div>
-            <div className="flex items-center gap-2">
               <BranchFilterSelect
                 value={branchFilter}
                 onChange={setBranchFilter}
                 branches={branchOptions}
                 noBranchCount={noBranchCount}
-                className="min-w-0 flex-1"
+                className={FACET_TRIGGER_CLASS}
               />
               <Select
                 value={agentFilter}
                 onValueChange={(v) => setAgentFilter(v as AgentType | "all")}
               >
-                <SelectTrigger className="h-9 min-w-0 flex-1">
+                <SelectTrigger className={FACET_SELECT_TRIGGER_CLASS}>
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="all">{t("agentFilterAll")}</SelectItem>
+                  {/* Every row — this one included — leads with a glyph, so the
+                      list (and the trigger it mirrors into) has one left edge
+                      instead of two. */}
+                  <SelectItem value="all">
+                    <span className="flex items-center gap-2">
+                      <Bot className="h-3.5 w-3.5 text-muted-foreground" />
+                      {t("agentFilterAll")}
+                    </span>
+                  </SelectItem>
                   {ALL_AGENT_TYPES.map((at) => (
                     <SelectItem key={at} value={at}>
                       <span className="flex items-center gap-2">
@@ -650,15 +886,22 @@ export function ConversationManageDialog({
                   setStatusFilter(v as ConversationStatus | "all")
                 }
               >
-                <SelectTrigger className="h-9 min-w-0 flex-1">
+                <SelectTrigger className={FACET_SELECT_TRIGGER_CLASS}>
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="all">{t("statusFilterAll")}</SelectItem>
+                  <SelectItem value="all">
+                    <span className="flex items-center gap-2">
+                      {/* Statusless: the dot's grey fallback, which no real
+                          status uses (see STATUS_COLORS). */}
+                      <StatusGlyph />
+                      {t("statusFilterAll")}
+                    </span>
+                  </SelectItem>
                   {STATUS_ORDER.map((s) => (
                     <SelectItem key={s} value={s}>
                       <span className="flex items-center gap-2">
-                        <ConversationStatusDot status={s} />
+                        <StatusGlyph status={s} />
                         {tStatus(s)}
                       </span>
                     </SelectItem>

@@ -264,6 +264,69 @@ describe("ConversationManageDialog", () => {
     expect(h.listAll.mock.calls.length).toBe(callsBefore)
   })
 
+  it("folds branches that share a `/` prefix under one header", async () => {
+    h.listAll.mockResolvedValue([
+      conversation({ id: 1, title: "on 49", git_branch: "task/49" }),
+      conversation({ id: 2, title: "on 50", git_branch: "task/50" }),
+      conversation({ id: 3, title: "on trunk", git_branch: "main" }),
+    ])
+    const user = renderDialog()
+    await screen.findByText("on 49")
+
+    await user.click(screen.getByRole("button", { name: /All branches/ }))
+
+    // The shared prefix becomes one header carrying both branches, folded — so
+    // one `task/` group can't bury a plain branch below a scroll.
+    expect(paletteRow("task/").textContent).toContain("2")
+    expect(screen.queryByText("49")).toBeNull()
+    // A branch that shares no prefix stays whole, and visible.
+    expect(paletteRow("main")).toBeTruthy()
+
+    // Opening the group shows each leaf under only what is left of its name.
+    await user.click(paletteRow("task/"))
+    expect(paletteRow("49")).toBeTruthy()
+    expect(paletteRow("50")).toBeTruthy()
+
+    await user.click(paletteRow("49"))
+    expect(screen.getByText("on 49")).toBeTruthy()
+    expect(screen.queryByText("on 50")).toBeNull()
+  })
+
+  it("re-opens onto the picked branch's group rather than hiding its check", async () => {
+    h.listAll.mockResolvedValue([
+      conversation({ id: 1, title: "on 49", git_branch: "task/49" }),
+      conversation({ id: 2, title: "on 50", git_branch: "task/50" }),
+    ])
+    const user = renderDialog()
+    await screen.findByText("on 49")
+
+    await user.click(screen.getByRole("button", { name: /All branches/ }))
+    await user.click(paletteRow("task/"))
+    await user.click(paletteRow("49"))
+
+    // Folds reset on each open — but a default fold over the current selection
+    // would read as "nothing is picked".
+    await user.click(screen.getByRole("button", { name: /task\/49/ }))
+    expect(paletteRow("49")).toBeTruthy()
+  })
+
+  it("flattens to whole branch names while searching", async () => {
+    h.listAll.mockResolvedValue([
+      conversation({ id: 1, title: "on 49", git_branch: "task/49" }),
+      conversation({ id: 2, title: "on 50", git_branch: "task/50" }),
+    ])
+    const user = renderDialog()
+    await screen.findByText("on 49")
+
+    await user.click(screen.getByRole("button", { name: /All branches/ }))
+    await user.type(screen.getByPlaceholderText(/Search branches/), "49")
+
+    // No group left to hide a match behind, so the row names the whole ref.
+    expect(screen.queryByText("task/")).toBeNull()
+    expect(paletteRow("task/49")).toBeTruthy()
+    expect(screen.queryByText("50")).toBeNull()
+  })
+
   it("isolates the conversations that carry no branch at all", async () => {
     const user = renderDialog()
     await screen.findByText("on main")
