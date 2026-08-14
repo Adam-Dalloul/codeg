@@ -46,6 +46,7 @@ const h = vi.hoisted(() => {
     // routes to the status-bar alert vs. to the OS notification.
     pushAlert: vi.fn(),
     sendSystemNotification: vi.fn(async () => undefined),
+    toastWarning: vi.fn(),
   }
 })
 
@@ -72,6 +73,10 @@ vi.mock("@/contexts/active-folder-context", () => ({
 
 vi.mock("@/lib/notification", () => ({
   sendSystemNotification: h.sendSystemNotification,
+}))
+
+vi.mock("sonner", () => ({
+  toast: { warning: h.toastWarning },
 }))
 
 vi.mock("@/lib/selector-prefs-storage", () => ({
@@ -1874,6 +1879,114 @@ describe("AcpConnectionsProvider Grok cross-agent-type model switch", () => {
     // The attempted model stays the saved preference (no revert of the persisted
     // choice), so a fresh session lands on Composer where the switch succeeds.
     expect(saveConfigPreference).toHaveBeenCalledTimes(1)
+  })
+
+  it("reports a rejected pick, and only when the backend says so", async () => {
+    // The backend owns the request↔answer correlation (`ConfigOptionRejected`):
+    // `acpSetConfigOption` resolves once the command is merely QUEUED, and the
+    // resulting option list is broadcast as an ordinary update — so this side
+    // must never try to infer a verdict from an option snapshot.
+    const handlers = await connectGrokOwner()
+    emitAcpEvent(handlers, {
+      seq: 1,
+      connection_id: "spawned-conn",
+      type: "session_config_options",
+      config_options: grokModelOptions("grok-4.5"),
+    })
+
+    h.toastWarning.mockClear()
+    await act(async () => {
+      await h.actions!.setConfigOption(TAB, "model", "grok-composer-2.5-fast")
+    })
+    // The pick alone reports nothing — the agent may still honour it.
+    expect(h.toastWarning).not.toHaveBeenCalled()
+
+    emitAcpEvent(handlers, {
+      seq: 2,
+      connection_id: "spawned-conn",
+      type: "config_option_rejected",
+      config_id: "model",
+      option_name: "Model",
+      requested: "Composer 2.5",
+      actual: "Grok 4.5",
+    })
+    emitAcpEvent(handlers, {
+      seq: 3,
+      connection_id: "spawned-conn",
+      type: "session_config_options",
+      config_options: grokModelOptions("grok-4.5"),
+    })
+
+    expect(h.toastWarning).toHaveBeenCalledTimes(1)
+    // The useTranslations mock echoes the key, so the message itself is the key.
+    expect(h.toastWarning).toHaveBeenCalledWith("configOptionAdjusted")
+  })
+
+  it("stays silent for option snapshots nobody asked for", async () => {
+    // codex-acp flips `collaboration_mode` mid-turn, and pi answers one
+    // `set_config_option` with TWO snapshots (response + notification). None of
+    // those is a verdict; only an explicit rejection event is.
+    const handlers = await connectGrokOwner()
+    emitAcpEvent(handlers, {
+      seq: 1,
+      connection_id: "spawned-conn",
+      type: "session_config_options",
+      config_options: grokModelOptions("grok-4.5"),
+    })
+
+    h.toastWarning.mockClear()
+    await act(async () => {
+      await h.actions!.setConfigOption(TAB, "model", "grok-composer-2.5-fast")
+    })
+    // Honoured, then a spontaneous switch back, then a duplicate echo.
+    for (const [seq, value] of [
+      [2, "grok-composer-2.5-fast"],
+      [3, "grok-4.5"],
+      [4, "grok-4.5"],
+    ] as const) {
+      emitAcpEvent(handlers, {
+        seq,
+        connection_id: "spawned-conn",
+        type: "session_config_options",
+        config_options: grokModelOptions(value),
+      })
+    }
+
+    expect(h.toastWarning).not.toHaveBeenCalled()
+  })
+
+  it("does not strand a verdict when the set fails outright", async () => {
+    // A failed `set_config_option` emits only a recoverable Error — no option
+    // snapshot at all. Nothing may linger to be charged against a later,
+    // unrelated update.
+    const handlers = await connectGrokOwner()
+    emitAcpEvent(handlers, {
+      seq: 1,
+      connection_id: "spawned-conn",
+      type: "session_config_options",
+      config_options: grokModelOptions("grok-4.5"),
+    })
+
+    h.toastWarning.mockClear()
+    await act(async () => {
+      await h.actions!.setConfigOption(TAB, "model", "grok-composer-2.5-fast")
+    })
+    emitAcpEvent(handlers, {
+      seq: 2,
+      connection_id: "spawned-conn",
+      type: "error",
+      message: "Failed to set config option: boom",
+      agent_type: "grok",
+      code: null,
+    })
+    emitAcpEvent(handlers, {
+      seq: 3,
+      connection_id: "spawned-conn",
+      type: "session_config_options",
+      config_options: grokModelOptions("grok-4.5"),
+    })
+
+    expect(h.toastWarning).not.toHaveBeenCalled()
   })
 })
 

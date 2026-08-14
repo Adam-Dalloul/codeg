@@ -10,6 +10,7 @@ import {
   type ReactNode,
 } from "react"
 import { useTranslations } from "next-intl"
+import { toast } from "sonner"
 import { subscribe, getEventStream } from "@/lib/platform"
 import type {
   AttachHandlers,
@@ -3182,6 +3183,41 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
     }
   }, [])
 
+  /**
+   * Say so when the agent settled a config-option pick somewhere else.
+   *
+   * `session/set_config_option` is advisory: the agent answers with the option
+   * list it adopted and codeg renders that verbatim, so a refused or downgraded
+   * pick reads as the selector springing back for no reason. pi does this for a
+   * model whose reasoning it can't honour; grok does it for a model switch
+   * mid-conversation.
+   *
+   * The request/answer correlation is the backend's (`ConfigOptionRejected`) —
+   * `acpSetConfigOption` resolves as soon as the command is queued, and the
+   * resulting option list arrives as a broadcast indistinguishable from an
+   * unsolicited update. This side only renders the verdict.
+   *
+   * Reporting only — the saved preference deliberately keeps the ATTEMPTED value.
+   * A rejection is often about this session rather than the pick itself (grok's
+   * mid-conversation switch succeeds in a fresh one).
+   */
+  const reportConfigOptionVerdict = useCallback(
+    (
+      agentType: AgentType | undefined,
+      rejection: { option_name: string; requested: string; actual: string }
+    ) => {
+      toast.warning(
+        t("configOptionAdjusted", {
+          agent: agentType ? getAgentLabel(agentType) : "",
+          option: rejection.option_name,
+          requested: rejection.requested,
+          actual: rejection.actual,
+        })
+      )
+    },
+    [t]
+  )
+
   const handleMappedEvent = useCallback(
     (contextKey: string, e: EventEnvelope) => {
       // Audible cue for the events the user opted into (Settings → General →
@@ -3537,6 +3573,16 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
           }
           break
         }
+        case "config_option_rejected": {
+          // Arrives immediately before the `session_config_options` carrying the
+          // value the agent actually adopted, so the notice and the selector
+          // settle together.
+          reportConfigOptionVerdict(
+            storeRef.current.connections.get(contextKey)?.agentType,
+            e
+          )
+          break
+        }
         case "session_config_stale": {
           flushStreamingQueue()
           dispatch({
@@ -3851,6 +3897,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
       flushPendingToolCallUpdates,
       flushStreamingQueue,
       rememberResolvedIdentity,
+      reportConfigOptionVerdict,
       scheduleToolCallUpdateFlush,
       t,
       tChat,

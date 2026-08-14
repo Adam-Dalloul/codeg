@@ -1324,7 +1324,16 @@
       "projectTrustEmpty": "尚未對任何目錄做出決定。",
       "projectTrustTrusted": "已信任",
       "projectTrustDenied": "不信任",
-      "projectTrustRevoke": "撤銷"
+      "projectTrustRevoke": "撤銷",
+      "reasoningTitle": "推理",
+      "reasoningEnableLabel": "啟用",
+      "reasoningDescription": "只有模型宣告了推理能力，pi 才會傳送推理強度——未宣告的模型所有等級都會被壓回 Off，所以輸入框裡的選擇器一改就彈回。這裡寫入 models.json 中該模型的項目。",
+      "levelsLabel": "可選等級",
+      "levelsHint": "這些會成為輸入框推理選擇器裡的等級。請選你的端點能接受的值；不在這裡的等級 pi 一律拒絕。",
+      "levelsEmptyError": "至少選一個等級——一個都不選時 pi 只會退回 Off。",
+      "wireValuesTitle": "進階：送給供應商的值",
+      "wireValuesHint": "留空表示原樣送出等級名稱。端點需要別的寫法時才填——Google 系需要 LOW / HIGH。",
+      "defaultLevelUnlisted": "該等級不在上面的可選清單裡——pi 會把它壓下來。"
     },
     "addCustomAgent": "新增自訂智慧體",
     "addCustomAgentHint": "接入任何相容 ACP 的智慧體。可從公開 ACP 註冊表中選擇，或直接貼上其註冊表資訊。",
@@ -2594,7 +2603,8 @@
           "line": "{error}{status} · {retry}",
           "lineWithDelay": "{error}{status} · {retry}，{delay}",
           "httpStatus": "（HTTP {status}）"
-        }
+        },
+        "configOptionAdjusted": "{agent} 把{option}設成了 {actual}，而不是 {requested}"
       },
       "connectionLifecycle": {
         "tasks": {

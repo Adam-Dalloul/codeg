@@ -1324,7 +1324,16 @@
       "projectTrustEmpty": "아직 결정한 폴더가 없습니다.",
       "projectTrustTrusted": "신뢰함",
       "projectTrustDenied": "신뢰 안 함",
-      "projectTrustRevoke": "취소"
+      "projectTrustRevoke": "취소",
+      "reasoningTitle": "추론",
+      "reasoningEnableLabel": "사용",
+      "reasoningDescription": "모델이 추론 기능을 선언한 경우에만 pi가 추론 강도를 보냅니다. 선언하지 않은 모델은 모든 단계가 Off로 고정되어, 입력창의 선택기가 건드리는 즉시 되돌아갑니다. models.json의 해당 모델 항목에 기록됩니다.",
+      "levelsLabel": "선택 가능한 단계",
+      "levelsHint": "입력창 추론 선택기의 항목이 됩니다. 엔드포인트가 받아들이는 값을 고르세요. 여기 없는 단계는 pi가 거부합니다.",
+      "levelsEmptyError": "단계를 하나 이상 선택하세요. 하나도 없으면 pi는 Off로 되돌아갑니다.",
+      "wireValuesTitle": "고급: 공급자에게 보내는 값",
+      "wireValuesHint": "비워 두면 단계 이름을 그대로 보냅니다. 엔드포인트가 다른 표기를 요구할 때만 설정하세요 — Google 계열은 LOW / HIGH가 필요합니다.",
+      "defaultLevelUnlisted": "이 단계는 위 선택 목록에 없습니다 — pi가 낮춰 버립니다."
     },
     "addCustomAgent": "사용자 지정 에이전트 추가",
     "addCustomAgentHint": "ACP를 지원하는 모든 에이전트를 등록할 수 있습니다. 공개 ACP 레지스트리에서 선택하거나 레지스트리 정보를 붙여넣으세요.",
@@ -2594,7 +2603,8 @@
           "line": "{error}{status} · {retry}",
           "lineWithDelay": "{error}{status} · {retry}, {delay}",
           "httpStatus": " (HTTP {status})"
-        }
+        },
+        "configOptionAdjusted": "{agent}이(가) {option}을(를) {requested} 대신 {actual}(으)로 설정했습니다"
       },
       "connectionLifecycle": {
         "tasks": {

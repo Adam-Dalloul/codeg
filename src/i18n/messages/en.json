@@ -1324,7 +1324,16 @@
       "projectTrustEmpty": "No folders decided yet.",
       "projectTrustTrusted": "Trusted",
       "projectTrustDenied": "Not trusted",
-      "projectTrustRevoke": "Revoke"
+      "projectTrustRevoke": "Revoke",
+      "reasoningTitle": "Reasoning",
+      "reasoningEnableLabel": "Enable",
+      "reasoningDescription": "pi only sends a reasoning effort for a model that declares it — an undeclared model has every level clamped to Off, so the composer's picker springs back the moment you touch it. Written to this model's entry in models.json.",
+      "levelsLabel": "Available levels",
+      "levelsHint": "These become the rows in the composer's reasoning picker. Pick the ones your endpoint accepts; pi rejects any level that isn't listed here.",
+      "levelsEmptyError": "Pick at least one level — with none, pi falls back to Off.",
+      "wireValuesTitle": "Advanced: values sent to the provider",
+      "wireValuesHint": "Leave blank to send the level name as-is. Set one when your endpoint expects something else — Google-style backends want LOW / HIGH.",
+      "defaultLevelUnlisted": "This level isn't in the available list above — pi would clamp it."
     },
     "addCustomAgent": "Add custom agent",
     "addCustomAgentHint": "Register any ACP-compatible agent. Pick one from the public ACP registry, or paste its registry information.",
@@ -2594,7 +2603,8 @@
           "line": "{error}{status} · {retry}",
           "lineWithDelay": "{error}{status} · {retry}, {delay}",
           "httpStatus": " (HTTP {status})"
-        }
+        },
+        "configOptionAdjusted": "{agent} set {option} to {actual} instead of {requested}"
       },
       "connectionLifecycle": {
         "tasks": {

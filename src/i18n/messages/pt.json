@@ -1324,7 +1324,16 @@
       "projectTrustEmpty": "Nenhuma pasta decidida ainda.",
       "projectTrustTrusted": "Confiável",
       "projectTrustDenied": "Não confiável",
-      "projectTrustRevoke": "Revogar"
+      "projectTrustRevoke": "Revogar",
+      "reasoningTitle": "Raciocínio",
+      "reasoningEnableLabel": "Ativar",
+      "reasoningDescription": "O pi só envia um esforço de raciocínio para um modelo que o declara — num modelo sem declaração, todos os níveis são reduzidos para Off, por isso o seletor do compositor volta atrás assim que se mexe nele. Escrito na entrada deste modelo em models.json.",
+      "levelsLabel": "Níveis disponíveis",
+      "levelsHint": "Passam a ser as linhas do seletor de raciocínio do compositor. Escolha os que o seu endpoint aceita; o pi recusa qualquer nível que não esteja aqui.",
+      "levelsEmptyError": "Escolha pelo menos um nível — sem nenhum, o pi volta para Off.",
+      "wireValuesTitle": "Avançado: valores enviados ao fornecedor",
+      "wireValuesHint": "Deixe em branco para enviar o nome do nível tal como está. Defina quando o seu endpoint esperar outra coisa — backends ao estilo Google querem LOW / HIGH.",
+      "defaultLevelUnlisted": "Este nível não está na lista acima — o pi iria reduzi-lo."
     },
     "addCustomAgent": "Adicionar agente personalizado",
     "addCustomAgentHint": "Registre qualquer agente compatível com ACP. Escolha um no registro público do ACP ou cole as informações de registro dele.",
@@ -2594,7 +2603,8 @@
           "line": "{error}{status} · {retry}",
           "lineWithDelay": "{error}{status} · {retry}, {delay}",
           "httpStatus": " (HTTP {status})"
-        }
+        },
+        "configOptionAdjusted": "O {agent} definiu {option} como {actual} em vez de {requested}"
       },
       "connectionLifecycle": {
         "tasks": {

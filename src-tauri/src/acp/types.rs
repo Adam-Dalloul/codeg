@@ -192,6 +192,32 @@ pub enum AcpEvent {
     SessionConfigOptions {
         config_options: Vec<SessionConfigOptionInfo>,
     },
+    /// The agent settled a `session/set_config_option` on a value other than the
+    /// one that was requested.
+    ///
+    /// `session/set_config_option` is advisory: the agent answers with the option
+    /// list it actually adopted, and codeg renders that verbatim — so a refused or
+    /// downgraded pick reads in the composer as the selector springing back for no
+    /// reason. pi does this for a model that never declared `reasoning` (its whole
+    /// thinking vocabulary collapses to `off`); grok does it for a model switch
+    /// mid-conversation.
+    ///
+    /// The comparison lives here rather than in the frontend because only this
+    /// side can correlate a request with its answer: `set_config_option` returns
+    /// as soon as the command is queued, and the resulting option list arrives as
+    /// an ordinary broadcast that is indistinguishable from an unsolicited update
+    /// (codex flips `collaboration_mode` mid-turn; pi emits two echoes per set).
+    ///
+    /// Transient — a notice about one interaction, never part of a snapshot.
+    ConfigOptionRejected {
+        config_id: String,
+        /// Human-readable option name, for the message.
+        option_name: String,
+        /// What the user picked, and what the agent settled on. Display labels
+        /// (resolved against the option's own value list), not raw ids.
+        requested: String,
+        actual: String,
+    },
     /// Initial selector payloads (modes/config options) have been emitted
     SelectorsReady,
     /// Prompt capabilities for this connection

@@ -1060,6 +1060,7 @@ impl SessionState {
                 self.background_activity_at = Some(Utc::now());
             }
             AcpEvent::ClaudeSdkMessage { .. }
+            | AcpEvent::ConfigOptionRejected { .. }
             | AcpEvent::SessionLoadFailed { .. }
             | AcpEvent::TurnRetrying { .. }
             | AcpEvent::UserPromptSent { .. } => {
@@ -1067,6 +1068,8 @@ impl SessionState {
                 // UserPromptSent 是纯通知事件，仅供 chat-channel 推送消费。
                 // TurnRetrying 与 Claude 的 api_retry 一样是前端瞬态提示（重试横幅），
                 // 不进快照——回合边界会清除它。
+                // ConfigOptionRejected 是对一次交互的提示（选择器被降级/拒绝），
+                // 权威值已由紧随其后的 SessionConfigOptions 落进快照。
             }
         }
         self.last_activity_at = Utc::now();

@@ -5485,9 +5485,56 @@ async fn set_session_config_option(
         .and_then(|opts| opts.iter().find(|o| o.id == config_id))
         .is_some_and(|o| matches!(o.kind, SessionConfigKindInfo::Boolean(_)));
     let value = encode_config_option_value(is_boolean, &value_id);
-    let updated = set_session_config_option_inner(cx, session_id, config_id, value).await?;
+    let updated =
+        set_session_config_option_inner(cx, session_id, config_id.clone(), value).await?;
+    // Compare BEFORE emitting: the agent's answer is the only place a request and
+    // its outcome are correlated. Once the option list is broadcast it is
+    // indistinguishable from an unsolicited update.
+    if let Some(rejection) =
+        config_option_rejection(&map_session_config_options(&updated), &config_id, &value_id)
+    {
+        emit_with_state(state, emitter, rejection).await;
+    }
     emit_session_config_options_values(state, emitter, agent_type, updated).await;
     Ok(())
+}
+
+/// Build a [`AcpEvent::ConfigOptionRejected`] when the agent's answer settled the
+/// option somewhere other than where the request asked.
+///
+/// Takes the mapped form so grouped and ungrouped selects are already flattened
+/// into one value list. Returns `None` when the pick was honoured, when the agent
+/// didn't advertise the option at all (nothing to compare against), or for a
+/// non-select kind — silence is the right default, since a spurious "your pick was
+/// changed" notice is worse than none.
+fn config_option_rejection(
+    updated: &[SessionConfigOptionInfo],
+    config_id: &str,
+    requested: &str,
+) -> Option<AcpEvent> {
+    let option = updated.iter().find(|o| o.id == config_id)?;
+    let SessionConfigKindInfo::Select(select) = &option.kind else {
+        return None;
+    };
+    if select.current_value == requested {
+        return None;
+    }
+    // Labels, not ids: the composer's dropdown shows names, so the notice has to
+    // name the same things the user was looking at.
+    let label = |value: &str| {
+        select
+            .options
+            .iter()
+            .find(|item| item.value == value)
+            .map(|item| item.name.clone())
+            .unwrap_or_else(|| value.to_string())
+    };
+    Some(AcpEvent::ConfigOptionRejected {
+        config_id: config_id.to_string(),
+        option_name: option.name.clone(),
+        requested: label(requested),
+        actual: label(&select.current_value),
+    })
 }
 
 /// Encode a selector value for `session/set_config_option`.
@@ -12635,6 +12682,132 @@ mod tests {
         let p = build_grok_set_model_params("s1", "grok-4.5", Some("high"));
         assert_eq!(p["modelId"], "grok-4.5");
         assert_eq!(p["_meta"]["reasoningEffort"], "high");
+    }
+
+    // ── config-option verdicts ──────────────────────────────────────────────
+    //
+    // `session/set_config_option` is advisory: the agent answers with the option
+    // list it adopted, and codeg renders that verbatim — so a refused pick reads
+    // in the composer as the selector springing back for no reason. Only this
+    // side can tell a request's answer from an unsolicited update, so the
+    // comparison has to be exactly right here.
+
+    fn rejection_fixture(current: &str) -> Vec<SessionConfigOptionInfo> {
+        vec![SessionConfigOptionInfo {
+            id: "thought_level".to_string(),
+            name: "Thinking".to_string(),
+            description: None,
+            category: Some("thought_level".to_string()),
+            kind: SessionConfigKindInfo::Select(SessionConfigSelectInfo {
+                current_value: current.to_string(),
+                options: vec![
+                    SessionConfigSelectOptionInfo {
+                        value: "off".to_string(),
+                        name: "Thinking: off".to_string(),
+                        description: None,
+                    },
+                    SessionConfigSelectOptionInfo {
+                        value: "high".to_string(),
+                        name: "Thinking: high".to_string(),
+                        description: None,
+                    },
+                ],
+                groups: vec![],
+            }),
+        }]
+    }
+
+    #[test]
+    fn config_option_rejection_reports_a_clamped_pick_with_labels() {
+        // pi clamps every level to `off` for a model that never declared
+        // `reasoning` — the bug that made the picker look broken.
+        let event = config_option_rejection(&rejection_fixture("off"), "thought_level", "high")
+            .expect("a clamped pick is a rejection");
+        match event {
+            AcpEvent::ConfigOptionRejected {
+                config_id,
+                option_name,
+                requested,
+                actual,
+            } => {
+                assert_eq!(config_id, "thought_level");
+                assert_eq!(option_name, "Thinking");
+                // Labels, not ids: the dropdown showed these strings.
+                assert_eq!(requested, "Thinking: high");
+                assert_eq!(actual, "Thinking: off");
+            }
+            other => panic!("expected ConfigOptionRejected, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn config_option_rejection_is_silent_when_the_pick_landed() {
+        assert!(config_option_rejection(&rejection_fixture("high"), "thought_level", "high").is_none());
+    }
+
+    #[test]
+    fn config_option_rejection_falls_back_to_the_raw_id_without_a_label() {
+        // An agent may settle on a value it never advertised; naming the raw id
+        // beats naming nothing.
+        let event = config_option_rejection(&rejection_fixture("medium"), "thought_level", "high")
+            .expect("still a rejection");
+        match event {
+            AcpEvent::ConfigOptionRejected { actual, .. } => assert_eq!(actual, "medium"),
+            other => panic!("expected ConfigOptionRejected, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn config_option_rejection_stays_silent_when_there_is_nothing_to_compare() {
+        let options = rejection_fixture("off");
+        // Option absent from the answer → nothing to compare against.
+        assert!(config_option_rejection(&options, "model", "grok-4.5").is_none());
+        // A kind with no comparable id → leave it to the agent. A false "your
+        // pick was changed" notice is worse than none.
+        let toggle = vec![SessionConfigOptionInfo {
+            id: "auto_approve".to_string(),
+            name: "Auto-approve tools".to_string(),
+            description: None,
+            category: None,
+            kind: SessionConfigKindInfo::Boolean(SessionConfigBooleanInfo {
+                current_value: false,
+            }),
+        }];
+        assert!(config_option_rejection(&toggle, "auto_approve", "true").is_none());
+    }
+
+    #[test]
+    fn config_option_rejection_reads_a_grouped_select() {
+        // Grouped options are flattened by `map_session_config_options` before the
+        // comparison, so a grouped model picker resolves its labels too.
+        let raw = serde_json::json!([{
+            "id": "model",
+            "name": "Model",
+            "type": "select",
+            "currentValue": "openai/gpt-5",
+            "options": [{
+                "group": "openai",
+                "name": "OpenAI",
+                "options": [
+                    {"value": "openai/gpt-5", "name": "GPT-5"},
+                    {"value": "openai/gpt-5-mini", "name": "GPT-5 Mini"}
+                ]
+            }]
+        }]);
+        let parsed: Vec<SessionConfigOption> = serde_json::from_value(raw).expect("parses");
+        let mapped = map_session_config_options(&parsed);
+
+        let event = config_option_rejection(&mapped, "model", "openai/gpt-5-mini")
+            .expect("the agent kept a different model");
+        match event {
+            AcpEvent::ConfigOptionRejected {
+                requested, actual, ..
+            } => {
+                assert_eq!(requested, "GPT-5 Mini");
+                assert_eq!(actual, "GPT-5");
+            }
+            other => panic!("expected ConfigOptionRejected, got {other:?}"),
+        }
     }
 
     #[test]

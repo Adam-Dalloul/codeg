@@ -1828,6 +1828,18 @@ export type AcpEvent =
       config_options: SessionConfigOptionInfo[]
     }
   | {
+      // The agent settled a `session/set_config_option` somewhere other than
+      // where the pick asked. Correlated backend-side (see the Rust
+      // `ConfigOptionRejected`) because only that side can tell a request's
+      // answer from an unsolicited option update. `requested` / `actual` are
+      // display labels, already resolved against the option's value list.
+      type: "config_option_rejected"
+      config_id: string
+      option_name: string
+      requested: string
+      actual: string
+    }
+  | {
       type: "selectors_ready"
     }
   | {

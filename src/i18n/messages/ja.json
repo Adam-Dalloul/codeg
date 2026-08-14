@@ -1324,7 +1324,16 @@
       "projectTrustEmpty": "まだ判断したフォルダーはありません。",
       "projectTrustTrusted": "信頼済み",
       "projectTrustDenied": "信頼しない",
-      "projectTrustRevoke": "取り消す"
+      "projectTrustRevoke": "取り消す",
+      "reasoningTitle": "推論",
+      "reasoningEnableLabel": "有効にする",
+      "reasoningDescription": "モデルが推論能力を宣言している場合にのみ、pi は推論強度を送信します。未宣言のモデルではすべてのレベルが Off に丸められるため、入力欄のセレクターは触れた瞬間に戻ってしまいます。models.json のこのモデルの項目に書き込まれます。",
+      "levelsLabel": "選択できるレベル",
+      "levelsHint": "入力欄の推論セレクターの項目になります。エンドポイントが受け付ける値を選んでください。ここにないレベルは pi が拒否します。",
+      "levelsEmptyError": "レベルを 1 つ以上選んでください。1 つも選ばないと pi は Off に戻ります。",
+      "wireValuesTitle": "詳細: プロバイダーに送る値",
+      "wireValuesHint": "空欄ならレベル名をそのまま送信します。エンドポイントが別の表記を求める場合のみ設定してください（Google 系は LOW / HIGH）。",
+      "defaultLevelUnlisted": "このレベルは上の選択リストにありません。pi が丸めてしまいます。"
     },
     "addCustomAgent": "カスタムエージェントを追加",
     "addCustomAgentHint": "ACP 対応のエージェントを追加できます。公開 ACP レジストリから選ぶか、レジストリ情報を貼り付けてください。",
@@ -2594,7 +2603,8 @@
           "line": "{error}{status} · {retry}",
           "lineWithDelay": "{error}{status} · {retry}、{delay}",
           "httpStatus": " (HTTP {status})"
-        }
+        },
+        "configOptionAdjusted": "{agent} は{option}を {requested} ではなく {actual} にしました"
       },
       "connectionLifecycle": {
         "tasks": {

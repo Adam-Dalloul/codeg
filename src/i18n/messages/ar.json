@@ -1324,7 +1324,16 @@
       "projectTrustEmpty": "لم يتم اتخاذ قرار بشأن أي مجلد بعد.",
       "projectTrustTrusted": "موثوق",
       "projectTrustDenied": "غير موثوق",
-      "projectTrustRevoke": "إلغاء"
+      "projectTrustRevoke": "إلغاء",
+      "reasoningTitle": "الاستدلال",
+      "reasoningEnableLabel": "تفعيل",
+      "reasoningDescription": "لا يرسل pi مستوى استدلال إلا لنموذج يعلن عنه — أي نموذج غير معلن تُخفَّض كل مستوياته إلى Off، فيعود المحدِّد في صندوق الإدخال إلى وضعه فور لمسه. يُكتب في مدخل هذا النموذج داخل models.json.",
+      "levelsLabel": "المستويات المتاحة",
+      "levelsHint": "تصبح هذه هي خيارات محدِّد الاستدلال في صندوق الإدخال. اختر ما تقبله نقطة النهاية لديك؛ فأي مستوى غير مدرج هنا يرفضه pi.",
+      "levelsEmptyError": "اختر مستوى واحدًا على الأقل — بدون أي مستوى يعود pi إلى Off.",
+      "wireValuesTitle": "متقدم: القيم المرسلة إلى المزوّد",
+      "wireValuesHint": "اتركه فارغًا لإرسال اسم المستوى كما هو. اضبطه عندما تتوقع نقطة النهاية صيغة أخرى — الواجهات على نمط Google تحتاج LOW / HIGH.",
+      "defaultLevelUnlisted": "هذا المستوى ليس ضمن القائمة أعلاه — سيخفّضه pi."
     },
     "addCustomAgent": "إضافة وكيل مخصص",
     "addCustomAgentHint": "سجّل أي وكيل متوافق مع ACP. اختر واحدًا من سجل ACP العام، أو الصق معلومات السجل الخاصة به.",
@@ -2594,7 +2603,8 @@
           "line": "{error}{status} · {retry}",
           "lineWithDelay": "{error}{status} · {retry}، {delay}",
           "httpStatus": " (HTTP {status})"
-        }
+        },
+        "configOptionAdjusted": "ضبط {agent} {option} على {actual} بدلاً من {requested}"
       },
       "connectionLifecycle": {
         "tasks": {

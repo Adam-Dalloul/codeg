@@ -5691,7 +5691,35 @@ pub(crate) struct PiConfigUpdate {
     /// Wire protocol for the custom provider (defaults to `openai-completions`).
     /// Ignored when `custom_base_url` is `None`.
     pub custom_api: Option<String>,
+    /// Reasoning declaration for `model` inside the custom provider. `None` leaves
+    /// whatever the model entry already declares untouched (built-in provider path,
+    /// or a client that predates the control). Ignored when `custom_base_url` is
+    /// `None` — a built-in model carries pi's own, more accurate declaration.
+    pub model_reasoning: Option<PiModelReasoningSpec>,
 }
+
+/// A model's reasoning capability as pi records it in `models.json`.
+///
+/// pi reads `reasoning: modelDef.reasoning ?? false`, and an undeclared model gets
+/// `["off"]` as its entire thinking-level vocabulary — so every level the composer
+/// sends is clamped straight back to `off`. `thinking_level_map` is pi's
+/// `thinkingLevelMap`: `None` removes a level from the picker, `Some(value)` both
+/// keeps it and sets the effort string pi sends to the provider.
+///
+/// The panel owns the derivation (`src/lib/pi-thinking.ts`) so the availability rules
+/// live in exactly one place; this side only validates the level names and writes.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PiModelReasoningSpec {
+    pub reasoning: bool,
+    #[serde(default)]
+    pub thinking_level_map: BTreeMap<String, Option<String>>,
+}
+
+/// pi's fixed thinking-level vocabulary (`EXTENDED_THINKING_LEVELS` in pi-ai). A name
+/// outside this list is rejected by pi-acp with `invalidParams`, so it must never reach
+/// `models.json`.
+const PI_THINKING_LEVELS: [&str; 6] = ["off", "minimal", "low", "medium", "high", "xhigh"];
 
 /// Read a JSON file into an owned object map, returning an empty map when the
 /// file is absent, unreadable, or does not parse to a JSON object. Pi's native
@@ -5724,6 +5752,75 @@ fn write_json_object_pretty(
     fs::write(path, text)
         .map_err(|e| AcpError::protocol(format!("write pi config failed: {e}")))?;
     Ok(())
+}
+
+/// Upsert `model_id` into a custom provider's `models` array, applying `reasoning`
+/// when the panel sent one.
+///
+/// Merge-preserving by design: a model the user hand-tuned in `models.json` keeps its
+/// `cost` / `contextWindow` / `headers` / `compat` / renamed `name`, because those are
+/// fields codeg's form has no opinion about. Only the reasoning keys are re-authored.
+///
+/// The upsert also fixes the older skip-if-present behaviour, under which re-saving an
+/// already-listed model wrote nothing at all — the reason a reasoning declaration could
+/// never reach an existing entry.
+fn apply_pi_custom_model(
+    entry: &mut serde_json::Map<String, serde_json::Value>,
+    model_id: &str,
+    reasoning: Option<&PiModelReasoningSpec>,
+) {
+    let mut models = match entry.remove("models") {
+        Some(serde_json::Value::Array(arr)) => arr,
+        _ => Vec::new(),
+    };
+
+    let existing = models.iter_mut().find_map(|item| {
+        let obj = item.as_object_mut()?;
+        (obj.get("id").and_then(serde_json::Value::as_str) == Some(model_id)).then_some(obj)
+    });
+    let model_obj = match existing {
+        Some(obj) => obj,
+        None => {
+            let mut fresh = serde_json::Map::new();
+            fresh.insert("id".to_string(), model_id.into());
+            fresh.insert("name".to_string(), model_id.into());
+            models.push(serde_json::Value::Object(fresh));
+            models
+                .last_mut()
+                .and_then(serde_json::Value::as_object_mut)
+                .expect("just pushed an object")
+        }
+    };
+
+    if let Some(spec) = reasoning {
+        model_obj.insert("reasoning".to_string(), spec.reasoning.into());
+        // An empty map means "pi's defaults" — drop the key rather than write `{}`,
+        // which reads as a declaration but constrains nothing.
+        let map: serde_json::Map<String, serde_json::Value> = spec
+            .thinking_level_map
+            .iter()
+            // A name pi does not know would make pi-acp reject the level with
+            // `invalidParams`; drop it rather than let it reach disk.
+            .filter(|(level, _)| PI_THINKING_LEVELS.contains(&level.as_str()))
+            .map(|(level, value)| {
+                let value = match value {
+                    Some(wire) => serde_json::Value::String(wire.clone()),
+                    None => serde_json::Value::Null,
+                };
+                (level.clone(), value)
+            })
+            .collect();
+        if map.is_empty() {
+            model_obj.remove("thinkingLevelMap");
+        } else {
+            model_obj.insert(
+                "thinkingLevelMap".to_string(),
+                serde_json::Value::Object(map),
+            );
+        }
+    }
+
+    entry.insert("models".to_string(), serde_json::Value::Array(models));
 }
 
 /// Apply a structured Pi config update to pi's native files. Validates the whole
@@ -5815,7 +5912,8 @@ pub(crate) async fn acp_update_pi_config_core(
     // given). Built-in providers leave this file untouched. Merge-preserving:
     // `baseUrl`/`api` are overwritten from the form, but any other fields the
     // user hand-tuned (headers/compat/modelOverrides) and previously-defined
-    // models are kept; the chosen model is folded into the `models` array. ----
+    // models are kept; the chosen model is upserted into the `models` array
+    // along with its reasoning declaration. ----
     let custom_base_url = update
         .custom_base_url
         .as_deref()
@@ -5846,26 +5944,7 @@ pub(crate) async fn acp_update_pi_config_core(
             "api".to_string(),
             serde_json::Value::String(custom_api.to_string()),
         );
-        let mut models_arr = match entry.remove("models") {
-            Some(serde_json::Value::Array(arr)) => arr,
-            _ => Vec::new(),
-        };
-        let already = models_arr
-            .iter()
-            .any(|m| m.get("id").and_then(serde_json::Value::as_str) == Some(model));
-        if !already {
-            let mut model_obj = serde_json::Map::new();
-            model_obj.insert(
-                "id".to_string(),
-                serde_json::Value::String(model.to_string()),
-            );
-            model_obj.insert(
-                "name".to_string(),
-                serde_json::Value::String(model.to_string()),
-            );
-            models_arr.push(serde_json::Value::Object(model_obj));
-        }
-        entry.insert("models".to_string(), serde_json::Value::Array(models_arr));
+        apply_pi_custom_model(&mut entry, model, update.model_reasoning.as_ref());
         providers.insert(provider.to_string(), serde_json::Value::Object(entry));
         models_doc.insert(
             "providers".to_string(),
@@ -5890,6 +5969,64 @@ pub struct PiCustomProvider {
     pub id: String,
     pub base_url: String,
     pub api: String,
+    /// Models this provider defines, sorted by id. The panel reads the entry
+    /// matching `default_model` to rehydrate its reasoning controls — reading the
+    /// file (rather than defaulting the form to "off") is what stops a save from
+    /// wiping a declaration the user hand-wrote.
+    pub models: Vec<PiCustomModel>,
+}
+
+/// One model inside a custom provider, carrying only the reasoning keys the panel
+/// edits. Absent keys stay absent (`None` / empty) so "never declared" is
+/// distinguishable from "declared false".
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PiCustomModel {
+    pub id: String,
+    pub reasoning: Option<bool>,
+    /// pi's `thinkingLevelMap`: a level mapped to `None` is removed from the picker,
+    /// `Some(wire)` keeps it and sets the effort string sent to the provider.
+    pub thinking_level_map: BTreeMap<String, Option<String>>,
+}
+
+/// Project a custom provider's `models` array. Entries without a string `id` are
+/// skipped (pi ignores them too), and a `thinkingLevelMap` value that is neither a
+/// string nor `null` is dropped rather than guessed at.
+fn pi_custom_models_from_entry(entry: &serde_json::Value) -> Vec<PiCustomModel> {
+    let mut models: Vec<PiCustomModel> = entry
+        .get("models")
+        .and_then(serde_json::Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| {
+                    let id = item.get("id").and_then(serde_json::Value::as_str)?;
+                    let thinking_level_map = item
+                        .get("thinkingLevelMap")
+                        .and_then(serde_json::Value::as_object)
+                        .map(|map| {
+                            map.iter()
+                                .filter_map(|(level, value)| match value {
+                                    serde_json::Value::Null => Some((level.clone(), None)),
+                                    serde_json::Value::String(wire) => {
+                                        Some((level.clone(), Some(wire.clone())))
+                                    }
+                                    _ => None,
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    Some(PiCustomModel {
+                        id: id.to_string(),
+                        reasoning: item.get("reasoning").and_then(serde_json::Value::as_bool),
+                        thinking_level_map,
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    models.sort_by(|a, b| a.id.cmp(&b.id));
+    models
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -5937,6 +6074,7 @@ pub(crate) fn load_pi_config_core() -> PiConfigProjection {
                             .and_then(serde_json::Value::as_str)
                             .unwrap_or("openai-completions")
                             .to_string(),
+                        models: pi_custom_models_from_entry(entry),
                     })
                     .collect()
             })
@@ -10529,6 +10667,7 @@ pub async fn acp_update_pi_config(
     api_key: Option<String>,
     custom_base_url: Option<String>,
     custom_api: Option<String>,
+    model_reasoning: Option<PiModelReasoningSpec>,
     db: State<'_, AppDatabase>,
     app: tauri::AppHandle,
 ) -> Result<(), AcpError> {
@@ -10541,6 +10680,7 @@ pub async fn acp_update_pi_config(
             api_key,
             custom_base_url,
             custom_api,
+            model_reasoning,
         },
         &db,
         &emitter,
@@ -13362,6 +13502,262 @@ mod tests {
         );
         assert!(state.resources[0].executes_code);
         assert_eq!(state.workspace, canonical_key(&ws));
+    }
+
+    // --- pi models.json: the per-model reasoning declaration -----------------
+    //
+    // A custom model written without `reasoning` gets `reasoning: false` from pi,
+    // which collapses its thinking vocabulary to `["off"]` — every level the
+    // composer sends is clamped straight back and the picker looks broken. These
+    // pin the shape pi actually reads.
+
+    fn pi_reasoning_spec(
+        reasoning: bool,
+        map: &[(&str, Option<&str>)],
+    ) -> PiModelReasoningSpec {
+        PiModelReasoningSpec {
+            reasoning,
+            thinking_level_map: map
+                .iter()
+                .map(|(level, wire)| (level.to_string(), wire.map(str::to_string)))
+                .collect(),
+        }
+    }
+
+    fn pi_models_of(entry: &serde_json::Map<String, serde_json::Value>) -> Vec<serde_json::Value> {
+        entry
+            .get("models")
+            .and_then(serde_json::Value::as_array)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn pi_custom_model_adds_a_missing_model_with_its_declaration() {
+        let mut entry = serde_json::Map::new();
+
+        apply_pi_custom_model(
+            &mut entry,
+            "gpt-5.6-sol",
+            Some(&pi_reasoning_spec(
+                true,
+                &[("off", Some("none")), ("minimal", None), ("xhigh", Some("xhigh"))],
+            )),
+        );
+
+        let models = pi_models_of(&entry);
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0]["id"], "gpt-5.6-sol");
+        assert_eq!(models[0]["name"], "gpt-5.6-sol");
+        assert_eq!(models[0]["reasoning"], true);
+        assert_eq!(models[0]["thinkingLevelMap"]["off"], "none");
+        assert!(models[0]["thinkingLevelMap"]["minimal"].is_null());
+        assert_eq!(models[0]["thinkingLevelMap"]["xhigh"], "xhigh");
+    }
+
+    /// The older writer skipped an already-listed model entirely, so a declaration
+    /// could never reach one. Upserting must still leave every field the form has
+    /// no opinion about — including a renamed `name` — exactly as the user left it.
+    #[test]
+    fn pi_custom_model_upserts_without_clobbering_hand_tuned_fields() {
+        let mut entry = serde_json::Map::new();
+        entry.insert(
+            "models".to_string(),
+            serde_json::json!([
+                { "id": "other", "name": "Other" },
+                {
+                    "id": "gpt-5.6-sol",
+                    "name": "My renamed model",
+                    "contextWindow": 400000,
+                    "cost": { "input": 5, "output": 30, "cacheRead": 0.5, "cacheWrite": 0 },
+                    "compat": { "some": "knob" },
+                },
+            ]),
+        );
+
+        apply_pi_custom_model(
+            &mut entry,
+            "gpt-5.6-sol",
+            Some(&pi_reasoning_spec(true, &[("off", Some("none"))])),
+        );
+
+        let models = pi_models_of(&entry);
+        assert_eq!(models.len(), 2, "no duplicate entry for the same id");
+        let target = models
+            .iter()
+            .find(|m| m["id"] == "gpt-5.6-sol")
+            .expect("model kept");
+        assert_eq!(target["name"], "My renamed model");
+        assert_eq!(target["contextWindow"], 400000);
+        assert_eq!(target["cost"]["input"], 5);
+        assert_eq!(target["compat"]["some"], "knob");
+        assert_eq!(target["reasoning"], true);
+        assert_eq!(models[0]["id"], "other", "untouched sibling stays put");
+    }
+
+    /// Turning the switch off only flips the flag: the level selection stays on
+    /// disk so re-enabling restores it instead of making the user re-pick.
+    #[test]
+    fn pi_custom_model_disabling_reasoning_keeps_the_level_map() {
+        let mut entry = serde_json::Map::new();
+        apply_pi_custom_model(
+            &mut entry,
+            "m",
+            Some(&pi_reasoning_spec(true, &[("minimal", None)])),
+        );
+
+        apply_pi_custom_model(
+            &mut entry,
+            "m",
+            Some(&pi_reasoning_spec(false, &[("minimal", None)])),
+        );
+
+        let models = pi_models_of(&entry);
+        assert_eq!(models[0]["reasoning"], false);
+        assert!(models[0]["thinkingLevelMap"]["minimal"].is_null());
+    }
+
+    /// `{}` would read as a declaration that constrains nothing; drop the key so
+    /// pi falls back to its own defaults.
+    #[test]
+    fn pi_custom_model_drops_an_empty_level_map() {
+        let mut entry = serde_json::Map::new();
+        apply_pi_custom_model(
+            &mut entry,
+            "m",
+            Some(&pi_reasoning_spec(true, &[("low", Some("LOW"))])),
+        );
+
+        apply_pi_custom_model(&mut entry, "m", Some(&pi_reasoning_spec(true, &[])));
+
+        let models = pi_models_of(&entry);
+        assert!(models[0].get("thinkingLevelMap").is_none());
+    }
+
+    /// pi-acp rejects a level name outside pi's fixed six with `invalidParams`, so
+    /// one must never reach disk.
+    #[test]
+    fn pi_custom_model_filters_levels_pi_does_not_know() {
+        let mut entry = serde_json::Map::new();
+
+        apply_pi_custom_model(
+            &mut entry,
+            "m",
+            Some(&pi_reasoning_spec(
+                true,
+                &[("ultra", Some("ultra")), ("high", Some("high"))],
+            )),
+        );
+
+        let models = pi_models_of(&entry);
+        let map = models[0]["thinkingLevelMap"].as_object().unwrap();
+        assert!(!map.contains_key("ultra"));
+        assert_eq!(map["high"], "high");
+    }
+
+    /// Built-in providers (and any client that predates the control) send no spec.
+    /// That must not erase a declaration already on disk.
+    #[test]
+    fn pi_custom_model_without_a_spec_leaves_the_declaration_alone() {
+        let mut entry = serde_json::Map::new();
+        entry.insert(
+            "models".to_string(),
+            serde_json::json!([
+                { "id": "m", "name": "m", "reasoning": true,
+                  "thinkingLevelMap": { "off": "none" } },
+            ]),
+        );
+
+        apply_pi_custom_model(&mut entry, "m", None);
+
+        let models = pi_models_of(&entry);
+        assert_eq!(models[0]["reasoning"], true);
+        assert_eq!(models[0]["thinkingLevelMap"]["off"], "none");
+    }
+
+    /// What the writer emits has to survive the read the panel rehydrates from,
+    /// or reopening the settings would show the wrong chips.
+    #[test]
+    fn pi_custom_models_projection_reads_back_what_was_written() {
+        let mut entry = serde_json::Map::new();
+        apply_pi_custom_model(
+            &mut entry,
+            "gpt-5.6-sol",
+            Some(&pi_reasoning_spec(
+                true,
+                &[("off", Some("none")), ("minimal", None), ("low", Some("LOW"))],
+            )),
+        );
+
+        let models = pi_custom_models_from_entry(&serde_json::Value::Object(entry));
+
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].id, "gpt-5.6-sol");
+        assert_eq!(models[0].reasoning, Some(true));
+        assert_eq!(models[0].thinking_level_map["off"], Some("none".to_string()));
+        assert_eq!(models[0].thinking_level_map["minimal"], None);
+        assert_eq!(models[0].thinking_level_map["low"], Some("LOW".to_string()));
+    }
+
+    /// A model with no `reasoning` key must project as `None`, not `Some(false)` —
+    /// the panel distinguishes "never declared" from "declared off".
+    #[test]
+    fn pi_custom_models_projection_keeps_an_undeclared_model_undeclared() {
+        let entry = serde_json::json!({
+            "models": [
+                { "id": "b", "name": "b" },
+                { "id": "a", "name": "a", "thinkingLevelMap": { "low": 7 } },
+                { "name": "no id at all" },
+            ]
+        });
+
+        let models = pi_custom_models_from_entry(&entry);
+
+        assert_eq!(
+            models.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(),
+            vec!["a", "b"],
+            "sorted by id, entries without one skipped"
+        );
+        assert_eq!(models[0].reasoning, None);
+        assert!(
+            models[0].thinking_level_map.is_empty(),
+            "a non-string, non-null wire value is dropped rather than guessed at"
+        );
+    }
+
+    /// End to end through the files pi actually reads: the panel's rehydrate path
+    /// must find the declaration under the provider it was saved to.
+    #[test]
+    fn load_pi_config_projects_custom_provider_models() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        temp_env::with_var("PI_CODING_AGENT_DIR", Some(tmp.path()), || {
+            fs::write(
+                tmp.path().join("settings.json"),
+                r#"{"defaultProvider":"gs","defaultModel":"gpt-5.6-sol","defaultThinkingLevel":"high"}"#,
+            )
+            .unwrap();
+            fs::write(
+                tmp.path().join("models.json"),
+                r#"{"providers":{"gs":{"api":"openai-responses","baseUrl":"https://example.test/v1",
+                   "models":[{"id":"gpt-5.6-sol","name":"gpt-5.6-sol","reasoning":true,
+                   "thinkingLevelMap":{"off":"none","minimal":null,"xhigh":"xhigh"}}]}}}"#,
+            )
+            .unwrap();
+
+            let cfg = load_pi_config_core();
+
+            assert_eq!(cfg.default_provider.as_deref(), Some("gs"));
+            assert_eq!(cfg.default_thinking_level.as_deref(), Some("high"));
+            let provider = &cfg.custom_providers[0];
+            assert_eq!(provider.id, "gs");
+            assert_eq!(provider.api, "openai-responses");
+            assert_eq!(provider.models[0].id, "gpt-5.6-sol");
+            assert_eq!(provider.models[0].reasoning, Some(true));
+            assert_eq!(
+                provider.models[0].thinking_level_map["xhigh"],
+                Some("xhigh".to_string())
+            );
+        });
     }
 
     #[test]

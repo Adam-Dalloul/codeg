@@ -1324,7 +1324,16 @@
       "projectTrustEmpty": "Noch keine Ordner entschieden.",
       "projectTrustTrusted": "Vertraut",
       "projectTrustDenied": "Nicht vertraut",
-      "projectTrustRevoke": "Widerrufen"
+      "projectTrustRevoke": "Widerrufen",
+      "reasoningTitle": "Reasoning",
+      "reasoningEnableLabel": "Aktivieren",
+      "reasoningDescription": "pi sendet einen Reasoning-Aufwand nur für ein Modell, das ihn deklariert — bei einem nicht deklarierten Modell werden alle Stufen auf Off begrenzt, sodass die Auswahl im Eingabefeld sofort zurückspringt. Wird in den Eintrag dieses Modells in models.json geschrieben.",
+      "levelsLabel": "Verfügbare Stufen",
+      "levelsHint": "Diese werden zu den Einträgen der Reasoning-Auswahl im Eingabefeld. Wähle die, die dein Endpunkt akzeptiert; jede hier nicht gelistete Stufe lehnt pi ab.",
+      "levelsEmptyError": "Wähle mindestens eine Stufe — ohne eine fällt pi auf Off zurück.",
+      "wireValuesTitle": "Erweitert: an den Anbieter gesendete Werte",
+      "wireValuesHint": "Leer lassen, um den Stufennamen unverändert zu senden. Setze einen Wert, wenn dein Endpunkt etwas anderes erwartet — Google-artige Backends erwarten LOW / HIGH.",
+      "defaultLevelUnlisted": "Diese Stufe steht nicht in der Liste oben — pi würde sie begrenzen."
     },
     "addCustomAgent": "Eigenen Agenten hinzufügen",
     "addCustomAgentHint": "Registriere jeden ACP-kompatiblen Agenten. Wähle einen aus der öffentlichen ACP-Registry oder füge seine Registry-Informationen ein.",
@@ -2594,7 +2603,8 @@
           "line": "{error}{status} · {retry}",
           "lineWithDelay": "{error}{status} · {retry}, {delay}",
           "httpStatus": " (HTTP {status})"
-        }
+        },
+        "configOptionAdjusted": "{agent} hat {option} auf {actual} statt {requested} gesetzt"
       },
       "connectionLifecycle": {
         "tasks": {

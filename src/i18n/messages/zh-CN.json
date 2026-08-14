@@ -1324,7 +1324,16 @@
       "projectTrustEmpty": "尚未对任何目录做出决定。",
       "projectTrustTrusted": "已信任",
       "projectTrustDenied": "不信任",
-      "projectTrustRevoke": "撤销"
+      "projectTrustRevoke": "撤销",
+      "reasoningTitle": "推理",
+      "reasoningEnableLabel": "启用",
+      "reasoningDescription": "只有模型声明了推理能力，pi 才会发送推理强度——未声明的模型所有档位都会被压回 Off，所以输入框里的选择器一改就弹回。这里写入 models.json 中该模型的条目。",
+      "levelsLabel": "可选档位",
+      "levelsHint": "这些会成为输入框推理选择器里的档位。请选你的接入点能接受的值；不在这里的档位 pi 一律拒绝。",
+      "levelsEmptyError": "至少选一个档位——一个都不选时 pi 只会退回 Off。",
+      "wireValuesTitle": "高级：发给供应商的值",
+      "wireValuesHint": "留空表示原样发送档位名。接入点需要别的写法时才填——Google 系需要 LOW / HIGH。",
+      "defaultLevelUnlisted": "该档位不在上面的可选列表里——pi 会把它压下来。"
     },
     "addCustomAgent": "添加自定义智能体",
     "addCustomAgentHint": "接入任意兼容 ACP 的智能体。可从公开 ACP 注册表中选择，或直接粘贴其注册表信息。",
@@ -2594,7 +2603,8 @@
           "line": "{error}{status} · {retry}",
           "lineWithDelay": "{error}{status} · {retry}，{delay}",
           "httpStatus": "（HTTP {status}）"
-        }
+        },
+        "configOptionAdjusted": "{agent} 把{option}设成了 {actual}，而不是 {requested}"
       },
       "connectionLifecycle": {
         "tasks": {
