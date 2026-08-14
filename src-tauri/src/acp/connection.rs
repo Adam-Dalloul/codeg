@@ -2523,20 +2523,34 @@ async fn apply_and_emit_session_config_options(
     emit_session_config_options_values(state, emitter, agent_type, updated).await;
 }
 
+/// Grok's initialize still advertises `image: false` — the coding model
+/// cannot see pixels. Native ACP `image` blocks nevertheless run its
+/// image-describe sidecar (verified against grok 1.0.2). An image-mime
+/// `resource` blob does not: grok dumps it as
+/// `<file_contents type="binary">` and the model only gets a path.
+/// Advertise `image: true` so the composer sends Image blocks.
+fn effective_prompt_capabilities(
+    agent_type: AgentType,
+    capabilities: &sacp::schema::PromptCapabilities,
+) -> PromptCapabilitiesInfo {
+    PromptCapabilitiesInfo {
+        image: capabilities.image || agent_type == AgentType::Grok,
+        audio: capabilities.audio,
+        embedded_context: capabilities.embedded_context,
+    }
+}
+
 async fn emit_prompt_capabilities(
     state: &Arc<RwLock<SessionState>>,
     emitter: &EventEmitter,
     capabilities: &sacp::schema::PromptCapabilities,
+    agent_type: AgentType,
 ) {
     emit_with_state(
         state,
         emitter,
         AcpEvent::PromptCapabilities {
-            prompt_capabilities: PromptCapabilitiesInfo {
-                image: capabilities.image,
-                audio: capabilities.audio,
-                embedded_context: capabilities.embedded_context,
-            },
+            prompt_capabilities: effective_prompt_capabilities(agent_type, capabilities),
         },
     )
     .await;
@@ -3626,6 +3640,7 @@ async fn run_connection(
                 &state,
                 &emitter_clone,
                 &init_resp.agent_capabilities.prompt_capabilities,
+                agent_type,
             )
             .await;
 
@@ -5726,6 +5741,31 @@ async fn journal_turn_span(
     let _ = tokio::time::timeout(std::time::Duration::from_secs(2), ack).await;
 }
 
+/// Promote image-mime embedded resources to native Image blocks.
+///
+/// Codeg used to send Grok images as `resource` blobs because grok
+/// advertised `image:false`. That path never reaches grok's describe
+/// sidecar — see [`effective_prompt_capabilities`]. Queued drafts and
+/// work-task replays can still carry the old shape; lift them here.
+fn promote_grok_image_resources(blocks: Vec<PromptInputBlock>) -> Vec<PromptInputBlock> {
+    blocks
+        .into_iter()
+        .map(|block| match block {
+            PromptInputBlock::Resource {
+                uri,
+                mime_type: Some(mime),
+                text: None,
+                blob: Some(blob),
+            } if mime.starts_with("image/") && !blob.is_empty() => PromptInputBlock::Image {
+                data: blob,
+                mime_type: mime,
+                uri: Some(uri),
+            },
+            other => other,
+        })
+        .collect()
+}
+
 fn map_prompt_blocks(blocks: Vec<PromptInputBlock>) -> Vec<ContentBlock> {
     blocks
         .into_iter()
@@ -6518,6 +6558,14 @@ async fn run_conversation_loop<'a>(
                         .collect();
                     (crate::turn_timings::prompt_hash(&text), cursor_turn_ord)
                 });
+                // Grok: lift leftover image-mime resource blobs (queued drafts
+                // composed before we advertised image:true) into native Image
+                // blocks so its describe sidecar actually runs.
+                let blocks = if agent_type == AgentType::Grok {
+                    promote_grok_image_resources(blocks)
+                } else {
+                    blocks
+                };
                 let prompt_blocks = map_prompt_blocks(blocks);
                 if prompt_blocks.is_empty() {
                     // Defensive: the manager rejects empty prompts before the
@@ -8576,6 +8624,37 @@ fn map_grok_ext_notification(
                 images: None,
             })
         }
+        // A prompt image was accepted on the wire but dropped before the
+        // describe sidecar (too small, oversize, decode failure). Surface it
+        // so the user isn't left wondering why Grok "can't see" the shot.
+        "image_dropped" => {
+            let detail = update
+                .get("notes")
+                .and_then(|v| v.as_array())
+                .map(|notes| {
+                    notes
+                        .iter()
+                        .filter_map(|n| n.as_str())
+                        .collect::<Vec<_>>()
+                        .join("; ")
+                })
+                .filter(|s| !s.is_empty())
+                .or_else(|| {
+                    update
+                        .get("reason")
+                        .or_else(|| update.get("message"))
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string)
+                })
+                .unwrap_or_else(|| "image was dropped before send".to_string());
+            Some(AcpEvent::Error {
+                message: format!("Image dropped: {detail}"),
+                agent_type: agent_type.to_string(),
+                code: None,
+                details: None,
+                terminal: false,
+            })
+        }
         // Compaction itself blew up (e.g. the summarizer model call failed) while
         // the turn still ended cleanly — surface a non-terminal error so the
         // result isn't a silent blank.
@@ -10498,6 +10577,85 @@ mod tests {
         assert!(matches!(
             map_grok_ext_notification(&raw, AgentType::Grok),
             Some(AcpEvent::ToolCall { .. })
+        ));
+    }
+
+    #[test]
+    fn map_grok_ext_notification_image_dropped_surfaces_error() {
+        let raw = UntypedMessage::new(
+            "_x.ai/session_notification",
+            serde_json::json!({
+                "sessionId": "s",
+                "update": {
+                    "sessionUpdate": "image_dropped",
+                    "notes": [
+                        "Image 1 was dropped before send: too small (1×1); images must be at least 8×8 pixels."
+                    ]
+                }
+            }),
+        )
+        .unwrap();
+        match map_grok_ext_notification(&raw, AgentType::Grok) {
+            Some(AcpEvent::Error {
+                message, terminal, ..
+            }) => {
+                assert!(
+                    message.contains("too small"),
+                    "error should carry grok's drop reason; got: {message}"
+                );
+                assert!(!terminal, "a dropped image must not kill the connection");
+            }
+            other => panic!("expected non-terminal Error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn promote_grok_image_resources_lifts_image_blobs_only() {
+        let blocks = vec![
+            PromptInputBlock::Text {
+                text: "see this".into(),
+            },
+            PromptInputBlock::Resource {
+                uri: "clipboard://shot.png-abc".into(),
+                mime_type: Some("image/png".into()),
+                text: None,
+                blob: Some("aGk=".into()),
+            },
+            PromptInputBlock::Resource {
+                uri: "clipboard://notes.md".into(),
+                mime_type: Some("text/markdown".into()),
+                text: Some("hi".into()),
+                blob: None,
+            },
+            PromptInputBlock::Image {
+                data: "already".into(),
+                mime_type: "image/jpeg".into(),
+                uri: None,
+            },
+        ];
+        let out = promote_grok_image_resources(blocks);
+        assert!(matches!(&out[0], PromptInputBlock::Text { text } if text == "see this"));
+        assert!(
+            matches!(
+                &out[1],
+                PromptInputBlock::Image { data, mime_type, uri: Some(u) }
+                    if data == "aGk="
+                        && mime_type == "image/png"
+                        && u == "clipboard://shot.png-abc"
+            ),
+            "{:?}",
+            out[1]
+        );
+        assert!(matches!(
+            &out[2],
+            PromptInputBlock::Resource {
+                mime_type: Some(m),
+                ..
+            } if m == "text/markdown"
+        ));
+        assert!(matches!(
+            &out[3],
+            PromptInputBlock::Image { data, .. } if data == "already"
         ));
     }
 
