@@ -2957,6 +2957,17 @@ export async function tokenUsageSync(
   return getTransport().call("token_usage_sync", { mode })
 }
 
+export type OfficialQuotaRead = {
+  family: string
+  payload: unknown | null
+  unavailableReason?: string | null
+}
+
+/** Official Codex app-server `account/rateLimits/read`. Missing CLI is null. */
+export async function subscriptionQuotaCodex(): Promise<OfficialQuotaRead> {
+  return getTransport().call("subscription_quota_codex")
+}
+
 // Automations
 
 export async function automationList(): Promise<Automation[]> {
