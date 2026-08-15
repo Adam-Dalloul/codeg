@@ -2968,6 +2968,11 @@ export async function subscriptionQuotaCodex(): Promise<OfficialQuotaRead> {
   return getTransport().call("subscription_quota_codex")
 }
 
+/** Claude Code `/usage` via local OAuth `GET /api/oauth/usage`. */
+export async function subscriptionQuotaClaude(): Promise<OfficialQuotaRead> {
+  return getTransport().call("subscription_quota_claude")
+}
+
 // Automations
 
 export async function automationList(): Promise<Automation[]> {

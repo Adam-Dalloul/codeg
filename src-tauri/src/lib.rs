@@ -1318,6 +1318,7 @@ mod tauri_app {
                 token_usage_commands::token_usage_status,
                 token_usage_commands::token_usage_sync,
                 subscription_quota_commands::subscription_quota_codex,
+                subscription_quota_commands::subscription_quota_claude,
                 work_task_commands::work_task_list,
                 work_task_commands::work_task_get,
                 work_task_commands::work_task_events,

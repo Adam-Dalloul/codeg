@@ -3,7 +3,10 @@
 import { useEffect, useState } from "react"
 import { useLocale, useTranslations } from "next-intl"
 import { ExternalLink } from "lucide-react"
-import { subscriptionQuotaCodex } from "@/lib/api"
+import {
+  subscriptionQuotaClaude,
+  subscriptionQuotaCodex,
+} from "@/lib/api"
 import { inventory, type IsolatableFamily } from "@/lib/subscription-quota"
 import { openUrl } from "@/lib/platform"
 
@@ -17,15 +20,21 @@ export function SubscriptionQuotaPanel() {
 
   useEffect(() => {
     let cancelled = false
-    void subscriptionQuotaCodex()
-      .then((read) => {
+    void Promise.allSettled([
+      subscriptionQuotaCodex(),
+      subscriptionQuotaClaude(),
+    ])
+      .then((results) => {
         if (cancelled) return
-        if (read.payload) {
-          setOfficial({ codex: read.payload })
+        const next: Partial<Record<IsolatableFamily, unknown>> = {}
+        const [codex, claude] = results
+        if (codex.status === "fulfilled" && codex.value.payload) {
+          next.codex = codex.value.payload
         }
-      })
-      .catch(() => {
-        // Missing CLI or a dead app-server is "unavailable", not a toast.
+        if (claude.status === "fulfilled" && claude.value.payload) {
+          next.claude = claude.value.payload
+        }
+        setOfficial(next)
       })
       .finally(() => {
         if (!cancelled) setLoaded(true)
@@ -55,7 +64,8 @@ export function SubscriptionQuotaPanel() {
                     limit: row.limit,
                   })}
                 </span>
-              ) : row.family === "codex" && !loaded ? (
+              ) : (row.family === "codex" || row.family === "claude") &&
+                !loaded ? (
                 <span className="text-muted-foreground">{t("quotaLoading")}</span>
               ) : (
                 <button

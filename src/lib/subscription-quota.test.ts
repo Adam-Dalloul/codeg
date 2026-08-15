@@ -96,13 +96,32 @@ describe("subscription quota inventory", () => {
 
   it("reads Claude remaining from the /usage HUD payload", () => {
     const payload = {
-      five_hour: { utilization: 0.42, resets_at: "2026-02-28T17:00:00Z" },
-      seven_day: { utilization: 0.61, resets_at: "2026-03-07T08:00:00Z" },
+      five_hour: { utilization: 42, resets_at: "2026-02-28T17:00:00Z" },
+      seven_day: { utilization: 61, resets_at: "2026-03-07T08:00:00Z" },
     }
     const parsed = remainingFromOfficialPayload("claude", payload)
-    expect(parsed?.source).toBe("claude /usage")
-    expect(parsed?.remaining).toBeCloseTo(58)
+    expect(parsed?.source).toBe("claude /api/oauth/usage")
+    expect(parsed?.remaining).toBe(39)
+    expect(parsed?.extras?.[0]?.label).toBe("5-hour")
     expect(familyQuota("claude", payload).kind).toBe("remaining-subscription")
+  })
+
+  it("parses the live Claude oauth/usage envelope from this machine", () => {
+    const payload = {
+      five_hour: { utilization: 0.0, resets_at: null },
+      seven_day: {
+        utilization: 100.0,
+        resets_at: "2026-08-16T07:59:59.753195+00:00",
+      },
+      extra_usage: { utilization: 9.4, is_enabled: true },
+    }
+    const parsed = remainingFromOfficialPayload("claude", payload)
+    expect(parsed?.remaining).toBe(0)
+    expect(parsed?.resetsAt).toBe(
+      Math.floor(Date.parse("2026-08-16T07:59:59.753195+00:00") / 1000)
+    )
+    const labels = parsed?.extras?.map((e) => e.label).sort()
+    expect(labels).toEqual(["5-hour", "extra usage"])
   })
 
   it("rejects a payload that is not the official family shape", () => {
