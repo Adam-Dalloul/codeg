@@ -1005,11 +1005,37 @@ fn resolve_claude_config_dir_from(
         .unwrap_or_else(|| home_dir.unwrap_or_default().join(".claude"))
 }
 
-/// Claude Desktop stores Code sessions at
-/// `<config>/Claude/claude-code-sessions/{org}/{user}/local_{id}.json`
-/// with `"isArchived": true` when archived (anthropics/claude-code#24534).
-fn claude_desktop_sessions_root() -> Option<PathBuf> {
-    dirs::config_dir().map(|p| p.join("Claude").join("claude-code-sessions"))
+/// Claude Desktop stores Code sessions as
+/// `claude-code-sessions/{org}/{user}/local_{id}.json` with `isArchived`.
+/// Classic Electron uses `%AppData%/Claude`. The Windows Store package
+/// virtualizes that to
+/// `%LocalAppData%/Packages/Claude_*/LocalCache/Roaming/Claude`.
+fn claude_desktop_sessions_roots() -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    if let Some(config) = dirs::config_dir() {
+        roots.push(config.join("Claude").join("claude-code-sessions"));
+    }
+    if let Some(local) = dirs::data_local_dir() {
+        let packages = local.join("Packages");
+        if let Ok(entries) = fs::read_dir(&packages) {
+            for entry in entries.flatten() {
+                let name = entry.file_name();
+                let name = name.to_string_lossy();
+                if !name.starts_with("Claude_") {
+                    continue;
+                }
+                roots.push(
+                    entry
+                        .path()
+                        .join("LocalCache")
+                        .join("Roaming")
+                        .join("Claude")
+                        .join("claude-code-sessions"),
+                );
+            }
+        }
+    }
+    roots
 }
 
 fn session_id_from_desktop_filename(name: &str) -> Option<String> {
@@ -1056,6 +1082,16 @@ fn load_claude_desktop_archived_ids(root: &Path) -> HashSet<String> {
             };
             if value.get("isArchived").and_then(|v| v.as_bool()) == Some(true) {
                 ids.insert(id);
+                if let Some(session_id) = value.get("sessionId").and_then(|v| v.as_str()) {
+                    if !session_id.is_empty() {
+                        ids.insert(session_id.to_string());
+                    }
+                }
+                if let Some(cli_id) = value.get("cliSessionId").and_then(|v| v.as_str()) {
+                    if !cli_id.is_empty() {
+                        ids.insert(cli_id.to_string());
+                    }
+                }
             }
         }
     }
@@ -1115,13 +1151,14 @@ impl AgentParser for ClaudeParser {
             }
         }
 
-        if let Some(root) = claude_desktop_sessions_root() {
-            let archived = load_claude_desktop_archived_ids(&root);
-            if !archived.is_empty() {
-                for conversation in &mut conversations {
-                    if archived.contains(&conversation.id) {
-                        conversation.archived = true;
-                    }
+        let mut archived = HashSet::new();
+        for root in claude_desktop_sessions_roots() {
+            archived.extend(load_claude_desktop_archived_ids(&root));
+        }
+        if !archived.is_empty() {
+            for conversation in &mut conversations {
+                if archived.contains(&conversation.id) {
+                    conversation.archived = true;
                 }
             }
         }
@@ -5213,5 +5250,21 @@ mod tests {
             session_id_from_desktop_filename("local_sess-desk.json").as_deref(),
             Some("sess-desk")
         );
+    }
+
+    #[test]
+    fn desktop_sidecar_indexes_session_id_and_cli_session_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let live = dir.path().join("org").join("user");
+        std::fs::create_dir_all(&live).unwrap();
+        std::fs::write(
+            live.join("local_file-id.json"),
+            r#"{"isArchived":true,"sessionId":"sess-json","cliSessionId":"cli-json"}"#,
+        )
+        .unwrap();
+        let ids = load_claude_desktop_archived_ids(dir.path());
+        assert!(ids.contains("file-id"));
+        assert!(ids.contains("sess-json"));
+        assert!(ids.contains("cli-json"));
     }
 }
