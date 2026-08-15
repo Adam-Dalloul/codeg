@@ -106,6 +106,7 @@ function scanFixture(): ScanResult {
           session("a2", "codex", "Alpha two", "new"),
           session("a3", "codex", "Alpha old", "imported"),
           session("a4", "codex", "Alpha archived", "new", true),
+          session("a5", "claude_code", "Alpha archived claude", "new", true),
         ],
       },
       {
@@ -121,8 +122,8 @@ function scanFixture(): ScanResult {
       },
     ],
     no_folder_count: 1,
-    total_sessions: 6,
-    importable_count: 4,
+    total_sessions: 7,
+    importable_count: 5,
   } as ScanResult
 }
 
@@ -171,6 +172,7 @@ describe("ImportSessionsWindow", () => {
     expect(screen.getByText("Alpha one")).toBeVisible()
     expect(screen.getByText("Beta gone")).toBeVisible()
     expect(screen.queryByText("Alpha archived")).toBeNull()
+    expect(screen.queryByText("Alpha archived claude")).toBeNull()
     // The not-in-codeg folder carries the "New" badge; the existing one not.
     const alphaHeader = screen
       .getByText("alpha")
@@ -179,7 +181,7 @@ describe("ImportSessionsWindow", () => {
     expect(alphaHeader.textContent).toContain("New")
     // Summary footer counts come from the scan payload.
     expect(
-      screen.getByText("6 sessions · 4 importable · 2 folders")
+      screen.getByText("7 sessions · 5 importable · 2 folders")
     ).toBeVisible()
     expect(screen.getByText("1 without a project folder skipped")).toBeVisible()
   })
@@ -269,12 +271,14 @@ describe("ImportSessionsWindow", () => {
     await screen.findByText("alpha")
 
     expect(screen.queryByText("Alpha archived")).toBeNull()
+    expect(screen.queryByText("Alpha archived claude")).toBeNull()
     expect(screen.getByText("Alpha one")).toBeVisible()
 
     const switches = screen.getAllByRole("switch")
     fireEvent.click(switches[1])
     expect(screen.getByText("Alpha archived")).toBeVisible()
-    expect(screen.getByText("Archived")).toBeVisible()
+    expect(screen.getByText("Alpha archived claude")).toBeVisible()
+    expect(screen.getAllByText("Archived").length).toBeGreaterThanOrEqual(2)
   })
 
   it("imports exactly the selected keys and shows the summary", async () => {
