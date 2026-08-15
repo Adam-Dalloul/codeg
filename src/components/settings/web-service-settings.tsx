@@ -51,6 +51,7 @@ import { openUrl } from "@/lib/platform"
 import { copyTextToClipboard } from "@/lib/utils"
 import { useCopiedFlag } from "@/hooks/use-copied-flag"
 import { displayAddresses } from "@/lib/tailscale-funnel"
+import { pairingMode, pairingQrValue } from "@/lib/codeg-pairing"
 
 // Remembers which reachable address the user last chose to display/open.
 // Keyed by host (IP) only, so the choice survives a port change.
@@ -86,11 +87,13 @@ function AddressBar({
   addresses,
   hasMultiple,
   onSelect,
+  qrValue,
 }: {
   address: string
   addresses: string[]
   hasMultiple: boolean
   onSelect: (address: string) => void
+  qrValue: string
 }) {
   const t = useTranslations("WebServiceSettings")
   const [copied, markCopied] = useCopiedFlag()
@@ -157,7 +160,8 @@ function AddressBar({
       </div>
       <AddressQrcodeDialog
         open={qrOpen}
-        address={address}
+        address={qrValue}
+        displayAddress={address}
         onOpenChange={setQrOpen}
       />
     </>
@@ -167,10 +171,12 @@ function AddressBar({
 function AddressQrcodeDialog({
   open,
   address,
+  displayAddress,
   onOpenChange,
 }: {
   open: boolean
   address: string
+  displayAddress: string
   onOpenChange: (open: boolean) => void
 }) {
   const t = useTranslations("WebServiceSettings")
@@ -185,7 +191,7 @@ function AddressQrcodeDialog({
             <QRCodeSVG value={address} size={208} marginSize={0} />
           </div>
           <code className="text-center text-xs break-all text-muted-foreground select-all">
-            {address}
+            {displayAddress}
           </code>
           <p className="text-center text-xs text-muted-foreground">
             {t("qrcodeHint")}
@@ -734,6 +740,14 @@ export function WebServiceSettings() {
                 addresses={visibleAddresses}
                 hasMultiple={hasMultipleAddresses}
                 onSelect={handleSelectAddress}
+                qrValue={pairingQrValue({
+                  url: currentAddress,
+                  token,
+                  mode: pairingMode({
+                    serveEnabled: Boolean(serve?.enabled),
+                    funnelEnabled: Boolean(funnel?.enabled),
+                  }),
+                })}
               />
               {hasMultipleAddresses && (
                 <p className="text-xs text-muted-foreground">
