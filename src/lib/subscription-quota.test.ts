@@ -27,38 +27,40 @@ describe("subscription quota inventory", () => {
     }
   })
 
-  it("reads remaining only from a recorded official remaining-subscription envelope", () => {
+  it("reads Codex remaining from documented account/rateLimits/read", () => {
     const payload = {
-      codegQuotaKind: "remaining-subscription",
-      family: "codex",
-      remaining: 42,
-      limit: 100,
-      source: "recorded-official-fixture",
+      rateLimits: {
+        primary: { usedPercent: 42, resetsAt: 1_775_000_000 },
+        secondary: { usedPercent: 10, resetsAt: 1_775_500_000 },
+      },
     }
     const parsed = remainingFromOfficialPayload("codex", payload)
     expect(parsed).toEqual({
-      remaining: 42,
+      remaining: 58,
       limit: 100,
-      source: "recorded-official-fixture",
+      source: "codex account/rateLimits/read",
     })
-    const row = familyQuota("codex", payload)
-    expect(row.kind).toBe("remaining-subscription")
-    if (row.kind === "remaining-subscription") {
-      expect(row.remaining).toBe(42)
-    }
+    expect(familyQuota("codex", payload).kind).toBe("remaining-subscription")
   })
 
-  it("rejects a payload that is not the official envelope", () => {
+  it("reads Claude remaining from the /usage HUD payload", () => {
+    const payload = {
+      five_hour: { utilization: 0.42, resets_at: "2026-02-28T17:00:00Z" },
+      seven_day: { utilization: 0.61, resets_at: "2026-03-07T08:00:00Z" },
+    }
+    const parsed = remainingFromOfficialPayload("claude", payload)
+    expect(parsed?.source).toBe("claude /usage")
+    expect(parsed?.remaining).toBeCloseTo(58)
+    expect(familyQuota("claude", payload).kind).toBe("remaining-subscription")
+  })
+
+  it("rejects a payload that is not the official family shape", () => {
     expect(
       remainingFromOfficialPayload("claude", { remaining: 1, limit: 2 })
     ).toBeNull()
     expect(
-      remainingFromOfficialPayload("claude", {
-        codegQuotaKind: "remaining-subscription",
-        family: "codex",
-        remaining: 1,
-        limit: 2,
-        source: "wrong-family",
+      remainingFromOfficialPayload("grok", {
+        rateLimits: { primary: { usedPercent: 10 } },
       })
     ).toBeNull()
   })
