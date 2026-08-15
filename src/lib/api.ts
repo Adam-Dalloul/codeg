@@ -2973,6 +2973,11 @@ export async function subscriptionQuotaClaude(): Promise<OfficialQuotaRead> {
   return getTransport().call("subscription_quota_claude")
 }
 
+/** Grok CLI-proxy `/v1/billing?format=credits`. */
+export async function subscriptionQuotaGrok(): Promise<OfficialQuotaRead> {
+  return getTransport().call("subscription_quota_grok")
+}
+
 // Automations
 
 export async function automationList(): Promise<Automation[]> {

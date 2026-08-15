@@ -6,6 +6,7 @@ import { ExternalLink } from "lucide-react"
 import {
   subscriptionQuotaClaude,
   subscriptionQuotaCodex,
+  subscriptionQuotaGrok,
 } from "@/lib/api"
 import { inventory, type IsolatableFamily } from "@/lib/subscription-quota"
 import { openUrl } from "@/lib/platform"
@@ -23,16 +24,20 @@ export function SubscriptionQuotaPanel() {
     void Promise.allSettled([
       subscriptionQuotaCodex(),
       subscriptionQuotaClaude(),
+      subscriptionQuotaGrok(),
     ])
       .then((results) => {
         if (cancelled) return
         const next: Partial<Record<IsolatableFamily, unknown>> = {}
-        const [codex, claude] = results
+        const [codex, claude, grok] = results
         if (codex.status === "fulfilled" && codex.value.payload) {
           next.codex = codex.value.payload
         }
         if (claude.status === "fulfilled" && claude.value.payload) {
           next.claude = claude.value.payload
+        }
+        if (grok.status === "fulfilled" && grok.value.payload) {
+          next.grok = grok.value.payload
         }
         setOfficial(next)
       })
@@ -64,7 +69,9 @@ export function SubscriptionQuotaPanel() {
                     limit: row.limit,
                   })}
                 </span>
-              ) : (row.family === "codex" || row.family === "claude") &&
+              ) : (row.family === "codex" ||
+                  row.family === "claude" ||
+                  row.family === "grok") &&
                 !loaded ? (
                 <span className="text-muted-foreground">{t("quotaLoading")}</span>
               ) : (

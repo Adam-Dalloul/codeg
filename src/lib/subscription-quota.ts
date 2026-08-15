@@ -14,8 +14,12 @@
  *     Claude Code OAuth token (same endpoint community monitors use).
  *     Live 2026-08-15: `five_hour.utilization` / `seven_day.utilization`
  *     are 0-100 percents, not 0-1 fractions.
- * Gemini / Grok / OpenCode: no remaining-quota command. OpenCode `stats`
- * is historical token/cost, not plan remaining.
+ *   Grok: no usage CLI. Live 2026-08-15:
+ *     `GET https://cli-chat-proxy.grok.com/v1/billing?format=credits`
+ *     with the Grok CLI OAuth token (`x-xai-token-auth: xai-grok-cli`)
+ *     returns `config.creditUsagePercent` (0-100) and period end.
+ * Gemini / OpenCode: no remaining-quota command. OpenCode `stats` is
+ * historical token/cost, not plan remaining.
  */
 
 export type IsolatableFamily = "claude" | "codex" | "grok" | "gemini" | "opencode"
@@ -221,12 +225,31 @@ export type OfficialRemaining = {
   windowDurationMins?: number
 }
 
+/** Grok CLI-proxy `GET /v1/billing?format=credits`. */
+export function remainingFromGrokBilling(
+  payload: unknown
+): OfficialRemaining | null {
+  const rec = asRecord(payload)
+  if (!rec) return null
+  const config = asRecord(rec.config) ?? rec
+  const remaining = percentRemaining(config.creditUsagePercent)
+  if (remaining == null) return null
+  const period = asRecord(config.currentPeriod)
+  return {
+    remaining,
+    limit: 100,
+    source: "grok cli-chat-proxy /v1/billing",
+    resetsAt: parseResetsAt(period?.end ?? config.billingPeriodEnd),
+  }
+}
+
 export function remainingFromOfficialPayload(
   family: IsolatableFamily,
   payload: unknown
 ): OfficialRemaining | null {
   if (family === "codex") return remainingFromCodexAppServer(payload)
   if (family === "claude") return remainingFromClaudeUsageHud(payload)
+  if (family === "grok") return remainingFromGrokBilling(payload)
   return null
 }
 
