@@ -3299,6 +3299,23 @@
         "compactedTokens": "컨텍스트 압축 완료 · {before} → {after} 토큰",
         "failed": "컨텍스트 압축 실패"
       },
+      "sessionFailure": {
+        "category": {
+          "connection": "연결 문제",
+          "access": "액세스 문제",
+          "limit": "한도 도달",
+          "request": "요청 거부됨",
+          "service": "서비스 문제",
+          "unknown": "세션 문제"
+        },
+        "action": {
+          "retry": "다시 시도",
+          "login": "로그인",
+          "newSession": "새 세션"
+        },
+        "recovered": "복구됨",
+        "toggleDetails": "세부 정보 전환"
+      },
       "backgroundTasks": {
         "running": "백그라운드 작업 {count}개 실행 중",
         "settling": "백그라운드 결과 동기화 중…",

@@ -112,6 +112,8 @@ import {
   type QuestionAnswer,
   type UserMessageBlock,
 } from "@/lib/types"
+import { useRouter } from "next/navigation"
+import type { SessionFailureAction } from "@/lib/session-failures"
 import { getAgentLabel } from "@/lib/custom-agents"
 import {
   getSavedModeId,
@@ -213,6 +215,26 @@ function buildUserTurnFromMessageBlocks(
     blocks: contentBlocks,
     timestamp: new Date().toISOString(),
   }
+}
+
+/** Text of the most recent USER turn — what the session-failure banner's
+ *  "retry" action re-submits. Joins the turn's text blocks; image-only or
+ *  empty turns are skipped (nothing meaningful to resend). */
+function lastUserPromptText(turns: MessageTurn[] | undefined): string | null {
+  if (!turns) return null
+  for (let i = turns.length - 1; i >= 0; i--) {
+    const turn = turns[i]
+    if (turn.role !== "user") continue
+    const text = turn.blocks
+      .filter(
+        (b): b is Extract<ContentBlock, { type: "text" }> => b.type === "text"
+      )
+      .map((b) => b.text)
+      .join("\n")
+      .trim()
+    if (text) return text
+  }
+  return null
 }
 
 function buildVirtualConversationId(seed: string): number {
@@ -1628,6 +1650,37 @@ const ConversationTabView = memo(function ConversationTabView({
     }
   }, [conn.connectionId, conn.isViewer, connStatus, acpActions, tabId])
 
+  // AIR session-failure strip actions. `retry` re-submits the LAST user
+  // prompt through the message queue — same mechanism as the live-feedback
+  // resend fallback: enqueue survives the turn-end status race and flushes as
+  // soon as the connection can take a prompt, so the retry is never silently
+  // dropped. `login` lands on the agents settings page (auth lives there);
+  // `new_session` reuses the load-error banner's fresh-draft path.
+  const router = useRouter()
+  const detailTurns = detail?.turns
+  const handleSessionFailureAction = useCallback(
+    (action: SessionFailureAction) => {
+      switch (action) {
+        case "retry": {
+          const text = lastUserPromptText(detailTurns)
+          if (!text) return
+          mqEnqueue(
+            { blocks: [{ type: "text", text }], displayText: text },
+            selectedModeId
+          )
+          break
+        }
+        case "login":
+          router.push("/settings/agents")
+          break
+        case "new_session":
+          handleOpenNewSession()
+          break
+      }
+    },
+    [detailTurns, mqEnqueue, selectedModeId, router, handleOpenNewSession]
+  )
+
   const messageListNode = (
     <GoalControlProvider value={goalControlValue}>
       <MessageListView
@@ -1701,6 +1754,14 @@ const ConversationTabView = memo(function ConversationTabView({
       agentName={getAgentLabel(selectedAgent)}
       error={conn.error}
       claudeApiRetry={conn.claudeApiRetry}
+      sessionFailures={conn.sessionFailures}
+      onSessionFailureAction={
+        // Owners of a live connection only — mirrors the goal-control gate:
+        // viewers must see the strips but not drive recovery.
+        conn.connectionId !== null && !conn.isViewer
+          ? handleSessionFailureAction
+          : undefined
+      }
       pendingPermission={conn.pendingPermission}
       pendingQuestion={conn.pendingQuestion}
       pendingAskQuestion={conn.pendingAskQuestion}

@@ -391,11 +391,12 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             // records ONLY, no resolve/tombstone wire; publication is STRICTLY
             // gated on the client advertising
             // `clientCapabilities._meta.jetbrains.air = {version >= 1,
-            // capabilities: ["sessionFailure"]}`. codeg does not advertise
-            // yet, so behavior stays byte-identical to 0.65.0 until the
-            // unified failure surface lands; on session/load the adapter
-            // re-publishes still-active failures (deliberate; id+revision
-            // merging absorbs it). A model fallback (`model_refusal_fallback`)
+            // capabilities: ["sessionFailure"]}`. codeg advertises it
+            // (`build_client_capabilities`) and projects the records into the
+            // session-failure banner (`AcpEvent::SessionFailure`); on
+            // session/load the adapter re-publishes still-active failures
+            // (deliberate; id+revision merging absorbs it). A model fallback
+            // (`model_refusal_fallback`)
             // publishes an AIR "advisory" record behind the same gate (#990).
             // Skill tool calls now carry `_meta.claudeCode.skill` plus
             // `skillPath` when a SKILL.md is located (#986) — input for a
@@ -503,16 +504,17 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             // to the final record shape in 1.3.0/#393, same wire as
             // claude-agent-acp 0.67.0 — see that entry): typed session
             // failures gated STRICTLY on the client advertising
-            // `clientCapabilities._meta.jetbrains.air`. Unadvertised —
-            // codeg today — everything stays byte-identical: `_meta.codex.
-            // error` (both willRetry branches), warning/config-warning text
-            // chunks, dropped deprecation notices. Once a client advertises,
-            // those branches are REPLACED by AIR records (willRetry ⇒
+            // `clientCapabilities._meta.jetbrains.air`, which codeg does
+            // (`build_client_capabilities`). Advertising REPLACES the legacy
+            // surfaces on the wire: `_meta.codex.error` (both willRetry
+            // branches), warning/config-warning text chunks and dropped
+            // deprecation notices all become AIR records (willRetry ⇒
             // severity "warning", terminal ⇒ "error" that deliberately stays
-            // active; recovery is implied by turn progress, never published),
-            // so the `codex_retry_indicator` pull source disappears for such
-            // connections — the future failure surface must take over the
-            // retry banner, not run beside it. #377 also normalizes cwd
+            // active; recovery is implied by turn progress, never published).
+            // `codex_retry_indicator` therefore no longer fires on these
+            // connections; severity-"warning" records take over the
+            // retry-banner role (see the SessionFailure consumer in
+            // connection.rs). #377 also normalizes cwd
             // filters for Windows session listing. 1.3.0 (#396) upgrades the
             // compaction lifecycle to the claude-aligned synthetic tool call
             // (kind "think", title "Compact conversation") whose meta is now

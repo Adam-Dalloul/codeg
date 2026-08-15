@@ -61,6 +61,7 @@ import type {
   PendingPlanApprovalState,
   PlanApprovalAnswer,
   SessionConfigOptionInfo,
+  SessionFailureRecord,
   SessionModeStateInfo,
   SessionUsageUpdateInfo,
   PromptCapabilitiesInfo,
@@ -68,6 +69,11 @@ import type {
   ToolCallImageWire,
   UserMessageBlock,
 } from "@/lib/types"
+import {
+  mergeSessionFailures,
+  settleSessionFailures,
+  upsertSessionFailure,
+} from "@/lib/session-failures"
 import { getAgentLabel } from "@/lib/custom-agents"
 import {
   CONNECTION_IDLE_TIMEOUT_MS,
@@ -206,6 +212,10 @@ export interface ConnectionState {
    *  `pending_plan_approval`; cleared on `plan_approval_resolved` or turn end. */
   pendingPlanApproval: PendingPlanApprovalState | null
   claudeApiRetry: ClaudeApiRetryState | null
+  /** AIR typed session failure table (see `lib/session-failures.ts` for the
+   *  merge/settle contract). Retained resolved — entries double as per-id
+   *  revision watermarks; the banner splits active from resolved itself. */
+  sessionFailures: SessionFailureRecord[]
   error: string | null
   /**
    * Set when the agent rejected `session/load` non-recoverably (currently
@@ -360,6 +370,13 @@ type Action =
       type: "STATUS_CHANGED"
       contextKey: string
       status: ConnectionStatus
+    }
+  | {
+      // One AIR typed session-failure upsert (`session_failure` event).
+      // Merged monotonically by id+revision; see `lib/session-failures.ts`.
+      type: "SESSION_FAILURE"
+      contextKey: string
+      record: SessionFailureRecord
     }
   | {
       // Mirror of a `background_activity` event onto the connection: the
@@ -1261,6 +1278,7 @@ function connectionsReducer(
         pendingAskQuestion: null,
         pendingPlanApproval: null,
         claudeApiRetry: null,
+        sessionFailures: [],
         error: null,
         loadError: null,
         lastAppliedSeq: 0,
@@ -1318,6 +1336,7 @@ function connectionsReducer(
         pendingAskQuestion: null,
         pendingPlanApproval: null,
         claudeApiRetry: null,
+        sessionFailures: [],
         error: null,
         loadError: null,
         lastAppliedSeq: 0,
@@ -1386,6 +1405,15 @@ function connectionsReducer(
       // folding a stale snapshot's `lastError` back in here would resurrect an
       // error the current turn already cleared; it is recovered on the fresh
       // path below instead.
+      // AIR failure records merge on BOTH branches: the per-id monotonic rule
+      // is idempotent and can only add or upgrade entries, never clobber a
+      // fresher live one — so even a stale-by-eventSeq snapshot may safely
+      // contribute records this client attached too late to see live.
+      const mergedSessionFailures = mergeSessionFailures(
+        current.sessionFailures,
+        action.patch.sessionFailures
+      )
+
       if (action.patch.eventSeq <= current.lastAppliedSeq) {
         if (
           mergedSelectorsReady === current.selectorsReady &&
@@ -1393,7 +1421,8 @@ function connectionsReducer(
           mergedModes === current.modes &&
           mergedConfigOptions === current.configOptions &&
           mergedAvailableCommands === current.availableCommands &&
-          mergedPromptCapabilities === current.promptCapabilities
+          mergedPromptCapabilities === current.promptCapabilities &&
+          mergedSessionFailures === current.sessionFailures
         ) {
           return state
         }
@@ -1406,6 +1435,7 @@ function connectionsReducer(
           promptCapabilities: mergedPromptCapabilities,
           selectorsReady: mergedSelectorsReady,
           supportsFork: mergedSupportsFork,
+          sessionFailures: mergedSessionFailures,
         })
         return next
       }
@@ -1441,6 +1471,7 @@ function connectionsReducer(
         // recovers the pending-background count the one-shot events won't
         // replay for it (sweep exemption + chip).
         backgroundOutstanding: action.patch.backgroundOutstanding,
+        sessionFailures: mergedSessionFailures,
         error: action.patch.lastError,
         lastAppliedSeq: action.patch.eventSeq,
       })
@@ -1495,12 +1526,27 @@ function connectionsReducer(
         updated.pendingQuestion = null
         updated.claudeApiRetry = null
         updated.error = null
+        // Starting a prompt past an active AIR failure acknowledges it —
+        // settle EVERYTHING (watermarks retained). A failure that is still
+        // real re-arms via a higher revision on the same id.
+        updated.sessionFailures = settleSessionFailures(
+          conn.sessionFailures,
+          "all"
+        )
         // The out-of-turn window ended: its tool-call contexts (kept only for
         // background permission enrichment) are stale for the new turn.
         updated.outOfTurnToolCalls = null
       } else if (conn.status === "prompting") {
         // Prompt cycle ended: clear in-flight Claude API retry banner.
         updated.claudeApiRetry = null
+        // AIR retry warnings settle at the turn boundary (adapters never
+        // publish resolution); severity-"error" records must survive — an
+        // escalated warning was already overwritten by an error upsert on
+        // the same id before the turn ended.
+        updated.sessionFailures = settleSessionFailures(
+          conn.sessionFailures,
+          "warnings"
+        )
         // A blocked ask_user_question can't outlive its turn. The normal path
         // clears it via `question_resolved`; this is the safety net for a turn
         // that ended without one (agent error / abandoned block).
@@ -2290,6 +2336,17 @@ function connectionsReducer(
         ...conn,
         claudeApiRetry: action.retry,
       })
+      return next
+    }
+
+    case "SESSION_FAILURE": {
+      const conn = state.get(action.contextKey)
+      if (!conn) return state
+      const merged = upsertSessionFailure(conn.sessionFailures, action.record)
+      // Stale/replayed upserts are rejected by reference — no re-render.
+      if (merged === conn.sessionFailures) return state
+      const next = new Map(state)
+      next.set(action.contextKey, { ...conn, sessionFailures: merged })
       return next
     }
 
@@ -3642,6 +3699,19 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
             entries: e.entries,
           })
           break
+        case "session_failure": {
+          // JetBrains AIR typed session failure upsert — merged monotonically
+          // by id+revision (stale/replayed records are dropped in the
+          // reducer). Rendering + action buttons live in
+          // `SessionFailureBanner`; resolution is inferred at turn/prompt
+          // boundaries (STATUS_CHANGED).
+          dispatch({
+            type: "SESSION_FAILURE",
+            contextKey,
+            record: e.record,
+          })
+          break
+        }
         case "turn_retrying": {
           // codex-acp #289: a retryable turn error keeps the turn alive (codex
           // auto-retries). Reuse the Claude API-retry banner — codex doesn't

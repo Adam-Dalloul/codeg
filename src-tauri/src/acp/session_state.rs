@@ -15,8 +15,8 @@ use crate::acp::plan_approval::PendingPlanApprovalState;
 use crate::acp::question::PendingQuestionState;
 use crate::acp::types::{
     AcpEvent, AvailableCommandInfo, ConfigStaleKind, ConnectionStatus, EventEnvelope,
-    GrokModelSpec, PromptCapabilitiesInfo, SessionConfigOptionInfo, SessionModeStateInfo,
-    ToolCallImageInfo,
+    GrokModelSpec, PromptCapabilitiesInfo, SessionConfigOptionInfo, SessionFailureRecord,
+    SessionModeStateInfo, ToolCallImageInfo,
 };
 use crate::models::agent::AgentType;
 use crate::models::message::MessageRole;
@@ -420,6 +420,17 @@ pub struct SessionState {
     /// Backend-internal routing only: not part of the client snapshot.
     pub neutral_goal_channel: bool,
 
+    /// AIR typed session failures projected by `id` (see
+    /// [`SessionFailureRecord`] for the wire contract). Entries are RETAINED
+    /// for the connection's lifetime — resolved ones included — both because
+    /// the protocol keeps resolved records as history and because each entry
+    /// doubles as the per-id revision watermark: dropping an entry would let
+    /// a delayed lower-revision upsert resurrect it. Carried on
+    /// `to_snapshot()` (whole table, watermarks included) so a client
+    /// attaching mid-session applies the same monotonic merge against
+    /// subsequent live events. BTreeMap for a deterministic snapshot order.
+    pub session_failures: BTreeMap<String, SessionFailureRecord>,
+
     /// Concatenated text content of the just-completed turn's assistant
     /// message. Captured at TurnComplete (just before live_message is
     /// cleared) so the lifecycle subscriber can surface it as the
@@ -528,6 +539,7 @@ impl SessionState {
             feedback_tool_available: false,
             native_steering_available: false,
             neutral_goal_channel: false,
+            session_failures: BTreeMap::new(),
             last_assistant_text: None,
             pending_user_message: None,
             pending_user_message_started_at: None,
@@ -843,6 +855,18 @@ impl SessionState {
                 // other than a normal end-of-turn means this turn's content
                 // may never have reached the wire.
                 self.last_turn_ended_abnormally = stop_reason != "end_turn";
+                // AIR retry warnings resolve at the turn boundary — adapters
+                // never publish resolution (see `SessionFailureRecord`), and a
+                // warning that ESCALATED instead was already overwritten by a
+                // higher-revision severity-"error" upsert on the same id
+                // before the turn ended, so this only settles genuinely
+                // recovered (or abandoned) retry incidents. Mirrors the retry
+                // banner's clear-at-turn-boundary semantics.
+                for failure in self.session_failures.values_mut() {
+                    if failure.severity == "warning" {
+                        failure.resolved = true;
+                    }
+                }
                 // Snapshot the just-finished turn's FINAL assistant text — what
                 // `get_delegation_status` returns as the child result. We take
                 // the Text blocks that follow the LAST tool call (the agent's
@@ -948,6 +972,15 @@ impl SessionState {
                 // queued prompt sent instead of answering) must not leave a dead
                 // approval in the snapshot for a mid-turn attach to render.
                 self.pending_plan_approval = None;
+                // Starting a prompt past an active AIR failure acknowledges it
+                // — settle EVERYTHING, mirroring the frontend reducer's
+                // prompt-start settle so a client hydrating mid-turn doesn't
+                // resurrect an error the owner already acted on. Entries stay
+                // in the table as revision watermarks; a failure that is
+                // still real re-arms via a higher revision on the same id.
+                for failure in self.session_failures.values_mut() {
+                    failure.resolved = true;
+                }
             }
             AcpEvent::ConversationLinked {
                 conversation_id,
@@ -1070,6 +1103,24 @@ impl SessionState {
                 // the backend idle timer on every batch of transcript activity.
                 self.background_outstanding = *outstanding;
                 self.background_activity_at = Some(Utc::now());
+            }
+            AcpEvent::SessionFailure { record } => {
+                // Monotonic per-id merge — the SAME rule the frontend reducer
+                // applies, so a replayed/out-of-order upsert (claude re-sends
+                // still-active failures on session/load) is dropped
+                // identically on every consumer. Equal revisions are rejected
+                // too: an upsert is only ever re-delivered verbatim, never
+                // legitimately revised in place. A fresh (higher-revision)
+                // upsert re-arms `resolved = false` — id reuse is how codex
+                // escalates a retry warning into the turn's terminal error.
+                let accept = self
+                    .session_failures
+                    .get(&record.id)
+                    .is_none_or(|existing| record.revision > existing.revision);
+                if accept {
+                    self.session_failures
+                        .insert(record.id.clone(), record.clone());
+                }
             }
             AcpEvent::ClaudeSdkMessage { .. }
             | AcpEvent::ConfigOptionRejected { .. }
@@ -1456,6 +1507,7 @@ impl SessionState {
             config_stale: self.config_stale,
             config_stale_kind: self.config_stale_kind,
             last_error: self.last_error.clone(),
+            session_failures: self.session_failures.values().cloned().collect(),
             event_seq: self.event_seq,
         }
     }
@@ -1564,6 +1616,13 @@ pub struct LiveSessionSnapshot {
     /// no error has occurred so older clients and common snapshots stay small.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_error: Option<SessionLastError>,
+    /// AIR typed session failure table (resolved entries and revision
+    /// watermarks included — see `SessionState.session_failures`). A client
+    /// attaching mid-session seeds its reducer from this and keeps applying
+    /// the same monotonic merge to live events. Omitted while empty (the
+    /// common case) to keep the wire shape byte-identical pre-feature.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub session_failures: Vec<SessionFailureRecord>,
     pub event_seq: u64,
 }
 
@@ -1699,6 +1758,85 @@ mod tests {
         });
         assert!(s.pending_plan_approval.is_none());
         assert!(s.to_snapshot().pending_plan_approval.is_none());
+    }
+
+    #[test]
+    fn session_failure_upserts_merge_monotonically_and_settle_at_turn_end() {
+        fn failure(id: &str, revision: u64, severity: &str, title: &str) -> AcpEvent {
+            AcpEvent::SessionFailure {
+                record: SessionFailureRecord {
+                    id: id.into(),
+                    revision,
+                    category: "limit".into(),
+                    severity: severity.into(),
+                    title: title.into(),
+                    details: None,
+                    actions: vec!["retry".into()],
+                    resolved: false,
+                },
+            }
+        }
+        let mut s = fresh_state();
+
+        // Upsert then revise in place: one entry, latest revision wins.
+        s.apply_event(&failure("t1:error", 1, "warning", "retrying"));
+        s.apply_event(&failure("t1:error", 2, "warning", "still retrying"));
+        assert_eq!(s.session_failures.len(), 1);
+        assert_eq!(s.session_failures["t1:error"].revision, 2);
+        assert_eq!(s.session_failures["t1:error"].title, "still retrying");
+
+        // Stale and equal-revision replays are rejected (claude re-publishes
+        // still-active failures on session/load — must not thrash state).
+        s.apply_event(&failure("t1:error", 1, "warning", "stale"));
+        s.apply_event(&failure("t1:error", 2, "warning", "replay"));
+        assert_eq!(s.session_failures["t1:error"].title, "still retrying");
+
+        // Turn boundary settles warnings — errors stay active (codex keeps
+        // terminal records active deliberately).
+        s.apply_event(&failure("s:notice", 1, "error", "auth expired"));
+        s.apply_event(&AcpEvent::TurnComplete {
+            session_id: "sid".into(),
+            stop_reason: "end_turn".into(),
+            agent_type: "codex".into(),
+        });
+        assert!(s.session_failures["t1:error"].resolved);
+        assert!(!s.session_failures["s:notice"].resolved);
+
+        // Escalation via id reuse: a HIGHER-revision upsert re-arms the entry
+        // (resolved resets) — how codex turns a retry warning into the turn's
+        // terminal error.
+        s.apply_event(&failure("t1:error", 3, "error", "gave up"));
+        let escalated = &s.session_failures["t1:error"];
+        assert!(!escalated.resolved);
+        assert_eq!(escalated.severity, "error");
+
+        // Starting a NEW prompt settles EVERYTHING — errors included — so a
+        // client hydrating mid-turn can't resurrect a failure the owner
+        // already acted past (mirrors the frontend reducer's prompt-start
+        // settle). Watermarks survive: the stale rev-2 replay stays rejected,
+        // and only a genuinely newer revision re-arms the record.
+        s.apply_event(&AcpEvent::UserMessage {
+            message_id: "m1".into(),
+            blocks: vec![],
+        });
+        assert!(s.session_failures.values().all(|f| f.resolved));
+        s.apply_event(&failure("t1:error", 2, "error", "stale replay"));
+        assert!(s.session_failures["t1:error"].resolved);
+        assert_eq!(s.session_failures["t1:error"].title, "gave up");
+        s.apply_event(&failure("t1:error", 4, "error", "it recurred"));
+        assert!(!s.session_failures["t1:error"].resolved);
+
+        // The snapshot carries the WHOLE table — resolved entries and their
+        // revision watermarks included — so an attaching client can keep
+        // rejecting stale upserts.
+        let snap = s.to_snapshot();
+        assert_eq!(snap.session_failures.len(), 2);
+        let json = serde_json::to_value(&snap).unwrap();
+        let failures = json.get("session_failures").unwrap().as_array().unwrap();
+        assert!(failures.iter().any(|f| {
+            f.get("id").and_then(|v| v.as_str()) == Some("t1:error")
+                && f.get("revision").and_then(|v| v.as_u64()) == Some(4)
+        }));
     }
 
     #[test]

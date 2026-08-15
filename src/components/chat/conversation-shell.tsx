@@ -11,9 +11,12 @@ import type {
   PromptInputBlock,
   QuestionAnswer,
   SessionConfigOptionInfo,
+  SessionFailureRecord,
   SessionModeInfo,
   AvailableCommandInfo,
 } from "@/lib/types"
+import type { SessionFailureAction } from "@/lib/session-failures"
+import { SessionFailureBanner } from "@/components/chat/session-failure-banner"
 import type {
   PendingPermission,
   PendingQuestion,
@@ -34,6 +37,15 @@ interface ConversationShellProps {
   agentName?: string
   error: string | null
   claudeApiRetry: ClaudeApiRetryState | null
+  /** AIR typed session failures for this connection (active + resolved; the
+   *  banner splits them itself). Omit/empty renders nothing. */
+  sessionFailures?: SessionFailureRecord[]
+  /** Wires the failure strips' suggested actions (retry/login/new_session);
+   *  omitted for read-only surfaces — the buttons are then hidden. */
+  onSessionFailureAction?: (
+    action: SessionFailureAction,
+    failure: SessionFailureRecord
+  ) => void
   pendingPermission: PendingPermission | null
   pendingQuestion: PendingQuestion | null
   /** Awaiting-answer multiple-choice `ask_user_question`. */
@@ -114,6 +126,8 @@ export function ConversationShell({
   agentName,
   error,
   claudeApiRetry,
+  sessionFailures,
+  onSessionFailureAction,
   pendingPermission,
   pendingQuestion,
   pendingAskQuestion,
@@ -306,6 +320,13 @@ export function ConversationShell({
           </div>
         )}
       </div>
+
+      {sessionFailures && sessionFailures.length > 0 && (
+        <SessionFailureBanner
+          failures={sessionFailures}
+          onAction={onSessionFailureAction}
+        />
+      )}
 
       {retryLineText && (
         <div className="border-t border-destructive/20 bg-destructive/5 px-4 py-2 text-xs text-destructive">

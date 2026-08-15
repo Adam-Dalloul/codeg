@@ -3299,6 +3299,23 @@
         "compactedTokens": "Kontext komprimiert · {before} → {after} Tokens",
         "failed": "Kontextkomprimierung fehlgeschlagen"
       },
+      "sessionFailure": {
+        "category": {
+          "connection": "Verbindungsproblem",
+          "access": "Zugriffsproblem",
+          "limit": "Limit erreicht",
+          "request": "Anfrage abgelehnt",
+          "service": "Dienstproblem",
+          "unknown": "Sitzungsproblem"
+        },
+        "action": {
+          "retry": "Erneut versuchen",
+          "login": "Anmelden",
+          "newSession": "Neue Sitzung"
+        },
+        "recovered": "Wiederhergestellt",
+        "toggleDetails": "Details umschalten"
+      },
       "backgroundTasks": {
         "running": "{count, plural, one {# Hintergrundaufgabe läuft} other {# Hintergrundaufgaben laufen}}",
         "settling": "Hintergrundergebnisse werden synchronisiert…",

@@ -3299,6 +3299,23 @@
         "compactedTokens": "コンテキストを圧縮 · {before} → {after} トークン",
         "failed": "コンテキストの圧縮に失敗しました"
       },
+      "sessionFailure": {
+        "category": {
+          "connection": "接続の問題",
+          "access": "アクセスの問題",
+          "limit": "上限に到達",
+          "request": "リクエスト拒否",
+          "service": "サービスの問題",
+          "unknown": "セッションの問題"
+        },
+        "action": {
+          "retry": "再試行",
+          "login": "サインイン",
+          "newSession": "新しいセッション"
+        },
+        "recovered": "回復済み",
+        "toggleDetails": "詳細の切り替え"
+      },
       "backgroundTasks": {
         "running": "{count} 件のバックグラウンドタスクを実行中",
         "settling": "バックグラウンド結果を同期中…",

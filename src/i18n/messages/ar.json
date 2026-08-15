@@ -3299,6 +3299,23 @@
         "compactedTokens": "تم ضغط السياق · {before} → {after} رمز",
         "failed": "فشل ضغط السياق"
       },
+      "sessionFailure": {
+        "category": {
+          "connection": "مشكلة في الاتصال",
+          "access": "مشكلة في الوصول",
+          "limit": "تم بلوغ الحد",
+          "request": "تم رفض الطلب",
+          "service": "مشكلة في الخدمة",
+          "unknown": "مشكلة في الجلسة"
+        },
+        "action": {
+          "retry": "إعادة المحاولة",
+          "login": "تسجيل الدخول",
+          "newSession": "جلسة جديدة"
+        },
+        "recovered": "تم التعافي",
+        "toggleDetails": "تبديل التفاصيل"
+      },
       "backgroundTasks": {
         "running": "{count, plural, one {مهمة خلفية واحدة قيد التشغيل} two {مهمتا خلفية قيد التشغيل} few {# مهام خلفية قيد التشغيل} other {# مهمة خلفية قيد التشغيل}}",
         "settling": "جارٍ مزامنة نتائج الخلفية…",

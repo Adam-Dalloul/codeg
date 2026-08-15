@@ -3299,6 +3299,23 @@
         "compactedTokens": "上下文已压缩 · {before} → {after} tokens",
         "failed": "上下文压缩失败"
       },
+      "sessionFailure": {
+        "category": {
+          "connection": "连接异常",
+          "access": "访问受限",
+          "limit": "已达限制",
+          "request": "请求被拒绝",
+          "service": "服务异常",
+          "unknown": "会话异常"
+        },
+        "action": {
+          "retry": "重试",
+          "login": "去登录",
+          "newSession": "新建会话"
+        },
+        "recovered": "已恢复",
+        "toggleDetails": "展开/收起详情"
+      },
       "backgroundTasks": {
         "running": "{count} 个后台任务运行中",
         "settling": "正在同步后台结果…",

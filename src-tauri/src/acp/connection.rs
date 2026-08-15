@@ -47,7 +47,8 @@ use crate::acp::types::{
     PermissionOptionInfo, PlanEntryInfo, PromptCapabilitiesInfo, PromptInputBlock,
     SessionConfigBooleanInfo, SessionConfigKindInfo, SessionConfigOptionInfo,
     SessionConfigSelectGroupInfo, SessionConfigSelectInfo, SessionConfigSelectOptionInfo,
-    SessionModeInfo, SessionModeStateInfo, ToolCallImageInfo, UserMessageBlock,
+    SessionFailureRecord, SessionModeInfo, SessionModeStateInfo, ToolCallImageInfo,
+    UserMessageBlock,
 };
 use crate::logging::throttle::LeadingEdgeThrottle;
 use crate::models::agent::AgentType;
@@ -3053,9 +3054,29 @@ fn build_client_capabilities(
         client_capabilities = client_capabilities
             .elicitation(ElicitationCapabilities::new().form(ElicitationFormCapabilities::new()));
     }
+    // Client `_meta` extensions, per agent. `jetbrains.air` opts codeg into
+    // JetBrains AIR typed session-failure records (claude-agent-acp 0.67+,
+    // codex-acp 1.2+) — both adapters gate publication on EXACTLY this
+    // advertisement (integer version >= 1 and "sessionFailure" in the
+    // capabilities array). Advertising REPLACES codex's legacy failure
+    // surfaces for the connection (`_meta.codex.error` → TurnRetrying,
+    // warning/config-warning text chunks), so this ships together with the
+    // `SessionFailure` consumer (`air_session_failure` + the frontend
+    // banner). Only the two known AIR speakers get it: the capability-gate
+    // convention is to advertise nothing an agent hasn't implemented.
+    let mut meta = serde_json::Map::new();
     if agent_type == AgentType::ClaudeCode {
-        let mut meta = serde_json::Map::new();
         meta.insert("subagent-transcript".to_string(), serde_json::Value::Bool(true));
+    }
+    if matches!(agent_type, AgentType::ClaudeCode | AgentType::Codex) {
+        meta.insert(
+            "jetbrains".to_string(),
+            serde_json::json!({
+                "air": { "version": 1, "capabilities": ["sessionFailure"] }
+            }),
+        );
+    }
+    if !meta.is_empty() {
         client_capabilities = client_capabilities.meta(meta);
     }
     client_capabilities
@@ -8678,6 +8699,78 @@ fn session_info_goal_value(
     }
 }
 
+/// The raw `sessionFailure` value out of a `session_info_update`'s
+/// `_meta.jetbrains.air` envelope — present only when the envelope itself is
+/// well-formed (integer `version >= 1`, mirroring the advertisement check the
+/// adapters run on codeg's `clientCapabilities._meta.jetbrains.air`). A
+/// malformed or future-incompatible envelope yields `None` and the update is
+/// treated as carrying no failure.
+fn air_session_failure(
+    meta: Option<&serde_json::Map<String, serde_json::Value>>,
+) -> Option<&serde_json::Value> {
+    let air = meta?.get("jetbrains")?.get("air")?;
+    let version = air.get("version").and_then(serde_json::Value::as_i64)?;
+    if version < 1 {
+        return None;
+    }
+    air.get("sessionFailure")
+}
+
+/// Validate one AIR failure upsert into a [`SessionFailureRecord`].
+///
+/// `id` (non-blank string) and `revision` (integer >= 1) are HARD
+/// requirements — without identity there is nothing to merge
+/// deterministically, so a record missing either is dropped (the caller logs
+/// it at debug). Everything else is lenient: `category`/`severity` default to
+/// `"unknown"`/`"error"` and pass through unrecognized values as plain
+/// strings (the frontend falls back per field), `title` may be blank,
+/// non-string `actions` entries are skipped. `resolved` starts `false`; the
+/// stores flip it (see the type docs).
+fn parse_session_failure_record(value: &serde_json::Value) -> Option<SessionFailureRecord> {
+    let id = value.get("id")?.as_str()?.trim();
+    if id.is_empty() {
+        return None;
+    }
+    let revision = value.get("revision")?.as_u64()?;
+    if revision < 1 {
+        return None;
+    }
+    let text = |key: &str, default: &str| -> String {
+        value
+            .get(key)
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or(default)
+            .to_string()
+    };
+    Some(SessionFailureRecord {
+        id: id.to_string(),
+        revision,
+        category: text("category", "unknown"),
+        severity: text("severity", "error"),
+        title: text("title", ""),
+        details: value
+            .get("details")
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string),
+        actions: value
+            .get("actions")
+            .and_then(serde_json::Value::as_array)
+            .map(|entries| {
+                entries
+                    .iter()
+                    .filter_map(serde_json::Value::as_str)
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default(),
+        resolved: false,
+    })
+}
+
 /// Strict SemVer floor check: true when `version >= min` by SemVer
 /// PRECEDENCE. Prerelease ordering matters here — `0.64.0-rc1` precedes
 /// `0.64.0` and may predate the very commit that shipped the
@@ -10359,10 +10452,32 @@ async fn emit_conversation_update(
                     .await;
                 }
             }
+            // JetBrains AIR typed session failure (claude-agent-acp 0.67+/
+            // codex-acp 1.2+): published only because codeg advertises
+            // `clientCapabilities._meta.jetbrains.air` (see
+            // `build_client_capabilities`). Valid upserts are forwarded
+            // verbatim — the monotonic id+revision merge runs identically in
+            // `SessionState::apply_event` and the frontend reducer, so a
+            // stale or replayed record is rejected the same way everywhere.
+            // A record without usable identity cannot merge and is dropped.
+            if let Some(raw) = air_session_failure(info.meta.as_ref()) {
+                match parse_session_failure_record(raw) {
+                    Some(record) => {
+                        emit_with_state(state, emitter, AcpEvent::SessionFailure { record })
+                            .await;
+                    }
+                    None => tracing::debug!(
+                        "[ACP] dropped AIR sessionFailure without usable id/revision: {raw:?}"
+                    ),
+                }
+            }
             // codex-acp #289 (v1.1.3+): a retryable turn error rides under
             // `_meta.codex.error` (only when `willRetry == true`) and the turn
             // stays alive. Surface a transient retry indicator (the frontend
             // reuses the Claude API-retry banner); it is NOT a turn failure.
+            // With AIR advertised (above), codex 1.2+ REPLACES this channel
+            // with severity-"warning" failure records, so this indicator now
+            // serves only non-advertised/legacy paths.
             if let Some((message, error_status)) = codex_retry_indicator(info.meta.as_ref()) {
                 emit_with_state(
                     state,
@@ -10892,6 +11007,127 @@ mod tests {
         ));
         assert!(session_info_goal_value(false, Some(&cleared)).is_none());
         assert!(session_info_goal_value(true, None).is_none());
+    }
+
+    #[test]
+    fn air_session_failure_requires_wellformed_versioned_envelope() {
+        let ok = meta_map(serde_json::json!({"jetbrains": {"air": {
+            "version": 1,
+            "sessionFailure": {"id": "t1:error", "revision": 1},
+        }}}));
+        assert!(air_session_failure(Some(&ok)).is_some());
+
+        // Missing/zero/stringly version, or a failure outside the air
+        // envelope, must yield nothing.
+        for bad in [
+            serde_json::json!({"jetbrains": {"air": {"sessionFailure": {"id": "x", "revision": 1}}}}),
+            serde_json::json!({"jetbrains": {"air": {"version": 0, "sessionFailure": {}}}}),
+            serde_json::json!({"jetbrains": {"air": {"version": "1", "sessionFailure": {}}}}),
+            serde_json::json!({"jetbrains": {"sessionFailure": {"id": "x", "revision": 1}}}),
+            serde_json::json!({"air": {"version": 1, "sessionFailure": {}}}),
+        ] {
+            let meta = meta_map(bad);
+            assert!(air_session_failure(Some(&meta)).is_none());
+        }
+        assert!(air_session_failure(None).is_none());
+    }
+
+    #[test]
+    fn parse_session_failure_record_requires_identity_and_stays_lenient() {
+        // The real codex shape (SESSION_FAILURE_POLICY: auth_required →
+        // access/[login]).
+        let full = serde_json::json!({
+            "id": "turn-9:error",
+            "revision": 2,
+            "category": "access",
+            "severity": "error",
+            "title": "Authentication required.",
+            "details": "Token expired",
+            "actions": ["login"],
+        });
+        let record = parse_session_failure_record(&full).expect("record");
+        assert_eq!(record.id, "turn-9:error");
+        assert_eq!(record.revision, 2);
+        assert_eq!(record.category, "access");
+        assert_eq!(record.severity, "error");
+        assert_eq!(record.title, "Authentication required.");
+        assert_eq!(record.details.as_deref(), Some("Token expired"));
+        assert_eq!(record.actions, vec!["login".to_string()]);
+        assert!(!record.resolved);
+
+        // id + revision are HARD requirements — no identity, no merge.
+        for bad in [
+            serde_json::json!({"revision": 1, "title": "x"}),
+            serde_json::json!({"id": "", "revision": 1}),
+            serde_json::json!({"id": "   ", "revision": 1}),
+            serde_json::json!({"id": "x", "title": "no revision"}),
+            serde_json::json!({"id": "x", "revision": 0}),
+            serde_json::json!({"id": "x", "revision": -1}),
+            serde_json::json!({"id": "x", "revision": "1"}),
+        ] {
+            assert!(parse_session_failure_record(&bad).is_none(), "{bad:?}");
+        }
+
+        // Everything else is lenient: unknown vocabulary passes through as
+        // strings, blanks default, non-string action entries are skipped.
+        let sparse = serde_json::json!({
+            "id": "notice-1",
+            "revision": 1,
+            "category": "quantum",
+            "actions": ["retry", 42, "sing"],
+        });
+        let record = parse_session_failure_record(&sparse).expect("record");
+        assert_eq!(record.category, "quantum");
+        assert_eq!(record.severity, "error");
+        assert_eq!(record.title, "");
+        assert_eq!(record.details, None);
+        assert_eq!(record.actions, vec!["retry".to_string(), "sing".to_string()]);
+    }
+
+    #[test]
+    fn client_capabilities_advertise_air_for_claude_and_codex_only() {
+        // Both AIR speakers must send EXACTLY the shape the adapters gate on:
+        // integer version >= 1 plus "sessionFailure" in the capabilities
+        // array (`clientSupportsTypedSessionFailures` in codex,
+        // `supportsAirSessionFailures` in claude).
+        for agent in [AgentType::ClaudeCode, AgentType::Codex] {
+            let caps =
+                serde_json::to_value(build_client_capabilities(agent, HostToolsPolicy::Default))
+                    .unwrap();
+            let air = caps
+                .get("_meta")
+                .and_then(|m| m.get("jetbrains"))
+                .and_then(|j| j.get("air"))
+                .unwrap_or_else(|| panic!("{agent:?} must advertise jetbrains.air"));
+            assert_eq!(air.get("version").and_then(|v| v.as_i64()), Some(1));
+            assert!(air
+                .get("capabilities")
+                .and_then(|c| c.as_array())
+                .is_some_and(|c| c.iter().any(|v| v.as_str() == Some("sessionFailure"))));
+        }
+        // Claude keeps its subagent-transcript flag alongside.
+        let claude = serde_json::to_value(build_client_capabilities(
+            AgentType::ClaudeCode,
+            HostToolsPolicy::Default,
+        ))
+        .unwrap();
+        assert_eq!(
+            claude
+                .get("_meta")
+                .and_then(|m| m.get("subagent-transcript"))
+                .and_then(|v| v.as_bool()),
+            Some(true)
+        );
+        // Non-AIR agents advertise nothing under jetbrains.
+        for agent in [AgentType::Gemini, AgentType::Grok, AgentType::OpenCode] {
+            let caps =
+                serde_json::to_value(build_client_capabilities(agent, HostToolsPolicy::Default))
+                    .unwrap();
+            assert!(caps
+                .get("_meta")
+                .and_then(|m| m.get("jetbrains"))
+                .is_none());
+        }
     }
 
     #[test]
@@ -11502,10 +11738,12 @@ mod tests {
         );
         assert!(claude.get("elicitation").is_none());
 
-        // Codex: form elicitation, no subagent-transcript meta.
+        // Codex: form elicitation; its `_meta` carries ONLY the AIR
+        // advertisement (no subagent-transcript, which is claude's opt-in).
         let codex = caps_of(AgentType::Codex);
         assert!(codex.get("elicitation").is_some());
-        assert!(codex.get("_meta").is_none());
+        assert!(codex["_meta"].get("subagent-transcript").is_none());
+        assert!(codex["_meta"].get("jetbrains").is_some());
 
         // Everyone else: neither gate; fs + terminal always advertised.
         let other = caps_of(AgentType::Gemini);

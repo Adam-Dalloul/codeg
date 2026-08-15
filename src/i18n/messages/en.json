@@ -3299,6 +3299,23 @@
         "compactedTokens": "Context compacted · {before} → {after} tokens",
         "failed": "Context compaction failed"
       },
+      "sessionFailure": {
+        "category": {
+          "connection": "Connection issue",
+          "access": "Access issue",
+          "limit": "Limit reached",
+          "request": "Request rejected",
+          "service": "Service issue",
+          "unknown": "Session issue"
+        },
+        "action": {
+          "retry": "Retry",
+          "login": "Sign in",
+          "newSession": "New session"
+        },
+        "recovered": "Recovered",
+        "toggleDetails": "Toggle details"
+      },
       "backgroundTasks": {
         "running": "{count, plural, one {# background task running} other {# background tasks running}}",
         "settling": "Syncing background results…",

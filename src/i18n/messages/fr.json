@@ -3299,6 +3299,23 @@
         "compactedTokens": "Contexte compacté · {before} → {after} tokens",
         "failed": "Échec de la compaction du contexte"
       },
+      "sessionFailure": {
+        "category": {
+          "connection": "Problème de connexion",
+          "access": "Problème d'accès",
+          "limit": "Limite atteinte",
+          "request": "Requête rejetée",
+          "service": "Problème de service",
+          "unknown": "Problème de session"
+        },
+        "action": {
+          "retry": "Réessayer",
+          "login": "Se connecter",
+          "newSession": "Nouvelle session"
+        },
+        "recovered": "Rétabli",
+        "toggleDetails": "Afficher/masquer les détails"
+      },
       "backgroundTasks": {
         "running": "{count, plural, one {# tâche en arrière-plan en cours} other {# tâches en arrière-plan en cours}}",
         "settling": "Synchronisation des résultats d'arrière-plan…",
