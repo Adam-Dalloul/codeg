@@ -284,6 +284,48 @@ fn resolve_codex_home_dir_from(
         .unwrap_or_else(|| home_dir.unwrap_or_default().join(".codex"))
 }
 
+/// Codex Desktop stores the current thread name in `session_index.jsonl`
+/// (sibling of `sessions/`). Rollouts often have no `thread_name_updated`,
+/// so the list/import path would otherwise keep the first user prompt.
+/// Last non-empty `thread_name` for an id wins.
+fn load_session_index_titles(codex_home: &std::path::Path) -> HashMap<String, String> {
+    let path = codex_home.join("session_index.jsonl");
+    let Ok(file) = fs::File::open(&path) else {
+        return HashMap::new();
+    };
+    let mut titles = HashMap::new();
+    for line in BufReader::new(file).lines() {
+        let Ok(line) = line else { continue };
+        if line.trim().is_empty() {
+            continue;
+        }
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(&line) else {
+            continue;
+        };
+        let Some(id) = value
+            .get("id")
+            .or_else(|| value.get("session_id"))
+            .or_else(|| value.get("sessionId"))
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        else {
+            continue;
+        };
+        let Some(name) = value
+            .get("thread_name")
+            .or_else(|| value.get("threadName"))
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        else {
+            continue;
+        };
+        titles.insert(id.to_string(), truncate_str(name, 100));
+    }
+    titles
+}
+
 impl AgentParser for CodexParser {
     fn list_conversations(&self) -> Result<Vec<ConversationSummary>, ParseError> {
         let mut conversations = Vec::new();
@@ -310,6 +352,17 @@ impl AgentParser for CodexParser {
             }) {
                 Ok(Some(summary)) => conversations.push(summary),
                 _ => continue,
+            }
+        }
+
+        let index_titles = load_session_index_titles(
+            self.base_dir
+                .parent()
+                .unwrap_or(self.base_dir.as_path()),
+        );
+        for conversation in &mut conversations {
+            if let Some(name) = index_titles.get(&conversation.id) {
+                conversation.title = Some(name.clone());
             }
         }
 
@@ -5251,6 +5304,39 @@ mod tests {
     }
 
     #[test]
+    fn list_conversations_prefers_session_index_thread_name() {
+        // Codex Desktop often renames a thread in session_index.jsonl without
+        // writing thread_name_updated into the rollout. Import must use that
+        // name instead of the first user prompt. See issue #457.
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time ok")
+            .as_nanos();
+        let home = env::temp_dir().join(format!("codeg-codex-idx-{nanos}"));
+        let sessions = home.join("sessions");
+        fs::create_dir_all(&sessions).expect("sessions dir");
+        let rollout = sessions.join("rollout-abc.jsonl");
+        fs::write(
+            &rollout,
+            concat!(
+                "{\"timestamp\":\"2026-03-01T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"abc-session\",\"cwd\":\"/tmp/demo\"}}\n",
+                "{\"timestamp\":\"2026-03-01T10:00:01Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"user_message\",\"message\":\"please implement a very long thing that should not become the sidebar title\"}}\n",
+            ),
+        )
+        .expect("write rollout");
+        fs::write(
+            home.join("session_index.jsonl"),
+            "{\"id\":\"abc-session\",\"thread_name\":\"Auth refactor\"}\n{\"id\":\"abc-session\",\"thread_name\":\"Readable title\"}\n",
+        )
+        .expect("write index");
+
+        let parser = CodexParser::with_base_dir(sessions);
+        let list = parser.list_conversations().expect("list ok");
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].title.as_deref(), Some("Readable title"));
+        let _ = fs::remove_dir_all(home);
+    }
+
     fn parse_summary_prefers_native_thread_name_over_goal_objective() {
         // A native `thread_name_updated` wins over the goal-objective fallback
         // (newest non-empty), matching the detail parser.
