@@ -5,10 +5,14 @@
 //! method over `codex app-server --stdio` and returns the official `result`
 //! object. It never invents a remaining number.
 //!
-//! Claude / Grok / Gemini / OpenCode have no matching official remaining
-//! payload on this host (verified against the live CLIs). Those families
-//! stay unavailable at the TypeScript inventory layer.
+//! Claude has no `usage` CLI. The `/usage` HUD reads
+//! `GET https://api.anthropic.com/api/oauth/usage` with the local Claude
+//! Code OAuth token (`~/.claude/.credentials.json`). That is the same
+//! endpoint community monitors use. Grok / Gemini / OpenCode still have
+//! no remaining-quota command.
 
+use std::fs;
+use std::path::Path;
 use std::process::Stdio;
 use std::time::Duration;
 
@@ -192,6 +196,100 @@ pub async fn subscription_quota_codex() -> Result<OfficialQuotaRead, AppCommandE
     Ok(read_codex_subscription_quota_core().await)
 }
 
+pub fn claude_oauth_access_token_from_credentials(text: &str) -> Option<String> {
+    let value: Value = serde_json::from_str(text).ok()?;
+    value
+        .get("claudeAiOauth")
+        .and_then(|oauth| oauth.get("accessToken"))
+        .and_then(Value::as_str)
+        .filter(|token| !token.is_empty())
+        .map(str::to_string)
+}
+
+fn claude_credentials_path() -> Option<std::path::PathBuf> {
+    dirs::home_dir().map(|home| home.join(".claude").join(".credentials.json"))
+}
+
+fn read_claude_oauth_access_token(path: &Path) -> Option<String> {
+    let text = fs::read_to_string(path).ok()?;
+    claude_oauth_access_token_from_credentials(&text)
+}
+
+async fn fetch_claude_oauth_usage(token: &str) -> Result<Value, AppCommandError> {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()
+        .map_err(|err| {
+            AppCommandError::new(AppErrorCode::NetworkError, "HTTP client")
+                .with_detail(err.to_string())
+        })?;
+    let response = client
+        .get("https://api.anthropic.com/api/oauth/usage")
+        .header("Authorization", format!("Bearer {token}"))
+        .header("anthropic-beta", "oauth-2025-04-20")
+        .header("User-Agent", "codeg")
+        .header("Accept", "application/json")
+        .send()
+        .await
+        .map_err(|err| {
+            AppCommandError::new(AppErrorCode::NetworkError, "Claude usage request failed")
+                .with_detail(err.to_string())
+        })?;
+    let status = response.status();
+    if !status.is_success() {
+        return Err(AppCommandError::new(
+            AppErrorCode::ExternalCommandFailed,
+            format!("Claude usage HTTP {status}"),
+        ));
+    }
+    response.json::<Value>().await.map_err(|err| {
+        AppCommandError::new(AppErrorCode::ExternalCommandFailed, "Claude usage JSON")
+            .with_detail(err.to_string())
+    })
+}
+
+pub async fn read_claude_subscription_quota_core() -> OfficialQuotaRead {
+    let Some(path) = claude_credentials_path() else {
+        return OfficialQuotaRead {
+            family: "claude",
+            payload: None,
+            unavailable_reason: Some("home directory unavailable".into()),
+        };
+    };
+    let Some(token) = read_claude_oauth_access_token(&path) else {
+        return OfficialQuotaRead {
+            family: "claude",
+            payload: None,
+            unavailable_reason: Some("Claude Code is not signed in".into()),
+        };
+    };
+    match fetch_claude_oauth_usage(&token).await {
+        Ok(payload) if payload.get("five_hour").is_some() || payload.get("seven_day").is_some() => {
+            OfficialQuotaRead {
+                family: "claude",
+                payload: Some(payload),
+                unavailable_reason: None,
+            }
+        }
+        Ok(_) => OfficialQuotaRead {
+            family: "claude",
+            payload: None,
+            unavailable_reason: Some("Claude usage payload missing five_hour/seven_day".into()),
+        },
+        Err(err) => OfficialQuotaRead {
+            family: "claude",
+            payload: None,
+            unavailable_reason: Some(err.message),
+        },
+    }
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn subscription_quota_claude() -> Result<OfficialQuotaRead, AppCommandError> {
+    Ok(read_claude_subscription_quota_core().await)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -251,5 +349,17 @@ mod tests {
             json!({"method": "remoteControl/status/changed", "params": {}}),
         ];
         assert!(extract_rate_limits_result(&messages).is_none());
+    }
+
+    #[test]
+    fn reads_claude_oauth_access_token_without_logging_it() {
+        let text = r#"{
+            "claudeAiOauth": { "accessToken": "tok_test_value", "subscriptionType": "max" }
+        }"#;
+        assert_eq!(
+            claude_oauth_access_token_from_credentials(text).as_deref(),
+            Some("tok_test_value")
+        );
+        assert!(claude_oauth_access_token_from_credentials("{}").is_none());
     }
 }

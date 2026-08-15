@@ -9,10 +9,11 @@
  *     windowDurationMins, resetsAt, planType, rateLimitsByLimitId }`.
  *     `primary` is the current window (here a 10080-minute week), not a
  *     guaranteed 5-hour window.
- *   Claude: `claude auth status` returns subscription type only.
- *     `claude -p /usage` returns a prose sentence, not `five_hour`.
- *     The `/usage` HUD parser is kept for that payload if one arrives;
- *     Codeg does not scrape undocumented Anthropic HTTP endpoints.
+ *   Claude: there is no `claude usage` CLI. The `/usage` HUD reads
+ *     `GET https://api.anthropic.com/api/oauth/usage` with the local
+ *     Claude Code OAuth token (same endpoint community monitors use).
+ *     Live 2026-08-15: `five_hour.utilization` / `seven_day.utilization`
+ *     are 0-100 percents, not 0-1 fractions.
  * Gemini / Grok / OpenCode: no remaining-quota command. OpenCode `stats`
  * is historical token/cost, not plan remaining.
  */
@@ -83,11 +84,37 @@ function percentRemaining(usedPercent: unknown): number | null {
   return Math.max(0, Math.min(100, 100 - usedPercent))
 }
 
+function parseResetsAt(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isFinite(value)) return value
+  if (typeof value === "string") {
+    const ms = Date.parse(value)
+    if (!Number.isNaN(ms)) return Math.floor(ms / 1000)
+  }
+  return undefined
+}
+
+/** Live `/api/oauth/usage` returns 0-100 percent, not a 0-1 fraction. */
 function utilizationRemaining(utilization: unknown): number | null {
   if (typeof utilization !== "number" || !Number.isFinite(utilization)) {
     return null
   }
-  return Math.max(0, Math.min(100, (1 - utilization) * 100))
+  return Math.max(0, Math.min(100, 100 - utilization))
+}
+
+function windowFromUtilization(
+  value: unknown,
+  label: string
+): QuotaWindow | null {
+  const rec = asRecord(value)
+  if (!rec) return null
+  const remaining = utilizationRemaining(rec.utilization)
+  if (remaining == null || typeof rec.utilization !== "number") return null
+  return {
+    remaining,
+    usedPercent: rec.utilization,
+    resetsAt: parseResetsAt(rec.resets_at),
+    label,
+  }
 }
 
 function windowFromLimit(limit: Record<string, unknown>): QuotaWindow | null {
@@ -153,19 +180,29 @@ export function remainingFromCodexAppServer(
   }
 }
 
-/** Claude `/usage` HUD payload (`five_hour.utilization`). */
+/** Claude Code `/usage` payload from `GET /api/oauth/usage`. */
 export function remainingFromClaudeUsageHud(
   payload: unknown
-): { remaining: number; limit: number; source: string } | null {
+): OfficialRemaining | null {
   const rec = asRecord(payload)
   if (!rec) return null
-  const five = asRecord(rec.five_hour)
-  const remaining = utilizationRemaining(five?.utilization)
-  if (remaining == null) return null
+  const five = windowFromUtilization(rec.five_hour, "5-hour")
+  const week = windowFromUtilization(rec.seven_day, "weekly")
+  const extra = windowFromUtilization(rec.extra_usage, "extra usage")
+  const candidates = [five, week].filter((w): w is QuotaWindow => w != null)
+  if (candidates.length === 0) return null
+  const primary = candidates.reduce((a, b) =>
+    a.remaining <= b.remaining ? a : b
+  )
+  const extras = [five, week, extra].filter(
+    (w): w is QuotaWindow => w != null && w !== primary
+  )
   return {
-    remaining,
+    remaining: primary.remaining,
     limit: 100,
-    source: "claude /usage",
+    source: "claude /api/oauth/usage",
+    extras: extras.length ? extras : undefined,
+    resetsAt: primary.resetsAt,
   }
 }
 
