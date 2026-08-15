@@ -4169,10 +4169,13 @@ export async function getWebServerStatus(): Promise<WebServerInfo | null> {
   return getTransport().call("get_web_server_status")
 }
 
+export type WebServiceBindMode = "loopback" | "lan"
+
 export interface WebServiceConfig {
   token: string | null
   port: number | null
   autoStart: boolean
+  bindMode?: WebServiceBindMode
 }
 
 export async function getWebServiceConfig(): Promise<WebServiceConfig> {

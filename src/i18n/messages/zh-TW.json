@@ -3472,6 +3472,8 @@
     "status": "狀態",
     "autoStart": "自動啟動",
     "autoStartHint": "Codeg 啟動時自動開啟 Web 服務",
+    "lanAccess": "區域網路",
+    "lanAccessHint": "在所有介面上監聽，同一網路的手機才能連線。關閉則僅本機可存取。",
     "running": "執行中",
     "stopped": "已停止",
     "processing": "處理中...",

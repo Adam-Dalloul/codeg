@@ -3472,6 +3472,8 @@
     "status": "Status",
     "autoStart": "Automatisch starten",
     "autoStartHint": "Webdienst beim Start von Codeg starten",
+    "lanAccess": "LAN",
+    "lanAccessHint": "Auf allen Schnittstellen lauschen, damit ein Telefon im selben Netz verbinden kann. Aus bleibt der Dienst nur auf diesem Rechner.",
     "running": "Läuft",
     "stopped": "Gestoppt",
     "processing": "Verarbeitung...",

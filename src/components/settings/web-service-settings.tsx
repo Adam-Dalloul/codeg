@@ -286,6 +286,7 @@ export function WebServiceSettings() {
   const [error, setError] = useState("")
   const [portProbe, setPortProbe] = useState<WebServicePortProbe | null>(null)
   const [autoStart, setAutoStart] = useState(false)
+  const [lanAccess, setLanAccess] = useState(false)
   const [configLoaded, setConfigLoaded] = useState(false)
   const [selectedAddress, setSelectedAddress] = useState<string | null>(null)
 
@@ -304,6 +305,7 @@ export function WebServiceSettings() {
         token: null,
         port: null,
         autoStart: false,
+        bindMode: "loopback" as const,
       }
       const [info, configResult] = await Promise.all([
         getWebServerStatus(),
@@ -314,6 +316,7 @@ export function WebServiceSettings() {
       const savedConfig = configResult.config
       setStatus(info)
       setAutoStart(savedConfig.autoStart ?? false)
+      setLanAccess(savedConfig.bindMode === "lan")
       if (info) {
         setPort(String(info.port))
         setToken(info.token)
@@ -340,8 +343,8 @@ export function WebServiceSettings() {
 
   // Pick which reachable address to display/open. Keep a still-valid prior
   // choice; otherwise honor the remembered host, falling back to the first
-  // entry (loopback). Selection is display-only — the service always binds
-  // 0.0.0.0, so every listed address stays reachable regardless of choice.
+  // entry (loopback). A loopback bind only advertises 127.0.0.1. LAN bind
+  // advertises every local IPv4; the selector is display-only.
   useEffect(() => {
     const addresses = status?.addresses ?? []
     if (addresses.length === 0) {
@@ -372,7 +375,7 @@ export function WebServiceSettings() {
   }
 
   const persistWebServiceConfig = useCallback(
-    async (nextAutoStart = autoStart) => {
+    async (nextAutoStart = autoStart, nextLanAccess = lanAccess) => {
       const portNum = parseInt(port, 10)
       if (!Number.isFinite(portNum) || portNum < 1 || portNum > 65535) {
         return
@@ -383,12 +386,13 @@ export function WebServiceSettings() {
           port: portNum,
           token: token.trim() || null,
           autoStart: nextAutoStart,
+          bindMode: nextLanAccess ? "lan" : "loopback",
         })
       } catch {
         setError(t("saveConfigFailed"))
       }
     },
-    [autoStart, port, t, token]
+    [autoStart, lanAccess, port, t, token]
   )
 
   useEffect(() => {
@@ -421,6 +425,7 @@ export function WebServiceSettings() {
       const portNum = parseInt(port, 10) || DEFAULT_PORT
       const info = await startWebServer({
         port: portNum,
+        host: lanAccess ? "0.0.0.0" : "127.0.0.1",
         token: token.trim() || null,
       })
       setStatus(info)
@@ -549,6 +554,23 @@ export function WebServiceSettings() {
             </div>
           </div>
 
+          <div className="flex items-center gap-4">
+            <label className="w-20 text-sm font-medium">{t("lanAccess")}</label>
+            <div className="flex min-w-0 items-center gap-3">
+              <Switch
+                checked={lanAccess}
+                disabled={isRunning}
+                onCheckedChange={(checked) => {
+                  setLanAccess(checked)
+                  void persistWebServiceConfig(autoStart, checked)
+                }}
+              />
+              <span className="text-sm text-muted-foreground">
+                {t("lanAccessHint")}
+              </span>
+            </div>
+          </div>
+
           {/* Start/Stop button */}
           <div className="flex items-center gap-4">
             <label className="w-20 text-sm font-medium">{t("status")}</label>
@@ -573,10 +595,8 @@ export function WebServiceSettings() {
 
           {error && <p className="text-sm text-destructive">{error}</p>}
 
-          {/* Address (only when running). The listener is bound to
-              0.0.0.0, so every local IP reaches the service; the selector
-              only changes which address is shown and opened by the arrow —
-              it never changes what the service actually listens on. */}
+          {/* Address (only when running). Loopback bind shows 127.0.0.1.
+              LAN bind lists every local IPv4; the selector is display-only. */}
           {isRunning && currentAddress && (
             <div className="space-y-2">
               <div className="text-xs font-medium text-muted-foreground">

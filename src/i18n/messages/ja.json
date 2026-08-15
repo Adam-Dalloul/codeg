@@ -3472,6 +3472,8 @@
     "status": "ステータス",
     "autoStart": "自動起動",
     "autoStartHint": "Codeg の起動時に Web サービスを開始",
+    "lanAccess": "LAN",
+    "lanAccessHint": "同じネットワークのスマホが接続できるよう全インターフェースで待受します。オフだとこのコンピュータのみです。",
     "running": "実行中",
     "stopped": "停止中",
     "processing": "処理中...",

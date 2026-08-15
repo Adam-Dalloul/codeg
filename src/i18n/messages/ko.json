@@ -3472,6 +3472,8 @@
     "status": "상태",
     "autoStart": "자동 시작",
     "autoStartHint": "Codeg가 시작될 때 웹 서비스를 시작합니다",
+    "lanAccess": "LAN",
+    "lanAccessHint": "같은 네트워크의 휴대폰이 연결되도록 모든 인터페이스에서 수신합니다. 끄면 이 컴퓨터에서만 열립니다.",
     "running": "실행 중",
     "stopped": "중지됨",
     "processing": "처리 중...",

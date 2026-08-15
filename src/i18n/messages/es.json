@@ -3472,6 +3472,8 @@
     "status": "Estado",
     "autoStart": "Inicio automático",
     "autoStartHint": "Iniciar el servicio web al abrir Codeg",
+    "lanAccess": "LAN",
+    "lanAccessHint": "Escuchar en todas las interfaces para que un teléfono de la misma red pueda conectar. Desactivado deja el servicio solo en este equipo.",
     "running": "En ejecución",
     "stopped": "Detenido",
     "processing": "Procesando...",

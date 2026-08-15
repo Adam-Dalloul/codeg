@@ -3472,6 +3472,8 @@
     "status": "状态",
     "autoStart": "自动启动",
     "autoStartHint": "Codeg 启动时自动开启 Web 服务",
+    "lanAccess": "局域网",
+    "lanAccessHint": "在所有网卡上监听，同一网络的手机才能连接。关闭则仅本机可访问。",
     "running": "运行中",
     "stopped": "已停止",
     "processing": "处理中...",

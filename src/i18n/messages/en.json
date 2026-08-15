@@ -3465,13 +3465,15 @@
     }
   },
   "WebServiceSettings": {
-    "addressSwitchHint": "Switching only changes the address shown and opened here — the service listens on all interfaces and stays reachable at every address.",
+    "addressSwitchHint": "This only changes the address shown here. Turn on LAN access to listen on every interface.",
     "sectionTitle": "Web Service",
-    "sectionDescription": "Enable to access Codeg remotely via browser",
+    "sectionDescription": "Start a local Web Service for the phone or browser client. Default is this computer only.",
     "port": "Port",
     "status": "Status",
     "autoStart": "Auto-start",
     "autoStartHint": "Start the Web service when Codeg launches",
+    "lanAccess": "LAN",
+    "lanAccessHint": "Listen on every interface so a phone on the same network can connect. Off keeps the service on this computer only.",
     "running": "Running",
     "stopped": "Stopped",
     "processing": "Processing...",
