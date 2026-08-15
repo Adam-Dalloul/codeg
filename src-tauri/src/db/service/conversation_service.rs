@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use chrono::Utc;
 use sea_orm::{
     ActiveModelTrait, ActiveValue::NotSet, ColumnTrait, DatabaseConnection, EntityTrait,
@@ -213,6 +215,46 @@ pub async fn refresh_auto_title(
         .exec(conn)
         .await?;
     Ok(res.rows_affected > 0)
+}
+
+/// Refresh every live, unlocked Codex conversation whose external session id
+/// has a title in `titles`. Candidate selection is batched into one read, while
+/// each changed row still goes through [`refresh_auto_title`] so a concurrent
+/// manual rename is protected by the same atomic `title_locked = false` guard.
+/// Converged rows issue no UPDATE and title refreshes never bump `updated_at`.
+pub async fn refresh_codex_auto_titles(
+    conn: &DatabaseConnection,
+    titles: &HashMap<String, String>,
+) -> Result<usize, DbError> {
+    if titles.is_empty() {
+        return Ok(0);
+    }
+
+    let candidates = conversation::Entity::find()
+        .filter(conversation::Column::AgentType.eq(AgentType::Codex.as_wire().into_owned()))
+        .filter(conversation::Column::ExternalId.is_not_null())
+        .filter(conversation::Column::DeletedAt.is_null())
+        .filter(conversation::Column::TitleLocked.eq(false))
+        .all(conn)
+        .await?;
+
+    let mut refreshed = 0;
+    for candidate in candidates {
+        let Some(external_id) = candidate.external_id.as_deref() else {
+            continue;
+        };
+        let Some(title) = titles.get(external_id).map(|title| title.trim()) else {
+            continue;
+        };
+        if title.is_empty() || candidate.title.as_deref() == Some(title) {
+            continue;
+        }
+        if refresh_auto_title(conn, candidate.id, title.to_string()).await? {
+            refreshed += 1;
+        }
+    }
+
+    Ok(refreshed)
 }
 
 /// Adopt an imported conversation's newest activity from its agent-side
@@ -1079,6 +1121,50 @@ mod tests {
         assert_eq!(
             summary.updated_at, before,
             "auto-title backfill is metadata, not activity — it must not bump updated_at"
+        );
+    }
+
+    #[tokio::test]
+    async fn refresh_codex_auto_titles_converges_without_bumping_updated_at() {
+        let db = fresh_in_memory_db().await;
+        let folder = seed_folder(&db, "/tmp/codeg-codex-index-title").await;
+        let row = create(
+            &db.conn,
+            folder,
+            AgentType::Codex,
+            Some("Makefile 文件的作用".into()),
+            None,
+        )
+        .await
+        .expect("create");
+        update_external_id(&db.conn, row.id, "codex-session-1".into())
+            .await
+            .expect("set external id");
+        let before = get_by_id(&db.conn, row.id).await.expect("get before");
+        let titles = HashMap::from([(
+            "codex-session-1".to_string(),
+            "解释 Makefile 文件作用".to_string(),
+        )]);
+
+        assert_eq!(
+            refresh_codex_auto_titles(&db.conn, &titles)
+                .await
+                .expect("first refresh"),
+            1
+        );
+        let refreshed = get_by_id(&db.conn, row.id).await.expect("get refreshed");
+        assert_eq!(refreshed.title.as_deref(), Some("解释 Makefile 文件作用"));
+        assert_eq!(
+            refreshed.updated_at, before.updated_at,
+            "index title refresh must not count as conversation activity"
+        );
+
+        assert_eq!(
+            refresh_codex_auto_titles(&db.conn, &titles)
+                .await
+                .expect("converged refresh"),
+            0,
+            "a converged title map must issue no UPDATE"
         );
     }
 

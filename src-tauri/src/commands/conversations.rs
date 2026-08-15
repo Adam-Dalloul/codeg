@@ -30,6 +30,15 @@ use crate::web::event_bridge::{
     IMPORT_SCAN_PROGRESS_EVENT, TABS_CHANGED_EVENT,
 };
 
+struct ListAllConversationsOptions {
+    folder_ids: Option<Vec<i32>>,
+    agent_type: Option<AgentType>,
+    search: Option<String>,
+    sort_by: Option<String>,
+    status: Option<String>,
+    include_children: bool,
+}
+
 pub async fn list_all_conversations_core(
     conn: &sea_orm::DatabaseConnection,
     folder_ids: Option<Vec<i32>>,
@@ -39,6 +48,45 @@ pub async fn list_all_conversations_core(
     status: Option<String>,
     include_children: bool,
 ) -> Result<Vec<DbConversationSummary>, AppCommandError> {
+    let codex_titles = tokio::task::spawn_blocking(|| CodexParser::new().load_thread_name_index())
+        .await
+        .map_err(|e| {
+            AppCommandError::task_execution_failed("Failed to load Codex session titles")
+                .with_detail(e.to_string())
+        })?;
+    list_all_conversations_core_with_codex_titles(
+        conn,
+        ListAllConversationsOptions {
+            folder_ids,
+            agent_type,
+            search,
+            sort_by,
+            status,
+            include_children,
+        },
+        &codex_titles,
+    )
+    .await
+}
+
+async fn list_all_conversations_core_with_codex_titles(
+    conn: &sea_orm::DatabaseConnection,
+    options: ListAllConversationsOptions,
+    codex_titles: &HashMap<String, String>,
+) -> Result<Vec<DbConversationSummary>, AppCommandError> {
+    // Synchronize before `list_all` builds any folder/agent/search/status
+    // filters so a freshly generated Codex title is visible on this same call.
+    conversation_service::refresh_codex_auto_titles(conn, codex_titles)
+        .await
+        .map_err(AppCommandError::from)?;
+    let ListAllConversationsOptions {
+        folder_ids,
+        agent_type,
+        search,
+        sort_by,
+        status,
+        include_children,
+    } = options;
     conversation_service::list_all(
         conn,
         folder_ids,
@@ -3225,6 +3273,162 @@ mod tests {
             .await
             .expect("list");
         assert!(rows.is_empty(), "fresh db must have zero conversations");
+    }
+
+    #[tokio::test]
+    async fn list_all_conversations_core_syncs_codex_index_title_before_search() {
+        let db = fresh_in_memory_db().await;
+        let folder_id = seed_folder(&db, "/tmp/codeg-list-codex-index").await;
+        let row = conversation_service::create(
+            &db.conn,
+            folder_id,
+            AgentType::Codex,
+            Some("Makefile 文件的作用".into()),
+            None,
+        )
+        .await
+        .expect("create conversation");
+        conversation_service::update_external_id(
+            &db.conn,
+            row.id,
+            "01a00496-1418-7273-a06f-dc4fae5cfa64".into(),
+        )
+        .await
+        .expect("set external id");
+        let before = conversation_service::get_by_id(&db.conn, row.id)
+            .await
+            .expect("get before");
+        let titles = HashMap::from([(
+            "01a00496-1418-7273-a06f-dc4fae5cfa64".to_string(),
+            "解释 Makefile 文件作用".to_string(),
+        )]);
+
+        let rows = list_all_conversations_core_with_codex_titles(
+            &db.conn,
+            ListAllConversationsOptions {
+                folder_ids: None,
+                agent_type: Some(AgentType::Codex),
+                search: Some("解释 Makefile".into()),
+                sort_by: None,
+                status: None,
+                include_children: false,
+            },
+            &titles,
+        )
+        .await
+        .expect("list");
+
+        assert_eq!(
+            rows.len(),
+            1,
+            "the new title must satisfy this same call's search"
+        );
+        assert_eq!(rows[0].id, row.id);
+        assert_eq!(rows[0].title.as_deref(), Some("解释 Makefile 文件作用"));
+        let stored = conversation_service::get_by_id(&db.conn, row.id)
+            .await
+            .expect("get stored");
+        assert_eq!(stored.title.as_deref(), Some("解释 Makefile 文件作用"));
+        assert_eq!(stored.updated_at, before.updated_at);
+    }
+
+    #[tokio::test]
+    async fn list_all_conversations_core_preserves_locked_codex_title() {
+        let db = fresh_in_memory_db().await;
+        let folder_id = seed_folder(&db, "/tmp/codeg-list-codex-locked").await;
+        let row = conversation_service::create(
+            &db.conn,
+            folder_id,
+            AgentType::Codex,
+            Some("initial".into()),
+            None,
+        )
+        .await
+        .expect("create conversation");
+        conversation_service::update_external_id(&db.conn, row.id, "locked-session".into())
+            .await
+            .expect("set external id");
+        conversation_service::update_title(&db.conn, row.id, "我的手动标题".into())
+            .await
+            .expect("manual rename");
+        let titles = HashMap::from([("locked-session".to_string(), "Codex 自动标题".to_string())]);
+
+        let rows = list_all_conversations_core_with_codex_titles(
+            &db.conn,
+            ListAllConversationsOptions {
+                folder_ids: None,
+                agent_type: None,
+                search: None,
+                sort_by: None,
+                status: None,
+                include_children: false,
+            },
+            &titles,
+        )
+        .await
+        .expect("list");
+
+        let listed = rows
+            .iter()
+            .find(|item| item.id == row.id)
+            .expect("listed row");
+        assert_eq!(listed.title.as_deref(), Some("我的手动标题"));
+        assert!(listed.title_locked);
+        let stored = conversation_service::get_by_id(&db.conn, row.id)
+            .await
+            .expect("get stored");
+        assert_eq!(stored.title.as_deref(), Some("我的手动标题"));
+        assert!(stored.title_locked);
+    }
+
+    #[tokio::test]
+    async fn list_all_conversations_core_keeps_title_when_codex_index_is_missing() {
+        let db = fresh_in_memory_db().await;
+        let folder_id = seed_folder(&db, "/tmp/codeg-list-codex-no-index").await;
+        let row = conversation_service::create(
+            &db.conn,
+            folder_id,
+            AgentType::Codex,
+            Some("数据库原标题".into()),
+            None,
+        )
+        .await
+        .expect("create conversation");
+        conversation_service::update_external_id(&db.conn, row.id, "missing-index-session".into())
+            .await
+            .expect("set external id");
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let titles = CodexParser::with_base_dir(temp_dir.path().join("missing-sessions"))
+            .load_thread_name_index();
+        assert!(
+            titles.is_empty(),
+            "a missing index must produce no title updates"
+        );
+
+        let rows = list_all_conversations_core_with_codex_titles(
+            &db.conn,
+            ListAllConversationsOptions {
+                folder_ids: None,
+                agent_type: None,
+                search: None,
+                sort_by: None,
+                status: None,
+                include_children: false,
+            },
+            &titles,
+        )
+        .await
+        .expect("list");
+
+        let listed = rows
+            .iter()
+            .find(|item| item.id == row.id)
+            .expect("listed row");
+        assert_eq!(listed.title.as_deref(), Some("数据库原标题"));
+        let stored = conversation_service::get_by_id(&db.conn, row.id)
+            .await
+            .expect("get stored");
+        assert_eq!(stored.title.as_deref(), Some("数据库原标题"));
     }
 
     #[tokio::test]
