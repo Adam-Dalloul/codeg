@@ -245,12 +245,19 @@ function GoalCard({
   // Pause/Clear are only offered for a live, controllable goal (the provider
   // supplies a callback only when the session is live and the user owns it; it
   // is `null` on history reload / for viewers / in the read-only sub-agent
-  // dialog). Pause applies to an active goal; Clear to active OR paused. Codex
-  // exposes no "resume" control — resuming is re-issuing the `/goal` prompt.
-  const { onGoalControl } = useGoalControl()
-  const showPause = Boolean(onGoalControl) && normalizedStatus === "active"
+  // dialog), AND only when the adapter's advertised action vocabulary carries
+  // the action — claude's neutral goal extension offers no "pause", so its
+  // cards show Clear alone. Pause applies to an active goal; Clear to active
+  // OR paused. No "resume" control — resuming is re-issuing the `/goal`
+  // prompt.
+  const { onGoalControl, actions: goalActions } = useGoalControl()
+  const showPause =
+    Boolean(onGoalControl) &&
+    goalActions.includes("pause") &&
+    normalizedStatus === "active"
   const showClear =
     Boolean(onGoalControl) &&
+    goalActions.includes("clear") &&
     (normalizedStatus === "active" || normalizedStatus === "paused")
 
   return (

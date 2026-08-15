@@ -4200,6 +4200,10 @@ async fn run_connection(
             if neutral_goal_channel {
                 tracing::info!("[ACP][{}] goal channel: provider-neutral (_meta.goal)", agent_type);
             }
+            // Advertised goal-control surface (method + action vocabulary);
+            // None keeps the legacy codex method/actions defaults — see the
+            // SessionState field docs.
+            let goal_control = goal_advertised_control(init_resp.meta.as_ref());
 
             // Whether this agent accepts MCP server entries over the ACP wire
             // (`session/new`'s `mcpServers`). Almost all do; OpenClaw rejects
@@ -4293,6 +4297,10 @@ async fn run_connection(
                 // agents could ship it someday).
                 s.native_steering_available = native_steering_available;
                 s.neutral_goal_channel = neutral_goal_channel;
+                if let Some((method, actions)) = goal_control {
+                    s.goal_control_method = method;
+                    s.goal_actions = actions;
+                }
                 if let Some(ref injected) = delegate_injection {
                     s.delegation_token = Some(injected.token.clone());
                     // The agent's actual feedback capability for this session
@@ -5680,12 +5688,17 @@ async fn send_goal_control(
     cx: &ConnectionTo<Agent>,
     session_id: &SessionId,
     action: GoalControlAction,
+    method: &str,
 ) -> Result<(), sacp::Error> {
+    // `method` is the connection's stored `goal_control_method`: the
+    // advertised provider-neutral `_session/goal` (claude 0.66+/codex 1.2+)
+    // or the legacy `_codex/session/goal_control` default. Both take the
+    // same `{sessionId, action}` request shape.
     let params = serde_json::json!({
         "sessionId": session_id,
         "action": action,
     });
-    let untyped_req = UntypedMessage::new("_codex/session/goal_control", params).map_err(|e| {
+    let untyped_req = UntypedMessage::new(method, params).map_err(|e| {
         sacp::util::internal_error(format!("Failed to build goal_control request: {e}"))
     })?;
     cx.send_request_to(Agent, untyped_req).block_task().await?;
@@ -7713,7 +7726,10 @@ async fn run_conversation_loop<'a>(
                                     }
                                 }
                                 Some(ConnectionCommand::GoalControl { action }) => {
-                                    if let Err(e) = send_goal_control(&cx, &sid, action).await {
+                                    let method = state.read().await.goal_control_method.clone();
+                                    if let Err(e) =
+                                        send_goal_control(&cx, &sid, action, &method).await
+                                    {
                                         emit_with_state(
                                             state,
                                             emitter,
@@ -7975,7 +7991,8 @@ async fn run_conversation_loop<'a>(
             Some(ConnectionCommand::GoalControl { action }) => {
                 let cx = session.connection();
                 let sid = session.session_id().clone();
-                if let Err(e) = send_goal_control(&cx, &sid, action).await {
+                let method = state.read().await.goal_control_method.clone();
+                if let Err(e) = send_goal_control(&cx, &sid, action, &method).await {
                     emit_with_state(
                         state,
                         emitter,
@@ -8680,6 +8697,43 @@ fn init_advertises_goal(meta: Option<&serde_json::Map<String, serde_json::Value>
         .and_then(|g| g.get("version"))
         .and_then(serde_json::Value::as_i64)
         .is_some_and(|version| version >= 1)
+}
+
+/// The goal-control surface an `initialize` response advertises:
+/// `(_meta.goal.controlMethod, _meta.goal.actions)` — claude 0.66+ offers
+/// `("_session/goal", ["set","clear"])`, codex 1.2+ the same method with all
+/// four actions. `None` when the neutral goal extension isn't advertised
+/// (see [`init_advertises_goal`]) or carries no usable method string — the
+/// session then keeps the legacy codex method + actions
+/// (`codex_goal::LEGACY_GOAL_CONTROL_METHOD` / `LEGACY_GOAL_ACTIONS`). An
+/// advertised-but-empty actions array is honored as "no controls": the goal
+/// card gates its buttons on this list, so only affordances the adapter
+/// actually implements are offered.
+fn goal_advertised_control(
+    meta: Option<&serde_json::Map<String, serde_json::Value>>,
+) -> Option<(String, Vec<String>)> {
+    if !init_advertises_goal(meta) {
+        return None;
+    }
+    let goal = meta?.get("goal")?;
+    let method = goal
+        .get("controlMethod")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|m| !m.is_empty())?
+        .to_string();
+    let actions = goal
+        .get("actions")
+        .and_then(serde_json::Value::as_array)
+        .map(|entries| {
+            entries
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
+    Some((method, actions))
 }
 
 /// Pick the goal payload out of a `session_info_update`'s `_meta` according to
@@ -11007,6 +11061,42 @@ mod tests {
         ));
         assert!(session_info_goal_value(false, Some(&cleared)).is_none());
         assert!(session_info_goal_value(true, None).is_none());
+    }
+
+    #[test]
+    fn goal_advertised_control_reads_method_and_actions_or_falls_back() {
+        // claude 0.66+ / codex 1.2+ advertisements.
+        let claude = meta_map(serde_json::json!({"goal": {
+            "version": 1,
+            "controlMethod": "_session/goal",
+            "actions": ["set", "clear"],
+        }}));
+        assert_eq!(
+            goal_advertised_control(Some(&claude)),
+            Some(("_session/goal".to_string(), vec!["set".to_string(), "clear".to_string()]))
+        );
+        // Advertised-but-empty actions are honored as "no controls" — the
+        // card must not offer affordances the adapter never implemented.
+        let none_offered = meta_map(serde_json::json!({"goal": {
+            "version": 1,
+            "controlMethod": "_session/goal",
+            "actions": [],
+        }}));
+        assert_eq!(
+            goal_advertised_control(Some(&none_offered)),
+            Some(("_session/goal".to_string(), Vec::new()))
+        );
+        // No neutral advertisement / no usable method ⇒ None (legacy
+        // defaults stay in force).
+        let no_goal = meta_map(serde_json::json!({"steering": {"supported": true}}));
+        assert_eq!(goal_advertised_control(Some(&no_goal)), None);
+        let blank_method = meta_map(serde_json::json!({"goal": {
+            "version": 1,
+            "controlMethod": "   ",
+            "actions": ["clear"],
+        }}));
+        assert_eq!(goal_advertised_control(Some(&blank_method)), None);
+        assert_eq!(goal_advertised_control(None), None);
     }
 
     #[test]

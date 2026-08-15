@@ -20,6 +20,17 @@
 
 use serde_json::{json, Value};
 
+/// codex's bespoke pre-extension goal-control request (codex-acp #293,
+/// v1.1.4) — still accepted by 1.2+ as an alias. The default
+/// `SessionState.goal_control_method` until an adapter advertises the
+/// provider-neutral `_meta.goal.controlMethod` at initialize.
+pub(crate) const LEGACY_GOAL_CONTROL_METHOD: &str = "_codex/session/goal_control";
+
+/// The action vocabulary the legacy method accepts — also the default
+/// `SessionState.goal_actions`, so a non-advertising (older PATH-resolved)
+/// codex keeps today's Pause/Clear affordances.
+pub(crate) const LEGACY_GOAL_ACTIONS: [&str; 2] = ["pause", "clear"];
+
 /// A Codex goal object mapped to codeg's canonical synthetic goal marker.
 ///
 /// The live path (`crate::acp::connection`) builds an `AcpEvent::ToolCall` from

@@ -420,6 +420,24 @@ pub struct SessionState {
     /// Backend-internal routing only: not part of the client snapshot.
     pub neutral_goal_channel: bool,
 
+    /// Goal-control request method for this connection. Defaults to codex's
+    /// legacy bespoke `_codex/session/goal_control`; overwritten at
+    /// initialize when the adapter advertises the provider-neutral goal
+    /// extension's `controlMethod` (`_session/goal`, claude 0.66+/codex
+    /// 1.2+). Both take the same `{sessionId, action}` params, so
+    /// `send_goal_control` just uses whatever is stored here.
+    /// Backend-internal: not part of the client snapshot.
+    pub goal_control_method: String,
+
+    /// The goal-control action vocabulary this connection's adapter offers —
+    /// the advertised `_meta.goal.actions` when the neutral extension is
+    /// present (claude: ["set","clear"] — NO pause; codex 1.2+: all four),
+    /// else the legacy default ["pause","clear"] so an older codex keeps
+    /// today's affordances. Carried on the snapshot: the goal card gates its
+    /// Pause/Clear buttons on this list, so a claude session never offers a
+    /// pause the adapter would reject.
+    pub goal_actions: Vec<String>,
+
     /// AIR typed session failures projected by `id` (see
     /// [`SessionFailureRecord`] for the wire contract). Entries are RETAINED
     /// for the connection's lifetime — resolved ones included — both because
@@ -539,6 +557,11 @@ impl SessionState {
             feedback_tool_available: false,
             native_steering_available: false,
             neutral_goal_channel: false,
+            goal_control_method: crate::acp::codex_goal::LEGACY_GOAL_CONTROL_METHOD.to_string(),
+            goal_actions: crate::acp::codex_goal::LEGACY_GOAL_ACTIONS
+                .iter()
+                .map(|a| a.to_string())
+                .collect(),
             session_failures: BTreeMap::new(),
             last_assistant_text: None,
             pending_user_message: None,
@@ -1508,6 +1531,7 @@ impl SessionState {
             config_stale_kind: self.config_stale_kind,
             last_error: self.last_error.clone(),
             session_failures: self.session_failures.values().cloned().collect(),
+            goal_actions: self.goal_actions.clone(),
             event_seq: self.event_seq,
         }
     }
@@ -1623,6 +1647,11 @@ pub struct LiveSessionSnapshot {
     /// common case) to keep the wire shape byte-identical pre-feature.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub session_failures: Vec<SessionFailureRecord>,
+    /// Goal-control action vocabulary the goal card gates its buttons on
+    /// (see `SessionState.goal_actions`). Defaults to the legacy
+    /// ["pause","clear"] pair; the advertised list for neutral-goal adapters.
+    #[serde(default)]
+    pub goal_actions: Vec<String>,
     pub event_seq: u64,
 }
 

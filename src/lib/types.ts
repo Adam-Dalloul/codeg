@@ -2314,6 +2314,10 @@ export interface LiveSessionSnapshot {
    *  watermarks included, so an attaching client seeds the same monotonic
    *  merge the live path applies. Absent while empty (the common case). */
   session_failures?: SessionFailureRecord[]
+  /** Goal-control action vocabulary the goal card gates its buttons on: the
+   *  advertised `_meta.goal.actions` for neutral-goal adapters (claude has no
+   *  "pause"), else the legacy ["pause","clear"] default. */
+  goal_actions?: string[]
   event_seq: number
 }
 

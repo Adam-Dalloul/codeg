@@ -45,6 +45,7 @@ import {
   GoalControlProvider,
   type GoalControlValue,
 } from "@/components/message/goal-control-context"
+import { useAdvertisedGoalActions } from "@/hooks/use-goal-actions"
 import { ConversationShell } from "@/components/chat/conversation-shell"
 import { SessionConfigStaleBanner } from "@/components/chat/session-config-stale-banner"
 import { PiProjectTrustBanner } from "@/components/chat/pi-project-trust-banner"
@@ -1636,6 +1637,11 @@ const ConversationTabView = memo(function ConversationTabView({
   // its buttons. Codex is the only agent that produces goal cards, so no
   // agent-type gate is needed. Provided only around the main panel's list; the
   // read-only sub-agent dialog renders its own MessageListView with no provider.
+  // The adapter's ADVERTISED goal-control vocabulary (fail-closed: no
+  // controls until the snapshot for this exact connectionId resolves — see
+  // `useAdvertisedGoalActions`).
+  const goalActions = useAdvertisedGoalActions(conn.connectionId)
+
   const goalControlValue = useMemo<GoalControlValue>(() => {
     const live =
       conn.connectionId !== null &&
@@ -1647,8 +1653,16 @@ const ConversationTabView = memo(function ConversationTabView({
             void acpActions.goalControl(tabId, action)
           }
         : null,
+      actions: goalActions,
     }
-  }, [conn.connectionId, conn.isViewer, connStatus, acpActions, tabId])
+  }, [
+    conn.connectionId,
+    conn.isViewer,
+    connStatus,
+    acpActions,
+    tabId,
+    goalActions,
+  ])
 
   // AIR session-failure strip actions. `retry` re-submits the LAST user
   // prompt through the message queue — same mechanism as the live-feedback
