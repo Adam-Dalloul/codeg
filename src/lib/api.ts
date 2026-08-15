@@ -4195,6 +4195,25 @@ export interface WebServicePortProbe {
   state: WebServicePortState
 }
 
+export type FunnelStatus = {
+  enabled: boolean
+  url?: string | null
+  target?: string | null
+  unavailableReason?: string | null
+}
+
+export async function tailscaleFunnelStatus(): Promise<FunnelStatus> {
+  return getTransport().call("tailscale_funnel_status")
+}
+
+export async function tailscaleFunnelEnable(port: number): Promise<FunnelStatus> {
+  return getTransport().call("tailscale_funnel_enable", { port })
+}
+
+export async function tailscaleFunnelDisable(): Promise<FunnelStatus> {
+  return getTransport().call("tailscale_funnel_disable")
+}
+
 export async function probeWebServicePort(
   port?: number
 ): Promise<WebServicePortProbe> {

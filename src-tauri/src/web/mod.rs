@@ -1,4 +1,5 @@
 pub mod auth;
+pub mod funnel;
 pub mod compression;
 pub mod event_bridge;
 pub mod handlers;
@@ -692,6 +693,8 @@ pub(crate) async fn do_start_web_server_with_state(
 }
 
 pub(crate) async fn do_stop_web_server(state: &WebServerState) {
+    // Drop the public HTTPS URL before the local listener dies.
+    funnel::funnel_disable_best_effort().await;
     let handle_opt = state.handle.lock().unwrap().take();
     let shutdown_tx = state.shutdown_tx.lock().unwrap().take();
 
