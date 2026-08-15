@@ -35,12 +35,63 @@ describe("subscription quota inventory", () => {
       },
     }
     const parsed = remainingFromOfficialPayload("codex", payload)
-    expect(parsed).toEqual({
-      remaining: 58,
-      limit: 100,
-      source: "codex account/rateLimits/read",
-    })
+    expect(parsed?.remaining).toBe(58)
+    expect(parsed?.limit).toBe(100)
+    expect(parsed?.source).toBe("codex account/rateLimits/read")
+    expect(parsed?.resetsAt).toBe(1_775_000_000)
     expect(familyQuota("codex", payload).kind).toBe("remaining-subscription")
+  })
+
+  it("parses the live Codex app-server envelope from this machine", () => {
+    // Sanitized from `codex app-server --stdio` + account/rateLimits/read
+    // on 2026-08-15. Numbers are real; ids are generic.
+    const payload = {
+      id: 2,
+      result: {
+        rateLimits: {
+          limitId: "codex",
+          limitName: null,
+          primary: {
+            usedPercent: 100,
+            windowDurationMins: 10080,
+            resetsAt: 1787196797,
+          },
+          secondary: null,
+          credits: { hasCredits: false, unlimited: false, balance: "0" },
+          planType: "pro",
+          rateLimitReachedType: "rate_limit_reached",
+        },
+        rateLimitsByLimitId: {
+          codex: {
+            limitId: "codex",
+            primary: { usedPercent: 100 },
+          },
+          codex_spark: {
+            limitId: "codex_spark",
+            limitName: "GPT-5.3-Codex-Spark",
+            primary: {
+              usedPercent: 0,
+              windowDurationMins: 10080,
+              resetsAt: 1787423547,
+            },
+          },
+        },
+      },
+    }
+    const parsed = remainingFromOfficialPayload("codex", payload)
+    expect(parsed?.remaining).toBe(0)
+    expect(parsed?.planType).toBe("pro")
+    expect(parsed?.rateLimitReached).toBe(true)
+    expect(parsed?.windowDurationMins).toBe(10080)
+    expect(parsed?.extras).toEqual([
+      {
+        remaining: 100,
+        usedPercent: 0,
+        windowDurationMins: 10080,
+        resetsAt: 1787423547,
+        label: "GPT-5.3-Codex-Spark",
+      },
+    ])
   })
 
   it("reads Claude remaining from the /usage HUD payload", () => {
