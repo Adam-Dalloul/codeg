@@ -355,11 +355,7 @@ impl AgentParser for CodexParser {
             }
         }
 
-        let index_titles = load_session_index_titles(
-            self.base_dir
-                .parent()
-                .unwrap_or(self.base_dir.as_path()),
-        );
+        let index_titles = self.session_index_titles();
         for conversation in &mut conversations {
             if let Some(name) = index_titles.get(&conversation.id) {
                 conversation.title = Some(name.clone());
@@ -388,13 +384,23 @@ impl AgentParser for CodexParser {
             }
             let fname = path.file_name().unwrap_or_default().to_string_lossy();
             if fname.contains(conversation_id) {
-                return self.parse_conversation_detail(&path, conversation_id);
+                let mut detail = self.parse_conversation_detail(&path, conversation_id)?;
+                if let Some(name) = self.session_index_titles().get(conversation_id) {
+                    detail.summary.title = Some(name.clone());
+                }
+                return Ok(detail);
             }
         }
 
         Err(ParseError::ConversationNotFound(
             conversation_id.to_string(),
         ))
+    }
+}
+
+impl CodexParser {
+    fn session_index_titles(&self) -> HashMap<String, String> {
+        load_session_index_titles(self.base_dir.parent().unwrap_or(self.base_dir.as_path()))
     }
 }
 
@@ -5315,7 +5321,7 @@ mod tests {
         let home = env::temp_dir().join(format!("codeg-codex-idx-{nanos}"));
         let sessions = home.join("sessions");
         fs::create_dir_all(&sessions).expect("sessions dir");
-        let rollout = sessions.join("rollout-abc.jsonl");
+        let rollout = sessions.join("rollout-abc-session.jsonl");
         fs::write(
             &rollout,
             concat!(
@@ -5334,6 +5340,14 @@ mod tests {
         let list = parser.list_conversations().expect("list ok");
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].title.as_deref(), Some("Readable title"));
+        let detail = parser
+            .get_conversation("abc-session")
+            .expect("detail ok");
+        assert_eq!(
+            detail.summary.title.as_deref(),
+            Some("Readable title"),
+            "opening a conversation must keep the session_index title"
+        );
         let _ = fs::remove_dir_all(home);
     }
 
