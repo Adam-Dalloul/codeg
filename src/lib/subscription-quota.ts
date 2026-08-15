@@ -2,10 +2,11 @@
  * Remaining-subscription inventory.
  *
  * ACP `usage_update` is context occupancy `{used, size}`, not plan remaining.
- * Official CLIs (claude /usage, chatgpt, grok, gemini, opencode) do not
- * publish a stable remaining-quota JSON that Codeg can read. This module is
- * the single gate: a remaining-subscription number is emitted only when a
- * recorded official payload actually contains one.
+ * Official remaining-quota sources we parse:
+ *   Codex: documented app-server `account/rateLimits/read`
+ *     (primary = 5-hour window, secondary = weekly).
+ *   Claude: the `/usage` HUD payload (`five_hour` / `seven_day` utilization).
+ * Gemini / Grok / OpenCode still have no machine-readable remaining quota.
  */
 
 export type IsolatableFamily = "claude" | "codex" | "grok" | "gemini" | "opencode"
@@ -48,34 +49,72 @@ const FAMILIES: IsolatableFamily[] = [
   "opencode",
 ]
 
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null
+}
+
+function percentRemaining(usedPercent: unknown): number | null {
+  if (typeof usedPercent !== "number" || !Number.isFinite(usedPercent)) {
+    return null
+  }
+  return Math.max(0, Math.min(100, 100 - usedPercent))
+}
+
+function utilizationRemaining(utilization: unknown): number | null {
+  if (typeof utilization !== "number" || !Number.isFinite(utilization)) {
+    return null
+  }
+  return Math.max(0, Math.min(100, (1 - utilization) * 100))
+}
+
+/** Documented Codex app-server `account/rateLimits/read` result. */
+export function remainingFromCodexAppServer(
+  payload: unknown
+): { remaining: number; limit: number; source: string } | null {
+  const rec = asRecord(payload)
+  if (!rec) return null
+  const result = asRecord(rec.result) ?? rec
+  const limits = asRecord(result.rateLimits)
+  if (!limits) return null
+  const primary = asRecord(limits.primary)
+  const remaining = percentRemaining(primary?.usedPercent)
+  if (remaining == null) return null
+  return {
+    remaining,
+    limit: 100,
+    source: "codex account/rateLimits/read",
+  }
+}
+
+/** Claude `/usage` HUD payload (`five_hour.utilization`). */
+export function remainingFromClaudeUsageHud(
+  payload: unknown
+): { remaining: number; limit: number; source: string } | null {
+  const rec = asRecord(payload)
+  if (!rec) return null
+  const five = asRecord(rec.five_hour)
+  const remaining = utilizationRemaining(five?.utilization)
+  if (remaining == null) return null
+  return {
+    remaining,
+    limit: 100,
+    source: "claude /usage",
+  }
+}
+
 /**
  * Read remaining subscription from a recorded official payload.
- * Production Codeg never invents this object. Return null unless the
- * payload is the documented official shape for that family.
+ * Production Codeg never invents this object.
  */
 export function remainingFromOfficialPayload(
   family: IsolatableFamily,
   payload: unknown
 ): { remaining: number; limit: number; source: string } | null {
-  if (!payload || typeof payload !== "object") return null
-  const rec = payload as Record<string, unknown>
-  // No family currently publishes this object. Accept only an explicit
-  // official envelope so a future CLI JSON can land without inventing
-  // numbers today.
-  if (rec.codegQuotaKind !== "remaining-subscription") return null
-  if (rec.family !== family) return null
-  if (typeof rec.remaining !== "number" || typeof rec.limit !== "number") {
-    return null
-  }
-  if (!Number.isFinite(rec.remaining) || !Number.isFinite(rec.limit)) {
-    return null
-  }
-  if (typeof rec.source !== "string" || !rec.source.trim()) return null
-  return {
-    remaining: rec.remaining,
-    limit: rec.limit,
-    source: rec.source.trim(),
-  }
+  if (family === "codex") return remainingFromCodexAppServer(payload)
+  if (family === "claude") return remainingFromClaudeUsageHud(payload)
+  return null
 }
 
 export function acpContextFromPayload(
