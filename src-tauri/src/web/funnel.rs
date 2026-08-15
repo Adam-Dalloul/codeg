@@ -1,5 +1,6 @@
-//! Official Tailscale Funnel: HTTPS on the internet to loopback Codeg.
-//! Relays do not decrypt. The local target is always 127.0.0.1.
+//! Official Tailscale Serve (private tailnet) and Funnel (public HTTPS).
+//! Both terminate TLS on this PC and proxy HTTP to 127.0.0.1 only.
+//! Serve is the both-devices privacy model. Funnel is a public door + token.
 
 use std::process::Stdio;
 use std::time::Duration;
@@ -63,6 +64,28 @@ fn target_is_loopback(target: &str) -> bool {
     target.contains("127.0.0.1") || target.contains("localhost")
 }
 
+pub fn allow_funnel(status: &Value) -> bool {
+    match status.get("AllowFunnel") {
+        Some(Value::Object(map)) => map.values().any(|value| value.as_bool() == Some(true)),
+        Some(Value::Bool(flag)) => *flag,
+        _ => false,
+    }
+}
+
+fn status_from_json(raw: &str, want_public: bool) -> FunnelStatus {
+    let value: Value = serde_json::from_str(raw).unwrap_or(Value::Object(Default::default()));
+    let url = extract_funnel_url(&value);
+    let target = extract_funnel_target(&value);
+    let public = allow_funnel(&value);
+    let enabled = url.is_some() && public == want_public;
+    FunnelStatus {
+        enabled,
+        url: if enabled { url } else { None },
+        target: if enabled { target } else { None },
+        unavailable_reason: None,
+    }
+}
+
 async fn run_tailscale_with_deadline(
     args: &[&str],
     deadline: Duration,
@@ -94,7 +117,7 @@ async fn run_tailscale_with_deadline(
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(AppCommandError::new(
             AppErrorCode::ExternalCommandFailed,
-            "Tailscale Funnel failed",
+            "Tailscale command failed",
         )
         .with_detail(stderr.chars().take(400).collect::<String>()));
     }
@@ -105,19 +128,28 @@ async fn run_tailscale(args: &[&str]) -> Result<String, AppCommandError> {
     run_tailscale_with_deadline(args, FUNNEL_DEADLINE).await
 }
 
+async fn expose_status_json() -> Result<String, AppCommandError> {
+    match run_tailscale(&["serve", "status", "--json"]).await {
+        Ok(raw) => Ok(raw),
+        Err(_) => run_tailscale(&["funnel", "status", "--json"]).await,
+    }
+}
+
+pub async fn serve_status_core() -> FunnelStatus {
+    match expose_status_json().await {
+        Ok(raw) => status_from_json(&raw, false),
+        Err(err) => FunnelStatus {
+            enabled: false,
+            url: None,
+            target: None,
+            unavailable_reason: Some(err.message),
+        },
+    }
+}
+
 pub async fn funnel_status_core() -> FunnelStatus {
-    match run_tailscale(&["funnel", "status", "--json"]).await {
-        Ok(raw) => {
-            let value: Value = serde_json::from_str(&raw).unwrap_or(Value::Object(Default::default()));
-            let url = extract_funnel_url(&value);
-            let target = extract_funnel_target(&value);
-            FunnelStatus {
-                enabled: url.is_some(),
-                url,
-                target,
-                unavailable_reason: None,
-            }
-        }
+    match expose_status_json().await {
+        Ok(raw) => status_from_json(&raw, true),
         Err(err) => FunnelStatus {
             enabled: false,
             url: None,
@@ -135,35 +167,85 @@ pub fn require_running_web_port(
         Some(port) if port == requested => Ok(()),
         Some(_) => Err(AppCommandError::new(
             AppErrorCode::InvalidInput,
-            "Funnel port must match the running Web Service",
+            "Tailscale port must match the running Web Service",
         )),
         None => Err(AppCommandError::new(
             AppErrorCode::InvalidInput,
-            "Start the Web Service before enabling Funnel",
+            "Start the Web Service before enabling Tailscale",
         )),
     }
 }
 
-pub async fn funnel_enable_core(port: u16) -> Result<FunnelStatus, AppCommandError> {
+async fn enable_expose(port: u16, public: bool) -> Result<FunnelStatus, AppCommandError> {
     let target = funnel_target(port);
     if !target_is_loopback(&target) {
         return Err(AppCommandError::new(
             AppErrorCode::InvalidInput,
-            "Funnel target must be loopback",
+            "Tailscale target must be loopback",
         ));
     }
-    run_tailscale(&["funnel", "--bg", "--yes", &target]).await?;
-    Ok(funnel_status_core().await)
+    // Same port cannot be Serve and Funnel. Reset both, then set the mode.
+    let _ = run_tailscale(&["funnel", "reset"]).await;
+    let _ = run_tailscale(&["serve", "reset"]).await;
+    if public {
+        run_tailscale(&["funnel", "--bg", "--yes", &target]).await?;
+        Ok(funnel_status_core().await)
+    } else {
+        run_tailscale(&["serve", "--bg", "--yes", &target]).await?;
+        Ok(serve_status_core().await)
+    }
+}
+
+pub async fn serve_enable_core(port: u16) -> Result<FunnelStatus, AppCommandError> {
+    enable_expose(port, false).await
+}
+
+pub async fn funnel_enable_core(port: u16) -> Result<FunnelStatus, AppCommandError> {
+    enable_expose(port, true).await
+}
+
+pub async fn serve_disable_core() -> Result<FunnelStatus, AppCommandError> {
+    expose_reset().await;
+    Ok(serve_status_core().await)
 }
 
 pub async fn funnel_disable_core() -> Result<FunnelStatus, AppCommandError> {
-    let _ = run_tailscale(&["funnel", "reset"]).await;
+    expose_reset().await;
     Ok(funnel_status_core().await)
 }
 
-/// Tear down a leftover public URL without blocking Stop / quit for 20s.
+async fn expose_reset() {
+    let _ = run_tailscale(&["funnel", "reset"]).await;
+    let _ = run_tailscale(&["serve", "reset"]).await;
+}
+
+/// Tear down leftover Serve/Funnel URLs without blocking Stop / quit for 20s.
 pub async fn funnel_disable_best_effort() {
     let _ = run_tailscale_with_deadline(&["funnel", "reset"], FUNNEL_STOP_DEADLINE).await;
+    let _ = run_tailscale_with_deadline(&["serve", "reset"], FUNNEL_STOP_DEADLINE).await;
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[tauri::command]
+pub async fn tailscale_serve_status() -> Result<FunnelStatus, AppCommandError> {
+    Ok(serve_status_core().await)
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[tauri::command]
+pub async fn tailscale_serve_enable(
+    state: tauri::State<'_, crate::web::WebServerState>,
+    port: u16,
+) -> Result<FunnelStatus, AppCommandError> {
+    let running = crate::web::do_get_web_server_status(&state).map(|info| info.port);
+    require_running_web_port(running, port)?;
+    serve_enable_core(port).await
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[tauri::command]
+pub async fn tailscale_serve_disable() -> Result<FunnelStatus, AppCommandError> {
+    serve_disable_core().await
 }
 
 #[cfg(feature = "tauri-runtime")]
@@ -218,5 +300,21 @@ mod tests {
         assert!(require_running_web_port(Some(3080), 3080).is_ok());
         assert!(require_running_web_port(None, 3080).is_err());
         assert!(require_running_web_port(Some(3080), 4000).is_err());
+        assert!(!allow_funnel(&status));
+        let public = json!({
+            "Web": {
+                "codeg.tail123.ts.net:443": {
+                    "Handlers": {
+                        "/": { "Proxy": "http://127.0.0.1:3080" }
+                    }
+                }
+            },
+            "AllowFunnel": { "codeg.tail123.ts.net:443": true }
+        });
+        assert!(allow_funnel(&public));
+        let serve = status_from_json(&public.to_string(), false);
+        let funnel = status_from_json(&public.to_string(), true);
+        assert!(!serve.enabled);
+        assert!(funnel.enabled);
     }
 }

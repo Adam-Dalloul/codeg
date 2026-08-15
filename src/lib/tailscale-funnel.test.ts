@@ -6,11 +6,20 @@ import {
   funnelEnableArgs,
   funnelTarget,
   isLoopbackTarget,
+  serveDisableArgs,
+  serveEnableArgs,
 } from "./tailscale-funnel"
 
-describe("tailscale funnel command", () => {
+describe("tailscale serve and funnel commands", () => {
   it("only targets loopback HTTP", () => {
     expect(funnelTarget(3080)).toBe("http://127.0.0.1:3080")
+    expect(serveEnableArgs(3080)).toEqual([
+      "serve",
+      "--bg",
+      "--yes",
+      "http://127.0.0.1:3080",
+    ])
+    expect(serveDisableArgs()).toEqual(["serve", "reset"])
     expect(funnelEnableArgs(3080)).toEqual([
       "funnel",
       "--bg",

@@ -1062,6 +1062,18 @@ pub fn build_router(
             post(handlers::web_server::probe_web_service_port),
         )
         .route(
+            "/tailscale_serve_status",
+            post(handlers::web_server::tailscale_serve_status),
+        )
+        .route(
+            "/tailscale_serve_enable",
+            post(handlers::web_server::tailscale_serve_enable),
+        )
+        .route(
+            "/tailscale_serve_disable",
+            post(handlers::web_server::tailscale_serve_disable),
+        )
+        .route(
             "/tailscale_funnel_status",
             post(handlers::web_server::tailscale_funnel_status),
         )

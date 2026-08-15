@@ -4202,6 +4202,18 @@ export type FunnelStatus = {
   unavailableReason?: string | null
 }
 
+export async function tailscaleServeStatus(): Promise<FunnelStatus> {
+  return getTransport().call("tailscale_serve_status")
+}
+
+export async function tailscaleServeEnable(port: number): Promise<FunnelStatus> {
+  return getTransport().call("tailscale_serve_enable", { port })
+}
+
+export async function tailscaleServeDisable(): Promise<FunnelStatus> {
+  return getTransport().call("tailscale_serve_disable")
+}
+
 export async function tailscaleFunnelStatus(): Promise<FunnelStatus> {
   return getTransport().call("tailscale_funnel_status")
 }

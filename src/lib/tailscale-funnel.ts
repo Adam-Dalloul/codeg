@@ -1,9 +1,9 @@
 /**
- * Tailscale Funnel command builders.
+ * Tailscale Serve / Funnel command builders.
  *
- * Funnel is official Tailscale HTTPS to the internet. Relays do not decrypt.
- * The local target is always loopback so the Codeg token remains the app gate
- * and the service is not bound on LAN.
+ * Serve is private to the tailnet (same privacy as Tailscale on both devices).
+ * Funnel is public HTTPS. Relays do not decrypt either path.
+ * The local target is always loopback.
  */
 
 export class FunnelError extends Error {
@@ -18,6 +18,18 @@ export function funnelTarget(port: number): string {
     throw new FunnelError("port must be an integer 1-65535")
   }
   return `http://127.0.0.1:${port}`
+}
+
+export function serveEnableArgs(port: number): string[] {
+  return ["serve", "--bg", "--yes", funnelTarget(port)]
+}
+
+export function serveDisableArgs(): string[] {
+  return ["serve", "reset"]
+}
+
+export function serveStatusArgs(): string[] {
+  return ["serve", "status", "--json"]
 }
 
 export function funnelEnableArgs(port: number): string[] {
