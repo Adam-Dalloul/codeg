@@ -470,6 +470,136 @@ describe("AcpConnectionsProvider preview-tab release (disconnectIfIdle)", () => 
   })
 })
 
+// AIR typed session failures: retry warnings must settle ONLY at a clean
+// `end_turn` — a cancelled/failed exit did not recover, and a failed turn's
+// terminal failure arrives as a `session_failure` event emitted just before
+// its `turn_complete` (the record rides the prompt RESPONSE `_meta`; both
+// adapters disguise that response as `end_turn`). Settling on any
+// leave-prompting transition painted a still-dead connection as a recovered
+// warning (2026-08-15 field report).
+describe("AcpConnectionsProvider AIR session-failure lifecycle", () => {
+  async function connectOwner(): Promise<AttachHandlers> {
+    h.acpFindConnectionForConversation.mockResolvedValue(null)
+    await mountProvider()
+    await act(async () => {
+      await h.actions!.connect(TAB, "claude_code", "/tmp/x", "sess-1", 42)
+    })
+    return latestAttachHandlers()
+  }
+
+  function failure(
+    id: string,
+    revision: number,
+    severity: string,
+    title: string
+  ) {
+    return {
+      id,
+      revision,
+      category: "connection",
+      severity,
+      title,
+      actions: ["new_session"],
+    }
+  }
+
+  it("escalates the response-borne terminal error instead of settling it at the disguised end_turn", async () => {
+    const handlers = await connectOwner()
+    emitAcpEvent(handlers, {
+      seq: 1,
+      connection_id: "spawned-conn",
+      type: "status_changed",
+      status: "prompting",
+    })
+    emitAcpEvent(handlers, {
+      seq: 2,
+      connection_id: "spawned-conn",
+      type: "session_failure",
+      record: failure(
+        "t1:error",
+        5,
+        "warning",
+        "Reconnecting to Claude, attempt 5 of 5."
+      ),
+    })
+    // The terminal record rides the prompt response; the backend emits it
+    // BEFORE turn_complete as a same-id higher-revision error escalation.
+    emitAcpEvent(handlers, {
+      seq: 3,
+      connection_id: "spawned-conn",
+      type: "session_failure",
+      record: failure(
+        "t1:error",
+        6,
+        "error",
+        "The connection to Claude was lost."
+      ),
+    })
+    emitAcpEvent(handlers, {
+      seq: 4,
+      connection_id: "spawned-conn",
+      type: "turn_complete",
+      session_id: "sess-1",
+      stop_reason: "end_turn",
+    })
+
+    const failures = h.store!.getConnection(TAB)?.sessionFailures
+    expect(failures).toHaveLength(1)
+    expect(failures?.[0]).toMatchObject({
+      id: "t1:error",
+      revision: 6,
+      severity: "error",
+      resolved: false,
+    })
+  })
+
+  it("keeps warnings active across a cancelled exit and settles them only on a clean end_turn", async () => {
+    const handlers = await connectOwner()
+    emitAcpEvent(handlers, {
+      seq: 1,
+      connection_id: "spawned-conn",
+      type: "status_changed",
+      status: "prompting",
+    })
+    emitAcpEvent(handlers, {
+      seq: 2,
+      connection_id: "spawned-conn",
+      type: "session_failure",
+      record: failure(
+        "t1:error",
+        1,
+        "warning",
+        "Reconnecting to Claude, attempt 1 of 5."
+      ),
+    })
+    // Cancelled exit: not recovery — the amber strip must survive it.
+    emitAcpEvent(handlers, {
+      seq: 3,
+      connection_id: "spawned-conn",
+      type: "turn_complete",
+      session_id: "sess-1",
+      stop_reason: "cancelled",
+    })
+    expect(h.store!.getConnection(TAB)?.sessionFailures?.[0]).toMatchObject({
+      id: "t1:error",
+      resolved: false,
+    })
+
+    // A later clean turn end is the recovery evidence that settles it.
+    emitAcpEvent(handlers, {
+      seq: 4,
+      connection_id: "spawned-conn",
+      type: "turn_complete",
+      session_id: "sess-1",
+      stop_reason: "end_turn",
+    })
+    expect(h.store!.getConnection(TAB)?.sessionFailures?.[0]).toMatchObject({
+      id: "t1:error",
+      resolved: true,
+    })
+  })
+})
+
 // The composer's connection-status popover. Unlike `reapplyConfig` (live owners
 // only), this has to work from EVERY state the icon can show — including the
 // states where the store holds no entry at all.

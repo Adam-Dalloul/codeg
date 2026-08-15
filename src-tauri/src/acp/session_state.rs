@@ -878,16 +878,25 @@ impl SessionState {
                 // other than a normal end-of-turn means this turn's content
                 // may never have reached the wire.
                 self.last_turn_ended_abnormally = stop_reason != "end_turn";
-                // AIR retry warnings resolve at the turn boundary — adapters
-                // never publish resolution (see `SessionFailureRecord`), and a
-                // warning that ESCALATED instead was already overwritten by a
-                // higher-revision severity-"error" upsert on the same id
-                // before the turn ended, so this only settles genuinely
-                // recovered (or abandoned) retry incidents. Mirrors the retry
-                // banner's clear-at-turn-boundary semantics.
-                for failure in self.session_failures.values_mut() {
-                    if failure.severity == "warning" {
-                        failure.resolved = true;
+                // AIR retry warnings resolve at the CLEAN turn boundary —
+                // adapters never publish resolution (see
+                // `SessionFailureRecord`), and a warning that ESCALATED
+                // instead was already overwritten by a higher-revision
+                // severity-"error" upsert on the same id before this event
+                // (a turn's terminal failure rides the prompt RESPONSE
+                // `_meta` and the loop emits it first — see
+                // `response_session_failure`), so this only settles genuinely
+                // recovered retry incidents. Every OTHER stop reason
+                // (cancelled / empty / refusal / …) ended a turn that did NOT
+                // recover: settling there painted a still-dead connection as
+                // a recovered warning (2026-08-15 field report), so those
+                // leave the warnings active — the `UserMessage` arm's
+                // settle-all still sweeps them at the next prompt.
+                if stop_reason == "end_turn" {
+                    for failure in self.session_failures.values_mut() {
+                        if failure.severity == "warning" {
+                            failure.resolved = true;
+                        }
                     }
                 }
                 // Snapshot the just-finished turn's FINAL assistant text — what
@@ -1866,6 +1875,62 @@ mod tests {
             f.get("id").and_then(|v| v.as_str()) == Some("t1:error")
                 && f.get("revision").and_then(|v| v.as_u64()) == Some(4)
         }));
+    }
+
+    #[test]
+    fn session_failure_warnings_survive_non_clean_turn_ends() {
+        fn failure(id: &str, revision: u64, severity: &str, title: &str) -> AcpEvent {
+            AcpEvent::SessionFailure {
+                record: SessionFailureRecord {
+                    id: id.into(),
+                    revision,
+                    category: "connection".into(),
+                    severity: severity.into(),
+                    title: title.into(),
+                    details: None,
+                    actions: vec!["new_session".into()],
+                    resolved: false,
+                },
+            }
+        }
+        fn turn_complete(stop_reason: &str) -> AcpEvent {
+            AcpEvent::TurnComplete {
+                session_id: "sid".into(),
+                stop_reason: stop_reason.into(),
+                agent_type: "claude_code".into(),
+            }
+        }
+        let mut s = fresh_state();
+        s.apply_event(&failure("t1:error", 5, "warning", "Reconnecting, attempt 5 of 5."));
+
+        // A cancelled/failed/empty exit is NOT recovery — the incident (e.g.
+        // reconnect attempts with the network still down) must stay active
+        // instead of collapsing into a "recovered" row (2026-08-15 field
+        // report: the banner claimed recovery while offline).
+        for reason in ["cancelled", "empty", "refusal", "unknown"] {
+            s.apply_event(&turn_complete(reason));
+            assert!(
+                !s.session_failures["t1:error"].resolved,
+                "stop_reason={reason} must not settle warnings"
+            );
+        }
+
+        // The terminal escalation rides the prompt RESPONSE and the loop
+        // applies it BEFORE `TurnComplete` (see `response_session_failure`):
+        // the same id flips to severity "error", so even the adapters'
+        // disguised clean `end_turn` carrying it cannot settle the incident.
+        s.apply_event(&failure("t1:error", 6, "error", "The connection was lost."));
+        s.apply_event(&turn_complete("end_turn"));
+        let escalated = &s.session_failures["t1:error"];
+        assert!(!escalated.resolved);
+        assert_eq!(escalated.severity, "error");
+        assert_eq!(escalated.revision, 6);
+
+        // A clean end still settles a genuine warning — and only the warning.
+        s.apply_event(&failure("w2", 1, "warning", "transient notice"));
+        s.apply_event(&turn_complete("end_turn"));
+        assert!(s.session_failures["w2"].resolved);
+        assert!(!s.session_failures["t1:error"].resolved);
     }
 
     #[test]

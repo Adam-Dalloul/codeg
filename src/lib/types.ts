@@ -2228,7 +2228,10 @@ export interface SessionLastError {
  * `id`+`revision` (per-id, from 1), and adapters never publish resolution —
  * consumers reject `revision <=` the stored one and infer lifecycle
  * themselves (see `lib/session-failures.ts`): severity-"warning" records
- * settle at turn boundaries, severity-"error" records stay active until the
+ * settle at CLEAN (`end_turn`) turn ends only — a cancelled/failed exit did
+ * not recover, and a failed turn's terminal record arrives just before its
+ * `turn_complete` (riding the prompt response) as a same-id higher-revision
+ * error escalation — while severity-"error" records stay active until the
  * user acts (a new prompt settles everything; a recurrence re-arms via a
  * higher revision on the same id). Entries are retained resolved so each
  * doubles as its id's revision watermark — dropping one would let a delayed

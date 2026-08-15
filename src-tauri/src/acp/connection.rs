@@ -7573,7 +7573,26 @@ async fn run_conversation_loop<'a>(
                             }
                         }
                         prompt_result = &mut prompt_response => {
-                            let reason = prompt_result?.stop_reason;
+                            let response = prompt_result?;
+                            // A turn's terminal AIR failure rides on the
+                            // response `_meta` (see `response_session_failure`
+                            // — the update channel only carries the retry
+                            // warnings). Emit it BEFORE `TurnComplete`: the
+                            // same-id higher-revision severity-"error" upsert
+                            // must land before `apply_event`'s turn-boundary
+                            // settle, or the retry warnings it escalates would
+                            // be marked recovered while the failure is live.
+                            let terminal_failure =
+                                response_session_failure(response.meta.as_ref());
+                            if let Some(record) = &terminal_failure {
+                                emit_with_state(
+                                    state,
+                                    emitter,
+                                    AcpEvent::SessionFailure { record: record.clone() },
+                                )
+                                .await;
+                            }
+                            let reason = response.stop_reason;
                             if !tracked_terminal_tool_calls.is_empty() {
                                 poll_tracked_terminal_tool_calls(
                                     terminal_runtime.as_ref(),
@@ -7588,8 +7607,21 @@ async fn run_conversation_loop<'a>(
                             // Same pure helper as the StopReason-message exit,
                             // so the two can't drift. This exit keeps its own
                             // extra side effect (`record_turn_end` below).
-                            let (reason_str, empty_report) =
-                                finish_turn_reason(&probe, raw_reason_str, stderr_tail);
+                            //
+                            // Exception: a response carrying a typed terminal
+                            // ERROR is a failed turn wearing the adapters'
+                            // disguised `end_turn` — its blank output is
+                            // explained by the AIR banner, so synthesizing an
+                            // "empty" toast on top would misdiagnose a dead
+                            // connection as "the agent produced nothing".
+                            let (reason_str, empty_report) = if terminal_failure
+                                .as_ref()
+                                .is_some_and(|record| record.severity == "error")
+                            {
+                                (raw_reason_str, None)
+                            } else {
+                                finish_turn_reason(&probe, raw_reason_str, stderr_tail)
+                            };
                             if let Some(err_event) =
                                 turn_failure_error_event(reason_str, agent_type, empty_report.as_ref())
                             {
@@ -8753,12 +8785,14 @@ fn session_info_goal_value(
     }
 }
 
-/// The raw `sessionFailure` value out of a `session_info_update`'s
-/// `_meta.jetbrains.air` envelope — present only when the envelope itself is
-/// well-formed (integer `version >= 1`, mirroring the advertisement check the
-/// adapters run on codeg's `clientCapabilities._meta.jetbrains.air`). A
-/// malformed or future-incompatible envelope yields `None` and the update is
-/// treated as carrying no failure.
+/// The raw `sessionFailure` value out of a `_meta.jetbrains.air` envelope —
+/// present only when the envelope itself is well-formed (integer
+/// `version >= 1`, mirroring the advertisement check the adapters run on
+/// codeg's `clientCapabilities._meta.jetbrains.air`). A malformed or
+/// future-incompatible envelope yields `None` and the carrier is treated as
+/// holding no failure. Records ride TWO carriers with this same envelope: the
+/// per-attempt upserts on `session_info_update._meta`, and a turn's terminal
+/// failure on the prompt RESPONSE `_meta` (see [`response_session_failure`]).
 fn air_session_failure(
     meta: Option<&serde_json::Map<String, serde_json::Value>>,
 ) -> Option<&serde_json::Value> {
@@ -8823,6 +8857,35 @@ fn parse_session_failure_record(value: &serde_json::Value) -> Option<SessionFail
             .unwrap_or_default(),
         resolved: false,
     })
+}
+
+/// The terminal AIR failure riding on a prompt RESPONSE's `_meta`, if any.
+///
+/// With `jetbrains.air` negotiated, BOTH adapters deliver a turn's terminal
+/// failure ON the prompt response rather than as another
+/// `session_info_update`: claude-agent-acp's `failActiveWithSessionFailure`
+/// settles the turn with a disguised `end_turn` stop reason and attaches the
+/// record here (its own comment calls the response "the canonical AIR
+/// carrier" — the update channel only ever carries the per-attempt retry
+/// warnings), and codex-acp's `terminalFailurePromptResponse` mirrors the
+/// same shape as the catch-up for a record whose update was missed (the
+/// strict revision merge de-duplicates when both arrive). Field report
+/// 2026-08-15: a mid-turn network drop on claude 0.68.0 published
+/// "Reconnecting to Claude, attempt N of 5" warnings via updates, then the
+/// `transport_lost` error escalation ONLY here — ignoring this carrier lost
+/// the terminal record entirely, so the turn-boundary settle painted the
+/// still-dead connection as a recovered warning.
+fn response_session_failure(
+    meta: Option<&serde_json::Map<String, serde_json::Value>>,
+) -> Option<SessionFailureRecord> {
+    let raw = air_session_failure(meta)?;
+    let record = parse_session_failure_record(raw);
+    if record.is_none() {
+        tracing::debug!(
+            "[ACP] dropped prompt-response AIR sessionFailure without usable id/revision: {raw:?}"
+        );
+    }
+    record
 }
 
 /// Strict SemVer floor check: true when `version >= min` by SemVer
@@ -11120,6 +11183,44 @@ mod tests {
             assert!(air_session_failure(Some(&meta)).is_none());
         }
         assert!(air_session_failure(None).is_none());
+    }
+
+    #[test]
+    fn response_session_failure_reads_the_prompt_response_carrier() {
+        // claude `failActiveWithSessionFailure` / codex
+        // `terminalFailurePromptResponse` both attach a turn's terminal record
+        // to the prompt response `_meta` under the SAME jetbrains.air envelope
+        // the update channel uses, with a disguised `end_turn` stop reason —
+        // this carrier is the only wire delivery of claude terminal failures.
+        let meta = meta_map(serde_json::json!({"jetbrains": {"air": {
+            "version": 1,
+            "sessionFailure": {
+                "id": "prompt-1:error",
+                "revision": 6,
+                "category": "connection",
+                "severity": "error",
+                "title": "The connection to Claude was lost.",
+                "actions": ["new_session"],
+            },
+        }}}));
+        let record = response_session_failure(Some(&meta)).expect("record");
+        assert_eq!(record.id, "prompt-1:error");
+        assert_eq!(record.revision, 6);
+        assert_eq!(record.severity, "error");
+        assert_eq!(record.actions, vec!["new_session".to_string()]);
+
+        // Same gates as the update channel: malformed envelope or missing
+        // identity ⇒ no record (and no synthetic-empty suppression).
+        let unversioned = meta_map(serde_json::json!({"jetbrains": {"air": {
+            "sessionFailure": {"id": "x", "revision": 1},
+        }}}));
+        assert!(response_session_failure(Some(&unversioned)).is_none());
+        let no_identity = meta_map(serde_json::json!({"jetbrains": {"air": {
+            "version": 1,
+            "sessionFailure": {"title": "no id"},
+        }}}));
+        assert!(response_session_failure(Some(&no_identity)).is_none());
+        assert!(response_session_failure(None).is_none());
     }
 
     #[test]

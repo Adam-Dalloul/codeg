@@ -379,6 +379,15 @@ type Action =
       record: SessionFailureRecord
     }
   | {
+      // Lifecycle settle for the AIR failure table, dispatched from the
+      // `turn_complete` handler on a CLEAN (`end_turn`) end only — a
+      // cancelled/failed exit ended a turn that did NOT recover, so its
+      // warnings must stay active (mirrors `SessionState::apply_event`).
+      type: "SETTLE_SESSION_FAILURES"
+      contextKey: string
+      scope: "warnings" | "all"
+    }
+  | {
       // Mirror of a `background_activity` event onto the connection: the
       // `outstanding` count (the backend transcript watcher's authoritative
       // accounting) plus whether this event settled tasks / carried overlay
@@ -1539,14 +1548,12 @@ function connectionsReducer(
       } else if (conn.status === "prompting") {
         // Prompt cycle ended: clear in-flight Claude API retry banner.
         updated.claudeApiRetry = null
-        // AIR retry warnings settle at the turn boundary (adapters never
-        // publish resolution); severity-"error" records must survive — an
-        // escalated warning was already overwritten by an error upsert on
-        // the same id before the turn ended.
-        updated.sessionFailures = settleSessionFailures(
-          conn.sessionFailures,
-          "warnings"
-        )
+        // AIR failures deliberately NOT settled here: leaving `prompting`
+        // covers error/cancel exits too, where the incident did not recover —
+        // settling on any exit painted a still-dead connection as a recovered
+        // warning. The `turn_complete` handler settles warnings on a clean
+        // `end_turn` instead (SETTLE_SESSION_FAILURES), after the response's
+        // terminal error escalation (if any) has already landed.
         // A blocked ask_user_question can't outlive its turn. The normal path
         // clears it via `question_resolved`; this is the safety net for a turn
         // that ended without one (agent error / abandoned block).
@@ -2347,6 +2354,17 @@ function connectionsReducer(
       if (merged === conn.sessionFailures) return state
       const next = new Map(state)
       next.set(action.contextKey, { ...conn, sessionFailures: merged })
+      return next
+    }
+
+    case "SETTLE_SESSION_FAILURES": {
+      const conn = state.get(action.contextKey)
+      if (!conn) return state
+      const settled = settleSessionFailures(conn.sessionFailures, action.scope)
+      // Nothing needed settling — same reference, no re-render.
+      if (settled === conn.sessionFailures) return state
+      const next = new Map(state)
+      next.set(action.contextKey, { ...conn, sessionFailures: settled })
       return next
     }
 
@@ -3735,6 +3753,20 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
         case "turn_complete": {
           flushStreamingQueue()
           flushPendingToolCallUpdates()
+          // AIR retry warnings settle only at a CLEAN turn end, mirroring the
+          // backend's `apply_event`. A failed turn's terminal failure rides
+          // the prompt response and was emitted as a `session_failure` event
+          // just before this one (same-id higher-revision error escalation),
+          // so settling here can no longer paint an unrecovered incident as
+          // recovered; any other exit (cancelled/empty/refusal) keeps the
+          // warnings active until the next prompt's settle-all.
+          if (e.stop_reason === "end_turn") {
+            dispatch({
+              type: "SETTLE_SESSION_FAILURES",
+              contextKey,
+              scope: "warnings",
+            })
+          }
           dispatch({
             type: "STATUS_CHANGED",
             contextKey,
