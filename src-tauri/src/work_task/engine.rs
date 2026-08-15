@@ -3812,10 +3812,14 @@ fn carries_image(block: &PromptInputBlock) -> bool {
 /// Swap every attached image into the shape the connected agent advertised.
 ///
 /// Two wire encodings carry the same bytes: a native `Image` block, and a
-/// `Resource` whose `blob` holds them under an image mime type (what agents
-/// that reject image content but accept embedded context — e.g. Grok — take).
-/// The composer picks one at compose time from a probe; this picks again at
-/// dispatch, when the session has actually said what it accepts.
+/// `Resource` whose `blob` holds them under an image mime type (what an agent
+/// that rejects image content but accepts embedded context takes). The composer
+/// picks one at compose time from a probe; this picks again at dispatch, when
+/// the session has actually said what it accepts.
+///
+/// Grok needs neither swap — it advertises both bits — but its images still get
+/// sorted per mime further downstream, in `acp::connection`, which is the last
+/// point that sees the blocks.
 ///
 /// Only image-carrying blocks are touched, and only to move between those two
 /// encodings — never to invent or drop content. An agent that advertises
