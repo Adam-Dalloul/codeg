@@ -124,6 +124,26 @@ describe("subscription quota inventory", () => {
     expect(labels).toEqual(["5-hour", "extra usage"])
   })
 
+  it("parses the live Grok CLI-proxy billing envelope from this machine", () => {
+    const payload = {
+      config: {
+        currentPeriod: {
+          type: "USAGE_PERIOD_TYPE_WEEKLY",
+          start: "2026-08-09T23:32:49.216917+00:00",
+          end: "2026-08-16T23:32:49.216917+00:00",
+        },
+        creditUsagePercent: 19.0,
+        billingPeriodEnd: "2026-08-16T23:32:49.216917+00:00",
+      },
+    }
+    const parsed = remainingFromOfficialPayload("grok", payload)
+    expect(parsed?.remaining).toBe(81)
+    expect(parsed?.source).toBe("grok cli-chat-proxy /v1/billing")
+    expect(parsed?.resetsAt).toBe(
+      Math.floor(Date.parse("2026-08-16T23:32:49.216917+00:00") / 1000)
+    )
+  })
+
   it("rejects a payload that is not the official family shape", () => {
     expect(
       remainingFromOfficialPayload("claude", { remaining: 1, limit: 2 })

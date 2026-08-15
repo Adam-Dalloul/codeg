@@ -7,9 +7,12 @@
 //!
 //! Claude has no `usage` CLI. The `/usage` HUD reads
 //! `GET https://api.anthropic.com/api/oauth/usage` with the local Claude
-//! Code OAuth token (`~/.claude/.credentials.json`). That is the same
-//! endpoint community monitors use. Grok / Gemini / OpenCode still have
-//! no remaining-quota command.
+//! Code OAuth token (`~/.claude/.credentials.json`).
+//!
+//! Grok has no usage CLI. Remaining credits come from
+//! `GET https://cli-chat-proxy.grok.com/v1/billing?format=credits` with
+//! the Grok CLI OAuth token in `~/.grok/auth.json`. Gemini / OpenCode
+//! still have no remaining-quota command.
 
 use std::fs;
 use std::path::Path;
@@ -290,6 +293,111 @@ pub async fn subscription_quota_claude() -> Result<OfficialQuotaRead, AppCommand
     Ok(read_claude_subscription_quota_core().await)
 }
 
+pub fn grok_cli_bearer_from_auth_json(text: &str) -> Option<String> {
+    let value: Value = serde_json::from_str(text).ok()?;
+    let obj = value.as_object()?;
+    let mut preferred = None;
+    let mut fallback = None;
+    for (key, entry) in obj {
+        let Some(token) = entry.get("key").and_then(Value::as_str) else {
+            continue;
+        };
+        if token.is_empty() {
+            continue;
+        }
+        if key.starts_with("https://auth.x.ai") {
+            preferred = Some(token.to_string());
+        } else if fallback.is_none() {
+            fallback = Some(token.to_string());
+        }
+    }
+    preferred.or(fallback)
+}
+
+fn grok_auth_path() -> Option<std::path::PathBuf> {
+    dirs::home_dir().map(|home| home.join(".grok").join("auth.json"))
+}
+
+fn read_grok_cli_bearer(path: &Path) -> Option<String> {
+    let text = fs::read_to_string(path).ok()?;
+    grok_cli_bearer_from_auth_json(&text)
+}
+
+async fn fetch_grok_billing(token: &str) -> Result<Value, AppCommandError> {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()
+        .map_err(|err| {
+            AppCommandError::new(AppErrorCode::NetworkError, "HTTP client")
+                .with_detail(err.to_string())
+        })?;
+    let response = client
+        .get("https://cli-chat-proxy.grok.com/v1/billing?format=credits")
+        .header("Authorization", format!("Bearer {token}"))
+        .header("x-xai-token-auth", "xai-grok-cli")
+        .header("Accept", "application/json")
+        .header("User-Agent", "codeg")
+        .send()
+        .await
+        .map_err(|err| {
+            AppCommandError::new(AppErrorCode::NetworkError, "Grok billing request failed")
+                .with_detail(err.to_string())
+        })?;
+    let status = response.status();
+    if !status.is_success() {
+        return Err(AppCommandError::new(
+            AppErrorCode::ExternalCommandFailed,
+            format!("Grok billing HTTP {status}"),
+        ));
+    }
+    response.json::<Value>().await.map_err(|err| {
+        AppCommandError::new(AppErrorCode::ExternalCommandFailed, "Grok billing JSON")
+            .with_detail(err.to_string())
+    })
+}
+
+pub async fn read_grok_subscription_quota_core() -> OfficialQuotaRead {
+    let Some(path) = grok_auth_path() else {
+        return OfficialQuotaRead {
+            family: "grok",
+            payload: None,
+            unavailable_reason: Some("home directory unavailable".into()),
+        };
+    };
+    let Some(token) = read_grok_cli_bearer(&path) else {
+        return OfficialQuotaRead {
+            family: "grok",
+            payload: None,
+            unavailable_reason: Some("Grok CLI is not signed in".into()),
+        };
+    };
+    match fetch_grok_billing(&token).await {
+        Ok(payload) if payload.get("config").and_then(|c| c.get("creditUsagePercent")).is_some() => {
+            OfficialQuotaRead {
+                family: "grok",
+                payload: Some(payload),
+                unavailable_reason: None,
+            }
+        }
+        Ok(_) => OfficialQuotaRead {
+            family: "grok",
+            payload: None,
+            unavailable_reason: Some("Grok billing payload missing creditUsagePercent".into()),
+        },
+        Err(err) => OfficialQuotaRead {
+            family: "grok",
+            payload: None,
+            unavailable_reason: Some(err.message),
+        },
+    }
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn subscription_quota_grok() -> Result<OfficialQuotaRead, AppCommandError> {
+    Ok(read_grok_subscription_quota_core().await)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -361,5 +469,18 @@ mod tests {
             Some("tok_test_value")
         );
         assert!(claude_oauth_access_token_from_credentials("{}").is_none());
+    }
+
+    #[test]
+    fn prefers_auth_xai_grok_cli_bearer() {
+        let text = r#"{
+            "https://accounts.x.ai/sign-in": { "key": "legacy" },
+            "https://auth.x.ai::abc": { "key": "oidc-token", "auth_mode": "oidc" }
+        }"#;
+        assert_eq!(
+            grok_cli_bearer_from_auth_json(text).as_deref(),
+            Some("oidc-token")
+        );
+        assert!(grok_cli_bearer_from_auth_json("{}").is_none());
     }
 }
