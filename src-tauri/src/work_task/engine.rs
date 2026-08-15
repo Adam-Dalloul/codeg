@@ -4332,23 +4332,20 @@ mod tests {
     fn a_configured_root_holds_one_directory_per_task() {
         let root = format!("{ABS_PREFIX}/home/me/repo");
         let trees = format!("{ABS_PREFIX}/var/worktrees");
-        let at = |name: &str| {
-            Path::new(&trees)
-                .join(name)
-                .to_string_lossy()
-                .into_owned()
+        // Compared as paths, not strings: a separator the setting carried in
+        // survives into the result — `Path::join` reuses a trailing one rather
+        // than adding its own — and on Windows `/` and `\` are the same
+        // separator. Only the directory the worktree lands in is pinned here,
+        // never the spelling of the separators.
+        let at = |name: &str| Path::new(&trees).join(name);
+        let landed = |setting: &str, name: &str| {
+            PathBuf::from(worktree_path_in_home(&root, Some(setting), name, None))
         };
-        assert_eq!(
-            worktree_path_in_home(&root, Some(&trees), "repo-task-7", None),
-            at("repo-task-7")
-        );
-        assert_eq!(
-            worktree_path_in_home(&root, Some(&trees), "repo-task-8", None),
-            at("repo-task-8")
-        );
+        assert_eq!(landed(&trees, "repo-task-7"), at("repo-task-7"));
+        assert_eq!(landed(&trees, "repo-task-8"), at("repo-task-8"));
         // Typed paths arrive with stray whitespace and trailing separators.
         assert_eq!(
-            worktree_path_in_home(&root, Some(&format!("  {trees}/  ")), "repo-task-7", None),
+            landed(&format!("  {trees}/  "), "repo-task-7"),
             at("repo-task-7")
         );
     }
