@@ -4199,6 +4199,7 @@ export type FunnelStatus = {
   enabled: boolean
   url?: string | null
   target?: string | null
+  loginUrl?: string | null
   unavailableReason?: string | null
 }
 

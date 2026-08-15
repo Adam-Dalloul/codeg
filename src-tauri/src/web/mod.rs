@@ -1,5 +1,6 @@
 pub mod auth;
 pub mod funnel;
+pub mod tsnet_sidecar;
 pub mod compression;
 pub mod event_bridge;
 pub mod handlers;

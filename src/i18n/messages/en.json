@@ -3475,7 +3475,7 @@
     "lanAccess": "LAN",
     "lanAccessHint": "Listen on every interface so a phone on the same network can connect. Off keeps the service on this computer only.",
     "private": "Private",
-    "privateHint": "Tailscale Serve: only your tailnet. Same privacy as Tailscale on both devices. WireGuard encrypted. Phone must join the tailnet (Tailscale app, or Codeg iOS with Tailscale built in).",
+    "privateHint": "Built into Codeg. No Tailscale app. Only your tailnet. Same privacy as Tailscale on both devices.",
     "privateFailed": "Could not start Tailscale Serve",
     "anywhere": "Public",
     "anywhereHint": "Tailscale Funnel: public HTTPS. Encrypted, but anyone with the URL and token can connect. Not as private as both-devices Tailscale.",

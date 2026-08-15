@@ -21,6 +21,8 @@ pub struct FunnelStatus {
     pub url: Option<String>,
     pub target: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub login_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub unavailable_reason: Option<String>,
 }
 
@@ -82,6 +84,7 @@ fn status_from_json(raw: &str, want_public: bool) -> FunnelStatus {
         enabled,
         url: if enabled { url } else { None },
         target: if enabled { target } else { None },
+        login_url: None,
         unavailable_reason: None,
     }
 }
@@ -136,24 +139,32 @@ async fn expose_status_json() -> Result<String, AppCommandError> {
 }
 
 pub async fn serve_status_core() -> FunnelStatus {
+    if let Some(status) = crate::web::tsnet_sidecar::sidecar_status(false) {
+        return status;
+    }
     match expose_status_json().await {
         Ok(raw) => status_from_json(&raw, false),
         Err(err) => FunnelStatus {
             enabled: false,
             url: None,
             target: None,
+            login_url: None,
             unavailable_reason: Some(err.message),
         },
     }
 }
 
 pub async fn funnel_status_core() -> FunnelStatus {
+    if let Some(status) = crate::web::tsnet_sidecar::sidecar_status(true) {
+        return status;
+    }
     match expose_status_json().await {
         Ok(raw) => status_from_json(&raw, true),
         Err(err) => FunnelStatus {
             enabled: false,
             url: None,
             target: None,
+            login_url: None,
             unavailable_reason: Some(err.message),
         },
     }
@@ -177,6 +188,9 @@ pub fn require_running_web_port(
 }
 
 async fn enable_expose(port: u16, public: bool) -> Result<FunnelStatus, AppCommandError> {
+    if crate::web::tsnet_sidecar::sidecar_available() {
+        return crate::web::tsnet_sidecar::sidecar_enable(port, public).await;
+    }
     let target = funnel_target(port);
     if !target_is_loopback(&target) {
         return Err(AppCommandError::new(
@@ -215,12 +229,14 @@ pub async fn funnel_disable_core() -> Result<FunnelStatus, AppCommandError> {
 }
 
 async fn expose_reset() {
+    crate::web::tsnet_sidecar::sidecar_disable().await;
     let _ = run_tailscale(&["funnel", "reset"]).await;
     let _ = run_tailscale(&["serve", "reset"]).await;
 }
 
 /// Tear down leftover Serve/Funnel URLs without blocking Stop / quit for 20s.
 pub async fn funnel_disable_best_effort() {
+    crate::web::tsnet_sidecar::sidecar_disable().await;
     let _ = run_tailscale_with_deadline(&["funnel", "reset"], FUNNEL_STOP_DEADLINE).await;
     let _ = run_tailscale_with_deadline(&["serve", "reset"], FUNNEL_STOP_DEADLINE).await;
 }

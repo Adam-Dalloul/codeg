@@ -636,6 +636,9 @@ export function WebServiceSettings() {
                           : await tailscaleServeDisable()
                         setServe(next)
                         if (checked) setFunnel({ enabled: false })
+                        if (next.loginUrl) {
+                          void openUrl(next.loginUrl)
+                        }
                         if (next.unavailableReason) {
                           setError(next.unavailableReason)
                         }
@@ -679,6 +682,9 @@ export function WebServiceSettings() {
                           : await tailscaleFunnelDisable()
                         setFunnel(next)
                         if (checked) setServe({ enabled: false })
+                        if (next.loginUrl) {
+                          void openUrl(next.loginUrl)
+                        }
                         if (next.unavailableReason) {
                           setError(next.unavailableReason)
                         }
