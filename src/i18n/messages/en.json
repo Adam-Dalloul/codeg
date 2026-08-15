@@ -4925,6 +4925,10 @@
   },
   "TokenUsage": {
     "title": "Token Usage",
+    "quotaTitle": "Subscription remaining",
+    "quotaHint": "Codeg meters tokens on this page. Remaining plan quota is shown only when a provider CLI publishes it. ACP usage is context occupancy, not subscription remaining.",
+    "quotaRemaining": "{remaining} of {limit} remaining",
+    "quotaProviderLink": "Provider usage page",
     "rangeLabel": "Time range",
     "range7d": "7 days",
     "range30d": "30 days",
