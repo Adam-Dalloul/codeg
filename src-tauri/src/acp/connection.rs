@@ -2931,12 +2931,15 @@ async fn apply_and_emit_session_config_options(
 /// it as `<file_contents type="binary">` and the model only gets a path.
 /// Advertise `image: true` so the composer sends Image blocks.
 ///
-/// Measured live against grok 1.0.0 (the version `registry.rs` pins) and 0.2.112:
-/// both accept a native `image` block and answer correctly about the pixels,
-/// while the same bytes as a resource blob make the model invent an answer. The
-/// advertisement has simply been wrong for as long as codeg has supported grok,
-/// so this is deliberately NOT version-gated, and it stays correct if grok ever
-/// starts advertising the truth (`image` is already true then).
+/// Measured live against 0.2.112, 1.0.0 and 1.0.3: every one of them still
+/// advertises `image: false`, accepts a native `image` block anyway, and answers
+/// correctly about the pixels — while the same bytes as a resource blob make the
+/// model invent an answer. The advertisement has simply been wrong for as long
+/// as codeg has supported grok, across every version tested, so this is
+/// deliberately NOT version-gated (and stays correct if grok ever starts
+/// advertising the truth: `image` is already true then). Deliberately no pinned
+/// version named here either — `registry.rs` moves on its own schedule, and a
+/// claim about "the pinned version" rots at the next bump.
 ///
 /// This bit says only that grok takes image blocks AT ALL — it decodes just some
 /// formats, which is a per-mime question a single capability cannot answer, so
