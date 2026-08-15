@@ -3314,6 +3314,7 @@
           "newSession": "Neue Sitzung"
         },
         "recovered": "Wiederhergestellt",
+        "retryUnavailable": "Keine vorherige Nachricht zum erneuten Senden.",
         "toggleDetails": "Details umschalten"
       },
       "backgroundTasks": {

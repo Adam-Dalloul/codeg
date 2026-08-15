@@ -3314,6 +3314,7 @@
           "newSession": "Nova sessão"
         },
         "recovered": "Recuperado",
+        "retryUnavailable": "Nenhuma mensagem anterior para reenviar.",
         "toggleDetails": "Alternar detalhes"
       },
       "backgroundTasks": {

@@ -3314,6 +3314,7 @@
           "newSession": "새 세션"
         },
         "recovered": "복구됨",
+        "retryUnavailable": "다시 보낼 메시지가 없습니다.",
         "toggleDetails": "세부 정보 전환"
       },
       "backgroundTasks": {

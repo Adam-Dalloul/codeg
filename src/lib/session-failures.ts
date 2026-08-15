@@ -24,7 +24,11 @@
  * Kept dependency-free for unit testing without the context harness.
  */
 
-import type { SessionFailureRecord } from "@/lib/types"
+import type {
+  ContentBlock,
+  MessageTurn,
+  SessionFailureRecord,
+} from "@/lib/types"
 
 /** Merge one incoming upsert; returns the SAME array reference when rejected. */
 export function upsertSessionFailure(
@@ -90,6 +94,34 @@ export function resolvedSessionFailures(
   failures: SessionFailureRecord[]
 ): SessionFailureRecord[] {
   return failures.filter((f) => f.resolved)
+}
+
+/**
+ * Text of the most recent USER turn — what the failure banner's "retry"
+ * action re-submits. Joins the turn's text blocks; image-only or empty user
+ * turns are skipped (nothing meaningful to resend). Callers should feed the
+ * runtime TIMELINE turns first and fall back to the persisted detail: after a
+ * failed turn the prompt may exist only as an optimistic/promoted runtime
+ * turn (the persisted parse can lag or miss it), and reading only the detail
+ * made the retry click a silent no-op (2026-08-16 field report).
+ */
+export function lastUserPromptText(
+  turns: MessageTurn[] | undefined
+): string | null {
+  if (!turns) return null
+  for (let i = turns.length - 1; i >= 0; i--) {
+    const turn = turns[i]
+    if (turn.role !== "user") continue
+    const text = turn.blocks
+      .filter(
+        (b): b is Extract<ContentBlock, { type: "text" }> => b.type === "text"
+      )
+      .map((b) => b.text)
+      .join("\n")
+      .trim()
+    if (text) return text
+  }
+  return null
 }
 
 /** The AIR action vocabulary the banner knows how to wire. */

@@ -3314,6 +3314,7 @@
           "newSession": "新しいセッション"
         },
         "recovered": "回復済み",
+        "retryUnavailable": "再送信できるメッセージがありません。",
         "toggleDetails": "詳細の切り替え"
       },
       "backgroundTasks": {

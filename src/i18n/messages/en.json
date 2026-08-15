@@ -3314,6 +3314,7 @@
           "newSession": "New session"
         },
         "recovered": "Recovered",
+        "retryUnavailable": "No previous message to resend.",
         "toggleDetails": "Toggle details"
       },
       "backgroundTasks": {

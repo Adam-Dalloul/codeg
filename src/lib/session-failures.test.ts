@@ -3,12 +3,13 @@ import { describe, expect, it } from "vitest"
 import {
   activeSessionFailures,
   knownSessionFailureActions,
+  lastUserPromptText,
   mergeSessionFailures,
   resolvedSessionFailures,
   settleSessionFailures,
   upsertSessionFailure,
 } from "./session-failures"
-import type { SessionFailureRecord } from "@/lib/types"
+import type { MessageTurn, SessionFailureRecord } from "@/lib/types"
 
 function record(
   id: string,
@@ -107,6 +108,48 @@ describe("settleSessionFailures", () => {
     const table = settleSessionFailures([record("w", 1)], "all")
     expect(settleSessionFailures(table, "all")).toBe(table)
     expect(settleSessionFailures([], "warnings")).toEqual([])
+  })
+})
+
+describe("lastUserPromptText", () => {
+  function turn(
+    role: MessageTurn["role"],
+    blocks: MessageTurn["blocks"]
+  ): MessageTurn {
+    return { id: `${role}-${Math.random()}`, role, blocks, timestamp: "" }
+  }
+  const text = (t: string) => ({ type: "text", text: t }) as const
+  const image = {
+    type: "image",
+    data: "aGk=",
+    mime_type: "image/png",
+    uri: null,
+  } as const
+
+  it("returns the MOST RECENT user turn's joined text", () => {
+    const turns = [
+      turn("user", [text("first prompt")]),
+      turn("assistant", [text("reply")]),
+      turn("user", [text("line one"), image, text("line two")]),
+      turn("assistant", [text("failed mid-way")]),
+    ]
+    expect(lastUserPromptText(turns)).toBe("line one\nline two")
+  })
+
+  it("skips image-only and blank user turns, and handles no-user/undefined", () => {
+    // The retry action must resend something MEANINGFUL: an image-only or
+    // whitespace user turn yields nothing, so the scan continues backwards.
+    const turns = [
+      turn("user", [text("real prompt")]),
+      turn("user", [image]),
+      turn("user", [text("   ")]),
+    ]
+    expect(lastUserPromptText(turns)).toBe("real prompt")
+    expect(lastUserPromptText([turn("assistant", [text("only agent")])])).toBe(
+      null
+    )
+    expect(lastUserPromptText([])).toBe(null)
+    expect(lastUserPromptText(undefined)).toBe(null)
   })
 })
 

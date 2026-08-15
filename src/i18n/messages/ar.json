@@ -3314,6 +3314,7 @@
           "newSession": "جلسة جديدة"
         },
         "recovered": "تم التعافي",
+        "retryUnavailable": "لا توجد رسالة سابقة لإعادة إرسالها.",
         "toggleDetails": "تبديل التفاصيل"
       },
       "backgroundTasks": {

@@ -3314,6 +3314,7 @@
           "newSession": "新建会话"
         },
         "recovered": "已恢复",
+        "retryUnavailable": "没有可重发的消息。",
         "toggleDetails": "展开/收起详情"
       },
       "backgroundTasks": {

@@ -3314,6 +3314,7 @@
           "newSession": "新增會話"
         },
         "recovered": "已恢復",
+        "retryUnavailable": "沒有可重發的訊息。",
         "toggleDetails": "展開/收合詳情"
       },
       "backgroundTasks": {

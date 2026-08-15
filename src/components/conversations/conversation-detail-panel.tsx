@@ -93,6 +93,7 @@ import { TurnBusyError } from "@/lib/turn-busy"
 import {
   getConversationIdByExternalIdFromStore,
   getRuntimeSession,
+  getTimelineTurns,
   useConversationRuntimeActions,
   useConversationRuntimeStore,
 } from "@/stores/conversation-runtime-store"
@@ -114,7 +115,10 @@ import {
   type UserMessageBlock,
 } from "@/lib/types"
 import { useRouter } from "next/navigation"
-import type { SessionFailureAction } from "@/lib/session-failures"
+import {
+  lastUserPromptText,
+  type SessionFailureAction,
+} from "@/lib/session-failures"
 import { getAgentLabel } from "@/lib/custom-agents"
 import {
   getSavedModeId,
@@ -216,26 +220,6 @@ function buildUserTurnFromMessageBlocks(
     blocks: contentBlocks,
     timestamp: new Date().toISOString(),
   }
-}
-
-/** Text of the most recent USER turn — what the session-failure banner's
- *  "retry" action re-submits. Joins the turn's text blocks; image-only or
- *  empty turns are skipped (nothing meaningful to resend). */
-function lastUserPromptText(turns: MessageTurn[] | undefined): string | null {
-  if (!turns) return null
-  for (let i = turns.length - 1; i >= 0; i--) {
-    const turn = turns[i]
-    if (turn.role !== "user") continue
-    const text = turn.blocks
-      .filter(
-        (b): b is Extract<ContentBlock, { type: "text" }> => b.type === "text"
-      )
-      .map((b) => b.text)
-      .join("\n")
-      .trim()
-    if (text) return text
-  }
-  return null
 }
 
 function buildVirtualConversationId(seed: string): number {
@@ -1671,13 +1655,29 @@ const ConversationTabView = memo(function ConversationTabView({
   // dropped. `login` lands on the agents settings page (auth lives there);
   // `new_session` reuses the load-error banner's fresh-draft path.
   const router = useRouter()
+  const tSessionFailure = useTranslations("Folder.chat.sessionFailure")
   const detailTurns = detail?.turns
   const handleSessionFailureAction = useCallback(
     (action: SessionFailureAction) => {
       switch (action) {
         case "retry": {
-          const text = lastUserPromptText(detailTurns)
-          if (!text) return
+          // Prompt text source: the runtime TIMELINE first — it is what the
+          // user sees, and a failed turn's prompt lives there as an
+          // optimistic/promoted turn even when the persisted detail is stale
+          // (field report 2026-08-16: after a network-drop terminal failure
+          // the detail had no user turn yet, so retry read null and silently
+          // did nothing). Persisted detail is the fallback for a conversation
+          // whose runtime session was evicted.
+          const text =
+            lastUserPromptText(
+              getTimelineTurns(effectiveConversationId).map((e) => e.turn)
+            ) ?? lastUserPromptText(detailTurns)
+          if (!text) {
+            // Nothing resendable is a dead end for this action — say so
+            // instead of swallowing the click.
+            toast.warning(tSessionFailure("retryUnavailable"))
+            return
+          }
           mqEnqueue(
             { blocks: [{ type: "text", text }], displayText: text },
             selectedModeId
@@ -1692,7 +1692,15 @@ const ConversationTabView = memo(function ConversationTabView({
           break
       }
     },
-    [detailTurns, mqEnqueue, selectedModeId, router, handleOpenNewSession]
+    [
+      effectiveConversationId,
+      detailTurns,
+      mqEnqueue,
+      selectedModeId,
+      router,
+      handleOpenNewSession,
+      tSessionFailure,
+    ]
   )
 
   const messageListNode = (
