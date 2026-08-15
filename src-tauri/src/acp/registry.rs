@@ -275,9 +275,10 @@ const ACP_ADAPTER_DOCS_URL: &str = "https://docs.codeg.app/guide/supported-agent
 /// `_meta.steering.supported`: an adapter that ignores the opt-in falls back
 /// to `startedNewTurn` on the turn-end race — a detached turn no host request
 /// owns, which codeg's turn-scoped runtime must never trigger. codex-acp
-/// 1.1.9 ships `_session/steering` but not `promptRequired` (verified against
-/// the published tarball), so it stays `None` until a release implements the
-/// opt-in — then this is a one-line flip plus tests.
+/// ships `_session/steering` but not `promptRequired` — re-verified against
+/// the published 1.3.0 tarball (zero hits, same as 1.1.9) — so it stays
+/// `None` until a release implements the opt-in — then this is a one-line
+/// flip plus tests.
 ///
 /// Honoring the opt-in is necessary but not sufficient: the ACTIVE path must
 /// also keep the owning `session/prompt` in flight across the steered work
@@ -368,9 +369,50 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             // ExitPlanMode `plan_update` experiment outright, and 0.65.0's
             // remaining commits are devDependency bumps — the runtime deps and
             // the Node floor still match 0.64.0's.
+            // 0.66.0 (#964) introduces the provider-neutral goal extension:
+            // initialize advertises `_meta.goal = {version: 1, controlMethod:
+            // "_session/goal", actions}` (claude offers ["set", "clear"]) and
+            // goal state arrives as `session_info_update._meta.goal` snapshots
+            // — {objective, status (active|paused|blocked|limited|complete),
+            // iterations?, lastReason?, createdAt/updatedAt (Unix ms),
+            // tokenBudget?, tokensUsed?, timeUsedSeconds?, controlMethod},
+            // `goal: null` clears. codeg picks the goal channel per connection
+            // at initialize (advertised ⇒ neutral only; see the
+            // SessionInfoUpdate arm in connection.rs), the same selection that
+            // keeps codex goals alive after its silent 1.2.0 switch. #967
+            // fixes goal publish/replace reliability.
+            // 0.67.0 bumps claude-agent-sdk 0.3.220→0.3.232 and joins the
+            // JetBrains AIR extension codex 1.2.0 speaks (#979; record shape
+            // finalized in 0.68.0/#992): typed session failures ride
+            // `session_info_update._meta.jetbrains.air.sessionFailure` as
+            // {id, revision (per-id from 1), category (connection|access|
+            // limit|request|service|unknown), severity (warning|error), title,
+            // details?, actions (subset of retry|login|new_session)} — upsert
+            // records ONLY, no resolve/tombstone wire; publication is STRICTLY
+            // gated on the client advertising
+            // `clientCapabilities._meta.jetbrains.air = {version >= 1,
+            // capabilities: ["sessionFailure"]}`. codeg does not advertise
+            // yet, so behavior stays byte-identical to 0.65.0 until the
+            // unified failure surface lands; on session/load the adapter
+            // re-publishes still-active failures (deliberate; id+revision
+            // merging absorbs it). A model fallback (`model_refusal_fallback`)
+            // publishes an AIR "advisory" record behind the same gate (#990).
+            // Skill tool calls now carry `_meta.claudeCode.skill` plus
+            // `skillPath` when a SKILL.md is located (#986) — input for a
+            // future dedicated card. Task plans survive across prompts
+            // (#974), file-preparing tool calls get a pending title (#978),
+            // and the default model option description names the resolved
+            // model (#982) — all through existing generic render paths.
+            // Compaction remains plain text ("Compacting...") with NO
+            // `contextCompaction` meta, so the compaction card stays a
+            // codex/grok surface. 0.68.0 (#992) only realigns the failure
+            // record (categories narrowed to the six above, actions to the
+            // three above). The steering `promptRequired` path is intact
+            // across 0.66–0.68 (tarball-verified), so the 0.65.0 floor keeps
+            // holding, and `engines.node` stays ">=22".
             distribution: AgentDistribution::Npx {
-                version: "0.65.0",
-                package: "@agentclientprotocol/claude-agent-acp@0.65.0",
+                version: "0.68.0",
+                package: "@agentclientprotocol/claude-agent-acp@0.68.0",
                 cmd: "claude-agent-acp",
                 args: &[],
                 env: &[],
@@ -445,9 +487,53 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             // inert here — it only runs behind that capability, and its
             // dependency set is byte-identical to 1.1.8's. 1.1.9 still declares
             // no `engines.node`, so the 20.0.0 floor is retained.
+            // 1.2.0 rewires two surfaces UNANNOUNCED in its release notes (the
+            // #929/#930 pattern again; both tarball-verified): (a) `/goal`
+            // transitions move to the provider-neutral
+            // `session_info_update._meta.goal` snapshot the claude adapter
+            // speaks since 0.66.0 — the legacy `_meta.codex.goal` key is GONE,
+            // so codeg's initialize-pinned channel selection (SessionInfoUpdate
+            // arm, connection.rs) is what keeps GoalCard alive from this
+            // release on. The neutral snapshot collapses usageLimited/
+            // budgetLimited into status "limited", adds paused/blocked,
+            // carries createdAt/updatedAt in Unix ms and embeds controlMethod
+            // "_session/goal" (actions [set, pause, resume, clear]; the old
+            // "_codex/session/goal_control" name is kept as an accepted
+            // alias). (b) It joins the JetBrains AIR extension (#383; aligned
+            // to the final record shape in 1.3.0/#393, same wire as
+            // claude-agent-acp 0.67.0 — see that entry): typed session
+            // failures gated STRICTLY on the client advertising
+            // `clientCapabilities._meta.jetbrains.air`. Unadvertised —
+            // codeg today — everything stays byte-identical: `_meta.codex.
+            // error` (both willRetry branches), warning/config-warning text
+            // chunks, dropped deprecation notices. Once a client advertises,
+            // those branches are REPLACED by AIR records (willRetry ⇒
+            // severity "warning", terminal ⇒ "error" that deliberately stays
+            // active; recovery is implied by turn progress, never published),
+            // so the `codex_retry_indicator` pull source disappears for such
+            // connections — the future failure surface must take over the
+            // retry banner, not run beside it. #377 also normalizes cwd
+            // filters for Windows session listing. 1.3.0 (#396) upgrades the
+            // compaction lifecycle to the claude-aligned synthetic tool call
+            // (kind "think", title "Compact conversation") whose meta is now
+            // the versioned object `{contextCompaction: {version: 1}}` — the
+            // `contextCompaction: true` boolean marker from 1.1.3 is gone
+            // (the schema reserves trigger/preTokens/postTokens/durationMs/
+            // error, but 1.3.0 emits none of them). The frontend predicate
+            // (`src/lib/context-compaction.ts`) accepts both shapes: the Grok
+            // bridge still synthesizes the boolean. #400 restores native
+            // provider state after overrides (matters for BYO-provider model
+            // switching). New in the bundle and fine on generic cards:
+            // synthetic "Guardian Review" tool calls (kind "think") and
+            // fuzzyFileSearch ids. Structured plan_update stays inert — its
+            // gate is a TOP-LEVEL `clientCapabilities.plan` field sacp 11.0.0
+            // cannot express. 1.3.0 still ships NO steering `promptRequired`
+            // opt-in (tarball grep: zero hits ⇒ the arm below stays None) and
+            // still declares no `engines.node`, so the 20.0.0 floor is
+            // retained.
             distribution: AgentDistribution::Npx {
-                version: "1.1.9",
-                package: "@agentclientprotocol/codex-acp@1.1.9",
+                version: "1.3.0",
+                package: "@agentclientprotocol/codex-acp@1.3.0",
                 cmd: "codex-acp",
                 args: &[],
                 env: &[],
@@ -863,9 +949,9 @@ mod tests {
         // fixed the latter (claude-agent-acp 0.65.0 / #958), NOT the one that
         // introduced the opt-in — every 0.64.x settles the prompt early (#934).
         // Everyone else stays None and rides the MCP pull channel; codex-acp
-        // 1.1.9 ships steering without the opt-in at all. Flipping an agent on
-        // here without the runtime `agent_info.version` proof is not enough by
-        // design.
+        // ships steering without the opt-in at all (re-verified on the 1.3.0
+        // tarball). Flipping an agent on here without the runtime
+        // `agent_info.version` proof is not enough by design.
         assert_eq!(
             steering_prompt_required_min_version(AgentType::ClaudeCode),
             Some("0.65.0")
@@ -885,8 +971,8 @@ mod tests {
     fn registry_pins_current_acp_agent_versions() {
         assert_npx_version(
             AgentType::ClaudeCode,
-            "0.65.0",
-            "@agentclientprotocol/claude-agent-acp@0.65.0",
+            "0.68.0",
+            "@agentclientprotocol/claude-agent-acp@0.68.0",
             Some("22.0.0"),
         );
         assert_npx_version(
@@ -921,8 +1007,8 @@ mod tests {
         );
         assert_npx_version(
             AgentType::Codex,
-            "1.1.9",
-            "@agentclientprotocol/codex-acp@1.1.9",
+            "1.3.0",
+            "@agentclientprotocol/codex-acp@1.3.0",
             Some("20.0.0"),
         );
         assert_npx_version(AgentType::Pi, "0.0.33", "pi-acp@0.0.33", Some("22.0.0"));

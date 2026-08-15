@@ -4168,6 +4168,18 @@ async fn run_connection(
                 native_steering_available
             );
 
+            // Goal channel selection, pinned for the whole connection: an
+            // adapter advertising the provider-neutral goal extension
+            // (`_meta.goal`, claude-agent-acp 0.66+/codex-acp 1.2+) publishes
+            // goal snapshots ONLY there — and codex dropped the legacy
+            // `_meta.codex.goal` key in the same release, so honoring the
+            // advertisement is what keeps GoalCard alive across the bump (see
+            // `session_info_goal_value`).
+            let neutral_goal_channel = init_advertises_goal(init_resp.meta.as_ref());
+            if neutral_goal_channel {
+                tracing::info!("[ACP][{}] goal channel: provider-neutral (_meta.goal)", agent_type);
+            }
+
             // Whether this agent accepts MCP server entries over the ACP wire
             // (`session/new`'s `mcpServers`). Almost all do; OpenClaw rejects
             // any server entry and fails session creation, so it must receive
@@ -4259,6 +4271,7 @@ async fn run_connection(
                 // that needs no tool; OpenClaw-style `supports_mcp: false`
                 // agents could ship it someday).
                 s.native_steering_available = native_steering_available;
+                s.neutral_goal_channel = neutral_goal_channel;
                 if let Some(ref injected) = delegate_injection {
                     s.delegation_token = Some(injected.token.clone());
                     // The agent's actual feedback capability for this session
@@ -8630,6 +8643,41 @@ fn init_advertises_steering(meta: Option<&serde_json::Map<String, serde_json::Va
         .unwrap_or(false)
 }
 
+/// Whether the `initialize` response advertises the provider-neutral goal
+/// extension: top-level `_meta.goal = {version: <integer >= 1>, controlMethod,
+/// actions}`. Advertised ⇒ goal state arrives as
+/// `session_info_update._meta.goal` snapshots and the legacy
+/// `_meta.codex.goal` key is ignored for the WHOLE connection — codex-acp
+/// switched to the neutral key silently in 1.2.0 (legacy key gone), and
+/// claude-agent-acp speaks only the neutral form (0.66.0+). Pinning the
+/// channel here, at initialize, makes the selection independent of update
+/// arrival order, so a transitional adapter double-publishing one goal
+/// transition through both namespaces can never produce two goal cards.
+/// Non-integer or sub-1 versions fail closed onto the legacy channel.
+fn init_advertises_goal(meta: Option<&serde_json::Map<String, serde_json::Value>>) -> bool {
+    meta.and_then(|m| m.get("goal"))
+        .and_then(|g| g.get("version"))
+        .and_then(serde_json::Value::as_i64)
+        .is_some_and(|version| version >= 1)
+}
+
+/// Pick the goal payload out of a `session_info_update`'s `_meta` according to
+/// the channel pinned at initialize (see [`init_advertises_goal`]): the
+/// neutral `_meta.goal` for advertising connections, the legacy
+/// `_meta.codex.goal` otherwise — never both. Pure so the either/or contract
+/// is unit-tested without the connection machinery.
+fn session_info_goal_value(
+    neutral_goal_channel: bool,
+    meta: Option<&serde_json::Map<String, serde_json::Value>>,
+) -> Option<&serde_json::Value> {
+    let meta = meta?;
+    if neutral_goal_channel {
+        meta.get("goal")
+    } else {
+        meta.get("codex").and_then(|codex| codex.get("goal"))
+    }
+}
+
 /// Strict SemVer floor check: true when `version >= min` by SemVer
 /// PRECEDENCE. Prerelease ordering matters here — `0.64.0-rc1` precedes
 /// `0.64.0` and may predate the very commit that shipped the
@@ -10263,20 +10311,28 @@ async fn emit_conversation_update(
         }
         SessionUpdate::SessionInfoUpdate(info) => {
             // codex-acp v1.1.0 (#263) reports `/goal` transitions as structured
-            // session metadata instead of live "Goal updated (…)" agent text:
-            // the goal object rides under `_meta.codex.goal`. Map it onto codeg's
-            // canonical create_goal/update_goal synthetic tool call so the
-            // existing goal-card pipeline (groupGoalRuns/GoalCard) renders it —
-            // byte-identical to the history path (parsers/codex.rs). Non-Codex
-            // agents don't populate the `codex` key, so this is a no-op for them.
+            // session metadata instead of live "Goal updated (…)" agent text.
+            // The goal object rides under ONE of two meta keys, selected per
+            // connection at initialize (`SessionState.neutral_goal_channel`,
+            // see `session_info_goal_value`): the provider-neutral
+            // `_meta.goal` for adapters advertising the goal extension
+            // (claude-agent-acp 0.66+, codex-acp 1.2+ — which dropped the
+            // legacy key), else the legacy `_meta.codex.goal`. Either way it
+            // maps onto codeg's canonical create_goal/update_goal synthetic
+            // tool call so the existing goal-card pipeline
+            // (groupGoalRuns/GoalCard) renders it — byte-identical to the
+            // history path (parsers/codex.rs). Agents publishing no goal meta
+            // no-op here. The neutral snapshot's status vocabulary
+            // (active|paused|blocked|limited|complete) passes through
+            // `normalize_goal_status` unchanged; its extra fields
+            // (createdAt/updatedAt/iterations/lastReason/controlMethod)
+            // survive inside the marker's raw goal object for the card.
             // (`info.title` is Codex's native thread name; it is adopted via the
             // parser auto-title path on the next conversation fetch, not here, to
             // keep this DB-agnostic emit path unchanged — see parsers/codex.rs.)
-            if let Some(goal) = info
-                .meta
-                .as_ref()
-                .and_then(|m| m.get("codex"))
-                .and_then(|codex| codex.get("goal"))
+            let neutral_goal_channel = state.read().await.neutral_goal_channel;
+            if let Some(goal) =
+                session_info_goal_value(neutral_goal_channel, info.meta.as_ref())
             {
                 if let Some(marker) =
                     crate::acp::codex_goal::next_goal_marker(&mut cb_state.codex_open_goal, goal)
@@ -10772,6 +10828,70 @@ mod tests {
         let stringly = meta_map(serde_json::json!({"steering": {"supported": "true"}}));
         assert!(!init_advertises_steering(Some(&stringly)));
         assert!(!init_advertises_steering(None));
+    }
+
+    #[test]
+    fn init_advertises_goal_requires_integer_version_at_least_1() {
+        // The real advertisements: codex-acp 1.2.0+ / claude-agent-acp 0.66.0+.
+        let codex = meta_map(serde_json::json!({"goal": {
+            "version": 1,
+            "controlMethod": "_session/goal",
+            "actions": ["set", "pause", "resume", "clear"],
+        }}));
+        assert!(init_advertises_goal(Some(&codex)));
+        // Future versions must keep selecting the neutral channel.
+        let v2 = meta_map(serde_json::json!({"goal": {"version": 2}}));
+        assert!(init_advertises_goal(Some(&v2)));
+
+        // Fail closed onto the legacy channel: sub-1, non-integer, stringly,
+        // absent, or wrongly-shaped advertisements.
+        for bad in [
+            serde_json::json!({"goal": {"version": 0}}),
+            serde_json::json!({"goal": {"version": 1.5}}),
+            serde_json::json!({"goal": {"version": "1"}}),
+            serde_json::json!({"goal": {}}),
+            serde_json::json!({"goal": true}),
+            serde_json::json!({"steering": {"supported": true}}),
+        ] {
+            let meta = meta_map(bad);
+            assert!(!init_advertises_goal(Some(&meta)));
+        }
+        assert!(!init_advertises_goal(None));
+    }
+
+    #[test]
+    fn session_info_goal_value_reads_exactly_one_channel() {
+        // A transitional adapter double-publishing the same transition through
+        // both namespaces (even across separate updates) must yield the goal
+        // from exactly ONE channel — the one pinned at initialize.
+        let both = meta_map(serde_json::json!({
+            "goal": {"objective": "neutral", "status": "active"},
+            "codex": {"goal": {"objective": "legacy", "status": "active"}},
+        }));
+        let neutral = session_info_goal_value(true, Some(&both)).expect("neutral value");
+        assert_eq!(neutral.get("objective").and_then(|v| v.as_str()), Some("neutral"));
+        let legacy = session_info_goal_value(false, Some(&both)).expect("legacy value");
+        assert_eq!(legacy.get("objective").and_then(|v| v.as_str()), Some("legacy"));
+
+        // Neutral-pinned connections ignore a legacy-only update (and vice
+        // versa) — the two updates of a double-publish collapse to one marker.
+        let legacy_only = meta_map(
+            serde_json::json!({"codex": {"goal": {"objective": "legacy", "status": "active"}}}),
+        );
+        assert!(session_info_goal_value(true, Some(&legacy_only)).is_none());
+        let neutral_only = meta_map(
+            serde_json::json!({"goal": {"objective": "neutral", "status": "active"}}),
+        );
+        assert!(session_info_goal_value(false, Some(&neutral_only)).is_none());
+
+        // `goal: null` IS a value (the clear signal), not an absent key.
+        let cleared = meta_map(serde_json::json!({"goal": null}));
+        assert!(matches!(
+            session_info_goal_value(true, Some(&cleared)),
+            Some(v) if v.is_null()
+        ));
+        assert!(session_info_goal_value(false, Some(&cleared)).is_none());
+        assert!(session_info_goal_value(true, None).is_none());
     }
 
     #[test]

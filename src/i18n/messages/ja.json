@@ -3069,7 +3069,8 @@
             "blocked": "ブロック中",
             "usageLimited": "使用量制限",
             "budgetLimited": "予算制限",
-            "complete": "完了"
+            "complete": "完了",
+            "limited": "上限到達"
           }
         },
         "field": {
@@ -3295,7 +3296,8 @@
       "contextCompaction": {
         "compacting": "コンテキストを圧縮しています…",
         "compacted": "コンテキストを圧縮しました",
-        "compactedTokens": "コンテキストを圧縮 · {before} → {after} トークン"
+        "compactedTokens": "コンテキストを圧縮 · {before} → {after} トークン",
+        "failed": "コンテキストの圧縮に失敗しました"
       },
       "backgroundTasks": {
         "running": "{count} 件のバックグラウンドタスクを実行中",

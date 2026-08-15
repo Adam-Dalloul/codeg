@@ -3069,7 +3069,8 @@
             "blocked": "受阻",
             "usageLimited": "用量受限",
             "budgetLimited": "預算受限",
-            "complete": "已完成"
+            "complete": "已完成",
+            "limited": "已達上限"
           }
         },
         "field": {
@@ -3295,7 +3296,8 @@
       "contextCompaction": {
         "compacting": "正在壓縮上下文…",
         "compacted": "上下文已壓縮",
-        "compactedTokens": "上下文已壓縮 · {before} → {after} tokens"
+        "compactedTokens": "上下文已壓縮 · {before} → {after} tokens",
+        "failed": "上下文壓縮失敗"
       },
       "backgroundTasks": {
         "running": "{count} 個背景任務執行中",

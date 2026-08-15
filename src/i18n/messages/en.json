@@ -3069,7 +3069,8 @@
             "blocked": "blocked",
             "usageLimited": "usage limited",
             "budgetLimited": "budget limited",
-            "complete": "complete"
+            "complete": "complete",
+            "limited": "limit reached"
           }
         },
         "field": {
@@ -3295,7 +3296,8 @@
       "contextCompaction": {
         "compacting": "Compacting context…",
         "compacted": "Context compacted",
-        "compactedTokens": "Context compacted · {before} → {after} tokens"
+        "compactedTokens": "Context compacted · {before} → {after} tokens",
+        "failed": "Context compaction failed"
       },
       "backgroundTasks": {
         "running": "{count, plural, one {# background task running} other {# background tasks running}}",

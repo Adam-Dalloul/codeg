@@ -3069,7 +3069,8 @@
             "blocked": "차단됨",
             "usageLimited": "사용량 제한",
             "budgetLimited": "예산 제한",
-            "complete": "완료"
+            "complete": "완료",
+            "limited": "한도 도달"
           }
         },
         "field": {
@@ -3295,7 +3296,8 @@
       "contextCompaction": {
         "compacting": "컨텍스트 압축 중…",
         "compacted": "컨텍스트 압축 완료",
-        "compactedTokens": "컨텍스트 압축 완료 · {before} → {after} 토큰"
+        "compactedTokens": "컨텍스트 압축 완료 · {before} → {after} 토큰",
+        "failed": "컨텍스트 압축 실패"
       },
       "backgroundTasks": {
         "running": "백그라운드 작업 {count}개 실행 중",

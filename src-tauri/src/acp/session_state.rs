@@ -409,6 +409,17 @@ pub struct SessionState {
     /// opt-in), rerouting subsequent notes to the MCP pull path.
     pub native_steering_available: bool,
 
+    /// Which `session_info_update` meta key carries goal snapshots for this
+    /// connection: `true` ⇒ the provider-neutral `_meta.goal` (adapter
+    /// advertised the goal extension at initialize — claude-agent-acp 0.66+,
+    /// codex-acp 1.2+, which dropped the legacy key in the same release),
+    /// `false` ⇒ the legacy `_meta.codex.goal`. Pinned ONCE at initialize
+    /// (`connection.rs::init_advertises_goal`) so a transitional adapter
+    /// double-publishing a goal transition through both namespaces — even
+    /// across separate updates — can never render two goal cards.
+    /// Backend-internal routing only: not part of the client snapshot.
+    pub neutral_goal_channel: bool,
+
     /// Concatenated text content of the just-completed turn's assistant
     /// message. Captured at TurnComplete (just before live_message is
     /// cleared) so the lifecycle subscriber can surface it as the
@@ -516,6 +527,7 @@ impl SessionState {
             delegation_token: None,
             feedback_tool_available: false,
             native_steering_available: false,
+            neutral_goal_channel: false,
             last_assistant_text: None,
             pending_user_message: None,
             pending_user_message_started_at: None,

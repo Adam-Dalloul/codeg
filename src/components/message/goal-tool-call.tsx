@@ -157,6 +157,9 @@ function statusTone(
     case "blocked":
     case "usage_limited":
     case "budget_limited":
+    // Neutral goal-extension snapshots (claude-agent-acp 0.66+/codex-acp
+    // 1.2+) collapse usageLimited/budgetLimited into "limited" adapter-side.
+    case "limited":
     case "failed":
       return "error"
     case "paused":
@@ -182,6 +185,8 @@ function goalStatusLabel(
       return t("status.usageLimited")
     case "budget_limited":
       return t("status.budgetLimited")
+    case "limited":
+      return t("status.limited")
     case "complete":
     case "completed":
       return t("status.complete")
