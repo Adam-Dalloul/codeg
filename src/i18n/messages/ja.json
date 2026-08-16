@@ -1287,7 +1287,15 @@
       "sendAttributionHeader": "API に帰属/課金識別子を送信",
       "sendAttributionHeaderAria": "API に Claude Code の帰属/課金識別子を送信",
       "disableNonessentialTraffic": "テレメトリや不要なネットワークリクエストを無効化",
-      "disableNonessentialTrafficAria": "Claude Code のテレメトリや不要なネットワークリクエストを無効化"
+      "disableNonessentialTrafficAria": "Claude Code のテレメトリや不要なネットワークリクエストを無効化",
+      "permissionModeLabel": "権限モード",
+      "permissionModeHint": "新しい Claude チャットはこのモードで始まります。~/.claude/settings.json の permissions.defaultMode に保存されます。",
+      "permissionModeAria": "Claude Code の権限モード",
+      "permissionUnset": "デフォルトを使用",
+      "permission_default": "毎回確認",
+      "permission_acceptEdits": "編集を自動承認",
+      "permission_auto": "スマート自動承認",
+      "permission_bypassPermissions": "常に許可"
     },
     "dialogs": {
       "confirmDeleteProvider": "Provider {providerId} を削除しますか？",

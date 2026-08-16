@@ -1287,7 +1287,15 @@
       "sendAttributionHeader": "Enviar identificador de atribución/facturación a la API",
       "sendAttributionHeaderAria": "Enviar el identificador de atribución/facturación de Claude Code a la API",
       "disableNonessentialTraffic": "Desactivar la telemetría o las solicitudes de red innecesarias",
-      "disableNonessentialTrafficAria": "Desactivar la telemetría o las solicitudes de red innecesarias de Claude Code"
+      "disableNonessentialTrafficAria": "Desactivar la telemetría o las solicitudes de red innecesarias de Claude Code",
+      "permissionModeLabel": "Modo de permisos",
+      "permissionModeHint": "Los chats nuevos de Claude empiezan en este modo. Se guarda como permissions.defaultMode en ~/.claude/settings.json.",
+      "permissionModeAria": "Modo de permisos de Claude Code",
+      "permissionUnset": "Usar el predeterminado",
+      "permission_default": "Preguntar cada vez",
+      "permission_acceptEdits": "Aprobar ediciones automáticamente",
+      "permission_auto": "Aprobación automática inteligente",
+      "permission_bypassPermissions": "Aprobar siempre"
     },
     "dialogs": {
       "confirmDeleteProvider": "¿Eliminar proveedor {providerId}?",

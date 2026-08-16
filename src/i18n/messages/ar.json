@@ -1287,7 +1287,15 @@
       "sendAttributionHeader": "إرسال معرّف الإسناد/الفوترة إلى الواجهة",
       "sendAttributionHeaderAria": "إرسال معرّف الإسناد/الفوترة الخاص بـ Claude Code إلى الواجهة",
       "disableNonessentialTraffic": "تعطيل القياس عن بُعد أو طلبات الشبكة غير الضرورية",
-      "disableNonessentialTrafficAria": "تعطيل القياس عن بُعد أو طلبات الشبكة غير الضرورية في Claude Code"
+      "disableNonessentialTrafficAria": "تعطيل القياس عن بُعد أو طلبات الشبكة غير الضرورية في Claude Code",
+      "permissionModeLabel": "وضع الأذونات",
+      "permissionModeHint": "تبدأ محادثات Claude الجديدة بهذا الوضع. تُحفظ كـ permissions.defaultMode في ~/.claude/settings.json.",
+      "permissionModeAria": "وضع أذونات Claude Code",
+      "permissionUnset": "استخدام الافتراضي",
+      "permission_default": "السؤال في كل مرة",
+      "permission_acceptEdits": "الموافقة التلقائية على التعديلات",
+      "permission_auto": "موافقة تلقائية ذكية",
+      "permission_bypassPermissions": "السماح دائماً"
     },
     "dialogs": {
       "confirmDeleteProvider": "حذف المزود {providerId}؟",

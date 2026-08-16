@@ -1287,7 +1287,15 @@
       "sendAttributionHeader": "Send attribution/billing identifier to the API",
       "sendAttributionHeaderAria": "Send Claude Code attribution/billing identifier to the API",
       "disableNonessentialTraffic": "Disable telemetry or redundant network requests",
-      "disableNonessentialTrafficAria": "Disable Claude Code telemetry or redundant network requests"
+      "disableNonessentialTrafficAria": "Disable Claude Code telemetry or redundant network requests",
+      "permissionModeLabel": "Permission mode",
+      "permissionModeHint": "New Claude chats start in this mode. Saved as permissions.defaultMode in ~/.claude/settings.json.",
+      "permissionModeAria": "Claude Code permission mode",
+      "permissionUnset": "Use default",
+      "permission_default": "Ask every time",
+      "permission_acceptEdits": "Auto-approve edits",
+      "permission_auto": "Smart auto-approve",
+      "permission_bypassPermissions": "Always approve"
     },
     "dialogs": {
       "confirmDeleteProvider": "Delete Provider {providerId}?",
