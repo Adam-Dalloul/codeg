@@ -1360,6 +1360,7 @@ mod tauri_app {
                 subscription_quota_commands::subscription_quota_claude,
                 subscription_quota_commands::subscription_quota_grok,
                 subscription_quota_commands::subscription_quota_cursor,
+                subscription_quota_commands::subscription_quota_opencode,
                 work_task_commands::work_task_list,
                 work_task_commands::work_task_get,
                 work_task_commands::work_task_events,

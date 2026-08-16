@@ -23,8 +23,12 @@
  *     `POST aiserver.v1.DashboardService/GetCurrentPeriodUsage` on
  *     `api2.cursor.sh`. `planUsage` has `remaining` / `limit` plus
  *     `total_percent_used` / `auto_percent_used` / `api_percent_used`.
- * Gemini / OpenCode: no remaining-quota command. OpenCode `stats` is
- * historical token/cost, not plan remaining.
+ *   OpenCode Go: official `GET https://opencode.ai/zen/go/v1/usage`
+ *     (shipped 2026-08-11, anomalyco/opencode#16513) with the Go API
+ *     key. `{ usage.rolling|weekly|monthly: { percent, resetsAt } }`.
+ *     `percent` is used 0-100. `opencode stats` is still historical
+ *     session cost, not this. Zen pay-as-you-go has no remaining API.
+ * Gemini: no remaining-quota command.
  */
 
 export type IsolatableFamily =
@@ -100,7 +104,7 @@ export const PROVIDER_USAGE_URLS: Record<IsolatableFamily, string> = {
   grok: "https://accounts.x.ai/",
   cursor: "https://cursor.com/dashboard/spending",
   gemini: "https://aistudio.google.com/",
-  opencode: "https://opencode.ai/",
+  opencode: "https://opencode.ai/go",
 }
 
 const FAMILIES: IsolatableFamily[] = [
@@ -350,6 +354,53 @@ export function remainingFromCursorPeriodUsage(
   }
 }
 
+function windowFromOpencodeGo(
+  value: unknown,
+  label: string
+): QuotaWindow | null {
+  const rec = asRecord(value)
+  if (!rec) return null
+  const used = pickNum(rec, "percent", "usagePercent", "usage_percent")
+  const remaining = percentRemaining(used)
+  if (remaining == null || used == null) return null
+  return {
+    remaining,
+    usedPercent: used,
+    resetsAt: parseResetsAt(rec.resetsAt ?? rec.resets_at),
+    label,
+  }
+}
+
+/**
+ * Official OpenCode Go `GET /zen/go/v1/usage`.
+ * `percent` is used 0-100. Shipped 2026-08-11 (#16513).
+ */
+export function remainingFromOpencodeGoUsage(
+  payload: unknown
+): OfficialRemaining | null {
+  const rec = asRecord(payload)
+  if (!rec) return null
+  const usage = asRecord(rec.usage) ?? rec
+  const rolling = windowFromOpencodeGo(usage.rolling, "5-hour")
+  const weekly = windowFromOpencodeGo(usage.weekly, "weekly")
+  const monthly = windowFromOpencodeGo(usage.monthly, "monthly")
+  const candidates = [rolling, weekly, monthly].filter(
+    (w): w is QuotaWindow => w != null
+  )
+  if (candidates.length === 0) return null
+  const primary = candidates.reduce((a, b) =>
+    a.remaining <= b.remaining ? a : b
+  )
+  const extras = candidates.filter((w) => w !== primary)
+  return {
+    remaining: primary.remaining,
+    limit: 100,
+    source: "opencode /zen/go/v1/usage",
+    extras: extras.length ? extras : undefined,
+    resetsAt: primary.resetsAt,
+  }
+}
+
 export function remainingFromOfficialPayload(
   family: IsolatableFamily,
   payload: unknown
@@ -358,6 +409,7 @@ export function remainingFromOfficialPayload(
   if (family === "claude") return remainingFromClaudeUsageHud(payload)
   if (family === "grok") return remainingFromGrokBilling(payload)
   if (family === "cursor") return remainingFromCursorPeriodUsage(payload)
+  if (family === "opencode") return remainingFromOpencodeGoUsage(payload)
   return null
 }
 

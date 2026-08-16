@@ -17,7 +17,12 @@
 //! plan usage is the same DashboardService RPC the official CLI/IDE client
 //! already ships: `GetCurrentPeriodUsage` on `api2.cursor.sh`, authenticated
 //! with the cursor-agent login token (`%APPDATA%\Cursor\auth.json` or
-//! `CURSOR_API_KEY`). Gemini / OpenCode still have no remaining-quota command.
+//! `CURSOR_API_KEY`).
+//!
+//! OpenCode Go remaining is official
+//! `GET https://opencode.ai/zen/go/v1/usage` (anomalyco/opencode#16513,
+//! live 2026-08-11) with the Go API key from `auth.json`. Gemini still
+//! has no remaining-quota command. OpenCode `stats` is session history.
 
 use std::fs;
 use std::path::Path;
@@ -488,6 +493,7 @@ pub fn extra_homes_in(
         "codex" => "codex-",
         "grok" => "grok-",
         "cursor" => "cursor-",
+        "opencode" => "opencode-",
         _ => return Vec::new(),
     };
     let Some(root) = root else {
@@ -670,6 +676,144 @@ pub async fn subscription_quota_cursor() -> Result<OfficialQuotaRead, AppCommand
     Ok(read_cursor_subscription_quota_core().await)
 }
 
+pub fn opencode_go_key_from_auth_json(text: &str) -> Option<String> {
+    let value: Value = serde_json::from_str(text).ok()?;
+    let obj = value.as_object()?;
+    // `opencode-go` wins when present, but a plain `opencode` entry is the
+    // common single-account shape, so a missing provider skips to the next one
+    // instead of ending the search.
+    for provider in ["opencode-go", "opencode"] {
+        let Some(entry) = obj.get(provider).and_then(Value::as_object) else {
+            continue;
+        };
+        let Some(key) = entry.get("key").and_then(Value::as_str) else {
+            continue;
+        };
+        if !key.is_empty() {
+            return Some(key.to_string());
+        }
+    }
+    None
+}
+
+fn opencode_auth_path() -> Option<std::path::PathBuf> {
+    Some(crate::parsers::opencode::resolve_opencode_base_dir().join("auth.json"))
+}
+
+fn read_opencode_go_key(path: &Path) -> Option<String> {
+    let text = fs::read_to_string(path).ok()?;
+    opencode_go_key_from_auth_json(&text)
+}
+
+fn opencode_go_key_from_env_or_file() -> Option<String> {
+    for name in ["OPENCODE_GO_API_KEY", "OPENCODE_API_KEY"] {
+        if let Ok(key) = std::env::var(name) {
+            let trimmed = key.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
+        }
+    }
+    let path = opencode_auth_path()?;
+    read_opencode_go_key(&path)
+}
+
+fn opencode_payload_has_usage(payload: &Value) -> bool {
+    let usage = payload.get("usage").unwrap_or(payload);
+    ["rolling", "weekly", "monthly"].iter().any(|window| {
+        usage
+            .get(*window)
+            .and_then(|w| w.get("percent").or_else(|| w.get("usagePercent")))
+            .is_some()
+    })
+}
+
+async fn fetch_opencode_go_usage(token: &str) -> Result<Value, AppCommandError> {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()
+        .map_err(|err| {
+            AppCommandError::new(AppErrorCode::NetworkError, "HTTP client")
+                .with_detail(err.to_string())
+        })?;
+    let response = client
+        .get("https://opencode.ai/zen/go/v1/usage")
+        .header("Authorization", format!("Bearer {token}"))
+        .header("Accept", "application/json")
+        .header("User-Agent", "codeg")
+        .send()
+        .await
+        .map_err(|err| {
+            AppCommandError::new(AppErrorCode::NetworkError, "OpenCode usage request failed")
+                .with_detail(err.to_string())
+        })?;
+    let status = response.status();
+    if !status.is_success() {
+        return Err(AppCommandError::new(
+            AppErrorCode::ExternalCommandFailed,
+            format!("OpenCode usage HTTP {status}"),
+        ));
+    }
+    response.json::<Value>().await.map_err(|err| {
+        AppCommandError::new(AppErrorCode::ExternalCommandFailed, "OpenCode usage JSON")
+            .with_detail(err.to_string())
+    })
+}
+
+pub async fn read_opencode_subscription_quota_core() -> OfficialQuotaRead {
+    let extra_slots = extra_opencode_slots().await;
+    let Some(token) = opencode_go_key_from_env_or_file() else {
+        return OfficialQuotaRead {
+            family: "opencode",
+            payload: None,
+            extra_slots,
+            unavailable_reason: Some("OpenCode Go is not signed in".into()),
+        };
+    };
+    match fetch_opencode_go_usage(&token).await {
+        Ok(payload) if opencode_payload_has_usage(&payload) => OfficialQuotaRead {
+            family: "opencode",
+            payload: Some(payload),
+            extra_slots,
+            unavailable_reason: None,
+        },
+        Ok(_) => OfficialQuotaRead {
+            family: "opencode",
+            payload: None,
+            extra_slots,
+            unavailable_reason: Some("OpenCode usage payload missing windows".into()),
+        },
+        Err(err) => OfficialQuotaRead {
+            family: "opencode",
+            payload: None,
+            extra_slots,
+            unavailable_reason: Some(err.message),
+        },
+    }
+}
+
+async fn extra_opencode_slots() -> Vec<OfficialQuotaSlot> {
+    let mut slots = Vec::new();
+    for (label, home) in extra_homes_for_family("opencode") {
+        let path = home.join("auth.json");
+        let Some(token) = read_opencode_go_key(&path) else {
+            continue;
+        };
+        if let Ok(payload) = fetch_opencode_go_usage(&token).await {
+            if opencode_payload_has_usage(&payload) {
+                slots.push(OfficialQuotaSlot { label, payload });
+            }
+        }
+    }
+    slots
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn subscription_quota_opencode() -> Result<OfficialQuotaRead, AppCommandError> {
+    Ok(read_opencode_subscription_quota_core().await)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -767,6 +911,7 @@ mod tests {
         fs::create_dir_all(root.join("claude-3")).unwrap();
         fs::create_dir_all(root.join("codex-2")).unwrap();
         fs::create_dir_all(root.join("cursor-2")).unwrap();
+        fs::create_dir_all(root.join("opencode-2")).unwrap();
         fs::write(root.join("claude-ignore"), "").unwrap();
         let claude = extra_homes_in(Some(root.clone()), "claude");
         let names: Vec<_> = claude.iter().map(|(n, _)| n.as_str()).collect();
@@ -777,6 +922,9 @@ mod tests {
         let cursor = extra_homes_in(Some(root.clone()), "cursor");
         assert_eq!(cursor.len(), 1);
         assert_eq!(cursor[0].0, "cursor-2");
+        let opencode = extra_homes_in(Some(root.clone()), "opencode");
+        assert_eq!(opencode.len(), 1);
+        assert_eq!(opencode[0].0, "opencode-2");
         assert!(extra_homes_in(Some(root.clone()), "grok").is_empty());
         let _ = fs::remove_dir_all(&root);
     }
@@ -797,5 +945,23 @@ mod tests {
             Some("key_only")
         );
         assert!(cursor_access_token_from_auth_json("{}").is_none());
+    }
+
+    #[test]
+    fn reads_opencode_go_key_without_logging_it() {
+        let text = r#"{
+            "opencode": { "type": "api", "key": "zen-key" },
+            "opencode-go": { "type": "api", "key": "go-key" }
+        }"#;
+        assert_eq!(
+            opencode_go_key_from_auth_json(text).as_deref(),
+            Some("go-key")
+        );
+        assert_eq!(
+            opencode_go_key_from_auth_json(r#"{"opencode":{"type":"api","key":"zen-only"}}"#)
+                .as_deref(),
+            Some("zen-only")
+        );
+        assert!(opencode_go_key_from_auth_json("{}").is_none());
     }
 }

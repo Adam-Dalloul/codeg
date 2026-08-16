@@ -8,6 +8,7 @@ import {
   subscriptionQuotaCodex,
   subscriptionQuotaCursor,
   subscriptionQuotaGrok,
+  subscriptionQuotaOpencode,
 } from "@/lib/api"
 import {
   inventory,
@@ -34,12 +35,13 @@ export function SubscriptionQuotaPanel() {
       subscriptionQuotaClaude(),
       subscriptionQuotaGrok(),
       subscriptionQuotaCursor(),
+      subscriptionQuotaOpencode(),
     ])
       .then((results) => {
         if (cancelled) return
         const next: Partial<Record<IsolatableFamily, unknown>> = {}
         const slots: Partial<Record<IsolatableFamily, OfficialQuotaSlot[]>> = {}
-        const [codex, claude, grok, cursor] = results
+        const [codex, claude, grok, cursor, opencode] = results
         if (codex.status === "fulfilled") {
           if (codex.value.payload) next.codex = codex.value.payload
           if (codex.value.extraSlots?.length)
@@ -58,6 +60,11 @@ export function SubscriptionQuotaPanel() {
           if (cursor.value.payload) next.cursor = cursor.value.payload
           if (cursor.value.extraSlots?.length)
             slots.cursor = cursor.value.extraSlots
+        }
+        if (opencode.status === "fulfilled") {
+          if (opencode.value.payload) next.opencode = opencode.value.payload
+          if (opencode.value.extraSlots?.length)
+            slots.opencode = opencode.value.extraSlots
         }
         setOfficial(next)
         setExtraSlots(slots)
@@ -93,7 +100,8 @@ export function SubscriptionQuotaPanel() {
               ) : (row.family === "codex" ||
                   row.family === "claude" ||
                   row.family === "grok" ||
-                  row.family === "cursor") &&
+                  row.family === "cursor" ||
+                  row.family === "opencode") &&
                 !loaded ? (
                 <span className="text-muted-foreground">
                   {t("quotaLoading")}

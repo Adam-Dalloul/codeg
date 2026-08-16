@@ -14,6 +14,7 @@ import {
   subscriptionQuotaCodex,
   subscriptionQuotaCursor,
   subscriptionQuotaGrok,
+  subscriptionQuotaOpencode,
 } from "@/lib/api"
 import {
   familyFromAgentType,
@@ -45,7 +46,7 @@ const QUOTA_FETCHERS: Record<
   grok: subscriptionQuotaGrok,
   cursor: subscriptionQuotaCursor,
   gemini: null,
-  opencode: null,
+  opencode: subscriptionQuotaOpencode,
 }
 
 function SessionQuotaChipInner({ family }: { family: IsolatableFamily }) {

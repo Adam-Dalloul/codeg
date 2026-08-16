@@ -3033,6 +3033,11 @@ export async function subscriptionQuotaCursor(): Promise<OfficialQuotaRead> {
   return getTransport().call("subscription_quota_cursor")
 }
 
+/** Official OpenCode Go `GET /zen/go/v1/usage`. Missing key/plan is null. */
+export async function subscriptionQuotaOpencode(): Promise<OfficialQuotaRead> {
+  return getTransport().call("subscription_quota_opencode")
+}
+
 // Automations
 
 export async function automationList(): Promise<Automation[]> {

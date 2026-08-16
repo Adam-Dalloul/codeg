@@ -1289,6 +1289,10 @@ pub fn build_router(
             "/subscription_quota_cursor",
             post(handlers::subscription_quota::subscription_quota_cursor),
         )
+        .route(
+            "/subscription_quota_opencode",
+            post(handlers::subscription_quota::subscription_quota_opencode),
+        )
         // ─── Work tasks ───
         .route("/work_task_list", post(handlers::work_task::work_task_list))
         .route("/work_task_get", post(handlers::work_task::work_task_get))

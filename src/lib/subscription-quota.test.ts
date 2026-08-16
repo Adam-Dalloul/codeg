@@ -213,6 +213,49 @@ describe("subscription quota inventory", () => {
     ])
   })
 
+  it("reads OpenCode Go remaining from official /zen/go/v1/usage", () => {
+    // Shape from anomalyco/opencode#16513 formatUsage().
+    const payload = {
+      usage: {
+        rolling: {
+          status: "ok",
+          percent: 42,
+          resetsAt: "2026-08-16T18:00:00.000Z",
+        },
+        weekly: {
+          status: "ok",
+          percent: 10,
+          resetsAt: "2026-08-20T00:00:00.000Z",
+        },
+        monthly: {
+          status: "ok",
+          percent: 8,
+          resetsAt: "2026-09-01T00:00:00.000Z",
+        },
+      },
+    }
+    const parsed = remainingFromOfficialPayload("opencode", payload)
+    expect(parsed?.remaining).toBe(58)
+    expect(parsed?.source).toBe("opencode /zen/go/v1/usage")
+    expect(parsed?.resetsAt).toBe(
+      Math.floor(Date.parse("2026-08-16T18:00:00.000Z") / 1000)
+    )
+    expect(parsed?.extras?.map((e) => e.label).sort()).toEqual([
+      "monthly",
+      "weekly",
+    ])
+    expect(familyQuota("opencode", payload).kind).toBe("remaining-subscription")
+  })
+
+  it("does not invent OpenCode remaining from session stats", () => {
+    expect(
+      remainingFromOfficialPayload("opencode", {
+        tokens: 1200,
+        cost: 1.2,
+      })
+    ).toBeNull()
+  })
+
   it("does not invent Cursor remaining from about/status identity", () => {
     expect(
       remainingFromOfficialPayload("cursor", {
