@@ -684,6 +684,7 @@
       "saveKimiCodeConfig": "Kimi Code の設定を保存",
       "customInstall": "カスタムインストール",
       "saveKimiCodeRawConfig": "Save config.toml",
+      "saveDeepSeekConfig": "DeepSeek 設定を保存",
       "diagnose": "診断"
     },
     "status": {
@@ -786,6 +787,15 @@
       "modelNoMatch": "一致するモデルがありません",
       "modelsNeedAuth": "サインインするとモデル一覧を読み込みます。",
       "modelDefaultBadge": "既定"
+    },
+    "deepseek": {
+      "configManagement": "DeepSeek Harness の設定",
+      "configDescription": "エンドポイントと API キーは deepseek-acp が起動時に読み込む環境変数です。モデルと推論レベルはセッションごとのセレクターなので、入力欄で切り替えます。",
+      "baseUrlLabel": "API エンドポイント",
+      "baseUrlHint": "空欄なら公式エンドポイントを使います。保存後に開始したセッションから有効になります。実行中のセッションは再接続してください。",
+      "baseUrlInvalid": "クエリ文字列を含まない完全な http(s) URL を入力してください（例：https://api.deepseek.com）",
+      "apiKeyLabel": "API キー",
+      "apiKeyHint": "DEEPSEEK_API_KEY としてエージェントに渡されます。環境変数は認証情報ファイルより優先されるため、ターミナルでログインする場合は空のままにしてください。"
     },
     "codex": {
       "configDescription": "API URL、API Key、モデル名、reasoning effort を素早く設定でき、`auth.json` / `config.toml` と同期します。",
@@ -1207,6 +1217,8 @@
       "saveCodeBuddyFailed": "CodeBuddy の設定の保存に失敗しました",
       "kimiCodeSaved": "Kimi Code の設定を保存しました",
       "saveKimiCodeFailed": "Kimi Code の設定の保存に失敗しました",
+      "deepseekSaved": "DeepSeek の設定を保存しました",
+      "saveDeepSeekFailed": "DeepSeek の設定の保存に失敗しました",
       "modelProviderRequired": "保存する前にモデルプロバイダーを選択してください。",
       "affectedRunningSessions": "{count} 件の実行中セッションは再接続すると変更が適用されます",
       "providerConnected": "{providerId} を接続しました",

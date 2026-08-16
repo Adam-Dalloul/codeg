@@ -684,6 +684,7 @@
       "saveKimiCodeConfig": "Salvar configuração do Kimi Code",
       "customInstall": "Instalação personalizada",
       "saveKimiCodeRawConfig": "Save config.toml",
+      "saveDeepSeekConfig": "Salvar configuração do DeepSeek",
       "diagnose": "Diagnosticar"
     },
     "status": {
@@ -786,6 +787,15 @@
       "modelNoMatch": "Nenhum modelo correspondente",
       "modelsNeedAuth": "Faça login para carregar a lista de modelos.",
       "modelDefaultBadge": "padrão"
+    },
+    "deepseek": {
+      "configManagement": "Configuração do DeepSeek Harness",
+      "configDescription": "O endpoint e a chave são variáveis de ambiente que o deepseek-acp lê ao iniciar. O modelo e o nível de raciocínio são seletores por sessão — escolha-os no campo de mensagem.",
+      "baseUrlLabel": "Endpoint da API",
+      "baseUrlHint": "Deixe vazio para o endpoint oficial. Vale para as sessões iniciadas depois de salvar; reconecte uma sessão em andamento para que ela use o novo valor.",
+      "baseUrlInvalid": "Informe uma URL http(s) completa e sem query string, por exemplo https://api.deepseek.com",
+      "apiKeyLabel": "Chave de API",
+      "apiKeyHint": "Enviada ao agente como DEEPSEEK_API_KEY. Uma variável de ambiente tem precedência sobre o arquivo de credenciais, então deixe em branco se você entrar pelo terminal."
     },
     "codex": {
       "configDescription": "Suporta configuração rápida de URL da API, API Key, nome do modelo e reasoning effort, com sincronização para `auth.json` / `config.toml`.",
@@ -1207,6 +1217,8 @@
       "saveCodeBuddyFailed": "Falha ao salvar a configuração do CodeBuddy",
       "kimiCodeSaved": "Configuração do Kimi Code salva",
       "saveKimiCodeFailed": "Falha ao salvar a configuração do Kimi Code",
+      "deepseekSaved": "Configuração do DeepSeek salva",
+      "saveDeepSeekFailed": "Falha ao salvar a configuração do DeepSeek",
       "modelProviderRequired": "Selecione um provedor de modelo antes de salvar.",
       "affectedRunningSessions": "{count, plural, one {# sessão ativa precisa reconectar para aplicar a alteração} other {# sessões ativas precisam reconectar para aplicar a alteração}}",
       "providerConnected": "{providerId} conectado",

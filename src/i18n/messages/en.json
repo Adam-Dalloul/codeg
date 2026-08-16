@@ -684,6 +684,7 @@
       "saveKimiCodeConfig": "Save Kimi Code Config",
       "customInstall": "Custom install",
       "saveKimiCodeRawConfig": "Save config.toml",
+      "saveDeepSeekConfig": "Save DeepSeek Config",
       "diagnose": "Diagnose"
     },
     "status": {
@@ -786,6 +787,15 @@
       "modelNoMatch": "No matching model",
       "modelsNeedAuth": "Sign in to load the model list.",
       "modelDefaultBadge": "default"
+    },
+    "deepseek": {
+      "configManagement": "DeepSeek Harness Configuration",
+      "configDescription": "The endpoint and key are environment variables deepseek-acp reads at launch. Model and reasoning effort are per-session selectors — pick them in the composer.",
+      "baseUrlLabel": "API endpoint",
+      "baseUrlHint": "Leave empty for the official endpoint. Applies to sessions started after the save — reconnect a running session to pick it up.",
+      "baseUrlInvalid": "Enter a full http(s) URL with no query string, for example https://api.deepseek.com",
+      "apiKeyLabel": "API key",
+      "apiKeyHint": "Passed to the agent as DEEPSEEK_API_KEY. An environment variable outranks the credentials file, so leave this empty if you sign in through the terminal."
     },
     "codex": {
       "configDescription": "Supports quick configuration for API URL, API Key, model name and reasoning effort, and syncs with `auth.json` / `config.toml`.",
@@ -1207,6 +1217,8 @@
       "saveCodeBuddyFailed": "Failed to save CodeBuddy config",
       "kimiCodeSaved": "Kimi Code config saved",
       "saveKimiCodeFailed": "Failed to save Kimi Code config",
+      "deepseekSaved": "DeepSeek config saved",
+      "saveDeepSeekFailed": "Failed to save DeepSeek config",
       "modelProviderRequired": "Please select a model provider before saving.",
       "affectedRunningSessions": "{count, plural, one {# running session needs to reconnect to apply the change} other {# running sessions need to reconnect to apply the change}}",
       "providerConnected": "Connected {providerId}",

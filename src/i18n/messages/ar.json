@@ -684,6 +684,7 @@
       "saveKimiCodeConfig": "حفظ إعدادات Kimi Code",
       "customInstall": "تثبيت مخصص",
       "saveKimiCodeRawConfig": "Save config.toml",
+      "saveDeepSeekConfig": "حفظ إعدادات DeepSeek",
       "diagnose": "تشخيص"
     },
     "status": {
@@ -786,6 +787,15 @@
       "modelNoMatch": "لا يوجد نموذج مطابق",
       "modelsNeedAuth": "سجّل الدخول لتحميل قائمة النماذج.",
       "modelDefaultBadge": "افتراضي"
+    },
+    "deepseek": {
+      "configManagement": "إعدادات DeepSeek Harness",
+      "configDescription": "نقطة النهاية والمفتاح متغيّرا بيئة يقرأهما deepseek-acp عند الإقلاع. أما النموذج ومستوى الاستدلال فمحدِّدان على مستوى الجلسة، ويُختاران من حقل الإدخال.",
+      "baseUrlLabel": "نقطة نهاية API",
+      "baseUrlHint": "اتركه فارغًا لاستخدام نقطة النهاية الرسمية. يسري على الجلسات التي تبدأ بعد الحفظ؛ أعد الاتصال بالجلسة الجارية كي تأخذ القيمة الجديدة.",
+      "baseUrlInvalid": "أدخل عنوان http(s) كاملًا وبدون سلسلة استعلام، مثل https://api.deepseek.com",
+      "apiKeyLabel": "مفتاح API",
+      "apiKeyHint": "يُمرَّر إلى الوكيل باسم DEEPSEEK_API_KEY. متغيّر البيئة له أسبقية على ملف بيانات الاعتماد، لذا اترك الحقل فارغًا إن كنت تسجّل الدخول من الطرفية."
     },
     "codex": {
       "configDescription": "يدعم الإعداد السريع لعنوان API ومفتاح API واسم النموذج وجهد الاستدلال، مع المزامنة مع `auth.json` / `config.toml`.",
@@ -1207,6 +1217,8 @@
       "saveCodeBuddyFailed": "فشل حفظ إعدادات CodeBuddy",
       "kimiCodeSaved": "تم حفظ إعدادات Kimi Code",
       "saveKimiCodeFailed": "فشل حفظ إعدادات Kimi Code",
+      "deepseekSaved": "تم حفظ إعدادات DeepSeek",
+      "saveDeepSeekFailed": "تعذّر حفظ إعدادات DeepSeek",
       "modelProviderRequired": "يرجى اختيار مزود نموذج قبل الحفظ.",
       "affectedRunningSessions": "{count} جلسة نشطة تحتاج إلى إعادة الاتصال لتطبيق التغيير",
       "providerConnected": "تم ربط {providerId}",

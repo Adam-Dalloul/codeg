@@ -684,6 +684,7 @@
       "saveKimiCodeConfig": "保存 Kimi Code 配置",
       "customInstall": "自定义安装",
       "saveKimiCodeRawConfig": "保存 config.toml",
+      "saveDeepSeekConfig": "保存 DeepSeek 配置",
       "diagnose": "诊断"
     },
     "status": {
@@ -786,6 +787,15 @@
       "modelNoMatch": "没有匹配的模型",
       "modelsNeedAuth": "登录后加载模型列表。",
       "modelDefaultBadge": "默认"
+    },
+    "deepseek": {
+      "configManagement": "DeepSeek Harness 配置",
+      "configDescription": "端点与密钥是 deepseek-acp 启动时读取的环境变量。模型和推理档位是会话级选择器，在输入框里切换。",
+      "baseUrlLabel": "API 端点",
+      "baseUrlHint": "留空则使用官方端点。保存后对新建的会话生效——正在进行的会话需要重新连接才会切换。",
+      "baseUrlInvalid": "请填写完整的 http(s) 地址且不带查询参数，例如 https://api.deepseek.com",
+      "apiKeyLabel": "API 密钥",
+      "apiKeyHint": "以 DEEPSEEK_API_KEY 传给智能体。环境变量的优先级高于凭据文件，因此若用终端登录，这里留空即可。"
     },
     "codex": {
       "configDescription": "支持 API URL、API Key、模型名称、Reasoning Effort 快捷配置，并与 `auth.json` / `config.toml` 双向联动。",
@@ -1207,6 +1217,8 @@
       "saveCodeBuddyFailed": "保存 CodeBuddy 配置失败",
       "kimiCodeSaved": "Kimi Code 配置已保存",
       "saveKimiCodeFailed": "保存 Kimi Code 配置失败",
+      "deepseekSaved": "DeepSeek 配置已保存",
+      "saveDeepSeekFailed": "保存 DeepSeek 配置失败",
       "modelProviderRequired": "请先选择一个模型供应商再保存。",
       "affectedRunningSessions": "{count} 个进行中的会话需重连以应用更改",
       "providerConnected": "已连接 {providerId}",

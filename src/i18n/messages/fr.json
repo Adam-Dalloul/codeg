@@ -684,6 +684,7 @@
       "saveKimiCodeConfig": "Enregistrer la configuration de Kimi Code",
       "customInstall": "Installation personnalisée",
       "saveKimiCodeRawConfig": "Enregistrer config.toml",
+      "saveDeepSeekConfig": "Enregistrer la configuration DeepSeek",
       "diagnose": "Diagnostiquer"
     },
     "status": {
@@ -786,6 +787,15 @@
       "modelNoMatch": "Aucun modèle correspondant",
       "modelsNeedAuth": "Connectez-vous pour charger la liste des modèles.",
       "modelDefaultBadge": "par défaut"
+    },
+    "deepseek": {
+      "configManagement": "Configuration de DeepSeek Harness",
+      "configDescription": "Le point de terminaison et la clé sont des variables d'environnement que deepseek-acp lit au démarrage. Le modèle et le niveau de raisonnement sont des sélecteurs par session : ils se choisissent dans le champ de saisie.",
+      "baseUrlLabel": "Point de terminaison de l'API",
+      "baseUrlHint": "Laissez vide pour le point de terminaison officiel. S'applique aux sessions démarrées après l'enregistrement ; reconnectez une session en cours pour qu'elle le prenne en compte.",
+      "baseUrlInvalid": "Saisissez une URL http(s) complète et sans chaîne de requête, par exemple https://api.deepseek.com",
+      "apiKeyLabel": "Clé d'API",
+      "apiKeyHint": "Transmise à l'agent via DEEPSEEK_API_KEY. Une variable d'environnement l'emporte sur le fichier d'identifiants : laissez ce champ vide si vous vous connectez depuis le terminal."
     },
     "codex": {
       "configDescription": "Prend en charge la configuration rapide de l’URL API, de la clé API, du nom du modèle et du reasoning effort, avec synchronisation vers `auth.json` / `config.toml`.",
@@ -1207,6 +1217,8 @@
       "saveCodeBuddyFailed": "Échec de l'enregistrement de la configuration CodeBuddy",
       "kimiCodeSaved": "Configuration de Kimi Code enregistrée",
       "saveKimiCodeFailed": "Échec de l'enregistrement de la configuration de Kimi Code",
+      "deepseekSaved": "Configuration DeepSeek enregistrée",
+      "saveDeepSeekFailed": "Échec de l'enregistrement de la configuration DeepSeek",
       "modelProviderRequired": "Veuillez sélectionner un fournisseur de modèle avant d'enregistrer.",
       "affectedRunningSessions": "{count, plural, one {# session active doit se reconnecter pour appliquer la modification} other {# sessions actives doivent se reconnecter pour appliquer la modification}}",
       "providerConnected": "{providerId} connecté",

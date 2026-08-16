@@ -138,7 +138,7 @@ pub fn current_platform() -> &'static str {
     }
 }
 
-/// The twelve built-in agents. Excludes user-registered custom agents — use
+/// The thirteen built-in agents. Excludes user-registered custom agents — use
 /// [`all_acp_agents`] for the live set.
 pub fn builtin_acp_agents() -> Vec<AgentType> {
     vec![
@@ -154,11 +154,12 @@ pub fn builtin_acp_agents() -> Vec<AgentType> {
         AgentType::Pi,
         AgentType::Grok,
         AgentType::Cursor,
+        AgentType::DeepSeek,
     ]
 }
 
-/// Every agent codeg can currently drive: the twelve built-ins followed by the
-/// user's registered custom ACP agents (sorted by id).
+/// Every agent codeg can currently drive: the thirteen built-ins followed by
+/// the user's registered custom ACP agents (sorted by id).
 pub fn all_acp_agents() -> Vec<AgentType> {
     let mut agents = builtin_acp_agents();
     agents.extend(crate::acp::custom_registry::all());
@@ -179,6 +180,7 @@ pub fn registry_id_for(agent_type: AgentType) -> &'static str {
         AgentType::Pi => "pi-acp",
         AgentType::Grok => "grok-build",
         AgentType::Cursor => "cursor",
+        AgentType::DeepSeek => "deepseek-acp",
         // A custom agent's registry id IS its identity.
         AgentType::Custom(id) => id,
     }
@@ -198,6 +200,7 @@ pub fn from_registry_id(id: &str) -> Option<AgentType> {
         "pi-acp" => Some(AgentType::Pi),
         "grok-build" => Some(AgentType::Grok),
         "cursor" => Some(AgentType::Cursor),
+        "deepseek-acp" => Some(AgentType::DeepSeek),
         // Only ids the user has actually registered resolve. An unregistered
         // id must stay `None` so the ACP-registry picker still offers it as
         // "addable" rather than treating it as already supported.
@@ -896,6 +899,38 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
                 }),
             },
         },
+        AgentType::DeepSeek => AcpAgentMeta {
+            agent_type,
+            supports_mcp: true,
+            name: "DeepSeek Harness",
+            description: "Editor-facing DeepSeek Harness agent (ACP via deepseek-acp)",
+            // `deepseek-acp` is the community editor bridge for DeepSeek
+            // Harness (DSH): the harness's own `@deepseek-ai/dsh-acp` is an
+            // automation-only transport (no streaming, no tool presentation,
+            // rejects MCP), so codeg drives this adapter instead. It speaks
+            // ACP over stdio with NO arguments; auth is the `DEEPSEEK_API_KEY`
+            // env (or `~/.dsh/.credentials.yaml`), and per-session model /
+            // reasoning-effort / sandbox selection arrives through standard
+            // `configOptions`, so the composer selectors need no per-agent
+            // code. Session logs land under `$DSH_HOME/sessions` (default
+            // `~/.dsh/sessions`), which `parsers::deepseek` reads for history.
+            // It advertises loadSession + sessionCapabilities.list/resume and
+            // accepts wire `mcpServers` (stdio + streamable HTTP; SSE and the
+            // `acp` transport are explicitly rejected), so both the resume rung
+            // and the codeg-mcp companion work out of the box. 0.3.0 adds the
+            // upstream skills chain (`skill_storage_spec` mirrors its roots)
+            // and, since 0.2.0, `--setup` terminal auth for storing the key in
+            // `$DSH_HOME/.credentials.yaml`.
+            distribution: AgentDistribution::Npx {
+                version: "0.3.0",
+                package: "deepseek-acp@0.3.0",
+                cmd: "deepseek-acp",
+                args: &[],
+                env: &[],
+                // package.json declares `engines.node: ">=22"`.
+                node_required: Some("22.0.0"),
+            },
+        },
         // Handled by the early return above; kept so the match stays
         // exhaustive without a catch-all that could swallow a new built-in.
         AgentType::Custom(_) => unreachable!("custom agents resolve via custom_registry"),
@@ -1088,6 +1123,12 @@ mod tests {
             "1.0.3",
             "@xai-official/grok@1.0.3",
             Some("20.0.0"),
+        );
+        assert_npx_version(
+            AgentType::DeepSeek,
+            "0.3.0",
+            "deepseek-acp@0.3.0",
+            Some("22.0.0"),
         );
         assert_binary_version(AgentType::OpenCode, "1.18.18", "/releases/download/v1.18.18/");
         // Hermes rides the community npm bridge (upstream retired its PyPI
