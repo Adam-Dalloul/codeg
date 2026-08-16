@@ -18,7 +18,8 @@ export function usePlanOverlayAutoExpand(): {
   useEffect(() => {
     const sync = () => setAutoExpandState(readPlanOverlayAutoExpand())
     const onStorage = (event: StorageEvent) => {
-      if (event.key && event.key !== STORAGE_KEY_PLAN_OVERLAY_AUTO_EXPAND) return
+      if (event.key && event.key !== STORAGE_KEY_PLAN_OVERLAY_AUTO_EXPAND)
+        return
       sync()
     }
     window.addEventListener("storage", onStorage)

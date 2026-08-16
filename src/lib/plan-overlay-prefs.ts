@@ -8,14 +8,15 @@
 
 export const STORAGE_KEY_PLAN_OVERLAY_AUTO_EXPAND =
   "codeg-plan-overlay-auto-expand"
-export const PLAN_OVERLAY_AUTO_EXPAND_EVENT =
-  "codeg:plan-overlay-auto-expand"
+export const PLAN_OVERLAY_AUTO_EXPAND_EVENT = "codeg:plan-overlay-auto-expand"
 export const DEFAULT_PLAN_OVERLAY_AUTO_EXPAND = true
 
 export function readPlanOverlayAutoExpand(): boolean {
   if (typeof window === "undefined") return DEFAULT_PLAN_OVERLAY_AUTO_EXPAND
   try {
-    const raw = window.localStorage.getItem(STORAGE_KEY_PLAN_OVERLAY_AUTO_EXPAND)
+    const raw = window.localStorage.getItem(
+      STORAGE_KEY_PLAN_OVERLAY_AUTO_EXPAND
+    )
     if (raw === "0") return false
     if (raw === "1") return true
     return DEFAULT_PLAN_OVERLAY_AUTO_EXPAND
