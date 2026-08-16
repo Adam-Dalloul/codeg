@@ -110,8 +110,8 @@ One workspace, every agent. Whichever one is driving — Claude Code, Codex, Cur
 
 Step away from your desk, not your work. The native iOS and Android clients connect to the Codeg you already run — the **Web Service** of your desktop app, or your own `codeg-server` — and from there you start sessions, watch replies and tool calls stream in, answer permission prompts, and browse projects and branches. Nothing moves onto the phone: your files, agent CLIs, and conversations stay on the machine running Codeg, and the access token sits in iOS Keychain or Android Keystore. Both clients are open source ([iOS](https://github.com/xintaofei/codeg-ios), [Android](https://github.com/xintaofei/codeg-android)) and currently in testing; pairing takes three steps, covered in [Mobile apps](https://docs.codeg.app/getting-started/installation#mobile-apps).
 
-| iPhone & iPad | Android |
-| :---: | :---: |
+|                                               iPhone & iPad                                               |                                                         Android                                                         |
+| :-------------------------------------------------------------------------------------------------------: | :---------------------------------------------------------------------------------------------------------------------: |
 | <img src="./docs/images/mobile-ios.jpg" alt="Starting a session from the Codeg iOS client" width="248" /> | <img src="./docs/images/mobile-android.jpg" alt="An agent reply streaming into the Codeg Android client" width="248" /> |
 
 ## ✨ Highlights
