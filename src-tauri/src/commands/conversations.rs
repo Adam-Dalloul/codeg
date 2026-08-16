@@ -1,5 +1,8 @@
 use std::collections::{HashMap, HashSet};
 
+#[cfg(feature = "tauri-runtime")]
+use tauri::Manager;
+
 use crate::app_error::AppCommandError;
 use crate::db::entities::conversation;
 use crate::db::entities::folder::FolderKind;
@@ -106,8 +109,6 @@ async fn list_all_conversations_core_with_codex_titles(
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
 pub async fn list_all_conversations(
     app: tauri::AppHandle,
-    db: tauri::State<'_, AppDatabase>,
-    chat_channel_manager: tauri::State<'_, crate::chat_channel::manager::ChatChannelManager>,
     folder_ids: Option<Vec<i32>>,
     agent_type: Option<AgentType>,
     search: Option<String>,
@@ -115,9 +116,13 @@ pub async fn list_all_conversations(
     status: Option<String>,
     include_children: Option<bool>,
 ) -> Result<Vec<DbConversationSummary>, AppCommandError> {
+    let emitter = EventEmitter::Tauri(app.clone());
+    let db = app.state::<AppDatabase>();
+    let chat_channel_manager =
+        app.state::<crate::chat_channel::manager::ChatChannelManager>();
     list_all_conversations_core(
         &db.conn,
-        &EventEmitter::Tauri(app),
+        &emitter,
         &chat_channel_manager,
         ListAllConversationsOptions {
             folder_ids,
