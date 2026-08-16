@@ -1606,14 +1606,25 @@ fn redact_encrypted_args(value: &mut serde_json::Value) -> bool {
             }
             false
         }
-        serde_json::Value::Array(items) => items
-            .iter_mut()
-            .fold(false, |acc, item| redact_encrypted_args(item) || acc),
-        serde_json::Value::Object(map) => map
-            .values_mut()
-            .fold(false, |acc, item| redact_encrypted_args(item) || acc),
+        serde_json::Value::Array(items) => redact_encrypted_children(items.iter_mut()),
+        serde_json::Value::Object(map) => redact_encrypted_children(map.values_mut()),
         _ => false,
     }
+}
+
+/// Redact every child of a container and report whether any of them changed.
+///
+/// Deliberately a loop and not `Iterator::any`: the return value is a
+/// by-product, the traversal is the point, and `any` short-circuits — it would
+/// leave every envelope after the first one unredacted.
+fn redact_encrypted_children<'a>(
+    children: impl Iterator<Item = &'a mut serde_json::Value>,
+) -> bool {
+    let mut changed = false;
+    for child in children {
+        changed |= redact_encrypted_args(child);
+    }
+    changed
 }
 
 /// Add `agent_id` to a spawn execution capsule's input JSON (the
@@ -6673,6 +6684,29 @@ mod tests {
         assert_eq!(
             nested,
             serde_json::json!({"outer":{"list":["[encrypted]","keep me"]}})
+        );
+    }
+
+    #[test]
+    fn redaction_visits_every_sibling_not_just_the_first() {
+        // Guards the reason `redact_encrypted_children` is a loop: the obvious
+        // `Iterator::any` (which clippy's `unnecessary_fold` even suggests)
+        // stops at the first hit, so a second sealed sibling would reach the
+        // card as half a kilobyte of base64.
+        let sealed = format!("gAAAAAB{}", "0g7gOInVU3UTzqL".repeat(10));
+        let mut args = serde_json::json!({
+            "list": [sealed.clone(), sealed.clone()],
+            "first": sealed.clone(),
+            "second": sealed.clone(),
+        });
+        assert!(redact_encrypted_args(&mut args));
+        assert_eq!(
+            args,
+            serde_json::json!({
+                "list": ["[encrypted]", "[encrypted]"],
+                "first": "[encrypted]",
+                "second": "[encrypted]",
+            })
         );
     }
 
