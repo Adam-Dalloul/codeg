@@ -15,9 +15,10 @@ describe("familyFromAgentType", () => {
     expect(familyFromAgentType("codex")).toBe("codex")
     expect(familyFromAgentType("custom:codex-2")).toBe("codex")
     expect(familyFromAgentType("grok")).toBe("grok")
+    expect(familyFromAgentType("cursor")).toBe("cursor")
+    expect(familyFromAgentType("custom:cursor-2")).toBe("cursor")
     expect(familyFromAgentType("gemini")).toBe("gemini")
     expect(familyFromAgentType("open_code")).toBe("opencode")
-    expect(familyFromAgentType("cursor")).toBeNull()
     expect(familyFromAgentType(null)).toBeNull()
   })
 })
@@ -158,6 +159,43 @@ describe("subscription quota inventory", () => {
     expect(parsed?.resetsAt).toBe(
       Math.floor(Date.parse("2026-08-16T23:32:49.216917+00:00") / 1000)
     )
+  })
+
+  it("reads Cursor remaining from GetCurrentPeriodUsage planUsage", () => {
+    const payload = {
+      planUsage: {
+        remaining: 12,
+        limit: 20,
+        total_percent_used: 40,
+        auto_percent_used: 10,
+        api_percent_used: 55,
+      },
+    }
+    const parsed = remainingFromOfficialPayload("cursor", payload)
+    expect(parsed?.remaining).toBe(60)
+    expect(parsed?.source).toBe("cursor DashboardService/GetCurrentPeriodUsage")
+    expect(parsed?.extras?.map((e) => e.label).sort()).toEqual([
+      "API",
+      "Auto / Composer",
+    ])
+    expect(familyQuota("cursor", payload).kind).toBe("remaining-subscription")
+  })
+
+  it("falls back to Cursor remaining/limit when percents are absent", () => {
+    const parsed = remainingFromOfficialPayload("cursor", {
+      planUsage: { remaining: 5, limit: 20 },
+    })
+    expect(parsed?.remaining).toBe(25)
+  })
+
+  it("does not invent Cursor remaining from about/status identity", () => {
+    expect(
+      remainingFromOfficialPayload("cursor", {
+        cliVersion: "2026.07.23-e383d2b",
+        subscriptionTier: "pro",
+        userEmail: "dev@example.com",
+      })
+    ).toBeNull()
   })
 
   it("rejects a payload that is not the official family shape", () => {

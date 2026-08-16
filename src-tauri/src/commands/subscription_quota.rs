@@ -11,8 +11,13 @@
 //!
 //! Grok has no usage CLI. Remaining credits come from
 //! `GET https://cli-chat-proxy.grok.com/v1/billing?format=credits` with
-//! the Grok CLI OAuth token in `~/.grok/auth.json`. Gemini / OpenCode
-//! still have no remaining-quota command.
+//! the Grok CLI OAuth token in `~/.grok/auth.json`.
+//!
+//! Cursor has no usage CLI. `status` / `about` are identity only. Remaining
+//! plan usage is the same DashboardService RPC the official CLI/IDE client
+//! already ships: `GetCurrentPeriodUsage` on `api2.cursor.sh`, authenticated
+//! with the cursor-agent login token (`%APPDATA%\Cursor\auth.json` or
+//! `CURSOR_API_KEY`). Gemini / OpenCode still have no remaining-quota command.
 
 use std::fs;
 use std::path::Path;
@@ -482,6 +487,7 @@ pub fn extra_homes_in(
         "claude" => "claude-",
         "codex" => "codex-",
         "grok" => "grok-",
+        "cursor" => "cursor-",
         _ => return Vec::new(),
     };
     let Some(root) = root else {
@@ -510,6 +516,158 @@ pub fn extra_homes_in(
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
 pub async fn subscription_quota_grok() -> Result<OfficialQuotaRead, AppCommandError> {
     Ok(read_grok_subscription_quota_core().await)
+}
+
+pub fn cursor_access_token_from_auth_json(text: &str) -> Option<String> {
+    let value: Value = serde_json::from_str(text).ok()?;
+    value
+        .get("accessToken")
+        .and_then(Value::as_str)
+        .filter(|token| !token.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            value
+                .get("apiKey")
+                .and_then(Value::as_str)
+                .filter(|token| !token.is_empty())
+                .map(str::to_string)
+        })
+}
+
+fn cursor_auth_path() -> Option<std::path::PathBuf> {
+    if cfg!(windows) {
+        std::env::var_os("APPDATA")
+            .map(std::path::PathBuf::from)
+            .or_else(|| dirs::home_dir().map(|home| home.join("AppData").join("Roaming")))
+            .map(|appdata| appdata.join("Cursor").join("auth.json"))
+    } else if cfg!(target_os = "macos") {
+        dirs::home_dir().map(|home| home.join(".cursor").join("auth.json"))
+    } else {
+        let xdg = std::env::var_os("XDG_CONFIG_HOME")
+            .map(std::path::PathBuf::from)
+            .or_else(|| dirs::home_dir().map(|home| home.join(".config")));
+        xdg.map(|root| root.join("cursor").join("auth.json"))
+    }
+}
+
+fn read_cursor_access_token(path: &Path) -> Option<String> {
+    let text = fs::read_to_string(path).ok()?;
+    cursor_access_token_from_auth_json(&text)
+}
+
+fn cursor_token_from_env_or_file() -> Option<String> {
+    if let Ok(key) = std::env::var("CURSOR_API_KEY") {
+        let trimmed = key.trim();
+        if !trimmed.is_empty() {
+            return Some(trimmed.to_string());
+        }
+    }
+    let path = cursor_auth_path()?;
+    read_cursor_access_token(&path)
+}
+
+fn cursor_payload_has_plan_usage(payload: &Value) -> bool {
+    payload
+        .get("planUsage")
+        .or_else(|| payload.get("plan_usage"))
+        .map(|plan| {
+            plan.get("remaining").is_some()
+                || plan.get("limit").is_some()
+                || plan.get("totalPercentUsed").is_some()
+                || plan.get("total_percent_used").is_some()
+        })
+        .unwrap_or(false)
+}
+
+async fn fetch_cursor_period_usage(token: &str) -> Result<Value, AppCommandError> {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()
+        .map_err(|err| {
+            AppCommandError::new(AppErrorCode::NetworkError, "HTTP client")
+                .with_detail(err.to_string())
+        })?;
+    let response = client
+        .post("https://api2.cursor.sh/aiserver.v1.DashboardService/GetCurrentPeriodUsage")
+        .header("Authorization", format!("Bearer {token}"))
+        .header("Connect-Protocol-Version", "1")
+        .header("Content-Type", "application/json")
+        .header("Accept", "application/json")
+        .header("User-Agent", "codeg")
+        .json(&json!({}))
+        .send()
+        .await
+        .map_err(|err| {
+            AppCommandError::new(AppErrorCode::NetworkError, "Cursor usage request failed")
+                .with_detail(err.to_string())
+        })?;
+    let status = response.status();
+    if !status.is_success() {
+        return Err(AppCommandError::new(
+            AppErrorCode::ExternalCommandFailed,
+            format!("Cursor usage HTTP {status}"),
+        ));
+    }
+    response.json::<Value>().await.map_err(|err| {
+        AppCommandError::new(AppErrorCode::ExternalCommandFailed, "Cursor usage JSON")
+            .with_detail(err.to_string())
+    })
+}
+
+pub async fn read_cursor_subscription_quota_core() -> OfficialQuotaRead {
+    let extra_slots = extra_cursor_slots().await;
+    let Some(token) = cursor_token_from_env_or_file() else {
+        return OfficialQuotaRead {
+            family: "cursor",
+            payload: None,
+            extra_slots,
+            unavailable_reason: Some("Cursor CLI is not signed in".into()),
+        };
+    };
+    match fetch_cursor_period_usage(&token).await {
+        Ok(payload) if cursor_payload_has_plan_usage(&payload) => OfficialQuotaRead {
+            family: "cursor",
+            payload: Some(payload),
+            extra_slots,
+            unavailable_reason: None,
+        },
+        Ok(_) => OfficialQuotaRead {
+            family: "cursor",
+            payload: None,
+            extra_slots,
+            unavailable_reason: Some(
+                "Cursor usage payload missing planUsage remaining".into(),
+            ),
+        },
+        Err(err) => OfficialQuotaRead {
+            family: "cursor",
+            payload: None,
+            extra_slots,
+            unavailable_reason: Some(err.message),
+        },
+    }
+}
+
+async fn extra_cursor_slots() -> Vec<OfficialQuotaSlot> {
+    let mut slots = Vec::new();
+    for (label, home) in extra_homes_for_family("cursor") {
+        let path = home.join("auth.json");
+        let Some(token) = read_cursor_access_token(&path) else {
+            continue;
+        };
+        if let Ok(payload) = fetch_cursor_period_usage(&token).await {
+            if cursor_payload_has_plan_usage(&payload) {
+                slots.push(OfficialQuotaSlot { label, payload });
+            }
+        }
+    }
+    slots
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn subscription_quota_cursor() -> Result<OfficialQuotaRead, AppCommandError> {
+    Ok(read_cursor_subscription_quota_core().await)
 }
 
 #[cfg(test)]
@@ -608,6 +766,7 @@ mod tests {
         fs::create_dir_all(root.join("claude-2")).unwrap();
         fs::create_dir_all(root.join("claude-3")).unwrap();
         fs::create_dir_all(root.join("codex-2")).unwrap();
+        fs::create_dir_all(root.join("cursor-2")).unwrap();
         fs::write(root.join("claude-ignore"), "").unwrap();
         let claude = extra_homes_in(Some(root.clone()), "claude");
         let names: Vec<_> = claude.iter().map(|(n, _)| n.as_str()).collect();
@@ -615,7 +774,28 @@ mod tests {
         let codex = extra_homes_in(Some(root.clone()), "codex");
         assert_eq!(codex.len(), 1);
         assert_eq!(codex[0].0, "codex-2");
+        let cursor = extra_homes_in(Some(root.clone()), "cursor");
+        assert_eq!(cursor.len(), 1);
+        assert_eq!(cursor[0].0, "cursor-2");
         assert!(extra_homes_in(Some(root.clone()), "grok").is_empty());
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn reads_cursor_access_token_without_logging_it() {
+        let text = r#"{
+            "accessToken": "tok_cursor_value",
+            "refreshToken": "ref_cursor_value",
+            "apiKey": null
+        }"#;
+        assert_eq!(
+            cursor_access_token_from_auth_json(text).as_deref(),
+            Some("tok_cursor_value")
+        );
+        assert_eq!(
+            cursor_access_token_from_auth_json(r#"{"apiKey":"key_only"}"#).as_deref(),
+            Some("key_only")
+        );
+        assert!(cursor_access_token_from_auth_json("{}").is_none());
     }
 }

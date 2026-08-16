@@ -3028,6 +3028,11 @@ export async function subscriptionQuotaGrok(): Promise<OfficialQuotaRead> {
   return getTransport().call("subscription_quota_grok")
 }
 
+/** Cursor DashboardService GetCurrentPeriodUsage. Missing login is null. */
+export async function subscriptionQuotaCursor(): Promise<OfficialQuotaRead> {
+  return getTransport().call("subscription_quota_cursor")
+}
+
 // Automations
 
 export async function automationList(): Promise<Automation[]> {

@@ -18,6 +18,11 @@
  *     `GET https://cli-chat-proxy.grok.com/v1/billing?format=credits`
  *     with the Grok CLI OAuth token (`x-xai-token-auth: xai-grok-cli`)
  *     returns `config.creditUsagePercent` (0-100) and period end.
+ *   Cursor: no `usage` CLI. `status` / `about --format json` are identity
+ *     only. The official CLI/IDE client reads remaining from
+ *     `POST aiserver.v1.DashboardService/GetCurrentPeriodUsage` on
+ *     `api2.cursor.sh`. `planUsage` has `remaining` / `limit` plus
+ *     `total_percent_used` / `auto_percent_used` / `api_percent_used`.
  * Gemini / OpenCode: no remaining-quota command. OpenCode `stats` is
  * historical token/cost, not plan remaining.
  */
@@ -26,6 +31,7 @@ export type IsolatableFamily =
   | "claude"
   | "codex"
   | "grok"
+  | "cursor"
   | "gemini"
   | "opencode"
 
@@ -40,6 +46,7 @@ export function familyFromAgentType(
   if (s === "claude_code" || s.startsWith("custom:claude")) return "claude"
   if (s === "codex" || s.startsWith("custom:codex")) return "codex"
   if (s === "grok" || s.startsWith("custom:grok")) return "grok"
+  if (s === "cursor" || s.startsWith("custom:cursor")) return "cursor"
   if (s === "gemini" || s.startsWith("custom:gemini")) return "gemini"
   if (
     s === "open_code" ||
@@ -91,6 +98,7 @@ export const PROVIDER_USAGE_URLS: Record<IsolatableFamily, string> = {
   claude: "https://claude.ai/settings/usage",
   codex: "https://chatgpt.com/#settings",
   grok: "https://accounts.x.ai/",
+  cursor: "https://cursor.com/dashboard/spending",
   gemini: "https://aistudio.google.com/",
   opencode: "https://opencode.ai/",
 }
@@ -99,6 +107,7 @@ const FAMILIES: IsolatableFamily[] = [
   "claude",
   "codex",
   "grok",
+  "cursor",
   "gemini",
   "opencode",
 ]
@@ -275,6 +284,63 @@ export function remainingFromGrokBilling(
   }
 }
 
+function pickNum(
+  rec: Record<string, unknown>,
+  ...keys: string[]
+): number | null {
+  for (const key of keys) {
+    const value = rec[key]
+    if (typeof value === "number" && Number.isFinite(value)) return value
+  }
+  return null
+}
+
+function windowFromUsedPercent(
+  usedPercent: number | null,
+  label: string
+): QuotaWindow | null {
+  const remaining = percentRemaining(usedPercent)
+  if (remaining == null || usedPercent == null) return null
+  return { remaining, usedPercent, label }
+}
+
+/**
+ * Cursor CLI/IDE `GetCurrentPeriodUsage` `planUsage` object.
+ * Field names from aiserver.v1.GetCurrentPeriodUsageResponse.PlanUsage.
+ */
+export function remainingFromCursorPeriodUsage(
+  payload: unknown
+): OfficialRemaining | null {
+  const rec = asRecord(payload)
+  if (!rec) return null
+  const plan = asRecord(rec.planUsage) ?? asRecord(rec.plan_usage) ?? rec
+  if (!plan) return null
+
+  const usedTotal = pickNum(plan, "totalPercentUsed", "total_percent_used")
+  const usedAuto = pickNum(plan, "autoPercentUsed", "auto_percent_used")
+  const usedApi = pickNum(plan, "apiPercentUsed", "api_percent_used")
+  const leftover = pickNum(plan, "remaining")
+  const cap = pickNum(plan, "limit")
+
+  let remaining: number | null = percentRemaining(usedTotal)
+  if (remaining == null && leftover != null && cap != null && cap > 0) {
+    remaining = Math.max(0, Math.min(100, (100 * leftover) / cap))
+  }
+  if (remaining == null) return null
+
+  const extras = [
+    windowFromUsedPercent(usedAuto, "Auto / Composer"),
+    windowFromUsedPercent(usedApi, "API"),
+  ].filter((w): w is QuotaWindow => w != null)
+
+  return {
+    remaining,
+    limit: 100,
+    source: "cursor DashboardService/GetCurrentPeriodUsage",
+    extras: extras.length ? extras : undefined,
+  }
+}
+
 export function remainingFromOfficialPayload(
   family: IsolatableFamily,
   payload: unknown
@@ -282,6 +348,7 @@ export function remainingFromOfficialPayload(
   if (family === "codex") return remainingFromCodexAppServer(payload)
   if (family === "claude") return remainingFromClaudeUsageHud(payload)
   if (family === "grok") return remainingFromGrokBilling(payload)
+  if (family === "cursor") return remainingFromCursorPeriodUsage(payload)
   return null
 }
 

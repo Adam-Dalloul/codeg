@@ -12,6 +12,7 @@ import { Progress } from "@/components/ui/progress"
 import {
   subscriptionQuotaClaude,
   subscriptionQuotaCodex,
+  subscriptionQuotaCursor,
   subscriptionQuotaGrok,
 } from "@/lib/api"
 import {
@@ -42,6 +43,7 @@ const QUOTA_FETCHERS: Record<
   claude: subscriptionQuotaClaude,
   codex: subscriptionQuotaCodex,
   grok: subscriptionQuotaGrok,
+  cursor: subscriptionQuotaCursor,
   gemini: null,
   opencode: null,
 }

@@ -6,6 +6,7 @@ import { ExternalLink } from "lucide-react"
 import {
   subscriptionQuotaClaude,
   subscriptionQuotaCodex,
+  subscriptionQuotaCursor,
   subscriptionQuotaGrok,
 } from "@/lib/api"
 import {
@@ -32,12 +33,13 @@ export function SubscriptionQuotaPanel() {
       subscriptionQuotaCodex(),
       subscriptionQuotaClaude(),
       subscriptionQuotaGrok(),
+      subscriptionQuotaCursor(),
     ])
       .then((results) => {
         if (cancelled) return
         const next: Partial<Record<IsolatableFamily, unknown>> = {}
         const slots: Partial<Record<IsolatableFamily, OfficialQuotaSlot[]>> = {}
-        const [codex, claude, grok] = results
+        const [codex, claude, grok, cursor] = results
         if (codex.status === "fulfilled") {
           if (codex.value.payload) next.codex = codex.value.payload
           if (codex.value.extraSlots?.length)
@@ -51,6 +53,11 @@ export function SubscriptionQuotaPanel() {
         if (grok.status === "fulfilled") {
           if (grok.value.payload) next.grok = grok.value.payload
           if (grok.value.extraSlots?.length) slots.grok = grok.value.extraSlots
+        }
+        if (cursor.status === "fulfilled") {
+          if (cursor.value.payload) next.cursor = cursor.value.payload
+          if (cursor.value.extraSlots?.length)
+            slots.cursor = cursor.value.extraSlots
         }
         setOfficial(next)
         setExtraSlots(slots)
@@ -85,7 +92,8 @@ export function SubscriptionQuotaPanel() {
                 </span>
               ) : (row.family === "codex" ||
                   row.family === "claude" ||
-                  row.family === "grok") &&
+                  row.family === "grok" ||
+                  row.family === "cursor") &&
                 !loaded ? (
                 <span className="text-muted-foreground">
                   {t("quotaLoading")}
