@@ -39,7 +39,9 @@ export function joinPlan(input: {
   const key = input.authKey?.trim() ?? ""
   const url = input.authUrl?.trim() ?? ""
   if (key && url) {
-    throw new TailnetJoinError("use either an auth key or an auth URL, not both")
+    throw new TailnetJoinError(
+      "use either an auth key or an auth URL, not both"
+    )
   }
   if (!key && !url) {
     throw new TailnetJoinError("auth key or auth URL is required")

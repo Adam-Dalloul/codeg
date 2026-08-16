@@ -11,7 +11,10 @@ describe("embedded tailnet join plan", () => {
     const first = joinPlan(input)
     const second = joinPlan(input)
     expect(first).toEqual(second)
-    expect(first.auth).toEqual({ kind: "auth-key", value: "tskey-auth-example" })
+    expect(first.auth).toEqual({
+      kind: "auth-key",
+      value: "tskey-auth-example",
+    })
     expect(sidecarCommand(first)).toContain("--authkey")
     expect(sidecarCommand(first)).toContain("http://127.0.0.1:3080")
   })

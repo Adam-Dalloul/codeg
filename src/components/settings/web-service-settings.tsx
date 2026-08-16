@@ -601,7 +601,9 @@ export function WebServiceSettings() {
 
           <div className="space-y-2 rounded-md border p-3">
             <div className="text-sm font-medium">{t("phoneReachTitle")}</div>
-            <p className="text-xs text-muted-foreground">{t("phoneReachHint")}</p>
+            <p className="text-xs text-muted-foreground">
+              {t("phoneReachHint")}
+            </p>
             <input
               value={tailnetAuthKey}
               onChange={(event) => setTailnetAuthKey(event.target.value)}
