@@ -2272,9 +2272,16 @@ pub async fn put_composer_draft_core(
     conversation_id: i32,
     text: String,
     origin: String,
+    attachments: Option<Vec<conversation_composer_draft_service::ComposerDraftAttachment>>,
 ) -> Result<conversation_composer_draft_service::ComposerDraftPutResult, AppCommandError> {
-    let result =
-        conversation_composer_draft_service::put(conn, conversation_id, text, origin).await?;
+    let result = conversation_composer_draft_service::put(
+        conn,
+        conversation_id,
+        text,
+        origin,
+        attachments,
+    )
+    .await?;
     emit_event(
         emitter,
         COMPOSER_DRAFT_CHANGED_EVENT,
@@ -2296,6 +2303,7 @@ pub async fn put_composer_draft(
     conversation_id: i32,
     text: String,
     origin: String,
+    attachments: Option<Vec<conversation_composer_draft_service::ComposerDraftAttachment>>,
 ) -> Result<conversation_composer_draft_service::ComposerDraftPutResult, AppCommandError> {
     put_composer_draft_core(
         &db.conn,
@@ -2303,6 +2311,34 @@ pub async fn put_composer_draft(
         conversation_id,
         text,
         origin,
+        attachments,
+    )
+    .await
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn read_upload_attachment(
+    path: String,
+) -> Result<crate::web::handlers::files::ReadUploadAttachmentResult, AppCommandError> {
+    crate::web::handlers::files::read_upload_attachment_core(path).await
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn stage_composer_attachment(
+    file_name: String,
+    mime_type: Option<String>,
+    session_id: Option<String>,
+    data_base64: String,
+) -> Result<crate::web::handlers::files::UploadAttachmentResult, AppCommandError> {
+    crate::web::handlers::files::stage_composer_attachment_core(
+        crate::web::handlers::files::StageComposerAttachmentParams {
+            file_name,
+            mime_type,
+            session_id,
+            data_base64,
+        },
     )
     .await
 }

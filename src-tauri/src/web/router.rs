@@ -461,6 +461,19 @@ pub fn build_router(
             post(handlers::files::upload_attachment)
                 .layer(DefaultBodyLimit::max(UPLOAD_MAX_BYTES as usize + 64 * 1024)),
         )
+        .route(
+            "/read_upload_attachment",
+            post(handlers::files::read_upload_attachment),
+        )
+        .route(
+            "/stage_composer_attachment",
+            // Local desktop stages draft images as JSON base64 over IPC or
+            // the web API. Pad to the same ceiling as multipart upload.
+            post(handlers::files::stage_composer_attachment)
+                .layer(DefaultBodyLimit::max(
+                    ((UPLOAD_MAX_BYTES as usize * 4) / 3) + 64 * 1024,
+                )),
+        )
         // ─── Workspace files (web upload/download) ───
         //
         // Issue #179: when codeg runs in server mode the user has no

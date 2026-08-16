@@ -486,11 +486,22 @@ export interface ComposerDraftChanged {
 
 export const COMPOSER_DRAFT_CHANGED_EVENT = "composer-draft://changed"
 
+export interface ComposerDraftAttachment {
+  id: string
+  kind: "image" | "file"
+  name: string
+  mime?: string | null
+  size?: number
+  path?: string | null
+  uri?: string | null
+}
+
 export interface ComposerDraft {
   conversation_id: number
   text: string
   revision: number
   origin: string
+  attachments?: ComposerDraftAttachment[]
 }
 
 export interface ComposerDraftPutResult {

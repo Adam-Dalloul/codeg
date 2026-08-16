@@ -1025,6 +1025,8 @@ mod tauri_app {
                 conversations::update_conversation_pinned,
                 conversations::get_composer_draft,
                 conversations::put_composer_draft,
+                conversations::read_upload_attachment,
+                conversations::stage_composer_attachment,
                 conversations::delete_conversation,
                 folders::load_folder_history,
                 folders::get_folder,

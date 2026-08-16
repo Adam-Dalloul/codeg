@@ -653,6 +653,10 @@ mod tests {
         assert_eq!(p["origin"], "phone1");
         assert_eq!(p["cleared"], false);
         assert!(p.get("text").is_none(), "notify must never carry the draft body");
+        assert!(
+            p.get("attachments").is_none(),
+            "notify must never carry attachment metadata or bytes"
+        );
     }
 
     #[test]

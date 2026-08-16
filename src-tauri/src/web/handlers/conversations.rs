@@ -401,6 +401,11 @@ pub struct PutComposerDraftParams {
     pub conversation_id: i32,
     pub text: String,
     pub origin: String,
+    /// Absent / null = keep the stored list (old clients). `[]` clears.
+    #[serde(default)]
+    pub attachments: Option<
+        Vec<crate::db::service::conversation_composer_draft_service::ComposerDraftAttachment>,
+    >,
 }
 
 pub async fn put_composer_draft(
@@ -417,6 +422,7 @@ pub async fn put_composer_draft(
             params.conversation_id,
             params.text,
             params.origin,
+            params.attachments,
         )
         .await?,
     ))

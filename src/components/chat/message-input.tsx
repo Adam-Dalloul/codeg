@@ -100,7 +100,20 @@ import {
   saveMessageInputDraftV2,
 } from "@/lib/message-input-draft"
 import { conversationIdFromDraftKey } from "@/lib/composer-draft-sync"
+import {
+  collectDraftAttachments,
+  fileUriToPath,
+  isUploadJailPath,
+} from "@/lib/composer-draft-attachments"
 import { useComposerDraftSync } from "@/hooks/use-composer-draft-sync"
+import {
+  readUploadAttachment,
+  stageComposerAttachment,
+  uploadAttachment,
+} from "@/lib/api"
+import { buildFileUri } from "@/lib/reference-link"
+import { getActiveRemoteConnectionId, isDesktop } from "@/lib/transport"
+import type { ComposerDraftAttachment } from "@/lib/types"
 import { rankByTextMatch } from "@/lib/fuzzy-text-match"
 import {
   RichComposer,
@@ -359,17 +372,38 @@ export function MessageInput({
     effectiveDraftStorageKey
   )
   const applyingRemoteDraftRef = useRef(false)
+  const attachRef = useRef<{
+    attachments: ReturnType<typeof useComposerAttachments>["attachments"]
+    setAttachments: ReturnType<typeof useComposerAttachments>["setAttachments"]
+    insertFileReferences: ReturnType<
+      typeof useComposerAttachments
+    >["insertFileReferences"]
+  } | null>(null)
+  const applyRemoteDraftAttachmentsRef = useRef<
+    (items: ComposerDraftAttachment[]) => Promise<void>
+  >(async () => {})
   const persistSyncedDraft = useComposerDraftSync({
     conversationId: syncedConversationId,
     enabled: !isEditingQueueItem && composerReady,
-    getLocalText: () => editorRef.current?.getText() ?? "",
-    onRemote: (text) => {
+    getLocalSnapshot: () => ({
+      text: editorRef.current?.getText() ?? "",
+      attachments: collectDraftAttachments(
+        editorRef.current?.getEditor()?.getJSON(),
+        (attachRef.current?.attachments ?? []).filter(
+          (item) => item.type === "image"
+        )
+      ),
+    }),
+    onRemote: async (snapshot) => {
       const ed = editorRef.current
       if (!ed) return
       applyingRemoteDraftRef.current = true
-      ed.setText(text)
+      ed.setText(snapshot.text)
       const editor = ed.getEditor()
-      setComposerEmpty(editor ? isComposerEmpty(editor) : text.length === 0)
+      setComposerEmpty(
+        editor ? isComposerEmpty(editor) : snapshot.text.length === 0
+      )
+      await applyRemoteDraftAttachmentsRef.current(snapshot.attachments)
       if (typeof window !== "undefined") {
         window.setTimeout(() => {
           applyingRemoteDraftRef.current = false
@@ -400,12 +434,101 @@ export function MessageInput({
   })
   const {
     attachments,
+    setAttachments,
     embeddedPayloadsRef,
     clearAttachments,
     hasUploadingImage,
     hydrateFromBlocks,
     imagePromptBlocks,
+    insertFileReferences,
   } = attach
+  attachRef.current = {
+    attachments,
+    setAttachments,
+    insertFileReferences,
+  }
+
+  const persistDraftSnapshot = useCallback(async () => {
+    if (applyingRemoteDraftRef.current) return
+    if (hasUploadingImage) return
+    const ed = editorRef.current
+    const text = ed?.getText() ?? ""
+    const imageItems = attachments.filter((item) => item.type === "image")
+    const staged = await Promise.all(
+      imageItems.map(async (image) => {
+        const existing = image.uri ? fileUriToPath(image.uri) : null
+        if (existing && isUploadJailPath(existing)) {
+          return image
+        }
+        try {
+          const uploaded = await stageLocalDraftImage(
+            image,
+            attachmentTabId ?? null
+          )
+          return uploaded
+        } catch (error) {
+          console.warn(
+            `[MessageInput] draft image stage failed (${image.name}):`,
+            error
+          )
+          return image
+        }
+      })
+    )
+    const changed = staged.some((item, index) => item !== imageItems[index])
+    if (changed) {
+      setAttachments((prev) =>
+        prev.map((item) => {
+          if (item.type !== "image") return item
+          return staged.find((next) => next.id === item.id) ?? item
+        })
+      )
+    }
+    persistSyncedDraft({
+      text,
+      attachments: collectDraftAttachments(ed?.getEditor()?.getJSON(), staged),
+    })
+  }, [
+    attachments,
+    attachmentTabId,
+    hasUploadingImage,
+    persistSyncedDraft,
+    setAttachments,
+  ])
+  applyRemoteDraftAttachmentsRef.current = async (items) => {
+    const images = items.filter((item) => item.kind === "image" && item.path)
+    const files = items.filter((item) => item.kind === "file" && item.uri)
+    const hydrated = await Promise.all(
+      images.map(async (item) => {
+        try {
+          const read = await readUploadAttachment(item.path as string)
+          return {
+            id: item.id,
+            type: "image" as const,
+            data: read.data,
+            uri: buildFileUri(item.path as string),
+            name: item.name,
+            mimeType: item.mime || read.mimeType || "image/png",
+          }
+        } catch (error) {
+          console.warn(
+            `[MessageInput] draft image hydrate failed (${item.name}):`,
+            error
+          )
+          return null
+        }
+      })
+    )
+    setAttachments(hydrated.filter((item) => item !== null))
+    if (files.length > 0) {
+      insertFileReferences(
+        files.map((item) => ({
+          name: item.name,
+          uri: item.uri as string,
+        }))
+      )
+    }
+  }
   const menuShortcuts = useComposerShortcuts({
     editorRef,
     agentType: agentType ?? null,
@@ -483,18 +606,27 @@ export function MessageInput({
       draftSaveTimerRef.current = null
       const ed = editorRef.current
       if (!ed || !effectiveDraftStorageKey) return
-      if (ed.isEmpty()) {
+      if (ed.isEmpty() && (attachRef.current?.attachments.length ?? 0) === 0) {
         clearMessageInputDraftV2(effectiveDraftStorageKey)
-        if (!applyingRemoteDraftRef.current) persistSyncedDraft("")
+        if (!applyingRemoteDraftRef.current) {
+          persistSyncedDraft({ text: "", attachments: [] })
+        }
       } else {
         saveMessageInputDraftV2(
           effectiveDraftStorageKey,
           stripEmbeddedReferences(ed.getJSON())
         )
-        if (!applyingRemoteDraftRef.current) persistSyncedDraft(ed.getText())
+        if (!applyingRemoteDraftRef.current) {
+          void persistDraftSnapshot()
+        }
       }
     }, 300)
-  }, [effectiveDraftStorageKey, isEditingQueueItem, persistSyncedDraft])
+  }, [
+    effectiveDraftStorageKey,
+    isEditingQueueItem,
+    persistSyncedDraft,
+    persistDraftSnapshot,
+  ])
 
   useEffect(() => {
     return () => {
@@ -503,6 +635,19 @@ export function MessageInput({
       }
     }
   }, [])
+
+  useEffect(() => {
+    if (!composerReady || isEditingQueueItem) return
+    if (applyingRemoteDraftRef.current) return
+    if (hasUploadingImage) return
+    void persistDraftSnapshot()
+  }, [
+    attachments,
+    composerReady,
+    hasUploadingImage,
+    isEditingQueueItem,
+    persistDraftSnapshot,
+  ])
 
   // One-time hydration once the editor is ready: a queue-edit payload, else a v2
   // draft document (or a legacy v1 Markdown draft migrated forward). Guarded so
@@ -1256,7 +1401,7 @@ export function MessageInput({
       if (effectiveDraftStorageKey) {
         clearMessageInputDraftV2(effectiveDraftStorageKey)
       }
-      persistSyncedDraft("")
+      persistSyncedDraft({ text: "", attachments: [] })
       resetComposer()
       return
     }
@@ -1265,7 +1410,7 @@ export function MessageInput({
     if (effectiveDraftStorageKey) {
       clearMessageInputDraftV2(effectiveDraftStorageKey)
     }
-    persistSyncedDraft("")
+    persistSyncedDraft({ text: "", attachments: [] })
     resetComposer()
   }, [
     disabled,
@@ -1302,7 +1447,7 @@ export function MessageInput({
     onForkSend(draft, showModeSelector ? effectiveModeId : null)
     if (effectiveDraftStorageKey) {
       clearMessageInputDraftV2(effectiveDraftStorageKey)
-      persistSyncedDraft("")
+      persistSyncedDraft({ text: "", attachments: [] })
     }
     resetComposer()
   }, [
@@ -2165,4 +2310,38 @@ export function MessageInput({
       )}
     </div>
   )
+}
+
+async function stageLocalDraftImage(
+  image: {
+    id: string
+    data: string
+    name: string
+    mimeType: string
+    uri: string | null
+  },
+  sessionId: string | null
+) {
+  const localDesktop = isDesktop() && getActiveRemoteConnectionId() === null
+  if (localDesktop) {
+    const staged = await stageComposerAttachment({
+      fileName: image.name,
+      mimeType: image.mimeType,
+      sessionId,
+      dataBase64: image.data,
+    })
+    return {
+      ...image,
+      type: "image" as const,
+      uri: buildFileUri(staged.path),
+    }
+  }
+  const binary = Uint8Array.from(atob(image.data), (char) => char.charCodeAt(0))
+  const file = new File([binary], image.name, { type: image.mimeType })
+  const uploaded = await uploadAttachment(file, sessionId)
+  return {
+    ...image,
+    type: "image" as const,
+    uri: buildFileUri(uploaded.path),
+  }
 }
