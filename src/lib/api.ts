@@ -2957,9 +2957,15 @@ export async function tokenUsageSync(
   return getTransport().call("token_usage_sync", { mode })
 }
 
+export type OfficialQuotaSlot = {
+  label: string
+  payload: unknown
+}
+
 export type OfficialQuotaRead = {
   family: string
   payload: unknown | null
+  extraSlots?: OfficialQuotaSlot[]
   unavailableReason?: string | null
 }
 

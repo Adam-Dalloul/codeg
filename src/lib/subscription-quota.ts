@@ -253,6 +253,47 @@ export function remainingFromOfficialPayload(
   return null
 }
 
+export type OfficialQuotaSlot = {
+  label: string
+  payload: unknown
+}
+
+export function attachExtraSlots(
+  remaining: OfficialRemaining | null,
+  family: IsolatableFamily,
+  extraSlots?: OfficialQuotaSlot[] | null
+): OfficialRemaining | null {
+  const more: QuotaWindow[] = []
+  for (const slot of extraSlots ?? []) {
+    const parsed = remainingFromOfficialPayload(family, slot.payload)
+    if (!parsed) continue
+    more.push({
+      remaining: parsed.remaining,
+      usedPercent: Math.max(0, Math.min(100, 100 - parsed.remaining)),
+      resetsAt: parsed.resetsAt,
+      label: slot.label,
+    })
+  }
+  if (!remaining) {
+    if (more.length === 0) return null
+    const primary = more.reduce((a, b) =>
+      a.remaining <= b.remaining ? a : b
+    )
+    return {
+      remaining: primary.remaining,
+      limit: 100,
+      source: `${family} extra slot`,
+      extras: more.filter((slot) => slot !== primary),
+      resetsAt: primary.resetsAt,
+    }
+  }
+  if (more.length === 0) return remaining
+  return {
+    ...remaining,
+    extras: [...(remaining.extras ?? []), ...more],
+  }
+}
+
 export function acpContextFromPayload(
   payload: unknown
 ): { used: number; size: number } | null {
@@ -266,9 +307,14 @@ export function acpContextFromPayload(
 export function familyQuota(
   family: IsolatableFamily,
   officialPayload?: unknown,
-  acpUsage?: unknown
+  acpUsage?: unknown,
+  extraSlots?: OfficialQuotaSlot[] | null
 ): FamilyQuota {
-  const remaining = remainingFromOfficialPayload(family, officialPayload)
+  const remaining = attachExtraSlots(
+    remainingFromOfficialPayload(family, officialPayload),
+    family,
+    extraSlots
+  )
   if (remaining) {
     return { family, kind: "remaining-subscription", ...remaining }
   }
@@ -285,10 +331,18 @@ export function familyQuota(
 
 export function inventory(
   officialByFamily: Partial<Record<IsolatableFamily, unknown>> = {},
-  acpByFamily: Partial<Record<IsolatableFamily, unknown>> = {}
+  acpByFamily: Partial<Record<IsolatableFamily, unknown>> = {},
+  extraSlotsByFamily: Partial<
+    Record<IsolatableFamily, OfficialQuotaSlot[]>
+  > = {}
 ): FamilyQuota[] {
   return FAMILIES.map((family) =>
-    familyQuota(family, officialByFamily[family], acpByFamily[family])
+    familyQuota(
+      family,
+      officialByFamily[family],
+      acpByFamily[family],
+      extraSlotsByFamily[family]
+    )
   )
 }
 

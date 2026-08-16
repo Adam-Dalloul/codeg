@@ -8,7 +8,11 @@ import {
   subscriptionQuotaCodex,
   subscriptionQuotaGrok,
 } from "@/lib/api"
-import { inventory, type IsolatableFamily } from "@/lib/subscription-quota"
+import {
+  inventory,
+  type IsolatableFamily,
+  type OfficialQuotaSlot,
+} from "@/lib/subscription-quota"
 import { openUrl } from "@/lib/platform"
 
 export function SubscriptionQuotaPanel() {
@@ -16,6 +20,9 @@ export function SubscriptionQuotaPanel() {
   const locale = useLocale()
   const [official, setOfficial] = useState<
     Partial<Record<IsolatableFamily, unknown>>
+  >({})
+  const [extraSlots, setExtraSlots] = useState<
+    Partial<Record<IsolatableFamily, OfficialQuotaSlot[]>>
   >({})
   const [loaded, setLoaded] = useState(false)
 
@@ -29,17 +36,22 @@ export function SubscriptionQuotaPanel() {
       .then((results) => {
         if (cancelled) return
         const next: Partial<Record<IsolatableFamily, unknown>> = {}
+        const slots: Partial<Record<IsolatableFamily, OfficialQuotaSlot[]>> = {}
         const [codex, claude, grok] = results
-        if (codex.status === "fulfilled" && codex.value.payload) {
-          next.codex = codex.value.payload
+        if (codex.status === "fulfilled") {
+          if (codex.value.payload) next.codex = codex.value.payload
+          if (codex.value.extraSlots?.length) slots.codex = codex.value.extraSlots
         }
-        if (claude.status === "fulfilled" && claude.value.payload) {
-          next.claude = claude.value.payload
+        if (claude.status === "fulfilled") {
+          if (claude.value.payload) next.claude = claude.value.payload
+          if (claude.value.extraSlots?.length) slots.claude = claude.value.extraSlots
         }
-        if (grok.status === "fulfilled" && grok.value.payload) {
-          next.grok = grok.value.payload
+        if (grok.status === "fulfilled") {
+          if (grok.value.payload) next.grok = grok.value.payload
+          if (grok.value.extraSlots?.length) slots.grok = grok.value.extraSlots
         }
         setOfficial(next)
+        setExtraSlots(slots)
       })
       .finally(() => {
         if (!cancelled) setLoaded(true)
@@ -49,7 +61,7 @@ export function SubscriptionQuotaPanel() {
     }
   }, [])
 
-  const rows = inventory(official)
+  const rows = inventory(official, {}, extraSlots)
 
   return (
     <section className="rounded-xl border border-border bg-card p-4">
