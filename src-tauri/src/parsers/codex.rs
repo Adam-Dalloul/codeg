@@ -1657,6 +1657,35 @@ fn extract_wait_agent_status(value: &serde_json::Value) -> (String, Option<Strin
 /// routes through the same `CollabAgentCard` as the live `wait` capsule (matches
 /// the shape `collab-tool.ts` `parseCollabToolInput` expects). Caller guarantees
 /// `status` is non-empty.
+/// Build the history capsule for codex 0.147's `wait_agent`, whose output is
+/// `{"message":"Wait completed.","timed_out":false}` — no per-agent map at all.
+///
+/// It stays worth showing even though it carries nothing: with the native
+/// team-of-agents the spawn capsule settles the instant codex acknowledges the
+/// launch, so this wait is the ONLY thing in the timeline that spans the child's
+/// actual run. Live already renders it (codex-acp forwards the wait as a
+/// `collabAgentToolCall`, unlike the spawn), and the reload must agree — a
+/// contentless capsule live and nothing at all on reload is the disagreement
+/// this exists to remove. Both sides come out as a bare pill: no agents, no
+/// prompt, so `AgentCapsule` renders no body.
+///
+/// The legacy shape is NOT routed here — it carries per-agent results, and a
+/// content-free one there means "timed out with nothing to report", which is
+/// noise the caller still drops. `timed_out` (a real bool) is the shape gate:
+/// only the native-team output has it, and a timeout is a real outcome, so it
+/// flags the capsule as failed.
+fn native_team_wait_input(output: &serde_json::Value) -> Option<(String, bool)> {
+    let timed_out = output.get("timed_out")?.as_bool()?;
+    let input = serde_json::json!({
+        "senderThreadId": "",
+        "receiverThreadIds": [],
+        "agentsStates": {},
+        "status": if timed_out { "failed" } else { "completed" },
+        COLLAB_OP_KEY: "wait",
+    });
+    Some((input.to_string(), timed_out))
+}
+
 fn build_collab_wait_input(status: &serde_json::Map<String, serde_json::Value>) -> (String, bool) {
     let mut receiver_ids: Vec<serde_json::Value> = Vec::new();
     let mut agents_states = serde_json::Map::new();
@@ -3042,65 +3071,66 @@ impl CodexParser {
                                     });
                                 } else if is_wait {
                                     // Emit one `collab_agent` capsule per wait,
-                                    // built from THIS wait's own returned agents
-                                    // (`output.status`). Routes through the same
-                                    // CollabAgentCard as the live wait capsule.
-                                    if let Some(output_obj) = parse_codex_json_output(payload) {
-                                        if let Some(status) =
-                                            output_obj.get("status").and_then(|s| s.as_object())
+                                    // routed through the same CollabAgentCard as
+                                    // the live wait capsule. Two output shapes —
+                                    // see `native_team_wait_input`.
+                                    let capsule = parse_codex_json_output(payload).and_then(
+                                        |output_obj| match output_obj
+                                            .get("status")
+                                            .and_then(|s| s.as_object())
                                         {
-                                            // Mark returned agents so the spawn
-                                            // capsule won't also show their result,
-                                            // and record per-agent error state so
-                                            // the execution capsule can render
-                                            // failed (live parity).
-                                            for (agent_id, value) in status {
-                                                agent_waited.insert(agent_id.clone());
-                                                let (st, _) = extract_wait_agent_status(value);
-                                                if is_error_collab_status(&st) {
-                                                    agent_errored.insert(agent_id.clone());
+                                            Some(status) => {
+                                                // Mark returned agents so the spawn
+                                                // capsule won't also show their
+                                                // result, and record per-agent error
+                                                // state so the execution capsule can
+                                                // render failed (live parity).
+                                                for (agent_id, value) in status {
+                                                    agent_waited.insert(agent_id.clone());
+                                                    let (st, _) = extract_wait_agent_status(value);
+                                                    if is_error_collab_status(&st) {
+                                                        agent_errored.insert(agent_id.clone());
+                                                    }
                                                 }
+                                                (!status.is_empty())
+                                                    .then(|| build_collab_wait_input(status))
                                             }
-                                            if !status.is_empty() {
-                                                let (collab_input, is_error) =
-                                                    build_collab_wait_input(status);
-                                                messages.push(UnifiedMessage {
-                                                    id: format!("tool-{}", messages.len()),
-                                                    role: MessageRole::Assistant,
-                                                    content: vec![ContentBlock::ToolUse {
-                                                        tool_use_id: tool_use_id.clone(),
-                                                        tool_name: "collab_agent".to_string(),
-                                                        input_preview: Some(collab_input),
-                                                        status: None,
-                                                        meta: None,
-                                                    }],
-                                                    timestamp,
-                                                    usage: None,
-                                                    duration_ms: None,
-                                                    model: None,
-                                                    completed_at: Some(timestamp),
-                                                });
-                                                messages.push(UnifiedMessage {
-                                                    id: format!(
-                                                        "tool-result-{}",
-                                                        messages.len()
-                                                    ),
-                                                    role: MessageRole::Tool,
-                                                    content: vec![ContentBlock::ToolResult {
-                                                        tool_use_id,
-                                                        output_preview: None,
-                                                        is_error,
-                                                        agent_stats: None,
-                                                        images: Vec::new(),
-                                                    }],
-                                                    timestamp,
-                                                    usage: None,
-                                                    duration_ms: None,
-                                                    model: None,
-                                                    completed_at: Some(timestamp),
-                                                });
-                                            }
-                                        }
+                                            None => native_team_wait_input(&output_obj),
+                                        },
+                                    );
+                                    if let Some((collab_input, is_error)) = capsule {
+                                        messages.push(UnifiedMessage {
+                                            id: format!("tool-{}", messages.len()),
+                                            role: MessageRole::Assistant,
+                                            content: vec![ContentBlock::ToolUse {
+                                                tool_use_id: tool_use_id.clone(),
+                                                tool_name: "collab_agent".to_string(),
+                                                input_preview: Some(collab_input),
+                                                status: None,
+                                                meta: None,
+                                            }],
+                                            timestamp,
+                                            usage: None,
+                                            duration_ms: None,
+                                            model: None,
+                                            completed_at: Some(timestamp),
+                                        });
+                                        messages.push(UnifiedMessage {
+                                            id: format!("tool-result-{}", messages.len()),
+                                            role: MessageRole::Tool,
+                                            content: vec![ContentBlock::ToolResult {
+                                                tool_use_id,
+                                                output_preview: None,
+                                                is_error,
+                                                agent_stats: None,
+                                                images: Vec::new(),
+                                            }],
+                                            timestamp,
+                                            usage: None,
+                                            duration_ms: None,
+                                            model: None,
+                                            completed_at: Some(timestamp),
+                                        });
                                     }
                                 } else if is_close {
                                     active_agent_count = active_agent_count.saturating_sub(1);
@@ -4121,11 +4151,13 @@ mod tests {
     use super::extract_turn_usage_from_codex_usage;
     use super::is_encrypted_envelope;
     use super::merge_codex_context_window_stats;
+    use super::native_team_wait_input;
     use super::merge_codex_total_usage_stats;
     use super::parse_codex_subagent_stats;
     use super::redact_encrypted_args;
     use super::resolve_codex_home_dir_from;
     use super::CODEX_SUBAGENT_LAUNCH_KEY;
+    use super::COLLAB_OP_KEY;
     use super::should_skip_duplicate_user_message;
     use super::strip_blocked_resource_mentions;
     use super::CodexParser;
@@ -6642,6 +6674,87 @@ mod tests {
             nested,
             serde_json::json!({"outer":{"list":["[encrypted]","keep me"]}})
         );
+    }
+
+    #[test]
+    fn native_team_wait_renders_the_same_bare_capsule_history_and_live() {
+        // codex-acp forwards `wait_agent` (unlike the spawn), so live shows a
+        // 「fetch the sub-agent's result」 pill. Reload must show it too — it is
+        // the only span in the timeline covering the child's actual run.
+        let lines = vec![
+            rollout_line(
+                "2026-08-16T09:40:59Z",
+                "session_meta",
+                serde_json::json!({"id":"parent","cwd":"/tmp/demo"}),
+            ),
+            rollout_line(
+                "2026-08-16T09:41:00Z",
+                "response_item",
+                serde_json::json!({
+                    "type":"function_call","call_id":"call_wait","name":"wait_agent",
+                    "namespace":"collaboration",
+                    "arguments": serde_json::json!({"timeout_ms":3600000}).to_string(),
+                }),
+            ),
+            rollout_line(
+                "2026-08-16T09:41:20Z",
+                "response_item",
+                serde_json::json!({
+                    "type":"function_call_output","call_id":"call_wait",
+                    "output": serde_json::json!({
+                        "message":"Wait completed.","timed_out":false,
+                    }).to_string(),
+                }),
+            ),
+        ];
+        let path = write_temp_rollout("nativewait", &lines);
+        let detail = CodexParser::new()
+            .parse_conversation_detail(&path, "parent")
+            .expect("parse ok");
+        let input = detail
+            .turns
+            .iter()
+            .flat_map(|t| t.blocks.iter())
+            .find_map(|b| match b {
+                ContentBlock::ToolUse {
+                    tool_name,
+                    input_preview,
+                    ..
+                } if tool_name == "collab_agent" => input_preview.as_deref(),
+                _ => None,
+            })
+            .expect("wait capsule present");
+        let parsed: serde_json::Value = serde_json::from_str(input).expect("JSON");
+        assert_eq!(parsed.get(COLLAB_OP_KEY).and_then(|v| v.as_str()), Some("wait"));
+        assert_eq!(parsed.get("status").and_then(|v| v.as_str()), Some("completed"));
+        // No agents and no prompt — the card renders as a bare pill, exactly
+        // what the live `collabAgentToolCall` produces for this output.
+        assert_eq!(
+            parsed.get("agentsStates"),
+            Some(&serde_json::json!({}))
+        );
+        let errored = detail
+            .turns
+            .iter()
+            .flat_map(|t| t.blocks.iter())
+            .any(|b| matches!(b, ContentBlock::ToolResult { is_error: true, .. }));
+        assert!(!errored, "a completed wait is not an error");
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn native_team_wait_shape_gate_and_timeout() {
+        // `timed_out` is the shape gate: only the native-team output has it.
+        assert!(native_team_wait_input(&serde_json::json!({"message":"Wait completed."})).is_none());
+        assert!(native_team_wait_input(&serde_json::json!({})).is_none());
+        // A timeout is a real outcome — flag the capsule failed.
+        let (input, is_error) =
+            native_team_wait_input(&serde_json::json!({"message":"x","timed_out":true}))
+                .expect("native shape");
+        assert!(is_error);
+        let parsed: serde_json::Value = serde_json::from_str(&input).expect("JSON");
+        assert_eq!(parsed.get("status").and_then(|v| v.as_str()), Some("failed"));
     }
 
     #[test]
