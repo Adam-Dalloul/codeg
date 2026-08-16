@@ -1622,9 +1622,12 @@ const ConversationTabView = memo(function ConversationTabView({
   // agent-type gate is needed. Provided only around the main panel's list; the
   // read-only sub-agent dialog renders its own MessageListView with no provider.
   // The adapter's ADVERTISED goal-control vocabulary (fail-closed: no
-  // controls until the snapshot for this exact connectionId resolves — see
-  // `useAdvertisedGoalActions`).
-  const goalActions = useAdvertisedGoalActions(conn.connectionId)
+  // controls until the snapshot for this exact connectionId reports a known
+  // one — see `useAdvertisedGoalActions`). `connStatus` is what brings the
+  // hook back for a second read: a brand-new conversation hands us its
+  // connection id while `initialize` is still in flight, and the vocabulary
+  // isn't decided until that response lands.
+  const goalActions = useAdvertisedGoalActions(conn.connectionId, connStatus)
 
   const goalControlValue = useMemo<GoalControlValue>(() => {
     const live =

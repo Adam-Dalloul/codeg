@@ -436,7 +436,28 @@ pub struct SessionState {
     /// today's affordances. Carried on the snapshot: the goal card gates its
     /// Pause/Clear buttons on this list, so a claude session never offers a
     /// pause the adapter would reject.
-    pub goal_actions: Vec<String>,
+    ///
+    /// Whether the adapter's last goal snapshot left a run OPEN — i.e. the goal
+    /// is `active` and driving work. Mirrored from the live goal state in
+    /// `emit_conversation_update`; backend-internal, not on the client
+    /// snapshot. Read by `ConnectionManager::goal_control` as the one thing
+    /// that justifies following a pause/clear with an interrupt: an active goal
+    /// means whatever is running is the goal's own work, whereas a PAUSED goal
+    /// drives nothing, so clearing it must not abort a turn the user started
+    /// themselves.
+    pub goal_active: bool,
+
+    /// `None` means NOT YET KNOWN — the initialize response hasn't been
+    /// applied. That state is real and observable: `spawn_agent` returns (and
+    /// the frontend learns the connection id, then fetches this snapshot) while
+    /// `initialize` is still in flight. Defaulting to the legacy pair at
+    /// CONSTRUCTION would hand that early reader a plausible-looking
+    /// `["pause","clear"]` it latches forever — which is exactly how a claude
+    /// session ended up offering a Pause its adapter answers with
+    /// `Invalid params: goal action must be "set" or "clear"`. The legacy
+    /// fallback is therefore decided at INITIALIZE (see `connection.rs`), not
+    /// here, so "unknown" and "legacy" stay distinguishable on the wire.
+    pub goal_actions: Option<Vec<String>>,
 
     /// AIR typed session failures projected by `id` (see
     /// [`SessionFailureRecord`] for the wire contract). Entries are RETAINED
@@ -558,10 +579,8 @@ impl SessionState {
             native_steering_available: false,
             neutral_goal_channel: false,
             goal_control_method: crate::acp::codex_goal::LEGACY_GOAL_CONTROL_METHOD.to_string(),
-            goal_actions: crate::acp::codex_goal::LEGACY_GOAL_ACTIONS
-                .iter()
-                .map(|a| a.to_string())
-                .collect(),
+            goal_actions: None,
+            goal_active: false,
             session_failures: BTreeMap::new(),
             last_assistant_text: None,
             pending_user_message: None,
@@ -1657,10 +1676,18 @@ pub struct LiveSessionSnapshot {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub session_failures: Vec<SessionFailureRecord>,
     /// Goal-control action vocabulary the goal card gates its buttons on
-    /// (see `SessionState.goal_actions`). Defaults to the legacy
-    /// ["pause","clear"] pair; the advertised list for neutral-goal adapters.
+    /// (see `SessionState.goal_actions`): the advertised list for neutral-goal
+    /// adapters, the legacy ["pause","clear"] pair for the rest.
+    ///
+    /// Three-valued on purpose, and ALWAYS serialized (no `skip_serializing_if`)
+    /// so the client can tell the middle case apart:
+    /// * a list — the vocabulary is known, gate the buttons on it;
+    /// * `null` — this connection hasn't finished `initialize`, so nothing is
+    ///   known yet; the client stays fail-closed (no buttons) and re-reads;
+    /// * ABSENT — a server too old to have the field at all, which the client
+    ///   maps to the legacy pair.
     #[serde(default)]
-    pub goal_actions: Vec<String>,
+    pub goal_actions: Option<Vec<String>>,
     pub event_seq: u64,
 }
 

@@ -5,15 +5,18 @@ import { createContext, useContext } from "react"
 export type GoalControlAction = "pause" | "clear"
 
 /** The legacy codex goal-control vocabulary — what a snapshot with no
- *  `goal_actions` field (older server) maps to, mirroring the backend
- *  `SessionState.goal_actions` default, so an older codex keeps today's
- *  Pause/Clear affordances. */
+ *  `goal_actions` field AT ALL (a server too old to carry it) maps to,
+ *  mirroring what the backend resolves a non-advertising adapter to at
+ *  initialize, so an older codex keeps today's Pause/Clear affordances. An
+ *  explicitly `null` field is NOT this case: it means the handshake hasn't
+ *  answered yet (see `useAdvertisedGoalActions`). */
 export const LEGACY_GOAL_ACTIONS: readonly string[] = ["pause", "clear"]
 
 /** No controls: the vocabulary before a connection's advertisement is KNOWN
- *  (snapshot not yet fetched / fetch failed / connection switched). Offering
- *  a wrong affordance (claude has no "pause") is worse than briefly offering
- *  none, so unknown always renders as none. Stable reference. */
+ *  (snapshot not yet fetched / still initializing / fetch failed / connection
+ *  switched). Offering a wrong affordance (claude has no "pause") is worse than
+ *  briefly offering none, so unknown always renders as none. Stable
+ *  reference. */
 export const NO_GOAL_ACTIONS: readonly string[] = []
 
 export interface GoalControlValue {

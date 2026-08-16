@@ -308,6 +308,32 @@ pub fn steering_prompt_required_min_version(agent_type: AgentType) -> Option<&'s
     }
 }
 
+/// Whether this adapter's goal-control request reaches the agent OUT OF BAND —
+/// i.e. it changes the goal through its own channel instead of riding the
+/// session's prompt stream.
+///
+/// This is what decides whether pausing/clearing a goal may ALSO interrupt the
+/// turn that is running. Neither adapter's control request stops a turn on its
+/// own: codex's `pause` is `thread/goal/set{status:"paused"}` and its `clear`
+/// is `thread/goal/clear` — pure app-server metadata that only takes effect at
+/// the next idle point, so the agent visibly keeps working for as long as the
+/// current turn lasts (which, mid goal loop, is "forever" as far as the user is
+/// concerned). Interrupting is the missing half of the button, and it is safe
+/// there precisely because the goal RPC already landed before the interrupt.
+///
+/// claude is the counter-example and the reason this is a policy bit rather
+/// than an unconditional behavior: `claude-agent-acp`'s `_session/goal` handler
+/// rewrites the request into the text `"/goal clear"` and delivers it as a
+/// STEERING message (falling back to a fresh `session/prompt` when idle).
+/// Cancelling the turn would kill the very message that carries the clear, so
+/// the goal would stay armed — strictly worse than doing nothing. Everything
+/// else, custom agents included, fails closed onto `false`: an unknown
+/// adapter's control channel is not something to guess at with a destructive
+/// action.
+pub fn goal_control_is_out_of_band(agent_type: AgentType) -> bool {
+    matches!(agent_type, AgentType::Codex)
+}
+
 pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
     if let AgentType::Custom(id) = agent_type {
         return crate::acp::custom_registry::get(id)
@@ -966,6 +992,25 @@ mod tests {
             AgentType::Custom("acme"),
         ] {
             assert_eq!(steering_prompt_required_min_version(agent), None);
+        }
+    }
+
+    #[test]
+    fn goal_control_is_out_of_band_gates_codex_only() {
+        // codex changes the goal through an app-server RPC, so codeg may follow
+        // a pause/clear with the interrupt that actually stops the work. claude
+        // delivers the same request as the prompt text "/goal clear" — killing
+        // that turn would kill the clear — and every unverified adapter fails
+        // closed onto the same "don't touch the turn".
+        assert!(goal_control_is_out_of_band(AgentType::Codex));
+        assert!(!goal_control_is_out_of_band(AgentType::ClaudeCode));
+        for agent in [
+            AgentType::Gemini,
+            AgentType::OpenClaw,
+            AgentType::Grok,
+            AgentType::Custom("acme"),
+        ] {
+            assert!(!goal_control_is_out_of_band(agent));
         }
     }
 

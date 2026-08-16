@@ -26,9 +26,12 @@ use serde_json::{json, Value};
 /// provider-neutral `_meta.goal.controlMethod` at initialize.
 pub(crate) const LEGACY_GOAL_CONTROL_METHOD: &str = "_codex/session/goal_control";
 
-/// The action vocabulary the legacy method accepts — also the default
-/// `SessionState.goal_actions`, so a non-advertising (older PATH-resolved)
-/// codex keeps today's Pause/Clear affordances.
+/// The action vocabulary the legacy method accepts. Resolved into
+/// `SessionState.goal_actions` at initialize when the adapter advertises no
+/// neutral goal surface, so a non-advertising (older PATH-resolved) codex keeps
+/// today's Pause/Clear affordances. NOT a construction-time default: until
+/// initialize lands the vocabulary is `None` (unknown), because a client that
+/// reads the snapshot during the handshake latches whatever it finds.
 pub(crate) const LEGACY_GOAL_ACTIONS: [&str; 2] = ["pause", "clear"];
 
 /// A Codex goal object mapped to codeg's canonical synthetic goal marker.

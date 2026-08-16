@@ -2319,8 +2319,10 @@ export interface LiveSessionSnapshot {
   session_failures?: SessionFailureRecord[]
   /** Goal-control action vocabulary the goal card gates its buttons on: the
    *  advertised `_meta.goal.actions` for neutral-goal adapters (claude has no
-   *  "pause"), else the legacy ["pause","clear"] default. */
-  goal_actions?: string[]
+   *  "pause"), else the legacy ["pause","clear"] pair. `null` while the
+   *  connection is still initializing (nothing known yet — stay fail-closed
+   *  and re-read); absent only on a server too old to carry the field. */
+  goal_actions?: string[] | null
   event_seq: number
 }
 

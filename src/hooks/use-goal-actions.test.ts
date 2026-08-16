@@ -1,7 +1,7 @@
 import { act, renderHook, waitFor } from "@testing-library/react"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
-import type { LiveSessionSnapshot } from "@/lib/types"
+import type { ConnectionStatus, LiveSessionSnapshot } from "@/lib/types"
 
 vi.mock("@/lib/api", () => ({
   acpGetSessionSnapshot: vi.fn(),
@@ -12,7 +12,9 @@ import { useAdvertisedGoalActions } from "./use-goal-actions"
 
 const mockedFetch = vi.mocked(acpGetSessionSnapshot)
 
-function snapshotWith(goalActions: string[] | undefined): LiveSessionSnapshot {
+function snapshotWith(
+  goalActions: string[] | null | undefined
+): LiveSessionSnapshot {
   return { goal_actions: goalActions } as unknown as LiveSessionSnapshot
 }
 
@@ -49,12 +51,111 @@ describe("useAdvertisedGoalActions", () => {
     await waitFor(() => expect(result.current).toEqual(["pause", "clear"]))
   })
 
+  it("does NOT latch a still-initializing (null) vocabulary as legacy", async () => {
+    // The field is present and explicitly null: the handshake hasn't answered.
+    // Latching the legacy pair here is the claude-Pause bug — the adapter
+    // rejects `pause` with `goal action must be "set" or "clear"`.
+    mockedFetch.mockResolvedValue(snapshotWith(null))
+    const { result } = renderHook(() => useAdvertisedGoalActions("c1", null))
+    await act(async () => {})
+    expect(result.current).toEqual([])
+  })
+
+  it("re-reads once the connection reports itself live, and latches then", async () => {
+    // First read races `initialize` (null); the status flip is the signal to
+    // ask again — by then the advertised vocabulary is decided.
+    mockedFetch
+      .mockResolvedValueOnce(snapshotWith(null))
+      .mockResolvedValue(snapshotWith(["set", "clear"]))
+    const { result, rerender } = renderHook(
+      ({ status }: { status: ConnectionStatus }) =>
+        useAdvertisedGoalActions("c1", status),
+      { initialProps: { status: "connecting" as ConnectionStatus } }
+    )
+    await act(async () => {})
+    expect(result.current).toEqual([])
+    rerender({ status: "connected" })
+    await waitFor(() => expect(result.current).toEqual(["set", "clear"]))
+  })
+
+  it("stops re-reading once the vocabulary is known", async () => {
+    // The vocabulary is fixed for the connection's lifetime, so the
+    // connected↔prompting flip of every turn must not refetch.
+    mockedFetch.mockResolvedValue(snapshotWith(["set", "clear"]))
+    const { result, rerender } = renderHook(
+      ({ status }: { status: ConnectionStatus }) =>
+        useAdvertisedGoalActions("c1", status),
+      { initialProps: { status: "connected" as ConnectionStatus } }
+    )
+    await waitFor(() => expect(result.current).toEqual(["set", "clear"]))
+    const callsAfterFirstRead = mockedFetch.mock.calls.length
+    rerender({ status: "prompting" })
+    await act(async () => {})
+    rerender({ status: "connected" })
+    await act(async () => {})
+    expect(mockedFetch.mock.calls.length).toBe(callsAfterFirstRead)
+  })
+
   it("stays at NO controls when the snapshot fetch fails", async () => {
     mockedFetch.mockRejectedValue(new Error("gone"))
     const { result } = renderHook(() => useAdvertisedGoalActions("c1"))
     // Give the rejection a tick to (not) apply.
     await act(async () => {})
     expect(result.current).toEqual([])
+  })
+
+  it("retries a transient failure instead of hiding the controls for good", async () => {
+    // Mounting onto an already-settled connection means no status change is
+    // coming, so one failed read would otherwise cost this connection its
+    // buttons for its whole life.
+    vi.useFakeTimers()
+    try {
+      mockedFetch
+        .mockRejectedValueOnce(new Error("hiccup"))
+        .mockResolvedValue(snapshotWith(["set", "clear"]))
+      const { result } = renderHook(() =>
+        useAdvertisedGoalActions("c1", "connected")
+      )
+      await act(async () => {})
+      expect(result.current).toEqual([])
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(500)
+      })
+      expect(result.current).toEqual(["set", "clear"])
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("gives up after a bounded number of retries", async () => {
+    // A connection that never answers must not be polled forever.
+    vi.useFakeTimers()
+    try {
+      mockedFetch.mockResolvedValue(snapshotWith(null))
+      const { result } = renderHook(() =>
+        useAdvertisedGoalActions("c1", "connected")
+      )
+      // Drive the retry chain (each hop is timer → state → effect → fetch)
+      // until two consecutive advances add no read: that is the budget
+      // exhausting, not the harness running out of flushes.
+      let previous = -1
+      for (
+        let i = 0;
+        i < 12 && previous !== mockedFetch.mock.calls.length;
+        i++
+      ) {
+        previous = mockedFetch.mock.calls.length
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(10_000)
+        })
+      }
+      expect(mockedFetch.mock.calls.length).toBe(previous)
+      // The first read plus MAX_RETRIES timer-driven ones.
+      expect(previous).toBe(5)
+      expect(result.current).toEqual([])
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it("stays at NO controls for a nullish snapshot (connection already gone)", async () => {

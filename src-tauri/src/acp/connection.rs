@@ -304,6 +304,12 @@ pub enum ConnectionCommand {
     },
     GoalControl {
         action: GoalControlAction,
+        /// Did the goal-control request LAND? Attached only by a caller that
+        /// intends to follow a successful control with an interrupt
+        /// (`ConnectionManager::goal_control`), because aborting the turn is
+        /// destructive and must not happen on the strength of a request the
+        /// agent rejected. `None` = fire-and-forget, nobody is listening.
+        reply: Option<tokio::sync::oneshot::Sender<bool>>,
     },
     Cancel,
     RespondPermission {
@@ -4201,8 +4207,8 @@ async fn run_connection(
                 tracing::info!("[ACP][{}] goal channel: provider-neutral (_meta.goal)", agent_type);
             }
             // Advertised goal-control surface (method + action vocabulary);
-            // None keeps the legacy codex method/actions defaults — see the
-            // SessionState field docs.
+            // None keeps the legacy codex method and resolves the vocabulary to
+            // the legacy pair — see the SessionState field docs.
             let goal_control = goal_advertised_control(init_resp.meta.as_ref());
 
             // Whether this agent accepts MCP server entries over the ACP wire
@@ -4297,10 +4303,16 @@ async fn run_connection(
                 // agents could ship it someday).
                 s.native_steering_available = native_steering_available;
                 s.neutral_goal_channel = neutral_goal_channel;
-                if let Some((method, actions)) = goal_control {
+                // The vocabulary is decided HERE for every adapter, advertising
+                // or not — this assignment is what flips it from "unknown" to
+                // known, and a client reading the snapshot before it lands must
+                // see `None` rather than a legacy pair it would latch (a claude
+                // session offering a Pause the adapter rejects).
+                let (goal_method, goal_actions) = resolve_goal_control(goal_control);
+                if let Some(method) = goal_method {
                     s.goal_control_method = method;
-                    s.goal_actions = actions;
                 }
+                s.goal_actions = Some(goal_actions);
                 if let Some(ref injected) = delegate_injection {
                     s.delegation_token = Some(injected.token.clone());
                     // The agent's actual feedback capability for this session
@@ -5672,14 +5684,21 @@ async fn set_session_config_option_inner(
     Ok(response.config_options)
 }
 
-/// Send codex's bespoke `_codex/session/goal_control` extension request to pause
-/// or clear the session's active goal (codex-acp #293, v1.1.4). Start / resume /
-/// re-objective are NOT this method — they go through the `/goal` prompt.
+/// Send the connection's goal-control extension request to pause or clear the
+/// session's active goal — the advertised `_session/goal` (claude 0.66+ / codex
+/// 1.2+) or codex's bespoke `_codex/session/goal_control` (#293, v1.1.4) it
+/// still accepts as an alias. Start / resume / re-objective are NOT this method
+/// — they go through the `/goal` prompt.
 ///
-/// codex replies with an empty object and then pushes the resulting goal
-/// snapshot as a normal `session_info_update` (`_meta.codex.goal`, or `null` for
-/// a clear), which the existing goal-card path renders — so the response value
-/// carries nothing to parse and is intentionally discarded.
+/// The agent replies with an empty object and then pushes the resulting goal
+/// snapshot as a normal `session_info_update` (`_meta.goal`, the legacy
+/// `_meta.codex.goal`, or `null` for a clear), which the existing goal-card
+/// path renders — so the response value carries nothing to parse and is
+/// intentionally discarded.
+///
+/// This request does NOT stop a running turn on either adapter; that is the
+/// manager's call (see `ConnectionManager::goal_control`), because whether an
+/// interrupt is safe depends on how the adapter delivers the control.
 ///
 /// Sent via `UntypedMessage` because `_codex/…` is a codex-private extension
 /// method with no sacp typed variant — the same escape hatch used for
@@ -7757,24 +7776,38 @@ async fn run_conversation_loop<'a>(
                                         .await;
                                     }
                                 }
-                                Some(ConnectionCommand::GoalControl { action }) => {
+                                Some(ConnectionCommand::GoalControl { action, reply }) => {
                                     let method = state.read().await.goal_control_method.clone();
-                                    if let Err(e) =
-                                        send_goal_control(&cx, &sid, action, &method).await
-                                    {
-                                        emit_with_state(
-                                            state,
-                                            emitter,
-                                            AcpEvent::Error {
-                                                message: format!("Failed to control goal: {e}"),
-                                                agent_type: agent_type.to_string(),
-                                                code: None,
-                                                details: None,
-                                                // Recoverable: a failed pause/clear leaves the turn alive.
-                                                terminal: false,
-                                            },
-                                        )
-                                        .await;
+                                    let landed =
+                                        match send_goal_control(&cx, &sid, action, &method).await {
+                                            Ok(()) => true,
+                                            Err(e) => {
+                                                emit_with_state(
+                                                    state,
+                                                    emitter,
+                                                    AcpEvent::Error {
+                                                        message: format!(
+                                                            "Failed to control goal: {e}"
+                                                        ),
+                                                        agent_type: agent_type.to_string(),
+                                                        code: None,
+                                                        details: None,
+                                                        // Recoverable: the goal
+                                                        // is unchanged and the
+                                                        // session is untouched.
+                                                        terminal: false,
+                                                    },
+                                                )
+                                                .await;
+                                                false
+                                            }
+                                        };
+                                    if let Some(reply) = reply {
+                                        // A dead receiver is fine — the caller
+                                        // that wanted to follow up with an
+                                        // interrupt went away, and the control
+                                        // itself already happened.
+                                        let _ = reply.send(landed);
                                     }
                                 }
                                 Some(ConnectionCommand::Steer { text, reply }) => {
@@ -8020,25 +8053,37 @@ async fn run_conversation_loop<'a>(
                     .await;
                 }
             }
-            Some(ConnectionCommand::GoalControl { action }) => {
+            Some(ConnectionCommand::GoalControl { action, reply }) => {
                 let cx = session.connection();
                 let sid = session.session_id().clone();
                 let method = state.read().await.goal_control_method.clone();
-                if let Err(e) = send_goal_control(&cx, &sid, action, &method).await {
-                    emit_with_state(
-                        state,
-                        emitter,
-                        AcpEvent::Error {
-                            message: format!("Failed to control goal: {e}"),
-                            agent_type: agent_type.to_string(),
-                            code: None,
-                            details: None,
-                            // Recoverable: an idle pause/clear failure leaves the
-                            // connection alive.
-                            terminal: false,
-                        },
-                    )
-                    .await;
+                let landed = match send_goal_control(&cx, &sid, action, &method).await {
+                    Ok(()) => true,
+                    Err(e) => {
+                        emit_with_state(
+                            state,
+                            emitter,
+                            AcpEvent::Error {
+                                message: format!("Failed to control goal: {e}"),
+                                agent_type: agent_type.to_string(),
+                                code: None,
+                                details: None,
+                                // Recoverable: an idle pause/clear failure leaves the
+                                // connection alive.
+                                terminal: false,
+                            },
+                        )
+                        .await;
+                        false
+                    }
+                };
+                if let Some(reply) = reply {
+                    // Reply — never drop — for the same reason the Steer arm
+                    // below does: the manager awaits this oneshot to decide
+                    // whether to follow up, and a dropped sender would hang it.
+                    // (Its follow-up is an interrupt, which this idle arm's
+                    // caller won't get anyway: there is no turn to stop.)
+                    let _ = reply.send(landed);
                 }
             }
             Some(ConnectionCommand::Steer { text: _, reply }) => {
@@ -8766,6 +8811,32 @@ fn goal_advertised_control(
         })
         .unwrap_or_default();
     Some((method, actions))
+}
+
+/// Resolve [`goal_advertised_control`]'s answer into what the session state
+/// stores: an OPTIONAL method override (absent ⇒ keep the legacy codex method
+/// the state was built with) and the CONCRETE action vocabulary.
+///
+/// The legacy pair belongs here, at initialize, and not in `SessionState::new`.
+/// A client can read the snapshot during the handshake — `spawn_agent` returns
+/// with `initialize` still in flight — and it latches whatever it finds, so a
+/// construction-time legacy default hands a claude session a Pause its adapter
+/// answers with `Invalid params: goal action must be "set" or "clear"`. Keeping
+/// the field `None` until this runs is what makes "unknown" tellable from
+/// "legacy" on the wire.
+fn resolve_goal_control(
+    advertised: Option<(String, Vec<String>)>,
+) -> (Option<String>, Vec<String>) {
+    match advertised {
+        Some((method, actions)) => (Some(method), actions),
+        None => (
+            None,
+            crate::acp::codex_goal::LEGACY_GOAL_ACTIONS
+                .iter()
+                .map(|a| (*a).to_string())
+                .collect(),
+        ),
+    }
 }
 
 /// Pick the goal payload out of a `session_info_update`'s `_meta` according to
@@ -10568,6 +10639,13 @@ async fn emit_conversation_update(
                     )
                     .await;
                 }
+                // Mirror "a goal run is open" (⟺ the last snapshot was active,
+                // see `next_goal_marker`) onto the session state, where
+                // `ConnectionManager::goal_control` can read it: only an ACTIVE
+                // goal justifies following a pause/clear with an interrupt. A
+                // paused goal is not driving anything, so clearing it must
+                // leave whatever the user started themselves alone.
+                state.write().await.goal_active = cb_state.codex_open_goal.is_some();
             }
             // JetBrains AIR typed session failure (claude-agent-acp 0.67+/
             // codex-acp 1.2+): published only because codeg advertises
@@ -11160,6 +11238,45 @@ mod tests {
         }}));
         assert_eq!(goal_advertised_control(Some(&blank_method)), None);
         assert_eq!(goal_advertised_control(None), None);
+    }
+
+    #[test]
+    fn the_legacy_vocabulary_is_resolved_at_initialize_not_at_construction() {
+        // A fresh session knows NOTHING: a snapshot read during the handshake
+        // (which happens — `spawn_agent` returns before `initialize` lands)
+        // must not hand the card a legacy pair it latches forever.
+        let fresh = SessionState::new(
+            "c-goal".to_string(),
+            AgentType::ClaudeCode,
+            None,
+            "w".to_string(),
+            None,
+        );
+        assert_eq!(fresh.goal_actions, None);
+        assert_eq!(fresh.to_snapshot().goal_actions, None);
+        // ... and `None` reaches the client as an explicit null, not as an
+        // absent field — absent is reserved for a server too old to have it,
+        // which the client still maps to the legacy pair.
+        let wire = serde_json::to_value(fresh.to_snapshot()).unwrap();
+        assert_eq!(wire.get("goal_actions"), Some(&serde_json::Value::Null));
+
+        // Initialize is where both cases are decided. Advertised wins…
+        assert_eq!(
+            resolve_goal_control(Some((
+                "_session/goal".to_string(),
+                vec!["set".to_string(), "clear".to_string()],
+            ))),
+            (
+                Some("_session/goal".to_string()),
+                vec!["set".to_string(), "clear".to_string()]
+            )
+        );
+        // …and a non-advertising adapter resolves to the legacy pair, keeping
+        // the method the state was built with.
+        assert_eq!(
+            resolve_goal_control(None),
+            (None, vec!["pause".to_string(), "clear".to_string()])
+        );
     }
 
     #[test]
