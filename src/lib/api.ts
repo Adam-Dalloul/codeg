@@ -4207,7 +4207,9 @@ export async function tailscaleServeStatus(): Promise<FunnelStatus> {
   return getTransport().call("tailscale_serve_status")
 }
 
-export async function tailscaleServeEnable(port: number): Promise<FunnelStatus> {
+export async function tailscaleServeEnable(
+  port: number
+): Promise<FunnelStatus> {
   return getTransport().call("tailscale_serve_enable", { port })
 }
 
@@ -4219,7 +4221,9 @@ export async function tailscaleFunnelStatus(): Promise<FunnelStatus> {
   return getTransport().call("tailscale_funnel_status")
 }
 
-export async function tailscaleFunnelEnable(port: number): Promise<FunnelStatus> {
+export async function tailscaleFunnelEnable(
+  port: number
+): Promise<FunnelStatus> {
   return getTransport().call("tailscale_funnel_enable", { port })
 }
 
