@@ -70,9 +70,7 @@ export type InputAttachment = ResourceInputAttachment | ImageInputAttachment
  * reproducible without a random source (and unit-testable).
  */
 /** Built-in `grok` plus extra isolated slots (`custom:grok-2`, …). */
-export function agentUsesGrokImageSidecar(
-  agentType?: string | null
-): boolean {
+export function agentUsesGrokImageSidecar(agentType?: string | null): boolean {
   if (!agentType) return false
   const raw = agentType.toLowerCase()
   const id = raw.startsWith("custom:") ? raw.slice("custom:".length) : raw
