@@ -479,6 +479,11 @@ const rehypePlugins = rehypePluginsAllowingCodeg(defaultRehypePlugins)
 function MessageResponseImpl({
   className,
   children,
+  // Streamdown defaults to mode="streaming" + remend. remend 1.2.0 appends a
+  // leftover `*` / `_` after complete globs (`foo/*`) and `_meta` / `_blank`
+  // spans. Finished replies must stay static so that closer is never painted.
+  mode = "static",
+  parseIncompleteMarkdown = false,
   ...props
 }: MessageResponseProps) {
   const normalized = useMemo(
@@ -514,6 +519,8 @@ function MessageResponseImpl({
       remarkPlugins={remarkPlugins}
       rehypePlugins={rehypePlugins}
       {...props}
+      mode={mode}
+      parseIncompleteMarkdown={parseIncompleteMarkdown}
       // Merge after spreading props so a caller can still override other
       // elements, but the link icon + safety routing on `a` — and the diagram
       // block on `pre` — always win.
@@ -530,7 +537,11 @@ function MessageResponseImpl({
 
 export const MessageResponse = memo(
   MessageResponseImpl,
-  (prevProps, nextProps) => prevProps.children === nextProps.children
+  (prevProps, nextProps) =>
+    prevProps.children === nextProps.children &&
+    (prevProps.mode ?? "static") === (nextProps.mode ?? "static") &&
+    (prevProps.parseIncompleteMarkdown ?? false) ===
+      (nextProps.parseIncompleteMarkdown ?? false)
 )
 
 MessageResponse.displayName = "MessageResponse"

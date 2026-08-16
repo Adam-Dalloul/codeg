@@ -99,7 +99,13 @@ export const CompletedTurnContent = memo(function CompletedTurnContent({
     split.progress.length === 0 ||
     !hasVisibleAnswer(split.answer)
   ) {
-    return <ContentPartsRenderer parts={parts} role="assistant" />
+    return (
+      <ContentPartsRenderer
+        parts={parts}
+        role="assistant"
+        isStreaming={!completed}
+      />
+    )
   }
 
   const duration =
