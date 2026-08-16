@@ -22,7 +22,12 @@
  * historical token/cost, not plan remaining.
  */
 
-export type IsolatableFamily = "claude" | "codex" | "grok" | "gemini" | "opencode"
+export type IsolatableFamily =
+  | "claude"
+  | "codex"
+  | "grok"
+  | "gemini"
+  | "opencode"
 
 export type QuotaKind = "remaining-subscription" | "acp-context" | "unavailable"
 
@@ -137,13 +142,17 @@ function windowFromLimit(limit: Record<string, unknown>): QuotaWindow | null {
       : typeof limit.limitId === "string"
         ? limit.limitId
         : undefined
-  return { remaining, usedPercent: primary.usedPercent, windowDurationMins, resetsAt, label }
+  return {
+    remaining,
+    usedPercent: primary.usedPercent,
+    windowDurationMins,
+    resetsAt,
+    label,
+  }
 }
 
 /** Documented Codex app-server `account/rateLimits/read` result. */
-export function remainingFromCodexAppServer(
-  payload: unknown
-): {
+export function remainingFromCodexAppServer(payload: unknown): {
   remaining: number
   limit: number
   source: string
@@ -276,9 +285,7 @@ export function attachExtraSlots(
   }
   if (!remaining) {
     if (more.length === 0) return null
-    const primary = more.reduce((a, b) =>
-      a.remaining <= b.remaining ? a : b
-    )
+    const primary = more.reduce((a, b) => (a.remaining <= b.remaining ? a : b))
     return {
       remaining: primary.remaining,
       limit: 100,
