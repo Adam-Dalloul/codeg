@@ -70,36 +70,34 @@ export function UserImageAttachments({
             key={`${image.uri ?? image.name}-${index}`}
             image={image}
           >
-          <div
-            className="group relative overflow-hidden rounded-md border border-border/70 bg-muted/30"
-          >
-            <button
-              type="button"
-              onClick={() => setPreviewIndex(index)}
-              className="block cursor-pointer transition-opacity hover:opacity-80"
-            >
-              <Image
-                src={`data:${image.mime_type};base64,${image.data}`}
-                alt={image.name}
-                width={56}
-                height={56}
-                unoptimized
-                className="h-14 w-14 object-cover"
-              />
-            </button>
-            <button
-              type="button"
-              onClick={(e) => {
-                e.stopPropagation()
-                void handleDownload(image)
-              }}
-              className="absolute right-0.5 top-0.5 rounded-full bg-background/80 p-0.5 text-foreground/80 opacity-0 shadow-sm transition-opacity hover:bg-background hover:text-foreground group-hover:opacity-100 focus-visible:opacity-100"
-              aria-label={t("downloadImage")}
-              title={t("downloadImage")}
-            >
-              <Download className="h-3 w-3" />
-            </button>
-          </div>
+            <div className="group relative overflow-hidden rounded-md border border-border/70 bg-muted/30">
+              <button
+                type="button"
+                onClick={() => setPreviewIndex(index)}
+                className="block cursor-pointer transition-opacity hover:opacity-80"
+              >
+                <Image
+                  src={`data:${image.mime_type};base64,${image.data}`}
+                  alt={image.name}
+                  width={56}
+                  height={56}
+                  unoptimized
+                  className="h-14 w-14 object-cover"
+                />
+              </button>
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  void handleDownload(image)
+                }}
+                className="absolute right-0.5 top-0.5 rounded-full bg-background/80 p-0.5 text-foreground/80 opacity-0 shadow-sm transition-opacity hover:bg-background hover:text-foreground group-hover:opacity-100 focus-visible:opacity-100"
+                aria-label={t("downloadImage")}
+                title={t("downloadImage")}
+              >
+                <Download className="h-3 w-3" />
+              </button>
+            </div>
           </ImageActions>
         ))}
       </div>

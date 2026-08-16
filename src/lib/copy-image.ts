@@ -57,7 +57,9 @@ function rasterToPngBlob(bytes: Uint8Array, mime: string): Promise<Blob> {
     // Node / tests without a DOM: keep the original bytes tagged as PNG
     // only when they already are; otherwise fail closed.
     if (mime === "image/png") {
-      return Promise.resolve(new Blob([bytes as BlobPart], { type: "image/png" }))
+      return Promise.resolve(
+        new Blob([bytes as BlobPart], { type: "image/png" })
+      )
     }
     return Promise.reject(new ClipboardImageUnsupportedError())
   }

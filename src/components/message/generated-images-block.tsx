@@ -131,34 +131,34 @@ export const GeneratedImagesBlock = memo(function GeneratedImagesBlock({
 
         {image ? (
           <ImageActions image={image}>
-          <div className="group relative inline-block shrink-0 overflow-hidden rounded-md border border-border/70 bg-muted/30">
-            <button
-              type="button"
-              onClick={() => setPreviewOpen(true)}
-              className="block cursor-pointer transition-opacity hover:opacity-80"
-            >
-              <Image
-                src={`data:${image.mime_type};base64,${image.data}`}
-                alt={image.name}
-                width={256}
-                height={256}
-                unoptimized
-                className="h-auto max-h-64 w-auto max-w-full object-contain"
-              />
-            </button>
-            <button
-              type="button"
-              onClick={(e) => {
-                e.stopPropagation()
-                void handleDownload(image)
-              }}
-              className="absolute right-1 top-1 rounded-full bg-background/80 p-1 text-foreground/80 opacity-0 shadow-sm transition-opacity hover:bg-background hover:text-foreground group-hover:opacity-100 focus-visible:opacity-100"
-              aria-label={t("downloadImage")}
-              title={t("downloadImage")}
-            >
-              <Download className="h-3.5 w-3.5" />
-            </button>
-          </div>
+            <div className="group relative inline-block shrink-0 overflow-hidden rounded-md border border-border/70 bg-muted/30">
+              <button
+                type="button"
+                onClick={() => setPreviewOpen(true)}
+                className="block cursor-pointer transition-opacity hover:opacity-80"
+              >
+                <Image
+                  src={`data:${image.mime_type};base64,${image.data}`}
+                  alt={image.name}
+                  width={256}
+                  height={256}
+                  unoptimized
+                  className="h-auto max-h-64 w-auto max-w-full object-contain"
+                />
+              </button>
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  void handleDownload(image)
+                }}
+                className="absolute right-1 top-1 rounded-full bg-background/80 p-1 text-foreground/80 opacity-0 shadow-sm transition-opacity hover:bg-background hover:text-foreground group-hover:opacity-100 focus-visible:opacity-100"
+                aria-label={t("downloadImage")}
+                title={t("downloadImage")}
+              >
+                <Download className="h-3.5 w-3.5" />
+              </button>
+            </div>
           </ImageActions>
         ) : isFailed ? (
           <div
