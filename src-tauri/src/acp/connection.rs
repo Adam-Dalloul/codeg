@@ -3544,8 +3544,20 @@ async fn inject_codeg_mcp(
     // withholds this group too. The other groups stay: they surface codeg's own
     // state (feedback, ask, session info, task reporting), not arbitrary file
     // or command execution on the user's machine.
-    let delegation_enabled =
-        injection.broker.config_snapshot().await.enabled && host_tools.hosts_channels();
+    let delegation_configured = injection.broker.config_snapshot().await.enabled;
+    let delegation_enabled = delegation_configured && host_tools.hosts_channels();
+    if delegation_configured && !delegation_enabled {
+        // The one combination that looks like a bug from the settings UI: the
+        // multi-agent switch reads "on" and the tools are still absent. Say so
+        // once per launch, naming the knob, so the log answers the question the
+        // user actually asks ("why did delegate_to_agent disappear?").
+        tracing::info!(
+            "[delegation] multi-agent delegation is enabled in settings but withheld from \
+             connection {parent_connection_id}: {HOST_TOOLS_ENV}=agent hands fs/terminal back \
+             to this agent, and delegate_to_agent would route the same work through codeg \
+             anyway. Turn that per-agent switch off to restore the delegation tools."
+        );
+    }
     let flags = CompanionFeatureFlags {
         delegation: delegation_enabled,
         feedback: feedback_enabled,
@@ -8695,27 +8707,94 @@ fn codebuddy_meta_marks_subagent(
         .is_some_and(|s| !s.is_empty())
 }
 
-/// True when a Codex live `tool_call` is a `subAgentActivity` mapping
-/// (codex-acp #304, v1.1.3+). codex-acp maps codex `subAgentActivity`
-/// notifications onto ACP `tool_call(kind:other)` carrying
-/// `_meta.codex.subagent = {threadId, path, activity}`. codeg already renders
-/// codex collaboration from the `collabAgentToolCall` path (spawnAgent/wait/
-/// closeAgent — see `collab-tool.ts`) and reconstructs the full nested
-/// transcript on history reload from `agent-<id>.jsonl` (see
-/// `parsers/codex.rs`), so this new live signal is redundant with what codeg
-/// already shows. Suppressed at the emit point (keeping live and DB-reload
-/// consistent — a suppressed event is never persisted) to preserve the current
-/// live behavior. Gated on Codex.
-fn is_codex_subagent_activity(
+/// Name used when a codex sub-agent's `path` carries no usable segment. Matches
+/// the fallback codex-acp itself uses when building the activity title.
+const CODEX_SUBAGENT_FALLBACK_NAME: &str = "subagent";
+
+/// How a Codex live `subAgentActivity` (codex-acp #304) should be handled.
+///
+/// codex 0.147's native team-of-agents runs sub-agents entirely inside the codex
+/// process. Its orchestration calls (`spawn_agent` / `wait_agent`, the
+/// `collaboration` namespace) never reach the ACP wire, and the inter-agent
+/// message is an opaque encrypted envelope even in the on-disk rollout. The one
+/// thing codex-acp forwards is `subAgentActivity`, as a `tool_call(kind:other)`
+/// carrying `_meta.codex.subagent = {threadId, path, activity}`.
+///
+/// codeg used to DROP every one of these, on the premise that the
+/// `collabAgentToolCall` capsule already showed the same thing. That premise
+/// died with the team-of-agents rewrite: codex raises no `collabAgentToolCall`
+/// for a spawn any more, so dropping this left a codex sub-agent completely
+/// invisible while it ran — nothing appeared in the timeline until the session
+/// was reopened and the rollout re-parsed.
+enum CodexSubagentActivity {
+    /// Not a codex sub-agent activity — handle the call normally.
+    None,
+    /// A sub-agent was launched. Carries the Agent-card input to render it with.
+    Started(String),
+    /// A later lifecycle marker (`interacted` / `interrupted`). Still dropped:
+    /// they carry no content of their own and would each open a SECOND capsule
+    /// with the same name and no way to tell it apart from the launch.
+    Other,
+}
+
+/// Classify a live tool call's `_meta`, building the Agent-card input for a
+/// launch. The three fields are the ones `parsers/codex.rs` writes on reload, so
+/// live and history render the same capsule: the sub-agent's name is the last
+/// segment of its `path` (`/root/pnpm_build` → `pnpm_build`) and `agent_id` is
+/// its codex thread id, which the card renders as a short badge. No `prompt` —
+/// the task text is encrypted on this wire.
+///
+/// The capsule settles as soon as codex acknowledges the launch, NOT when the
+/// child finishes: the activity item's own lifecycle is the spawn's, and codex
+/// forwards nothing else about the child over ACP. A child's eventual result
+/// reaches the timeline as the parent's next message.
+fn classify_codex_subagent_activity(
     agent_type: AgentType,
     meta: Option<&serde_json::Map<String, serde_json::Value>>,
-) -> bool {
+) -> CodexSubagentActivity {
     if agent_type != AgentType::Codex {
-        return false;
+        return CodexSubagentActivity::None;
     }
-    meta.and_then(|m| m.get("codex"))
+    let Some(subagent) = meta
+        .and_then(|m| m.get("codex"))
         .and_then(|codex| codex.get("subagent"))
-        .is_some()
+    else {
+        return CodexSubagentActivity::None;
+    };
+    // A status-only follow-up carries the same meta with the same `activity`,
+    // so this classification is stable across the call's whole lifetime.
+    if subagent.get("activity").and_then(|v| v.as_str()) != Some("started") {
+        return CodexSubagentActivity::Other;
+    }
+    let name = subagent
+        .get("path")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .rsplit('/')
+        .find(|segment| !segment.is_empty())
+        .unwrap_or(CODEX_SUBAGENT_FALLBACK_NAME);
+    let mut input = serde_json::Map::new();
+    input.insert(
+        "subagent_type".to_string(),
+        serde_json::Value::String(name.to_string()),
+    );
+    if let Some(thread_id) = subagent
+        .get("threadId")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+    {
+        input.insert(
+            "agent_id".to_string(),
+            serde_json::Value::String(thread_id.to_string()),
+        );
+    }
+    // Say that this card stands for the LAUNCH, so its "completed" is not read
+    // as "the sub-agent finished" (see the constant's doc).
+    input.insert(
+        crate::parsers::codex::CODEX_SUBAGENT_LAUNCH_KEY.to_string(),
+        serde_json::Value::Bool(true),
+    );
+    CodexSubagentActivity::Started(serde_json::Value::Object(input).to_string())
 }
 
 /// True when a `session/request_permission` is codex's Plan-mode review gate
@@ -8729,7 +8808,7 @@ fn is_codex_subagent_activity(
 /// `tool_call_update` carrying just a status and `rawOutput`. Without seeding a
 /// tool call from this request that update lands on an unknown id and renders as
 /// an untitled generic tool card, so `handle_permission_request` emits one.
-/// Gated on Codex, mirroring [`is_codex_subagent_activity`].
+/// Gated on Codex, mirroring [`classify_codex_subagent_activity`].
 fn is_codex_plan_review(
     agent_type: AgentType,
     meta: Option<&serde_json::Map<String, serde_json::Value>>,
@@ -10165,13 +10244,17 @@ async fn emit_conversation_update(
             // Non-text thought chunks are currently ignored.
         }
         SessionUpdate::ToolCall(tc) => {
-            // codex-acp #304 (v1.1.3+) surfaces codex `subAgentActivity` as a
-            // live `tool_call`; suppress it — it is redundant with the collab
-            // capsule and the history reconstruction (see
-            // `is_codex_subagent_activity`).
-            if is_codex_subagent_activity(agent_type, tc.meta.as_ref()) {
-                return;
-            }
+            // codex-acp #304 surfaces codex `subAgentActivity` as a live
+            // `tool_call`. A launch becomes an Agent capsule (its own rawInput
+            // is orchestration bookkeeping, so it is replaced wholesale); the
+            // other lifecycle markers stay dropped. See
+            // `classify_codex_subagent_activity`.
+            let codex_subagent = match classify_codex_subagent_activity(agent_type, tc.meta.as_ref())
+            {
+                CodexSubagentActivity::None => None,
+                CodexSubagentActivity::Started(input) => Some(input),
+                CodexSubagentActivity::Other => return,
+            };
             let tool_call_id = tc.tool_call_id.to_string();
             // Grok emits a redundant `tool_call` for its native ask_user_question
             // alongside the blocking `_x.ai/ask_user_question` ext request codeg
@@ -10215,7 +10298,9 @@ async fn emit_conversation_update(
                 serialize_tool_call_content(&tc.content, synthesized_edit.is_none())
                     .map(|c| unwrap_codebuddy_deferred_output(agent_type, &c).unwrap_or(c));
             let images = extract_tool_call_images(&tc.content);
-            let raw_input = synthesized_edit
+            let codex_subagent_launch = codex_subagent.is_some();
+            let raw_input = codex_subagent
+                .or(synthesized_edit)
                 .or(own_raw_input)
                 .map(|text| resolve_live_tool_input(&text, cwd));
             // Initial tool_call notification — the frontend reducer
@@ -10242,7 +10327,13 @@ async fn emit_conversation_update(
             // reliable signal (frame 1) that keeps the Agent pill from flickering;
             // `meta_marks_background` keeps a concurrent sub-agent out of the
             // suppression window (see fn docs).
-            let meta_marks_subagent = codebuddy_meta_marks_subagent(agent_type, tc.meta.as_ref());
+            // `codex_subagent_launch` joins the CodeBuddy meta signal here for
+            // the same reason it exists: it is what records the authoritative
+            // "agent" title, so the status-only follow-up (which carries no
+            // rawInput at all) re-asserts it instead of downgrading the capsule
+            // to a generic tool card.
+            let meta_marks_subagent = codebuddy_meta_marks_subagent(agent_type, tc.meta.as_ref())
+                || codex_subagent_launch;
             let meta_marks_background = codebuddy_meta_marks_background(agent_type, tc.meta.as_ref());
             let grok_spawn = grok_meta_marks_spawn_subagent(agent_type, tc.meta.as_ref());
             let meta = tc.meta.map(serde_json::Value::Object);
@@ -10322,12 +10413,16 @@ async fn emit_conversation_update(
             .await;
         }
         SessionUpdate::ToolCallUpdate(tcu) => {
-            // Symmetric with the `ToolCall` arm: a follow-up update for a codex
-            // `subAgentActivity` still carries `_meta.codex.subagent`, so drop
-            // it too (see `is_codex_subagent_activity`).
-            if is_codex_subagent_activity(agent_type, tcu.meta.as_ref()) {
-                return;
-            }
+            // Symmetric with the `ToolCall` arm: the follow-up carries the same
+            // `_meta.codex.subagent`, so it classifies identically — a launch's
+            // completion is forwarded (settling its capsule), any other
+            // lifecycle marker's is dropped like its opening frame was.
+            let codex_subagent =
+                match classify_codex_subagent_activity(agent_type, tcu.meta.as_ref()) {
+                    CodexSubagentActivity::None => None,
+                    CodexSubagentActivity::Started(input) => Some(input),
+                    CodexSubagentActivity::Other => return,
+                };
             let tool_call_id = tcu.tool_call_id.to_string();
             // Suppress the redundant update stream for grok's ask_user_question
             // (see the ToolCall arm): match the tracked id, or the meta on a late
@@ -10379,7 +10474,9 @@ async fn emit_conversation_update(
                 .content
                 .as_deref()
                 .and_then(extract_tool_call_images);
-            let raw_input = synthesized_edit
+            let codex_subagent_launch = codex_subagent.is_some();
+            let raw_input = codex_subagent
+                .or(synthesized_edit)
                 .or(own_raw_input)
                 .map(|text| resolve_live_tool_input(&text, cwd));
             // Diff the incoming raw_output against the last snapshot we
@@ -10410,7 +10507,8 @@ async fn emit_conversation_update(
                 .as_ref()
                 .filter(|l| !l.is_empty())
                 .and_then(|l| serde_json::to_value(l).ok());
-            let meta_marks_subagent = codebuddy_meta_marks_subagent(agent_type, tcu.meta.as_ref());
+            let meta_marks_subagent = codebuddy_meta_marks_subagent(agent_type, tcu.meta.as_ref())
+                || codex_subagent_launch;
             let meta_marks_background = codebuddy_meta_marks_background(agent_type, tcu.meta.as_ref());
             let grok_spawn = grok_meta_marks_spawn_subagent(agent_type, tcu.meta.as_ref());
             let meta = tcu.meta.clone().map(serde_json::Value::Object);
@@ -11017,24 +11115,96 @@ mod tests {
         v.as_object().expect("object").clone()
     }
 
+    fn subagent_launch_input(
+        agent_type: AgentType,
+        meta: Option<&serde_json::Map<String, serde_json::Value>>,
+    ) -> Option<serde_json::Value> {
+        match classify_codex_subagent_activity(agent_type, meta) {
+            CodexSubagentActivity::Started(input) => {
+                Some(serde_json::from_str(&input).expect("valid JSON"))
+            }
+            _ => None,
+        }
+    }
+
     #[test]
-    fn codex_subagent_activity_detected_only_for_codex_subagent_meta() {
-        // codex-acp #304: `_meta.codex.subagent` marks the suppressed activity.
+    fn codex_subagent_launch_becomes_an_agent_capsule_input() {
+        // codex 0.147 forwards nothing but this for a native sub-agent, so it is
+        // the whole live signal: name from the path's last segment, thread id as
+        // the card's badge, and no prompt (the task text is encrypted).
         let sub = meta_map(serde_json::json!({
+            "codex": {
+                "subagent": {
+                    "threadId": "01a0098a-7e8a",
+                    "path": "/root/pnpm_build",
+                    "activity": "started",
+                }
+            }
+        }));
+        assert_eq!(
+            subagent_launch_input(AgentType::Codex, Some(&sub)),
+            Some(serde_json::json!({
+                "subagent_type": "pnpm_build",
+                "agent_id": "01a0098a-7e8a",
+                // Says the card stands for the LAUNCH, so its "completed" is
+                // not read as "the sub-agent finished" — the parser writes the
+                // same key on reload.
+                crate::parsers::codex::CODEX_SUBAGENT_LAUNCH_KEY: true,
+            }))
+        );
+        // A trailing slash / empty path must not produce a nameless capsule, and
+        // a missing thread id just drops the badge rather than the whole card.
+        let odd = meta_map(serde_json::json!({
+            "codex": { "subagent": { "path": "/", "activity": "started" } }
+        }));
+        assert_eq!(
+            subagent_launch_input(AgentType::Codex, Some(&odd)),
+            Some(serde_json::json!({
+                "subagent_type": "subagent",
+                crate::parsers::codex::CODEX_SUBAGENT_LAUNCH_KEY: true,
+            }))
+        );
+    }
+
+    #[test]
+    fn codex_subagent_activity_classified_only_for_codex_subagent_meta() {
+        let started = meta_map(serde_json::json!({
             "codex": { "subagent": { "threadId": "t1", "path": "/root/x", "activity": "started" } }
         }));
-        assert!(is_codex_subagent_activity(AgentType::Codex, Some(&sub)));
-        // Only Codex is gated — the same meta never suppresses another agent.
-        assert!(!is_codex_subagent_activity(AgentType::ClaudeCode, Some(&sub)));
+        // Only Codex is gated — the same meta never reshapes another agent's call.
+        assert!(matches!(
+            classify_codex_subagent_activity(AgentType::ClaudeCode, Some(&started)),
+            CodexSubagentActivity::None
+        ));
+        // Later lifecycle markers stay dropped: they carry no content and would
+        // open a second, indistinguishable capsule for the same sub-agent.
+        for kind in ["interacted", "interrupted"] {
+            let other = meta_map(serde_json::json!({
+                "codex": { "subagent": { "threadId": "t1", "path": "/root/x", "activity": kind } }
+            }));
+            assert!(matches!(
+                classify_codex_subagent_activity(AgentType::Codex, Some(&other)),
+                CodexSubagentActivity::Other
+            ));
+        }
         // Absent meta and sibling codex meta keys (goal / collaboration) are not
         // subagent activity and must render normally.
-        assert!(!is_codex_subagent_activity(AgentType::Codex, None));
+        assert!(matches!(
+            classify_codex_subagent_activity(AgentType::Codex, None),
+            CodexSubagentActivity::None
+        ));
         let goal = meta_map(serde_json::json!({ "codex": { "goal": { "objective": "x" } } }));
-        assert!(!is_codex_subagent_activity(AgentType::Codex, Some(&goal)));
+        assert!(matches!(
+            classify_codex_subagent_activity(AgentType::Codex, Some(&goal)),
+            CodexSubagentActivity::None
+        ));
         let collab = meta_map(serde_json::json!({
             "codex": { "collaboration": { "tool": "spawnAgent" } }
         }));
-        assert!(!is_codex_subagent_activity(AgentType::Codex, Some(&collab)));
+        assert!(matches!(
+            classify_codex_subagent_activity(AgentType::Codex, Some(&collab)),
+            CodexSubagentActivity::None
+        ));
     }
 
     #[test]

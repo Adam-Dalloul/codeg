@@ -2376,6 +2376,14 @@ export interface AcpAgentInfo {
   sort_order: number
   installed_version: string | null
   env: Record<string, string>
+  /**
+   * The RESOLVED `CODEG_ACP_HOST_TOOLS` verdict: whether the next launch hands
+   * the `fs/*` + `terminal/*` channels — and, with them, codeg-mcp's delegation
+   * tools — back to the agent. Resolved by the same Rust function the launch
+   * uses, so it covers BOTH the per-agent `env` above and codeg's own process
+   * env; reading `env` here would miss the second.
+   */
+  host_tools_agent_mode: boolean
   config_json: string | null
   config_file_path: string | null
   opencode_auth_json: string | null

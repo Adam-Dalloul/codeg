@@ -9876,6 +9876,8 @@ pub(crate) async fn acp_list_agents_core(db: &AppDatabase) -> Result<Vec<AcpAgen
             enabled: setting.map(|m| m.enabled).unwrap_or(true),
             sort_order,
             installed_version: local_installed_version,
+            host_tools_agent_mode: !crate::acp::host_tools_policy::HostToolsPolicy::from_env(&env)
+                .hosts_channels(),
             env,
             config_json,
             config_file_path: agent_local_config_path(agent_type)

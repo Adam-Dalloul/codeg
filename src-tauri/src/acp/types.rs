@@ -833,6 +833,17 @@ pub struct AcpAgentInfo {
     pub sort_order: i32,
     pub installed_version: Option<String>,
     pub env: BTreeMap<String, String>,
+    /// The RESOLVED `CODEG_ACP_HOST_TOOLS` verdict for this agent — whether the
+    /// next launch hands the `fs/*` + `terminal/*` channels (and, with them,
+    /// codeg-mcp's delegation tools) back to the agent.
+    ///
+    /// Resolved by [`crate::acp::host_tools_policy::HostToolsPolicy::from_env`],
+    /// the same function the launch uses, so it accounts for BOTH layers: the
+    /// per-agent `env_json` above and codeg's own process env. Reading `env`
+    /// frontend-side would see only the first, and an operator who exported the
+    /// knob process-wide would get no warning at all while every agent silently
+    /// lost delegation.
+    pub host_tools_agent_mode: bool,
     pub config_json: Option<String>,
     pub config_file_path: Option<String>,
     pub opencode_auth_json: Option<String>,

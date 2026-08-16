@@ -32,6 +32,7 @@ function agent(
     enabled: true,
     sort_order: 0,
     installed_version: null,
+    host_tools_agent_mode: false,
     env: {},
     config_json: null,
     config_file_path: null,

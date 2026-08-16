@@ -172,6 +172,7 @@ beforeEach(() => {
     enabled: true,
     available: true,
     installed_version: "1.0.0",
+    host_tools_agent_mode: false,
     is_acp_adapter: true,
   })
   h.acpConnect.mockResolvedValue("spawned-conn")
@@ -693,6 +694,7 @@ describe("AcpConnectionsProvider reconnect (status-icon button)", () => {
       enabled: true,
       available: false,
       installed_version: null,
+      host_tools_agent_mode: false,
       is_acp_adapter: true,
     })
     await mountProvider()
@@ -713,6 +715,7 @@ describe("AcpConnectionsProvider reconnect (status-icon button)", () => {
       enabled: true,
       available: true,
       installed_version: "1.0.0",
+      host_tools_agent_mode: false,
       is_acp_adapter: true,
     })
     h.acpFindConnectionForConversation.mockResolvedValue(null)
@@ -1908,6 +1911,7 @@ describe("AcpConnectionsProvider Grok cross-agent-type model switch", () => {
       enabled: true,
       available: true,
       installed_version: "0.2.94",
+      host_tools_agent_mode: false,
       is_acp_adapter: false,
     })
     await mountProvider()
@@ -2258,6 +2262,7 @@ describe("HYDRATE_FROM_SNAPSHOT last_error recovery", () => {
       enabled: true,
       available: true,
       installed_version: "1.0.0",
+      host_tools_agent_mode: false,
       is_acp_adapter: true,
     })
     await mountProvider()
