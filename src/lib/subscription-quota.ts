@@ -126,9 +126,17 @@ function percentRemaining(usedPercent: unknown): number | null {
 }
 
 function parseResetsAt(value: unknown): number | undefined {
-  if (typeof value === "number" && Number.isFinite(value)) return value
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value > 1e12 ? Math.floor(value / 1000) : value
+  }
   if (typeof value === "string") {
-    const ms = Date.parse(value)
+    const trimmed = value.trim()
+    if (/^\d+$/.test(trimmed)) {
+      const n = Number(trimmed)
+      if (!Number.isFinite(n)) return undefined
+      return n > 1e12 ? Math.floor(n / 1000) : n
+    }
+    const ms = Date.parse(trimmed)
     if (!Number.isNaN(ms)) return Math.floor(ms / 1000)
   }
   return undefined
@@ -338,6 +346,7 @@ export function remainingFromCursorPeriodUsage(
     limit: 100,
     source: "cursor DashboardService/GetCurrentPeriodUsage",
     extras: extras.length ? extras : undefined,
+    resetsAt: parseResetsAt(rec.billingCycleEnd ?? rec.billing_cycle_end),
   }
 }
 

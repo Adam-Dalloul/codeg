@@ -188,6 +188,31 @@ describe("subscription quota inventory", () => {
     expect(parsed?.remaining).toBe(25)
   })
 
+  it("parses the live Cursor GetCurrentPeriodUsage envelope from this machine", () => {
+    // Sanitized from a signed-in Ultra cursor-agent session on 2026-08-16.
+    // Token never stored. Numbers are the real planUsage fields.
+    const payload = {
+      enabled: true,
+      billingCycleStart: "1786889793000",
+      billingCycleEnd: "1789568193000",
+      planUsage: {
+        remaining: 40000,
+        limit: 40000,
+        remainingBonus: false,
+        autoPercentUsed: 0,
+        apiPercentUsed: 0,
+        totalPercentUsed: 0,
+      },
+    }
+    const parsed = remainingFromOfficialPayload("cursor", payload)
+    expect(parsed?.remaining).toBe(100)
+    expect(parsed?.resetsAt).toBe(1_789_568_193)
+    expect(parsed?.extras?.map((e) => e.label).sort()).toEqual([
+      "API",
+      "Auto / Composer",
+    ])
+  })
+
   it("does not invent Cursor remaining from about/status identity", () => {
     expect(
       remainingFromOfficialPayload("cursor", {
