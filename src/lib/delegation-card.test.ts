@@ -177,7 +177,11 @@ describe("parseDelegationMeta task fields", () => {
 
   it("parses permission_mode and trims it", () => {
     const parsed = parseInput(
-      JSON.stringify({ agent_type: "codex", task: "t", permission_mode: "  plan  " })
+      JSON.stringify({
+        agent_type: "codex",
+        task: "t",
+        permission_mode: "  plan  ",
+      })
     )
     expect(parsed.permissionMode).toBe("plan")
   })
