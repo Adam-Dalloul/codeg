@@ -217,44 +217,110 @@ pub async fn refresh_auto_title(
     Ok(res.rows_affected > 0)
 }
 
-/// Refresh every live, unlocked Codex conversation whose external session id
-/// has a title in `titles`. Candidate selection is batched into one read, while
-/// each changed row still goes through [`refresh_auto_title`] so a concurrent
-/// manual rename is protected by the same atomic `title_locked = false` guard.
-/// Converged rows issue no UPDATE and title refreshes never bump `updated_at`.
-pub async fn refresh_codex_auto_titles(
+/// Conditionally adopt one title discovered from Codex's session index.
+///
+/// Every field used to select the candidate is re-checked in the UPDATE, plus
+/// the title observed by the candidate read. This prevents a delayed refresh
+/// from writing an index title after the row was re-pointed, deleted, manually
+/// renamed, or refreshed by another task.
+async fn refresh_codex_auto_title_candidate(
     conn: &DatabaseConnection,
-    titles: &HashMap<String, String>,
-) -> Result<usize, DbError> {
-    if titles.is_empty() {
-        return Ok(0);
+    candidate: &conversation::Model,
+    title: &str,
+) -> Result<bool, DbError> {
+    use sea_orm::sea_query::Expr;
+
+    let title = title.trim();
+    let Some(external_id) = candidate.external_id.as_deref() else {
+        return Ok(false);
+    };
+    if title.is_empty() || candidate.title.as_deref() == Some(title) {
+        return Ok(false);
     }
 
-    let candidates = conversation::Entity::find()
+    let old_title = match candidate.title.as_deref() {
+        Some(old_title) => conversation::Column::Title.eq(old_title),
+        None => conversation::Column::Title.is_null(),
+    };
+    let res = conversation::Entity::update_many()
+        .col_expr(conversation::Column::Title, Expr::value(title))
+        .filter(conversation::Column::Id.eq(candidate.id))
         .filter(conversation::Column::AgentType.eq(AgentType::Codex.as_wire().into_owned()))
-        .filter(conversation::Column::ExternalId.is_not_null())
+        .filter(conversation::Column::ExternalId.eq(external_id))
         .filter(conversation::Column::DeletedAt.is_null())
         .filter(conversation::Column::TitleLocked.eq(false))
-        .all(conn)
+        .filter(old_title)
+        .exec(conn)
         .await?;
+    Ok(res.rows_affected > 0)
+}
 
-    let mut refreshed = 0;
-    for candidate in candidates {
-        let Some(external_id) = candidate.external_id.as_deref() else {
-            continue;
+/// Refresh every live, unlocked Codex conversation whose external session id
+/// has a title in `titles`. Candidate selection is limited to indexed session
+/// ids and chunked below SQLite's bound-variable limit. Each UPDATE atomically
+/// re-checks the complete candidate identity via
+/// [`refresh_codex_auto_title_candidate`]. Converged rows issue no UPDATE and
+/// title refreshes never bump `updated_at`. This is a best-effort reconciliation:
+/// a failed chunk or row is logged and skipped while successful row ids are
+/// retained for downstream notifications.
+pub(crate) async fn refresh_codex_auto_titles(
+    conn: &DatabaseConnection,
+    titles: &HashMap<String, String>,
+) -> Vec<i32> {
+    if titles.is_empty() {
+        return Vec::new();
+    }
+
+    const SQLITE_TITLE_QUERY_CHUNK_SIZE: usize = 500;
+    let external_ids: Vec<String> = titles
+        .iter()
+        .filter(|(_, title)| !title.trim().is_empty())
+        .map(|(external_id, _)| external_id.clone())
+        .collect();
+    let mut refreshed = Vec::new();
+
+    for external_id_chunk in external_ids.chunks(SQLITE_TITLE_QUERY_CHUNK_SIZE) {
+        let candidates = match conversation::Entity::find()
+            .filter(conversation::Column::AgentType.eq(AgentType::Codex.as_wire().into_owned()))
+            .filter(conversation::Column::ExternalId.is_in(external_id_chunk.iter().cloned()))
+            .filter(conversation::Column::DeletedAt.is_null())
+            .filter(conversation::Column::TitleLocked.eq(false))
+            .order_by_asc(conversation::Column::Id)
+            .all(conn)
+            .await
+        {
+            Ok(candidates) => candidates,
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    session_count = external_id_chunk.len(),
+                    "failed to select Codex title refresh candidates; skipping chunk"
+                );
+                continue;
+            }
         };
-        let Some(title) = titles.get(external_id).map(|title| title.trim()) else {
-            continue;
-        };
-        if title.is_empty() || candidate.title.as_deref() == Some(title) {
-            continue;
-        }
-        if refresh_auto_title(conn, candidate.id, title.to_string()).await? {
-            refreshed += 1;
+
+        for candidate in candidates {
+            let Some(external_id) = candidate.external_id.as_deref() else {
+                continue;
+            };
+            let Some(title) = titles.get(external_id) else {
+                continue;
+            };
+            match refresh_codex_auto_title_candidate(conn, &candidate, title).await {
+                Ok(true) => refreshed.push(candidate.id),
+                Ok(false) => {}
+                Err(error) => tracing::warn!(
+                    error = %error,
+                    conversation_id = candidate.id,
+                    external_id,
+                    "failed to refresh Codex title candidate; skipping row"
+                ),
+            }
         }
     }
 
-    Ok(refreshed)
+    refreshed
 }
 
 /// Adopt an imported conversation's newest activity from its agent-side
@@ -1147,10 +1213,8 @@ mod tests {
         )]);
 
         assert_eq!(
-            refresh_codex_auto_titles(&db.conn, &titles)
-                .await
-                .expect("first refresh"),
-            1
+            refresh_codex_auto_titles(&db.conn, &titles).await,
+            vec![row.id]
         );
         let refreshed = get_by_id(&db.conn, row.id).await.expect("get refreshed");
         assert_eq!(refreshed.title.as_deref(), Some("解释 Makefile 文件作用"));
@@ -1160,12 +1224,243 @@ mod tests {
         );
 
         assert_eq!(
-            refresh_codex_auto_titles(&db.conn, &titles)
-                .await
-                .expect("converged refresh"),
-            0,
+            refresh_codex_auto_titles(&db.conn, &titles).await,
+            Vec::<i32>::new(),
             "a converged title map must issue no UPDATE"
         );
+    }
+
+    #[tokio::test]
+    async fn refresh_codex_auto_titles_keeps_partial_successes_after_row_failure() {
+        use sea_orm::{ConnectionTrait, DbBackend, Statement};
+
+        let db = fresh_in_memory_db().await;
+        let folder = seed_folder(&db, "/tmp/codeg-codex-index-partial-failure").await;
+        let successful = create(
+            &db.conn,
+            folder,
+            AgentType::Codex,
+            Some("old success".into()),
+            None,
+        )
+        .await
+        .expect("create successful candidate");
+        update_external_id(&db.conn, successful.id, "session-success".into())
+            .await
+            .expect("set successful external id");
+        let failing = create(
+            &db.conn,
+            folder,
+            AgentType::Codex,
+            Some("old failure".into()),
+            None,
+        )
+        .await
+        .expect("create failing candidate");
+        update_external_id(&db.conn, failing.id, "session-failure".into())
+            .await
+            .expect("set failing external id");
+        db.conn
+            .execute(Statement::from_string(
+                DbBackend::Sqlite,
+                format!(
+                    r#"CREATE TRIGGER fail_second_codex_title_sync
+                       BEFORE UPDATE OF title ON conversation
+                       WHEN OLD.id = {}
+                       BEGIN
+                         SELECT RAISE(FAIL, 'injected partial title sync failure');
+                       END"#,
+                    failing.id
+                ),
+            ))
+            .await
+            .expect("install title failure trigger");
+        let titles = HashMap::from([
+            ("session-success".to_string(), "new success".to_string()),
+            ("session-failure".to_string(), "new failure".to_string()),
+        ]);
+
+        let refreshed = refresh_codex_auto_titles(&db.conn, &titles).await;
+
+        assert_eq!(refreshed, vec![successful.id]);
+        assert_eq!(
+            get_by_id(&db.conn, successful.id)
+                .await
+                .expect("get successful row")
+                .title
+                .as_deref(),
+            Some("new success")
+        );
+        assert_eq!(
+            get_by_id(&db.conn, failing.id)
+                .await
+                .expect("get failing row")
+                .title
+                .as_deref(),
+            Some("old failure")
+        );
+    }
+
+    #[tokio::test]
+    async fn refresh_codex_auto_title_candidate_rechecks_external_id_at_write_time() {
+        let db = fresh_in_memory_db().await;
+        let folder = seed_folder(&db, "/tmp/codeg-codex-index-race").await;
+        let row = create(
+            &db.conn,
+            folder,
+            AgentType::Codex,
+            Some("old title".into()),
+            None,
+        )
+        .await
+        .expect("create");
+        update_external_id(&db.conn, row.id, "session-before".into())
+            .await
+            .expect("set initial external id");
+        let stale_candidate = conversation::Entity::find_by_id(row.id)
+            .one(&db.conn)
+            .await
+            .expect("query candidate")
+            .expect("candidate exists");
+
+        update_external_id(&db.conn, row.id, "session-after".into())
+            .await
+            .expect("re-point conversation");
+        let wrote = refresh_codex_auto_title_candidate(
+            &db.conn,
+            &stale_candidate,
+            "title for session-before",
+        )
+        .await
+        .expect("conditional refresh");
+
+        assert!(!wrote, "a stale candidate must not update a re-pointed row");
+        let current = get_by_id(&db.conn, row.id).await.expect("read current row");
+        assert_eq!(current.external_id.as_deref(), Some("session-after"));
+        assert_eq!(current.title.as_deref(), Some("old title"));
+    }
+
+    #[tokio::test]
+    async fn refresh_codex_auto_title_candidate_rechecks_original_title_at_write_time() {
+        let db = fresh_in_memory_db().await;
+        let folder = seed_folder(&db, "/tmp/codeg-codex-index-title-race").await;
+        let row = create(
+            &db.conn,
+            folder,
+            AgentType::Codex,
+            Some("candidate title".into()),
+            None,
+        )
+        .await
+        .expect("create");
+        update_external_id(&db.conn, row.id, "session-title-race".into())
+            .await
+            .expect("set external id");
+        let stale_candidate = conversation::Entity::find_by_id(row.id)
+            .one(&db.conn)
+            .await
+            .expect("query candidate")
+            .expect("candidate exists");
+
+        refresh_auto_title(&db.conn, row.id, "newer automatic title".into())
+            .await
+            .expect("apply concurrent automatic title");
+        let wrote = refresh_codex_auto_title_candidate(
+            &db.conn,
+            &stale_candidate,
+            "stale session index title",
+        )
+        .await
+        .expect("conditional refresh");
+
+        assert!(!wrote, "a stale candidate must not overwrite a newer title");
+        let current = get_by_id(&db.conn, row.id).await.expect("read current row");
+        assert_eq!(current.title.as_deref(), Some("newer automatic title"));
+    }
+
+    #[tokio::test]
+    async fn refresh_codex_auto_title_candidate_rechecks_deleted_at_at_write_time() {
+        let db = fresh_in_memory_db().await;
+        let folder = seed_folder(&db, "/tmp/codeg-codex-index-delete-race").await;
+        let row = create(
+            &db.conn,
+            folder,
+            AgentType::Codex,
+            Some("candidate title".into()),
+            None,
+        )
+        .await
+        .expect("create");
+        update_external_id(&db.conn, row.id, "session-delete-race".into())
+            .await
+            .expect("set external id");
+        let stale_candidate = conversation::Entity::find_by_id(row.id)
+            .one(&db.conn)
+            .await
+            .expect("query candidate")
+            .expect("candidate exists");
+
+        soft_delete(&db.conn, row.id)
+            .await
+            .expect("concurrently delete candidate");
+        let wrote = refresh_codex_auto_title_candidate(
+            &db.conn,
+            &stale_candidate,
+            "stale session index title",
+        )
+        .await
+        .expect("conditional refresh");
+
+        assert!(!wrote, "a stale candidate must not update a deleted row");
+        let current = conversation::Entity::find_by_id(row.id)
+            .one(&db.conn)
+            .await
+            .expect("read current row")
+            .expect("soft-deleted row remains persisted");
+        assert!(current.deleted_at.is_some());
+        assert_eq!(current.title.as_deref(), Some("candidate title"));
+    }
+
+    #[tokio::test]
+    async fn refresh_codex_auto_title_candidate_rechecks_title_lock_at_write_time() {
+        let db = fresh_in_memory_db().await;
+        let folder = seed_folder(&db, "/tmp/codeg-codex-index-lock-race").await;
+        let row = create(
+            &db.conn,
+            folder,
+            AgentType::Codex,
+            Some("same manual title".into()),
+            None,
+        )
+        .await
+        .expect("create");
+        update_external_id(&db.conn, row.id, "session-lock-race".into())
+            .await
+            .expect("set external id");
+        let stale_candidate = conversation::Entity::find_by_id(row.id)
+            .one(&db.conn)
+            .await
+            .expect("query candidate")
+            .expect("candidate exists");
+
+        update_title(&db.conn, row.id, "same manual title".into())
+            .await
+            .expect("lock title without changing its value");
+        let wrote = refresh_codex_auto_title_candidate(
+            &db.conn,
+            &stale_candidate,
+            "stale session index title",
+        )
+        .await
+        .expect("conditional refresh");
+
+        assert!(
+            !wrote,
+            "a stale candidate must not overwrite a locked title"
+        );
+        let current = get_by_id(&db.conn, row.id).await.expect("read current row");
+        assert!(current.title_locked);
+        assert_eq!(current.title.as_deref(), Some("same manual title"));
     }
 
     #[tokio::test]

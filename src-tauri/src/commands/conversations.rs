@@ -30,40 +30,41 @@ use crate::web::event_bridge::{
     IMPORT_SCAN_PROGRESS_EVENT, TABS_CHANGED_EVENT,
 };
 
-struct ListAllConversationsOptions {
-    folder_ids: Option<Vec<i32>>,
-    agent_type: Option<AgentType>,
-    search: Option<String>,
-    sort_by: Option<String>,
-    status: Option<String>,
-    include_children: bool,
+#[derive(Default)]
+pub(crate) struct ListAllConversationsOptions {
+    pub(crate) folder_ids: Option<Vec<i32>>,
+    pub(crate) agent_type: Option<AgentType>,
+    pub(crate) search: Option<String>,
+    pub(crate) sort_by: Option<String>,
+    pub(crate) status: Option<String>,
+    pub(crate) include_children: bool,
 }
 
-pub async fn list_all_conversations_core(
+pub(crate) async fn list_all_conversations_core(
     conn: &sea_orm::DatabaseConnection,
-    folder_ids: Option<Vec<i32>>,
-    agent_type: Option<AgentType>,
-    search: Option<String>,
-    sort_by: Option<String>,
-    status: Option<String>,
-    include_children: bool,
+    emitter: &EventEmitter,
+    chat_channel_manager: &crate::chat_channel::manager::ChatChannelManager,
+    options: ListAllConversationsOptions,
 ) -> Result<Vec<DbConversationSummary>, AppCommandError> {
-    let codex_titles = tokio::task::spawn_blocking(|| CodexParser::new().load_thread_name_index())
-        .await
-        .map_err(|e| {
-            AppCommandError::task_execution_failed("Failed to load Codex session titles")
-                .with_detail(e.to_string())
-        })?;
+    let codex_titles = match tokio::task::spawn_blocking(|| {
+        CodexParser::new().load_thread_name_index()
+    })
+    .await
+    {
+        Ok(titles) => titles,
+        Err(error) => {
+            tracing::warn!(
+                error = %error,
+                "conversation list: failed to load Codex session titles; continuing without refresh"
+            );
+            HashMap::new()
+        }
+    };
     list_all_conversations_core_with_codex_titles(
         conn,
-        ListAllConversationsOptions {
-            folder_ids,
-            agent_type,
-            search,
-            sort_by,
-            status,
-            include_children,
-        },
+        emitter,
+        chat_channel_manager,
+        options,
         &codex_titles,
     )
     .await
@@ -71,14 +72,15 @@ pub async fn list_all_conversations_core(
 
 async fn list_all_conversations_core_with_codex_titles(
     conn: &sea_orm::DatabaseConnection,
+    emitter: &EventEmitter,
+    chat_channel_manager: &crate::chat_channel::manager::ChatChannelManager,
     options: ListAllConversationsOptions,
     codex_titles: &HashMap<String, String>,
 ) -> Result<Vec<DbConversationSummary>, AppCommandError> {
     // Synchronize before `list_all` builds any folder/agent/search/status
     // filters so a freshly generated Codex title is visible on this same call.
-    conversation_service::refresh_codex_auto_titles(conn, codex_titles)
-        .await
-        .map_err(AppCommandError::from)?;
+    let refreshed_ids = conversation_service::refresh_codex_auto_titles(conn, codex_titles).await;
+    notify_conversation_title_updates(conn, emitter, chat_channel_manager, refreshed_ids).await;
     let ListAllConversationsOptions {
         folder_ids,
         agent_type,
@@ -103,7 +105,9 @@ async fn list_all_conversations_core_with_codex_titles(
 #[cfg(feature = "tauri-runtime")]
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
 pub async fn list_all_conversations(
+    app: tauri::AppHandle,
     db: tauri::State<'_, AppDatabase>,
+    chat_channel_manager: tauri::State<'_, crate::chat_channel::manager::ChatChannelManager>,
     folder_ids: Option<Vec<i32>>,
     agent_type: Option<AgentType>,
     search: Option<String>,
@@ -113,12 +117,16 @@ pub async fn list_all_conversations(
 ) -> Result<Vec<DbConversationSummary>, AppCommandError> {
     list_all_conversations_core(
         &db.conn,
-        folder_ids,
-        agent_type,
-        search,
-        sort_by,
-        status,
-        include_children.unwrap_or(false),
+        &EventEmitter::Tauri(app),
+        &chat_channel_manager,
+        ListAllConversationsOptions {
+            folder_ids,
+            agent_type,
+            search,
+            sort_by,
+            status,
+            include_children: include_children.unwrap_or(false),
+        },
     )
     .await
 }
@@ -662,9 +670,8 @@ fn build_scan_result(
 pub async fn scan_importable_sessions_core(
     conn: &sea_orm::DatabaseConnection,
     emitter: &EventEmitter,
+    chat_channel_manager: &crate::chat_channel::manager::ChatChannelManager,
 ) -> Result<ScanResult, AppCommandError> {
-    use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
-
     let progress_emitter = emitter.clone();
     let summaries =
         import_service::collect_local_summaries(move |agent_type, done, total, session_count| {
@@ -680,6 +687,20 @@ pub async fn scan_importable_sessions_core(
             );
         })
         .await;
+
+    scan_importable_sessions_from_summaries(conn, emitter, chat_channel_manager, summaries).await
+}
+
+/// Reconcile summaries already collected by the filesystem scan. Keeping this
+/// boundary separate makes the DB refresh and notification behavior testable
+/// without reading the developer's real agent session directories.
+async fn scan_importable_sessions_from_summaries(
+    conn: &sea_orm::DatabaseConnection,
+    emitter: &EventEmitter,
+    chat_channel_manager: &crate::chat_channel::manager::ChatChannelManager,
+    summaries: Vec<(AgentType, ConversationSummary)>,
+) -> Result<ScanResult, AppCommandError> {
+    use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
 
     let conv_rows = conversation::Entity::find()
         .filter(conversation::Column::ExternalId.is_not_null())
@@ -701,9 +722,13 @@ pub async fn scan_importable_sessions_core(
 
     // Refresh the already-imported rows in place before answering, then
     // broadcast each one so open sidebars re-sort without a refetch.
-    for id in import_service::sync_imported_sessions(conn, &conv_rows, &summaries).await {
-        emit_conversation_upsert(emitter, conn, id).await;
-    }
+    notify_conversation_title_updates(
+        conn,
+        emitter,
+        chat_channel_manager,
+        import_service::sync_imported_sessions(conn, &conv_rows, &summaries).await,
+    )
+    .await;
 
     let folder_rows = load_folder_rows(conn).await?;
     Ok(build_scan_result(summaries, &imported_index, &folder_rows))
@@ -714,8 +739,9 @@ pub async fn scan_importable_sessions_core(
 pub async fn scan_importable_sessions(
     app: tauri::AppHandle,
     db: tauri::State<'_, AppDatabase>,
+    chat_channel_manager: tauri::State<'_, crate::chat_channel::manager::ChatChannelManager>,
 ) -> Result<ScanResult, AppCommandError> {
-    scan_importable_sessions_core(&db.conn, &EventEmitter::Tauri(app)).await
+    scan_importable_sessions_core(&db.conn, &EventEmitter::Tauri(app), &chat_channel_manager).await
 }
 
 /// Batch-import the selected sessions, creating (or reopening) each target
@@ -1552,6 +1578,22 @@ pub(crate) async fn emit_conversation_upsert(
         Err(e) => tracing::warn!(
             "[conversations] upsert emit skipped (get_by_id {conversation_id} failed): {e}"
         ),
+    }
+}
+
+/// Broadcast and propagate title changes discovered outside codeg (for
+/// example, Codex's session index or an import scan). Both operations are
+/// best-effort: the database update has already committed, so notification
+/// failures must not turn the originating list/scan request into an error.
+async fn notify_conversation_title_updates(
+    conn: &sea_orm::DatabaseConnection,
+    emitter: &EventEmitter,
+    chat_channel_manager: &crate::chat_channel::manager::ChatChannelManager,
+    conversation_ids: Vec<i32>,
+) {
+    for conversation_id in conversation_ids {
+        emit_conversation_upsert(emitter, conn, conversation_id).await;
+        sync_conversation_title_to_channels_core(conn, chat_channel_manager, conversation_id).await;
     }
 }
 
@@ -2878,10 +2920,14 @@ mod tests {
         assert!(summary.git_branch.is_none());
 
         // It surfaces in the default sidebar query (active-folder scope).
-        let rows =
-            list_all_conversations_core(&db.conn, None, None, None, None, None, false)
-                .await
-                .expect("list");
+        let rows = list_all_conversations_core(
+            &db.conn,
+            &EventEmitter::Noop,
+            &crate::chat_channel::manager::ChatChannelManager::new(),
+            ListAllConversationsOptions::default(),
+        )
+        .await
+        .expect("list");
         assert!(rows.iter().any(|c| c.id == result.conversation_id));
     }
 
@@ -3269,9 +3315,14 @@ mod tests {
     #[tokio::test]
     async fn list_all_conversations_core_empty_db_returns_empty() {
         let db = fresh_in_memory_db().await;
-        let rows = list_all_conversations_core(&db.conn, None, None, None, None, None, false)
-            .await
-            .expect("list");
+        let rows = list_all_conversations_core(
+            &db.conn,
+            &EventEmitter::Noop,
+            &crate::chat_channel::manager::ChatChannelManager::new(),
+            ListAllConversationsOptions::default(),
+        )
+        .await
+        .expect("list");
         assert!(rows.is_empty(), "fresh db must have zero conversations");
     }
 
@@ -3302,16 +3353,18 @@ mod tests {
             "01a00496-1418-7273-a06f-dc4fae5cfa64".to_string(),
             "解释 Makefile 文件作用".to_string(),
         )]);
+        let (broadcaster, emitter) = sync_test_emitter();
+        let mut events = broadcaster.subscribe();
+        let (chat_channel_manager, title_edits) = title_sync_test_manager(&db, row.id).await;
 
         let rows = list_all_conversations_core_with_codex_titles(
             &db.conn,
+            &emitter,
+            &chat_channel_manager,
             ListAllConversationsOptions {
-                folder_ids: None,
                 agent_type: Some(AgentType::Codex),
                 search: Some("解释 Makefile".into()),
-                sort_by: None,
-                status: None,
-                include_children: false,
+                ..Default::default()
             },
             &titles,
         )
@@ -3330,6 +3383,15 @@ mod tests {
             .expect("get stored");
         assert_eq!(stored.title.as_deref(), Some("解释 Makefile 文件作用"));
         assert_eq!(stored.updated_at, before.updated_at);
+        let event = events.try_recv().expect("title refresh must broadcast");
+        assert_eq!(event.channel, CONVERSATION_CHANGED_EVENT);
+        assert_eq!(event.payload["summary"]["id"], row.id);
+        assert_eq!(event.payload["summary"]["title"], "解释 Makefile 文件作用");
+        assert_eq!(
+            title_edits.titles.lock().await.as_slice(),
+            [format!("#{} 解释 Makefile 文件作用", row.id)],
+            "the same external title refresh must propagate to a bound chat thread"
+        );
     }
 
     #[tokio::test]
@@ -3355,14 +3417,9 @@ mod tests {
 
         let rows = list_all_conversations_core_with_codex_titles(
             &db.conn,
-            ListAllConversationsOptions {
-                folder_ids: None,
-                agent_type: None,
-                search: None,
-                sort_by: None,
-                status: None,
-                include_children: false,
-            },
+            &EventEmitter::Noop,
+            &crate::chat_channel::manager::ChatChannelManager::new(),
+            ListAllConversationsOptions::default(),
             &titles,
         )
         .await
@@ -3407,14 +3464,9 @@ mod tests {
 
         let rows = list_all_conversations_core_with_codex_titles(
             &db.conn,
-            ListAllConversationsOptions {
-                folder_ids: None,
-                agent_type: None,
-                search: None,
-                sort_by: None,
-                status: None,
-                include_children: false,
-            },
+            &EventEmitter::Noop,
+            &crate::chat_channel::manager::ChatChannelManager::new(),
+            ListAllConversationsOptions::default(),
             &titles,
         )
         .await
@@ -3429,6 +3481,119 @@ mod tests {
             .await
             .expect("get stored");
         assert_eq!(stored.title.as_deref(), Some("数据库原标题"));
+    }
+
+    #[tokio::test]
+    async fn list_all_conversations_core_returns_persisted_rows_when_title_sync_fails() {
+        use sea_orm::{ConnectionTrait, DbBackend, Statement};
+
+        let db = fresh_in_memory_db().await;
+        let folder_id = seed_folder(&db, "/tmp/codeg-list-codex-sync-failure").await;
+        let row = conversation_service::create(
+            &db.conn,
+            folder_id,
+            AgentType::Codex,
+            Some("persisted title".into()),
+            None,
+        )
+        .await
+        .expect("create conversation");
+        conversation_service::update_external_id(&db.conn, row.id, "failing-session".into())
+            .await
+            .expect("set external id");
+        db.conn
+            .execute(Statement::from_string(
+                DbBackend::Sqlite,
+                format!(
+                    r#"CREATE TRIGGER fail_codex_title_sync
+                       BEFORE UPDATE OF title ON conversation
+                       WHEN OLD.id = {}
+                       BEGIN
+                         SELECT RAISE(FAIL, 'injected title sync failure');
+                       END"#,
+                    row.id
+                ),
+            ))
+            .await
+            .expect("install title failure trigger");
+        let titles =
+            HashMap::from([("failing-session".to_string(), "new Codex title".to_string())]);
+
+        let rows = list_all_conversations_core_with_codex_titles(
+            &db.conn,
+            &EventEmitter::Noop,
+            &crate::chat_channel::manager::ChatChannelManager::new(),
+            ListAllConversationsOptions::default(),
+            &titles,
+        )
+        .await
+        .expect("list must degrade to persisted rows");
+
+        let listed = rows
+            .iter()
+            .find(|item| item.id == row.id)
+            .expect("persisted row remains visible");
+        assert_eq!(listed.title.as_deref(), Some("persisted title"));
+    }
+
+    #[tokio::test]
+    async fn scan_importable_sessions_syncs_title_and_notifies_clients() {
+        let db = fresh_in_memory_db().await;
+        let folder_id = seed_folder(&db, "/tmp/codeg-scan-codex-title-sync").await;
+        let row = conversation_service::create(
+            &db.conn,
+            folder_id,
+            AgentType::Codex,
+            Some("first prompt".into()),
+            None,
+        )
+        .await
+        .expect("create imported conversation");
+        conversation_service::update_external_id(&db.conn, row.id, "scan-session".into())
+            .await
+            .expect("set external id");
+        let (broadcaster, emitter) = sync_test_emitter();
+        let mut events = broadcaster.subscribe();
+        let (chat_channel_manager, title_edits) = title_sync_test_manager(&db, row.id).await;
+        let mut summary = scan_summary(
+            "scan-session",
+            AgentType::Codex,
+            Some("/tmp/codeg-scan-codex-title-sync"),
+            at(0),
+        );
+        summary.1.title = Some("Codex index title".into());
+
+        let result = scan_importable_sessions_from_summaries(
+            &db.conn,
+            &emitter,
+            &chat_channel_manager,
+            vec![summary],
+        )
+        .await
+        .expect("scan summaries");
+
+        assert_eq!(result.total_sessions, 1);
+        assert_eq!(result.importable_count, 0);
+        assert_eq!(
+            result.folders[0].sessions[0].status,
+            ScanSessionStatus::Imported
+        );
+        let stored = conversation_service::get_by_id(&db.conn, row.id)
+            .await
+            .expect("get refreshed conversation");
+        assert_eq!(stored.title.as_deref(), Some("Codex index title"));
+        let event = events
+            .try_recv()
+            .expect("scan title refresh must broadcast");
+        assert_eq!(event.channel, CONVERSATION_CHANGED_EVENT);
+        assert_eq!(event.payload["kind"], "upsert");
+        assert_eq!(event.payload["summary"]["id"], row.id);
+        assert_eq!(event.payload["summary"]["title"], "Codex index title");
+        assert_eq!(
+            title_edits.titles.lock().await.as_slice(),
+            [format!("#{} Codex index title", row.id)],
+            "scan-discovered titles must propagate to a bound chat thread"
+        );
     }
 
     #[tokio::test]
@@ -3851,9 +4016,14 @@ mod tests {
             .await
             .expect("delete");
         // After soft delete the row should no longer show up in list_all.
-        let remaining = list_all_conversations_core(&db.conn, None, None, None, None, None, false)
-            .await
-            .expect("list");
+        let remaining = list_all_conversations_core(
+            &db.conn,
+            &EventEmitter::Noop,
+            &crate::chat_channel::manager::ChatChannelManager::new(),
+            ListAllConversationsOptions::default(),
+        )
+        .await
+        .expect("list");
         assert!(
             remaining.iter().all(|c| c.id != conv_id),
             "soft-deleted conversation must not appear in list_all"
@@ -3942,6 +4112,120 @@ mod tests {
         let broadcaster = std::sync::Arc::new(crate::web::event_bridge::WebEventBroadcaster::new());
         let emitter = EventEmitter::test_web_only(broadcaster.clone());
         (broadcaster, emitter)
+    }
+
+    #[derive(Clone, Default)]
+    struct TitleEditRecorder {
+        titles: std::sync::Arc<tokio::sync::Mutex<Vec<String>>>,
+    }
+
+    struct RecordingTitleBackend {
+        recorder: TitleEditRecorder,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::chat_channel::traits::ChatChannelBackend for RecordingTitleBackend {
+        fn channel_type(&self) -> crate::chat_channel::types::ChannelType {
+            crate::chat_channel::types::ChannelType::Telegram
+        }
+
+        async fn start(
+            &self,
+            _command_tx: tokio::sync::mpsc::Sender<crate::chat_channel::types::IncomingCommand>,
+        ) -> Result<(), crate::chat_channel::error::ChatChannelError> {
+            Ok(())
+        }
+
+        async fn stop(&self) -> Result<(), crate::chat_channel::error::ChatChannelError> {
+            Ok(())
+        }
+
+        async fn status(&self) -> crate::chat_channel::types::ChannelConnectionStatus {
+            crate::chat_channel::types::ChannelConnectionStatus::Connected
+        }
+
+        async fn send_message(
+            &self,
+            _text: &str,
+        ) -> Result<
+            crate::chat_channel::types::SentMessageId,
+            crate::chat_channel::error::ChatChannelError,
+        > {
+            Ok(crate::chat_channel::types::SentMessageId("sent".into()))
+        }
+
+        async fn send_rich_message(
+            &self,
+            _message: &crate::chat_channel::types::RichMessage,
+        ) -> Result<
+            crate::chat_channel::types::SentMessageId,
+            crate::chat_channel::error::ChatChannelError,
+        > {
+            Ok(crate::chat_channel::types::SentMessageId("sent".into()))
+        }
+
+        async fn edit_thread_title(
+            &self,
+            _target: &crate::chat_channel::types::ChannelMessageTarget,
+            title: &str,
+        ) -> Result<(), crate::chat_channel::error::ChatChannelError> {
+            self.recorder.titles.lock().await.push(title.to_string());
+            Ok(())
+        }
+
+        async fn test_connection(
+            &self,
+        ) -> Result<(), crate::chat_channel::error::ChatChannelError> {
+            Ok(())
+        }
+    }
+
+    async fn title_sync_test_manager(
+        db: &crate::db::AppDatabase,
+        conversation_id: i32,
+    ) -> (
+        crate::chat_channel::manager::ChatChannelManager,
+        TitleEditRecorder,
+    ) {
+        let channel = crate::db::service::chat_channel_service::create(
+            &db.conn,
+            "title sync test".into(),
+            "telegram".into(),
+            "{}".into(),
+            true,
+            false,
+            None,
+        )
+        .await
+        .expect("create chat channel");
+        let recorder = TitleEditRecorder::default();
+        let manager = crate::chat_channel::manager::ChatChannelManager::new();
+        manager
+            .add_channel(
+                channel.id,
+                channel.name,
+                crate::chat_channel::types::ChannelType::Telegram,
+                Box::new(RecordingTitleBackend {
+                    recorder: recorder.clone(),
+                }),
+            )
+            .await
+            .expect("connect recording channel");
+        let target = crate::chat_channel::types::ChannelMessageTarget::telegram_forum_topic(
+            channel.id, "chat-1", "topic-1",
+        );
+        crate::db::service::thread_binding_service::upsert_for_target(
+            &db.conn,
+            &target,
+            "telegram",
+            conversation_id,
+            None,
+            "test-user",
+            Some("old topic title".into()),
+        )
+        .await
+        .expect("bind conversation thread");
+        (manager, recorder)
     }
 
     #[tokio::test]

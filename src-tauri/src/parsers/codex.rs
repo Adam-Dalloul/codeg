@@ -4086,6 +4086,53 @@ mod tests {
     }
 
     #[test]
+    fn session_index_title_wins_over_rollout_thread_name_update() {
+        let conversation_id = "index-vs-rollout-title";
+        let (_temp_dir, parser, index_path) = write_index_title_fixture(conversation_id);
+        let rollout_path = parser
+            .base_dir
+            .join("2026")
+            .join("08")
+            .join("15")
+            .join(format!(
+                "rollout-2026-08-15T16-00-00-{conversation_id}.jsonl"
+            ));
+        let mut rollout = fs::read_to_string(&rollout_path).expect("read rollout");
+        rollout.push_str(
+            &serde_json::json!({
+                "timestamp": "2026-08-15T08:00:02Z",
+                "type": "event_msg",
+                "payload": {
+                    "type": "thread_name_updated",
+                    "thread_name": "rollout thread title"
+                }
+            })
+            .to_string(),
+        );
+        rollout.push('\n');
+        fs::write(&rollout_path, rollout).expect("append rollout title");
+        fs::write(
+            &index_path,
+            format!(
+                "{}\n",
+                serde_json::json!({
+                    "id": conversation_id,
+                    "thread_name": "session index title",
+                    "updated_at": "2026-08-15T08:01:00Z"
+                })
+            ),
+        )
+        .expect("write index title");
+
+        let summaries = parser.list_conversations().expect("list conversations");
+        assert_eq!(summaries[0].title.as_deref(), Some("session index title"));
+        let detail = parser
+            .get_conversation(conversation_id)
+            .expect("get conversation");
+        assert_eq!(detail.summary.title.as_deref(), Some("session index title"));
+    }
+
+    #[test]
     fn session_index_title_refreshes_after_summary_cache_hit() {
         let conversation_id = "cache-title-session";
         let (_temp_dir, parser, index_path) = write_index_title_fixture(conversation_id);
