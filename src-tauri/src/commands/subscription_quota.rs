@@ -32,11 +32,20 @@ const LIMITS_ID: u64 = 2;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct OfficialQuotaSlot {
+    pub label: String,
+    pub payload: Value,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct OfficialQuotaRead {
     pub family: &'static str,
     /// Official JSON from the CLI, or `null` when that CLI did not publish
     /// a remaining-quota payload. Missing CLI is not an error.
     pub payload: Option<Value>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub extra_slots: Vec<OfficialQuotaSlot>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub unavailable_reason: Option<String>,
 }
@@ -86,13 +95,22 @@ fn rate_limits_request() -> Value {
 }
 
 async fn read_codex_rate_limits_from_child() -> Result<Option<Value>, AppCommandError> {
-    let mut child = crate::process::tokio_command("codex")
-        .args(["app-server", "--stdio"])
+    read_codex_rate_limits_from_home(None).await
+}
+
+async fn read_codex_rate_limits_from_home(
+    home: Option<&Path>,
+) -> Result<Option<Value>, AppCommandError> {
+    let mut cmd = crate::process::tokio_command("codex");
+    cmd.args(["app-server", "--stdio"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .kill_on_drop(true)
-        .spawn()
+        .kill_on_drop(true);
+    if let Some(home) = home {
+        cmd.env("CODEX_HOME", home);
+    }
+    let mut child = cmd.spawn()
         .map_err(|err| {
             AppCommandError::new(
                 AppErrorCode::DependencyMissing,
@@ -174,20 +192,29 @@ async fn read_codex_rate_limits_from_child() -> Result<Option<Value>, AppCommand
 }
 
 pub async fn read_codex_subscription_quota_core() -> OfficialQuotaRead {
+    let mut extra_slots = Vec::new();
+    for (label, home) in extra_homes_for_family("codex") {
+        if let Ok(Some(payload)) = read_codex_rate_limits_from_home(Some(&home)).await {
+            extra_slots.push(OfficialQuotaSlot { label, payload });
+        }
+    }
     match read_codex_rate_limits_from_child().await {
         Ok(Some(payload)) => OfficialQuotaRead {
             family: "codex",
             payload: Some(payload),
+            extra_slots,
             unavailable_reason: None,
         },
         Ok(None) => OfficialQuotaRead {
             family: "codex",
             payload: None,
+            extra_slots,
             unavailable_reason: Some("codex app-server did not return rateLimits".into()),
         },
         Err(err) => OfficialQuotaRead {
             family: "codex",
             payload: None,
+            extra_slots,
             unavailable_reason: Some(err.message),
         },
     }
@@ -252,10 +279,12 @@ async fn fetch_claude_oauth_usage(token: &str) -> Result<Value, AppCommandError>
 }
 
 pub async fn read_claude_subscription_quota_core() -> OfficialQuotaRead {
+    let extra_slots = extra_claude_slots().await;
     let Some(path) = claude_credentials_path() else {
         return OfficialQuotaRead {
             family: "claude",
             payload: None,
+            extra_slots,
             unavailable_reason: Some("home directory unavailable".into()),
         };
     };
@@ -263,6 +292,7 @@ pub async fn read_claude_subscription_quota_core() -> OfficialQuotaRead {
         return OfficialQuotaRead {
             family: "claude",
             payload: None,
+            extra_slots,
             unavailable_reason: Some("Claude Code is not signed in".into()),
         };
     };
@@ -271,20 +301,39 @@ pub async fn read_claude_subscription_quota_core() -> OfficialQuotaRead {
             OfficialQuotaRead {
                 family: "claude",
                 payload: Some(payload),
+                extra_slots,
                 unavailable_reason: None,
             }
         }
         Ok(_) => OfficialQuotaRead {
             family: "claude",
             payload: None,
+            extra_slots,
             unavailable_reason: Some("Claude usage payload missing five_hour/seven_day".into()),
         },
         Err(err) => OfficialQuotaRead {
             family: "claude",
             payload: None,
+            extra_slots,
             unavailable_reason: Some(err.message),
         },
     }
+}
+
+async fn extra_claude_slots() -> Vec<OfficialQuotaSlot> {
+    let mut slots = Vec::new();
+    for (label, home) in extra_homes_for_family("claude") {
+        let path = home.join(".credentials.json");
+        let Some(token) = read_claude_oauth_access_token(&path) else {
+            continue;
+        };
+        if let Ok(payload) = fetch_claude_oauth_usage(&token).await {
+            if payload.get("five_hour").is_some() || payload.get("seven_day").is_some() {
+                slots.push(OfficialQuotaSlot { label, payload });
+            }
+        }
+    }
+    slots
 }
 
 #[cfg(feature = "tauri-runtime")]
@@ -357,10 +406,12 @@ async fn fetch_grok_billing(token: &str) -> Result<Value, AppCommandError> {
 }
 
 pub async fn read_grok_subscription_quota_core() -> OfficialQuotaRead {
+    let extra_slots = extra_grok_slots().await;
     let Some(path) = grok_auth_path() else {
         return OfficialQuotaRead {
             family: "grok",
             payload: None,
+            extra_slots,
             unavailable_reason: Some("home directory unavailable".into()),
         };
     };
@@ -368,6 +419,7 @@ pub async fn read_grok_subscription_quota_core() -> OfficialQuotaRead {
         return OfficialQuotaRead {
             family: "grok",
             payload: None,
+            extra_slots,
             unavailable_reason: Some("Grok CLI is not signed in".into()),
         };
     };
@@ -376,20 +428,82 @@ pub async fn read_grok_subscription_quota_core() -> OfficialQuotaRead {
             OfficialQuotaRead {
                 family: "grok",
                 payload: Some(payload),
+                extra_slots,
                 unavailable_reason: None,
             }
         }
         Ok(_) => OfficialQuotaRead {
             family: "grok",
             payload: None,
+            extra_slots,
             unavailable_reason: Some("Grok billing payload missing creditUsagePercent".into()),
         },
         Err(err) => OfficialQuotaRead {
             family: "grok",
             payload: None,
+            extra_slots,
             unavailable_reason: Some(err.message),
         },
     }
+}
+
+async fn extra_grok_slots() -> Vec<OfficialQuotaSlot> {
+    let mut slots = Vec::new();
+    for (label, home) in extra_homes_for_family("grok") {
+        let path = home.join("auth.json");
+        let Some(token) = read_grok_cli_bearer(&path) else {
+            continue;
+        };
+        if let Ok(payload) = fetch_grok_billing(&token).await {
+            if payload
+                .get("config")
+                .and_then(|c| c.get("creditUsagePercent"))
+                .is_some()
+            {
+                slots.push(OfficialQuotaSlot { label, payload });
+            }
+        }
+    }
+    slots
+}
+
+pub fn extra_homes_for_family(family: &str) -> Vec<(String, std::path::PathBuf)> {
+    extra_homes_in(
+        dirs::home_dir().map(|home| home.join(".codeg-profiles")),
+        family,
+    )
+}
+
+pub fn extra_homes_in(
+    root: Option<std::path::PathBuf>,
+    family: &str,
+) -> Vec<(String, std::path::PathBuf)> {
+    let prefix = match family {
+        "claude" => "claude-",
+        "codex" => "codex-",
+        "grok" => "grok-",
+        _ => return Vec::new(),
+    };
+    let Some(root) = root else {
+        return Vec::new();
+    };
+    let Ok(entries) = fs::read_dir(&root) else {
+        return Vec::new();
+    };
+    let mut homes = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().to_string();
+        if !name.starts_with(prefix) {
+            continue;
+        }
+        homes.push((name, path));
+    }
+    homes.sort_by(|a, b| a.0.cmp(&b.0));
+    homes
 }
 
 #[cfg(feature = "tauri-runtime")]
@@ -482,5 +596,26 @@ mod tests {
             Some("oidc-token")
         );
         assert!(grok_cli_bearer_from_auth_json("{}").is_none());
+    }
+
+    #[test]
+    fn extra_homes_are_isolated_profile_dirs() {
+        let root = std::env::temp_dir().join(format!(
+            "codeg-quota-homes-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("claude-2")).unwrap();
+        fs::create_dir_all(root.join("claude-3")).unwrap();
+        fs::create_dir_all(root.join("codex-2")).unwrap();
+        fs::write(root.join("claude-ignore"), "").unwrap();
+        let claude = extra_homes_in(Some(root.clone()), "claude");
+        let names: Vec<_> = claude.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(names, ["claude-2", "claude-3"]);
+        let codex = extra_homes_in(Some(root.clone()), "codex");
+        assert_eq!(codex.len(), 1);
+        assert_eq!(codex[0].0, "codex-2");
+        assert!(extra_homes_in(Some(root.clone()), "grok").is_empty());
+        let _ = fs::remove_dir_all(&root);
     }
 }

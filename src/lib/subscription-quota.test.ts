@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest"
 import {
+  attachExtraSlots,
   emitsRemainingSubscription,
   familyQuota,
   inventory,
@@ -153,5 +154,38 @@ describe("subscription quota inventory", () => {
         rateLimits: { primary: { usedPercent: 10 } },
       })
     ).toBeNull()
+  })
+
+  it("attaches extra isolated-account remaining as labeled extras", () => {
+    const primary = remainingFromOfficialPayload("claude", {
+      five_hour: { utilization: 10, resets_at: null },
+      seven_day: { utilization: 20, resets_at: null },
+    })
+    const attached = attachExtraSlots(primary, "claude", [
+      {
+        label: "claude-2",
+        payload: {
+          five_hour: { utilization: 40, resets_at: null },
+          seven_day: { utilization: 40, resets_at: null },
+        },
+      },
+    ])
+    expect(attached?.remaining).toBe(80)
+    expect(attached?.extras?.some((e) => e.label === "claude-2" && e.remaining === 60)).toBe(
+      true
+    )
+    const onlyExtra = familyQuota("claude", undefined, undefined, [
+      {
+        label: "claude-2",
+        payload: {
+          five_hour: { utilization: 5, resets_at: null },
+          seven_day: { utilization: 5, resets_at: null },
+        },
+      },
+    ])
+    expect(onlyExtra.kind).toBe("remaining-subscription")
+    if (onlyExtra.kind === "remaining-subscription") {
+      expect(onlyExtra.remaining).toBe(95)
+    }
   })
 })
