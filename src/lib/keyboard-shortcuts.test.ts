@@ -3,7 +3,6 @@ import { beforeEach, describe, expect, it } from "vitest"
 import {
   DEFAULT_SHORTCUTS,
   SHORTCUTS_STORAGE_KEY,
-
   NUMBERED_TAB_ACTION_IDS,
   SHORTCUT_DEFINITIONS,
   formatShortcutLabel,
@@ -11,7 +10,6 @@ import {
   normalizeShortcut,
   readShortcutSettings,
   resolveWindowZoomAction,
-
   numberedTabIndexFromEvent,
   pickNumberedTabId,
   shortcutFromKeyboardEvent,
@@ -107,6 +105,26 @@ describe("numbered tab shortcuts", () => {
         DEFAULT_SHORTCUTS
       )
     ).toBeNull()
+  })
+})
+
+describe("reopen last closed tab", () => {
+  it("defaults to Ctrl/Cmd+Shift+T", () => {
+    const ids = SHORTCUT_DEFINITIONS.map((definition) => definition.id)
+    expect(ids).toContain("reopen_last_closed_tab")
+    expect(DEFAULT_SHORTCUTS.reopen_last_closed_tab).toBe("mod+shift+t")
+    expect(
+      matchShortcutEvent(
+        keyEvent("t", { ctrlKey: true, shiftKey: true }),
+        DEFAULT_SHORTCUTS.reopen_last_closed_tab
+      )
+    ).toBe(true)
+    expect(
+      matchShortcutEvent(
+        keyEvent("t", { ctrlKey: true }),
+        DEFAULT_SHORTCUTS.reopen_last_closed_tab
+      )
+    ).toBe(false)
   })
 })
 
