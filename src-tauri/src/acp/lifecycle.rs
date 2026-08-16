@@ -2736,6 +2736,7 @@ mod tests {
             task: "do x".into(),
             working_dir: None,
             requested_working_dir: None,
+            permission_mode: None,
             external_handle: None,
         }
     }
