@@ -56,9 +56,28 @@ describe("normalizeMathDelimiters", () => {
     expect(normalizeMathDelimiters("\\( y \\)")).toBe("$$ y $$")
   })
 
-  it("preserves currency values as plain text", () => {
-    const text = "Costs $25 direct and $13 elsewhere."
+  it("does not rewrite currency or shell $ tokens", () => {
+    // This helper only rewrites `\(`/`\[`. The real `$` fix is
+    // `singleDollarTextMath: false` — covered in math-delimiters.parse.test.ts.
+    const text = "Costs $25. Set $HOME and $1."
     expect(normalizeMathDelimiters(text)).toBe(text)
+  })
+
+  it("pads multi-line \\(...\\) at the start of a block so $$ is not a flow fence", () => {
+    expect(normalizeMathDelimiters("\\(a\nb\\)")).toBe("\u200b$$a\nb$$")
+    expect(normalizeMathDelimiters("\\(a\nb\n\\)")).toBe("\u200b$$a\nb$$\n")
+  })
+
+  it("does not pad mid-paragraph multi-line \\(...\\)", () => {
+    expect(normalizeMathDelimiters("text \\(a\nb\\) tail")).toBe(
+      "text $$a\nb$$ tail"
+    )
+  })
+
+  it("does not collapse newlines inside \\(...\\) (TeX % comments)", () => {
+    expect(normalizeMathDelimiters("\\(a % comment\nb + c\\)")).toBe(
+      "\u200b$$a % comment\nb + c$$"
+    )
   })
 
   it("preserves inline and fenced code blocks", () => {

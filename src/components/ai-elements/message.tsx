@@ -344,11 +344,14 @@ export const MessageBranchPage = ({
 // / `/slash`-badging hooks were removed.
 export type MessageResponseProps = ComponentProps<typeof Streamdown>
 
-// remark-math uses dollar delimiters.
-// `\[...\]` / `\(...\)` are normalized to `$$...$$`.
-// Single-dollar math is disabled so currency like "$25 ... $13"
-// cannot be misinterpreted as LaTeX.
-// Code blocks and inline code are preserved to avoid false positives.
+// remark-math uses dollar delimiters. `\[...\]` / `\(...\)` are rewritten
+// to `$$...$$`. Single-dollar `$...$` is disabled (`singleDollarTextMath:
+// false`) so currency (`$9.99`) and shell vars (`$HOME`, `$1`) stay prose.
+// A single-line `$$x$$` inside a paragraph stays *inline* math (mdast tags
+// it `math-inline`); `$$` at column 0 of a line is a math FLOW fence.
+// Multi-line `\(...\)` that would land `$$` at the start of a line is
+// padded so the fence path cannot swallow the first line as metadata.
+// Code / inline code is masked so delimiters inside them stay literal.
 export function normalizeMathDelimiters(text: string): string {
   const saved: string[] = []
   const placeholder = (m: string) => {
@@ -361,11 +364,32 @@ export function normalizeMathDelimiters(text: string): string {
   )
   const normalized = masked
     .replace(/\\\[([\s\S]*?)\\\]/g, (_m, inner: string) => `$$${inner}$$`)
-    .replace(/\\\(([\s\S]*?)\\\)/g, (_m, inner: string) => `$$${inner}$$`)
+    .replace(/\\\(([\s\S]*?)\\\)/g, (_m, inner: string, offset: number) => {
+      // Keep inner newlines (TeX `%` comments, `> \(a\n> b\)`). Only peel
+      // trailing newlines off the formula so the closer is not alone on a
+      // line (`\(a\nb\n\)` would otherwise become a display fence).
+      const trimmed = inner.replace(/\n+$/, "")
+      const after = inner.slice(trimmed.length)
+      // A leading space is not enough — math flow fences allow the same
+      // 0-3 spaces as ATX headings. A ZWSP keeps `$$` off column 0
+      // without becoming a visible character or indented code.
+      if (trimmed.includes("\n") && wouldStartMathFlowFence(masked, offset)) {
+        return `\u200b$$${trimmed}$$${after}`
+      }
+      return `$$${trimmed}$$${after}`
+    })
   return normalized.replace(
     /\0CBLK(\d+)\0/g,
     (_m, i: string) => saved[Number(i)]
   )
+}
+
+/** True when a `$$` emitted at `offset` would open a math flow fence
+ *  (column 0 of a line, or the first token after `>` / list markers). */
+function wouldStartMathFlowFence(source: string, offset: number): boolean {
+  const lineStart = source.lastIndexOf("\n", offset - 1) + 1
+  const prefix = source.slice(lineStart, offset)
+  return /^(?:[ \t]{0,3}(?:>[ \t]?|[*-][ \t]|\d+[.)][ \t]))*$/.test(prefix)
 }
 
 const remarkPlugins = [
