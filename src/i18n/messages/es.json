@@ -683,6 +683,7 @@
       "saveKimiCodeConfig": "Guardar configuración de Kimi Code",
       "customInstall": "Instalación personalizada",
       "saveKimiCodeRawConfig": "Save config.toml",
+      "saveDeepSeekConfig": "Guardar configuración de DeepSeek",
       "diagnose": "Diagnosticar"
     },
     "status": {
@@ -785,6 +786,15 @@
       "modelNoMatch": "Ningún modelo coincide",
       "modelsNeedAuth": "Inicia sesión para cargar la lista de modelos.",
       "modelDefaultBadge": "predeterminado"
+    },
+    "deepseek": {
+      "configManagement": "Configuración de DeepSeek Harness",
+      "configDescription": "El endpoint y la clave son variables de entorno que deepseek-acp lee al arrancar. El modelo y el esfuerzo de razonamiento son selectores por sesión: se eligen en el campo de mensaje.",
+      "baseUrlLabel": "Endpoint de la API",
+      "baseUrlHint": "Déjalo vacío para el endpoint oficial. Se aplica a las sesiones iniciadas tras guardar; vuelve a conectar una sesión en curso para que lo tome.",
+      "baseUrlInvalid": "Introduce una URL http(s) completa y sin cadena de consulta, por ejemplo https://api.deepseek.com",
+      "apiKeyLabel": "Clave de API",
+      "apiKeyHint": "Se pasa al agente como DEEPSEEK_API_KEY. Una variable de entorno tiene prioridad sobre el archivo de credenciales, así que déjala vacía si inicias sesión desde la terminal."
     },
     "codex": {
       "configDescription": "Admite configuración rápida de URL de API, API Key, nombre del modelo y reasoning effort, y sincroniza con `auth.json` / `config.toml`.",
@@ -1206,6 +1216,8 @@
       "saveCodeBuddyFailed": "No se pudo guardar la configuración de CodeBuddy",
       "kimiCodeSaved": "Configuración de Kimi Code guardada",
       "saveKimiCodeFailed": "Error al guardar la configuración de Kimi Code",
+      "deepseekSaved": "Configuración de DeepSeek guardada",
+      "saveDeepSeekFailed": "No se pudo guardar la configuración de DeepSeek",
       "modelProviderRequired": "Seleccione un proveedor de modelo antes de guardar.",
       "affectedRunningSessions": "{count, plural, one {# sesión activa necesita reconectarse para aplicar el cambio} other {# sesiones activas necesitan reconectarse para aplicar el cambio}}",
       "providerConnected": "Conectado {providerId}",

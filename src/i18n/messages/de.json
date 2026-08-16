@@ -683,6 +683,7 @@
       "saveKimiCodeConfig": "Kimi-Code-Konfiguration speichern",
       "customInstall": "Benutzerdefinierte Installation",
       "saveKimiCodeRawConfig": "Save config.toml",
+      "saveDeepSeekConfig": "DeepSeek-Konfiguration speichern",
       "diagnose": "Diagnose"
     },
     "status": {
@@ -785,6 +786,15 @@
       "modelNoMatch": "Kein passendes Modell",
       "modelsNeedAuth": "Melde dich an, um die Modellliste zu laden.",
       "modelDefaultBadge": "Standard"
+    },
+    "deepseek": {
+      "configManagement": "DeepSeek-Harness-Konfiguration",
+      "configDescription": "Endpunkt und Schlüssel sind Umgebungsvariablen, die deepseek-acp beim Start liest. Modell und Denkstufe sind Auswahlfelder pro Sitzung — sie werden im Eingabefeld gewählt.",
+      "baseUrlLabel": "API-Endpunkt",
+      "baseUrlHint": "Leer lassen für den offiziellen Endpunkt. Gilt für Sitzungen, die nach dem Speichern starten – eine laufende Sitzung muss neu verbinden.",
+      "baseUrlInvalid": "Vollständige http(s)-URL ohne Query-String eingeben, zum Beispiel https://api.deepseek.com",
+      "apiKeyLabel": "API-Schlüssel",
+      "apiKeyHint": "Wird dem Agenten als DEEPSEEK_API_KEY übergeben. Eine Umgebungsvariable hat Vorrang vor der Zugangsdatendatei – lass das Feld leer, wenn du dich im Terminal anmeldest."
     },
     "codex": {
       "configDescription": "Unterstützt schnelle Konfiguration von API-URL, API-Key, Modellname und reasoning effort und synchronisiert mit `auth.json` / `config.toml`.",
@@ -1206,6 +1216,8 @@
       "saveCodeBuddyFailed": "CodeBuddy-Konfiguration konnte nicht gespeichert werden",
       "kimiCodeSaved": "Kimi-Code-Konfiguration gespeichert",
       "saveKimiCodeFailed": "Speichern der Kimi-Code-Konfiguration fehlgeschlagen",
+      "deepseekSaved": "DeepSeek-Konfiguration gespeichert",
+      "saveDeepSeekFailed": "DeepSeek-Konfiguration konnte nicht gespeichert werden",
       "modelProviderRequired": "Bitte wählen Sie vor dem Speichern einen Modellanbieter aus.",
       "affectedRunningSessions": "{count, plural, one {# laufende Sitzung muss zum Anwenden neu verbunden werden} other {# laufende Sitzungen müssen zum Anwenden neu verbunden werden}}",
       "providerConnected": "{providerId} verbunden",

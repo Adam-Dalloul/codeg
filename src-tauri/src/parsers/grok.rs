@@ -1357,7 +1357,9 @@ fn grok_mcp_input_preview(input: &Value) -> Option<String> {
 /// bloat vector (many strings, long arrays, JSON/UTF-8 escaping that expands
 /// bytes) — a single per-field cap could not. Converges in O(log budget) passes;
 /// an already-small value returns on the first pass unchanged.
-fn cap_json_to_budget(value: &Value, budget: usize) -> Option<String> {
+/// `pub(crate)`: the DeepSeek parser bounds its oversized tool arguments with
+/// the same valid-JSON guarantee (`deepseek_tool_input_preview`).
+pub(crate) fn cap_json_to_budget(value: &Value, budget: usize) -> Option<String> {
     let mut per_string = budget;
     loop {
         let serialized = serde_json::to_string(&cap_json_string_values(value, per_string)).ok()?;

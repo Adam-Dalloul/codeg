@@ -3049,7 +3049,15 @@ fn build_client_capabilities(
                 .write_text_file(true),
         );
     }
-    if agent_type == AgentType::Codex {
+    // Form elicitation is advertised only to agents that are KNOWN to send
+    // spec-conformant `elicitation/create` forms `classify_elicitation` can
+    // bridge: codex-acp (Plan-mode `request_user_input`, MCP forms/approvals)
+    // and deepseek-acp (its `ask_user_question` + plan-review both build
+    // standard oneOf/anyOf forms, and decode a free-text answer that is not in
+    // the option set as a custom answer — the card's "Other" input round-trips
+    // cleanly). Agents without the bit fall back to their own
+    // `request_permission` button path.
+    if matches!(agent_type, AgentType::Codex | AgentType::DeepSeek) {
         client_capabilities = client_capabilities
             .elicitation(ElicitationCapabilities::new().form(ElicitationFormCapabilities::new()));
     }
@@ -3224,6 +3232,10 @@ fn load_mcp_servers_for_agent(agent_type: AgentType) -> Vec<McpServer> {
     // wire here would double-register them — skip it. (The built-in
     // `codeg-mcp` companion is injected separately by `inject_codeg_mcp`, so
     // it still reaches them.)
+    //
+    // DeepSeek is deliberately NOT in this set: deepseek-acp reads no MCP file
+    // at all, so `$DSH_HOME/mcp.json` (codeg's own store) reaches it ONLY
+    // through the wire — skipping it would silently drop every user server.
     if matches!(
         agent_type,
         AgentType::Hermes | AgentType::KimiCode | AgentType::Grok | AgentType::Cursor
@@ -11386,6 +11398,13 @@ mod tests {
         let codex = caps_of(AgentType::Codex);
         assert!(codex.get("elicitation").is_some());
         assert!(codex.get("_meta").is_none());
+
+        // DeepSeek: form elicitation too — deepseek-acp routes its
+        // ask_user_question + plan review through `elicitation/create` forms
+        // when the bit is advertised (button fallback otherwise).
+        let deepseek = caps_of(AgentType::DeepSeek);
+        assert!(deepseek.get("elicitation").is_some());
+        assert!(deepseek.get("_meta").is_none());
 
         // Everyone else: neither gate; fs + terminal always advertised.
         let other = caps_of(AgentType::Gemini);

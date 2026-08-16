@@ -65,7 +65,7 @@ Codeg (Code Generation) هو مساحة عمل برمجية متعددة الو�
 
 ## 🤖 الوكلاء المدعومون
 
-Claude Code · Codex · Gemini · OpenClaw · OpenCode · Cline · Hermes · CodeBuddy · Kimi Code · Pi · Grok · Cursor
+Claude Code · Codex · Gemini · OpenClaw · OpenCode · Cline · Hermes · CodeBuddy · Kimi Code · Pi · Grok · Cursor · DeepSeek Harness
 
 يتولّى Codeg تثبيت معظمهم وتثبيت إصداراتهم وتحديثهم نيابةً عنك. راجع [الوكلاء المدعومون](https://docs.codeg.app/guide/supported-agents) للقائمة الكاملة، ومتطلبات تشغيل كل وكيل، وموضع حفظ جلساته على القرص.
 
