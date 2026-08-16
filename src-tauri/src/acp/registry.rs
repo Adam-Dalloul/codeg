@@ -734,8 +734,8 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             name: "CodeBuddy",
             description: "Tencent Cloud's official AI coding assistant (ACP)",
             distribution: AgentDistribution::Npx {
-                version: "2.136.0",
-                package: "@tencent-ai/codebuddy-code@2.136.0",
+                version: "2.137.0",
+                package: "@tencent-ai/codebuddy-code@2.137.0",
                 cmd: "codebuddy",
                 args: &["--acp"],
                 env: &[],
@@ -815,27 +815,27 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             // `models` that the composer's selectors and context ring read, and
             // prompting straight after it works. It also skips `session/load`'s
             // history replay, which codeg only drained to discard. The 1.0.1–
-            // 1.0.3 patches add nothing further here: re-probed live against the
-            // 1.0.3 binary, `initialize` still answers `sessionCapabilities:
+            // 1.0.4 patches add nothing further here: re-probed live against the
+            // 1.0.4 binary, `initialize` still answers `sessionCapabilities:
             // {list, resume, close}` plus the same
             // `promptCapabilities.embeddedContext`, so the resume rung stands.
             distribution: AgentDistribution::Npx {
-                version: "1.0.3",
-                package: "@xai-official/grok@1.0.3",
+                version: "1.0.4",
+                package: "@xai-official/grok@1.0.4",
                 cmd: "grok",
                 // Only the ACP subcommand lives here. Grok's ROOT-level launch
                 // flags (`--no-auto-update` always, `--permission-mode <value>`
                 // only for a non-default permission mode) MUST precede this
                 // subcommand — `grok agent stdio` itself rejects them (re-verified
-                // against 1.0.3: it still only accepts --debug/--debug-file/
+                // against 1.0.4: it still only accepts --debug/--debug-file/
                 // --leader-socket) — so `build_agent` inserts them ahead of these
-                // args rather than appending after. 1.0.3 no longer LISTS
-                // `--no-auto-update` in `grok --help`, but it is still accepted:
+                // args rather than appending after. Since 1.0.3 `grok --help` no
+                // longer LISTS `--no-auto-update`, but it is still accepted:
                 // clap hard-errors on an unknown argument, and
                 // `grok --no-auto-update agent stdio` initializes clean.
                 args: &["agent", "stdio"],
                 env: &[],
-                // `@xai-official/grok@1.0.3` declares `engines.node: ">=20"`;
+                // `@xai-official/grok@1.0.4` declares `engines.node: ">=20"`;
                 // surface that in preflight so Node 18 isn't silently accepted.
                 node_required: Some("20.0.0"),
             },
@@ -1101,8 +1101,8 @@ mod tests {
         );
         assert_npx_version(
             AgentType::CodeBuddy,
-            "2.136.0",
-            "@tencent-ai/codebuddy-code@2.136.0",
+            "2.137.0",
+            "@tencent-ai/codebuddy-code@2.137.0",
             Some("22.0.0"),
         );
         assert_npx_version(
@@ -1120,8 +1120,8 @@ mod tests {
         assert_npx_version(AgentType::Pi, "0.0.33", "pi-acp@0.0.33", Some("22.0.0"));
         assert_npx_version(
             AgentType::Grok,
-            "1.0.3",
-            "@xai-official/grok@1.0.3",
+            "1.0.4",
+            "@xai-official/grok@1.0.4",
             Some("20.0.0"),
         );
         assert_npx_version(
