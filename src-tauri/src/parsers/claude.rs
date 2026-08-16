@@ -190,6 +190,168 @@ fn is_slash_command_expansion(value: &serde_json::Value, prompt_id: Option<&str>
     }
 }
 
+/// What the record following a buffered slash command says about that command.
+enum PendingCommandVerdict {
+    /// A real turn followed — the command IS that turn's prompt, so render it.
+    Emit,
+    /// The next thing in the transcript is another user-authored record, so the
+    /// command drove no turn of its own (a client-side `/model`, `/compact`).
+    Drop,
+    /// Undecided: this record is part of the same submission (command output,
+    /// an injected instruction, an attachment, a tool result).
+    Wait,
+}
+
+/// Whether `value` is an instruction Claude Code injected for the model under
+/// the SAME submission as a buffered slash command: an `isMeta` record carrying
+/// the command's `promptId` whose content survives tag-stripping.
+///
+/// This is the positive, causal half of [`pending_command_verdict`] — the
+/// command didn't just happen to precede a turn, it *caused* one. `/goal`'s
+/// injection is the motivating case ("A session-scoped Stop hook is now active
+/// with condition: …", an `isMeta` STRING record sharing the command's
+/// `promptId`), and resolving on it means the transcript grows its user turn the
+/// instant the command is submitted rather than when the model finally answers.
+///
+/// The `promptId` must match: without it, the same shape is exactly a cron-fired
+/// prompt (also `isMeta`, also bare string), which belongs to nobody's command.
+/// The stripping requirement excludes the `<local-command-caveat>` the CLI
+/// writes around local commands — same submission, but it instructs nothing.
+fn is_same_submission_injection(value: &serde_json::Value, prompt_id: Option<&str>) -> bool {
+    let (Some(command_prompt_id), Some(record_prompt_id)) = (
+        prompt_id,
+        value.get("promptId").and_then(|p| p.as_str()),
+    ) else {
+        return false;
+    };
+    if command_prompt_id != record_prompt_id || !is_meta_message(value) {
+        return false;
+    }
+    match value.pointer("/message/content") {
+        Some(serde_json::Value::String(s)) => strip_system_tags(s).is_some(),
+        Some(serde_json::Value::Array(_)) => !extract_user_content(value).is_empty(),
+        _ => false,
+    }
+}
+
+/// Whether a user record is an async sub-agent `<task-notification>` — an
+/// out-of-turn initiator in its own right (`background_watch` opens an episode
+/// on it), so whatever the model writes after it answers the notification, not
+/// a slash command that happened to precede it.
+fn is_task_notification_record(value: &serde_json::Value) -> bool {
+    value
+        .pointer("/message/content")
+        .and_then(|c| c.as_str())
+        .is_some_and(|raw| raw.trim_start().starts_with("<task-notification>"))
+}
+
+/// Resolve a buffered slash command against the record that follows it.
+///
+/// A slash command is persisted as its own user record whose content is pure
+/// command tags, so it strips to nothing and would vanish — leaving the turn it
+/// started with no visible prompt. Whether it deserves a bubble depends on what
+/// it did:
+///
+/// * prompt-expanding commands (`/init`, custom commands) inject the expanded
+///   prompt as an `isMeta` ARRAY record — see [`is_slash_command_expansion`];
+/// * `/goal` writes `<local-command-stdout>` and then an `isMeta` STRING hook
+///   instruction that the model answers directly, so the command is the turn's
+///   prompt (dropping it left the reply anchored to nothing: the transcript
+///   showed a reply to no one, and everything that locates the in-flight prompt
+///   by the trailing user turn — the viewer's partial-reply suppression, the
+///   owner's persisted-tail strip — missed it and double-rendered the reply);
+/// * client-only commands (`/model`, `/compact`) are followed by the user's
+///   NEXT prompt with no model turn in between, and stay hidden as before.
+///
+/// So the verdict is decided by evidence rather than by the single adjacent
+/// record. In order of strength: an injection carrying the command's own
+/// `promptId` proves it caused a turn ([`is_same_submission_injection`]); an
+/// interrupt marker proves a request was in flight to interrupt; a real
+/// (non-synthetic) assistant record shows the model answering. It is refuted by
+/// the next thing that owns a turn of ITS own — another user-authored prompt, a
+/// `<task-notification>` whose settlement the following reply answers, or a
+/// foreign injection (a cron prompt, a post-compaction continuation). That last
+/// refutation is what keeps the weakest evidence honest: without it, a command
+/// buffered indefinitely (this accumulator is fed incrementally by the
+/// background watcher and never flushed) would be adopted by whatever unrelated
+/// reply eventually came along. Everything the CLI writes in between keeps the
+/// question open, and a command left unresolved when the feed ends stays hidden:
+/// end-of-file is a sampling boundary, not evidence.
+fn pending_command_verdict(
+    value: &serde_json::Value,
+    prompt_id: Option<&str>,
+) -> PendingCommandVerdict {
+    if is_slash_command_expansion(value, prompt_id)
+        || is_same_submission_injection(value, prompt_id)
+    {
+        return PendingCommandVerdict::Emit;
+    }
+    match value.get("type").and_then(|t| t.as_str()) {
+        // A synthetic placeholder is what Claude Code writes FOR a client
+        // command — evidence of the opposite, but the next prompt settles it.
+        Some("assistant") if !is_synthetic_assistant(value) => PendingCommandVerdict::Emit,
+        Some("user") => {
+            // The marker is only ever written against a request that was
+            // running, so the command did drive one — keep the prompt that
+            // explains the interrupted (possibly output-less) turn.
+            if is_interrupt_marker(value) {
+                return PendingCommandVerdict::Emit;
+            }
+            if is_task_notification_record(value) {
+                return PendingCommandVerdict::Drop;
+            }
+            if is_meta_message(value) {
+                // Not this command's injection (checked above). If it
+                // demonstrably belongs to ANOTHER submission and instructs the
+                // model — a cron-fired prompt, a post-compaction continuation —
+                // it owns the turn that follows, so it RETIRES the buffered
+                // command rather than leaving it to claim that turn's prompt
+                // slot: this accumulator is fed incrementally by the background
+                // watcher and never flushed, so a command left buffered can
+                // otherwise sit there until some unrelated reply adopts it.
+                //
+                // Both ids are required to call it foreign. Without them there
+                // is nothing to attribute by, and the record is as likely to be
+                // this command's own injection as someone else's — so it decides
+                // nothing and the weaker evidence downstream gets its chance
+                // (that is the whole degradation path for a CLI that stops
+                // stamping submission ids). Same for a record that instructs
+                // nothing at all: the `<local-command-caveat>` wrapped around
+                // local commands.
+                let foreign_submission = matches!(
+                    (prompt_id, value.get("promptId").and_then(|p| p.as_str())),
+                    (Some(command), Some(record)) if command != record
+                );
+                return if foreign_submission && !extract_user_content(value).is_empty() {
+                    PendingCommandVerdict::Drop
+                } else {
+                    PendingCommandVerdict::Wait
+                };
+            }
+            // Tool results continue whatever turn is running; command output
+            // and other tag-only records render nothing at all. Everything else
+            // a user record can hold — text, images — is the next prompt, and
+            // this is the same emptiness test the parser itself applies, so the
+            // two can't disagree about what "renders nothing" means.
+            let tool_results_only = value
+                .pointer("/message/content")
+                .and_then(|c| c.as_array())
+                .is_some_and(|blocks| {
+                    !blocks.is_empty()
+                        && blocks.iter().all(|b| {
+                            b.get("type").and_then(|t| t.as_str()) == Some("tool_result")
+                        })
+                });
+            if tool_results_only || extract_user_content(value).is_empty() {
+                PendingCommandVerdict::Wait
+            } else {
+                PendingCommandVerdict::Drop
+            }
+        }
+        _ => PendingCommandVerdict::Wait,
+    }
+}
+
 /// Check if a JSONL entry is a system meta message (isMeta: true).
 /// Rebuild a standard unified diff from `toolUseResult.structuredPatch`.
 ///
@@ -759,10 +921,10 @@ pub(crate) struct ClaudeRecordAccumulator {
     pub(crate) custom_title: Option<String>,
     pub(crate) first_timestamp: Option<DateTime<Utc>>,
     pub(crate) last_timestamp: Option<DateTime<Utc>>,
-    /// A prompt-expanding slash command is buffered (with its promptId) until
-    /// the next entry confirms it expanded into a real prompt — see
-    /// `is_slash_command_expansion`. Client commands (`/model`) never confirm
-    /// and are dropped, so they stay hidden as before.
+    /// A user-typed slash command is buffered (with its promptId) until a later
+    /// record confirms it drove a real turn — see `pending_command_verdict`.
+    /// Client commands (`/model`, `/compact`) are refuted by the next prompt and
+    /// stay hidden as before, including one left unresolved when the feed ends.
     pending_command: Option<(UnifiedMessage, Option<String>)>,
     /// Async background launches seen in this feed: the ack tool_result's
     /// `tool_use_id` → the launched task id (`toolUseResult.agentId`). Joined
@@ -899,13 +1061,24 @@ impl ClaudeRecordAccumulator {
             return;
         }
 
-        // Resolve a buffered slash command against this entry: emit it only
-        // if this entry is its expanded prompt, otherwise drop it (a client
-        // command like `/model` that produced no model turn).
-        if let Some((command_msg, prompt_id)) = pending_command.take() {
-            if is_slash_command_expansion(&value, prompt_id.as_deref()) {
-                messages.push(command_msg);
+        // Resolve a buffered slash command against this entry (see
+        // `pending_command_verdict`): emit it once a real turn is confirmed,
+        // drop it when the next user-authored record arrives first, and keep
+        // waiting through everything the CLI writes in between. A second
+        // command arriving while one is buffered needs no verdict of its own —
+        // it overwrites the buffer below, which discards the first exactly as
+        // `Drop` would.
+        let verdict = pending_command
+            .as_ref()
+            .map(|(_, prompt_id)| pending_command_verdict(&value, prompt_id.as_deref()));
+        match verdict {
+            Some(PendingCommandVerdict::Emit) => {
+                if let Some((command_msg, _)) = pending_command.take() {
+                    messages.push(command_msg);
+                }
             }
+            Some(PendingCommandVerdict::Drop) => *pending_command = None,
+            Some(PendingCommandVerdict::Wait) | None => {}
         }
 
         // Skip system meta messages and interrupt bookkeeping (see the
@@ -1404,6 +1577,14 @@ impl ClaudeRecordAccumulator {
 
     /// In-place [`Self::apply_background_lifecycle`] over `self.messages` —
     /// the full-file detail parse calls this once after feeding every record.
+    ///
+    /// A slash command still awaiting its verdict is deliberately NOT flushed
+    /// here: end-of-file is a sampling boundary, not evidence that the command
+    /// drove a turn (the watcher re-reads the same growing file every second,
+    /// and a cold parse can land anywhere). Emitting on it would make a trailing
+    /// `/model` appear and then vanish once the next prompt refuted it. The
+    /// commands that need their bubble mid-turn get it from their own injection
+    /// record instead — see `is_same_submission_injection`.
     pub(crate) fn finalize_background_lifecycle(&mut self) {
         let mut messages = std::mem::take(&mut self.messages);
         self.apply_background_lifecycle(&mut messages);
@@ -3615,6 +3796,371 @@ mod tests {
             .any(|b| matches!(b, ContentBlock::Text { text } if text.contains("/model")))));
         // Title comes from the first real prompt, not any slash command.
         assert_eq!(detail.summary.title.as_deref(), Some("hi"));
+    }
+
+    fn role_name(turn: &MessageTurn) -> &'static str {
+        match turn.role {
+            TurnRole::User => "user",
+            TurnRole::Assistant => "assistant",
+            TurnRole::System => "system",
+        }
+    }
+
+    /// The real `/goal` shape (Claude Code 2.1.x): the command record, its
+    /// `<local-command-stdout>`, then an `isMeta` STRING hook instruction that
+    /// the model answers directly. None of that is the expanded-prompt shape,
+    /// so the old "decide on the very next record" rule dropped the command —
+    /// the user's message vanished from history and the reply was left with no
+    /// prompt above it to anchor the in-flight suppression on.
+    #[test]
+    fn goal_command_renders_as_the_prompt_of_the_turn_it_drove() {
+        let records = [
+            json!({
+                "type": "user",
+                "timestamp": "2026-08-15T23:43:38.000Z",
+                "uuid": "u-goal",
+                "promptId": "p1",
+                "message": { "role": "user", "content": "<command-name>/goal</command-name>\n            <command-message>goal</command-message>\n            <command-args>随便开发一个测试页面</command-args>" }
+            }),
+            json!({
+                "type": "user",
+                "timestamp": "2026-08-15T23:43:38.100Z",
+                "uuid": "u-out",
+                "promptId": "p1",
+                "message": { "role": "user", "content": "<local-command-stdout>Goal set: 随便开发一个测试页面</local-command-stdout>" }
+            }),
+            json!({
+                "type": "user",
+                "timestamp": "2026-08-15T23:43:38.320Z",
+                "uuid": "u-hook",
+                "isMeta": true,
+                "promptId": "p1",
+                "message": { "role": "user", "content": "A session-scoped Stop hook is now active with condition: \"随便开发一个测试页面\"." }
+            }),
+            json!({
+                "type": "assistant",
+                "timestamp": "2026-08-15T23:43:44.000Z",
+                "uuid": "a1",
+                "message": { "role": "assistant", "model": "claude-sonnet-5", "content": [{"type": "text", "text": "收到，目标是随便开发一个测试页面。"}] }
+            }),
+        ];
+
+        // Whole feed: the command is the turn's prompt.
+        let mut acc = ClaudeRecordAccumulator::new(PathBuf::from("/nonexistent.jsonl"));
+        for record in &records {
+            acc.feed_line(&record.to_string());
+        }
+        acc.finalize_background_lifecycle();
+        let turns = group_into_turns(acc.messages);
+        let roles: Vec<_> = turns.iter().map(role_name).collect();
+        assert_eq!(roles, vec!["user", "assistant"]);
+        assert!(matches!(
+            &turns[0].blocks[0],
+            ContentBlock::Text { text } if text == "/goal 随便开发一个测试页面"
+        ));
+        // The hook instruction is addressed to the model, not spoken by the
+        // user — it must stay out of the transcript.
+        assert!(!turns.iter().any(|t| t.blocks.iter().any(
+            |b| matches!(b, ContentBlock::Text { text } if text.contains("Stop hook"))
+        )));
+
+        // Mid-turn (the model is still thinking, no assistant record yet): the
+        // hook injection alone must already resolve it, because the transcript
+        // tail is what both in-flight anchors match on — and waiting for the
+        // reply would leave that window unanchored. Nothing is flushed at the
+        // end of the feed, so this can only come from the injection.
+        let mut acc = ClaudeRecordAccumulator::new(PathBuf::from("/nonexistent.jsonl"));
+        for record in &records[..3] {
+            acc.feed_line(&record.to_string());
+        }
+        acc.finalize_background_lifecycle();
+        let turns = group_into_turns(acc.messages);
+        assert_eq!(turns.len(), 1);
+        assert_eq!(role_name(&turns[0]), "user");
+
+        // …and the promptId is what makes it evidence: the SAME shape with a
+        // foreign id is a cron-fired prompt, which belongs to no command. It
+        // must not resolve one, and with nothing flushed at EOF the command
+        // stays hidden.
+        let mut foreign = records[2].clone();
+        foreign["promptId"] = json!("p-cron");
+        let mut acc = ClaudeRecordAccumulator::new(PathBuf::from("/nonexistent.jsonl"));
+        for record in [&records[0], &records[1], &foreign] {
+            acc.feed_line(&record.to_string());
+        }
+        acc.finalize_background_lifecycle();
+        assert!(acc.messages.is_empty());
+    }
+
+    /// Evidence the command drove a turn can also arrive as an interrupt
+    /// marker: it is only ever written against a request that was running. The
+    /// turn may have no output at all, which is exactly when its prompt is the
+    /// only thing left to explain it.
+    #[test]
+    fn interrupted_command_turn_keeps_its_prompt() {
+        let mut acc = ClaudeRecordAccumulator::new(PathBuf::from("/nonexistent.jsonl"));
+        for record in [
+            json!({
+                "type": "user",
+                "timestamp": "2026-08-15T23:43:38.000Z",
+                "uuid": "u-goal",
+                "promptId": "p1",
+                "message": { "role": "user", "content": "<command-name>/goal</command-name>\n<command-args>ship it</command-args>" }
+            }),
+            json!({
+                "type": "user",
+                "timestamp": "2026-08-15T23:43:39.000Z",
+                "uuid": "u-int",
+                "message": { "role": "user", "content": "[Request interrupted by user]" }
+            }),
+            json!({
+                "type": "user",
+                "timestamp": "2026-08-15T23:44:00.000Z",
+                "uuid": "u1",
+                "message": { "role": "user", "content": [{"type": "text", "text": "never mind"}] }
+            }),
+        ] {
+            acc.feed_line(&record.to_string());
+        }
+        acc.finalize_background_lifecycle();
+        let turns = group_into_turns(acc.messages);
+        let texts: Vec<_> = turns
+            .iter()
+            .flat_map(|t| t.blocks.iter())
+            .filter_map(|b| match b {
+                ContentBlock::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(texts, vec!["/goal ship it", "never mind"]);
+    }
+
+    /// The fallback evidence, for a shape the stronger rules can't see: no
+    /// `promptId` to correlate an injection with (nothing in today's corpus
+    /// reaches this — every real command resolves at its expansion, injection or
+    /// interrupt — but a CLI that stops stamping submission ids must degrade to
+    /// a visible prompt, not to the invisible-user-message bug).
+    #[test]
+    fn a_reply_alone_still_resolves_a_command_with_no_submission_id() {
+        let mut acc = ClaudeRecordAccumulator::new(PathBuf::from("/nonexistent.jsonl"));
+        for record in [
+            json!({
+                "type": "user",
+                "timestamp": "2026-08-15T23:43:38.000Z",
+                "uuid": "u-goal",
+                "message": { "role": "user", "content": "<command-name>/goal</command-name>\n<command-args>ship it</command-args>" }
+            }),
+            json!({
+                "type": "user",
+                "timestamp": "2026-08-15T23:43:38.100Z",
+                "uuid": "u-out",
+                "message": { "role": "user", "content": "<local-command-stdout>Goal set: ship it</local-command-stdout>" }
+            }),
+            json!({
+                "type": "assistant",
+                "timestamp": "2026-08-15T23:43:44.000Z",
+                "uuid": "a1",
+                "message": { "role": "assistant", "model": "claude-sonnet-5", "content": [{"type": "text", "text": "On it."}] }
+            }),
+        ] {
+            acc.feed_line(&record.to_string());
+        }
+        acc.finalize_background_lifecycle();
+        let turns = group_into_turns(acc.messages);
+        assert_eq!(turns.len(), 2);
+        assert!(matches!(
+            &turns[0].blocks[0],
+            ContentBlock::Text { text } if text == "/goal ship it"
+        ));
+    }
+
+    /// The degradation path must stay coherent end to end: with no submission
+    /// ids anywhere, the command's OWN injection is indistinguishable from a
+    /// foreign one, so it must not be treated as a refutation — otherwise the
+    /// record that proves the command drove a turn is the very thing that
+    /// discards it, and the reply-based fallback never gets to run.
+    #[test]
+    fn a_command_survives_its_own_injection_when_nothing_carries_an_id() {
+        let mut acc = ClaudeRecordAccumulator::new(PathBuf::from("/nonexistent.jsonl"));
+        for record in [
+            json!({
+                "type": "user",
+                "timestamp": "2026-08-15T23:43:38.000Z",
+                "uuid": "u-goal",
+                "message": { "role": "user", "content": "<command-name>/goal</command-name>\n<command-args>ship it</command-args>" }
+            }),
+            json!({
+                "type": "user",
+                "timestamp": "2026-08-15T23:43:38.100Z",
+                "uuid": "u-out",
+                "message": { "role": "user", "content": "<local-command-stdout>Goal set: ship it</local-command-stdout>" }
+            }),
+            json!({
+                "type": "user",
+                "timestamp": "2026-08-15T23:43:38.200Z",
+                "uuid": "u-hook",
+                "isMeta": true,
+                "message": { "role": "user", "content": "A session-scoped Stop hook is now active with condition: ship it." }
+            }),
+            json!({
+                "type": "assistant",
+                "timestamp": "2026-08-15T23:43:44.000Z",
+                "uuid": "a1",
+                "message": { "role": "assistant", "model": "claude-sonnet-5", "content": [{"type": "text", "text": "On it."}] }
+            }),
+        ] {
+            acc.feed_line(&record.to_string());
+        }
+        acc.finalize_background_lifecycle();
+        let turns = group_into_turns(acc.messages);
+        assert_eq!(turns.len(), 2);
+        assert!(matches!(
+            &turns[0].blocks[0],
+            ContentBlock::Text { text } if text == "/goal ship it"
+        ));
+    }
+
+    /// A stale buffered command must not be adopted by an unrelated turn. The
+    /// accumulator is also fed incrementally by the background watcher, which
+    /// never ends its feed, so a client command can sit buffered indefinitely —
+    /// and the reply that eventually arrives may belong to a cron prompt that
+    /// landed in between. The foreign injection retires it.
+    #[test]
+    fn a_foreign_injection_retires_a_stale_buffered_command() {
+        let records = [
+            json!({
+                "type": "user",
+                "timestamp": "2026-08-15T23:42:59.000Z",
+                "uuid": "u-model",
+                "promptId": "p1",
+                "message": { "role": "user", "content": "<command-name>/model</command-name>\n<command-args>sonnet</command-args>" }
+            }),
+            json!({
+                "type": "user",
+                "timestamp": "2026-08-15T23:42:59.100Z",
+                "uuid": "u-out",
+                "promptId": "p1",
+                "message": { "role": "user", "content": "<local-command-stdout>Set model to sonnet</local-command-stdout>" }
+            }),
+            // Hours later: a cron-fired prompt — same isMeta STRING shape as the
+            // `/goal` hook, but a submission of its own.
+            json!({
+                "type": "user",
+                "timestamp": "2026-08-16T02:00:00.000Z",
+                "uuid": "u-cron",
+                "promptId": "p2",
+                "isMeta": true,
+                "userType": "external",
+                "message": { "role": "user", "content": "iterate forever" }
+            }),
+            json!({
+                "type": "assistant",
+                "timestamp": "2026-08-16T02:00:05.000Z",
+                "uuid": "a1",
+                "message": { "role": "assistant", "model": "claude-sonnet-5", "content": [{"type": "text", "text": "Resuming the loop."}] }
+            }),
+        ];
+        let mut acc = ClaudeRecordAccumulator::new(PathBuf::from("/nonexistent.jsonl"));
+        for record in &records {
+            acc.feed_line(&record.to_string());
+        }
+        acc.finalize_background_lifecycle();
+        let turns = group_into_turns(acc.messages);
+        assert!(
+            !turns.iter().any(|t| t.blocks.iter().any(
+                |b| matches!(b, ContentBlock::Text { text } if text.contains("/model"))
+            )),
+            "the cron owns that reply — the command must not claim its prompt slot"
+        );
+    }
+
+    /// A `<task-notification>` settling mid-wait owns the reply that follows it
+    /// (background work reporting back), so it refutes the buffered command
+    /// rather than letting it claim that reply's prompt slot.
+    #[test]
+    fn task_notification_refutes_a_buffered_command() {
+        let mut acc = ClaudeRecordAccumulator::new(PathBuf::from("/nonexistent.jsonl"));
+        for record in [
+            json!({
+                "type": "user",
+                "timestamp": "2026-08-15T23:42:59.000Z",
+                "uuid": "u-model",
+                "promptId": "p1",
+                "message": { "role": "user", "content": "<command-name>/model</command-name>\n<command-args>sonnet</command-args>" }
+            }),
+            json!({
+                "type": "user",
+                "timestamp": "2026-08-15T23:42:59.100Z",
+                "uuid": "u-out",
+                "promptId": "p1",
+                "message": { "role": "user", "content": "<local-command-stdout>Set model to sonnet</local-command-stdout>" }
+            }),
+            json!({
+                "type": "user",
+                "timestamp": "2026-08-15T23:43:30.000Z",
+                "uuid": "u-note",
+                "message": { "role": "user", "content": "<task-notification>\n<task-id>abc123</task-id>\n<status>completed</status>\n</task-notification>" }
+            }),
+            json!({
+                "type": "assistant",
+                "timestamp": "2026-08-15T23:43:31.000Z",
+                "uuid": "a1",
+                "message": { "role": "assistant", "model": "claude-sonnet-5", "content": [{"type": "text", "text": "The build finished."}] }
+            }),
+        ] {
+            acc.feed_line(&record.to_string());
+        }
+        acc.finalize_background_lifecycle();
+        let turns = group_into_turns(acc.messages);
+        assert!(!turns.iter().any(|t| t.blocks.iter().any(
+            |b| matches!(b, ContentBlock::Text { text } if text.contains("/model"))
+        )));
+    }
+
+    /// A client-only command stays hidden even when the CLI writes several
+    /// inert records before the next prompt — the lookahead walks past command
+    /// output and attachments without deciding, and only the real prompt does.
+    #[test]
+    fn client_command_stays_hidden_across_inert_records() {
+        let mut acc = ClaudeRecordAccumulator::new(PathBuf::from("/nonexistent.jsonl"));
+        for record in [
+            json!({
+                "type": "user",
+                "timestamp": "2026-08-15T23:42:59.000Z",
+                "uuid": "u-model",
+                "promptId": "p1",
+                "message": { "role": "user", "content": "<command-name>/model</command-name>\n            <command-message>model</command-message>\n            <command-args>sonnet</command-args>" }
+            }),
+            json!({
+                "type": "user",
+                "timestamp": "2026-08-15T23:42:59.100Z",
+                "uuid": "u-out",
+                "promptId": "p1",
+                "message": { "role": "user", "content": "<local-command-stdout>Set model to sonnet</local-command-stdout>" }
+            }),
+            json!({"type": "attachment", "timestamp": "2026-08-15T23:42:59.200Z", "uuid": "att"}),
+            json!({
+                "type": "user",
+                "timestamp": "2026-08-15T23:43:10.000Z",
+                "uuid": "u1",
+                "message": { "role": "user", "content": [{"type": "text", "text": "hi"}] }
+            }),
+            json!({
+                "type": "assistant",
+                "timestamp": "2026-08-15T23:43:11.000Z",
+                "uuid": "a1",
+                "message": { "role": "assistant", "model": "claude-sonnet-5", "content": [{"type": "text", "text": "Hello."}] }
+            }),
+        ] {
+            acc.feed_line(&record.to_string());
+        }
+        acc.finalize_background_lifecycle();
+        let turns = group_into_turns(acc.messages);
+        let roles: Vec<_> = turns.iter().map(role_name).collect();
+        assert_eq!(roles, vec!["user", "assistant"]);
+        assert!(!turns.iter().any(|t| t.blocks.iter().any(
+            |b| matches!(b, ContentBlock::Text { text } if text.contains("/model"))
+        )));
     }
 
     #[test]
