@@ -68,6 +68,45 @@ describe("normalizeMathDelimiters", () => {
     expect(normalizeMathDelimiters("\\(a\nb\n\\)")).toBe("\u200b$$a\nb$$\n")
   })
 
+  it("moves a prefix-only closer line after $$ so it cannot fence", () => {
+    expect(normalizeMathDelimiters("> \\(a\n> b\n> \\)")).toBe(
+      "> \u200b$$a\n> b$$\n> "
+    )
+    expect(normalizeMathDelimiters("- Note:\n  \\(a\n  b\n  \\) holds.")).toBe(
+      "- Note:\n  \u200b$$a\n  b$$\n   holds."
+    )
+  })
+
+  it("treats +, indent, extra marker spaces, and list continuation as fence prefixes", () => {
+    expect(normalizeMathDelimiters("+ \\(a\n  b\\)")).toBe("+ \u200b$$a\n  b$$")
+    expect(normalizeMathDelimiters(" \\(a\nb\\)")).toBe(" \u200b$$a\nb$$")
+    expect(normalizeMathDelimiters("   \\(a\nb\\)")).toBe("   \u200b$$a\nb$$")
+    expect(normalizeMathDelimiters("-  \\(a\n   b\\)")).toBe(
+      "-  \u200b$$a\n   b$$"
+    )
+    expect(normalizeMathDelimiters(">  \\(a\n>  b\\)")).toBe(
+      ">  \u200b$$a\n>  b$$"
+    )
+    expect(
+      normalizeMathDelimiters("- Note that\n  \\(a + b\n  = c\\) holds.")
+    ).toBe("- Note that\n  \u200b$$a + b\n  = c$$ holds.")
+  })
+
+  it("canonicalizes CR / CRLF before offset logic", () => {
+    // After LF fold, trailing newlines peel so the closer is not alone.
+    expect(normalizeMathDelimiters("\\(a\r\n\\)")).toBe("$$a$$\n")
+    expect(normalizeMathDelimiters("\\(a\rb\\)")).toBe("\u200b$$a\nb$$")
+  })
+
+  it("prefix scan stays linear on a deep failed prefix", () => {
+    const text = `${"> ".repeat(40)}x \\(a\nb\\)`
+    const start = performance.now()
+    const out = normalizeMathDelimiters(text)
+    expect(performance.now() - start).toBeLessThan(50)
+    expect(out).toContain("$$a\nb$$")
+    expect(out.startsWith("\u200b")).toBe(false)
+  })
+
   it("does not pad mid-paragraph multi-line \\(...\\)", () => {
     expect(normalizeMathDelimiters("text \\(a\nb\\) tail")).toBe(
       "text $$a\nb$$ tail"

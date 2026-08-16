@@ -68,4 +68,39 @@ describe("remark-math with singleDollarTextMath: false", () => {
     expect(two[0]?.value).toContain("a")
     expect(two[0]?.value).toContain("b")
   })
+
+  it("keeps formula text when the closer sits on a continuation prefix", () => {
+    const quote = parseMath(normalizeMathDelimiters("> \\(a\n> b\n> \\)"))
+    expect(quote).toHaveLength(1)
+    expect(quote[0]?.type).toBe("inlineMath")
+    expect(quote[0]?.value.replace(/\s+/g, "")).toBe("ab")
+
+    const list = parseMath(
+      normalizeMathDelimiters("- Note:\n  \\(a\n  b\n  \\) holds.")
+    )
+    expect(list).toHaveLength(1)
+    expect(list[0]?.type).toBe("inlineMath")
+    expect(list[0]?.value.replace(/\s+/g, "")).toBe("ab")
+  })
+
+  it("keeps wrapped list-continuation math as inline, not a flow fence", () => {
+    const nodes = parseMath(
+      normalizeMathDelimiters("- Note that\n  \\(a + b\n  = c\\) holds.")
+    )
+    expect(nodes).toHaveLength(1)
+    expect(nodes[0]?.type).toBe("inlineMath")
+    expect(nodes[0]?.value.replace(/\s+/g, "")).toBe("a+b=c")
+  })
+
+  it("parses CR / CRLF multiline \\(...\\) as inline math", () => {
+    const crlf = parseMath(normalizeMathDelimiters("\\(a\r\n\\)"))
+    expect(crlf).toHaveLength(1)
+    expect(crlf[0]?.type).toBe("inlineMath")
+    expect(crlf[0]?.value.replace(/\s+/g, "")).toBe("a")
+
+    const cr = parseMath(normalizeMathDelimiters("\\(a\rb\\)"))
+    expect(cr).toHaveLength(1)
+    expect(cr[0]?.type).toBe("inlineMath")
+    expect(cr[0]?.value.replace(/\s+/g, "")).toBe("ab")
+  })
 })
