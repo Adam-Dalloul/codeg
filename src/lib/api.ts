@@ -2903,9 +2903,7 @@ export async function putComposerDraft(
   })
 }
 
-export async function readUploadAttachment(
-  path: string
-): Promise<{
+export async function readUploadAttachment(path: string): Promise<{
   data: string
   name: string
   size: number
