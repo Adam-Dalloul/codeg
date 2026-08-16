@@ -40,11 +40,13 @@ export function SubscriptionQuotaPanel() {
         const [codex, claude, grok] = results
         if (codex.status === "fulfilled") {
           if (codex.value.payload) next.codex = codex.value.payload
-          if (codex.value.extraSlots?.length) slots.codex = codex.value.extraSlots
+          if (codex.value.extraSlots?.length)
+            slots.codex = codex.value.extraSlots
         }
         if (claude.status === "fulfilled") {
           if (claude.value.payload) next.claude = claude.value.payload
-          if (claude.value.extraSlots?.length) slots.claude = claude.value.extraSlots
+          if (claude.value.extraSlots?.length)
+            slots.claude = claude.value.extraSlots
         }
         if (grok.status === "fulfilled") {
           if (grok.value.payload) next.grok = grok.value.payload
@@ -85,7 +87,9 @@ export function SubscriptionQuotaPanel() {
                   row.family === "claude" ||
                   row.family === "grok") &&
                 !loaded ? (
-                <span className="text-muted-foreground">{t("quotaLoading")}</span>
+                <span className="text-muted-foreground">
+                  {t("quotaLoading")}
+                </span>
               ) : (
                 <button
                   type="button"

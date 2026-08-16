@@ -186,9 +186,11 @@ describe("subscription quota inventory", () => {
       },
     ])
     expect(attached?.remaining).toBe(80)
-    expect(attached?.extras?.some((e) => e.label === "claude-2" && e.remaining === 60)).toBe(
-      true
-    )
+    expect(
+      attached?.extras?.some(
+        (e) => e.label === "claude-2" && e.remaining === 60
+      )
+    ).toBe(true)
     const onlyExtra = familyQuota("claude", undefined, undefined, [
       {
         label: "claude-2",
