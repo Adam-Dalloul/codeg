@@ -92,9 +92,7 @@ describe("composer draft attachments", () => {
     expect(fileUriToPath("file:///C:/Users/a/.codeg/uploads/anon/x.png")).toBe(
       "C:/Users/a/.codeg/uploads/anon/x.png"
     )
-    expect(
-      isUploadJailPath("C:/Users/a/.codeg/uploads/anon/x.png")
-    ).toBe(true)
+    expect(isUploadJailPath("C:/Users/a/.codeg/uploads/anon/x.png")).toBe(true)
     expect(isUploadJailPath("C:/Users/a/Desktop/shot.png")).toBe(false)
   })
 
