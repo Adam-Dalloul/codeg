@@ -7,8 +7,11 @@ import { useTranslations } from "next-intl"
 import type { UserImageDisplay } from "@/lib/adapters/ai-elements-adapter"
 import type { ToolCallStatus } from "@/lib/types"
 import { ImagePreviewDialog } from "@/components/ui/image-preview-dialog"
+import { ImageActions } from "./image-actions"
+import { copyImageToClipboard } from "@/lib/copy-image"
 import { downloadImage } from "@/lib/image-download"
 import { toErrorMessage } from "@/lib/app-error"
+import { toast } from "sonner"
 import { cn } from "@/lib/utils"
 
 interface GeneratedImagesBlockProps {
@@ -89,6 +92,21 @@ export const GeneratedImagesBlock = memo(function GeneratedImagesBlock({
     [t]
   )
 
+  const handleCopy = useCallback(
+    async (img: UserImageDisplay) => {
+      try {
+        await copyImageToClipboard({
+          data: img.data,
+          mime_type: img.mime_type,
+        })
+        toast.success(t("copiedImage"))
+      } catch (err) {
+        toast.error(t("copyImageFailed", { message: toErrorMessage(err) }))
+      }
+    },
+    [t]
+  )
+
   const trimmedPrompt =
     typeof revisedPrompt === "string" ? revisedPrompt.trim() : ""
 
@@ -112,6 +130,7 @@ export const GeneratedImagesBlock = memo(function GeneratedImagesBlock({
         ) : null}
 
         {image ? (
+          <ImageActions image={image}>
           <div className="group relative inline-block shrink-0 overflow-hidden rounded-md border border-border/70 bg-muted/30">
             <button
               type="button"
@@ -140,6 +159,7 @@ export const GeneratedImagesBlock = memo(function GeneratedImagesBlock({
               <Download className="h-3.5 w-3.5" />
             </button>
           </div>
+          </ImageActions>
         ) : isFailed ? (
           <div
             className="flex h-64 w-64 max-w-full shrink-0 items-center justify-center rounded-md border border-dashed border-destructive/40 bg-destructive/5 text-xs text-destructive"
@@ -172,6 +192,8 @@ export const GeneratedImagesBlock = memo(function GeneratedImagesBlock({
         onOpenChange={(open) => setPreviewOpen(open)}
         onDownload={image ? () => void handleDownload(image) : undefined}
         downloadLabel={t("downloadImage")}
+        onCopy={image ? () => void handleCopy(image) : undefined}
+        copyLabel={t("copyImage")}
       />
     </div>
   )

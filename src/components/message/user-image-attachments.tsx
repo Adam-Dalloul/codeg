@@ -6,8 +6,11 @@ import { Download } from "lucide-react"
 import { useTranslations } from "next-intl"
 import type { UserImageDisplay } from "@/lib/adapters/ai-elements-adapter"
 import { ImagePreviewDialog } from "@/components/ui/image-preview-dialog"
+import { ImageActions } from "./image-actions"
+import { copyImageToClipboard } from "@/lib/copy-image"
 import { downloadImage } from "@/lib/image-download"
 import { toErrorMessage } from "@/lib/app-error"
+import { toast } from "sonner"
 
 interface UserImageAttachmentsProps {
   images: UserImageDisplay[]
@@ -37,6 +40,21 @@ export function UserImageAttachments({
     [t]
   )
 
+  const handleCopy = useCallback(
+    async (image: UserImageDisplay) => {
+      try {
+        await copyImageToClipboard({
+          data: image.data,
+          mime_type: image.mime_type,
+        })
+        toast.success(t("copiedImage"))
+      } catch (err) {
+        toast.error(t("copyImageFailed", { message: toErrorMessage(err) }))
+      }
+    },
+    [t]
+  )
+
   if (images.length === 0) return null
 
   const previewImage =
@@ -48,8 +66,11 @@ export function UserImageAttachments({
     <div className={className}>
       <div className="flex flex-wrap gap-1.5">
         {images.map((image, index) => (
-          <div
+          <ImageActions
             key={`${image.uri ?? image.name}-${index}`}
+            image={image}
+          >
+          <div
             className="group relative overflow-hidden rounded-md border border-border/70 bg-muted/30"
           >
             <button
@@ -79,6 +100,7 @@ export function UserImageAttachments({
               <Download className="h-3 w-3" />
             </button>
           </div>
+          </ImageActions>
         ))}
       </div>
       <ImagePreviewDialog
@@ -96,6 +118,8 @@ export function UserImageAttachments({
           previewImage ? () => void handleDownload(previewImage) : undefined
         }
         downloadLabel={t("downloadImage")}
+        onCopy={previewImage ? () => void handleCopy(previewImage) : undefined}
+        copyLabel={t("copyImage")}
       />
     </div>
   )

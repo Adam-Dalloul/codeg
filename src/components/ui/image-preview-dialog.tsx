@@ -1,7 +1,7 @@
 "use client"
 
 import { Dialog as DialogPrimitive } from "radix-ui"
-import { Download, X } from "lucide-react"
+import { Copy, Download, X } from "lucide-react"
 import { cn } from "@/lib/utils"
 
 interface ImagePreviewDialogProps {
@@ -16,6 +16,8 @@ interface ImagePreviewDialogProps {
    */
   onDownload?: () => void
   downloadLabel?: string
+  onCopy?: () => void
+  copyLabel?: string
 }
 
 function ImagePreviewDialog({
@@ -25,6 +27,8 @@ function ImagePreviewDialog({
   onOpenChange,
   onDownload,
   downloadLabel,
+  onCopy,
+  copyLabel,
 }: ImagePreviewDialogProps) {
   return (
     <DialogPrimitive.Root open={open} onOpenChange={onOpenChange}>
@@ -44,6 +48,20 @@ function ImagePreviewDialog({
             {alt}
           </DialogPrimitive.Title>
           <div className="absolute right-4 top-4 z-10 flex items-center gap-2">
+            {onCopy && (
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  onCopy()
+                }}
+                className="rounded-full bg-background/60 p-1.5 text-foreground/80 hover:bg-background/80 hover:text-foreground"
+                aria-label={copyLabel ?? "Copy image"}
+                title={copyLabel ?? "Copy image"}
+              >
+                <Copy className="h-5 w-5" />
+              </button>
+            )}
             {onDownload && (
               <button
                 type="button"
@@ -73,6 +91,12 @@ function ImagePreviewDialog({
               src={src}
               alt={alt}
               onClick={(e) => e.stopPropagation()}
+              onContextMenu={(e) => {
+                if (!onCopy) return
+                e.preventDefault()
+                e.stopPropagation()
+                onCopy()
+              }}
               className="max-h-[90vh] max-w-[90vw] rounded-lg object-contain"
             />
           )}
