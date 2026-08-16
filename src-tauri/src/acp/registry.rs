@@ -437,9 +437,21 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             // three above). The steering `promptRequired` path is intact
             // across 0.66–0.68 (tarball-verified), so the 0.65.0 floor keeps
             // holding, and `engines.node` stays ">=22".
+            // 0.69.0 adds exactly ONE thing (tarball-diffed: the only new
+            // string literals in `acp-agent.js` are "collecting",
+            // "notReported", "providerError", plus the new
+            // `dist/file-change-audit.js`) — the AIR `agentFileChangeReport`
+            // capability, shipped in lockstep with codex-acp 1.4.0. It is
+            // OFF unless the client asks for it twice, and codeg deliberately
+            // asks for neither; see `build_client_capabilities` in
+            // connection.rs for the reasoning. The only ambient change is that
+            // `airSessionFailureCapabilityMeta` became variadic so the agent
+            // can advertise `["sessionFailure", "agentFileChangeReport"]` — an
+            // ADDITIVE element in an array codeg only ever membership-tests,
+            // so the session-failure gate is unaffected.
             distribution: AgentDistribution::Npx {
-                version: "0.68.0",
-                package: "@agentclientprotocol/claude-agent-acp@0.68.0",
+                version: "0.69.0",
+                package: "@agentclientprotocol/claude-agent-acp@0.69.0",
                 cmd: "claude-agent-acp",
                 args: &[],
                 env: &[],
@@ -559,9 +571,21 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             // opt-in (tarball grep: zero hits ⇒ the arm below stays None) and
             // still declares no `engines.node`, so the 20.0.0 floor is
             // retained.
+            // 1.4.0 is the codex half of the same AIR `agentFileChangeReport`
+            // release as claude-agent-acp 0.69.0 and carries nothing else
+            // (tarball-diffed: the only new string literals are that feature's
+            // plus the `thread/fork` app-server method it is built on;
+            // `@openai/codex` stays ^0.147.0, so the CLI and its native
+            // team-of-agents surface are unchanged). codex implements the
+            // audit by forking the thread (`approvalPolicy: "never"`,
+            // `sandbox: "read-only"`, `ephemeral: true`) and running an extra
+            // turn on the fork; claude uses a Stop hook plus a hidden
+            // continuation. Either way it is an extra model round-trip per
+            // prompt, and it is gated on a client advertisement codeg does not
+            // make — see `build_client_capabilities` in connection.rs.
             distribution: AgentDistribution::Npx {
-                version: "1.3.0",
-                package: "@agentclientprotocol/codex-acp@1.3.0",
+                version: "1.4.0",
+                package: "@agentclientprotocol/codex-acp@1.4.0",
                 cmd: "codex-acp",
                 args: &[],
                 env: &[],
@@ -1018,8 +1042,8 @@ mod tests {
     fn registry_pins_current_acp_agent_versions() {
         assert_npx_version(
             AgentType::ClaudeCode,
-            "0.68.0",
-            "@agentclientprotocol/claude-agent-acp@0.68.0",
+            "0.69.0",
+            "@agentclientprotocol/claude-agent-acp@0.69.0",
             Some("22.0.0"),
         );
         assert_npx_version(
@@ -1054,8 +1078,8 @@ mod tests {
         );
         assert_npx_version(
             AgentType::Codex,
-            "1.3.0",
-            "@agentclientprotocol/codex-acp@1.3.0",
+            "1.4.0",
+            "@agentclientprotocol/codex-acp@1.4.0",
             Some("20.0.0"),
         );
         assert_npx_version(AgentType::Pi, "0.0.33", "pi-acp@0.0.33", Some("22.0.0"));

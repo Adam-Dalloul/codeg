@@ -3074,6 +3074,26 @@ fn build_client_capabilities(
     if agent_type == AgentType::ClaudeCode {
         meta.insert("subagent-transcript".to_string(), serde_json::Value::Bool(true));
     }
+    // The capabilities array is deliberately "sessionFailure" ONLY.
+    // claude-agent-acp 0.69.0 and codex-acp 1.4.0 added a second AIR
+    // capability, "agentFileChangeReport": advertise it and every prompt may
+    // carry `_meta.jetbrains.air.agentFileChangeReportRequest = {version: 1,
+    // requestId}`, after which the agent runs an EXTRA model round-trip at the
+    // end of the turn (claude: a Stop hook plus a hidden continuation calling
+    // `mcp__claude_agent_acp__report_changed_files`; codex: an ephemeral
+    // read-only `thread/fork`) and answers on
+    // `session_info_update._meta.jetbrains.air.agentFileChangeReport`.
+    //
+    // codeg does not ask for it, and the reason is not cost alone: both
+    // adapters CLAMP the reported paths to `cwd` + `additionalDirectories`
+    // (anything outside a root is dropped as truncated), which is exactly the
+    // tree `workspace_state` already watches recursively via `notify`. So the
+    // report can only ever name a SUBSET of what the watcher sees, less
+    // reliably — it is a model self-report that declares `complete: false`
+    // when unsure and truncates at 1024 paths / 256KB. It exists for clients
+    // with no filesystem watcher; codeg is not one. Nothing else in either
+    // release depends on it, and both adapters no-op without the
+    // advertisement, so staying out costs us nothing.
     if matches!(agent_type, AgentType::ClaudeCode | AgentType::Codex) {
         meta.insert(
             "jetbrains".to_string(),
@@ -11578,10 +11598,24 @@ mod tests {
                 .and_then(|j| j.get("air"))
                 .unwrap_or_else(|| panic!("{agent:?} must advertise jetbrains.air"));
             assert_eq!(air.get("version").and_then(|v| v.as_i64()), Some(1));
-            assert!(air
+            let capabilities = air
                 .get("capabilities")
                 .and_then(|c| c.as_array())
-                .is_some_and(|c| c.iter().any(|v| v.as_str() == Some("sessionFailure"))));
+                .unwrap_or_else(|| panic!("{agent:?} must advertise an AIR capabilities array"));
+            assert!(capabilities
+                .iter()
+                .any(|v| v.as_str() == Some("sessionFailure")));
+            // And nothing else. Adding a capability here is not free: it is
+            // what turns a per-prompt request on, and "agentFileChangeReport"
+            // (claude-agent-acp 0.69.0 / codex-acp 1.4.0) buys an extra model
+            // round-trip per turn for a clamped, self-reported subset of what
+            // the `workspace_state` watcher already sees. See the reasoning at
+            // the advertisement site before relaxing this.
+            assert_eq!(
+                capabilities,
+                &vec![serde_json::Value::String("sessionFailure".to_string())],
+                "{agent:?} must advertise ONLY sessionFailure"
+            );
         }
         // Claude keeps its subagent-transcript flag alongside.
         let claude = serde_json::to_value(build_client_capabilities(
