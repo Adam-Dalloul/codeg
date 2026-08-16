@@ -3329,7 +3329,9 @@
         },
         "recovered": "تم التعافي",
         "retryUnavailable": "لا توجد رسالة سابقة لإعادة إرسالها.",
-        "toggleDetails": "تبديل التفاصيل"
+        "toggleDetails": "تبديل التفاصيل",
+        "dismiss": "تجاهل",
+        "moreIncidents": "+{count} أخرى"
       },
       "backgroundTasks": {
         "running": "{count, plural, one {مهمة خلفية واحدة قيد التشغيل} two {مهمتا خلفية قيد التشغيل} few {# مهام خلفية قيد التشغيل} other {# مهمة خلفية قيد التشغيل}}",

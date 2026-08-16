@@ -3329,7 +3329,9 @@
         },
         "recovered": "回復済み",
         "retryUnavailable": "再送信できるメッセージがありません。",
-        "toggleDetails": "詳細の切り替え"
+        "toggleDetails": "詳細の切り替え",
+        "dismiss": "閉じる",
+        "moreIncidents": "他 {count} 件"
       },
       "backgroundTasks": {
         "running": "{count} 件のバックグラウンドタスクを実行中",

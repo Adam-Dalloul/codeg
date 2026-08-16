@@ -3329,7 +3329,9 @@
         },
         "recovered": "Recuperado",
         "retryUnavailable": "No hay ningún mensaje anterior para reenviar.",
-        "toggleDetails": "Mostrar u ocultar detalles"
+        "toggleDetails": "Mostrar u ocultar detalles",
+        "dismiss": "Descartar",
+        "moreIncidents": "+{count} más"
       },
       "backgroundTasks": {
         "running": "{count, plural, one {# tarea en segundo plano en ejecución} other {# tareas en segundo plano en ejecución}}",

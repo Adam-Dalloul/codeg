@@ -3329,7 +3329,9 @@
         },
         "recovered": "Recuperado",
         "retryUnavailable": "Nenhuma mensagem anterior para reenviar.",
-        "toggleDetails": "Alternar detalhes"
+        "toggleDetails": "Alternar detalhes",
+        "dismiss": "Dispensar",
+        "moreIncidents": "+{count} mais"
       },
       "backgroundTasks": {
         "running": "{count, plural, one {# tarefa em segundo plano em execução} other {# tarefas em segundo plano em execução}}",

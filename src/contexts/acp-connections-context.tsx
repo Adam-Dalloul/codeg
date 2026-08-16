@@ -70,9 +70,12 @@ import type {
   UserMessageBlock,
 } from "@/lib/types"
 import {
+  dismissSessionFailures,
+  hasSettleableRetryIncident,
   mergeSessionFailures,
   settleSessionFailures,
   upsertSessionFailure,
+  type SessionFailureSettleScope,
 } from "@/lib/session-failures"
 import { getAgentLabel } from "@/lib/custom-agents"
 import {
@@ -379,13 +382,23 @@ type Action =
       record: SessionFailureRecord
     }
   | {
-      // Lifecycle settle for the AIR failure table, dispatched from the
-      // `turn_complete` handler on a CLEAN (`end_turn`) end only — a
+      // Lifecycle settle for the AIR failure table (mirrors
+      // `SessionState::apply_event`). `retry_incidents` rides turn PROGRESS —
+      // fresh output proves the adapter reconnected. `warnings` is dispatched
+      // from the `turn_complete` handler on a CLEAN (`end_turn`) end only: a
       // cancelled/failed exit ended a turn that did NOT recover, so its
-      // warnings must stay active (mirrors `SessionState::apply_event`).
+      // warnings must stay active.
       type: "SETTLE_SESSION_FAILURES"
       contextKey: string
-      scope: "warnings" | "all"
+      scope: SessionFailureSettleScope
+    }
+  | {
+      // The user closed a strip. Client-local, like `DISMISS_CONFIG_STALE`.
+      // Takes every id that strip stood for: the collapsed warning bar closes
+      // its hidden siblings with it.
+      type: "DISMISS_SESSION_FAILURES"
+      contextKey: string
+      ids: string[]
     }
   | {
       // Mirror of a `background_activity` event onto the connection: the
@@ -2368,6 +2381,17 @@ function connectionsReducer(
       return next
     }
 
+    case "DISMISS_SESSION_FAILURES": {
+      const conn = state.get(action.contextKey)
+      if (!conn) return state
+      const dismissed = dismissSessionFailures(conn.sessionFailures, action.ids)
+      // Unknown ids / already resolved — same reference, no re-render.
+      if (dismissed === conn.sessionFailures) return state
+      const next = new Map(state)
+      next.set(action.contextKey, { ...conn, sessionFailures: dismissed })
+      return next
+    }
+
     case "ERROR": {
       const conn = state.get(action.contextKey)
       if (!conn) return state
@@ -2651,6 +2675,15 @@ export interface AcpActionsValue {
    * subsequent settings change re-shows it. Wired to the banner's X button.
    */
   dismissConfigStale(contextKey: string): void
+  /**
+   * Close AIR failure strips (client-local, like `dismissConfigStale`) — one
+   * call per strip, carrying every record that strip stood for. The records
+   * stay in the table as their revision watermarks, so this silences only what
+   * was on screen: a failure that is still real re-arms via a higher revision.
+   * Unlike the recovery actions this is NOT gated on owning the session — a
+   * viewer dismissing a strip only edits its own projection.
+   */
+  dismissSessionFailures(contextKey: string, ids: string[]): void
 }
 
 const AcpActionsContext = createContext<AcpActionsValue | null>(null)
@@ -3168,6 +3201,30 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
     [flushStreamingQueue]
   )
 
+  /**
+   * Turn PROGRESS settles in-flight AIR retry incidents — codex's own
+   * `completeRetryIncidentOnTurnProgress`: a reconnect warning is published
+   * when the upstream drops, and the next byte of turn output is the proof it
+   * came back. Without this the only settle points are a clean `end_turn` and
+   * the next prompt, so a long turn that reconnected N times kept N permanent
+   * strips docked under the composer (issue #496).
+   *
+   * Called per chunk, so it reads the store and dispatches only when something
+   * would actually change; the common case is a `some()` over an empty array.
+   */
+  const settleRetryIncidentsOnProgress = useCallback(
+    (contextKey: string) => {
+      const conn = storeRef.current.connections.get(contextKey)
+      if (!conn || !hasSettleableRetryIncident(conn.sessionFailures)) return
+      dispatch({
+        type: "SETTLE_SESSION_FAILURES",
+        contextKey,
+        scope: "retry_incidents",
+      })
+    },
+    [dispatch]
+  )
+
   const resolveListenerReadyWaiters = useCallback(() => {
     if (listenerReadyWaitersRef.current.length === 0) return
     const waiters = listenerReadyWaitersRef.current
@@ -3308,6 +3365,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
           dispatch({ type: "STATUS_CHANGED", contextKey, status: e.status })
           break
         case "content_delta":
+          settleRetryIncidentsOnProgress(contextKey)
           enqueueStreamingAction({
             type: "CONTENT_DELTA",
             contextKey,
@@ -3318,6 +3376,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
           })
           break
         case "thinking":
+          settleRetryIncidentsOnProgress(contextKey)
           enqueueStreamingAction({
             type: "THINKING",
             contextKey,
@@ -3334,6 +3393,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
           })
           break
         case "tool_call":
+          settleRetryIncidentsOnProgress(contextKey)
           flushStreamingQueue()
           dispatch({
             type: "TOOL_CALL",
@@ -3760,6 +3820,11 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
           // so settling here can no longer paint an unrecovered incident as
           // recovered; any other exit (cancelled/empty/refusal) keeps the
           // warnings active until the next prompt's settle-all.
+          //
+          // Incidents that recovered MID-turn are already gone (see
+          // `settleRetryIncidentsOnProgress`); this boundary catches the ones
+          // still in flight at the end, plus the category-"unknown" notices
+          // that progress deliberately skips.
           if (e.stop_reason === "end_turn") {
             dispatch({
               type: "SETTLE_SESSION_FAILURES",
@@ -4001,6 +4066,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
       rememberResolvedIdentity,
       reportConfigOptionVerdict,
       scheduleToolCallUpdateFlush,
+      settleRetryIncidentsOnProgress,
       t,
       tChat,
     ]
@@ -5224,6 +5290,13 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
     [dispatch]
   )
 
+  const dismissSessionFailuresAction = useCallback(
+    (contextKey: string, ids: string[]) => {
+      dispatch({ type: "DISMISS_SESSION_FAILURES", contextKey, ids })
+    },
+    [dispatch]
+  )
+
   const disconnectAll = useCallback(async () => {
     const promises: Promise<void>[] = []
     pendingConnectRequestsRef.current.clear()
@@ -5561,6 +5634,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
       reconnect,
       getReconnectInfo,
       dismissConfigStale,
+      dismissSessionFailures: dismissSessionFailuresAction,
     }),
     [
       connect,
@@ -5586,6 +5660,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
       reconnect,
       getReconnectInfo,
       dismissConfigStale,
+      dismissSessionFailuresAction,
     ]
   )
 

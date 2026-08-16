@@ -599,6 +599,114 @@ describe("AcpConnectionsProvider AIR session-failure lifecycle", () => {
       resolved: true,
     })
   })
+
+  // Issue #496: with `end_turn` as the only mid-flight settle point, a long
+  // turn that reconnected N times stacked N permanent amber strips under the
+  // composer. Turn PROGRESS settles the incident — codex's own
+  // `completeRetryIncidentOnTurnProgress`.
+  it("settles retry incidents as soon as the turn produces output again", async () => {
+    const handlers = await connectOwner()
+    const categorized = (id: string, category: string, severity: string) => ({
+      id,
+      revision: 1,
+      category,
+      severity,
+      title: `${id} title`,
+      actions: [],
+    })
+    const failuresNow = () => {
+      const table = h.store!.getConnection(TAB)?.sessionFailures ?? []
+      return Object.fromEntries(table.map((f) => [f.id, f.resolved]))
+    }
+
+    emitAcpEvent(handlers, {
+      seq: 1,
+      connection_id: "spawned-conn",
+      type: "status_changed",
+      status: "prompting",
+    })
+    for (const [i, rec] of [
+      categorized("i1", "connection", "warning"),
+      categorized("i2", "service", "warning"),
+      // Informational, not an incident: codex config/skill-budget notices and
+      // claude advisories both land on category "unknown". Progress must leave
+      // them readable.
+      categorized("notice", "unknown", "warning"),
+      categorized("err", "connection", "error"),
+    ].entries()) {
+      emitAcpEvent(handlers, {
+        seq: 2 + i,
+        connection_id: "spawned-conn",
+        type: "session_failure",
+        record: rec,
+      })
+    }
+    expect(failuresNow()).toEqual({
+      i1: false,
+      i2: false,
+      notice: false,
+      err: false,
+    })
+
+    emitAcpEvent(handlers, {
+      seq: 10,
+      connection_id: "spawned-conn",
+      type: "content_delta",
+      text: "back online",
+    })
+    expect(failuresNow()).toEqual({
+      i1: true,
+      i2: true,
+      notice: false,
+      err: false,
+    })
+
+    // A local tool call ADVANCING proves nothing about the upstream, so
+    // `tool_call_update` deliberately does not settle.
+    emitAcpEvent(handlers, {
+      seq: 11,
+      connection_id: "spawned-conn",
+      type: "session_failure",
+      record: categorized("i3", "limit", "warning"),
+    })
+    emitAcpEvent(handlers, {
+      seq: 12,
+      connection_id: "spawned-conn",
+      type: "tool_call_update",
+      tool_call_id: "call_1",
+      title: "Bash",
+      status: "in_progress",
+      content: null,
+      raw_input: null,
+      raw_output: null,
+    })
+    expect(failuresNow().i3).toBe(false)
+
+    // A NEW tool call is model output, so it does.
+    emitAcpEvent(handlers, {
+      seq: 13,
+      connection_id: "spawned-conn",
+      type: "tool_call",
+      tool_call_id: "call_2",
+      title: "Read",
+      kind: "read",
+      status: "pending",
+      content: null,
+      raw_input: null,
+      raw_output: null,
+    })
+    expect(failuresNow().i3).toBe(true)
+
+    // The notice still waits for the clean boundary; the error outlives it.
+    emitAcpEvent(handlers, {
+      seq: 14,
+      connection_id: "spawned-conn",
+      type: "turn_complete",
+      session_id: "sess-1",
+      stop_reason: "end_turn",
+    })
+    expect(failuresNow()).toMatchObject({ notice: true, err: false })
+  })
 })
 
 // The composer's connection-status popover. Unlike `reapplyConfig` (live owners

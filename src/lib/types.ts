@@ -2260,6 +2260,11 @@ export interface SessionFailureRecord {
   actions?: string[]
   /** Client-inferred lifecycle (never on the wire). */
   resolved?: boolean
+  /** Set when the USER closed the strip (client-local, never on the wire).
+   *  Implies `resolved`, but must NOT render as "recovered": the incident was
+   *  silenced, not fixed — saying otherwise would be a lie whenever the
+   *  connection is still down. */
+  dismissed?: boolean
 }
 
 export interface LiveSessionSnapshot {

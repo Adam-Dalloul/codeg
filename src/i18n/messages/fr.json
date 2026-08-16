@@ -3329,7 +3329,9 @@
         },
         "recovered": "Rétabli",
         "retryUnavailable": "Aucun message précédent à renvoyer.",
-        "toggleDetails": "Afficher/masquer les détails"
+        "toggleDetails": "Afficher/masquer les détails",
+        "dismiss": "Ignorer",
+        "moreIncidents": "+{count} autre(s)"
       },
       "backgroundTasks": {
         "running": "{count, plural, one {# tâche en arrière-plan en cours} other {# tâches en arrière-plan en cours}}",

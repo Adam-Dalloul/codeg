@@ -3329,7 +3329,9 @@
         },
         "recovered": "복구됨",
         "retryUnavailable": "다시 보낼 메시지가 없습니다.",
-        "toggleDetails": "세부 정보 전환"
+        "toggleDetails": "세부 정보 전환",
+        "dismiss": "닫기",
+        "moreIncidents": "외 {count}건"
       },
       "backgroundTasks": {
         "running": "백그라운드 작업 {count}개 실행 중",
