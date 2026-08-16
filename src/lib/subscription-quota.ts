@@ -24,6 +24,29 @@
 
 export type IsolatableFamily = "claude" | "codex" | "grok" | "gemini" | "opencode"
 
+/** Map a conversation's agent_type (built-in or `custom:<family>-N`) to the
+ *  remaining-quota family, or null when that agent has no remaining-quota
+ *  source. Extra slots keep the family isolator (`custom:claude-code-2`). */
+export function familyFromAgentType(
+  agentType: string | null | undefined
+): IsolatableFamily | null {
+  if (!agentType) return null
+  const s = agentType.toLowerCase()
+  if (s === "claude_code" || s.startsWith("custom:claude")) return "claude"
+  if (s === "codex" || s.startsWith("custom:codex")) return "codex"
+  if (s === "grok" || s.startsWith("custom:grok")) return "grok"
+  if (s === "gemini" || s.startsWith("custom:gemini")) return "gemini"
+  if (
+    s === "open_code" ||
+    s.startsWith("custom:opencode") ||
+    s.startsWith("custom:open-code") ||
+    s.startsWith("custom:open_code")
+  ) {
+    return "opencode"
+  }
+  return null
+}
+
 export type QuotaKind = "remaining-subscription" | "acp-context" | "unavailable"
 
 export type QuotaWindow = {

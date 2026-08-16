@@ -2,10 +2,25 @@ import { describe, expect, it } from "vitest"
 import {
   attachExtraSlots,
   emitsRemainingSubscription,
+  familyFromAgentType,
   familyQuota,
   inventory,
   remainingFromOfficialPayload,
 } from "./subscription-quota"
+
+describe("familyFromAgentType", () => {
+  it("maps built-ins and extra isolator slots", () => {
+    expect(familyFromAgentType("claude_code")).toBe("claude")
+    expect(familyFromAgentType("custom:claude-code-2")).toBe("claude")
+    expect(familyFromAgentType("codex")).toBe("codex")
+    expect(familyFromAgentType("custom:codex-2")).toBe("codex")
+    expect(familyFromAgentType("grok")).toBe("grok")
+    expect(familyFromAgentType("gemini")).toBe("gemini")
+    expect(familyFromAgentType("open_code")).toBe("opencode")
+    expect(familyFromAgentType("cursor")).toBeNull()
+    expect(familyFromAgentType(null)).toBeNull()
+  })
+})
 
 describe("subscription quota inventory", () => {
   it("does not invent remaining-subscription numbers when no official payload exists", () => {
