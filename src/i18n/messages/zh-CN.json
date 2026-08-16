@@ -2836,7 +2836,8 @@
       "agentSelector": {
         "noEnabledAgents": "暂无已启用的 Agent",
         "openAgentsSettings": "打开 Agents 设置",
-        "notInstalled": "未安装"
+        "notInstalled": "未安装",
+        "moreAgents": "更多 Agent（{count}）"
       },
       "subAgentOverlay": {
         "title": "子智能体",

@@ -1869,6 +1869,10 @@ const ConversationTabView = memo(function ConversationTabView({
               />
               <div className="flex justify-center">
                 <AgentSelector
+                  // The selector spans the row it is given (it has to measure
+                  // how much room it has), so the centring lives inside it now
+                  // — the `justify-center` above only centres a full-width box.
+                  align="center"
                   defaultAgentType={selectedAgent}
                   onSelect={handleAgentSelect}
                   onFallback={handleAgentFallback}

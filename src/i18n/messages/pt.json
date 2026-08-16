@@ -2836,7 +2836,8 @@
       "agentSelector": {
         "noEnabledAgents": "Nenhum agente habilitado",
         "openAgentsSettings": "Abrir configurações de agentes",
-        "notInstalled": "Não instalado"
+        "notInstalled": "Não instalado",
+        "moreAgents": "Mais agentes ({count})"
       },
       "subAgentOverlay": {
         "title": "Subagentes",

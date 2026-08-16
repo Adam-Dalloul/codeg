@@ -2836,7 +2836,8 @@
       "agentSelector": {
         "noEnabledAgents": "有効なエージェントがありません",
         "openAgentsSettings": "エージェント設定を開く",
-        "notInstalled": "未インストール"
+        "notInstalled": "未インストール",
+        "moreAgents": "他のエージェント（{count}）"
       },
       "subAgentOverlay": {
         "title": "サブエージェント",

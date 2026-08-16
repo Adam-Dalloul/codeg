@@ -2836,7 +2836,8 @@
       "agentSelector": {
         "noEnabledAgents": "لا يوجد وكلاء مفعّلون",
         "openAgentsSettings": "فتح إعدادات الوكلاء",
-        "notInstalled": "غير مثبّت"
+        "notInstalled": "غير مثبّت",
+        "moreAgents": "وكلاء إضافيون ({count})"
       },
       "subAgentOverlay": {
         "title": "الوكلاء الفرعيون",
