@@ -10,6 +10,9 @@ pub struct Model {
     pub text: String,
     pub revision: i64,
     pub origin: String,
+    /// JSON array of jail / file-link refs. Never raw bytes. See the draft
+    /// service for the schema and the omit-does-not-wipe PUT contract.
+    pub attachments: String,
     pub updated_at: DateTimeUtc,
 }
 

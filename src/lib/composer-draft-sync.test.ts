@@ -4,6 +4,14 @@ import {
   conversationIdFromDraftKey,
   shouldApplyRemoteDraft,
 } from "./composer-draft-sync"
+import {
+  attachmentsEqual,
+  collectEditorFileAttachments,
+  draftSnapshotKey,
+  fileUriToPath,
+  imageToDraftAttachment,
+  isUploadJailPath,
+} from "./composer-draft-attachments"
 
 describe("conversationIdFromDraftKey", () => {
   it("accepts persisted conversation keys only", () => {
@@ -63,5 +71,93 @@ describe("shouldApplyRemoteDraft", () => {
         localOrigin,
       })
     ).toBe(false)
+  })
+})
+
+describe("composer draft attachments", () => {
+  it("fingerprints text plus refs", () => {
+    const a = draftSnapshotKey("hi", [
+      { id: "1", kind: "file", name: "a.md", uri: "file:///tmp/a.md" },
+    ])
+    const b = draftSnapshotKey("hi", [
+      { id: "1", kind: "file", name: "a.md", uri: "file:///tmp/a.md" },
+    ])
+    const c = draftSnapshotKey("hi", [])
+    expect(a).toBe(b)
+    expect(a).not.toBe(c)
+    expect(attachmentsEqual([], [])).toBe(true)
+  })
+
+  it("decodes file uris and recognizes the uploads jail", () => {
+    expect(fileUriToPath("file:///C:/Users/a/.codeg/uploads/anon/x.png")).toBe(
+      "C:/Users/a/.codeg/uploads/anon/x.png"
+    )
+    expect(
+      isUploadJailPath("C:/Users/a/.codeg/uploads/anon/x.png")
+    ).toBe(true)
+    expect(isUploadJailPath("C:/Users/a/Desktop/shot.png")).toBe(false)
+  })
+
+  it("only drafts images that already have a jail path", () => {
+    expect(
+      imageToDraftAttachment({
+        id: "image:1",
+        type: "image",
+        data: "abc",
+        uri: "file:///C:/Users/a/.codeg/uploads/anon/x.png",
+        name: "x.png",
+        mimeType: "image/png",
+      })?.path
+    ).toContain("uploads")
+    expect(
+      imageToDraftAttachment({
+        id: "image:2",
+        type: "image",
+        data: "abc",
+        uri: "file:///C:/Users/a/Desktop/x.png",
+        name: "x.png",
+        mimeType: "image/png",
+      })
+    ).toBeNull()
+  })
+
+  it("collects file:// badges from a composer document", () => {
+    const files = collectEditorFileAttachments({
+      type: "doc",
+      content: [
+        {
+          type: "paragraph",
+          content: [
+            {
+              type: "reference",
+              attrs: {
+                refType: "file",
+                label: "notes.md",
+                uri: "file:///tmp/notes.md",
+              },
+            },
+            {
+              type: "reference",
+              attrs: {
+                refType: "file",
+                label: "embedded",
+                uri: "codeg://embedded/1",
+              },
+            },
+          ],
+        },
+      ],
+    })
+    expect(files).toEqual([
+      {
+        id: "file:file:///tmp/notes.md",
+        kind: "file",
+        name: "notes.md",
+        mime: null,
+        size: 0,
+        path: null,
+        uri: "file:///tmp/notes.md",
+      },
+    ])
   })
 })
