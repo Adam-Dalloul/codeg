@@ -172,6 +172,7 @@ beforeEach(() => {
     enabled: true,
     available: true,
     installed_version: "1.0.0",
+    host_tools_agent_mode: false,
     is_acp_adapter: true,
   })
   h.acpConnect.mockResolvedValue("spawned-conn")
@@ -470,6 +471,244 @@ describe("AcpConnectionsProvider preview-tab release (disconnectIfIdle)", () => 
   })
 })
 
+// AIR typed session failures: retry warnings must settle ONLY at a clean
+// `end_turn` — a cancelled/failed exit did not recover, and a failed turn's
+// terminal failure arrives as a `session_failure` event emitted just before
+// its `turn_complete` (the record rides the prompt RESPONSE `_meta`; both
+// adapters disguise that response as `end_turn`). Settling on any
+// leave-prompting transition painted a still-dead connection as a recovered
+// warning (2026-08-15 field report).
+describe("AcpConnectionsProvider AIR session-failure lifecycle", () => {
+  async function connectOwner(): Promise<AttachHandlers> {
+    h.acpFindConnectionForConversation.mockResolvedValue(null)
+    await mountProvider()
+    await act(async () => {
+      await h.actions!.connect(TAB, "claude_code", "/tmp/x", "sess-1", 42)
+    })
+    return latestAttachHandlers()
+  }
+
+  function failure(
+    id: string,
+    revision: number,
+    severity: string,
+    title: string
+  ) {
+    return {
+      id,
+      revision,
+      category: "connection",
+      severity,
+      title,
+      actions: ["new_session"],
+    }
+  }
+
+  it("escalates the response-borne terminal error instead of settling it at the disguised end_turn", async () => {
+    const handlers = await connectOwner()
+    emitAcpEvent(handlers, {
+      seq: 1,
+      connection_id: "spawned-conn",
+      type: "status_changed",
+      status: "prompting",
+    })
+    emitAcpEvent(handlers, {
+      seq: 2,
+      connection_id: "spawned-conn",
+      type: "session_failure",
+      record: failure(
+        "t1:error",
+        5,
+        "warning",
+        "Reconnecting to Claude, attempt 5 of 5."
+      ),
+    })
+    // The terminal record rides the prompt response; the backend emits it
+    // BEFORE turn_complete as a same-id higher-revision error escalation.
+    emitAcpEvent(handlers, {
+      seq: 3,
+      connection_id: "spawned-conn",
+      type: "session_failure",
+      record: failure(
+        "t1:error",
+        6,
+        "error",
+        "The connection to Claude was lost."
+      ),
+    })
+    emitAcpEvent(handlers, {
+      seq: 4,
+      connection_id: "spawned-conn",
+      type: "turn_complete",
+      session_id: "sess-1",
+      stop_reason: "end_turn",
+    })
+
+    const failures = h.store!.getConnection(TAB)?.sessionFailures
+    expect(failures).toHaveLength(1)
+    expect(failures?.[0]).toMatchObject({
+      id: "t1:error",
+      revision: 6,
+      severity: "error",
+      resolved: false,
+    })
+  })
+
+  it("keeps warnings active across a cancelled exit and settles them only on a clean end_turn", async () => {
+    const handlers = await connectOwner()
+    emitAcpEvent(handlers, {
+      seq: 1,
+      connection_id: "spawned-conn",
+      type: "status_changed",
+      status: "prompting",
+    })
+    emitAcpEvent(handlers, {
+      seq: 2,
+      connection_id: "spawned-conn",
+      type: "session_failure",
+      record: failure(
+        "t1:error",
+        1,
+        "warning",
+        "Reconnecting to Claude, attempt 1 of 5."
+      ),
+    })
+    // Cancelled exit: not recovery — the amber strip must survive it.
+    emitAcpEvent(handlers, {
+      seq: 3,
+      connection_id: "spawned-conn",
+      type: "turn_complete",
+      session_id: "sess-1",
+      stop_reason: "cancelled",
+    })
+    expect(h.store!.getConnection(TAB)?.sessionFailures?.[0]).toMatchObject({
+      id: "t1:error",
+      resolved: false,
+    })
+
+    // A later clean turn end is the recovery evidence that settles it.
+    emitAcpEvent(handlers, {
+      seq: 4,
+      connection_id: "spawned-conn",
+      type: "turn_complete",
+      session_id: "sess-1",
+      stop_reason: "end_turn",
+    })
+    expect(h.store!.getConnection(TAB)?.sessionFailures?.[0]).toMatchObject({
+      id: "t1:error",
+      resolved: true,
+    })
+  })
+
+  // Issue #496: with `end_turn` as the only mid-flight settle point, a long
+  // turn that reconnected N times stacked N permanent amber strips under the
+  // composer. Turn PROGRESS settles the incident — codex's own
+  // `completeRetryIncidentOnTurnProgress`.
+  it("settles retry incidents as soon as the turn produces output again", async () => {
+    const handlers = await connectOwner()
+    const categorized = (id: string, category: string, severity: string) => ({
+      id,
+      revision: 1,
+      category,
+      severity,
+      title: `${id} title`,
+      actions: [],
+    })
+    const failuresNow = () => {
+      const table = h.store!.getConnection(TAB)?.sessionFailures ?? []
+      return Object.fromEntries(table.map((f) => [f.id, f.resolved]))
+    }
+
+    emitAcpEvent(handlers, {
+      seq: 1,
+      connection_id: "spawned-conn",
+      type: "status_changed",
+      status: "prompting",
+    })
+    for (const [i, rec] of [
+      categorized("i1", "connection", "warning"),
+      categorized("i2", "service", "warning"),
+      // Informational, not an incident: codex config/skill-budget notices and
+      // claude advisories both land on category "unknown". Progress must leave
+      // them readable.
+      categorized("notice", "unknown", "warning"),
+      categorized("err", "connection", "error"),
+    ].entries()) {
+      emitAcpEvent(handlers, {
+        seq: 2 + i,
+        connection_id: "spawned-conn",
+        type: "session_failure",
+        record: rec,
+      })
+    }
+    expect(failuresNow()).toEqual({
+      i1: false,
+      i2: false,
+      notice: false,
+      err: false,
+    })
+
+    emitAcpEvent(handlers, {
+      seq: 10,
+      connection_id: "spawned-conn",
+      type: "content_delta",
+      text: "back online",
+    })
+    expect(failuresNow()).toEqual({
+      i1: true,
+      i2: true,
+      notice: false,
+      err: false,
+    })
+
+    // A local tool call ADVANCING proves nothing about the upstream, so
+    // `tool_call_update` deliberately does not settle.
+    emitAcpEvent(handlers, {
+      seq: 11,
+      connection_id: "spawned-conn",
+      type: "session_failure",
+      record: categorized("i3", "limit", "warning"),
+    })
+    emitAcpEvent(handlers, {
+      seq: 12,
+      connection_id: "spawned-conn",
+      type: "tool_call_update",
+      tool_call_id: "call_1",
+      title: "Bash",
+      status: "in_progress",
+      content: null,
+      raw_input: null,
+      raw_output: null,
+    })
+    expect(failuresNow().i3).toBe(false)
+
+    // A NEW tool call is model output, so it does.
+    emitAcpEvent(handlers, {
+      seq: 13,
+      connection_id: "spawned-conn",
+      type: "tool_call",
+      tool_call_id: "call_2",
+      title: "Read",
+      kind: "read",
+      status: "pending",
+      content: null,
+      raw_input: null,
+      raw_output: null,
+    })
+    expect(failuresNow().i3).toBe(true)
+
+    // The notice still waits for the clean boundary; the error outlives it.
+    emitAcpEvent(handlers, {
+      seq: 14,
+      connection_id: "spawned-conn",
+      type: "turn_complete",
+      session_id: "sess-1",
+      stop_reason: "end_turn",
+    })
+    expect(failuresNow()).toMatchObject({ notice: true, err: false })
+  })
+})
+
 // The composer's connection-status popover. Unlike `reapplyConfig` (live owners
 // only), this has to work from EVERY state the icon can show — including the
 // states where the store holds no entry at all.
@@ -563,6 +802,7 @@ describe("AcpConnectionsProvider reconnect (status-icon button)", () => {
       enabled: true,
       available: false,
       installed_version: null,
+      host_tools_agent_mode: false,
       is_acp_adapter: true,
     })
     await mountProvider()
@@ -583,6 +823,7 @@ describe("AcpConnectionsProvider reconnect (status-icon button)", () => {
       enabled: true,
       available: true,
       installed_version: "1.0.0",
+      host_tools_agent_mode: false,
       is_acp_adapter: true,
     })
     h.acpFindConnectionForConversation.mockResolvedValue(null)
@@ -1778,6 +2019,7 @@ describe("AcpConnectionsProvider Grok cross-agent-type model switch", () => {
       enabled: true,
       available: true,
       installed_version: "0.2.94",
+      host_tools_agent_mode: false,
       is_acp_adapter: false,
     })
     await mountProvider()
@@ -2128,6 +2370,7 @@ describe("HYDRATE_FROM_SNAPSHOT last_error recovery", () => {
       enabled: true,
       available: true,
       installed_version: "1.0.0",
+      host_tools_agent_mode: false,
       is_acp_adapter: true,
     })
     await mountProvider()

@@ -72,7 +72,10 @@ pub async fn create_with_delegation(
     } else {
         ConversationKind::Regular
     };
-    create_inner(conn, folder_id, agent_type, title, git_branch, delegation, kind).await
+    create_inner(
+        conn, folder_id, agent_type, title, git_branch, delegation, kind,
+    )
+    .await
 }
 
 async fn create_inner(
@@ -212,6 +215,70 @@ pub async fn refresh_auto_title(
                 .add(conversation::Column::Title.is_null())
                 .add(conversation::Column::Title.ne(title)),
         )
+        .exec(conn)
+        .await?;
+    Ok(res.rows_affected > 0)
+}
+
+/// Lock a row's title WITHOUT rewriting it. For a conversation whose name was
+/// typed by the user somewhere else — a work task's title, an automation's name
+/// — the seed passed to [`create`] already IS the name; all that's missing is
+/// the promise that [`refresh_auto_title`] will keep its hands off it, exactly
+/// as it does after a manual rename ([`update_title`]).
+///
+/// Without this, a task-launched session drifts to whatever the agent's session
+/// file parses to — for agents with no title of their own, the first line of the
+/// composed prompt — and the board's own name for the work is lost (issue #495).
+///
+/// Deliberately does NOT touch `title` or bump `updated_at`: like
+/// [`refresh_auto_title`], flipping this flag is metadata, not user activity,
+/// and must not float the row to the top of a recency-sorted sidebar. A
+/// non-existent row simply matches nothing.
+///
+/// Callers must lock BEFORE broadcasting the row's first sidebar upsert: the
+/// conversation id is not knowable to any client until that broadcast, so
+/// locking first makes an auto-title backfill on this row impossible rather
+/// than merely unlikely.
+pub async fn lock_title(conn: &DatabaseConnection, conversation_id: i32) -> Result<(), DbError> {
+    use sea_orm::sea_query::Expr;
+    conversation::Entity::update_many()
+        .col_expr(conversation::Column::TitleLocked, Expr::value(true))
+        .filter(conversation::Column::Id.eq(conversation_id))
+        .exec(conn)
+        .await?;
+    Ok(())
+}
+
+/// Rename a locked title when its OWNER was renamed: write `new_title` only if
+/// the row still carries `expected`. Used when a work task is retitled — the
+/// session it produced should follow the card it came from, but only while the
+/// two are still in sync.
+///
+/// The equality guard is the whole point. Both a task-derived title and a hand
+/// picked one leave `title_locked = true`, so the flag alone cannot tell them
+/// apart; `expected` (the task's PREVIOUS title) can. If the user renamed the
+/// conversation themselves, nothing matches and not a byte is written. Same
+/// optimistic shape as [`refresh_auto_title`]: one conditional UPDATE, so the
+/// comparison happens at write time in the database and a rename landing in
+/// between can never be clobbered. Returns `true` when a row was written.
+///
+/// Leaves `title_locked` alone (already true for every row this can match) and,
+/// like its siblings, does not bump `updated_at`.
+pub async fn retitle_if_unchanged(
+    conn: &DatabaseConnection,
+    conversation_id: i32,
+    expected: &str,
+    new_title: &str,
+) -> Result<bool, DbError> {
+    use sea_orm::sea_query::Expr;
+    let new_title = new_title.trim();
+    if new_title.is_empty() || new_title == expected {
+        return Ok(false);
+    }
+    let res = conversation::Entity::update_many()
+        .col_expr(conversation::Column::Title, Expr::value(new_title))
+        .filter(conversation::Column::Id.eq(conversation_id))
+        .filter(conversation::Column::Title.eq(expected))
         .exec(conn)
         .await?;
     Ok(res.rows_affected > 0)
@@ -825,9 +892,15 @@ mod tests {
     async fn list_children_orders_newest_first() {
         let db = fresh_in_memory_db().await;
         let folder = seed_folder(&db, "/tmp/codeg-list-children-order").await;
-        let parent = create(&db.conn, folder, AgentType::ClaudeCode, Some("P".into()), None)
-            .await
-            .expect("parent");
+        let parent = create(
+            &db.conn,
+            folder,
+            AgentType::ClaudeCode,
+            Some("P".into()),
+            None,
+        )
+        .await
+        .expect("parent");
         // Two children created oldest → newest under the same parent.
         let first = create_with_delegation(
             &db.conn,
@@ -926,7 +999,9 @@ mod tests {
         let folder = seed_folder(&db, "/tmp/codeg-child-count-deleted").await;
         let (parent, child) = seed_parent_with_child(&db.conn, folder).await;
 
-        soft_delete(&db.conn, child).await.expect("soft delete child");
+        soft_delete(&db.conn, child)
+            .await
+            .expect("soft delete child");
 
         // A removed sub-session must not keep the parent's chevron alive: the
         // aggregate filters deleted_at IS NULL, matching list_children.
@@ -944,9 +1019,15 @@ mod tests {
     async fn update_pin_sets_and_clears_without_bumping_updated_at() {
         let db = fresh_in_memory_db().await;
         let folder = seed_folder(&db, "/tmp/codeg-update-pin").await;
-        let conv = create(&db.conn, folder, AgentType::ClaudeCode, Some("c".into()), None)
-            .await
-            .expect("create");
+        let conv = create(
+            &db.conn,
+            folder,
+            AgentType::ClaudeCode,
+            Some("c".into()),
+            None,
+        )
+        .await
+        .expect("create");
 
         // Freshly created rows are unpinned, and the summary projection carries
         // the field through (conv_to_summary mapping).
@@ -961,7 +1042,10 @@ mod tests {
         // preference, not activity).
         update_pin(&db.conn, conv.id, true).await.expect("pin");
         let pinned = get_by_id(&db.conn, conv.id).await.expect("get pinned");
-        assert!(pinned.pinned_at.is_some(), "pinned_at must be set after pin");
+        assert!(
+            pinned.pinned_at.is_some(),
+            "pinned_at must be set after pin"
+        );
         assert_eq!(
             pinned.updated_at, updated_at_before,
             "pinning must not bump updated_at"
@@ -999,11 +1083,20 @@ mod tests {
     async fn create_leaves_title_unlocked() {
         let db = fresh_in_memory_db().await;
         let folder = seed_folder(&db, "/tmp/codeg-title-unlocked").await;
-        let row = create(&db.conn, folder, AgentType::ClaudeCode, Some("hi".into()), None)
-            .await
-            .expect("create");
+        let row = create(
+            &db.conn,
+            folder,
+            AgentType::ClaudeCode,
+            Some("hi".into()),
+            None,
+        )
+        .await
+        .expect("create");
         let summary = get_by_id(&db.conn, row.id).await.expect("get");
-        assert!(!summary.title_locked, "new conversation must start unlocked");
+        assert!(
+            !summary.title_locked,
+            "new conversation must start unlocked"
+        );
     }
 
     #[tokio::test]
@@ -1188,6 +1281,146 @@ mod tests {
             summary.updated_at, before,
             "auto-title backfill is metadata, not activity — it must not bump updated_at"
         );
+    }
+
+    /// The work-task / automation launch path: the seed IS the name, so locking
+    /// must keep the title byte-identical, keep the row where it is in a
+    /// recency-sorted sidebar, and make the next auto-title a no-op.
+    #[tokio::test]
+    async fn lock_title_freezes_the_seed_without_rewriting_or_bumping() {
+        let db = fresh_in_memory_db().await;
+        let folder = seed_folder(&db, "/tmp/codeg-title-lock-seed").await;
+        let row = create(
+            &db.conn,
+            folder,
+            AgentType::ClaudeCode,
+            Some("Fix the login flow".into()),
+            None,
+        )
+        .await
+        .expect("create");
+        let before = row.updated_at;
+        assert!(!row.title_locked, "a fresh row starts unlocked");
+
+        lock_title(&db.conn, row.id).await.expect("lock");
+
+        let locked = get_by_id(&db.conn, row.id).await.expect("get");
+        assert!(locked.title_locked, "lock_title must set the flag");
+        assert_eq!(
+            locked.title.as_deref(),
+            Some("Fix the login flow"),
+            "lock_title must not rewrite the title"
+        );
+        assert_eq!(
+            locked.updated_at, before,
+            "locking is metadata, not activity — it must not bump updated_at"
+        );
+
+        // The whole point: the parsed session title can no longer take over.
+        assert!(
+            !refresh_auto_title(&db.conn, row.id, "项目：/Users/me/app".into())
+                .await
+                .expect("auto"),
+            "a seeded-and-locked title must survive the per-turn backfill"
+        );
+        let after = get_by_id(&db.conn, row.id).await.expect("get again");
+        assert_eq!(after.title.as_deref(), Some("Fix the login flow"));
+    }
+
+    /// A missing row must not be an error — the caller locks on a best-effort
+    /// path where a failure would be worse than the drift it prevents.
+    #[tokio::test]
+    async fn lock_title_on_a_missing_row_is_a_no_op() {
+        let db = fresh_in_memory_db().await;
+        lock_title(&db.conn, 999_999).await.expect("no-op lock");
+    }
+
+    #[tokio::test]
+    async fn retitle_if_unchanged_follows_the_owner_rename() {
+        let db = fresh_in_memory_db().await;
+        let folder = seed_folder(&db, "/tmp/codeg-retitle-follow").await;
+        let row = create(
+            &db.conn,
+            folder,
+            AgentType::ClaudeCode,
+            Some("old".into()),
+            None,
+        )
+        .await
+        .expect("create");
+        let before = row.updated_at;
+        lock_title(&db.conn, row.id).await.expect("lock");
+
+        let wrote = retitle_if_unchanged(&db.conn, row.id, "old", "new")
+            .await
+            .expect("retitle");
+        assert!(wrote, "a title still in sync with its owner must follow it");
+
+        let summary = get_by_id(&db.conn, row.id).await.expect("get");
+        assert_eq!(summary.title.as_deref(), Some("new"));
+        assert!(summary.title_locked, "the row must stay locked");
+        assert_eq!(
+            summary.updated_at, before,
+            "following an owner rename is metadata, not activity"
+        );
+    }
+
+    /// The guard that makes the sync safe: once the user names the conversation
+    /// themselves, the owner's rename must not reach it. `title_locked` is true
+    /// in BOTH cases, so only the expected-value comparison can tell them apart.
+    #[tokio::test]
+    async fn retitle_if_unchanged_refuses_after_a_manual_rename() {
+        let db = fresh_in_memory_db().await;
+        let folder = seed_folder(&db, "/tmp/codeg-retitle-refuse").await;
+        let row = create(
+            &db.conn,
+            folder,
+            AgentType::ClaudeCode,
+            Some("old".into()),
+            None,
+        )
+        .await
+        .expect("create");
+        update_title(&db.conn, row.id, "User pick".into())
+            .await
+            .expect("rename");
+
+        let wrote = retitle_if_unchanged(&db.conn, row.id, "old", "new")
+            .await
+            .expect("retitle");
+        assert!(!wrote, "a hand-picked title must not follow the owner");
+        let summary = get_by_id(&db.conn, row.id).await.expect("get");
+        assert_eq!(summary.title.as_deref(), Some("User pick"));
+    }
+
+    #[tokio::test]
+    async fn retitle_if_unchanged_skips_empty_and_identical() {
+        let db = fresh_in_memory_db().await;
+        let folder = seed_folder(&db, "/tmp/codeg-retitle-skip").await;
+        let row = create(
+            &db.conn,
+            folder,
+            AgentType::ClaudeCode,
+            Some("same".into()),
+            None,
+        )
+        .await
+        .expect("create");
+
+        assert!(
+            !retitle_if_unchanged(&db.conn, row.id, "same", "same")
+                .await
+                .expect("identical"),
+            "an unchanged owner name must be a no-op"
+        );
+        assert!(
+            !retitle_if_unchanged(&db.conn, row.id, "same", "   ")
+                .await
+                .expect("blank"),
+            "a blank new title must never erase the name"
+        );
+        let summary = get_by_id(&db.conn, row.id).await.expect("get");
+        assert_eq!(summary.title.as_deref(), Some("same"));
     }
 
     #[tokio::test]
