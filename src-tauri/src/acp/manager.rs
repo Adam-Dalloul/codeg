@@ -1051,9 +1051,18 @@ impl ConnectionManager {
                 (s.conversation_id, s.external_id.clone())
             };
             if let (Some(cid), Some(eid)) = (cid_opt, eid_opt) {
-                conversation_service::update_external_id(&db.conn, cid, eid)
-                    .await
-                    .map_err(|e| AcpError::protocol(e.to_string()))?;
+                // THE codeg#500 write. Branch A above adopts a row the caller
+                // supplied, which may still be bound to an older session — a
+                // connection spawned with `session_id = None` (a reconnect that
+                // lost the id, or an unclassified `session/load` failure that
+                // fell through to `session/new`) arrives here holding a session
+                // that has nothing to do with the row's history. `bind_external_id`
+                // splits that history onto its own row instead of overwriting it.
+                let continues = crate::acp::continued_session_ids(agent_type, &eid);
+                let preserved =
+                    conversation_service::bind_external_id(&db.conn, cid, &eid, &continues)
+                        .await
+                        .map_err(|e| AcpError::protocol(e.to_string()))?;
                 // SessionStarted arrived BEFORE this link, so the lifecycle
                 // subscriber skipped its broadcast (no conversation_id then).
                 // Now that external_id is persisted, converge every client's
@@ -1062,6 +1071,10 @@ impl ConnectionManager {
                 // `external_id: null`. Root-only via the helper.
                 crate::commands::conversations::emit_conversation_upsert(&emitter, &db.conn, cid)
                     .await;
+                crate::commands::conversations::emit_preserved_conversation(
+                    &emitter, &db.conn, preserved,
+                )
+                .await;
             } else if cid_opt.is_some() {
                 tracing::info!(
                     "[manager] send_prompt_linked: conversation linked but \
@@ -1744,6 +1757,33 @@ impl ConnectionManager {
                     active.external_id = Set(Some(forked_session_id));
                     active.updated_at = Set(now);
                     active.update(txn).await?;
+
+                    // The lifecycle subscriber may have got here first. Its
+                    // `SessionStarted{S2}` handler now runs the guarded
+                    // `bind_external_id`, which preserves S1 on its own row
+                    // when nothing else holds it — and that race is real, not
+                    // theoretical: the fork reply is sent to us BEFORE
+                    // `handle_fork_or_exit` emits `SessionStarted{S2}` (see
+                    // `connection.rs`), so this detached persistence task and
+                    // the lifecycle worker run concurrently from that point.
+                    //
+                    // Inserting a second S1 row would not merely duplicate it:
+                    // `idx_conversation_external_agent` is UNIQUE over
+                    // `(external_id, agent_type)`, so the INSERT would fail and
+                    // roll back the whole fork. Adopt whatever already holds S1
+                    // instead and return ITS id — the caller feeds that straight
+                    // into `ForkResultInfo.sibling_conversation_id` and the
+                    // sidebar upsert, both of which must name a real row.
+                    if let Some(existing) = conversation::Entity::find()
+                        .filter(conversation::Column::ExternalId.eq(original_session_id.clone()))
+                        .filter(conversation::Column::AgentType.eq(agent_type_str.clone()))
+                        .filter(conversation::Column::Id.ne(conversation_id))
+                        .filter(conversation::Column::DeletedAt.is_null())
+                        .one(txn)
+                        .await?
+                    {
+                        return Ok(existing.id);
+                    }
 
                     // INSERT sibling row preserving pre-fork (S1) history.
                     // PendingReview because no live agent is attached to S1.
@@ -3805,6 +3845,101 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn send_prompt_linked_preserves_history_when_the_session_was_re_minted() {
+        // codeg#500, end to end, in the exact shape the reporter described:
+        // an existing completed conversation, then a new session started in the
+        // same folder and pane.
+        //
+        // The connection was spawned with `session_id = None` (a reconnect that
+        // lost the id, or an unclassified `session/load` failure that fell
+        // through to `session/new`), so it holds S2 while the row the UI still
+        // points at holds S1. Branch A adopts that row and persists the session
+        // id onto it. Before the guard, S1 was left with no row at all — and
+        // since the conversation list is built purely from DB rows, the user's
+        // 49-minute conversation simply vanished from the sidebar.
+        use crate::db::test_helpers;
+        let db = test_helpers::fresh_in_memory_db().await;
+        let folder_id = test_helpers::seed_folder(&db, "/tmp/reminted").await;
+        let existing = conversation_service::create(
+            &db.conn,
+            folder_id,
+            AgentType::Codex,
+            Some("nouveauté de cette version".into()),
+            None,
+        )
+        .await
+        .unwrap();
+        conversation_service::bind_external_id(&db.conn, existing.id, "S1", &[])
+            .await
+            .unwrap();
+        conversation_service::update_status(
+            &db.conn,
+            existing.id,
+            ConversationStatus::PendingReview,
+        )
+        .await
+        .unwrap();
+
+        let mgr = ConnectionManager::new();
+        let conn_id = "conn-reminted";
+        let _cmd_rx = insert_live_connection(
+            &mgr,
+            conn_id,
+            AgentType::Codex,
+            Some(PathBuf::from("/tmp/reminted")),
+        )
+        .await;
+        // The connection came up on a session of its own — nobody told it about
+        // S1, which is the whole problem.
+        mgr.get_state(conn_id)
+            .await
+            .unwrap()
+            .write()
+            .await
+            .external_id = Some("S2".into());
+
+        mgr.send_prompt_linked(
+            &db,
+            conn_id,
+            vec![PromptInputBlock::Text {
+                text: "tu peux faire 2 couleur".into(),
+            }],
+            Some(folder_id),
+            Some(existing.id),
+            None,
+        )
+        .await
+        .expect("the prompt itself must still go through");
+
+        // The row the user has open follows the live session...
+        let current = conversation_service::get_by_id(&db.conn, existing.id)
+            .await
+            .expect("current row");
+        assert_eq!(current.external_id.as_deref(), Some("S2"));
+
+        // ...and S1 is still indexed, under the title the user recognises, so
+        // it remains visible and reopenable from the sidebar.
+        let listed = crate::commands::conversations::list_all_conversations_core(
+            &db.conn, None, None, None, None, None, false,
+        )
+        .await
+        .expect("list");
+        let preserved = listed
+            .iter()
+            .find(|c| c.external_id.as_deref() == Some("S1"))
+            .expect("the previous session must remain in the conversation index");
+        assert_eq!(
+            preserved.title.as_deref(),
+            Some("nouveauté de cette version")
+        );
+        assert_ne!(
+            preserved.id, existing.id,
+            "the preserved history lives on its own row"
+        );
+        assert_eq!(listed.len(), 2, "exactly two conversations, got {listed:?}");
+    }
+
+    #[tokio::test]
     async fn send_prompt_linked_rejects_second_prompt_while_turn_in_flight() {
         // Two clients co-controlling one connection can send near-
         // simultaneously. The first accepted prompt marks the turn in flight;
@@ -4050,7 +4185,7 @@ mod tests {
         )
         .await
         .unwrap();
-        conversation_service::update_external_id(&db.conn, pre.id, "session-S1".into())
+        conversation_service::bind_external_id(&db.conn, pre.id, "session-S1", &[])
             .await
             .unwrap();
 
@@ -5693,7 +5828,7 @@ mod tests {
         .await
         .unwrap();
         // External_id starts as S1 — manager.fork_session will swap to S2.
-        conversation_service::update_external_id(&db.conn, pre.id, "session-S1".into())
+        conversation_service::bind_external_id(&db.conn, pre.id, "session-S1", &[])
             .await
             .unwrap();
 
@@ -5761,6 +5896,72 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(sibling.title.as_deref(), Some("Topic"));
+    }
+
+    #[tokio::test]
+    async fn fork_session_adopts_a_sibling_the_lifecycle_subscriber_already_made() {
+        // Fork's reply reaches us BEFORE `handle_fork_or_exit` emits
+        // `SessionStarted{S2}`, so this persistence and the lifecycle worker
+        // (which retries with backoff) run concurrently. If the lifecycle side
+        // lands first, its guarded `bind_external_id` has already preserved S1
+        // on a row of its own.
+        //
+        // Inserting a second S1 row then is not a cosmetic duplicate:
+        // `(external_id, agent_type)` is UNIQUE, so the INSERT fails and rolls
+        // back the entire fork — the user's fork just breaks. Adopt the
+        // existing row instead, and return ITS id, because the caller puts that
+        // id straight into the fork result and the sidebar upsert.
+        use crate::db::test_helpers;
+        let db = test_helpers::fresh_in_memory_db().await;
+        let folder_id = test_helpers::seed_folder(&db, "/tmp/fork-raced").await;
+
+        let pre = conversation_service::create(
+            &db.conn,
+            folder_id,
+            AgentType::ClaudeCode,
+            Some("Topic".into()),
+            None,
+        )
+        .await
+        .unwrap();
+        conversation_service::bind_external_id(&db.conn, pre.id, "session-S1", &[])
+            .await
+            .unwrap();
+        // Lifecycle got there first: S2 landed on the row and S1 was preserved.
+        let preserved_id = conversation_service::bind_external_id(&db.conn, pre.id, "session-S2", &[])
+            .await
+            .unwrap()
+            .expect("the lifecycle bind preserves S1");
+
+        let (mgr, join) =
+            manager_with_fake_fork("c-raced", pre.id, "session-S2", "session-S1").await;
+        let result = mgr
+            .fork_session(&db, "c-raced", None, None)
+            .await
+            .expect("fork must survive the lifecycle subscriber winning the race");
+        let _ = join.await;
+
+        assert_eq!(
+            result.sibling_conversation_id, preserved_id,
+            "fork must report the row that actually holds S1"
+        );
+        let listed = crate::commands::conversations::list_all_conversations_core(
+            &db.conn, None, None, None, None, None, false,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            listed.len(),
+            2,
+            "exactly two rows regardless of who won the race, got {listed:?}"
+        );
+        assert_eq!(
+            listed
+                .iter()
+                .filter(|c| c.external_id.as_deref() == Some("session-S1"))
+                .count(),
+            1
+        );
     }
 
     #[tokio::test]
@@ -6140,7 +6341,7 @@ mod tests {
         )
         .await
         .unwrap();
-        conversation_service::update_external_id(&db.conn, pre.id, "session-S1".into())
+        conversation_service::bind_external_id(&db.conn, pre.id, "session-S1", &[])
             .await
             .unwrap();
         conversation_service::soft_delete(&db.conn, pre.id)
@@ -6226,7 +6427,7 @@ mod tests {
         )
         .await
         .unwrap();
-        conversation_service::update_external_id(&db.conn, pre.id, "session-S1".into())
+        conversation_service::bind_external_id(&db.conn, pre.id, "session-S1", &[])
             .await
             .unwrap();
 

@@ -1114,8 +1114,21 @@ pub async fn get_folder_conversation_core(
 
     // If we resolved a different external_id (e.g. ACP UUID → parser branch ID),
     // update the database so future lookups are direct.
+    //
+    // This is an ALIAS normalization — both ids denote the same session — so it
+    // uses the narrow CAS rather than `bind_external_id`, whose history-split
+    // would manufacture a phantom conversation for the old spelling. The
+    // expected-old value is the exact id this parse ran against, so a
+    // `SessionStarted` that rebound the row while we were parsing leaves this
+    // write matching nothing instead of clobbering the newer binding.
     if let Some(new_ext_id) = resolved_ext_id {
-        let _ = conversation_service::update_external_id(conn, conversation_id, new_ext_id).await;
+        let _ = conversation_service::renormalize_external_id_alias(
+            conn,
+            conversation_id,
+            summary.external_id.as_deref(),
+            new_ext_id,
+        )
+        .await;
     }
 
     let mut summary = summary;
@@ -1508,6 +1521,27 @@ pub(crate) async fn emit_conversation_upsert(
         Err(e) => tracing::warn!(
             "[conversations] upsert emit skipped (get_by_id {conversation_id} failed): {e}"
         ),
+    }
+}
+
+/// Broadcast the row [`conversation_service::bind_external_id`] created to
+/// preserve a session that was about to be orphaned.
+///
+/// Every caller of `bind_external_id` MUST route its `Some(..)` through this
+/// (or emit an equivalent upsert itself). Creating the row is only half the
+/// fix: the sidebar learns about a conversation it has never seen ONLY from a
+/// `conversation://changed` upsert — otherwise not until a full reload. A
+/// preserved row that is never broadcast therefore still looks, to the user,
+/// exactly like the conversation vanishing, which is the bug being fixed.
+///
+/// `None` is the common case (an ordinary bind) and is a no-op.
+pub(crate) async fn emit_preserved_conversation(
+    emitter: &EventEmitter,
+    conn: &sea_orm::DatabaseConnection,
+    preserved: Option<i32>,
+) {
+    if let Some(preserved_id) = preserved {
+        emit_conversation_upsert(emitter, conn, preserved_id).await;
     }
 }
 
