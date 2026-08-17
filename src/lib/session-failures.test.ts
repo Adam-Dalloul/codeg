@@ -206,8 +206,22 @@ describe("dismissSessionFailures", () => {
     expect(mostRecentRecoveredWarning(table)).toBeNull()
   })
 
-  it("is a reference-preserving no-op for unknown / already-resolved ids", () => {
-    const table = [record("a", 1, { resolved: true }), record("b", 1)]
+  it("silences an ALREADY-RESOLVED record — that is the recovered line's exit", () => {
+    // Regression: gating on `!resolved` made the recovered strip's close
+    // button and auto-expiry silent no-ops, so it hung under the composer
+    // forever (field report 2026-08-17).
+    const table = [record("a", 1, { resolved: true })]
+    const next = dismissSessionFailures(table, ["a"])
+    expect(next).not.toBe(table)
+    expect(next[0]).toMatchObject({ resolved: true, dismissed: true })
+    expect(mostRecentRecoveredWarning(next)).toBeNull()
+  })
+
+  it("is a reference-preserving no-op for unknown / already-dismissed ids", () => {
+    const table = [
+      record("a", 1, { resolved: true, dismissed: true }),
+      record("b", 1),
+    ]
     expect(dismissSessionFailures(table, ["a"])).toBe(table)
     expect(dismissSessionFailures(table, ["nope"])).toBe(table)
     expect(dismissSessionFailures(table, [])).toBe(table)
@@ -234,16 +248,14 @@ describe("mostRecentRecoveredWarning", () => {
       record("w3", 1),
     ]
     expect(mostRecentRecoveredWarning(table)?.id).toBe("w2")
-    // An ACTIVE warning dismissed after the fact must not become the recovered
-    // line — the fallback is the older, genuine recovery.
-    const afterDismiss = dismissSessionFailures(table, ["w3"])
-    expect(afterDismiss.find((f) => f.id === "w3")?.dismissed).toBe(true)
-    expect(mostRecentRecoveredWarning(afterDismiss)?.id).toBe("w2")
-    // …and with that one silenced too, the next-oldest genuine one.
-    const bothSilenced = afterDismiss.map((f) =>
-      f.id === "w2" ? { ...f, dismissed: true } : f
-    )
-    expect(mostRecentRecoveredWarning(bothSilenced)?.id).toBe("w1")
+    // Closing the line on screen falls back to the older genuine recovery,
+    // never to the record just silenced.
+    const afterDismiss = dismissSessionFailures(table, ["w2"])
+    expect(mostRecentRecoveredWarning(afterDismiss)?.id).toBe("w1")
+    // …and with that one silenced too, nothing is left to announce.
+    expect(
+      mostRecentRecoveredWarning(dismissSessionFailures(afterDismiss, ["w1"]))
+    ).toBeNull()
   })
 
   it("returns null when there is nothing recovered", () => {

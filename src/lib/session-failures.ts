@@ -155,6 +155,11 @@ export function settleSessionFailures(
  * revision watermark, so this silences only what was actually on screen — a
  * failure that is still real re-arms via a higher revision on the same id.
  *
+ * Applies to ALREADY-RESOLVED records too, not just active ones: the muted
+ * "recovered" line is by definition resolved, and closing (or auto-expiring)
+ * it still has to mark it `dismissed` so it stops rendering. Gating this on
+ * `!resolved` made both of that strip's exits silent no-ops.
+ *
  * Returns the same array reference when nothing needed dismissing.
  */
 export function dismissSessionFailures(
@@ -162,9 +167,11 @@ export function dismissSessionFailures(
   ids: string[]
 ): SessionFailureRecord[] {
   const targets = new Set(ids)
-  if (!failures.some((f) => targets.has(f.id) && !f.resolved)) return failures
+  const changes = (f: SessionFailureRecord) =>
+    targets.has(f.id) && !(f.resolved && f.dismissed)
+  if (!failures.some(changes)) return failures
   return failures.map((f) =>
-    targets.has(f.id) ? { ...f, resolved: true, dismissed: true } : f
+    changes(f) ? { ...f, resolved: true, dismissed: true } : f
   )
 }
 
