@@ -289,7 +289,10 @@ pub async fn retitle_if_unchanged(
 /// Every field used to select the candidate is re-checked in the UPDATE, plus
 /// the title observed by the candidate read. This prevents a delayed refresh
 /// from writing an index title after the row was re-pointed, deleted, manually
-/// renamed, or refreshed by another task.
+/// renamed, moved into a deleted folder, or refreshed by another task.
+///
+/// `kind` is deliberately absent: it is written once at insert and never
+/// updated, so the candidate query's filter cannot go stale between the two.
 async fn refresh_codex_auto_title_candidate(
     conn: &DatabaseConnection,
     candidate: &conversation::Model,
@@ -316,6 +319,15 @@ async fn refresh_codex_auto_title_candidate(
         .filter(conversation::Column::ExternalId.eq(external_id))
         .filter(conversation::Column::DeletedAt.is_null())
         .filter(conversation::Column::TitleLocked.eq(false))
+        .filter(
+            conversation::Column::FolderId.in_subquery(
+                sea_orm::sea_query::Query::select()
+                    .column(folder::Column::Id)
+                    .from(folder::Entity)
+                    .and_where(folder::Column::DeletedAt.is_null())
+                    .to_owned(),
+            ),
+        )
         .filter(old_title)
         .exec(conn)
         .await?;
@@ -330,6 +342,16 @@ async fn refresh_codex_auto_title_candidate(
 /// title refreshes never bump `updated_at`. This is a best-effort reconciliation:
 /// a failed chunk or row is logged and skipped while successful row ids are
 /// retained for downstream notifications.
+///
+/// Candidate scope mirrors [`list_all`]'s own visibility rules — a live folder
+/// and `kind != 'loop'` — because every refreshed id is broadcast as a sidebar
+/// upsert. Refreshing a row this query would never return would push a row the
+/// list deliberately hides into every client's sidebar until its next refetch.
+///
+/// Each candidate keeps its OWN autocommit UPDATE rather than sharing one
+/// transaction per chunk: the guarantee callers rely on is that a row that
+/// failed (or lost its CAS) never holds back the rows that succeeded, and a
+/// chunk-wide transaction would roll those back together.
 pub(crate) async fn refresh_codex_auto_titles(
     conn: &DatabaseConnection,
     titles: &HashMap<String, String>,
@@ -352,6 +374,16 @@ pub(crate) async fn refresh_codex_auto_titles(
             .filter(conversation::Column::ExternalId.is_in(external_id_chunk.iter().cloned()))
             .filter(conversation::Column::DeletedAt.is_null())
             .filter(conversation::Column::TitleLocked.eq(false))
+            .filter(conversation::Column::Kind.ne(ConversationKind::Loop))
+            .filter(
+                conversation::Column::FolderId.in_subquery(
+                    sea_orm::sea_query::Query::select()
+                        .column(folder::Column::Id)
+                        .from(folder::Entity)
+                        .and_where(folder::Column::DeletedAt.is_null())
+                        .to_owned(),
+                ),
+            )
             .order_by_asc(conversation::Column::Id)
             .all(conn)
             .await
@@ -1694,6 +1726,172 @@ mod tests {
         let current = get_by_id(&db.conn, row.id).await.expect("read current row");
         assert!(current.title_locked);
         assert_eq!(current.title.as_deref(), Some("same manual title"));
+    }
+
+    #[tokio::test]
+    async fn refresh_codex_auto_title_candidate_rechecks_folder_deletion_at_write_time() {
+        let db = fresh_in_memory_db().await;
+        let folder = seed_folder(&db, "/tmp/codeg-codex-index-folder-race").await;
+        let row = create(
+            &db.conn,
+            folder,
+            AgentType::Codex,
+            Some("old title".into()),
+            None,
+        )
+        .await
+        .expect("create");
+        update_external_id(&db.conn, row.id, "session-folder-race".into())
+            .await
+            .expect("set external id");
+        let stale_candidate = conversation::Entity::find_by_id(row.id)
+            .one(&db.conn)
+            .await
+            .expect("query candidate")
+            .expect("candidate exists");
+
+        crate::db::service::folder_service::soft_delete_folder(&db.conn, folder)
+            .await
+            .expect("soft delete folder");
+        let wrote =
+            refresh_codex_auto_title_candidate(&db.conn, &stale_candidate, "index title").await;
+
+        assert!(
+            !wrote.expect("conditional refresh"),
+            "a row whose folder was deleted mid-refresh must not be rewritten (and so must not be broadcast)"
+        );
+        let current = get_by_id(&db.conn, row.id).await.expect("read current row");
+        assert_eq!(current.title.as_deref(), Some("old title"));
+    }
+
+    #[tokio::test]
+    async fn refresh_codex_auto_title_candidate_adopts_a_title_over_null() {
+        let db = fresh_in_memory_db().await;
+        let folder = seed_folder(&db, "/tmp/codeg-codex-index-null-title").await;
+        let row = create(&db.conn, folder, AgentType::Codex, None, None)
+            .await
+            .expect("create");
+        update_external_id(&db.conn, row.id, "session-null-title".into())
+            .await
+            .expect("set external id");
+        let candidate = conversation::Entity::find_by_id(row.id)
+            .one(&db.conn)
+            .await
+            .expect("query candidate")
+            .expect("candidate exists");
+        assert!(candidate.title.is_none(), "fixture must start titleless");
+
+        assert!(
+            refresh_codex_auto_title_candidate(&db.conn, &candidate, "first Codex title")
+                .await
+                .expect("conditional refresh"),
+            "the IS NULL branch of the observed-title CAS must still write"
+        );
+        assert_eq!(
+            get_by_id(&db.conn, row.id)
+                .await
+                .expect("read current row")
+                .title
+                .as_deref(),
+            Some("first Codex title")
+        );
+
+        // ...and once a title exists, the same stale (title = NULL) candidate
+        // must no longer match.
+        assert!(
+            !refresh_codex_auto_title_candidate(&db.conn, &candidate, "second Codex title")
+                .await
+                .expect("conditional refresh"),
+            "a stale titleless candidate must not clobber the title it just wrote"
+        );
+    }
+
+    #[tokio::test]
+    async fn refresh_codex_auto_titles_skips_rows_the_sidebar_list_hides() {
+        let db = fresh_in_memory_db().await;
+        let live_folder = seed_folder(&db, "/tmp/codeg-codex-index-visible").await;
+        let dead_folder = seed_folder(&db, "/tmp/codeg-codex-index-hidden").await;
+
+        let visible = create(
+            &db.conn,
+            live_folder,
+            AgentType::Codex,
+            Some("old visible".into()),
+            None,
+        )
+        .await
+        .expect("create visible");
+        update_external_id(&db.conn, visible.id, "session-visible".into())
+            .await
+            .expect("set visible external id");
+
+        let in_dead_folder = create(
+            &db.conn,
+            dead_folder,
+            AgentType::Codex,
+            Some("old hidden".into()),
+            None,
+        )
+        .await
+        .expect("create hidden");
+        update_external_id(&db.conn, in_dead_folder.id, "session-hidden".into())
+            .await
+            .expect("set hidden external id");
+        crate::db::service::folder_service::soft_delete_folder(&db.conn, dead_folder)
+            .await
+            .expect("soft delete folder");
+
+        let loop_row = create(
+            &db.conn,
+            live_folder,
+            AgentType::Codex,
+            Some("old loop".into()),
+            None,
+        )
+        .await
+        .expect("create loop row");
+        update_external_id(&db.conn, loop_row.id, "session-loop".into())
+            .await
+            .expect("set loop external id");
+        // No public write path mints kind='loop' yet, so flip it directly.
+        let mut active: conversation::ActiveModel = conversation::Entity::find_by_id(loop_row.id)
+            .one(&db.conn)
+            .await
+            .expect("query loop row")
+            .expect("loop row exists")
+            .into();
+        active.kind = Set(ConversationKind::Loop);
+        active.update(&db.conn).await.expect("flip kind");
+
+        let titles = HashMap::from([
+            ("session-visible".to_string(), "new visible".to_string()),
+            ("session-hidden".to_string(), "new hidden".to_string()),
+            ("session-loop".to_string(), "new loop".to_string()),
+        ]);
+
+        let refreshed = refresh_codex_auto_titles(&db.conn, &titles).await;
+
+        assert_eq!(
+            refreshed,
+            vec![visible.id],
+            "only rows `list_all` would return may be refreshed — every refreshed id is broadcast as a sidebar upsert"
+        );
+        assert_eq!(
+            get_by_id(&db.conn, in_dead_folder.id)
+                .await
+                .expect("read hidden row")
+                .title
+                .as_deref(),
+            Some("old hidden")
+        );
+        assert_eq!(
+            get_by_id(&db.conn, loop_row.id)
+                .await
+                .expect("read loop row")
+                .title
+                .as_deref(),
+            Some("old loop")
+        );
     }
 
     #[tokio::test]

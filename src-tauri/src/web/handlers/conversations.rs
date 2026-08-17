@@ -206,6 +206,7 @@ pub async fn import_local_conversations(
         conv_commands::import_local_conversations_core(
             &state.db.conn,
             &state.emitter,
+            &state.chat_channel_manager,
             params.folder_id,
         )
         .await?,
