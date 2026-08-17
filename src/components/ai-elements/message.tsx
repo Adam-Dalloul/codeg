@@ -32,7 +32,7 @@ import { markdownLinkComponents } from "./markdown-link"
 import { rehypePluginsAllowingCodeg } from "./rehype-allow-codeg"
 import { remarkTrimCjkAutolinkTail } from "./remark-cjk-autolink-tail"
 import { remarkRewriteFileUriLinks } from "./remark-file-uri-links"
-import { useStreamdownPlugins } from "./streamdown-plugins"
+import { MATH_FENCE_PAD, useStreamdownPlugins } from "./streamdown-plugins"
 
 export type MessageProps = HTMLAttributes<HTMLDivElement> & {
   from: UIMessage["role"]
@@ -347,50 +347,56 @@ export type MessageResponseProps = ComponentProps<typeof Streamdown>
 // remark-math uses dollar delimiters. `\[...\]` / `\(...\)` are rewritten
 // to `$$...$$`. Single-dollar `$...$` is disabled (`singleDollarTextMath:
 // false`) so currency (`$9.99`) and shell vars (`$HOME`, `$1`) stay prose.
+//
 // A single-line `$$x$$` inside a paragraph stays *inline* math (mdast tags
-// it `math-inline`); `$$` at column 0 of a line is a math FLOW fence.
-// Multi-line `\(...\)` that would land `$$` at a fence position is padded
-// on the opener. A prefix-only closer line is moved after `$$` (ZWSP on
-// the closer either fences or lands inside the formula). Code / inline
-// code is masked so delimiters inside them stay literal. CR / CRLF is
-// folded to LF first so offset math matches what remark-parse sees on
-// Windows files.
+// every math-text node `math-inline` regardless of dollar count). The one
+// hazard is math FLOW: a `$$` that starts a line's block content opens a
+// display fence and swallows the rest of that line as fence metadata. Both
+// delimiters of a multi-line `\(...\)` can land there, and both are kept off
+// it by putting a zero-width space in front:
+//
+//   opener — padded only when the `$$` would land exactly at block content
+//            start, since the pad sits in the surrounding Markdown, where it
+//            is a real character to later constructs. (An emphasis run or a
+//            link-reference label padded on one side stops matching.)
+//   closer — padded unconditionally. This pad lands INSIDE the formula,
+//            where KaTeX ignores it, so it costs nothing to always emit and
+//            saves having to decide whether the closing line is container
+//            prefix or TeX. That question is not answerable from the line
+//            alone: `\(a\n2. \)` and a list continuation look identical, as
+//            do a tab-indented `>` and a blockquote marker, and a lazily
+//            continued quote carries no marker at all.
+//
+// Code and inline code are masked BEFORE line endings are folded: the inline
+// mask excludes LF but tolerates a bare CR, so folding first would un-mask
+// multi-line inline code and rewrite its contents.
+//
+// Known limit, pre-existing: an INDENTED code block is not masked, so
+// `\(...\)` inside one is rewritten (it already is on main). Padding cannot
+// avoid it — 4 spaces means "indented code" at top level but "content column"
+// inside a nested list, and a prefix scan cannot tell those apart.
 export function normalizeMathDelimiters(text: string): string {
-  const canonical = text.replace(/\r\n|\r/g, "\n")
   const saved: string[] = []
   const placeholder = (m: string) => {
     saved.push(m)
     return `\0CBLK${saved.length - 1}\0`
   }
-  const masked = canonical.replace(
+  const masked = text.replace(
     /`{3,}[\s\S]*?`{3,}|~{3,}[\s\S]*?~{3,}|`[^`\n]+`/g,
     placeholder
   )
-  const normalized = masked
+  // Fold line endings only after masking, so the offsets and line scans below
+  // match what remark-parse sees while masked code keeps its own bytes.
+  const source = masked.replace(/\r\n|\r/g, "\n")
+  const normalized = source
     .replace(/\\\[([\s\S]*?)\\\]/g, (_m, inner: string) => `$$${inner}$$`)
     .replace(/\\\(([\s\S]*?)\\\)/g, (_m, inner: string, offset: number) => {
-      // Keep inner newlines (TeX `%` comments, `> \(a\n> b\)`). Only peel
-      // trailing newlines off the formula so the closer is not alone on a
-      // line (`\(a\nb\n\)` would otherwise become a display fence).
-      const trimmed = inner.replace(/\n+$/, "")
-      const after = inner.slice(trimmed.length)
-      if (!trimmed.includes("\n")) {
-        return `$$${trimmed}$$${after}`
-      }
-      // A closer `$$` on a container continuation (`\n> `, `\n  `) is
-      // itself a flow fence. ZWSP before that closer lands *inside* the
-      // formula; ZWSP after it still fences. Move a prefix-only last
-      // line to after the closer instead.
-      const { body, prefixTail } = peelPrefixOnlyLastLine(trimmed)
-      // A leading space is not enough — math flow fences allow the same
-      // 0-3 spaces as ATX headings. A ZWSP keeps `$$` off column 0
-      // without becoming a visible character or indented code.
-      //
-      // ZWSP is a real character every later matcher sees. Emphasis in
-      // the padded shapes is fine. A rare link-reference pair can stop
-      // matching if only one of the label / definition is padded.
-      const open = wouldStartMathFlowFence(masked, offset) ? MATH_FENCE_PAD : ""
-      return `${open}$$${body}$$${prefixTail}${after}`
+      if (!inner.includes("\n")) return `$$${inner}$$`
+      const lineStart = source.lastIndexOf("\n", offset - 1) + 1
+      const atContentStart =
+        containerPrefixEnd(source, lineStart, offset) === offset
+      const open = atContentStart ? MATH_FENCE_PAD : ""
+      return `${open}$$${inner}${MATH_FENCE_PAD}$$`
     })
   return normalized.replace(
     /\0CBLK(\d+)\0/g,
@@ -398,114 +404,70 @@ export function normalizeMathDelimiters(text: string): string {
   )
 }
 
-const MATH_FENCE_PAD = "\u200b"
-
-/** True when a `$$` emitted at `offset` would open a math flow fence. */
-function wouldStartMathFlowFence(source: string, offset: number): boolean {
-  const lineStart = source.lastIndexOf("\n", offset - 1) + 1
-  return scanContainerPrefix(source, lineStart, offset)
-}
-
-/** Split a prefix-only last line (`> `, list indent) off so `$$` is not there. */
-function peelPrefixOnlyLastLine(inner: string): {
-  body: string
-  prefixTail: string
-} {
-  const nl = inner.lastIndexOf("\n")
-  if (nl < 0) return { body: inner, prefixTail: "" }
-  const lastLine = inner.slice(nl + 1)
-  if (
-    lastLine.length > 0 &&
-    scanContainerPrefix(lastLine, 0, lastLine.length)
-  ) {
-    return { body: inner.slice(0, nl), prefixTail: inner.slice(nl) }
-  }
-  return { body: inner, prefixTail: "" }
+function isSpaceOrTab(code: number): boolean {
+  return code === 32 || code === 9
 }
 
 /**
- * Linear CommonMark-ish prefix walk. Consumes blockquote markers, list
- * markers (`*`, `-`, `+`, ordered), their following spaces, and 0-3
- * spaces of indent / list-continuation. No backtracking.
+ * Index just past the CommonMark container prefix (blockquote markers, list
+ * markers, indentation) opening the line `[start, end)` — i.e. where that
+ * line's block content begins. Returns `start` when content starts
+ * immediately. Single pass, no backtracking: every iteration consumes at
+ * least one character or returns.
+ *
+ * Indentation is deliberately not capped at 3. A deeper run only happens
+ * inside a nested list (where it IS the content column, so the guard is
+ * needed) or in an indented code block (where the guard is inert).
  */
-function scanContainerPrefix(
+function containerPrefixEnd(
   source: string,
   start: number,
   end: number
-): boolean {
+): number {
   let i = start
-  while (true) {
-    let indent = 0
-    while (
-      i < end &&
-      indent < 3 &&
-      (source.charCodeAt(i) === 32 || source.charCodeAt(i) === 9)
-    ) {
-      indent += 1
-      i += 1
-    }
-    if (i >= end) return true
+  for (;;) {
+    while (i < end && isSpaceOrTab(source.charCodeAt(i))) i += 1
+    if (i >= end) return i
 
     const ch = source.charCodeAt(i)
     if (ch === 62 /* > */) {
       i += 1
-      while (
-        i < end &&
-        (source.charCodeAt(i) === 32 || source.charCodeAt(i) === 9)
-      ) {
-        i += 1
-      }
       continue
     }
 
     if (ch === 42 /* * */ || ch === 45 /* - */ || ch === 43 /* + */) {
-      i += 1
-      if (
-        i < end &&
-        (source.charCodeAt(i) === 32 || source.charCodeAt(i) === 9)
-      ) {
-        while (
-          i < end &&
-          (source.charCodeAt(i) === 32 || source.charCodeAt(i) === 9)
-        ) {
-          i += 1
-        }
+      if (i + 1 < end && isSpaceOrTab(source.charCodeAt(i + 1))) {
+        i += 2
         continue
       }
-      return false
+      return i
     }
 
     if (ch >= 48 && ch <= 57) {
+      let j = i
       let digits = 0
       while (
-        i < end &&
+        j < end &&
         digits < 9 &&
-        source.charCodeAt(i) >= 48 &&
-        source.charCodeAt(i) <= 57
+        source.charCodeAt(j) >= 48 &&
+        source.charCodeAt(j) <= 57
       ) {
         digits += 1
-        i += 1
+        j += 1
       }
-      const marker = i < end ? source.charCodeAt(i) : 0
-      if (digits > 0 && (marker === 46 /* . */ || marker === 41) /* ) */) {
-        i += 1
-        if (
-          i < end &&
-          (source.charCodeAt(i) === 32 || source.charCodeAt(i) === 9)
-        ) {
-          while (
-            i < end &&
-            (source.charCodeAt(i) === 32 || source.charCodeAt(i) === 9)
-          ) {
-            i += 1
-          }
-          continue
-        }
+      const marker = j < end ? source.charCodeAt(j) : 0
+      if (
+        (marker === 46 /* . */ || marker === 41) /* ) */ &&
+        j + 1 < end &&
+        isSpaceOrTab(source.charCodeAt(j + 1))
+      ) {
+        i = j + 2
+        continue
       }
-      return false
+      return i
     }
 
-    return false
+    return i
   }
 }
 
