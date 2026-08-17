@@ -65,7 +65,7 @@ Codeg bündelt die Sitzungen aller unterstützten Agenten-CLIs in einem durchsuc
 
 ## 🤖 Unterstützte Agenten
 
-Claude Code · Codex · Gemini · OpenClaw · OpenCode · Cline · Hermes · CodeBuddy · Kimi Code · Pi · Grok · Cursor · DeepSeek Harness
+Claude Code · Codex · Gemini · OpenClaw · OpenCode · Cline · Hermes · CodeBuddy · Kimi Code · Pi · Grok · Cursor · DeepSeek Harness · Qoder
 
 Die meisten davon installiert, fixiert und aktualisiert Codeg für dich. Die vollständige Liste, die Laufzeit-Anforderungen jedes Agenten und den Ablageort seiner Sitzungen findest du unter [Unterstützte Agenten](https://docs.codeg.app/guide/supported-agents).
 

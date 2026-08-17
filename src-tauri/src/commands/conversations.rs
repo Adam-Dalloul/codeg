@@ -16,6 +16,7 @@ use crate::parsers::cline::ClineParser;
 use crate::parsers::codebuddy::CodeBuddyParser;
 use crate::parsers::codex::CodexParser;
 use crate::parsers::deepseek::DeepSeekParser;
+use crate::parsers::qoder::QoderParser;
 use crate::parsers::gemini::GeminiParser;
 use crate::parsers::cursor::CursorParser;
 use crate::parsers::grok::GrokParser;
@@ -248,6 +249,7 @@ fn list_conversations_sync(
         (AgentType::Grok, Box::new(GrokParser::new())),
         (AgentType::Cursor, Box::new(CursorParser::new())),
         (AgentType::DeepSeek, Box::new(DeepSeekParser::new())),
+        (AgentType::Qoder, Box::new(QoderParser::new())),
     ];
     // Registered custom agents read back from codeg's own ACP transcripts, so
     // their sessions participate in folder grouping and stats like any other.
@@ -363,6 +365,7 @@ pub async fn get_conversation(
             AgentType::Grok => Box::new(GrokParser::new()),
             AgentType::Cursor => Box::new(CursorParser::new()),
             AgentType::DeepSeek => Box::new(DeepSeekParser::new()),
+            AgentType::Qoder => Box::new(QoderParser::new()),
             // Custom ACP agents have no native store to reverse-engineer;
             // their history is codeg's own ACP transcript.
             AgentType::Custom(_) => Box::new(AcpNativeParser::new(agent_type)),
@@ -1137,6 +1140,7 @@ pub async fn get_folder_conversation_core(
                 AgentType::Grok => Box::new(GrokParser::new()),
                 AgentType::Cursor => Box::new(CursorParser::new()),
                 AgentType::DeepSeek => Box::new(DeepSeekParser::new()),
+                AgentType::Qoder => Box::new(QoderParser::new()),
                 AgentType::Custom(_) => Box::new(AcpNativeParser::new(at)),
             };
             match parser.get_conversation(&eid) {

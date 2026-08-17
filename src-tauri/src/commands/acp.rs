@@ -7671,6 +7671,18 @@ pub(crate) fn skill_storage_spec(agent_type: AgentType) -> Option<SkillStorageSp
             ],
             project_rel_dirs: vec![".dsh/skills", ".agents/skills"],
         }),
+        // Qoder's skill filesystem (verified against the 1.1.23 bundle)
+        // discovers directory bundles only — `<id>/SKILL.md`; it never scans
+        // flat `<id>.md` files, hence Claude's spec shape rather than Codex's.
+        // Its roots: `~/.agents/skills` (home scope) and, per workspace, both
+        // `<project>/skills` and `<workdir>/.agents/skills`. There is NO
+        // qoder-owned home skills dir — the home root is the shared
+        // `.agents` store other agents already use.
+        AgentType::Qoder => Some(SkillStorageSpec {
+            kind: SkillStorageKind::SkillDirectoryOnly,
+            global_dirs: vec![home_dir_or_default().join(".agents").join("skills")],
+            project_rel_dirs: vec!["skills", ".agents/skills"],
+        }),
         // codeg cannot detect where an arbitrary ACP agent loads skills from,
         // so custom agents are gated on the user's own declaration: that the
         // agent reads the shared `.agents/skills` store (the cross-agent
@@ -8564,6 +8576,13 @@ fn agent_env_keys(agent_type: AgentType) -> (&'static str, &'static str, &'stati
             "DEEPSEEK_API_KEY",
             "DEEPSEEK_ACP_MODEL",
         ),
+        // Qoder authenticates as the qoder ACCOUNT (`qoder login` / the IDE's
+        // qoder-browser flow; credentials live in the machine key store, not
+        // the environment) and has no endpoint override, so none of the three
+        // slots is real. They stay as inert `QODER_*` placeholders so the
+        // generic cascade never lands on the OPENAI_* keys; model selection
+        // flows through the ACP `configOptions` selectors instead.
+        AgentType::Qoder => ("QODER_BASE_URL", "QODER_API_KEY", "QODER_MODEL"),
         _ => ("OPENAI_BASE_URL", "OPENAI_API_KEY", "OPENAI_MODEL"),
     }
 }
@@ -8986,6 +9005,12 @@ fn cascade_update_agent_config(
             // as a runtime env var through the generic agent settings panel;
             // it has no codeg-managed config file and does not participate in
             // the model-provider credential cascade.
+        }
+        AgentType::Qoder => {
+            // Qoder authenticates as the qoder account (`qoder login` / the
+            // IDE's qoder-browser flow); the credential lives in qoder's own
+            // machine-key store, not in any env or file codeg manages, so it
+            // does not participate in the model-provider credential cascade.
         }
         AgentType::Custom(_) => {
             // Custom agents are deliberately configuration-free: codeg writes

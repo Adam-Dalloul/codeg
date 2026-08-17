@@ -138,7 +138,7 @@ pub fn current_platform() -> &'static str {
     }
 }
 
-/// The thirteen built-in agents. Excludes user-registered custom agents — use
+/// The fourteen built-in agents. Excludes user-registered custom agents — use
 /// [`all_acp_agents`] for the live set.
 pub fn builtin_acp_agents() -> Vec<AgentType> {
     vec![
@@ -155,10 +155,11 @@ pub fn builtin_acp_agents() -> Vec<AgentType> {
         AgentType::Grok,
         AgentType::Cursor,
         AgentType::DeepSeek,
+        AgentType::Qoder,
     ]
 }
 
-/// Every agent codeg can currently drive: the thirteen built-ins followed by
+/// Every agent codeg can currently drive: the fourteen built-ins followed by
 /// the user's registered custom ACP agents (sorted by id).
 pub fn all_acp_agents() -> Vec<AgentType> {
     let mut agents = builtin_acp_agents();
@@ -181,6 +182,7 @@ pub fn registry_id_for(agent_type: AgentType) -> &'static str {
         AgentType::Grok => "grok-build",
         AgentType::Cursor => "cursor",
         AgentType::DeepSeek => "deepseek-acp",
+        AgentType::Qoder => "qoder-cli",
         // A custom agent's registry id IS its identity.
         AgentType::Custom(id) => id,
     }
@@ -201,6 +203,7 @@ pub fn from_registry_id(id: &str) -> Option<AgentType> {
         "grok-build" => Some(AgentType::Grok),
         "cursor" => Some(AgentType::Cursor),
         "deepseek-acp" => Some(AgentType::DeepSeek),
+        "qoder-cli" => Some(AgentType::Qoder),
         // Only ids the user has actually registered resolve. An unregistered
         // id must stay `None` so the ACP-registry picker still offers it as
         // "addable" rather than treating it as already supported.
@@ -931,6 +934,38 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
                 node_required: Some("22.0.0"),
             },
         },
+        AgentType::Qoder => AcpAgentMeta {
+            agent_type,
+            supports_mcp: true,
+            name: "Qoder",
+            description: "Alibaba's Qoder coding agent CLI (native ACP via --acp)",
+            // `qoder --acp` is the CLI's OWN first-party ACP server (not a
+            // community bridge): verified handshake advertises `loadSession`
+            // plus the full `sessionCapabilities` set (list/resume/fork/close/
+            // delete/additionalDirectories), image + embeddedContext prompts,
+            // and MCP http+sse — so the resume rung and the codeg-mcp
+            // companion work with no adapters in between. Auth is the qoder
+            // account (`qoder login`, or the IDE's qoder-browser flow); there
+            // is no API-key env to manage. Model, mode (default/acceptEdits/
+            // bypassPermissions/plan) and reasoning effort arrive through
+            // standard `configOptions`, so the composer selectors need no
+            // per-agent code. Session logs land as
+            // `$QODER_CONFIG_DIR/projects/<encoded-cwd>/<sessionId>.jsonl`
+            // (default `~/.qoder/...`) in the Claude-Code-style chunk-log
+            // envelope, which `parsers::qoder` reads for history. The sibling
+            // `<sessionId>/state.json` keeps its titles ENCRYPTED (AES-GCM
+            // under the machine key), so the parser derives titles from the
+            // plaintext transcript instead. `engines.node: ">=20"`.
+            distribution: AgentDistribution::Npx {
+                version: "1.1.23",
+                package: "@qoder-ai/qodercli@1.1.23",
+                cmd: "qoder",
+                args: &["--acp"],
+                env: &[],
+                // package.json declares `engines.node: ">=20.0.0"`.
+                node_required: Some("20.0.0"),
+            },
+        },
         // Handled by the early return above; kept so the match stays
         // exhaustive without a catch-all that could swallow a new built-in.
         AgentType::Custom(_) => unreachable!("custom agents resolve via custom_registry"),
@@ -1129,6 +1164,12 @@ mod tests {
             "0.3.0",
             "deepseek-acp@0.3.0",
             Some("22.0.0"),
+        );
+        assert_npx_version(
+            AgentType::Qoder,
+            "1.1.23",
+            "@qoder-ai/qodercli@1.1.23",
+            Some("20.0.0"),
         );
         assert_binary_version(AgentType::OpenCode, "1.18.18", "/releases/download/v1.18.18/");
         // Hermes rides the community npm bridge (upstream retired its PyPI

@@ -65,7 +65,7 @@ It aggregates your sessions from every supported agent CLI into one searchable w
 
 ## 🤖 Supported Agents
 
-Claude Code · Codex · Gemini · OpenClaw · OpenCode · Cline · Hermes · CodeBuddy · Kimi Code · Pi · Grok · Cursor · DeepSeek Harness
+Claude Code · Codex · Gemini · OpenClaw · OpenCode · Cline · Hermes · CodeBuddy · Kimi Code · Pi · Grok · Cursor · DeepSeek Harness · Qoder
 
 Codeg installs, pins, and updates most of them for you. See [Supported Agents](https://docs.codeg.app/guide/supported-agents) for the full roster, each agent's runtime requirements, and where it keeps its sessions on disk.
 

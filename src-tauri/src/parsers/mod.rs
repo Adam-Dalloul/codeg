@@ -13,6 +13,7 @@ pub mod kimi_code;
 pub mod openclaw;
 pub mod opencode;
 pub mod pi;
+pub mod qoder;
 mod summary_cache;
 
 use std::collections::{HashMap, HashSet};
@@ -163,6 +164,17 @@ pub fn external_transcript_sources() -> Vec<ExternalSource> {
             // sibling `.credentials.yaml` under `~/.dsh` is never archived.
             agent: "deepseek",
             root: deepseek::resolve_deepseek_sessions_root(),
+            is_file: false,
+            include_top: None,
+        },
+        ExternalSource {
+            // Qoder keeps one JSONL per session under
+            // `~/.qoder/projects/<encoded-cwd>/<sessionId>.jsonl` (relocatable
+            // via `QODER_CONFIG_DIR`). The resolver already points at the
+            // `projects/` subtree, so the sibling `settings.json` /
+            // `security/` / `cache/` under `~/.qoder` are never archived.
+            agent: "qoder",
+            root: qoder::resolve_qoder_config_dir().join("projects"),
             is_file: false,
             include_top: None,
         },
