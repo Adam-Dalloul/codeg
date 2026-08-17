@@ -31,15 +31,16 @@ export type HeavyKind = "code" | "math" | "mermaid"
 // when an engine resolves, upgrading the already-rendered fallback in place.
 //
 // Correctness: each engine only *affects* output when its trigger syntax is
-// present (shiki only highlights fenced code; remark-math only transforms `$…$`;
-// mermaid only replaces ```mermaid blocks). Loading exactly when the trigger
-// appears therefore reproduces the eager-plugin output byte-for-byte, save for a
-// one-time pre-load fallback render (plain code / literal `$…$` / mermaid source)
-// that upgrades once the engine arrives. Detection errs LOOSE on purpose — a
-// false positive merely pre-loads an engine that then no-ops, exactly matching
-// the previous always-loaded behavior; a false *negative* would silently drop
-// real rendering, so the math trigger is a superset (`$` OR the pre-normalized
-// `\[` / `\(` delimiters that `normalizeMathDelimiters` maps to `$`).
+// present (shiki only highlights fenced code; remark-math transforms `$$…$$`
+// and ` ```math ` fences — not lone `$…$`; mermaid only replaces ```mermaid
+// blocks). Loading exactly when the trigger appears therefore reproduces the
+// eager-plugin output byte-for-byte, save for a one-time pre-load fallback
+// render (plain code / literal `$…$` / mermaid source) that upgrades once the
+// engine arrives. Detection errs LOOSE on purpose — a false positive merely
+// pre-loads an engine that then no-ops, exactly matching the previous
+// always-loaded behavior; a false *negative* would silently drop real
+// rendering. The math trigger is `$$` / `\(`/`\[` / a `math` fence, never a
+// lone `$` (currency and `$HOME` / `$1` are prose).
 
 const loaded: {
   code?: CodePlugin
@@ -110,7 +111,12 @@ function ensure(kind: HeavyKind): void {
   } else if (kind === "math") {
     import("@streamdown/math")
       .then((mod) => {
-        loaded.math = mod.createMathPlugin({ singleDollarTextMath: true })
+        // `$x$` is deliberately literal. That reverts b23f6a5a ("enable
+        // inline math formula rendering with single dollar signs"): `$VAR`,
+        // `$1`, and `$9.99` show up in agent prose far more than `$x$`,
+        // and `false` is @streamdown/math's own default. Inline math still
+        // works via `$$x$$` (stays inline in a paragraph) and `\(...\)`.
+        loaded.math = mod.createMathPlugin({ singleDollarTextMath: false })
       })
       .catch(() => {})
       .finally(settle)
@@ -165,11 +171,16 @@ export function detectHeavyPlugins(text: string): HeavyPluginNeeds {
   return {
     // Any fenced or indented block may want syntax highlighting.
     code: hasFence || hasIndentedCode,
-    // `$` is remark-math's only delimiter; `normalizeMathDelimiters` rewrites
-    // `\[…\]` / `\(…\)` to `$$…$$` / `$…$`, but a caller may detect on the raw
-    // pre-normalized text, so treat those escapes as math triggers too. No such
-    // token ⇒ remark-math is a no-op ⇒ katex is not needed.
-    math: text.includes("$") || text.includes("\\[") || text.includes("\\("),
+    // After `singleDollarTextMath: false`, a lone `$` can never produce math.
+    // `normalizeMathDelimiters` rewrites `\[…\]` / `\(...\)` to `$$…$$`.
+    // rehype-katex also renders ` ```math ` fences with no `$` anywhere, so
+    // those have to stay a trigger. Callers may detect on raw pre-normalized
+    // text, so `\(` / `\[` count too.
+    math:
+      text.includes("$$") ||
+      text.includes("\\[") ||
+      text.includes("\\(") ||
+      /(?:```|~~~)[^\S\r\n]*math\b/i.test(text),
     // A ```mermaid (or ~~~mermaid) fence is the only thing the diagram engine
     // renders.
     mermaid: /(?:```|~~~)[^\S\r\n]*mermaid\b/i.test(text),
