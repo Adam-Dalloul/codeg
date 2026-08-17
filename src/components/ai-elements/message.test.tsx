@@ -48,6 +48,8 @@ describe("MessageResponse", () => {
 })
 
 describe("normalizeMathDelimiters", () => {
+  const Z = "\u200b"
+
   it("normalizes \\[...\\] to $$...$$", () => {
     expect(normalizeMathDelimiters("\\[ x^2 \\]")).toBe("$$ x^2 $$")
   })
@@ -63,60 +65,95 @@ describe("normalizeMathDelimiters", () => {
     expect(normalizeMathDelimiters(text)).toBe(text)
   })
 
-  it("pads multi-line \\(...\\) at the start of a block so $$ is not a flow fence", () => {
-    expect(normalizeMathDelimiters("\\(a\nb\\)")).toBe("\u200b$$a\nb$$")
-    expect(normalizeMathDelimiters("\\(a\nb\n\\)")).toBe("\u200b$$a\nb$$\n")
+  it("leaves a single-line formula unpadded", () => {
+    expect(normalizeMathDelimiters("Also \\(x\\).")).toBe("Also $$x$$.")
   })
 
-  it("moves a prefix-only closer line after $$ so it cannot fence", () => {
+  it("pads a multi-line closer so it cannot open a flow fence", () => {
+    // The closing pad sits INSIDE the formula, where KaTeX ignores it, so it
+    // is emitted unconditionally rather than trying to decide whether the
+    // last line is container prefix or TeX.
+    expect(normalizeMathDelimiters("\\(a\nb\\)")).toBe(`${Z}$$a\nb${Z}$$`)
+    expect(normalizeMathDelimiters("\\(a\nb\n\\)")).toBe(`${Z}$$a\nb\n${Z}$$`)
     expect(normalizeMathDelimiters("> \\(a\n> b\n> \\)")).toBe(
-      "> \u200b$$a\n> b$$\n> "
-    )
-    expect(normalizeMathDelimiters("- Note:\n  \\(a\n  b\n  \\) holds.")).toBe(
-      "- Note:\n  \u200b$$a\n  b$$\n   holds."
+      `> ${Z}$$a\n> b\n> ${Z}$$`
     )
   })
 
-  it("treats +, indent, extra marker spaces, and list continuation as fence prefixes", () => {
-    expect(normalizeMathDelimiters("+ \\(a\n  b\\)")).toBe("+ \u200b$$a\n  b$$")
-    expect(normalizeMathDelimiters(" \\(a\nb\\)")).toBe(" \u200b$$a\nb$$")
-    expect(normalizeMathDelimiters("   \\(a\nb\\)")).toBe("   \u200b$$a\nb$$")
+  it("pads a multi-line opener only at block content start", () => {
+    expect(normalizeMathDelimiters("text \\(a\nb\\) tail")).toBe(
+      `text $$a\nb${Z}$$ tail`
+    )
+    expect(normalizeMathDelimiters("+ \\(a\n  b\\)")).toBe(
+      `+ ${Z}$$a\n  b${Z}$$`
+    )
+    expect(normalizeMathDelimiters(" \\(a\nb\\)")).toBe(` ${Z}$$a\nb${Z}$$`)
+    expect(normalizeMathDelimiters("   \\(a\nb\\)")).toBe(`   ${Z}$$a\nb${Z}$$`)
     expect(normalizeMathDelimiters("-  \\(a\n   b\\)")).toBe(
-      "-  \u200b$$a\n   b$$"
+      `-  ${Z}$$a\n   b${Z}$$`
     )
     expect(normalizeMathDelimiters(">  \\(a\n>  b\\)")).toBe(
-      ">  \u200b$$a\n>  b$$"
+      `>  ${Z}$$a\n>  b${Z}$$`
+    )
+  })
+
+  it("pads a container prefix wider than three columns", () => {
+    expect(normalizeMathDelimiters("10. Note\n    \\(a\n    b\\)")).toBe(
+      `10. Note\n    ${Z}$$a\n    b${Z}$$`
     )
     expect(
-      normalizeMathDelimiters("- Note that\n  \\(a + b\n  = c\\) holds.")
-    ).toBe("- Note that\n  \u200b$$a + b\n  = c$$ holds.")
+      normalizeMathDelimiters("- outer\n  - inner\n    \\(a\n    b\\)")
+    ).toBe(`- outer\n  - inner\n    ${Z}$$a\n    b${Z}$$`)
   })
 
-  it("canonicalizes CR / CRLF before offset logic", () => {
-    // After LF fold, trailing newlines peel so the closer is not alone.
-    expect(normalizeMathDelimiters("\\(a\r\n\\)")).toBe("$$a$$\n")
-    expect(normalizeMathDelimiters("\\(a\rb\\)")).toBe("\u200b$$a\nb$$")
-  })
-
-  it("prefix scan stays linear on a deep failed prefix", () => {
-    const text = `${"> ".repeat(40)}x \\(a\nb\\)`
-    const start = performance.now()
-    const out = normalizeMathDelimiters(text)
-    expect(performance.now() - start).toBeLessThan(50)
-    expect(out).toContain("$$a\nb$$")
-    expect(out.startsWith("\u200b")).toBe(false)
-  })
-
-  it("does not pad mid-paragraph multi-line \\(...\\)", () => {
-    expect(normalizeMathDelimiters("text \\(a\nb\\) tail")).toBe(
-      "text $$a\nb$$ tail"
+  it("never removes formula text, whatever the closing line looks like", () => {
+    // Each of these closing lines is ambiguous from the line alone — a list
+    // marker, a tab-indented `>`, a `>` outside any blockquote. Padding
+    // instead of classifying keeps them all.
+    expect(normalizeMathDelimiters("Before \\(a\n2. \\) after")).toBe(
+      `Before $$a\n2. ${Z}$$ after`
     )
+    expect(normalizeMathDelimiters("> \\(a\n\t> \\) after")).toBe(
+      `> ${Z}$$a\n\t> ${Z}$$ after`
+    )
+    expect(normalizeMathDelimiters("\\(a\n> \\)")).toBe(`${Z}$$a\n> ${Z}$$`)
   })
 
   it("does not collapse newlines inside \\(...\\) (TeX % comments)", () => {
     expect(normalizeMathDelimiters("\\(a % comment\nb + c\\)")).toBe(
-      "\u200b$$a % comment\nb + c$$"
+      `${Z}$$a % comment\nb + c${Z}$$`
     )
+  })
+
+  it("canonicalizes CR / CRLF outside code", () => {
+    expect(normalizeMathDelimiters("\\(a\r\n\\)")).toBe(`${Z}$$a\n${Z}$$`)
+    expect(normalizeMathDelimiters("\\(a\rb\\)")).toBe(`${Z}$$a\nb${Z}$$`)
+    expect(normalizeMathDelimiters("\\(a\r\nb\\)")).toBe(`${Z}$$a\nb${Z}$$`)
+  })
+
+  it("masks inline code before folding line endings", () => {
+    // The inline-code pattern tolerates a bare CR. Folding first would
+    // un-mask this span and rewrite the delimiters inside it.
+    const text = "`\\(a\rb\\)`"
+    expect(normalizeMathDelimiters(text)).toBe(text)
+  })
+
+  it("scans container prefixes in one pass, without backtracking", () => {
+    // The predecessor regex was exponential here: ~910ms at 26 markers.
+    // Compare scaling rather than wall-clock, so a loaded machine cannot
+    // flake this — a quadratic scan blows the ratio long before any budget.
+    const run = (n: number) => {
+      const text = `${"> ".repeat(n)}x \\(a\nb\\)`
+      const start = performance.now()
+      const out = normalizeMathDelimiters(text)
+      expect(out).toContain("$$a\nb")
+      expect(out.startsWith(Z)).toBe(false)
+      return performance.now() - start
+    }
+    run(200) // warm up, so the ratio below is not measuring first-call JIT
+    const small = Math.max(run(200), 0.05)
+    const large = run(4000)
+    expect(large / small).toBeLessThan(20 * 5)
   })
 
   it("preserves inline and fenced code blocks", () => {

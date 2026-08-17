@@ -94,6 +94,82 @@ function makeSafeCode(code: CodePlugin): CodePlugin {
   }
 }
 
+/**
+ * Zero-width space `normalizeMathDelimiters` puts in front of a `$$` that
+ * would otherwise start a line's block content and open a math FLOW fence.
+ *
+ * The pad in front of a CLOSING `$$` necessarily lands inside the formula, and
+ * KaTeX does not ignore it: it lexes as a `textord`, which changes spacing
+ * around a terminal operator or punctuation (`a+` stays `mbin` and gains
+ * 0.2222em) and warns about unrecognized Unicode. Its whole job is to survive
+ * micromark's block tokenizer, so it is removed once the tree exists — after
+ * remark-math has built the math nodes, before rehype-katex reads them.
+ */
+export const MATH_FENCE_PAD = "​"
+
+export type MdastNodeLike = {
+  type: string
+  value?: unknown
+  data?: { hChildren?: unknown }
+  children?: unknown
+}
+
+/**
+ * Remove the fence pad from every math node in `tree`. Exported so the
+ * KaTeX-equivalence regression can drive the real implementation.
+ */
+export function stripMathFencePad(node: MdastNodeLike): void {
+  if (node.type === "inlineMath" || node.type === "math") {
+    if (typeof node.value === "string" && node.value.endsWith(MATH_FENCE_PAD)) {
+      node.value = node.value.slice(0, -MATH_FENCE_PAD.length)
+    }
+    // `mdast-util-math` pre-renders the value into `data.hChildren`, and that
+    // is what `rehype-katex` actually reads.
+    const hChildren = node.data?.hChildren
+    if (Array.isArray(hChildren)) {
+      for (const child of hChildren as MdastNodeLike[]) {
+        if (
+          child?.type === "text" &&
+          typeof child.value === "string" &&
+          child.value.endsWith(MATH_FENCE_PAD)
+        ) {
+          child.value = child.value.slice(0, -MATH_FENCE_PAD.length)
+        }
+      }
+    }
+    return
+  }
+  if (Array.isArray(node.children)) {
+    for (const child of node.children as MdastNodeLike[]) {
+      stripMathFencePad(child)
+    }
+  }
+}
+
+/**
+ * Wrap the math plugin so its remark half also strips the fence pad. Doing it
+ * here rather than in each consumer's `remarkPlugins` keeps the pad's producer
+ * and its consumer paired, and covers every caller of `useStreamdownPlugins`.
+ */
+function makeFencePadStripped(math: MathPlugin): MathPlugin {
+  const declared = math.remarkPlugin
+  const [plugin, options] = (
+    Array.isArray(declared) ? declared : [declared, undefined]
+  ) as [(...args: unknown[]) => unknown, unknown]
+  function remarkMathWithoutFencePad(this: unknown) {
+    // remark-math only registers micromark/mdast extensions and returns no
+    // transformer, but chain whatever it does return rather than assume.
+    const inner = plugin.call(this, options)
+    return (tree: MdastNodeLike, file: unknown) => {
+      if (typeof inner === "function") {
+        ;(inner as (tree: unknown, file: unknown) => void)(tree, file)
+      }
+      stripMathFencePad(tree)
+    }
+  }
+  return { ...math, remarkPlugin: remarkMathWithoutFencePad } as MathPlugin
+}
+
 function ensure(kind: HeavyKind): void {
   if (loaded[kind] || inflight.has(kind)) return
   inflight.add(kind)
@@ -116,7 +192,9 @@ function ensure(kind: HeavyKind): void {
         // `$1`, and `$9.99` show up in agent prose far more than `$x$`,
         // and `false` is @streamdown/math's own default. Inline math still
         // works via `$$x$$` (stays inline in a paragraph) and `\(...\)`.
-        loaded.math = mod.createMathPlugin({ singleDollarTextMath: false })
+        loaded.math = makeFencePadStripped(
+          mod.createMathPlugin({ singleDollarTextMath: false })
+        )
       })
       .catch(() => {})
       .finally(settle)
