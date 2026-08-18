@@ -485,13 +485,26 @@ describe("groupGoalRuns", () => {
   it("settles an unfinished goal run when not streaming", () => {
     // codex leaves a `/goal` active without a closing update_goal, so a stopped
     // turn or a reloaded conversation must NOT shimmer the capsule forever.
+    // Trailing prose is lifted out so the collapsed chip does not hide it.
     const out = groupGoalRuns([poll("create_goal"), text], false)
 
-    expect(out).toHaveLength(1)
+    expect(out.map((p) => p.type)).toEqual(["goal-run", "text"])
     const goalRun = goalRunOf(out[0])
     expect(goalRun.end).toBeNull()
-    expect(goalRun.items).toEqual([text])
+    expect(goalRun.items).toEqual([])
     expect(goalRun.isRunning).toBe(false)
+    expect(out[1]).toEqual(text)
+  })
+
+  it("lifts trailing prose out of a settled unfinished goal after tools", () => {
+    const out = groupGoalRuns(
+      [poll("create_goal"), poll("exec_command"), text],
+      false
+    )
+
+    expect(out.map((p) => p.type)).toEqual(["goal-run", "text"])
+    expect(goalRunOf(out[0]).items.map((p) => p.type)).toEqual(["tool-call"])
+    expect(out[1]).toEqual(text)
   })
 
   it("does not mutate a reopened unfinished goal run when closing across turns", () => {
@@ -553,8 +566,10 @@ describe("groupGoalRuns", () => {
 
     const out = groupGoalRuns([firstRun, repeatedRun, nextText])
 
-    expect(out).toHaveLength(1)
-    expect(goalRunOf(out[0]).items).toEqual([firstText, nextText])
+    expect(out.map((p) => p.type)).toEqual(["goal-run", "text", "text"])
+    expect(goalRunOf(out[0]).items).toEqual([])
+    expect(out[1]).toEqual(firstText)
+    expect(out[2]).toEqual(nextText)
   })
 
   it("closes an active cross-turn goal when the next turn already has a completed goal run", () => {

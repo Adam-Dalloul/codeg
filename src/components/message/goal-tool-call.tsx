@@ -225,7 +225,9 @@ function GoalCard({
     Boolean(startPart.errorText) ||
     endPart?.state === "output-error" ||
     Boolean(endPart?.errorText)
-  const [bodyOpen, setBodyOpen] = useState(isError)
+  const [bodyOpen, setBodyOpen] = useState(
+    isError || (isRunning && items.length > 0)
+  )
   const goal = useMemo(
     () => parseGoal(startPart, endPart),
     [startPart, endPart]

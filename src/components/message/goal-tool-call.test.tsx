@@ -85,11 +85,12 @@ describe("GoalToolCallPart", () => {
     expect(runningTitle).toHaveClass("text-transparent")
     expect(screen.queryByText("Goal active")).not.toBeInTheDocument()
     expect(button.querySelectorAll("svg")).toHaveLength(1)
-    expect(screen.queryByText("Reading README.md")).not.toBeInTheDocument()
+    // A live goal with process text starts open so the work is visible.
+    expect(screen.getByText("Reading README.md")).toBeInTheDocument()
 
     fireEvent.click(screen.getByRole("button"))
 
-    expect(screen.getByText("Reading README.md")).toBeInTheDocument()
+    expect(screen.queryByText("Reading README.md")).not.toBeInTheDocument()
   })
 
   it("shows active status for wrapper-prefixed create_goal names", () => {

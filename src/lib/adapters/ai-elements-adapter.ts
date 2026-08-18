@@ -1565,7 +1565,27 @@ function mergeGoalObjectiveHints(
  * reloaded goal capsule spins forever. `isStreaming` gates that: an unfinished
  * run flushes with `isRunning: isStreaming`, so it settles (static) once the
  * turn stops or on history reload, and shimmers only while live.
+ *
+ * The Goal card starts collapsed, so a settled run must not keep the turn's
+ * trailing prose inside the chip. After the last non-text item (or when the
+ * body is only text), lift those text parts out so a reload still shows the
+ * final answer under the chip. While the turn is live the prose stays in the
+ * card; the card opens itself while running.
  */
+function splitTrailingTextParts(items: AdaptedContentPart[]): {
+  body: AdaptedContentPart[]
+  trailing: AdaptedContentPart[]
+} {
+  let end = items.length
+  while (end > 0 && items[end - 1]?.type === "text") {
+    end -= 1
+  }
+  if (end === items.length) {
+    return { body: items, trailing: [] }
+  }
+  return { body: items.slice(0, end), trailing: items.slice(end) }
+}
+
 export function groupGoalRuns(
   parts: AdaptedContentPart[],
   isStreaming: boolean = false
@@ -1592,17 +1612,44 @@ export function groupGoalRuns(
     return Boolean(objective && completedGoalObjectives.has(objective))
   }
 
-  const flushActive = () => {
-    if (!active) return
+  const pushGoalRun = (
+    start: AdaptedToolCallPart,
+    end: AdaptedToolCallPart | null,
+    items: AdaptedContentPart[],
+    isRunning: boolean
+  ) => {
+    // Keep live prose inside the running card (it opens while in flight).
+    // Once the turn settles, lift trailing text so a collapsed chip on
+    // reload does not hide the answer.
+    // Only lift when the run never closed. A completed update_goal already
+    // leaves later prose as siblings; mid-run notes stay in that card.
+    const shouldLiftTrailing = !isRunning && end === null
+    if (!shouldLiftTrailing) {
+      result.push({
+        type: "goal-run",
+        start,
+        end,
+        items: [...items],
+        isRunning,
+      })
+      return
+    }
+    const { body, trailing } = splitTrailingTextParts(items)
     result.push({
       type: "goal-run",
-      start: active.start,
+      start,
       end: null,
-      items: [...active.items],
-      // Unfinished run: shimmer only while the turn is live. A stopped or
-      // reloaded goal (codex never emits a closing update_goal) settles static.
-      isRunning: isStreaming,
+      items: body,
+      isRunning: false,
     })
+    result.push(...trailing)
+  }
+
+  const flushActive = () => {
+    if (!active) return
+    // Unfinished run: shimmer only while the turn is live. A stopped or
+    // reloaded goal (codex never emits a closing update_goal) settles static.
+    pushGoalRun(active.start, null, active.items, isStreaming)
     active = null
   }
 
@@ -1619,10 +1666,7 @@ export function groupGoalRuns(
         } else if (part.end === null) {
           active = { start: part.start, items: [...part.items] }
         } else {
-          result.push({
-            ...part,
-            items: [...part.items],
-          })
+          pushGoalRun(part.start, part.end, part.items, part.isRunning)
           rememberCompletedGoal(part.start, part.end)
         }
         continue
@@ -1637,13 +1681,12 @@ export function groupGoalRuns(
       if (part.end === null) {
         active.items.push(...part.items)
       } else {
-        result.push({
-          type: "goal-run",
-          start: active.start,
-          end: part.end,
-          items: [...active.items, ...part.items],
-          isRunning: part.isRunning,
-        })
+        pushGoalRun(
+          active.start,
+          part.end,
+          [...active.items, ...part.items],
+          part.isRunning
+        )
         rememberCompletedGoal(active.start, part.end)
         active = null
       }
@@ -1664,13 +1707,7 @@ export function groupGoalRuns(
     }
 
     if (active && isGoalEndPart(part)) {
-      result.push({
-        type: "goal-run",
-        start: active.start,
-        end: part,
-        items: [...active.items],
-        isRunning: isRunningToolCall(part),
-      })
+      pushGoalRun(active.start, part, active.items, isRunningToolCall(part))
       rememberCompletedGoal(active.start, part)
       active = null
       continue
