@@ -2694,6 +2694,7 @@
         "slashCommands": "슬래시 명령",
         "slashSearchPlaceholder": "명령 검색...",
         "slashSearchEmpty": "일치하는 명령이 없습니다",
+        "slashLoading": "명령을 불러오는 중…",
         "experts": "전문가",
         "office": "일상 업무",
         "research": "과학 연구",

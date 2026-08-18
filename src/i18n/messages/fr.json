@@ -2694,6 +2694,7 @@
         "slashCommands": "Commandes slash",
         "slashSearchPlaceholder": "Rechercher des commandes...",
         "slashSearchEmpty": "Aucune commande correspondante",
+        "slashLoading": "Chargement des commandes…",
         "experts": "Experts",
         "office": "Bureautique",
         "research": "Recherche",

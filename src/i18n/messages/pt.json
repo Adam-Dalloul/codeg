@@ -2694,6 +2694,7 @@
         "slashCommands": "Comandos de barra",
         "slashSearchPlaceholder": "Buscar comandos...",
         "slashSearchEmpty": "Nenhum comando correspondente",
+        "slashLoading": "Carregando comandos…",
         "experts": "Especialistas",
         "office": "Escritório",
         "research": "Pesquisa",

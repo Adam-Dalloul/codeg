@@ -2694,6 +2694,7 @@
         "slashCommands": "斜線命令",
         "slashSearchPlaceholder": "搜尋命令...",
         "slashSearchEmpty": "沒有符合的指令",
+        "slashLoading": "正在載入指令…",
         "experts": "專家",
         "office": "日常辦公",
         "research": "科學研究",
