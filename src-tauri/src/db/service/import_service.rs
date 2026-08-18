@@ -325,10 +325,14 @@ async fn refresh_existing(
 /// the sync costs one index build plus one UPDATE per row that genuinely
 /// drifted, with no per-session SELECT.
 ///
-/// `rows` is matched, not `items`, so historical duplicate rows sharing an
-/// `(agent_type, external_id)` (the pair has no unique index) all converge.
-/// A row error is logged and skipped: a best-effort refresh must never fail the
-/// scan it rides along with.
+/// `rows` is matched, not `items`, so every row carrying an `external_id` is
+/// visited directly rather than looked up per session. (An earlier version of
+/// this comment claimed the pair had no unique index and that duplicate rows
+/// therefore had to converge — both are wrong: the init migration creates
+/// `idx_conversation_external_agent` UNIQUE over `(external_id, agent_type)`,
+/// so duplicates cannot exist. The iteration shape is unchanged; only the
+/// stated reason was.) A row error is logged and skipped: a best-effort refresh
+/// must never fail the scan it rides along with.
 pub(crate) async fn sync_imported_sessions(
     conn: &DatabaseConnection,
     rows: &[conversation::Model],
