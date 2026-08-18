@@ -43,7 +43,6 @@ import {
   openRemoteWorkspace,
 } from "@/lib/remote-workspace"
 import type { RemoteWorkspaceConnection } from "@/lib/types"
-import { cn } from "@/lib/utils"
 import { CloneDialog } from "./clone-dialog"
 import { RemoteWorkspaceManageDialog } from "./remote-workspace-manage-dialog"
 import { WorkspaceFolderDialog } from "./workspace-folder-dialog"
@@ -76,7 +75,7 @@ export function QuickActionsDropdown() {
   const { setOpen: setSearchOpen } = useSearchDialog()
   const { unseenFailures } = useAutomationsView()
   const { attentionCount } = useTasksView()
-  const { routeId, setRoute } = useWorkbenchRoute()
+  const { setRoute } = useWorkbenchRoute()
 
   const [folderDialogOpen, setFolderDialogOpen] = useState(false)
   const [cloneOpen, setCloneOpen] = useState(false)
@@ -236,11 +235,12 @@ export function QuickActionsDropdown() {
           <DropdownMenuSeparator />
           <DropdownMenuLabel>{t("groups.automation")}</DropdownMenuLabel>
           {/* Both rows carry the same badges as their sidebar twins: failures
-              are destructive-tinted, tasks waiting on the user are not. */}
-          <DropdownMenuItem
-            onSelect={() => setRoute("automations")}
-            className={cn(routeId === "automations" && "bg-accent/60")}
-          >
+              are destructive-tinted, tasks waiting on the user are not. They
+              deliberately do *not* mark the current route the way the sidebar
+              rows do — this is a launcher, not a nav list, and every other row
+              in it is stateless, so a tinted row here reads as hover/focus
+              rather than "you are here". */}
+          <DropdownMenuItem onSelect={() => setRoute("automations")}>
             <Zap />
             <span className="min-w-0 flex-1 truncate">
               {tSidebar("automations")}
@@ -251,10 +251,7 @@ export function QuickActionsDropdown() {
               </span>
             )}
           </DropdownMenuItem>
-          <DropdownMenuItem
-            onSelect={() => setRoute("tasks")}
-            className={cn(routeId === "tasks" && "bg-accent/60")}
-          >
+          <DropdownMenuItem onSelect={() => setRoute("tasks")}>
             <ListTodo />
             <span className="min-w-0 flex-1 truncate">{tSidebar("tasks")}</span>
             {attentionCount > 0 && (
