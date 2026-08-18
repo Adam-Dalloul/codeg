@@ -3920,7 +3920,10 @@ mod tests {
         // ...and S1 is still indexed, under the title the user recognises, so
         // it remains visible and reopenable from the sidebar.
         let listed = crate::commands::conversations::list_all_conversations_core(
-            &db.conn, None, None, None, None, None, false,
+            &db.conn,
+            &EventEmitter::Noop,
+            &crate::chat_channel::manager::ChatChannelManager::new(),
+            crate::commands::conversations::ListAllConversationsOptions::default(),
         )
         .await
         .expect("list");
@@ -5946,7 +5949,10 @@ mod tests {
             "fork must report the row that actually holds S1"
         );
         let listed = crate::commands::conversations::list_all_conversations_core(
-            &db.conn, None, None, None, None, None, false,
+            &db.conn,
+            &EventEmitter::Noop,
+            &crate::chat_channel::manager::ChatChannelManager::new(),
+            crate::commands::conversations::ListAllConversationsOptions::default(),
         )
         .await
         .unwrap();

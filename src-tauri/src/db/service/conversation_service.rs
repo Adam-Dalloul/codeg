@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use chrono::Utc;
 use sea_orm::{
     ActiveModelTrait, ActiveValue::NotSet, ColumnTrait, DatabaseConnection, EntityTrait,
@@ -70,7 +72,10 @@ pub async fn create_with_delegation(
     } else {
         ConversationKind::Regular
     };
-    create_inner(conn, folder_id, agent_type, title, git_branch, delegation, kind).await
+    create_inner(
+        conn, folder_id, agent_type, title, git_branch, delegation, kind,
+    )
+    .await
 }
 
 async fn create_inner(
@@ -277,6 +282,144 @@ pub async fn retitle_if_unchanged(
         .exec(conn)
         .await?;
     Ok(res.rows_affected > 0)
+}
+
+/// Conditionally adopt one title discovered from Codex's session index.
+///
+/// Every field used to select the candidate is re-checked in the UPDATE, plus
+/// the title observed by the candidate read. This prevents a delayed refresh
+/// from writing an index title after the row was re-pointed, deleted, manually
+/// renamed, moved into a deleted folder, or refreshed by another task.
+///
+/// `kind` is deliberately absent: it is written once at insert and never
+/// updated, so the candidate query's filter cannot go stale between the two.
+async fn refresh_codex_auto_title_candidate(
+    conn: &DatabaseConnection,
+    candidate: &conversation::Model,
+    title: &str,
+) -> Result<bool, DbError> {
+    use sea_orm::sea_query::Expr;
+
+    let title = title.trim();
+    let Some(external_id) = candidate.external_id.as_deref() else {
+        return Ok(false);
+    };
+    if title.is_empty() || candidate.title.as_deref() == Some(title) {
+        return Ok(false);
+    }
+
+    let old_title = match candidate.title.as_deref() {
+        Some(old_title) => conversation::Column::Title.eq(old_title),
+        None => conversation::Column::Title.is_null(),
+    };
+    let res = conversation::Entity::update_many()
+        .col_expr(conversation::Column::Title, Expr::value(title))
+        .filter(conversation::Column::Id.eq(candidate.id))
+        .filter(conversation::Column::AgentType.eq(AgentType::Codex.as_wire().into_owned()))
+        .filter(conversation::Column::ExternalId.eq(external_id))
+        .filter(conversation::Column::DeletedAt.is_null())
+        .filter(conversation::Column::TitleLocked.eq(false))
+        .filter(
+            conversation::Column::FolderId.in_subquery(
+                sea_orm::sea_query::Query::select()
+                    .column(folder::Column::Id)
+                    .from(folder::Entity)
+                    .and_where(folder::Column::DeletedAt.is_null())
+                    .to_owned(),
+            ),
+        )
+        .filter(old_title)
+        .exec(conn)
+        .await?;
+    Ok(res.rows_affected > 0)
+}
+
+/// Refresh every live, unlocked Codex conversation whose external session id
+/// has a title in `titles`. Candidate selection is limited to indexed session
+/// ids and chunked below SQLite's bound-variable limit. Each UPDATE atomically
+/// re-checks the complete candidate identity via
+/// [`refresh_codex_auto_title_candidate`]. Converged rows issue no UPDATE and
+/// title refreshes never bump `updated_at`. This is a best-effort reconciliation:
+/// a failed chunk or row is logged and skipped while successful row ids are
+/// retained for downstream notifications.
+///
+/// Candidate scope mirrors [`list_all`]'s own visibility rules — a live folder
+/// and `kind != 'loop'` — because every refreshed id is broadcast as a sidebar
+/// upsert. Refreshing a row this query would never return would push a row the
+/// list deliberately hides into every client's sidebar until its next refetch.
+///
+/// Each candidate keeps its OWN autocommit UPDATE rather than sharing one
+/// transaction per chunk: the guarantee callers rely on is that a row that
+/// failed (or lost its CAS) never holds back the rows that succeeded, and a
+/// chunk-wide transaction would roll those back together.
+pub(crate) async fn refresh_codex_auto_titles(
+    conn: &DatabaseConnection,
+    titles: &HashMap<String, String>,
+) -> Vec<i32> {
+    if titles.is_empty() {
+        return Vec::new();
+    }
+
+    const SQLITE_TITLE_QUERY_CHUNK_SIZE: usize = 500;
+    let external_ids: Vec<String> = titles
+        .iter()
+        .filter(|(_, title)| !title.trim().is_empty())
+        .map(|(external_id, _)| external_id.clone())
+        .collect();
+    let mut refreshed = Vec::new();
+
+    for external_id_chunk in external_ids.chunks(SQLITE_TITLE_QUERY_CHUNK_SIZE) {
+        let candidates = match conversation::Entity::find()
+            .filter(conversation::Column::AgentType.eq(AgentType::Codex.as_wire().into_owned()))
+            .filter(conversation::Column::ExternalId.is_in(external_id_chunk.iter().cloned()))
+            .filter(conversation::Column::DeletedAt.is_null())
+            .filter(conversation::Column::TitleLocked.eq(false))
+            .filter(conversation::Column::Kind.ne(ConversationKind::Loop))
+            .filter(
+                conversation::Column::FolderId.in_subquery(
+                    sea_orm::sea_query::Query::select()
+                        .column(folder::Column::Id)
+                        .from(folder::Entity)
+                        .and_where(folder::Column::DeletedAt.is_null())
+                        .to_owned(),
+                ),
+            )
+            .order_by_asc(conversation::Column::Id)
+            .all(conn)
+            .await
+        {
+            Ok(candidates) => candidates,
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    session_count = external_id_chunk.len(),
+                    "failed to select Codex title refresh candidates; skipping chunk"
+                );
+                continue;
+            }
+        };
+
+        for candidate in candidates {
+            let Some(external_id) = candidate.external_id.as_deref() else {
+                continue;
+            };
+            let Some(title) = titles.get(external_id) else {
+                continue;
+            };
+            match refresh_codex_auto_title_candidate(conn, &candidate, title).await {
+                Ok(true) => refreshed.push(candidate.id),
+                Ok(false) => {}
+                Err(error) => tracing::warn!(
+                    error = %error,
+                    conversation_id = candidate.id,
+                    external_id,
+                    "failed to refresh Codex title candidate; skipping row"
+                ),
+            }
+        }
+    }
+
+    refreshed
 }
 
 /// Adopt an imported conversation's newest activity from its agent-side
@@ -1059,9 +1202,15 @@ mod tests {
     async fn list_children_orders_newest_first() {
         let db = fresh_in_memory_db().await;
         let folder = seed_folder(&db, "/tmp/codeg-list-children-order").await;
-        let parent = create(&db.conn, folder, AgentType::ClaudeCode, Some("P".into()), None)
-            .await
-            .expect("parent");
+        let parent = create(
+            &db.conn,
+            folder,
+            AgentType::ClaudeCode,
+            Some("P".into()),
+            None,
+        )
+        .await
+        .expect("parent");
         // Two children created oldest → newest under the same parent.
         let first = create_with_delegation(
             &db.conn,
@@ -1160,7 +1309,9 @@ mod tests {
         let folder = seed_folder(&db, "/tmp/codeg-child-count-deleted").await;
         let (parent, child) = seed_parent_with_child(&db.conn, folder).await;
 
-        soft_delete(&db.conn, child).await.expect("soft delete child");
+        soft_delete(&db.conn, child)
+            .await
+            .expect("soft delete child");
 
         // A removed sub-session must not keep the parent's chevron alive: the
         // aggregate filters deleted_at IS NULL, matching list_children.
@@ -1178,9 +1329,15 @@ mod tests {
     async fn update_pin_sets_and_clears_without_bumping_updated_at() {
         let db = fresh_in_memory_db().await;
         let folder = seed_folder(&db, "/tmp/codeg-update-pin").await;
-        let conv = create(&db.conn, folder, AgentType::ClaudeCode, Some("c".into()), None)
-            .await
-            .expect("create");
+        let conv = create(
+            &db.conn,
+            folder,
+            AgentType::ClaudeCode,
+            Some("c".into()),
+            None,
+        )
+        .await
+        .expect("create");
 
         // Freshly created rows are unpinned, and the summary projection carries
         // the field through (conv_to_summary mapping).
@@ -1195,7 +1352,10 @@ mod tests {
         // preference, not activity).
         update_pin(&db.conn, conv.id, true).await.expect("pin");
         let pinned = get_by_id(&db.conn, conv.id).await.expect("get pinned");
-        assert!(pinned.pinned_at.is_some(), "pinned_at must be set after pin");
+        assert!(
+            pinned.pinned_at.is_some(),
+            "pinned_at must be set after pin"
+        );
         assert_eq!(
             pinned.updated_at, updated_at_before,
             "pinning must not bump updated_at"
@@ -1233,11 +1393,20 @@ mod tests {
     async fn create_leaves_title_unlocked() {
         let db = fresh_in_memory_db().await;
         let folder = seed_folder(&db, "/tmp/codeg-title-unlocked").await;
-        let row = create(&db.conn, folder, AgentType::ClaudeCode, Some("hi".into()), None)
-            .await
-            .expect("create");
+        let row = create(
+            &db.conn,
+            folder,
+            AgentType::ClaudeCode,
+            Some("hi".into()),
+            None,
+        )
+        .await
+        .expect("create");
         let summary = get_by_id(&db.conn, row.id).await.expect("get");
-        assert!(!summary.title_locked, "new conversation must start unlocked");
+        assert!(
+            !summary.title_locked,
+            "new conversation must start unlocked"
+        );
     }
 
     #[tokio::test]
@@ -1896,9 +2065,15 @@ mod tests {
     async fn retitle_if_unchanged_follows_the_owner_rename() {
         let db = fresh_in_memory_db().await;
         let folder = seed_folder(&db, "/tmp/codeg-retitle-follow").await;
-        let row = create(&db.conn, folder, AgentType::ClaudeCode, Some("old".into()), None)
-            .await
-            .expect("create");
+        let row = create(
+            &db.conn,
+            folder,
+            AgentType::ClaudeCode,
+            Some("old".into()),
+            None,
+        )
+        .await
+        .expect("create");
         let before = row.updated_at;
         lock_title(&db.conn, row.id).await.expect("lock");
 
@@ -1923,9 +2098,15 @@ mod tests {
     async fn retitle_if_unchanged_refuses_after_a_manual_rename() {
         let db = fresh_in_memory_db().await;
         let folder = seed_folder(&db, "/tmp/codeg-retitle-refuse").await;
-        let row = create(&db.conn, folder, AgentType::ClaudeCode, Some("old".into()), None)
-            .await
-            .expect("create");
+        let row = create(
+            &db.conn,
+            folder,
+            AgentType::ClaudeCode,
+            Some("old".into()),
+            None,
+        )
+        .await
+        .expect("create");
         update_title(&db.conn, row.id, "User pick".into())
             .await
             .expect("rename");
@@ -1942,9 +2123,15 @@ mod tests {
     async fn retitle_if_unchanged_skips_empty_and_identical() {
         let db = fresh_in_memory_db().await;
         let folder = seed_folder(&db, "/tmp/codeg-retitle-skip").await;
-        let row = create(&db.conn, folder, AgentType::ClaudeCode, Some("same".into()), None)
-            .await
-            .expect("create");
+        let row = create(
+            &db.conn,
+            folder,
+            AgentType::ClaudeCode,
+            Some("same".into()),
+            None,
+        )
+        .await
+        .expect("create");
 
         assert!(
             !retitle_if_unchanged(&db.conn, row.id, "same", "same")
@@ -1960,6 +2147,455 @@ mod tests {
         );
         let summary = get_by_id(&db.conn, row.id).await.expect("get");
         assert_eq!(summary.title.as_deref(), Some("same"));
+    }
+
+    #[tokio::test]
+    async fn refresh_codex_auto_titles_converges_without_bumping_updated_at() {
+        let db = fresh_in_memory_db().await;
+        let folder = seed_folder(&db, "/tmp/codeg-codex-index-title").await;
+        let row = create(
+            &db.conn,
+            folder,
+            AgentType::Codex,
+            Some("Makefile 文件的作用".into()),
+            None,
+        )
+        .await
+        .expect("create");
+        bind_external_id(&db.conn, row.id, "codex-session-1", &[])
+            .await
+            .expect("set external id");
+        let before = get_by_id(&db.conn, row.id).await.expect("get before");
+        let titles = HashMap::from([(
+            "codex-session-1".to_string(),
+            "解释 Makefile 文件作用".to_string(),
+        )]);
+
+        assert_eq!(
+            refresh_codex_auto_titles(&db.conn, &titles).await,
+            vec![row.id]
+        );
+        let refreshed = get_by_id(&db.conn, row.id).await.expect("get refreshed");
+        assert_eq!(refreshed.title.as_deref(), Some("解释 Makefile 文件作用"));
+        assert_eq!(
+            refreshed.updated_at, before.updated_at,
+            "index title refresh must not count as conversation activity"
+        );
+
+        assert_eq!(
+            refresh_codex_auto_titles(&db.conn, &titles).await,
+            Vec::<i32>::new(),
+            "a converged title map must issue no UPDATE"
+        );
+    }
+
+    #[tokio::test]
+    async fn refresh_codex_auto_titles_keeps_partial_successes_after_row_failure() {
+        use sea_orm::{ConnectionTrait, DbBackend, Statement};
+
+        let db = fresh_in_memory_db().await;
+        let folder = seed_folder(&db, "/tmp/codeg-codex-index-partial-failure").await;
+        let successful = create(
+            &db.conn,
+            folder,
+            AgentType::Codex,
+            Some("old success".into()),
+            None,
+        )
+        .await
+        .expect("create successful candidate");
+        bind_external_id(&db.conn, successful.id, "session-success", &[])
+            .await
+            .expect("set successful external id");
+        let failing = create(
+            &db.conn,
+            folder,
+            AgentType::Codex,
+            Some("old failure".into()),
+            None,
+        )
+        .await
+        .expect("create failing candidate");
+        bind_external_id(&db.conn, failing.id, "session-failure", &[])
+            .await
+            .expect("set failing external id");
+        db.conn
+            .execute(Statement::from_string(
+                DbBackend::Sqlite,
+                format!(
+                    r#"CREATE TRIGGER fail_second_codex_title_sync
+                       BEFORE UPDATE OF title ON conversation
+                       WHEN OLD.id = {}
+                       BEGIN
+                         SELECT RAISE(FAIL, 'injected partial title sync failure');
+                       END"#,
+                    failing.id
+                ),
+            ))
+            .await
+            .expect("install title failure trigger");
+        let titles = HashMap::from([
+            ("session-success".to_string(), "new success".to_string()),
+            ("session-failure".to_string(), "new failure".to_string()),
+        ]);
+
+        let refreshed = refresh_codex_auto_titles(&db.conn, &titles).await;
+
+        assert_eq!(refreshed, vec![successful.id]);
+        assert_eq!(
+            get_by_id(&db.conn, successful.id)
+                .await
+                .expect("get successful row")
+                .title
+                .as_deref(),
+            Some("new success")
+        );
+        assert_eq!(
+            get_by_id(&db.conn, failing.id)
+                .await
+                .expect("get failing row")
+                .title
+                .as_deref(),
+            Some("old failure")
+        );
+    }
+
+    #[tokio::test]
+    async fn refresh_codex_auto_title_candidate_rechecks_external_id_at_write_time() {
+        let db = fresh_in_memory_db().await;
+        let folder = seed_folder(&db, "/tmp/codeg-codex-index-race").await;
+        let row = create(
+            &db.conn,
+            folder,
+            AgentType::Codex,
+            Some("old title".into()),
+            None,
+        )
+        .await
+        .expect("create");
+        bind_external_id(&db.conn, row.id, "session-before", &[])
+            .await
+            .expect("set initial external id");
+        let stale_candidate = conversation::Entity::find_by_id(row.id)
+            .one(&db.conn)
+            .await
+            .expect("query candidate")
+            .expect("candidate exists");
+
+        // In-place re-point: this test is about the CAS seeing a changed
+        // `external_id`, not about session preservation, so it uses the alias
+        // rewrite rather than `bind_external_id` (which would additionally
+        // split `session-before` onto a preserving row and put a second
+        // candidate-shaped row in front of the assertions below).
+        renormalize_external_id_alias(
+            &db.conn,
+            row.id,
+            Some("session-before"),
+            "session-after".into(),
+        )
+        .await
+        .expect("re-point conversation");
+        let wrote = refresh_codex_auto_title_candidate(
+            &db.conn,
+            &stale_candidate,
+            "title for session-before",
+        )
+        .await
+        .expect("conditional refresh");
+
+        assert!(!wrote, "a stale candidate must not update a re-pointed row");
+        let current = get_by_id(&db.conn, row.id).await.expect("read current row");
+        assert_eq!(current.external_id.as_deref(), Some("session-after"));
+        assert_eq!(current.title.as_deref(), Some("old title"));
+    }
+
+    #[tokio::test]
+    async fn refresh_codex_auto_title_candidate_rechecks_original_title_at_write_time() {
+        let db = fresh_in_memory_db().await;
+        let folder = seed_folder(&db, "/tmp/codeg-codex-index-title-race").await;
+        let row = create(
+            &db.conn,
+            folder,
+            AgentType::Codex,
+            Some("candidate title".into()),
+            None,
+        )
+        .await
+        .expect("create");
+        bind_external_id(&db.conn, row.id, "session-title-race", &[])
+            .await
+            .expect("set external id");
+        let stale_candidate = conversation::Entity::find_by_id(row.id)
+            .one(&db.conn)
+            .await
+            .expect("query candidate")
+            .expect("candidate exists");
+
+        refresh_auto_title(&db.conn, row.id, "newer automatic title".into())
+            .await
+            .expect("apply concurrent automatic title");
+        let wrote = refresh_codex_auto_title_candidate(
+            &db.conn,
+            &stale_candidate,
+            "stale session index title",
+        )
+        .await
+        .expect("conditional refresh");
+
+        assert!(!wrote, "a stale candidate must not overwrite a newer title");
+        let current = get_by_id(&db.conn, row.id).await.expect("read current row");
+        assert_eq!(current.title.as_deref(), Some("newer automatic title"));
+    }
+
+    #[tokio::test]
+    async fn refresh_codex_auto_title_candidate_rechecks_deleted_at_at_write_time() {
+        let db = fresh_in_memory_db().await;
+        let folder = seed_folder(&db, "/tmp/codeg-codex-index-delete-race").await;
+        let row = create(
+            &db.conn,
+            folder,
+            AgentType::Codex,
+            Some("candidate title".into()),
+            None,
+        )
+        .await
+        .expect("create");
+        bind_external_id(&db.conn, row.id, "session-delete-race", &[])
+            .await
+            .expect("set external id");
+        let stale_candidate = conversation::Entity::find_by_id(row.id)
+            .one(&db.conn)
+            .await
+            .expect("query candidate")
+            .expect("candidate exists");
+
+        soft_delete(&db.conn, row.id)
+            .await
+            .expect("concurrently delete candidate");
+        let wrote = refresh_codex_auto_title_candidate(
+            &db.conn,
+            &stale_candidate,
+            "stale session index title",
+        )
+        .await
+        .expect("conditional refresh");
+
+        assert!(!wrote, "a stale candidate must not update a deleted row");
+        let current = conversation::Entity::find_by_id(row.id)
+            .one(&db.conn)
+            .await
+            .expect("read current row")
+            .expect("soft-deleted row remains persisted");
+        assert!(current.deleted_at.is_some());
+        assert_eq!(current.title.as_deref(), Some("candidate title"));
+    }
+
+    #[tokio::test]
+    async fn refresh_codex_auto_title_candidate_rechecks_title_lock_at_write_time() {
+        let db = fresh_in_memory_db().await;
+        let folder = seed_folder(&db, "/tmp/codeg-codex-index-lock-race").await;
+        let row = create(
+            &db.conn,
+            folder,
+            AgentType::Codex,
+            Some("same manual title".into()),
+            None,
+        )
+        .await
+        .expect("create");
+        bind_external_id(&db.conn, row.id, "session-lock-race", &[])
+            .await
+            .expect("set external id");
+        let stale_candidate = conversation::Entity::find_by_id(row.id)
+            .one(&db.conn)
+            .await
+            .expect("query candidate")
+            .expect("candidate exists");
+
+        update_title(&db.conn, row.id, "same manual title".into())
+            .await
+            .expect("lock title without changing its value");
+        let wrote = refresh_codex_auto_title_candidate(
+            &db.conn,
+            &stale_candidate,
+            "stale session index title",
+        )
+        .await
+        .expect("conditional refresh");
+
+        assert!(
+            !wrote,
+            "a stale candidate must not overwrite a locked title"
+        );
+        let current = get_by_id(&db.conn, row.id).await.expect("read current row");
+        assert!(current.title_locked);
+        assert_eq!(current.title.as_deref(), Some("same manual title"));
+    }
+
+    #[tokio::test]
+    async fn refresh_codex_auto_title_candidate_rechecks_folder_deletion_at_write_time() {
+        let db = fresh_in_memory_db().await;
+        let folder = seed_folder(&db, "/tmp/codeg-codex-index-folder-race").await;
+        let row = create(
+            &db.conn,
+            folder,
+            AgentType::Codex,
+            Some("old title".into()),
+            None,
+        )
+        .await
+        .expect("create");
+        bind_external_id(&db.conn, row.id, "session-folder-race", &[])
+            .await
+            .expect("set external id");
+        let stale_candidate = conversation::Entity::find_by_id(row.id)
+            .one(&db.conn)
+            .await
+            .expect("query candidate")
+            .expect("candidate exists");
+
+        crate::db::service::folder_service::soft_delete_folder(&db.conn, folder)
+            .await
+            .expect("soft delete folder");
+        let wrote =
+            refresh_codex_auto_title_candidate(&db.conn, &stale_candidate, "index title").await;
+
+        assert!(
+            !wrote.expect("conditional refresh"),
+            "a row whose folder was deleted mid-refresh must not be rewritten (and so must not be broadcast)"
+        );
+        let current = get_by_id(&db.conn, row.id).await.expect("read current row");
+        assert_eq!(current.title.as_deref(), Some("old title"));
+    }
+
+    #[tokio::test]
+    async fn refresh_codex_auto_title_candidate_adopts_a_title_over_null() {
+        let db = fresh_in_memory_db().await;
+        let folder = seed_folder(&db, "/tmp/codeg-codex-index-null-title").await;
+        let row = create(&db.conn, folder, AgentType::Codex, None, None)
+            .await
+            .expect("create");
+        bind_external_id(&db.conn, row.id, "session-null-title", &[])
+            .await
+            .expect("set external id");
+        let candidate = conversation::Entity::find_by_id(row.id)
+            .one(&db.conn)
+            .await
+            .expect("query candidate")
+            .expect("candidate exists");
+        assert!(candidate.title.is_none(), "fixture must start titleless");
+
+        assert!(
+            refresh_codex_auto_title_candidate(&db.conn, &candidate, "first Codex title")
+                .await
+                .expect("conditional refresh"),
+            "the IS NULL branch of the observed-title CAS must still write"
+        );
+        assert_eq!(
+            get_by_id(&db.conn, row.id)
+                .await
+                .expect("read current row")
+                .title
+                .as_deref(),
+            Some("first Codex title")
+        );
+
+        // ...and once a title exists, the same stale (title = NULL) candidate
+        // must no longer match.
+        assert!(
+            !refresh_codex_auto_title_candidate(&db.conn, &candidate, "second Codex title")
+                .await
+                .expect("conditional refresh"),
+            "a stale titleless candidate must not clobber the title it just wrote"
+        );
+    }
+
+    #[tokio::test]
+    async fn refresh_codex_auto_titles_skips_rows_the_sidebar_list_hides() {
+        let db = fresh_in_memory_db().await;
+        let live_folder = seed_folder(&db, "/tmp/codeg-codex-index-visible").await;
+        let dead_folder = seed_folder(&db, "/tmp/codeg-codex-index-hidden").await;
+
+        let visible = create(
+            &db.conn,
+            live_folder,
+            AgentType::Codex,
+            Some("old visible".into()),
+            None,
+        )
+        .await
+        .expect("create visible");
+        bind_external_id(&db.conn, visible.id, "session-visible", &[])
+            .await
+            .expect("set visible external id");
+
+        let in_dead_folder = create(
+            &db.conn,
+            dead_folder,
+            AgentType::Codex,
+            Some("old hidden".into()),
+            None,
+        )
+        .await
+        .expect("create hidden");
+        bind_external_id(&db.conn, in_dead_folder.id, "session-hidden", &[])
+            .await
+            .expect("set hidden external id");
+        crate::db::service::folder_service::soft_delete_folder(&db.conn, dead_folder)
+            .await
+            .expect("soft delete folder");
+
+        let loop_row = create(
+            &db.conn,
+            live_folder,
+            AgentType::Codex,
+            Some("old loop".into()),
+            None,
+        )
+        .await
+        .expect("create loop row");
+        bind_external_id(&db.conn, loop_row.id, "session-loop", &[])
+            .await
+            .expect("set loop external id");
+        // No public write path mints kind='loop' yet, so flip it directly.
+        let mut active: conversation::ActiveModel = conversation::Entity::find_by_id(loop_row.id)
+            .one(&db.conn)
+            .await
+            .expect("query loop row")
+            .expect("loop row exists")
+            .into();
+        active.kind = Set(ConversationKind::Loop);
+        active.update(&db.conn).await.expect("flip kind");
+
+        let titles = HashMap::from([
+            ("session-visible".to_string(), "new visible".to_string()),
+            ("session-hidden".to_string(), "new hidden".to_string()),
+            ("session-loop".to_string(), "new loop".to_string()),
+        ]);
+
+        let refreshed = refresh_codex_auto_titles(&db.conn, &titles).await;
+
+        assert_eq!(
+            refreshed,
+            vec![visible.id],
+            "only rows `list_all` would return may be refreshed — every refreshed id is broadcast as a sidebar upsert"
+        );
+        assert_eq!(
+            get_by_id(&db.conn, in_dead_folder.id)
+                .await
+                .expect("read hidden row")
+                .title
+                .as_deref(),
+            Some("old hidden")
+        );
+        assert_eq!(
+            get_by_id(&db.conn, loop_row.id)
+                .await
+                .expect("read loop row")
+                .title
+                .as_deref(),
+            Some("old loop")
+        );
     }
 
     #[tokio::test]
