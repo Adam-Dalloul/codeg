@@ -1312,6 +1312,11 @@ fn is_terminal_task_status(status: &str) -> bool {
     matches!(
         status,
         "completed"
+            | "complete"
+            | "success"
+            | "succeeded"
+            | "done"
+            | "exited"
             | "failed"
             | "canceled"
             | "cancelled"
@@ -2406,6 +2411,24 @@ mod tests {
     /// written. That collection must clear the outstanding count (the bug:
     /// only `<task-notification>` used to settle, so these stranded for the
     /// full keep-alive max-age). A non-terminal poll must NOT clear it.
+    #[test]
+    fn taskoutput_success_status_settles_background_shell() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = temp_session(&dir);
+        write_lines(&path, &[&bash_ack("bash1")]);
+        let ledger = PromptLedger::shared();
+        let mut ws = WatchState::with_file_for_test("s1", path.clone());
+        let _ = tick_now(&mut ws, &ledger);
+
+        write_lines(&path, &[&taskoutput_result("bash1", "success")]);
+        let (_, outstanding, ..) =
+            unpack(tick_now(&mut ws, &ledger).expect("settle event"));
+        assert_eq!(
+            outstanding, 0,
+            "TaskOutput status=success must clear the count"
+        );
+    }
+
     #[test]
     fn taskoutput_terminal_status_settles_background_shell() {
         let dir = tempfile::tempdir().unwrap();

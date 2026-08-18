@@ -35,6 +35,7 @@ import {
   acpFindConnectionForConversation,
 } from "@/lib/api"
 import { denormalizeSnapshot } from "@/lib/snapshot-denormalize"
+import { visibleBackgroundOutstanding } from "@/lib/background-activity"
 import { buildDelegationSeedEnvelopes } from "@/lib/delegation-seed"
 import {
   isConnectionBusy,
@@ -297,6 +298,12 @@ export interface ConnectionState {
    * and drives the "background tasks running" chip.
    */
   backgroundOutstanding: number
+  /**
+   * Epoch ms of the last `background_activity` event, or the snapshot's
+   * `background_activity_at`. The chip and idle sweep treat a count whose
+   * heartbeat is older than the keepalive window as already settled.
+   */
+  backgroundActivityAt: number | null
   /**
    * Epoch ms of the most recent `background_activity` event that settled a
    * task, cleared when the follow-up overlay turns start arriving. Bridges
@@ -1312,6 +1319,7 @@ function connectionsReducer(
         configStaleKind: null,
         configStaleDismissed: false,
         backgroundOutstanding: 0,
+        backgroundActivityAt: null,
         backgroundSettleSyncingSince: null,
         outOfTurnToolCalls: null,
       })
@@ -1370,6 +1378,7 @@ function connectionsReducer(
         configStaleKind: null,
         configStaleDismissed: false,
         backgroundOutstanding: 0,
+        backgroundActivityAt: null,
         backgroundSettleSyncingSince: null,
         outOfTurnToolCalls: null,
       })
@@ -1493,6 +1502,9 @@ function connectionsReducer(
         // recovers the pending-background count the one-shot events won't
         // replay for it (sweep exemption + chip).
         backgroundOutstanding: action.patch.backgroundOutstanding,
+        backgroundActivityAt:
+          action.patch.backgroundActivityAt ??
+          (action.patch.backgroundOutstanding > 0 ? Date.now() : null),
         sessionFailures: mergedSessionFailures,
         error: action.patch.lastError,
         lastAppliedSeq: action.patch.eventSeq,
@@ -1611,6 +1623,7 @@ function connectionsReducer(
       next.set(action.contextKey, {
         ...conn,
         backgroundOutstanding: action.outstanding,
+        backgroundActivityAt: Date.now(),
         backgroundSettleSyncingSince: syncingSince,
       })
       return next
@@ -4619,7 +4632,15 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
         // background task with it. The backend watcher settles or max-age
         // expires the accounting and emits `outstanding: 0`, which re-arms
         // this sweep for the connection.
-        if (conn.backgroundOutstanding > 0) continue
+        if (
+          visibleBackgroundOutstanding(
+            conn.backgroundOutstanding,
+            conn.backgroundActivityAt,
+            now
+          ) > 0
+        ) {
+          continue
+        }
         const lastActive = lastActivityRef.current.get(contextKey) ?? 0
         if (now - lastActive > CONNECTION_IDLE_TIMEOUT_MS) {
           toDisconnect.push({

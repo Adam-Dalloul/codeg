@@ -2366,6 +2366,7 @@ describe("HYDRATE_FROM_SNAPSHOT last_error recovery", () => {
       configStale: false,
       configStaleKind: null,
       backgroundOutstanding: 0,
+      backgroundActivityAt: null,
       activeDelegations: [],
       lastErrorDetails: null,
       ...overrides,

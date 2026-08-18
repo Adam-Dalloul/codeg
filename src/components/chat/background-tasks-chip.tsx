@@ -4,6 +4,10 @@ import { useEffect, useState } from "react"
 import { useTranslations } from "next-intl"
 import { Loader2 } from "lucide-react"
 import { useConnection } from "@/hooks/use-connection"
+import {
+  BACKGROUND_KEEPALIVE_MAX_MS,
+  visibleBackgroundOutstanding,
+} from "@/lib/background-activity"
 
 /**
  * How long the "syncing results" state stays visible after a settlement with
@@ -29,13 +33,17 @@ const SETTLE_SYNC_DISPLAY_MS = 30_000
  */
 export function BackgroundTasksChip({ contextKey }: { contextKey: string }) {
   const t = useTranslations("Folder.chat.backgroundTasks")
-  const { backgroundOutstanding, backgroundSettleSyncingSince } =
-    useConnection(contextKey)
+  const {
+    backgroundOutstanding,
+    backgroundActivityAt,
+    backgroundSettleSyncingSince,
+  } = useConnection(contextKey)
 
   // Which arm timestamp has display-expired. Tied to the specific value so a
   // re-arm (another settlement → fresh timestamp) un-expires automatically,
   // and render stays pure (Date.now() only runs inside the effect).
   const [expiredFor, setExpiredFor] = useState<number | null>(null)
+  const [nowMs, setNowMs] = useState(() => Date.now())
   useEffect(() => {
     if (backgroundSettleSyncingSince == null) return
     const remaining =
@@ -49,12 +57,29 @@ export function BackgroundTasksChip({ contextKey }: { contextKey: string }) {
     return () => clearTimeout(timer)
   }, [backgroundSettleSyncingSince])
 
+  useEffect(() => {
+    if (backgroundOutstanding <= 0 || backgroundActivityAt == null) return
+    const remaining =
+      BACKGROUND_KEEPALIVE_MAX_MS - (Date.now() - backgroundActivityAt)
+    const timer = setTimeout(
+      () => setNowMs(Date.now()),
+      Math.max(0, remaining) + 50
+    )
+    return () => clearTimeout(timer)
+  }, [backgroundOutstanding, backgroundActivityAt])
+
+  const visibleOutstanding = visibleBackgroundOutstanding(
+    backgroundOutstanding,
+    backgroundActivityAt,
+    nowMs
+  )
+
   const showSyncing =
-    backgroundOutstanding <= 0 &&
+    visibleOutstanding <= 0 &&
     backgroundSettleSyncingSince != null &&
     expiredFor !== backgroundSettleSyncingSince
 
-  if (backgroundOutstanding <= 0 && !showSyncing) return null
+  if (visibleOutstanding <= 0 && !showSyncing) return null
 
   return (
     <div className="border-b border-sky-500/20 bg-sky-500/10 px-3 py-1.5 text-xs text-sky-700 dark:text-sky-300">
@@ -63,8 +88,8 @@ export function BackgroundTasksChip({ contextKey }: { contextKey: string }) {
             only "still working" signal for Reduce Motion users. */}
         <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" />
         <span className="min-w-0 truncate">
-          {backgroundOutstanding > 0
-            ? t("running", { count: backgroundOutstanding })
+          {visibleOutstanding > 0
+            ? t("running", { count: visibleOutstanding })
             : t("settling")}
         </span>
       </div>

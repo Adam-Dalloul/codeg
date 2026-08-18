@@ -11,6 +11,7 @@
  */
 
 import { extractAppCommandError, toErrorMessage } from "@/lib/app-error"
+import { visibleBackgroundOutstanding } from "@/lib/background-activity"
 
 /**
  * Work that an `acpDisconnect` would DESTROY rather than merely detach from.
@@ -27,8 +28,16 @@ import { extractAppCommandError, toErrorMessage } from "@/lib/app-error"
 export function isConnectionBusy(conn: {
   status: string | null
   backgroundOutstanding: number
+  backgroundActivityAt?: number | null
 }): boolean {
-  return conn.status === "prompting" || conn.backgroundOutstanding > 0
+  return (
+    conn.status === "prompting" ||
+    visibleBackgroundOutstanding(
+      conn.backgroundOutstanding,
+      conn.backgroundActivityAt ?? null,
+      Date.now()
+    ) > 0
+  )
 }
 
 // Must mirror `AcpError::ConnectionNotFound`'s code in

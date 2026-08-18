@@ -2299,6 +2299,10 @@ export interface LiveSessionSnapshot {
    *  mid-episode recover the pending count the one-shot `background_activity`
    *  events won't replay. Absent / omitted when zero. */
   background_outstanding?: number
+  /** RFC3339 time of the last `BackgroundActivity` event. Absent when
+   *  outstanding is zero / on older servers. The chip hides a count whose
+   *  heartbeat is older than the keepalive window. */
+  background_activity_at?: string | null
   /** Whether this agent has the `check_user_feedback` tool (fixed at launch).
    *  The frontend gates the feedback bar on this — the agent's real capability —
    *  not the (possibly later-toggled) global setting. Absent → `false`. */

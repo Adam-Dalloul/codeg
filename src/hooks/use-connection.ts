@@ -89,6 +89,8 @@ export interface UseConnectionReturn {
    *  backend watcher). Drives the "background tasks running" chip; non-zero
    *  also exempts the connection from the idle sweeps. */
   backgroundOutstanding: number
+  /** Epoch ms of the last `background_activity` event / snapshot heartbeat. */
+  backgroundActivityAt: number | null
   /** Epoch ms while a settled background task's follow-up reply is still being
    *  generated/surfaced (cleared when overlay turns arrive). Drives the chip's
    *  transient "syncing results" state so the gap after the running count
@@ -237,6 +239,7 @@ export function useConnection(contextKey: string): UseConnectionReturn {
   const configStaleDismissed = connection?.configStaleDismissed ?? false
   const isDelegationChild = connection?.isDelegationChild ?? false
   const backgroundOutstanding = connection?.backgroundOutstanding ?? 0
+  const backgroundActivityAt = connection?.backgroundActivityAt ?? null
   const backgroundSettleSyncingSince =
     connection?.backgroundSettleSyncingSince ?? null
 
@@ -343,6 +346,7 @@ export function useConnection(contextKey: string): UseConnectionReturn {
       configStaleDismissed,
       isDelegationChild,
       backgroundOutstanding,
+      backgroundActivityAt,
       backgroundSettleSyncingSince,
       connect,
       disconnect,
@@ -383,6 +387,7 @@ export function useConnection(contextKey: string): UseConnectionReturn {
       configStaleDismissed,
       isDelegationChild,
       backgroundOutstanding,
+      backgroundActivityAt,
       backgroundSettleSyncingSince,
       connect,
       disconnect,

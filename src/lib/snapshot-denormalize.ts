@@ -15,6 +15,7 @@ import type {
   SessionUsageUpdateInfo,
   ToolCallState,
 } from "@/lib/types"
+import { parseBackgroundActivityAt } from "@/lib/background-activity"
 
 import type {
   LiveContentBlock as LocalLiveContentBlock,
@@ -72,6 +73,8 @@ export interface SnapshotPatch {
    *  the one-shot `background_activity` events won't replay. `0` when the
    *  server omitted the field. */
   backgroundOutstanding: number
+  /** Epoch ms of `background_activity_at`, or `null` when the server omitted it. */
+  backgroundActivityAt: number | null
   /** AIR typed session failure table carried by the snapshot — resolved
    *  entries and their revision watermarks included. MERGED into the in-memory
    *  table by the monotonic per-id rule (`mergeSessionFailures`) on BOTH
@@ -152,6 +155,9 @@ export function denormalizeSnapshot(wire: LiveSessionSnapshot): SnapshotPatch {
     configStale: wire.config_stale ?? false,
     configStaleKind: wire.config_stale_kind ?? null,
     backgroundOutstanding: wire.background_outstanding ?? 0,
+    backgroundActivityAt: parseBackgroundActivityAt(
+      wire.background_activity_at
+    ),
     sessionFailures: wire.session_failures ?? [],
     lastError,
     lastErrorDetails,

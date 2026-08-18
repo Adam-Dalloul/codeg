@@ -1570,7 +1570,16 @@ impl SessionState {
             pending_user_message: self.pending_user_message.clone(),
             active_delegations: self.active_delegations.values().cloned().collect(),
             feedback: self.feedback.clone(),
-            background_outstanding: self.background_outstanding,
+            background_outstanding: if self.has_active_background_work(Utc::now()) {
+                self.background_outstanding
+            } else {
+                0
+            },
+            background_activity_at: if self.has_active_background_work(Utc::now()) {
+                self.background_activity_at
+            } else {
+                None
+            },
             feedback_tool_available: self.feedback_tool_available,
             native_steering_available: self.native_steering_available,
             modes: self.modes.clone(),
@@ -1659,6 +1668,12 @@ pub struct LiveSessionSnapshot {
     /// common no-background case keeps the wire shape byte-identical.
     #[serde(default, skip_serializing_if = "u32_is_zero")]
     pub background_outstanding: u32,
+    /// Instant of the last `BackgroundActivity` event. Lets a reconnecting
+    /// client hide a hydrated count whose keepalive heartbeat is already dead
+    /// (Grok has no watcher ticker; Claude emits `0` itself after max-age).
+    /// Omitted when outstanding is zero.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub background_activity_at: Option<DateTime<Utc>>,
     /// Whether this agent has the `check_user_feedback` tool (see
     /// `SessionState.feedback_tool_available`). `#[serde(default)]` so older
     /// payloads deserialize to `false`; the frontend gates the feedback bar on
@@ -2144,6 +2159,15 @@ mod tests {
             watermark: 0,
         });
         assert_eq!(s.to_snapshot().background_outstanding, 3);
+        assert!(s.to_snapshot().background_activity_at.is_some());
+
+        // A count whose heartbeat is already past max-age must not come back
+        // to life on attach — the chip would otherwise stay up forever.
+        s.background_activity_at = Some(
+            Utc::now() - background_keepalive_max_age() - chrono::Duration::seconds(1),
+        );
+        assert_eq!(s.to_snapshot().background_outstanding, 0);
+        assert!(s.to_snapshot().background_activity_at.is_none());
         let json = serde_json::to_value(s.to_snapshot()).unwrap();
         assert_eq!(
             json.get("background_outstanding").and_then(|v| v.as_u64()),
