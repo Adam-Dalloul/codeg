@@ -15,7 +15,11 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 
 import type { RichComposerHandle } from "./composer/rich-composer"
 import { serializeDocToText } from "./composer/to-prompt-blocks"
-import { emitAttachFileToSession } from "@/lib/session-attachment-events"
+import {
+  emitAttachFileToSession,
+  emitAttachSessionToSession,
+} from "@/lib/session-attachment-events"
+import type { DbConversationSummary } from "@/lib/types"
 
 // MessageInput holds its RichComposer handle internally and does not forward a
 // ref, so capture that handle through a partial mock that still renders the real
@@ -260,6 +264,113 @@ describe("MessageInput attach-to-chat insertion position", () => {
       expect(serializeDocToText(editor.state.doc)).toContain(link)
     )
     assertBetweenHelloAndWorld(serializeDocToText(editor.state.doc), link)
+  })
+})
+
+// The sidebar's "add to session" drops a session mention — the same reference the
+// `@` panel's Sessions group builds — into the active tab's composer.
+describe("MessageInput session-mention attach", () => {
+  afterEach(() => {
+    cleanup()
+    composerHandle.current = null
+  })
+
+  function summary(id: number, title: string | null): DbConversationSummary {
+    return {
+      id,
+      folder_id: 1,
+      title,
+      title_locked: false,
+      agent_type: "claude_code",
+      status: "pending",
+      kind: "regular",
+      model: null,
+      git_branch: null,
+      external_id: null,
+      message_count: 0,
+      child_count: 0,
+      created_at: "2026-01-01T00:00:00Z",
+      updated_at: "2026-01-01T00:00:00Z",
+      pinned_at: null,
+    }
+  }
+
+  async function mountWithEditor() {
+    renderInput({ attachmentTabId: "tab-1" })
+    await waitFor(
+      () => expect(composerHandle.current?.getEditor()).toBeTruthy(),
+      { timeout: 5000 }
+    )
+    const editor = composerHandle.current?.getEditor()
+    if (!editor) throw new Error("composer editor not mounted")
+    return editor
+  }
+
+  it("drops a session badge at the caret, not the end", async () => {
+    const editor = await mountWithEditor()
+    act(() => {
+      editor.commands.setContent("hello world")
+      editor.commands.setTextSelection(6)
+    })
+    act(() => {
+      emitAttachSessionToSession({
+        tabId: "tab-1",
+        conversation: summary(42, "Fix auth"),
+      })
+    })
+    const link = "[Fix auth](codeg://session/42)"
+    await waitFor(() =>
+      expect(serializeDocToText(editor.state.doc)).toContain(link)
+    )
+    const text = serializeDocToText(editor.state.doc)
+    const at = text.indexOf(link)
+    expect(text.slice(0, at)).toContain("hello")
+    expect(text.slice(at + link.length)).toContain("world")
+  })
+
+  it("falls back to #id for an untitled conversation", async () => {
+    const editor = await mountWithEditor()
+    act(() => {
+      emitAttachSessionToSession({
+        tabId: "tab-1",
+        conversation: summary(7, "   "),
+      })
+    })
+    await waitFor(() =>
+      expect(serializeDocToText(editor.state.doc)).toContain(
+        "[#7](codeg://session/7)"
+      )
+    )
+  })
+
+  it("ignores an event addressed to another tab", async () => {
+    const editor = await mountWithEditor()
+    act(() => {
+      emitAttachSessionToSession({
+        tabId: "other-tab",
+        conversation: summary(42, "Fix auth"),
+      })
+    })
+    expect(serializeDocToText(editor.state.doc)).not.toContain(
+      "codeg://session/42"
+    )
+  })
+
+  it("does not stack a second badge for the same session", async () => {
+    const editor = await mountWithEditor()
+    const conversation = summary(42, "Fix auth")
+    act(() => {
+      emitAttachSessionToSession({ tabId: "tab-1", conversation })
+    })
+    const link = "[Fix auth](codeg://session/42)"
+    await waitFor(() =>
+      expect(serializeDocToText(editor.state.doc)).toContain(link)
+    )
+    act(() => {
+      emitAttachSessionToSession({ tabId: "tab-1", conversation })
+    })
+    const text = serializeDocToText(editor.state.doc)
+    expect(text.indexOf(link)).toBe(text.lastIndexOf(link))
   })
 })
 

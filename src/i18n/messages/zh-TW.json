@@ -1740,6 +1740,7 @@
     "conversationCard": {
       "untitledConversation": "未命名會話",
       "newConversation": "新增會話",
+      "attachToCurrentSession": "添加到會話",
       "rename": "重新命名",
       "status": "狀態",
       "delete": "刪除",

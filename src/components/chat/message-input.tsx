@@ -61,8 +61,10 @@ import type {
 } from "@/lib/types"
 import {
   ATTACH_FILE_TO_SESSION_EVENT,
+  ATTACH_SESSION_TO_SESSION_EVENT,
   APPEND_TEXT_TO_SESSION_EVENT,
   type AttachFileToSessionDetail,
+  type AttachSessionToSessionDetail,
   type AppendTextToSessionDetail,
 } from "@/lib/session-attachment-events"
 import {
@@ -120,6 +122,8 @@ import {
   skillToReference,
 } from "@/components/chat/composer/invocation-reference"
 import { cutSelectionToClipboard } from "@/components/chat/composer/clipboard-actions"
+import { sessionToSuggestion } from "@/components/chat/composer/suggestion/adapters"
+import { editorHasReference } from "@/components/chat/composer/attachment-files"
 import type { ReferenceAttrs } from "@/components/chat/composer/types"
 import type { Editor, JSONContent } from "@tiptap/core"
 import { useReferenceSearch } from "@/components/chat/composer/use-reference-search"
@@ -1035,6 +1039,43 @@ export function MessageInput({
       window.removeEventListener(ATTACH_FILE_TO_SESSION_EVENT, handleAttachFile)
     }
   }, [attach, attachmentTabId])
+
+  // Sidebar "add to session": drop a session mention badge — the very same
+  // reference the `@` panel's Sessions group inserts — at the caret. Deduped by
+  // uri like the file badges, so repeated menu clicks can't stack the same
+  // `codeg://session/<id>` twice; the focus still lands in the composer either
+  // way so the user sees where the badge went.
+  useEffect(() => {
+    if (!attachmentTabId) return
+
+    const handleAttachSession = (event: Event) => {
+      const customEvent = event as CustomEvent<AttachSessionToSessionDetail>
+      if (!customEvent.detail) return
+      if (customEvent.detail.tabId !== attachmentTabId) return
+      const editor = editorRef.current?.getEditor()
+      if (!editor) return
+      const { reference } = sessionToSuggestion(customEvent.detail.conversation)
+      if (
+        reference.uri &&
+        editorHasReference(editor, "session", reference.uri)
+      ) {
+        editor.commands.focus()
+        return
+      }
+      editor.chain().focus().insertReference(reference).insertContent(" ").run()
+    }
+
+    window.addEventListener(
+      ATTACH_SESSION_TO_SESSION_EVENT,
+      handleAttachSession
+    )
+    return () => {
+      window.removeEventListener(
+        ATTACH_SESSION_TO_SESSION_EVENT,
+        handleAttachSession
+      )
+    }
+  }, [attachmentTabId])
 
   useEffect(() => {
     if (!attachmentTabId) return

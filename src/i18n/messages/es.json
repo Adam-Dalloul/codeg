@@ -1740,6 +1740,7 @@
     "conversationCard": {
       "untitledConversation": "Conversación sin título",
       "newConversation": "Nueva conversación",
+      "attachToCurrentSession": "Agregar a la sesión",
       "rename": "Renombrar",
       "status": "Estado",
       "delete": "Eliminar",

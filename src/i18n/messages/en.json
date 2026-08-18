@@ -1740,6 +1740,7 @@
     "conversationCard": {
       "untitledConversation": "Untitled conversation",
       "newConversation": "New Conversation",
+      "attachToCurrentSession": "Add to session",
       "rename": "Rename",
       "status": "Status",
       "delete": "Delete",
