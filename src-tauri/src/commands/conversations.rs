@@ -1653,9 +1653,18 @@ pub(crate) async fn emit_preserved_conversation(
 /// never a stale snapshot captured at spawn time.
 ///
 /// Deliberately NOT capped at N attempts. The loop exits only when the title it
-/// just read equals the one it last sent, so an exit always leaves the provider
-/// holding the current title; any fixed cap reintroduces exactly the bug this
-/// closes (rename → stall → rename → … exhausts the cap and exits stale). It
+/// just read equals the one it last SENT, so the last value it sent is always
+/// the current one; any fixed cap reintroduces exactly the bug this closes
+/// (rename → stall → rename → … exhausts the cap and exits stale).
+///
+/// The guarantee is about what was SENT, not about what the provider ended up
+/// holding. `sync_conversation_title` reports nothing back, so an edit that the
+/// provider rejected still counts as sent and is not retried here — on that
+/// path the thread keeps its old name. That is the intended best-effort
+/// contract, not an oversight: the DB has already converged and is the source
+/// of truth, the channel layer logs the failure, and retrying a provider that
+/// is down would turn a detached task into an unbounded remote-call loop over a
+/// cosmetic thread title. It
 /// cannot spin on its own: an iteration happens only when a NEW title was
 /// observed, so it terminates as soon as renames stop, and each iteration is
 /// rate-limited by one provider round-trip. Two concurrent syncs for the same
