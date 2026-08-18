@@ -1822,6 +1822,16 @@
         "cacheRead": "キャッシュ読み取り",
         "cacheWrite": "キャッシュ書き込み",
         "total": "合計"
+      },
+      "quickActions": {
+        "title": "クイック操作",
+        "groups": {
+          "workspace": "ワークスペース",
+          "sessions": "セッション",
+          "automation": "オートメーションと ToDo",
+          "more": "その他"
+        },
+        "showPet": "ペットを表示"
       }
     },
     "auxPanel": {

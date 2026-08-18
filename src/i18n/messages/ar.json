@@ -1822,6 +1822,16 @@
         "cacheRead": "قراءة الكاش",
         "cacheWrite": "كتابة الكاش",
         "total": "الإجمالي"
+      },
+      "quickActions": {
+        "title": "إجراءات سريعة",
+        "groups": {
+          "workspace": "مساحة العمل",
+          "sessions": "الجلسات",
+          "automation": "الأتمتة والمهام",
+          "more": "المزيد"
+        },
+        "showPet": "إظهار الحيوان الأليف"
       }
     },
     "auxPanel": {

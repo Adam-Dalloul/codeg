@@ -1822,6 +1822,16 @@
         "cacheRead": "Lectura de caché",
         "cacheWrite": "Escritura de caché",
         "total": "Total de tokens"
+      },
+      "quickActions": {
+        "title": "Acciones rápidas",
+        "groups": {
+          "workspace": "Espacio de trabajo",
+          "sessions": "Sesiones",
+          "automation": "Automatización y tareas",
+          "more": "Más"
+        },
+        "showPet": "Mostrar mascota"
       }
     },
     "auxPanel": {

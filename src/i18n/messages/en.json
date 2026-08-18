@@ -1822,6 +1822,16 @@
         "cacheRead": "Cache Read",
         "cacheWrite": "Cache Write",
         "total": "Total"
+      },
+      "quickActions": {
+        "title": "Quick actions",
+        "groups": {
+          "workspace": "Workspace",
+          "sessions": "Sessions",
+          "automation": "Automation & to-dos",
+          "more": "More"
+        },
+        "showPet": "Show pet"
       }
     },
     "auxPanel": {

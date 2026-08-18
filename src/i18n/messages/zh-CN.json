@@ -1822,6 +1822,16 @@
         "cacheRead": "缓存读取",
         "cacheWrite": "缓存写入",
         "total": "总计"
+      },
+      "quickActions": {
+        "title": "快捷操作",
+        "groups": {
+          "workspace": "工作区",
+          "sessions": "会话",
+          "automation": "自动化与待办",
+          "more": "更多"
+        },
+        "showPet": "显示宠物"
       }
     },
     "auxPanel": {

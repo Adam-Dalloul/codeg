@@ -1822,6 +1822,16 @@
         "cacheRead": "캐시 읽기",
         "cacheWrite": "캐시 쓰기",
         "total": "합계"
+      },
+      "quickActions": {
+        "title": "빠른 작업",
+        "groups": {
+          "workspace": "워크스페이스",
+          "sessions": "세션",
+          "automation": "자동화 및 할 일",
+          "more": "기타"
+        },
+        "showPet": "펫 표시"
       }
     },
     "auxPanel": {
