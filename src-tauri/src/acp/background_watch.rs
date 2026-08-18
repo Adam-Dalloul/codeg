@@ -829,6 +829,21 @@ impl WatchState {
                         .and_then(|v| v.as_str())
                         .filter(|s| !s.is_empty())
                     {
+                        // A later BashOutput (or a fast command that already
+                        // exited on the launch result) carries an exit code.
+                        // That IS done — drop the count now, don't wait for a
+                        // TaskOutput poll or the one-hour keepalive.
+                        let exited = tur.get("exitCode").and_then(|v| v.as_i64()).is_some()
+                            || tur.get("exit_code").and_then(|v| v.as_i64()).is_some()
+                            || tur.get("interrupted").and_then(|v| v.as_bool()) == Some(true);
+                        if exited {
+                            if self.tasks.remove(id).is_some() {
+                                self.settled_ids.insert(id.to_string());
+                                tracing::info!(
+                                    "[bg-watch] settled task={id} via background shell exit"
+                                );
+                            }
+                        } else {
                         // Same first-seen rationale as the agent branch above —
                         // doubly important here since a still-running shell is
                         // typically observed via REPEATED `BashOutput`-style
@@ -840,6 +855,7 @@ impl WatchState {
                                 started_at: Instant::now(),
                             }
                         });
+                        }
                         // Deliberately NOT inserted into `current_turn_launched_ids`:
                         // #870 never holds a turn open for a shell (this
                         // module's own top-of-file doc comment — "a hold must
@@ -1379,6 +1395,14 @@ mod tests {
     fn bash_ack(task_id: &str) -> String {
         format!(
             r#"{{"type":"user","timestamp":"2026-07-07T03:46:15.000Z","uuid":"u-bash-{task_id}","message":{{"role":"user","content":[{{"tool_use_id":"toolu_02","type":"tool_result","content":"Command running in background with ID: {task_id}."}}]}},"toolUseResult":{{"stdout":"","stderr":"","interrupted":false,"backgroundTaskId":"{task_id}"}}}}"#
+        )
+    }
+
+    /// A later BashOutput (or a short command that already exited) carrying
+    /// the same `backgroundTaskId` plus an `exitCode`.
+    fn bash_exited(task_id: &str, exit_code: i64) -> String {
+        format!(
+            r#"{{"type":"user","timestamp":"2026-07-07T03:46:40.000Z","uuid":"u-bash-exit-{task_id}","message":{{"role":"user","content":[{{"tool_use_id":"toolu_02b","type":"tool_result","content":"exited {exit_code}"}}]}},"toolUseResult":{{"stdout":"ok","stderr":"","interrupted":false,"backgroundTaskId":"{task_id}","exitCode":{exit_code}}}}}"#
         )
     }
 
@@ -2411,6 +2435,23 @@ mod tests {
     /// written. That collection must clear the outstanding count (the bug:
     /// only `<task-notification>` used to settle, so these stranded for the
     /// full keep-alive max-age). A non-terminal poll must NOT clear it.
+    #[test]
+    fn bash_exit_code_settles_background_shell() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = temp_session(&dir);
+        write_lines(&path, &[&bash_ack("bash1")]);
+        let ledger = PromptLedger::shared();
+        let mut ws = WatchState::with_file_for_test("s1", path.clone());
+        let (_, outstanding, ..) = unpack(tick_now(&mut ws, &ledger).expect("ack event"));
+        assert_eq!(outstanding, 1);
+
+        write_lines(&path, &[&bash_exited("bash1", 0)]);
+        let (_, outstanding, settled, _) =
+            unpack(tick_now(&mut ws, &ledger).expect("settle event"));
+        assert_eq!(outstanding, 0, "exitCode on BashOutput must clear the count");
+        assert!(settled.is_empty());
+    }
+
     #[test]
     fn taskoutput_success_status_settles_background_shell() {
         let dir = tempfile::tempdir().unwrap();

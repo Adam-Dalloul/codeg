@@ -9419,6 +9419,11 @@ struct CodeBuddyLiveState {
     /// the case whose result would otherwise never reach the card live; a
     /// blocking spawn's own completion frame carries the output instead.
     grok_settled_spawn_ids: HashSet<String>,
+    /// Grok `run_terminal_command` / similar tasks that were moved to the
+    /// background (`task_backgrounded`). Removed on `task_completed` so the
+    /// chip leaves as soon as grok says the process exited — same automatic
+    /// settle as Claude's TaskOutput / exitCode path.
+    grok_bg_task_ids: HashSet<String>,
     /// Spawn calls announced in the CURRENT turn — the only ones whose
     /// `subagent_progress` ticks may emit a live `ToolCallUpdate`. Cleared at
     /// every turn start (with the pending queue): a tick for a PRIOR turn's
@@ -9459,6 +9464,18 @@ struct GrokPendingSpawn {
 /// `spawn_subagent` launcher (`_meta["x.ai/tool"].name`). Present on the very
 /// first frame (verified against real captures), unlike `subagent_type` which
 /// rides `rawInput`. Gated on Grok so the namespaced key can't affect others.
+/// Background children (spawned sub-agents whose launch call already settled)
+/// plus backgrounded shell tasks. One number drives the chip for every Grok
+/// source — the bar leaves when this hits zero.
+fn grok_outstanding_count(cb_state: &CodeBuddyLiveState) -> u32 {
+    let children = cb_state
+        .grok_subagent_to_call
+        .values()
+        .filter(|call_id| cb_state.grok_settled_spawn_ids.contains(*call_id))
+        .count();
+    (children + cb_state.grok_bg_task_ids.len()) as u32
+}
+
 fn grok_meta_marks_spawn_subagent(
     agent_type: AgentType,
     meta: Option<&serde_json::Map<String, serde_json::Value>>,
@@ -9805,6 +9822,90 @@ fn map_grok_ext_notification(
     }
 }
 
+/// Grok `run_terminal_command` (and similar) moved to the background.
+/// `task_backgrounded` is the only live pairing of `tool_call_id` ↔ `task_id`;
+/// `task_completed` is the done signal (exit code on `task_snapshot`). The
+/// history parser deliberately does not rewrite the launch card from that
+/// snapshot; the chip still has to drop the moment grok says the process exited.
+fn map_grok_background_task_notification(
+    notification: &UntypedMessage,
+    agent_type: AgentType,
+    cb_state: &mut CodeBuddyLiveState,
+) -> Option<AcpEvent> {
+    if !matches!(agent_type, AgentType::Grok) {
+        return None;
+    }
+    if !GROK_EXT_UPDATE_METHODS.contains(&notification.method()) {
+        return None;
+    }
+    let params = notification.params();
+    let update = params.get("update")?;
+    let session_id = params.get("sessionId").and_then(|v| v.as_str())?;
+    match update.get("sessionUpdate").and_then(|v| v.as_str())? {
+        "task_backgrounded" => {
+            let task_id = update
+                .get("task_id")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())?;
+            cb_state.grok_bg_task_ids.insert(task_id.to_string());
+            Some(AcpEvent::BackgroundActivity {
+                session_id: session_id.to_string(),
+                turns: Vec::new(),
+                outstanding: grok_outstanding_count(cb_state),
+                settled: Vec::new(),
+                watermark: 0,
+            })
+        }
+        "task_completed" => {
+            let snapshot = update.get("task_snapshot");
+            let task_id = snapshot
+                .and_then(|s| s.get("task_id"))
+                .or_else(|| update.get("task_id"))
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())?;
+            cb_state.grok_bg_task_ids.remove(task_id);
+            let status = snapshot
+                .and_then(|s| s.get("exit_code"))
+                .and_then(|v| v.as_i64())
+                .map(|code| {
+                    if code == 0 {
+                        "completed".to_string()
+                    } else {
+                        "failed".to_string()
+                    }
+                })
+                .unwrap_or_else(|| "completed".to_string());
+            Some(AcpEvent::BackgroundActivity {
+                session_id: session_id.to_string(),
+                turns: Vec::new(),
+                outstanding: grok_outstanding_count(cb_state),
+                settled: vec![crate::acp::types::BackgroundSettledInfo {
+                    task_id: task_id.to_string(),
+                    status,
+                    summary: None,
+                    tool_use_id: update
+                        .get("tool_call_id")
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string),
+                    result: snapshot
+                        .and_then(|s| s.get("output"))
+                        .and_then(|v| v.as_str())
+                        .filter(|s| !s.is_empty())
+                        .map(|s| {
+                            crate::parsers::truncate_str(
+                                s,
+                                crate::parsers::claude::BACKGROUND_RESULT_MAX_CHARS,
+                            )
+                        }),
+                    wire_visible: true,
+                }],
+                watermark: 0,
+            })
+        }
+        _ => None,
+    }
+}
+
 /// Map grok's sub-agent lifecycle notifications (`_x.ai/session/update` with
 /// `sessionUpdate: subagent_spawned | subagent_progress | subagent_finished`)
 /// onto live events for the launching `spawn_subagent` Agent card. STATEFUL —
@@ -9866,13 +9967,7 @@ fn map_grok_subagent_notification_inner(
     let subagent_id = update.get("subagent_id").and_then(|v| v.as_str())?;
     // `outstanding` = paired subagents still running whose launch call already
     // settled — i.e. background children codeg would otherwise sweep as idle.
-    let outstanding = |cb_state: &CodeBuddyLiveState| {
-        cb_state
-            .grok_subagent_to_call
-            .values()
-            .filter(|call_id| cb_state.grok_settled_spawn_ids.contains(*call_id))
-            .count() as u32
-    };
+    let outstanding = |cb_state: &CodeBuddyLiveState| grok_outstanding_count(cb_state);
     match update.get("sessionUpdate").and_then(|v| v.as_str())? {
         "subagent_spawned" => {
             // First pending entry whose captured launch `(description,
@@ -10191,6 +10286,10 @@ async fn maybe_emit_ext_notification(
         for event in grok_subagent_events {
             emit_with_state(state, emitter, event).await;
         }
+    } else if let Some(event) =
+        map_grok_background_task_notification(&notification, agent_type, cb_state)
+    {
+        emit_with_state(state, emitter, event).await;
     } else if let Some(event) = map_claude_sdk_ext_notification(&notification)
         .or_else(|| map_grok_ext_notification(&notification, agent_type))
     {
@@ -10600,11 +10699,7 @@ async fn emit_conversation_update(
             {
                 let session_id = state.read().await.external_id.clone();
                 if let Some(session_id) = session_id {
-                    let outstanding = cb_state
-                        .grok_subagent_to_call
-                        .values()
-                        .filter(|call| cb_state.grok_settled_spawn_ids.contains(*call))
-                        .count() as u32;
+                    let outstanding = grok_outstanding_count(cb_state);
                     emit_with_state(
                         state,
                         emitter,
@@ -13045,6 +13140,45 @@ mod tests {
         // Lifecycle over: a duplicate finished no longer routes anywhere.
         assert!(map_grok_subagent_notification(&finished, AgentType::Grok, false, &mut cb)
             .is_empty());
+    }
+
+    #[test]
+    fn map_grok_background_task_leaves_the_chip_when_the_process_exits() {
+        let mut cb = CodeBuddyLiveState::default();
+        let started = grok_subagent_notif(serde_json::json!({
+            "sessionUpdate": "task_backgrounded",
+            "tool_call_id": "call-1",
+            "task_id": "term_x",
+            "command": "pnpm build"
+        }));
+        match map_grok_background_task_notification(&started, AgentType::Grok, &mut cb) {
+            Some(AcpEvent::BackgroundActivity { outstanding, .. }) => {
+                assert_eq!(outstanding, 1);
+            }
+            other => panic!("expected backgrounded activity, got {other:?}"),
+        }
+
+        let finished = grok_subagent_notif(serde_json::json!({
+            "sessionUpdate": "task_completed",
+            "task_snapshot": {
+                "task_id": "term_x",
+                "exit_code": 0,
+                "output": "ok"
+            }
+        }));
+        match map_grok_background_task_notification(&finished, AgentType::Grok, &mut cb) {
+            Some(AcpEvent::BackgroundActivity {
+                outstanding,
+                settled,
+                ..
+            }) => {
+                assert_eq!(outstanding, 0, "task_completed must clear the count");
+                assert_eq!(settled.len(), 1);
+                assert_eq!(settled[0].task_id, "term_x");
+                assert_eq!(settled[0].status, "completed");
+            }
+            other => panic!("expected completed activity, got {other:?}"),
+        }
     }
 
     /// A BLOCKING spawn (call not yet settled when the child finishes) must NOT
