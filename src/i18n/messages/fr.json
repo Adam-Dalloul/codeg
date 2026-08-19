@@ -788,6 +788,24 @@
       "modelsNeedAuth": "Connectez-vous pour charger la liste des modèles.",
       "modelDefaultBadge": "par défaut"
     },
+    "qoder": {
+      "configDescription": "Connectez-vous à Qoder ici. Tout le reste de ce que lit la CLI tient dans un seul fichier — $QODER_CONFIG_DIR/settings.json (par défaut ~/.qoder), partagé avec la CLI qoder — et s'édite tel quel ci-dessous. Le modèle et l'effort de raisonnement ne sont pas ici : Qoder les annonce via ACP, donc les sélecteurs du champ de saisie les décident par session.",
+      "authTitle": "Compte",
+      "authChecking": "Vérification…",
+      "authNotInstalled": "qoder n'est pas installé",
+      "authUnknown": "État indisponible",
+      "authLoggedIn": "Connecté",
+      "authNotLoggedIn": "Non connecté",
+      "loginHint": "Exécutez ceci dans un terminal pour vous connecter avec votre compte Qoder (une fenêtre de navigateur s'ouvre), puis actualisez :",
+      "authMethodLabel": "Méthode d'authentification",
+      "tokenLabel": "Jeton d'accès personnel",
+      "tokenPlaceholder": "pour machines headless / serveurs",
+      "tokenHint": "QODER_PERSONAL_ACCESS_TOKEN — identifiant non interactif pour les machines où la connexion par navigateur ne peut pas s'exécuter. Laissez vide pour utiliser la connexion au compte qoder.",
+      "saveToken": "Enregistrer le jeton",
+      "advancedToggle": "Avancé : settings.json brut",
+      "advancedHint": "Le settings.json complet. L'enregistrement écrit le fichier tel quel — c'est aussi le seul moyen de supprimer une clé.",
+      "saveRawConfig": "Enregistrer le fichier"
+    },
     "deepseek": {
       "configManagement": "Configuration de DeepSeek Harness",
       "configDescription": "Le point de terminaison et la clé sont des variables d'environnement que deepseek-acp lit au démarrage. Le modèle et le niveau de raisonnement sont des sélecteurs par session : ils se choisissent dans le champ de saisie.",
@@ -1235,7 +1253,9 @@
       "piBinaryInstallFailed": "Échec de l'installation de pi",
       "piBinaryUninstalled": "pi désinstallé",
       "piBinaryUninstallFailed": "Échec de la désinstallation de pi",
-      "savePiTrustFailed": "Échec de l'enregistrement de la confiance de l'espace de travail"
+      "savePiTrustFailed": "Échec de l'enregistrement de la confiance de l'espace de travail",
+      "qoderSaved": "Configuration Qoder enregistrée",
+      "saveQoderConfigFailed": "Échec de l'enregistrement de la configuration Qoder"
     },
     "version": {
       "statusLabel": "Statut de version",

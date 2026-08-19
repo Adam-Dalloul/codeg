@@ -788,6 +788,24 @@
       "modelsNeedAuth": "Sign in to load the model list.",
       "modelDefaultBadge": "default"
     },
+    "qoder": {
+      "configDescription": "Sign in to Qoder here. Everything else the CLI reads lives in one file — $QODER_CONFIG_DIR/settings.json (default ~/.qoder), shared with the qoder CLI — and is edited raw below. Model and reasoning effort are not here: Qoder reports them over ACP, so the composer's own selectors own them per session.",
+      "authTitle": "Account",
+      "authChecking": "Checking…",
+      "authNotInstalled": "qoder is not installed",
+      "authUnknown": "Status unavailable",
+      "authLoggedIn": "Signed in",
+      "authNotLoggedIn": "Not signed in",
+      "loginHint": "Run this in a terminal to sign in with your Qoder account (a browser window opens), then hit refresh:",
+      "authMethodLabel": "Auth method",
+      "tokenLabel": "Personal access token",
+      "tokenPlaceholder": "for headless / server machines",
+      "tokenHint": "QODER_PERSONAL_ACCESS_TOKEN — a non-interactive credential for machines where the browser sign-in can't run. Leave empty to use the qoder account login.",
+      "saveToken": "Save token",
+      "advancedToggle": "Advanced: raw settings.json",
+      "advancedHint": "The whole settings.json, written verbatim on save — which is also the only way to delete a key.",
+      "saveRawConfig": "Save file"
+    },
     "deepseek": {
       "configManagement": "DeepSeek Harness Configuration",
       "configDescription": "The endpoint and key are environment variables deepseek-acp reads at launch. Model and reasoning effort are per-session selectors — pick them in the composer.",
@@ -1235,7 +1253,9 @@
       "piBinaryInstallFailed": "Failed to install pi",
       "piBinaryUninstalled": "pi uninstalled",
       "piBinaryUninstallFailed": "Failed to uninstall pi",
-      "savePiTrustFailed": "Failed to save workspace trust"
+      "savePiTrustFailed": "Failed to save workspace trust",
+      "qoderSaved": "Qoder config saved",
+      "saveQoderConfigFailed": "Failed to save Qoder config"
     },
     "version": {
       "statusLabel": "Version Status",
