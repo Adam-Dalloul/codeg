@@ -142,7 +142,16 @@ export function QuickActionsDropdown() {
             title={t("title")}
             aria-label={t("title")}
           >
-            <GamepadDirectional aria-hidden="true" className="h-3.5 w-3.5" />
+            {/* Sized with `size-3.5`, NOT `h-3.5 w-3.5`: the Button base
+                carries `[&_svg:not([class*='size-'])]:size-4`, and that
+                selector's (0,2,1) specificity beats a bare `h-*`/`w-*`
+                (0,1,0) — so the `h-3.5 w-3.5` spelling silently rendered this
+                glyph at 1rem, the largest icon on a bar whose others are
+                0.75–0.875rem. Spelling it `size-` is what opts out of that
+                rule. 0.875rem is also exactly the sidebar's nav-icon size, so
+                atop the bar's `pl-2` this glyph shares their leading edge, not
+                just their rail axis. */}
+            <GamepadDirectional aria-hidden="true" className="size-3.5" />
           </Button>
         </DropdownMenuTrigger>
         {/* `side="top"`: the trigger sits on the window's bottom edge, so the
