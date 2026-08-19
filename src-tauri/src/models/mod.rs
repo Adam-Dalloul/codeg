@@ -49,7 +49,7 @@ pub use work_task::{
     STAGE_PROMPT_ALL,
 };
 #[cfg(feature = "tauri-runtime")]
-pub use system::SystemRenderingSettings;
+pub use system::{SystemAutostartSettings, SystemRenderingSettings};
 pub use system::{
     AvailableTerminalShells, GitCredentials, GitDetectResult, GitHubAccountsSettings,
     GitHubTokenValidation, GitSettings, SystemLanguageSettings, SystemProxySettings,

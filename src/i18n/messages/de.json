@@ -1407,7 +1407,11 @@
   "GeneralSettings": {
     "loading": "Wird geladen...",
     "sectionTitle": "Allgemein",
-    "sectionDescription": "Zentrale Einstellungen für das Standardterminal, die Rendering-Beschleunigung und die Multi-Agent-Delegation.",
+    "sectionDescription": "Zentrale Einstellungen für den Autostart beim Anmelden, das Standardterminal, die Rendering-Beschleunigung und die Multi-Agent-Delegation.",
+    "autostartTitle": "Beim Anmelden starten",
+    "autostartDescription": "Startet codeg automatisch, nachdem Sie sich an diesem Computer angemeldet haben.",
+    "autostartSaveFailed": "Autostart-Einstellungen konnten nicht gespeichert werden: {message}",
+    "autostartUnavailable": "Dieses System hat den Autostart-Eintrag von codeg nicht gemeldet: {message}",
     "terminalTitle": "Standardterminal",
     "terminalDescription": "Wählen Sie die Shell, die beim Öffnen neuer Terminal-Tabs über die Terminalleiste oder den Dateibaum verwendet wird. Agenten nutzen sie ebenfalls, wenn sie codeg um die Ausführung einer vollständigen Befehlszeile bitten.",
     "terminalSystemDefault": "Systemstandard",

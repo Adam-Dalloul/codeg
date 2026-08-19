@@ -2868,6 +2868,13 @@ export interface SystemRenderingSettings {
   disable_hardware_acceleration: boolean
 }
 
+/** "Launch at login". The OS registration is the source of truth, so an update
+ * returns the state the system actually settled on — which can differ from what
+ * was requested (e.g. Windows Task Manager vetoing the Run entry). */
+export interface SystemAutostartSettings {
+  enabled: boolean
+}
+
 // --- Logging ---
 
 export type LogLevel = "off" | "error" | "warn" | "info" | "debug" | "trace"

@@ -1407,7 +1407,11 @@
   "GeneralSettings": {
     "loading": "加载中...",
     "sectionTitle": "常规",
-    "sectionDescription": "集中管理默认终端、渲染加速以及多智能体协同等通用偏好。",
+    "sectionDescription": "集中管理开机自启、默认终端、渲染加速以及多智能体协同等通用偏好。",
+    "autostartTitle": "开机自启",
+    "autostartDescription": "登录这台电脑后自动启动 codeg。",
+    "autostartSaveFailed": "开机自启设置保存失败：{message}",
+    "autostartUnavailable": "无法读取本机的开机自启状态：{message}",
     "terminalTitle": "默认终端",
     "terminalDescription": "选择从终端栏或文件树打开新终端标签页时使用的 Shell。智能体请求 codeg 代为执行整条命令行时也会使用它。",
     "terminalSystemDefault": "系统默认",

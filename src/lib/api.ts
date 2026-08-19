@@ -110,6 +110,7 @@ import type {
   SystemLanguageSettings,
   SystemProxySettings,
   SystemRenderingSettings,
+  SystemAutostartSettings,
   SystemTerminalSettings,
   LogSettings,
   LogSettingsView,
@@ -1566,6 +1567,16 @@ export async function updateSystemRenderingSettings(
   settings: SystemRenderingSettings
 ): Promise<SystemRenderingSettings> {
   return getTransport().call("update_system_rendering_settings", { settings })
+}
+
+export async function getSystemAutostartSettings(): Promise<SystemAutostartSettings> {
+  return getTransport().call("get_system_autostart_settings")
+}
+
+export async function updateSystemAutostartSettings(
+  settings: SystemAutostartSettings
+): Promise<SystemAutostartSettings> {
+  return getTransport().call("update_system_autostart_settings", { settings })
 }
 
 // --- Logging ---

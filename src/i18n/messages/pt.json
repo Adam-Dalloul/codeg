@@ -1407,7 +1407,11 @@
   "GeneralSettings": {
     "loading": "Carregando...",
     "sectionTitle": "Geral",
-    "sectionDescription": "Preferências centralizadas para o terminal padrão, aceleração de renderização e delegação multi-agente.",
+    "sectionDescription": "Preferências centralizadas para o início automático ao fazer login, o terminal padrão, aceleração de renderização e delegação multi-agente.",
+    "autostartTitle": "Iniciar ao fazer login",
+    "autostartDescription": "Abre o codeg automaticamente depois de você entrar neste computador.",
+    "autostartSaveFailed": "Falha ao salvar as configurações de início automático: {message}",
+    "autostartUnavailable": "Este sistema não informou o registro de inicialização do codeg: {message}",
     "terminalTitle": "Terminal padrão",
     "terminalDescription": "Escolha o shell usado ao abrir novas abas de terminal pela barra de terminal ou pela árvore de arquivos. Os agentes também o usam quando pedem ao codeg para executar uma linha de comando inteira.",
     "terminalSystemDefault": "Padrão do sistema",
