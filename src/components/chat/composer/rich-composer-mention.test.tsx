@@ -285,4 +285,112 @@ describe("RichComposer @ mention integration", () => {
     await new Promise((resolve) => setTimeout(resolve, 250))
     expect(screen.queryByTestId("mention-popup")).toBeNull()
   })
+
+  it("triggers on an @ typed straight after CJK text", async () => {
+    // Chinese, Japanese and Korean put no spaces between words, so the space
+    // Tiptap's default `allowedPrefixes` demands never arrives and the panel
+    // used to stay shut for the most natural way to write the mention.
+    const { editor } = await mount()
+    act(() => {
+      editor.commands.insertContent("请看@app")
+    })
+    expect(
+      await screen.findByText("app.ts", {}, { timeout: 5000 })
+    ).toBeTruthy()
+  })
+
+  it("still ignores the @ inside an email address", async () => {
+    // The other half of the prefix rule, unchanged: an ASCII letter before `@`
+    // means the user is typing an address, not a mention.
+    const { editor } = await mount()
+    act(() => {
+      editor.commands.insertContent("me@app")
+    })
+    await new Promise((resolve) => setTimeout(resolve, 250))
+    expect(screen.queryByTestId("mention-popup")).toBeNull()
+  })
+
+  it("keeps the query current through an IME composition, including the committed frame", async () => {
+    // #518. Chromium writes the *committed* character into the DOM before it
+    // fires `compositionend`, so the transaction carrying the final text still
+    // lands with `view.composing === true` — and nothing dispatches afterwards.
+    // A trigger gated on `!composing` therefore never sees the finished query:
+    // the panel goes quiet at the first keystroke of the composition and never
+    // catches up. Walk the frames a Chinese IME actually produces (pinyin →
+    // converted character, all inside one composition) and require the panel to
+    // be showing the committed query's results at the end.
+    const queries: string[] = []
+    const cjkSearch: ReferenceSearch = (query) => {
+      queries.push(query)
+      return [
+        {
+          kind: "file",
+          label: "Files",
+          items:
+            query === "美术"
+              ? [
+                  {
+                    reference: {
+                      refType: "file",
+                      id: "docs/美术资源清单.md",
+                      label: "美术资源清单.md",
+                      uri: "file:///repo/docs/美术资源清单.md",
+                      meta: { fileKind: "file" },
+                    },
+                    detail: "docs/美术资源清单.md",
+                  },
+                ]
+              : [],
+        },
+      ]
+    }
+    const ref = createRef<RichComposerHandle>()
+    render(<RichComposer ref={ref} referenceSearch={cjkSearch} />)
+    await waitFor(() => expect(ref.current?.getEditor()).not.toBeNull(), {
+      timeout: 5000,
+    })
+    const editor = ref.current?.getEditor()
+    if (!editor) throw new Error("editor not mounted")
+
+    const setComposing = (value: boolean) => {
+      Object.defineProperty(editor.view, "composing", {
+        configurable: true,
+        get: () => value,
+      })
+    }
+    // Replace the in-flight composition text with what the IME converted it to,
+    // the way `compositionupdate` does — still mid-composition.
+    const convert = async (raw: string, converted: string) => {
+      const to = editor.state.selection.from
+      await act(async () => {
+        editor
+          .chain()
+          .setTextSelection({ from: to - raw.length, to })
+          .insertContent(converted)
+          .run()
+      })
+    }
+
+    await act(async () => {
+      editor.commands.insertContent("@")
+    })
+    setComposing(true)
+    await act(async () => {
+      editor.commands.insertContent("mei")
+    })
+    await convert("mei", "美")
+    await act(async () => {
+      editor.commands.insertContent("shu")
+    })
+    await convert("shu", "术")
+    // `compositionend` only flips the flag — it dispatches nothing, so the
+    // frame above is the last chance the panel gets.
+    setComposing(false)
+
+    expect(editor.getText()).toBe("@美术")
+    expect(
+      await screen.findByText("美术资源清单.md", {}, { timeout: 5000 })
+    ).toBeTruthy()
+    expect(queries[queries.length - 1]).toBe("美术")
+  })
 })

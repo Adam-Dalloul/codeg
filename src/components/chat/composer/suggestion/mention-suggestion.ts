@@ -1,6 +1,8 @@
 import { Extension } from "@tiptap/core"
 import Suggestion, { type SuggestionProps } from "@tiptap/suggestion"
 
+import { findMentionMatch } from "./mention-match"
+
 /** Live render state the plugin pushes to React while the `@` panel is open. */
 export interface MentionRenderState {
   query: string
@@ -86,6 +88,10 @@ export const MentionSuggestion = Extension.create<MentionSuggestionOptions>({
         // `isImeCompositionKey` recognizes — including the WebKit case where
         // `compositionend` beats the confirming Enter.
         allow: ({ state }) => !state.selection.$from.parent.type.spec.code,
+        // Upstream's own matcher, minus a prefix rule only a space-separated
+        // script can satisfy — see findMentionMatch. (`allowedPrefixes` cannot
+        // express this: the array is joined raw into a character class.)
+        findSuggestionMatch: findMentionMatch,
         render: () => ({
           onStart: (props) => controller.onStart(toRenderState(props)),
           onUpdate: (props) => controller.onUpdate(toRenderState(props)),
