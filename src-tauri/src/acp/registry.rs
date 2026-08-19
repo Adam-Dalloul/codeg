@@ -980,10 +980,11 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             // per-agent code. Session logs land as
             // `$QODER_CONFIG_DIR/projects/<encoded-cwd>/<sessionId>.jsonl`
             // (default `~/.qoder/...`) in the Claude-Code-style chunk-log
-            // envelope, which `parsers::qoder` reads for history. The sibling
-            // `<sessionId>/state.json` keeps its titles ENCRYPTED (AES-GCM
-            // under the machine key), so the parser derives titles from the
-            // plaintext transcript instead. `engines.node: ">=20"`.
+            // envelope, which `parsers::qoder` reads for history — including
+            // the `custom-title` / `ai-title` records that carry the session's
+            // name in plaintext (the sibling `<sessionId>/state.json` keeps its
+            // own copy AES-GCM-encrypted under the machine key, so it is not
+            // the source). `engines.node: ">=20"`.
             distribution: AgentDistribution::Npx {
                 version: "1.1.23",
                 package: "@qoder-ai/qodercli@1.1.23",

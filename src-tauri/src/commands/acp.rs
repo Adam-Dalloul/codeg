@@ -7671,17 +7671,42 @@ pub(crate) fn skill_storage_spec(agent_type: AgentType) -> Option<SkillStorageSp
             ],
             project_rel_dirs: vec![".dsh/skills", ".agents/skills"],
         }),
-        // Qoder's skill filesystem (verified against the 1.1.23 bundle)
-        // discovers directory bundles only — `<id>/SKILL.md`; it never scans
-        // flat `<id>.md` files, hence Claude's spec shape rather than Codex's.
-        // Its roots: `~/.agents/skills` (home scope) and, per workspace, both
-        // `<project>/skills` and `<workdir>/.agents/skills`. There is NO
-        // qoder-owned home skills dir — the home root is the shared
-        // `.agents` store other agents already use.
+        // Qoder discovers directory bundles only — `<id>/SKILL.md`, never flat
+        // `<id>.md` files — hence Claude's spec shape rather than Codex's.
+        //
+        // Roots read verbatim off `SkillCommandHandler.enumerate` in the
+        // qodercli 1.1.23 bundle, which resolves them through
+        // `{projectDir: <workDir>/<projectConfigDirName>, userDir: <globalDir>}`
+        // (both config dir names default to `.qoder`):
+        //
+        //   home       `<globalDir>/skills`            ← relocated by QODER_CONFIG_DIR
+        //   home       `~/.agents/skills`              ← only if loadFromAgentsDirectory
+        //   workspace  `<cwd>/.qoder/skills`
+        //   workspace  `<cwd>/.agents/skills`          ← only if loadFromAgentsDirectory
+        //
+        // Qoder's OWN dirs lead in both scopes because they are the ones it
+        // always scans: the `.agents` pair is gated behind
+        // `loadSkillsFromAgentsDirectory`, which defaults to FALSE. Writing
+        // installs to `.agents` alone (and to a bare `<cwd>/skills`, which
+        // nothing scans) is why this used to install skills the agent never
+        // loaded — while leaving whatever the user already had in
+        // `~/.qoder/skills` invisible to codeg. Both `.agents` roots stay in
+        // the list so a user who did turn the setting on still sees them.
         AgentType::Qoder => Some(SkillStorageSpec {
             kind: SkillStorageKind::SkillDirectoryOnly,
-            global_dirs: vec![home_dir_or_default().join(".agents").join("skills")],
-            project_rel_dirs: vec!["skills", ".agents/skills"],
+            global_dirs: vec![
+                crate::parsers::qoder::resolve_qoder_config_dir().join("skills"),
+                // `getGlobalAgentsDir()` joins `.agents` onto Qoder's CLI HOME,
+                // not the OS home — the shared store moves with
+                // `QODER_CLI_HOME` even though it lives outside the config dir.
+                crate::parsers::qoder::resolve_qoder_home()
+                    .join(".agents")
+                    .join("skills"),
+            ],
+            project_rel_dirs: vec![
+                crate::parsers::qoder::qoder_project_skills_rel_dir(),
+                ".agents/skills",
+            ],
         }),
         // codeg cannot detect where an arbitrary ACP agent loads skills from,
         // so custom agents are gated on the user's own declaration: that the
@@ -8576,13 +8601,21 @@ fn agent_env_keys(agent_type: AgentType) -> (&'static str, &'static str, &'stati
             "DEEPSEEK_API_KEY",
             "DEEPSEEK_ACP_MODEL",
         ),
-        // Qoder authenticates as the qoder ACCOUNT (`qoder login` / the IDE's
-        // qoder-browser flow; credentials live in the machine key store, not
-        // the environment) and has no endpoint override, so none of the three
-        // slots is real. They stay as inert `QODER_*` placeholders so the
-        // generic cascade never lands on the OPENAI_* keys; model selection
-        // flows through the ACP `configOptions` selectors instead.
-        AgentType::Qoder => ("QODER_BASE_URL", "QODER_API_KEY", "QODER_MODEL"),
+        // Qoder's non-interactive credential is `QODER_PERSONAL_ACCESS_TOKEN`
+        // — "设置后自动使用 PAT 认证" in the 1.1.23 package's own README, and the
+        // only way to authenticate a headless/server/Docker install, where the
+        // `qoder login` browser flow cannot run. (An interactive login still
+        // outranks it; the credential itself lives in the machine key store.)
+        // `QODER_MODEL` is real too — the README lists it as the env twin of
+        // `-m/--model`. There is NO endpoint override, so the base-url slot
+        // stays an inert `QODER_BASE_URL` placeholder for the same reason
+        // `CURSOR_MODEL` above is one: it keeps the generic cascade off the
+        // OPENAI_* keys. `QODER_API_KEY` was never a thing Qoder reads.
+        AgentType::Qoder => (
+            "QODER_BASE_URL",
+            "QODER_PERSONAL_ACCESS_TOKEN",
+            "QODER_MODEL",
+        ),
         _ => ("OPENAI_BASE_URL", "OPENAI_API_KEY", "OPENAI_MODEL"),
     }
 }
@@ -9007,10 +9040,11 @@ fn cascade_update_agent_config(
             // the model-provider credential cascade.
         }
         AgentType::Qoder => {
-            // Qoder authenticates as the qoder account (`qoder login` / the
-            // IDE's qoder-browser flow); the credential lives in qoder's own
-            // machine-key store, not in any env or file codeg manages, so it
-            // does not participate in the model-provider credential cascade.
+            // Qoder talks only to Qoder's own service — no endpoint override
+            // and no BYO-provider key — so it stays off the model-provider
+            // credential cascade even though its env slots are real. The PAT
+            // (`QODER_PERSONAL_ACCESS_TOKEN`) is set directly in the agent's
+            // env; there is no codeg-managed config file to reconcile it with.
         }
         AgentType::Custom(_) => {
             // Custom agents are deliberately configuration-free: codeg writes

@@ -1,4 +1,4 @@
-/** The thirteen agents codeg ships hand-written support for. */
+/** The fourteen agents codeg ships hand-written support for. */
 export type BuiltinAgentType =
   | "claude_code"
   | "codex"

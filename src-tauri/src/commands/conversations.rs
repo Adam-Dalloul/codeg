@@ -2381,6 +2381,19 @@ mod tests {
     use super::*;
     use crate::db::test_helpers::{fresh_in_memory_db, seed_folder};
 
+    /// Serializes every test that touches the process-global [`IMPORT_GUARD`].
+    ///
+    /// The harness runs `#[tokio::test]`s on parallel threads of one process, so
+    /// a test that *holds* the guard and a test that *calls* a guard-taking
+    /// import flip each other's expected outcome: the caller sees a spurious
+    /// "already in progress" instead of its real error, and the holder's
+    /// `try_lock().expect(...)` panics. Both are timing-dependent, so the suite
+    /// passes locally and fails on a loaded CI runner.
+    ///
+    /// Always take this *before* `IMPORT_GUARD` (never the reverse) so the two
+    /// locks can't deadlock. Held for the whole test body.
+    static IMPORT_GUARD_SERIALIZER: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
     // ──────────────────────────────────────────────────────────────────────
     // Delegation meta injection for historical reload. Parsers always emit
     // `ContentBlock::ToolUse { meta: None }`; without this helper, a
@@ -4281,6 +4294,9 @@ mod tests {
 
     #[tokio::test]
     async fn import_local_conversations_core_missing_folder_errors() {
+        // Takes IMPORT_GUARD internally — must not overlap a test holding it,
+        // or the guard error masks the not-found error asserted below.
+        let _serialized = IMPORT_GUARD_SERIALIZER.lock().await;
         let db = fresh_in_memory_db().await;
         let err = import_local_conversations_core(
             &db.conn,
@@ -5290,6 +5306,7 @@ mod tests {
 
     #[tokio::test]
     async fn import_selected_sessions_core_rejects_concurrent_and_empty() {
+        let _serialized = IMPORT_GUARD_SERIALIZER.lock().await;
         let db = fresh_in_memory_db().await;
 
         assert!(
@@ -5318,6 +5335,7 @@ mod tests {
         // legacy import racing a batch import could double-insert on a DB with no
         // unique index. With the guard held it is rejected BEFORE the folder
         // lookup, so even a valid folder id surfaces the guard error, not a hit.
+        let _serialized = IMPORT_GUARD_SERIALIZER.lock().await;
         let db = fresh_in_memory_db().await;
         let folder_id = seed_folder(&db, "/tmp/legacy-guard").await;
 
