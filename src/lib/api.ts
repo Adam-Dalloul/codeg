@@ -19,6 +19,12 @@ import type {
   Automation,
   AutomationRun,
   AutomationDraft,
+  ForgeCreateResult,
+  ForgeIssueList,
+  ForgeRemote,
+  ForgeTab,
+  ForgeTaskDraftInput,
+  ForgeTaskLink,
   WorkTask,
   WorkTaskChangedFile,
   WorkTaskConfig,
@@ -1673,6 +1679,15 @@ export async function validateGitHubToken(
   return getTransport().call("validate_github_token", { serverUrl, token })
 }
 
+/** Same answer shape as GitHub's, from `GET /api/v4/user` (+ the token's own
+ *  scopes, which GitLab reports on a separate endpoint). */
+export async function validateGitLabToken(
+  serverUrl: string,
+  token: string
+): Promise<GitHubTokenValidation> {
+  return getTransport().call("validate_gitlab_token", { serverUrl, token })
+}
+
 export async function updateGitHubAccounts(
   settings: GitHubAccountsSettings
 ): Promise<GitHubAccountsSettings> {
@@ -3120,12 +3135,14 @@ export async function workTaskStart(id: number): Promise<void> {
 export async function workTaskRetry(
   id: number,
   note?: string | null,
-  blocks?: PromptInputBlock[] | null
+  blocks?: PromptInputBlock[] | null,
+  allowDuplicateSource?: boolean
 ): Promise<void> {
   return getTransport().call("work_task_retry", {
     id,
     note: note ?? null,
     blocks: stripUploadedTaskBlocks(blocks),
+    allowDuplicateSource: allowDuplicateSource ?? false,
   })
 }
 
@@ -3136,12 +3153,14 @@ export async function workTaskRetry(
 export async function workTaskRequeue(
   id: number,
   note?: string | null,
-  blocks?: PromptInputBlock[] | null
+  blocks?: PromptInputBlock[] | null,
+  allowDuplicateSource?: boolean
 ): Promise<void> {
   return getTransport().call("work_task_requeue", {
     id,
     note: note ?? null,
     blocks: stripUploadedTaskBlocks(blocks),
+    allowDuplicateSource: allowDuplicateSource ?? false,
   })
 }
 
@@ -3202,6 +3221,22 @@ export async function workTaskMerge(
     message,
     deleteWorktree,
   })
+}
+
+/** Accept a reviewed forge-sourced task by pushing it back: an issue's task
+ *  publishes its branch and opens (or adopts) a pull request, a pull request's
+ *  task pushes onto that pull request's own branch (where `title`/`draft` are
+ *  ignored — nothing is created). Resolves with the pull request URL.
+ *
+ *  Unlike the merge dispatch this awaits the WHOLE operation — no agent runs,
+ *  just a push and two REST calls — so a rejection is the real reason and the
+ *  task is already back in review by the time it surfaces. */
+export async function workTaskDeliverPr(
+  id: number,
+  prTitle: string | null,
+  draft: boolean
+): Promise<string> {
+  return getTransport().call("work_task_deliver_pr", { id, prTitle, draft })
 }
 
 /** Withdraw a merge waiting in the project's queue; the task stays in review. */
@@ -4806,4 +4841,46 @@ export async function scanExternalConflictsWeb(
     { uploadId, passphrase: passphrase ?? null },
     { timeoutMs: BACKUP_LONG_CALL_TIMEOUT_MS }
   )
+}
+
+// ── Forge workbench (Issues/PR) ────────────────────────────────────────────
+
+/** The folder's `origin` remote parsed into forge coordinates, if any. */
+export async function folderForgeRemote(
+  folderId: number
+): Promise<ForgeRemote | null> {
+  return getTransport().call("folder_forge_remote", { folderId })
+}
+
+export async function forgeListIssues(req: {
+  folderId: number
+  tab: ForgeTab
+  state?: "open" | "closed" | "all"
+  assignedMe?: boolean
+  cursor?: string | null
+  accountId?: string | null
+}): Promise<ForgeIssueList> {
+  return getTransport().call("forge_list_issues", {
+    folderId: req.folderId,
+    tab: req.tab,
+    state: req.state ?? "open",
+    assignedMe: req.assignedMe ?? false,
+    cursor: req.cursor ?? null,
+    accountId: req.accountId ?? null,
+  })
+}
+
+/** Trigger a work task from an issue. Duplicate / folder-mismatch come back
+ *  as discriminated outcomes for the dialog to act on, not as errors. */
+export async function workTaskCreateFromForge(
+  draft: ForgeTaskDraftInput
+): Promise<ForgeCreateResult> {
+  return getTransport().call("work_task_create_from_forge", { draft })
+}
+
+/** Latest task per source key (any state) — drives the row chips. */
+export async function workTaskLookupBySource(
+  sourceKeys: string[]
+): Promise<ForgeTaskLink[]> {
+  return getTransport().call("work_task_lookup_by_source", { sourceKeys })
 }

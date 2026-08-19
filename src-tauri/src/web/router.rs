@@ -583,6 +583,10 @@ pub fn build_router(
             post(handlers::version_control::validate_github_token),
         )
         .route(
+            "/validate_gitlab_token",
+            post(handlers::version_control::validate_gitlab_token),
+        )
+        .route(
             "/save_account_token",
             post(handlers::version_control::save_account_token),
         )
@@ -1319,6 +1323,26 @@ pub fn build_router(
         .route(
             "/work_task_return",
             post(handlers::work_task::work_task_return),
+        )
+        .route(
+            "/folder_forge_remote",
+            post(handlers::forge::folder_forge_remote),
+        )
+        .route(
+            "/forge_list_issues",
+            post(handlers::forge::forge_list_issues),
+        )
+        .route(
+            "/work_task_create_from_forge",
+            post(handlers::forge::work_task_create_from_forge),
+        )
+        .route(
+            "/work_task_lookup_by_source",
+            post(handlers::forge::work_task_lookup_by_source),
+        )
+        .route(
+            "/work_task_deliver_pr",
+            post(handlers::work_task::work_task_deliver_pr),
         )
         .route(
             "/work_task_cancel",

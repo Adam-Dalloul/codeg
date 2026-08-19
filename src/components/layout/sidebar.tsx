@@ -7,6 +7,7 @@ import {
   ListChevronsDownUp,
   ListChevronsUpDown,
   Search,
+  GitPullRequestArrow,
   ListTodo,
   SquarePen,
   Zap,
@@ -493,6 +494,15 @@ export function Sidebar() {
               </span>
             ) : null
           }
+        />
+        <SidebarNavButton
+          icon={GitPullRequestArrow}
+          label={t("forge")}
+          active={routeId === "forge"}
+          onClick={() => {
+            if (isMobile) toggle()
+            setRoute("forge")
+          }}
         />
       </div>
 

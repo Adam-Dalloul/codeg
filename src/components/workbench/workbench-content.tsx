@@ -9,6 +9,7 @@ import {
   AutomationsPage,
   AutomationsPageTitle,
 } from "@/components/automations/automations-page"
+import { ForgePage, ForgePageTitle } from "@/components/forge/forge-page"
 import { TasksChromeActions } from "@/components/tasks/tasks-chrome-actions"
 import { TasksPage, TasksPageTitle } from "@/components/tasks/tasks-page"
 import {
@@ -26,6 +27,7 @@ import {
 const WORKBENCH_ROUTES: Partial<Record<WorkbenchRouteId, ComponentType>> = {
   automations: AutomationsPage,
   tasks: TasksPage,
+  forge: ForgePage,
   tokenUsage: TokenUsagePage,
 }
 
@@ -35,6 +37,7 @@ const WORKBENCH_ROUTE_STRIPS: Partial<Record<WorkbenchRouteId, ComponentType>> =
   {
     automations: AutomationsPageTitle,
     tasks: TasksPageTitle,
+    forge: ForgePageTitle,
     tokenUsage: TokenUsagePageTitle,
   }
 

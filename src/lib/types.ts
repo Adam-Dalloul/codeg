@@ -1407,6 +1407,10 @@ export interface WorkTask {
   additions: number | null
   deletions: number | null
   merge_commit: string | null
+  /** How a done task ended: 'merged' | 'delivered_pr' |
+   *  'accepted_without_merge'. Absent on live tasks and on rows finished
+   *  before the column existed. */
+  completion_kind?: string | null
   /** Acceptance red/green light of the current review, if a preflight
    *  command ran. */
   preflight: WorkTaskPreflight | null
@@ -1419,6 +1423,12 @@ export interface WorkTask {
   /** Planned start of a to-do task (ISO); null = no plan. Consumed the moment
    *  the task is claimed, by the scheduler or by hand. */
   scheduled_at: string | null
+  /** Forge provenance ('forge_issue' | 'forge_pr'); absent = not forge-sourced. */
+  source_kind?: string | null
+  /** Canonical source key ({provider}:{host}:{owner_repo}:{kind}:{number}). */
+  source_key?: string | null
+  /** Source snapshot (url, title, numbers …); shape mirrors ForgeSourceMeta. */
+  source_meta?: ForgeSourceMeta | null
   /** Latest agent_progress milestone — present on live (running/awaiting/merging) rows only. */
   latest_progress?: string | null
   created_at: string
@@ -1427,6 +1437,97 @@ export interface WorkTask {
   settled_at: string | null
   finished_at: string | null
 }
+
+/** Provenance snapshot of a forge-triggered task (mirrors Rust ForgeSourceMeta). */
+export interface ForgeSourceMeta {
+  provider: ForgeProviderId
+  server_host: string
+  api_base: string
+  account_id: string
+  owner_repo: string
+  number: number
+  /** Canonical html URL, server-derived. */
+  url: string
+  /** Issue/PR title at trigger time. */
+  title: string
+  /** PR-only fields (absent on issues; filled by trigger-time hydration in M8). */
+  base_ref?: string | null
+  head_ref?: string | null
+  head_sha?: string | null
+  head_repo?: string | null
+  /** URL of the PR created by the delivery acceptance path (P1). */
+  result_pr?: string | null
+}
+
+export type ForgeTab = "issues" | "prs"
+
+/** One row of the forge workbench list (mirrors Rust ForgeIssueRow). */
+export interface ForgeIssueRow {
+  number: number
+  title: string
+  /** Capped body from the list payload — the trigger snapshot's source. */
+  body: string | null
+  state: string
+  labels: string[]
+  author: string | null
+  updated_at: string | null
+  html_url: string
+  is_pr: boolean
+}
+
+export interface ForgeIssueList {
+  rows: ForgeIssueRow[]
+  /** Opaque Link-header cursor; feed back verbatim to fetch the next page. */
+  next_cursor: string | null
+}
+
+/** A folder's `origin` remote parsed into forge coordinates. */
+export interface ForgeRemote {
+  server_host: string
+  owner_repo: string
+  remote_url: string
+  /** Which forge this host is — decided by the backend from the configured
+   *  accounts and the hostname, never chosen here. */
+  provider: ForgeProviderId
+}
+
+/** Latest task (any state) for a source key — the row chip's data. */
+export interface ForgeTaskLink {
+  source_key: string
+  task_id: number
+  status: WorkTaskStatus
+  verdict: string | null
+  updated_at: string
+}
+
+/** Trigger payload (client supplies coordinates + display snapshot only —
+ *  the server derives everything trusted). */
+export interface ForgeTaskDraftInput {
+  folder_id: number
+  source: {
+    kind: "issue" | "pr"
+    provider: ForgeProviderId
+    server_host: string
+    account_id?: string | null
+    owner_repo: string
+    number: number
+  }
+  snapshot: {
+    title: string
+    body?: string | null
+    labels?: string[]
+    author?: string | null
+  }
+  instruction?: string | null
+  agent_type?: string | null
+  force?: boolean
+}
+
+/** Discriminated trigger outcome — duplicate/mismatch are answers, not errors. */
+export type ForgeCreateResult =
+  | { outcome: "created"; task: WorkTask }
+  | { outcome: "duplicate"; existing: WorkTask }
+  | { outcome: "folder_mismatch"; folder_remote: ForgeRemote | null }
 
 /** A merge parked on a reviewed task while its project lands another one. */
 export interface WorkTaskQueuedMerge {
@@ -1507,6 +1608,10 @@ export interface WorkTaskFolderSettings {
    *  Keys are the engine's stage ids (`work` | `retry` | `return` | `merge`)
    *  plus the reserved `all`, which applies to every stage. */
   stage_prompts?: Record<string, string> | null
+  /** Comment the outcome back on the issue/PR a task came from once it
+   *  finishes. Optional here (and off in the backend's default) because it is
+   *  the only setting that writes where other people are watching. */
+  forge_writeback?: boolean
 }
 
 /** Changed file of a task worktree vs its recorded base. */
@@ -2970,6 +3075,8 @@ export interface GitSettings {
   custom_path: string | null
 }
 
+/** A stored forge credential. Despite the name (kept for the wire format),
+ *  this is any host's account — GitHub, GitLab, or a plain git remote. */
 export interface GitHubAccount {
   id: string
   server_url: string
@@ -2978,7 +3085,13 @@ export interface GitHubAccount {
   avatar_url: string | null
   is_default: boolean
   created_at: string
+  /** Which forge the token is for. Absent on accounts stored before GitLab
+   *  support (and on plain git credentials), where it keeps meaning "a
+   *  credential for this host, whichever forge lives there". */
+  provider?: ForgeProviderId | null
 }
+
+export type ForgeProviderId = "github" | "gitlab"
 
 export interface GitHubAccountsSettings {
   accounts: GitHubAccount[]
