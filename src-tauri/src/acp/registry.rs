@@ -696,8 +696,8 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             // Docker / Nix are the supported channels. The npm `hermes-agent`
             // package is a COMMUNITY bridge (wyrtensi/hermes-agent-npm, not
             // Nous Research), pinned here at an exact, audited version: its
-            // postinstall clones the OFFICIAL repo at tag v2026.8.13 verifying
-            // the full commit SHA (f80f453a…), bootstraps an isolated Python
+            // postinstall clones the OFFICIAL repo at tag v2026.8.18 verifying
+            // the full commit SHA (e624e9fd…), bootstraps an isolated Python
             // 3.11 venv with a checksum-pinned uv, and `uv sync --locked
             // --extra all` (⊇ the acp+mcp extras) from upstream's lockfile —
             // all inside the npm package directory; config/credentials stay in
@@ -705,21 +705,30 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             // console script, so `hermes acp` is the same adapter the official
             // install runs. Keep the pin EXACT on version bumps and re-audit
             // the wrapper diff — the exact pin is what bounds the third-party
-            // trust surface. 0.20.1 audited: `bin/`, `lib/` and
-            // `scripts/postinstall.js` are byte-identical to 0.20.0 (the whole
-            // diff is the version string, the upstream tag/commit pin, and a
-            // README badge), the SHA check is still a hard `rev-parse
-            // <tag>^{commit}` equality on a 40-hex pin, and that tag really is
-            // NousResearch's own "Hermes Agent v0.20.1 (2026.8.13)" release
-            // resolving to the pinned commit.
+            // trust surface. 0.20.4 audited — unlike the 0.20.0 → 0.20.1 bump
+            // this one is NOT byte-identical, so the whole diff was read:
+            // `bin/` is untouched, and the three code changes are a new
+            // `lib/runtime-checkout.js` that sparse-checks-out the runtime
+            // (`/*` minus `/contributors/`) before the fetch, the postinstall
+            // `run()` helper gaining stdin piping so those patterns can reach
+            // `git sparse-checkout --stdin`, and `lib/npm-channel.js` splitting
+            // its dirty-tree check into named helpers with unchanged semantics
+            // (an empty `status --porcelain` still means release-pinned). The
+            // parts that bound the trust surface did not move:
+            // `fetchAndVerifyPinnedTag` is byte-identical — still a hard
+            // `rev-parse <tag>^{commit}` equality against the 40-hex pin — and
+            // the checksum-pinned `uv` installer / venv bootstrap is untouched.
+            // The pin resolves as advertised: the annotated tag v2026.8.18
+            // dereferences to exactly e624e9fd…, tagged by Teknium, and is
+            // NousResearch's own "Hermes Agent v0.20.4 (2026.8.18)" release.
             //
             // Launch preference: `resolve_npx_command("hermes")` checks PATH
             // first, so an official-installer `hermes` (which self-updates)
             // naturally outranks the npm-managed copy; the npm global install
             // is the managed/one-click channel codeg's Install button drives.
             distribution: AgentDistribution::Npx {
-                version: "0.20.1",
-                package: "hermes-agent@0.20.1",
+                version: "0.20.4",
+                package: "hermes-agent@0.20.4",
                 cmd: "hermes",
                 args: &["acp"],
                 env: &[],
@@ -734,8 +743,8 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             name: "CodeBuddy",
             description: "Tencent Cloud's official AI coding assistant (ACP)",
             distribution: AgentDistribution::Npx {
-                version: "2.137.0",
-                package: "@tencent-ai/codebuddy-code@2.137.0",
+                version: "2.137.1",
+                package: "@tencent-ai/codebuddy-code@2.137.1",
                 cmd: "codebuddy",
                 args: &["--acp"],
                 env: &[],
@@ -748,8 +757,8 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             name: "Kimi Code",
             description: "Moonshot AI's official CLI coding assistant (ACP)",
             distribution: AgentDistribution::Npx {
-                version: "0.36.1",
-                package: "@moonshot-ai/kimi-code@0.36.1",
+                version: "0.37.2",
+                package: "@moonshot-ai/kimi-code@0.37.2",
                 cmd: "kimi",
                 args: &["acp"],
                 env: &[],
@@ -815,19 +824,19 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             // `models` that the composer's selectors and context ring read, and
             // prompting straight after it works. It also skips `session/load`'s
             // history replay, which codeg only drained to discard. The 1.0.1–
-            // 1.0.4 patches add nothing further here: re-probed live against the
-            // 1.0.4 binary, `initialize` still answers `sessionCapabilities:
+            // 1.0.5 patches add nothing further here: re-probed live against the
+            // 1.0.5 binary, `initialize` still answers `sessionCapabilities:
             // {list, resume, close}` plus the same
             // `promptCapabilities.embeddedContext`, so the resume rung stands.
             distribution: AgentDistribution::Npx {
-                version: "1.0.4",
-                package: "@xai-official/grok@1.0.4",
+                version: "1.0.5",
+                package: "@xai-official/grok@1.0.5",
                 cmd: "grok",
                 // Only the ACP subcommand lives here. Grok's ROOT-level launch
                 // flags (`--no-auto-update` always, `--permission-mode <value>`
                 // only for a non-default permission mode) MUST precede this
                 // subcommand — `grok agent stdio` itself rejects them (re-verified
-                // against 1.0.4: it still only accepts --debug/--debug-file/
+                // against 1.0.5: it still only accepts --debug/--debug-file/
                 // --leader-socket) — so `build_agent` inserts them ahead of these
                 // args rather than appending after. Since 1.0.3 `grok --help` no
                 // longer LISTS `--no-auto-update`, but it is still accepted:
@@ -835,7 +844,7 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
                 // `grok --no-auto-update agent stdio` initializes clean.
                 args: &["agent", "stdio"],
                 env: &[],
-                // `@xai-official/grok@1.0.4` declares `engines.node: ">=20"`;
+                // `@xai-official/grok@1.0.5` declares `engines.node: ">=20"`;
                 // surface that in preflight so Node 18 isn't silently accepted.
                 node_required: Some("20.0.0"),
             },
@@ -917,13 +926,32 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             // It advertises loadSession + sessionCapabilities.list/resume and
             // accepts wire `mcpServers` (stdio + streamable HTTP; SSE and the
             // `acp` transport are explicitly rejected), so both the resume rung
-            // and the codeg-mcp companion work out of the box. 0.3.0 adds the
-            // upstream skills chain (`skill_storage_spec` mirrors its roots)
-            // and, since 0.2.0, `--setup` terminal auth for storing the key in
-            // `$DSH_HOME/.credentials.yaml`.
+            // and the codeg-mcp companion work out of the box. Since 0.3.0 it
+            // mounts the upstream skills chain (`skill_storage_spec` mirrors
+            // its roots) and, since 0.2.0, offers `--setup` terminal auth for
+            // storing the key in `$DSH_HOME/.credentials.yaml`.
+            //
+            // 0.5.0 audited against 0.3.0: the capability advertisement is
+            // untouched (the whole `protocol/initialize` diff is the version
+            // string), so every claim above still holds. What moved is two
+            // presentation fixes — 0.4.0 guards chunked tool-call headers whose
+            // later fragments repeat an explicit null/empty name (which used to
+            // overwrite the first fragment's id/name and dispatch an empty tool
+            // name), and 0.5.0 sends a terminal `tool_call`'s `rawInput` as the
+            // `{command, description?, cwd?}` OBJECT rather than a bare command
+            // string, i.e. the codex-acp shape codeg's tool cards already parse.
+            // Its `dsh-*` deps went rc.6 → rc.7, but the three packages codeg
+            // mirrors (`dsh-home-paths`' `resolveDshHome`, `dsh-skill-filesystem`'s
+            // roots, `dsh-session-persistence-jsonl`'s log layout) are byte-
+            // identical across that bump, so `parsers::deepseek` needs nothing.
+            //
+            // Keep `version` and `package` moving together: `version` is what
+            // the agents list shows as the upgrade target beside the installed
+            // version, so a drift leaves the Upgrade button installing one
+            // version while the row keeps calling it stale.
             distribution: AgentDistribution::Npx {
-                version: "0.3.0",
-                package: "deepseek-acp@0.3.0",
+                version: "0.5.0",
+                package: "deepseek-acp@0.5.0",
                 cmd: "deepseek-acp",
                 args: &[],
                 env: &[],
@@ -1101,14 +1129,14 @@ mod tests {
         );
         assert_npx_version(
             AgentType::CodeBuddy,
-            "2.137.0",
-            "@tencent-ai/codebuddy-code@2.137.0",
+            "2.137.1",
+            "@tencent-ai/codebuddy-code@2.137.1",
             Some("22.0.0"),
         );
         assert_npx_version(
             AgentType::KimiCode,
-            "0.36.1",
-            "@moonshot-ai/kimi-code@0.36.1",
+            "0.37.2",
+            "@moonshot-ai/kimi-code@0.37.2",
             Some("22.19.0"),
         );
         assert_npx_version(
@@ -1120,14 +1148,14 @@ mod tests {
         assert_npx_version(AgentType::Pi, "0.0.33", "pi-acp@0.0.33", Some("22.0.0"));
         assert_npx_version(
             AgentType::Grok,
-            "1.0.4",
-            "@xai-official/grok@1.0.4",
+            "1.0.5",
+            "@xai-official/grok@1.0.5",
             Some("20.0.0"),
         );
         assert_npx_version(
             AgentType::DeepSeek,
-            "0.3.0",
-            "deepseek-acp@0.3.0",
+            "0.5.0",
+            "deepseek-acp@0.5.0",
             Some("22.0.0"),
         );
         assert_binary_version(AgentType::OpenCode, "1.18.18", "/releases/download/v1.18.18/");
@@ -1137,8 +1165,8 @@ mod tests {
         // audited wrapper code is only what the pinned version ships.
         assert_npx_version(
             AgentType::Hermes,
-            "0.20.1",
-            "hermes-agent@0.20.1",
+            "0.20.4",
+            "hermes-agent@0.20.4",
             Some("20.0.0"),
         );
     }
