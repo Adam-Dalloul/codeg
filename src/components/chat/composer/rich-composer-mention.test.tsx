@@ -127,6 +127,91 @@ describe("RichComposer @ mention integration", () => {
     expect(onSubmit).not.toHaveBeenCalled()
   })
 
+  // A phone's soft keyboard types through an IME composition that stays open
+  // across the whole word (Android keeps `view.composing` true for five seconds
+  // past the last keystroke), so a trigger that refuses to fire while composing
+  // never fires on mobile at all — which is what "@ does nothing on my phone"
+  // was. Desktop typing never composes, which is why it only showed up there.
+  function forceComposing(view: { composing: boolean }) {
+    Object.defineProperty(view, "composing", {
+      configurable: true,
+      get: () => true,
+    })
+  }
+
+  it("opens the panel while an IME composition is in flight", async () => {
+    const { editor } = await mount()
+    forceComposing(editor.view)
+    act(() => {
+      editor.commands.insertContent("@app")
+    })
+    expect(
+      await screen.findByText("app.ts", {}, { timeout: 5000 })
+    ).toBeTruthy()
+  })
+
+  it("lets the IME keep its own Enter while the panel is open", async () => {
+    // The other half of the trade: the panel is now open during a composition,
+    // so the Enter that picks a CJK candidate must reach the input method
+    // rather than insert a row or send the message. The popup reads that off
+    // the event itself (`isComposing` here, `keyCode` 229 on WebKit, which
+    // fires `compositionend` before the keydown).
+    const onSubmit = vi.fn()
+    const { editor } = await mount(onSubmit)
+    forceComposing(editor.view)
+    act(() => {
+      editor.commands.insertContent("@app")
+    })
+    await screen.findByText("app.ts", {}, { timeout: 5000 })
+    act(() => {
+      ;(editor.view.dom as HTMLElement).dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "Enter",
+          isComposing: true,
+          bubbles: true,
+          cancelable: true,
+        })
+      )
+    })
+    expect(onSubmit).not.toHaveBeenCalled()
+    expect(findReference(editor.getJSON())).toBeUndefined()
+    // Still open: the composition is unfinished, not dismissed.
+    expect(screen.queryByTestId("mention-popup")).not.toBeNull()
+  })
+
+  it("leaves Enter to the editor while the panel has nothing to insert", async () => {
+    // Between the trigger and the first search result the panel is open but
+    // has no selectable row. It must not eat the key: on Android the soft
+    // keyboard's Enter reaches the panel as a synthetic event that ProseMirror
+    // fires *after* the browser applied the newline, and claiming it there
+    // makes ProseMirror drop that change instead of reconciling it.
+    const onSubmit = vi.fn()
+    const { editor } = await mount(onSubmit)
+    // Await only the plugin's own microtask (it resolves `items` before
+    // `onStart`), never the 150ms search debounce.
+    await act(async () => {
+      editor.commands.insertContent("@app")
+    })
+    // Panel is mounted but the debounced search has not answered yet, so
+    // nothing is selectable.
+    expect(screen.queryByTestId("mention-popup")).not.toBeNull()
+    expect(screen.queryByText("app.ts")).toBeNull()
+    act(() => {
+      ;(editor.view.dom as HTMLElement).dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "Enter",
+          bubbles: true,
+          cancelable: true,
+        })
+      )
+    })
+    // Not selected, not sent — and the editor got the key, splitting the
+    // paragraph the way a plain Enter does with no panel in the way.
+    expect(findReference(editor.getJSON())).toBeUndefined()
+    expect(onSubmit).not.toHaveBeenCalled()
+    expect(editor.getJSON().content?.length).toBe(2)
+  })
+
   it("dismisses the panel on Escape", async () => {
     const { editor } = await mount()
     act(() => {

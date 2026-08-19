@@ -70,11 +70,22 @@ export const MentionSuggestion = Extension.create<MentionSuggestionOptions>({
         allowSpaces: false,
         items: () => [],
         command: () => {},
-        // Don't trigger mid-IME-composition or inside code blocks.
-        allow: ({ editor, state }) => {
-          if (editor.view.composing) return false
-          return !state.selection.$from.parent.type.spec.code
-        },
+        // Only gate on structure (never inside a code block). Composition state
+        // is deliberately NOT checked here: a phone's soft keyboard types
+        // through an IME composition that stays open across the whole word —
+        // and on Android ProseMirror keeps `view.composing` true for five more
+        // seconds after the last keystroke — so gating on it means the panel
+        // never opens on mobile at all, which is exactly what it did.
+        //
+        // The plugin's own state is written for composing input on purpose
+        // (`isEditable && (empty || editor.view.composing)`, tiptap#1449), so
+        // letting it through here is the supported path, not a loophole. The
+        // IME's keys are kept away from the panel where they actually arrive:
+        // the composer's `handleKeyDown` hands every composing key straight
+        // back to the editor, and the popup's own `onKeyDown` drops anything
+        // `isImeCompositionKey` recognizes — including the WebKit case where
+        // `compositionend` beats the confirming Enter.
+        allow: ({ state }) => !state.selection.$from.parent.type.spec.code,
         render: () => ({
           onStart: (props) => controller.onStart(toRenderState(props)),
           onUpdate: (props) => controller.onUpdate(toRenderState(props)),
