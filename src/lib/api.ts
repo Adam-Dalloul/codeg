@@ -47,6 +47,7 @@ import type {
   CursorStructuredConfig,
   CursorAuthStatus,
   CursorModelsResult,
+  QoderAuthStatus,
   CodexModelInfo,
   AgentSkillScope,
   AgentSkillLayout,
@@ -577,6 +578,17 @@ export async function acpUpdateAgentConfig(
     cursorCliConfigJson: params.cursor_cli_config_json ?? null,
     cursorStructured: params.cursor_structured ?? null,
   })
+}
+
+/**
+ * Probe `qoder status -o json` for the Qoder auth card. The optional live
+ * personal access token lets the probe report on the credential that is on
+ * screen rather than a stale saved one.
+ */
+export async function acpQoderAuthStatus(
+  personalAccessToken?: string
+): Promise<QoderAuthStatus> {
+  return getTransport().call("acp_qoder_auth_status", { personalAccessToken })
 }
 
 /**

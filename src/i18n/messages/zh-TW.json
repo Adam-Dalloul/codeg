@@ -788,6 +788,24 @@
       "modelsNeedAuth": "登入後載入模型清單。",
       "modelDefaultBadge": "預設"
     },
+    "qoder": {
+      "configDescription": "在此登入 Qoder 帳號。CLI 讀取的其餘設定全部集中在一個檔案裡——$QODER_CONFIG_DIR/settings.json（預設 ~/.qoder，與 qoder CLI 共用），請在下方按原文編輯。模型與推理強度不在這裡：Qoder 透過 ACP 回報它們，由輸入框的選擇器逐次決定。",
+      "authTitle": "帳號",
+      "authChecking": "檢查中…",
+      "authNotInstalled": "qoder 未安裝",
+      "authUnknown": "狀態無法取得",
+      "authLoggedIn": "已登入",
+      "authNotLoggedIn": "未登入",
+      "loginHint": "在終端機執行以下指令登入 Qoder 帳號（會開啟瀏覽器），完成後按重新整理：",
+      "authMethodLabel": "登入方式",
+      "tokenLabel": "個人存取權杖",
+      "tokenPlaceholder": "用於無頭 / 伺服器環境",
+      "tokenHint": "QODER_PERSONAL_ACCESS_TOKEN —— 瀏覽器登入無法執行時使用的非互動憑證。留空則使用 qoder 帳號登入。",
+      "saveToken": "儲存權杖",
+      "advancedToggle": "進階：原始 settings.json",
+      "advancedHint": "完整的 settings.json，儲存時會按原文寫入——這也是唯一能刪除某個鍵的入口。",
+      "saveRawConfig": "儲存檔案"
+    },
     "deepseek": {
       "configManagement": "DeepSeek Harness 設定",
       "configDescription": "端點與金鑰是 deepseek-acp 啟動時讀取的環境變數。模型與推理等級是工作階段層級的選擇器，在輸入框裡切換。",
@@ -1235,7 +1253,9 @@
       "piBinaryInstallFailed": "pi 安裝失敗",
       "piBinaryUninstalled": "pi 已解除安裝",
       "piBinaryUninstallFailed": "pi 解除安裝失敗",
-      "savePiTrustFailed": "儲存工作區信任失敗"
+      "savePiTrustFailed": "儲存工作區信任失敗",
+      "qoderSaved": "Qoder 設定已儲存",
+      "saveQoderConfigFailed": "儲存 Qoder 設定失敗"
     },
     "version": {
       "statusLabel": "版本狀態",
