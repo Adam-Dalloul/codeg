@@ -757,6 +757,15 @@ function importantEnvKeysByAgent(agentType: AgentType): ImportantEnvKeys {
       model: ["DEEPSEEK_ACP_MODEL"],
     }
   }
+  if (agentType === "qoder") {
+    // Qoder authenticates as the qoder account (`qoder login` / the IDE's
+    // qoder-browser flow); no env var is a real credential, and the generic
+    // OPENAI_*/API_KEY fallback would let the auth panel report "configured"
+    // off a key qoder never reads. Empty lists keep the panel honest — the
+    // sign-in command is the path, mirrors the backend `agent_env_keys(Qoder)`
+    // placeholders.
+    return { apiBaseUrl: [], apiKey: [], model: [] }
+  }
   return {
     apiBaseUrl: ["OPENAI_BASE_URL", "API_BASE_URL"],
     apiKey: ["OPENAI_API_KEY", "API_KEY"],
