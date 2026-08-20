@@ -973,9 +973,11 @@ impl ConnectionManager {
             // Seed a delegation child's title from the task prompt so the
             // sidebar shows a meaningful label immediately. `list_children`
             // returns the raw DB title, so a child born with NULL reads
-            // "Untitled" until the first detail load backfills it. Roots (no
-            // delegation) keep `None` and follow the existing backfill. Computed
-            // out here so `blocks` stays with the caller for the actual prompt.
+            // "Untitled" until the first detail load backfills it. Roots keep
+            // `None` here and get the same first-prompt seed after the send
+            // succeeds (so a failed enqueue does not name a cancelled row).
+            // Computed out here so `blocks` stays with the caller for the
+            // actual prompt.
             let seed_title = if delegation.is_some() {
                 delegation_child_title_seed(&blocks)
             } else {
@@ -1227,6 +1229,15 @@ impl ConnectionManager {
         } else {
             None
         };
+        // Seed an unlocked title from the first prompt so the sidebar is not
+        // "Untitled" while the agent is still working. Native ACP titles
+        // (session_info_update) replace this later via refresh_auto_title.
+        // Delegation children are already seeded at row create.
+        let first_prompt_title = if delegation.is_none() {
+            delegation_child_title_seed(&blocks)
+        } else {
+            None
+        };
 
         // Project the user's prompt blocks for the cross-client viewer
         // broadcast BEFORE `send_prompt_inner` consumes `blocks`, and hand the
@@ -1285,6 +1296,26 @@ impl ConnectionManager {
                         AcpEvent::UserPromptSent { text_preview },
                     )
                     .await;
+                }
+                if let (Some(cid), Some(title)) =
+                    (conversation_id_for_status, first_prompt_title)
+                {
+                    match conversation_service::seed_auto_title_if_empty(&db.conn, cid, title)
+                        .await
+                    {
+                        Ok(true) => {
+                            crate::commands::conversations::emit_conversation_upsert(
+                                &emitter, &db.conn, cid,
+                            )
+                            .await;
+                        }
+                        Ok(false) => {}
+                        Err(e) => tracing::warn!(
+                            conversation_id = cid,
+                            error = %e,
+                            "[manager] first-prompt title seed failed"
+                        ),
+                    }
                 }
                 Ok(conversation_id_for_status)
             }
@@ -4893,6 +4924,52 @@ mod tests {
             }
         }
         assert_eq!(found.as_deref(), Some("hello world"));
+    }
+
+    #[tokio::test]
+    async fn send_prompt_linked_seeds_first_prompt_title_when_untitled() {
+        use crate::db::test_helpers;
+        let db = test_helpers::fresh_in_memory_db().await;
+        let folder_id = test_helpers::seed_folder(&db, "/tmp/title-seed").await;
+        let mgr = ConnectionManager::new();
+        let conn_id = "conn-title-seed";
+        let _rx = insert_live_connection(
+            &mgr,
+            conn_id,
+            AgentType::ClaudeCode,
+            Some(PathBuf::from("/tmp/title-seed")),
+        )
+        .await;
+
+        mgr.send_prompt_linked(
+            &db,
+            conn_id,
+            vec![PromptInputBlock::Text {
+                text: "hello world".into(),
+            }],
+            Some(folder_id),
+            None,
+            None,
+        )
+        .await
+        .expect("send");
+
+        let cid = mgr
+            .get_state(conn_id)
+            .await
+            .unwrap()
+            .read()
+            .await
+            .conversation_id
+            .expect("row linked");
+        let row = conversation_service::get_by_id(&db.conn, cid)
+            .await
+            .expect("get");
+        assert_eq!(row.title.as_deref(), Some("hello world"));
+        assert!(
+            !row.title_locked,
+            "first-prompt seed must stay unlocked so a later ACP title can replace it"
+        );
     }
 
     /// A textless prompt (image-only) succeeds but emits NO `UserPromptSent` —
