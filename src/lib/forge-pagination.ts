@@ -1,39 +1,66 @@
-import type { ForgeIssueList, ForgeIssueRow } from "@/lib/types"
+/** A slot in the pagination strip: a page to jump to, or a gap. */
+export type PageSlot = number | "ellipsis"
 
-/** How many consecutive sparse pages one click may auto-follow. Bounds the
- *  API cost of a pathological repo (hundreds of PR-only pages on the Issues
- *  tab) while making the normal mixed repo feel seamless. */
-export const MAX_SPARSE_HOPS = 5
+/** Widest strip a caller gets by default: first, gap, current±1, gap, last. */
+export const DEFAULT_MAX_PAGE_SLOTS = 7
+/** Narrowest strip that still means anything: first, gap, current, gap, last. */
+const MIN_MAX_PAGE_SLOTS = 5
 
-export interface NonSparsePage {
-  rows: ForgeIssueRow[]
-  nextCursor: string | null
-  /** Pages actually fetched (1 = no sparse hop was needed). */
-  hops: number
+/**
+ * The page numbers to render for `current` out of `totalPages`.
+ *
+ * Always includes the first and last page (the two jumps people actually
+ * want), plus `current` and as many neighbours as `maxSlots` affords; anything
+ * skipped becomes one gap marker. The width is therefore CONSTANT — so the
+ * strip does not reflow as the user walks through a long list.
+ *
+ * `maxSlots` is what makes the strip fit a phone: the fixed part is
+ * `first + gap + current + gap + last` = 5, and every further pair of slots
+ * buys one neighbour on each side. Below 5 there is nothing left to drop, so
+ * that is the floor.
+ *
+ * A gap is only emitted for a real skip: with exactly one page missing the
+ * marker would be wider than the number it hides, so that number is shown
+ * instead.
+ */
+export function pageSlots(
+  current: number,
+  totalPages: number,
+  maxSlots: number = DEFAULT_MAX_PAGE_SLOTS
+): PageSlot[] {
+  if (totalPages <= 0) return []
+  const page = Math.min(Math.max(current, 1), totalPages)
+  const neighbours = Math.floor(
+    (Math.max(maxSlots, MIN_MAX_PAGE_SLOTS) - MIN_MAX_PAGE_SLOTS) / 2
+  )
+
+  const wanted = new Set<number>([1, totalPages])
+  for (let p = page - neighbours; p <= page + neighbours; p += 1) {
+    if (p >= 1 && p <= totalPages) wanted.add(p)
+  }
+  const pages = [...wanted].sort((a, b) => a - b)
+
+  const slots: PageSlot[] = []
+  let previous = 0
+  for (const p of pages) {
+    const skipped = p - previous - 1
+    if (skipped === 1) slots.push(p - 1)
+    else if (skipped > 1) slots.push("ellipsis")
+    slots.push(p)
+    previous = p
+  }
+  return slots
 }
 
 /**
- * Fetch a page, auto-following the cursor through SPARSE pages — the mixed
- * `/issues` feed is split into tabs client-side, so a page can legitimately
- * filter down to zero visible rows while more matches exist behind the Link
- * cursor. Stopping there would render an empty state with unreachable rows
- * (Codex round-1 finding); this keeps hopping until it has something to show,
- * runs out of pages, or hits the hop cap (the caller then still gets the
- * cursor and can offer an explicit "load more").
+ * How many pages `total` items fill. `null` in (the forge declined to count)
+ * stays `null` out — the caller must not invent a page count from a total it
+ * was never given.
  */
-export async function fetchNonSparsePage(
-  fetchPage: (cursor: string | null) => Promise<ForgeIssueList>,
-  cursor: string | null,
-  maxHops: number = MAX_SPARSE_HOPS
-): Promise<NonSparsePage> {
-  const rows: ForgeIssueRow[] = []
-  let next = cursor
-  let hops = 0
-  do {
-    const page = await fetchPage(next)
-    hops += 1
-    rows.push(...page.rows)
-    next = page.next_cursor
-  } while (rows.length === 0 && next != null && hops < maxHops)
-  return { rows, nextCursor: next, hops }
+export function pageCount(
+  total: number | null,
+  perPage: number
+): number | null {
+  if (total == null || perPage <= 0) return null
+  return Math.max(1, Math.ceil(total / perPage))
 }

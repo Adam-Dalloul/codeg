@@ -1461,6 +1461,36 @@ export interface ForgeSourceMeta {
 
 export type ForgeTab = "issues" | "prs"
 
+/** Normalized across both forges. `merged` only reaches a pull request row —
+ *  GitHub reports merged ones as plain `closed`, so the backend derives it. */
+export type ForgeItemState = "open" | "closed" | "merged"
+
+/** How the workbench list is ordered (mirrors Rust ForgeSort). Four NAMED
+ *  orders rather than a field/direction pair: the two forges spell their sort
+ *  fields differently and accept different sets, so this is the intersection. */
+export type ForgeSort =
+  | "newest"
+  | "oldest"
+  | "recently_updated"
+  | "least_recently_updated"
+
+/** One label as the forge paints it (mirrors Rust ForgeLabel). */
+export interface ForgeLabel {
+  name: string
+  /** `#rrggbb`, normalized from GitHub's bare digits and GitLab's hashed ones —
+   *  or null when the forge sent something that is not hex (GitLab accepts CSS
+   *  colour names on write). Null draws the neutral chip. */
+  color: string | null
+}
+
+/** The repository's label vocabulary (mirrors Rust ForgeLabelList). */
+export interface ForgeLabelList {
+  labels: ForgeLabel[]
+  /** The repository has more labels than one page holds — said out loud so a
+   *  filter list that stops at 100 does not read as complete. */
+  truncated: boolean
+}
+
 /** One row of the forge workbench list (mirrors Rust ForgeIssueRow). */
 export interface ForgeIssueRow {
   number: number
@@ -1468,17 +1498,39 @@ export interface ForgeIssueRow {
   /** Capped body from the list payload — the trigger snapshot's source. */
   body: string | null
   state: string
-  labels: string[]
+  /** Draft / work-in-progress pull request. Always false for issues. */
+  draft: boolean
+  labels: ForgeLabel[]
   author: string | null
   updated_at: string | null
   html_url: string
   is_pr: boolean
+  /** Human comments (GitHub `comments` / GitLab `user_notes_count`) — system
+   *  timeline events are excluded by both, which is what makes it mean
+   *  "there is a discussion here". */
+  comments: number
 }
 
+/** One page of the workbench list (mirrors Rust ForgeIssueList). */
 export interface ForgeIssueList {
   rows: ForgeIssueRow[]
-  /** Opaque Link-header cursor; feed back verbatim to fetch the next page. */
-  next_cursor: string | null
+  /** 1-based page actually served (already clamped by the backend). */
+  page: number
+  per_page: number
+  /** Matching items, or null when the forge declines to count — GitLab omits
+   *  its totals past 10k rows, and its locally-filtered closed-MR query would
+   *  report a count that includes rows the user cannot see. Null means the UI
+   *  must fall back to previous/next instead of page numbers. */
+  total_count: number | null
+  /** How many of those matches the forge will actually PAGE through, when that
+   *  is fewer than `total_count`. GitHub Search serves only the first 1000
+   *  results and answers 422 past them, so page NUMBERS come from this and the
+   *  "N results" summary from `total_count`. Null means every match is
+   *  reachable (always so on GitLab). */
+  reachable_count: number | null
+  has_next: boolean
+  /** GitHub search timed out; this page is partial. */
+  incomplete: boolean
 }
 
 /** A folder's `origin` remote parsed into forge coordinates. */

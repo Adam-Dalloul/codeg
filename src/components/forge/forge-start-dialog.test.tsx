@@ -58,11 +58,13 @@ function row(overrides: Partial<ForgeIssueRow> = {}): ForgeIssueRow {
     title: "Login times out",
     body: "steps to reproduce…",
     state: "open",
-    labels: ["bug"],
+    draft: false,
+    labels: [{ name: "bug", color: "#d73a4a" }],
     author: "octocat",
     updated_at: null,
     html_url: "https://github.com/o/r/issues/42",
     is_pr: false,
+    comments: 0,
     ...overrides,
   }
 }
@@ -126,6 +128,9 @@ describe("ForgeStartDialog", () => {
       snapshot: {
         title: "Login times out",
         body: "steps to reproduce…",
+        // NAMES: the snapshot is text handed to an agent, so the label's
+        // colour is dropped on the way in rather than travelling as an object
+        // the envelope would have to stringify.
         labels: ["bug"],
         author: "octocat",
       },

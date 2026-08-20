@@ -1333,6 +1333,14 @@ pub fn build_router(
             post(handlers::forge::forge_list_issues),
         )
         .route(
+            "/forge_tab_count",
+            post(handlers::forge::forge_tab_count),
+        )
+        .route(
+            "/forge_list_labels",
+            post(handlers::forge::forge_list_labels),
+        )
+        .route(
             "/work_task_create_from_forge",
             post(handlers::forge::work_task_create_from_forge),
         )

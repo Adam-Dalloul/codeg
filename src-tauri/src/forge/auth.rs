@@ -98,16 +98,17 @@ pub async fn resolve_forge_auth(
             .ok_or_else(|| {
                 ForgeError::Auth(format!("account {id} not found on host {host}"))
             })?,
+        // Nothing configured for this host is the ONE auth miss the user can
+        // act on, so it gets its own variant (and with it an i18n key + an
+        // "add an account" affordance in the workbench).
         None => on_host
             .iter()
             .find(|a| a.is_default)
             .or_else(|| on_host.first())
             .copied()
-            .ok_or_else(|| {
-                ForgeError::Auth(format!(
-                    "no {} account for host {host}",
-                    provider.as_str()
-                ))
+            .ok_or_else(|| ForgeError::NoAccount {
+                provider,
+                host: host.clone(),
             })?,
     };
 
@@ -497,10 +498,11 @@ mod tests {
             resolve_forge_auth(&db.conn, gh, "ghe.corp.com", Some("acc-x")).await,
             Err(ForgeError::Auth(_))
         ));
-        // Unknown host: no account at all.
+        // Unknown host: no account at all — its OWN variant, because that is
+        // the miss the workbench turns into "add an account".
         assert!(matches!(
             resolve_forge_auth(&db.conn, gh, "nowhere.example", None).await,
-            Err(ForgeError::Auth(_))
+            Err(ForgeError::NoAccount { .. })
         ));
         // Blank host is invalid input, not an auth miss.
         assert!(matches!(
@@ -573,14 +575,16 @@ mod tests {
         ));
         // GHE host derives the /api/v3 base — but without a stored token the
         // resolution must fail rather than hand back an unusable identity.
+        // Still plain `Auth`: an account IS configured here, so "add an
+        // account" would be the wrong advice.
         assert!(matches!(
             resolve_forge_auth(conn, gh, "ghe.corp.com", None).await,
             Err(ForgeError::Auth(_))
         ));
-        // Unknown host: no account at all.
+        // Unknown host: no account at all — the actionable variant.
         assert!(matches!(
             resolve_forge_auth(conn, gh, "nowhere.example", None).await,
-            Err(ForgeError::Auth(_))
+            Err(ForgeError::NoAccount { .. })
         ));
 
         // The GitLab account resolves for GitLab, with GitLab's API base…

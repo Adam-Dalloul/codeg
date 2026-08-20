@@ -18,9 +18,11 @@
 //!    no URL a human ever sees; addressing by it silently reads another
 //!    project's work item.
 //!
-//! Pagination and rate-limit classification are shared with the GitHub client
-//! (both send `Link: rel="next"`), and so is the rule that a short page is not
-//! an end signal.
+//! Pagination is offset-based (`page` + `per_page`), and the totals are the
+//! one place it differs from the GitHub client: `X-Total` / `X-Total-Pages`
+//! are OPTIONAL — GitLab omits them past 10,000 rows on purpose — so
+//! `X-Next-Page` is the only signal always present. Rate-limit classification
+//! is shared with the GitHub client.
 
 use std::collections::HashMap;
 use std::sync::{LazyLock, RwLock};
@@ -30,12 +32,10 @@ use serde::Deserialize;
 use super::auth::ResolvedAuth;
 use super::deliver::{ForgePr, NewPullRequest};
 use super::{
-    checked_cursor, next_link, truncate_chars, urlencode_path, urlencode_query,
-    validate_state_filter, web_origin, ForgeError, ForgeIssueList, ForgeIssueRow, ForgeItemKind,
-    ListIssuesRequest, BODY_CAP,
+    truncate_chars, urlencode_path, urlencode_query, validate_state_filter, web_origin, ForgeError,
+    ForgeIssueList, ForgeIssueRow, ForgeItemKind, ForgeLabel, ForgeLabelList, ForgeSort,
+    ListIssuesRequest, BODY_CAP, LABEL_PAGE_SIZE,
 };
-
-const PAGE_SIZE: u32 = 30;
 
 // ── reads ───────────────────────────────────────────────────────────────────
 
@@ -46,40 +46,63 @@ pub async fn list_issues(
     let project = project_ref(&req.owner_repo)?;
     validate_state_filter(&req.state)?;
 
-    let url = match &req.cursor {
-        Some(cursor) => checked_cursor(auth, cursor)?,
-        None => {
-            let collection = match req.tab {
-                super::ForgeTab::Issues => "issues",
-                super::ForgeTab::Prs => "merge_requests",
-            };
-            let mut url = format!(
-                "{}/projects/{project}/{collection}?state={}&per_page={PAGE_SIZE}",
-                auth.api_base,
-                wire_state(req.tab, &req.state)
-            );
-            if req.assigned_me {
-                // `assignee_username` takes the literal login; there is no
-                // `@me` shorthand on the collection endpoints.
-                let login = current_login(auth).await?;
-                url.push_str(&format!("&assignee_username={}", urlencode_query(&login)));
-            }
-            url
-        }
+    let (page, per_page) = req.clamped();
+
+    let collection = match req.tab {
+        super::ForgeTab::Issues => "issues",
+        super::ForgeTab::Prs => "merge_requests",
     };
+    // `with_labels_details=true` turns each entry of `labels` from a bare name
+    // into an object carrying the label's colour — the chip the workbench draws
+    // is the project's own, as it is on GitHub. Instances that predate the
+    // parameter ignore it and keep sending strings, which `RawItemLabel` reads
+    // just as happily.
+    let mut url = format!(
+        "{}/projects/{project}/{collection}?state={}&order_by={}&sort={}\
+         &with_labels_details=true&page={page}&per_page={per_page}",
+        auth.api_base,
+        wire_state(req.tab, &req.state),
+        order_by(req.sort),
+        req.sort.direction()
+    );
+    if req.assigned_me {
+        // `assignee_username` takes the literal login; there is no `@me`
+        // shorthand on the collection endpoints.
+        let login = current_login(auth).await?;
+        url.push_str(&format!("&assignee_username={}", urlencode_query(&login)));
+    }
+    if !req.labels.is_empty() {
+        // Comma-joined, which is lossless here: GitLab forbids commas in label
+        // titles, so no name can be split by this.
+        url.push_str(&format!("&labels={}", urlencode_query(&req.labels.join(","))));
+    }
+    if let Some(text) = req.search.as_deref() {
+        // `search` is plain text on both collections, so unlike GitHub's `q`
+        // there is no query syntax to strip. `in` is title+description by
+        // default and is stated anyway: the box promises that scope, and a
+        // promise resting on somebody else's default is one release away from
+        // being wrong.
+        url.push_str(&format!("&search={}&in=title,description", urlencode_query(text)));
+    }
 
     let response = api_get(auth, &url).await?;
-    let next_cursor = next_link(response.headers());
+    let total_count = header_i64(response.headers(), "x-total");
+    // Empty means "no page after this one" — the one pagination signal GitLab
+    // always sends, even where it declines to count.
+    let has_next = header_str(response.headers(), "x-next-page")
+        .is_some_and(|v| !v.trim().is_empty());
     let raw: Vec<RawItem> = response
         .json()
         .await
         .map_err(|e| ForgeError::Network(format!("bad list payload: {e}")))?;
 
     let is_pr = req.tab == super::ForgeTab::Prs;
+    // Whether this query is narrowed AFTER it arrives — structural, not
+    // data-dependent: a page that happens to hold no open rows is still part
+    // of a result set whose count includes them elsewhere.
+    let filters_locally = wire_state(req.tab, &req.state) == "all" && req.state != "all";
     let rows = raw
         .into_iter()
-        // The merged-inclusive "closed" query (see module docs) comes back with
-        // open rows too; drop them here rather than show the wrong tab.
         .filter(|item| keeps(&req.state, &item.state))
         .map(|item| ForgeIssueRow {
             is_pr,
@@ -87,14 +110,86 @@ pub async fn list_issues(
             title: item.title,
             body: item.description.map(|b| truncate_chars(&b, BODY_CAP)),
             state: display_state(&item.state),
-            labels: item.labels.into_iter().filter(|l| !l.is_empty()).collect(),
+            draft: is_pr && (item.draft || item.work_in_progress),
+            labels: item.labels.into_iter().filter_map(RawItemLabel::into_label).collect(),
             author: item.author.map(|a| a.username),
             updated_at: item.updated_at,
             html_url: item.web_url,
+            comments: item.user_notes_count,
         })
         .collect();
 
-    Ok(ForgeIssueList { rows, next_cursor })
+    Ok(ForgeIssueList {
+        rows,
+        page,
+        per_page,
+        // Withheld rather than wrong. Two ways the count stops being true:
+        // GitLab omits `X-Total` past 10k rows (documented, for performance),
+        // and the closed-merge-request query above asks for `state=all` and
+        // filters here — so its total counts open rows the user cannot see.
+        // `None` is the signal the UI degrades to previous/next on.
+        total_count: total_count.filter(|_| !filters_locally),
+        // GitLab paginates the whole collection — no equivalent of GitHub
+        // search's first-thousand ceiling, so every match is reachable.
+        reachable_count: None,
+        has_next,
+        // GitLab has no partial-result flag; only GitHub search does.
+        incomplete: false,
+    })
+}
+
+/// GitLab's spelling of the sort field. It is the SAME two fields GitHub
+/// offers, suffixed — and the only two both collections (issues and merge
+/// requests) accept, which is what makes the workbench's four orders portable.
+fn order_by(sort: ForgeSort) -> &'static str {
+    match sort.field() {
+        "updated" => "updated_at",
+        _ => "created_at",
+    }
+}
+
+/// The project's labels, for the workbench's label filter.
+///
+/// `with_counts=false` on purpose: the counts are an extra aggregation per
+/// label on the server and nothing here shows them.
+pub async fn list_labels(
+    auth: &ResolvedAuth,
+    owner_repo: &str,
+) -> Result<ForgeLabelList, ForgeError> {
+    let project = project_ref(owner_repo)?;
+    let url = format!(
+        "{}/projects/{project}/labels?per_page={LABEL_PAGE_SIZE}&with_counts=false",
+        auth.api_base
+    );
+    #[derive(Deserialize)]
+    struct RawProjectLabel {
+        #[serde(default)]
+        name: String,
+        /// `#rrggbb` here, unlike GitHub's bare digits.
+        #[serde(default)]
+        color: Option<String>,
+    }
+    let raw: Vec<RawProjectLabel> = api_get(auth, &url)
+        .await?
+        .json()
+        .await
+        .map_err(|e| ForgeError::Network(format!("bad labels payload: {e}")))?;
+    let truncated = raw.len() >= LABEL_PAGE_SIZE;
+    Ok(ForgeLabelList {
+        labels: raw
+            .into_iter()
+            .filter_map(|l| ForgeLabel::parse(l.name, l.color.as_deref()))
+            .collect(),
+        truncated,
+    })
+}
+
+fn header_str<'h>(headers: &'h reqwest::header::HeaderMap, name: &str) -> Option<&'h str> {
+    headers.get(name)?.to_str().ok()
+}
+
+fn header_i64(headers: &reqwest::header::HeaderMap, name: &str) -> Option<i64> {
+    header_str(headers, name)?.trim().parse().ok()
 }
 
 /// One merge request by `iid` — what turns "!12" into something checkoutable.
@@ -360,19 +455,24 @@ fn wire_state(tab: super::ForgeTab, state: &str) -> &'static str {
     }
 }
 
-/// Whether a row survives the filter the API could not fully express.
+/// Whether a row survives the filter the API could not fully express. Mirrors
+/// [`display_state`]: `locked` DISPLAYS as open, so the closed tab must drop it
+/// too — otherwise the merged-inclusive query leaks a row the icon then draws
+/// as open into a list of closed ones.
 fn keeps(requested: &str, actual: &str) -> bool {
     match requested {
-        "closed" => actual != "opened",
+        "closed" => !matches!(actual, "opened" | "locked"),
         _ => true,
     }
 }
 
-/// GitLab's `opened`/`locked`/`merged`/`closed` in the two words the rest of
-/// codeg (and the workbench row's icon) understands.
+/// GitLab's `opened`/`locked`/`merged`/`closed` in the three words the rest of
+/// codeg (and the workbench row's icon) understands. `merged` survives as
+/// itself: it is a real state here, unlike GitHub where it has to be inferred.
 fn display_state(state: &str) -> String {
     match state {
         "opened" | "locked" => "open".to_string(),
+        "merged" => "merged".to_string(),
         _ => "closed".to_string(),
     }
 }
@@ -431,14 +531,52 @@ struct RawItem {
     description: Option<String>,
     #[serde(default)]
     state: String,
+    /// Merge requests only. GitLab renamed `work_in_progress` to `draft`; old
+    /// self-managed instances still send only the former, so both are read.
     #[serde(default)]
-    labels: Vec<String>,
+    draft: bool,
+    #[serde(default)]
+    work_in_progress: bool,
+    #[serde(default)]
+    labels: Vec<RawItemLabel>,
     #[serde(default)]
     author: Option<RawUser>,
     #[serde(default)]
     updated_at: Option<String>,
     #[serde(default)]
     web_url: String,
+    /// Human comments. GitLab's own name for it: `notes` also covers the
+    /// system events ("changed the milestone"), which nobody wants counted.
+    #[serde(default)]
+    user_notes_count: i64,
+}
+
+/// A label on a collection item, in either shape GitLab may send it.
+///
+/// With `with_labels_details=true` (which the list URL asks for) each entry is
+/// an object carrying the colour; without it — and on any instance old enough
+/// to ignore the parameter — it is the bare name. Reading both is what keeps a
+/// self-managed GitLab listing at all: a hard-coded object shape would turn
+/// every row on such an instance into a deserialization failure.
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum RawItemLabel {
+    Name(String),
+    Detail {
+        #[serde(default)]
+        name: String,
+        #[serde(default)]
+        color: Option<String>,
+    },
+}
+
+impl RawItemLabel {
+    fn into_label(self) -> Option<ForgeLabel> {
+        match self {
+            Self::Name(name) => ForgeLabel::parse(name, None),
+            Self::Detail { name, color } => ForgeLabel::parse(name, color.as_deref()),
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -503,10 +641,13 @@ mod tests {
             "title": format!("item {iid}"),
             "description": format!("body {iid}"),
             "state": state,
-            "labels": ["bug", ""],
+            // What `with_labels_details=true` returns — plus one bare name, the
+            // shape an instance that ignores the parameter still sends.
+            "labels": [{ "name": "bug", "color": "#D9534F" }, "legacy", { "name": "" }],
             "author": { "username": "alice" },
             "updated_at": "2026-08-18T00:00:00Z",
             "web_url": format!("https://gitlab.test/group/sub/proj/-/issues/{iid}"),
+            "user_notes_count": iid,
         })
     }
 
@@ -523,38 +664,49 @@ mod tests {
         })
     }
 
-    /// `(api_base, MR-create bodies, note bodies, /user hits)`.
+    /// `(api_base, MR-create bodies, note bodies, /user hits, last list query)`.
+    /// The last element is what the collection endpoint was actually asked for,
+    /// so a test can assert the URL rather than infer it.
     #[allow(clippy::type_complexity)]
     async fn mock_api() -> (
         String,
         Arc<std::sync::Mutex<Vec<serde_json::Value>>>,
         Arc<std::sync::Mutex<Vec<(String, serde_json::Value)>>>,
         Arc<AtomicUsize>,
+        Arc<RwLock<HashMap<String, String>>>,
     ) {
         let creates: Arc<std::sync::Mutex<Vec<serde_json::Value>>> = Default::default();
         let notes: Arc<std::sync::Mutex<Vec<(String, serde_json::Value)>>> = Default::default();
         let user_hits = Arc::new(AtomicUsize::new(0));
+        let last_query: Arc<RwLock<HashMap<String, String>>> = Default::default();
         let seen = creates.clone();
         let issue_notes = notes.clone();
         let mr_notes = notes.clone();
         let hits = user_hits.clone();
+        let issue_query = last_query.clone();
+        let mr_query = last_query.clone();
         // The project path arrives percent-encoded, so it is ONE segment.
         let app = axum::Router::new()
             .route(
                 "/projects/group%2Fsub%2Fproj/issues",
-                get(|Query(q): Query<HashMap<String, String>>| async move {
-                    let mut headers = axum::http::HeaderMap::new();
-                    if !q.contains_key("page2") {
-                        headers.insert(
-                            "link",
-                            r#"<PLACEHOLDER/projects/group%2Fsub%2Fproj/issues?page2=1>; rel="next""#
-                                .parse()
-                                .unwrap(),
-                        );
+                get(move |Query(q): Query<HashMap<String, String>>| async move {
+                    if let Ok(mut slot) = issue_query.write() {
+                        *slot = q.clone();
                     }
+                    let page: u32 =
+                        q.get("page").and_then(|p| p.parse().ok()).unwrap_or(1);
+                    let mut headers = axum::http::HeaderMap::new();
+                    // 3 matches over 2 pages — the shape GitLab sends when it
+                    // is willing to count.
+                    headers.insert("x-total", "3".parse().unwrap());
+                    headers.insert("x-total-pages", "2".parse().unwrap());
+                    headers.insert(
+                        "x-next-page",
+                        if page < 2 { "2" } else { "" }.parse().unwrap(),
+                    );
                     let rows = if q.get("assignee_username").map(String::as_str) == Some("alice") {
                         vec![item_json(9, "opened")]
-                    } else if q.contains_key("page2") {
+                    } else if page >= 2 {
                         vec![item_json(3, "opened")]
                     } else {
                         vec![item_json(1, "opened")]
@@ -564,19 +716,33 @@ mod tests {
             )
             .route(
                 "/projects/group%2Fsub%2Fproj/merge_requests",
-                get(|Query(q): Query<HashMap<String, String>>| async move {
+                get(move |Query(q): Query<HashMap<String, String>>| async move {
+                    if let Ok(mut slot) = mr_query.write() {
+                        *slot = q.clone();
+                    }
+                    let mut headers = axum::http::HeaderMap::new();
+                    // A count IS sent — the client must still refuse to trust
+                    // it for the locally-filtered "closed" query.
+                    headers.insert("x-total", "3".parse().unwrap());
+                    headers.insert("x-next-page", "".parse().unwrap());
                     let rows = match q.get("source_branch").map(String::as_str) {
                         Some("feature") => vec![mr_json(4, "opened", 1)],
                         Some(_) => vec![],
                         // The tab listing: `state=all` is what the "closed"
                         // filter asks for, and it comes back merged + open.
-                        None => vec![
-                            mr_json(5, "merged", 1),
-                            mr_json(6, "opened", 1),
-                            mr_json(7, "closed", 1),
-                        ],
+                        // A draft rides along so the row mapping is covered.
+                        None => {
+                            let mut draft = mr_json(6, "opened", 1);
+                            draft["draft"] = serde_json::json!(true);
+                            vec![
+                                mr_json(5, "merged", 1),
+                                draft,
+                                mr_json(7, "closed", 1),
+                                mr_json(11, "locked", 1),
+                            ]
+                        }
                     };
-                    Json(serde_json::Value::Array(rows))
+                    (headers, Json(serde_json::Value::Array(rows)))
                 })
                 .post(move |Json(body): Json<serde_json::Value>| {
                     seen.lock().unwrap().push(body);
@@ -623,6 +789,21 @@ mod tests {
                 }),
             )
             .route(
+                "/projects/group%2Fsub%2Fproj/labels",
+                get(|Query(q): Query<HashMap<String, String>>| async move {
+                    // Counts are an extra per-label aggregation server-side and
+                    // nothing here shows them.
+                    assert_eq!(q.get("with_counts").map(String::as_str), Some("false"));
+                    Json(serde_json::json!([
+                        { "name": "bug", "color": "#D9534F" },
+                        // GitLab accepts CSS colour names when a label is
+                        // written, so a stored colour need not be hex at all.
+                        { "name": "help wanted", "color": "rebeccapurple" },
+                        { "name": "" },
+                    ]))
+                }),
+            )
+            .route(
                 "/limited/projects/group%2Fsub%2Fproj/issues",
                 get(|| async {
                     let mut headers = axum::http::HeaderMap::new();
@@ -637,7 +818,7 @@ mod tests {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-        (format!("http://{addr}"), creates, notes, user_hits)
+        (format!("http://{addr}"), creates, notes, user_hits, last_query)
     }
 
     fn req(tab: super::super::ForgeTab, state: &str) -> ListIssuesRequest {
@@ -646,7 +827,11 @@ mod tests {
             tab,
             state: state.into(),
             assigned_me: false,
-            cursor: None,
+            labels: vec![],
+            search: None,
+            sort: ForgeSort::default(),
+            page: 1,
+            per_page: 20,
         }
     }
 
@@ -655,7 +840,7 @@ mod tests {
     /// `opened`) is normalized to what the workbench renders.
     #[tokio::test]
     async fn issues_come_from_the_encoded_project_path() {
-        let (api_base, _, _, _) = mock_api().await;
+        let (api_base, _, _, _, _) = mock_api().await;
         let auth = auth_for(api_base.clone());
         let list = list_issues(&auth, &req(super::super::ForgeTab::Issues, "open"))
             .await
@@ -664,31 +849,47 @@ mod tests {
         let row = &list.rows[0];
         assert_eq!((row.number, row.state.as_str()), (1, "open"));
         assert_eq!(row.body.as_deref(), Some("body 1"));
-        assert_eq!(row.labels, vec!["bug"]); // the empty label is dropped
+        // The empty label is dropped; a detailed one keeps its colour and a
+        // bare one still lists, just without a swatch.
+        assert_eq!(
+            row.labels,
+            vec![
+                ForgeLabel { name: "bug".into(), color: Some("#d9534f".into()) },
+                ForgeLabel { name: "legacy".into(), color: None },
+            ]
+        );
         assert_eq!(row.author.as_deref(), Some("alice"));
         assert!(!row.is_pr);
 
-        // Pagination is the Link header, exactly as on the GitHub side.
-        let next = list.next_cursor.expect("next").replace("PLACEHOLDER", &api_base);
+        // Offset pagination: `X-Total` is the count and `X-Next-Page` is what
+        // says whether another page exists.
+        assert_eq!((list.page, list.per_page), (1, 20));
+        assert_eq!(list.total_count, Some(3));
+        assert!(list.has_next);
+
         let page2 = list_issues(
             &auth,
-            &ListIssuesRequest {
-                cursor: Some(next),
-                ..req(super::super::ForgeTab::Issues, "open")
-            },
+            &ListIssuesRequest { page: 2, ..req(super::super::ForgeTab::Issues, "open") },
         )
         .await
         .expect("page 2");
         assert_eq!(page2.rows[0].number, 3);
-        assert!(page2.next_cursor.is_none());
+        // Empty `X-Next-Page` is GitLab's end-of-list, not a missing header.
+        assert!(!page2.has_next);
     }
 
     /// GitLab's `state=closed` excludes merged merge requests. The workbench's
     /// closed tab has to show them (GitHub's does), so the query asks for
     /// everything and the open ones are dropped here.
+    ///
+    /// That local narrowing is exactly why this query must report NO total: the
+    /// `X-Total` the server sends counts the open rows the user cannot see, so
+    /// page numbers built from it would be wrong. `locked` displays as open, so
+    /// it is dropped alongside `opened` — otherwise the closed tab would show a
+    /// row the icon then draws green.
     #[tokio::test]
-    async fn the_closed_tab_still_shows_merged_merge_requests() {
-        let (api_base, _, _, _) = mock_api().await;
+    async fn the_closed_tab_shows_merged_and_withholds_the_untrustworthy_total() {
+        let (api_base, _, _, _, _) = mock_api().await;
         let auth = auth_for(api_base);
         let list = list_issues(&auth, &req(super::super::ForgeTab::Prs, "closed"))
             .await
@@ -696,17 +897,132 @@ mod tests {
         assert_eq!(
             list.rows.iter().map(|r| r.number).collect::<Vec<_>>(),
             vec![5, 7],
-            "merged and closed, but not the open one"
+            "merged and closed, but neither the open nor the locked one"
         );
-        assert!(list.rows.iter().all(|r| r.is_pr && r.state == "closed"));
+        assert!(list.rows.iter().all(|r| r.is_pr));
+        // `merged` survives as itself now — the icon draws it differently.
+        assert_eq!(list.rows[0].state, "merged");
+        assert_eq!(list.rows[1].state, "closed");
+        assert_eq!(
+            list.total_count, None,
+            "a count that includes rows we filtered out must not be shown"
+        );
         assert_eq!(wire_state(super::super::ForgeTab::Prs, "closed"), "all");
-        // Issues have no merged state, so theirs stays a plain closed query.
+        // Issues have no merged state, so theirs stays a plain closed query —
+        // nothing is filtered locally, so its count IS trustworthy.
         assert_eq!(wire_state(super::super::ForgeTab::Issues, "closed"), "closed");
+        let issues = list_issues(&auth, &req(super::super::ForgeTab::Issues, "closed"))
+            .await
+            .expect("list");
+        assert_eq!(issues.total_count, Some(3));
+    }
+
+    /// The open tab is a plain `state=opened` query, so its count is honest —
+    /// and a draft merge request has to arrive marked as one.
+    #[tokio::test]
+    async fn the_open_tab_counts_and_carries_the_draft_flag() {
+        let (api_base, _, _, _, _) = mock_api().await;
+        let auth = auth_for(api_base);
+        let list = list_issues(&auth, &req(super::super::ForgeTab::Prs, "open"))
+            .await
+            .expect("list");
+        assert_eq!(list.total_count, Some(3), "no local filtering on this one");
+        // GitLab paginates the whole collection: nothing is out of reach, so
+        // the footer's page numbers come straight from the total. Only GitHub
+        // search has a ceiling to declare.
+        assert_eq!(list.reachable_count, None);
+        assert_eq!(list.trustworthy_count(), Some(3));
+        let draft = list.rows.iter().find(|r| r.number == 6).expect("draft row");
+        assert!(draft.draft && draft.state == "open");
+        assert!(
+            list.rows.iter().filter(|r| r.number != 6).all(|r| !r.draft),
+            "draft must not spill onto the other rows"
+        );
+    }
+
+    /// Search text, labels and the sort order all reach the collection URL.
+    /// Unlike GitHub there is no query syntax to strip — `search` is plain text
+    /// over title and description — but the params still have to be there.
+    #[tokio::test]
+    async fn text_label_and_sort_filters_reach_the_url() {
+        let (api_base, _, _, _, last) = mock_api().await;
+        let auth = auth_for(api_base);
+        list_issues(
+            &auth,
+            &ListIssuesRequest {
+                labels: vec!["bug".into(), "help wanted".into()],
+                search: Some("login timeout".into()),
+                sort: ForgeSort::LeastRecentlyUpdated,
+                ..req(super::super::ForgeTab::Issues, "open")
+            },
+        )
+        .await
+        .expect("list");
+        let sent = last.read().unwrap().clone();
+        // Comma-joined: GitLab forbids commas in label titles, so nothing splits.
+        assert_eq!(sent.get("labels").map(String::as_str), Some("bug,help wanted"));
+        assert_eq!(sent.get("search").map(String::as_str), Some("login timeout"));
+        // The scope the box promises, stated rather than inherited: it happens
+        // to be GitLab's default too, and a promise resting on somebody else's
+        // default is one release away from being wrong.
+        assert_eq!(sent.get("in").map(String::as_str), Some("title,description"));
+        assert_eq!(sent.get("order_by").map(String::as_str), Some("updated_at"));
+        assert_eq!(sent.get("sort").map(String::as_str), Some("asc"));
+        // Without this the rows come back with bare label NAMES and every chip
+        // in the workbench is grey.
+        assert_eq!(sent.get("with_labels_details").map(String::as_str), Some("true"));
+
+        // The default order, and GitLab's spelling of GitHub's `created`.
+        list_issues(&auth, &req(super::super::ForgeTab::Issues, "open"))
+            .await
+            .expect("list");
+        let plain = last.read().unwrap().clone();
+        assert_eq!(plain.get("order_by").map(String::as_str), Some("created_at"));
+        assert_eq!(plain.get("sort").map(String::as_str), Some("desc"));
+        // Absent filters are absent params, not empty ones — `labels=` matches
+        // items with no labels at all on some GitLab versions. `in` belongs to
+        // the text and goes with it.
+        assert!(
+            !plain.contains_key("labels")
+                && !plain.contains_key("search")
+                && !plain.contains_key("in")
+        );
+    }
+
+    /// `user_notes_count`, not `notes`: the latter counts the system events
+    /// ("changed the milestone"), which is not what a discussion badge means.
+    #[tokio::test]
+    async fn rows_carry_the_human_comment_count() {
+        let (api_base, _, _, _, _) = mock_api().await;
+        let auth = auth_for(api_base);
+        let list = list_issues(&auth, &req(super::super::ForgeTab::Issues, "open"))
+            .await
+            .expect("list");
+        assert_eq!(list.rows[0].comments, 1);
+    }
+
+    /// The label vocabulary for the filter, from the project's own labels.
+    #[tokio::test]
+    async fn project_labels_are_listed() {
+        let (api_base, _, _, _, _) = mock_api().await;
+        let auth = auth_for(api_base);
+        let list = list_labels(&auth, "Group/Sub/Proj").await.expect("labels");
+        assert_eq!(
+            list.labels,
+            vec![
+                ForgeLabel { name: "bug".into(), color: Some("#d9534f".into()) },
+                // Unrecognized colour → no colour, not a dropped label.
+                ForgeLabel { name: "help wanted".into(), color: None },
+            ],
+            "empty name dropped"
+        );
+        assert!(!list.truncated, "three of a hundred is not a full page");
+        assert!(list_labels(&auth, "no-slash").await.is_err());
     }
 
     #[tokio::test]
     async fn assigned_me_resolves_the_login_once() {
-        let (api_base, _, _, user_hits) = mock_api().await;
+        let (api_base, _, _, user_hits, _) = mock_api().await;
         let auth = auth_for(api_base);
         let request = ListIssuesRequest {
             assigned_me: true,
@@ -725,7 +1041,7 @@ mod tests {
     /// resolved so the refusal can name it.
     #[tokio::test]
     async fn a_merge_request_is_looked_up_by_iid() {
-        let (api_base, _, _, _) = mock_api().await;
+        let (api_base, _, _, _, _) = mock_api().await;
         let auth = auth_for(api_base);
         let mr = get_merge_request(&auth, "Group/Sub/Proj", 4).await.expect("mr");
         assert_eq!((mr.number, mr.head_ref.as_str(), mr.base_ref.as_str()), (4, "feature", "main"));
@@ -748,7 +1064,7 @@ mod tests {
     /// same shape the four-way match already knows.
     #[tokio::test]
     async fn merge_requests_are_found_by_source_branch() {
-        let (api_base, _, _, _) = mock_api().await;
+        let (api_base, _, _, _, _) = mock_api().await;
         let auth = auth_for(api_base);
         let found = find_merge_requests(&auth, "group/sub/proj", "feature")
             .await
@@ -765,7 +1081,7 @@ mod tests {
     /// how its own UI models a draft.
     #[tokio::test]
     async fn a_draft_merge_request_is_a_prefixed_title() {
-        let (api_base, creates, _, _) = mock_api().await;
+        let (api_base, creates, _, _, _) = mock_api().await;
         let auth = auth_for(api_base);
         let made = create_merge_request(
             &auth,
@@ -815,7 +1131,7 @@ mod tests {
     /// collection.
     #[tokio::test]
     async fn notes_go_to_the_collection_the_item_belongs_to() {
-        let (api_base, _, notes, _) = mock_api().await;
+        let (api_base, _, notes, _, _) = mock_api().await;
         let auth = auth_for(api_base);
         let issue_url = create_note(&auth, "Group/Sub/Proj", ForgeItemKind::Issue, 7, "done")
             .await
@@ -837,7 +1153,7 @@ mod tests {
 
     #[tokio::test]
     async fn rate_limits_are_told_apart_from_auth_failures() {
-        let (api_base, _, _, _) = mock_api().await;
+        let (api_base, _, _, _, _) = mock_api().await;
         let auth = auth_for(format!("{api_base}/limited"));
         match list_issues(&auth, &req(super::super::ForgeTab::Issues, "open")).await {
             Err(ForgeError::RateLimited { retry_after }) => assert_eq!(retry_after, Some(17)),
@@ -845,20 +1161,23 @@ mod tests {
         }
     }
 
-    /// A crafted cursor must not turn the client into an authenticated proxy
-    /// for someone else's host.
+    /// Every request URL is now built here from the resolved api_base, so the
+    /// only thing the client still supplies is coordinates — and a project path
+    /// it made up must be refused rather than turned into a URL.
     #[tokio::test]
-    async fn a_foreign_cursor_is_rejected() {
-        let (api_base, _, _, _) = mock_api().await;
+    async fn a_crafted_project_path_is_rejected() {
+        let (api_base, _, _, _, _) = mock_api().await;
         let auth = auth_for(api_base);
-        let hostile = ListIssuesRequest {
-            cursor: Some("http://169.254.169.254/latest/meta-data".into()),
-            ..req(super::super::ForgeTab::Issues, "open")
-        };
-        assert!(matches!(
-            list_issues(&auth, &hostile).await,
-            Err(ForgeError::Invalid(_))
-        ));
+        for bad in ["no-slash", "acme/app?x=1", "http://169.254.169.254/latest"] {
+            let hostile = ListIssuesRequest {
+                owner_repo: bad.into(),
+                ..req(super::super::ForgeTab::Issues, "open")
+            };
+            assert!(
+                matches!(list_issues(&auth, &hostile).await, Err(ForgeError::Invalid(_))),
+                "{bad} should be refused"
+            );
+        }
     }
 
     #[test]

@@ -19,6 +19,10 @@ import {
   CollapsibleTrigger,
 } from "@/components/ui/collapsible"
 import { workTaskCreateFromForge } from "@/lib/api"
+import {
+  toLocalizedErrorMessage,
+  type AppErrorTranslator,
+} from "@/lib/app-error"
 import { useWorkbenchRoute } from "@/contexts/workbench-route-context"
 import type {
   ForgeIssueRow,
@@ -55,6 +59,9 @@ export function ForgeStartDialog({
   onCreated: (task: WorkTask) => void
 }) {
   const t = useTranslations("Forge")
+  // Root-scoped: backend errors carry FULL dotted keys the namespaced `t`
+  // above cannot resolve. See `backup-settings.tsx` for the same pairing.
+  const tRoot = useTranslations()
   const { setRoute } = useWorkbenchRoute()
   const [instruction, setInstruction] = useState("")
   const [submitting, setSubmitting] = useState(false)
@@ -77,7 +84,9 @@ export function ForgeStartDialog({
         snapshot: {
           title: row.title,
           body: row.body,
-          labels: row.labels,
+          // Names only: the snapshot is TEXT handed to an agent, and a colour
+          // means nothing there.
+          labels: row.labels.map((l) => l.name),
           author: row.author,
         },
         instruction: instruction.trim() || null,
@@ -99,7 +108,11 @@ export function ForgeStartDialog({
         }
       }
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
+      // A rejected `invoke()` throws the SERIALIZED AppCommandError object,
+      // not an Error — `String(e)` on it renders "[object Object]".
+      setError(
+        toLocalizedErrorMessage(e, tRoot as unknown as AppErrorTranslator)
+      )
     } finally {
       setSubmitting(false)
     }

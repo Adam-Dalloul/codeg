@@ -17,8 +17,8 @@ use crate::db::service::work_task_service::{self, ForgeCreateOutcome};
 use crate::db::AppDatabase;
 use crate::forge::envelope::{forge_untrusted_envelope, ForgeSnapshot};
 use crate::forge::{
-    self, ForgeError, ForgeIssueList, ForgeItemKind, ForgeProvider, ForgeSourceMeta, ForgeTab,
-    ListIssuesRequest,
+    self, CountFilters, ForgeError, ForgeIssueList, ForgeItemKind, ForgeProvider, ForgeSourceMeta,
+    ForgeTab, ListFilters, ListIssuesRequest,
 };
 use crate::models::{WorkTaskConfig, WorkTaskDraft, WorkTaskInfo, WorkTaskSource};
 use crate::web::event_bridge::{emit_event, EventEmitter, WorkTaskChange, WORK_TASK_CHANGED_EVENT};
@@ -145,15 +145,14 @@ fn redact_userinfo(url: &str) -> String {
     }
 }
 
-pub async fn forge_list_issues_core(
+/// Resolve the folder's repository AND the credential to read it with — the
+/// two things every workbench read needs and neither of which the client may
+/// supply.
+async fn resolve_folder_repo(
     db: &AppDatabase,
     folder_id: i32,
-    tab: ForgeTab,
-    state: String,
-    assigned_me: bool,
-    cursor: Option<String>,
-    account_id: Option<String>,
-) -> Result<ForgeIssueList, AppCommandError> {
+    account_id: Option<&str>,
+) -> Result<(ForgeRemote, forge::ResolvedAuth), AppCommandError> {
     let remote = folder_forge_remote_core(db, folder_id)
         .await?
         .ok_or_else(|| {
@@ -161,23 +160,76 @@ pub async fn forge_list_issues_core(
                 "this folder has no recognizable forge remote (origin)",
             )
         })?;
-    let auth = forge::resolve_forge_auth(
-        &db.conn,
-        remote.provider,
-        &remote.server_host,
-        account_id.as_deref(),
-    )
-    .await?;
-    let request = ListIssuesRequest {
-        owner_repo: remote.owner_repo,
-        tab,
-        state,
-        assigned_me,
-        cursor,
-    };
+    let auth =
+        forge::resolve_forge_auth(&db.conn, remote.provider, &remote.server_host, account_id)
+            .await?;
+    Ok((remote, auth))
+}
+
+pub async fn forge_list_issues_core(
+    db: &AppDatabase,
+    folder_id: i32,
+    filters: ListFilters,
+) -> Result<ForgeIssueList, AppCommandError> {
+    let (remote, auth) =
+        resolve_folder_repo(db, folder_id, filters.account_id.as_deref()).await?;
+    // The repository is an ARGUMENT here, never a field of `filters`: it is
+    // derived from the folder's own remote, so there is nothing for a client to
+    // claim. Paging is clamped inside each client (`ListIssuesRequest::clamped`)
+    // and the text/label filters are normalized by `new`.
+    let request = ListIssuesRequest::new(remote.owner_repo, filters);
     Ok(match remote.provider {
         ForgeProvider::GitHub => forge::github::list_issues(&auth, &request).await?,
         ForgeProvider::GitLab => forge::gitlab::list_issues(&auth, &request).await?,
+    })
+}
+
+/// One tab's item count under a set of filters — a badge on the workbench's
+/// Issues/PR switcher.
+///
+/// **One tab, and specifically the tab the user is NOT looking at.** The active
+/// tab's count arrives inside the list response the page already paid for, so
+/// asking for it again would make every filter change cost three search calls
+/// against a quota of thirty a MINUTE — decoration competing for quota with the
+/// content it decorates. Paired with a frontend that remembers both numbers per
+/// filter set, this makes switching tabs and turning pages cost nothing at all.
+///
+/// Its own command rather than a probe fired from the frontend: every list call
+/// re-derives the folder's remote (which spawns `git`) and re-resolves the
+/// account, so the sequencing has to happen behind one resolution.
+///
+/// `None` — never an error — for a forge that declines to count, a probe that
+/// failed, or a search GitHub itself calls incomplete. A badge is decoration:
+/// losing one costs that badge and nothing else, not the other badge and
+/// certainly not the list, which reports its own failures with its own error.
+pub async fn forge_tab_count_core(
+    db: &AppDatabase,
+    folder_id: i32,
+    tab: ForgeTab,
+    filters: CountFilters,
+) -> Result<Option<i64>, AppCommandError> {
+    let (remote, auth) = resolve_folder_repo(db, folder_id, filters.account_id.as_deref()).await?;
+    let request = ListIssuesRequest::new(remote.owner_repo.clone(), filters.probe(tab));
+    let listed = match remote.provider {
+        ForgeProvider::GitHub => forge::github::list_issues(&auth, &request).await,
+        ForgeProvider::GitLab => forge::gitlab::list_issues(&auth, &request).await,
+    };
+    Ok(listed.ok().and_then(|page| page.trustworthy_count()))
+}
+
+/// The repository's label vocabulary, for the workbench's label filter. Its
+/// own command rather than a field on the list response: the labels change far
+/// more slowly than the list, so the frontend fetches them once per repository
+/// instead of on every page turn.
+pub async fn forge_list_labels_core(
+    db: &AppDatabase,
+    folder_id: i32,
+    account_id: Option<String>,
+) -> Result<forge::ForgeLabelList, AppCommandError> {
+    let (remote, auth) = resolve_folder_repo(db, folder_id, account_id.as_deref()).await?;
+    Ok(match remote.provider {
+        ForgeProvider::GitHub => forge::github::list_labels(&auth, &remote.owner_repo).await?,
+        ForgeProvider::GitLab => forge::gitlab::list_labels(&auth, &remote.owner_repo).await?,
     })
 }
 
@@ -430,22 +482,30 @@ pub async fn folder_forge_remote(
 pub async fn forge_list_issues(
     db: tauri::State<'_, AppDatabase>,
     folder_id: i32,
-    tab: ForgeTab,
-    state: Option<String>,
-    assigned_me: Option<bool>,
-    cursor: Option<String>,
-    account_id: Option<String>,
+    query: ListFilters,
 ) -> Result<ForgeIssueList, AppCommandError> {
-    forge_list_issues_core(
-        &db,
-        folder_id,
-        tab,
-        state.unwrap_or_else(|| "open".to_string()),
-        assigned_me.unwrap_or(false),
-        cursor,
-        account_id,
-    )
-    .await
+    forge_list_issues_core(&db, folder_id, query).await
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn forge_tab_count(
+    db: tauri::State<'_, AppDatabase>,
+    folder_id: i32,
+    tab: ForgeTab,
+    filters: CountFilters,
+) -> Result<Option<i64>, AppCommandError> {
+    forge_tab_count_core(&db, folder_id, tab, filters).await
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn forge_list_labels(
+    db: tauri::State<'_, AppDatabase>,
+    folder_id: i32,
+    account_id: Option<String>,
+) -> Result<forge::ForgeLabelList, AppCommandError> {
+    forge_list_labels_core(&db, folder_id, account_id).await
 }
 
 #[cfg(feature = "tauri-runtime")]

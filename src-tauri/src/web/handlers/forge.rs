@@ -9,7 +9,7 @@ use serde::Deserialize;
 use crate::app_error::AppCommandError;
 use crate::app_state::AppState;
 use crate::commands::forge as core;
-use crate::forge::ForgeTab;
+use crate::forge::{CountFilters, ListFilters};
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -19,21 +19,33 @@ pub struct FolderParams {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ListIssuesParams {
+pub struct LabelsParams {
     pub folder_id: i32,
-    pub tab: ForgeTab,
-    #[serde(default = "default_state")]
-    pub state: String,
-    #[serde(default)]
-    pub assigned_me: bool,
-    #[serde(default)]
-    pub cursor: Option<String>,
     #[serde(default)]
     pub account_id: Option<String>,
 }
 
-fn default_state() -> String {
-    "open".to_string()
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListIssuesParams {
+    pub folder_id: i32,
+    /// Everything the client gets to decide, in one value. Nested rather than
+    /// flattened so the trust boundary stays visible: the repository is not in
+    /// here, and cannot be.
+    pub query: ListFilters,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TabCountParams {
+    pub folder_id: i32,
+    /// Which tab to count. Always the one NOT on screen — the visible tab's
+    /// count rides along with its own list response (see
+    /// `forge_tab_count_core`).
+    pub tab: crate::forge::ForgeTab,
+    /// The filter half only — a count has no page or order (see
+    /// `CountFilters`).
+    pub filters: CountFilters,
 }
 
 #[derive(Deserialize)]
@@ -62,16 +74,25 @@ pub async fn forge_list_issues(
     Json(params): Json<ListIssuesParams>,
 ) -> Result<Json<crate::forge::ForgeIssueList>, AppCommandError> {
     Ok(Json(
-        core::forge_list_issues_core(
-            &state.db,
-            params.folder_id,
-            params.tab,
-            params.state,
-            params.assigned_me,
-            params.cursor,
-            params.account_id,
-        )
-        .await?,
+        core::forge_list_issues_core(&state.db, params.folder_id, params.query).await?,
+    ))
+}
+
+pub async fn forge_tab_count(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(params): Json<TabCountParams>,
+) -> Result<Json<Option<i64>>, AppCommandError> {
+    Ok(Json(
+        core::forge_tab_count_core(&state.db, params.folder_id, params.tab, params.filters).await?,
+    ))
+}
+
+pub async fn forge_list_labels(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(params): Json<LabelsParams>,
+) -> Result<Json<crate::forge::ForgeLabelList>, AppCommandError> {
+    Ok(Json(
+        core::forge_list_labels_core(&state.db, params.folder_id, params.account_id).await?,
     ))
 }
 

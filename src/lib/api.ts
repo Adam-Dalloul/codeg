@@ -9,6 +9,7 @@ import {
 import { getCodegToken } from "./transport/web-auth"
 import { notifyWebUnauthorized } from "./transport/web-connection-store"
 import { getCurrentEffectiveAppLocale } from "./i18n"
+import { DEFAULT_FORGE_PAGE_SIZE } from "./forge-list-prefs"
 import { TurnBusyError, isTurnInProgressRejection } from "./turn-busy"
 import type { FolderThemeColor } from "./theme-presets"
 import type { FollowUpIntent } from "./task-follow-up"
@@ -21,7 +22,9 @@ import type {
   AutomationDraft,
   ForgeCreateResult,
   ForgeIssueList,
+  ForgeLabelList,
   ForgeRemote,
+  ForgeSort,
   ForgeTab,
   ForgeTaskDraftInput,
   ForgeTaskLink,
@@ -2647,6 +2650,7 @@ export type SettingsSection =
   | "experts"
   | "science"
   | "office-tools"
+  | "version-control"
   | "shortcuts"
   | "system"
 
@@ -4863,21 +4867,91 @@ export async function folderForgeRemote(
   return getTransport().call("folder_forge_remote", { folderId })
 }
 
-export async function forgeListIssues(req: {
-  folderId: number
+/** Everything the client gets to decide about a list request. The REPOSITORY
+ *  is deliberately absent: the backend derives it from the folder's own remote,
+ *  so there is nothing here to claim (see `commands/forge.rs`). */
+export interface ForgeListQuery {
   tab: ForgeTab
   state?: "open" | "closed" | "all"
   assignedMe?: boolean
-  cursor?: string | null
+  /** Label names, ANDed by both forges. */
+  labels?: string[]
+  /** Free text over title and description. Treated as TEXT, not query syntax. */
+  search?: string | null
+  sort?: ForgeSort
+  /** 1-based. Both forges paginate by offset; the backend clamps. */
+  page?: number
+  perPage?: number
   accountId?: string | null
-}): Promise<ForgeIssueList> {
+}
+
+export async function forgeListIssues(
+  folderId: number,
+  query: ForgeListQuery
+): Promise<ForgeIssueList> {
   return getTransport().call("forge_list_issues", {
-    folderId: req.folderId,
-    tab: req.tab,
-    state: req.state ?? "open",
-    assignedMe: req.assignedMe ?? false,
-    cursor: req.cursor ?? null,
-    accountId: req.accountId ?? null,
+    folderId,
+    query: {
+      tab: query.tab,
+      state: query.state ?? "open",
+      assignedMe: query.assignedMe ?? false,
+      labels: query.labels ?? [],
+      search: query.search ?? null,
+      sort: query.sort ?? "newest",
+      page: query.page ?? 1,
+      perPage: query.perPage ?? DEFAULT_FORGE_PAGE_SIZE,
+      accountId: query.accountId ?? null,
+    },
+  })
+}
+
+/** Everything a COUNT may be narrowed by. No page and no order: neither can
+ *  change the number, which is what lets the switcher survive a page turn
+ *  without spending a request. */
+export interface ForgeCountFilters {
+  state?: "open" | "closed" | "all"
+  assignedMe?: boolean
+  labels?: string[]
+  search?: string | null
+  accountId?: string | null
+}
+
+/** One tab's count — a badge on the workbench's switcher — or null when the
+ *  forge declines to count, the probe fails, or GitHub calls the search
+ *  incomplete.
+ *
+ *  Ask only for the tab you are NOT showing. The visible tab's count already
+ *  came back inside its own list response, and re-asking would make every
+ *  filter change cost three search calls against a quota of thirty a MINUTE. */
+export async function forgeTabCount(
+  folderId: number,
+  tab: ForgeTab,
+  filters: ForgeCountFilters = {}
+): Promise<number | null> {
+  return getTransport().call("forge_tab_count", {
+    folderId,
+    tab,
+    filters: {
+      state: filters.state ?? "open",
+      assignedMe: filters.assignedMe ?? false,
+      labels: filters.labels ?? [],
+      search: filters.search ?? null,
+      accountId: filters.accountId ?? null,
+    },
+  })
+}
+
+/** The repository's labels, for the workbench's label filter. Its own call
+ *  (and its own cache in the page): labels change far more slowly than the
+ *  list, and on GitHub this runs on the core quota rather than search's
+ *  30-per-minute one. */
+export async function forgeListLabels(
+  folderId: number,
+  accountId?: string | null
+): Promise<ForgeLabelList> {
+  return getTransport().call("forge_list_labels", {
+    folderId,
+    accountId: accountId ?? null,
   })
 }
 

@@ -46,6 +46,16 @@ impl ForgeProvider {
         }
     }
 
+    /// How this forge spells its own name in prose. [`as_str`] is the wire
+    /// value (lowercase, compared and stored); putting it in front of a user
+    /// reads as a typo.
+    pub fn display_name(self) -> &'static str {
+        match self {
+            ForgeProvider::GitHub => "GitHub",
+            ForgeProvider::GitLab => "GitLab",
+        }
+    }
+
     /// What this forge calls a proposed change, for messages the user reads.
     /// GitLab users do not have "pull requests" and being told they do reads
     /// like the wrong tool answered.
@@ -128,11 +138,23 @@ impl ForgeItemKind {
     }
 }
 
+/// i18n key for [`ForgeError::NoAccount`]. Dotted from the message root
+/// because the frontend localizes it with a ROOT-scoped translator; the
+/// forge page's own `useTranslations("Forge")` cannot resolve it.
+pub const NO_ACCOUNT_I18N_KEY: &str = "Forge.errors.noAccount";
+
 #[derive(Debug, thiserror::Error)]
 pub enum ForgeError {
     /// No usable account/token for the requested host (or the token is dead).
     #[error("forge auth: {0}")]
     Auth(String),
+    /// Nothing is configured for this host at all — the one auth failure the
+    /// user can fix themselves, so it carries an i18n key and the workbench
+    /// turns it into an "add an account" action instead of a dead end. A
+    /// pinned-id miss, a missing keyring token or a rejected token stay
+    /// [`ForgeError::Auth`]: adding another account fixes none of them.
+    #[error("no {} account for host {host}", provider.display_name())]
+    NoAccount { provider: ForgeProvider, host: String },
     /// Primary or secondary rate limit; honor `retry_after` when present.
     #[error("forge rate limited")]
     RateLimited { retry_after: Option<u64> },
@@ -155,6 +177,14 @@ impl From<ForgeError> for crate::app_error::AppCommandError {
                 "the account for this repository's host is not usable",
             )
             .with_detail(msg.clone()),
+            ForgeError::NoAccount { provider, host } => {
+                let params = std::collections::BTreeMap::from([
+                    ("host".to_string(), host.clone()),
+                    ("provider".to_string(), provider.display_name().to_string()),
+                ]);
+                E::configuration_missing(err.to_string())
+                    .with_i18n(NO_ACCOUNT_I18N_KEY, params)
+            }
             ForgeError::RateLimited { retry_after } => E::network("forge rate limit reached")
                 .with_detail(match retry_after {
                     Some(secs) => format!("retry after {secs}s"),
@@ -329,9 +359,65 @@ pub enum ForgeTab {
     Prs,
 }
 
+/// Page-size bounds. Both forges cap `per_page` at 100; the clamp lives here
+/// so a client cannot ask for a page that either API would reject outright.
+pub const MIN_PER_PAGE: u32 = 1;
+pub const MAX_PER_PAGE: u32 = 100;
+pub const DEFAULT_PER_PAGE: u32 = 20;
+
+/// Longest free-text filter accepted. GitHub caps the whole `q` at 256
+/// characters and the qualifiers already eat some of that, so a longer string
+/// would turn the search into a 422 rather than a narrower list.
+pub const MAX_SEARCH_CHARS: usize = 128;
+/// Most labels one filter may name. Both forges AND them together, so past a
+/// handful the result set is empty anyway — and each one lengthens GitHub's `q`.
+pub const MAX_LABEL_FILTERS: usize = 10;
+
+/// How the list is ordered. Deliberately four NAMED orders rather than a
+/// free (field, direction) pair: the two forges spell their fields differently
+/// (`created` vs `created_at`) and accept different sets, so the intersection
+/// is what the workbench can honestly offer on both.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ForgeSort {
+    /// Newest first — what github.com's own issue list defaults to.
+    #[default]
+    Newest,
+    Oldest,
+    RecentlyUpdated,
+    LeastRecentlyUpdated,
+}
+
+impl ForgeSort {
+    /// GitHub's `sort` value. GitLab spells the same two fields `created_at` /
+    /// `updated_at`, derived from this in its own client.
+    pub fn field(self) -> &'static str {
+        match self {
+            ForgeSort::Newest | ForgeSort::Oldest => "created",
+            ForgeSort::RecentlyUpdated | ForgeSort::LeastRecentlyUpdated => "updated",
+        }
+    }
+
+    pub fn ascending(self) -> bool {
+        matches!(self, ForgeSort::Oldest | ForgeSort::LeastRecentlyUpdated)
+    }
+
+    /// `asc` / `desc` — the spelling both forges share.
+    pub fn direction(self) -> &'static str {
+        if self.ascending() {
+            "asc"
+        } else {
+            "desc"
+        }
+    }
+}
+
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ListIssuesRequest {
+    /// SERVER-DERIVED from the folder's remote — never taken from the client.
+    /// That is why this struct is built through [`ListIssuesRequest::new`]
+    /// rather than deserialized from the wire.
     pub owner_repo: String,
     pub tab: ForgeTab,
     /// "open" | "closed" | "all" (anything else is rejected). Normalized to
@@ -340,13 +426,224 @@ pub struct ListIssuesRequest {
     pub state: String,
     #[serde(default)]
     pub assigned_me: bool,
-    /// Opaque continuation: the `Link: rel="next"` URL of the previous page.
+    /// Label names, ANDed. Already normalized (see [`normalize_labels`]).
     #[serde(default)]
-    pub cursor: Option<String>,
+    pub labels: Vec<String>,
+    /// Free text over title and description. Already normalized (see
+    /// [`normalize_search`]) — and treated as TEXT by both clients, not as
+    /// query syntax the user gets to write.
+    #[serde(default)]
+    pub search: Option<String>,
+    #[serde(default)]
+    pub sort: ForgeSort,
+    /// 1-based page. Offset pagination on both forges — see [`ForgeIssueList`]
+    /// for why this replaced the old opaque Link cursor.
+    #[serde(default = "default_page")]
+    pub page: u32,
+    #[serde(default = "default_per_page")]
+    pub per_page: u32,
 }
+
+impl ListIssuesRequest {
+    /// The one way a provider request comes into being: caller-supplied
+    /// filters plus a repository the SERVER resolved. Keeping `owner_repo` a
+    /// separate argument is the trust boundary — it cannot be defaulted in
+    /// from a payload the client wrote.
+    pub fn new(owner_repo: String, filters: ListFilters) -> Self {
+        Self {
+            owner_repo,
+            tab: filters.tab,
+            state: filters.state,
+            assigned_me: filters.assigned_me,
+            labels: normalize_labels(filters.labels),
+            search: normalize_search(filters.search.as_deref()),
+            sort: filters.sort,
+            page: filters.page,
+            per_page: filters.per_page,
+        }
+    }
+
+    /// Bring client-supplied paging into range. Called by the clients rather
+    /// than trusted from the wire: a `per_page=0` is a 422 at GitHub and an
+    /// empty page at GitLab, and `page=0` silently means page 1 at one and
+    /// not the other.
+    pub fn clamped(&self) -> (u32, u32) {
+        (
+            self.page.max(1),
+            self.per_page.clamp(MIN_PER_PAGE, MAX_PER_PAGE),
+        )
+    }
+}
+
+/// Everything about a list request the CLIENT gets to decide. The repository
+/// is not in here on purpose (see [`ListIssuesRequest::new`]).
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListFilters {
+    pub tab: ForgeTab,
+    #[serde(default = "default_state")]
+    pub state: String,
+    #[serde(default)]
+    pub assigned_me: bool,
+    #[serde(default)]
+    pub labels: Vec<String>,
+    #[serde(default)]
+    pub search: Option<String>,
+    #[serde(default)]
+    pub sort: ForgeSort,
+    #[serde(default = "default_page")]
+    pub page: u32,
+    #[serde(default = "default_per_page")]
+    pub per_page: u32,
+    /// Which stored account to spend. Auth, not a filter — consumed by the
+    /// command layer and never reaches a provider client.
+    #[serde(default)]
+    pub account_id: Option<String>,
+}
+
+/// Everything a COUNT request may be narrowed by.
+///
+/// Deliberately not [`ListFilters`]: a count has no tab, no page and no order,
+/// and carrying three fields the server is obliged to ignore is how a client
+/// comes to believe it set one. What it does share is the filter half — the
+/// numbers on the switcher have to describe the same result set the list does,
+/// or the badge and the page count contradict each other on screen.
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CountFilters {
+    #[serde(default = "default_state")]
+    pub state: String,
+    #[serde(default)]
+    pub assigned_me: bool,
+    #[serde(default)]
+    pub labels: Vec<String>,
+    #[serde(default)]
+    pub search: Option<String>,
+    /// Which stored account to spend. Auth, not a filter — same as
+    /// [`ListFilters::account_id`], and consumed by the command layer.
+    #[serde(default)]
+    pub account_id: Option<String>,
+}
+
+impl CountFilters {
+    /// The one-row list request whose `total_count` IS the answer.
+    ///
+    /// Neither forge offers a count-only endpoint for these collections:
+    /// GitHub's search returns `total_count` beside the page and GitLab puts
+    /// its own in `X-Total`, so the smallest page there is ([`MIN_PER_PAGE`])
+    /// is the cheapest way to ask. The order cannot change a count and is left
+    /// at the default rather than plumbed through.
+    pub fn probe(&self, tab: ForgeTab) -> ListFilters {
+        ListFilters {
+            tab,
+            state: self.state.clone(),
+            assigned_me: self.assigned_me,
+            labels: self.labels.clone(),
+            search: self.search.clone(),
+            sort: ForgeSort::default(),
+            page: 1,
+            per_page: MIN_PER_PAGE,
+            account_id: self.account_id.clone(),
+        }
+    }
+}
+
+/// Trim, cap and drop-if-empty. The cap is [`MAX_SEARCH_CHARS`] CHARACTERS,
+/// counted char-wise: a byte slice through arbitrary user text can split a
+/// code point and panic.
+pub fn normalize_search(raw: Option<&str>) -> Option<String> {
+    let trimmed = raw?.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    Some(truncate_chars(trimmed, MAX_SEARCH_CHARS))
+}
+
+/// Trim, drop empties, de-duplicate (case-sensitively — GitHub label names are
+/// case-sensitive) and cap at [`MAX_LABEL_FILTERS`], preserving order.
+pub fn normalize_labels(raw: Vec<String>) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    raw.into_iter()
+        .map(|l| l.trim().to_string())
+        .filter(|l| !l.is_empty() && seen.insert(l.clone()))
+        .take(MAX_LABEL_FILTERS)
+        .collect()
+}
+
+/// One label as the forge paints it: the name a filter names it by, plus the
+/// colour the project gave it. Both forges attach a colour to every label, and
+/// carrying it is what lets the workbench draw github.com's own chip instead of
+/// a row of identical grey pills — colour is how a triage list is scanned.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct ForgeLabel {
+    pub name: String,
+    /// Normalized to `#rrggbb`, or `None` when the forge sent something this
+    /// does not recognize. See [`normalize_hex_color`].
+    pub color: Option<String>,
+}
+
+impl ForgeLabel {
+    /// A provider's label, or `None` when it carries no usable name — an empty
+    /// name is a chip with nothing in it and no way to filter by.
+    pub fn parse(name: String, color: Option<&str>) -> Option<Self> {
+        if name.is_empty() {
+            return None;
+        }
+        Some(Self {
+            name,
+            color: color.and_then(normalize_hex_color),
+        })
+    }
+}
+
+/// `#rrggbb` out of whatever spelling the forge used, or `None`.
+///
+/// The two disagree: GitHub sends bare `d73a4a`, GitLab sends `#d9534f`. Both
+/// are accepted, as is the 3-digit shorthand.
+///
+/// Everything else is rejected rather than passed through, because GitLab
+/// ACCEPTS CSS colour names when a label is written (`red`, `rebeccapurple`),
+/// so a self-managed instance can hold a value that is not hex at all — and
+/// this string ends up inside a `style` attribute. `None` costs the chip its
+/// colour, which is a great deal cheaper than forwarding arbitrary text into a
+/// stylesheet.
+pub fn normalize_hex_color(raw: &str) -> Option<String> {
+    let hex = raw.trim().trim_start_matches('#');
+    if !hex.chars().all(|c| c.is_ascii_hexdigit()) {
+        return None;
+    }
+    let expanded: String = match hex.len() {
+        3 => hex.chars().flat_map(|c| [c, c]).collect(),
+        6 => hex.to_string(),
+        _ => return None,
+    };
+    Some(format!("#{}", expanded.to_ascii_lowercase()))
+}
+
+/// The repository's label vocabulary, for the workbench's label filter.
+///
+/// One page of [`LABEL_PAGE_SIZE`], and `truncated` says so out loud when the
+/// repository has more: a filter list that silently stops at 100 reads as
+/// "these are all the labels", and the label you wanted simply is not there.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ForgeLabelList {
+    pub labels: Vec<ForgeLabel>,
+    pub truncated: bool,
+}
+
+/// Labels fetched in one request. 100 is the per-page maximum on both forges.
+pub const LABEL_PAGE_SIZE: usize = 100;
 
 fn default_state() -> String {
     "open".to_string()
+}
+
+fn default_page() -> u32 {
+    1
+}
+
+fn default_per_page() -> u32 {
+    DEFAULT_PER_PAGE
 }
 
 /// One row of the workbench list (both tabs share the shape; `is_pr` is the
@@ -360,23 +657,71 @@ pub struct ForgeIssueRow {
     /// Capped (see [`BODY_CAP`]) — the untrusted-data envelope trims to 12k
     /// anyway, so shipping megabyte bodies to the UI buys nothing.
     pub body: Option<String>,
-    /// Normalized to `open` / `closed` for BOTH forges: GitLab says `opened`,
-    /// and the workbench row renders its icon off this value.
+    /// Normalized to `open` / `closed` / `merged` for BOTH forges. GitLab says
+    /// `opened`; GitHub has no merged STATE at all (a merged pull request is
+    /// just closed) and is derived from `pull_request.merged_at`. The workbench
+    /// row picks its icon and colour off this value plus [`Self::draft`].
     pub state: String,
-    pub labels: Vec<String>,
+    /// Draft / work-in-progress pull request. Always false for issues.
+    pub draft: bool,
+    pub labels: Vec<ForgeLabel>,
     pub author: Option<String>,
     pub updated_at: Option<String>,
     pub html_url: String,
     pub is_pr: bool,
+    /// Human comments on the item. GitHub calls it `comments`, GitLab
+    /// `user_notes_count` — both exclude system notes, which is what makes the
+    /// number mean "there is a discussion here" rather than "things happened".
+    pub comments: i64,
 }
 
+/// One page of the workbench list.
+///
+/// Offset pagination, NOT the old `Link: rel="next"` cursor. The cursor could
+/// only ever offer "load more", because the GitHub client listed both kinds
+/// from `/issues` and split them client-side — so "API page 3" was not
+/// "Issues page 3" and no total existed. The GitHub client now asks
+/// `/search/issues` with `is:issue` / `is:pr` (what github.com's own web UI is
+/// backed by), which filters server-side and returns a real count; GitLab's
+/// two collections were always separate. Hence real page numbers.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct ForgeIssueList {
     pub rows: Vec<ForgeIssueRow>,
-    /// Opaque next-page cursor (the `Link: rel="next"` URL). Feed it back
-    /// verbatim; pagination MUST follow Link headers because client-side
-    /// tab filtering makes page sizes sparse.
-    pub next_cursor: Option<String>,
+    /// Echo of the page actually served (already clamped).
+    pub page: u32,
+    pub per_page: u32,
+    /// Matching items, or `None` when the forge declines to count: GitLab
+    /// omits `X-Total`/`X-Total-Pages` past 10k rows, and one GitLab query
+    /// (merge requests + closed) is filtered locally so its count would lie.
+    /// `None` means the UI must degrade to previous/next.
+    pub total_count: Option<i64>,
+    /// How many of those matches the forge will actually PAGE through, when
+    /// that is fewer than `total_count`. GitHub Search serves only the first
+    /// [`github::SEARCH_RESULT_CAP`]; page 1201 of a 24 000-hit query is a 422,
+    /// so page numbers derived from `total_count` would be a strip of buttons
+    /// into an error. `None` means every match is reachable — which is both
+    /// GitLab's answer and GitHub's whenever the query fits under the cap.
+    pub reachable_count: Option<i64>,
+    pub has_next: bool,
+    /// GitHub search timed out and answered with a partial result set. Shown,
+    /// not swallowed — a silently short list reads as "that's all there is".
+    pub incomplete: bool,
+}
+
+impl ForgeIssueList {
+    /// The count a BADGE may show.
+    ///
+    /// `total_count`, but only when the forge answered completely: an
+    /// incomplete search counted fewer items than match, and a bare number on
+    /// a tab has nowhere to say so. The list can carry that caveat next to
+    /// itself ([`Self::incomplete`]); a badge can only be right or absent.
+    pub fn trustworthy_count(&self) -> Option<i64> {
+        if self.incomplete {
+            None
+        } else {
+            self.total_count
+        }
+    }
 }
 
 /// Proxy-aware shared HTTP client. A reqwest client caches its proxy
@@ -388,21 +733,6 @@ pub struct ForgeIssueList {
 type ProxyKeyedClient = (Vec<(String, String)>, reqwest::Client);
 
 static HTTP_CLIENT: RwLock<Option<ProxyKeyedClient>> = RwLock::new(None);
-
-/// The `rel="next"` target of a Link header, if any. THE pagination signal for
-/// both forges — a short page is not one, because rows are filtered after they
-/// arrive (GitHub mixes issues and pull requests on one endpoint; GitLab's
-/// closed tab folds in merged ones).
-pub(crate) fn next_link(headers: &reqwest::header::HeaderMap) -> Option<String> {
-    let link = headers.get("link")?.to_str().ok()?;
-    for part in link.split(',') {
-        let (target, params) = part.split_once(';')?;
-        if params.split(';').any(|p| p.trim() == r#"rel="next""#) {
-            return Some(target.trim().trim_start_matches('<').trim_end_matches('>').to_string());
-        }
-    }
-    None
-}
 
 /// Char-boundary-safe truncation (issue bodies are arbitrary UTF-8; a byte
 /// slice could split a code point and panic).
@@ -474,18 +804,6 @@ fn encode(value: &str, keep_slash: bool) -> String {
         .collect()
 }
 
-/// A pagination cursor is fed back by the client; only ever follow it into the
-/// SAME API origin, or a crafted cursor turns an authenticated client into an
-/// SSRF proxy with our bearer token attached.
-pub(crate) fn checked_cursor(auth: &ResolvedAuth, cursor: &str) -> Result<String, ForgeError> {
-    if !cursor.starts_with(&format!("{}/", auth.api_base)) {
-        return Err(ForgeError::Invalid(
-            "cursor does not belong to this API".into(),
-        ));
-    }
-    Ok(cursor.to_string())
-}
-
 /// `(scheme, host, port)` — what "the same server" means for a redirect.
 fn origin_of(url: &reqwest::Url) -> (String, Option<String>, Option<u16>) {
     (
@@ -535,6 +853,34 @@ pub(crate) fn http_client() -> Result<reqwest::Client, ForgeError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `NoAccount` is the one forge failure the UI turns into an action, and
+    /// it can only do that if the i18n key and BOTH params survive the trip to
+    /// the client. Serialize as well as convert: the frontend reads the JSON,
+    /// not the struct, and `skip_serializing_if` on those two fields means a
+    /// conversion that forgot to set them looks identical from Rust.
+    #[test]
+    fn no_account_carries_i18n_key_and_params_over_the_wire() {
+        let err: crate::app_error::AppCommandError = ForgeError::NoAccount {
+            provider: ForgeProvider::GitHub,
+            host: "github.com".into(),
+        }
+        .into();
+        let json = serde_json::to_value(&err).unwrap();
+        assert_eq!(json["code"], "configuration_missing");
+        assert_eq!(json["i18n_key"], NO_ACCOUNT_I18N_KEY);
+        assert_eq!(json["i18n_params"]["host"], "github.com");
+        // Display name, not the lowercase wire value: this one is read by a human.
+        assert_eq!(json["i18n_params"]["provider"], "GitHub");
+        // The English message stands in when a locale lacks the key.
+        assert_eq!(json["message"], "no GitHub account for host github.com");
+
+        // Every OTHER auth failure stays keyless — "add an account" fixes none
+        // of them, so the UI must not offer it.
+        let dead_token: crate::app_error::AppCommandError =
+            ForgeError::Auth("no stored token for account acc-1".into()).into();
+        assert!(serde_json::to_value(&dead_token).unwrap().get("i18n_key").is_none());
+    }
 
     #[test]
     fn source_key_normalizes_and_validates() {
@@ -674,28 +1020,183 @@ mod tests {
         assert_eq!(web_origin(&auth), "https://fallback.test");
     }
 
-    /// Both forges send `Link: rel="next"`, and it is the ONLY end-of-list
-    /// signal either client may use — rows get filtered after they arrive, so
-    /// a short page is normal.
+    /// Paging comes off the wire and reaches two APIs that reject different
+    /// halves of the nonsense: `per_page=0` is a 422 at GitHub and an empty
+    /// page at GitLab, and `page=0` means page 1 at one of them only.
     #[test]
-    fn link_header_parses_only_rel_next() {
-        let mut headers = reqwest::header::HeaderMap::new();
-        headers.insert(
-            "link",
-            r#"<https://api.github.com/x?page=3>; rel="next", <https://api.github.com/x?page=9>; rel="last""#
-                .parse()
-                .unwrap(),
+    fn client_supplied_paging_is_clamped_into_range() {
+        let req = |page: u32, per_page: u32| ListIssuesRequest {
+            owner_repo: "acme/app".into(),
+            tab: ForgeTab::Issues,
+            state: "open".into(),
+            assigned_me: false,
+            labels: vec![],
+            search: None,
+            sort: ForgeSort::default(),
+            page,
+            per_page,
+        };
+        assert_eq!(req(0, 0).clamped(), (1, MIN_PER_PAGE));
+        assert_eq!(req(3, 20).clamped(), (3, 20));
+        // Both forges cap per_page at 100; asking for more is a rejected request.
+        assert_eq!(req(1, 5_000).clamped(), (1, MAX_PER_PAGE));
+    }
+
+    fn filters() -> ListFilters {
+        ListFilters {
+            tab: ForgeTab::Issues,
+            state: "open".into(),
+            assigned_me: false,
+            labels: vec![],
+            search: None,
+            sort: ForgeSort::default(),
+            page: 1,
+            per_page: DEFAULT_PER_PAGE,
+            account_id: None,
+        }
+    }
+
+    /// The repository is an ARGUMENT, not a field of the client's payload:
+    /// whatever filters arrive, the request is built against the repository the
+    /// server resolved from the folder's remote.
+    #[test]
+    fn a_request_takes_its_repository_from_the_caller_and_normalizes_the_rest() {
+        let built = ListIssuesRequest::new(
+            "acme/app".into(),
+            ListFilters {
+                labels: vec!["  bug ".into(), "".into(), "bug".into(), "docs".into()],
+                search: Some("   login timeout  ".into()),
+                ..filters()
+            },
         );
+        assert_eq!(built.owner_repo, "acme/app");
+        assert_eq!(built.labels, vec!["bug", "docs"], "trimmed and de-duplicated");
+        assert_eq!(built.search.as_deref(), Some("login timeout"));
+        // Whitespace-only is no filter at all, not a search for nothing.
+        assert!(ListIssuesRequest::new("a/b".into(), ListFilters { search: Some("  ".into()), ..filters() })
+            .search
+            .is_none());
+    }
+
+    /// Both caps are real API limits, not taste: GitHub rejects a `q` over 256
+    /// characters outright, and each extra label lengthens it further.
+    #[test]
+    fn search_and_label_filters_are_capped() {
+        let long = "汉".repeat(MAX_SEARCH_CHARS + 40);
+        let capped = normalize_search(Some(&long)).expect("kept");
+        // CHARS, not bytes — a byte slice here would split a code point.
+        assert_eq!(capped.chars().count(), MAX_SEARCH_CHARS);
+        assert_eq!(normalize_search(Some("\t\n ")), None);
+        assert_eq!(normalize_search(None), None);
+
+        let many: Vec<String> = (0..MAX_LABEL_FILTERS + 5).map(|i| format!("l{i}")).collect();
+        assert_eq!(normalize_labels(many).len(), MAX_LABEL_FILTERS);
+        // Case-sensitive de-dup: GitHub treats `Bug` and `bug` as two labels.
         assert_eq!(
-            next_link(&headers).as_deref(),
-            Some("https://api.github.com/x?page=3")
+            normalize_labels(vec!["Bug".into(), "bug".into()]),
+            vec!["Bug", "bug"]
         );
-        headers.insert(
-            "link",
-            r#"<https://api.github.com/x?page=9>; rel="last""#.parse().unwrap(),
+    }
+
+    /// The two forges spell the same colour differently — GitHub sends bare
+    /// `d73a4a`, GitLab `#d9534f` — so one normalized `#rrggbb` is what the UI
+    /// gets. Anything that is not hex is refused rather than passed along:
+    /// GitLab accepts CSS colour names on write, and this value is handed
+    /// straight to a `style` attribute.
+    #[test]
+    fn label_colours_are_normalized_and_non_hex_is_refused() {
+        for (raw, want) in [
+            ("d73a4a", "#d73a4a"),   // GitHub
+            ("#d9534f", "#d9534f"),  // GitLab
+            ("  #D73A4A ", "#d73a4a"), // padded and upper-cased
+            ("#0f0", "#00ff00"),     // the three-digit shorthand
+        ] {
+            assert_eq!(normalize_hex_color(raw).as_deref(), Some(want), "{raw}");
+        }
+        for raw in ["", "#", "rebeccapurple", "#12345", "#1234567", "#12345g", "var(--x)"] {
+            assert_eq!(normalize_hex_color(raw), None, "{raw}");
+        }
+
+        // A label is its NAME first: an unusable colour costs the swatch, not
+        // the chip. An unusable name costs the whole label — there would be
+        // nothing to show and nothing to filter by.
+        assert_eq!(
+            ForgeLabel::parse("bug".into(), Some("red")),
+            Some(ForgeLabel { name: "bug".into(), color: None })
         );
-        assert_eq!(next_link(&headers), None);
-        assert_eq!(next_link(&reqwest::header::HeaderMap::new()), None);
+        assert_eq!(ForgeLabel::parse(String::new(), Some("#fff")), None);
+    }
+
+    /// A count is a LIST asked for one row: neither forge counts these
+    /// collections on its own endpoint. The tab is the only thing that differs
+    /// between the switcher's two probes — every filter carries over, or the
+    /// badge would describe a result set nobody is looking at.
+    #[test]
+    fn a_count_probe_is_the_smallest_page_of_the_same_filters() {
+        let filters = CountFilters {
+            state: "closed".into(),
+            assigned_me: true,
+            labels: vec!["bug".into()],
+            search: Some("login".into()),
+            account_id: Some("acc-1".into()),
+        };
+        for tab in [ForgeTab::Issues, ForgeTab::Prs] {
+            let probe = filters.probe(tab);
+            assert_eq!(probe.tab, tab);
+            assert_eq!(probe.page, 1);
+            // One row, not a page of twenty thrown away: the count rides in
+            // `total_count` / `X-Total`, never in the body.
+            assert_eq!(probe.per_page, MIN_PER_PAGE);
+            assert_eq!(probe.state, "closed");
+            assert!(probe.assigned_me);
+            assert_eq!(probe.labels, vec!["bug"]);
+            assert_eq!(probe.search.as_deref(), Some("login"));
+            assert_eq!(probe.account_id.as_deref(), Some("acc-1"));
+        }
+    }
+
+    /// A badge is a bare digit with nowhere to add a caveat, so a count that
+    /// needs one is withheld instead. The list keeps the caveat — and the
+    /// count — because it has a footer to say it in.
+    #[test]
+    fn an_incomplete_search_offers_no_count_to_a_badge() {
+        let page = |total: Option<i64>, incomplete: bool| ForgeIssueList {
+            rows: vec![],
+            page: 1,
+            per_page: 1,
+            total_count: total,
+            reachable_count: None,
+            has_next: false,
+            incomplete,
+        };
+        assert_eq!(page(Some(57), false).trustworthy_count(), Some(57));
+        // GitHub timed out: it counted fewer items than match, and "57" on a
+        // tab would be a claim the response itself disowns.
+        assert_eq!(page(Some(57), true).trustworthy_count(), None);
+        // Nothing to withhold in the first place.
+        assert_eq!(page(None, false).trustworthy_count(), None);
+    }
+
+    /// Four named orders, because the two forges accept different field sets
+    /// and spell the shared ones differently. `newest` is the default — the
+    /// same one github.com's issue list opens on.
+    #[test]
+    fn sort_orders_map_to_a_field_and_a_direction() {
+        assert_eq!(ForgeSort::default(), ForgeSort::Newest);
+        for (sort, field, direction) in [
+            (ForgeSort::Newest, "created", "desc"),
+            (ForgeSort::Oldest, "created", "asc"),
+            (ForgeSort::RecentlyUpdated, "updated", "desc"),
+            (ForgeSort::LeastRecentlyUpdated, "updated", "asc"),
+        ] {
+            assert_eq!((sort.field(), sort.direction()), (field, direction), "{sort:?}");
+            assert_eq!(sort.ascending(), direction == "asc");
+        }
+        // The wire spelling the frontend sends.
+        assert_eq!(
+            serde_json::to_string(&ForgeSort::LeastRecentlyUpdated).unwrap(),
+            "\"least_recently_updated\""
+        );
     }
 
     /// Issue bodies are arbitrary UTF-8; a byte slice could split a code point
