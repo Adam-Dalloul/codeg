@@ -1,5 +1,6 @@
 "use client"
 
+import type { ReactNode } from "react"
 import { Dialog as DialogPrimitive } from "radix-ui"
 import { Copy, Download, X } from "lucide-react"
 import { cn } from "@/lib/utils"
@@ -18,6 +19,12 @@ interface ImagePreviewDialogProps {
   downloadLabel?: string
   onCopy?: () => void
   copyLabel?: string
+  /**
+   * Wrap the image element — used to hang a right-click menu off it, so the
+   * blown-up picture offers the same actions as its thumbnail did. A render
+   * prop keeps this ui/ component free of message-specific imports.
+   */
+  renderImage?: (image: ReactNode) => ReactNode
 }
 
 function ImagePreviewDialog({
@@ -29,7 +36,17 @@ function ImagePreviewDialog({
   downloadLabel,
   onCopy,
   copyLabel,
+  renderImage,
 }: ImagePreviewDialogProps) {
+  const image = src ? (
+    /* eslint-disable-next-line @next/next/no-img-element */
+    <img
+      src={src}
+      alt={alt}
+      onClick={(e) => e.stopPropagation()}
+      className="max-h-[90vh] max-w-[90vw] rounded-lg object-contain"
+    />
+  ) : null
   return (
     <DialogPrimitive.Root open={open} onOpenChange={onOpenChange}>
       <DialogPrimitive.Portal>
@@ -85,21 +102,7 @@ function ImagePreviewDialog({
               <X className="h-5 w-5" />
             </button>
           </div>
-          {src && (
-            /* eslint-disable-next-line @next/next/no-img-element */
-            <img
-              src={src}
-              alt={alt}
-              onClick={(e) => e.stopPropagation()}
-              onContextMenu={(e) => {
-                if (!onCopy) return
-                e.preventDefault()
-                e.stopPropagation()
-                onCopy()
-              }}
-              className="max-h-[90vh] max-w-[90vw] rounded-lg object-contain"
-            />
-          )}
+          {image && (renderImage ? renderImage(image) : image)}
         </DialogPrimitive.Content>
       </DialogPrimitive.Portal>
     </DialogPrimitive.Root>

@@ -2933,6 +2933,7 @@
         "copyImage": "Copy image",
         "copiedImage": "Image copied",
         "copyImageFailed": "Could not copy image: {message}",
+        "copyImageUnsupported": "Copying this image is not supported here",
         "downloadFailed": "Download failed: {message}",
         "imageGeneration": "Image generation",
         "imageGenerationPending": "Generating image…",
