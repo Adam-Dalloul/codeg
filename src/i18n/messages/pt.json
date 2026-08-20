@@ -3289,6 +3289,25 @@
         "collapse": "Recolher",
         "errorTitle": "Falha ao verificar comentários"
       },
+      "codegMcpTool": {
+        "getSessionInfo": "Lendo a sessão {session}",
+        "getSessionInfoNoId": "Lendo uma sessão",
+        "taskProgress": "Progresso: {message}",
+        "taskProgressNoMessage": "Relatando o progresso da tarefa",
+        "taskComplete": "Tarefa concluída · {verdict}",
+        "taskCompleteWithSummary": "Tarefa concluída · {verdict}: {summary}",
+        "createAutomation": "Criando a automação {name}",
+        "createAutomationNoName": "Criando uma automação",
+        "createWorkTask": "Criando a tarefa de trabalho {title}",
+        "createWorkTaskNoTitle": "Criando uma tarefa de trabalho",
+        "promptLabel": "Instrução",
+        "verdict": {
+          "success": "sucesso",
+          "needs_review": "requer revisão",
+          "blocked": "bloqueada",
+          "unknown": "desconhecido"
+        }
+      },
       "askQuestionResult": {
         "title": "Pergunta",
         "answeredLabel": "Pergunta e resposta:",

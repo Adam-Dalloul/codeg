@@ -3289,6 +3289,25 @@
         "collapse": "Einklappen",
         "errorTitle": "Feedback-Prüfung fehlgeschlagen"
       },
+      "codegMcpTool": {
+        "getSessionInfo": "Sitzung {session} wird gelesen",
+        "getSessionInfoNoId": "Sitzung wird gelesen",
+        "taskProgress": "Fortschritt: {message}",
+        "taskProgressNoMessage": "Aufgabenfortschritt wird gemeldet",
+        "taskComplete": "Aufgabe beendet · {verdict}",
+        "taskCompleteWithSummary": "Aufgabe beendet · {verdict}: {summary}",
+        "createAutomation": "Automatisierung {name} wird erstellt",
+        "createAutomationNoName": "Automatisierung wird erstellt",
+        "createWorkTask": "Arbeitsaufgabe {title} wird erstellt",
+        "createWorkTaskNoTitle": "Arbeitsaufgabe wird erstellt",
+        "promptLabel": "Anweisung",
+        "verdict": {
+          "success": "erfolgreich",
+          "needs_review": "Prüfung nötig",
+          "blocked": "blockiert",
+          "unknown": "unbekannt"
+        }
+      },
       "askQuestionResult": {
         "title": "Frage",
         "answeredLabel": "Frage & Antwort:",

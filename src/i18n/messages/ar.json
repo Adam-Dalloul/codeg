@@ -3289,6 +3289,25 @@
         "collapse": "طي",
         "errorTitle": "فشل التحقق من الملاحظات"
       },
+      "codegMcpTool": {
+        "getSessionInfo": "قراءة المحادثة {session}",
+        "getSessionInfoNoId": "قراءة محادثة",
+        "taskProgress": "التقدم: {message}",
+        "taskProgressNoMessage": "الإبلاغ عن تقدم المهمة",
+        "taskComplete": "انتهت المهمة · {verdict}",
+        "taskCompleteWithSummary": "انتهت المهمة · {verdict}: {summary}",
+        "createAutomation": "إنشاء الأتمتة {name}",
+        "createAutomationNoName": "إنشاء أتمتة",
+        "createWorkTask": "إنشاء مهمة العمل {title}",
+        "createWorkTaskNoTitle": "إنشاء مهمة عمل",
+        "promptLabel": "التعليمات",
+        "verdict": {
+          "success": "ناجحة",
+          "needs_review": "بحاجة إلى مراجعة",
+          "blocked": "متوقفة",
+          "unknown": "غير معروف"
+        }
+      },
       "askQuestionResult": {
         "title": "سؤال",
         "answeredLabel": "سؤال وجواب:",

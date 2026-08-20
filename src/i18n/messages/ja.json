@@ -3289,6 +3289,25 @@
         "collapse": "折りたたむ",
         "errorTitle": "フィードバックの確認に失敗しました"
       },
+      "codegMcpTool": {
+        "getSessionInfo": "セッション {session} を読み取り中",
+        "getSessionInfoNoId": "セッションを読み取り中",
+        "taskProgress": "進捗: {message}",
+        "taskProgressNoMessage": "タスクの進捗を報告",
+        "taskComplete": "タスク終了 · {verdict}",
+        "taskCompleteWithSummary": "タスク終了 · {verdict}: {summary}",
+        "createAutomation": "自動化 {name} を作成中",
+        "createAutomationNoName": "自動化を作成中",
+        "createWorkTask": "作業タスク {title} を作成中",
+        "createWorkTaskNoTitle": "作業タスクを作成中",
+        "promptLabel": "プロンプト",
+        "verdict": {
+          "success": "成功",
+          "needs_review": "要確認",
+          "blocked": "ブロック",
+          "unknown": "不明"
+        }
+      },
       "askQuestionResult": {
         "title": "質問",
         "answeredLabel": "質問と回答：",

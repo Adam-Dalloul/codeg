@@ -3289,6 +3289,25 @@
         "collapse": "Réduire",
         "errorTitle": "Échec de la vérification des retours"
       },
+      "codegMcpTool": {
+        "getSessionInfo": "Lecture de la session {session}",
+        "getSessionInfoNoId": "Lecture d’une session",
+        "taskProgress": "Progression : {message}",
+        "taskProgressNoMessage": "Signalement de la progression",
+        "taskComplete": "Tâche terminée · {verdict}",
+        "taskCompleteWithSummary": "Tâche terminée · {verdict} : {summary}",
+        "createAutomation": "Création de l’automatisation {name}",
+        "createAutomationNoName": "Création d’une automatisation",
+        "createWorkTask": "Création de la tâche {title}",
+        "createWorkTaskNoTitle": "Création d’une tâche",
+        "promptLabel": "Instruction",
+        "verdict": {
+          "success": "réussie",
+          "needs_review": "à relire",
+          "blocked": "bloquée",
+          "unknown": "inconnu"
+        }
+      },
       "askQuestionResult": {
         "title": "Question",
         "answeredLabel": "Question et réponse :",

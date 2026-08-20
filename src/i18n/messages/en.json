@@ -3289,6 +3289,25 @@
         "collapse": "Collapse",
         "errorTitle": "Feedback check failed"
       },
+      "codegMcpTool": {
+        "getSessionInfo": "Reading session {session}",
+        "getSessionInfoNoId": "Reading a session",
+        "taskProgress": "Progress: {message}",
+        "taskProgressNoMessage": "Reporting task progress",
+        "taskComplete": "Task finished · {verdict}",
+        "taskCompleteWithSummary": "Task finished · {verdict}: {summary}",
+        "createAutomation": "Creating automation {name}",
+        "createAutomationNoName": "Creating an automation",
+        "createWorkTask": "Creating work task {title}",
+        "createWorkTaskNoTitle": "Creating a work task",
+        "promptLabel": "Prompt",
+        "verdict": {
+          "success": "success",
+          "needs_review": "needs review",
+          "blocked": "blocked",
+          "unknown": "unknown"
+        }
+      },
       "askQuestionResult": {
         "title": "Question",
         "answeredLabel": "Q&A:",

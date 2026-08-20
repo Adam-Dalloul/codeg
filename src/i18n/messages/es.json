@@ -3289,6 +3289,25 @@
         "collapse": "Contraer",
         "errorTitle": "Error al comprobar los comentarios"
       },
+      "codegMcpTool": {
+        "getSessionInfo": "Leyendo la sesión {session}",
+        "getSessionInfoNoId": "Leyendo una sesión",
+        "taskProgress": "Progreso: {message}",
+        "taskProgressNoMessage": "Informando el progreso de la tarea",
+        "taskComplete": "Tarea finalizada · {verdict}",
+        "taskCompleteWithSummary": "Tarea finalizada · {verdict}: {summary}",
+        "createAutomation": "Creando la automatización {name}",
+        "createAutomationNoName": "Creando una automatización",
+        "createWorkTask": "Creando la tarea de trabajo {title}",
+        "createWorkTaskNoTitle": "Creando una tarea de trabajo",
+        "promptLabel": "Instrucción",
+        "verdict": {
+          "success": "correcta",
+          "needs_review": "requiere revisión",
+          "blocked": "bloqueada",
+          "unknown": "desconocido"
+        }
+      },
       "askQuestionResult": {
         "title": "Pregunta",
         "answeredLabel": "Pregunta y respuesta:",

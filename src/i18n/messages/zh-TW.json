@@ -3289,6 +3289,25 @@
         "collapse": "收合",
         "errorTitle": "回饋檢查失敗"
       },
+      "codegMcpTool": {
+        "getSessionInfo": "讀取會話 {session}",
+        "getSessionInfoNoId": "讀取會話",
+        "taskProgress": "進度：{message}",
+        "taskProgressNoMessage": "回報任務進度",
+        "taskComplete": "任務結束 · {verdict}",
+        "taskCompleteWithSummary": "任務結束 · {verdict}：{summary}",
+        "createAutomation": "建立自動化 {name}",
+        "createAutomationNoName": "建立自動化",
+        "createWorkTask": "建立待辦任務 {title}",
+        "createWorkTaskNoTitle": "建立待辦任務",
+        "promptLabel": "指令",
+        "verdict": {
+          "success": "成功",
+          "needs_review": "待複核",
+          "blocked": "受阻",
+          "unknown": "未知"
+        }
+      },
       "askQuestionResult": {
         "title": "提問",
         "answeredLabel": "提問回答：",

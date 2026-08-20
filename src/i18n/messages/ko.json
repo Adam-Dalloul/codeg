@@ -3289,6 +3289,25 @@
         "collapse": "접기",
         "errorTitle": "피드백 확인 실패"
       },
+      "codegMcpTool": {
+        "getSessionInfo": "세션 {session} 읽는 중",
+        "getSessionInfoNoId": "세션 읽는 중",
+        "taskProgress": "진행: {message}",
+        "taskProgressNoMessage": "작업 진행 상황 보고",
+        "taskComplete": "작업 종료 · {verdict}",
+        "taskCompleteWithSummary": "작업 종료 · {verdict}: {summary}",
+        "createAutomation": "자동화 {name} 생성 중",
+        "createAutomationNoName": "자동화 생성 중",
+        "createWorkTask": "작업 항목 {title} 생성 중",
+        "createWorkTaskNoTitle": "작업 항목 생성 중",
+        "promptLabel": "프롬프트",
+        "verdict": {
+          "success": "성공",
+          "needs_review": "검토 필요",
+          "blocked": "차단됨",
+          "unknown": "알 수 없음"
+        }
+      },
       "askQuestionResult": {
         "title": "질문",
         "answeredLabel": "질문과 답변:",
