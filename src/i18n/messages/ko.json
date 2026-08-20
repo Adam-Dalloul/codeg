@@ -1435,7 +1435,11 @@
   "GeneralSettings": {
     "loading": "로딩 중...",
     "sectionTitle": "일반",
-    "sectionDescription": "기본 터미널, 렌더링 가속, 다중 에이전트 위임 등 공용 환경설정을 한곳에서 관리합니다.",
+    "sectionDescription": "로그인 시 실행, 기본 터미널, 렌더링 가속, 다중 에이전트 위임 등 공용 환경설정을 한곳에서 관리합니다.",
+    "autostartTitle": "로그인 시 실행",
+    "autostartDescription": "이 컴퓨터에 로그인한 뒤 codeg을 자동으로 실행합니다.",
+    "autostartSaveFailed": "로그인 시 실행 설정 저장 실패: {message}",
+    "autostartUnavailable": "이 시스템에서 시작 프로그램 등록 상태를 읽지 못했습니다: {message}",
     "terminalTitle": "기본 터미널",
     "terminalDescription": "터미널 바나 파일 트리에서 새 터미널 탭을 열 때 사용할 셸을 선택합니다. 에이전트가 codeg에 전체 명령줄 실행을 요청할 때도 사용됩니다.",
     "terminalSystemDefault": "시스템 기본값",

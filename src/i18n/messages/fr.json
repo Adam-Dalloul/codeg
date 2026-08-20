@@ -1435,7 +1435,11 @@
   "GeneralSettings": {
     "loading": "Chargement...",
     "sectionTitle": "Général",
-    "sectionDescription": "Préférences centralisées pour le terminal par défaut, l'accélération du rendu et la délégation multi-agents.",
+    "sectionDescription": "Préférences centralisées pour le lancement à l’ouverture de session, le terminal par défaut, l’accélération du rendu et la délégation multi-agents.",
+    "autostartTitle": "Lancer à l’ouverture de session",
+    "autostartDescription": "Démarre codeg automatiquement après votre connexion à cet ordinateur.",
+    "autostartSaveFailed": "Échec de l’enregistrement des paramètres de lancement au démarrage : {message}",
+    "autostartUnavailable": "Ce système n’a pas signalé l’entrée de démarrage de codeg : {message}",
     "terminalTitle": "Terminal par défaut",
     "terminalDescription": "Choisissez le shell utilisé à l'ouverture de nouveaux onglets de terminal depuis la barre de terminal ou l'arborescence des fichiers. Les agents l'utilisent aussi lorsqu'ils demandent à codeg d'exécuter une ligne de commande complète.",
     "terminalSystemDefault": "Par défaut système",
