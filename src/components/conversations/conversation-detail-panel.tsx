@@ -38,6 +38,7 @@ import { groupOfTab, isReparentUnmount } from "@/stores/tab-store"
 import { computeRects, leafIds } from "@/lib/tab-group-layout"
 import { useTaskContext } from "@/contexts/task-context"
 import { cn, copyTextFromMenu, randomUUID } from "@/lib/utils"
+import { buildQuotedMarkdown } from "@/lib/message-quote"
 import { useConnectionLifecycle } from "@/hooks/use-connection-lifecycle"
 import { useMessageQueue, type QueuedMessage } from "@/hooks/use-message-queue"
 import { MessageListView } from "@/components/message/message-list-view"
@@ -331,7 +332,11 @@ const ConversationTabView = memo(function ConversationTabView({
     null
   )
   const [hasSentMessage, setHasSentMessage] = useState(false)
-  const [quickActionInject, setQuickActionInject] =
+  // One inbox for everything pushed into this tab's composer from outside it:
+  // welcome-page quick actions (replace) and quoted transcript selections
+  // (append). Exactly one composer is mounted at a time — the welcome one or the
+  // docked one — so a single slot can serve both.
+  const [composerInject, setComposerInject] =
     useState<ComposerInjectContent | null>(null)
 
   const hasPersistedConversation = dbConversationId != null
@@ -1541,11 +1546,19 @@ const ConversationTabView = memo(function ConversationTabView({
   const isWelcomeMode = showDraftHeader
 
   const handleQuickAction = useCallback((payload: ComposerInjectContent) => {
-    setQuickActionInject(payload)
+    setComposerInject(payload)
   }, [])
 
-  const handleQuickActionConsumed = useCallback(() => {
-    setQuickActionInject(null)
+  const handleComposerInjectConsumed = useCallback(() => {
+    setComposerInject(null)
+  }, [])
+
+  // Quote a transcript selection into the composer. A fresh object every time so
+  // quoting the same passage twice still re-fires the composer's inject effect.
+  const handleQuoteSelection = useCallback((selected: string) => {
+    const quoted = buildQuotedMarkdown(selected)
+    if (!quoted) return
+    setComposerInject({ text: quoted, mode: "append" })
   }, [])
 
   const canShowDetailErrorActions =
@@ -1726,6 +1739,12 @@ const ConversationTabView = memo(function ConversationTabView({
     [acpActions, tabId]
   )
 
+  // The docked composer is the only place a quote can land, so the selection
+  // bubble offers "quote" exactly when that composer is on screen (see
+  // `hideInput` below). Without a composer the inject would never be consumed
+  // and the action would silently do nothing.
+  const composerAvailable = !isWelcomeMode && !acpLoadError
+
   const messageListNode = (
     <GoalControlProvider value={goalControlValue}>
       <MessageListView
@@ -1742,6 +1761,7 @@ const ConversationTabView = memo(function ConversationTabView({
         onNewSession={
           canShowDetailErrorActions ? handleOpenNewSession : undefined
         }
+        onQuoteSelection={composerAvailable ? handleQuoteSelection : undefined}
       />
     </GoalControlProvider>
   )
@@ -1832,6 +1852,8 @@ const ConversationTabView = memo(function ConversationTabView({
       attachmentTabId={tabId}
       draftStorageKey={draftStorageKey}
       hideInput={isWelcomeMode || Boolean(acpLoadError)}
+      injectContent={composerInject}
+      onInjectConsumed={handleComposerInjectConsumed}
       composerBanner={acpLoadErrorBanner}
       feedbackList={
         feedback.showList ? (
@@ -1958,8 +1980,8 @@ const ConversationTabView = memo(function ConversationTabView({
                   feedback.featureEnabled ? feedback.openDialog : undefined
                 }
                 feedbackAddDisabled={!feedback.canSubmit}
-                injectContent={quickActionInject}
-                onInjectConsumed={handleQuickActionConsumed}
+                injectContent={composerInject}
+                onInjectConsumed={handleComposerInjectConsumed}
                 flush
                 tall
               />
