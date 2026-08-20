@@ -3373,8 +3373,6 @@
         "moreIncidents": "+{count} mais"
       },
       "backgroundTasks": {
-        "running": "{count, plural, one {# tarefa em segundo plano em execução} other {# tarefas em segundo plano em execução}}",
-        "settling": "Sincronizando resultados em segundo plano…",
         "settledFallback": "Tarefa em segundo plano concluída ({status})",
         "cardRunning": "Executando em segundo plano",
         "cardLaunchedPending": "Tarefa iniciada em segundo plano",

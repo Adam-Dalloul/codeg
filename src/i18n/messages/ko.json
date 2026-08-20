@@ -3373,8 +3373,6 @@
         "moreIncidents": "외 {count}건"
       },
       "backgroundTasks": {
-        "running": "백그라운드 작업 {count}개 실행 중",
-        "settling": "백그라운드 결과 동기화 중…",
         "settledFallback": "백그라운드 작업이 종료되었습니다 ({status})",
         "cardRunning": "백그라운드에서 실행 중",
         "cardLaunchedPending": "백그라운드 작업 시작됨",

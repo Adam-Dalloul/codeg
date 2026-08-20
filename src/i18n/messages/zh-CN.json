@@ -3373,8 +3373,6 @@
         "moreIncidents": "另 {count} 条"
       },
       "backgroundTasks": {
-        "running": "{count} 个后台任务运行中",
-        "settling": "正在同步后台结果…",
         "settledFallback": "后台任务已结束（{status}）",
         "cardRunning": "后台运行中",
         "cardLaunchedPending": "已启动后台任务",

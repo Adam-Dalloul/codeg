@@ -3373,8 +3373,6 @@
         "moreIncidents": "+{count} weitere"
       },
       "backgroundTasks": {
-        "running": "{count, plural, one {# Hintergrundaufgabe läuft} other {# Hintergrundaufgaben laufen}}",
-        "settling": "Hintergrundergebnisse werden synchronisiert…",
         "settledFallback": "Hintergrundaufgabe beendet ({status})",
         "cardRunning": "Läuft im Hintergrund",
         "cardLaunchedPending": "Hintergrundaufgabe gestartet",

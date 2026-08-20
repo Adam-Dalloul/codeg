@@ -3373,8 +3373,6 @@
         "moreIncidents": "+{count} أخرى"
       },
       "backgroundTasks": {
-        "running": "{count, plural, one {مهمة خلفية واحدة قيد التشغيل} two {مهمتا خلفية قيد التشغيل} few {# مهام خلفية قيد التشغيل} other {# مهمة خلفية قيد التشغيل}}",
-        "settling": "جارٍ مزامنة نتائج الخلفية…",
         "settledFallback": "انتهت مهمة الخلفية ({status})",
         "cardRunning": "قيد التشغيل في الخلفية",
         "cardLaunchedPending": "بدأت مهمة الخلفية",
