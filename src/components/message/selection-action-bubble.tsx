@@ -2,10 +2,10 @@
 
 import { useCallback, useEffect, useRef, useState, type RefObject } from "react"
 import { useTranslations } from "next-intl"
-import { CheckIcon, CopyIcon, TextQuote } from "lucide-react"
+import { toast } from "sonner"
+import { CopyIcon, TextQuote } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
-import { useCopiedFlag } from "@/hooks/use-copied-flag"
 import { copyTextToClipboard } from "@/lib/utils"
 
 /** Vertical gap between the selection box and the bubble. */
@@ -70,7 +70,9 @@ interface SelectionActionBubbleProps {
 
 /**
  * Floating quick-action toolbar for a text selection inside a message
- * transcript: copy the selected text, or quote it into the composer.
+ * transcript: copy the selected text, or quote it into the composer. Either way
+ * the action dismisses the toolbar and drops the selection; copy confirms with a
+ * toast, since the toolbar it would otherwise confirm on is gone by then.
  *
  * Rendered IN-TREE (not portalled to `body`) on purpose. Inactive conversation
  * tabs stay mounted and are hidden with `visibility: hidden`, which is
@@ -94,7 +96,6 @@ export function SelectionActionBubble({
   // unmount the button before its click ever lands. Frozen until the next press
   // outside the bubble.
   const pressedInsideRef = useRef(false)
-  const [copied, markCopied] = useCopiedFlag()
 
   const apply = useCallback((next: SelectionState) => {
     if (sameState(stateRef.current, next)) return
@@ -237,26 +238,47 @@ export function SelectionActionBubble({
     return () => cancelAnimationFrame(frame)
   }, [live, apply, measure])
 
-  // Both handlers read the selection through `stateRef` rather than `state`, so
-  // they stay referentially stable while the frame loop repositions the bubble.
+  // The action handlers read the selection through `stateRef` rather than
+  // `state`, so they stay referentially stable while the frame loop repositions
+  // the bubble.
+
+  /**
+   * Drop the selection and take the bubble down. Every action ends this way:
+   * the work is done, so the toolbar gets out of the way instead of hovering
+   * over text the user is finished with. Clearing the selection (rather than
+   * only hiding) is what makes the dismissal stick — the frame loop re-measures
+   * every frame and would put the bubble straight back otherwise.
+   */
+  const dismiss = useCallback(() => {
+    pressedInsideRef.current = false
+    window.getSelection()?.removeAllRanges()
+    apply(NO_SELECTION)
+  }, [apply])
+
   const handleCopy = useCallback(() => {
     const current = stateRef.current
     if (current.kind === "none") return
-    void copyTextToClipboard(current.text).then((ok) => {
-      if (ok) markCopied()
+    const { text } = current
+    // Dismiss BEFORE the write, not in its `.then()`. The clipboard write is
+    // async (and on the non-secure-context fallback path it focuses a hidden
+    // textarea, which churns the page selection), so waiting on it would leave
+    // a stale toolbar hovering over text that is already being taken away.
+    // Clearing first also means the fallback's snapshot-and-restore of the page
+    // selection has nothing to put back.
+    dismiss()
+    void copyTextToClipboard(text).then((ok) => {
+      toast[ok ? "success" : "error"](
+        ok ? t("selectionCopied") : t("selectionCopyFailed")
+      )
     })
-  }, [markCopied])
+  }, [dismiss, t])
 
   const handleQuote = useCallback(() => {
     const current = stateRef.current
     if (current.kind === "none" || !onQuote) return
-    pressedInsideRef.current = false
     onQuote(current.text)
-    // The quote has landed in the composer; drop the selection so the bubble
-    // gets out of the way instead of hovering over text the user is done with.
-    window.getSelection()?.removeAllRanges()
-    apply(NO_SELECTION)
-  }, [onQuote, apply])
+    dismiss()
+  }, [onQuote, dismiss])
 
   if (state.kind !== "visible") return null
 
@@ -271,9 +293,10 @@ export function SelectionActionBubble({
         top: state.y,
         transform: `translate(-50%, ${state.below ? "0" : "-100%"})`,
       }}
-      // Keep the selection (and the page's focus) intact when a button is
-      // pressed — otherwise the click clears what we are about to act on, and
-      // the non-secure-context clipboard fallback loses its source text.
+      // Keep the selection (and the page's focus) intact while a button is
+      // pressed. Without this the press collapses the selection, the resulting
+      // `selectionchange` tears the toolbar down, and the button unmounts before
+      // its `click` is ever dispatched — the action would simply never run.
       onMouseDown={(event) => event.preventDefault()}
       // Touch/pen presses arm the conversation panel's long-press context menu.
       // Stop them here so a slow tap on a bubble button doesn't pop that menu.
@@ -289,8 +312,8 @@ export function SelectionActionBubble({
         onClick={handleCopy}
         aria-label={t("selectionCopy")}
       >
-        {copied ? <CheckIcon /> : <CopyIcon />}
-        {copied ? t("copied") : t("selectionCopy")}
+        <CopyIcon />
+        {t("selectionCopy")}
       </Button>
       {onQuote && (
         <Button

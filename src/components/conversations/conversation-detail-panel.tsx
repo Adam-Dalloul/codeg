@@ -1,17 +1,8 @@
 "use client"
 
-import {
-  memo,
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  type PointerEvent as ReactPointerEvent,
-} from "react"
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   AlertCircle,
-  Copy,
   Download,
   FileCode,
   FileImage,
@@ -37,7 +28,7 @@ import { useTabActions, useTabStore } from "@/contexts/tab-context"
 import { groupOfTab, isReparentUnmount } from "@/stores/tab-store"
 import { computeRects, leafIds } from "@/lib/tab-group-layout"
 import { useTaskContext } from "@/contexts/task-context"
-import { cn, copyTextFromMenu, randomUUID } from "@/lib/utils"
+import { cn, randomUUID } from "@/lib/utils"
 import { buildQuotedMarkdown } from "@/lib/message-quote"
 import { useConnectionLifecycle } from "@/hooks/use-connection-lifecycle"
 import { useMessageQueue, type QueuedMessage } from "@/hooks/use-message-queue"
@@ -2227,68 +2218,6 @@ export function ConversationDetailPanel() {
     }))
   }, [activeConversationTab])
 
-  const [contextMenuSelectedText, setContextMenuSelectedText] = useState("")
-  const savedSelectionRangeRef = useRef<Range | null>(null)
-  const isContextMenuOpenRef = useRef(false)
-
-  const handleContextMenuOpenChange = useCallback((open: boolean) => {
-    isContextMenuOpenRef.current = open
-    if (!open) {
-      savedSelectionRangeRef.current = null
-      return
-    }
-    const selection = window.getSelection()
-    const text = selection?.toString() ?? ""
-    setContextMenuSelectedText(text)
-    savedSelectionRangeRef.current =
-      selection && selection.rangeCount > 0 && !selection.isCollapsed
-        ? selection.getRangeAt(0).cloneRange()
-        : null
-  }, [])
-
-  const handleContextMenuTriggerPointerDown = useCallback(
-    (event: ReactPointerEvent<HTMLDivElement>) => {
-      if (event.button !== 2) return
-      const selection = window.getSelection()
-      if (selection && !selection.isCollapsed) {
-        event.preventDefault()
-      }
-    },
-    []
-  )
-
-  useEffect(() => {
-    const handler = () => {
-      if (!isContextMenuOpenRef.current) return
-      const range = savedSelectionRangeRef.current
-      if (!range) return
-      if (
-        !document.contains(range.startContainer) ||
-        !document.contains(range.endContainer)
-      ) {
-        savedSelectionRangeRef.current = null
-        return
-      }
-      const selection = window.getSelection()
-      if (!selection) return
-      if (selection.toString().length > 0) return
-      selection.removeAllRanges()
-      selection.addRange(range)
-    }
-    document.addEventListener("selectionchange", handler)
-    return () => document.removeEventListener("selectionchange", handler)
-  }, [])
-
-  const handleCopySelectedText = useCallback(async () => {
-    if (!contextMenuSelectedText) return
-    const ok = await copyTextFromMenu(contextMenuSelectedText)
-    if (ok) {
-      toast.success(t("copyTextSuccess"))
-    } else {
-      toast.error(t("copyTextFailed"))
-    }
-  }, [contextMenuSelectedText, t])
-
   const handleNewConversation = useCallback(() => {
     if (!folder) return
     // Right-click "new conversation" inside a conversation tab: keep the
@@ -2672,12 +2601,11 @@ export function ConversationDetailPanel() {
             status={activeTab.status as ConversationStatus | undefined}
           />
         )}
-        <ContextMenu onOpenChange={handleContextMenuOpenChange}>
+        <ContextMenu>
           <ContextMenuTrigger asChild>
             <div
               ref={groupContainerRef}
               className="relative min-h-0 flex-1 overflow-hidden"
-              onPointerDown={handleContextMenuTriggerPointerDown}
             >
               {/* Flat sibling shells keyed by stable group id + divider
                   overlays — stable across every split/tile flip, otherwise
@@ -2696,14 +2624,6 @@ export function ConversationDetailPanel() {
             </div>
           </ContextMenuTrigger>
           <ContextMenuContent>
-            <ContextMenuItem
-              disabled={!contextMenuSelectedText}
-              onSelect={handleCopySelectedText}
-            >
-              <Copy className="h-4 w-4" />
-              {t("copyText")}
-            </ContextMenuItem>
-            <ContextMenuSeparator />
             <ContextMenuItem
               disabled={!folder?.path}
               onSelect={handleNewConversation}

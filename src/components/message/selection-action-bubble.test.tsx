@@ -3,6 +3,15 @@ import { act, fireEvent, render, screen } from "@testing-library/react"
 import { NextIntlClientProvider } from "next-intl"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
+const toastSuccess = vi.fn()
+const toastError = vi.fn()
+vi.mock("sonner", () => ({
+  toast: {
+    success: (m: string) => toastSuccess(m),
+    error: (m: string) => toastError(m),
+  },
+}))
+
 import { SelectionActionBubble } from "./selection-action-bubble"
 import enMessages from "@/i18n/messages/en.json"
 
@@ -33,22 +42,48 @@ const SELECTION_RECT = {
 } as DOMRect
 
 const removeAllRanges = vi.fn()
+const addRange = vi.fn()
 
+/**
+ * A stateful stand-in for the page selection, spied onto BOTH `window` and
+ * `document` (the clipboard fallback in `lib/utils` reaches for
+ * `document.getSelection`).
+ *
+ * Statefulness matters: `removeAllRanges` really empties it and `addRange`
+ * really refills it, which is what lets a test tell "cleared and left cleared"
+ * apart from "cleared, then handed back by the clipboard fallback's restore".
+ */
 function mockSelection(
   container: Node | null,
   text: string,
   rect: DOMRect = SELECTION_RECT
 ) {
-  vi.spyOn(window, "getSelection").mockReturnValue({
-    isCollapsed: text.length === 0,
-    rangeCount: container ? 1 : 0,
-    getRangeAt: () => ({
-      commonAncestorContainer: container,
-      getBoundingClientRect: () => rect,
-    }),
-    toString: () => text,
-    removeAllRanges,
-  } as unknown as Selection)
+  let cleared = false
+  const range = {
+    commonAncestorContainer: container,
+    getBoundingClientRect: () => rect,
+    cloneRange: () => range,
+  }
+  const selection = {
+    get isCollapsed() {
+      return cleared || text.length === 0
+    },
+    get rangeCount() {
+      return cleared || !container ? 0 : 1
+    },
+    getRangeAt: () => range,
+    toString: () => (cleared ? "" : text),
+    removeAllRanges: () => {
+      cleared = true
+      removeAllRanges()
+    },
+    addRange: () => {
+      cleared = false
+      addRange()
+    },
+  } as unknown as Selection
+  vi.spyOn(window, "getSelection").mockReturnValue(selection)
+  vi.spyOn(document, "getSelection").mockReturnValue(selection)
 }
 
 /** Fire the browser event the component listens on, inside `act`. */
@@ -117,6 +152,9 @@ function mockToolbarWidth(width: number) {
 
 beforeEach(() => {
   removeAllRanges.mockClear()
+  addRange.mockClear()
+  toastSuccess.mockClear()
+  toastError.mockClear()
   rectSpy = vi
     .spyOn(Element.prototype, "getBoundingClientRect")
     .mockReturnValue(BOX)
@@ -223,7 +261,7 @@ describe("SelectionActionBubble", () => {
     expect(screen.queryByRole("toolbar")).toBeNull()
   })
 
-  it("copies the selected text and confirms", async () => {
+  it("copies the selected text, then clears the selection, hides and toasts", async () => {
     const writeText = vi.fn().mockResolvedValue(undefined)
     Object.defineProperty(navigator, "clipboard", {
       configurable: true,
@@ -238,9 +276,47 @@ describe("SelectionActionBubble", () => {
     })
 
     expect(writeText).toHaveBeenCalledWith("hello world")
-    expect(screen.getByRole("button", { name: "Copy Text" }).textContent).toBe(
-      "Copied"
-    )
+    // The toolbar is gone, so the confirmation has to be a toast — there is no
+    // button left to turn into a checkmark.
+    expect(removeAllRanges).toHaveBeenCalled()
+    expect(screen.queryByRole("toolbar")).toBeNull()
+    expect(toastSuccess).toHaveBeenCalledWith("Copied")
+    expect(toastError).not.toHaveBeenCalled()
+  })
+
+  it("toasts an error when the clipboard write fails", async () => {
+    // Non-secure contexts (the web build over plain HTTP) have no
+    // navigator.clipboard, and the legacy execCommand path can refuse too.
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText: vi.fn().mockRejectedValue(new Error("denied")) },
+    })
+    const execCommand = vi.fn().mockReturnValue(false)
+    Object.defineProperty(document, "execCommand", {
+      configurable: true,
+      value: execCommand,
+    })
+    const { container } = render(<Harness onQuote={vi.fn()} />)
+    mockSelection(container.querySelector("[data-testid=para]"), "hello world")
+    selectionChanged()
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Copy Text" }))
+    })
+
+    expect(toastError).toHaveBeenCalledWith("Copy failed")
+    expect(toastSuccess).not.toHaveBeenCalled()
+    expect(screen.queryByRole("toolbar")).toBeNull()
+
+    // This write went down the legacy path, which snapshots the page selection
+    // around its hidden textarea and restores it afterwards. Because the bubble
+    // clears the selection BEFORE starting the write, that snapshot is empty and
+    // no restore is attempted at all — so nothing can hand the selection, and
+    // with it the bubble, back.
+    expect(execCommand).toHaveBeenCalledWith("copy")
+    expect(addRange).not.toHaveBeenCalled()
+    selectionChanged()
+    expect(screen.queryByRole("toolbar")).toBeNull()
   })
 
   it("survives a tap that clears the selection before the click lands", () => {
@@ -352,21 +428,26 @@ describe("SelectionActionBubble", () => {
     expect(screen.getByRole("toolbar").style.top).toBe("152px")
   })
 
-  it("keeps tracking the selection after one of its buttons is clicked", async () => {
+  it("keeps tracking the selection after a press on its chrome", async () => {
     // Regression (caught in a real browser): the tap guard above stayed armed
     // once the click had landed, so the bubble stopped following the text —
     // scrolling the thread left it stranded at its original coordinates.
+    //
+    // Pressing the toolbar's own padding rather than a button is what still
+    // exercises this: both actions dismiss the bubble and clear the guard
+    // themselves, so the shared `click` release only matters for a press that
+    // runs no action at all.
     const { container } = render(<Harness onQuote={vi.fn()} />)
     const para = container.querySelector("[data-testid=para]")
     mockSelection(para, "hello")
     selectionChanged()
     expect(screen.getByRole("toolbar").style.top).toBe("92px")
 
-    const copy = screen.getByRole("button", { name: "Copy Text" })
+    const toolbar = screen.getByRole("toolbar")
     await act(async () => {
-      fireEvent.pointerDown(copy)
-      fireEvent.pointerUp(copy)
-      fireEvent.click(copy)
+      fireEvent.pointerDown(toolbar)
+      fireEvent.pointerUp(toolbar)
+      fireEvent.click(toolbar)
     })
 
     // Same selection, new geometry — as after a scroll.
