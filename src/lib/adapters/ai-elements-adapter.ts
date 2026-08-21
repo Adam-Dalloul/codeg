@@ -1566,18 +1566,35 @@ function mergeGoalObjectiveHints(
  * run flushes with `isRunning: isStreaming`, so it settles (static) once the
  * turn stops or on history reload, and shimmers only while live.
  *
- * The Goal card starts collapsed, so a settled run must not keep the turn's
- * trailing prose inside the chip. After the last non-text item (or when the
- * body is only text), lift those text parts out so a reload still shows the
- * final answer under the chip. While the turn is live the prose stays in the
- * card; the card opens itself while running.
+ * The Goal card starts collapsed once the run settles, so a settled run must
+ * not keep the turn's answer inside the chip. After the last process item (or
+ * when the body is only answer parts), lift those parts out so a reload still
+ * shows the final answer under the chip. While the turn is live the answer
+ * stays in the card, which opens itself as soon as it holds anything.
  */
-function splitTrailingTextParts(items: AdaptedContentPart[]): {
+
+/**
+ * Parts that ARE the turn's answer rather than the process that produced it:
+ * prose, the codex Plan-mode document the user has to read, and a generated
+ * image. Everything else (tool calls/results/groups, reasoning, todo plans,
+ * delegation and background-task polls) is process and belongs in the capsule.
+ */
+const GOAL_ANSWER_PART_TYPES: ReadonlySet<AdaptedContentPart["type"]> = new Set(
+  ["text", "proposed-plan", "generated-image"]
+)
+
+/**
+ * Split a settled unfinished run's body at the last process part: everything
+ * after it is the answer and gets lifted out, in order. Answer parts BEFORE a
+ * process part stay inside — prose followed by more work is a mid-run note,
+ * not a wrap-up, and lifting it would reorder the reply.
+ */
+function splitTrailingAnswerParts(items: AdaptedContentPart[]): {
   body: AdaptedContentPart[]
   trailing: AdaptedContentPart[]
 } {
   let end = items.length
-  while (end > 0 && items[end - 1]?.type === "text") {
+  while (end > 0 && GOAL_ANSWER_PART_TYPES.has(items[end - 1]!.type)) {
     end -= 1
   }
   if (end === items.length) {
@@ -1618,9 +1635,9 @@ export function groupGoalRuns(
     items: AdaptedContentPart[],
     isRunning: boolean
   ) => {
-    // Keep live prose inside the running card (it opens while in flight).
-    // Once the turn settles, lift trailing text so a collapsed chip on
-    // reload does not hide the answer.
+    // Keep the live answer inside the running card (it opens while in flight).
+    // Once the turn settles, lift the trailing answer so a collapsed chip on
+    // reload does not hide it.
     // Only lift when the run never closed. A completed update_goal already
     // leaves later prose as siblings; mid-run notes stay in that card.
     const shouldLiftTrailing = !isRunning && end === null
@@ -1634,7 +1651,7 @@ export function groupGoalRuns(
       })
       return
     }
-    const { body, trailing } = splitTrailingTextParts(items)
+    const { body, trailing } = splitTrailingAnswerParts(items)
     result.push({
       type: "goal-run",
       start,
