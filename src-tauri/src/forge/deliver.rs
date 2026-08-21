@@ -160,13 +160,17 @@ pub struct DeliveryCtx<'a> {
 /// against a real HTTP server (see this module's tests).
 #[async_trait]
 pub trait ForgeDeliveryApi: Send + Sync {
-    /// Publish `work_branch` as `remote_branch` on the source repository.
+    /// Publish `work_branch` as `remote_branch` on `repo` — the repository the
+    /// push lands in: the source repository for an issue task's own branch,
+    /// the recorded HEAD repository for a pull-request push-back (the same
+    /// repository except when the pull request comes from a fork).
     /// Fast-forward only — a rejected push means that branch has another owner
     /// and the task must go back to a human.
     async fn push_branch(
         &self,
         ctx: &DeliveryCtx<'_>,
         worktree_path: &str,
+        repo: &str,
         work_branch: &str,
         remote_branch: &str,
     ) -> Result<(), String>;
@@ -248,13 +252,14 @@ impl ForgeDeliveryApi for ForgeDelivery {
         &self,
         ctx: &DeliveryCtx<'_>,
         worktree_path: &str,
+        repo: &str,
         work_branch: &str,
         remote_branch: &str,
     ) -> Result<(), String> {
         // Git is git: the same explicit-URL push with the same pinned
         // credentials works against both forges.
         let auth = resolve(ctx).await?;
-        push_work_branch(ctx, &auth, worktree_path, work_branch, remote_branch).await
+        push_work_branch(ctx, &auth, worktree_path, repo, work_branch, remote_branch).await
     }
 
     async fn find_pulls(
@@ -409,17 +414,29 @@ pub async fn get_pull(
 /// behind its author's back, so the engine refuses it), which would leave it
 /// stuck in review with no acceptance at all. Refusing at the only moment the
 /// user can still choose something else is the whole point.
+///
+/// A change from a FORK has such a place: its own branch in the fork — the
+/// checkout never needed it (both forges publish the head under a server-side
+/// ref on this repository), and the delivery pushes to the fork with the same
+/// pinned credentials, which the forge grants when the author allowed
+/// maintainer edits. That grant cannot be read reliably up front, so it is not
+/// gated here: a refused push bounces the task back to review with the reason,
+/// and a review turn that added no commits settles without pushing at all.
+/// What IS refused is a fork codeg cannot even name — a deleted or invisible
+/// head repository — because a push there can never work for anyone.
 pub fn pull_is_workable(
     provider: ForgeProvider,
     pull: &ForgePr,
     owner_repo: &str,
 ) -> Result<(), String> {
     let noun = provider.change_noun();
-    if !super::same_repo(&pull.head_repo, owner_repo) {
+    if !super::same_repo(&pull.head_repo, owner_repo)
+        && super::normalize_repo(&pull.head_repo).is_none()
+    {
         return Err(format!(
-            "{noun} #{} comes from a fork ({}), and codeg can only work on {noun}s whose branch \
-             lives in {owner_repo}",
-            pull.number, pull.head_repo
+            "{noun} #{} comes from a fork whose repository codeg cannot see (it may be private \
+             or deleted), so there would be no way to push work back to it",
+            pull.number
         ));
     }
     // A closed-but-unmerged pull request is fine: it can be reopened, and the
@@ -497,17 +514,25 @@ pub async fn create_issue_comment(
 /// the repository may well use an SSH remote (which would bypass credential
 /// injection entirely), and the identity here must be the pinned account, not
 /// whatever git's helper chain answers with.
+///
+/// `repo` — not `ctx.owner_repo` — is where the push lands: a pull request
+/// from a fork pushes back to the fork, while every context-level operation
+/// (comments, pull-request lookups) stays on the source repository.
 async fn push_work_branch(
     ctx: &DeliveryCtx<'_>,
     auth: &ResolvedAuth,
     worktree_path: &str,
+    repo: &str,
     work_branch: &str,
     remote_branch: &str,
 ) -> Result<(), String> {
-    // Both names are interpolated into a refspec. Validate BEFORE building it.
+    // Everything here is interpolated into a URL or a refspec. Validate
+    // BEFORE building either.
+    let repo = super::normalize_repo(repo)
+        .ok_or_else(|| format!("bad repository path: {repo}"))?;
     ensure_pushable_branch(work_branch)?;
     ensure_pushable_branch(remote_branch)?;
-    let url = format!("{}/{}.git", web_origin(auth), ctx.owner_repo);
+    let url = format!("{}/{}.git", web_origin(auth), repo);
     // Fully qualified on both sides: a short name goes through git's revision
     // resolution, where a same-named tag makes it ambiguous (the project's
     // existing push path documents the same trap).
@@ -1071,9 +1096,20 @@ mod tests {
         let err = pull_is_workable(gh, &merged, "acme/app").expect_err("merged");
         assert!(err.contains("already merged"), "{err}");
 
-        // A fork's branch lives in someone else's repository.
+        // A fork's branch lives in someone else's repository — a real place
+        // the delivery can push to, so it is workable.
         let fork = pr(7, "abc", "feature", "main", "contributor/app");
-        let err = pull_is_workable(gh, &fork, "acme/app").expect_err("fork");
+        assert!(pull_is_workable(gh, &fork, "acme/app").is_ok());
+
+        // ...unless that repository cannot even be named: GitHub reports a
+        // deleted fork as no repository at all, and GitLab keeps a
+        // `project-{id}` placeholder when the fork project is not visible to
+        // this account. No name, no push URL, ever.
+        let deleted_fork = pr(7, "abc", "feature", "main", "");
+        let err = pull_is_workable(gh, &deleted_fork, "acme/app").expect_err("deleted fork");
+        assert!(err.contains("fork") && err.contains("cannot see"), "{err}");
+        let invisible_fork = pr(7, "abc", "feature", "main", "project-4711");
+        let err = pull_is_workable(gh, &invisible_fork, "acme/app").expect_err("placeholder");
         assert!(err.contains("fork"), "{err}");
 
         // Nothing to check out or push back to.

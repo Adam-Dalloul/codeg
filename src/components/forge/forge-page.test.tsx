@@ -53,6 +53,12 @@ vi.mock("@/lib/api", () => ({
   openSettingsWindow: vi.fn().mockResolvedValue(undefined),
   workTaskLookupBySource: vi.fn().mockResolvedValue([]),
   workTaskCreateFromForge: vi.fn(),
+  // Read once on mount for the trigger dialog's starting positions. Resolved,
+  // never rejected, in the default fixture: every assertion below is about the
+  // LIST, and a rejected preferences read would add an unhandled rejection to
+  // each of them.
+  forgeSettingsGet: vi.fn(),
+  forgeSettingsSet: vi.fn(),
 }))
 vi.mock("@/lib/platform", () => ({
   subscribe: vi.fn().mockResolvedValue(() => {}),
@@ -69,6 +75,7 @@ vi.mock("@/contexts/workbench-route-context", () => ({
 import {
   folderForgeRemote,
   forgeListLabels,
+  forgeSettingsGet,
   forgeTabCount,
   workTaskLookupBySource,
 } from "@/lib/api"
@@ -175,6 +182,10 @@ beforeEach(() => {
       { name: "help wanted", color: null },
     ],
     truncated: false,
+  })
+  vi.mocked(forgeSettingsGet).mockResolvedValue({
+    global: { writeback_default: true, scenario_prompts: {} },
+    folders: {},
   })
 })
 
@@ -452,6 +463,44 @@ describe("ForgePage reload button", () => {
     await screen.findByText("a row")
     await waitFor(() => expect(reloadButton()).toBeEnabled())
     expect(reloadButton().querySelector(".animate-spin")).toBeNull()
+  })
+})
+
+/**
+ * The gear beside reload. Sender and receiver are in two different branches of
+ * the tree — the button is drawn in the window chrome, the dialog belongs to
+ * the page — so the only thing worth asserting is that the event actually
+ * crosses between them.
+ */
+describe("ForgePage settings button", () => {
+  function settingsButton() {
+    return screen.getByRole("button", { name: "Panel settings" })
+  }
+
+  it("opens the panel's preferences from the window chrome", async () => {
+    const user = userEvent.setup()
+    vi.mocked(forgeListIssues).mockResolvedValue(listOf([issue(1, "a row")]))
+    mount()
+    await screen.findByText("a row")
+
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument()
+    await user.click(settingsButton())
+    // Opened on the folder whose list is on screen, not on the global row —
+    // that is the scope the gear beside THIS list is about.
+    expect(
+      await screen.findByText("How issues and changes in codeg are handled.")
+    ).toBeInTheDocument()
+  })
+
+  it("stays live over a folder with no repository at all", async () => {
+    // Unlike reload: the preferences exist whatever the folder resolves to, so
+    // there is something to change even when the list has nothing to show.
+    vi.mocked(folderForgeRemote).mockResolvedValue(null)
+    mount()
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Refresh" })).toBeDisabled()
+    )
+    expect(settingsButton()).toBeEnabled()
   })
 })
 

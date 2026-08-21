@@ -1392,6 +1392,8 @@ mod tauri_app {
                 forge_commands::forge_list_labels,
                 forge_commands::work_task_create_from_forge,
                 forge_commands::work_task_lookup_by_source,
+                forge_commands::forge_settings_get,
+                forge_commands::forge_settings_set,
                 terminal_commands::terminal_spawn,
                 terminal_commands::terminal_write,
                 terminal_commands::terminal_resize,
