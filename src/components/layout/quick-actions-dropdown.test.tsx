@@ -19,7 +19,6 @@ const mocks = vi.hoisted(() => {
     openPetWindow: vi.fn(() => Promise.resolve()),
     openRemoteWorkspace: vi.fn(() => Promise.resolve()),
     listRemoteWorkspaceConnections: vi.fn(() => Promise.resolve(connections)),
-    setSearchOpen: vi.fn(),
     setRoute: vi.fn(),
   }
 })
@@ -45,10 +44,6 @@ vi.mock("@/contexts/active-folder-context", () => ({
     activeFolder,
     activeFolderId: activeFolder?.id ?? null,
   }),
-}))
-
-vi.mock("@/contexts/search-dialog-context", () => ({
-  useSearchDialog: () => ({ open: false, setOpen: mocks.setSearchOpen }),
 }))
 
 vi.mock("@/contexts/automations-view-context", () => ({
@@ -121,7 +116,7 @@ beforeEach(() => {
 })
 
 describe("QuickActionsDropdown", () => {
-  it("groups all ten actions under their headings on desktop", async () => {
+  it("groups all nine actions under their headings on desktop", async () => {
     await mountAndOpen()
 
     for (const group of [
@@ -139,7 +134,6 @@ describe("QuickActionsDropdown", () => {
       "Open remote workspace",
       "Manage conversations",
       "Import local sessions",
-      "Search",
       AUTOMATIONS_ROW,
       "To-dos",
       "Show pet",
@@ -148,14 +142,21 @@ describe("QuickActionsDropdown", () => {
     }
   })
 
+  it("has no Search row — that button is always visible in the chrome", async () => {
+    await mountAndOpen()
+    // Every other entry here is a fallback for a home that disappears with the
+    // sidebar; search's home (LeftEdgeChrome / FolderTitleBar) never does.
+    expect(screen.queryByRole("menuitem", { name: "Search" })).toBeNull()
+  })
+
   it("drops the desktop-only rows in web mode", async () => {
     desktop = false
     await mountAndOpen()
 
-    // The remaining eight still render, so this is a targeted removal rather
+    // The remaining seven still render, so this is a targeted removal rather
     // than the menu failing to open.
     expect(
-      await screen.findByRole("menuitem", { name: "Search" })
+      await screen.findByRole("menuitem", { name: "Import local sessions" })
     ).toBeVisible()
     expect(
       screen.queryByRole("menuitem", { name: "Open remote workspace" })
@@ -168,10 +169,6 @@ describe("QuickActionsDropdown", () => {
     activeFolder = FOLDER
     await mountAndOpen()
 
-    await clickItem("Search")
-    expect(mocks.setSearchOpen).toHaveBeenCalledWith(true)
-
-    await reopen()
     await clickItem(AUTOMATIONS_ROW)
     expect(mocks.setRoute).toHaveBeenCalledWith("automations")
 
