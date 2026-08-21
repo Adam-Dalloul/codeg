@@ -63,6 +63,7 @@ import {
   FolderSelect,
   type FolderSelectOption,
 } from "@/components/shared/folder-select"
+import { ForgeBetaBadge } from "@/components/forge/forge-beta-badge"
 import { OPEN_FORGE_SETTINGS_EVENT } from "@/components/forge/forge-chrome-actions"
 import { ForgeIssueRowItem } from "@/components/forge/forge-issue-row"
 import { ForgeSettingsDialog } from "@/components/forge/forge-settings-dialog"
@@ -238,7 +239,7 @@ export function repoWebUrl(remote: ForgeRemote): string {
 
 export function ForgePageTitle() {
   const t = useTranslations("Forge")
-  return <WorkbenchPageTitle title={t("title")} />
+  return <WorkbenchPageTitle title={t("title")} badge={<ForgeBetaBadge />} />
 }
 
 function loadStoredFolderId(): number | null {
