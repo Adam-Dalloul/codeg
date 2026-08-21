@@ -210,6 +210,7 @@ pub async fn refresh_auto_title(
         .col_expr(conversation::Column::Title, Expr::value(title))
         .filter(conversation::Column::Id.eq(conversation_id))
         .filter(conversation::Column::TitleLocked.eq(false))
+        .filter(conversation::Column::DeletedAt.is_null())
         .filter(
             sea_orm::Condition::any()
                 .add(conversation::Column::Title.is_null())
@@ -240,6 +241,7 @@ pub async fn seed_auto_title_if_empty(
         .col_expr(conversation::Column::Title, Expr::value(title))
         .filter(conversation::Column::Id.eq(conversation_id))
         .filter(conversation::Column::TitleLocked.eq(false))
+        .filter(conversation::Column::DeletedAt.is_null())
         .filter(
             sea_orm::Condition::any()
                 .add(conversation::Column::Title.is_null())

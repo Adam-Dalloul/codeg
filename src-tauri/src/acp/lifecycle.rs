@@ -322,12 +322,26 @@ pub(crate) async fn handle_event(
                 return Ok(());
             };
             let conversation_id = { state_arc.read().await.conversation_id };
+            // Title published before the first prompt binds the row: drop it.
+            // ConversationLinked clears last_native_title so a later resend
+            // is accepted; otherwise the next detail load recovers it.
             let Some(cid) = conversation_id else {
                 return Ok(());
             };
+            // Unlocked on purpose: a later ACP title or a session-file parse
+            // can still replace this. Identical repeats are filtered at emit
+            // time so CodeBuddy's per-turn fallback cannot ping-pong the
+            // sidebar. Soft-deleted rows are skipped by the UPDATE predicate.
             if conversation_service::refresh_auto_title(db_conn, cid, title.clone()).await? {
                 crate::commands::conversations::emit_conversation_upsert(&emitter, db_conn, cid)
                     .await;
+                if let Some(ccm) = manager.chat_channel() {
+                    crate::commands::conversations::spawn_sync_conversation_title_until_current(
+                        db_conn.clone(),
+                        ccm,
+                        cid,
+                    );
+                }
             }
             Ok(())
         }

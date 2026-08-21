@@ -213,6 +213,10 @@ pub struct ConnectionManager {
     /// init. `Arc<OnceLock>` so the inner `Self` cloned from `clone_ref` sees
     /// the install too — the lock is set once at startup and never mutated.
     delegation_injection: Arc<std::sync::OnceLock<crate::acp::connection::DelegationInjection>>,
+    /// Chat-channel manager installed during bootstrap so live title writes
+    /// can sync Telegram topic names without threading the manager through
+    /// every `send_prompt_linked` caller. Optional in tests.
+    chat_channel: Arc<std::sync::OnceLock<crate::chat_channel::manager::ChatChannelManager>>,
     /// Per-agent-type serialization for `probe_agent_options`. Without
     /// this, rapid agent-tab clicks in the settings UI would fan out one
     /// real CLI process per click — each one running up to 60s. The
@@ -269,6 +273,7 @@ impl ConnectionManager {
             spawn_handshake_timeout: spawn_handshake_timeout_from_env(),
             terminal_shell_config: TerminalShellRuntimeConfig::new(),
             delegation_injection: Arc::new(std::sync::OnceLock::new()),
+            chat_channel: Arc::new(std::sync::OnceLock::new()),
             probe_locks: Arc::new(Mutex::new(HashMap::new())),
             pending_questions: Arc::new(Mutex::new(HashMap::new())),
             pending_plan_approvals: Arc::new(Mutex::new(HashMap::new())),
@@ -283,6 +288,7 @@ impl ConnectionManager {
             spawn_handshake_timeout: self.spawn_handshake_timeout,
             terminal_shell_config: self.terminal_shell_config.clone(),
             delegation_injection: self.delegation_injection.clone(),
+            chat_channel: self.chat_channel.clone(),
             probe_locks: self.probe_locks.clone(),
             pending_questions: self.pending_questions.clone(),
             pending_plan_approvals: self.pending_plan_approvals.clone(),
@@ -294,6 +300,22 @@ impl ConnectionManager {
     /// the unlikely event a second `build_delegation_stack` runs.
     pub fn install_delegation(&self, injection: crate::acp::connection::DelegationInjection) {
         let _ = self.delegation_injection.set(injection);
+    }
+
+    /// Install the chat-channel manager exactly once during bootstrap so
+    /// live title writes can sync bound forum topics. Calling twice is a
+    /// no-op. Tests leave this unset and skip the remote sync.
+    pub fn install_chat_channel(
+        &self,
+        manager: crate::chat_channel::manager::ChatChannelManager,
+    ) {
+        let _ = self.chat_channel.set(manager);
+    }
+
+    pub(crate) fn chat_channel(
+        &self,
+    ) -> Option<crate::chat_channel::manager::ChatChannelManager> {
+        self.chat_channel.get().map(|c| c.clone_ref())
     }
 
     fn delegation_snapshot(&self) -> Option<crate::acp::connection::DelegationInjection> {
@@ -317,6 +339,7 @@ impl ConnectionManager {
             spawn_handshake_timeout: timeout,
             terminal_shell_config: TerminalShellRuntimeConfig::new(),
             delegation_injection: Arc::new(std::sync::OnceLock::new()),
+            chat_channel: Arc::new(std::sync::OnceLock::new()),
             probe_locks: Arc::new(Mutex::new(HashMap::new())),
             pending_questions: Arc::new(Mutex::new(HashMap::new())),
             pending_plan_approvals: Arc::new(Mutex::new(HashMap::new())),
@@ -1308,6 +1331,13 @@ impl ConnectionManager {
                                 &emitter, &db.conn, cid,
                             )
                             .await;
+                            if let Some(ccm) = self.chat_channel() {
+                                crate::commands::conversations::spawn_sync_conversation_title_until_current(
+                                    db.conn.clone(),
+                                    ccm,
+                                    cid,
+                                );
+                            }
                         }
                         Ok(false) => {}
                         Err(e) => tracing::warn!(

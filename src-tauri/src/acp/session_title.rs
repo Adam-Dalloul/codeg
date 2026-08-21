@@ -7,9 +7,10 @@
 
 /// Pull a usable session title out of ACP `session_info_update.title`.
 ///
-/// `Undefined` / `Null` (passed in as `None`) and whitespace-only strings
-/// are ignored — those updates are typically goal/error metadata with no
-/// title, and emitting them would queue the lifecycle worker for nothing.
+/// `Undefined` (passed in as `None`) means the update did not touch the title
+/// and is ignored. The schema also uses `Null` to mean "clear"; we treat that
+/// the same as absent on purpose so an explicit clear cannot wipe the row
+/// back to Untitled. Whitespace-only strings are ignored for the same reason.
 pub(crate) fn native_title_from_session_info(title: Option<&str>) -> Option<String> {
     let t = title?.trim();
     if t.is_empty() {
