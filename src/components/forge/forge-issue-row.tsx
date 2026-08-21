@@ -15,6 +15,7 @@ import {
   type LucideIcon,
 } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
+import { BrowserLink } from "@/components/ui/browser-link"
 import { Button } from "@/components/ui/button"
 import { statusLabelKey } from "@/components/tasks/task-card"
 import { useWorkbenchRoute } from "@/contexts/workbench-route-context"
@@ -156,15 +157,13 @@ export function ForgeIssueRowItem({
       </span>
       <div className="min-w-0 flex-1">
         <div className="flex min-w-0 items-center gap-1.5">
-          <a
+          <BrowserLink
             href={row.html_url}
-            target="_blank"
-            rel="noreferrer"
             className="truncate text-sm font-medium hover:underline"
             title={row.title}
           >
             {row.title}
-          </a>
+          </BrowserLink>
           {row.labels
             .slice(0, compact ? LABEL_CAP_COMPACT : LABEL_CAP)
             .map((label) => {

@@ -97,6 +97,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
+import { BrowserLink } from "@/components/ui/browser-link"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
 import {
@@ -1084,10 +1085,8 @@ export function TaskDetailSheet({
                           : "detailPullRequest"
                       )}
                     >
-                      <a
+                      <BrowserLink
                         href={deliveredPr}
-                        target="_blank"
-                        rel="noopener noreferrer"
                         className="inline-flex min-w-0 items-center gap-1 truncate underline-offset-2 hover:underline"
                         title={deliveredPr}
                       >
@@ -1096,7 +1095,7 @@ export function TaskDetailSheet({
                           aria-hidden="true"
                         />
                         <span className="truncate">{deliveredPr}</span>
-                      </a>
+                      </BrowserLink>
                     </InfoRow>
                   ) : null}
                   {task.files_changed != null && task.files_changed > 0 ? (
