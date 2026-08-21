@@ -21,6 +21,107 @@ export function isModelConfigOption(option: SessionConfigOptionInfo): boolean {
   return option.id === "model" || option.category === "model"
 }
 
+const DESCRIPTION_SEPARATORS = [" · ", " – ", " - ", ": "] as const
+
+/**
+ * Display-only cleanup for a select option list. Values never change.
+ *
+ * Agents often ship a short `name` ("Fable") and put the versioned name in
+ * the description ("Fable 5 · Most capable…"). The trigger then reads
+ * "Fable" while the row says "Fable 5". When the description starts with
+ * the name and then a longer head before a separator, promote that head
+ * to the label and keep the remainder as the blurb.
+ *
+ * A description that is exactly another option's name (Claude's
+ * "Default (recommended)" whose blurb is "Opus (1M context)") is dropped:
+ * the sibling row already carries that title, so repeating it looks like
+ * two copies of the same model.
+ *
+ * Run this BEFORE provider-prefix grouping. Stripping `OpenCode Zen/` first
+ * leaves a name ("Fable") that no longer prefixes the still-full description
+ * ("OpenCode Zen/Fable 5 · …"), so the promotion would miss.
+ */
+export function polishSelectOptions(
+  options: SessionConfigSelectOptionInfo[]
+): SessionConfigSelectOptionInfo[] {
+  const promoted = options.map(promoteVersionedName)
+  const names = new Set(promoted.map((opt) => opt.name.trim()).filter(Boolean))
+  return promoted.map((opt) => dropRedundantDescription(opt, names))
+}
+
+/** True when `candidate` is `name` plus a version token (`5`, `4.6`, `4.5`). */
+function isVersionedExtension(name: string, candidate: string): boolean {
+  if (!candidate.startsWith(name) || candidate.length <= name.length) {
+    return false
+  }
+  const rest = candidate.slice(name.length).trim()
+  return /^\d[\w.-]*(?:\s*\([^)]+\))?$/.test(rest)
+}
+
+function promoteVersionedName(
+  opt: SessionConfigSelectOptionInfo
+): SessionConfigSelectOptionInfo {
+  const name = opt.name.trim()
+  const description = opt.description?.trim() ?? ""
+  if (!description) {
+    return name === opt.name ? opt : { ...opt, name }
+  }
+  if (description === name) {
+    return { ...opt, name, description: null }
+  }
+  for (const sep of DESCRIPTION_SEPARATORS) {
+    const idx = description.indexOf(sep)
+    if (idx <= 0) continue
+    const head = description.slice(0, idx).trim()
+    const tail = description.slice(idx + sep.length).trim()
+    if (head.startsWith(name) && head.length > name.length) {
+      return { ...opt, name: head, description: tail || null }
+    }
+  }
+  if (isVersionedExtension(name, description)) {
+    return { ...opt, name: description, description: null }
+  }
+  return name === opt.name && description === (opt.description ?? "").trim()
+    ? opt
+    : { ...opt, name, description }
+}
+
+function dropRedundantDescription(
+  opt: SessionConfigSelectOptionInfo,
+  siblingNames: Set<string>
+): SessionConfigSelectOptionInfo {
+  const description = opt.description?.trim() ?? ""
+  if (!description) return opt
+  if (description === opt.name.trim()) {
+    return { ...opt, description: null }
+  }
+  if (siblingNames.has(description) && description !== opt.name.trim()) {
+    return { ...opt, description: null }
+  }
+  return opt
+}
+
+/**
+ * Same display polish as {@link polishSelectOptions}, applied to a select
+ * config option's flat list AND any server-provided groups (groups are remapped
+ * by value so they pick up the promoted names).
+ */
+export function polishConfigOption(
+  option: SessionConfigOptionInfo
+): SessionConfigOptionInfo {
+  if (option.kind.type !== "select") return option
+  const kind = option.kind
+  const options = polishSelectOptions(kind.options)
+  const byValue = new Map(options.map((item) => [item.value, item]))
+  const groups = kind.groups.map((group) => ({
+    ...group,
+    options: group.options.map(
+      (item) => byValue.get(item.value) ?? polishSelectOptions([item])[0]
+    ),
+  }))
+  return { ...option, kind: { ...kind, options, groups } }
+}
+
 // The namespace before the FIRST "/", or `null` when there is no usable prefix
 // (no slash, a leading slash, or a trailing slash with an empty suffix). Values
 // like `openrouter/anthropic/claude` group under their first segment.
@@ -178,8 +279,13 @@ export function modelListGroups(
   option: SessionConfigOptionInfo
 ): ModelOptionGroup[] {
   if (option.kind.type !== "select") return []
-  const kind = option.kind
-  const derived = deriveModelGroups(option)
+  // Polish first so a versioned description head ("Fable 5") is the name that
+  // prefix-stripping and the trigger both see. Grouping after polish still
+  // keys off values, which never change.
+  const polished = polishConfigOption(option)
+  if (polished.kind.type !== "select") return []
+  const kind = polished.kind
+  const derived = deriveModelGroups(polished)
   if (derived) return derived
   if (kind.groups.length > 0) {
     return kind.groups.map((group) => ({

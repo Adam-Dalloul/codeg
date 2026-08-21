@@ -86,7 +86,6 @@ import {
   type SessionSelectorSetting,
 } from "@/components/chat/session-selectors-panel"
 import {
-  deriveModelGroups,
   isModelConfigOption,
   modelListGroups,
   MODEL_LIST_VIRTUALIZE_THRESHOLD,
@@ -1475,7 +1474,7 @@ export function MessageInput({
             <InlineSessionConfigSelector
               key={option.id}
               option={option}
-              derivedGroups={deriveModelGroups(option)}
+              derivedGroups={modelListGroups(option)}
               onSelect={(configId, valueId) =>
                 onConfigOptionChange?.(configId, valueId)
               }
@@ -1526,40 +1525,10 @@ export function MessageInput({
         }
         if (option.kind.type !== "select") continue
         const kind = option.kind
-        // Model values that carry a `provider/` prefix group by provider; every
-        // other option keeps its server groups or stays flat (`null` derived).
-        const derived = deriveModelGroups(option)
-        const groups: SessionSelectorGroup[] = derived
-          ? derived.map((group) => ({
-              key: group.key,
-              name: group.name,
-              options: group.options.map((item) => ({
-                value: item.value,
-                name: item.name,
-                description: item.description,
-              })),
-            }))
-          : kind.groups.length > 0
-            ? kind.groups.map((group) => ({
-                key: group.group,
-                name: group.name,
-                options: group.options.map((item) => ({
-                  value: item.value,
-                  name: item.name,
-                  description: item.description,
-                })),
-              }))
-            : [
-                {
-                  key: "__flat__",
-                  name: null,
-                  options: kind.options.map((item) => ({
-                    value: item.value,
-                    name: item.name,
-                    description: item.description,
-                  })),
-                },
-              ]
+        // Same grouping + display polish as the wide picker (provider headers,
+        // versioned names, no duplicate sibling blurbs) so the collapsed rail
+        // cannot drift from the composer chips.
+        const groups: SessionSelectorGroup[] = modelListGroups(option)
         // Resolve the left-rail summary against the built groups so a grouped
         // model shows its prefix-stripped name (the provider is implied) rather
         // than repeating `provider/`.

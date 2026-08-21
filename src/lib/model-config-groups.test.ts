@@ -6,6 +6,7 @@ import {
   flattenModelGroups,
   isModelConfigOption,
   modelListGroups,
+  polishSelectOptions,
   type ModelOptionGroup,
 } from "./model-config-groups"
 import type {
@@ -295,6 +296,84 @@ const SAMPLE_GROUPS: ModelOptionGroup[] = [
   },
 ]
 
+describe("polishSelectOptions", () => {
+  // Claude's short ACP catalog: short names, versioned heads in the
+  // description, and Default's blurb repeating a sibling title.
+  const claudeCatalog = [
+    opt("default", "Default (recommended)", "Opus (1M context)"),
+    opt("opus[1m]", "Opus (1M context)"),
+    opt("fable", "Fable", "Fable 5 · Most capable, complex agents"),
+    opt("sonnet", "Sonnet"),
+    opt("haiku", "Haiku"),
+  ]
+
+  it("promotes a versioned description head so the trigger matches the row", () => {
+    const polished = polishSelectOptions(claudeCatalog)
+    const fable = polished.find((o) => o.value === "fable")
+    expect(fable).toMatchObject({
+      value: "fable",
+      name: "Fable 5",
+      description: "Most capable, complex agents",
+    })
+  })
+
+  it("drops a description that is exactly a sibling option's name", () => {
+    const polished = polishSelectOptions(claudeCatalog)
+    const def = polished.find((o) => o.value === "default")
+    expect(def).toMatchObject({
+      value: "default",
+      name: "Default (recommended)",
+      description: null,
+    })
+  })
+
+  it("leaves already-clean sibling names and values alone", () => {
+    const polished = polishSelectOptions(claudeCatalog)
+    expect(polished.map((o) => o.value)).toEqual([
+      "default",
+      "opus[1m]",
+      "fable",
+      "sonnet",
+      "haiku",
+    ])
+    expect(polished.find((o) => o.value === "opus[1m]")?.name).toBe(
+      "Opus (1M context)"
+    )
+    expect(polished.find((o) => o.value === "sonnet")?.name).toBe("Sonnet")
+    expect(polished.find((o) => o.value === "haiku")?.name).toBe("Haiku")
+  })
+
+  it("promotes a version-only description with no blurb separator", () => {
+    const polished = polishSelectOptions([
+      opt("fable", "Fable", "Fable 5"),
+      opt("opus", "Opus", "Opus 4.6 (1M context)"),
+    ])
+    expect(polished[0]).toMatchObject({
+      name: "Fable 5",
+      description: null,
+    })
+    expect(polished[1]).toMatchObject({
+      name: "Opus 4.6 (1M context)",
+      description: null,
+    })
+  })
+
+  it("does not steal a unique blurb that does not start with the name", () => {
+    const polished = polishSelectOptions([
+      opt("sonnet", "Sonnet", "Balanced speed and quality"),
+    ])
+    expect(polished[0]).toMatchObject({
+      name: "Sonnet",
+      description: "Balanced speed and quality",
+    })
+  })
+
+  it("is idempotent", () => {
+    const once = polishSelectOptions(claudeCatalog)
+    expect(polishSelectOptions(once)).toEqual(once)
+  })
+})
+
 describe("modelListGroups", () => {
   it("uses the derived provider groups when applicable", () => {
     const option = modelOption([
@@ -334,6 +413,46 @@ describe("modelListGroups", () => {
     expect(groups).toHaveLength(1)
     expect(groups[0].name).toBeNull()
     expect(groups[0].options.map((o) => o.value)).toEqual(["a", "b", "c"])
+  })
+
+  it("polishes a flat Claude list so the trigger can show Fable 5", () => {
+    const catalog = modelOption([
+      opt("default", "Default (recommended)", "Opus (1M context)"),
+      opt("opus[1m]", "Opus (1M context)"),
+      opt("fable", "Fable", "Fable 5 · Most capable, complex agents"),
+      opt("sonnet", "Sonnet"),
+      opt("haiku", "Haiku"),
+    ])
+    catalog.kind.current_value = "fable"
+    const groups = modelListGroups(catalog)
+    expect(groups).toHaveLength(1)
+    expect(groups[0].name).toBeNull()
+    const fable = groups[0].options.find((o) => o.value === "fable")
+    expect(fable?.name).toBe("Fable 5")
+    expect(
+      groups[0].options.find((o) => o.value === "default")?.description
+    ).toBeNull()
+  })
+
+  it("polishes before stripping a shared provider prefix", () => {
+    // If grouping ran first, the name would become "Fable" while the
+    // description still started with "OpenCode Zen/Fable 5", and promotion
+    // would miss.
+    const option = modelOption([
+      opt(
+        "opencode/fable",
+        "OpenCode Zen/Fable",
+        "OpenCode Zen/Fable 5 · Most capable"
+      ),
+      opt("opencode/sonnet", "OpenCode Zen/Sonnet"),
+    ])
+    const groups = modelListGroups(option)
+    expect(groups.map((g) => g.name)).toEqual(["OpenCode Zen"])
+    expect(groups[0].options.map((o) => o.name)).toEqual(["Fable 5", "Sonnet"])
+    expect(groups[0].options[0]).toMatchObject({
+      value: "opencode/fable",
+      description: "Most capable",
+    })
   })
 })
 

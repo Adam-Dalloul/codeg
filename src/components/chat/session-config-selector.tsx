@@ -14,7 +14,10 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import { DropdownRadioItemContent } from "@/components/chat/dropdown-radio-item-content"
-import type { ModelOptionGroup } from "@/lib/model-config-groups"
+import {
+  polishSelectOptions,
+  type ModelOptionGroup,
+} from "@/lib/model-config-groups"
 import type { SessionConfigOptionInfo } from "@/lib/types"
 
 interface SessionConfigSelectorProps {
@@ -41,12 +44,15 @@ export function InlineSessionConfigSelector({
   // `name === null` is a headerless bucket (the leading prefix-less models).
   const renderGroups: ModelOptionGroup[] | null =
     derivedGroups && derivedGroups.length > 0
-      ? derivedGroups
+      ? derivedGroups.map((group) => ({
+          ...group,
+          options: polishSelectOptions(group.options),
+        }))
       : option.kind.groups.length > 0
         ? option.kind.groups.map((group) => ({
             key: group.group,
             name: group.name,
-            options: group.options,
+            options: polishSelectOptions(group.options),
           }))
         : null
 
@@ -55,7 +61,7 @@ export function InlineSessionConfigSelector({
   // the group it sits in) rather than repeating `provider/`.
   const renderedOptions = renderGroups
     ? renderGroups.flatMap((group) => group.options)
-    : option.kind.options
+    : polishSelectOptions(option.kind.options)
   const selected = renderedOptions.find(
     (item) => item.value === option.kind.current_value
   )
@@ -112,7 +118,7 @@ export function InlineSessionConfigSelector({
                   ))}
                 </Fragment>
               ))
-            : option.kind.options.map((item) => (
+            : renderedOptions.map((item) => (
                 <DropdownMenuRadioItem
                   key={item.value}
                   value={item.value}

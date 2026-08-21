@@ -170,6 +170,46 @@ describe("InlineSessionConfigSelector — model grouping", () => {
     // No provider headers for an ungroupable flat list.
     expect(screen.queryByText("anthropic")).toBeNull()
   })
+
+  it("promotes Fable 5 onto the trigger and drops Default's sibling blurb", async () => {
+    const user = userEvent.setup()
+    const option = modelOption(
+      [
+        {
+          value: "default",
+          name: "Default (recommended)",
+          description: "Opus (1M context)",
+        },
+        { value: "opus[1m]", name: "Opus (1M context)" },
+        {
+          value: "fable",
+          name: "Fable",
+          description: "Fable 5 · Most capable, complex agents",
+        },
+        { value: "sonnet", name: "Sonnet" },
+        { value: "haiku", name: "Haiku" },
+      ],
+      "fable"
+    )
+    render(<InlineSessionConfigSelector option={option} onSelect={vi.fn()} />)
+
+    // Trigger uses the promoted name, not the short ACP label.
+    expect(screen.getByRole("button", { name: /Fable 5/ })).toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: /^Model: Fable$/ })).toBeNull()
+
+    await user.click(screen.getByRole("button", { name: /Fable 5/ }))
+
+    const fable = await screen.findByRole("menuitemradio", { name: /Fable 5/ })
+    expect(fable).toHaveTextContent("Most capable, complex agents")
+    expect(fable).not.toHaveTextContent("Fable 5 ·")
+
+    const def = screen.getByRole("menuitemradio", {
+      name: /Default \(recommended\)/,
+    })
+    // The sibling title used to be Default's description, which made the
+    // list look like two copies of Opus (1M context).
+    expect(def).not.toHaveTextContent("Opus (1M context)")
+  })
 })
 
 // Cline 3.0.50's `auto_approve` — the first boolean config option any pinned
