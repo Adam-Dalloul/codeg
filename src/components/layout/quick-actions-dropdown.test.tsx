@@ -116,15 +116,10 @@ beforeEach(() => {
 })
 
 describe("QuickActionsDropdown", () => {
-  it("groups all nine actions under their headings on desktop", async () => {
+  it("groups all ten actions under their headings on desktop", async () => {
     await mountAndOpen()
 
-    for (const group of [
-      "Workspace",
-      "Sessions",
-      "Automation & to-dos",
-      "More",
-    ]) {
+    for (const group of ["Workspace", "Sessions", "Navigation", "More"]) {
       expect(await screen.findByText(group)).toBeVisible()
     }
     for (const label of [
@@ -136,6 +131,7 @@ describe("QuickActionsDropdown", () => {
       "Import local sessions",
       AUTOMATIONS_ROW,
       "To-dos",
+      "Repository panel",
       "Show pet",
     ]) {
       expect(await screen.findByRole("menuitem", { name: label })).toBeVisible()
@@ -153,10 +149,14 @@ describe("QuickActionsDropdown", () => {
     desktop = false
     await mountAndOpen()
 
-    // The remaining seven still render, so this is a targeted removal rather
-    // than the menu failing to open.
+    // The remaining eight still render, so this is a targeted removal rather
+    // than the menu failing to open. The navigation rows in particular are
+    // platform-neutral route switches and must survive off the desktop.
     expect(
       await screen.findByRole("menuitem", { name: "Import local sessions" })
+    ).toBeVisible()
+    expect(
+      await screen.findByRole("menuitem", { name: "Repository panel" })
     ).toBeVisible()
     expect(
       screen.queryByRole("menuitem", { name: "Open remote workspace" })
@@ -186,6 +186,10 @@ describe("QuickActionsDropdown", () => {
     await reopen()
     await clickItem("To-dos")
     expect(mocks.setRoute).toHaveBeenCalledWith("tasks")
+
+    await reopen()
+    await clickItem("Repository panel")
+    expect(mocks.setRoute).toHaveBeenCalledWith("forge")
 
     await reopen()
     await clickItem("Show pet")

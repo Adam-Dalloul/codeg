@@ -1859,7 +1859,7 @@
         "groups": {
           "workspace": "Espace de travail",
           "sessions": "Sessions",
-          "automation": "Automatisation et tâches",
+          "navigation": "Navigation",
           "more": "Plus"
         },
         "showPet": "Afficher la mascotte"

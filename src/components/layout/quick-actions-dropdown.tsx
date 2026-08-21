@@ -6,6 +6,7 @@ import {
   FolderGit2,
   FolderOpenDot,
   GamepadDirectional,
+  LayoutTemplate,
   ListChecks,
   ListTodo,
   MonitorCloud,
@@ -51,9 +52,9 @@ import { ConversationManageDialog } from "@/components/conversations/conversatio
  * collapsed. The status bar never unmounts, so this menu is the one always-on
  * path to all of them. Items are grouped by what they act on rather than by
  * where they used to live: workspace (open/clone/boot/remote), sessions
- * (manage/import), workbench routes (automations/to-dos), and the desktop pet.
- * Search is the one deliberate omission — it has a permanent button in the
- * window's top-left chrome, so it needs no always-on fallback.
+ * (manage/import), navigation (every full-page workbench route), and the
+ * desktop pet. Search is the one deliberate omission — it has a permanent
+ * button in the window's top-left chrome, so it needs no always-on fallback.
  *
  * Dialogs are rendered as siblings of the menu, not inside it: the menu
  * unmounts its content on close, which would take a nested dialog with it.
@@ -219,10 +220,11 @@ export function QuickActionsDropdown() {
               actions whose only other home disappears with the sidebar. */}
 
           <DropdownMenuSeparator />
-          <DropdownMenuLabel>{t("groups.automation")}</DropdownMenuLabel>
-          {/* Both rows carry the same badges as their sidebar twins: failures
-              are destructive-tinted, tasks waiting on the user are not. They
-              deliberately do *not* mark the current route the way the sidebar
+          <DropdownMenuLabel>{t("groups.navigation")}</DropdownMenuLabel>
+          {/* Every full-page workbench route the sidebar lists, in the sidebar's
+              own order. The badged rows carry the same badges as their sidebar
+              twins: failures are destructive-tinted, tasks waiting on the user
+              are not. None of them mark the current route the way the sidebar
               rows do — this is a launcher, not a nav list, and every other row
               in it is stateless, so a tinted row here reads as hover/focus
               rather than "you are here". */}
@@ -245,6 +247,10 @@ export function QuickActionsDropdown() {
                 {attentionCount}
               </span>
             )}
+          </DropdownMenuItem>
+          <DropdownMenuItem onSelect={() => setRoute("forge")}>
+            <LayoutTemplate />
+            <span className="min-w-0 flex-1 truncate">{tSidebar("forge")}</span>
           </DropdownMenuItem>
 
           {desktop && (

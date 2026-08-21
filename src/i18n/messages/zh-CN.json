@@ -1859,7 +1859,7 @@
         "groups": {
           "workspace": "工作区",
           "sessions": "会话",
-          "automation": "自动化与待办",
+          "navigation": "菜单导航",
           "more": "更多"
         },
         "showPet": "显示宠物"

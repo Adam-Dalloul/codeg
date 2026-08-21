@@ -1859,7 +1859,7 @@
         "groups": {
           "workspace": "워크스페이스",
           "sessions": "세션",
-          "automation": "자동화 및 할 일",
+          "navigation": "탐색",
           "more": "기타"
         },
         "showPet": "펫 표시"

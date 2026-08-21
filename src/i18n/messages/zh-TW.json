@@ -1859,7 +1859,7 @@
         "groups": {
           "workspace": "工作區",
           "sessions": "會話",
-          "automation": "自動化與待辦",
+          "navigation": "選單導覽",
           "more": "更多"
         },
         "showPet": "顯示寵物"
