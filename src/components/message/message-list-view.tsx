@@ -10,6 +10,7 @@ import { isWindowedDetail } from "@/lib/turn-window"
 import { ContentPartsRenderer } from "./content-parts-renderer"
 import { ContextCompactionCard } from "./context-compaction-card"
 import { CollapsibleUserMessage } from "./collapsible-user-message"
+import { CollapsibleSystemMessage } from "./collapsible-system-message"
 import { isContextCompactionMeta } from "@/lib/context-compaction"
 import {
   createMessageTurnAdapter,
@@ -45,10 +46,7 @@ import {
 import {
   AlertCircle,
   CheckIcon,
-  ChevronDown,
-  ChevronRight,
   CopyIcon,
-  Info,
   Loader2,
   Plus,
   RefreshCw,
@@ -230,41 +228,6 @@ function extractDelegationSources(
   collectDelegationSources(parts, out)
   return out
 }
-
-const CollapsibleSystemMessage = memo(function CollapsibleSystemMessage({
-  group,
-}: {
-  group: ResolvedMessageGroup
-}) {
-  const [expanded, setExpanded] = useState(false)
-  const t = useTranslations("Folder.chat.messageList")
-
-  return (
-    <div className="border rounded-md text-sm border-yellow-500/30 bg-yellow-500/5">
-      <button
-        onClick={() => setExpanded(!expanded)}
-        className="flex items-center gap-2 w-full px-3 py-2.5 text-left hover:bg-yellow-500/10 transition-colors"
-      >
-        {expanded ? (
-          <ChevronDown className="h-3.5 w-3.5 shrink-0 text-yellow-600 dark:text-yellow-500" />
-        ) : (
-          <ChevronRight className="h-3.5 w-3.5 shrink-0 text-yellow-600 dark:text-yellow-500" />
-        )}
-        <Info className="h-3.5 w-3.5 shrink-0 text-yellow-600 dark:text-yellow-500" />
-        <span className="font-medium text-yellow-700 dark:text-yellow-400">
-          {t("systemMessage")}
-        </span>
-      </button>
-      {expanded && (
-        <div className="px-3 pb-3 border-t border-yellow-500/20">
-          <div className="text-sm text-muted-foreground mt-2.5 max-h-96 overflow-auto">
-            <ContentPartsRenderer parts={group.parts} role={group.role} />
-          </div>
-        </div>
-      )}
-    </div>
-  )
-})
 
 function extractTextFromParts(parts: AdaptedContentPart[]): string {
   return parts
@@ -583,7 +546,7 @@ const HistoricalMessageGroup = memo(function HistoricalMessageGroup({
   sourceTurns?: MessageTurn[]
 }) {
   if (group.role === "system") {
-    return <CollapsibleSystemMessage group={group} />
+    return <CollapsibleSystemMessage parts={group.parts} />
   }
 
   return (
