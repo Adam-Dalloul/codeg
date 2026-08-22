@@ -1,4 +1,5 @@
 pub mod acp_native;
+pub mod antigravity;
 pub mod claude;
 pub mod cline;
 pub mod codebuddy;
@@ -175,6 +176,18 @@ pub fn external_transcript_sources() -> Vec<ExternalSource> {
             // `security/` / `cache/` under `~/.qoder` are never archived.
             agent: "qoder",
             root: qoder::resolve_qoder_config_dir().join("projects"),
+            is_file: false,
+            include_top: None,
+        },
+        ExternalSource {
+            // Antigravity keeps one SQLite trajectory + `.meta` sidecar per
+            // session under `<GEMINI_HOME>/antigravity-acp/conversations`
+            // (default `~/.gemini/...`). The root points at `conversations`
+            // and NOT at `antigravity-acp` itself, whose siblings are the
+            // OAuth token files (`acp_token.json`, `acp_business_token.json`)
+            // — those must never end up in a backup archive.
+            agent: "antigravity",
+            root: antigravity::resolve_antigravity_sessions_dir(),
             is_file: false,
             include_top: None,
         },

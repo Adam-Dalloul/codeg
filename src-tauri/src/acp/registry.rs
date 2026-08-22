@@ -67,6 +67,29 @@ pub struct PlatformBinary {
     pub sha256: Option<&'static str>,
 }
 
+/// A set of archive-relative paths that differ between platform families
+/// (typically only by a `.exe` suffix). Paths are '/'-separated.
+#[derive(Debug, Clone, Copy)]
+pub struct PlatformFiles {
+    pub unix: &'static [&'static str],
+    pub windows: &'static [&'static str],
+}
+
+impl PlatformFiles {
+    pub const NONE: PlatformFiles = PlatformFiles {
+        unix: &[],
+        windows: &[],
+    };
+
+    pub fn for_current_platform(&self) -> &'static [&'static str] {
+        if cfg!(windows) {
+            self.windows
+        } else {
+            self.unix
+        }
+    }
+}
+
 /// Launch entry inside an extracted directory-tree archive (see
 /// [`AgentDistribution::Binary::dir_entry`]). Paths are relative to the
 /// archive root, '/'-separated; `windows` names the `.cmd`/`.bat` shim.
@@ -74,6 +97,19 @@ pub struct PlatformBinary {
 pub struct BinaryDirEntry {
     pub unix: &'static str,
     pub windows: &'static str,
+    /// Files that must sit beside `unix`/`windows` for the install to be
+    /// USABLE, not merely present — the cache treats a version dir missing any
+    /// of them as not installed, and installing fails loudly rather than
+    /// leaving a half-tree behind.
+    ///
+    /// This is what stops a stale single-file cache from being adopted. Before
+    /// an agent becomes a built-in, the same ACP-registry entry can be added as
+    /// a CUSTOM agent, and a FLAT archive (`cmd: "./foo"`, no `/`) installs
+    /// through the single-file copy-out path — leaving exactly the entry file,
+    /// under exactly the same `<registry id>/<version>/<platform>` key the
+    /// built-in later uses. Probing for the entry alone would then report that
+    /// cache as installed and launch a tree with its helpers missing.
+    pub required_siblings: PlatformFiles,
 }
 
 impl BinaryDirEntry {
@@ -111,6 +147,20 @@ impl AcpAgentMeta {
     }
 }
 
+/// Launch args for Google Antigravity's ACP server, resolved at compile time.
+///
+/// The ACP registry publishes `--uid=` for the two Linux targets and for
+/// nothing else, and that asymmetry is deliberate: the flag comes from the
+/// binary's linked-in absl `InitGoogle`, which — when the process runs as root
+/// — drops privileges to `nobody` unless told otherwise. Passing it everywhere
+/// would risk a hard "unknown flag" startup error on the Windows build, which
+/// need not link the same initializer.
+const ANTIGRAVITY_LAUNCH_ARGS: &[&str] = if cfg!(target_os = "linux") {
+    &["--uid="]
+} else {
+    &[]
+};
+
 pub fn current_platform() -> &'static str {
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     {
@@ -138,7 +188,7 @@ pub fn current_platform() -> &'static str {
     }
 }
 
-/// The fourteen built-in agents. Excludes user-registered custom agents — use
+/// The fifteen built-in agents. Excludes user-registered custom agents — use
 /// [`all_acp_agents`] for the live set.
 pub fn builtin_acp_agents() -> Vec<AgentType> {
     vec![
@@ -156,10 +206,11 @@ pub fn builtin_acp_agents() -> Vec<AgentType> {
         AgentType::Cursor,
         AgentType::DeepSeek,
         AgentType::Qoder,
+        AgentType::Antigravity,
     ]
 }
 
-/// Every agent codeg can currently drive: the fourteen built-ins followed by
+/// Every agent codeg can currently drive: the fifteen built-ins followed by
 /// the user's registered custom ACP agents (sorted by id).
 pub fn all_acp_agents() -> Vec<AgentType> {
     let mut agents = builtin_acp_agents();
@@ -183,6 +234,7 @@ pub fn registry_id_for(agent_type: AgentType) -> &'static str {
         AgentType::Cursor => "cursor",
         AgentType::DeepSeek => "deepseek-acp",
         AgentType::Qoder => "qoder-cli",
+        AgentType::Antigravity => "antigravity-acp",
         // A custom agent's registry id IS its identity.
         AgentType::Custom(id) => id,
     }
@@ -204,6 +256,7 @@ pub fn from_registry_id(id: &str) -> Option<AgentType> {
         "cursor" => Some(AgentType::Cursor),
         "deepseek-acp" => Some(AgentType::DeepSeek),
         "qoder-cli" => Some(AgentType::Qoder),
+        "antigravity-acp" => Some(AgentType::Antigravity),
         // Only ids the user has actually registered resolve. An unregistered
         // id must stay `None` so the ACP-registry picker still offers it as
         // "addable" rather than treating it as already supported.
@@ -216,8 +269,9 @@ pub fn from_registry_id(id: &str) -> Option<AgentType> {
 /// The vendor CLI wrapped by a codeg entry that is really a THIRD-PARTY ACP
 /// *adapter*.
 ///
-/// Ten of the twelve built-ins distribute the vendor's own CLI, so a user's
-/// existing global install is found by the launch gate as-is. Claude Code and
+/// All but two of the built-ins distribute the vendor's own CLI (or, for
+/// Antigravity, the vendor's own ACP server), so a user's existing global
+/// install is found by the launch gate as-is. Claude Code and
 /// Codex are the exceptions: neither `claude` nor `codex` speaks ACP, so codeg
 /// installs a separate adapter package (`claude-agent-acp` / `codex-acp`,
 /// maintained by the Agent Client Protocol org) whose command name has nothing
@@ -922,6 +976,11 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
                 dir_entry: Some(BinaryDirEntry {
                     unix: "dist-package/cursor-agent",
                     windows: "dist-package/cursor-agent.cmd",
+                    // Cursor's tree ships a bundled `node` the entry shim
+                    // execs, but the shim resolves it at RUN time and the
+                    // package layout is upstream's to change, so it is
+                    // chmod'd opportunistically rather than required here.
+                    required_siblings: PlatformFiles::NONE,
                 }),
             },
         },
@@ -1009,6 +1068,114 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
                 node_required: Some("20.0.0"),
             },
         },
+        AgentType::Antigravity => AcpAgentMeta {
+            agent_type,
+            supports_mcp: true,
+            name: "Google Antigravity",
+            description: "Google's AI coding agent (first-party ACP server)",
+            // `agy_acp_server` is Google's OWN ACP server, not a community
+            // bridge: the verified handshake advertises `loadSession`,
+            // `sessionCapabilities` list+resume, image/audio/embeddedContext
+            // prompts and MCP http+sse, with `agentInfo.name =
+            // "antigravity-acp"`. Model and session mode (default/auto_edit/
+            // yolo) arrive as standard `configOptions`, so the composer
+            // selectors need no per-agent code.
+            //
+            // WHOLE-TREE, NOT SINGLE-FILE. The archive is FLAT but holds TWO
+            // executables:
+            //
+            //   agy_acp_server.par     the server (a compiled binary despite
+            //                          the `.par` name — it embeds a whole
+            //                          CPython runtime)
+            //   localharness_external  the Go harness the server drives
+            //
+            // `main.py::_configure_localharness_path` looks for
+            // `localharness_external` (then `localharness`) beside
+            // `dirname(argv[0])` / `dirname(sys.executable)` and logs
+            // "Localharness not found." when it is missing. Copying the
+            // single `cmd` file out of the archive (`dir_entry: None`) would
+            // strand that sibling, so this uses the same whole-tree
+            // extraction Cursor does — and `install_extracted_tree` also
+            // marks the harness executable.
+            //
+            // AUTH IS A FILE, NOT AN ENV VAR. `session/new` FAILS with
+            // `-32000 Authentication required` unless
+            // `$GEMINI_HOME/antigravity-acp/settings.json` declares
+            // `auth.type` (env-based selection was removed upstream; the
+            // server's own message says so). codeg does not implement the ACP
+            // `authenticate` request, so the launch path writes that file
+            // instead — see `sync_antigravity_settings_file` in connection.rs
+            // and the Antigravity settings panel that feeds it. With
+            // `auth.type` set, the server runs its own browser OAuth loopback
+            // flow inside `session/new`.
+            //
+            // VERSION vs URL. `version` is the ACP registry's ("1.0.0"); the
+            // URLs carry Google's build id (`agy_acp_server_20260818_01_RC01`)
+            // instead, so the two do NOT substitute into each other — bump
+            // both together, and note a custom-version override can only
+            // relabel the cache entry, not select a different build.
+            // `darwin-x86_64` is deliberately absent: upstream publishes no
+            // Intel macOS build, so those machines get `PlatformNotSupported`
+            // rather than a 404 mid-download.
+            distribution: AgentDistribution::Binary {
+                version: "1.0.0",
+                // Never resolvable on PATH (there is no standalone CLI by
+                // this name); it exists because `Binary` requires one, and
+                // for dir-tree agents `installed_binary_path` ignores it in
+                // favour of `dir_entry`.
+                cmd: "agy_acp_server",
+                // `--uid=` is an absl/InitGoogle flag ("If root, switch to
+                // this user id (or empty-string not to switch)"), not an ACP
+                // one: without it a root process (Docker) drops to `nobody`.
+                // The ACP registry passes it on Linux ONLY, and so do we —
+                // the Windows build need not link the same InitGoogle, and an
+                // unknown flag is a hard startup error there.
+                args: ANTIGRAVITY_LAUNCH_ARGS,
+                env: &[],
+                platforms: &[
+                    PlatformBinary {
+                        platform: "darwin-aarch64",
+                        url: "https://dl.google.com/agy-extensions/releases/macos/agy-acp-server-agy_acp_server_20260818_01_RC01-darwin-arm64.zip",
+                        sha256: None,
+                    },
+                    PlatformBinary {
+                        platform: "linux-aarch64",
+                        url: "https://dl.google.com/agy-extensions/releases/linux/agy-acp-server-agy_acp_server_20260818_01_RC01-linux-arm64.zip",
+                        sha256: None,
+                    },
+                    PlatformBinary {
+                        platform: "linux-x86_64",
+                        url: "https://dl.google.com/agy-extensions/releases/linux/agy-acp-server-agy_acp_server_20260818_01_RC01-linux-x86_64.zip",
+                        sha256: None,
+                    },
+                    PlatformBinary {
+                        platform: "windows-aarch64",
+                        url: "https://dl.google.com/agy-extensions/releases/windows/agy-acp-server-agy_acp_server_20260818_01_RC01-windows-arm64.zip",
+                        sha256: None,
+                    },
+                    PlatformBinary {
+                        platform: "windows-x86_64",
+                        url: "https://dl.google.com/agy-extensions/releases/windows/agy-acp-server-agy_acp_server_20260818_01_RC01-windows-x86_64.zip",
+                        sha256: None,
+                    },
+                ],
+                dir_entry: Some(BinaryDirEntry {
+                    unix: "agy_acp_server.par",
+                    windows: "agy_acp_server.exe",
+                    // The Go harness the server execs. Required, not just
+                    // chmod'd: without it the server starts and then logs
+                    // "Localharness not found." — a working handshake
+                    // attached to a broken agent, which is worse than a
+                    // failed install. It also invalidates any single-file
+                    // cache left behind by a pre-integration CUSTOM entry
+                    // for `antigravity-acp` (see `required_siblings`).
+                    required_siblings: PlatformFiles {
+                        unix: &["localharness_external"],
+                        windows: &["localharness_external.exe"],
+                    },
+                }),
+            },
+        },
         // Handled by the early return above; kept so the match stays
         // exhaustive without a catch-all that could swallow a new built-in.
         AgentType::Custom(_) => unreachable!("custom agents resolve via custom_registry"),
@@ -1071,7 +1238,65 @@ mod tests {
         }
     }
 
-    // Cursor is the only dir-tree binary agent: the archive must be kept
+    // Google Antigravity's archive is FLAT but holds two executables — the
+    // server and the `localharness_external` binary it spawns — so it must
+    // use whole-tree extraction (the single-file copy-out would strand the
+    // harness and the server would log "Localharness not found."). The Linux
+    // targets, and only those, carry the absl `--uid=` flag.
+    #[test]
+    fn antigravity_pins_dir_tree_binary_and_linux_only_uid_flag() {
+        let meta = get_agent_meta(AgentType::Antigravity);
+        assert!(meta.supports_mcp);
+        assert_eq!(registry_id_for(AgentType::Antigravity), "antigravity-acp");
+        match meta.distribution {
+            AgentDistribution::Binary {
+                version,
+                cmd,
+                args,
+                platforms,
+                dir_entry,
+                ..
+            } => {
+                assert_eq!(version, "1.0.0");
+                assert_eq!(cmd, "agy_acp_server");
+                let entry = dir_entry.expect("antigravity must use dir-tree extraction");
+                assert_eq!(entry.unix, "agy_acp_server.par");
+                assert_eq!(entry.windows, "agy_acp_server.exe");
+                // Five targets: upstream publishes no Intel macOS build.
+                assert_eq!(platforms.len(), 5);
+                assert!(!platforms.iter().any(|p| p.platform == "darwin-x86_64"));
+                for platform in platforms {
+                    assert!(
+                        platform
+                            .url
+                            .contains("agy_acp_server_20260818_01_RC01"),
+                        "{} URL lost the build id: {}",
+                        platform.platform,
+                        platform.url
+                    );
+                }
+                if cfg!(target_os = "linux") {
+                    assert_eq!(args, &["--uid="]);
+                } else {
+                    assert!(args.is_empty(), "--uid= is a Linux-only absl flag");
+                }
+                // The harness must be REQUIRED, not merely chmod'd. It is what
+                // stops a stale single-file cache — which a pre-integration
+                // CUSTOM `antigravity-acp` entry would have written under the
+                // same key, because the archive is flat — from being adopted
+                // and launched without it.
+                let required = entry.required_siblings.for_current_platform();
+                assert_eq!(required.len(), 1);
+                assert!(
+                    required[0].starts_with("localharness_external"),
+                    "unexpected required sibling: {required:?}"
+                );
+            }
+            other => panic!("expected binary distribution for Antigravity, got {other:?}"),
+        }
+    }
+
+    // Cursor is one of two dir-tree binary agents: the archive must be kept
     // intact (bundled Node runtime) and launched via the in-tree entry
     // script, never copied out as a single file.
     #[test]
@@ -1126,6 +1351,7 @@ mod tests {
             AgentType::Gemini,
             AgentType::OpenClaw,
             AgentType::Grok,
+            AgentType::Antigravity,
             AgentType::Custom("acme"),
         ] {
             assert_eq!(steering_prompt_required_min_version(agent), None);
@@ -1145,6 +1371,7 @@ mod tests {
             AgentType::Gemini,
             AgentType::OpenClaw,
             AgentType::Grok,
+            AgentType::Antigravity,
             AgentType::Custom("acme"),
         ] {
             assert!(!goal_control_is_out_of_band(agent));

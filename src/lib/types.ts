@@ -1,4 +1,4 @@
-/** The fourteen agents codeg ships hand-written support for. */
+/** The fifteen agents codeg ships hand-written support for. */
 export type BuiltinAgentType =
   | "claude_code"
   | "codex"
@@ -14,6 +14,7 @@ export type BuiltinAgentType =
   | "cursor"
   | "deepseek"
   | "qoder"
+  | "antigravity"
 
 /**
  * Which agent backs a conversation.
@@ -698,6 +699,7 @@ export const AGENT_DISPLAY_ORDER: BuiltinAgentType[] = [
   "cursor",
   "deepseek",
   "qoder",
+  "antigravity",
 ]
 
 const AGENT_DISPLAY_ORDER_INDEX = new Map<AgentType, number>(
@@ -731,6 +733,7 @@ export const ALL_AGENT_TYPES: BuiltinAgentType[] = [
   "cursor",
   "deepseek",
   "qoder",
+  "antigravity",
 ]
 
 export const MODEL_PROVIDER_AGENT_TYPES: BuiltinAgentType[] = [
@@ -1041,6 +1044,7 @@ export const AGENT_LABELS: Record<BuiltinAgentType, string> = {
   cursor: "Cursor",
   deepseek: "DeepSeek Harness",
   qoder: "Qoder",
+  antigravity: "Google Antigravity",
 }
 
 export const AGENT_COLORS: Record<BuiltinAgentType, string> = {
@@ -1058,6 +1062,7 @@ export const AGENT_COLORS: Record<BuiltinAgentType, string> = {
   cursor: "bg-zinc-800",
   deepseek: "bg-[#4D6BFE]",
   qoder: "bg-[#6C4CF1]",
+  antigravity: "bg-[#1A73E8]",
 }
 
 // ACP connection status (matches Rust ConnectionStatus)
@@ -3228,6 +3233,7 @@ export type McpAppType =
   | "cursor"
   | "deepseek"
   | "qoder"
+  | "antigravity"
 
 export interface LocalMcpServer {
   id: string

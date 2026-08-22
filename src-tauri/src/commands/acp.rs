@@ -7404,6 +7404,16 @@ fn agent_local_config_path(agent_type: AgentType) -> Option<PathBuf> {
     match agent_type {
         AgentType::ClaudeCode => Some(home_dir_or_default().join(".claude").join("settings.json")),
         AgentType::Gemini => Some(home_dir_or_default().join(".gemini").join("settings.json")),
+        // Antigravity's ACP server keeps its own `settings.json` under
+        // `<GEMINI_HOME>/antigravity-acp/` — a DIFFERENT file from Gemini
+        // CLI's above, even though both trees default to `~/.gemini`. Exposing
+        // the path lights up "open config file"; the write side is owned by
+        // `acp::connection::sync_antigravity_settings_file` at launch, which
+        // merges only `auth.type` and the `gcp` block and leaves every other
+        // key the user put there alone.
+        AgentType::Antigravity => Some(
+            crate::parsers::antigravity::resolve_antigravity_acp_dir().join("settings.json"),
+        ),
         AgentType::OpenCode => Some(resolve_opencode_config_path()),
         AgentType::Cline => Some(cline_global_state_path()),
         // Kimi Code's native config is `~/.kimi-code/config.toml`. Exposing the
@@ -7725,6 +7735,37 @@ pub(crate) fn skill_storage_spec(agent_type: AgentType) -> Option<SkillStorageSp
                 crate::parsers::qoder::qoder_project_skills_rel_dir(),
                 ".agents/skills",
             ],
+        }),
+        // Antigravity's roots are `server.py::resolve_skills_paths`, verbatim
+        // and in its order:
+        //
+        //   home       `<GEMINI_HOME>/config/skills`        ← cross-surface global
+        //   workspace  `<cwd>/.gemini/skills`
+        //   home       `<GEMINI_HOME>/antigravity-cli/skills` ← the CLI's, read too
+        //   workspace  `<cwd>/.agents/skills`
+        //
+        // Both home roots follow the resolved `GEMINI_HOME` on purpose: the
+        // server's own comment records that a `$HOME`-anchored entry here used
+        // to hand the real `~/.gemini` to the agent even when the home had
+        // been relocated. `config/skills` leads because it is the directory
+        // Antigravity itself calls the global one; `antigravity-cli/skills`
+        // belongs to the CLI and is only READ, so installs must not land
+        // there ahead of it.
+        //
+        // `SkillDirectoryOnly`: the discovery docstring says "SKILL.md files
+        // or skill subfolders", which does not distinguish a bundle's
+        // `<id>/SKILL.md` from a flat `<id>.md`, and the actual scan happens
+        // inside the Go harness. The directory bundle is the shape every agent
+        // supports, so codeg installs that rather than guessing at the wider
+        // one and writing skills the agent may never load.
+        AgentType::Antigravity => Some(SkillStorageSpec {
+            kind: SkillStorageKind::SkillDirectoryOnly,
+            global_dirs: vec![
+                crate::parsers::antigravity::resolve_antigravity_shared_config_dir()
+                    .join("skills"),
+                crate::parsers::antigravity::resolve_antigravity_cli_dir().join("skills"),
+            ],
+            project_rel_dirs: vec![".gemini/skills", ".agents/skills"],
         }),
         // codeg cannot detect where an arbitrary ACP agent loads skills from,
         // so custom agents are gated on the user's own declaration: that the
@@ -8825,6 +8866,21 @@ fn agent_env_keys(agent_type: AgentType) -> (&'static str, &'static str, &'stati
             "QODER_PERSONAL_ACCESS_TOKEN",
             "QODER_MODEL",
         ),
+        // Antigravity's credential depends on the auth method the settings
+        // panel picked, and the panel writes the right one directly; the slot
+        // named here is the Gemini Developer API key, which is what
+        // `auth.type = "gemini-api-key"` reads (the server says so in its own
+        // `auth_required` message). `AGY_ACP_DEFAULT_MODEL` is real — it is
+        // the env the server's `get_default_model_id` consults before falling
+        // back to `gemini-3.7-flash-high`. There is NO endpoint override, so
+        // the base-url slot stays an inert `AGY_BASE_URL` placeholder for the
+        // same reason `CURSOR_MODEL`/`QODER_BASE_URL` above are: it keeps the
+        // generic cascade off the `OPENAI_*` keys.
+        AgentType::Antigravity => (
+            "AGY_BASE_URL",
+            "GEMINI_API_KEY",
+            "AGY_ACP_DEFAULT_MODEL",
+        ),
         _ => ("OPENAI_BASE_URL", "OPENAI_API_KEY", "OPENAI_MODEL"),
     }
 }
@@ -9256,6 +9312,18 @@ fn cascade_update_agent_config(
             // env, and while codeg DOES manage a Qoder config file
             // (`settings.json`, via the Qoder settings panel), that file holds
             // no credentials for the cascade to reconcile.
+        }
+        AgentType::Antigravity => {
+            // Antigravity only ever talks to Google's own endpoints (CCPA for
+            // the consumer path, BAIC for Gemini Enterprise, the Gemini
+            // Developer API for a raw key), none of which accepts a custom
+            // base URL — so it stays off the model-provider credential
+            // cascade. Its credentials come from the auth method the settings
+            // panel recorded, which the launch path projects into the process
+            // env and into `antigravity-acp/settings.json` (see
+            // `sync_antigravity_settings_file`); that file carries the chosen
+            // METHOD, never a credential, so there is nothing here to
+            // reconcile either.
         }
         AgentType::Custom(_) => {
             // Custom agents are deliberately configuration-free: codeg writes

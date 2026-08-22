@@ -818,6 +818,32 @@
       "advancedHint": "settings.json 전체입니다. 저장하면 그대로 기록되며, 키를 삭제할 수 있는 유일한 경로이기도 합니다.",
       "saveRawConfig": "파일 저장"
     },
+    "antigravity": {
+      "configDescription": "Antigravity needs an authentication method before it can start a session. The choice is written to auth.type in $GEMINI_HOME/antigravity-acp/settings.json, which is the only place the ACP server looks — without it every new session fails with \"Authentication required\". Model and session mode are not here: Antigravity reports them over ACP, so the composer's own selectors own them per session.",
+      "methodLabel": "Authentication method",
+      "methods": {
+        "oauth-personal": "Sign in with Google",
+        "oauth-business": "Gemini Enterprise",
+        "gemini-api-key": "Gemini API key",
+        "agent-platform": "Gemini Enterprise Agent Platform"
+      },
+      "methodHints": {
+        "oauth-personal": "Your Google account, on any Antigravity plan including the free tier. The first new session opens a browser to finish signing in; the token is then cached and reused.",
+        "oauth-business": "Your Gemini Enterprise account. Needs a GCP project and location, and the first new session opens a browser.",
+        "gemini-api-key": "A key for the Gemini Developer API, passed to the agent as GEMINI_API_KEY.",
+        "agent-platform": "Formerly Vertex AI. Use an API key, or a project and location with Application Default Credentials (gcloud auth application-default login)."
+      },
+      "geminiApiKeyLabel": "Gemini API key",
+      "googleApiKeyLabel": "Google API key",
+      "googleApiKeyHint": "Optional. When set it is used on its own — the project and location below are ignored. Leave it empty to authenticate with Application Default Credentials instead.",
+      "gcpProjectLabel": "GCP project",
+      "gcpLocationLabel": "GCP location",
+      "missingGeminiApiKey": "Enter a Gemini API key, or pick a different authentication method — sessions will fail to start without it.",
+      "missingAgentPlatformConfig": "Enter an API key, or both a project and a location — sessions will fail to start without one of the two.",
+      "missingEnterpriseConfig": "Gemini Enterprise needs both a project and a location.",
+      "settingsFileHint": "Saved to auth.type in this file. Any other keys you put there are preserved.",
+      "save": "Save"
+    },
     "deepseek": {
       "configManagement": "DeepSeek Harness 구성",
       "configDescription": "엔드포인트와 API 키는 deepseek-acp가 시작할 때 읽는 환경 변수입니다. 모델과 추론 강도는 세션별 선택기이므로 입력창에서 바꿉니다.",
@@ -1267,7 +1293,9 @@
       "piBinaryUninstallFailed": "pi 제거 실패",
       "savePiTrustFailed": "작업 공간 신뢰 저장 실패",
       "qoderSaved": "Qoder 설정을 저장했습니다",
-      "saveQoderConfigFailed": "Qoder 설정 저장에 실패했습니다"
+      "saveQoderConfigFailed": "Qoder 설정 저장에 실패했습니다",
+      "antigravitySaved": "Antigravity config saved",
+      "saveAntigravityConfigFailed": "Failed to save Antigravity config"
     },
     "version": {
       "statusLabel": "버전 상태",

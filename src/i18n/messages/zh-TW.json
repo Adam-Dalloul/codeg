@@ -818,6 +818,32 @@
       "advancedHint": "完整的 settings.json，儲存時會按原文寫入——這也是唯一能刪除某個鍵的入口。",
       "saveRawConfig": "儲存檔案"
     },
+    "antigravity": {
+      "configDescription": "Antigravity 必须先选定认证方式才能开始会话。所选方式会写入 $GEMINI_HOME/antigravity-acp/settings.json 的 auth.type —— 这是 ACP 服务端唯一读取的位置，不写就每次新建会话都会报 “Authentication required”。模型与会话模式不在这里：Antigravity 通过 ACP 上报它们，由输入框的选择器按会话管理。",
+      "methodLabel": "认证方式",
+      "methods": {
+        "oauth-personal": "使用 Google 账号登录",
+        "oauth-business": "Gemini Enterprise",
+        "gemini-api-key": "Gemini API Key",
+        "agent-platform": "Gemini Enterprise Agent Platform"
+      },
+      "methodHints": {
+        "oauth-personal": "你的 Google 账号，任意 Antigravity 套餐（含免费版）均可。首次新建会话会自动打开浏览器完成登录，之后令牌会被缓存复用。",
+        "oauth-business": "你的 Gemini Enterprise 账号。需要填 GCP 项目与区域，首次新建会话会打开浏览器。",
+        "gemini-api-key": "Gemini Developer API 的密钥，以 GEMINI_API_KEY 传给智能体。",
+        "agent-platform": "即原 Vertex AI。可用 API Key，或用项目 + 区域配合应用默认凭据（gcloud auth application-default login）。"
+      },
+      "geminiApiKeyLabel": "Gemini API Key",
+      "googleApiKeyLabel": "Google API Key",
+      "googleApiKeyHint": "可选。填了就单独使用它，下面的项目与区域会被忽略；留空则改用应用默认凭据认证。",
+      "gcpProjectLabel": "GCP 项目",
+      "gcpLocationLabel": "GCP 区域",
+      "missingGeminiApiKey": "请填写 Gemini API Key，或改用其他认证方式 —— 否则会话无法启动。",
+      "missingAgentPlatformConfig": "请填写 API Key，或同时填写项目与区域 —— 二者缺一不可，否则会话无法启动。",
+      "missingEnterpriseConfig": "Gemini Enterprise 需要同时填写项目与区域。",
+      "settingsFileHint": "auth.type 会保存到该文件；你自己写在里面的其他键会原样保留。",
+      "save": "保存"
+    },
     "deepseek": {
       "configManagement": "DeepSeek Harness 設定",
       "configDescription": "端點與金鑰是 deepseek-acp 啟動時讀取的環境變數。模型與推理等級是工作階段層級的選擇器，在輸入框裡切換。",
@@ -1267,7 +1293,9 @@
       "piBinaryUninstallFailed": "pi 解除安裝失敗",
       "savePiTrustFailed": "儲存工作區信任失敗",
       "qoderSaved": "Qoder 設定已儲存",
-      "saveQoderConfigFailed": "儲存 Qoder 設定失敗"
+      "saveQoderConfigFailed": "儲存 Qoder 設定失敗",
+      "antigravitySaved": "已保存 Antigravity 配置",
+      "saveAntigravityConfigFailed": "保存 Antigravity 配置失败"
     },
     "version": {
       "statusLabel": "版本狀態",
