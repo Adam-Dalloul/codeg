@@ -181,6 +181,7 @@
       "chooseImage": "Escolher imagem",
       "replaceImage": "Substituir imagem",
       "removeImage": "Remover",
+      "formatHint": "PNG, JPEG, WebP e GIF. Imagens animadas são reproduzidas automaticamente.",
       "fillMode": "Modo de preenchimento",
       "fillModes": {
         "cover": "Preencher",
@@ -194,6 +195,7 @@
       "panelOpacity": "Opacidade dos painéis",
       "panelOpacityHint": "O quão opacos são a barra lateral, os painéis e as barras de abas. Mais baixo deixa a imagem transparecer mais.",
       "errorTooLarge": "A imagem é muito grande (máx. 16 MB).",
+      "errorUnsupportedFormat": "Formato de imagem não suportado. Escolha um PNG, JPEG, WebP ou GIF.",
       "errorUploadFailed": "Falha ao definir a imagem de fundo."
     }
   },
@@ -2683,6 +2685,8 @@
           "nextRetryIn": "próxima em {seconds}s",
           "line": "{error}{status} · {retry}",
           "lineWithDelay": "{error}{status} · {retry}, {delay}",
+          "lineNoError": "{retry}",
+          "lineNoErrorWithDelay": "{retry}, {delay}",
           "httpStatus": " (HTTP {status})"
         },
         "configOptionAdjusted": "O {agent} definiu {option} como {actual} em vez de {requested}"
@@ -4587,6 +4591,7 @@
     "actionEdit": "Editar",
     "actionDelete": "Excluir",
     "actionRetryCleanup": "Repetir limpeza",
+    "actionDeleteWorktree": "Excluir worktree",
     "actionMerge": "Merge",
     "actionUnqueueMerge": "Sair da fila de merge",
     "actionEditQueuedMerge": "Editar merge na fila",
@@ -4761,6 +4766,8 @@
     "deleteConfirmTitle": "Excluir tarefa?",
     "deleteConfirmBody": "“{title}” será removida do quadro. Uma execução ativa é cancelada antes.",
     "deleteWithWorktree": "Excluir também o worktree",
+    "deleteWorktreeConfirmTitle": "Excluir o worktree?",
+    "deleteWorktreeConfirmBody": "O diretório do worktree e o seu branch de trabalho são excluídos em definitivo. A tarefa continua no quadro e a sua conversa passa para a pasta do projeto.",
     "eventCreated": "Criada",
     "eventStatusChanged": "Mudança de status",
     "eventConfigEffective": "Configuração de execução",

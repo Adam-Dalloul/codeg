@@ -181,6 +181,7 @@
       "chooseImage": "Choose image",
       "replaceImage": "Replace image",
       "removeImage": "Remove",
+      "formatHint": "PNG, JPEG, WebP and GIF. Animated images play automatically.",
       "fillMode": "Fill mode",
       "fillModes": {
         "cover": "Cover",
@@ -194,6 +195,7 @@
       "panelOpacity": "Panel opacity",
       "panelOpacityHint": "How opaque the sidebar, panels and tab bars are. Lower lets more of the image show through.",
       "errorTooLarge": "Image is too large (max 16 MB).",
+      "errorUnsupportedFormat": "Unsupported image format. Choose a PNG, JPEG, WebP or GIF.",
       "errorUploadFailed": "Failed to set the background image."
     }
   },
@@ -2683,6 +2685,8 @@
           "nextRetryIn": "next in {seconds}s",
           "line": "{error}{status} · {retry}",
           "lineWithDelay": "{error}{status} · {retry}, {delay}",
+          "lineNoError": "{retry}",
+          "lineNoErrorWithDelay": "{retry}, {delay}",
           "httpStatus": " (HTTP {status})"
         },
         "configOptionAdjusted": "{agent} set {option} to {actual} instead of {requested}"
@@ -4587,6 +4591,7 @@
     "actionEdit": "Edit",
     "actionDelete": "Delete",
     "actionRetryCleanup": "Retry cleanup",
+    "actionDeleteWorktree": "Delete worktree",
     "actionMerge": "Merge",
     "actionUnqueueMerge": "Leave merge queue",
     "actionEditQueuedMerge": "Edit queued merge",
@@ -4761,6 +4766,8 @@
     "deleteConfirmTitle": "Delete task?",
     "deleteConfirmBody": "“{title}” will be removed from the board. An active run is canceled first.",
     "deleteWithWorktree": "Also delete its worktree",
+    "deleteWorktreeConfirmTitle": "Delete worktree?",
+    "deleteWorktreeConfirmBody": "The worktree directory and its work branch are deleted for good. The task stays on the board, and its conversation moves to the project folder.",
     "eventCreated": "Created",
     "eventStatusChanged": "Status changed",
     "eventConfigEffective": "Launch config",

@@ -181,6 +181,7 @@
       "chooseImage": "选择图片",
       "replaceImage": "更换图片",
       "removeImage": "移除",
+      "formatHint": "支持 PNG、JPEG、WebP、GIF；动图会自动播放。",
       "fillMode": "填充方式",
       "fillModes": {
         "cover": "覆盖",
@@ -194,6 +195,7 @@
       "panelOpacity": "面板不透明度",
       "panelOpacityHint": "侧栏、面板与标签栏的不透明程度。越低，透出的图片越多。",
       "errorTooLarge": "图片太大（最大 16 MB）。",
+      "errorUnsupportedFormat": "不支持的图片格式，请选择 PNG、JPEG、WebP 或 GIF。",
       "errorUploadFailed": "设置背景图片失败。"
     }
   },
@@ -2683,6 +2685,8 @@
           "nextRetryIn": "{seconds} 秒后重试",
           "line": "{error}{status} · {retry}",
           "lineWithDelay": "{error}{status} · {retry}，{delay}",
+          "lineNoError": "{retry}",
+          "lineNoErrorWithDelay": "{retry}，{delay}",
           "httpStatus": "（HTTP {status}）"
         },
         "configOptionAdjusted": "{agent} 把{option}设成了 {actual}，而不是 {requested}"
@@ -4587,6 +4591,7 @@
     "actionEdit": "编辑",
     "actionDelete": "删除",
     "actionRetryCleanup": "重试清理",
+    "actionDeleteWorktree": "删除 worktree",
     "actionMerge": "合并",
     "actionUnqueueMerge": "取消排队",
     "actionEditQueuedMerge": "修改排队的合并",
@@ -4761,6 +4766,8 @@
     "deleteConfirmTitle": "删除任务？",
     "deleteConfirmBody": "「{title}」将从看板移除。进行中的运行会先被取消。",
     "deleteWithWorktree": "同时删除其 worktree",
+    "deleteWorktreeConfirmTitle": "删除 worktree？",
+    "deleteWorktreeConfirmBody": "worktree 目录及其工作分支将被彻底删除。任务仍留在看板上，其会话会移到项目文件夹下。",
     "eventCreated": "已创建",
     "eventStatusChanged": "状态变更",
     "eventConfigEffective": "启动配置",

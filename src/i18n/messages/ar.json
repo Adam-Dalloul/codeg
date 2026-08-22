@@ -181,6 +181,7 @@
       "chooseImage": "اختيار صورة",
       "replaceImage": "استبدال الصورة",
       "removeImage": "إزالة",
+      "formatHint": "‏PNG وJPEG وWebP وGIF. تُشغَّل الصور المتحركة تلقائيًا.",
       "fillMode": "وضع الملء",
       "fillModes": {
         "cover": "تغطية",
@@ -194,6 +195,7 @@
       "panelOpacity": "عتامة اللوحات",
       "panelOpacityHint": "مدى عتامة الشريط الجانبي واللوحات وأشرطة التبويب. الأقل يُظهر المزيد من الصورة.",
       "errorTooLarge": "الصورة كبيرة جدًا (16 ميجابايت كحد أقصى).",
+      "errorUnsupportedFormat": "صيغة صورة غير مدعومة. اختر ملف PNG أو JPEG أو WebP أو GIF.",
       "errorUploadFailed": "فشل تعيين صورة الخلفية."
     }
   },
@@ -2683,6 +2685,8 @@
           "nextRetryIn": "المحاولة التالية خلال {seconds}ث",
           "line": "{error}{status} · {retry}",
           "lineWithDelay": "{error}{status} · {retry}، {delay}",
+          "lineNoError": "{retry}",
+          "lineNoErrorWithDelay": "{retry}، {delay}",
           "httpStatus": " (HTTP {status})"
         },
         "configOptionAdjusted": "ضبط {agent} {option} على {actual} بدلاً من {requested}"
@@ -4587,6 +4591,7 @@
     "actionEdit": "تحرير",
     "actionDelete": "حذف",
     "actionRetryCleanup": "إعادة محاولة التنظيف",
+    "actionDeleteWorktree": "حذف الـ worktree",
     "actionMerge": "دمج",
     "actionUnqueueMerge": "مغادرة طابور الدمج",
     "actionEditQueuedMerge": "تعديل الدمج المنتظر",
@@ -4761,6 +4766,8 @@
     "deleteConfirmTitle": "حذف المهمة؟",
     "deleteConfirmBody": "ستُزال “{title}” من اللوحة. يُلغى التشغيل النشط أولًا.",
     "deleteWithWorktree": "حذف الـ worktree الخاص بها أيضًا",
+    "deleteWorktreeConfirmTitle": "حذف الـ worktree؟",
+    "deleteWorktreeConfirmBody": "سيُحذف مجلد الـ worktree وفرع العمل الخاص به نهائيًا. تبقى المهمة على اللوحة، وتنتقل محادثتها إلى مجلد المشروع.",
     "eventCreated": "أُنشئت",
     "eventStatusChanged": "تغيّر الحالة",
     "eventConfigEffective": "إعداد الإطلاق",

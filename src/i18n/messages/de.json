@@ -181,6 +181,7 @@
       "chooseImage": "Bild auswählen",
       "replaceImage": "Bild ersetzen",
       "removeImage": "Entfernen",
+      "formatHint": "PNG, JPEG, WebP und GIF. Animierte Bilder werden automatisch abgespielt.",
       "fillMode": "Füllmodus",
       "fillModes": {
         "cover": "Füllen",
@@ -194,6 +195,7 @@
       "panelOpacity": "Panel-Deckkraft",
       "panelOpacityHint": "Wie deckend Seitenleiste, Panels und Tab-Leisten sind. Niedriger lässt mehr vom Bild durchscheinen.",
       "errorTooLarge": "Bild ist zu groß (max. 16 MB).",
+      "errorUnsupportedFormat": "Nicht unterstütztes Bildformat. Wähle ein PNG, JPEG, WebP oder GIF.",
       "errorUploadFailed": "Hintergrundbild konnte nicht festgelegt werden."
     }
   },
@@ -2683,6 +2685,8 @@
           "nextRetryIn": "nächster in {seconds}s",
           "line": "{error}{status} · {retry}",
           "lineWithDelay": "{error}{status} · {retry}, {delay}",
+          "lineNoError": "{retry}",
+          "lineNoErrorWithDelay": "{retry}, {delay}",
           "httpStatus": " (HTTP {status})"
         },
         "configOptionAdjusted": "{agent} hat {option} auf {actual} statt {requested} gesetzt"
@@ -4587,6 +4591,7 @@
     "actionEdit": "Bearbeiten",
     "actionDelete": "Löschen",
     "actionRetryCleanup": "Aufräumen wiederholen",
+    "actionDeleteWorktree": "Worktree löschen",
     "actionMerge": "Mergen",
     "actionUnqueueMerge": "Merge-Warteschlange verlassen",
     "actionEditQueuedMerge": "Wartenden Merge bearbeiten",
@@ -4761,6 +4766,8 @@
     "deleteConfirmTitle": "Aufgabe löschen?",
     "deleteConfirmBody": "„{title}“ wird vom Board entfernt. Ein aktiver Lauf wird zuerst abgebrochen.",
     "deleteWithWorktree": "Auch den Worktree löschen",
+    "deleteWorktreeConfirmTitle": "Worktree löschen?",
+    "deleteWorktreeConfirmBody": "Das Worktree-Verzeichnis und sein Arbeits-Branch werden endgültig gelöscht. Die Aufgabe bleibt auf dem Board, ihre Konversation wandert in den Projektordner.",
     "eventCreated": "Erstellt",
     "eventStatusChanged": "Statusänderung",
     "eventConfigEffective": "Startkonfiguration",

@@ -181,6 +181,7 @@
       "chooseImage": "Elegir imagen",
       "replaceImage": "Reemplazar imagen",
       "removeImage": "Quitar",
+      "formatHint": "PNG, JPEG, WebP y GIF. Las imágenes animadas se reproducen automáticamente.",
       "fillMode": "Modo de relleno",
       "fillModes": {
         "cover": "Cubrir",
@@ -194,6 +195,7 @@
       "panelOpacity": "Opacidad de los paneles",
       "panelOpacityHint": "Cuán opacos son la barra lateral, los paneles y las barras de pestañas. Más bajo deja ver más la imagen.",
       "errorTooLarge": "La imagen es demasiado grande (máx. 16 MB).",
+      "errorUnsupportedFormat": "Formato de imagen no admitido. Elige un PNG, JPEG, WebP o GIF.",
       "errorUploadFailed": "No se pudo establecer la imagen de fondo."
     }
   },
@@ -2683,6 +2685,8 @@
           "nextRetryIn": "siguiente en {seconds}s",
           "line": "{error}{status} · {retry}",
           "lineWithDelay": "{error}{status} · {retry}, {delay}",
+          "lineNoError": "{retry}",
+          "lineNoErrorWithDelay": "{retry}, {delay}",
           "httpStatus": " (HTTP {status})"
         },
         "configOptionAdjusted": "{agent} estableció {option} en {actual} en lugar de {requested}"
@@ -4587,6 +4591,7 @@
     "actionEdit": "Editar",
     "actionDelete": "Eliminar",
     "actionRetryCleanup": "Reintentar limpieza",
+    "actionDeleteWorktree": "Eliminar worktree",
     "actionMerge": "Fusionar",
     "actionUnqueueMerge": "Salir de la cola de fusión",
     "actionEditQueuedMerge": "Editar la fusión en cola",
@@ -4761,6 +4766,8 @@
     "deleteConfirmTitle": "¿Eliminar la tarea?",
     "deleteConfirmBody": "“{title}” se quitará del tablero. Una ejecución activa se cancela primero.",
     "deleteWithWorktree": "Eliminar también su worktree",
+    "deleteWorktreeConfirmTitle": "¿Eliminar el worktree?",
+    "deleteWorktreeConfirmBody": "El directorio del worktree y su rama de trabajo se eliminan definitivamente. La tarea sigue en el tablero y su conversación pasa a la carpeta del proyecto.",
     "eventCreated": "Creada",
     "eventStatusChanged": "Cambio de estado",
     "eventConfigEffective": "Configuración de arranque",

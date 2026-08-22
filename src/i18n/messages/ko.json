@@ -181,6 +181,7 @@
       "chooseImage": "이미지 선택",
       "replaceImage": "이미지 변경",
       "removeImage": "제거",
+      "formatHint": "PNG, JPEG, WebP, GIF를 지원합니다. 움직이는 이미지는 자동으로 재생됩니다.",
       "fillMode": "채우기 방식",
       "fillModes": {
         "cover": "채우기",
@@ -194,6 +195,7 @@
       "panelOpacity": "패널 불투명도",
       "panelOpacityHint": "사이드바, 패널, 탭 바의 불투명도입니다. 낮을수록 이미지가 더 많이 비쳐 보입니다.",
       "errorTooLarge": "이미지가 너무 큽니다(최대 16 MB).",
+      "errorUnsupportedFormat": "지원하지 않는 이미지 형식입니다. PNG, JPEG, WebP, GIF 중에서 선택하세요.",
       "errorUploadFailed": "배경 이미지 설정에 실패했습니다."
     }
   },
@@ -2683,6 +2685,8 @@
           "nextRetryIn": "{seconds}초 후 재시도",
           "line": "{error}{status} · {retry}",
           "lineWithDelay": "{error}{status} · {retry}, {delay}",
+          "lineNoError": "{retry}",
+          "lineNoErrorWithDelay": "{retry}, {delay}",
           "httpStatus": " (HTTP {status})"
         },
         "configOptionAdjusted": "{agent}이(가) {option}을(를) {requested} 대신 {actual}(으)로 설정했습니다"
@@ -4587,6 +4591,7 @@
     "actionEdit": "편집",
     "actionDelete": "삭제",
     "actionRetryCleanup": "정리 다시 시도",
+    "actionDeleteWorktree": "worktree 삭제",
     "actionMerge": "병합",
     "actionUnqueueMerge": "병합 대기 취소",
     "actionEditQueuedMerge": "대기 중인 병합 수정",
@@ -4761,6 +4766,8 @@
     "deleteConfirmTitle": "작업을 삭제할까요?",
     "deleteConfirmBody": "“{title}”이(가) 보드에서 제거됩니다. 실행 중이면 먼저 취소됩니다.",
     "deleteWithWorktree": "worktree도 함께 삭제",
+    "deleteWorktreeConfirmTitle": "worktree를 삭제할까요?",
+    "deleteWorktreeConfirmBody": "worktree 디렉터리와 작업 브랜치가 완전히 삭제됩니다. 작업은 보드에 그대로 남고, 대화는 프로젝트 폴더로 옮겨집니다.",
     "eventCreated": "생성됨",
     "eventStatusChanged": "상태 변경",
     "eventConfigEffective": "실행 구성",
