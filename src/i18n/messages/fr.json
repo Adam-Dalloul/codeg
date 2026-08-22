@@ -2657,6 +2657,8 @@
           "nextRetryIn": "prochaine dans {seconds}s",
           "line": "{error}{status} · {retry}",
           "lineWithDelay": "{error}{status} · {retry}, {delay}",
+          "lineNoError": "{retry}",
+          "lineNoErrorWithDelay": "{retry}, {delay}",
           "httpStatus": " (HTTP {status})"
         },
         "configOptionAdjusted": "{agent} a réglé {option} sur {actual} au lieu de {requested}"

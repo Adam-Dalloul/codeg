@@ -2657,6 +2657,8 @@
           "nextRetryIn": "المحاولة التالية خلال {seconds}ث",
           "line": "{error}{status} · {retry}",
           "lineWithDelay": "{error}{status} · {retry}، {delay}",
+          "lineNoError": "{retry}",
+          "lineNoErrorWithDelay": "{retry}، {delay}",
           "httpStatus": " (HTTP {status})"
         },
         "configOptionAdjusted": "ضبط {agent} {option} على {actual} بدلاً من {requested}"

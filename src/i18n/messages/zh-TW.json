@@ -2657,6 +2657,8 @@
           "nextRetryIn": "{seconds} 秒後重試",
           "line": "{error}{status} · {retry}",
           "lineWithDelay": "{error}{status} · {retry}，{delay}",
+          "lineNoError": "{retry}",
+          "lineNoErrorWithDelay": "{retry}，{delay}",
           "httpStatus": "（HTTP {status}）"
         },
         "configOptionAdjusted": "{agent} 把{option}設成了 {actual}，而不是 {requested}"

@@ -2110,9 +2110,19 @@ export type AcpEvent =
       // `codexErrorInfo` carried one. With AIR advertised, codex 1.2+ replaces
       // this channel with severity-"warning" `session_failure` records, so it
       // now serves only legacy paths.
+      //
+      // pi shares this channel (#525): pi-acp announces `auto_retry_start` as
+      // ordinary prose, so the backend classifies it out of the transcript and
+      // routes it here. pi sends an EMPTY `message` — it forwards no error text,
+      // only the counters below — and the banner renders its own localized line
+      // in that case. All three counters are absent for codex, which reports
+      // none of them.
       type: "turn_retrying"
       message: string
       error_status?: number
+      attempt?: number
+      max_retries?: number
+      retry_delay_ms?: number
     }
   | {
       // JetBrains AIR typed session failure upsert

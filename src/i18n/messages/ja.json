@@ -2657,6 +2657,8 @@
           "nextRetryIn": "{seconds}秒後に再試行",
           "line": "{error}{status} · {retry}",
           "lineWithDelay": "{error}{status} · {retry}、{delay}",
+          "lineNoError": "{retry}",
+          "lineNoErrorWithDelay": "{retry}、{delay}",
           "httpStatus": " (HTTP {status})"
         },
         "configOptionAdjusted": "{agent} は{option}を {requested} ではなく {actual} にしました"
