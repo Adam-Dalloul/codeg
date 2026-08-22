@@ -144,7 +144,7 @@ export function Sidebar() {
   // On desktop the header's top-left is owned by the fixed window-chrome overlay
   // (sidebar toggle + remote); reserve exactly its width so the view controls
   // and drag region clear it. The reserve scales with the app zoom to track the
-  // rem-sized overlay buttons. Mobile has no overlay (the sidebar is a Sheet).
+  // rem-sized overlay buttons. Mobile has no overlay (the sidebar is a Drawer).
   const leftReserve = leftChromeReserve(platformIsMac && isDesktop(), zoomLevel)
 
   // `showCompleted` defaults OFF; `showWorktrees` and `showRecent` default ON
@@ -228,7 +228,7 @@ export function Sidebar() {
   }, [allExpanded])
 
   const handleNewConversation = useCallback(() => {
-    // On mobile the sidebar is a Sheet overlay — close it so the new
+    // On mobile the sidebar is a Drawer overlay — close it so the new
     // conversation is visible (mirrors tapping a conversation card, which the
     // list wrapper already closes on).
     if (isMobile) toggle()
@@ -266,7 +266,7 @@ export function Sidebar() {
           // while those headers sit on the transparent canvas: with a workspace
           // background image on, a border-border/50 hairline washes out against the
           // frosted shade, so it takes the boosted `ws-chrome-border` (like the
-          // frosted status bar) to stay legible. Mobile (Sheet): keep the original
+          // frosted status bar) to stay legible. Mobile (Drawer): keep the original
           // title padding + a full-strength divider — mobile is unchanged.
           isMobile
             ? "border-b border-border pl-4"
@@ -444,7 +444,7 @@ export function Sidebar() {
             window chrome (`LeftEdgeChrome`, plus the mobile `FolderTitleBar`),
             which — unlike this sidebar — never unmounts, so the button survives
             a collapse. ⌘K still works from anywhere. */}
-        {/* Both route rows close the mobile Sheet on the way out, like tapping a
+        {/* Both route rows close the mobile Drawer on the way out, like tapping a
             conversation card (handled by the list wrapper below) — otherwise the
             page they just opened stays hidden behind the sidebar. */}
         <SidebarNavButton
@@ -493,7 +493,7 @@ export function Sidebar() {
         />
       </div>
 
-      {/* On mobile, clicking a conversation card auto-closes the Sheet */}
+      {/* On mobile, clicking a conversation card auto-closes the Drawer */}
       <div
         className="flex flex-col flex-1 min-h-0 overflow-hidden pt-1.5"
         onClick={
