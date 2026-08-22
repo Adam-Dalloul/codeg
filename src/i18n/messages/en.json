@@ -181,6 +181,7 @@
       "chooseImage": "Choose image",
       "replaceImage": "Replace image",
       "removeImage": "Remove",
+      "formatHint": "PNG, JPEG, WebP and GIF. Animated images play automatically.",
       "fillMode": "Fill mode",
       "fillModes": {
         "cover": "Cover",
@@ -194,6 +195,7 @@
       "panelOpacity": "Panel opacity",
       "panelOpacityHint": "How opaque the sidebar, panels and tab bars are. Lower lets more of the image show through.",
       "errorTooLarge": "Image is too large (max 16 MB).",
+      "errorUnsupportedFormat": "Unsupported image format. Choose a PNG, JPEG, WebP or GIF.",
       "errorUploadFailed": "Failed to set the background image."
     }
   },

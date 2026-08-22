@@ -181,6 +181,7 @@
       "chooseImage": "Choisir une image",
       "replaceImage": "Remplacer l'image",
       "removeImage": "Supprimer",
+      "formatHint": "PNG, JPEG, WebP et GIF. Les images animées sont lues automatiquement.",
       "fillMode": "Mode de remplissage",
       "fillModes": {
         "cover": "Remplir",
@@ -194,6 +195,7 @@
       "panelOpacity": "Opacité des panneaux",
       "panelOpacityHint": "Opacité de la barre latérale, des panneaux et des barres d'onglets. Plus c'est bas, plus l'image transparaît.",
       "errorTooLarge": "L'image est trop volumineuse (16 Mo maximum).",
+      "errorUnsupportedFormat": "Format d'image non pris en charge. Choisissez un PNG, JPEG, WebP ou GIF.",
       "errorUploadFailed": "Échec de la définition de l'image d'arrière-plan."
     }
   },

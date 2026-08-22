@@ -181,6 +181,7 @@
       "chooseImage": "Escolher imagem",
       "replaceImage": "Substituir imagem",
       "removeImage": "Remover",
+      "formatHint": "PNG, JPEG, WebP e GIF. Imagens animadas são reproduzidas automaticamente.",
       "fillMode": "Modo de preenchimento",
       "fillModes": {
         "cover": "Preencher",
@@ -194,6 +195,7 @@
       "panelOpacity": "Opacidade dos painéis",
       "panelOpacityHint": "O quão opacos são a barra lateral, os painéis e as barras de abas. Mais baixo deixa a imagem transparecer mais.",
       "errorTooLarge": "A imagem é muito grande (máx. 16 MB).",
+      "errorUnsupportedFormat": "Formato de imagem não suportado. Escolha um PNG, JPEG, WebP ou GIF.",
       "errorUploadFailed": "Falha ao definir a imagem de fundo."
     }
   },

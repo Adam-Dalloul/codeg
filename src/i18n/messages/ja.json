@@ -181,6 +181,7 @@
       "chooseImage": "画像を選択",
       "replaceImage": "画像を変更",
       "removeImage": "削除",
+      "formatHint": "PNG・JPEG・WebP・GIF に対応しています。アニメーション画像は自動で再生されます。",
       "fillMode": "表示方法",
       "fillModes": {
         "cover": "全体を覆う",
@@ -194,6 +195,7 @@
       "panelOpacity": "パネルの不透明度",
       "panelOpacityHint": "サイドバー・パネル・タブバーの不透明度です。低いほど画像が透けて見えます。",
       "errorTooLarge": "画像が大きすぎます（最大 16 MB）。",
+      "errorUnsupportedFormat": "対応していない画像形式です。PNG・JPEG・WebP・GIF から選んでください。",
       "errorUploadFailed": "背景画像の設定に失敗しました。"
     }
   },

@@ -181,6 +181,7 @@
       "chooseImage": "Bild auswählen",
       "replaceImage": "Bild ersetzen",
       "removeImage": "Entfernen",
+      "formatHint": "PNG, JPEG, WebP und GIF. Animierte Bilder werden automatisch abgespielt.",
       "fillMode": "Füllmodus",
       "fillModes": {
         "cover": "Füllen",
@@ -194,6 +195,7 @@
       "panelOpacity": "Panel-Deckkraft",
       "panelOpacityHint": "Wie deckend Seitenleiste, Panels und Tab-Leisten sind. Niedriger lässt mehr vom Bild durchscheinen.",
       "errorTooLarge": "Bild ist zu groß (max. 16 MB).",
+      "errorUnsupportedFormat": "Nicht unterstütztes Bildformat. Wähle ein PNG, JPEG, WebP oder GIF.",
       "errorUploadFailed": "Hintergrundbild konnte nicht festgelegt werden."
     }
   },

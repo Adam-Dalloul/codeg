@@ -181,6 +181,7 @@
       "chooseImage": "选择图片",
       "replaceImage": "更换图片",
       "removeImage": "移除",
+      "formatHint": "支持 PNG、JPEG、WebP、GIF；动图会自动播放。",
       "fillMode": "填充方式",
       "fillModes": {
         "cover": "覆盖",
@@ -194,6 +195,7 @@
       "panelOpacity": "面板不透明度",
       "panelOpacityHint": "侧栏、面板与标签栏的不透明程度。越低，透出的图片越多。",
       "errorTooLarge": "图片太大（最大 16 MB）。",
+      "errorUnsupportedFormat": "不支持的图片格式，请选择 PNG、JPEG、WebP 或 GIF。",
       "errorUploadFailed": "设置背景图片失败。"
     }
   },

@@ -181,6 +181,7 @@
       "chooseImage": "اختيار صورة",
       "replaceImage": "استبدال الصورة",
       "removeImage": "إزالة",
+      "formatHint": "‏PNG وJPEG وWebP وGIF. تُشغَّل الصور المتحركة تلقائيًا.",
       "fillMode": "وضع الملء",
       "fillModes": {
         "cover": "تغطية",
@@ -194,6 +195,7 @@
       "panelOpacity": "عتامة اللوحات",
       "panelOpacityHint": "مدى عتامة الشريط الجانبي واللوحات وأشرطة التبويب. الأقل يُظهر المزيد من الصورة.",
       "errorTooLarge": "الصورة كبيرة جدًا (16 ميجابايت كحد أقصى).",
+      "errorUnsupportedFormat": "صيغة صورة غير مدعومة. اختر ملف PNG أو JPEG أو WebP أو GIF.",
       "errorUploadFailed": "فشل تعيين صورة الخلفية."
     }
   },
