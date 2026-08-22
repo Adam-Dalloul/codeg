@@ -4873,6 +4873,27 @@ mod tests {
         assert!(preview.ends_with("..."));
     }
 
+    /// The chat-channel handle is installed once at bootstrap on the ONE
+    /// manager Tauri/axum owns, but every consumer (the web AppState at
+    /// `web/mod.rs`, the lifecycle worker) holds a `clone_ref` of it. The
+    /// handle therefore has to live behind the shared `Arc<OnceLock>` — if a
+    /// clone ever got a fresh lock, live title writes would stop renaming
+    /// bound Telegram topics on exactly the paths that do the writing, with
+    /// no error anywhere.
+    #[test]
+    fn installed_chat_channel_survives_clone_ref() {
+        let mgr = ConnectionManager::new();
+        assert!(mgr.chat_channel().is_none(), "unset before bootstrap");
+
+        // Install on a clone: the handle must become visible on the original
+        // too (bootstrap order across `clone_ref` boundaries is not fixed).
+        let clone = mgr.clone_ref();
+        clone.install_chat_channel(crate::chat_channel::manager::ChatChannelManager::new());
+
+        assert!(mgr.chat_channel().is_some());
+        assert!(mgr.clone_ref().chat_channel().is_some());
+    }
+
     #[test]
     fn delegation_child_title_seed_uses_parser_title_from_first_prompt() {
         // The delegating prompt is a single text block (the task) — the seed must

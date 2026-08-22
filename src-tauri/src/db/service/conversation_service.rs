@@ -2324,6 +2324,56 @@ mod tests {
         assert_eq!(summary.title.as_deref(), Some("User pick"));
     }
 
+    /// Neither auto-title primitive may write a soft-deleted row. Both are now
+    /// driven from the live ACP path (a title can land while the user is
+    /// deleting the conversation), and a late write to a deleted row is a
+    /// resurrection the sidebar can never show — `emit_conversation_upsert`
+    /// filters it out, so the row would silently diverge from every client.
+    #[tokio::test]
+    async fn auto_title_writes_skip_soft_deleted_rows() {
+        let db = fresh_in_memory_db().await;
+        let folder = seed_folder(&db, "/tmp/codeg-title-deleted").await;
+
+        // Untitled + deleted: the first-prompt seed must not name it.
+        let seeded = create(&db.conn, folder, AgentType::ClaudeCode, None, None)
+            .await
+            .expect("create");
+        soft_delete(&db.conn, seeded.id).await.expect("soft delete");
+        assert!(
+            !seed_auto_title_if_empty(&db.conn, seeded.id, "First prompt".into())
+                .await
+                .expect("seed"),
+            "a soft-deleted row must not be seeded"
+        );
+
+        // Titled + deleted: a live ACP title must not replace it either.
+        let refreshed = create(
+            &db.conn,
+            folder,
+            AgentType::ClaudeCode,
+            Some("Old name".into()),
+            None,
+        )
+        .await
+        .expect("create");
+        soft_delete(&db.conn, refreshed.id).await.expect("soft delete");
+        assert!(
+            !refresh_auto_title(&db.conn, refreshed.id, "Agent title".into())
+                .await
+                .expect("refresh"),
+            "a soft-deleted row must not be auto-retitled"
+        );
+
+        for (id, expected) in [(seeded.id, None), (refreshed.id, Some("Old name"))] {
+            let row = conversation::Entity::find_by_id(id)
+                .one(&db.conn)
+                .await
+                .expect("query")
+                .expect("row still present");
+            assert_eq!(row.title.as_deref(), expected);
+        }
+    }
+
     /// The work-task / automation launch path: the seed IS the name, so locking
     /// must keep the title byte-identical, keep the row where it is in a
     /// recency-sorted sidebar, and make the next auto-title a no-op.

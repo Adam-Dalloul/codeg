@@ -502,6 +502,19 @@ mod tauri_app {
                     });
                 }
 
+                // Hand the chat-channel manager to the connection manager
+                // BEFORE the chat background tasks below start accepting
+                // messages: a `/new` that lands first would write its live ACP
+                // title against an `install_chat_channel` that hasn't happened
+                // yet, and skip the topic rename for good (the later
+                // reconciliation passes only sync titles their own conditional
+                // UPDATE wrote, and this one already converged).
+                {
+                    let cm = app.state::<ConnectionManager>();
+                    let ccm = app.state::<ChatChannelManager>();
+                    cm.install_chat_channel(ccm.clone_ref());
+                }
+
                 // Start chat channel background tasks
                 {
                     let ccm = app.state::<ChatChannelManager>();
@@ -718,12 +731,6 @@ mod tauri_app {
                         bus,
                         Some(broker_for_lifecycle),
                     ));
-                }
-
-                {
-                    let cm = app.state::<ConnectionManager>();
-                    let ccm = app.state::<ChatChannelManager>();
-                    cm.install_chat_channel(ccm.clone_ref());
                 }
 
                 match tauri::async_runtime::block_on(web::load_web_service_config(&db.conn)) {

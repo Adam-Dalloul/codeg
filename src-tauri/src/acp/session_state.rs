@@ -1836,6 +1836,32 @@ mod tests {
         )
     }
 
+    /// `ConversationLinked` must forget the live-title skip-cache.
+    ///
+    /// Today this clear can only ever be a no-op: `emit_conversation_update`
+    /// refuses to cache a title while `conversation_id` is `None`, and both
+    /// producers of `ConversationLinked` fire only from that same unbound
+    /// state, so the cache is already empty every time this runs. It is kept —
+    /// and pinned here — because the day something rebinds a LIVE connection to
+    /// another row, a cache carried over from the old one would classify the
+    /// new row's first title as a repeat and leave it Untitled for the rest of
+    /// the connection, with no error anywhere to point at.
+    #[test]
+    fn conversation_linked_clears_the_native_title_skip_cache() {
+        let mut s = fresh_state();
+        s.last_native_title = Some("Fix the login flow".into());
+
+        s.apply_event(&AcpEvent::ConversationLinked {
+            conversation_id: 7,
+            folder_id: 1,
+            parent_conversation_id: None,
+            parent_tool_use_id: None,
+        });
+
+        assert_eq!(s.conversation_id, Some(7));
+        assert!(s.last_native_title.is_none());
+    }
+
     #[test]
     fn plan_approval_applies_clears_by_id_and_survives_snapshot() {
         let mut s = fresh_state();

@@ -323,8 +323,10 @@ pub(crate) async fn handle_event(
             };
             let conversation_id = { state_arc.read().await.conversation_id };
             // Title published before the first prompt binds the row: drop it.
-            // ConversationLinked clears last_native_title so a later resend
-            // is accepted; otherwise the next detail load recovers it.
+            // `emit_conversation_update` never caches an unbound title, so a
+            // later resend is still accepted. Failing that, the next detail
+            // load recovers it only where the agent's own transcript carries
+            // the name — see the note at that emit site.
             let Some(cid) = conversation_id else {
                 return Ok(());
             };
