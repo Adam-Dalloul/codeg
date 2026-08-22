@@ -7456,6 +7456,42 @@ pub(crate) fn load_agent_local_config_json(agent_type: AgentType) -> Option<Stri
     serde_json::to_string_pretty(&parsed).ok()
 }
 
+/// What a patch subtree means where the base has nothing to merge it into: a
+/// copy with its nested removal sentinels (`null` object values) dropped, or
+/// `None` when it carried nothing but removals.
+///
+/// Copying such a subtree verbatim is what turned the "remove this key"
+/// sentinel into a literal `null` on disk — and a `null` under
+/// `~/.claude/settings.json`'s `env` is not "unset": the Claude Code CLI
+/// stringifies it into `process.env`, so `ANTHROPIC_DEFAULT_OPUS_MODEL` becomes
+/// the model name `"null"` and every row of the composer's model picker reads
+/// `null`. The trigger is a first provider bind against a settings file that has
+/// no `env` object yet, which is exactly the "no model configured" case: every
+/// `ANTHROPIC_*_MODEL` key in the cascade patch is a removal.
+///
+/// Arrays are copied as-is: `merge_json_values` never treats their elements as
+/// keys, so a `null` inside one is data, not a sentinel.
+fn patch_addition(patch: &serde_json::Value) -> Option<serde_json::Value> {
+    let Some(patch_obj) = patch.as_object() else {
+        return Some(patch.clone());
+    };
+    let mut kept = serde_json::Map::new();
+    for (key, value) in patch_obj {
+        if value.is_null() {
+            continue;
+        }
+        if let Some(value) = patch_addition(value) {
+            kept.insert(key.clone(), value);
+        }
+    }
+    // An object the patch author wrote as empty is a value in its own right; one
+    // left empty by dropping removals asks for nothing and creates nothing.
+    if kept.is_empty() && !patch_obj.is_empty() {
+        return None;
+    }
+    Some(serde_json::Value::Object(kept))
+}
+
 fn merge_json_values(base: &mut serde_json::Value, patch: &serde_json::Value) {
     if let (Some(base_obj), Some(patch_obj)) = (base.as_object_mut(), patch.as_object()) {
         for (key, patch_value) in patch_obj {
@@ -7466,15 +7502,23 @@ fn merge_json_values(base: &mut serde_json::Value, patch: &serde_json::Value) {
             }
             match base_obj.get_mut(key) {
                 Some(base_value) => merge_json_values(base_value, patch_value),
+                // Nothing here to remove, so the subtree's own removal sentinels
+                // must not be materialized alongside its real values.
                 None => {
-                    base_obj.insert(key.clone(), patch_value.clone());
+                    if let Some(value) = patch_addition(patch_value) {
+                        base_obj.insert(key.clone(), value);
+                    }
                 }
             }
         }
         return;
     }
 
-    *base = patch.clone();
+    // Type mismatch (or a non-object base): the patch replaces the base
+    // wholesale, minus its removal sentinels — there is nothing here for them to
+    // remove either. An all-removals object collapses to `{}` rather than
+    // leaving the mistyped value in place.
+    *base = patch_addition(patch).unwrap_or_else(|| serde_json::Value::Object(Default::default()));
 }
 
 fn persist_agent_local_config_json(
@@ -8171,8 +8215,31 @@ struct AgentRuntimeConfig {
     api_key: Option<String>,
     #[serde(default)]
     model: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_env_strings")]
     env: BTreeMap<String, String>,
+}
+
+/// Read an agent config's `env` map, skipping entries whose value is not a
+/// string instead of failing the whole parse.
+///
+/// Both readers of this struct discard the ENTIRE local config on a parse error
+/// (`build_runtime_env_from_setting` and the agent-info env projection), so one
+/// odd value would silently cost the launch env its base URL and key too. The
+/// value seen in the wild is `null` — written by an older
+/// [`merge_json_values`], see [`patch_addition`] — but a hand-edited number or
+/// bool deserves the same containment.
+fn deserialize_env_strings<'de, D>(deserializer: D) -> Result<BTreeMap<String, String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let raw = BTreeMap::<String, serde_json::Value>::deserialize(deserializer)?;
+    Ok(raw
+        .into_iter()
+        .filter_map(|(key, value)| match value {
+            serde_json::Value::String(value) => Some((key, value)),
+            _ => None,
+        })
+        .collect())
 }
 
 fn trim_non_empty(value: Option<String>) -> Option<String> {
@@ -14597,6 +14664,105 @@ wire_api = "chat"
             env.get("ANTHROPIC_MODEL").and_then(|v| v.as_str()),
             Some("keep-me")
         );
+    }
+
+    #[test]
+    fn merge_json_values_never_materializes_a_removal_into_a_missing_parent() {
+        // The regression: binding a Claude provider that configures NO models
+        // against a ~/.claude/settings.json that has no `env` object yet. Every
+        // ANTHROPIC_*_MODEL entry of the cascade patch is a removal, and the old
+        // merge copied the whole `env` subtree in verbatim because the key was
+        // absent — writing the sentinels out as real JSON nulls. The Claude Code
+        // CLI stringifies settings env into `process.env`, so those became the
+        // model name "null" and every row of the composer's model picker read
+        // `null`.
+        let mut base = serde_json::json!({ "effortLevel": "high" });
+        let patch = serde_json::json!({
+            "env": {
+                "ANTHROPIC_BASE_URL": "https://gw.example",
+                "ANTHROPIC_AUTH_TOKEN": "sk-1",
+                "ANTHROPIC_MODEL": null,
+                "ANTHROPIC_DEFAULT_OPUS_MODEL": null,
+                "ANTHROPIC_CUSTOM_MODEL_OPTION": null
+            }
+        });
+        merge_json_values(&mut base, &patch);
+        let env = base
+            .get("env")
+            .and_then(|v| v.as_object())
+            .expect("env object created for the real values");
+        assert_eq!(
+            env.get("ANTHROPIC_BASE_URL").and_then(|v| v.as_str()),
+            Some("https://gw.example")
+        );
+        assert_eq!(
+            env.get("ANTHROPIC_AUTH_TOKEN").and_then(|v| v.as_str()),
+            Some("sk-1")
+        );
+        // Not "present and null" — absent.
+        assert!(!env.contains_key("ANTHROPIC_MODEL"));
+        assert!(!env.contains_key("ANTHROPIC_DEFAULT_OPUS_MODEL"));
+        assert!(!env.contains_key("ANTHROPIC_CUSTOM_MODEL_OPTION"));
+        // Untouched siblings survive.
+        assert_eq!(
+            base.get("effortLevel").and_then(|v| v.as_str()),
+            Some("high")
+        );
+    }
+
+    #[test]
+    fn merge_json_values_skips_a_patch_subtree_that_is_only_removals() {
+        // Same missing-parent case, but the patch has nothing real to add:
+        // creating an empty `env` husk in a config that never had one would be
+        // writing a key the user never asked for.
+        let mut base = serde_json::json!({});
+        merge_json_values(
+            &mut base,
+            &serde_json::json!({ "env": { "ANTHROPIC_MODEL": null } }),
+        );
+        assert!(!base.as_object().expect("object").contains_key("env"));
+
+        // An object the patch author wrote as empty IS a value — it still lands.
+        let mut base = serde_json::json!({});
+        merge_json_values(&mut base, &serde_json::json!({ "env": {} }));
+        assert_eq!(base.get("env"), Some(&serde_json::json!({})));
+    }
+
+    #[test]
+    fn merge_json_values_strips_removals_when_replacing_a_mistyped_base() {
+        // A base whose `env` is not an object can't be merged into, so the patch
+        // replaces it — still without materializing the sentinels.
+        let mut base = serde_json::json!({ "env": "not-an-object" });
+        merge_json_values(
+            &mut base,
+            &serde_json::json!({ "env": { "ANTHROPIC_BASE_URL": "https://gw", "ANTHROPIC_MODEL": null } }),
+        );
+        assert_eq!(
+            base.get("env"),
+            Some(&serde_json::json!({ "ANTHROPIC_BASE_URL": "https://gw" }))
+        );
+
+        // Arrays are data, not key/value maps: a null element is preserved.
+        let mut base = serde_json::json!({});
+        merge_json_values(&mut base, &serde_json::json!({ "xs": [1, null, 2] }));
+        assert_eq!(base.get("xs"), Some(&serde_json::json!([1, null, 2])));
+    }
+
+    #[test]
+    fn agent_runtime_config_env_survives_a_non_string_value() {
+        // A settings.json corrupted by the old merge (env values as JSON null)
+        // must not cost the launch env everything else in the file: the bad
+        // entries are skipped, the rest — including the credentials — still land.
+        let config: AgentRuntimeConfig = serde_json::from_str(
+            r#"{"env":{"ANTHROPIC_BASE_URL":"https://gw","ANTHROPIC_MODEL":null,"PORT":8080}}"#,
+        )
+        .expect("a null env value must not fail the whole parse");
+        assert_eq!(
+            config.env.get("ANTHROPIC_BASE_URL").map(String::as_str),
+            Some("https://gw")
+        );
+        assert!(!config.env.contains_key("ANTHROPIC_MODEL"));
+        assert!(!config.env.contains_key("PORT"));
     }
 
     #[test]
