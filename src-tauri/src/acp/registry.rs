@@ -948,27 +948,70 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             // its roots) and, since 0.2.0, offers `--setup` terminal auth for
             // storing the key in `$DSH_HOME/.credentials.yaml`.
             //
-            // 0.5.0 audited against 0.3.0: the capability advertisement is
-            // untouched (the whole `protocol/initialize` diff is the version
-            // string), so every claim above still holds. What moved is two
-            // presentation fixes — 0.4.0 guards chunked tool-call headers whose
-            // later fragments repeat an explicit null/empty name (which used to
-            // overwrite the first fragment's id/name and dispatch an empty tool
-            // name), and 0.5.0 sends a terminal `tool_call`'s `rawInput` as the
+            // 0.4.0 guards chunked tool-call headers whose later fragments
+            // repeat an explicit null/empty name (which used to overwrite the
+            // first fragment's id/name and dispatch an empty tool name); 0.5.0
+            // sends a terminal `tool_call`'s `rawInput` as the
             // `{command, description?, cwd?}` OBJECT rather than a bare command
             // string, i.e. the codex-acp shape codeg's tool cards already parse.
-            // Its `dsh-*` deps went rc.6 → rc.7, but the three packages codeg
-            // mirrors (`dsh-home-paths`' `resolveDshHome`, `dsh-skill-filesystem`'s
-            // roots, `dsh-session-persistence-jsonl`'s log layout) are byte-
-            // identical across that bump, so `parsers::deepseek` needs nothing.
+            //
+            // 0.6.0 is the first bump that MOVES the handshake, because its
+            // `dsh-*` deps went 0.1.0-rc.7 → 0.1.1-rc.2 and it wired up what
+            // that unlocked. Four of the five new capabilities cost codeg
+            // nothing — they land on paths that already read the agent's own
+            // advertisement:
+            //
+            // * `sessionCapabilities.fork` is now advertised unconditionally,
+            //   so `supports_fork` flips on by itself and `acp::fork`'s
+            //   `{sessionId, cwd}` request is exactly what it accepts (it
+            //   rejects `additionalDirectories`, which codeg never sends).
+            // * `promptCapabilities.image` went from a hardwired `false` to
+            //   "true whenever the attachment store is mounted", which the
+            //   stock composition always does — so the composer's upload path
+            //   un-gates through `effective_prompt_capabilities` with no
+            //   per-agent branch. Sending pixels to a text-only model is
+            //   refused by the agent with a message naming the model to switch
+            //   to, which is a better failure than hiding the button.
+            // * Multi-provider deployments re-encode the model config value as
+            //   `provider::model` and ship SERVER-SIDE `configOptions` groups.
+            //   `deriveModelGroups` already yields to server groups verbatim,
+            //   and single-provider installs (i.e. nearly all of them) keep
+            //   emitting bare model ids, so the selector is unaffected either
+            //   way. codeg does not drive the new `providers/*` UNSTABLE plane;
+            //   routes are configured in `settings.yaml`, and the DeepSeek
+            //   settings panel still owns `DEEPSEEK_BASE_URL`/`DEEPSEEK_API_KEY`
+            //   for the built-in `deepseek-official` route.
+            // * `session/load` + `session/resume` + `session/fork` now answer
+            //   `-32002 Resource not found` (was `-32603`) for a session id with
+            //   no log, which `classify_load_failure` already maps to the
+            //   `resource_not_found` copy — a stale workspace id stops looking
+            //   like an agent crash.
+            //
+            // The fifth, context compaction, is the one codeg cannot take on
+            // the wire: `compaction_update` / `compaction_summary_chunk` are
+            // gated behind a `clientCapabilities.session.compaction` that the
+            // pinned `agent-client-protocol-schema` (0.11) can neither
+            // advertise nor deserialize, so the agent correctly stays silent.
+            // Compaction still HAPPENS (auto at the window limit, or `/compact`)
+            // and still lands in the log, so `parsers::deepseek` renders it
+            // from there — see its `compaction/*` arm.
+            //
+            // What `parsers::deepseek` did have to learn is the log's two new
+            // shapes: `image` content blocks (bytes live in the content-
+            // addressed `$DSH_HOME/attachments/v1` store, the log keeps only a
+            // `sha256:` ref) and the `compaction/*` lifecycle. The three
+            // upstream layouts codeg mirrors — `dsh-home-paths`'
+            // `resolveDshHome`, `dsh-skill-filesystem`'s roots,
+            // `dsh-session-persistence-jsonl`'s `session.jsonl[.zstd]` tree —
+            // are unchanged across rc.7 → rc.2, so nothing else moved.
             //
             // Keep `version` and `package` moving together: `version` is what
             // the agents list shows as the upgrade target beside the installed
             // version, so a drift leaves the Upgrade button installing one
             // version while the row keeps calling it stale.
             distribution: AgentDistribution::Npx {
-                version: "0.5.0",
-                package: "deepseek-acp@0.5.0",
+                version: "0.6.0",
+                package: "deepseek-acp@0.6.0",
                 cmd: "deepseek-acp",
                 args: &[],
                 env: &[],
@@ -1208,8 +1251,8 @@ mod tests {
         );
         assert_npx_version(
             AgentType::DeepSeek,
-            "0.5.0",
-            "deepseek-acp@0.5.0",
+            "0.6.0",
+            "deepseek-acp@0.6.0",
             Some("22.0.0"),
         );
         assert_npx_version(
