@@ -71,6 +71,7 @@ import { useShortcutSettings } from "@/hooks/use-shortcut-settings"
 import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
 import {
   canDeliverToPr,
+  canRemoveWorktree,
   deliveredPrUrl,
   hasNothingToMerge,
   isMergeQueued,
@@ -122,6 +123,12 @@ import {
   SheetHeader,
   SheetTitle,
 } from "@/components/ui/sheet"
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip"
 import { cn } from "@/lib/utils"
 import type {
   AgentType,
@@ -234,6 +241,9 @@ export function TaskDetailSheet({
   const [intent, setIntent] = useState<FollowUpIntent>(DEFAULT_FOLLOW_UP_INTENT)
   const [deleteOpen, setDeleteOpen] = useState(false)
   const [deleteWorktree, setDeleteWorktree] = useState(false)
+  /** Confirm for the footer's standalone worktree removal (`canRemoveWorktree`
+   *  decides who is offered it). */
+  const [cleanupOpen, setCleanupOpen] = useState(false)
   const [diffFile, setDiffFile] = useState<string | null | false>(false)
   const [busy, setBusy] = useState(false)
   /** Synchronous in-flight latch for the follow-up send (see submitFollowUp). */
@@ -1226,9 +1236,9 @@ export function TaskDetailSheet({
           {/* Footer: everything that does NOT advance the task's state — the
               status's own actions live in the action zone / acceptance panel
               above. Left: session viewer, edit (while editable), cleanup
-              retry; right: destructive delete (`merging` cannot be deleted).
-              Deleting offers the worktree checkbox in its confirm dialog, so
-              that is the only worktree affordance kept here. */}
+              retry; right: the worktree a finished task is still holding, then
+              the destructive delete (`merging` cannot be deleted), which takes
+              the worktree along as a checkbox in its own confirm. */}
           {task.conversation_id != null ||
           canEdit ||
           task.status !== "merging" ? (
@@ -1258,6 +1268,18 @@ export function TaskDetailSheet({
                 />
               ) : null}
               <div className="flex-1" />
+              {/* Beside "delete", because that is the other way to be rid of
+                  this worktree — and glyph-only, because a done task's leftover
+                  checkout is a housekeeping detail, not a decision the drawer
+                  should press on the user every time they open it. */}
+              {canRemoveWorktree(task) ? (
+                <FooterIconAction
+                  icon={FolderX}
+                  label={t("actionDeleteWorktree")}
+                  busy={busy}
+                  onClick={() => setCleanupOpen(true)}
+                />
+              ) : null}
               {task.status !== "merging" ? (
                 <FooterAction
                   icon={Trash2}
@@ -1288,6 +1310,35 @@ export function TaskDetailSheet({
           ) : null}
         </DialogContent>
       </Dialog>
+
+      {/* Worktree removal confirm. Git takes the directory `--force` and the
+          work branch `-D`, so anything left uncommitted or unlanded in there
+          goes with it — too much to hang off one click on a bare glyph. */}
+      <AlertDialog open={cleanupOpen} onOpenChange={setCleanupOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              {t("deleteWorktreeConfirmTitle")}
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {t("deleteWorktreeConfirmBody")}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>{t("cancel")}</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() =>
+                run(async () => {
+                  await workTaskCleanup(task.id)
+                  setCleanupOpen(false)
+                })
+              }
+            >
+              {t("actionDeleteWorktree")}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       {/* Delete confirm (optionally with the worktree). */}
       <AlertDialog open={deleteOpen} onOpenChange={setDeleteOpen}>
@@ -1531,6 +1582,45 @@ function FooterAction({
       <Icon className="size-3.5" aria-hidden="true" />
       {label}
     </Button>
+  )
+}
+
+/**
+ * A footer action stripped to its glyph. The label lives on twice over: as an
+ * `aria-label` (a Radix tooltip only DESCRIBES its trigger — it never names it)
+ * and as the tooltip itself, which is the only way a pointer user reads it.
+ * Sized to `FooterAction`'s own h-7 so the row keeps one baseline.
+ */
+function FooterIconAction({
+  icon: Icon,
+  label,
+  onClick,
+  busy,
+}: {
+  icon: typeof Play
+  label: string
+  onClick: () => void
+  busy: boolean
+}) {
+  return (
+    <TooltipProvider delayDuration={200}>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Button
+            type="button"
+            size="icon-sm"
+            variant="ghost"
+            disabled={busy}
+            aria-label={label}
+            className="size-7 text-muted-foreground hover:text-foreground"
+            onClick={onClick}
+          >
+            <Icon className="size-3.5" aria-hidden="true" />
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent side="top">{label}</TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
   )
 }
 
