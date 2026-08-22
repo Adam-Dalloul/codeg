@@ -169,6 +169,32 @@ pub fn external_transcript_sources() -> Vec<ExternalSource> {
             include_top: None,
         },
         ExternalSource {
+            // Since deepseek-acp 0.6.0 a prompt can carry images, and the log
+            // keeps only a `sha256:` reference — the pixels live in the
+            // content-addressed store at `$DSH_HOME/attachments/v1/objects/`.
+            // Without this source a backup restores every image as the
+            // `[image …]` placeholder `parsers::deepseek` falls back to, which
+            // is unrecoverable: the bytes exist nowhere else.
+            //
+            // A SEPARATE source rather than widening the one above, for two
+            // reasons. `DEEPSEEK_ACP_SESSIONS_ROOT` relocates the logs
+            // INDEPENDENTLY of `DSH_HOME`, so re-rooting both at `$DSH_HOME`
+            // would silently stop archiving the logs of any deployment that
+            // uses it. And `agent` is the restore key — `map_external_to_target`
+            // resolves `external/<agent>/…` by `find(|s| s.agent == agent)`, so
+            // two sources sharing a name would restore this one's entries under
+            // the sessions root.
+            //
+            // Scoped to `objects/`: the siblings are `tmp/` (upload staging)
+            // and `request-images/` (per-provider re-encodings derived from
+            // `objects/`), neither of which is conversation content, and both
+            // of which the agent rebuilds on demand.
+            agent: "deepseek-attachments",
+            root: deepseek::resolve_deepseek_attachments_root(),
+            is_file: false,
+            include_top: Some(&["objects"]),
+        },
+        ExternalSource {
             // Qoder keeps one JSONL per session under
             // `~/.qoder/projects/<encoded-cwd>/<sessionId>.jsonl` (relocatable
             // via `QODER_CONFIG_DIR`). The resolver already points at the

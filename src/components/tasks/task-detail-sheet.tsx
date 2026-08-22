@@ -117,12 +117,12 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import {
-  Sheet,
-  SheetContent,
-  SheetDescription,
-  SheetHeader,
-  SheetTitle,
-} from "@/components/ui/sheet"
+  Drawer,
+  DrawerContent,
+  DrawerDescription,
+  DrawerHeader,
+  DrawerTitle,
+} from "@/components/ui/drawer"
 import {
   Tooltip,
   TooltipContent,
@@ -181,7 +181,7 @@ interface TaskDetailSheetProps {
   onSchedule: (task: WorkTask) => void
 }
 
-/** One button of the sheet's action panel (see below). */
+/** One button of the drawer's action panel (see below). */
 interface ZoneAction {
   icon: typeof Play
   label: string
@@ -668,12 +668,9 @@ export function TaskDetailSheet({
 
   return (
     <>
-      <Sheet open={open} onOpenChange={onOpenChange}>
-        <SheetContent
-          side="right"
-          className="flex w-full flex-col gap-0 p-0 sm:max-w-[44rem]"
-        >
-          <SheetHeader className="shrink-0 gap-0 border-b border-border px-5 py-4">
+      <Drawer open={open} onOpenChange={onOpenChange} swipeDirection="right">
+        <DrawerContent className="flex w-[calc(100%-1rem)] flex-col gap-0 p-0 sm:max-w-[44rem]">
+          <DrawerHeader className="shrink-0 gap-0 border-b border-border px-5 py-4">
             {/* Agent glyph, then the title block. The status chip rides
                 directly beside the title rather than being pinned to the far
                 edge — it reads as part of the name, not as a separate
@@ -695,9 +692,9 @@ export function TaskDetailSheet({
               </span>
               <div className="flex min-w-0 flex-1 flex-col gap-1">
                 <div className="flex min-w-0 items-start gap-2">
-                  <SheetTitle className="min-w-0 break-words text-[0.9375rem] font-semibold leading-5">
+                  <DrawerTitle className="min-w-0 break-words text-[0.9375rem] font-semibold leading-5">
                     {task.title}
-                  </SheetTitle>
+                  </DrawerTitle>
                   {/* One title line tall, centring its own content: the chips
                       differ in height (pill vs bare spinner text), so a fixed
                       margin would only ever centre one of them — and a
@@ -740,10 +737,10 @@ export function TaskDetailSheet({
                 </div>
               </div>
             </div>
-            <SheetDescription className="sr-only">
+            <DrawerDescription className="sr-only">
               {t("detailDescription")}
-            </SheetDescription>
-          </SheetHeader>
+            </DrawerDescription>
+          </DrawerHeader>
 
           <ScrollArea className="min-h-0 flex-1">
             <div className="flex flex-col gap-5 px-5 py-4">
@@ -1291,8 +1288,8 @@ export function TaskDetailSheet({
               ) : null}
             </div>
           ) : null}
-        </SheetContent>
-      </Sheet>
+        </DrawerContent>
+      </Drawer>
 
       {/* Per-file / full diff viewer. */}
       <Dialog

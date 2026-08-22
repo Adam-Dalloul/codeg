@@ -90,7 +90,7 @@ import {
 } from "@/lib/window-chrome"
 import { useIsMobile } from "@/hooks/use-mobile"
 import { usePlatform } from "@/hooks/use-platform"
-import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet"
+import { Drawer, DrawerContent, DrawerTitle } from "@/components/ui/drawer"
 
 function WorkspaceDocumentTitle() {
   const { activeFolder } = useActiveFolder()
@@ -611,44 +611,50 @@ function MobileFolderWorkspaceShell({
 
   return (
     <div className="flex flex-1 min-h-0 overflow-hidden">
-      <Sheet open={sidebarRestored && sidebarOpen} onOpenChange={toggleSidebar}>
-        <SheetContent
-          side="left"
+      <Drawer
+        open={sidebarRestored && sidebarOpen}
+        onOpenChange={toggleSidebar}
+        swipeDirection="left"
+      >
+        <DrawerContent
           showCloseButton={false}
           className="w-[85%] max-w-[360px] p-0"
         >
-          <SheetTitle className="sr-only">Sidebar</SheetTitle>
+          <DrawerTitle className="sr-only">Sidebar</DrawerTitle>
           <Sidebar />
-        </SheetContent>
-      </Sheet>
+        </DrawerContent>
+      </Drawer>
 
       <main className="flex h-full min-h-0 w-full flex-col overflow-hidden">
         <MobileWorkspaceContent>{children}</MobileWorkspaceContent>
       </main>
 
-      <Sheet open={auxRestored && auxOpen} onOpenChange={toggleAux}>
-        <SheetContent
-          side="right"
+      <Drawer
+        open={auxRestored && auxOpen}
+        onOpenChange={toggleAux}
+        swipeDirection="right"
+      >
+        <DrawerContent
           showCloseButton={false}
           className="w-[85%] max-w-[360px] p-0"
         >
-          <SheetTitle className="sr-only">Panel</SheetTitle>
+          <DrawerTitle className="sr-only">Panel</DrawerTitle>
           <AuxPanel />
-        </SheetContent>
-      </Sheet>
+        </DrawerContent>
+      </Drawer>
 
-      <Sheet open={terminalOpen} onOpenChange={toggleTerminal}>
-        <SheetContent
-          side="bottom"
-          showCloseButton={false}
-          className="!h-[70vh] p-0"
-        >
-          <SheetTitle className="sr-only">Terminal</SheetTitle>
+      <Drawer
+        open={terminalOpen}
+        onOpenChange={toggleTerminal}
+        swipeDirection="down"
+      >
+        <DrawerContent showCloseButton={false} className="h-[70vh] p-0">
+          <DrawerTitle className="sr-only">Terminal</DrawerTitle>
           <div className="h-full min-h-0 overflow-hidden">
             <TerminalPanel />
           </div>
-        </SheetContent>
-      </Sheet>
+        </DrawerContent>
+      </Drawer>
     </div>
   )
 }

@@ -10,7 +10,7 @@
  *
  * Extracted from the delegation sub-agent dialog so other embeds (the work-task
  * transcript viewer) reuse the exact same streaming pipeline. The host owns the
- * chrome (Dialog/Sheet + header) and, when the viewed connection is not a
+ * chrome (Dialog/Drawer + header) and, when the viewed connection is not a
  * delegation child already attached by its parent, the host also owns the
  * `attachDelegationChild`/`detachDelegationChild` lifecycle.
  *
