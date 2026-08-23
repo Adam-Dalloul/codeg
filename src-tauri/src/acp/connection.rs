@@ -11779,9 +11779,43 @@ async fn emit_conversation_update(
             // `normalize_goal_status` unchanged; its extra fields
             // (createdAt/updatedAt/iterations/lastReason/controlMethod)
             // survive inside the marker's raw goal object for the card.
-            // (`info.title` is Codex's native thread name; it is adopted via the
-            // parser auto-title path on the next conversation fetch, not here, to
-            // keep this DB-agnostic emit path unchanged — see parsers/codex.rs.)
+            // `info.title` is the agent's live session name (Codex thread name,
+            // Claude ACP 0.69+ generated titles, anyone else who publishes the
+            // field). Apply it immediately via a dedicated lifecycle event
+            // rather than waiting for the next conversation fetch. Goal-only
+            // updates leave title undefined and emit nothing. Identical repeats
+            // are skipped (CodeBuddy resends its fallback after every turn).
+            // A title that arrives before the row is bound is dropped, not
+            // remembered, so a later resend is still accepted. If it never
+            // comes back, the next detail load recovers it only for agents
+            // whose own transcript carries the name (Codex's session index,
+            // Claude's `ai-title`) — a custom ACP agent's is gone, because
+            // `parsers/acp_native.rs` records no `session_info_update` and can
+            // only ever title a session by its first prompt.
+            if let Some(title) = crate::acp::session_title::native_title_from_session_info(
+                info.title.value().map(|s| s.as_str()),
+            ) {
+                // Test and set under ONE write lock. Nothing can interleave
+                // here today — a session's notifications are handled serially,
+                // and the only other writer of `last_native_title` is the
+                // `ConversationLinked` arm, which is emitted ONLY while the row
+                // is still unbound and therefore can never race a title this
+                // admits. That safety currently rests on two guards in
+                // different files agreeing; keeping the halves in one critical
+                // section makes it hold by construction instead.
+                let admit = {
+                    let mut s = state.write().await;
+                    let admit = s.conversation_id.is_some()
+                        && s.last_native_title.as_deref() != Some(title.as_str());
+                    if admit {
+                        s.last_native_title = Some(title.clone());
+                    }
+                    admit
+                };
+                if admit {
+                    emit_with_state(state, emitter, AcpEvent::NativeSessionTitle { title }).await;
+                }
+            }
             let neutral_goal_channel = state.read().await.neutral_goal_channel;
             if let Some(goal) =
                 session_info_goal_value(neutral_goal_channel, info.meta.as_ref())
@@ -12449,6 +12483,145 @@ mod tests {
         ));
         assert!(session_info_goal_value(false, Some(&cleared)).is_none());
         assert!(session_info_goal_value(true, None).is_none());
+    }
+
+    // --- live ACP session title (`session_info_update.title`) --------------
+
+    /// Drive one `session_info_update` carrying `title` through
+    /// `emit_conversation_update`.
+    async fn drive_session_info_title(state: &Arc<RwLock<SessionState>>, title: &str) {
+        let update: SessionUpdate = serde_json::from_value(serde_json::json!({
+            "sessionUpdate": "session_info_update",
+            "title": title,
+        }))
+        .expect("valid session_info_update wire shape");
+        let mut cache = ToolCallOutputCache::default();
+        let mut cb = CodeBuddyLiveState::default();
+        emit_conversation_update(
+            state,
+            &EventEmitter::Noop,
+            AgentType::CodeBuddy,
+            update,
+            None,
+            &mut cache,
+            &mut cb,
+        )
+        .await;
+    }
+
+    /// Titles emitted on this connection so far, oldest first.
+    async fn emitted_native_titles(state: &Arc<RwLock<SessionState>>) -> Vec<String> {
+        state
+            .read()
+            .await
+            .recent_events_after(0)
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|e| match &e.payload {
+                AcpEvent::NativeSessionTitle { title } => Some(title.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn title_test_state(conversation_id: Option<i32>) -> Arc<RwLock<SessionState>> {
+        let mut st = SessionState::new(
+            "conn-title".to_string(),
+            AgentType::CodeBuddy,
+            None,
+            "win".to_string(),
+            None,
+        );
+        st.conversation_id = conversation_id;
+        Arc::new(RwLock::new(st))
+    }
+
+    /// A changed title emits; the SAME title arriving again does not. CodeBuddy
+    /// (`sendPendingTitleUpdate`) resends its 80-code-unit fallback after every
+    /// completed prompt with no last-sent guard of its own, and that string
+    /// differs from the 100-char title our own parser derives from the same
+    /// first message — so without this skip the sidebar name would flip on
+    /// every turn (live write, then session-file parse, repeat).
+    #[tokio::test]
+    async fn session_info_title_emits_once_and_skips_an_identical_repeat() {
+        let state = title_test_state(Some(7));
+
+        drive_session_info_title(&state, "Fix the login flow").await;
+        drive_session_info_title(&state, "Fix the login flow").await;
+        drive_session_info_title(&state, "  Fix the login flow  ").await; // same after trim
+        drive_session_info_title(&state, "Fix the signup flow").await;
+
+        assert_eq!(
+            emitted_native_titles(&state).await,
+            vec![
+                "Fix the login flow".to_string(),
+                "Fix the signup flow".to_string()
+            ],
+            "only a CHANGED title may reach the lifecycle worker"
+        );
+    }
+
+    /// A title published before the first prompt binds the row has nowhere to
+    /// land, so it is dropped — and deliberately NOT remembered, so the resend
+    /// that follows `ConversationLinked` is still accepted. Guards the
+    /// `conversation_id.is_some()` half of the skip: a stale cache here would
+    /// leave the row "Untitled" for the rest of the connection.
+    #[tokio::test]
+    async fn session_info_title_dropped_while_unbound_is_accepted_after_link() {
+        let state = title_test_state(None);
+
+        drive_session_info_title(&state, "Fix the login flow").await;
+        assert!(
+            emitted_native_titles(&state).await.is_empty(),
+            "no row to write to yet"
+        );
+        assert!(
+            state.read().await.last_native_title.is_none(),
+            "a dropped title must not poison the skip-cache"
+        );
+
+        state.write().await.apply_event(&AcpEvent::ConversationLinked {
+            conversation_id: 7,
+            folder_id: 1,
+            parent_conversation_id: None,
+            parent_tool_use_id: None,
+        });
+
+        drive_session_info_title(&state, "Fix the login flow").await;
+        assert_eq!(
+            emitted_native_titles(&state).await,
+            vec!["Fix the login flow".to_string()],
+            "the same title must be accepted once the row exists"
+        );
+    }
+
+    /// Goal-only / metadata-only `session_info_update`s (the common case for
+    /// codex `/goal` transitions) carry no title and must not queue the
+    /// lifecycle worker.
+    #[tokio::test]
+    async fn session_info_without_a_title_emits_no_native_title() {
+        let state = title_test_state(Some(7));
+        for wire in [
+            serde_json::json!({"sessionUpdate": "session_info_update"}),
+            serde_json::json!({"sessionUpdate": "session_info_update", "title": null}),
+            serde_json::json!({"sessionUpdate": "session_info_update", "title": "   "}),
+        ] {
+            let update: SessionUpdate =
+                serde_json::from_value(wire).expect("valid session_info_update wire shape");
+            let mut cache = ToolCallOutputCache::default();
+            let mut cb = CodeBuddyLiveState::default();
+            emit_conversation_update(
+                &state,
+                &EventEmitter::Noop,
+                AgentType::Codex,
+                update,
+                None,
+                &mut cache,
+                &mut cb,
+            )
+            .await;
+        }
+        assert!(emitted_native_titles(&state).await.is_empty());
     }
 
     #[test]
