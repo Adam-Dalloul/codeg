@@ -8,6 +8,8 @@ import {
   ListChevronsUpDown,
   LayoutTemplate,
   ListTodo,
+  Menu,
+  MessagesSquare,
   SquarePen,
   Zap,
   type LucideIcon,
@@ -33,6 +35,9 @@ import {
   DropdownMenuRadioGroup,
   DropdownMenuRadioItem,
   DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import { useIsMobile } from "@/hooks/use-mobile"
@@ -373,59 +378,82 @@ export function Sidebar() {
             {/* Wider than the shared `min-w-48`: the section-order rows carry a
                 position chip and two move buttons beside the name, and the menu
                 clips overflow-x — 48 would start truncating longer localized
-                section names (and already wrapped the checkbox labels). */}
+                section names. */}
             <DropdownMenuContent align="end" className="min-w-56">
-              {/* Four labelled groups: what the list shows → which nav rows
-                  exist → how the list is sorted → how its sections are
-                  stacked. Every option keeps the
-                  menu open on select (the default is to close): this menu is a
-                  settings panel, not a command list, and flipping two of them
-                  used to cost two round trips through the trigger. The one
-                  action it used to carry — expand/collapse all — is now a
-                  header button of its own. */}
-              <DropdownMenuLabel>{t("listOptions")}</DropdownMenuLabel>
-              <DropdownMenuCheckboxItem
-                checked={showCompleted}
-                onCheckedChange={handleSetShowCompleted}
-                onSelect={(event) => event.preventDefault()}
-              >
-                {t("showCompleted")}
-              </DropdownMenuCheckboxItem>
-              <DropdownMenuCheckboxItem
-                checked={showWorktrees}
-                onCheckedChange={handleSetShowWorktrees}
-                onSelect={(event) => event.preventDefault()}
-              >
-                {t("showWorktrees")}
-              </DropdownMenuCheckboxItem>
-              <DropdownMenuCheckboxItem
-                checked={showRecent}
-                onCheckedChange={handleSetShowRecent}
-                onSelect={(event) => event.preventDefault()}
-              >
-                {t("showRecent")}
-              </DropdownMenuCheckboxItem>
-              <DropdownMenuSeparator />
-              <DropdownMenuLabel>{t("navigationItems")}</DropdownMenuLabel>
-              {/* Driven by the id list itself, so a route added there can never
-                  ship a row without its toggle. Each id doubles as its message
-                  key. Hiding one only drops the sidebar shortcut: the status
-                  bar's quick-actions menu still reaches every route, so no
-                  choice here can strand the user on a page. */}
-              {SIDEBAR_NAV_ITEM_IDS.map((id) => {
-                const Icon = NAV_ITEM_ICONS[id]
-                return (
+              {/* Four groups: what the list shows → which nav rows exist → how
+                  the list is sorted → how its sections are stacked. The first
+                  two are hover-opened submenus rather than inline blocks: they
+                  are set-and-forget on/off inventories, six checkboxes between
+                  them, and inlining all six left a fifteen-row menu with Sort
+                  by / Section order — the two settings people actually come
+                  back for — stranded at the bottom of it. Those two stay
+                  inline: a pair of radios and a ranked list read wrong behind
+                  another hop, and the order rows need this menu's width.
+                  Every option keeps the menu open on select (the default is to
+                  close): this menu is a settings panel, not a command list, and
+                  flipping two of them used to cost two round trips through the
+                  trigger. The one action it used to carry — expand/collapse
+                  all — is now a header button of its own. */}
+              <DropdownMenuSub>
+                <DropdownMenuSubTrigger>
+                  <MessagesSquare className="text-muted-foreground" />
+                  {t("listOptions")}
+                </DropdownMenuSubTrigger>
+                {/* No width override: unlike the root content — held at exactly
+                    `min-w-56` and clipping overflow-x — the sub-content grows to
+                    fit its rows, which is the headroom these three (the longest
+                    labels in the menu) want. */}
+                <DropdownMenuSubContent>
                   <DropdownMenuCheckboxItem
-                    key={id}
-                    checked={isNavItemVisible(navItems, id)}
-                    onCheckedChange={(value) => handleSetNavItem(id, value)}
+                    checked={showCompleted}
+                    onCheckedChange={handleSetShowCompleted}
                     onSelect={(event) => event.preventDefault()}
                   >
-                    <Icon className="text-muted-foreground" />
-                    {t(id)}
+                    {t("showCompleted")}
                   </DropdownMenuCheckboxItem>
-                )
-              })}
+                  <DropdownMenuCheckboxItem
+                    checked={showWorktrees}
+                    onCheckedChange={handleSetShowWorktrees}
+                    onSelect={(event) => event.preventDefault()}
+                  >
+                    {t("showWorktrees")}
+                  </DropdownMenuCheckboxItem>
+                  <DropdownMenuCheckboxItem
+                    checked={showRecent}
+                    onCheckedChange={handleSetShowRecent}
+                    onSelect={(event) => event.preventDefault()}
+                  >
+                    {t("showRecent")}
+                  </DropdownMenuCheckboxItem>
+                </DropdownMenuSubContent>
+              </DropdownMenuSub>
+              <DropdownMenuSub>
+                <DropdownMenuSubTrigger>
+                  <Menu className="text-muted-foreground" />
+                  {t("navigationItems")}
+                </DropdownMenuSubTrigger>
+                {/* Driven by the id list itself, so a route added there can
+                    never ship a row without its toggle. Each id doubles as its
+                    message key. Hiding one only drops the sidebar shortcut: the
+                    status bar's quick-actions menu still reaches every route, so
+                    no choice here can strand the user on a page. */}
+                <DropdownMenuSubContent>
+                  {SIDEBAR_NAV_ITEM_IDS.map((id) => {
+                    const Icon = NAV_ITEM_ICONS[id]
+                    return (
+                      <DropdownMenuCheckboxItem
+                        key={id}
+                        checked={isNavItemVisible(navItems, id)}
+                        onCheckedChange={(value) => handleSetNavItem(id, value)}
+                        onSelect={(event) => event.preventDefault()}
+                      >
+                        <Icon className="text-muted-foreground" />
+                        {t(id)}
+                      </DropdownMenuCheckboxItem>
+                    )
+                  })}
+                </DropdownMenuSubContent>
+              </DropdownMenuSub>
               <DropdownMenuSeparator />
               <DropdownMenuLabel>{t("sortBy")}</DropdownMenuLabel>
               <DropdownMenuRadioGroup

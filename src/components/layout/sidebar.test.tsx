@@ -115,6 +115,27 @@ function renderSidebar() {
   )
 }
 
+/**
+ * Walk into one of the view-options menu's two visibility inventories, which
+ * live behind submenus. Clicking a sub-trigger opens it synchronously; opening
+ * it by HOVER runs on a 100ms Radix timer and is asserted separately below.
+ *
+ * This — and every click on a row inside the submenu — deliberately uses the
+ * module-level `userEvent` instead of a `setup()` instance, matching the
+ * quick-actions submenu tests. A shared instance remembers where the pointer
+ * was, so the next click drags it off the sub-trigger first; Radix answers a
+ * trigger-leave with its grace-area check, which needs real element geometry,
+ * and jsdom reports every rect as 0×0. The check fails, the root menu takes
+ * focus back, and the submenu closes out from under the click. A fresh
+ * instance has no previous position, so nothing ever leaves the trigger.
+ */
+async function openViewOptionsGroup(
+  group: "Conversation list" | "Navigation items"
+) {
+  await userEvent.click(screen.getByRole("button", { name: "View options" }))
+  await userEvent.click(screen.getByRole("menuitem", { name: group }))
+}
+
 describe("Sidebar — fixed nav region", () => {
   beforeEach(() => {
     spies.openNewConversationTab.mockClear()
@@ -170,6 +191,63 @@ describe("Sidebar — fixed nav region", () => {
   })
 })
 
+describe("Sidebar — View options grouping", () => {
+  beforeEach(() => {
+    localStorage.clear()
+    mockState.activeFolder = { id: 7, path: "/x" }
+  })
+
+  it("keeps both visibility inventories out of the root menu", async () => {
+    const user = userEvent.setup()
+    renderSidebar()
+    await user.click(screen.getByRole("button", { name: "View options" }))
+
+    // Six checkboxes inline turned the root into a wall; they now sit one hop
+    // in, behind their group. Sort by / Section order stay inline — the
+    // control on the right is the proof this is about the two inventories and
+    // not the menu failing to render.
+    expect(
+      screen.queryByRole("menuitemcheckbox", { name: "Show worktree folders" })
+    ).toBeNull()
+    expect(
+      screen.queryByRole("menuitemcheckbox", { name: "Automations" })
+    ).toBeNull()
+    expect(
+      screen.getByRole("menuitemradio", { name: "Created time" })
+    ).toBeTruthy()
+
+    expect(
+      screen.getByRole("menuitem", { name: "Conversation list" })
+    ).toBeTruthy()
+    expect(
+      screen.getByRole("menuitem", { name: "Navigation items" })
+    ).toBeTruthy()
+    await user.keyboard("{Escape}")
+  })
+
+  it("opens a group on hover alone, with no click", async () => {
+    const user = userEvent.setup()
+    renderSidebar()
+    await user.click(screen.getByRole("button", { name: "View options" }))
+
+    // Load-bearing: without this the assertion below would also pass on a menu
+    // that never nested the toggles in the first place.
+    expect(
+      screen.queryByRole("menuitemcheckbox", { name: "Automations" })
+    ).toBeNull()
+
+    // Pointing at the row is the whole interaction — Radix opens the submenu on
+    // a short pointer-move timer, so this resolves without a second click.
+    await user.hover(screen.getByRole("menuitem", { name: "Navigation items" }))
+
+    expect(
+      await screen.findByRole("menuitemcheckbox", { name: "Automations" })
+    ).toBeTruthy()
+    // Escape inside a submenu closes the whole stack, root included.
+    await user.keyboard("{Escape}")
+  })
+})
+
 describe("Sidebar — Show worktree folders toggle", () => {
   beforeEach(() => {
     localStorage.clear()
@@ -191,13 +269,12 @@ describe("Sidebar — Show worktree folders toggle", () => {
   })
 
   it("toggling the view-options item off persists the choice and threads it down", async () => {
-    const user = userEvent.setup()
     renderSidebar()
     // Default on with a cleared store.
     expect(spies.listProps?.showWorktrees).toBe(true)
 
-    await user.click(screen.getByRole("button", { name: "View options" }))
-    await user.click(
+    await openViewOptionsGroup("Conversation list")
+    await userEvent.click(
       screen.getByRole("menuitemcheckbox", { name: "Show worktree folders" })
     )
 
@@ -246,18 +323,18 @@ describe("Sidebar — Show Recent group toggle", () => {
   })
 
   it("toggling the view-options item off persists the choice and keeps the menu open", async () => {
-    const user = userEvent.setup()
     renderSidebar()
 
-    await user.click(screen.getByRole("button", { name: "View options" }))
-    await user.click(
+    await openViewOptionsGroup("Conversation list")
+    await userEvent.click(
       screen.getByRole("menuitemcheckbox", { name: "Show Recent group" })
     )
 
     expect(localStorage.getItem("workspace:sidebar-show-recent")).toBe("false")
     expect(spies.listProps?.showRecent).toBe(false)
     // The view-options menu is a settings panel: flipping one option must not
-    // dismiss it, or changing two costs two trips through the trigger.
+    // dismiss it — nor the submenu it lives in — or changing two costs two
+    // trips back through the trigger.
     expect(
       screen.getByRole("menuitemcheckbox", { name: "Show Recent group" })
     ).toBeTruthy()
@@ -285,21 +362,21 @@ describe("Sidebar — Navigation item visibility", () => {
   })
 
   it("hides a row when its menu toggle is switched off, and persists it", async () => {
-    const user = userEvent.setup()
     renderSidebar()
 
-    await user.click(screen.getByRole("button", { name: "View options" }))
-    await user.click(
+    await openViewOptionsGroup("Navigation items")
+    await userEvent.click(
       screen.getByRole("menuitemcheckbox", { name: "Automations" })
     )
-    // Like every other option here, flipping one must not dismiss the menu.
+    // Like every other option here, flipping one must not dismiss the menu —
+    // and the submenu it lives in has to survive too.
     expect(
       screen.getByRole("menuitemcheckbox", { name: "Automations" })
     ).toBeTruthy()
     // Close it before looking at the rows: an open Radix menu is modal and
     // aria-hides the sidebar behind it, which would make "the row is gone" true
-    // for the wrong reason.
-    await user.keyboard("{Escape}")
+    // for the wrong reason. Escape inside a submenu closes the whole stack.
+    await userEvent.keyboard("{Escape}")
 
     expect(navRow("Automations")).toBeNull()
     // Control: the other rows are still there, so the assertion above is about

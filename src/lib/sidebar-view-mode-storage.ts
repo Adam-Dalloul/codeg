@@ -18,9 +18,14 @@ export const SIDEBAR_SECTION_IDS = ["folders", "chats", "recent"] as const
 
 export type SidebarSectionId = (typeof SIDEBAR_SECTION_IDS)[number]
 
-/** Every section that can own a header row — the reorderable ones plus the
- *  always-on-top "Pinned" bucket. */
-export type SidebarSectionKey = "pinned" | SidebarSectionId
+/** Every section that can own a header row — the always-on-top "Pinned" bucket
+ *  plus the reorderable ones, in render order. The one list every all-sections
+ *  operation walks (collapse/expand all, {@link loadSectionCollapsed}), so a
+ *  section added to {@link SIDEBAR_SECTION_IDS} is picked up by all of them
+ *  rather than silently missed by whichever one forgot to grow a branch. */
+export const SIDEBAR_SECTION_KEYS = ["pinned", ...SIDEBAR_SECTION_IDS] as const
+
+export type SidebarSectionKey = (typeof SIDEBAR_SECTION_KEYS)[number]
 
 /**
  * Vertical order of the reorderable sidebar sections, top to bottom. Always a
@@ -350,10 +355,9 @@ export function loadSectionCollapsed(): SidebarSectionCollapsed {
     if (!parsed || typeof parsed !== "object") return {}
     const obj = parsed as Record<string, unknown>
     const result: SidebarSectionCollapsed = {}
-    if (typeof obj.pinned === "boolean") result.pinned = obj.pinned
-    if (typeof obj.folders === "boolean") result.folders = obj.folders
-    if (typeof obj.chats === "boolean") result.chats = obj.chats
-    if (typeof obj.recent === "boolean") result.recent = obj.recent
+    for (const key of SIDEBAR_SECTION_KEYS) {
+      if (typeof obj[key] === "boolean") result[key] = obj[key]
+    }
     return result
   } catch {
     return {}
