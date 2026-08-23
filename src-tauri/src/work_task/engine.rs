@@ -7159,6 +7159,55 @@ mod tests {
         assert_eq!(status_of(&engine, task_id).await, WorkTaskStatus::Canceled);
     }
 
+    /// The other half of the CAS: the status alone would let a stale
+    /// connection's cancel land on the RUN AFTER it, which is `running` again
+    /// and so passes the status gate. Only `run_seq` tells the two apart.
+    #[tokio::test]
+    async fn a_previous_generation_cancelled_event_spares_the_current_run() {
+        let (engine, task_id) = running_task().await;
+        let row = work_task_service::get_model(&engine.db.conn, task_id)
+            .await
+            .expect("task row");
+        let (stale_seq, conv_id) = (row.run_seq, row.conversation_id.expect("conversation"));
+        // Walk the real chain into the next generation: settle, requeue, run.
+        assert!(work_task_service::settle_review(
+            &engine.db.conn,
+            task_id,
+            stale_seq,
+            None,
+            None,
+        )
+        .await
+        .expect("settle review"));
+        let next_seq = work_task_service::claim_for_run(
+            &engine.db.conn,
+            task_id,
+            WorkTaskStatus::Review,
+            "test",
+        )
+        .await
+        .expect("claim")
+        .expect("claimed");
+        assert_ne!(next_seq, stale_seq);
+        assert!(work_task_service::begin_setup(&engine.db.conn, task_id, next_seq)
+            .await
+            .expect("begin_setup"));
+        assert!(work_task_service::mark_running(
+            &engine.db.conn,
+            task_id,
+            next_seq,
+            conv_id,
+            "conn-next",
+        )
+        .await
+        .expect("mark_running"));
+
+        // The old connection's cancel finally arrives.
+        engine.on_turn_complete(PARENT_CONN, "cancelled").await;
+
+        assert_eq!(status_of(&engine, task_id).await, WorkTaskStatus::Running);
+    }
+
     fn env(conn_id: &str, payload: AcpEvent) -> EventEnvelope {
         EventEnvelope {
             seq: 0,
