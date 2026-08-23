@@ -2150,6 +2150,33 @@ fn annotate_npm_bootstrap_failure(package: &str, err: AcpError) -> AcpError {
     ))
 }
 
+/// Name the proxy when npm refused to parse the proxy address itself.
+///
+/// npm resolves `HTTP(S)_PROXY` with WHATWG `new URL()`, where a scheme may not
+/// start with a digit, so a bare `127.0.0.1:7890` aborts the install with a
+/// context-free `ERR_INVALID_URL` before any network I/O — no mention of a
+/// proxy, no mention of which variable. codeg normalizes the address it exports
+/// from Settings, so what reaches here is an externally-provided value (docker
+/// `-e`, a shell export) that the startup contract leaves untouched.
+fn annotate_npm_proxy_url_failure(err: AcpError) -> AcpError {
+    let AcpError::Protocol(message) = &err else {
+        return err;
+    };
+    if !message.contains("ERR_INVALID_URL") && !message.contains("Invalid URL") {
+        return err;
+    }
+    let offenders = crate::network::proxy::proxy_env_vars_missing_scheme();
+    if offenders.is_empty() {
+        return err;
+    }
+    AcpError::Protocol(format!(
+        "{message}\n\nnpm could not parse the proxy address in {} — it has no scheme. \
+         npm requires one (codeg's own HTTP client does not, which is why updates still \
+         work). Set it to a full URL, e.g. `http://127.0.0.1:7890`.",
+        offenders.join(", ")
+    ))
+}
+
 /// Run an npm command with piped stdout/stderr, streaming each line as a log event.
 /// Returns (success: bool, collected_stderr: String) so callers can inspect errors.
 async fn run_npm_streaming(
@@ -2228,7 +2255,23 @@ async fn run_npm_streaming(
     Ok((status.success(), collected_stderr))
 }
 
+/// Install an npm package globally, streaming progress, with the proxy
+/// diagnostic attached to every failure.
+///
+/// The annotation lives here rather than at the call sites so it covers each
+/// entry point — the pinned npx agents and the `pi` binary prerequisite alike —
+/// and cannot be forgotten by the next one.
 async fn install_npm_global_package_streaming(
+    package: &str,
+    task_id: &str,
+    emitter: &EventEmitter,
+) -> Result<(), AcpError> {
+    install_npm_global_package_streaming_inner(package, task_id, emitter)
+        .await
+        .map_err(annotate_npm_proxy_url_failure)
+}
+
+async fn install_npm_global_package_streaming_inner(
     package: &str,
     task_id: &str,
     emitter: &EventEmitter,
@@ -17558,5 +17601,25 @@ model = "gpt"
             AcpError::Protocol("failed to install npm package globally: EACCES".to_string()),
         );
         assert!(!permissions.to_string().contains("HTTP(S)_PROXY"));
+    }
+
+    /// The proxy hint is keyed on npm's URL-parse failure, so every other way an
+    /// install can die has to pass through untouched. (The positive branch also
+    /// requires a scheme-less proxy in the process env; asserting that would
+    /// mean mutating env under a parallel test binary.)
+    #[test]
+    fn npm_proxy_url_hint_leaves_unrelated_failures_alone() {
+        for err in [
+            AcpError::Protocol("failed to install npm package globally: EACCES".to_string()),
+            AcpError::Protocol("failed to install npm package globally: ETIMEDOUT".to_string()),
+            AcpError::SdkNotInstalled("npm is not installed".to_string()),
+        ] {
+            let before = err.to_string();
+            assert_eq!(
+                annotate_npm_proxy_url_failure(err).to_string(),
+                before,
+                "only an ERR_INVALID_URL failure may be annotated"
+            );
+        }
     }
 }
