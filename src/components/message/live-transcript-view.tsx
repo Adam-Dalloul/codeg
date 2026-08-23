@@ -331,7 +331,13 @@ export function LiveTranscriptView({
           />
         </div>
       )}
-      <div className="min-h-0 flex-1 px-4 py-3">
+      {/* No padding of its own. `MessageListView` insets its own content —
+          every virtualized row is wrapped in `mx-auto max-w-3xl px-4` and the
+          virtualizer adds 16px above the first row and below the last — so a
+          padded wrapper here doubled it, and in a panel this narrow the two
+          layers cost the transcript a visible chunk of its width. This is
+          exactly how the main conversation panel mounts the same component. */}
+      <div className="min-h-0 flex-1">
         <MessageListView
           conversationId={conversationId}
           agentType={agentType ?? "claude_code"}

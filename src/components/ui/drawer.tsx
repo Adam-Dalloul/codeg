@@ -36,7 +36,7 @@ const DrawerContext = React.createContext<DrawerContextProps | null>(null)
  * `w-(--drawer-content-width,auto)` in favour of this one.
  */
 const SIDE_PANEL_CONTENT_CLASS =
-  "flex w-[calc(100%-1rem)] flex-col gap-0 p-0 sm:max-w-[35rem]"
+  "flex w-[calc(100%-1rem)] flex-col gap-0 p-0 sm:max-w-[32rem]"
 
 function useDrawer() {
   const context = React.useContext(DrawerContext)

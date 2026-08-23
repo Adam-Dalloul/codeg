@@ -38,7 +38,7 @@ import type { ForgeIssueRow, ForgeTaskLink } from "@/lib/types"
  * Typography for the item's Markdown body at the panel's scale.
  *
  * Streamdown sizes its own elements for the full-width chat column — `h1` at
- * `text-3xl`, 24px above every heading — which in a 35rem panel turns a
+ * `text-3xl`, 24px above every heading — which in a 32rem panel turns a
  * three-heading issue into a page of titles. A descendant selector outranks the
  * class Streamdown puts on the element itself, so these win without
  * `!important`. Lists and the first/last block's collapsed margin already come

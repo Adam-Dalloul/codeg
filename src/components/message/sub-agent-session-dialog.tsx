@@ -79,7 +79,10 @@ export function SubAgentSessionDialog({
         </DrawerDescription>
         {open ? (
           <div className="flex h-full min-h-0 flex-col">
-            <div className="flex items-center gap-3 border-b border-border px-5 py-2.5 pr-12">
+            {/* `px-4` and not `px-5`: the transcript below insets its rows by
+                16px, so anything else here leaves the header's icon hanging off
+                the column it titles. `pr-12` clears the close button. */}
+            <div className="flex items-center gap-3 border-b border-border px-4 py-2.5 pr-12">
               <span className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-border bg-background text-foreground">
                 {agentType ? (
                   <AgentIcon agentType={agentType} className="h-4 w-4" />

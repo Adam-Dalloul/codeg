@@ -253,7 +253,9 @@ function TaskTranscriptBody({
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="flex items-center gap-3 border-b border-border px-5 py-2.5 pr-12">
+      {/* Aligned with the transcript's own 16px row inset below, as in the
+          delegation viewer. `pr-12` clears the close button. */}
+      <div className="flex items-center gap-3 border-b border-border px-4 py-2.5 pr-12">
         <span className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-border bg-background text-foreground">
           <AgentIcon agentType={agentType} className="h-4 w-4" />
         </span>
