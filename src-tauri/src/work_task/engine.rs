@@ -1938,6 +1938,37 @@ impl TaskEngine {
         self.detach_delegation_subtree(parent_conn_id, false).await;
     }
 
+    /// Drop every engine-side trace of a run connection: its `index` entry, the
+    /// task's outstanding-request set, and its delegation children.
+    ///
+    /// `index` is what attributes an incoming event to a task, so an entry that
+    /// outlives its connection keeps answering for a row that has moved on —
+    /// and `remove_worktree_locked` reads the same map as "a live agent is
+    /// working in there". Whoever takes over from a settle that will never
+    /// arrive calls this; the entry has no other way out (`reconcile_once`
+    /// only ever looks at `running` / `awaiting_input` rows).
+    async fn retire_connection(&self, conn_id: &str, task_id: i32) {
+        // The outstanding-request set is keyed by TASK, not by connection, so
+        // clearing it while another generation still owns the row would drop
+        // ITS pending permissions — resolving one of the survivors then empties
+        // an already-empty set and flips the card back to `running` with the
+        // agent still parked. Hence "was this the last connection on the task",
+        // and hence the `index` guard held ACROSS the clear rather than just
+        // the test: a launch registers its generation in `index` before it can
+        // publish any request (and a delegation child's keys only exist while
+        // its parent is indexed), so holding it is what keeps the answer true
+        // until the set is gone. Lock order is index → awaiting; every other
+        // `awaiting` critical section is a leaf, so it cannot invert.
+        {
+            let mut index = self.index.lock().await;
+            index.remove(conn_id);
+            if !index.values().any(|(tid, _)| *tid == task_id) {
+                self.awaiting.lock().await.remove(&task_id);
+            }
+        }
+        self.forget_delegation_children_of(conn_id).await;
+    }
+
     /// Drop a finished delegation child (and anything it delegated in turn) plus
     /// any blocking requests they left unanswered.
     ///
@@ -4143,6 +4174,13 @@ impl TaskEngine {
             if self.manager.get_state_and_emitter(conn_id).await.is_some() {
                 return; // live merge generation — on_turn_complete owns the settle
             }
+            // Dead: its TurnComplete is never coming, so this pass inherits the
+            // teardown that settle owed. Retire it BEFORE deciding anything —
+            // this very pass calls `remove_worktree_locked` when the merge
+            // landed, and a leftover entry reads there as "a live agent is
+            // still working in that worktree" and refuses the cleanup the user
+            // asked for. Nothing below re-reads the connection.
+            self.retire_connection(conn_id, task_id).await;
         }
         let Some(state) = task
             .merge_state
@@ -4253,14 +4291,30 @@ impl TaskEngine {
             }
             return;
         };
-        // Precondition: no live connection of ours on this task.
-        let has_conn = {
+        // Precondition: no live connection of ours on this task. `index` alone
+        // cannot answer that — it is a correlation table, not a liveness one,
+        // and an entry whose connection died stays put until something retires
+        // it. Believing such an entry costs the user a worktree they asked to
+        // remove and a `failed` flag whose retry can never clear (nothing will
+        // ever arrive to remove the entry). Ask the manager, and retire what it
+        // says is gone.
+        let mut has_conn = false;
+        let claimed: Vec<String> = {
             self.index
                 .lock()
                 .await
-                .values()
-                .any(|(tid, _)| *tid == task_id)
+                .iter()
+                .filter(|(_, (tid, _))| *tid == task_id)
+                .map(|(conn_id, _)| conn_id.clone())
+                .collect()
         };
+        for conn_id in claimed {
+            if self.manager.get_state_and_emitter(&conn_id).await.is_some() {
+                has_conn = true;
+            } else {
+                self.retire_connection(&conn_id, task_id).await;
+            }
+        }
         if has_conn {
             let _ = work_task_service::set_cleanup_state(
                 &self.db.conn,
@@ -4341,9 +4395,7 @@ impl TaskEngine {
             }
             // Connection gone. If the produced conversation reached a terminal
             // status the TurnComplete was merely dropped — settle from it.
-            self.index.lock().await.remove(&conn_id);
-            self.awaiting.lock().await.remove(&task.id);
-            self.forget_delegation_children_of(&conn_id).await;
+            self.retire_connection(&conn_id, task.id).await;
             let conv_status = match task.conversation_id {
                 Some(cid) => self.conversation_status(cid).await,
                 None => None,
@@ -8435,6 +8487,154 @@ mod tests {
         f.engine.recover_merging(f.task_id).await;
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         assert_eq!(f.forge.comments.lock().await.len(), 1);
+    }
+
+    // ── the dead merge generation's connection ──────────────────────────────
+
+    /// Park the fixture's task exactly where a process that died mid-merge left
+    /// it: `merging`, pointing at a connection that no longer exists, with that
+    /// connection still in the engine's correlation index.
+    async fn interrupt_merge(f: &Delivery, conn_id: &str, delete_worktree: bool) {
+        use sea_orm::{ActiveModelTrait, IntoActiveModel, Set};
+        let state = WorkTaskMergeState {
+            op: WorkTaskMergeOp::Land,
+            pre_merge_head: task_git::rev_parse(f.root.to_str().unwrap(), "HEAD")
+                .await
+                .expect("base head"),
+            strategy: "merge".into(),
+            delete_worktree,
+            ..Default::default()
+        };
+        let task = row(&f.engine, f.task_id).await;
+        let run_seq = task.run_seq;
+        let mut active = task.into_active_model();
+        active.status = Set(WorkTaskStatus::Merging);
+        active.merge_state = Set(Some(serde_json::to_string(&state).expect("state")));
+        active.connection_id = Set(Some(conn_id.to_string()));
+        active.update(&f.engine.db.conn).await.expect("to merging");
+        // Registered at launch, and only a TurnComplete ever takes it out.
+        f.engine
+            .index
+            .lock()
+            .await
+            .insert(conn_id.into(), (f.task_id, run_seq));
+    }
+
+    /// The dead generation's index entry has no other way out — `reconcile_once`
+    /// only scans `running` / `awaiting_input`, and the TurnComplete that would
+    /// have retired it is the very thing that went missing. Recovery inherits
+    /// that teardown, and must do it before it acts: this same pass honors the
+    /// "delete the worktree" the user ticked, and worktree removal reads that
+    /// same map as "an agent is still working in there".
+    #[tokio::test]
+    async fn recovery_retires_the_dead_merge_generations_connection() {
+        const DEAD_CONN: &str = "conn-of-a-dead-merge";
+        let f = delivery_fixture(FakeForge::default()).await;
+        interrupt_merge(&f, DEAD_CONN, true).await;
+        // The landing itself, which the dead process did complete.
+        git_run(&f.root, &["merge", "--no-ff", "-q", "-m", "land", "task/7"]);
+
+        f.engine.recover_merging(f.task_id).await;
+
+        assert!(
+            !f.engine.index.lock().await.contains_key(DEAD_CONN),
+            "the dead generation must not outlive its recovery"
+        );
+        let task = row(&f.engine, f.task_id).await;
+        assert_eq!(task.status, WorkTaskStatus::Done);
+        assert_eq!(
+            task.cleanup_state, None,
+            "nothing is working in that worktree — the removal must not be refused"
+        );
+        assert_eq!(task.worktree_folder_id, None, "detached");
+        assert!(!f.worktree.exists(), "and really gone from disk");
+    }
+
+    /// The other outcome, same teardown: a recovery that cannot prove the merge
+    /// landed bounces the row to `review` — where a surviving entry would keep
+    /// attributing the dead connection's late events to a task that has moved
+    /// on, and would block the worktree cleanup offered right there on the card.
+    #[tokio::test]
+    async fn a_bounced_recovery_retires_the_dead_connection_too() {
+        const DEAD_CONN: &str = "conn-of-a-lost-merge";
+        let f = delivery_fixture(FakeForge::default()).await;
+        // No merge commit: the process died before landing anything.
+        interrupt_merge(&f, DEAD_CONN, false).await;
+
+        f.engine.recover_merging(f.task_id).await;
+
+        let task = row(&f.engine, f.task_id).await;
+        assert_eq!(task.status, WorkTaskStatus::Review);
+        assert!(task.last_error.is_some(), "bounced with a reason");
+        assert!(
+            !f.engine.index.lock().await.contains_key(DEAD_CONN),
+            "a task back in review has no run to correlate events to"
+        );
+    }
+
+    /// Retiring one generation must not disarm another. The outstanding-request
+    /// set is keyed by task, so a stale pass that reaches a task someone else
+    /// has already relaunched would otherwise drop the live generation's
+    /// pending permissions — and the next resolution would empty a set that is
+    /// already empty and put the card back to `running` while the agent is
+    /// still parked on the request nobody answered.
+    #[tokio::test]
+    async fn retiring_a_connection_spares_the_requests_of_one_still_on_the_task() {
+        let db = crate::db::test_helpers::fresh_in_memory_db().await;
+        let engine = test_engine(db);
+        {
+            let mut index = engine.index.lock().await;
+            index.insert("conn-old".into(), (7, 1));
+            index.insert("conn-new".into(), (7, 2));
+        }
+        engine
+            .awaiting
+            .lock()
+            .await
+            .insert(7, ["p:req-1".to_string()].into_iter().collect());
+
+        engine.retire_connection("conn-old", 7).await;
+
+        {
+            let index = engine.index.lock().await;
+            assert!(!index.contains_key("conn-old"), "the retired one is gone");
+            assert!(index.contains_key("conn-new"), "and only that one");
+        }
+        assert_eq!(
+            engine.awaiting.lock().await.get(&7).map(|s| s.len()),
+            Some(1),
+            "the live generation is still waiting on its permission"
+        );
+
+        // The last one out does clear it — a set inherited by the next
+        // generation would never flip the row to `awaiting_input` again.
+        engine.retire_connection("conn-new", 7).await;
+        assert!(engine.awaiting.lock().await.get(&7).is_none());
+    }
+
+    /// `index` is a correlation table, not a liveness one. Whatever leaves an
+    /// entry behind, the user's "remove worktree" must not be refused on behalf
+    /// of a connection that is gone — the refusal sets a `failed` flag whose
+    /// retry can never clear, because nothing would ever arrive to remove the
+    /// entry. The manager is the truth, and what it says is gone is retired.
+    #[tokio::test]
+    async fn worktree_removal_is_not_refused_by_a_dead_connection() {
+        const ZOMBIE: &str = "conn-nobody-holds";
+        let f = delivery_fixture(FakeForge::default()).await;
+        let run_seq = row(&f.engine, f.task_id).await.run_seq;
+        f.engine
+            .index
+            .lock()
+            .await
+            .insert(ZOMBIE.into(), (f.task_id, run_seq));
+
+        f.engine.cleanup_task(f.task_id).await.expect("cleanup");
+
+        let task = row(&f.engine, f.task_id).await;
+        assert_eq!(task.cleanup_state, None, "not a live agent");
+        assert_eq!(task.worktree_folder_id, None, "detached");
+        assert!(!f.worktree.exists(), "and really gone from disk");
+        assert!(!f.engine.index.lock().await.contains_key(ZOMBIE), "retired");
     }
 
     /// A task nobody triggered from a forge has no thread to comment on — the
