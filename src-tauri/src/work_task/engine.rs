@@ -216,10 +216,22 @@ fn test_engine(db: AppDatabase) -> Arc<TaskEngine> {
 /// the credential store.
 #[cfg(test)]
 fn test_engine_with_forge(db: AppDatabase, forge: Arc<dyn ForgeDeliveryApi>) -> Arc<TaskEngine> {
+    test_engine_full(db, forge, EventEmitter::Noop)
+}
+
+/// As [`test_engine_with_forge`], with the emitter chosen by the caller — the
+/// broadcast-ordering tests need a real `WebEventBroadcaster` behind it to read
+/// back what the engine announced, and in what order.
+#[cfg(test)]
+fn test_engine_full(
+    db: AppDatabase,
+    forge: Arc<dyn ForgeDeliveryApi>,
+    emitter: EventEmitter,
+) -> Arc<TaskEngine> {
     Arc::new(TaskEngine {
         db,
         manager: ConnectionManager::new(),
-        emitter: EventEmitter::Noop,
+        emitter,
         bus: Arc::new(InternalEventBus::new(Default::default())),
         // An anonymous temp file, not a handle on `data_dir`: opening a
         // DIRECTORY as a File succeeds on Unix but fails on Windows.
@@ -2422,10 +2434,11 @@ impl TaskEngine {
                     ),
                 )
                 .await;
+                self.emit_upsert(task_id);
             } else {
+                // Broadcast omitted: the removal announces its own outcome.
                 self.remove_worktree_locked(task_id).await;
             }
-            self.emit_upsert(task_id);
         }
         Ok(())
     }
@@ -4265,12 +4278,33 @@ impl TaskEngine {
         }
         let lock = self.folder_lock(task.folder_id).await;
         let _guard = lock.lock().await;
+        // No `emit_upsert` here: the removal owns that broadcast now, and only
+        // it can tell a pass that changed the row from one that found nothing
+        // to do.
         self.remove_worktree_locked(task_id).await;
-        self.emit_upsert(task_id);
         Ok(())
     }
 
-    /// Git-first-then-DB worktree removal. Caller holds the folder git lock.
+    /// Git-first-then-DB worktree removal, and the `task://changed` that tells
+    /// clients about it. Caller holds the folder git lock.
+    ///
+    /// The broadcast lives HERE rather than at the call sites: this is the only
+    /// thing that knows whether the row moved, and the acceptance paths reach it
+    /// AFTER their own `emit_upsert` (`settle_merge_generation`,
+    /// `recover_merging`) — so a caller-side convention leaves the card holding
+    /// a snapshot taken before the worktree was detached, and its "worktree
+    /// removed" badge (`worktreeWasRemoved`, keyed on `worktree_folder_id`)
+    /// never appears until a full refetch. `converge_worktree_removal` owns its
+    /// folder / conversation / tab broadcasts for the same reason.
+    async fn remove_worktree_locked(&self, task_id: i32) {
+        if self.remove_worktree_inner(task_id).await {
+            self.emit_upsert(task_id);
+        }
+    }
+
+    /// The removal itself. Returns whether it wrote to the task row — the
+    /// broadcast in [`Self::remove_worktree_locked`] rides that answer, so a
+    /// pass that decided there was nothing to do stays silent.
     ///
     /// Order matters: the git removal runs first; only after it succeeds does
     /// the DB transaction re-parent the worktree's conversations onto the
@@ -4278,9 +4312,9 @@ impl TaskEngine {
     /// the folder row. A git failure flags `cleanup_state='failed'` (retryable
     /// from the card) and leaves the DB untouched; a `done` task never leaves
     /// `done` either way.
-    async fn remove_worktree_locked(&self, task_id: i32) {
+    async fn remove_worktree_inner(&self, task_id: i32) -> bool {
         let Ok(task) = work_task_service::get_model(&self.db.conn, task_id).await else {
-            return;
+            return false;
         };
         let Some(wt_id) = task.worktree_folder_id else {
             // Nothing left to remove. A cleanup flag surviving past the
@@ -4288,8 +4322,9 @@ impl TaskEngine {
             if task.cleanup_state.is_some() {
                 let _ =
                     work_task_service::set_cleanup_state(&self.db.conn, task_id, false, None).await;
+                return true;
             }
-            return;
+            return false;
         };
         // Precondition: no live connection of ours on this task. `index` alone
         // cannot answer that — it is a correlation table, not a liveness one,
@@ -4323,7 +4358,7 @@ impl TaskEngine {
                 Some("task still has a live agent connection".to_string()),
             )
             .await;
-            return;
+            return true;
         }
 
         let root = match get_folder_core(&self.db, task.folder_id).await {
@@ -4336,7 +4371,7 @@ impl TaskEngine {
                     Some(e.to_string()),
                 )
                 .await;
-                return;
+                return true;
             }
         };
         let Ok(wt) = get_folder_core(&self.db, wt_id).await else {
@@ -4345,7 +4380,7 @@ impl TaskEngine {
             // otherwise keep rendering a worktree no refetch would return.
             let _ = work_task_service::clear_worktree(&self.db.conn, task_id).await;
             emit_folder_deleted(&self.emitter, wt_id);
-            return;
+            return true;
         };
 
         if let Err(e) = task_git::remove_worktree_and_branch(
@@ -4362,7 +4397,7 @@ impl TaskEngine {
                 Some(e.to_string()),
             )
             .await;
-            return;
+            return true;
         }
 
         converge_worktree_removal(
@@ -4374,6 +4409,7 @@ impl TaskEngine {
             &wt.path,
         )
         .await;
+        true
     }
 
     // ── reconcile ───────────────────────────────────────────────────────────
@@ -7650,6 +7686,10 @@ mod tests {
     struct Delivery {
         engine: Arc<TaskEngine>,
         forge: Arc<FakeForge>,
+        /// Everything the engine broadcast, in order — the ordering tests read
+        /// it, and holding it also keeps the sender from reporting no
+        /// receivers for every other test on this fixture.
+        events: tokio::sync::broadcast::Receiver<crate::web::event_bridge::WebEvent>,
         task_id: i32,
         head: String,
         /// The commit the task branched from — a real commit that is NOT a
@@ -7735,9 +7775,16 @@ mod tests {
         // Default posture: the remote base is exactly where this task branched
         // from, so nothing unpushed can leak into the pull request.
         *forge.remote_base.lock().await = Some(base_sha.clone());
+        let broadcaster = Arc::new(crate::web::event_bridge::WebEventBroadcaster::new());
+        let events = broadcaster.subscribe();
         Delivery {
-            engine: test_engine_with_forge(db, forge.clone()),
+            engine: test_engine_full(
+                db,
+                forge.clone(),
+                EventEmitter::test_web_only(broadcaster),
+            ),
             forge,
+            events,
             task_id: task.id,
             head,
             base_sha,
@@ -8635,6 +8682,57 @@ mod tests {
         assert_eq!(task.worktree_folder_id, None, "detached");
         assert!(!f.worktree.exists(), "and really gone from disk");
         assert!(!f.engine.index.lock().await.contains_key(ZOMBIE), "retired");
+    }
+
+    /// Drain everything the fixture's engine has broadcast so far.
+    fn drained(f: &mut Delivery) -> Vec<crate::web::event_bridge::WebEvent> {
+        let mut out = Vec::new();
+        while let Ok(ev) = f.events.try_recv() {
+            out.push(ev);
+        }
+        out
+    }
+
+    /// An acceptance that removes the worktree has to say so on the TASK
+    /// channel, not just the folder one. Both acceptance paths broadcast the
+    /// row BEFORE the cleanup runs (`settle_merge_generation` and this one), so
+    /// a removal that stays silent leaves every open board holding the snapshot
+    /// taken while the worktree still existed: the card flips to `done` but its
+    /// "worktree removed" badge — keyed on `worktree_folder_id` going null —
+    /// never appears until someone refetches the whole table.
+    #[tokio::test]
+    async fn removing_the_worktree_announces_the_task_after_the_folder() {
+        let mut f = delivery_fixture(FakeForge::default()).await;
+        interrupt_merge(&f, "conn-of-a-dead-merge", true).await;
+        git_run(&f.root, &["merge", "--no-ff", "-q", "-m", "land", "task/7"]);
+        let _ = drained(&mut f); // everything up to the merge is setup noise
+
+        f.engine.recover_merging(f.task_id).await;
+
+        assert_eq!(
+            row(&f.engine, f.task_id).await.worktree_folder_id,
+            None,
+            "precondition: this run really did detach the worktree"
+        );
+        let events = drained(&mut f);
+        let folder_gone = events
+            .iter()
+            .position(|e| {
+                e.channel == crate::web::event_bridge::FOLDER_CHANGED_EVENT
+                    && e.payload["kind"] == "deleted"
+            })
+            .expect("the worktree folder drop is broadcast");
+        assert!(
+            events.iter().skip(folder_gone).any(|e| {
+                e.channel == WORK_TASK_CHANGED_EVENT
+                    && e.payload["kind"] == "upsert"
+                    && e.payload["id"] == f.task_id
+            }),
+            "the task must be re-announced AFTER the detach — an upsert from \
+             before it carries the worktree the client is being told to drop; \
+             saw {:?}",
+            events.iter().map(|e| &e.channel).collect::<Vec<_>>()
+        );
     }
 
     /// A task nobody triggered from a forge has no thread to comment on — the
