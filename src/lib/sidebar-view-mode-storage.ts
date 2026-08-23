@@ -4,6 +4,7 @@ const FOLDER_EXPANDED_KEY = "workspace:sidebar-folder-expanded"
 const SHOW_COMPLETED_KEY = "workspace:sidebar-show-completed"
 const SHOW_WORKTREES_KEY = "workspace:sidebar-show-worktrees"
 const SHOW_RECENT_KEY = "workspace:sidebar-show-recent"
+const NAV_ITEMS_KEY = "workspace:sidebar-nav-items"
 const SORT_MODE_KEY = "workspace:sidebar-sort-mode"
 const SECTION_ORDER_KEY = "workspace:sidebar-section-order"
 const SECTION_COLLAPSED_KEY = "workspace:sidebar-section-collapsed"
@@ -41,6 +42,35 @@ export interface SidebarSectionCollapsed {
   folders?: boolean
   chats?: boolean
   recent?: boolean
+}
+
+/**
+ * The optional route rows in the sidebar's fixed nav block, top to bottom.
+ * Every id is BOTH a `WorkbenchRouteId` and a `Folder.sidebar` message key, so
+ * one list drives the rows, their labels and their visibility toggles.
+ *
+ * "New chat" is deliberately absent: it is the block's primary action rather
+ * than navigation, and it is the one row with no equivalent elsewhere in the
+ * chrome. Adding a future route here gives it a toggle for free.
+ */
+export const SIDEBAR_NAV_ITEM_IDS = ["automations", "tasks", "forge"] as const
+
+export type SidebarNavItemId = (typeof SIDEBAR_NAV_ITEM_IDS)[number]
+
+/** Which optional nav rows are switched off. Absent key = shown (the default),
+ *  mirroring {@link SidebarSectionCollapsed}: only rows the user explicitly
+ *  hid are persisted, so a store written before a route existed still shows
+ *  that route. */
+export type SidebarNavItemVisibility = Partial<
+  Record<SidebarNavItemId, boolean>
+>
+
+/** Absent = visible; only an explicitly-stored `false` hides a row. */
+export function isNavItemVisible(
+  visibility: SidebarNavItemVisibility,
+  id: SidebarNavItemId
+): boolean {
+  return visibility[id] !== false
 }
 
 function isSectionId(value: unknown): value is SidebarSectionId {
@@ -227,6 +257,35 @@ export function saveShowRecent(value: boolean): void {
   if (typeof window === "undefined") return
   try {
     localStorage.setItem(SHOW_RECENT_KEY, String(value))
+  } catch {
+    /* ignore */
+  }
+}
+
+export function loadNavItemVisibility(): SidebarNavItemVisibility {
+  if (typeof window === "undefined") return {}
+  try {
+    const raw = localStorage.getItem(NAV_ITEMS_KEY)
+    if (!raw) return {}
+    const parsed = JSON.parse(raw) as unknown
+    if (!parsed || typeof parsed !== "object") return {}
+    const obj = parsed as Record<string, unknown>
+    const result: SidebarNavItemVisibility = {}
+    // Read through the known ids rather than copying the object: a stale entry
+    // for a route that no longer exists is dropped instead of lingering.
+    for (const id of SIDEBAR_NAV_ITEM_IDS) {
+      if (typeof obj[id] === "boolean") result[id] = obj[id]
+    }
+    return result
+  } catch {
+    return {}
+  }
+}
+
+export function saveNavItemVisibility(state: SidebarNavItemVisibility): void {
+  if (typeof window === "undefined") return
+  try {
+    localStorage.setItem(NAV_ITEMS_KEY, JSON.stringify(state))
   } catch {
     /* ignore */
   }
