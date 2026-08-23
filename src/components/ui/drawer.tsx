@@ -3,6 +3,7 @@
 import * as React from "react"
 import { Drawer as DrawerPrimitive } from "@base-ui/react/drawer"
 
+import { useOverlayHostHidden } from "@/components/ui/overlay-host-hidden"
 import { OverlayPortalContainerProvider } from "@/components/ui/overlay-portal-container"
 import { attachRef } from "@/lib/attach-ref"
 import { cn } from "@/lib/utils"
@@ -18,6 +19,25 @@ type DrawerContextProps = {
 
 const DrawerContext = React.createContext<DrawerContextProps | null>(null)
 
+/**
+ * The shape every side panel in the app shares: the task detail sheet and all
+ * three session viewers.
+ *
+ * One constant rather than four copies because they STACK on each other — the
+ * session viewer opens over the detail sheet, and a delegation viewer opens
+ * over another one. Panels of differing widths in a stack read as a mistake:
+ * the layer underneath juts out past the one on top on one side only. So the
+ * width is not per-panel taste, it is a property of the stack, and there is
+ * exactly one place to change it.
+ *
+ * `w-` and not just `max-w-`: the popup sizes itself from
+ * `--drawer-content-width`, which the base classes set per swipe axis, so a
+ * bare `max-w-` would have nothing to cap. tailwind-merge drops the base
+ * `w-(--drawer-content-width,auto)` in favour of this one.
+ */
+const SIDE_PANEL_CONTENT_CLASS =
+  "flex w-[calc(100%-1rem)] flex-col gap-0 p-0 sm:max-w-[35rem]"
+
 function useDrawer() {
   const context = React.useContext(DrawerContext)
 
@@ -32,6 +52,11 @@ function useDrawer() {
  * The closes that mean "something ambient dismissed the drawer" rather than
  * "the user asked for it". Only these are ever second-guessed below — a close
  * button, a swipe, a trigger press and an imperative close always go through.
+ *
+ * `escape-key` is the reason that matters for every drawer; the pointer ones
+ * only reach here on a drawer that opted back into `disablePointerDismissal`
+ * (upstream suppresses them entirely otherwise), which is why the guard below
+ * covers all three rather than just Escape.
  */
 const AMBIENT_DISMISS_REASONS: ReadonlySet<string> = new Set([
   "outside-press",
@@ -129,9 +154,20 @@ function isShieldedDismissal(
 function Drawer({
   // House style, and the reason this component exists: every drawer in the app
   // is non-modal. No backdrop, no scroll lock, no focus trap — the page behind
-  // stays visible and interactive, and an outside press still closes. Pass
-  // `modal` explicitly to opt a single drawer back into the modal behaviour.
+  // stays visible and interactive. Pass `modal` explicitly to opt a single
+  // drawer back into the modal behaviour.
   modal = false,
+  // The other half of that house style. Non-modal means the page behind stays
+  // live, which also means EVERY press out there reads as an outside press —
+  // a drawer opened to be consulted while working in the page could not
+  // survive the first click, and Base UI additionally closes a non-modal
+  // drawer on focus-out (`closeOnFocusOut: !disablePointerDismissal`). So
+  // pointer dismissal is off by default; Escape, the close button, a swipe and
+  // the trigger all still close (`escapeKey` is a separate switch upstream —
+  // see `useDialogRoot`). Pass `disablePointerDismissal={false}` on a drawer
+  // that genuinely wants press-outside-to-close, e.g. the mobile navigation
+  // panels.
+  disablePointerDismissal = true,
   onOpenChange,
   showSwipeHandle = false,
   snapPoints,
@@ -168,6 +204,7 @@ function Drawer({
       <DrawerPrimitive.Root
         data-slot="drawer"
         modal={modal}
+        disablePointerDismissal={disablePointerDismissal}
         onOpenChange={handleOpenChange}
         snapPoints={snapPoints}
         swipeDirection={swipeDirection}
@@ -225,15 +262,22 @@ function DrawerSwipeHandle({
 function DrawerContent({
   className,
   children,
+  closeButtonClassName,
   showCloseButton = true,
   ref,
   ...props
 }: DrawerPrimitive.Popup.Props & {
+  closeButtonClassName?: string
   showCloseButton?: boolean
 }) {
   const { hasSnapPoints, modal, showSwipeHandle, swipeDirection } = useDrawer()
   const swipeAxis =
     swipeDirection === "down" || swipeDirection === "up" ? "y" : "x"
+  // The host surface this drawer was opened from is hidden-but-mounted (the
+  // workbench does that to the conversation surface when a full-page route
+  // takes over). We portal to the body, so nothing the host did to its own
+  // subtree reaches us — see `overlay-host-hidden.tsx`.
+  const hostHidden = useOverlayHostHidden()
   const [popup, setPopup] = React.useState<HTMLDivElement | null>(null)
   // Own cleanup, not a bare `ref(node)` passthrough: React 19 runs a callback
   // ref's returned cleanup INSTEAD of re-invoking it with `null`, so handing the
@@ -254,12 +298,29 @@ function DrawerContent({
   return (
     <DrawerPortal data-slot="drawer-portal">
       {modal === true && (
-        <DrawerOverlay data-snap-points={hasSnapPoints ? "" : undefined} />
+        <DrawerOverlay
+          data-snap-points={hasSnapPoints ? "" : undefined}
+          className={
+            hostHidden ? "conversation-tab-hidden invisible" : undefined
+          }
+        />
       )}
       <DrawerPrimitive.Viewport
         data-slot="drawer-viewport"
         data-modal={modal}
-        className="pointer-events-none fixed inset-0 z-50 select-none data-[modal=true]:pointer-events-auto"
+        // Borrowed wholesale from what the host does to its own subtree:
+        // `invisible` (visibility, not display — the popup keeps its layout,
+        // measured height and scroll position, so switching back restores it
+        // untouched), `conversation-tab-hidden` to harden that against
+        // descendants declaring their own `visibility: visible`, and `inert`
+        // to take it out of the tab order and stop it swallowing clicks meant
+        // for the route on top. Deliberately NOT a close: the surface behind
+        // it is being preserved too.
+        inert={hostHidden || undefined}
+        className={cn(
+          "pointer-events-none fixed inset-0 z-50 select-none data-[modal=true]:pointer-events-auto",
+          hostHidden && "conversation-tab-hidden invisible"
+        )}
       >
         <DrawerPrimitive.Popup
           data-slot="drawer-popup"
@@ -321,7 +382,7 @@ function DrawerContent({
             {showCloseButton && (
               <DrawerPrimitive.Close
                 data-slot="drawer-close"
-                className="absolute top-4 right-4"
+                className={cn("absolute top-4 right-4", closeButtonClassName)}
                 render={<Button variant="ghost" size="icon-sm" />}
               >
                 <XIcon />
@@ -382,6 +443,7 @@ function DrawerDescription({
 }
 
 export {
+  SIDE_PANEL_CONTENT_CLASS,
   Drawer,
   DrawerPortal,
   DrawerOverlay,

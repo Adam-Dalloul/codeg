@@ -255,12 +255,15 @@ export function SettingsShell({ children }: SettingsShellProps) {
           </aside>
         )}
 
-        {/* Mobile navigation Drawer */}
+        {/* Mobile navigation Drawer. Opts back into press-outside-to-close,
+            against the app-wide drawer default: it is navigation, and tapping
+            the page it partially covers is how you put it away on a phone. */}
         {isMobile && (
           <Drawer
             open={navOpen}
             onOpenChange={setNavOpen}
             swipeDirection="left"
+            disablePointerDismissal={false}
           >
             <DrawerContent showCloseButton={false} className="w-[260px] p-3">
               <DrawerTitle className="sr-only">{t("title")}</DrawerTitle>

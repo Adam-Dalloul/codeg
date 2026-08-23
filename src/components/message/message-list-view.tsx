@@ -31,6 +31,7 @@ import { UserResourceLinks } from "./user-resource-links"
 import { UserImageAttachments } from "./user-image-attachments"
 import { AgentPlanOverlay } from "@/components/chat/agent-plan-overlay"
 import { SubAgentOverlay } from "@/components/chat/sub-agent-overlay"
+import { SessionViewerHost } from "@/components/message/session-viewer-host"
 import { normalizeToolName } from "@/lib/tool-call-normalization"
 import { isDelegateToAgentToolName } from "@/lib/delegation-card"
 import type { DelegationCardSource } from "@/hooks/use-delegation-card-model"
@@ -1093,39 +1094,45 @@ export function MessageListView({
   }
 
   return (
-    <div
-      ref={selectionBoxRef}
-      className="relative flex h-full min-h-0 flex-col"
-    >
-      <MessageThread
-        className="flex-1 min-h-0"
-        resize={shouldUseSmoothResize ? "smooth" : undefined}
+    // The "查看会话" drawers are hosted HERE, not in the cards that offer them:
+    // those live in virtua's rows and take their drawer down with them when
+    // they scroll out of the buffer. This is the nearest ancestor that owns
+    // the virtualizer instead of sitting inside it — and it covers the
+    // top-right SubAgentOverlay's rows too.
+    <SessionViewerHost>
+      <div
+        ref={selectionBoxRef}
+        className="relative flex h-full min-h-0 flex-col"
       >
-        <AutoScrollOnSend signal={sendSignal} />
-        <VirtualizedMessageThread
-          items={threadItems}
-          getItemKey={getThreadItemKey}
-          renderItem={renderThreadItem}
-          emptyState={emptyState}
-          scrollApiRef={scrollApiRef}
-          hasOlder={hasOlderTurns}
-          isLoadingOlder={loadingOlderTurns}
-          onLoadOlder={handleLoadOlder}
-          loadOlderLabel={t("loadEarlier")}
-          loadingOlderLabel={t("loadingEarlier")}
-          prependEpoch={session?.olderTurnsPrependEpoch ?? 0}
-          prependScopeKey={conversationId}
-        />
-        <MessageThreadScrollButton />
-      </MessageThread>
-      {liveMessage && connStatus === "prompting" && (
-        <LiveTurnStats
-          message={liveMessage}
-          agentType={agentType}
-          isStreaming={connStatus === "prompting"}
-        />
-      )}
-      {/* Shared overlay stack pinned to the inline-start edge (top-left in LTR,
+        <MessageThread
+          className="flex-1 min-h-0"
+          resize={shouldUseSmoothResize ? "smooth" : undefined}
+        >
+          <AutoScrollOnSend signal={sendSignal} />
+          <VirtualizedMessageThread
+            items={threadItems}
+            getItemKey={getThreadItemKey}
+            renderItem={renderThreadItem}
+            emptyState={emptyState}
+            scrollApiRef={scrollApiRef}
+            hasOlder={hasOlderTurns}
+            isLoadingOlder={loadingOlderTurns}
+            onLoadOlder={handleLoadOlder}
+            loadOlderLabel={t("loadEarlier")}
+            loadingOlderLabel={t("loadingEarlier")}
+            prependEpoch={session?.olderTurnsPrependEpoch ?? 0}
+            prependScopeKey={conversationId}
+          />
+          <MessageThreadScrollButton />
+        </MessageThread>
+        {liveMessage && connStatus === "prompting" && (
+          <LiveTurnStats
+            message={liveMessage}
+            agentType={agentType}
+            isStreaming={connStatus === "prompting"}
+          />
+        )}
+        {/* Shared overlay stack pinned to the inline-start edge (top-left in LTR,
           top-right in RTL). A flex column keeps the order stable regardless of
           each panel's expand/collapse height: the message navigator first, then
           the plan panel, then the sub-agent panel. Empty panels render null and
@@ -1134,34 +1141,35 @@ export function MessageListView({
           edge), rounded on the end side — that expand toward the inline-end on
           hover. Logical `start-0` + `items-start` keep the anchor and the bullet
           on the same side, so the whole stack mirrors cleanly in RTL. */}
-      <div className="pointer-events-none absolute start-0 top-4 z-20 flex max-w-[min(22rem,calc(100%-2rem))] flex-col items-start gap-2">
-        {showMessageNav && userMessageCount > 0 && (
-          <ConversationMessageNav
-            count={userMessageCount}
-            expanded={navExpanded}
-            onToggle={setNavExpanded}
-            entries={navEntries}
-            scrollApiRef={scrollApiRef}
+        <div className="pointer-events-none absolute start-0 top-4 z-20 flex max-w-[min(22rem,calc(100%-2rem))] flex-col items-start gap-2">
+          {showMessageNav && userMessageCount > 0 && (
+            <ConversationMessageNav
+              count={userMessageCount}
+              expanded={navExpanded}
+              onToggle={setNavExpanded}
+              entries={navEntries}
+              scrollApiRef={scrollApiRef}
+            />
+          )}
+          <AgentPlanOverlay
+            key={agentPlanOverlayKey}
+            message={liveMessage ?? null}
+            entries={historicalPlanEntries}
+            planKey={historicalPlanKey}
+            defaultExpanded={false}
+            isStreaming={connStatus === "prompting"}
           />
-        )}
-        <AgentPlanOverlay
-          key={agentPlanOverlayKey}
-          message={liveMessage ?? null}
-          entries={historicalPlanEntries}
-          planKey={historicalPlanKey}
-          defaultExpanded={false}
-          isStreaming={connStatus === "prompting"}
-        />
-        <SubAgentOverlay
-          key={subAgentOverlayKey}
-          delegations={lastAssistantDelegations}
-          overlayKey={subAgentOverlayKey}
+          <SubAgentOverlay
+            key={subAgentOverlayKey}
+            delegations={lastAssistantDelegations}
+            overlayKey={subAgentOverlayKey}
+          />
+        </div>
+        <SelectionActionBubble
+          containerRef={selectionBoxRef}
+          onQuote={onQuoteSelection}
         />
       </div>
-      <SelectionActionBubble
-        containerRef={selectionBoxRef}
-        onQuote={onQuoteSelection}
-      />
-    </div>
+    </SessionViewerHost>
   )
 }
