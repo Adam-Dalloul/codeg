@@ -8099,6 +8099,25 @@ async fn run_conversation_loop<'a>(
                     }
                 }
 
+                // grok can LOSE the `session/prompt` response: when the first
+                // prompt races a slow MCP-server initialization (measured on a
+                // live stuck child: prompt sent at ~0.7s, `mcp_initialized` at
+                // ~35s), grok streams the whole turn and announces its end on
+                // the private ext channel (`_x.ai/session_notification`,
+                // `sessionUpdate: "response_completed"`) but never answers the
+                // prompt request itself. With no response and no StopReason
+                // message the loop below can never break, which strands the
+                // conversation row `in_progress` and any delegation waiting on
+                // this child `running` forever (#551). The notification arms a
+                // grace timer rather than exiting immediately so the healthy
+                // path is untouched: when the real response arrives (it
+                // follows the notification within milliseconds on a healthy
+                // turn) it wins the select and the timer is dropped unfired.
+                let grok_lost_response_grace =
+                    tokio::time::sleep(std::time::Duration::from_secs(365 * 24 * 3600));
+                tokio::pin!(grok_lost_response_grace);
+                let mut grok_response_completed_seen = false;
+
                 // Read updates until turn completes.
                 // We must also listen for commands (e.g. RespondPermission)
                 // to avoid deadlocking when the agent awaits a permission response.
@@ -8138,6 +8157,22 @@ async fn run_conversation_loop<'a>(
                                     // isn't misclassified as `"empty"` at turn end.
                                     if grok_ext_notification_is_turn_output(&dispatch, agent_type) {
                                         probe.saw_agent_output = true;
+                                    }
+                                    // grok's own turn-end signal on the ext
+                                    // channel — see the grace-timer comment
+                                    // above the loop. First sighting arms the
+                                    // timer; the healthy prompt response
+                                    // cancels it by winning the select.
+                                    if !grok_response_completed_seen
+                                        && grok_response_completed_notification(
+                                            &dispatch, agent_type, &sid.0,
+                                        )
+                                    {
+                                        grok_response_completed_seen = true;
+                                        grok_lost_response_grace.as_mut().reset(
+                                            tokio::time::Instant::now()
+                                                + GROK_LOST_PROMPT_RESPONSE_GRACE,
+                                        );
                                     }
                                     // Grok has no `usage_update` channel; its
                                     // cumulative token count rides the outer
@@ -8390,6 +8425,65 @@ async fn run_conversation_loop<'a>(
                             // (fast drain before the next prompt; broker
                             // backgrounds the slow child teardown) for the
                             // same reasons as that branch — see above.
+                            if reason_str != "end_turn" {
+                                if let Some(inj) = delegation_injection {
+                                    inj.broker.cancel_by_parent_turn(conn_id).await;
+                                }
+                            }
+                            break;
+                        }
+                        // grok lost-response rescue (see the grace-timer
+                        // comment above the loop): `response_completed` was
+                        // observed on the ext channel and the real
+                        // `session/prompt` response still has not arrived.
+                        // Complete the turn from the notification instead of
+                        // hanging forever. Mirrors the StopReason-message exit
+                        // above — including deliberately NOT calling
+                        // `record_turn_end`: the response `_meta` this exit
+                        // stands in for never existed, and the streamed tail
+                        // was already persisted.
+                        () = grok_lost_response_grace.as_mut(), if grok_response_completed_seen => {
+                            tracing::warn!(
+                                "[ACP] grok never answered session/prompt {}s after its \
+                                 response_completed notification; completing the turn from \
+                                 the notification (session={})",
+                                GROK_LOST_PROMPT_RESPONSE_GRACE.as_secs(),
+                                sid.0,
+                            );
+                            if !tracked_terminal_tool_calls.is_empty() {
+                                poll_tracked_terminal_tool_calls(
+                                    terminal_runtime.as_ref(),
+                                    &sid,
+                                    state,
+                                    emitter,
+                                    &mut tracked_terminal_tool_calls,
+                                )
+                                .await;
+                            }
+                            let raw_reason_str = "end_turn";
+                            let (reason_str, empty_report) =
+                                finish_turn_reason(&probe, raw_reason_str, stderr_tail);
+                            if let Some(err_event) = turn_failure_error_event(
+                                reason_str,
+                                agent_type,
+                                empty_report.as_ref(),
+                            ) {
+                                emit_with_state(state, emitter, err_event).await;
+                            }
+                            if reason_str == "end_turn" {
+                                journal_turn_span(&mut turn_timing_probe, conn_id, &sid.0).await;
+                            }
+                            drain_permissions_then_emit(
+                                perms,
+                                state,
+                                emitter,
+                                AcpEvent::TurnComplete {
+                                    session_id: sid.0.to_string(),
+                                    stop_reason: reason_str.into(),
+                                    agent_type: agent_type.to_string(),
+                                },
+                            )
+                            .await;
                             if reason_str != "end_turn" {
                                 if let Some(inj) = delegation_injection {
                                     inj.broker.cancel_by_parent_turn(conn_id).await;
@@ -10776,6 +10870,46 @@ fn map_claude_sdk_ext_notification(notification: &UntypedMessage) -> Option<AcpE
 const GROK_EXT_UPDATE_METHODS: [&str; 2] =
     ["_x.ai/session_notification", "_x.ai/session/update"];
 
+/// How long after grok's `response_completed` ext notification the turn loop
+/// keeps waiting for the real `session/prompt` response before completing the
+/// turn from the notification (#551). On a healthy turn the response follows
+/// the notification within milliseconds, so a live response path never gets
+/// near this; the lost-response case never delivers it at all, so anything
+/// finite works and 10s keeps a slow-but-alive response path winning cleanly.
+const GROK_LOST_PROMPT_RESPONSE_GRACE: std::time::Duration =
+    std::time::Duration::from_secs(10);
+
+/// Whether a dispatch is grok's `response_completed` session notification for
+/// THIS session — grok's own end-of-turn signal on its private ext channel.
+/// It rides the same methods `map_grok_ext_notification` maps, but that
+/// mapper deliberately declines turn-level outcomes (the prompt response owns
+/// those), so the turn loop consults this narrow predicate separately and
+/// only as a lost-response fallback, never as the primary exit.
+fn grok_response_completed_notification(
+    dispatch: &Dispatch,
+    agent_type: AgentType,
+    session_id: &str,
+) -> bool {
+    if !matches!(agent_type, AgentType::Grok) {
+        return false;
+    }
+    let Dispatch::Notification(notification) = dispatch else {
+        return false;
+    };
+    if !GROK_EXT_UPDATE_METHODS.contains(&notification.method()) {
+        return false;
+    }
+    let params = notification.params();
+    if params.get("sessionId").and_then(|v| v.as_str()) != Some(session_id) {
+        return false;
+    }
+    params
+        .get("update")
+        .and_then(|u| u.get("sessionUpdate"))
+        .and_then(|v| v.as_str())
+        == Some("response_completed")
+}
+
 /// A stable id for a synthetic event derived from a grok ext notification —
 /// grok stamps `params._meta.eventId`; fall back to a fresh uuid.
 fn grok_ext_event_id(params: &serde_json::Value) -> String {
@@ -12209,6 +12343,81 @@ mod tests {
             PermissionQueue::default(),
             Arc::new(std::sync::Mutex::new(Vec::new())),
         )
+    }
+
+    // ── grok lost prompt response (#551) ────────────────────────────────────
+
+    /// The `_x.ai/session_notification` frame captured on the wire from a live
+    /// stuck delegation child (grok 1.0.5): the turn streamed fully, this
+    /// notification arrived, and the `session/prompt` response never did.
+    fn grok_response_completed_dispatch(session_id: &str) -> Dispatch {
+        let params = serde_json::json!({
+            "sessionId": session_id,
+            "update": {
+                "sessionUpdate": "response_completed",
+                "usage": {
+                    "input_tokens": 76195,
+                    "output_tokens": 40,
+                    "cache_read_input_tokens": 11648,
+                    "cache_creation_input_tokens": 0,
+                    "reasoning_tokens": 35
+                }
+            }
+        });
+        Dispatch::Notification(
+            UntypedMessage::new("_x.ai/session_notification", params)
+                .expect("fixture frame must serialize"),
+        )
+    }
+
+    #[test]
+    fn grok_response_completed_notification_matches_the_live_frame() {
+        let d = grok_response_completed_dispatch("s-1");
+        assert!(grok_response_completed_notification(
+            &d,
+            AgentType::Grok,
+            "s-1"
+        ));
+    }
+
+    #[test]
+    fn grok_response_completed_notification_requires_this_session() {
+        let d = grok_response_completed_dispatch("s-1");
+        assert!(!grok_response_completed_notification(
+            &d,
+            AgentType::Grok,
+            "s-2"
+        ));
+    }
+
+    #[test]
+    fn grok_response_completed_notification_is_grok_only() {
+        let d = grok_response_completed_dispatch("s-1");
+        assert!(!grok_response_completed_notification(
+            &d,
+            AgentType::Codex,
+            "s-1"
+        ));
+    }
+
+    #[test]
+    fn grok_response_completed_notification_ignores_other_updates() {
+        // `model_changed` rides the same ext method and must not arm the
+        // rescue timer (it arrives at turn START — treating it as an end
+        // would complete every grok turn instantly).
+        let params = serde_json::json!({
+            "sessionId": "s-1",
+            "update": { "sessionUpdate": "model_changed", "model_id": "grok-4.6" }
+        });
+        let d = Dispatch::Notification(
+            UntypedMessage::new("_x.ai/session_notification", params)
+                .expect("fixture frame must serialize"),
+        );
+        assert!(!grok_response_completed_notification(
+            &d,
+            AgentType::Grok,
+            "s-1"
+        ));
     }
 
     #[test]
