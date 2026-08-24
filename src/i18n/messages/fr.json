@@ -359,6 +359,7 @@
     "resetDefault": "Rétablir les valeurs par défaut",
     "recordInstruction": "Cliquez sur le bouton à droite, puis appuyez sur une combinaison de touches. Utilisez Ctrl/Cmd, Alt et Shift. Appuyez sur Échap pour annuler l’enregistrement.",
     "recording": "Appuyez sur un raccourci...",
+    "unassigned": "Non attribué",
     "toasts": {
       "conflict": "Le raccourci est déjà utilisé par \"{title}\"",
       "updated": "Raccourci mis à jour",

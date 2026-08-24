@@ -359,6 +359,7 @@
     "resetDefault": "恢復預設",
     "recordInstruction": "點擊右側按鈕後按下組合鍵即可修改。建議使用 Ctrl/Cmd、Alt、Shift 的組合。按 Esc 可取消錄製。",
     "recording": "按下快捷鍵...",
+    "unassigned": "未指派",
     "toasts": {
       "conflict": "快捷鍵已被「{title}」占用",
       "updated": "快捷鍵已更新",

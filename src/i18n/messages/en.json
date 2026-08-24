@@ -359,6 +359,7 @@
     "resetDefault": "Reset defaults",
     "recordInstruction": "Click the right-side button, then press a key combination. Use Ctrl/Cmd, Alt, and Shift. Press Esc to cancel recording.",
     "recording": "Press shortcut...",
+    "unassigned": "Unassigned",
     "toasts": {
       "conflict": "Shortcut is already used by \"{title}\"",
       "updated": "Shortcut updated",

@@ -89,6 +89,25 @@ export const INPUT_SHORTCUT_IDS = new Set<ShortcutActionId>([
   "newline_in_message",
 ])
 
+/**
+ * Pairs that are meant to share a chord: the two actions never apply to the
+ * same surface, so one key can serve both.
+ */
+const SHARED_SHORTCUT_PAIRS: Array<[ShortcutActionId, ShortcutActionId]> = [
+  ["new_terminal_tab", "new_conversation"],
+  ["close_current_terminal_tab", "close_current_tab"],
+]
+
+export function canShareShortcut(
+  a: ShortcutActionId,
+  b: ShortcutActionId
+): boolean {
+  return SHARED_SHORTCUT_PAIRS.some(
+    ([left, right]) =>
+      (left === a && right === b) || (left === b && right === a)
+  )
+}
+
 export type ShortcutSettings = Record<ShortcutActionId, string>
 
 export const DEFAULT_SHORTCUTS: ShortcutSettings = {
@@ -121,6 +140,7 @@ export const SHORTCUTS_STORAGE_KEY = "settings:shortcuts:v1"
 export const SHORTCUTS_UPDATED_EVENT = "codeg:shortcuts-updated"
 
 const FUNCTION_KEY_PATTERN = /^f\d{1,2}$/
+const DIGIT_KEY_PATTERN = /^[0-9]$/
 const MODIFIER_KEY_SET = new Set(["shift", "meta", "control", "alt"])
 
 const SPECIAL_KEY_ALIASES: Record<string, string> = {
@@ -214,12 +234,44 @@ function normalizeSettings(input: unknown): ShortcutSettings {
   if (!input || typeof input !== "object") return next
 
   const record = input as Record<string, unknown>
+  const stored = new Set<ShortcutActionId>()
   for (const definition of SHORTCUT_DEFINITIONS) {
     const rawValue = record[definition.id]
     if (typeof rawValue !== "string") continue
 
+    // An empty string is a real state, not a missing key: it is what an action
+    // holds once its default lost to a stored binding below. Reseeding the
+    // default here would put the collision straight back on the next write.
+    if (!rawValue.trim()) {
+      next[definition.id] = ""
+      stored.add(definition.id)
+      continue
+    }
+
     const normalized = normalizeShortcut(rawValue)
-    if (normalized) next[definition.id] = normalized
+    if (!normalized) continue
+    next[definition.id] = normalized
+    stored.add(definition.id)
+  }
+
+  // A default added after this profile was written can land on a chord the user
+  // already assigned. Both actions would then fire, with nothing on screen to
+  // say so, so the stored binding keeps the chord and the new action arrives
+  // unbound for the user to place.
+  for (const definition of SHORTCUT_DEFINITIONS) {
+    if (stored.has(definition.id)) continue
+
+    const seeded = next[definition.id]
+    if (!seeded) continue
+
+    const taken = SHORTCUT_DEFINITIONS.some(
+      (other) =>
+        other.id !== definition.id &&
+        stored.has(other.id) &&
+        !canShareShortcut(other.id, definition.id) &&
+        shortcutsConflict(next[other.id], seeded)
+    )
+    if (taken) next[definition.id] = ""
   }
 
   return next
@@ -393,6 +445,22 @@ function matchesNumpadCode(
   return false
 }
 
+/**
+ * A digit binding must also fire from its own digit-row key on layouts that
+ * shift that row. On AZERTY unshifted `Digit0` types `à` and the digit needs
+ * Shift, so `mod+0` matches neither spelling on `event.key` alone.
+ *
+ * `Digit<N>` names one physical key, so this cannot mis-fire the way a bare
+ * `Minus`/`Equal` fallback would.
+ */
+function matchesDigitRowCode(
+  event: ShortcutEventLike,
+  boundKey: string
+): boolean {
+  if (!DIGIT_KEY_PATTERN.test(boundKey)) return false
+  return event.code === `Digit${boundKey}`
+}
+
 export function matchShortcutEvent(
   event: ShortcutEventLike,
   shortcut: string
@@ -403,21 +471,61 @@ export function matchShortcutEvent(
   const keys = siblingKeys(parsed.key)
   const actualKey = eventKeyToken(event)
   const matchesKey = actualKey !== null && keys.has(actualKey)
-  if (!matchesKey && !matchesNumpadCode(event, parsed.key)) return false
+  const matchesDigitRow = matchesDigitRowCode(event, parsed.key)
+  if (
+    !matchesKey &&
+    !matchesDigitRow &&
+    !matchesNumpadCode(event, parsed.key)
+  ) {
+    return false
+  }
 
   const hasMod = event.metaKey || event.ctrlKey
   if (hasMod !== parsed.mod) return false
   if (event.altKey !== parsed.alt) return false
 
-  // Extra Shift is how `=` becomes `+` (and `-` becomes `_`). Require Shift
-  // when the binding asked for it; ignore a surplus Shift only on those pairs.
+  // Extra Shift is how `=` becomes `+` (and `-` becomes `_`), and on a shifted
+  // digit row it is how you type the digit at all. Require Shift when the
+  // binding asked for it; ignore a surplus Shift only in those cases.
   if (parsed.shift) {
     if (!event.shiftKey) return false
-  } else if (event.shiftKey && keys.size === 1) {
+  } else if (event.shiftKey && keys.size === 1 && !matchesDigitRow) {
     return false
   }
 
   return true
+}
+
+/**
+ * Two bindings collide when some event matches both. String equality misses
+ * that: `mod+=` and `mod+shift++` are different strings that both fire on
+ * Ctrl/Cmd+Shift+=. Round-trip each side through the real matcher instead.
+ */
+export function shortcutsConflict(a: string, b: string): boolean {
+  const parsedA = parseShortcut(a)
+  const parsedB = parseShortcut(b)
+  if (!parsedA || !parsedB) return false
+
+  return (
+    matchShortcutEvent(syntheticEvent(parsedA), b) ||
+    matchShortcutEvent(syntheticEvent(parsedB), a)
+  )
+}
+
+/** The canonical event a binding describes, as the matcher would see it. */
+function syntheticEvent(parsed: ParsedShortcut): ShortcutEventLike {
+  return {
+    key: parsed.key,
+    metaKey: parsed.mod,
+    ctrlKey: false,
+    altKey: parsed.alt,
+    shiftKey: parsed.shift,
+    // Carry the physical key for digits so the shifted-digit-row tolerance
+    // above is visible to conflict checks too.
+    ...(DIGIT_KEY_PATTERN.test(parsed.key)
+      ? { code: `Digit${parsed.key}` }
+      : {}),
+  }
 }
 
 export function resolveWindowZoomAction(

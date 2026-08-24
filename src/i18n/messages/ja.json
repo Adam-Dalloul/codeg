@@ -359,6 +359,7 @@
     "resetDefault": "デフォルトに戻す",
     "recordInstruction": "右側のボタンをクリックしてからキーの組み合わせを押してください。Ctrl/Cmd、Alt、Shift が使用できます。Esc で記録をキャンセルします。",
     "recording": "ショートカットを入力...",
+    "unassigned": "未割り当て",
     "toasts": {
       "conflict": "ショートカットはすでに「{title}」で使用されています",
       "updated": "ショートカットを更新しました",

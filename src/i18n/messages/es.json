@@ -359,6 +359,7 @@
     "resetDefault": "Restablecer valores predeterminados",
     "recordInstruction": "Haz clic en el botón derecho y luego pulsa una combinación de teclas. Usa Ctrl/Cmd, Alt y Shift. Pulsa Esc para cancelar la grabación.",
     "recording": "Pulsa un atajo...",
+    "unassigned": "Sin asignar",
     "toasts": {
       "conflict": "El atajo ya está en uso por \"{title}\"",
       "updated": "Atajo actualizado",

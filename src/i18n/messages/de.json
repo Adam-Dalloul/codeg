@@ -359,6 +359,7 @@
     "resetDefault": "Standardwerte zurücksetzen",
     "recordInstruction": "Klicke auf die rechte Schaltfläche und drücke dann eine Tastenkombination. Verwende Ctrl/Cmd, Alt und Shift. Drücke Esc, um die Aufzeichnung abzubrechen.",
     "recording": "Kurzbefehl drücken...",
+    "unassigned": "Nicht zugewiesen",
     "toasts": {
       "conflict": "Der Kurzbefehl wird bereits von \"{title}\" verwendet",
       "updated": "Kurzbefehl aktualisiert",

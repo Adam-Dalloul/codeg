@@ -359,6 +359,7 @@
     "resetDefault": "기본값으로 재설정",
     "recordInstruction": "오른쪽 버튼을 클릭한 다음 키 조합을 누르세요. Ctrl/Cmd, Alt, Shift를 사용할 수 있습니다. Esc를 누르면 기록을 취소합니다.",
     "recording": "단축키 입력...",
+    "unassigned": "할당 안 됨",
     "toasts": {
       "conflict": "단축키가 이미 \"{title}\"에서 사용 중입니다",
       "updated": "단축키가 업데이트되었습니다",

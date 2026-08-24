@@ -359,6 +359,7 @@
     "resetDefault": "Restaurar padrões",
     "recordInstruction": "Clique no botão à direita e pressione uma combinação de teclas. Use Ctrl/Cmd, Alt e Shift. Pressione Esc para cancelar a gravação.",
     "recording": "Pressione um atalho...",
+    "unassigned": "Não atribuído",
     "toasts": {
       "conflict": "O atalho já está em uso por \"{title}\"",
       "updated": "Atalho atualizado",
