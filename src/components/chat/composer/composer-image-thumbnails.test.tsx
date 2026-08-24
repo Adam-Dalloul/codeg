@@ -1,4 +1,10 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react"
+import {
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react"
 import { NextIntlClientProvider } from "next-intl"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
@@ -103,6 +109,50 @@ describe("ComposerImageThumbnails", () => {
         suggestedName: ATTACHMENT.name,
       })
     )
+  })
+
+  it("carries the actions into the blown-up preview", async () => {
+    renderStrip()
+
+    fireEvent.click(screen.getByAltText(ATTACHMENT.name))
+    const dialog = await screen.findByRole("dialog")
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "Copy image" }))
+    await waitFor(() =>
+      expect(mocks.copyImageToClipboard).toHaveBeenCalledWith({
+        data: ATTACHMENT.data,
+        mime_type: ATTACHMENT.mimeType,
+      })
+    )
+    fireEvent.click(
+      within(dialog).getByRole("button", { name: "Download image" })
+    )
+    await waitFor(() => expect(mocks.downloadImage).toHaveBeenCalled())
+    // Neither action doubles as "close": the buttons stop the click from
+    // reaching the backdrop that dismisses the preview.
+    expect(screen.queryByRole("dialog")).not.toBeNull()
+  })
+
+  it("offers the right-click menu on the blown-up image too", async () => {
+    renderStrip()
+
+    fireEvent.click(screen.getByAltText(ATTACHMENT.name))
+    const dialog = await screen.findByRole("dialog")
+    const previewTrigger = dialog.querySelector<HTMLElement>(
+      "[data-image-actions]"
+    )
+    expect(previewTrigger).not.toBeNull()
+
+    fireEvent.contextMenu(previewTrigger as HTMLElement)
+    const downloadItem = await screen.findByRole("menuitem", {
+      name: "Download image",
+    })
+
+    fireEvent.click(downloadItem)
+    await waitFor(() => expect(mocks.downloadImage).toHaveBeenCalled())
+    // The menu is portaled out, but its click still bubbles through the React
+    // tree to the dialog's dismiss-on-click backdrop — which must not fire.
+    expect(screen.queryByRole("dialog")).not.toBeNull()
   })
 
   it("keeps the tile out of our menu when the clipboard cannot take images", () => {
