@@ -51,14 +51,16 @@ use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 
 use crate::acp::session_state::{background_keepalive_max_age, SessionState};
+use crate::acp::session_title::publish_native_title;
 use crate::acp::types::{AcpEvent, BackgroundSettledInfo, ConnectionStatus};
 use crate::models::agent::AgentType;
 use crate::models::message::MessageTurn;
 use crate::parsers::claude::{
-    capture_tag, find_session_file, group_into_turns, is_meta_message, slash_command_display,
-    task_notification_result_regex, task_notification_status_regex, task_notification_summary_regex,
-    task_notification_task_id_regex, task_notification_tool_use_id_regex, ClaudeRecordAccumulator,
-    BACKGROUND_RESULT_MAX_CHARS, CONTEXT_CONTINUATION_PREFIX,
+    capture_tag, capture_title_record, find_session_file, group_into_turns, is_meta_message,
+    slash_command_display, task_notification_result_regex, task_notification_status_regex,
+    task_notification_summary_regex, task_notification_task_id_regex,
+    task_notification_tool_use_id_regex, ClaudeRecordAccumulator, BACKGROUND_RESULT_MAX_CHARS,
+    CONTEXT_CONTINUATION_PREFIX,
 };
 use crate::parsers::truncate_str;
 use crate::web::event_bridge::{emit_with_state, EventEmitter};
@@ -303,6 +305,28 @@ async fn run_watch(
             }
         };
 
+        // Publish a title the transcript just named the session, exactly like
+        // a live ACP one (same skip-cache, same lifecycle write). Deliberately
+        // OUTSIDE the activity emit below: a tick whose tail is nothing but an
+        // `ai-title` record produces no turns, no settlements and no
+        // accounting change, so `tick` correctly returns `None` — which is the
+        // common case for a title generated after the last turn ended.
+        //
+        // Held rather than dropped while the conversation row is still
+        // unbound: unlike a live ACP title there is no resend to fall back on,
+        // because the record is read once and those bytes are never re-read.
+        //
+        // Bound to a `let` so the read guard is released before
+        // `publish_native_title` asks for the write lock, and short-circuited
+        // on `pending_title` so a settled session never takes the lock at all.
+        let title_is_publishable =
+            ws.pending_title.is_some() && state.read().await.conversation_id.is_some();
+        if title_is_publishable {
+            if let Some(title) = ws.pending_title.take() {
+                publish_native_title(&state, &emitter, title).await;
+            }
+        }
+
         if let Some(event) = event {
             if let AcpEvent::BackgroundActivity {
                 turns,
@@ -451,6 +475,18 @@ pub(crate) struct WatchState {
     /// they were written before the transcript file was first discovered;
     /// records before it are pre-existing history. Set by `rearm`.
     epoch: Option<std::time::SystemTime>,
+    /// Newest non-empty `custom-title` / `ai-title` value this watch has read
+    /// off the transcript, in the parser's own two slots (`parsers::claude::
+    /// capture_title_record`). Kept separate rather than folded into one
+    /// string so the user's `/rename` keeps winning over a title Claude Code
+    /// generates afterwards, exactly as `parse_conversation_detail` resolves
+    /// the pair over the whole file.
+    custom_title: Option<String>,
+    ai_title: Option<String>,
+    /// A resolved title this watch read but has not published yet. Set only
+    /// when a title RECORD actually changed the resolution, so a session with
+    /// a settled name costs nothing per tick.
+    pending_title: Option<String>,
 }
 
 impl WatchState {
@@ -479,6 +515,45 @@ impl WatchState {
             armed_logged: false,
             last_episode_base: 0,
             epoch: None,
+            custom_title: None,
+            ai_title: None,
+            pending_title: None,
+        }
+    }
+
+    /// The session's name as this watch currently understands it: the user's
+    /// own `/rename` first, then Claude Code's generated summary — the same
+    /// precedence `parsers::claude` applies when it resolves the whole file.
+    fn resolved_title(&self) -> Option<String> {
+        self.custom_title.clone().or_else(|| self.ai_title.clone())
+    }
+
+    /// Fold one transcript record into the title slots, queueing the result
+    /// for publication when it changed the resolved name.
+    ///
+    /// Claude Code writes its generated title as a dedicated `ai-title`
+    /// record, and it lands whenever the background summarizer finishes —
+    /// routinely AFTER the turn that triggered it has already ended. The ACP
+    /// adapter only reads the name back at turn-end, so on a short session
+    /// that title is never published and the conversation keeps its
+    /// first-prompt fallback name. The watcher is already tailing these exact
+    /// bytes, so surfacing the record here is what makes the name appear
+    /// while the session is still live instead of on its next detail load.
+    ///
+    /// Only records that carry a title are inspected — everything else costs
+    /// one string compare.
+    fn capture_title(&mut self, value: &serde_json::Value) {
+        let record_type = value.get("type").and_then(|t| t.as_str()).unwrap_or("");
+        if !matches!(record_type, "custom-title" | "ai-title") {
+            return;
+        }
+        let before = self.resolved_title();
+        capture_title_record(value, record_type, &mut self.custom_title, &mut self.ai_title);
+        let after = self.resolved_title();
+        // `capture_title_record` ignores blank values, so `after` is `None`
+        // only when nothing has ever been captured — never a clear.
+        if after.is_some() && after != before {
+            self.pending_title = after;
         }
     }
 
@@ -656,6 +731,7 @@ impl WatchState {
                             Err(_) => continue,
                         };
                         self.account(&value, &mut settled);
+                        self.capture_title(&value);
                         self.classify_and_feed(&value, ledger, cwd, &mut changed_turns);
                     }
                     if !lines.is_empty() {
@@ -1406,6 +1482,17 @@ mod tests {
         format!(
             r#"{{"type":"user","timestamp":"2026-07-07T03:49:00.000Z","uuid":"u-cron","isMeta":true,"userType":"external","message":{{"role":"user","content":"{text}"}}}}"#
         )
+    }
+
+    /// Real-shape generated-title record. Claude Code writes it with NO
+    /// timestamp and no message body (captured from a live transcript).
+    fn ai_title(title: &str) -> String {
+        format!(r#"{{"type":"ai-title","aiTitle":"{title}","sessionId":"s1"}}"#)
+    }
+
+    /// Real-shape user-set title record (`/rename`, `claude -n`, a fork).
+    fn custom_title(title: &str) -> String {
+        format!(r#"{{"type":"custom-title","customTitle":"{title}","sessionId":"s1"}}"#)
     }
 
     fn tick_now(ws: &mut WatchState, ledger: &PromptLedger) -> Option<AcpEvent> {
@@ -2624,5 +2711,134 @@ mod tests {
         let cmd = r#"{"type":"user","uuid":"u-cmd","message":{"role":"user","content":"<command-name>/init</command-name><command-args>now</command-args>"}}"#;
         let cmd: serde_json::Value = serde_json::from_str(cmd).unwrap();
         assert_eq!(turn_initiator_text(&cmd).as_deref(), Some("/init now"));
+    }
+
+    /// The whole point of reading titles here: Claude Code's background
+    /// summarizer writes `ai-title` AFTER the turn that triggered it has
+    /// ended, and the ACP adapter only reads the name back at turn-end — so on
+    /// a short session nothing ever publishes it. That tail is pure metadata:
+    /// no turns, no settlements, no accounting change, so `tick` returns
+    /// `None`. The title must still come out, which is why `run_watch` takes
+    /// it independently of the activity event.
+    #[test]
+    fn a_title_only_tail_yields_no_activity_event_but_still_surfaces_the_title() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = temp_session(&dir);
+        write_lines(&path, &[]);
+        let ledger = PromptLedger::shared();
+        let mut ws = WatchState::with_file_for_test("s1", path.clone());
+
+        write_lines(&path, &[&ai_title("Find current vLLM stable release tag")]);
+
+        assert!(
+            tick_now(&mut ws, &ledger).is_none(),
+            "a title record is not background ACTIVITY"
+        );
+        assert_eq!(
+            ws.pending_title.take().as_deref(),
+            Some("Find current vLLM stable release tag")
+        );
+    }
+
+    /// Once taken, the same name must not be re-queued on every later tick —
+    /// each publish walks the state write lock and a DB write.
+    #[test]
+    fn an_unchanged_title_is_queued_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = temp_session(&dir);
+        write_lines(&path, &[]);
+        let ledger = PromptLedger::shared();
+        let mut ws = WatchState::with_file_for_test("s1", path.clone());
+
+        write_lines(&path, &[&ai_title("Fix the login flow")]);
+        let _ = tick_now(&mut ws, &ledger);
+        assert_eq!(ws.pending_title.take().as_deref(), Some("Fix the login flow"));
+
+        // Claude Code re-emits the record; the resolved name did not change.
+        write_lines(&path, &[&ai_title("Fix the login flow")]);
+        let _ = tick_now(&mut ws, &ledger);
+        assert_eq!(ws.pending_title, None);
+
+        // A genuinely new name is queued again.
+        write_lines(&path, &[&ai_title("Fix the signup flow")]);
+        let _ = tick_now(&mut ws, &ledger);
+        assert_eq!(ws.pending_title.take().as_deref(), Some("Fix the signup flow"));
+    }
+
+    /// `customTitle ?? aiTitle` — Claude Code's own precedence, and the one
+    /// `parsers::claude` applies over the whole file. A generated title
+    /// arriving after the user named the session must not take the name back.
+    #[test]
+    fn a_user_set_title_outranks_a_later_generated_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = temp_session(&dir);
+        write_lines(&path, &[]);
+        let ledger = PromptLedger::shared();
+        let mut ws = WatchState::with_file_for_test("s1", path.clone());
+
+        write_lines(&path, &[&custom_title("auth-refactor")]);
+        let _ = tick_now(&mut ws, &ledger);
+        assert_eq!(ws.pending_title.take().as_deref(), Some("auth-refactor"));
+
+        write_lines(&path, &[&ai_title("Concise AI Summary")]);
+        let _ = tick_now(&mut ws, &ledger);
+        assert_eq!(
+            ws.pending_title,
+            None,
+            "the generated title must not displace the user's own name"
+        );
+        assert_eq!(ws.resolved_title().as_deref(), Some("auth-refactor"));
+
+        // A NEW user-set name still wins.
+        write_lines(&path, &[&custom_title("auth-refactor-v2")]);
+        let _ = tick_now(&mut ws, &ledger);
+        assert_eq!(ws.pending_title.take().as_deref(), Some("auth-refactor-v2"));
+    }
+
+    /// Claude Code writes an empty `aiTitle` for trivial sessions. Publishing
+    /// it would rename the conversation to nothing.
+    #[test]
+    fn a_blank_title_record_is_never_queued() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = temp_session(&dir);
+        write_lines(&path, &[]);
+        let ledger = PromptLedger::shared();
+        let mut ws = WatchState::with_file_for_test("s1", path.clone());
+
+        write_lines(&path, &[&ai_title("   ")]);
+        let _ = tick_now(&mut ws, &ledger);
+        assert_eq!(ws.pending_title, None);
+        assert_eq!(ws.resolved_title(), None);
+    }
+
+    /// History before the arm baseline renders through the ordinary detail
+    /// fetch, which resolves the title from the whole file. Re-publishing it
+    /// from here would rename the conversation on every reconnect.
+    #[test]
+    fn a_title_in_pre_baseline_history_is_not_queued() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = temp_session(&dir);
+        write_lines(
+            &path,
+            &[
+                &user_prompt_array("u-old", "old prompt"),
+                &ai_title("Old Session Name"),
+            ],
+        );
+
+        let ledger = PromptLedger::shared();
+        let mut ws = WatchState::new();
+        // Arm with an epoch after the existing records, exactly as `run_watch`
+        // does for a resumed session, and take the real baseline.
+        ws.rearm("s1".to_string(), epoch("2030-01-01T00:00:00Z"));
+        ws.adopt_file(path.clone());
+
+        let _ = tick_now(&mut ws, &ledger);
+        assert_eq!(ws.pending_title, None);
+
+        // A title written from here on IS this watch's to surface.
+        write_lines(&path, &[&ai_title("New Session Name")]);
+        let _ = tick_now(&mut ws, &ledger);
+        assert_eq!(ws.pending_title.take().as_deref(), Some("New Session Name"));
     }
 }
