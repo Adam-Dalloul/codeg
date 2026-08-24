@@ -2036,9 +2036,7 @@ impl TaskEngine {
         };
 
         let summary = self.capture_summary(conn_id).await;
-        self.index.lock().await.remove(conn_id);
-        self.awaiting.lock().await.remove(&task_id);
-        self.forget_delegation_children_of(conn_id).await;
+        self.retire_connection(conn_id, task_id).await;
         let _ = self.manager.disconnect(conn_id).await;
 
         let task = work_task_service::get_model(&self.db.conn, task_id).await.ok();
@@ -7398,6 +7396,78 @@ mod tests {
         // The old connection's cancel finally arrives.
         engine.on_turn_complete(PARENT_CONN, "cancelled").await;
 
+        assert_eq!(status_of(&engine, task_id).await, WorkTaskStatus::Running);
+    }
+
+    #[tokio::test]
+    async fn a_previous_generation_cancel_does_not_clear_current_waits() {
+        let (engine, task_id) = running_task().await;
+        let row = work_task_service::get_model(&engine.db.conn, task_id)
+            .await
+            .expect("task row");
+        let (stale_seq, conv_id) = (row.run_seq, row.conversation_id.expect("conversation"));
+
+        assert!(work_task_service::settle_review(
+            &engine.db.conn,
+            task_id,
+            stale_seq,
+            None,
+            None,
+        )
+        .await
+        .expect("settle review"));
+        let next_seq = work_task_service::claim_for_run(
+            &engine.db.conn,
+            task_id,
+            WorkTaskStatus::Review,
+            "test",
+        )
+        .await
+        .expect("claim")
+        .expect("claimed");
+        assert!(work_task_service::begin_setup(&engine.db.conn, task_id, next_seq)
+            .await
+            .expect("begin_setup"));
+        assert!(work_task_service::mark_running(
+            &engine.db.conn,
+            task_id,
+            next_seq,
+            conv_id,
+            "conn-next",
+        )
+        .await
+        .expect("mark_running"));
+        engine
+            .index
+            .lock()
+            .await
+            .insert("conn-next".into(), (task_id, next_seq));
+
+        engine
+            .track_request("conn-next", "permission-a".into(), true)
+            .await;
+        engine
+            .track_request("conn-next", "permission-b".into(), true)
+            .await;
+        assert_eq!(
+            status_of(&engine, task_id).await,
+            WorkTaskStatus::AwaitingInput
+        );
+
+        engine.on_turn_complete(PARENT_CONN, "cancelled").await;
+        engine
+            .track_request("conn-next", "permission-a".into(), false)
+            .await;
+
+        assert_eq!(
+            status_of(&engine, task_id).await,
+            WorkTaskStatus::AwaitingInput,
+            "the second request in the current generation is still outstanding"
+        );
+
+        engine
+            .track_request("conn-next", "permission-b".into(), false)
+            .await;
         assert_eq!(status_of(&engine, task_id).await, WorkTaskStatus::Running);
     }
 
