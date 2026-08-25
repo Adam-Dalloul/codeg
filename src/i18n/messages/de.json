@@ -146,7 +146,7 @@
     },
     "zoomLevel": {
       "sectionTitle": "Fensterzoom",
-      "sectionDescription": "Skaliert die gesamte Oberfläche. Wird sofort übernommen und pro Gerät gespeichert.",
+      "sectionDescription": "Skaliert die gesamte Oberfläche. Wird sofort übernommen und pro Gerät gespeichert. ⌘/Ctrl + und - durchlaufen dieselben Zoomstufen wie dieses Menü (⌘/Ctrl 0 setzt auf 100% zurück).",
       "placeholder": "Zoomstufe wählen",
       "default": "Standard",
       "current": "Aktueller Zoom: {zoom}%"
@@ -359,6 +359,7 @@
     "resetDefault": "Standardwerte zurücksetzen",
     "recordInstruction": "Klicke auf die rechte Schaltfläche und drücke dann eine Tastenkombination. Verwende Ctrl/Cmd, Alt und Shift. Drücke Esc, um die Aufzeichnung abzubrechen.",
     "recording": "Kurzbefehl drücken...",
+    "unassigned": "Nicht zugewiesen",
     "toasts": {
       "conflict": "Der Kurzbefehl wird bereits von \"{title}\" verwendet",
       "updated": "Kurzbefehl aktualisiert",
@@ -429,6 +430,18 @@
       "toggle_custom_style": {
         "title": "Eigenen Stil aussetzen/fortsetzen",
         "description": "Notausstieg: schaltet alle eigenen Farben und CSS aus und wieder ein"
+      },
+      "zoom_in": {
+        "title": "Vergrößern",
+        "description": "Das Fenster eine Stufe größer machen"
+      },
+      "zoom_out": {
+        "title": "Verkleinern",
+        "description": "Das Fenster eine Stufe kleiner machen"
+      },
+      "zoom_reset": {
+        "title": "Zoom zurücksetzen",
+        "description": "Fensterzoom auf 100% zurücksetzen"
       }
     }
   },
@@ -5165,11 +5178,9 @@
     "viewExisting": "Bestehende Aufgabe ansehen",
     "scenarioLabel": "Vorgehen",
     "scenarioFix": "Direkt beheben / umsetzen",
-    "scenarioFixHint": "Der Agent setzt es im Worktree um oder behebt es — du prüfst den Diff, bevor etwas landet.",
-    "scenarioInvestigate": "Nur analysieren",
-    "scenarioInvestigateHint": "Nur reproduzieren und diagnostizieren, ohne Fix; das Ergebnis kommt als Bericht, und du kannst die Aufgabe für den Fix zurückgeben.",
+    "scenarioFixHint": "Der Agent bestätigt zuerst im Worktree, dass das Problem wirklich existiert, und behebt es dann — lässt es sich nicht bestätigen, meldet er das, statt Code zu ändern.",
     "scenarioPlanFirst": "Erst planen",
-    "scenarioPlanFirstHint": "Der Agent liefert einen Umsetzungsplan und stoppt — nach deiner Freigabe setzt er ihn per Rückgabe im selben Worktree um.",
+    "scenarioPlanFirstHint": "Der Agent bestätigt, dass das Problem wirklich existiert, liefert einen Umsetzungsplan und stoppt — nach deiner Freigabe setzt er ihn per Rückgabe im selben Worktree um.",
     "scenarioReviewFix": "Review & Fix",
     "scenarioReviewFixHint": "Änderungen reviewen und Probleme direkt beheben; nach der Abnahme gehen die Commits zurück auf den Branch.",
     "scenarioReviewOnly": "Nur Review",

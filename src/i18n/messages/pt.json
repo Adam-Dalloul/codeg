@@ -146,7 +146,7 @@
     },
     "zoomLevel": {
       "sectionTitle": "Zoom da janela",
-      "sectionDescription": "Dimensiona toda a interface. Aplica imediatamente e é salvo por dispositivo.",
+      "sectionDescription": "Dimensiona toda a interface. Aplica imediatamente e é salvo por dispositivo. ⌘/Ctrl + e - percorrem os mesmos níveis de zoom deste menu (⌘/Ctrl 0 volta para 100%).",
       "placeholder": "Selecione o nível de zoom",
       "default": "Padrão",
       "current": "Zoom atual: {zoom}%"
@@ -359,6 +359,7 @@
     "resetDefault": "Restaurar padrões",
     "recordInstruction": "Clique no botão à direita e pressione uma combinação de teclas. Use Ctrl/Cmd, Alt e Shift. Pressione Esc para cancelar a gravação.",
     "recording": "Pressione um atalho...",
+    "unassigned": "Não atribuído",
     "toasts": {
       "conflict": "O atalho já está em uso por \"{title}\"",
       "updated": "Atalho atualizado",
@@ -429,6 +430,18 @@
       "toggle_custom_style": {
         "title": "Suspender/retomar estilo personalizado",
         "description": "Saída de emergência: desliga todas as cores e o CSS personalizados e volta a ligá-los"
+      },
+      "zoom_in": {
+        "title": "Aumentar zoom",
+        "description": "Aumenta a janela em um nível"
+      },
+      "zoom_out": {
+        "title": "Diminuir zoom",
+        "description": "Diminui a janela em um nível"
+      },
+      "zoom_reset": {
+        "title": "Redefinir zoom",
+        "description": "Restaura o zoom da janela para 100%"
       }
     }
   },
@@ -5165,11 +5178,9 @@
     "viewExisting": "Ver a tarefa existente",
     "scenarioLabel": "Como tratar",
     "scenarioFix": "Corrigir / implementar",
-    "scenarioFixHint": "O agente implementa ou corrige no worktree — você revisa o diff antes de aplicar qualquer coisa.",
-    "scenarioInvestigate": "Apenas analisar",
-    "scenarioInvestigateHint": "Reproduzir e diagnosticar sem corrigir; as conclusões chegam como relatório, e você pode devolver a tarefa para obter a correção.",
+    "scenarioFixHint": "O agente primeiro confirma que o problema é real no worktree e só então corrige; se não conseguir confirmar, relata isso em vez de mexer no código.",
     "scenarioPlanFirst": "Planejar primeiro",
-    "scenarioPlanFirstHint": "O agente entrega um plano de implementação e para — aprove devolvendo a tarefa para a implementação.",
+    "scenarioPlanFirstHint": "O agente confirma que o problema é real, entrega um plano de implementação e para — aprove devolvendo a tarefa para a implementação.",
     "scenarioReviewFix": "Revisar e corrigir",
     "scenarioReviewFixHint": "Revisa as mudanças e corrige os problemas em cima; ao aceitar, os commits voltam para o branch.",
     "scenarioReviewOnly": "Apenas revisar",

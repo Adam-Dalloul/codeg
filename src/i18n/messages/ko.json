@@ -146,7 +146,7 @@
     },
     "zoomLevel": {
       "sectionTitle": "창 확대/축소",
-      "sectionDescription": "전체 인터페이스를 확대하거나 축소합니다. 즉시 적용되며 장치별로 저장됩니다.",
+      "sectionDescription": "전체 인터페이스를 확대하거나 축소합니다. 즉시 적용되며 장치별로 저장됩니다. ⌘/Ctrl +와 -는 이 메뉴와 같은 단계로 확대/축소합니다(⌘/Ctrl 0은 100%로 되돌립니다).",
       "placeholder": "확대/축소 단계 선택",
       "default": "기본값",
       "current": "현재 확대/축소: {zoom}%"
@@ -359,6 +359,7 @@
     "resetDefault": "기본값으로 재설정",
     "recordInstruction": "오른쪽 버튼을 클릭한 다음 키 조합을 누르세요. Ctrl/Cmd, Alt, Shift를 사용할 수 있습니다. Esc를 누르면 기록을 취소합니다.",
     "recording": "단축키 입력...",
+    "unassigned": "할당 안 됨",
     "toasts": {
       "conflict": "단축키가 이미 \"{title}\"에서 사용 중입니다",
       "updated": "단축키가 업데이트되었습니다",
@@ -429,6 +430,18 @@
       "toggle_custom_style": {
         "title": "사용자 지정 스타일 중지/재개",
         "description": "비상 탈출구: 모든 사용자 지정 색상과 CSS를 끄고, 다시 누르면 되돌립니다"
+      },
+      "zoom_in": {
+        "title": "확대",
+        "description": "창을 한 단계 더 크게 만듭니다"
+      },
+      "zoom_out": {
+        "title": "축소",
+        "description": "창을 한 단계 더 작게 만듭니다"
+      },
+      "zoom_reset": {
+        "title": "확대/축소 초기화",
+        "description": "창 확대/축소를 100%로 되돌립니다"
       }
     }
   },
@@ -5165,11 +5178,9 @@
     "viewExisting": "기존 작업 보기",
     "scenarioLabel": "처리 방식",
     "scenarioFix": "바로 수정/구현",
-    "scenarioFixHint": "에이전트가 워크트리에서 구현하거나 수정하고, 반영 전에 변경 사항을 검토합니다.",
-    "scenarioInvestigate": "분석만",
-    "scenarioInvestigateHint": "재현과 원인 파악만 하고 수정하지 않습니다. 결과는 보고서로 오며, 작업을 돌려보내면 수정까지 진행합니다.",
+    "scenarioFixHint": "에이전트가 먼저 워크트리에서 문제가 실제로 있는지 확인한 뒤 수정합니다. 확인하지 못하면 코드를 바꾸지 않고 결과를 보고합니다.",
     "scenarioPlanFirst": "계획 먼저",
-    "scenarioPlanFirstHint": "구현 계획을 내놓고 멈춥니다. 확인 후 작업을 돌려보내면 같은 워크트리에서 구현합니다.",
+    "scenarioPlanFirstHint": "문제가 실제로 있는지 확인한 다음 구현 계획을 내놓고 멈춥니다. 확인 후 작업을 돌려보내면 같은 워크트리에서 구현합니다.",
     "scenarioReviewFix": "리뷰 후 수정",
     "scenarioReviewFixHint": "변경을 리뷰하고 문제를 바로 고칩니다. 승인하면 커밋이 원래 브랜치로 푸시됩니다.",
     "scenarioReviewOnly": "리뷰만",

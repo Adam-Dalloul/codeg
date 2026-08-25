@@ -5272,7 +5272,7 @@ async fn compose_prompt(
                  change instead of making it."
             )
         } else if original_work_order && cfg.deliverable.as_deref() == Some(DELIVERABLE_REPORT) {
-            // Report-deliverable order (forge investigate / plan / review-only):
+            // Report-deliverable order (forge plan-first / review-only):
             // the generic "commit as you like" grant would quietly undo the
             // task's own "analysis only" instruction several blocks earlier —
             // the licence must defer to the task text, not overrule it.
@@ -6468,7 +6468,7 @@ mod tests {
             .any(|t| t.contains("Commit to the current branch as you like")));
     }
 
-    /// A report-deliverable task (forge investigate / plan-first / review-only)
+    /// A report-deliverable task (forge plan-first / review-only)
     /// swaps the commit licence on its ORIGINAL order — otherwise the guard's
     /// "commit as you like", being the last block read, would quietly undo the
     /// task's own "analysis only" instruction.
