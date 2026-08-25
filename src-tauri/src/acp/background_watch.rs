@@ -37,13 +37,23 @@
 //!   consumed exactly once, so a cron//loop re-fire of the SAME text later
 //!   correctly classifies as out-of-turn).
 //!
+//! * **Session title** — Claude Code's generated name arrives as a dedicated
+//!   `ai-title` transcript record whenever the background summarizer finishes,
+//!   routinely AFTER the turn that triggered it ended. The ACP adapter only
+//!   pulls the name at turn-end (`maybeUpdateSessionTitle`, claude-agent-acp
+//!   0.69.0), so on a short session there is nothing to read yet and no wire
+//!   event ever follows. These bytes are already being tailed, so the records
+//!   are folded here and handed to [`publish_native_title`] — the same path a
+//!   live ACP title takes. Not activity: it rides alongside the activity event
+//!   rather than inside it (see `run_watch`).
+//!
 //! The watcher is connection-scoped on purpose: background work cannot outlive
 //! the agent CLI process, whose lifetime IS the connection's. Poll ticks are
 //! mtime-gated (an unchanged file costs one `stat`).
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{BufRead, Read, Seek, SeekFrom};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -313,8 +323,11 @@ async fn run_watch(
         // common case for a title generated after the last turn ended.
         //
         // Held rather than dropped while the conversation row is still
-        // unbound: unlike a live ACP title there is no resend to fall back on,
-        // because the record is read once and those bytes are never re-read.
+        // unbound: unlike a live ACP title there is no resend to COUNT on.
+        // These bytes are read exactly once, and while the CLI does re-emit the
+        // record on its own metadata flushes, nothing guarantees another one
+        // lands after the row binds — a session that ends right there would
+        // keep its first-prompt name.
         //
         // Bound to a `let` so the read guard is released before
         // `publish_native_title` asks for the write lock, and short-circuited
@@ -481,6 +494,11 @@ pub(crate) struct WatchState {
     /// string so the user's `/rename` keeps winning over a title Claude Code
     /// generates afterwards, exactly as `parse_conversation_detail` resolves
     /// the pair over the whole file.
+    ///
+    /// Seeded from the skipped pre-baseline history at arm time
+    /// (`seed_titles_from_history`) precisely because that resolution IS a
+    /// whole-file rule — the two records are appended independently, so the
+    /// tail alone is not enough to resolve them.
     custom_title: Option<String>,
     ai_title: Option<String>,
     /// A resolved title this watch read but has not published yet. Set only
@@ -817,8 +835,63 @@ impl WatchState {
             // must see this tick as changed so a baseline that landed BEFORE
             // EOF (pre-discovery records to process) is read immediately, not
             // on the next unrelated append.
+            self.seed_titles_from_history(&f, self.committed);
         }
         self.file = Some(f);
+    }
+
+    /// Fold the title records in the SKIPPED history into the title slots,
+    /// without queueing any of them for publication.
+    ///
+    /// `customTitle ?? aiTitle` is a WHOLE-FILE rule, and Claude Code appends
+    /// the two records INDEPENDENTLY: `/rename` writes a lone `custom-title`,
+    /// the background summarizer writes a lone `ai-title` (verified in the
+    /// 2.1.185 CLI — two separate one-record writers, plus a metadata flush
+    /// that re-emits whichever are set). A session renamed before this watch
+    /// armed therefore keeps its `custom-title` entirely in the history the
+    /// baseline skips, and resolving over the tail alone would let the next
+    /// `ai-title` publish over the user's own name — which the CLI re-emits
+    /// constantly (228 identical copies in one observed transcript), so the
+    /// exposure is not theoretical. Seeding costs one bounded read of the
+    /// prefix, once per arm, on top of the whole-file read
+    /// `baseline_offset_since` just did.
+    ///
+    /// `pending_title` is deliberately untouched: history renders through the
+    /// ordinary detail fetch, which already resolved this same pair over these
+    /// same bytes, so re-publishing it would rename on every reconnect.
+    fn seed_titles_from_history(&mut self, path: &PathBuf, upto: u64) {
+        if upto == 0 {
+            return;
+        }
+        let Ok(file) = std::fs::File::open(path) else {
+            return;
+        };
+        let mut reader = std::io::BufReader::new(file.take(upto));
+        let mut line = Vec::new();
+        loop {
+            line.clear();
+            match reader.read_until(b'\n', &mut line) {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {}
+            }
+            // Mirror the tail reader: a non-UTF-8 (or unparsable) line is
+            // skipped, never fatal to the rest of the scan.
+            let Ok(text) = std::str::from_utf8(&line) else {
+                continue;
+            };
+            let Ok(value) = serde_json::from_str::<serde_json::Value>(text.trim_end()) else {
+                continue;
+            };
+            let Some(record_type) = value.get("type").and_then(|t| t.as_str()) else {
+                continue;
+            };
+            capture_title_record(
+                &value,
+                record_type,
+                &mut self.custom_title,
+                &mut self.ai_title,
+            );
+        }
     }
 
     /// Read bytes appended since `committed`, returning COMPLETE lines only;
@@ -2840,5 +2913,117 @@ mod tests {
         write_lines(&path, &[&ai_title("New Session Name")]);
         let _ = tick_now(&mut ws, &ledger);
         assert_eq!(ws.pending_title.take().as_deref(), Some("New Session Name"));
+    }
+
+    /// `customTitle ?? aiTitle` is a WHOLE-FILE rule, but the two records are
+    /// appended independently — `/rename` writes a lone `custom-title`, the
+    /// summarizer a lone `ai-title`. A session renamed BEFORE this watch armed
+    /// keeps its `custom-title` in the skipped history, so resolving over the
+    /// tail alone would let the very next `ai-title` (the CLI re-emits it
+    /// constantly) publish over the user's own name. The arm seeds the slots
+    /// from history to close that.
+    #[test]
+    fn a_pre_baseline_user_title_outranks_a_generated_one_read_later() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = temp_session(&dir);
+        write_lines(
+            &path,
+            &[
+                &user_prompt_array("u-old", "old prompt"),
+                &custom_title("auth-refactor"),
+            ],
+        );
+
+        let ledger = PromptLedger::shared();
+        let mut ws = WatchState::new();
+        ws.rearm("s1".to_string(), epoch("2030-01-01T00:00:00Z"));
+        ws.adopt_file(path.clone());
+        assert_eq!(
+            ws.resolved_title().as_deref(),
+            Some("auth-refactor"),
+            "the arm must read the name the user already set"
+        );
+        assert_eq!(
+            ws.pending_title, None,
+            "seeding is not a publication — history rides the detail fetch"
+        );
+
+        // Only the GENERATED title lands in this watch's tail.
+        write_lines(&path, &[&ai_title("Concise AI Summary")]);
+        let _ = tick_now(&mut ws, &ledger);
+        assert_eq!(
+            ws.pending_title, None,
+            "a generated title must not take the name back from the user"
+        );
+        assert_eq!(ws.resolved_title().as_deref(), Some("auth-refactor"));
+
+        // A new user-set name still publishes normally.
+        write_lines(&path, &[&custom_title("auth-refactor-v2")]);
+        let _ = tick_now(&mut ws, &ledger);
+        assert_eq!(ws.pending_title.take().as_deref(), Some("auth-refactor-v2"));
+    }
+
+    /// The CLI re-emits the SAME `ai-title` record throughout a session (228
+    /// identical copies in one observed transcript). On a resumed session the
+    /// first one past the baseline is a repeat of what history — and therefore
+    /// the detail fetch, and therefore the row — already holds, so seeding must
+    /// swallow it rather than spend a lifecycle write on a no-op.
+    #[test]
+    fn a_generated_title_already_in_history_is_not_republished() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = temp_session(&dir);
+        write_lines(
+            &path,
+            &[
+                &user_prompt_array("u-old", "old prompt"),
+                &ai_title("Old Session Name"),
+            ],
+        );
+
+        let ledger = PromptLedger::shared();
+        let mut ws = WatchState::new();
+        ws.rearm("s1".to_string(), epoch("2030-01-01T00:00:00Z"));
+        ws.adopt_file(path.clone());
+
+        write_lines(&path, &[&ai_title("Old Session Name")]);
+        let _ = tick_now(&mut ws, &ledger);
+        assert_eq!(ws.pending_title, None);
+
+        // A genuinely NEW generated name is still this watch's to surface.
+        write_lines(&path, &[&ai_title("Renamed By The Summarizer")]);
+        let _ = tick_now(&mut ws, &ledger);
+        assert_eq!(
+            ws.pending_title.take().as_deref(),
+            Some("Renamed By The Summarizer")
+        );
+    }
+
+    /// A brand-new session baselines at offset 0 (its file is created after the
+    /// spawn epoch), so there is no history to seed and the seed must be a
+    /// no-op — the path this PR actually targets stays untouched.
+    #[test]
+    fn seeding_is_a_noop_for_a_fresh_session_whose_whole_file_is_ours() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = temp_session(&dir);
+        write_lines(
+            &path,
+            &[
+                &user_prompt_array("u-new", "first prompt"),
+                &ai_title("Find current vLLM stable release tag"),
+            ],
+        );
+
+        let ledger = PromptLedger::shared();
+        let mut ws = WatchState::new();
+        ws.rearm("s1".to_string(), epoch("2020-01-01T00:00:00Z"));
+        ws.adopt_file(path.clone());
+        assert_eq!(ws.committed, 0, "the whole file belongs to this watch");
+        assert_eq!(ws.resolved_title(), None, "nothing to seed from");
+
+        let _ = tick_now(&mut ws, &ledger);
+        assert_eq!(
+            ws.pending_title.take().as_deref(),
+            Some("Find current vLLM stable release tag")
+        );
     }
 }
