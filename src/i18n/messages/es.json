@@ -3475,7 +3475,11 @@
       "hunkLabel": "Bloque {index}",
       "loadingHunk": "Cargando hunk...",
       "noDiffData": "Sin datos de diff",
-      "showRemainingLines": "Mostrar {count} líneas más"
+      "showRemainingLines": "Mostrar {count} líneas más",
+      "viewMode": {
+        "split": "Cambiar a la vista lado a lado",
+        "unified": "Cambiar a la vista en línea"
+      }
     },
     "conversationContextBar": {
       "folderTitle": "Carpeta de trabajo",

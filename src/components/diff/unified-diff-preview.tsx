@@ -2,6 +2,7 @@
 
 import { useMemo, useState } from "react"
 import { useTranslations } from "next-intl"
+import { Columns2, Rows3 } from "lucide-react"
 import { useActiveFolder } from "@/contexts/active-folder-context"
 import { cn } from "@/lib/utils"
 import { ScrollArea } from "@/components/ui/scroll-area"
@@ -9,6 +10,29 @@ import { FilePathLink } from "@/components/ai-elements/link-safety"
 
 type RowMarker = "none" | "added" | "deleted" | "modified"
 type DiffFileMode = "modified" | "added" | "deleted" | "renamed"
+export type DiffViewMode = "unified" | "split"
+
+const DIFF_VIEW_MODE_KEY = "workspace:diff-view-mode"
+
+export function loadDiffViewMode(): DiffViewMode {
+  if (typeof window === "undefined") return "unified"
+  try {
+    const raw = localStorage.getItem(DIFF_VIEW_MODE_KEY)
+    if (raw === "split" || raw === "unified") return raw
+  } catch {
+    /* ignore */
+  }
+  return "unified"
+}
+
+export function saveDiffViewMode(mode: DiffViewMode): void {
+  if (typeof window === "undefined") return
+  try {
+    localStorage.setItem(DIFF_VIEW_MODE_KEY, mode)
+  } catch {
+    /* ignore */
+  }
+}
 
 interface RawDiffRow {
   kind: "context" | "add" | "del"
@@ -17,7 +41,7 @@ interface RawDiffRow {
   newLine: number | null
 }
 
-interface ParsedDiffRow {
+export interface ParsedDiffRow {
   type: "context" | "added" | "deleted" | "modified"
   text: string
   sign: " " | "+" | "-"
@@ -459,6 +483,75 @@ function rowMarker(row: ParsedDiffRow): RowMarker {
   return "none"
 }
 
+/** One half of a side-by-side row. `text === null` marks the filler cell a
+ *  delete-only or add-only block leaves on the opposite side. */
+export interface SplitCell {
+  line: number | null
+  text: string | null
+  marker: RowMarker
+}
+
+export interface SplitRow {
+  left: SplitCell
+  right: SplitCell
+}
+
+const EMPTY_CELL: SplitCell = { line: null, text: null, marker: "none" }
+
+/**
+ * Re-pair a hunk's unified rows for the side-by-side view: context rows span
+ * both sides, and each delete-run followed by its add-run is zipped
+ * positionally — the i-th deleted line faces the i-th added line, and the
+ * longer run's remainder faces a filler cell (the same alignment GitHub's
+ * split view uses; the lines share a row, they are not claimed to be
+ * related).
+ */
+export function toSplitRows(rows: ParsedDiffRow[]): SplitRow[] {
+  const out: SplitRow[] = []
+  let index = 0
+
+  while (index < rows.length) {
+    const row = rows[index]
+    if (!row) break
+
+    if (row.type === "context") {
+      out.push({
+        left: { line: row.oldLine, text: row.text, marker: "none" },
+        right: { line: row.newLine, text: row.text, marker: "none" },
+      })
+      index += 1
+      continue
+    }
+
+    const dels: ParsedDiffRow[] = []
+    const adds: ParsedDiffRow[] = []
+    while (index < rows.length && rows[index]?.type === "deleted") {
+      dels.push(rows[index]!)
+      index += 1
+    }
+    while (index < rows.length && rows[index]?.type === "added") {
+      adds.push(rows[index]!)
+      index += 1
+    }
+
+    const pairs = Math.max(dels.length, adds.length)
+    for (let p = 0; p < pairs; p++) {
+      const del = dels[p]
+      const add = adds[p]
+      out.push({
+        left: del
+          ? { line: del.oldLine, text: del.text, marker: "deleted" }
+          : EMPTY_CELL,
+        right: add
+          ? { line: add.newLine, text: add.text, marker: "added" }
+          : EMPTY_CELL,
+      })
+    }
+  }
+
+  return out
+}
+
 function HunkSeparator({ hunk }: { hunk: ParsedDiffHunk }) {
   const label =
     hunk.oldStart != null && hunk.oldCount != null
@@ -516,6 +609,52 @@ function NewFileLines({ rows }: { rows: ParsedDiffRow[] }) {
   )
 }
 
+function SplitCellView({
+  cell,
+  gutterClassName,
+}: {
+  cell: SplitCell
+  gutterClassName: string
+}) {
+  const empty = cell.text === null
+  return (
+    <div
+      className={cn(
+        "flex min-w-[260px] flex-1 basis-0",
+        empty ? "bg-muted/20" : ROW_CLASS[cell.marker]
+      )}
+    >
+      <span
+        className={cn(
+          gutterClassName,
+          "shrink-0 select-none pr-1 text-right",
+          empty ? "text-transparent" : "text-muted-foreground/40"
+        )}
+      >
+        {cell.line ?? ""}
+      </span>
+      <span className="flex-1 whitespace-pre pr-3">{cell.text}</span>
+    </div>
+  )
+}
+
+function HunkSplitLines({ rows }: { rows: ParsedDiffRow[] }) {
+  const splitRows = useMemo(() => toSplitRows(rows), [rows])
+  return (
+    <div className="font-mono text-[12px] leading-[20px]">
+      {splitRows.map((row, i) => (
+        <div key={i} className="flex">
+          <SplitCellView cell={row.left} gutterClassName="w-[3rem]" />
+          <SplitCellView
+            cell={row.right}
+            gutterClassName="w-[3rem] border-l border-border/40"
+          />
+        </div>
+      ))}
+    </div>
+  )
+}
+
 function isNewFileOnly(file: ParsedDiffFile): boolean {
   return file.mode === "added" && file.deletions === 0
 }
@@ -550,12 +689,14 @@ function capHunks(hunks: ParsedDiffHunk[], limit: number): ParsedDiffHunk[] {
 
 function DiffFileSection({
   file,
+  view,
   embedded,
   clickableFilePath,
   folderPath,
   unbounded,
 }: {
   file: ParsedDiffFile
+  view: DiffViewMode
   embedded: boolean
   clickableFilePath: boolean
   folderPath: string | null
@@ -649,7 +790,11 @@ function DiffFileSection({
             : hunks.map((hunk, hunkIdx) => (
                 <div key={hunk.key}>
                   {hunkIdx > 0 && <HunkSeparator hunk={hunk} />}
-                  <HunkLines rows={hunk.rows} />
+                  {view === "split" ? (
+                    <HunkSplitLines rows={hunk.rows} />
+                  ) : (
+                    <HunkLines rows={hunk.rows} />
+                  )}
                 </div>
               ))}
         </div>
@@ -702,6 +847,12 @@ export function UnifiedDiffPreview({
   const t = useTranslations("Folder.diffPreview")
   const { activeFolder: folder } = useActiveFolder()
   const files = useMemo(() => parseUnifiedDiff(diffText), [diffText])
+  const [view, setView] = useState<DiffViewMode>(() => loadDiffViewMode())
+
+  const switchView = (mode: DiffViewMode) => {
+    setView(mode)
+    saveDiffViewMode(mode)
+  }
 
   if (!diffText.trim()) {
     return (
@@ -738,10 +889,27 @@ export function UnifiedDiffPreview({
   return (
     <Frame className={className}>
       <div className={embedded ? "space-y-2" : "space-y-3"}>
+        <div className="flex items-center justify-end gap-1">
+          <ViewModeButton
+            active={view === "unified"}
+            label={t("viewMode.unified")}
+            onClick={() => switchView("unified")}
+          >
+            <Rows3 className="h-3 w-3" />
+          </ViewModeButton>
+          <ViewModeButton
+            active={view === "split"}
+            label={t("viewMode.split")}
+            onClick={() => switchView("split")}
+          >
+            <Columns2 className="h-3 w-3" />
+          </ViewModeButton>
+        </div>
         {files.map((file) => (
           <DiffFileSection
             key={file.key}
             file={file}
+            view={view}
             embedded={embedded}
             clickableFilePath={clickableFilePath}
             folderPath={folder?.path ?? null}
@@ -750,6 +918,34 @@ export function UnifiedDiffPreview({
         ))}
       </div>
     </Frame>
+  )
+}
+
+function ViewModeButton({
+  active,
+  label,
+  onClick,
+  children,
+}: {
+  active: boolean
+  label: string
+  onClick: () => void
+  children: React.ReactNode
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-label={label}
+      aria-pressed={active}
+      title={label}
+      className={cn(
+        "inline-flex items-center gap-1 rounded border border-border bg-background px-2 py-0.5 text-[10px] transition-colors hover:bg-muted",
+        active ? "text-foreground" : "text-muted-foreground"
+      )}
+    >
+      {children}
+    </button>
   )
 }
 

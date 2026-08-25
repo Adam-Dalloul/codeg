@@ -3475,7 +3475,11 @@
       "hunkLabel": "مقطع {index}",
       "loadingHunk": "جارٍ تحميل hunk...",
       "noDiffData": "لا توجد بيانات diff",
-      "showRemainingLines": "عرض {count} سطر إضافي"
+      "showRemainingLines": "عرض {count} سطر إضافي",
+      "viewMode": {
+        "split": "التبديل إلى العرض جنباً إلى جنب",
+        "unified": "التبديل إلى العرض المضمّن"
+      }
     },
     "conversationContextBar": {
       "folderTitle": "مجلد العمل",

@@ -3475,7 +3475,11 @@
       "hunkLabel": "Bloco {index}",
       "loadingHunk": "Carregando hunk...",
       "noDiffData": "Sem dados de diff",
-      "showRemainingLines": "Mostrar mais {count} linhas"
+      "showRemainingLines": "Mostrar mais {count} linhas",
+      "viewMode": {
+        "split": "Alternar para a visualização lado a lado",
+        "unified": "Alternar para a visualização em linha"
+      }
     },
     "conversationContextBar": {
       "folderTitle": "Pasta de trabalho",

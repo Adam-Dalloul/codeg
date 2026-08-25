@@ -1,8 +1,12 @@
 import { fireEvent, render, screen } from "@testing-library/react"
 import { NextIntlClientProvider } from "next-intl"
-import { describe, expect, it, vi } from "vitest"
+import { beforeEach, describe, expect, it, vi } from "vitest"
 
-import { UnifiedDiffPreview } from "./unified-diff-preview"
+import {
+  UnifiedDiffPreview,
+  toSplitRows,
+  type ParsedDiffRow,
+} from "./unified-diff-preview"
 import enMessages from "@/i18n/messages/en.json"
 
 // The component reads the active folder only to strip a path prefix from the
@@ -88,5 +92,143 @@ describe("UnifiedDiffPreview", () => {
     ).toBeInTheDocument()
     expect(screen.getByText("line 500")).toBeInTheDocument()
     expect(screen.queryByText("line 700")).not.toBeInTheDocument()
+  })
+})
+
+/** A single-file modified diff: one context row, two deletions, one addition,
+ *  one more context row — exercises the split pairing with unequal runs. */
+function modifiedDiff(): string {
+  return [
+    "diff --git a/app.ts b/app.ts",
+    "--- a/app.ts",
+    "+++ b/app.ts",
+    "@@ -1,5 1,4 @@",
+    " keep one",
+    "-old line A",
+    "-old line B",
+    "+new line A",
+    " keep two",
+  ].join("\n")
+}
+
+/** The unified rows `parseUnifiedDiff` derives from `modifiedDiff`, so the
+ *  pairing unit tests feed the exact shape production renders. */
+function modifiedRows(): ParsedDiffRow[] {
+  return [
+    { type: "context", text: "keep one", sign: " ", oldLine: 1, newLine: 1 },
+    {
+      type: "deleted",
+      text: "old line A",
+      sign: "-",
+      oldLine: 2,
+      newLine: null,
+    },
+    {
+      type: "deleted",
+      text: "old line B",
+      sign: "-",
+      oldLine: 3,
+      newLine: null,
+    },
+    { type: "added", text: "new line A", sign: "+", oldLine: null, newLine: 2 },
+    { type: "context", text: "keep two", sign: " ", oldLine: 4, newLine: 3 },
+  ]
+}
+
+describe("UnifiedDiffPreview — side-by-side view", () => {
+  beforeEach(() => {
+    localStorage.clear()
+  })
+
+  it("renders unified signs by default and keeps the split mode opt-in", () => {
+    renderWithIntl(<UnifiedDiffPreview diffText={modifiedDiff()} />)
+
+    expect(screen.getAllByText("+")).toHaveLength(1)
+    expect(screen.getAllByText("-")).toHaveLength(2)
+  })
+
+  it("reads a persisted split preference before the first render", () => {
+    localStorage.setItem("workspace:diff-view-mode", "split")
+    renderWithIntl(<UnifiedDiffPreview diffText={modifiedDiff()} />)
+
+    expect(screen.queryByText("+")).not.toBeInTheDocument()
+    // Context rows now render once per side.
+    expect(screen.getAllByText("keep one")).toHaveLength(2)
+  })
+
+  it("toggles to split, renders both sides, and persists the choice", () => {
+    renderWithIntl(<UnifiedDiffPreview diffText={modifiedDiff()} />)
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Switch to side-by-side view" })
+    )
+
+    // No unified sign column anymore; both sides' texts are on screen.
+    expect(screen.queryByText("+")).not.toBeInTheDocument()
+    expect(screen.getAllByText("keep one")).toHaveLength(2)
+    expect(screen.getByText("old line A")).toBeInTheDocument()
+    expect(screen.getByText("new line A")).toBeInTheDocument()
+    expect(localStorage.getItem("workspace:diff-view-mode")).toBe("split")
+  })
+
+  it("toggles back to unified and persists it", () => {
+    localStorage.setItem("workspace:diff-view-mode", "split")
+    renderWithIntl(<UnifiedDiffPreview diffText={modifiedDiff()} />)
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Switch to inline view" })
+    )
+
+    expect(screen.getByText("+")).toBeInTheDocument()
+    expect(localStorage.getItem("workspace:diff-view-mode")).toBe("unified")
+  })
+})
+
+describe("toSplitRows", () => {
+  it("spans context rows across both sides", () => {
+    const [row] = toSplitRows(modifiedRows().slice(0, 1))
+
+    expect(row?.left).toEqual({
+      line: 1,
+      text: "keep one",
+      marker: "none",
+    })
+    expect(row?.right).toEqual({
+      line: 1,
+      text: "keep one",
+      marker: "none",
+    })
+  })
+
+  it("pairs a delete-run with its add-run positionally", () => {
+    const rows = toSplitRows(modifiedRows().slice(1, 4))
+
+    expect(rows).toHaveLength(2)
+    // First pair: old A faces new A.
+    expect(rows[0]?.left).toMatchObject({
+      text: "old line A",
+      marker: "deleted",
+    })
+    expect(rows[0]?.right).toMatchObject({
+      text: "new line A",
+      marker: "added",
+    })
+    // The longer delete run leaves a filler cell on the right.
+    expect(rows[1]?.left).toMatchObject({ text: "old line B" })
+    expect(rows[1]?.right).toEqual({
+      line: null,
+      text: null,
+      marker: "none",
+    })
+  })
+
+  it("gives a pure insertion an empty left cell", () => {
+    const rows = toSplitRows([
+      { type: "added", text: "fresh", sign: "+", oldLine: null, newLine: 5 },
+    ])
+
+    expect(rows).toHaveLength(1)
+    expect(rows[0]?.left).toEqual({ line: null, text: null, marker: "none" })
+    expect(rows[0]?.right).toMatchObject({ text: "fresh", line: 5 })
   })
 })
