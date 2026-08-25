@@ -14,10 +14,17 @@ use crate::models::{RemoteWorkspaceConnectionInfo, RemoteWorkspaceHeader};
 
 /// Names the client sets itself, on the HTTP calls and on the WebSocket
 /// handshake. The save fails rather than silently drop what the user typed.
-const RESERVED_HEADER_NAMES: [&str; 10] = [
+/// A slice, not a fixed-size array: the length is one more thing to forget to
+/// bump when a name is added.
+const RESERVED_HEADER_NAMES: &[&str] = &[
     "authorization",
     "content-type",
     "content-length",
+    // `hyper` frames the body itself and picks chunked for the streaming
+    // workspace upload. A user-supplied framing header contradicts it, and it
+    // is also the header a request-smuggling attempt rides in on — which is
+    // the one thing not to hand to a fronting proxy.
+    "transfer-encoding",
     "host",
     "connection",
     "upgrade",
@@ -323,8 +330,23 @@ mod tests {
     }
 
     #[test]
+    fn to_header_map_marks_every_value_sensitive() {
+        // A custom header is a credential. Sensitive keeps it out of the HTTP/2
+        // HPACK dynamic table and out of any `{:?}` of the request.
+        let map = [header("CF-Access-Client-Secret", "s3cret")].to_header_map();
+        let value = map.get("cf-access-client-secret").unwrap();
+        assert!(value.is_sensitive());
+        assert_eq!(format!("{value:?}"), "Sensitive");
+    }
+
+    #[test]
     fn validate_headers_rejects_reserved_names() {
-        for name in ["Authorization", "content-type", "Sec-WebSocket-Protocol"] {
+        for name in [
+            "Authorization",
+            "content-type",
+            "Transfer-Encoding",
+            "Sec-WebSocket-Protocol",
+        ] {
             let err = validate_headers(&[header(name, "x")]).unwrap_err();
             assert!(
                 err.message.contains("reserved"),
@@ -383,6 +405,49 @@ mod tests {
 
         delete(&db.conn, created.id).await.unwrap();
         assert!(list(&db.conn).await.unwrap().is_empty());
+    }
+
+    /// The upgrade path, which is every existing install: rows written before
+    /// the `headers` column existed. `ADD COLUMN NOT NULL DEFAULT '[]'` has to
+    /// backfill them — a NULL there fails to deserialize into `Model.headers:
+    /// String` and takes the whole connection list down, not just the headers.
+    /// The insert omits `headers` exactly the way the old schema did.
+    #[tokio::test]
+    async fn list_reads_a_row_written_without_the_headers_column() {
+        use sea_orm::{ConnectionTrait, DbBackend, Statement};
+
+        let db = fresh_in_memory_db().await;
+        // Seeded through `create` so the legacy row can copy its timestamps
+        // verbatim, rather than guessing SeaORM's SQLite datetime encoding.
+        let seed = create(&db.conn, "Seed", "http://127.0.0.1:3080", "token", &[])
+            .await
+            .unwrap();
+        db.conn
+            .execute(Statement::from_string(
+                DbBackend::Sqlite,
+                "INSERT INTO remote_workspace_connection \
+                 (name, base_url, token, sort_order, created_at, updated_at) \
+                 SELECT 'Legacy', 'http://127.0.0.1:3099', token, 1, \
+                 created_at, updated_at FROM remote_workspace_connection"
+                    .to_owned(),
+            ))
+            .await
+            .unwrap();
+
+        let listed = list(&db.conn).await.unwrap();
+        assert_eq!(
+            listed.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
+            vec!["Seed", "Legacy"]
+        );
+        assert!(listed[1].headers.is_empty());
+
+        // `create` re-reads every column to find the max sort order, so the
+        // legacy row has to survive that read too.
+        let next = create(&db.conn, "Next", "http://127.0.0.1:3081", "token", &[])
+            .await
+            .unwrap();
+        assert_eq!(next.sort_order, 2);
+        assert_ne!(next.id, seed.id);
     }
 
     #[tokio::test]

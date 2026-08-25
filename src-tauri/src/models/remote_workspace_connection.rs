@@ -12,7 +12,14 @@ pub struct RemoteWorkspaceHeader {
 
 impl RemoteWorkspaceHeader {
     pub fn to_header_pair(&self) -> Result<(HeaderName, HeaderValue), http::Error> {
-        Ok((self.name.trim().try_into()?, self.value.trim().try_into()?))
+        let name: HeaderName = self.name.trim().try_into()?;
+        let mut value: HeaderValue = self.value.trim().try_into()?;
+        // A custom header on a remote connection normally carries a credential
+        // (a Cloudflare Access service token, a proxy secret), so it gets the
+        // same treatment `reqwest` gives its own `bearer_auth` value: never
+        // added to the HTTP/2 HPACK dynamic table, and redacted from `Debug`.
+        value.set_sensitive(true);
+        Ok((name, value))
     }
 }
 
