@@ -276,6 +276,30 @@ describe("digit bindings on a shifted digit row", () => {
     ).toBe("reset")
   })
 
+  // The positional fallback must not claim a SHIFTED digit key: with Shift that
+  // key types a character that belongs to another binding, so matching by
+  // position would make one press satisfy two.
+  it("leaves shifted US Digit0 to whoever owns the character it types", () => {
+    expect(
+      matchShortcutEvent(
+        keyEvent(")", { metaKey: true, shiftKey: true, code: "Digit0" }),
+        "mod+0"
+      )
+    ).toBe(false)
+  })
+
+  it("gives QWERTZ Ctrl+Shift+0 to zoom in only, not also to reset", () => {
+    // On German QWERTZ that keypress types "=", which is the zoom-in binding.
+    const event = keyEvent("=", {
+      ctrlKey: true,
+      shiftKey: true,
+      code: "Digit0",
+    })
+    expect(matchShortcutEvent(event, "mod+0")).toBe(false)
+    expect(matchShortcutEvent(event, "mod+=")).toBe(true)
+    expect(resolveWindowZoomAction(event, defaultZoom)).toBe("in")
+  })
+
   it("only accepts the bound digit's own physical key", () => {
     expect(
       matchShortcutEvent(

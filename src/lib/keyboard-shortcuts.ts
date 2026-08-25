@@ -458,6 +458,17 @@ function matchesDigitRowCode(
   boundKey: string
 ): boolean {
   if (!DIGIT_KEY_PATTERN.test(boundKey)) return false
+  // Unshifted only: with Shift the digit row yields a character that belongs to
+  // someone else — ")" on US, "=" on QWERTZ — and claiming it by position makes
+  // one press satisfy two bindings.
+  //
+  // This narrows the positional fallback rather than closing it: the unshifted
+  // half remains, because AZERTY puts `-` on Digit6 and `_` on Digit8, so
+  // `Ctrl+-` matches both `mod+-` and `mod+6` while `shortcutsConflict` cannot
+  // see it (the recorder serialises from `key`, this matches by `code`, and the
+  // synthetic event only rebuilds the `key` form). Latent while nothing binds
+  // digits 1-9; any `Digit<N>` positional fallback has this shape.
+  if (event.shiftKey) return false
   return event.code === `Digit${boundKey}`
 }
 
@@ -489,7 +500,11 @@ export function matchShortcutEvent(
   // binding asked for it; ignore a surplus Shift only in those cases.
   if (parsed.shift) {
     if (!event.shiftKey) return false
-  } else if (event.shiftKey && keys.size === 1 && !matchesDigitRow) {
+  } else if (
+    event.shiftKey &&
+    keys.size === 1 &&
+    !DIGIT_KEY_PATTERN.test(parsed.key)
+  ) {
     return false
   }
 
