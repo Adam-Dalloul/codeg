@@ -218,6 +218,27 @@ describe("UnifiedDiffPreview — side-by-side view", () => {
     expect(screen.getAllByText("shared context")).toHaveLength(2)
   })
 
+  it("lays the split rows out on one grid sized to its content", () => {
+    // jsdom does no layout, so this pins the two declarations that ARE the
+    // behaviour. Both were verified in Chromium and WebKit: with per-row flex
+    // boxes (or a grid without `w-max`) the container resolves to the tracks'
+    // minimum size, `1fr 1fr` halves it, and the longer side of a row paints
+    // its line over the opposite column — two lines of code on top of each
+    // other. Shared tracks give every row the same break point; `w-max` keeps
+    // each track wide enough for its widest line.
+    localStorage.setItem("workspace:diff-view-mode", "split")
+    const { container } = renderWithIntl(
+      <UnifiedDiffPreview diffText={modifiedDiff()} />
+    )
+
+    const grid = container.querySelector('[class*="grid-cols-"]')
+    expect(grid).not.toBeNull()
+    expect(grid).toHaveClass("w-max")
+    expect(grid).toHaveClass("grid-cols-[repeat(2,minmax(260px,1fr))]")
+    // Cells must not size themselves — the track owns the width.
+    expect(grid?.firstElementChild?.className).not.toMatch(/flex-1|basis-0/)
+  })
+
   it("still switches when persisting the choice throws", () => {
     // Storage disabled / over quota: the mode won't survive a reload, but the
     // button must not look dead. The broadcast carries the new mode instead of

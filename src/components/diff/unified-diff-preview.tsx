@@ -1,6 +1,6 @@
 "use client"
 
-import { useMemo, useState } from "react"
+import { Fragment, useMemo, useState } from "react"
 import { useTranslations } from "next-intl"
 import { Columns2, Rows3 } from "lucide-react"
 import { useActiveFolder } from "@/contexts/active-folder-context"
@@ -603,13 +603,11 @@ function SplitCellView({
   gutterClassName: string
 }) {
   const empty = cell.text === null
+  // Sizing belongs to the grid track, not the cell: a cell that sized itself
+  // could end up narrower than its own `whitespace-pre` line and paint it over
+  // the neighbouring column.
   return (
-    <div
-      className={cn(
-        "flex min-w-[260px] flex-1 basis-0",
-        empty ? "bg-muted/20" : ROW_CLASS[cell.marker]
-      )}
-    >
+    <div className={cn("flex", empty ? "bg-muted/20" : ROW_CLASS[cell.marker])}>
       <span
         className={cn(
           gutterClassName,
@@ -624,18 +622,33 @@ function SplitCellView({
   )
 }
 
+/**
+ * One grid for the whole hunk, so the two columns are laid out by shared
+ * tracks rather than per-row: every row is guaranteed to break at the same
+ * x, and no cell can be sized below the line it holds.
+ *
+ * `w-max` is load-bearing. Without it the grid takes the shrink-to-fit width
+ * of its inline-block parent, which resolves to the tracks' MINIMUM sizes;
+ * `1fr 1fr` then halves that between the columns, so a row whose two sides
+ * differ in length (the normal case — a replaced line rarely keeps its old
+ * width) leaves the longer side overflowing its track and painting under the
+ * opposite column's background and text. Sizing to `max-content` makes the
+ * grid as wide as twice its widest cell, which the enclosing `x="scroll"`
+ * ScrollArea then scrolls; `min-w-full` keeps short diffs filling the host
+ * instead of huddling on the left.
+ */
 function HunkSplitLines({ rows }: { rows: ParsedDiffRow[] }) {
   const splitRows = useMemo(() => toSplitRows(rows), [rows])
   return (
-    <div className="font-mono text-[12px] leading-[20px]">
+    <div className="grid w-max min-w-full grid-cols-[repeat(2,minmax(260px,1fr))] font-mono text-[12px] leading-[20px]">
       {splitRows.map((row, i) => (
-        <div key={i} className="flex">
+        <Fragment key={i}>
           <SplitCellView cell={row.left} gutterClassName="w-[3rem]" />
           <SplitCellView
             cell={row.right}
             gutterClassName="w-[3rem] border-l border-border/40"
           />
-        </div>
+        </Fragment>
       ))}
     </div>
   )
