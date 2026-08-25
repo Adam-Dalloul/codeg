@@ -56,6 +56,7 @@ import {
 import { useZoomLevel, useEditorFont } from "@/hooks/use-appearance"
 import { useImeSafeEditorValue } from "@/hooks/use-ime-safe-editor-value"
 import { ScrollArea } from "@/components/ui/scroll-area"
+import { getAddToChatPillPlacement } from "@/lib/add-to-chat-pill-placement"
 
 import "@/lib/monaco-local"
 
@@ -331,6 +332,7 @@ const AUTO_SAVE_DELAY_MS = 5000
 
 interface AddToChatPill {
   widget: MonacoEditorNs.IContentWidget
+  isVisible: () => boolean
   setVisible: (visible: boolean, position: IPosition | null) => void
   /** Re-read the label (e.g. after a locale change) even while already shown. */
   refreshLabel: () => void
@@ -347,6 +349,7 @@ interface AddToChatPill {
  * `layoutContentWidget`.
  */
 function createAddToChatPill(
+  editor: MonacoEditorNs.IStandaloneCodeEditor,
   monaco: Monaco,
   onActivate: () => void,
   getLabel: () => string
@@ -382,22 +385,29 @@ function createAddToChatPill(
   const widget: MonacoEditorNs.IContentWidget = {
     getId: () => "codeg.addToChatPill",
     getDomNode: () => dom,
-    getPosition: () =>
-      visible && position
-        ? {
-            position,
-            preference: [
-              monaco.editor.ContentWidgetPositionPreference.ABOVE,
-              monaco.editor.ContentWidgetPositionPreference.BELOW,
-            ],
-          }
-        : null,
+    getPosition: () => {
+      if (!visible || !position) return null
+
+      const firstVisibleLineNumber =
+        editor.getVisibleRanges()[0]?.startLineNumber ?? null
+      const preference = getAddToChatPillPlacement(
+        position.lineNumber,
+        firstVisibleLineNumber
+      ).map((placement) =>
+        placement === "above"
+          ? monaco.editor.ContentWidgetPositionPreference.ABOVE
+          : monaco.editor.ContentWidgetPositionPreference.BELOW
+      )
+
+      return { position, preference }
+    },
     allowEditorOverflow: true,
     suppressMouseDown: true,
   }
 
   return {
     widget,
+    isVisible: () => visible,
     setVisible: (next, pos) => {
       visible = next
       position = pos
@@ -1028,6 +1038,7 @@ export function FileWorkspacePanel() {
   const selectionListenerRef = useRef<IDisposable | null>(null)
   const focusListenerRef = useRef<IDisposable | null>(null)
   const blurListenerRef = useRef<IDisposable | null>(null)
+  const scrollListenerRef = useRef<IDisposable | null>(null)
   const tRef = useRef(t)
   const monacoRef = useRef<Monaco | null>(null)
   // The loaded monaco instance, captured at editor mount. Passing it to the
@@ -1260,6 +1271,8 @@ export function FileWorkspacePanel() {
       focusListenerRef.current = null
       blurListenerRef.current?.dispose()
       blurListenerRef.current = null
+      scrollListenerRef.current?.dispose()
+      scrollListenerRef.current = null
       if (addToChatPillRef.current) {
         target?.removeContentWidget(addToChatPillRef.current.widget)
         addToChatPillRef.current = null
@@ -1607,6 +1620,7 @@ export function FileWorkspacePanel() {
       )
 
       const pill = createAddToChatPill(
+        editorInstance,
         monaco,
         () => addSelectionToChat(),
         () => tRef.current("addToChat")
@@ -1637,6 +1651,12 @@ export function FileWorkspacePanel() {
       blurListenerRef.current = editorInstance.onDidBlurEditorText(() => {
         pill.setVisible(false, null)
         editorInstance.layoutContentWidget(pill.widget)
+      })
+      scrollListenerRef.current?.dispose()
+      scrollListenerRef.current = editorInstance.onDidScrollChange((event) => {
+        if (event.scrollTopChanged && pill.isVisible()) {
+          editorInstance.layoutContentWidget(pill.widget)
+        }
       })
 
       editorInstance.onDidDispose(() => teardownAddToChat(editorInstance))
