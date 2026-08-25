@@ -3481,7 +3481,11 @@
       "hunkLabel": "Hunk {index}",
       "loadingHunk": "Loading hunk...",
       "noDiffData": "No diff data",
-      "showRemainingLines": "Show {count} more lines"
+      "showRemainingLines": "Show {count} more lines",
+      "viewMode": {
+        "split": "Switch to side-by-side view",
+        "unified": "Switch to inline view"
+      }
     },
     "conversationContextBar": {
       "folderTitle": "Working folder",

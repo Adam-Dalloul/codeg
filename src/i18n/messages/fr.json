@@ -3481,7 +3481,11 @@
       "hunkLabel": "Bloc {index}",
       "loadingHunk": "Chargement du hunk...",
       "noDiffData": "Aucune donnée diff",
-      "showRemainingLines": "Afficher {count} lignes de plus"
+      "showRemainingLines": "Afficher {count} lignes de plus",
+      "viewMode": {
+        "split": "Passer à la vue côte à côte",
+        "unified": "Passer à la vue en ligne"
+      }
     },
     "conversationContextBar": {
       "folderTitle": "Dossier de travail",
