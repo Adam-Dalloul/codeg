@@ -111,6 +111,20 @@ function modifiedDiff(): string {
   ].join("\n")
 }
 
+/** A second modified file, for asserting that two previews on one screen share
+ *  the view-mode preference. */
+function otherModifiedDiff(): string {
+  return [
+    "diff --git a/other.ts b/other.ts",
+    "--- a/other.ts",
+    "+++ b/other.ts",
+    "@@ -1,2 +1,2 @@",
+    " shared context",
+    "-was here",
+    "+is here",
+  ].join("\n")
+}
+
 /** The unified rows `parseUnifiedDiff` derives from `modifiedDiff`, so the
  *  pairing unit tests feed the exact shape production renders. */
 function modifiedRows(): ParsedDiffRow[] {
@@ -182,6 +196,72 @@ describe("UnifiedDiffPreview — side-by-side view", () => {
     expect(screen.getByText("+")).toBeInTheDocument()
     expect(localStorage.getItem("workspace:diff-view-mode")).toBe("unified")
   })
+
+  it("flips every preview mounted alongside it, not just the clicked one", () => {
+    // A transcript renders one preview per Edit/Write tool call, and a
+    // permission dialog stacks another on top. The view mode is a single
+    // preference, so toggling one must not leave its siblings inline until
+    // they happen to remount.
+    renderWithIntl(
+      <>
+        <UnifiedDiffPreview diffText={modifiedDiff()} />
+        <UnifiedDiffPreview diffText={otherModifiedDiff()} />
+      </>
+    )
+
+    fireEvent.click(
+      screen.getAllByRole("button", { name: "Switch to side-by-side view" })[0]!
+    )
+
+    // Context rows render once per side in split mode — both previews switched.
+    expect(screen.getAllByText("keep one")).toHaveLength(2)
+    expect(screen.getAllByText("shared context")).toHaveLength(2)
+  })
+
+  it("still switches when persisting the choice throws", () => {
+    // Storage disabled / over quota: the mode won't survive a reload, but the
+    // button must not look dead. The broadcast carries the new mode instead of
+    // making every listener re-read what was never written.
+    const setItem = vi
+      .spyOn(Storage.prototype, "setItem")
+      .mockImplementation(() => {
+        throw new Error("QuotaExceededError")
+      })
+    try {
+      renderWithIntl(<UnifiedDiffPreview diffText={modifiedDiff()} />)
+
+      fireEvent.click(
+        screen.getByRole("button", { name: "Switch to side-by-side view" })
+      )
+
+      expect(screen.getAllByText("keep one")).toHaveLength(2)
+    } finally {
+      setItem.mockRestore()
+    }
+  })
+
+  it("hides the toggle for a diff that has no side to split", () => {
+    // A pure new-file diff renders as plain content in both modes, so the
+    // control would be a visible no-op.
+    renderWithIntl(<UnifiedDiffPreview diffText={newFileDiff(3)} />)
+
+    expect(
+      screen.queryByRole("button", { name: "Switch to side-by-side view" })
+    ).not.toBeInTheDocument()
+    expect(
+      screen.queryByRole("button", { name: "Switch to inline view" })
+    ).not.toBeInTheDocument()
+  })
+
+  it("keeps the toggle when a new file is mixed with a modified one", () => {
+    renderWithIntl(
+      <UnifiedDiffPreview diffText={`${newFileDiff(2)}\n${modifiedDiff()}`} />
+    )
+
+    expect(
+      screen.getByRole("button", { name: "Switch to side-by-side view" })
+    ).toBeInTheDocument()
+  })
 })
 
 describe("toSplitRows", () => {
@@ -220,6 +300,22 @@ describe("toSplitRows", () => {
       text: null,
       marker: "none",
     })
+  })
+
+  it("spans a 'modified' row instead of spinning on it", () => {
+    // `ParsedDiffRow` has a fourth type the current classifier never emits.
+    // Pairing must still consume it: a row that matches neither the delete run
+    // nor the add run would leave the cursor parked and hang the tab in a
+    // synchronous loop no test timeout can interrupt.
+    const rows = toSplitRows([
+      { type: "modified", text: "touched", sign: " ", oldLine: 7, newLine: 7 },
+      { type: "added", text: "after", sign: "+", oldLine: null, newLine: 8 },
+    ])
+
+    expect(rows).toHaveLength(2)
+    expect(rows[0]?.left).toMatchObject({ text: "touched", line: 7 })
+    expect(rows[0]?.right).toMatchObject({ text: "touched", line: 7 })
+    expect(rows[1]?.right).toMatchObject({ text: "after", marker: "added" })
   })
 
   it("gives a pure insertion an empty left cell", () => {

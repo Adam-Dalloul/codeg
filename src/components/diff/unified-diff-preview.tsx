@@ -5,34 +5,14 @@ import { useTranslations } from "next-intl"
 import { Columns2, Rows3 } from "lucide-react"
 import { useActiveFolder } from "@/contexts/active-folder-context"
 import { cn } from "@/lib/utils"
+import { useDiffViewMode, type DiffViewMode } from "@/lib/diff-view-mode-prefs"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { FilePathLink } from "@/components/ai-elements/link-safety"
 
 type RowMarker = "none" | "added" | "deleted" | "modified"
 type DiffFileMode = "modified" | "added" | "deleted" | "renamed"
-export type DiffViewMode = "unified" | "split"
 
-const DIFF_VIEW_MODE_KEY = "workspace:diff-view-mode"
-
-export function loadDiffViewMode(): DiffViewMode {
-  if (typeof window === "undefined") return "unified"
-  try {
-    const raw = localStorage.getItem(DIFF_VIEW_MODE_KEY)
-    if (raw === "split" || raw === "unified") return raw
-  } catch {
-    /* ignore */
-  }
-  return "unified"
-}
-
-export function saveDiffViewMode(mode: DiffViewMode): void {
-  if (typeof window === "undefined") return
-  try {
-    localStorage.setItem(DIFF_VIEW_MODE_KEY, mode)
-  } catch {
-    /* ignore */
-  }
-}
+export type { DiffViewMode }
 
 interface RawDiffRow {
   kind: "context" | "add" | "del"
@@ -514,7 +494,13 @@ export function toSplitRows(rows: ParsedDiffRow[]): SplitRow[] {
     const row = rows[index]
     if (!row) break
 
-    if (row.type === "context") {
+    // Everything that is not part of a delete/add run spans both sides. The
+    // branch keys off "not added and not deleted" rather than "is context" so
+    // that the loop is guaranteed to consume a row on every pass: a row of the
+    // fourth `ParsedDiffRow` type ("modified") would otherwise match neither
+    // this branch nor either run below, leaving `index` unmoved and spinning
+    // the tab forever.
+    if (row.type !== "added" && row.type !== "deleted") {
       out.push({
         left: { line: row.oldLine, text: row.text, marker: "none" },
         right: { line: row.newLine, text: row.text, marker: "none" },
@@ -657,6 +643,14 @@ function HunkSplitLines({ rows }: { rows: ParsedDiffRow[] }) {
 
 function isNewFileOnly(file: ParsedDiffFile): boolean {
   return file.mode === "added" && file.deletions === 0
+}
+
+/** New files render as plain content in BOTH modes (there is no "before" side
+ *  to put anything on), so a diff made only of them has nothing to switch —
+ *  offering the toggle there would be a control that visibly does nothing.
+ *  Write-tool previews in a transcript are exactly this shape. */
+function supportsSplitView(files: ParsedDiffFile[]): boolean {
+  return files.some((file) => !isNewFileOnly(file))
 }
 
 // Beyond this many rows a single file is rendered as a bounded preview: each
@@ -847,12 +841,7 @@ export function UnifiedDiffPreview({
   const t = useTranslations("Folder.diffPreview")
   const { activeFolder: folder } = useActiveFolder()
   const files = useMemo(() => parseUnifiedDiff(diffText), [diffText])
-  const [view, setView] = useState<DiffViewMode>(() => loadDiffViewMode())
-
-  const switchView = (mode: DiffViewMode) => {
-    setView(mode)
-    saveDiffViewMode(mode)
-  }
+  const [view, switchView] = useDiffViewMode()
 
   if (!diffText.trim()) {
     return (
@@ -889,22 +878,24 @@ export function UnifiedDiffPreview({
   return (
     <Frame className={className}>
       <div className={embedded ? "space-y-2" : "space-y-3"}>
-        <div className="flex items-center justify-end gap-1">
-          <ViewModeButton
-            active={view === "unified"}
-            label={t("viewMode.unified")}
-            onClick={() => switchView("unified")}
-          >
-            <Rows3 className="h-3 w-3" />
-          </ViewModeButton>
-          <ViewModeButton
-            active={view === "split"}
-            label={t("viewMode.split")}
-            onClick={() => switchView("split")}
-          >
-            <Columns2 className="h-3 w-3" />
-          </ViewModeButton>
-        </div>
+        {supportsSplitView(files) && (
+          <div className="flex items-center justify-end gap-1">
+            <ViewModeButton
+              active={view === "unified"}
+              label={t("viewMode.unified")}
+              onClick={() => switchView("unified")}
+            >
+              <Rows3 className="h-3 w-3" />
+            </ViewModeButton>
+            <ViewModeButton
+              active={view === "split"}
+              label={t("viewMode.split")}
+              onClick={() => switchView("split")}
+            >
+              <Columns2 className="h-3 w-3" />
+            </ViewModeButton>
+          </div>
+        )}
         {files.map((file) => (
           <DiffFileSection
             key={file.key}
