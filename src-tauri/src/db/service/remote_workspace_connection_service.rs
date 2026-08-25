@@ -10,7 +10,22 @@ use sea_orm::{
 use crate::app_error::AppCommandError;
 use crate::db::entities::remote_workspace_connection;
 use crate::db::error::DbError;
-use crate::models::RemoteWorkspaceConnectionInfo;
+use crate::models::{RemoteWorkspaceConnectionInfo, RemoteWorkspaceHeader};
+
+/// Names the client sets itself, on the HTTP calls and on the WebSocket
+/// handshake. The save fails rather than silently drop what the user typed.
+const RESERVED_HEADER_NAMES: [&str; 10] = [
+    "authorization",
+    "content-type",
+    "content-length",
+    "host",
+    "connection",
+    "upgrade",
+    "sec-websocket-key",
+    "sec-websocket-version",
+    "sec-websocket-protocol",
+    "sec-websocket-extensions",
+];
 
 fn to_info(model: remote_workspace_connection::Model) -> RemoteWorkspaceConnectionInfo {
     RemoteWorkspaceConnectionInfo {
@@ -18,10 +33,49 @@ fn to_info(model: remote_workspace_connection::Model) -> RemoteWorkspaceConnecti
         name: model.name,
         base_url: model.base_url,
         token: model.token,
+        headers: serde_json::from_str(&model.headers).unwrap_or_default(),
         sort_order: model.sort_order,
         created_at: model.created_at,
         updated_at: model.updated_at,
     }
+}
+
+pub fn validate_headers(
+    headers: &[RemoteWorkspaceHeader],
+) -> Result<Vec<RemoteWorkspaceHeader>, AppCommandError> {
+    let mut result = Vec::with_capacity(headers.len());
+    for header in headers {
+        let name = header.name.trim();
+        let value = header.value.trim();
+        if name.is_empty() && value.is_empty() {
+            continue;
+        }
+        if name.is_empty() {
+            return Err(AppCommandError::invalid_input(
+                "Custom header name is required",
+            ));
+        }
+        if RESERVED_HEADER_NAMES.contains(&name.to_ascii_lowercase().as_str()) {
+            return Err(AppCommandError::invalid_input(format!(
+                "Custom header \"{name}\" is reserved by Codeg"
+            )));
+        }
+        header.to_header_pair().map_err(|e| {
+            AppCommandError::invalid_input(format!("Custom header \"{name}\" is invalid"))
+                .with_detail(e.to_string())
+        })?;
+        result.push(RemoteWorkspaceHeader {
+            name: name.to_string(),
+            value: value.to_string(),
+        });
+    }
+    Ok(result)
+}
+
+fn serialize_headers(headers: &[RemoteWorkspaceHeader]) -> Result<String, AppCommandError> {
+    serde_json::to_string(headers).map_err(|e| {
+        AppCommandError::invalid_input("Failed to store custom headers").with_detail(e.to_string())
+    })
 }
 
 pub fn normalize_base_url(raw: &str) -> Result<String, AppCommandError> {
@@ -83,8 +137,10 @@ pub async fn create(
     name: &str,
     base_url: &str,
     token: &str,
+    headers: &[RemoteWorkspaceHeader],
 ) -> Result<RemoteWorkspaceConnectionInfo, AppCommandError> {
     let now = Utc::now();
+    let headers = serialize_headers(&validate_headers(headers)?)?;
     let max_order = remote_workspace_connection::Entity::find()
         .order_by_desc(remote_workspace_connection::Column::SortOrder)
         .one(conn)
@@ -98,6 +154,7 @@ pub async fn create(
         name: Set(validate_name(name)?),
         base_url: Set(normalize_base_url(base_url)?),
         token: Set(validate_token(token)?),
+        headers: Set(headers),
         sort_order: Set(max_order + 1),
         created_at: Set(now),
         updated_at: Set(now),
@@ -116,7 +173,9 @@ pub async fn update(
     name: &str,
     base_url: &str,
     token: &str,
+    headers: &[RemoteWorkspaceHeader],
 ) -> Result<RemoteWorkspaceConnectionInfo, AppCommandError> {
+    let headers = serialize_headers(&validate_headers(headers)?)?;
     let row = remote_workspace_connection::Entity::find_by_id(id)
         .one(conn)
         .await
@@ -128,6 +187,7 @@ pub async fn update(
     active.name = Set(validate_name(name)?);
     active.base_url = Set(normalize_base_url(base_url)?);
     active.token = Set(validate_token(token)?);
+    active.headers = Set(headers);
     active.updated_at = Set(Utc::now());
     let model = active
         .update(conn)
@@ -205,6 +265,7 @@ pub async fn reorder(conn: &DatabaseConnection, ids: Vec<i32>) -> Result<(), App
 mod tests {
     use super::*;
     use crate::db::test_helpers::fresh_in_memory_db;
+    use crate::models::ToHeaderMap;
 
     #[test]
     fn normalize_base_url_trims_and_removes_trailing_slashes() {
@@ -218,6 +279,68 @@ mod tests {
         assert!(err.message.contains("http"));
     }
 
+    fn header(name: &str, value: &str) -> RemoteWorkspaceHeader {
+        RemoteWorkspaceHeader {
+            name: name.to_string(),
+            value: value.to_string(),
+        }
+    }
+
+    #[test]
+    fn validate_headers_trims_and_drops_empty_rows() {
+        let actual = validate_headers(&[
+            header("  CF-Access-Client-Id  ", "  abc123  "),
+            header("", ""),
+            header("   ", "  "),
+        ])
+        .unwrap();
+        assert_eq!(actual, vec![header("CF-Access-Client-Id", "abc123")]);
+    }
+
+    #[test]
+    fn validate_headers_keeps_repeated_names_and_order() {
+        let input = vec![header("X-Trace", "a"), header("X-Trace", "b")];
+        assert_eq!(validate_headers(&input).unwrap(), input);
+    }
+
+    #[test]
+    fn to_header_map_keeps_repeats_and_skips_unparsable_rows() {
+        let map = [
+            header("X-Trace", "a"),
+            header("X-Trace", "b"),
+            header("bad header", "dropped"),
+            header("  ", "dropped"),
+        ]
+        .to_header_map();
+        assert_eq!(
+            map.get_all("x-trace")
+                .iter()
+                .map(|v| v.to_str().unwrap())
+                .collect::<Vec<_>>(),
+            vec!["a", "b"]
+        );
+        assert_eq!(map.len(), 2);
+    }
+
+    #[test]
+    fn validate_headers_rejects_reserved_names() {
+        for name in ["Authorization", "content-type", "Sec-WebSocket-Protocol"] {
+            let err = validate_headers(&[header(name, "x")]).unwrap_err();
+            assert!(
+                err.message.contains("reserved"),
+                "expected {name} to be reserved, got {}",
+                err.message
+            );
+        }
+    }
+
+    #[test]
+    fn validate_headers_rejects_invalid_name_value_and_missing_name() {
+        assert!(validate_headers(&[header("bad header", "x")]).is_err());
+        assert!(validate_headers(&[header("X-Bad", "line\nbreak")]).is_err());
+        assert!(validate_headers(&[header("", "orphan-value")]).is_err());
+    }
+
     #[tokio::test]
     async fn create_list_update_delete_roundtrip() {
         let db = fresh_in_memory_db().await;
@@ -226,17 +349,23 @@ mod tests {
             "Local 3080",
             "http://127.0.0.1:3080/",
             "secret-token",
+            &[header("CF-Access-Client-Id", "abc123")],
         )
         .await
         .unwrap();
         assert_eq!(created.name, "Local 3080");
         assert_eq!(created.base_url, "http://127.0.0.1:3080");
         assert_eq!(created.token, "secret-token");
+        assert_eq!(
+            created.headers,
+            vec![header("CF-Access-Client-Id", "abc123")]
+        );
         assert_eq!(created.sort_order, 0);
 
         let listed = list(&db.conn).await.unwrap();
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].id, created.id);
+        assert_eq!(listed[0].headers, created.headers);
 
         let updated = update(
             &db.conn,
@@ -244,11 +373,13 @@ mod tests {
             "Server A",
             "https://codeg.example.com/",
             "next-token",
+            &[],
         )
         .await
         .unwrap();
         assert_eq!(updated.name, "Server A");
         assert_eq!(updated.base_url, "https://codeg.example.com");
+        assert!(updated.headers.is_empty());
 
         delete(&db.conn, created.id).await.unwrap();
         assert!(list(&db.conn).await.unwrap().is_empty());
@@ -257,13 +388,13 @@ mod tests {
     #[tokio::test]
     async fn reorder_updates_list_order() {
         let db = fresh_in_memory_db().await;
-        let first = create(&db.conn, "First", "http://127.0.0.1:3080", "token-a")
+        let first = create(&db.conn, "First", "http://127.0.0.1:3080", "token-a", &[])
             .await
             .unwrap();
-        let second = create(&db.conn, "Second", "http://127.0.0.1:3081", "token-b")
+        let second = create(&db.conn, "Second", "http://127.0.0.1:3081", "token-b", &[])
             .await
             .unwrap();
-        let third = create(&db.conn, "Third", "http://127.0.0.1:3082", "token-c")
+        let third = create(&db.conn, "Third", "http://127.0.0.1:3082", "token-c", &[])
             .await
             .unwrap();
 
@@ -288,10 +419,10 @@ mod tests {
     #[tokio::test]
     async fn reorder_rejects_partial_or_duplicate_ids() {
         let db = fresh_in_memory_db().await;
-        let first = create(&db.conn, "First", "http://127.0.0.1:3080", "token-a")
+        let first = create(&db.conn, "First", "http://127.0.0.1:3080", "token-a", &[])
             .await
             .unwrap();
-        let second = create(&db.conn, "Second", "http://127.0.0.1:3081", "token-b")
+        let second = create(&db.conn, "Second", "http://127.0.0.1:3081", "token-b", &[])
             .await
             .unwrap();
 

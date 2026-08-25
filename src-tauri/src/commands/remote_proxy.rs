@@ -41,7 +41,10 @@ use serde_json::Value;
 use tauri::{AppHandle, Emitter, EventTarget, State, WebviewWindow};
 use tokio::sync::{mpsc, watch, Mutex, RwLock};
 use tokio_tungstenite::tungstenite::{
-    client::IntoClientRequest, handshake::client::Request, http::HeaderValue, Message,
+    client::IntoClientRequest,
+    handshake::client::Request,
+    http::{HeaderMap, HeaderValue},
+    Message,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -62,6 +65,7 @@ use crate::app_error::{
 };
 use crate::db::service::remote_workspace_connection_service;
 use crate::db::AppDatabase;
+use crate::models::ToHeaderMap;
 use crate::workspace_transfer::{
     TransferDirection, TransferState, WorkspaceTransferManager, WorkspaceTransferProgress,
     WORKSPACE_TRANSFER_PROGRESS_EVENT,
@@ -308,6 +312,7 @@ pub async fn remote_http_call(
         .http
         .post(&url)
         .bearer_auth(conn.token.trim())
+        .headers(conn.headers.to_header_map())
         .json(&body);
     // Per-request override beats the client-wide 30s default. Used by the
     // ACP probe path (`describeAgentOptions`) whose backend deadline is
@@ -593,6 +598,7 @@ pub async fn remote_upload_attachment(
         .http
         .post(&url)
         .bearer_auth(conn.token.trim())
+        .headers(conn.headers.to_header_map())
         .multipart(form)
         .send()
         .await
@@ -741,6 +747,7 @@ pub async fn remote_upload_workspace_paths(
             AppCommandError::not_found(format!("Remote connection {connection_id} not found"))
         })?;
 
+    let custom_headers = conn.headers.to_header_map();
     let (transfer_id, cancel_token) = transfers.register_transfer().await;
     let result = async {
         let _permit = transfers
@@ -804,6 +811,7 @@ pub async fn remote_upload_workspace_paths(
                         &proxy,
                         &conn.base_url,
                         conn.token.trim(),
+                        &custom_headers,
                         &transfer_id,
                         cancel_token.clone(),
                         &root_path,
@@ -821,6 +829,7 @@ pub async fn remote_upload_workspace_paths(
                     &proxy,
                     &conn.base_url,
                     conn.token.trim(),
+                    &custom_headers,
                     &transfer_id,
                     cancel_token.clone(),
                     &root_path,
@@ -888,6 +897,7 @@ async fn upload_one_workspace_path(
     proxy: &RemoteProxyState,
     base_url: &str,
     token: &str,
+    custom_headers: &HeaderMap,
     transfer_id: &str,
     cancel_token: CancellationToken,
     root_path: &str,
@@ -953,6 +963,7 @@ async fn upload_one_workspace_path(
         .workspace_http
         .post(&url)
         .bearer_auth(token)
+        .headers(custom_headers.clone())
         .multipart(form)
         .send()
         .await
@@ -1150,6 +1161,7 @@ async fn remote_workspace_download_stream(
             AppCommandError::not_found(format!("Remote connection {connection_id} not found"))
         })?;
 
+    let custom_headers = conn.headers.to_header_map();
     let (transfer_id, cancel_token) = transfers.register_transfer().await;
     let result = async {
         let _permit = transfers
@@ -1170,6 +1182,7 @@ async fn remote_workspace_download_stream(
             .workspace_http
             .post(ticket_url)
             .bearer_auth(conn.token.trim())
+            .headers(custom_headers.clone())
             .json(&serde_json::json!({
                 "rootPath": root_path,
                 "path": path,
@@ -1201,6 +1214,7 @@ async fn remote_workspace_download_stream(
         let response = proxy
             .workspace_http
             .get(download_url)
+            .headers(custom_headers.clone())
             .send()
             .await
             .map_err(|e| {
@@ -1506,6 +1520,7 @@ pub async fn remote_ws_subscribe(
     let task_proxy = proxy_arc.clone();
     let base_url = conn.base_url.clone();
     let token = conn.token.clone();
+    let custom_headers = conn.headers.to_header_map();
     let task_entry = entry.clone();
 
     tauri::async_runtime::spawn(async move {
@@ -1515,6 +1530,7 @@ pub async fn remote_ws_subscribe(
             connection_id,
             base_url,
             token,
+            custom_headers,
             task_entry,
             shutdown_rx,
             outbound_rx,
@@ -1628,6 +1644,7 @@ async fn run_ws_task(
     connection_id: i32,
     base_url: String,
     token: String,
+    custom_headers: HeaderMap,
     entry: Arc<WsTaskEntry>,
     mut shutdown_rx: watch::Receiver<bool>,
     mut outbound_rx: mpsc::Receiver<String>,
@@ -1649,7 +1666,7 @@ async fn run_ws_task(
                 }
                 continue;
             }
-            res = connect_with_subprotocol_auth(&ws_url, &token) => res,
+            res = connect_with_subprotocol_auth(&ws_url, &token, &custom_headers) => res,
         };
 
         let mut socket = match connect_result {
@@ -1849,6 +1866,7 @@ async fn snapshot_subscribers(entry: &Arc<WsTaskEntry>) -> Vec<String> {
 async fn connect_with_subprotocol_auth(
     ws_url: &str,
     token: &str,
+    custom_headers: &HeaderMap,
 ) -> Result<
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
     String,
@@ -1864,6 +1882,7 @@ async fn connect_with_subprotocol_auth(
         HeaderValue::from_str(&protocols_value)
             .map_err(|e| format!("invalid subprotocol value: {e}"))?,
     );
+    request.headers_mut().extend(custom_headers.clone());
 
     let (stream, _resp) = tokio_tungstenite::connect_async(request)
         .await

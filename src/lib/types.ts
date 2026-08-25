@@ -72,11 +72,17 @@ export interface AppCommandError {
   i18n_params?: Record<string, string> | null
 }
 
+export interface RemoteWorkspaceHeader {
+  name: string
+  value: string
+}
+
 export interface RemoteWorkspaceConnection {
   id: number
   name: string
   base_url: string
   token: string
+  headers: RemoteWorkspaceHeader[]
   sort_order: number
   created_at: string
   updated_at: string
@@ -86,6 +92,7 @@ export interface RemoteWorkspaceConnectionInput {
   name: string
   baseUrl: string
   token: string
+  headers: RemoteWorkspaceHeader[]
 }
 
 export interface ConversationSummary {

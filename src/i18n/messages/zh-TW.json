@@ -4210,6 +4210,11 @@
     "name": "Name",
     "baseUrl": "Service URL",
     "token": "Access token",
+    "customHeaders": "自訂請求標頭",
+    "customHeaderName": "標頭名稱",
+    "customHeaderValue": "標頭值",
+    "addCustomHeader": "新增標頭",
+    "removeCustomHeader": "移除標頭",
     "save": "Save",
     "delete": "Delete",
     "confirmDelete": {

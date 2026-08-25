@@ -4210,6 +4210,11 @@
     "name": "Name",
     "baseUrl": "Service URL",
     "token": "Access token",
+    "customHeaders": "Cabeçalhos personalizados",
+    "customHeaderName": "Nome do cabeçalho",
+    "customHeaderValue": "Valor do cabeçalho",
+    "addCustomHeader": "Adicionar cabeçalho",
+    "removeCustomHeader": "Remover cabeçalho",
     "save": "Save",
     "delete": "Delete",
     "confirmDelete": {

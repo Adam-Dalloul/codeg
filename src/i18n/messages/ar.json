@@ -4210,6 +4210,11 @@
     "name": "Name",
     "baseUrl": "Service URL",
     "token": "Access token",
+    "customHeaders": "ترويسات مخصصة",
+    "customHeaderName": "اسم الترويسة",
+    "customHeaderValue": "قيمة الترويسة",
+    "addCustomHeader": "إضافة ترويسة",
+    "removeCustomHeader": "إزالة ترويسة",
     "save": "Save",
     "delete": "Delete",
     "confirmDelete": {

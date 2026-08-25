@@ -4210,6 +4210,11 @@
     "name": "Name",
     "baseUrl": "Service URL",
     "token": "Access token",
+    "customHeaders": "カスタムヘッダー",
+    "customHeaderName": "ヘッダー名",
+    "customHeaderValue": "ヘッダーの値",
+    "addCustomHeader": "ヘッダーを追加",
+    "removeCustomHeader": "ヘッダーを削除",
     "save": "Save",
     "delete": "Delete",
     "confirmDelete": {
