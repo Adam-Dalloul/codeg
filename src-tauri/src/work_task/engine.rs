@@ -8264,6 +8264,26 @@ mod tests {
             "git {args:?} failed: {}",
             String::from_utf8_lossy(&out.stderr)
         );
+        // A fixture repository must not translate line endings, whoever's git
+        // opens it. The env above neuters the global and system config for the
+        // commands THIS helper runs — but the engine's git, spawned through
+        // `crate::process`, inherits the real environment, and Git for Windows
+        // ships `core.autocrlf=true` in its system config. The two then disagree
+        // about one worktree: the engine checks a file out as CRLF while a
+        // `git add` here stores those bytes verbatim, so a file nobody touched
+        // reads as rewritten, and a diff measured from a commit credits the task
+        // with work it never did. Repo-LOCAL config is the one layer both sides
+        // read.
+        match args.first() {
+            // `init` runs with the repository as its cwd; `clone` names the
+            // destination last.
+            Some(&"init") => git_run(dir, &["config", "core.autocrlf", "false"]),
+            Some(&"clone") => {
+                let dest = std::path::PathBuf::from(args.last().expect("clone destination"));
+                git_run(&dest, &["config", "core.autocrlf", "false"]);
+            }
+            _ => {}
+        }
     }
 
     struct Delivery {

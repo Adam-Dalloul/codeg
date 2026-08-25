@@ -648,6 +648,16 @@ mod tests {
             "git {args:?} failed: {}",
             String::from_utf8_lossy(&out.stderr)
         );
+        // The env above only reaches the commands THIS helper runs; the
+        // functions under test spawn their own git through `crate::process`,
+        // which inherits the real environment — and Git for Windows ships
+        // `core.autocrlf=true` in its system config. A fixture whose bytes mean
+        // one thing to the test and another to the code it exercises measures
+        // the harness, not the behaviour. Repo-LOCAL config is the one layer
+        // both sides read.
+        if args.first() == Some(&"init") {
+            git_run(dir, &["config", "core.autocrlf", "false"]);
+        }
     }
 
     /// Why removing a task worktree has to consult BOTH probes: each is blind
