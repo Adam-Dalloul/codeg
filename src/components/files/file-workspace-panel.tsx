@@ -336,7 +336,23 @@ interface AddToChatPill {
   setVisible: (visible: boolean, position: IPosition | null) => void
   /** Re-read the label (e.g. after a locale change) even while already shown. */
   refreshLabel: () => void
+  /**
+   * Re-read the rendered pill height now that Monaco has un-hidden the node.
+   * Returns true when the cached value changed, i.e. when the caller should lay
+   * the widget out once more so the corrected placement lands.
+   */
+  remeasure: () => boolean
 }
+
+/**
+ * Placement fallback for the very first show, before the pill has ever been
+ * measured (Monaco keeps the node at `display: none` until *after* it asks for
+ * a position, so `offsetHeight` reads 0 exactly when the placement is decided).
+ * Deliberately a slight over-estimate of the real box: over-estimating only
+ * demotes ABOVE for one extra line, while under-estimating is what puts the
+ * pill back behind the file path bar.
+ */
+const ADD_TO_CHAT_PILL_FALLBACK_HEIGHT_PX = 28
 
 /**
  * The floating "Add to Chat" pill shown next to a text selection, built as a
@@ -381,6 +397,7 @@ function createAddToChatPill(
 
   let visible = false
   let position: IPosition | null = null
+  let measuredHeight = 0
 
   const widget: MonacoEditorNs.IContentWidget = {
     getId: () => "codeg.addToChatPill",
@@ -388,11 +405,18 @@ function createAddToChatPill(
     getPosition: () => {
       if (!visible || !position) return null
 
-      const firstVisibleLineNumber =
-        editor.getVisibleRanges()[0]?.startLineNumber ?? null
-      const preference = getAddToChatPillPlacement(
+      // Monaco's own `anchor.top`: the gap between the top edge of the editor
+      // viewport and the anchor line. `getTopForPosition` is wrap-aware (it
+      // converts to a view position first) and costs a layout-model lookup
+      // only — no DOM measurement — so it is safe on the scroll path.
+      // A negative return means "no model", not a real offset.
+      const anchorTop = editor.getTopForPosition(
         position.lineNumber,
-        firstVisibleLineNumber
+        position.column
+      )
+      const preference = getAddToChatPillPlacement(
+        anchorTop < 0 ? null : anchorTop - editor.getScrollTop(),
+        measuredHeight || ADD_TO_CHAT_PILL_FALLBACK_HEIGHT_PX
       ).map((placement) =>
         placement === "above"
           ? monaco.editor.ContentWidgetPositionPreference.ABOVE
@@ -415,6 +439,12 @@ function createAddToChatPill(
     },
     refreshLabel: () => {
       if (labelSpan) labelSpan.textContent = getLabel()
+    },
+    remeasure: () => {
+      const next = dom.offsetHeight
+      if (next <= 0 || next === measuredHeight) return false
+      measuredHeight = next
+      return true
     },
   }
 }
@@ -1640,6 +1670,11 @@ export function FileWorkspacePanel() {
           show && selection ? selection.getStartPosition() : null
         )
         editorInstance.layoutContentWidget(pill.widget)
+        // Monaco flips the node to `display: block` inside the call above, so
+        // this is the first moment the pill can be measured. When that lands a
+        // new height, redo the layout in the same frame with the real box —
+        // otherwise the first-ever show would place itself off the fallback.
+        if (pill.remeasure()) editorInstance.layoutContentWidget(pill.widget)
       }
       selectionListenerRef.current?.dispose()
       selectionListenerRef.current =
@@ -1652,6 +1687,12 @@ export function FileWorkspacePanel() {
         pill.setVisible(false, null)
         editorInstance.layoutContentWidget(pill.widget)
       })
+      // Monaco latches a widget's placement preference when the widget is laid
+      // out and re-uses it for every later render, so a pill that is already on
+      // screen keeps its old above/below choice while the user scrolls its
+      // anchor line up to the top edge. Re-layout on vertical scroll to
+      // re-decide. Nothing above depends on the horizontal offset, so
+      // `scrollLeft`-only ticks are skipped.
       scrollListenerRef.current?.dispose()
       scrollListenerRef.current = editorInstance.onDidScrollChange((event) => {
         if (event.scrollTopChanged && pill.isVisible()) {
