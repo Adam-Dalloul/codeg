@@ -146,7 +146,7 @@
     },
     "zoomLevel": {
       "sectionTitle": "視窗縮放",
-      "sectionDescription": "整體放大或縮小介面，立即生效，依裝置分別儲存。",
+      "sectionDescription": "整體放大或縮小介面，立即生效，依裝置分別儲存。⌘/Ctrl + 和 - 依與此選單相同的檔位調節（⌘/Ctrl 0 恢復為 100%）。",
       "placeholder": "請選擇縮放檔位",
       "default": "預設",
       "current": "目前縮放：{zoom}%"
@@ -359,6 +359,7 @@
     "resetDefault": "恢復預設",
     "recordInstruction": "點擊右側按鈕後按下組合鍵即可修改。建議使用 Ctrl/Cmd、Alt、Shift 的組合。按 Esc 可取消錄製。",
     "recording": "按下快捷鍵...",
+    "unassigned": "未指派",
     "toasts": {
       "conflict": "快捷鍵已被「{title}」占用",
       "updated": "快捷鍵已更新",
@@ -429,6 +430,18 @@
       "toggle_custom_style": {
         "title": "停用/恢復自訂樣式",
         "description": "逃生艙：一鍵關閉全部自訂配色與 CSS，再按一次恢復"
+      },
+      "zoom_in": {
+        "title": "放大",
+        "description": "把視窗縮放提高一檔"
+      },
+      "zoom_out": {
+        "title": "縮小",
+        "description": "把視窗縮放降低一檔"
+      },
+      "zoom_reset": {
+        "title": "重設縮放",
+        "description": "把視窗縮放恢復為 100%"
       }
     }
   },
