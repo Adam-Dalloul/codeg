@@ -3481,7 +3481,11 @@
       "hunkLabel": "代码块 {index}",
       "loadingHunk": "正在加载代码块...",
       "noDiffData": "无差异数据",
-      "showRemainingLines": "显示剩余 {count} 行"
+      "showRemainingLines": "显示剩余 {count} 行",
+      "viewMode": {
+        "split": "切换为左右分栏视图",
+        "unified": "切换为内联视图"
+      }
     },
     "conversationContextBar": {
       "folderTitle": "工作文件夹",

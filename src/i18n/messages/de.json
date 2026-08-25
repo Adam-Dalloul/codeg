@@ -3481,7 +3481,11 @@
       "hunkLabel": "Block {index}",
       "loadingHunk": "Hunk wird geladen...",
       "noDiffData": "Keine Diff-Daten",
-      "showRemainingLines": "{count} weitere Zeilen anzeigen"
+      "showRemainingLines": "{count} weitere Zeilen anzeigen",
+      "viewMode": {
+        "split": "Zur Zwei-Spalten-Ansicht wechseln",
+        "unified": "Zur Inline-Ansicht wechseln"
+      }
     },
     "conversationContextBar": {
       "folderTitle": "Arbeitsordner",

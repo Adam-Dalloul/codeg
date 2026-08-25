@@ -3481,7 +3481,11 @@
       "hunkLabel": "ハンク {index}",
       "loadingHunk": "Hunk を読み込み中...",
       "noDiffData": "Diff データがありません",
-      "showRemainingLines": "残り {count} 行を表示"
+      "showRemainingLines": "残り {count} 行を表示",
+      "viewMode": {
+        "split": "左右分割ビューに切り替え",
+        "unified": "インラインビューに切り替え"
+      }
     },
     "conversationContextBar": {
       "folderTitle": "作業フォルダ",
