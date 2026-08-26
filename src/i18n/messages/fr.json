@@ -2993,6 +2993,25 @@
         "thoughtForFewSeconds": "Réflexion",
         "thoughtForSeconds": "Réflexion"
       },
+      "mermaid": {
+        "diagram": "Diagramme",
+        "loading": "Rendu du diagramme…",
+        "zoomIn": "Zoom avant",
+        "zoomOut": "Zoom arrière",
+        "resetView": "Réinitialiser la vue",
+        "fullscreen": "Afficher en plein écran",
+        "close": "Fermer",
+        "download": "Télécharger",
+        "downloadSvg": "Télécharger en SVG",
+        "downloadPng": "Télécharger en PNG",
+        "downloadMmd": "Télécharger la source (.mmd)",
+        "downloadFailed": "Impossible d'enregistrer le diagramme",
+        "copySource": "Copier la source",
+        "copied": "Copié",
+        "renderFailed": "Erreur Mermaid : {message}",
+        "showSource": "Afficher la source",
+        "retry": "Réessayer"
+      },
       "linkSafety": {
         "errorCannotOpen": "Impossible d'ouvrir le fichier local",
         "errorNoWorkspace": "Aucun dossier d'espace de travail n'est actuellement actif.",

@@ -2993,6 +2993,25 @@
         "thoughtForFewSeconds": "Pensamento",
         "thoughtForSeconds": "Pensamento"
       },
+      "mermaid": {
+        "diagram": "Diagrama",
+        "loading": "Renderizando o diagrama…",
+        "zoomIn": "Ampliar",
+        "zoomOut": "Reduzir",
+        "resetView": "Redefinir a visualização",
+        "fullscreen": "Ver em tela cheia",
+        "close": "Fechar",
+        "download": "Baixar",
+        "downloadSvg": "Baixar como SVG",
+        "downloadPng": "Baixar como PNG",
+        "downloadMmd": "Baixar o código-fonte (.mmd)",
+        "downloadFailed": "Não foi possível salvar o diagrama",
+        "copySource": "Copiar o código-fonte",
+        "copied": "Copiado",
+        "renderFailed": "Erro do Mermaid: {message}",
+        "showSource": "Ver o código-fonte",
+        "retry": "Tentar novamente"
+      },
       "linkSafety": {
         "errorCannotOpen": "Não é possível abrir o arquivo local",
         "errorNoWorkspace": "Nenhuma pasta de espaço de trabalho está ativa no momento.",

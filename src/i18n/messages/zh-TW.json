@@ -2993,6 +2993,25 @@
         "thoughtForFewSeconds": "思考",
         "thoughtForSeconds": "思考"
       },
+      "mermaid": {
+        "diagram": "圖表",
+        "loading": "正在算繪圖表…",
+        "zoomIn": "放大",
+        "zoomOut": "縮小",
+        "resetView": "重設檢視",
+        "fullscreen": "全螢幕檢視",
+        "close": "關閉",
+        "download": "下載",
+        "downloadSvg": "下載為 SVG",
+        "downloadPng": "下載為 PNG",
+        "downloadMmd": "下載原始碼（.mmd）",
+        "downloadFailed": "圖表儲存失敗",
+        "copySource": "複製原始碼",
+        "copied": "已複製",
+        "renderFailed": "Mermaid 錯誤：{message}",
+        "showSource": "檢視原始碼",
+        "retry": "重試"
+      },
       "linkSafety": {
         "errorCannotOpen": "無法開啟本地檔案",
         "errorNoWorkspace": "目前沒有活躍的工作區資料夾。",

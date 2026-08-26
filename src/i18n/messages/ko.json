@@ -2993,6 +2993,25 @@
         "thoughtForFewSeconds": "생각함",
         "thoughtForSeconds": "생각함"
       },
+      "mermaid": {
+        "diagram": "다이어그램",
+        "loading": "다이어그램을 그리는 중…",
+        "zoomIn": "확대",
+        "zoomOut": "축소",
+        "resetView": "보기 초기화",
+        "fullscreen": "전체 화면으로 보기",
+        "close": "닫기",
+        "download": "다운로드",
+        "downloadSvg": "SVG로 다운로드",
+        "downloadPng": "PNG로 다운로드",
+        "downloadMmd": "소스 다운로드(.mmd)",
+        "downloadFailed": "다이어그램을 저장하지 못했습니다",
+        "copySource": "소스 복사",
+        "copied": "복사됨",
+        "renderFailed": "Mermaid 오류: {message}",
+        "showSource": "소스 보기",
+        "retry": "다시 시도"
+      },
       "linkSafety": {
         "errorCannotOpen": "로컬 파일을 열 수 없습니다",
         "errorNoWorkspace": "현재 활성화된 워크스페이스 폴더가 없습니다.",

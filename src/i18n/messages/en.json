@@ -2993,6 +2993,25 @@
         "thoughtForFewSeconds": "Thought",
         "thoughtForSeconds": "Thought"
       },
+      "mermaid": {
+        "diagram": "Diagram",
+        "loading": "Rendering diagram…",
+        "zoomIn": "Zoom in",
+        "zoomOut": "Zoom out",
+        "resetView": "Reset view",
+        "fullscreen": "View fullscreen",
+        "close": "Close",
+        "download": "Download",
+        "downloadSvg": "Download as SVG",
+        "downloadPng": "Download as PNG",
+        "downloadMmd": "Download source (.mmd)",
+        "downloadFailed": "Could not save the diagram",
+        "copySource": "Copy source",
+        "copied": "Copied",
+        "renderFailed": "Mermaid error: {message}",
+        "showSource": "Show source",
+        "retry": "Retry"
+      },
       "linkSafety": {
         "errorCannotOpen": "Cannot open local file",
         "errorNoWorkspace": "No workspace folder is currently active.",

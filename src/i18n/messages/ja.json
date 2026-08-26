@@ -2993,6 +2993,25 @@
         "thoughtForFewSeconds": "考えた",
         "thoughtForSeconds": "考えた"
       },
+      "mermaid": {
+        "diagram": "図",
+        "loading": "図を描画しています…",
+        "zoomIn": "拡大",
+        "zoomOut": "縮小",
+        "resetView": "表示をリセット",
+        "fullscreen": "全画面表示",
+        "close": "閉じる",
+        "download": "ダウンロード",
+        "downloadSvg": "SVG でダウンロード",
+        "downloadPng": "PNG でダウンロード",
+        "downloadMmd": "ソースをダウンロード（.mmd）",
+        "downloadFailed": "図を保存できませんでした",
+        "copySource": "ソースをコピー",
+        "copied": "コピーしました",
+        "renderFailed": "Mermaid エラー: {message}",
+        "showSource": "ソースを表示",
+        "retry": "再試行"
+      },
       "linkSafety": {
         "errorCannotOpen": "ローカルファイルを開けません",
         "errorNoWorkspace": "現在アクティブなワークスペースフォルダがありません。",

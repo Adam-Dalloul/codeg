@@ -2993,6 +2993,25 @@
         "thoughtForFewSeconds": "Nachgedacht",
         "thoughtForSeconds": "Nachgedacht"
       },
+      "mermaid": {
+        "diagram": "Diagramm",
+        "loading": "Diagramm wird gerendert …",
+        "zoomIn": "Vergrößern",
+        "zoomOut": "Verkleinern",
+        "resetView": "Ansicht zurücksetzen",
+        "fullscreen": "Im Vollbild anzeigen",
+        "close": "Schließen",
+        "download": "Herunterladen",
+        "downloadSvg": "Als SVG herunterladen",
+        "downloadPng": "Als PNG herunterladen",
+        "downloadMmd": "Quelltext herunterladen (.mmd)",
+        "downloadFailed": "Diagramm konnte nicht gespeichert werden",
+        "copySource": "Quelltext kopieren",
+        "copied": "Kopiert",
+        "renderFailed": "Mermaid-Fehler: {message}",
+        "showSource": "Quelltext anzeigen",
+        "retry": "Erneut versuchen"
+      },
       "linkSafety": {
         "errorCannotOpen": "Lokale Datei kann nicht geöffnet werden",
         "errorNoWorkspace": "Es ist kein Arbeitsbereichsordner aktiv.",

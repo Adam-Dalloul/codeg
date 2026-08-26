@@ -2993,6 +2993,25 @@
         "thoughtForFewSeconds": "تفكير",
         "thoughtForSeconds": "تفكير"
       },
+      "mermaid": {
+        "diagram": "مخطط",
+        "loading": "جارٍ عرض المخطط…",
+        "zoomIn": "تكبير",
+        "zoomOut": "تصغير",
+        "resetView": "إعادة تعيين العرض",
+        "fullscreen": "عرض بملء الشاشة",
+        "close": "إغلاق",
+        "download": "تنزيل",
+        "downloadSvg": "تنزيل بصيغة SVG",
+        "downloadPng": "تنزيل بصيغة PNG",
+        "downloadMmd": "تنزيل المصدر (.mmd)",
+        "downloadFailed": "تعذّر حفظ المخطط",
+        "copySource": "نسخ المصدر",
+        "copied": "تم النسخ",
+        "renderFailed": "خطأ Mermaid: {message}",
+        "showSource": "عرض المصدر",
+        "retry": "إعادة المحاولة"
+      },
       "linkSafety": {
         "errorCannotOpen": "تعذر فتح الملف المحلي",
         "errorNoWorkspace": "لا يوجد مجلد مساحة عمل نشط حالياً.",

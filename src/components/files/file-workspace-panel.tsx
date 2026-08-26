@@ -47,6 +47,7 @@ import {
 import { Streamdown } from "streamdown"
 import { readFileBase64 } from "@/lib/api"
 import { normalizeMathDelimiters } from "@/components/ai-elements/message"
+import { mermaidComponents } from "@/components/ai-elements/mermaid-block"
 import { useStreamdownPlugins } from "@/components/ai-elements/streamdown-plugins"
 import {
   defineMonacoThemes,
@@ -273,6 +274,7 @@ function MarkdownDocumentPreview({
       <Streamdown
         plugins={plugins}
         components={{
+          ...mermaidComponents,
           // eslint-disable-next-line @typescript-eslint/no-unused-vars
           img: ({ node, ...imgProps }) => (
             <PreviewImage
