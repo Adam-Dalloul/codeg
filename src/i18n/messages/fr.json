@@ -4210,6 +4210,11 @@
     "name": "Nom",
     "baseUrl": "URL du service",
     "token": "Jeton d’accès",
+    "customHeaders": "En-têtes personnalisés",
+    "customHeaderName": "Nom de l'en-tête",
+    "customHeaderValue": "Valeur de l'en-tête",
+    "addCustomHeader": "Ajouter un en-tête",
+    "removeCustomHeader": "Supprimer l'en-tête",
     "save": "Enregistrer",
     "delete": "Supprimer",
     "confirmDelete": {

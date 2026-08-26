@@ -4222,6 +4222,11 @@
     "name": "名称",
     "baseUrl": "服务地址",
     "token": "访问 Token",
+    "customHeaders": "自定义请求头",
+    "customHeaderName": "请求头名称",
+    "customHeaderValue": "请求头值",
+    "addCustomHeader": "添加请求头",
+    "removeCustomHeader": "删除请求头",
     "save": "保存",
     "delete": "删除",
     "confirmDelete": {

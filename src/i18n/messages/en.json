@@ -4222,6 +4222,11 @@
     "name": "Name",
     "baseUrl": "Service URL",
     "token": "Access token",
+    "customHeaders": "Custom headers",
+    "customHeaderName": "Header name",
+    "customHeaderValue": "Header value",
+    "addCustomHeader": "Add header",
+    "removeCustomHeader": "Remove header",
     "save": "Save",
     "delete": "Delete",
     "confirmDelete": {
