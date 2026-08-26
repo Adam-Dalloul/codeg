@@ -4167,3 +4167,107 @@ export function serializeCodexModelConfig(
   if (obj.default && obj.default.trim()) out.default = obj.default.trim()
   return JSON.stringify(out)
 }
+
+/** Whether a catalog entry is offered in codex's model picker. Codex flips
+ *  retired models to `hide` rather than deleting them (they keep an `upgrade`
+ *  migration stub), so "official the user can see" always means listable. */
+function isListableModel(m: CodexModelInfo): boolean {
+  return (m.visibility ?? "list") === "list"
+}
+
+/** Drop `excludedOfficials` entries that no longer name a **listable** official.
+ *
+ *  Codex retires models by flipping them to `visibility:"hide"` (0.147 did this
+ *  to `gpt-5.4` / `gpt-5.4-mini`), which turns a past removal into a *ghost*: it
+ *  is invisible in the editor yet still counts as a customization, so codeg goes
+ *  on replacing codex's whole model table for no benefit. Pruning lets the
+ *  config heal itself on the next save.
+ *
+ *  `officials` empty (catalog still loading, or codex unreachable) means "we
+ *  can't tell" — the config is returned untouched so an offline session never
+ *  destroys the user's removals. The trade-off when we *can* tell: temporarily
+ *  running an older codex that lacks a model forgets that model's removal. That
+ *  is rarer and far less harmful than ghosts accumulating forever. */
+export function pruneCodexGhostExclusions(
+  config: CodexModelConfig,
+  officials: CodexModelInfo[]
+): CodexModelConfig {
+  const excluded = config.excludedOfficials ?? []
+  if (!excluded.length || !officials.length) return config
+  const listable = new Set(officials.filter(isListableModel).map((m) => m.slug))
+  const kept = excluded.filter((slug) => listable.has(slug))
+  if (kept.length === excluded.length) return config
+  const next: CodexModelConfig = { ...config }
+  if (kept.length) next.excludedOfficials = kept
+  else delete next.excludedOfficials
+  return next
+}
+
+/** Whether the user has deviated from codex's own catalog in a way that still
+ *  applies — i.e. what actually justifies taking over `model_catalog_json`.
+ *  Ghost exclusions (see [[pruneCodexGhostExclusions]]) don't count. */
+export function hasCodexCustomization(
+  config: CodexModelConfig,
+  officials: CodexModelInfo[]
+): boolean {
+  if (config.customs.length > 0) return true
+  return (
+    (pruneCodexGhostExclusions(config, officials).excludedOfficials ?? [])
+      .length > 0
+  )
+}
+
+/** ModelInfo overrides that make a cloned GPT entry speak **plain** OpenAI
+ *  Responses, for third-party gateways that only implement the public API.
+ *
+ *  Verified by capturing what codex 0.147 actually puts on the wire: a stock
+ *  `gpt-5.6-sol` sends `tools: []` plus a non-standard `additional_tools`
+ *  developer input item, no `instructions`, and `reasoning.context` — nothing a
+ *  compatible endpoint can serve. With these overrides the same request becomes
+ *  standard: `instructions` + a plain `function` tool array + `reasoning:
+ *  {effort}`. `apply_patch_tool_type:null` additionally drops the
+ *  `type:"custom"` freeform-grammar tool.
+ *
+ *  Not included on purpose: the residual `tool_search` / `web_search` /
+ *  `namespace` tools come from codex's global feature flags, not from ModelInfo,
+ *  so a per-model template cannot (and shouldn't) touch them. */
+export const CODEX_COMPAT_OVERRIDES: Record<string, unknown> = {
+  tool_mode: null,
+  multi_agent_version: null,
+  use_responses_lite: false,
+  apply_patch_tool_type: null,
+  supports_image_detail_original: false,
+}
+
+/** Apply (or clear) the compatibility bundle on an entry's overrides, keeping
+ *  the sparse-write rule the editor uses everywhere: a value equal to the clone
+ *  base carries no override, so `serialize` stays byte-stable. Overrides outside
+ *  the bundle are left alone. Clearing drops the bundle keys so each field falls
+ *  back to the base again. */
+export function applyCodexCompatOverrides(
+  entry: CodexCustomEntry,
+  base: Record<string, unknown>,
+  enabled: boolean
+): Record<string, unknown> | undefined {
+  const next = { ...(entry.overrides ?? {}) }
+  for (const [key, value] of Object.entries(CODEX_COMPAT_OVERRIDES)) {
+    if (!enabled || Object.is(value, base[key])) delete next[key]
+    else next[key] = value
+  }
+  return Object.keys(next).length ? next : undefined
+}
+
+/** Whether an entry's **effective** values (override, else clone base) match the
+ *  compatibility bundle. Derived rather than stored, so the persisted shape
+ *  stays "sparse overrides only" — and a base that already ships a compat value
+ *  (e.g. `gpt-5.2` has `use_responses_lite:false`) still reads as compatible
+ *  even though no override records it. */
+export function isCodexCompatEntry(
+  entry: CodexCustomEntry,
+  base: Record<string, unknown>
+): boolean {
+  const overrides = entry.overrides ?? {}
+  return Object.entries(CODEX_COMPAT_OVERRIDES).every(([key, value]) =>
+    Object.is(key in overrides ? overrides[key] : base[key], value)
+  )
+}

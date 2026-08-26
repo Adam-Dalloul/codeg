@@ -7274,6 +7274,9 @@ export function AcpAgentSettings() {
   const handleCodexModelListChange = useCallback(
     (next: CodexModelConfig) => {
       const defaultSlug = next.default ?? next.customs[0]?.slug ?? ""
+      // `next` arrives already pruned of exclusions that no longer name a
+      // listable official, so a plain count is the *effective* customization —
+      // codeg only takes over codex's model table when something really deviates.
       const hasCatalog =
         next.customs.length > 0 || (next.excludedOfficials?.length ?? 0) > 0
       updateSelectedDraft((current) => {
