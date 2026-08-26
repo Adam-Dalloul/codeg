@@ -56,7 +56,10 @@ import {
 import { useZoomLevel, useEditorFont } from "@/hooks/use-appearance"
 import { useImeSafeEditorValue } from "@/hooks/use-ime-safe-editor-value"
 import { ScrollArea } from "@/components/ui/scroll-area"
-import { getAddToChatPillPlacement } from "@/lib/add-to-chat-pill-placement"
+import {
+  getAddToChatPillPlacement,
+  type AddToChatPillPlacement,
+} from "@/lib/add-to-chat-pill-placement"
 
 import "@/lib/monaco-local"
 
@@ -363,6 +366,14 @@ const ADD_TO_CHAT_PILL_FALLBACK_HEIGHT_PX = 28
  * returns null while hidden — Monaco unmounts the widget on a null position, so
  * visibility is driven entirely through {@link AddToChatPill.setVisible} +
  * `layoutContentWidget`.
+ *
+ * Keep `allowEditorOverflow`: dropping it moves the node inside the editor's own
+ * scrollable content, where the vertical scrollbar paints over the pill for any
+ * anchor near the right edge (reproduced against monaco 0.55.1 — a hit test on
+ * the pill's right-hand corners resolves to the scrollbar, not the button), and
+ * the node then shrink-to-fits to min-content and wraps to three lines. The cost
+ * of keeping it is that Monaco decides placement from *page* geometry, which
+ * {@link getAddToChatPillPlacement} corrects back to viewport geometry.
  */
 function createAddToChatPill(
   editor: MonacoEditorNs.IStandaloneCodeEditor,
@@ -399,31 +410,44 @@ function createAddToChatPill(
   let position: IPosition | null = null
   let measuredHeight = 0
 
+  const toMonacoPreference = (placement: AddToChatPillPlacement) =>
+    placement === "above"
+      ? monaco.editor.ContentWidgetPositionPreference.ABOVE
+      : monaco.editor.ContentWidgetPositionPreference.BELOW
+
   const widget: MonacoEditorNs.IContentWidget = {
     getId: () => "codeg.addToChatPill",
     getDomNode: () => dom,
     getPosition: () => {
       if (!visible || !position) return null
 
-      // Monaco's own `anchor.top`: the gap between the top edge of the editor
-      // viewport and the anchor line. `getTopForPosition` is wrap-aware (it
-      // converts to a view position first) and costs a layout-model lookup
-      // only — no DOM measurement — so it is safe on the scroll path.
-      // A negative return means "no model", not a real offset.
+      // Rebuild the two measurements Monaco's `_layoutBoxInViewport` works
+      // from. `getTopForPosition` is wrap-aware (it converts to a view position
+      // first) and is a layout-model lookup, not a DOM measurement, so this is
+      // safe on the scroll path. A negative return means "no model", not a real
+      // offset. `getLayoutInfo().height` is exactly Monaco's `viewportHeight`
+      // (the value it hands the scrollable), so the two agree to the pixel.
       const anchorTop = editor.getTopForPosition(
         position.lineNumber,
         position.column
       )
-      const preference = getAddToChatPillPlacement(
-        anchorTop < 0 ? null : anchorTop - editor.getScrollTop(),
-        measuredHeight || ADD_TO_CHAT_PILL_FALLBACK_HEIGHT_PX
-      ).map((placement) =>
-        placement === "above"
-          ? monaco.editor.ContentWidgetPositionPreference.ABOVE
-          : monaco.editor.ContentWidgetPositionPreference.BELOW
-      )
+      const lineHeightPx = editor.getLineHeightForPosition(position)
+      const spaceAbovePx =
+        anchorTop < 0 ? null : anchorTop - editor.getScrollTop()
+      const preference = getAddToChatPillPlacement({
+        spaceAbovePx,
+        spaceBelowPx:
+          spaceAbovePx === null
+            ? 0
+            : editor.getLayoutInfo().height - (spaceAbovePx + lineHeightPx),
+        lineHeightPx,
+        pillHeightPx: measuredHeight || ADD_TO_CHAT_PILL_FALLBACK_HEIGHT_PX,
+      }).map(toMonacoPreference)
 
-      return { position, preference }
+      // An empty list means "nowhere sensible" — hand Monaco a null position so
+      // it unmounts the pill, the same way {@link AddToChatPill.setVisible}
+      // hides it. It comes back on the next layout once the anchor is in view.
+      return preference.length > 0 ? { position, preference } : null
     },
     allowEditorOverflow: true,
     suppressMouseDown: true,
@@ -1069,6 +1093,7 @@ export function FileWorkspacePanel() {
   const focusListenerRef = useRef<IDisposable | null>(null)
   const blurListenerRef = useRef<IDisposable | null>(null)
   const scrollListenerRef = useRef<IDisposable | null>(null)
+  const layoutListenerRef = useRef<IDisposable | null>(null)
   const tRef = useRef(t)
   const monacoRef = useRef<Monaco | null>(null)
   // The loaded monaco instance, captured at editor mount. Passing it to the
@@ -1303,6 +1328,8 @@ export function FileWorkspacePanel() {
       blurListenerRef.current = null
       scrollListenerRef.current?.dispose()
       scrollListenerRef.current = null
+      layoutListenerRef.current?.dispose()
+      layoutListenerRef.current = null
       if (addToChatPillRef.current) {
         target?.removeContentWidget(addToChatPillRef.current.widget)
         addToChatPillRef.current = null
@@ -1658,6 +1685,17 @@ export function FileWorkspacePanel() {
       addToChatPillRef.current = pill
       editorInstance.addContentWidget(pill.widget)
 
+      // The single way to lay the pill out. Monaco reads `getPosition()` — and
+      // so decides the placement — while the node is still `display: none`, and
+      // only flips it to `block` inside this same call, so this is the first
+      // moment the pill can be measured. Whenever that lands a height we did
+      // not have (the first-ever show, or a zoom that resized the pill), redo
+      // the layout in the same frame with the real box.
+      const layoutPill = () => {
+        editorInstance.layoutContentWidget(pill.widget)
+        if (pill.remeasure()) editorInstance.layoutContentWidget(pill.widget)
+      }
+
       const refreshPill = () => {
         const selection = editorInstance.getSelection()
         const show =
@@ -1669,12 +1707,7 @@ export function FileWorkspacePanel() {
           show,
           show && selection ? selection.getStartPosition() : null
         )
-        editorInstance.layoutContentWidget(pill.widget)
-        // Monaco flips the node to `display: block` inside the call above, so
-        // this is the first moment the pill can be measured. When that lands a
-        // new height, redo the layout in the same frame with the real box —
-        // otherwise the first-ever show would place itself off the fallback.
-        if (pill.remeasure()) editorInstance.layoutContentWidget(pill.widget)
+        layoutPill()
       }
       selectionListenerRef.current?.dispose()
       selectionListenerRef.current =
@@ -1685,20 +1718,27 @@ export function FileWorkspacePanel() {
       blurListenerRef.current?.dispose()
       blurListenerRef.current = editorInstance.onDidBlurEditorText(() => {
         pill.setVisible(false, null)
-        editorInstance.layoutContentWidget(pill.widget)
+        layoutPill()
       })
       // Monaco latches a widget's placement preference when the widget is laid
-      // out and re-uses it for every later render, so a pill that is already on
-      // screen keeps its old above/below choice while the user scrolls its
-      // anchor line up to the top edge. Re-layout on vertical scroll to
-      // re-decide. Nothing above depends on the horizontal offset, so
-      // `scrollLeft`-only ticks are skipped.
+      // out and re-uses it for every later render, so a visible pill keeps a
+      // stale above/below choice until something lays it out again. Every input
+      // to that choice can change while the pill sits on screen: the room above
+      // the anchor (vertical scroll), the viewport height (the user dragging
+      // the terminal splitter up), and the pill's own height (zoom, which
+      // scales the rem-based pill and the editor font together). Refresh on
+      // each — a layout change covers zoom, because the panel feeds the zoomed
+      // font size to Monaco as an option. Nothing in the decision depends on
+      // the horizontal offset, so `scrollLeft`-only ticks are skipped.
+      const relayoutPill = () => {
+        if (pill.isVisible()) layoutPill()
+      }
       scrollListenerRef.current?.dispose()
       scrollListenerRef.current = editorInstance.onDidScrollChange((event) => {
-        if (event.scrollTopChanged && pill.isVisible()) {
-          editorInstance.layoutContentWidget(pill.widget)
-        }
+        if (event.scrollTopChanged) relayoutPill()
       })
+      layoutListenerRef.current?.dispose()
+      layoutListenerRef.current = editorInstance.onDidLayoutChange(relayoutPill)
 
       editorInstance.onDidDispose(() => teardownAddToChat(editorInstance))
 
