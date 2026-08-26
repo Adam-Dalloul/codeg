@@ -526,6 +526,41 @@ pub async fn forge_tab_count_core(
     Ok(listed.ok().and_then(|page| page.trustworthy_count()))
 }
 
+/// One page of an item's discussion, for the detail panel.
+///
+/// Its own command rather than a field on the list row, and this is a real
+/// trade rather than tidiness: a thread is one request PER ITEM, so folding it
+/// into the list would spend thirty of them to draw a page whose reader opens
+/// at most one. Asking only when the panel opens keeps the cost proportional
+/// to what is actually read — and on GitHub it lands on the core quota
+/// (5000/hour) instead of the 30-per-minute one the list itself lives on, so
+/// opening item after item cannot starve the list behind it.
+///
+/// The item's COORDINATES come from the client (kind and number, the same two
+/// values the trigger takes) and everything else is derived here — repository
+/// from the folder's own remote, credentials from the resolved account. Both
+/// are validated before they reach a provider client: on GitLab the kind picks
+/// the collection, so a wrong one reads a real item that is not this one.
+pub async fn forge_list_comments_core(
+    db: &AppDatabase,
+    folder_id: i32,
+    filters: forge::CommentFilters,
+) -> Result<forge::ForgeCommentList, AppCommandError> {
+    let (kind, number, page, per_page) = filters.resolve().map_err(AppCommandError::from)?;
+    let (remote, auth) = resolve_folder_repo(db, folder_id, filters.account_id.as_deref()).await?;
+    Ok(match remote.provider {
+        // No kind: a pull request IS an issue at GitHub, and both are served
+        // from `/issues/{n}/comments` (see `github::list_comments`).
+        ForgeProvider::GitHub => {
+            forge::github::list_comments(&auth, &remote.owner_repo, number, page, per_page).await?
+        }
+        ForgeProvider::GitLab => {
+            forge::gitlab::list_notes(&auth, &remote.owner_repo, kind, number, page, per_page)
+                .await?
+        }
+    })
+}
+
 /// The repository's label vocabulary, for the workbench's label filter. Its
 /// own command rather than a field on the list response: the labels change far
 /// more slowly than the list, so the frontend fetches them once per repository
@@ -548,15 +583,7 @@ pub async fn work_task_create_from_forge_core(
     draft: ForgeTaskDraft,
 ) -> Result<ForgeCreateResult, AppCommandError> {
     let source = &draft.source;
-    let item_kind = match source.kind.trim() {
-        "issue" => ForgeItemKind::Issue,
-        "pr" => ForgeItemKind::Change,
-        other => {
-            return Err(AppCommandError::invalid_input(format!(
-                "unknown work item kind: {other}"
-            )))
-        }
-    };
+    let item_kind = ForgeItemKind::parse(&source.kind).map_err(AppCommandError::from)?;
     let is_pr = item_kind == ForgeItemKind::Change;
     let claimed_provider =
         ForgeProvider::parse(&source.provider).map_err(AppCommandError::from)?;
@@ -843,6 +870,16 @@ pub async fn forge_list_labels(
     account_id: Option<String>,
 ) -> Result<forge::ForgeLabelList, AppCommandError> {
     forge_list_labels_core(&db, folder_id, account_id).await
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn forge_list_comments(
+    db: tauri::State<'_, AppDatabase>,
+    folder_id: i32,
+    filters: forge::CommentFilters,
+) -> Result<forge::ForgeCommentList, AppCommandError> {
+    forge_list_comments_core(&db, folder_id, filters).await
 }
 
 #[cfg(feature = "tauri-runtime")]

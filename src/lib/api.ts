@@ -9,7 +9,10 @@ import {
 import { getCodegToken } from "./transport/web-auth"
 import { notifyWebUnauthorized } from "./transport/web-connection-store"
 import { getCurrentEffectiveAppLocale } from "./i18n"
-import { DEFAULT_FORGE_PAGE_SIZE } from "./forge-list-prefs"
+import {
+  DEFAULT_FORGE_COMMENT_PAGE_SIZE,
+  DEFAULT_FORGE_PAGE_SIZE,
+} from "./forge-list-prefs"
 import { TurnBusyError, isTurnInProgressRejection } from "./turn-busy"
 import type { FolderThemeColor } from "./theme-presets"
 import type { FollowUpIntent } from "./task-follow-up"
@@ -21,6 +24,7 @@ import type {
   AutomationRun,
   AutomationDraft,
   ForgeCreateResult,
+  ForgeCommentList,
   ForgeIssueList,
   ForgeLabelList,
   ForgePanelSettings,
@@ -4996,6 +5000,43 @@ export async function forgeListLabels(
   return getTransport().call("forge_list_labels", {
     folderId,
     accountId: accountId ?? null,
+  })
+}
+
+/** Which item's discussion, and which page of it. As with `ForgeListQuery`,
+ *  the repository is deliberately absent — the backend derives it from the
+ *  folder's own remote. */
+export interface ForgeCommentQuery {
+  /** "issue" | "pr". Picks the COLLECTION on GitLab; GitHub serves both from
+   *  its issue-comments endpoint. */
+  kind: "issue" | "pr"
+  /** The item's own number (`iid` on GitLab). */
+  number: number
+  /** 1-based; the backend clamps. */
+  page?: number
+  perPage?: number
+  accountId?: string | null
+}
+
+/** One page of a work item's comments, oldest first.
+ *
+ *  Its own call rather than part of the list: a thread is one request per ITEM,
+ *  and a list page holds thirty of them whose reader opens at most one. On
+ *  GitHub it runs on the core quota (5000/hour) rather than search's
+ *  30-per-minute one, so opening panel after panel cannot starve the list. */
+export async function forgeListComments(
+  folderId: number,
+  query: ForgeCommentQuery
+): Promise<ForgeCommentList> {
+  return getTransport().call("forge_list_comments", {
+    folderId,
+    filters: {
+      kind: query.kind,
+      number: query.number,
+      page: query.page ?? 1,
+      perPage: query.perPage ?? DEFAULT_FORGE_COMMENT_PAGE_SIZE,
+      accountId: query.accountId ?? null,
+    },
   })
 }
 

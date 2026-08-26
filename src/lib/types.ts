@@ -1548,6 +1548,41 @@ export interface ForgeIssueList {
   incomplete: boolean
 }
 
+/** One human comment on a work item (mirrors Rust ForgeComment).
+ *
+ *  "Human" is the selection rule the backend applies: GitHub's review comments
+ *  live on another endpoint and GitLab's system events ("changed the
+ *  milestone") are filtered out, so this thread is exactly the set
+ *  `ForgeIssueRow.comments` counts. */
+export interface ForgeComment {
+  /** The forge's own id, stringified — a React key and the de-duplication
+   *  handle across pages, never a number to do arithmetic with. */
+  id: string
+  author: string | null
+  /** `http(s)` only; null when the forge sent nothing usable. */
+  author_avatar: string | null
+  body: string
+  created_at: string | null
+  /** Present only when the comment was EDITED — both forges stamp an
+   *  `updated_at` on creation, and the backend drops the ones that merely
+   *  repeat `created_at`. */
+  updated_at: string | null
+  html_url: string | null
+}
+
+/** One page of an item's discussion (mirrors Rust ForgeCommentList). No total:
+ *  neither forge counts this collection cheaply, and the count the panel shows
+ *  is `ForgeIssueRow.comments`, which the list already paid for. */
+export interface ForgeCommentList {
+  comments: ForgeComment[]
+  page: number
+  per_page: number
+  /** Whether the FORGE has another page. Not "the page came back full": GitLab
+   *  drops system notes after paginating, so a page can hold no comments at
+   *  all and still have a discussion behind it. */
+  has_next: boolean
+}
+
 /** A folder's `origin` remote parsed into forge coordinates. */
 export interface ForgeRemote {
   server_host: string
