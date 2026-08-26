@@ -19,6 +19,7 @@ use std::path::Path;
 
 use tracing_appender::non_blocking::{NonBlocking, WorkerGuard};
 use tracing_appender::rolling::Rotation;
+use tracing_subscriber::filter::filter_fn;
 use tracing_subscriber::{fmt, prelude::*, reload, EnvFilter, Registry};
 
 use crate::logging::budget::{self, BudgetedWriter};
@@ -100,10 +101,15 @@ pub struct LogGuard {
 ///   pinnable to trace for frame-level debugging. That escape hatch is right
 ///   for a firehose and wrong for a credential, so the dump gets its own entry.
 ///   Backstops are appended last and win at equal specificity (see
-///   [`build_env_filter`]), and no target is more specific than the module the
-///   `trace!` lives in — so neither the Settings UI nor `CODEG_LOG` can reopen
-///   it, deliberately or otherwise. Asking for LESS is still honored: the clamp
-///   never raises verbosity, so `off` still means off.
+///   [`build_env_filter`]), so a plain `tungstenite::handshake::client=trace`
+///   from the Settings UI or `CODEG_LOG` loses to this entry at any module
+///   depth. Asking for LESS is still honored: the clamp never raises
+///   verbosity, so `off` still means off.
+///
+///   This entry is not by itself sufficient, because a level table can only
+///   answer directives that are about levels — a field-qualified directive
+///   outranks it. [`is_credential_dump_target`] is what actually closes the
+///   target; this keeps the level story coherent alongside it.
 /// - `sqlx::query` → `Warn` — sqlx logs every executed statement, with its SQL
 ///   text, at INFO by default. Every `ConnectOptions` in the tree sets
 ///   `.sqlx_logging(false)`, but that is a per-call-site opt-out that a new
@@ -124,6 +130,29 @@ const TARGET_BACKSTOPS: &[(&str, LogLevel)] = &[
     ("sqlx::query", LogLevel::Warn),
     ("codeg_lib::logging", LogLevel::Off),
 ];
+
+/// The one target that is refused structurally rather than by level.
+///
+/// [`TARGET_BACKSTOPS`] is a table of *levels*, and a level is negotiable:
+/// `EnvFilter` ranks a field-qualified directive above a plain target one, so
+/// `CODEG_LOG='tungstenite::handshake::client[{message}]=trace'` outranks the
+/// entry there — and that `trace!` is a formatted event, so it has a `message`
+/// field to match on. The entry in the table still earns its place (it keeps
+/// the crate ceiling coherent and it is what the directive tests read), but it
+/// cannot be the whole answer.
+///
+/// A ceiling is the wrong shape for this line anyway. There is no verbosity to
+/// trade off: `handshake/client.rs` prints the serialized request, and in this
+/// codebase the only tungstenite client is the remote-workspace WebSocket, so
+/// every time that line prints at all it prints a bearer token and whatever
+/// custom credential headers the connection carries. So it is dropped before
+/// the level filter is consulted, and no directive in any syntax reaches it.
+///
+/// Anyone who genuinely needs the handshake bytes has `tungstenite::protocol`
+/// for frames, or a local edit here.
+fn is_credential_dump_target(target: &str) -> bool {
+    target == "tungstenite::handshake::client"
+}
 
 /// How much a level lets through, ascending. Distinct from [`LogLevel::rank`],
 /// which is a *severity* rank for filtering records (and puts `Off` at 0
@@ -485,6 +514,9 @@ fn build_subscriber(
         Some((non_blocking, guard)) => {
             Registry::default()
                 .with(filter_layer)
+                // A second global filter: an event must clear BOTH, so this one
+                // cannot be argued with by any `EnvFilter` directive.
+                .with(filter_fn(|meta| !is_credential_dump_target(meta.target())))
                 .with(fmt::layer().with_writer(std::io::stderr))
                 .with(BufferEmitLayer)
                 .with(fmt::layer().json().with_writer(non_blocking))
@@ -494,6 +526,9 @@ fn build_subscriber(
         None => {
             Registry::default()
                 .with(filter_layer)
+                // A second global filter: an event must clear BOTH, so this one
+                // cannot be argued with by any `EnvFilter` directive.
+                .with(filter_fn(|meta| !is_credential_dump_target(meta.target())))
                 .with(fmt::layer().with_writer(std::io::stderr))
                 .with(BufferEmitLayer)
                 .init();
@@ -739,6 +774,91 @@ mod tests {
         assert!(
             frames.contains("tungstenite::protocol=trace"),
             "frame tracing must survive the crate ceiling: {frames}"
+        );
+    }
+
+    /// Why the level table cannot be the whole answer, pinned as a fact rather
+    /// than an argument: `EnvFilter` ranks a field-qualified directive above a
+    /// plain target one, and the dump is a formatted event so it has a
+    /// `message` field to qualify on. The first assertion shows the ceiling
+    /// losing; the second shows what actually holds the line.
+    #[test]
+    fn a_field_qualified_directive_defeats_the_ceiling_but_not_the_denial() {
+        let rendered = EnvFilter::builder()
+            .parse_lossy(env_override_directives(
+                "tungstenite::handshake::client[{message}]=trace",
+            ))
+            .to_string();
+        assert!(
+            rendered.contains("tungstenite::handshake::client[{message}]=trace"),
+            "expected the level table to be outranked here: {rendered}"
+        );
+
+        assert!(
+            is_credential_dump_target("tungstenite::handshake::client"),
+            "the dump's target must be denied outright, whatever the filter says"
+        );
+        // Exact match only — the denial must not swallow its neighbours.
+        for neighbour in [
+            "tungstenite::handshake::server",
+            "tungstenite::handshake",
+            "tungstenite::protocol",
+            "tungstenite",
+        ] {
+            assert!(
+                !is_credential_dump_target(neighbour),
+                "{neighbour} must stay reachable"
+            );
+        }
+    }
+
+    /// The predicate above is only half the claim; this exercises the wiring,
+    /// with the same two global filters the real subscriber is built from and
+    /// the most permissive directive anyone could write for the dump.
+    #[test]
+    fn the_denial_layer_drops_the_dump_and_nothing_else() {
+        use std::sync::{Arc, Mutex};
+
+        struct CaptureTargets(Arc<Mutex<Vec<String>>>);
+        impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for CaptureTargets {
+            fn on_event(
+                &self,
+                event: &tracing::Event<'_>,
+                _ctx: tracing_subscriber::layer::Context<'_, S>,
+            ) {
+                self.0
+                    .lock()
+                    .unwrap()
+                    .push(event.metadata().target().to_string());
+            }
+        }
+
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let subscriber = Registry::default()
+            .with(EnvFilter::builder().parse_lossy(
+                "trace,tungstenite::handshake::client[{message}]=trace",
+            ))
+            .with(filter_fn(|meta| !is_credential_dump_target(meta.target())))
+            .with(CaptureTargets(seen.clone()));
+
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::trace!(target: "tungstenite::handshake::client", "Request: bearer s3cret");
+            tracing::trace!(target: "tungstenite::protocol", "frame");
+            tracing::trace!(target: "codeg_lib::acp", "unrelated");
+        });
+
+        let seen = seen.lock().unwrap();
+        assert!(
+            !seen.iter().any(|t| t == "tungstenite::handshake::client"),
+            "the dump reached a sink: {seen:?}"
+        );
+        assert!(
+            seen.iter().any(|t| t == "tungstenite::protocol"),
+            "frame tracing must still arrive: {seen:?}"
+        );
+        assert!(
+            seen.iter().any(|t| t == "codeg_lib::acp"),
+            "unrelated targets must still arrive: {seen:?}"
         );
     }
 
