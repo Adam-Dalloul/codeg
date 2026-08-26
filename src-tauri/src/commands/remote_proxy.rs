@@ -144,12 +144,19 @@ struct WsSubscriber {
 /// Matches `reqwest`'s own default redirect bound.
 const MAX_REMOTE_REDIRECTS: usize = 10;
 
-/// Two URLs reach the same server. Host and port only, deliberately: this is
-/// the exact test `reqwest` applies when it decides whether to strip
-/// `Authorization` across a redirect, so an `http` → `https` hop reads as a
-/// different origin through its default port, the same way it does there.
+/// Two URLs reach the same server over the same kind of channel.
+///
+/// Scheme, host and port — a true origin, one notch stricter than the host-and-
+/// port test `reqwest` uses to decide whether to strip `Authorization`. The
+/// extra notch is the point: on a connection configured as `https://box:8443`,
+/// a hop to `http://box:8443` keeps reqwest's host and port identical, so its
+/// rule would allow it and put the connection's credentials on the wire in
+/// plaintext. Refusing a scheme change costs only the `http` → `https` upgrade
+/// on an identical explicit port, which is a URL the user can simply configure.
 fn same_remote_origin(a: &reqwest::Url, b: &reqwest::Url) -> bool {
-    a.host_str() == b.host_str() && a.port_or_known_default() == b.port_or_known_default()
+    a.scheme() == b.scheme()
+        && a.host_str() == b.host_str()
+        && a.port_or_known_default() == b.port_or_known_default()
 }
 
 /// `host:port` for an error message. The port is not decoration: two ports on
@@ -2067,8 +2074,7 @@ mod tests {
             "https://evil.example/dl/t1",
             // Same host, different port — a different server.
             "https://box.example:8443/dl/t1",
-            // Same host, downgraded scheme: reqwest treats this as cross-origin
-            // through the default port, and so do we.
+            // Same host, downgraded scheme.
             "http://box.example/dl/t1",
         ] {
             let err = absolute_remote_ticket_url("https://box.example", ticket)
@@ -2079,6 +2085,15 @@ mod tests {
                 err.message
             );
         }
+
+        // The case a host-and-port test alone would wave through: identical
+        // explicit port, scheme downgraded, so the credentials would have gone
+        // out in plaintext. `reqwest`'s own strip rule has this blind spot.
+        assert!(
+            absolute_remote_ticket_url("https://box.example:8443", "http://box.example:8443/dl/t1")
+                .is_err(),
+            "a plaintext downgrade on the same port must be refused"
+        );
     }
 
     /// Accept `responses.len()` connections in order, answering each with the

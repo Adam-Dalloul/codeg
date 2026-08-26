@@ -76,6 +76,28 @@ pub struct LogGuard {
 ///   Protocol-level debugging stays reachable: a MORE SPECIFIC target beats a
 ///   crate-level ceiling, so setting `CODEG_LOG` to
 ///   `info,sacp::jsonrpc::transport_actor=trace` still dumps the wire.
+/// - `tungstenite` → `Debug` — `handshake/client.rs` TRACEs the serialized
+///   handshake **in full**: `trace!("Request: {:?}", …)` over the raw request
+///   bytes. For a remote workspace connection that request carries the
+///   connection's credentials — the bearer token (which travels as a
+///   `Sec-WebSocket-Protocol` value) and every custom header the user
+///   configured, which for the case the feature exists to serve is a Cloudflare
+///   Access service token. `HeaderValue::set_sensitive` does not help: that
+///   only governs HTTP/2 HPACK indexing and the `Debug` of the value itself,
+///   and this line formats bytes tungstenite has already written out. So a user
+///   who raises the level to trace to diagnose a connection problem and then
+///   attaches the log to a bug report ships their secrets with it.
+///
+///   `Debug` — not lower — because the crate's `debug!` lines are the useful,
+///   harmless ones ("Client handshake done.", "Trying to contact {uri}",
+///   "Received close frame"). `trace!` is where both problems live: this dump,
+///   and a line per WebSocket frame read and written (`protocol/frame/mod.rs`),
+///   which is the sacp firehose shape again — every ACP event twice over.
+///
+///   The usual escape hatch applies and is deliberate: `tungstenite::protocol`
+///   can still be pinned to trace for frame-level debugging, and naming
+///   `tungstenite::handshake::client` re-opens the dump for someone who has
+///   decided they want it. What this stops is getting it by accident.
 /// - `sqlx::query` → `Warn` — sqlx logs every executed statement, with its SQL
 ///   text, at INFO by default. Every `ConnectOptions` in the tree sets
 ///   `.sqlx_logging(false)`, but that is a per-call-site opt-out that a new
@@ -91,6 +113,7 @@ const TARGET_BACKSTOPS: &[(&str, LogLevel)] = &[
     ("kill_tree", LogLevel::Warn),
     ("sacp", LogLevel::Warn),
     ("sacp_tokio", LogLevel::Warn),
+    ("tungstenite", LogLevel::Debug),
     ("sqlx::query", LogLevel::Warn),
     ("codeg_lib::logging", LogLevel::Off),
 ];
@@ -620,12 +643,43 @@ mod tests {
             // INFO line — the 34GB-in-8.8h shape.
             "sacp=warn",
             "sacp_tokio=warn",
+            // The serialized WS handshake at TRACE — bearer token and every
+            // custom header of a remote workspace connection, in the clear.
+            // Clamped to the global `info` here: the ceiling never adds volume,
+            // it only refuses trace.
+            "tungstenite=info",
             // Every SQL statement at INFO if a ConnectOptions forgets to opt out.
             "sqlx::query=warn",
             "codeg_lib::logging=off",
         ] {
             assert!(rendered.contains(pin), "missing backstop {pin}: {rendered}");
         }
+    }
+
+    /// The specific accident the `tungstenite` ceiling exists to prevent: a user
+    /// raises the level to trace to diagnose a remote-workspace connection, and
+    /// the WS handshake dump takes their bearer token and every custom header —
+    /// the Cloudflare Access secret the feature exists to carry — to disk with
+    /// it. Both filter paths have to hold, since the env override builds its own.
+    #[test]
+    fn a_global_trace_cannot_capture_the_websocket_handshake_dump() {
+        let rendered = build_env_filter(&LogSettings {
+            level: LogLevel::Trace,
+            targets: Vec::new(),
+        })
+        .to_string();
+        assert!(
+            rendered.contains("tungstenite=debug"),
+            "global trace re-opened the handshake dump: {rendered}"
+        );
+        let env = env_override_directives("trace");
+        assert!(
+            EnvFilter::builder()
+                .parse_lossy(&env)
+                .to_string()
+                .contains("tungstenite=debug"),
+            "CODEG_LOG=trace re-opened the handshake dump: {env}"
+        );
     }
 
     #[test]
@@ -635,7 +689,7 @@ mod tests {
         // re-opens the kill_tree per-PID firehose and the sacp wire dump.
         assert_eq!(
             env_override_directives("debug"),
-            "debug,kill_tree=warn,sacp=warn,sacp_tokio=warn,\
+            "debug,kill_tree=warn,sacp=warn,sacp_tokio=warn,tungstenite=debug,\
              sqlx::query=warn,codeg_lib::logging=off"
         );
         // And the parsed filter still carries the clamps under a global debug.
@@ -684,7 +738,8 @@ mod tests {
         // And the env-override path. `RUST_LOG=off` must be silent too.
         assert_eq!(
             env_override_directives("OFF"),
-            "OFF,kill_tree=off,sacp=off,sacp_tokio=off,sqlx::query=off,codeg_lib::logging=off",
+            "OFF,kill_tree=off,sacp=off,sacp_tokio=off,tungstenite=off,\
+             sqlx::query=off,codeg_lib::logging=off",
             "a bare off override collapses the ceilings, case-insensitively"
         );
     }
@@ -701,7 +756,8 @@ mod tests {
         // other ceiling collapses to off too.
         assert_eq!(
             env_override_directives("sacp=off"),
-            "sacp=off,kill_tree=off,sacp=off,sacp_tokio=off,sqlx::query=off,codeg_lib::logging=off"
+            "sacp=off,kill_tree=off,sacp=off,sacp_tokio=off,tungstenite=off,\
+             sqlx::query=off,codeg_lib::logging=off"
         );
         // ...but the same target asking for MORE is still refused: that is the
         // firehose this whole clamp exists to keep shut.
