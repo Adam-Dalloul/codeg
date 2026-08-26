@@ -93,11 +93,17 @@ pub struct LogGuard {
 ///   "Received close frame"). `trace!` is where both problems live: this dump,
 ///   and a line per WebSocket frame read and written (`protocol/frame/mod.rs`),
 ///   which is the sacp firehose shape again — every ACP event twice over.
-///
-///   The usual escape hatch applies and is deliberate: `tungstenite::protocol`
-///   can still be pinned to trace for frame-level debugging, and naming
-///   `tungstenite::handshake::client` re-opens the dump for someone who has
-///   decided they want it. What this stops is getting it by accident.
+/// - `tungstenite::handshake::client` → `Debug` — the same ceiling again, on
+///   the exact target the dump is emitted from, and this one is not negotiable.
+///   The crate-level entry above is a ceiling in the usual sense: a MORE
+///   specific directive beats it, which is what keeps `tungstenite::protocol`
+///   pinnable to trace for frame-level debugging. That escape hatch is right
+///   for a firehose and wrong for a credential, so the dump gets its own entry.
+///   Backstops are appended last and win at equal specificity (see
+///   [`build_env_filter`]), and no target is more specific than the module the
+///   `trace!` lives in — so neither the Settings UI nor `CODEG_LOG` can reopen
+///   it, deliberately or otherwise. Asking for LESS is still honored: the clamp
+///   never raises verbosity, so `off` still means off.
 /// - `sqlx::query` → `Warn` — sqlx logs every executed statement, with its SQL
 ///   text, at INFO by default. Every `ConnectOptions` in the tree sets
 ///   `.sqlx_logging(false)`, but that is a per-call-site opt-out that a new
@@ -114,6 +120,7 @@ const TARGET_BACKSTOPS: &[(&str, LogLevel)] = &[
     ("sacp", LogLevel::Warn),
     ("sacp_tokio", LogLevel::Warn),
     ("tungstenite", LogLevel::Debug),
+    ("tungstenite::handshake::client", LogLevel::Debug),
     ("sqlx::query", LogLevel::Warn),
     ("codeg_lib::logging", LogLevel::Off),
 ];
@@ -682,6 +689,59 @@ mod tests {
         );
     }
 
+    /// The crate ceiling stops the accident; this stops the deliberate act.
+    /// A firehose ceiling is meant to be re-openable by naming a submodule —
+    /// that is how `tungstenite::protocol=trace` stays available for frame
+    /// debugging. A credential dump is not, so the exact target it is emitted
+    /// on carries its own backstop, which wins at equal specificity, and no
+    /// target is more specific than the module holding the `trace!`.
+    #[test]
+    fn the_handshake_dump_cannot_be_reopened_even_by_naming_its_target() {
+        for asked in [
+            "tungstenite::handshake::client=trace",
+            "trace,tungstenite::handshake::client=trace",
+        ] {
+            let rendered = EnvFilter::builder()
+                .parse_lossy(env_override_directives(asked))
+                .to_string();
+            assert!(
+                !rendered.contains("tungstenite::handshake::client=trace"),
+                "CODEG_LOG={asked} reopened the dump: {rendered}"
+            );
+        }
+
+        // The Settings UI builds its filter down a different path.
+        let rendered = build_env_filter(&LogSettings {
+            level: LogLevel::Trace,
+            targets: vec![TargetDirective {
+                target: "tungstenite::handshake::client".into(),
+                level: LogLevel::Trace,
+            }],
+        })
+        .to_string();
+        assert!(
+            !rendered.contains("tungstenite::handshake::client=trace"),
+            "the Settings UI reopened the dump: {rendered}"
+        );
+
+        // Asking for less is still honored — a ceiling never raises verbosity.
+        assert!(
+            env_override_directives("tungstenite::handshake::client=off")
+                .contains("tungstenite::handshake::client=off"),
+            "off must still mean off"
+        );
+
+        // And frame-level debugging stays reachable, which is the whole reason
+        // the crate-level entry remains a re-openable ceiling.
+        let frames = EnvFilter::builder()
+            .parse_lossy(env_override_directives("info,tungstenite::protocol=trace"))
+            .to_string();
+        assert!(
+            frames.contains("tungstenite::protocol=trace"),
+            "frame tracing must survive the crate ceiling: {frames}"
+        );
+    }
+
     #[test]
     fn env_override_appends_backstops_so_debug_cannot_reopen_them() {
         // The explicit RUST_LOG/CODEG_LOG path bypasses build_env_filter, so it
@@ -690,7 +750,7 @@ mod tests {
         assert_eq!(
             env_override_directives("debug"),
             "debug,kill_tree=warn,sacp=warn,sacp_tokio=warn,tungstenite=debug,\
-             sqlx::query=warn,codeg_lib::logging=off"
+             tungstenite::handshake::client=debug,sqlx::query=warn,codeg_lib::logging=off"
         );
         // And the parsed filter still carries the clamps under a global debug.
         let rendered = EnvFilter::builder()
@@ -739,7 +799,7 @@ mod tests {
         assert_eq!(
             env_override_directives("OFF"),
             "OFF,kill_tree=off,sacp=off,sacp_tokio=off,tungstenite=off,\
-             sqlx::query=off,codeg_lib::logging=off",
+             tungstenite::handshake::client=off,sqlx::query=off,codeg_lib::logging=off",
             "a bare off override collapses the ceilings, case-insensitively"
         );
     }
@@ -757,7 +817,7 @@ mod tests {
         assert_eq!(
             env_override_directives("sacp=off"),
             "sacp=off,kill_tree=off,sacp=off,sacp_tokio=off,tungstenite=off,\
-             sqlx::query=off,codeg_lib::logging=off"
+             tungstenite::handshake::client=off,sqlx::query=off,codeg_lib::logging=off"
         );
         // ...but the same target asking for MORE is still refused: that is the
         // firehose this whole clamp exists to keep shut.

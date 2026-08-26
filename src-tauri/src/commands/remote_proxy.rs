@@ -2145,6 +2145,11 @@ mod tests {
 
         let client = reqwest::Client::builder()
             .redirect(connection_redirect_policy())
+            // Hermetic: this box has HTTP_PROXY set, and reqwest does not
+            // bypass loopback for it. Without this the request reaches the
+            // proxy instead of the test server, which answers 502 — an error,
+            // so the cross-host case would pass for entirely the wrong reason.
+            .no_proxy()
             .build()
             .unwrap();
         let err = client
@@ -2190,6 +2195,11 @@ mod tests {
 
         let client = reqwest::Client::builder()
             .redirect(connection_redirect_policy())
+            // Hermetic: this box has HTTP_PROXY set, and reqwest does not
+            // bypass loopback for it. Without this the request reaches the
+            // proxy instead of the test server, which answers 502 — an error,
+            // so the cross-host case would pass for entirely the wrong reason.
+            .no_proxy()
             .build()
             .unwrap();
         let response = client
