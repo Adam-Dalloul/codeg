@@ -1740,6 +1740,7 @@
       "noChats": "沒有聊天",
       "noRecent": "暫無最近對話",
       "showMoreRecent": "顯示更多（{count}）",
+      "resetRecentLimit": "重設為前 {count} 筆",
       "noFolders": "沒有開啟的資料夾",
       "newChatAction": "新增聊天",
       "automations": "自動化",

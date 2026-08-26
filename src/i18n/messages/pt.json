@@ -1740,6 +1740,7 @@
       "noChats": "Sem chats",
       "noRecent": "Sem conversas recentes",
       "showMoreRecent": "Mostrar mais ({count})",
+      "resetRecentLimit": "Redefinir para as primeiras {count}",
       "noFolders": "Nenhuma pasta aberta",
       "newChatAction": "Novo chat",
       "automations": "Automações",
