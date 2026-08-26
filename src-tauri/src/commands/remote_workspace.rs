@@ -46,6 +46,11 @@ async fn validate_remote_health(
     let url = format!("{normalized}/api/health");
     let client = reqwest::Client::builder()
         .timeout(REMOTE_HEALTH_TIMEOUT)
+        // The health check is the first request to carry the connection's
+        // custom headers, and the one the user runs to prove the setup works.
+        // It gets the same host pinning as every later request, or "test
+        // succeeded" would mean something weaker than "save succeeded".
+        .redirect(crate::commands::remote_proxy::connection_redirect_policy())
         .build()
         .map_err(|e| {
             AppCommandError::configuration_invalid("Failed to create remote health client")
@@ -61,7 +66,7 @@ async fn validate_remote_health(
         .await
         .map_err(|e| {
             AppCommandError::network("Unable to connect to remote workspace")
-                .with_detail(e.to_string())
+                .with_detail(crate::commands::remote_proxy::request_error_detail(&e))
         })?;
 
     if response.status() == StatusCode::UNAUTHORIZED {
