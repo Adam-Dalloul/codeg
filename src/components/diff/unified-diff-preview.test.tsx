@@ -95,6 +95,77 @@ describe("UnifiedDiffPreview", () => {
   })
 })
 
+describe("UnifiedDiffPreview — sticky line numbers", () => {
+  beforeEach(() => {
+    localStorage.clear()
+  })
+
+  // jsdom does no layout, so these pin the declarations that ARE the
+  // behaviour (both verified in Chromium): the rail holds at x=0 of its
+  // scrollport while the code slides under it, and its OPAQUE base is what
+  // stops the code from showing through the digits — every row tint is
+  // translucent, so a rail carrying only the tint would be see-through.
+
+  it("pins the scroll bodies to LTR in both views", () => {
+    // The app puts the document in `dir="rtl"` for Arabic, and a diff is
+    // left-to-right whatever the UI language. Under RTL the panes would swap,
+    // react-resizable-panels would invert the drag, each scrollport would
+    // report `scrollLeft` as 0 at its right edge counting into negatives, and
+    // this rail would stick to the edge the numbers are no longer on. The
+    // direction has to sit on the scroll container itself — that is what
+    // decides both the layout and the sign of `scrollLeft`.
+    const { container } = renderWithIntl(
+      <UnifiedDiffPreview diffText={modifiedDiff()} />
+    )
+    // Scoped to the file section: the preview's own outer frame is a
+    // ScrollArea too, and it holds the header, which stays with the UI.
+    expect(
+      container.querySelector("section [data-overlayscrollbars-initialize]")
+    ).toHaveAttribute("dir", "ltr")
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Switch to side-by-side view" })
+    )
+
+    const group = container.querySelector("[data-panel-group]")
+    expect(group).toHaveAttribute("dir", "ltr")
+    const panes = container.querySelectorAll(
+      "[data-panel] [data-overlayscrollbars-initialize]"
+    )
+    expect(panes).toHaveLength(2)
+  })
+
+  it("carries the numbers and the sign on an opaque rail, inline", () => {
+    const { container } = renderWithIntl(
+      <UnifiedDiffPreview diffText={modifiedDiff()} />
+    )
+
+    const rails = container.querySelectorAll(".sticky.left-0")
+    // One per row: context, two deletions, one addition, context.
+    expect(rails).toHaveLength(5)
+    expect(rails[0]).toHaveClass("bg-background")
+    // Old number, new number, and the +/- marker travel together; the code
+    // does not, which is the whole point.
+    expect(rails[0]?.textContent).toBe("11")
+    expect(rails[1]?.textContent).toBe("2-")
+    expect(rails[0]?.textContent).not.toContain("keep one")
+  })
+
+  it("carries each pane's own numbers on its own rail, side by side", () => {
+    localStorage.setItem("workspace:diff-view-mode", "split")
+    const { container } = renderWithIntl(
+      <UnifiedDiffPreview diffText={modifiedDiff()} />
+    )
+
+    const rails = container.querySelectorAll(".sticky.left-0")
+    // Four paired rows, two sides.
+    expect(rails).toHaveLength(8)
+    for (const rail of rails) expect(rail).toHaveClass("bg-background")
+    expect(rails[0]?.textContent).toBe("1")
+    expect(rails[0]?.textContent).not.toContain("keep one")
+  })
+})
+
 /** A single-file modified diff: one context row, two deletions, one addition,
  *  one more context row — exercises the split pairing with unequal runs. */
 function modifiedDiff(): string {
@@ -122,6 +193,23 @@ function otherModifiedDiff(): string {
     " shared context",
     "-was here",
     "+is here",
+  ].join("\n")
+}
+
+/** A two-hunk diff, so the second hunk's `@@` marker has to be drawn. */
+function twoHunkDiff(): string {
+  return [
+    "diff --git a/two.ts b/two.ts",
+    "--- a/two.ts",
+    "+++ b/two.ts",
+    "@@ -1,3 +1,3 @@",
+    " alpha",
+    "-old top",
+    "+new top",
+    "@@ -10,3 +12,3 @@",
+    " beta",
+    "-old bottom",
+    "+new bottom",
   ].join("\n")
 }
 
@@ -218,25 +306,60 @@ describe("UnifiedDiffPreview — side-by-side view", () => {
     expect(screen.getAllByText("shared context")).toHaveLength(2)
   })
 
-  it("lays the split rows out on one grid sized to its content", () => {
-    // jsdom does no layout, so this pins the two declarations that ARE the
-    // behaviour. Both were verified in Chromium and WebKit: with per-row flex
-    // boxes (or a grid without `w-max`) the container resolves to the tracks'
-    // minimum size, `1fr 1fr` halves it, and the longer side of a row paints
-    // its line over the opposite column — two lines of code on top of each
-    // other. Shared tracks give every row the same break point; `w-max` keeps
-    // each track wide enough for its widest line.
+  it("gives each side its own pane with a resize handle between them", () => {
+    // The two sides are separate scroll containers so each can scroll to its
+    // own longest line (`use-synced-scroll` puts them back in step). jsdom
+    // does no layout, so this pins the structure that makes that possible:
+    // two panes, a draggable separator, and a `w-max` content box per side so
+    // the pane has something wider than itself to scroll.
     localStorage.setItem("workspace:diff-view-mode", "split")
     const { container } = renderWithIntl(
       <UnifiedDiffPreview diffText={modifiedDiff()} />
     )
 
-    const grid = container.querySelector('[class*="grid-cols-"]')
-    expect(grid).not.toBeNull()
-    expect(grid).toHaveClass("w-max")
-    expect(grid).toHaveClass("grid-cols-[repeat(2,minmax(260px,1fr))]")
-    // Cells must not size themselves — the track owns the width.
-    expect(grid?.firstElementChild?.className).not.toMatch(/flex-1|basis-0/)
+    expect(screen.getByRole("separator")).toBeInTheDocument()
+
+    const panes = container.querySelectorAll(".w-max")
+    expect(panes).toHaveLength(2)
+    for (const pane of panes) {
+      // Short diffs still fill their half rather than huddling on the left.
+      expect(pane).toHaveClass("min-w-full")
+    }
+    // Each pane holds one side of the pairing, not both.
+    expect(panes[0]?.textContent).toContain("old line A")
+    expect(panes[0]?.textContent).not.toContain("new line A")
+    expect(panes[1]?.textContent).toContain("new line A")
+    expect(panes[1]?.textContent).not.toContain("old line A")
+  })
+
+  it("holds a filler row open to a full line", () => {
+    // A filler cell carries neither a number nor text, so its flex line has
+    // nothing to give it height. The old single grid let the opposite cell
+    // hold the row open; independent panes each lay out alone. Measured in
+    // Chromium without the min-height: the filler row is 0px and every row
+    // below the unpaired deletion sits 20px high on that side.
+    localStorage.setItem("workspace:diff-view-mode", "split")
+    const { container } = renderWithIntl(
+      <UnifiedDiffPreview diffText={modifiedDiff()} />
+    )
+
+    // `modifiedDiff` pairs two deletions against one addition, so the second
+    // pair leaves a filler on the right.
+    const rows = container.querySelectorAll(".w-max > div")
+    expect(rows).toHaveLength(8)
+    for (const row of rows) expect(row).toHaveClass("min-h-[20px]")
+  })
+
+  it("repeats the hunk marker in both panes so the rows stay level", () => {
+    // A marker rendered once, spanning both sides, would push one pane's rows
+    // down by its own height — the two sides scroll independently now, so the
+    // only thing keeping them on the same baseline is an identical run of
+    // boxes. Each side shows its own range.
+    localStorage.setItem("workspace:diff-view-mode", "split")
+    renderWithIntl(<UnifiedDiffPreview diffText={twoHunkDiff()} />)
+
+    expect(screen.getByText("@@ -10,3 @@")).toBeInTheDocument()
+    expect(screen.getByText("@@ +12,3 @@")).toBeInTheDocument()
   })
 
   it("still switches when persisting the choice throws", () => {
@@ -259,6 +382,46 @@ describe("UnifiedDiffPreview — side-by-side view", () => {
     } finally {
       setItem.mockRestore()
     }
+  })
+
+  it("offers one button that names the view it switches to", () => {
+    // Two buttons spent twice the header's width to say the same thing, and
+    // one of them was always a no-op. The single button shows the layout it
+    // takes you to, never the one already on screen.
+    renderWithIntl(<UnifiedDiffPreview diffText={modifiedDiff()} />)
+
+    expect(screen.getAllByRole("button")).toHaveLength(1)
+    expect(
+      screen.queryByRole("button", { name: "Switch to inline view" })
+    ).not.toBeInTheDocument()
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Switch to side-by-side view" })
+    )
+
+    expect(screen.getAllByRole("button")).toHaveLength(1)
+    expect(
+      screen.getByRole("button", { name: "Switch to inline view" })
+    ).toBeInTheDocument()
+  })
+
+  it("puts the counters with the path and the toggle at the far right", () => {
+    const { container } = renderWithIntl(
+      <UnifiedDiffPreview diffText={modifiedDiff()} />
+    )
+
+    const header = container.querySelector("header")
+    const toggle = screen.getByRole("button", {
+      name: "Switch to side-by-side view",
+    })
+    expect(header).toContainElement(toggle)
+
+    // Reading order: badge, path, +1, -2, toggle.
+    const cells = Array.from(header?.children ?? []).map((child) =>
+      child.textContent?.trim()
+    )
+    expect(cells).toEqual(["Modified", "app.ts", "+1-2", ""])
+    expect(header?.lastElementChild).toBe(toggle)
   })
 
   it("hides the toggle for a diff that has no side to split", () => {

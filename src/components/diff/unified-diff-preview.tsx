@@ -7,7 +7,13 @@ import { useActiveFolder } from "@/contexts/active-folder-context"
 import { cn } from "@/lib/utils"
 import { useDiffViewMode, type DiffViewMode } from "@/lib/diff-view-mode-prefs"
 import { ScrollArea } from "@/components/ui/scroll-area"
+import {
+  ResizableHandle,
+  ResizablePanel,
+  ResizablePanelGroup,
+} from "@/components/ui/resizable"
 import { FilePathLink } from "@/components/ai-elements/link-safety"
+import { useSyncedScroll } from "./use-synced-scroll"
 
 type RowMarker = "none" | "added" | "deleted" | "modified"
 type DiffFileMode = "modified" | "added" | "deleted" | "renamed"
@@ -545,31 +551,63 @@ function HunkSeparator({ hunk }: { hunk: ParsedDiffHunk }) {
       : "···"
   return (
     <div className="flex items-center gap-2 border-y border-border/50 bg-muted/30 px-3 py-0.5 font-mono text-[11px] text-muted-foreground/60">
-      <span className="select-none">{label}</span>
+      {/* Rides along with the line numbers rather than sliding off to the
+          left. Nothing scrolls underneath it, so the band needs no backing. */}
+      <span className="sticky left-3 select-none">{label}</span>
     </div>
   )
 }
+
+/**
+ * Holds the line numbers (and, inline, the +/- sign) against the left edge
+ * while the code scrolls under them — the numbers are how you keep your place
+ * in a long line, and they were the first thing to leave the screen.
+ *
+ * `bg-background` is load-bearing: the row tints are translucent, so a rail
+ * carrying only its row's tint would let the code slide visibly through the
+ * digits. The opaque base goes on the rail and `STICKY_RAIL_TINT` re-applies
+ * the row's colour on top, which composites to exactly what the row looks like
+ * further right. No `z-index` — a sticky (positioned) box already paints above
+ * its static siblings, and adding one here would put the rail above the
+ * scrollbars.
+ *
+ * `left-0` is safe as a physical edge because the scroll bodies pin themselves
+ * to `dir="ltr"`; the numbers are always on the physical left.
+ */
+const STICKY_RAIL = "sticky left-0 flex shrink-0 bg-background"
+
+/**
+ * The tinted layer inside the rail. Everything the rail covers goes in here,
+ * including the trailing gap that keeps scrolled code off the digits: put that
+ * padding on the rail itself and it stays card-coloured, drawing a bare stripe
+ * down the middle of every added and deleted row.
+ */
+const STICKY_RAIL_TINT = "flex pr-1"
 
 function HunkLines({ rows }: { rows: ParsedDiffRow[] }) {
   return (
     <div className="font-mono text-[12px] leading-[20px]">
       {rows.map((row, i) => {
-        const marker = rowMarker(row)
+        const tint = ROW_CLASS[rowMarker(row)]
         return (
-          <div key={i} className={cn("flex", ROW_CLASS[marker])}>
-            <span className="w-[3.5rem] shrink-0 select-none pr-1 text-right text-muted-foreground/40">
-              {row.oldLine ?? ""}
-            </span>
-            <span className="w-[3.5rem] shrink-0 select-none pr-1 text-right text-muted-foreground/40">
-              {row.newLine ?? ""}
-            </span>
-            <span
-              className={cn(
-                "w-4 shrink-0 select-none text-center",
-                SIGN_CLASS[row.sign] ?? ""
-              )}
-            >
-              {row.sign === " " ? "" : row.sign}
+          <div key={i} className={cn("flex", tint)}>
+            <span className={STICKY_RAIL}>
+              <span className={cn(STICKY_RAIL_TINT, tint)}>
+                <span className="w-[3.5rem] select-none pr-1 text-right text-muted-foreground/40">
+                  {row.oldLine ?? ""}
+                </span>
+                <span className="w-[3.5rem] select-none pr-1 text-right text-muted-foreground/40">
+                  {row.newLine ?? ""}
+                </span>
+                <span
+                  className={cn(
+                    "w-4 select-none text-center",
+                    SIGN_CLASS[row.sign] ?? ""
+                  )}
+                >
+                  {row.sign === " " ? "" : row.sign}
+                </span>
+              </span>
             </span>
             <span className="flex-1 whitespace-pre pr-3">{row.text}</span>
           </div>
@@ -585,8 +623,12 @@ function NewFileLines({ rows }: { rows: ParsedDiffRow[] }) {
     <div className="font-mono text-[12px] leading-[20px]">
       {rows.map((row, i) => (
         <div key={i} className={cn("flex", ROW_CLASS.added)}>
-          <span className="w-[3.5rem] shrink-0 select-none pr-1 text-right text-muted-foreground/40">
-            {row.newLine ?? i + 1}
+          <span className={STICKY_RAIL}>
+            <span className={cn(STICKY_RAIL_TINT, ROW_CLASS.added)}>
+              <span className="w-[3.5rem] select-none pr-1 text-right text-muted-foreground/40">
+                {row.newLine ?? i + 1}
+              </span>
+            </span>
           </span>
           <span className="flex-1 whitespace-pre pr-3">{row.text}</span>
         </div>
@@ -595,62 +637,169 @@ function NewFileLines({ rows }: { rows: ParsedDiffRow[] }) {
   )
 }
 
-function SplitCellView({
-  cell,
-  gutterClassName,
-}: {
-  cell: SplitCell
-  gutterClassName: string
-}) {
+function SplitCellView({ cell }: { cell: SplitCell }) {
   const empty = cell.text === null
-  // Sizing belongs to the grid track, not the cell: a cell that sized itself
-  // could end up narrower than its own `whitespace-pre` line and paint it over
-  // the neighbouring column.
+  const tint = empty ? "bg-muted/20" : ROW_CLASS[cell.marker]
   return (
-    <div className={cn("flex", empty ? "bg-muted/20" : ROW_CLASS[cell.marker])}>
-      <span
-        className={cn(
-          gutterClassName,
-          "shrink-0 select-none pr-1 text-right",
-          empty ? "text-transparent" : "text-muted-foreground/40"
-        )}
-      >
-        {cell.line ?? ""}
+    // `min-h-[20px]` (one `leading-[20px]` line) is what holds a filler cell
+    // open. It carries neither a number nor text, so its flex line has nothing
+    // to give it height: the old single grid let the opposite cell hold the row
+    // open, but independent panes each lay out alone, and a collapsed filler
+    // slides every row below it one line out of step with the other side.
+    <div className={cn("flex min-h-[20px]", tint)}>
+      <span className={STICKY_RAIL}>
+        <span className={cn(STICKY_RAIL_TINT, tint)}>
+          <span
+            className={cn(
+              "w-[3rem] select-none pr-1 text-right",
+              empty ? "text-transparent" : "text-muted-foreground/40"
+            )}
+          >
+            {cell.line ?? ""}
+          </span>
+        </span>
       </span>
       <span className="flex-1 whitespace-pre pr-3">{cell.text}</span>
     </div>
   )
 }
 
-/**
- * One grid for the whole hunk, so the two columns are laid out by shared
- * tracks rather than per-row: every row is guaranteed to break at the same
- * x, and no cell can be sized below the line it holds.
- *
- * `w-max` is load-bearing. Without it the grid takes the shrink-to-fit width
- * of its inline-block parent, which resolves to the tracks' MINIMUM sizes;
- * `1fr 1fr` then halves that between the columns, so a row whose two sides
- * differ in length (the normal case — a replaced line rarely keeps its old
- * width) leaves the longer side overflowing its track and painting under the
- * opposite column's background and text. Sizing to `max-content` makes the
- * grid as wide as twice its widest cell, which the enclosing `x="scroll"`
- * ScrollArea then scrolls; `min-w-full` keeps short diffs filling the host
- * instead of huddling on the left.
- */
-function HunkSplitLines({ rows }: { rows: ParsedDiffRow[] }) {
-  const splitRows = useMemo(() => toSplitRows(rows), [rows])
+/** A file's hunks, paired for the side-by-side view. Both panes walk this same
+ *  list — identical block sequence, identical row heights — which is what keeps
+ *  the two sides on the same baseline now that each scrolls on its own. */
+interface SplitBlock {
+  key: string
+  hunk: ParsedDiffHunk
+  /** Every hunk but the first is preceded by its `@@` marker. */
+  separator: boolean
+  rows: SplitRow[]
+}
+
+function toSplitBlocks(hunks: ParsedDiffHunk[]): SplitBlock[] {
+  return hunks.map((hunk, index) => ({
+    key: hunk.key,
+    hunk,
+    separator: index > 0,
+    rows: toSplitRows(hunk.rows),
+  }))
+}
+
+/** The hunk marker, split across the panes: each side shows only its own
+ *  range. The box is identical on both sides so the rows below it stay level. */
+function SplitHunkSeparator({
+  hunk,
+  side,
+}: {
+  hunk: ParsedDiffHunk
+  side: "left" | "right"
+}) {
+  const start = side === "left" ? hunk.oldStart : hunk.newStart
+  const count = side === "left" ? hunk.oldCount : hunk.newCount
+  const sign = side === "left" ? "-" : "+"
+  const label =
+    start != null && count != null ? `@@ ${sign}${start},${count} @@` : "···"
   return (
-    <div className="grid w-max min-w-full grid-cols-[repeat(2,minmax(260px,1fr))] font-mono text-[12px] leading-[20px]">
-      {splitRows.map((row, i) => (
-        <Fragment key={i}>
-          <SplitCellView cell={row.left} gutterClassName="w-[3rem]" />
-          <SplitCellView
-            cell={row.right}
-            gutterClassName="w-[3rem] border-l border-border/40"
-          />
+    <div className="border-y border-border/50 bg-muted/30 px-3 text-[11px] text-muted-foreground/60">
+      <span className="sticky left-3 inline-block select-none">{label}</span>
+    </div>
+  )
+}
+
+/**
+ * One side of the split view. `w-max` sizes the pane to its widest line so the
+ * enclosing `x="scroll"` ScrollArea has something to scroll; `min-w-full` keeps
+ * a short diff filling its half instead of leaving the row tints ending
+ * mid-way.
+ */
+function SplitPane({
+  blocks,
+  side,
+}: {
+  blocks: SplitBlock[]
+  side: "left" | "right"
+}) {
+  return (
+    <div className="w-max min-w-full font-mono text-[12px] leading-[20px]">
+      {blocks.map((block) => (
+        <Fragment key={block.key}>
+          {block.separator && (
+            <SplitHunkSeparator hunk={block.hunk} side={side} />
+          )}
+          {block.rows.map((row, i) => (
+            <SplitCellView
+              key={i}
+              cell={side === "left" ? row.left : row.right}
+            />
+          ))}
         </Fragment>
       ))}
     </div>
+  )
+}
+
+/**
+ * The side-by-side layout: two independent scroll containers, split down the
+ * middle by a draggable handle.
+ *
+ * Two scrollers rather than one two-column grid, because a shared scroller ties
+ * the columns' horizontal position together — scrolling to read the end of a
+ * long line on one side drags the other side's text off-screen with it. Each
+ * pane now scrolls to its own longest line, and `useSyncedScroll` puts the two
+ * back in step so the row under the cursor stays the row under the cursor.
+ */
+function SplitDiffPanes({
+  hunks,
+  bounded,
+}: {
+  hunks: ParsedDiffHunk[]
+  /** The section caps its own height, so each pane owns a vertical scrollbar.
+   *  When false the host scrolls the whole preview and the panes just grow. */
+  bounded: boolean
+}) {
+  const blocks = useMemo(() => toSplitBlocks(hunks), [hunks])
+  const { registerLeft, registerRight, handleLeftScroll, handleRightScroll } =
+    useSyncedScroll()
+
+  return (
+    <ResizablePanelGroup
+      direction="horizontal"
+      // A diff is left-to-right whatever the UI language, and under `dir="rtl"`
+      // (the app switches the document over for Arabic) every part of this
+      // layout inverts: the panes swap so "before" lands on the right,
+      // react-resizable-panels reads the group's own computed direction and
+      // flips the drag delta, each scrollport reports `scrollLeft` as 0 at its
+      // right edge counting down into negatives — which the sync clamp would
+      // pin at 0 — and the sticky rail below sticks to the wrong edge. Pinning
+      // the body to LTR settles all four at the source.
+      dir="ltr"
+      // `min-h-0` lets the group shrink inside the section's capped height
+      // instead of pushing past it; unbounded, it takes its content's height.
+      className={cn("min-h-0", bounded ? undefined : "h-auto")}
+    >
+      <ResizablePanel defaultSize={50} minSize={20}>
+        <ScrollArea
+          className={bounded ? "h-full" : undefined}
+          x="scroll"
+          y={bounded ? "scroll" : "hidden"}
+          onViewportRef={registerLeft}
+          onScroll={handleLeftScroll}
+        >
+          <SplitPane blocks={blocks} side="left" />
+        </ScrollArea>
+      </ResizablePanel>
+      <ResizableHandle />
+      <ResizablePanel defaultSize={50} minSize={20}>
+        <ScrollArea
+          className={bounded ? "h-full" : undefined}
+          x="scroll"
+          y={bounded ? "scroll" : "hidden"}
+          onViewportRef={registerRight}
+          onScroll={handleRightScroll}
+        >
+          <SplitPane blocks={blocks} side="right" />
+        </ScrollArea>
+      </ResizablePanel>
+    </ResizablePanelGroup>
   )
 }
 
@@ -697,6 +846,7 @@ function capHunks(hunks: ParsedDiffHunk[], limit: number): ParsedDiffHunk[] {
 function DiffFileSection({
   file,
   view,
+  switchView,
   embedded,
   clickableFilePath,
   folderPath,
@@ -704,6 +854,7 @@ function DiffFileSection({
 }: {
   file: ParsedDiffFile
   view: DiffViewMode
+  switchView: (mode: DiffViewMode) => void
   embedded: boolean
   clickableFilePath: boolean
   folderPath: string | null
@@ -755,6 +906,8 @@ function DiffFileSection({
       )}
     >
       {!embedded && (
+        // The counters sit with the path they belong to; the far right of the
+        // bar is the view toggle's, so it lands in the same spot on every file.
         <header className="flex shrink-0 items-center gap-2 border-b border-border bg-muted/40 px-3 py-2 text-[11px]">
           <span className="shrink-0 rounded border border-border bg-background px-1.5 py-0.5 text-[10px] text-muted-foreground">
             {newFile ? "WRITE" : t(modeKey(file.mode))}
@@ -762,21 +915,27 @@ function DiffFileSection({
           {clickableFilePath ? (
             <FilePathLink
               filePath={file.path}
-              className="min-w-0 flex-1 font-mono text-foreground"
+              className="min-w-0 font-mono text-foreground"
               title={file.path}
             >
               {toDisplayPath(file.path, folderPath)}
             </FilePathLink>
           ) : (
             <span
-              className="min-w-0 flex-1 truncate font-mono text-foreground"
+              className="min-w-0 truncate font-mono text-foreground"
               title={file.path}
             >
               {toDisplayPath(file.path, folderPath)}
             </span>
           )}
           {!newFile && (
-            <span className="ml-auto inline-flex shrink-0 items-center gap-2 font-mono">
+            // The counters are one LTR unit inside a header that still follows
+            // the UI direction: without this, RTL reorders them to "3- 2+",
+            // moving each sign behind its number. A no-op everywhere else.
+            <span
+              dir="ltr"
+              className="inline-flex shrink-0 items-center gap-2 font-mono"
+            >
               <span className="text-green-700 dark:text-green-400">
                 +{file.additions}
               </span>
@@ -785,27 +944,37 @@ function DiffFileSection({
               </span>
             </span>
           )}
+          {!newFile && (
+            <ViewModeToggle
+              view={view}
+              onSwitch={switchView}
+              className="ml-auto"
+            />
+          )}
         </header>
       )}
 
-      <ScrollArea x="scroll" y={unbounded ? "hidden" : "scroll"}>
-        <div className="inline-block min-w-full">
-          {newFile
-            ? hunks.map((hunk) => (
-                <NewFileLines key={hunk.key} rows={hunk.rows} />
-              ))
-            : hunks.map((hunk, hunkIdx) => (
-                <div key={hunk.key}>
-                  {hunkIdx > 0 && <HunkSeparator hunk={hunk} />}
-                  {view === "split" ? (
-                    <HunkSplitLines rows={hunk.rows} />
-                  ) : (
+      {view === "split" && !newFile ? (
+        <SplitDiffPanes hunks={hunks} bounded={!unbounded} />
+      ) : (
+        // `dir="ltr"` for the same reason the split panes force it: the rows
+        // are code, and under `dir="rtl"` the sticky rail would pin itself to
+        // the edge the numbers are no longer on.
+        <ScrollArea dir="ltr" x="scroll" y={unbounded ? "hidden" : "scroll"}>
+          <div className="inline-block min-w-full">
+            {newFile
+              ? hunks.map((hunk) => (
+                  <NewFileLines key={hunk.key} rows={hunk.rows} />
+                ))
+              : hunks.map((hunk, hunkIdx) => (
+                  <div key={hunk.key}>
+                    {hunkIdx > 0 && <HunkSeparator hunk={hunk} />}
                     <HunkLines rows={hunk.rows} />
-                  )}
-                </div>
-              ))}
-        </div>
-      </ScrollArea>
+                  </div>
+                ))}
+          </div>
+        </ScrollArea>
+      )}
 
       {capped && (
         <button
@@ -871,7 +1040,10 @@ export function UnifiedDiffPreview({
 
   if (files.length === 0) {
     const pre = (
-      <pre className="font-mono text-[11px] leading-5 whitespace-pre-wrap text-muted-foreground p-3">
+      <pre
+        dir="ltr"
+        className="font-mono text-[11px] leading-5 whitespace-pre-wrap text-muted-foreground p-3"
+      >
         {diffText}
       </pre>
     )
@@ -891,22 +1063,11 @@ export function UnifiedDiffPreview({
   return (
     <Frame className={className}>
       <div className={embedded ? "space-y-2" : "space-y-3"}>
-        {supportsSplitView(files) && (
-          <div className="flex items-center justify-end gap-1">
-            <ViewModeButton
-              active={view === "unified"}
-              label={t("viewMode.unified")}
-              onClick={() => switchView("unified")}
-            >
-              <Rows3 className="h-3 w-3" />
-            </ViewModeButton>
-            <ViewModeButton
-              active={view === "split"}
-              label={t("viewMode.split")}
-              onClick={() => switchView("split")}
-            >
-              <Columns2 className="h-3 w-3" />
-            </ViewModeButton>
+        {/* Every file renders its own toggle in its header. Embedded previews
+            have no header to put it in, so they keep a row of their own. */}
+        {embedded && supportsSplitView(files) && (
+          <div className="flex items-center justify-end">
+            <ViewModeToggle view={view} onSwitch={switchView} />
           </div>
         )}
         {files.map((file) => (
@@ -914,6 +1075,7 @@ export function UnifiedDiffPreview({
             key={file.key}
             file={file}
             view={view}
+            switchView={switchView}
             embedded={embedded}
             clickableFilePath={clickableFilePath}
             folderPath={folder?.path ?? null}
@@ -925,30 +1087,37 @@ export function UnifiedDiffPreview({
   )
 }
 
-function ViewModeButton({
-  active,
-  label,
-  onClick,
-  children,
+/**
+ * One button for both layouts, showing the view it switches TO rather than the
+ * one already on screen — the icon reads as "go here", which is also what the
+ * `viewMode` labels say ("Switch to …"). A pair of buttons spent twice the
+ * header's width to say the same thing.
+ */
+function ViewModeToggle({
+  view,
+  onSwitch,
+  className,
 }: {
-  active: boolean
-  label: string
-  onClick: () => void
-  children: React.ReactNode
+  view: DiffViewMode
+  onSwitch: (mode: DiffViewMode) => void
+  className?: string
 }) {
+  const t = useTranslations("Folder.diffPreview")
+  const next: DiffViewMode = view === "split" ? "unified" : "split"
+  const label = t(`viewMode.${next}`)
+  const Icon = next === "split" ? Columns2 : Rows3
   return (
     <button
       type="button"
-      onClick={onClick}
+      onClick={() => onSwitch(next)}
       aria-label={label}
-      aria-pressed={active}
       title={label}
       className={cn(
-        "inline-flex items-center gap-1 rounded border border-border bg-background px-2 py-0.5 text-[10px] transition-colors hover:bg-muted",
-        active ? "text-foreground" : "text-muted-foreground"
+        "inline-flex h-5 w-5 shrink-0 items-center justify-center rounded border border-border bg-background text-muted-foreground transition-colors hover:bg-muted hover:text-foreground",
+        className
       )}
     >
-      {children}
+      <Icon className="h-3 w-3" />
     </button>
   )
 }
