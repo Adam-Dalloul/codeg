@@ -845,6 +845,105 @@ export async function acpSyncAntigravitySettings(): Promise<AntigravitySyncRepor
 }
 
 /**
+ * Step one of a browser-free Antigravity sign-in. Mirrors
+ * `AntigravityLoginStart` in src-tauri/src/acp/antigravity_login.rs, as a union
+ * on `alreadySignedIn` — the agent may hold a still-usable token, in which case
+ * it authenticates on the spot and there is no link and nothing to complete.
+ */
+export type AntigravityLoginStart =
+  | {
+      alreadySignedIn: true
+      handle: null
+      authUrl: null
+      redirectUri: null
+      methodId: string
+      expiresInSecs: number
+    }
+  | {
+      alreadySignedIn: false
+      /** Opaque id for this attempt; pass it back to finish/cancel. */
+      handle: string
+      /** The Google consent URL — open it in any browser, on any machine. */
+      authUrl: string
+      /**
+       * Where the browser will be redirected and fail to connect. Shown so the
+       * dead page reads as an expected step rather than a broken login.
+       */
+      redirectUri: string
+      methodId: string
+      /** Antigravity stops waiting after this many seconds. */
+      expiresInSecs: number
+    }
+
+/** Step two's answer. Mirrors `AntigravityLoginOutcome` in the same file. */
+export type AntigravityLoginOutcome = {
+  signedIn: boolean
+  /** The agent's own words when it refused; `null` on success. */
+  message: string | null
+  /**
+   * Whether the same link still works. True only when codeg rejected the paste
+   * itself — the agent never saw it, so the consent already given is still good
+   * and only the paste needs fixing. False once the redirect went out: the
+   * agent's listener answers exactly one request.
+   */
+  retryable: boolean
+  /** Where the credential landed, when codeg can name the file. */
+  credentialPath: string | null
+}
+
+/**
+ * Begin signing in to Antigravity on a machine with no browser.
+ *
+ * Antigravity authenticates through a loopback browser flow the AGENT runs, so
+ * on a headless server (codeg deployed on Linux, no desktop) the first session
+ * opens a browser that does not exist and then blocks for five minutes. This
+ * runs the same flow out of band and hands back the link, so the consent can
+ * happen in whatever browser the user does have.
+ */
+export async function acpAntigravityLoginStart(
+  methodId: string
+): Promise<AntigravityLoginStart> {
+  // The backend spawns the agent and waits for it: up to 60s for `initialize`
+  // (CPython inside a PAR, unpacked on first run) plus 90s for the printed
+  // link. The transport defaults — 60s on web, 30s through the remote-desktop
+  // proxy — would abort with "Request timed out" while that child is still
+  // starting, so the ceiling has to clear the backend's own with a margin.
+  return getTransport().call(
+    "acp_antigravity_login_start",
+    { methodId },
+    { timeoutMs: 180_000 }
+  )
+}
+
+/**
+ * Finish that sign-in with the address the browser was redirected to.
+ *
+ * That address points at `127.0.0.1` on the *server*, which the user's browser
+ * cannot reach — codeg can, so it performs the redirect on their behalf. Only
+ * the OAuth parameters are taken from the paste; the target itself comes from
+ * the link codeg issued.
+ */
+export async function acpAntigravityLoginFinish(
+  handle: string,
+  redirect: string
+): Promise<AntigravityLoginOutcome> {
+  // 20s to deliver the redirect plus 180s for the agent's token exchange and
+  // onboarding round-trips. Timing out under that would be the worst case
+  // available: the attempt is already spent, so the sign-in cannot be retried,
+  // and its result would be lost with it.
+  return getTransport().call(
+    "acp_antigravity_login_finish",
+    { handle, redirect },
+    { timeoutMs: 240_000 }
+  )
+}
+
+/** Abandon a pending browser-free sign-in and stop its agent process. */
+export async function acpAntigravityLoginCancel(handle: string): Promise<void> {
+  return getTransport().call("acp_antigravity_login_cancel", { handle })
+}
+
+/**
  * Which repo-shipped pi resources a workspace ships, and whether any trust
  * decision already covers it. Read-only.
  */

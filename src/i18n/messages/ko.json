@@ -843,8 +843,8 @@
         "agent-platform": "Gemini Enterprise Agent Platform"
       },
       "methodHints": {
-        "oauth-personal": "Your Google account, on any Antigravity plan including the free tier. The first new session opens a browser to finish signing in; the token is then cached and reused.",
-        "oauth-business": "Your Gemini Enterprise account. Needs a GCP project and location, and the first new session opens a browser.",
+        "oauth-personal": "Your Google account, on any Antigravity plan including the free tier. The first new session opens a browser to finish signing in; the token is then cached and reused. 이 컴퓨터에 브라우저가 없다면 아래의 브라우저 없는 로그인을 사용하세요.",
+        "oauth-business": "Your Gemini Enterprise account. Needs a GCP project and location, and the first new session opens a browser. 이 컴퓨터에 브라우저가 없다면 아래의 브라우저 없는 로그인을 사용하세요.",
         "gemini-api-key": "A key for the Gemini Developer API, passed to the agent as GEMINI_API_KEY.",
         "agent-platform": "Formerly Vertex AI. Use an API key, or a project and location with Application Default Credentials (gcloud auth application-default login)."
       },
@@ -858,7 +858,24 @@
       "missingEnterpriseConfig": "Gemini Enterprise needs both a project and a location.",
       "settingsFileHint": "Saved to auth.type in this file. Any other keys you put there are preserved.",
       "syncSkipped": "Your choice was saved, but codeg could not write it to the ACP server's settings.json, so Antigravity will keep authenticating the way that file says. Set auth.type in it yourself, or move it aside and save again.",
-      "save": "Save"
+      "save": "Save",
+      "headless": {
+        "title": "브라우저가 없는 컴퓨터에서 로그인",
+        "description": "Antigravity의 Google 로그인은 에이전트가 직접 실행하므로 브라우저는 에이전트가 실행되는 컴퓨터에서 열려야 합니다. 데스크톱이 없는 서버에 배포한 codeg에는 브라우저가 없어 첫 세션이 5분을 기다린 뒤 실패합니다. 대신 여기서 로그인하세요. 링크를 아무 기기에서나 열고, 이동한 주소를 다시 붙여넣습니다.",
+        "start": "로그인 링크 받기",
+        "saveFirst": "먼저 저장하세요. 로그인은 위에 입력한 값이 아니라 저장된 설정을 사용합니다.",
+        "step1": "1. 이 링크를 열고 Google에 로그인하세요.",
+        "step2": "2. 브라우저는 결국 {redirectUri}로 이동해 연결할 수 없다고 표시합니다. 정상입니다. 주소창의 전체 주소를 복사해 여기에 붙여넣으세요.",
+        "copyLink": "링크 복사",
+        "openLink": "새 탭에서 열기",
+        "complete": "로그인 완료",
+        "cancel": "취소",
+        "signedIn": "로그인되었습니다. 새 세션은 이 계정을 사용합니다.",
+        "alreadySignedIn": "Antigravity에 이미 유효한 토큰이 있어 링크 없이 로그인했습니다.",
+        "failed": "로그인이 완료되지 않았습니다.",
+        "startFailed": "로그인을 시작할 수 없습니다",
+        "credentialHint": "토큰이 여기에 캐시됩니다. 이 파일을 데스크톱이 없는 다른 컴퓨터로 복사하면 그쪽도 로그인됩니다."
+      }
     },
     "deepseek": {
       "configManagement": "DeepSeek Harness 구성",

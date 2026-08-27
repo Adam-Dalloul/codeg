@@ -398,18 +398,53 @@ fn sync_antigravity_settings_file(runtime_env: &BTreeMap<String, String>) -> Ant
 /// mean guessing, and a guess here creates a stray tree AND leaves the real
 /// `auth.type` unwritten, so the sync reports the skip instead.
 fn antigravity_acp_dir_for_env(runtime_env: &BTreeMap<String, String>) -> Result<PathBuf, String> {
-    // NOT trimmed: the spawn layer's "is this var removed" test is an exact
-    // empty-string check (`vendor/sacp-tokio/src/acp_agent.rs`), so a
-    // whitespace-only value reaches the child verbatim and trimming here would
-    // name a directory it never opens.
-    let configured = runtime_env.get("GEMINI_HOME").filter(|v| !v.is_empty());
+    antigravity_acp_dir_with_inherited(runtime_env, std::env::var_os("GEMINI_HOME"))
+}
+
+/// [`antigravity_acp_dir_for_env`] with codeg's own `GEMINI_HOME` handed in.
+///
+/// Split out so the three-state resolution can be tested without mutating the
+/// process environment. A `temp_env` writer would race every other test that
+/// reads `GEMINI_HOME` — `resolve_antigravity_acp_dir` does, one assertion away
+/// in this same module — and that race is silent: the writer's value simply
+/// leaks into the reader's expectation.
+fn antigravity_acp_dir_with_inherited(
+    runtime_env: &BTreeMap<String, String>,
+    inherited: Option<std::ffi::OsString>,
+) -> Result<PathBuf, String> {
+    // Three states, and they are NOT interchangeable — the same distinction
+    // [`crate::acp::file_system_runtime::child_home_dir`] spells out for `HOME`,
+    // for the same reason. `merge_agent_env` names only the variables a launch
+    // SETS, so an ABSENT key means the child inherits codeg's value, and a
+    // container that relocates the tree does exactly that: `GEMINI_HOME` in the
+    // image's own environment, nothing in the per-agent row. Reading only the
+    // row made codeg write `auth.type` — and name the token file — under
+    // `~/.gemini` (i.e. `/root/.gemini`) while the agent used the relocated
+    // one, so the file the panel talked about was never the file the session
+    // read.
+    let configured = match runtime_env.get("GEMINI_HOME") {
+        // Explicitly removed (blank ⇒ `env_remove`): the child sees no
+        // `GEMINI_HOME` at all and falls back to `~/.gemini`.
+        Some(value) if value.is_empty() => None,
+        // Overridden. NOT trimmed: the spawn layer's "is this var removed" test
+        // is an exact empty-string check
+        // (`vendor/sacp-tokio/src/acp_agent.rs`), so a whitespace-only value
+        // reaches the child verbatim and trimming here would name a directory
+        // it never opens.
+        Some(value) => Some(std::ffi::OsString::from(value)),
+        // Absent: the child inherits codeg's environment, so codeg's own answer
+        // is exact. Empty is filtered because the server's `paths.py` treats an
+        // empty `GEMINI_HOME` as unset (`if not home`).
+        None => inherited.filter(|value| !value.is_empty()),
+    };
 
     // The CHILD's home, not codeg's. `merge_agent_env` copies `HOME` into the
     // child like any other variable, so a launch that relocates it moves both
     // the `~/.gemini` default and any `~` in `GEMINI_HOME` with it — and the
     // server, running `os.path.expanduser` in that environment, resolves them
     // there. Only a value that is already absolute is independent of it.
-    let needs_home = configured.is_none_or(|value| {
+    let needs_home = configured.as_ref().is_none_or(|value| {
+        let value = value.to_string_lossy();
         value == "~" || value.starts_with("~/") || value.starts_with("~\\")
     });
     let home = crate::acp::file_system_runtime::child_home_dir(runtime_env);
@@ -422,11 +457,8 @@ fn antigravity_acp_dir_for_env(runtime_env: &BTreeMap<String, String>) -> Result
     }
 
     Ok(
-        crate::parsers::antigravity::resolve_gemini_home_from_value(
-            configured.map(std::ffi::OsString::from),
-            home,
-        )
-        .join(ANTIGRAVITY_ACP_SUBDIR),
+        crate::parsers::antigravity::resolve_gemini_home_from_value(configured, home)
+            .join(ANTIGRAVITY_ACP_SUBDIR),
     )
 }
 
@@ -533,6 +565,52 @@ pub fn sync_antigravity_settings_for_env(
     runtime_env: &BTreeMap<String, String>,
 ) -> AntigravitySyncReport {
     sync_antigravity_settings_file(runtime_env)
+}
+
+/// The environment a real Antigravity launch hands the agent process.
+///
+/// Factored out of [`build_agent`]'s `Binary` branch so the browser-free
+/// sign-in flow ([`crate::acp::antigravity_login`]) can spawn the SAME binary
+/// with the SAME environment. That identity is the whole point: the sign-in
+/// child is the one that writes the OAuth token, and the token's location is
+/// decided by `GEMINI_HOME` (via `paths.py`) and its storage backend by
+/// `AGY_ACP_FORCE_FILE_STORAGE` — so a child launched with a different
+/// environment would faithfully sign the user in and then leave the credential
+/// somewhere no session ever reads.
+///
+/// Deliberately does NOT run [`sync_antigravity_settings_file`]: this returns a
+/// value and that writes a file, and the sign-in path wants the report rather
+/// than a silently dropped one. Callers run the sync themselves.
+pub fn antigravity_launch_env(runtime_env: &BTreeMap<String, String>) -> Vec<(String, String)> {
+    let registry_env: &[(&'static str, &'static str)] =
+        match registry::get_agent_meta(AgentType::Antigravity).distribution {
+            AgentDistribution::Binary { env, .. } => env,
+            // Unreachable while the registry entry stays `Binary`; an empty
+            // base is the correct answer for every other shape anyway, since
+            // `runtime_env` carries everything the panel owns.
+            _ => &[],
+        };
+    let mut merged = merge_agent_env(registry_env, runtime_env);
+    apply_antigravity_env_policy(&mut merged, runtime_env);
+    merged
+}
+
+/// The `auth.type` values Antigravity accepts, for callers that must validate a
+/// method id before acting on it.
+pub fn is_antigravity_auth_method(method_id: &str) -> bool {
+    ANTIGRAVITY_AUTH_METHODS.contains(&method_id)
+}
+
+/// `<GEMINI_HOME>/antigravity-acp` for a launch carrying `runtime_env`, for
+/// callers outside this module that need to name a file the agent keeps there
+/// (its OAuth token, alongside the `settings.json` this module writes).
+///
+/// Same resolution, same `Err` contract as the private original: see
+/// [`antigravity_acp_dir_for_env`].
+pub fn antigravity_acp_dir_for_runtime_env(
+    runtime_env: &BTreeMap<String, String>,
+) -> Result<PathBuf, String> {
+    antigravity_acp_dir_for_env(runtime_env)
 }
 
 /// Read `settings.json` for editing.
@@ -13847,6 +13925,77 @@ mod tests {
             antigravity_gcp_field(&filled, Some("oauth-business"), "GOOGLE_CLOUD_PROJECT"),
             GcpField::Set("p")
         ));
+    }
+
+    /// A `GEMINI_HOME` that only codeg's OWN environment carries still names
+    /// the directory the agent uses.
+    ///
+    /// `merge_agent_env` lists the variables a launch SETS; anything absent is
+    /// inherited, and relocating the tree from a container's environment
+    /// (`GEMINI_HOME=/data/gemini` in the image, nothing in the per-agent row)
+    /// is exactly that shape. Treating "absent" as "unset" sent codeg to
+    /// `~/.gemini` — so on a Docker deployment it wrote `auth.type` into
+    /// `/root/.gemini` while the agent read the relocated file, and the panel
+    /// named a token path that was never written. The same three-state
+    /// distinction `child_home_dir` makes for `HOME`, for the same reason.
+    #[test]
+    fn antigravity_settings_path_follows_a_gemini_home_codeg_only_inherits() {
+        // Platform-native, and HOME is pinned in the row rather than read from
+        // the process: other tests relocate the real one through `temp_env`,
+        // and a read here would race them. codeg's own `GEMINI_HOME` is
+        // injected for the same reason — see
+        // [`antigravity_acp_dir_with_inherited`].
+        #[cfg(windows)]
+        let (home_key, child_home, inherited, from_row) = (
+            "USERPROFILE",
+            "C:\\srv\\agy",
+            "C:\\data\\gemini",
+            "C:\\srv\\row",
+        );
+        #[cfg(not(windows))]
+        let (home_key, child_home, inherited, from_row) =
+            ("HOME", "/srv/agy", "/data/gemini", "/srv/row");
+        let base = || BTreeMap::from([(home_key.to_string(), child_home.to_string())]);
+
+        let codegs_own = || Some(std::ffi::OsString::from(inherited));
+
+        // ABSENT from the row: the child inherits codeg's, so codeg's own value
+        // is the exact answer.
+        assert_eq!(
+            antigravity_acp_dir_with_inherited(&base(), codegs_own()).expect("nameable"),
+            PathBuf::from(inherited).join(ANTIGRAVITY_ACP_SUBDIR)
+        );
+
+        // Present in the row: that is what the child is launched with, so it
+        // outranks the inherited one.
+        let mut overridden = base();
+        overridden.insert("GEMINI_HOME".to_string(), from_row.to_string());
+        assert_eq!(
+            antigravity_acp_dir_with_inherited(&overridden, codegs_own()).expect("nameable"),
+            PathBuf::from(from_row).join(ANTIGRAVITY_ACP_SUBDIR)
+        );
+
+        // Present but EMPTY is a removal (the spawn layer reads a blank as
+        // `env_remove`), and a removal is NOT the same as absent: the child then
+        // sees no `GEMINI_HOME` at all and falls back to `~/.gemini` under its
+        // own home. Collapsing the two would send codeg to the inherited value
+        // for a launch that deliberately took it away.
+        let mut removed = base();
+        removed.insert("GEMINI_HOME".to_string(), String::new());
+        assert_eq!(
+            antigravity_acp_dir_with_inherited(&removed, codegs_own()).expect("nameable"),
+            PathBuf::from(child_home)
+                .join(".gemini")
+                .join(ANTIGRAVITY_ACP_SUBDIR)
+        );
+
+        // And codeg having none either is the plain default.
+        assert_eq!(
+            antigravity_acp_dir_with_inherited(&base(), None).expect("nameable"),
+            PathBuf::from(child_home)
+                .join(".gemini")
+                .join(ANTIGRAVITY_ACP_SUBDIR)
+        );
     }
 
     /// `GEMINI_HOME=~/x` names `$HOME/x` to the server, so it has to name the

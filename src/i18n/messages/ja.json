@@ -843,8 +843,8 @@
         "agent-platform": "Gemini Enterprise Agent Platform"
       },
       "methodHints": {
-        "oauth-personal": "Your Google account, on any Antigravity plan including the free tier. The first new session opens a browser to finish signing in; the token is then cached and reused.",
-        "oauth-business": "Your Gemini Enterprise account. Needs a GCP project and location, and the first new session opens a browser.",
+        "oauth-personal": "Your Google account, on any Antigravity plan including the free tier. The first new session opens a browser to finish signing in; the token is then cached and reused. このマシンにブラウザがない場合は、下のブラウザ不要のサインインを使ってください。",
+        "oauth-business": "Your Gemini Enterprise account. Needs a GCP project and location, and the first new session opens a browser. このマシンにブラウザがない場合は、下のブラウザ不要のサインインを使ってください。",
         "gemini-api-key": "A key for the Gemini Developer API, passed to the agent as GEMINI_API_KEY.",
         "agent-platform": "Formerly Vertex AI. Use an API key, or a project and location with Application Default Credentials (gcloud auth application-default login)."
       },
@@ -858,7 +858,24 @@
       "missingEnterpriseConfig": "Gemini Enterprise needs both a project and a location.",
       "settingsFileHint": "Saved to auth.type in this file. Any other keys you put there are preserved.",
       "syncSkipped": "Your choice was saved, but codeg could not write it to the ACP server's settings.json, so Antigravity will keep authenticating the way that file says. Set auth.type in it yourself, or move it aside and save again.",
-      "save": "Save"
+      "save": "Save",
+      "headless": {
+        "title": "ブラウザのないマシンでサインイン",
+        "description": "Antigravity の Google サインインはエージェント自身が実行するため、ブラウザはエージェントが動くマシンで開く必要があります。デスクトップのないサーバーに置いた codeg にはブラウザがなく、最初のセッション作成は 5 分待ってから失敗します。代わりにここからサインインしてください。リンクを任意の端末で開き、移動先のアドレスを貼り戻します。",
+        "start": "サインインリンクを取得",
+        "saveFirst": "先に保存してください。サインインは保存済みの設定を使用し、上の入力内容は参照しません。",
+        "step1": "1. このリンクを開いて Google にサインインします。",
+        "step2": "2. ブラウザは最終的に {redirectUri} へ移動し、接続できないと表示されます（想定どおりです）。アドレスバーのアドレス全体をコピーしてここに貼り付けてください。",
+        "copyLink": "リンクをコピー",
+        "openLink": "新しいタブで開く",
+        "complete": "サインインを完了",
+        "cancel": "キャンセル",
+        "signedIn": "サインインしました。新しいセッションはこのアカウントを使用します。",
+        "alreadySignedIn": "Antigravity は有効なトークンを既に保持していたため、リンクなしでサインインしました。",
+        "failed": "サインインが完了しませんでした。",
+        "startFailed": "サインインを開始できませんでした",
+        "credentialHint": "トークンはここにキャッシュされます。このファイルを別のデスクトップなしマシンにコピーすれば、そちらもサインイン済みになります。"
+      }
     },
     "deepseek": {
       "configManagement": "DeepSeek Harness の設定",

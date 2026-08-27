@@ -5594,24 +5594,58 @@ pub(crate) fn pi_project_trust_launch_block(
 pub(crate) async fn acp_sync_antigravity_settings_core(
     db: &AppDatabase,
 ) -> Result<crate::acp::connection::AntigravitySyncReport, AcpError> {
-    // The read error is PROPAGATED, unlike the `.ok().flatten()` the pi trust
-    // path uses. This function's whole job is to report on the stored row, and
-    // treating a failed read as "no row" would not merely lose the method — it
-    // would hand the sync an empty environment, which on a machine with no
-    // settings.json yet writes `oauth-personal` and reports success for a
-    // choice the user did not make.
+    let runtime_env = antigravity_runtime_env(db).await?;
+    Ok(crate::acp::connection::sync_antigravity_settings_for_env(
+        &runtime_env,
+    ))
+}
+
+/// The environment a real Antigravity launch would compose from the STORED row.
+///
+/// The read error is PROPAGATED, unlike the `.ok().flatten()` the pi trust path
+/// uses. Treating a failed read as "no row" would not merely lose the method —
+/// it would hand the caller an empty environment, which on a machine with no
+/// settings.json yet writes `oauth-personal` and reports success for a choice
+/// the user did not make, and which points the browser-free sign-in at the
+/// default `~/.gemini` rather than the relocated `GEMINI_HOME` a session uses.
+async fn antigravity_runtime_env(db: &AppDatabase) -> Result<BTreeMap<String, String>, AcpError> {
     let setting = agent_setting_service::get_by_agent_type(&db.conn, AgentType::Antigravity)
         .await
         .map_err(|e| AcpError::protocol(e.to_string()))?;
     let local_config_json = load_agent_local_config_json(AgentType::Antigravity);
-    let runtime_env = build_runtime_env_from_setting(
+    Ok(build_runtime_env_from_setting(
         AgentType::Antigravity,
         setting.as_ref(),
         local_config_json.as_deref(),
-    );
-    Ok(crate::acp::connection::sync_antigravity_settings_for_env(
-        &runtime_env,
     ))
+}
+
+/// Start a browser-free Antigravity sign-in and hand back the link to open.
+///
+/// For headless deployments (codeg on a Linux server, no desktop), where the
+/// agent's own loopback browser flow cannot complete: it opens a browser that
+/// does not exist and then blocks for five minutes inside `session/new`. See
+/// [`crate::acp::antigravity_login`].
+pub(crate) async fn acp_antigravity_login_start_core(
+    db: &AppDatabase,
+    method_id: String,
+) -> Result<crate::acp::antigravity_login::AntigravityLoginStart, AcpError> {
+    let runtime_env = antigravity_runtime_env(db).await?;
+    crate::acp::antigravity_login::start(&runtime_env, method_id.trim()).await
+}
+
+/// Deliver the redirect the user's browser could not reach, completing the
+/// sign-in started by [`acp_antigravity_login_start_core`].
+pub(crate) async fn acp_antigravity_login_finish_core(
+    handle: String,
+    redirect: String,
+) -> Result<crate::acp::antigravity_login::AntigravityLoginOutcome, AcpError> {
+    crate::acp::antigravity_login::finish(handle.trim(), &redirect).await
+}
+
+/// Abandon a pending browser-free sign-in and stop its agent process.
+pub(crate) async fn acp_antigravity_login_cancel_core(handle: String) -> Result<(), AcpError> {
+    crate::acp::antigravity_login::cancel(handle.trim()).await
 }
 
 pub(crate) async fn acp_pi_project_trust_state_core(
@@ -11412,6 +11446,34 @@ pub async fn acp_sync_antigravity_settings(
     db: tauri::State<'_, AppDatabase>,
 ) -> Result<crate::acp::connection::AntigravitySyncReport, AcpError> {
     acp_sync_antigravity_settings_core(&db).await
+}
+
+/// Start a browser-free Antigravity sign-in for a machine with no desktop.
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn acp_antigravity_login_start(
+    db: tauri::State<'_, AppDatabase>,
+    method_id: String,
+) -> Result<crate::acp::antigravity_login::AntigravityLoginStart, AcpError> {
+    acp_antigravity_login_start_core(&db, method_id).await
+}
+
+/// Complete a browser-free Antigravity sign-in from the address the user's
+/// browser was redirected to.
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn acp_antigravity_login_finish(
+    handle: String,
+    redirect: String,
+) -> Result<crate::acp::antigravity_login::AntigravityLoginOutcome, AcpError> {
+    acp_antigravity_login_finish_core(handle, redirect).await
+}
+
+/// Abandon a pending browser-free Antigravity sign-in.
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn acp_antigravity_login_cancel(handle: String) -> Result<(), AcpError> {
+    acp_antigravity_login_cancel_core(handle).await
 }
 
 /// Record (or clear, with `trusted: null`) an explicit project-trust decision in

@@ -843,8 +843,8 @@
         "agent-platform": "Gemini Enterprise Agent Platform"
       },
       "methodHints": {
-        "oauth-personal": "你的 Google 账号，任意 Antigravity 套餐（含免费版）均可。首次新建会话会自动打开浏览器完成登录，之后令牌会被缓存复用。",
-        "oauth-business": "你的 Gemini Enterprise 账号。需要填 GCP 项目与区域，首次新建会话会打开浏览器。",
+        "oauth-personal": "你的 Google 账号，任意 Antigravity 套餐（含免费版）均可。首次新建会话会自动打开浏览器完成登录，之后令牌会被缓存复用。本机没有浏览器？用下面的免浏览器登录。",
+        "oauth-business": "你的 Gemini Enterprise 账号。需要填 GCP 项目与区域，首次新建会话会打开浏览器。本机没有浏览器？用下面的免浏览器登录。",
         "gemini-api-key": "Gemini Developer API 的密钥，以 GEMINI_API_KEY 传给智能体。",
         "agent-platform": "即原 Vertex AI。可用 API Key，或用项目 + 区域配合应用默认凭据（gcloud auth application-default login）。"
       },
@@ -858,7 +858,24 @@
       "missingEnterpriseConfig": "Gemini Enterprise 需要同时填写项目与区域。",
       "settingsFileHint": "auth.type 会保存到该文件；你自己写在里面的其他键会原样保留。",
       "syncSkipped": "你的选择已经存下来了，但 codeg 没能写进 ACP 服务端的 settings.json，所以 Antigravity 仍然按那个文件里写的方式认证。请自己在里面设置 auth.type，或者把它挪走再保存一次。",
-      "save": "保存"
+      "save": "保存",
+      "headless": {
+        "title": "在没有浏览器的机器上登录",
+        "description": "Antigravity 的 Google 登录由智能体自己发起，浏览器必须开在运行智能体的那台机器上。部署在无桌面服务器上的 codeg 没有浏览器，首次新建会话会等待 5 分钟后失败。改从这里登录：把链接拿到任意设备上打开，再把跳转后的地址粘回来。",
+        "start": "获取登录链接",
+        "saveFirst": "请先保存——登录用的是已保存的设置，而不是上面刚填的内容。",
+        "step1": "1. 打开这个链接并登录 Google 账号。",
+        "step2": "2. 浏览器最终会跳到 {redirectUri} 并提示无法访问——这是正常的。把地址栏里的完整地址复制出来粘贴到下面。",
+        "copyLink": "复制链接",
+        "openLink": "在新标签页打开",
+        "complete": "完成登录",
+        "cancel": "取消",
+        "signedIn": "已登录，新会话将使用该账号。",
+        "alreadySignedIn": "Antigravity 本来就持有有效令牌，无需链接即已登录。",
+        "failed": "登录未完成。",
+        "startFailed": "无法开始登录",
+        "credentialHint": "令牌缓存在这里。把这个文件复制到其他无桌面机器，那台也就登录好了。"
+      }
     },
     "deepseek": {
       "configManagement": "DeepSeek Harness 配置",

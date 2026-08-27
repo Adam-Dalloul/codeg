@@ -843,8 +843,8 @@
         "agent-platform": "Gemini Enterprise Agent Platform"
       },
       "methodHints": {
-        "oauth-personal": "Your Google account, on any Antigravity plan including the free tier. The first new session opens a browser to finish signing in; the token is then cached and reused.",
-        "oauth-business": "Your Gemini Enterprise account. Needs a GCP project and location, and the first new session opens a browser.",
+        "oauth-personal": "Your Google account, on any Antigravity plan including the free tier. The first new session opens a browser to finish signing in; the token is then cached and reused. No browser on this machine? Use the browser-free sign-in below.",
+        "oauth-business": "Your Gemini Enterprise account. Needs a GCP project and location, and the first new session opens a browser. No browser on this machine? Use the browser-free sign-in below.",
         "gemini-api-key": "A key for the Gemini Developer API, passed to the agent as GEMINI_API_KEY.",
         "agent-platform": "Formerly Vertex AI. Use an API key, or a project and location with Application Default Credentials (gcloud auth application-default login)."
       },
@@ -858,7 +858,24 @@
       "missingEnterpriseConfig": "Gemini Enterprise needs both a project and a location.",
       "settingsFileHint": "Saved to auth.type in this file. Any other keys you put there are preserved.",
       "syncSkipped": "Your choice was saved, but codeg could not write it to the ACP server's settings.json, so Antigravity will keep authenticating the way that file says. Set auth.type in it yourself, or move it aside and save again.",
-      "save": "Save"
+      "save": "Save",
+      "headless": {
+        "title": "Sign in without a browser on this machine",
+        "description": "Antigravity runs the Google sign-in itself, on the machine the agent runs on. When there is no browser there — codeg on a server with no desktop — the first session waits five minutes and then fails. Start the sign-in here instead: open the link on any device, then paste back the address you land on.",
+        "start": "Get sign-in link",
+        "saveFirst": "Save first — the sign-in uses the stored settings, not what is typed above.",
+        "step1": "1. Open this link and sign in to Google.",
+        "step2": "2. Your browser will end up on {redirectUri} and fail to connect — that is expected. Copy that whole address out of the address bar and paste it here.",
+        "copyLink": "Copy link",
+        "openLink": "Open in a new tab",
+        "complete": "Complete sign-in",
+        "cancel": "Cancel",
+        "signedIn": "Signed in. New sessions will use this account.",
+        "alreadySignedIn": "Antigravity already had a valid token, so it signed in without a link.",
+        "failed": "Sign-in did not complete.",
+        "startFailed": "Could not start the sign-in",
+        "credentialHint": "The token is cached here. Copy this file to another machine with no desktop to sign that one in too."
+      }
     },
     "deepseek": {
       "configManagement": "DeepSeek Harness Configuration",

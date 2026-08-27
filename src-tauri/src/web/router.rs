@@ -757,6 +757,18 @@ pub fn build_router(
             post(handlers::acp::acp_sync_antigravity_settings),
         )
         .route(
+            "/acp_antigravity_login_start",
+            post(handlers::acp::acp_antigravity_login_start),
+        )
+        .route(
+            "/acp_antigravity_login_finish",
+            post(handlers::acp::acp_antigravity_login_finish),
+        )
+        .route(
+            "/acp_antigravity_login_cancel",
+            post(handlers::acp::acp_antigravity_login_cancel),
+        )
+        .route(
             "/acp_pi_project_trust_state",
             post(handlers::acp::acp_pi_project_trust_state),
         )

@@ -843,8 +843,8 @@
         "agent-platform": "Gemini Enterprise Agent Platform"
       },
       "methodHints": {
-        "oauth-personal": "Your Google account, on any Antigravity plan including the free tier. The first new session opens a browser to finish signing in; the token is then cached and reused.",
-        "oauth-business": "Your Gemini Enterprise account. Needs a GCP project and location, and the first new session opens a browser.",
+        "oauth-personal": "Your Google account, on any Antigravity plan including the free tier. The first new session opens a browser to finish signing in; the token is then cached and reused. Kein Browser auf diesem Rechner? Nutze die browserfreie Anmeldung unten.",
+        "oauth-business": "Your Gemini Enterprise account. Needs a GCP project and location, and the first new session opens a browser. Kein Browser auf diesem Rechner? Nutze die browserfreie Anmeldung unten.",
         "gemini-api-key": "A key for the Gemini Developer API, passed to the agent as GEMINI_API_KEY.",
         "agent-platform": "Formerly Vertex AI. Use an API key, or a project and location with Application Default Credentials (gcloud auth application-default login)."
       },
@@ -858,7 +858,24 @@
       "missingEnterpriseConfig": "Gemini Enterprise needs both a project and a location.",
       "settingsFileHint": "Saved to auth.type in this file. Any other keys you put there are preserved.",
       "syncSkipped": "Your choice was saved, but codeg could not write it to the ACP server's settings.json, so Antigravity will keep authenticating the way that file says. Set auth.type in it yourself, or move it aside and save again.",
-      "save": "Save"
+      "save": "Save",
+      "headless": {
+        "title": "Ohne Browser auf diesem Rechner anmelden",
+        "description": "Antigravity führt die Google-Anmeldung selbst aus – auf dem Rechner, auf dem der Agent läuft. Fehlt dort ein Browser (codeg auf einem Server ohne Desktop), wartet die erste Sitzung fünf Minuten und schlägt dann fehl. Melde dich stattdessen hier an: Link auf einem beliebigen Gerät öffnen und die Zieladresse zurück einfügen.",
+        "start": "Anmeldelink holen",
+        "saveFirst": "Zuerst speichern – die Anmeldung nutzt die gespeicherten Einstellungen, nicht das oben Eingetippte.",
+        "step1": "1. Öffne diesen Link und melde dich bei Google an.",
+        "step2": "2. Dein Browser landet auf {redirectUri} und kann keine Verbindung herstellen – das ist so gewollt. Kopiere die vollständige Adresse aus der Adressleiste und füge sie hier ein.",
+        "copyLink": "Link kopieren",
+        "openLink": "In neuem Tab öffnen",
+        "complete": "Anmeldung abschließen",
+        "cancel": "Abbrechen",
+        "signedIn": "Angemeldet. Neue Sitzungen verwenden dieses Konto.",
+        "alreadySignedIn": "Antigravity hatte bereits ein gültiges Token und hat sich ohne Link angemeldet.",
+        "failed": "Die Anmeldung wurde nicht abgeschlossen.",
+        "startFailed": "Anmeldung konnte nicht gestartet werden",
+        "credentialHint": "Das Token liegt hier. Kopiere diese Datei auf weitere Rechner ohne Desktop, um sie ebenfalls anzumelden."
+      }
     },
     "deepseek": {
       "configManagement": "DeepSeek-Harness-Konfiguration",

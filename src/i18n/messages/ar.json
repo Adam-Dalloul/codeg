@@ -843,8 +843,8 @@
         "agent-platform": "Gemini Enterprise Agent Platform"
       },
       "methodHints": {
-        "oauth-personal": "Your Google account, on any Antigravity plan including the free tier. The first new session opens a browser to finish signing in; the token is then cached and reused.",
-        "oauth-business": "Your Gemini Enterprise account. Needs a GCP project and location, and the first new session opens a browser.",
+        "oauth-personal": "Your Google account, on any Antigravity plan including the free tier. The first new session opens a browser to finish signing in; the token is then cached and reused. لا يوجد متصفح على هذا الجهاز؟ استخدم تسجيل الدخول دون متصفح أدناه.",
+        "oauth-business": "Your Gemini Enterprise account. Needs a GCP project and location, and the first new session opens a browser. لا يوجد متصفح على هذا الجهاز؟ استخدم تسجيل الدخول دون متصفح أدناه.",
         "gemini-api-key": "A key for the Gemini Developer API, passed to the agent as GEMINI_API_KEY.",
         "agent-platform": "Formerly Vertex AI. Use an API key, or a project and location with Application Default Credentials (gcloud auth application-default login)."
       },
@@ -858,7 +858,24 @@
       "missingEnterpriseConfig": "Gemini Enterprise needs both a project and a location.",
       "settingsFileHint": "Saved to auth.type in this file. Any other keys you put there are preserved.",
       "syncSkipped": "Your choice was saved, but codeg could not write it to the ACP server's settings.json, so Antigravity will keep authenticating the way that file says. Set auth.type in it yourself, or move it aside and save again.",
-      "save": "Save"
+      "save": "Save",
+      "headless": {
+        "title": "تسجيل الدخول دون متصفح على هذا الجهاز",
+        "description": "ينفّذ Antigravity تسجيل دخول Google بنفسه على الجهاز الذي يعمل عليه الوكيل. وإذا لم يوجد متصفح هناك — أي codeg على خادم بلا سطح مكتب — فستنتظر أول جلسة خمس دقائق ثم تفشل. سجّل الدخول من هنا بدلاً من ذلك: افتح الرابط على أي جهاز، ثم الصق العنوان الذي وصلت إليه.",
+        "start": "الحصول على رابط تسجيل الدخول",
+        "saveFirst": "احفظ أولاً — يستخدم تسجيل الدخول الإعدادات المحفوظة، وليس ما كُتب أعلاه.",
+        "step1": "1. افتح هذا الرابط وسجّل الدخول إلى Google.",
+        "step2": "2. سينتهي المتصفح عند {redirectUri} ويتعذّر عليه الاتصال، وهذا متوقّع. انسخ العنوان كاملاً من شريط العناوين والصقه هنا.",
+        "copyLink": "نسخ الرابط",
+        "openLink": "فتح في علامة تبويب جديدة",
+        "complete": "إتمام تسجيل الدخول",
+        "cancel": "إلغاء",
+        "signedIn": "تم تسجيل الدخول. ستستخدم الجلسات الجديدة هذا الحساب.",
+        "alreadySignedIn": "كان لدى Antigravity رمز صالح بالفعل، فتم تسجيل الدخول دون الحاجة إلى رابط.",
+        "failed": "لم يكتمل تسجيل الدخول.",
+        "startFailed": "تعذّر بدء تسجيل الدخول",
+        "credentialHint": "يُخزَّن الرمز هنا. انسخ هذا الملف إلى جهاز آخر بلا سطح مكتب لتسجيل دخوله أيضاً."
+      }
     },
     "deepseek": {
       "configManagement": "إعدادات DeepSeek Harness",

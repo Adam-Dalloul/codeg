@@ -843,8 +843,8 @@
         "agent-platform": "Gemini Enterprise Agent Platform"
       },
       "methodHints": {
-        "oauth-personal": "Your Google account, on any Antigravity plan including the free tier. The first new session opens a browser to finish signing in; the token is then cached and reused.",
-        "oauth-business": "Your Gemini Enterprise account. Needs a GCP project and location, and the first new session opens a browser.",
+        "oauth-personal": "Your Google account, on any Antigravity plan including the free tier. The first new session opens a browser to finish signing in; the token is then cached and reused. ¿Sin navegador en esta máquina? Usa el acceso sin navegador de abajo.",
+        "oauth-business": "Your Gemini Enterprise account. Needs a GCP project and location, and the first new session opens a browser. ¿Sin navegador en esta máquina? Usa el acceso sin navegador de abajo.",
         "gemini-api-key": "A key for the Gemini Developer API, passed to the agent as GEMINI_API_KEY.",
         "agent-platform": "Formerly Vertex AI. Use an API key, or a project and location with Application Default Credentials (gcloud auth application-default login)."
       },
@@ -858,7 +858,24 @@
       "missingEnterpriseConfig": "Gemini Enterprise needs both a project and a location.",
       "settingsFileHint": "Saved to auth.type in this file. Any other keys you put there are preserved.",
       "syncSkipped": "Your choice was saved, but codeg could not write it to the ACP server's settings.json, so Antigravity will keep authenticating the way that file says. Set auth.type in it yourself, or move it aside and save again.",
-      "save": "Save"
+      "save": "Save",
+      "headless": {
+        "title": "Inicia sesión sin navegador en esta máquina",
+        "description": "Antigravity ejecuta el inicio de sesión de Google por su cuenta, en la máquina donde corre el agente. Si allí no hay navegador —codeg en un servidor sin escritorio—, la primera sesión espera cinco minutos y falla. Inicia sesión desde aquí: abre el enlace en cualquier dispositivo y pega de vuelta la dirección a la que llegues.",
+        "start": "Obtener enlace de acceso",
+        "saveFirst": "Guarda primero: el inicio de sesión usa los ajustes guardados, no lo que acabas de escribir.",
+        "step1": "1. Abre este enlace e inicia sesión en Google.",
+        "step2": "2. Tu navegador terminará en {redirectUri} y no podrá conectarse; es lo esperado. Copia esa dirección completa de la barra y pégala aquí.",
+        "copyLink": "Copiar enlace",
+        "openLink": "Abrir en una pestaña nueva",
+        "complete": "Completar inicio de sesión",
+        "cancel": "Cancelar",
+        "signedIn": "Sesión iniciada. Las nuevas sesiones usarán esta cuenta.",
+        "alreadySignedIn": "Antigravity ya tenía un token válido, así que inició sesión sin necesidad de enlace.",
+        "failed": "El inicio de sesión no se completó.",
+        "startFailed": "No se pudo iniciar el acceso",
+        "credentialHint": "El token se guarda aquí. Copia este archivo a otra máquina sin escritorio para dejarla también con la sesión iniciada."
+      }
     },
     "deepseek": {
       "configManagement": "Configuración de DeepSeek Harness",
