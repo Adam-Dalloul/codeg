@@ -9292,6 +9292,54 @@ fn pi_result_content_is_stringify_noise(
             .is_some_and(pi_result_is_empty_announcement)
 }
 
+/// Resolve the live `raw_output` string for an OpenCode tool call.
+///
+/// OpenCode's ACP adapter reports a finished tool on BOTH channels: the clean
+/// result text on `content[]`, and the envelope `{output, metadata?,
+/// attachments?}` — wrapping that very same string — on `rawOutput` (a failure
+/// sends `{error, metadata?}` beside the error text). Stringifying the envelope
+/// shadows the clean text, because the live renderer's `raw_output_chunks` win
+/// over `content` (`conversation-runtime-store.ts`), so every card that parses
+/// the result ITSELF is handed JSON source instead of the result.
+///
+/// Verified against opencode 1.18.23 (driven over real ACP with a stub MCP
+/// server): a codeg-mcp `ask_user_question` completes as
+///   content:   [{"type":"content","content":{"type":"text","text":"The user
+///               answered your question(s):\n1. [框架] …\n   → 选项 A\n"}}]
+///   rawOutput: {"output":"<that same text>","metadata":{"truncated":false}}
+/// OpenCode drops the MCP `structuredContent` entirely, so the human-readable
+/// lines ARE the whole record — and `AskQuestionResultCard`, seeing only the
+/// one-line JSON blob, matched neither the structured envelope nor the text
+/// fallback and rendered an answered question as "no selection", while the
+/// history parser (which reads the same `state.output` bare) rendered it fine.
+///
+/// Same parity rule as Grok and pi (see [`grok_live_tool_output`]): whenever
+/// `content` carries anything, it IS OpenCode's own rendering of this result —
+/// return `None` and let it render. Only with no `content` is the envelope
+/// unwrapped, mirroring `parsers/opencode.rs`: `output`, else the failure
+/// `error`, else `metadata.output` (a command writing only to stderr leaves
+/// `state.output` empty while the combined stream stays in the metadata). An
+/// unrecognized payload still stringifies as before, so no result is ever lost.
+fn opencode_live_tool_output(
+    content: &Option<String>,
+    raw_output: &Option<serde_json::Value>,
+) -> Option<String> {
+    if content.as_deref().is_some_and(|c| !c.trim().is_empty()) {
+        return None;
+    }
+    let raw = raw_output.as_ref()?;
+    fn text(value: Option<&serde_json::Value>) -> Option<&str> {
+        value
+            .and_then(serde_json::Value::as_str)
+            .filter(|s| !s.trim().is_empty())
+    }
+    text(raw.get("output"))
+        .or_else(|| text(raw.get("error")))
+        .or_else(|| text(raw.pointer("/metadata/output")))
+        .map(structurize_live_output)
+        .or_else(|| json_value_to_text(raw_output).map(|t| structurize_live_output(&t)))
+}
+
 /// What a pi `agent_message_chunk` actually IS (issue #525).
 ///
 /// pi-acp puts the assistant's prose AND its own lifecycle announcements on the
@@ -11540,6 +11588,11 @@ async fn emit_conversation_update(
                 // `content` already carries; shipping it shadows the clean text
                 // with JSON source (see pi_live_tool_output).
                 pi_live_tool_output(&content, &tc.raw_output)
+            } else if matches!(agent_type, AgentType::OpenCode) {
+                // OpenCode's rawOutput is the `{output, metadata}` envelope
+                // around the SAME text `content` already carries; shipping it
+                // shadows the clean text (see opencode_live_tool_output).
+                opencode_live_tool_output(&content, &tc.raw_output)
             } else {
                 json_value_to_text(&tc.raw_output)
                     .map(|text| unwrap_codebuddy_deferred_output(agent_type, &text).unwrap_or(text))
@@ -11745,6 +11798,11 @@ async fn emit_conversation_update(
                 // Symmetric with the ToolCall arm — and the arm that matters:
                 // pi delivers the result on the update (see pi_live_tool_output).
                 pi_live_tool_output(&content, &tcu.fields.raw_output)
+            } else if matches!(agent_type, AgentType::OpenCode) {
+                // Symmetric with the ToolCall arm — and the arm that matters:
+                // OpenCode delivers every result on the completion update (see
+                // opencode_live_tool_output).
+                opencode_live_tool_output(&content, &tcu.fields.raw_output)
             } else {
                 json_value_to_text(&tcu.fields.raw_output)
                     .map(|text| unwrap_codebuddy_deferred_output(agent_type, &text).unwrap_or(text))
@@ -16418,6 +16476,169 @@ mod tests {
         );
         // Absent rawOutput.
         assert_eq!(grok_live_tool_output(&None, &None), None);
+    }
+
+    /// The captured opencode 1.18.23 completion envelope for a codeg-mcp
+    /// `ask_user_question` — the clean answer text on both channels, the
+    /// `rawOutput` one wrapped in `{output, metadata}`.
+    fn opencode_ask_raw_output() -> serde_json::Value {
+        serde_json::json!({
+            "output": "The user answered your question(s):\n1. [框架] 选一个前端框架\n   → 选项 A\n",
+            "metadata": {"truncated": false},
+        })
+    }
+
+    /// The envelope must never shadow `content`: it wraps the very same string,
+    /// and the JSON blob is what made an answered question render "no selection".
+    #[test]
+    fn opencode_live_tool_output_prefers_content() {
+        let content = Some(
+            "The user answered your question(s):\n1. [框架] 选一个前端框架\n   → 选项 A\n"
+                .to_string(),
+        );
+        assert_eq!(
+            opencode_live_tool_output(&content, &Some(opencode_ask_raw_output())),
+            None
+        );
+    }
+
+    /// With no `content` the envelope is unwrapped to the bare result text —
+    /// never the stringified object. Whitespace-only content counts as none.
+    #[test]
+    fn opencode_live_tool_output_unwraps_output_when_content_empty() {
+        let raw = Some(opencode_ask_raw_output());
+        let expected =
+            "The user answered your question(s):\n1. [框架] 选一个前端框架\n   → 选项 A\n";
+        assert_eq!(
+            opencode_live_tool_output(&None, &raw).as_deref(),
+            Some(expected)
+        );
+        assert_eq!(
+            opencode_live_tool_output(&Some("   ".to_string()), &raw).as_deref(),
+            Some(expected)
+        );
+    }
+
+    /// Failures send `{error, metadata}`, and a command that writes only to
+    /// stderr leaves `output` empty while the combined stream stays in
+    /// `metadata.output` — both mirror `parsers/opencode.rs`.
+    #[test]
+    fn opencode_live_tool_output_falls_back_to_error_and_metadata_output() {
+        let failed = Some(serde_json::json!({
+            "error": "The tool call was aborted",
+            "metadata": {},
+        }));
+        assert_eq!(
+            opencode_live_tool_output(&None, &failed).as_deref(),
+            Some("The tool call was aborted")
+        );
+
+        let stderr_only = Some(serde_json::json!({
+            "output": "",
+            "metadata": {"output": "boom\n", "exit": 1},
+        }));
+        assert_eq!(
+            opencode_live_tool_output(&None, &stderr_only).as_deref(),
+            Some("boom\n")
+        );
+    }
+
+    /// An unrecognized payload still stringifies exactly as before — the fix
+    /// unwraps a known envelope, it never drops a result on the floor.
+    #[test]
+    fn opencode_live_tool_output_keeps_unknown_payloads() {
+        let unknown = Some(serde_json::json!({"weird": {"shape": 1}}));
+        assert_eq!(
+            opencode_live_tool_output(&None, &unknown).as_deref(),
+            Some(r#"{"weird":{"shape":1}}"#)
+        );
+        assert_eq!(opencode_live_tool_output(&None, &None), None);
+    }
+
+    /// End-to-end over the frames opencode 1.18.23 actually put on the wire for a
+    /// codeg-mcp `ask_user_question` (captured by driving `opencode acp` against a
+    /// stub MCP server). The card reconstructs the answer from the result TEXT —
+    /// opencode drops the MCP `structuredContent` — so the completion must hand
+    /// the frontend that text, not the `{output, metadata}` blob that shadows it
+    /// and made an answered question render "no selection" while streaming.
+    #[tokio::test]
+    async fn opencode_ask_question_completion_emits_the_answer_text() {
+        let mut cache = ToolCallOutputCache::default();
+        let mut cb = CodeBuddyLiveState::default();
+
+        let (_, _, opening_output, _) = pi_emit(
+            AgentType::OpenCode,
+            &mut cache,
+            &mut cb,
+            serde_json::json!({
+                "sessionUpdate": "tool_call",
+                "toolCallId": "call_probe_1",
+                "title": "codeg-mcp_ask_user_question",
+                "kind": "other",
+                "status": "pending",
+                "locations": [],
+                "rawInput": {},
+            }),
+        )
+        .await;
+        assert!(
+            opening_output.is_none(),
+            "the pending frame carries no result: {opening_output:?}"
+        );
+
+        let (content, _, raw_output, _) = pi_emit(
+            AgentType::OpenCode,
+            &mut cache,
+            &mut cb,
+            serde_json::json!({
+                "sessionUpdate": "tool_call_update",
+                "toolCallId": "call_probe_1",
+                "status": "completed",
+                "content": [{
+                    "type": "content",
+                    "content": {
+                        "type": "text",
+                        "text": "The user answered your question(s):\n1. [框架] 选一个前端框架\n   → 选项 A\n",
+                    },
+                }],
+                "rawOutput": opencode_ask_raw_output(),
+            }),
+        )
+        .await;
+
+        assert_eq!(
+            content.as_deref(),
+            Some("The user answered your question(s):\n1. [框架] 选一个前端框架\n   → 选项 A\n"),
+            "the clean answer text reaches the card"
+        );
+        assert!(
+            raw_output.is_none(),
+            "the envelope must not shadow it: {raw_output:?}"
+        );
+    }
+
+    /// The unwrap is agent-gated: every other agent keeps the existing
+    /// `json_value_to_text` behavior for an object `rawOutput`.
+    #[tokio::test]
+    async fn non_opencode_keeps_the_stringified_envelope() {
+        let mut cache = ToolCallOutputCache::default();
+        let mut cb = CodeBuddyLiveState::default();
+        let (_, _, raw_output, _) = pi_emit(
+            AgentType::ClaudeCode,
+            &mut cache,
+            &mut cb,
+            serde_json::json!({
+                "sessionUpdate": "tool_call_update",
+                "toolCallId": "call-1",
+                "status": "completed",
+                "rawOutput": {"output": "hi", "metadata": {"truncated": false}},
+            }),
+        )
+        .await;
+        assert_eq!(
+            raw_output.as_deref(),
+            Some(r#"{"metadata":{"truncated":false},"output":"hi"}"#)
+        );
     }
 
     /// A finished Grok terminal `tool_call_update` carries the readable output in
