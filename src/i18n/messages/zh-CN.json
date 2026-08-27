@@ -1150,7 +1150,7 @@
       "authModeApiKey": "API Key",
       "authModeLogin": "Kimi 账号登录（订阅）",
       "authModeApiKeyHint": "在 config.toml 写入受管供应商，并播种门控令牌以便会话能够打开。",
-      "loginHint": "在终端运行 `kimi login`，用 Kimi 订阅账号登录。codeg 不存储任何凭据，复用 Kimi 自己的登录。在此保存会移除 codeg 的 API Key 门控令牌。",
+      "loginHint": "在终端运行 `kimi login`，用 Kimi 订阅账号登录；Kimi 0.39.0 起，kimi.ai 账号需加 `--region global`，默认登录的是 kimi.com。codeg 不存储任何凭据，复用 Kimi 自己的登录。在此保存会移除 codeg 的 API Key 门控令牌。",
       "credentialTitle": "凭据",
       "interfaceTypeLabel": "供应商类型",
       "interfaceTypeHint": "Kimi 使用的供应商协议（config.toml 的 `type`）。Moonshot / platform.kimi.com 的 Key 请选「Kimi / Moonshot」。",

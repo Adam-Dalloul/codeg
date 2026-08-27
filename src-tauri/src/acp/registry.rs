@@ -841,28 +841,32 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             supports_mcp: true,
             name: "Kimi Code",
             description: "Moonshot AI's official CLI coding assistant (ACP)",
-            // DELIBERATELY BEHIND `latest`: 0.36.1 is the last release where
-            // MCP servers handed over on the ACP connection actually come up.
-            // On 0.37.x they do not — which takes the codeg-mcp companion (and
-            // therefore multi-agent delegation) down with every user server, so
-            // "newer" is a regression here. Field-observed on 0.37.x; do NOT
-            // bump this pin on a version number alone — reconnect with a real
-            // MCP entry and confirm its tools are callable first.
+            // NEVER PIN INTO 0.37.0–0.38.0. Those releases hard-fail
+            // `session/new` (and `session/load` / `session/resume`) with "ACP
+            // stdio MCP server <name> does not declare a runtime identity" as
+            // soon as any stdio server rides the wire — for Kimi that is always
+            // the codeg-mcp companion, so the whole agent was unusable, not
+            // just delegation. codeg sat on 0.36.1 until 0.39.0 restored it.
             //
-            // Where NOT to look when re-testing: the wire-facing surface is a
-            // red herring. Diffing the 0.36.1 and 0.37.2 bundles, the whole
-            // `packages/acp-adapter/src/server.ts` region is byte-identical
-            // (`newSession`/`loadSession`/`resumeSession` all still run
-            // `acpMcpServersToConfigs(params.mcpServers)` into the harness),
-            // `packages/acp-server/src/server.ts` changes nothing MCP-related,
-            // and BOTH advertise the same `mcpCapabilities { http, sse }`. So
-            // the handshake and the request handlers look fine and prove
-            // nothing; whatever breaks is further in, around the
-            // `agent-core-v2` `mcpService` / `mcpCore` connection-manager
-            // rework that 0.37.x shipped.
+            // Root cause, if it ever regresses: 0.37.x added a SECOND converter
+            // (`acpMcpServersToConfigRecord`), pointed the three session entry
+            // points at it, and left the old `acpMcpServersToConfigs` in the
+            // bundle as dead code. The new one handled only `http`/`sse` and
+            // threw on an absent `type` — which is how ACP spells stdio. 0.39.0
+            // gives it a stdio arm again (`{transport:"stdio", …,
+            // runtime_id:"local"}`), feeding the `runtime_id` that Kimi's own
+            // session-scoped connection manager demands; codeg sends nothing
+            // extra. Diffing the old converter or the handshake proves nothing
+            // — both were byte-identical across the break.
+            //
+            // Verified on 0.39.0 before this bump rather than assumed from the
+            // version number: a stdio server handed over on `session/new` is
+            // spawned, its tools reach the model as `mcp__<server>__<tool>`,
+            // `tools/call` runs, and the result comes back — same for a server
+            // in Kimi's own `~/.kimi-code/mcp.json`.
             distribution: AgentDistribution::Npx {
-                version: "0.36.1",
-                package: "@moonshot-ai/kimi-code@0.36.1",
+                version: "0.39.0",
+                package: "@moonshot-ai/kimi-code@0.39.0",
                 cmd: "kimi",
                 args: &["acp"],
                 env: &[],
@@ -1529,14 +1533,12 @@ mod tests {
             "@tencent-ai/codebuddy-code@2.139.0",
             Some("22.0.0"),
         );
-        // Kimi Code is pinned BELOW `latest` on purpose — 0.37.x breaks MCP
-        // over the ACP connection (see the registry entry). This assertion is
-        // the tripwire: a routine "bump everything to latest" sweep has to
-        // come here and read why before it can go green.
+        // Kimi Code must never land on 0.37.0–0.38.0: every session in that
+        // range dies on the codeg-mcp stdio entry (see the registry entry).
         assert_npx_version(
             AgentType::KimiCode,
-            "0.36.1",
-            "@moonshot-ai/kimi-code@0.36.1",
+            "0.39.0",
+            "@moonshot-ai/kimi-code@0.39.0",
             Some("22.19.0"),
         );
         assert_npx_version(

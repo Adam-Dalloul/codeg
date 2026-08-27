@@ -1150,7 +1150,7 @@
       "authModeApiKey": "API キー",
       "authModeLogin": "Kimi アカウントログイン（サブスクリプション）",
       "authModeApiKeyHint": "config.toml に管理対象プロバイダーを書き込み、セッションを開けるようゲートトークンを配置します。",
-      "loginHint": "ターミナルで `kimi login` を実行し、Kimi サブスクリプションアカウントでログインしてください。codeg は資格情報を保存せず、Kimi 自身のログインを再利用します。ここで保存すると codeg の API キー用ゲートトークンが削除されます。",
+      "loginHint": "ターミナルで `kimi login` を実行し、Kimi サブスクリプションアカウントでログインしてください。Kimi 0.39.0 以降、kimi.ai のアカウントには `--region global` を付けます（既定は kimi.com へのログインです）。codeg は資格情報を保存せず、Kimi 自身のログインを再利用します。ここで保存すると codeg の API キー用ゲートトークンが削除されます。",
       "credentialTitle": "資格情報",
       "interfaceTypeLabel": "プロバイダー種別",
       "interfaceTypeHint": "Kimi が話すプロバイダープロトコル（config.toml の `type`）。Moonshot / platform.kimi.com のキーには「Kimi / Moonshot」を選びます。",

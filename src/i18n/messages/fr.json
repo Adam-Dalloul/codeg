@@ -1150,7 +1150,7 @@
       "authModeApiKey": "Clé API",
       "authModeLogin": "Connexion au compte Kimi (abonnement)",
       "authModeApiKeyHint": "Écrit un fournisseur géré dans config.toml et dépose le jeton d'accès pour que les sessions puissent s'ouvrir.",
-      "loginHint": "Exécutez `kimi login` dans un terminal pour vous connecter avec un compte Kimi par abonnement. codeg ne stocke rien et réutilise la connexion de Kimi. Enregistrer ici supprime le jeton d'accès par clé API de codeg.",
+      "loginHint": "Exécutez `kimi login` dans un terminal pour vous connecter avec un compte Kimi par abonnement ; depuis Kimi 0.39.0, ajoutez `--region global` pour un compte kimi.ai, car la connexion cible kimi.com par défaut. codeg ne stocke rien et réutilise la connexion de Kimi. Enregistrer ici supprime le jeton d'accès par clé API de codeg.",
       "credentialTitle": "Identifiant",
       "interfaceTypeLabel": "Type de fournisseur",
       "interfaceTypeHint": "Le protocole de fournisseur que parle Kimi (le `type` de config.toml). Choisissez Kimi / Moonshot pour une clé Moonshot / platform.kimi.com.",

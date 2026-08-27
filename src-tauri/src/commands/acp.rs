@@ -4340,7 +4340,9 @@ fn persist_opencode_auth_json(raw_auth: &str) -> Result<(), AcpError> {
 // Kimi Code config helpers
 //
 // IMPORTANT — how `kimi acp` actually authenticates (reverse-engineered &
-// empirically verified against @moonshot-ai/kimi-code 0.19.1):
+// empirically verified against @moonshot-ai/kimi-code 0.19.1; still the exact
+// behaviour on 0.39.0, where the managed block + seeded token below were driven
+// through a real `session/new` + `session/prompt` again):
 //
 // `kimi acp` gates EVERY `session/new` on an OAuth-style token: it calls
 // `harnessIsAuthed`, which is true iff `~/.kimi-code/credentials/kimi-code.json`

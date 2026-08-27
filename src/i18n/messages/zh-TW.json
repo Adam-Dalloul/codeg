@@ -1150,7 +1150,7 @@
       "authModeApiKey": "API Key",
       "authModeLogin": "Kimi 帳號登入（訂閱）",
       "authModeApiKeyHint": "在 config.toml 寫入受管供應商，並植入門控權杖以便工作階段能夠開啟。",
-      "loginHint": "在終端機執行 `kimi login`，用 Kimi 訂閱帳號登入。codeg 不儲存任何憑證，沿用 Kimi 自己的登入。在此儲存會移除 codeg 的 API Key 門控權杖。",
+      "loginHint": "在終端機執行 `kimi login`，用 Kimi 訂閱帳號登入；Kimi 0.39.0 起，kimi.ai 帳號需加上 `--region global`，預設登入的是 kimi.com。codeg 不儲存任何憑證，沿用 Kimi 自己的登入。在此儲存會移除 codeg 的 API Key 門控權杖。",
       "credentialTitle": "憑證",
       "interfaceTypeLabel": "供應商類型",
       "interfaceTypeHint": "Kimi 使用的供應商協定（config.toml 的 `type`）。Moonshot / platform.kimi.com 的 Key 請選「Kimi / Moonshot」。",

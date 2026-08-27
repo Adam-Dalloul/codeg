@@ -1150,7 +1150,7 @@
       "authModeApiKey": "API-Schlüssel",
       "authModeLogin": "Kimi-Konto-Anmeldung (Abo)",
       "authModeApiKeyHint": "Schreibt einen verwalteten Provider in config.toml und legt das Gate-Token an, damit Sitzungen geöffnet werden können.",
-      "loginHint": "Führe `kimi login` im Terminal aus, um dich mit einem Kimi-Abo-Konto anzumelden. codeg speichert nichts und nutzt Kimis eigene Anmeldung. Speichern hier entfernt codegs API-Schlüssel-Gate-Token.",
+      "loginHint": "Führe `kimi login` im Terminal aus, um dich mit einem Kimi-Abo-Konto anzumelden; ab Kimi 0.39.0 hänge für ein kimi.ai-Konto `--region global` an, denn standardmäßig wird bei kimi.com angemeldet. codeg speichert nichts und nutzt Kimis eigene Anmeldung. Speichern hier entfernt codegs API-Schlüssel-Gate-Token.",
       "credentialTitle": "Zugangsdaten",
       "interfaceTypeLabel": "Provider-Typ",
       "interfaceTypeHint": "Das Provider-Protokoll, das Kimi spricht (`type` in config.toml). Für einen Moonshot-/platform.kimi.com-Schlüssel Kimi / Moonshot wählen.",

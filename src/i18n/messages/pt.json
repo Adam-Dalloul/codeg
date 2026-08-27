@@ -1150,7 +1150,7 @@
       "authModeApiKey": "Chave de API",
       "authModeLogin": "Login da conta Kimi (assinatura)",
       "authModeApiKeyHint": "Grava um provedor gerenciado no config.toml e cria o token de acesso para que as sessões possam abrir.",
-      "loginHint": "Execute `kimi login` em um terminal para entrar com uma conta Kimi por assinatura. O codeg não armazena nada e reutiliza o login do próprio Kimi. Salvar aqui remove o token de acesso por chave de API do codeg.",
+      "loginHint": "Execute `kimi login` em um terminal para entrar com uma conta Kimi por assinatura; a partir do Kimi 0.39.0, adicione `--region global` para uma conta kimi.ai, pois o padrão entra em kimi.com. O codeg não armazena nada e reutiliza o login do próprio Kimi. Salvar aqui remove o token de acesso por chave de API do codeg.",
       "credentialTitle": "Credencial",
       "interfaceTypeLabel": "Tipo de provedor",
       "interfaceTypeHint": "O protocolo de provedor que o Kimi fala (o `type` do config.toml). Use Kimi / Moonshot para uma chave da Moonshot / platform.kimi.com.",

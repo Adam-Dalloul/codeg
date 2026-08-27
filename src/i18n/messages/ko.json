@@ -1150,7 +1150,7 @@
       "authModeApiKey": "API 키",
       "authModeLogin": "Kimi 계정 로그인(구독)",
       "authModeApiKeyHint": "config.toml에 관리형 공급자를 기록하고, 세션이 열리도록 게이트 토큰을 심습니다.",
-      "loginHint": "터미널에서 `kimi login`을 실행해 Kimi 구독 계정으로 로그인하세요. codeg는 자격 증명을 저장하지 않고 Kimi 자체 로그인을 재사용합니다. 여기서 저장하면 codeg의 API 키 게이트 토큰이 제거됩니다.",
+      "loginHint": "터미널에서 `kimi login`을 실행해 Kimi 구독 계정으로 로그인하세요. Kimi 0.39.0부터 kimi.ai 계정은 `--region global`을 붙여야 하며, 기본값은 kimi.com 로그인입니다. codeg는 자격 증명을 저장하지 않고 Kimi 자체 로그인을 재사용합니다. 여기서 저장하면 codeg의 API 키 게이트 토큰이 제거됩니다.",
       "credentialTitle": "자격 증명",
       "interfaceTypeLabel": "공급자 유형",
       "interfaceTypeHint": "Kimi가 사용하는 공급자 프로토콜(config.toml의 `type`). Moonshot / platform.kimi.com 키라면 「Kimi / Moonshot」을 선택하세요.",

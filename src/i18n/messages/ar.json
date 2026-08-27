@@ -1150,7 +1150,7 @@
       "authModeApiKey": "مفتاح API",
       "authModeLogin": "تسجيل الدخول بحساب Kimi (اشتراك)",
       "authModeApiKeyHint": "يكتب مزوّدًا مُدارًا في config.toml ويزرع رمز البوابة كي تتمكن الجلسات من الفتح.",
-      "loginHint": "شغّل `kimi login` في الطرفية لتسجيل الدخول بحساب اشتراك Kimi. لا يخزّن codeg أي بيانات اعتماد بل يعيد استخدام تسجيل دخول Kimi نفسه. الحفظ هنا يزيل رمز بوابة مفتاح API الخاص بـ codeg.",
+      "loginHint": "شغّل `kimi login` في الطرفية لتسجيل الدخول بحساب اشتراك Kimi، وابتداءً من Kimi 0.39.0 أضف `--region global` لحساب kimi.ai لأن الوضع الافتراضي يسجّل الدخول إلى kimi.com. لا يخزّن codeg أي بيانات اعتماد بل يعيد استخدام تسجيل دخول Kimi نفسه. الحفظ هنا يزيل رمز بوابة مفتاح API الخاص بـ codeg.",
       "credentialTitle": "بيانات الاعتماد",
       "interfaceTypeLabel": "نوع المزوّد",
       "interfaceTypeHint": "بروتوكول المزوّد الذي يتحدث به Kimi (الحقل `type` في config.toml). اختر Kimi / Moonshot لمفتاح من Moonshot أو platform.kimi.com.",
