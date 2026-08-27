@@ -3067,6 +3067,8 @@
         "tokenCacheRead": "缓存读取",
         "tokenCacheWrite": "缓存写入",
         "duration": "耗时",
+        "worked": "已工作",
+        "workedFor": "工作了 {duration}",
         "completedAt": "完成时间",
         "jumpToPreviousUserMessage": "跳转到上一条用户消息",
         "showMore": "展开",

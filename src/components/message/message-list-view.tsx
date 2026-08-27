@@ -7,7 +7,7 @@ import {
   useConversationRuntimeStore,
 } from "@/stores/conversation-runtime-store"
 import { isWindowedDetail } from "@/lib/turn-window"
-import { ContentPartsRenderer } from "./content-parts-renderer"
+import { CompletedTurnContent } from "./completed-turn-content"
 import { ContextCompactionCard } from "./context-compaction-card"
 import { CollapsibleUserMessage } from "./collapsible-user-message"
 import { CollapsibleSystemMessage } from "./collapsible-system-message"
@@ -145,6 +145,7 @@ export type ThreadRenderItem =
       kind: "turn"
       group: ResolvedMessageGroup
       phase: "persisted" | "optimistic" | "streaming"
+      isResponseComplete: boolean
       showStats: boolean
       isRoleTransition: boolean
       previousUserIndex: number | null
@@ -264,6 +265,7 @@ type AssistantTurnItem = Extract<ThreadRenderItem, { kind: "turn" }>
 export interface MergedAssistantRunCacheEntry {
   memberGroups: ResolvedMessageGroup[]
   memberKeys: string[]
+  memberCompletion: boolean[]
   item: AssistantTurnItem
 }
 export type MergedAssistantRunCache = WeakMap<
@@ -331,7 +333,8 @@ export function mergeConsecutiveAssistantTurns(
     for (let i = 0; i < buffer.length; i++) {
       if (
         buffer[i].group !== cached.memberGroups[i] ||
-        buffer[i].key !== cached.memberKeys[i]
+        buffer[i].key !== cached.memberKeys[i] ||
+        buffer[i].isResponseComplete !== cached.memberCompletion[i]
       ) {
         return false
       }
@@ -418,6 +421,7 @@ export function mergeConsecutiveAssistantTurns(
       const merged: AssistantTurnItem = {
         ...last,
         key: `merged-${first.key}`,
+        isResponseComplete: buffer.every((it) => it.isResponseComplete),
         // Concatenate every sub-turn's raw turns so the artifacts card sees all
         // file edits across the merged reply, not just the last sub-turn.
         sourceTurns: buffer.flatMap((b) => b.sourceTurns),
@@ -436,6 +440,7 @@ export function mergeConsecutiveAssistantTurns(
       mergeCache?.set(first.group, {
         memberGroups: buffer.map((it) => it.group),
         memberKeys: buffer.map((it) => it.key),
+        memberCompletion: buffer.map((it) => it.isResponseComplete),
         item: merged,
       })
     }
@@ -573,7 +578,11 @@ const HistoricalMessageGroup = memo(function HistoricalMessageGroup({
           </div>
         ) : (
           <MessageContent>
-            <ContentPartsRenderer parts={group.parts} role={group.role} />
+            <CompletedTurnContent
+              parts={group.parts}
+              durationMs={group.duration_ms}
+              completed={isResponseComplete}
+            />
           </MessageContent>
         )}
         {group.role === "user" && group.resources.length > 0 ? (
@@ -719,6 +728,14 @@ export function MessageListView({
 
   const { threadItems, nonStreamingAdapted } = useMemo(() => {
     const allTurns = timelineTurns.map((item) => item.turn)
+    const inFlightUserTurnId = detail?.in_flight_user_turn_id ?? null
+    const inFlightUserTurnIndex =
+      inFlightUserTurnId === null
+        ? -1
+        : timelineTurns.findIndex(
+            (item) =>
+              item.turn.role === "user" && item.turn.id === inFlightUserTurnId
+          )
     const streamingIndices = new Set<number>()
     const inProgressToolCallIdsByIndex = new Map<number, Set<string>>()
     timelineTurns.forEach((item, i) => {
@@ -786,6 +803,12 @@ export function MessageListView({
         kind: "turn" as const,
         group,
         phase,
+        // Persisted does not always mean completed: passive viewers can read
+        // transcript blocks written after the backend's authoritative
+        // in-flight user-turn marker without owning the live stream.
+        isResponseComplete:
+          phase === "persisted" &&
+          (inFlightUserTurnIndex < 0 || i <= inFlightUserTurnIndex),
         showStats: false,
         isRoleTransition: false,
         previousUserIndex: null,
@@ -850,6 +873,7 @@ export function MessageListView({
     turnAdapter,
     groupCache,
     mergedRunCache,
+    detail?.in_flight_user_turn_id,
   ])
 
   const historicalPlanEntries = useMemo(
@@ -886,7 +910,7 @@ export function MessageListView({
                 dimmed={item.phase === "optimistic"}
                 showStats={item.showStats}
                 previousUserIndex={item.previousUserIndex}
-                isResponseComplete={item.phase === "persisted"}
+                isResponseComplete={item.isResponseComplete}
                 sourceTurns={item.sourceTurns}
               />
             </div>

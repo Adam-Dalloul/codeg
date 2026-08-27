@@ -3067,6 +3067,8 @@
         "tokenCacheRead": "캐시 읽기",
         "tokenCacheWrite": "캐시 쓰기",
         "duration": "소요 시간",
+        "worked": "작업함",
+        "workedFor": "{duration} 동안 작업함",
         "completedAt": "완료 시각",
         "jumpToPreviousUserMessage": "이전 사용자 메시지로 이동",
         "showMore": "더보기",

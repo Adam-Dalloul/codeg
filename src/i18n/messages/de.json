@@ -3067,6 +3067,8 @@
         "tokenCacheRead": "Cache-Lesen",
         "tokenCacheWrite": "Cache-Schreiben",
         "duration": "Dauer",
+        "worked": "Gearbeitet",
+        "workedFor": "{duration} gearbeitet",
         "completedAt": "Abgeschlossen um",
         "jumpToPreviousUserMessage": "Zur Benutzernachricht springen",
         "showMore": "Mehr anzeigen",
