@@ -11,6 +11,7 @@ import { notifyWebUnauthorized } from "./transport/web-connection-store"
 import { getCurrentEffectiveAppLocale } from "./i18n"
 import {
   DEFAULT_FORGE_COMMENT_PAGE_SIZE,
+  DEFAULT_FORGE_FILES_PAGE_SIZE,
   DEFAULT_FORGE_PAGE_SIZE,
 } from "./forge-list-prefs"
 import { TurnBusyError, isTurnInProgressRejection } from "./turn-busy"
@@ -23,14 +24,19 @@ import type {
   Automation,
   AutomationRun,
   AutomationDraft,
+  ForgeChangeDetail,
+  ForgeChangedFileList,
+  ForgeComment,
   ForgeCreateResult,
   ForgeCommentList,
   ForgeIssueList,
+  ForgeIssueRow,
   ForgeLabelList,
   ForgePanelSettings,
   ForgeRemote,
   ForgeSettingsStore,
   ForgeSort,
+  ForgeStateAction,
   ForgeTab,
   ForgeTaskDraftInput,
   ForgeTaskLink,
@@ -5134,6 +5140,126 @@ export async function forgeListComments(
       number: query.number,
       page: query.page ?? 1,
       perPage: query.perPage ?? DEFAULT_FORGE_COMMENT_PAGE_SIZE,
+      accountId: query.accountId ?? null,
+    },
+  })
+}
+
+/**
+ * Post one comment, and get back the comment as the FORGE stored it.
+ *
+ * The result is what the thread appends — not the text that was sent. They
+ * differ in every field that matters: the id (the React key, and the handle
+ * that de-duplicates it when the next page arrives), the author as the forge
+ * resolved it from the token, the timestamp and the permalink.
+ *
+ * Never retried: a retried POST posts twice, and a thread other people read is
+ * the wrong place to be approximately once.
+ */
+export async function forgeCreateComment(
+  folderId: number,
+  draft: {
+    kind: "issue" | "pr"
+    number: number
+    body: string
+    accountId?: string | null
+  }
+): Promise<ForgeComment> {
+  return getTransport().call("forge_create_comment", {
+    folderId,
+    draft: {
+      kind: draft.kind,
+      number: draft.number,
+      body: draft.body,
+      accountId: draft.accountId ?? null,
+    },
+  })
+}
+
+/**
+ * Close or reopen one item, and get back the row the forge now serves.
+ *
+ * The returned row is the point: flipping `state` locally would be a guess.
+ * The item may have been closed in the browser a moment ago, a lock may have
+ * refused the write, and on GitHub a pull request merged in between comes back
+ * `merged` rather than `closed`.
+ */
+export async function forgeSetItemState(
+  folderId: number,
+  request: {
+    kind: "issue" | "pr"
+    number: number
+    action: ForgeStateAction
+    accountId?: string | null
+  }
+): Promise<ForgeIssueRow> {
+  return getTransport().call("forge_set_item_state", {
+    folderId,
+    request: {
+      kind: request.kind,
+      number: request.number,
+      action: request.action,
+      accountId: request.accountId ?? null,
+    },
+  })
+}
+
+/** Open a new issue on the folder's repository. As everywhere else on this
+ *  surface, the repository is derived from the folder's own remote — there is
+ *  no field here to point this account's token at somewhere else. */
+export async function forgeCreateIssue(
+  folderId: number,
+  draft: {
+    title: string
+    body?: string | null
+    labels?: string[]
+    accountId?: string | null
+  }
+): Promise<ForgeIssueRow> {
+  return getTransport().call("forge_create_issue", {
+    folderId,
+    draft: {
+      title: draft.title,
+      body: draft.body ?? null,
+      labels: draft.labels ?? [],
+      accountId: draft.accountId ?? null,
+    },
+  })
+}
+
+/** One proposed change's branches, size, mergeability and CI. Asked only when
+ *  the panel opens on a PULL REQUEST — a list page holds thirty rows whose
+ *  reader opens at most one, so folding this into every row would spend its
+ *  requests on rows nobody looks at. */
+export async function forgeChangeDetail(
+  folderId: number,
+  number: number,
+  accountId?: string | null
+): Promise<ForgeChangeDetail> {
+  return getTransport().call("forge_change_detail", {
+    folderId,
+    query: { number, accountId: accountId ?? null },
+  })
+}
+
+/** One page of the files a proposed change touches. Paths and counters only —
+ *  reading the diff itself is what the task worktree and the app's diff view
+ *  are for. */
+export async function forgeChangeFiles(
+  folderId: number,
+  query: {
+    number: number
+    page?: number
+    perPage?: number
+    accountId?: string | null
+  }
+): Promise<ForgeChangedFileList> {
+  return getTransport().call("forge_change_files", {
+    folderId,
+    query: {
+      number: query.number,
+      page: query.page ?? 1,
+      perPage: query.perPage ?? DEFAULT_FORGE_FILES_PAGE_SIZE,
       accountId: query.accountId ?? null,
     },
   })

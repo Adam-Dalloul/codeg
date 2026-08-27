@@ -1583,6 +1583,118 @@ export interface ForgeCommentList {
   has_next: boolean
 }
 
+/** What the panel's state button does to an item (mirrors Rust
+ *  ForgeStateAction). Two VERBS rather than a target state — that is what
+ *  GitLab's API takes and what a button means. Merging is deliberately absent:
+ *  it is a different operation with its own preconditions, not a state. */
+export type ForgeStateAction = "close" | "reopen"
+
+/** How a check ended up, in ONE vocabulary (mirrors Rust ForgeCheckState).
+ *
+ *  GitHub crosses `status` with `conclusion` and keeps a second legacy
+ *  commit-status vocabulary; GitLab has its own eleven job statuses. All three
+ *  are folded by the backend, so this switches on five values instead of
+ *  eighteen. `neutral` is deliberately not `success`: a skipped required check
+ *  is not a pass. */
+export type ForgeCheckState =
+  | "queued"
+  | "running"
+  | "success"
+  | "failure"
+  | "neutral"
+
+/** One CI check on a change's head commit (mirrors Rust ForgeCheck). */
+export interface ForgeCheck {
+  id: string
+  name: string
+  state: ForgeCheckState
+  /** One-line detail — GitHub's status description, GitLab's stage. */
+  summary: string | null
+  /** `http(s)` only; null when the forge sent nothing usable. */
+  url: string | null
+  /** A failure here does not block the change (GitLab's `allow_failure`;
+   *  always false on GitHub, which has no per-check equivalent). */
+  allow_failure: boolean
+}
+
+/** A change's checks, and how much of the answer arrived (mirrors Rust
+ *  ForgeCheckList).
+ *
+ *  `available: false` is NOT "no checks ran" — it means the forge would not
+ *  say (a token without `checks:read`, CI disabled). An empty list under
+ *  `available: true` means nothing is configured. Collapsing the two prints
+ *  "no checks" over a repository whose pipeline is red.
+ *
+ *  `partial` is the same distinction one level down: GitHub keeps its checks
+ *  in TWO collections behind TWO fine-grained permissions, so a token granted
+ *  only one of them gets a 403 from one endpoint and an empty list from the
+ *  other. That half answer must not be drawn as a complete one. */
+export interface ForgeCheckList {
+  checks: ForgeCheck[]
+  available: boolean
+  /** Some checks could not be read; this list may be missing entries. Always
+   *  false when `available` is false — there is no partial answer to qualify. */
+  partial: boolean
+}
+
+/** What a proposed change is, beyond what its list row says (mirrors Rust
+ *  ForgeChangeDetail).
+ *
+ *  Every counter is nullable because the two forges answer different halves:
+ *  GitHub's pull object carries additions/deletions/changed_files/commits,
+ *  GitLab's merge request carries none of them. A zero would claim the change
+ *  touches nothing, so absent stays absent. */
+export interface ForgeChangeDetail {
+  number: number
+  /** Where it would land. */
+  base_ref: string
+  /** What would land. */
+  head_ref: string
+  /** `owner/repo` of the head, present ONLY when it is a fork. */
+  head_repo: string | null
+  head_sha: string | null
+  draft: boolean
+  state: string
+  /** Tri-state on BOTH forges: null is "the server has not worked it out yet"
+   *  (GitHub computes it asynchronously, GitLab says `unchecked`), which is a
+   *  different answer from false. */
+  mergeable: boolean | null
+  /** The forge's own word for the situation, for a tooltip — the two
+   *  vocabularies do not line up and a translation would read as a diagnosis. */
+  merge_state: string | null
+  additions: number | null
+  deletions: number | null
+  changed_files: number | null
+  commits: number | null
+  checks: ForgeCheckList
+}
+
+/** How a file was touched (mirrors Rust ForgeFileStatus). */
+export type ForgeFileStatus = "added" | "removed" | "modified" | "renamed"
+
+/** One file a change touches (mirrors Rust ForgeChangedFile). */
+export interface ForgeChangedFile {
+  /** Path AFTER the change (the old one for a deletion). */
+  path: string
+  /** Where a rename came from; null otherwise. */
+  previous_path: string | null
+  status: ForgeFileStatus
+  /** Null when the forge does not count — a binary file has no line counts on
+   *  either forge. */
+  additions: number | null
+  deletions: number | null
+  binary: boolean
+}
+
+/** One page of a change's file list (mirrors Rust ForgeChangedFileList). */
+export interface ForgeChangedFileList {
+  files: ForgeChangedFile[]
+  page: number
+  per_page: number
+  /** From the forge's own pagination signal, never from the row count. */
+  has_next: boolean
+}
+
 /** A folder's `origin` remote parsed into forge coordinates. */
 export interface ForgeRemote {
   server_host: string

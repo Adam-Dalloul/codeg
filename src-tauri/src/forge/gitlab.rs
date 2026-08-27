@@ -32,10 +32,11 @@ use serde::Deserialize;
 use super::auth::ResolvedAuth;
 use super::deliver::{ForgePr, NewPullRequest};
 use super::{
-    sanitize_web_url, truncate_chars, urlencode_path, urlencode_query, validate_state_filter,
-    web_origin, ForgeComment, ForgeCommentList, ForgeError, ForgeIssueList, ForgeIssueRow,
-    ForgeItemKind, ForgeLabel, ForgeLabelList, ForgeSort, ListIssuesRequest, BODY_CAP,
-    LABEL_PAGE_SIZE,
+    count_diff_lines, sanitize_web_url, truncate_chars, urlencode_path, urlencode_query,
+    validate_state_filter, web_origin, ForgeChangeDetail, ForgeChangedFile, ForgeChangedFileList,
+    ForgeCheck, ForgeCheckList, ForgeCheckState, ForgeComment, ForgeCommentList, ForgeError,
+    ForgeFileStatus, ForgeIssueList, ForgeIssueRow, ForgeItemKind, ForgeLabel, ForgeLabelList,
+    ForgeSort, ForgeStateAction, ListIssuesRequest, ResolvedNewIssue, BODY_CAP, LABEL_PAGE_SIZE,
 };
 
 // ── reads ───────────────────────────────────────────────────────────────────
@@ -105,19 +106,7 @@ pub async fn list_issues(
     let rows = raw
         .into_iter()
         .filter(|item| keeps(&req.state, &item.state))
-        .map(|item| ForgeIssueRow {
-            is_pr,
-            number: item.iid,
-            title: item.title,
-            body: item.description.map(|b| truncate_chars(&b, BODY_CAP)),
-            state: display_state(&item.state),
-            draft: is_pr && (item.draft || item.work_in_progress),
-            labels: item.labels.into_iter().filter_map(RawItemLabel::into_label).collect(),
-            author: item.author.map(|a| a.username),
-            updated_at: item.updated_at,
-            html_url: item.web_url,
-            comments: item.user_notes_count,
-        })
+        .map(|item| item.into_row(is_pr))
         .collect();
 
     Ok(ForgeIssueList {
@@ -240,28 +229,16 @@ pub async fn list_notes(
         .await
         .map_err(|e| ForgeError::Network(format!("bad notes payload: {e}")))?;
 
-    let origin = web_origin(auth);
+    let anchor = NoteAnchor {
+        origin: web_origin(auth),
+        repo,
+        collection,
+        iid,
+    };
     let comments = raw
         .into_iter()
         .filter(|note| !note.system)
-        .map(|note| ForgeComment {
-            author: ForgeComment::author_name(note.author.as_ref().map(|a| a.username.clone())),
-            author_avatar: note
-                .author
-                .as_ref()
-                .and_then(|a| a.avatar_url.as_deref())
-                .and_then(sanitize_web_url),
-            body: truncate_chars(note.body.as_deref().unwrap_or_default(), BODY_CAP),
-            updated_at: ForgeComment::edited_at(note.created_at.as_deref(), note.updated_at),
-            created_at: note.created_at,
-            // Notes carry no web URL of their own — the same anchor
-            // `create_note` hands back for the comment it just posted.
-            html_url: Some(format!(
-                "{origin}/{repo}/-/{collection}/{iid}#note_{}",
-                note.id
-            )),
-            id: note.id.to_string(),
-        })
+        .map(|note| note.into_comment(&anchor))
         .collect();
 
     Ok(ForgeCommentList {
@@ -377,7 +354,7 @@ pub async fn create_note(
     kind: ForgeItemKind,
     iid: i64,
     body: &str,
-) -> Result<String, ForgeError> {
+) -> Result<ForgeComment, ForgeError> {
     let repo = super::normalize_repo(owner_repo)
         .ok_or_else(|| ForgeError::Invalid(format!("bad repository path: {owner_repo}")))?;
     let project = project_ref(owner_repo)?;
@@ -386,23 +363,307 @@ pub async fn create_note(
     }
     let collection = collection_of(kind);
     let url = format!("{}/projects/{project}/{collection}/{iid}/notes", auth.api_base);
-    #[derive(Deserialize)]
-    struct CreatedNote {
-        #[serde(default)]
-        id: i64,
-    }
-    let created: CreatedNote = api_post(auth, &url, &serde_json::json!({ "body": body }))
+    let created: RawNote = api_post(auth, &url, &serde_json::json!({ "body": body }))
         .await?
         .json()
         .await
         .map_err(|e| ForgeError::Network(format!("bad note payload: {e}")))?;
-    // Notes carry no web URL of their own; the anchor on the item's page is
-    // the link a human can actually follow.
-    Ok(format!(
-        "{}/{repo}/-/{collection}/{iid}#note_{}",
-        web_origin(auth),
-        created.id
-    ))
+    // Through the same mapper the READER uses, anchor included: a comment that
+    // came back from the composer and the same comment on the next page of the
+    // thread have to be one object, or the optimistic append shows a second
+    // copy of what was just posted.
+    Ok(created.into_comment(&NoteAnchor {
+        origin: web_origin(auth),
+        repo,
+        collection,
+        iid,
+    }))
+}
+
+/// Close or reopen one item, and hand back the row as the project now sees it.
+///
+/// `PUT /projects/{p}/{issues|merge_requests}/{iid}` with a `state_event` — a
+/// VERB, not a target state. Note the returned row's labels arrive as bare
+/// NAMES: `with_labels_details` is a list-endpoint parameter, so a single item
+/// never carries its labels' colours. The panel keeps the ones it already had
+/// (see `mergeForgeRowUpdate` in the frontend) rather than dropping every chip
+/// to grey on a close.
+pub async fn set_item_state(
+    auth: &ResolvedAuth,
+    owner_repo: &str,
+    kind: ForgeItemKind,
+    iid: i64,
+    action: ForgeStateAction,
+) -> Result<ForgeIssueRow, ForgeError> {
+    let project = project_ref(owner_repo)?;
+    if iid <= 0 {
+        return Err(ForgeError::Invalid(format!("bad work item number: {iid}")));
+    }
+    let collection = collection_of(kind);
+    let url = format!("{}/projects/{project}/{collection}/{iid}", auth.api_base);
+    let raw: RawItem = api_put(
+        auth,
+        &url,
+        &serde_json::json!({ "state_event": action.gitlab_event() }),
+    )
+    .await?
+    .json()
+    .await
+    .map_err(|e| ForgeError::Network(format!("bad item payload: {e}")))?;
+    Ok(raw.into_row(kind == ForgeItemKind::Change))
+}
+
+/// `POST /projects/{p}/issues` — open an issue, and hand back its row.
+///
+/// Labels are COMMA-JOINED, which is lossless: GitLab forbids commas in label
+/// titles, so no name can be split by this (the same property the list filter
+/// leans on).
+pub async fn create_issue(
+    auth: &ResolvedAuth,
+    owner_repo: &str,
+    draft: &ResolvedNewIssue,
+) -> Result<ForgeIssueRow, ForgeError> {
+    let project = project_ref(owner_repo)?;
+    let url = format!("{}/projects/{project}/issues", auth.api_base);
+    let mut payload = serde_json::json!({ "title": draft.title });
+    if let Some(body) = draft.body.as_deref() {
+        payload["description"] = serde_json::Value::String(body.to_string());
+    }
+    if !draft.labels.is_empty() {
+        payload["labels"] = serde_json::Value::String(draft.labels.join(","));
+    }
+    let raw: RawItem = api_post(auth, &url, &payload)
+        .await?
+        .json()
+        .await
+        .map_err(|e| ForgeError::Network(format!("bad issue payload: {e}")))?;
+    Ok(raw.into_row(false))
+}
+
+// ── proposed changes ────────────────────────────────────────────────────────
+
+/// One merge request's branches, size and CI.
+///
+/// Two requests: the merge request itself, then its head pipeline's jobs.
+/// Almost every counter GitHub's pull object carries is simply absent here —
+/// GitLab reports neither additions/deletions nor a commit count on a merge
+/// request — so those stay `None` rather than being invented from a diff this
+/// call deliberately does not fetch.
+pub async fn change_detail(
+    auth: &ResolvedAuth,
+    owner_repo: &str,
+    iid: i64,
+) -> Result<ForgeChangeDetail, ForgeError> {
+    let project = project_ref(owner_repo)?;
+    if iid <= 0 {
+        return Err(ForgeError::Invalid(format!("bad work item number: {iid}")));
+    }
+    let url = format!("{}/projects/{project}/merge_requests/{iid}", auth.api_base);
+    let raw: RawMergeRequestDetail = api_get(auth, &url)
+        .await?
+        .json()
+        .await
+        .map_err(|e| ForgeError::Network(format!("bad merge request payload: {e}")))?;
+
+    let checks = match raw.head_pipeline.as_ref().map(|p| p.id) {
+        Some(pipeline) => pipeline_jobs(auth, &project, pipeline).await,
+        // GitLab answered and named no pipeline: there is nothing to run, which
+        // is a fact — not the same as a request that could not be made.
+        None => ForgeCheckList::available(Vec::new()),
+    };
+
+    // A fork's real path costs one extra request and is only spent when the
+    // source project genuinely differs — the same rule `get_merge_request`
+    // follows, and for the same reason: "project 4711" is a worse answer than
+    // the truth in the one place a reader needs it.
+    let head_repo = match (raw.source_project_id, raw.target_project_id) {
+        (Some(source), Some(target)) if source != target => project_path(auth, source).await,
+        _ => None,
+    };
+
+    Ok(ForgeChangeDetail {
+        number: if raw.iid > 0 { raw.iid } else { iid },
+        base_ref: raw.target_branch,
+        head_ref: raw.source_branch,
+        head_repo,
+        head_sha: raw
+            .diff_refs
+            .and_then(|d| d.head_sha)
+            .or(raw.sha)
+            .filter(|sha| !sha.is_empty()),
+        draft: raw.draft || raw.work_in_progress,
+        state: display_state(&raw.state),
+        mergeable: mergeable(raw.merge_status.as_deref(), raw.has_conflicts),
+        // The detailed status where the instance has one (GitLab 15.6+, and it
+        // says WHY — `not_approved`, `conflict`, `ci_still_running`), the older
+        // three-value one otherwise.
+        merge_state: raw
+            .detailed_merge_status
+            .or(raw.merge_status)
+            .filter(|s| !s.is_empty()),
+        additions: None,
+        deletions: None,
+        changed_files: raw.changes_count.as_deref().and_then(exact_changes_count),
+        commits: None,
+        checks,
+    })
+}
+
+/// GitLab's merge status, as a tri-state.
+///
+/// `unchecked` / `checking` / `cannot_be_merged_recheck` all mean the server
+/// has not finished working it out — the same "ask again shortly" GitHub
+/// answers with a null `mergeable`, and emphatically not "cannot be merged".
+fn mergeable(merge_status: Option<&str>, has_conflicts: bool) -> Option<bool> {
+    if has_conflicts {
+        return Some(false);
+    }
+    match merge_status? {
+        "can_be_merged" => Some(true),
+        "cannot_be_merged" => Some(false),
+        _ => None,
+    }
+}
+
+/// `changes_count` as a number, but only when it IS one.
+///
+/// GitLab sends this as a string and suffixes it with `+` once the diff hits
+/// its own limit ("1000+"). Parsing the digits off that would print "1000
+/// files" for a change that touches more, so a truncated count is reported as
+/// no count at all.
+fn exact_changes_count(raw: &str) -> Option<i64> {
+    raw.trim().parse::<i64>().ok().filter(|n| *n >= 0)
+}
+
+/// The head pipeline's jobs, as checks.
+///
+/// One request, and its failure is swallowed the same way GitHub's is: a token
+/// that cannot read pipelines still reads the merge request perfectly well, and
+/// losing the panel over the CI section would be the worse answer.
+async fn pipeline_jobs(auth: &ResolvedAuth, project: &str, pipeline: i64) -> ForgeCheckList {
+    if pipeline <= 0 {
+        return ForgeCheckList::unavailable();
+    }
+    let url = format!(
+        "{}/projects/{project}/pipelines/{pipeline}/jobs?per_page={LABEL_PAGE_SIZE}",
+        auth.api_base
+    );
+    let raw: Option<Vec<RawJob>> = async { api_get(auth, &url).await.ok()?.json().await.ok() }.await;
+    match raw {
+        Some(jobs) => ForgeCheckList::available(
+            jobs.into_iter()
+                .map(|job| ForgeCheck {
+                    id: format!("job-{}", job.id),
+                    state: job_state(&job.status),
+                    // The stage, which is what turns a column of job names into
+                    // a pipeline you can read ("test", "build", "deploy").
+                    summary: job.stage.filter(|stage| !stage.trim().is_empty()),
+                    url: job.web_url.as_deref().and_then(sanitize_web_url),
+                    name: job.name,
+                    allow_failure: job.allow_failure,
+                })
+                .collect(),
+        ),
+        None => ForgeCheckList::unavailable(),
+    }
+}
+
+/// GitLab's eleven job statuses in the five the strip draws.
+fn job_state(status: &str) -> ForgeCheckState {
+    match status {
+        "success" => ForgeCheckState::Success,
+        "failed" => ForgeCheckState::Failure,
+        "running" | "preparing" => ForgeCheckState::Running,
+        "created" | "pending" | "scheduled" | "waiting_for_resource" => ForgeCheckState::Queued,
+        // canceled, skipped, manual — ran (or deliberately did not) and
+        // produced no verdict.
+        _ => ForgeCheckState::Neutral,
+    }
+}
+
+/// One page of the files a merge request touches.
+///
+/// `/diffs` is the paginated endpoint (GitLab 15.7+); older instances answer
+/// 404 and are served from `/changes`, which returns the WHOLE diff in one
+/// payload and is sliced locally so the panel's footer behaves the same either
+/// way. GitLab counts nothing per file, so the `+`/`−` beside each path is
+/// counted off the diff hunk it ships (see [`count_diff_lines`]).
+pub async fn list_change_files(
+    auth: &ResolvedAuth,
+    owner_repo: &str,
+    iid: i64,
+    page: u32,
+    per_page: u32,
+) -> Result<ForgeChangedFileList, ForgeError> {
+    let project = project_ref(owner_repo)?;
+    if iid <= 0 {
+        return Err(ForgeError::Invalid(format!("bad work item number: {iid}")));
+    }
+    let url = format!(
+        "{}/projects/{project}/merge_requests/{iid}/diffs?page={page}&per_page={per_page}",
+        auth.api_base
+    );
+    match api_get(auth, &url).await {
+        Ok(response) => {
+            let has_next = header_str(response.headers(), "x-next-page")
+                .is_some_and(|v| !v.trim().is_empty());
+            let raw: Vec<RawDiff> = response
+                .json()
+                .await
+                .map_err(|e| ForgeError::Network(format!("bad diffs payload: {e}")))?;
+            Ok(ForgeChangedFileList {
+                files: raw.into_iter().map(RawDiff::into_file).collect(),
+                page,
+                per_page,
+                has_next,
+            })
+        }
+        Err(ForgeError::NotFound) => {
+            legacy_change_files(auth, &project, iid, page, per_page).await
+        }
+        Err(other) => Err(other),
+    }
+}
+
+/// The pre-15.7 spelling: one unpaginated payload, paged here.
+async fn legacy_change_files(
+    auth: &ResolvedAuth,
+    project: &str,
+    iid: i64,
+    page: u32,
+    per_page: u32,
+) -> Result<ForgeChangedFileList, ForgeError> {
+    #[derive(Deserialize)]
+    struct RawChanges {
+        #[serde(default)]
+        changes: Vec<RawDiff>,
+    }
+    let url = format!(
+        "{}/projects/{project}/merge_requests/{iid}/changes",
+        auth.api_base
+    );
+    let raw: RawChanges = api_get(auth, &url)
+        .await?
+        .json()
+        .await
+        .map_err(|e| ForgeError::Network(format!("bad changes payload: {e}")))?;
+    let total = raw.changes.len();
+    // `saturating_mul` rather than a bare product: `page` is clamped to at
+    // least 1 but has no ceiling, and a 32-bit overflow here would wrap round
+    // to the FIRST page of a list the caller asked to be past the end of.
+    let skip = (page as usize).saturating_sub(1).saturating_mul(per_page as usize);
+    Ok(ForgeChangedFileList {
+        files: raw
+            .changes
+            .into_iter()
+            .skip(skip)
+            .take(per_page as usize)
+            .map(RawDiff::into_file)
+            .collect(),
+        page,
+        per_page,
+        has_next: total > skip.saturating_add(per_page as usize),
+    })
 }
 
 // ── plumbing ────────────────────────────────────────────────────────────────
@@ -464,8 +725,25 @@ pub(crate) async fn api_post(
     url: &str,
     body: &serde_json::Value,
 ) -> Result<reqwest::Response, ForgeError> {
-    let response = super::http_client()?
-        .post(url)
+    send(super::http_client()?.post(url), auth, body).await
+}
+
+/// Authenticated PUT — how GitLab spells "edit an existing thing" (GitHub uses
+/// PATCH for the same operation; neither accepts the other's method).
+pub(crate) async fn api_put(
+    auth: &ResolvedAuth,
+    url: &str,
+    body: &serde_json::Value,
+) -> Result<reqwest::Response, ForgeError> {
+    send(super::http_client()?.put(url), auth, body).await
+}
+
+async fn send(
+    request: reqwest::RequestBuilder,
+    auth: &ResolvedAuth,
+    body: &serde_json::Value,
+) -> Result<reqwest::Response, ForgeError> {
+    let response = request
         .header("PRIVATE-TOKEN", &auth.token)
         .header("User-Agent", "codeg")
         .header("Accept", "application/json")
@@ -631,6 +909,33 @@ struct RawItem {
     user_notes_count: i64,
 }
 
+impl RawItem {
+    /// One issue or merge request, as the workbench row.
+    ///
+    /// `is_pr` is an argument because the collection the payload came from is
+    /// the only thing that says so — an item carries no field distinguishing
+    /// the two, and the draft flag only means anything for a merge request.
+    fn into_row(self, is_pr: bool) -> ForgeIssueRow {
+        ForgeIssueRow {
+            is_pr,
+            number: self.iid,
+            title: self.title,
+            body: self.description.map(|b| truncate_chars(&b, BODY_CAP)),
+            state: display_state(&self.state),
+            draft: is_pr && (self.draft || self.work_in_progress),
+            labels: self
+                .labels
+                .into_iter()
+                .filter_map(RawItemLabel::into_label)
+                .collect(),
+            author: self.author.map(|a| a.username),
+            updated_at: self.updated_at,
+            html_url: self.web_url,
+            comments: self.user_notes_count,
+        }
+    }
+}
+
 /// A label on a collection item, in either shape GitLab may send it.
 ///
 /// With `with_labels_details=true` (which the list URL asks for) each entry is
@@ -691,6 +996,161 @@ struct RawNote {
     created_at: Option<String>,
     #[serde(default)]
     updated_at: Option<String>,
+}
+
+/// Everything needed to build a note's permalink. GitLab notes carry no web
+/// URL of their own, so the anchor on the item's own page is the only link a
+/// human can follow — and it is assembled from four values that all four
+/// callers (reader and composer, issue and merge request) must agree on.
+struct NoteAnchor {
+    origin: String,
+    /// Lowercased `owner/repo`, as it appears in a web path.
+    repo: String,
+    /// `issues` | `merge_requests` — the item's WEB segment, which is the same
+    /// word as its API collection.
+    collection: &'static str,
+    iid: i64,
+}
+
+impl RawNote {
+    fn into_comment(self, anchor: &NoteAnchor) -> ForgeComment {
+        ForgeComment {
+            author: ForgeComment::author_name(self.author.as_ref().map(|a| a.username.clone())),
+            author_avatar: self
+                .author
+                .as_ref()
+                .and_then(|a| a.avatar_url.as_deref())
+                .and_then(sanitize_web_url),
+            body: truncate_chars(self.body.as_deref().unwrap_or_default(), BODY_CAP),
+            updated_at: ForgeComment::edited_at(self.created_at.as_deref(), self.updated_at),
+            created_at: self.created_at,
+            html_url: Some(format!(
+                "{}/{}/-/{}/{}#note_{}",
+                anchor.origin, anchor.repo, anchor.collection, anchor.iid, self.id
+            )),
+            id: self.id.to_string(),
+        }
+    }
+}
+
+/// The SINGLE merge request payload, which carries a good deal the list one
+/// does not: the merge status, a head pipeline, and a `changes_count`.
+#[derive(Debug, Deserialize)]
+struct RawMergeRequestDetail {
+    #[serde(default)]
+    iid: i64,
+    #[serde(default)]
+    state: String,
+    #[serde(default)]
+    draft: bool,
+    #[serde(default)]
+    work_in_progress: bool,
+    #[serde(default)]
+    source_branch: String,
+    #[serde(default)]
+    target_branch: String,
+    #[serde(default)]
+    sha: Option<String>,
+    #[serde(default)]
+    diff_refs: Option<RawDiffRefs>,
+    #[serde(default)]
+    source_project_id: Option<i64>,
+    #[serde(default)]
+    target_project_id: Option<i64>,
+    /// `can_be_merged` | `cannot_be_merged` | `unchecked` | `checking` |
+    /// `cannot_be_merged_recheck`.
+    #[serde(default)]
+    merge_status: Option<String>,
+    /// GitLab 15.6+, and it says WHY (`not_approved`, `conflict`,
+    /// `ci_still_running`) — absent on older instances.
+    #[serde(default)]
+    detailed_merge_status: Option<String>,
+    #[serde(default)]
+    has_conflicts: bool,
+    /// A STRING, and suffixed with `+` once the diff hits GitLab's own limit.
+    #[serde(default)]
+    changes_count: Option<String>,
+    #[serde(default)]
+    head_pipeline: Option<RawPipeline>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawPipeline {
+    #[serde(default)]
+    id: i64,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawJob {
+    #[serde(default)]
+    id: i64,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    stage: Option<String>,
+    #[serde(default)]
+    status: String,
+    #[serde(default)]
+    web_url: Option<String>,
+    /// A job the pipeline is allowed to fail on. Worth carrying: a red
+    /// indicator that cannot block anything is a different fact from one that
+    /// can, and treating them alike sends people to look at the wrong job.
+    #[serde(default)]
+    allow_failure: bool,
+}
+
+/// One file's entry in `/diffs` (and, identically, in the legacy `/changes`).
+#[derive(Debug, Deserialize)]
+struct RawDiff {
+    #[serde(default)]
+    old_path: String,
+    #[serde(default)]
+    new_path: String,
+    #[serde(default)]
+    new_file: bool,
+    #[serde(default)]
+    renamed_file: bool,
+    #[serde(default)]
+    deleted_file: bool,
+    /// The unified diff, as text. GitLab counts nothing per file, so this is
+    /// where the `+`/`−` numbers come from — and an EMPTY one is how binary
+    /// content arrives (there is nothing textual to send).
+    #[serde(default)]
+    diff: String,
+}
+
+impl RawDiff {
+    fn into_file(self) -> ForgeChangedFile {
+        let status = if self.new_file {
+            ForgeFileStatus::Added
+        } else if self.deleted_file {
+            ForgeFileStatus::Removed
+        } else if self.renamed_file {
+            ForgeFileStatus::Renamed
+        } else {
+            ForgeFileStatus::Modified
+        };
+        // No hunk to count. Binary content arrives this way — and so does an
+        // empty file, which from here is indistinguishable and equally has no
+        // line counts to show.
+        let binary = self.diff.trim().is_empty();
+        let (additions, deletions) = count_diff_lines(&self.diff);
+        ForgeChangedFile {
+            // The path AFTER the change; GitLab repeats it in `old_path` for a
+            // deletion, so this is right for every status.
+            path: if self.new_path.is_empty() {
+                self.old_path.clone()
+            } else {
+                self.new_path
+            },
+            previous_path: (status == ForgeFileStatus::Renamed && !self.old_path.is_empty())
+                .then_some(self.old_path),
+            status,
+            additions: (!binary).then_some(additions),
+            deletions: (!binary).then_some(deletions),
+            binary,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -1401,10 +1861,10 @@ mod tests {
     async fn notes_go_to_the_collection_the_item_belongs_to() {
         let (api_base, _, notes, _, _) = mock_api().await;
         let auth = auth_for(api_base);
-        let issue_url = create_note(&auth, "Group/Sub/Proj", ForgeItemKind::Issue, 7, "done")
+        let issue_note = create_note(&auth, "Group/Sub/Proj", ForgeItemKind::Issue, 7, "done")
             .await
             .expect("issue note");
-        let mr_url = create_note(&auth, "group/sub/proj", ForgeItemKind::Change, 7, "done")
+        let mr_note = create_note(&auth, "group/sub/proj", ForgeItemKind::Change, 7, "done")
             .await
             .expect("mr note");
         let sent = notes.lock().unwrap().clone();
@@ -1412,8 +1872,15 @@ mod tests {
         assert_eq!(sent[0].1["body"], "done");
         assert_eq!(sent[1].0, "merge_requests");
         // A note has no URL of its own; the anchor on the item's page does.
+        let issue_url = issue_note.html_url.clone().expect("issue anchor");
+        let mr_url = mr_note.html_url.clone().expect("mr anchor");
         assert!(issue_url.ends_with("/group/sub/proj/-/issues/7#note_55"), "{issue_url}");
         assert!(mr_url.ends_with("/group/sub/proj/-/merge_requests/7#note_66"), "{mr_url}");
+        // The composer gets the whole comment back, not just a link — it is
+        // appended to the thread on screen without re-fetching the page, so it
+        // has to be the SAME shape the reader produces.
+        assert_eq!(issue_note.id, "55");
+        assert_eq!(mr_note.id, "66");
 
         assert!(create_note(&auth, "not-a-path", ForgeItemKind::Issue, 7, "x").await.is_err());
         assert!(create_note(&auth, "group/sub/proj", ForgeItemKind::Issue, 0, "x").await.is_err());
@@ -1473,4 +1940,425 @@ mod tests {
         assert!(!super::super::same_repo(&mapped.head_repo, "group/proj"));
     }
 
+    // ── writes and change detail ────────────────────────────────────────────
+
+    /// `(method, path, body)` per write. The METHOD is asserted because GitLab
+    /// edits with PUT where GitHub uses PATCH, and neither accepts the other's.
+    type Writes = Arc<std::sync::Mutex<Vec<(String, String, serde_json::Value)>>>;
+
+    /// A second mock, covering the write and merge-request-detail surface.
+    async fn mock_write_api() -> (String, Writes) {
+        use axum::extract::Path;
+        use axum::routing::put;
+        let writes: Writes = Arc::new(std::sync::Mutex::new(Vec::new()));
+
+        let w = writes.clone();
+        let edit_issue = put(
+            move |Path(iid): Path<i64>, Json(body): Json<serde_json::Value>| {
+                let w = w.clone();
+                async move {
+                    w.lock().unwrap().push((
+                        "PUT".into(),
+                        format!("issues/{iid}"),
+                        body.clone(),
+                    ));
+                    let mut item = item_json(iid, "closed");
+                    // A single item's labels arrive as bare NAMES — the colours
+                    // only ever come with `with_labels_details`, which is a
+                    // list-endpoint parameter.
+                    item["labels"] = serde_json::json!(["bug", "docs"]);
+                    Json(item)
+                }
+            },
+        );
+
+        let w = writes.clone();
+        let edit_mr = put(
+            move |Path(iid): Path<i64>, Json(body): Json<serde_json::Value>| {
+                let w = w.clone();
+                async move {
+                    w.lock().unwrap().push((
+                        "PUT".into(),
+                        format!("merge_requests/{iid}"),
+                        body.clone(),
+                    ));
+                    let mut item = item_json(iid, "closed");
+                    item["draft"] = serde_json::json!(true);
+                    Json(item)
+                }
+            },
+        );
+
+        let w = writes.clone();
+        let new_issue = post(move |Json(body): Json<serde_json::Value>| {
+            let w = w.clone();
+            async move {
+                w.lock()
+                    .unwrap()
+                    .push(("POST".into(), "issues".into(), body.clone()));
+                let mut item = item_json(123, "opened");
+                item["title"] = body["title"].clone();
+                Json(item)
+            }
+        });
+
+        let app = axum::Router::new()
+            .route("/projects/group%2Fsub%2Fproj/issues/{iid}", edit_issue)
+            .route("/projects/group%2Fsub%2Fproj/merge_requests/{iid}", edit_mr)
+            .route("/projects/group%2Fsub%2Fproj/issues", new_issue)
+            .route(
+                "/detail/projects/group%2Fsub%2Fproj/merge_requests/4",
+                get(|| async {
+                    Json(serde_json::json!({
+                        "iid": 4,
+                        "state": "opened",
+                        "work_in_progress": true,
+                        "source_branch": "fix/timeout",
+                        "target_branch": "main",
+                        "sha": "cafe123",
+                        "diff_refs": { "head_sha": "deadbee" },
+                        "source_project_id": 42,
+                        "target_project_id": 1,
+                        "merge_status": "can_be_merged",
+                        "detailed_merge_status": "mergeable",
+                        "has_conflicts": false,
+                        "changes_count": "3",
+                        "head_pipeline": { "id": 77, "status": "running" },
+                    }))
+                }),
+            )
+            .route(
+                "/detail/projects/42",
+                get(|| async {
+                    Json(serde_json::json!({ "path_with_namespace": "contributor/proj" }))
+                }),
+            )
+            .route(
+                "/detail/projects/group%2Fsub%2Fproj/pipelines/77/jobs",
+                get(|| async {
+                    Json(serde_json::json!([
+                        { "id": 1, "name": "rspec", "stage": "test", "status": "success",
+                          "web_url": "https://gitlab.test/-/jobs/1", "allow_failure": false },
+                        { "id": 2, "name": "lint", "stage": "test", "status": "failed",
+                          "allow_failure": true },
+                        { "id": 3, "name": "deploy", "stage": "deploy", "status": "manual",
+                          "web_url": "data:text/html,x" },
+                        { "id": 4, "name": "build", "stage": "build", "status": "running" },
+                    ]))
+                }),
+            )
+            .route(
+                "/detail/projects/group%2Fsub%2Fproj/merge_requests/4/diffs",
+                get(|Query(q): Query<HashMap<String, String>>| async move {
+                    let mut headers = axum::http::HeaderMap::new();
+                    let page: u32 = q.get("page").and_then(|p| p.parse().ok()).unwrap_or(1);
+                    headers.insert(
+                        "x-next-page",
+                        if page < 2 { "2" } else { "" }.parse().unwrap(),
+                    );
+                    (headers, Json(serde_json::json!([
+                        { "old_path": "src/a.rs", "new_path": "src/a.rs",
+                          "diff": "--- a/src/a.rs\n+++ b/src/a.rs\n@@ -1,2 +1,3 @@\n ctx\n-old\n+new\n+more\n" },
+                        { "old_path": "src/old.rs", "new_path": "src/new.rs",
+                          "renamed_file": true, "diff": "@@ -1 +1 @@\n-a\n+b\n" },
+                        // Binary: GitLab has nothing textual to send.
+                        { "old_path": "logo.png", "new_path": "logo.png",
+                          "new_file": true, "diff": "" },
+                    ])))
+                }),
+            )
+            // An instance older than 15.7: `/diffs` does not exist there.
+            .route(
+                "/legacy/projects/group%2Fsub%2Fproj/merge_requests/4/diffs",
+                get(|| async { axum::http::StatusCode::NOT_FOUND }),
+            )
+            .route(
+                "/legacy/projects/group%2Fsub%2Fproj/merge_requests/4/changes",
+                get(|| async {
+                    let changes: Vec<serde_json::Value> = (0..5)
+                        .map(|i| {
+                            serde_json::json!({
+                                "old_path": format!("f{i}.rs"),
+                                "new_path": format!("f{i}.rs"),
+                                "diff": "@@ -1 +1 @@\n-a\n+b\n",
+                            })
+                        })
+                        .collect();
+                    Json(serde_json::json!({ "changes": changes }))
+                }),
+            )
+            // CI the token cannot read: the merge request still loads.
+            .route(
+                "/blind/projects/group%2Fsub%2Fproj/merge_requests/4",
+                get(|| async {
+                    Json(serde_json::json!({
+                        "iid": 4, "state": "opened",
+                        "source_branch": "x", "target_branch": "main",
+                        "source_project_id": 1, "target_project_id": 1,
+                        "merge_status": "unchecked",
+                        "changes_count": "1000+",
+                        "head_pipeline": { "id": 77 },
+                    }))
+                }),
+            )
+            .route(
+                "/blind/projects/group%2Fsub%2Fproj/pipelines/77/jobs",
+                get(|| async { axum::http::StatusCode::FORBIDDEN }),
+            )
+            // No pipeline at all: the forge ANSWERED, and the answer is that
+            // nothing runs here.
+            .route(
+                "/nopipe/projects/group%2Fsub%2Fproj/merge_requests/4",
+                get(|| async {
+                    Json(serde_json::json!({
+                        "iid": 4, "state": "merged",
+                        "source_branch": "x", "target_branch": "main",
+                        "has_conflicts": true,
+                    }))
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        (format!("http://{addr}"), writes)
+    }
+
+    /// Issues and merge requests are separate collections here, and the change
+    /// is a VERB (`state_event`) rather than a target state — sending GitHub's
+    /// `{"state": "closed"}` would be silently ignored.
+    #[tokio::test]
+    async fn a_state_change_puts_a_verb_on_the_right_collection() {
+        let (api_base, writes) = mock_write_api().await;
+        let auth = auth_for(api_base);
+
+        let issue = set_item_state(
+            &auth,
+            "Group/Sub/Proj",
+            ForgeItemKind::Issue,
+            7,
+            ForgeStateAction::Close,
+        )
+        .await
+        .expect("close issue");
+        assert!(!issue.is_pr && issue.state == "closed");
+        // Bare names still make chips; they just arrive without colours.
+        assert_eq!(
+            issue.labels.iter().map(|l| l.name.as_str()).collect::<Vec<_>>(),
+            vec!["bug", "docs"]
+        );
+        assert!(issue.labels.iter().all(|l| l.color.is_none()));
+
+        let mr = set_item_state(
+            &auth,
+            "group/sub/proj",
+            ForgeItemKind::Change,
+            9,
+            ForgeStateAction::Reopen,
+        )
+        .await
+        .expect("reopen mr");
+        assert!(mr.is_pr && mr.draft, "the draft flag only means anything here");
+
+        let sent = writes.lock().unwrap().clone();
+        assert_eq!(sent[0].0, "PUT", "GitLab edits with PUT, not PATCH");
+        assert_eq!(sent[0].1, "issues/7");
+        assert_eq!(sent[0].2["state_event"], "close");
+        assert_eq!(sent[1].1, "merge_requests/9");
+        assert_eq!(sent[1].2["state_event"], "reopen");
+
+        assert!(set_item_state(&auth, "no-slash", ForgeItemKind::Issue, 7, ForgeStateAction::Close)
+            .await
+            .is_err());
+        assert!(set_item_state(&auth, "group/sub/proj", ForgeItemKind::Issue, 0, ForgeStateAction::Close)
+            .await
+            .is_err());
+    }
+
+    /// Labels go out COMMA-JOINED here, not as a JSON array — GitHub's shape
+    /// would apply no labels at all, silently.
+    #[tokio::test]
+    async fn a_new_issue_comma_joins_its_labels() {
+        let (api_base, writes) = mock_write_api().await;
+        let auth = auth_for(api_base);
+        let row = create_issue(
+            &auth,
+            "Group/Sub/Proj",
+            &ResolvedNewIssue {
+                title: "Login times out".into(),
+                body: Some("steps".into()),
+                labels: vec!["bug".into(), "help wanted".into()],
+            },
+        )
+        .await
+        .expect("issue");
+        assert_eq!((row.number, row.is_pr), (123, false));
+        assert_eq!(row.title, "Login times out");
+        let sent = writes.lock().unwrap().clone();
+        assert_eq!(sent[0].2["labels"], "bug,help wanted");
+        // GitLab calls the body a DESCRIPTION; `body` would be dropped.
+        assert_eq!(sent[0].2["description"], "steps");
+        assert!(sent[0].2.get("body").is_none());
+    }
+
+    /// Branches, the fork's real name, a tri-state merge status and the head
+    /// pipeline's jobs — everything the panel shows that the list row does not.
+    #[tokio::test]
+    async fn a_merge_request_detail_carries_its_branches_and_pipeline() {
+        let (api_base, _) = mock_write_api().await;
+        let auth = auth_for(format!("{api_base}/detail"));
+        let detail = change_detail(&auth, "Group/Sub/Proj", 4).await.expect("detail");
+
+        assert_eq!((detail.base_ref.as_str(), detail.head_ref.as_str()), ("main", "fix/timeout"));
+        // The fork's PATH, resolved with the one extra request a fork costs —
+        // "project 42" would be a worse answer in the one place it is read.
+        assert_eq!(detail.head_repo.as_deref(), Some("contributor/proj"));
+        // `diff_refs.head_sha` is the precise head of the diff under review and
+        // outranks the merge request's own `sha`.
+        assert_eq!(detail.head_sha.as_deref(), Some("deadbee"));
+        assert!(detail.draft, "old instances only send `work_in_progress`");
+        assert_eq!(detail.mergeable, Some(true));
+        assert_eq!(detail.merge_state.as_deref(), Some("mergeable"));
+        assert_eq!(detail.changed_files, Some(3));
+        // GitLab reports neither, and a zero would claim the change is empty.
+        assert_eq!((detail.additions, detail.deletions, detail.commits), (None, None, None));
+
+        assert!(detail.checks.available);
+        let state_of = |name: &str| {
+            detail.checks.checks.iter().find(|c| c.name == name).expect(name).state
+        };
+        assert_eq!(state_of("rspec"), ForgeCheckState::Success);
+        assert_eq!(state_of("lint"), ForgeCheckState::Failure);
+        assert_eq!(state_of("deploy"), ForgeCheckState::Neutral, "manual has no verdict");
+        assert_eq!(state_of("build"), ForgeCheckState::Running);
+        // A red job the pipeline is allowed to fail on is a different fact
+        // from one that blocks the change.
+        assert!(detail.checks.checks.iter().find(|c| c.name == "lint").unwrap().allow_failure);
+        // The stage is the summary — it is what turns a column of job names
+        // into a pipeline that can be read.
+        assert_eq!(
+            detail.checks.checks.iter().find(|c| c.name == "rspec").unwrap().summary.as_deref(),
+            Some("test")
+        );
+        // A `data:` URL the instance made up never reaches an `href`.
+        assert_eq!(
+            detail.checks.checks.iter().find(|c| c.name == "deploy").unwrap().url,
+            None
+        );
+
+        assert!(change_detail(&auth, "no-slash", 4).await.is_err());
+        assert!(change_detail(&auth, "group/sub/proj", 0).await.is_err());
+    }
+
+    /// Three ways the CI section can be right, and they are all different.
+    #[tokio::test]
+    async fn a_pipeline_it_cannot_read_is_unavailable_and_no_pipeline_is_empty() {
+        let (api_base, _) = mock_write_api().await;
+
+        let blind = change_detail(&auth_for(format!("{api_base}/blind")), "group/sub/proj", 4)
+            .await
+            .expect("detail");
+        assert!(!blind.checks.available, "the jobs request was refused");
+        // `unchecked` is "ask again shortly", NOT "cannot be merged".
+        assert_eq!(blind.mergeable, None);
+        // "1000+" is a truncation marker; parsing 1000 off it would print a
+        // count for a change that touches more.
+        assert_eq!(blind.changed_files, None);
+
+        let quiet = change_detail(&auth_for(format!("{api_base}/nopipe")), "group/sub/proj", 4)
+            .await
+            .expect("detail");
+        assert!(quiet.checks.available && quiet.checks.checks.is_empty(),
+                "the forge answered: nothing runs here");
+        // A conflict is a definite no, whatever `merge_status` says.
+        assert_eq!(quiet.mergeable, Some(false));
+        assert_eq!(quiet.state, "merged");
+    }
+
+    /// GitLab counts nothing per file, so the `+`/`−` come off the diff hunk it
+    /// ships — and an empty one is binary content, which has no counts at all.
+    #[tokio::test]
+    async fn changed_files_are_counted_off_the_diff_hunk() {
+        let (api_base, _) = mock_write_api().await;
+        let auth = auth_for(format!("{api_base}/detail"));
+        let page = list_change_files(&auth, "Group/Sub/Proj", 4, 1, 50)
+            .await
+            .expect("files");
+        assert_eq!(page.files.len(), 3);
+        // `+++`/`---` are the file headers; counting them would add one to
+        // each side of every file in the list.
+        assert_eq!((page.files[0].additions, page.files[0].deletions), (Some(2), Some(1)));
+        assert_eq!(page.files[0].status, ForgeFileStatus::Modified);
+        assert_eq!(page.files[1].status, ForgeFileStatus::Renamed);
+        assert_eq!(page.files[1].previous_path.as_deref(), Some("src/old.rs"));
+        assert!(page.files[2].binary);
+        assert_eq!((page.files[2].additions, page.files[2].deletions), (None, None));
+        assert!(page.has_next, "from `x-next-page`, never from the row count");
+    }
+
+    /// An instance older than 15.7 has no `/diffs`. The unpaginated `/changes`
+    /// answers instead and is sliced here, so the panel's footer behaves the
+    /// same either way.
+    #[tokio::test]
+    async fn a_missing_diffs_endpoint_falls_back_to_changes() {
+        let (api_base, _) = mock_write_api().await;
+        let auth = auth_for(format!("{api_base}/legacy"));
+        let first = list_change_files(&auth, "group/sub/proj", 4, 1, 2)
+            .await
+            .expect("page 1");
+        assert_eq!(
+            first.files.iter().map(|f| f.path.as_str()).collect::<Vec<_>>(),
+            vec!["f0.rs", "f1.rs"]
+        );
+        assert!(first.has_next);
+
+        let last = list_change_files(&auth, "group/sub/proj", 4, 3, 2)
+            .await
+            .expect("page 3");
+        assert_eq!(
+            last.files.iter().map(|f| f.path.as_str()).collect::<Vec<_>>(),
+            vec!["f4.rs"]
+        );
+        assert!(!last.has_next);
+
+        // Past the end: an empty page, not a wrap round to the first one.
+        let beyond = list_change_files(&auth, "group/sub/proj", 4, 90_000, 100)
+            .await
+            .expect("page 90000");
+        assert!(beyond.files.is_empty() && !beyond.has_next);
+    }
+
+    /// GitLab's eleven job statuses over the five the strip draws, and the
+    /// tri-state merge status that is the whole reason `mergeable` is optional.
+    #[test]
+    fn job_statuses_and_merge_statuses_fold_into_the_shared_vocabulary() {
+        assert_eq!(job_state("success"), ForgeCheckState::Success);
+        assert_eq!(job_state("failed"), ForgeCheckState::Failure);
+        for running in ["running", "preparing"] {
+            assert_eq!(job_state(running), ForgeCheckState::Running, "{running}");
+        }
+        for queued in ["created", "pending", "scheduled", "waiting_for_resource"] {
+            assert_eq!(job_state(queued), ForgeCheckState::Queued, "{queued}");
+        }
+        for neutral in ["canceled", "skipped", "manual"] {
+            assert_eq!(job_state(neutral), ForgeCheckState::Neutral, "{neutral}");
+        }
+
+        assert_eq!(mergeable(Some("can_be_merged"), false), Some(true));
+        assert_eq!(mergeable(Some("cannot_be_merged"), false), Some(false));
+        // Three ways of saying "the server has not worked it out yet".
+        for unknown in ["unchecked", "checking", "cannot_be_merged_recheck"] {
+            assert_eq!(mergeable(Some(unknown), false), None, "{unknown}");
+        }
+        assert_eq!(mergeable(None, false), None);
+        // A conflict outranks whatever the status says.
+        assert_eq!(mergeable(Some("can_be_merged"), true), Some(false));
+        assert_eq!(mergeable(None, true), Some(false));
+
+        assert_eq!(exact_changes_count("12"), Some(12));
+        assert_eq!(exact_changes_count(" 0 "), Some(0));
+        // Truncated: no count at all beats a count that is wrong.
+        assert_eq!(exact_changes_count("1000+"), None);
+        assert_eq!(exact_changes_count(""), None);
+        assert_eq!(exact_changes_count("many"), None);
+    }
 }

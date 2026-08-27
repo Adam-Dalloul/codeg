@@ -1361,6 +1361,26 @@ pub fn build_router(
             post(handlers::forge::forge_list_comments),
         )
         .route(
+            "/forge_create_comment",
+            post(handlers::forge::forge_create_comment),
+        )
+        .route(
+            "/forge_set_item_state",
+            post(handlers::forge::forge_set_item_state),
+        )
+        .route(
+            "/forge_create_issue",
+            post(handlers::forge::forge_create_issue),
+        )
+        .route(
+            "/forge_change_detail",
+            post(handlers::forge::forge_change_detail),
+        )
+        .route(
+            "/forge_change_files",
+            post(handlers::forge::forge_change_files),
+        )
+        .route(
             "/work_task_create_from_forge",
             post(handlers::forge::work_task_create_from_forge),
         )
