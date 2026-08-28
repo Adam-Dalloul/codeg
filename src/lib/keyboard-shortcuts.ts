@@ -493,14 +493,18 @@ function matchesDigitRowCode(
   // Unshifted only: with Shift the digit row yields a character that belongs to
   // someone else — ")" on US, "=" on QWERTZ — and claiming it by position makes
   // one press satisfy two bindings.
-  //
-  // This narrows the positional fallback rather than closing it: the unshifted
-  // half remains, because AZERTY puts `-` on Digit6 and `_` on Digit8, so
-  // `Ctrl+-` matches both `mod+-` and `mod+6` while `shortcutsConflict` cannot
-  // see it (the recorder serialises from `key`, this matches by `code`, and the
-  // synthetic event only rebuilds the `key` form). Latent while nothing binds
-  // digits 1-9; any `Digit<N>` positional fallback has this shape.
   if (event.shiftKey) return false
+  // Same reason, for the unshifted half: AZERTY puts `-` on Digit6 and `_` on
+  // Digit8, so a bare positional match would let one `Ctrl+-` press satisfy
+  // both `mod+-` (by key) and `mod+6` (by code) — and `shortcutsConflict`
+  // cannot warn about it, because the recorder serialises from `key` while
+  // this matches by `code`. The zoom listener preventDefaults but does not
+  // stopPropagation, so both handlers really would run. Decline the position
+  // whenever the key typed a character some binding owns by name; `mod+6` is
+  // still reachable there as Shift + the digit row, which the surplus-Shift
+  // tolerance for digits in `matchShortcutEvent` already accepts.
+  const typed = eventKeyToken(event)
+  if (typed !== null && typed in PHYSICAL_KEY_SIBLINGS) return false
   return event.code === `Digit${boundKey}`
 }
 

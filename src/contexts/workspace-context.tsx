@@ -2158,6 +2158,9 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
           if (!confirmed) return prev
         }
 
+        // `pushClosedTab` keys on the tab id and moves an existing entry to the
+        // top, so recording from inside this updater survives React invoking it
+        // more than once (StrictMode, or a discarded render replayed).
         const closed = snapshotFileTab(tab)
         if (closed) pushClosedTab(closed)
 
@@ -2208,6 +2211,10 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
         }
 
         for (const closing of closingTabs) {
+          // `pushClosedTab` is idempotent per tab id, which is what makes this
+          // safe inside an updater React may invoke more than once.
+          const closed = snapshotFileTab(closing)
+          if (closed) pushClosedTab(closed)
           inFlightLoadsRef.current.delete(closing.id)
         }
 

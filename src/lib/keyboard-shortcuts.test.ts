@@ -359,6 +359,44 @@ describe("digit bindings on a shifted digit row", () => {
     expect(resolveWindowZoomAction(event, defaultZoom)).toBe("in")
   })
 
+  // AZERTY puts `-` on Digit6 and `_` on Digit8. Binding the digits 1-9 to tab
+  // jumps put those two physical keys in reach of the positional fallback, so
+  // one Ctrl+- press would have matched `mod+-` by key AND `mod+6` by code —
+  // and the zoom listener preventDefaults without stopping propagation, so the
+  // window would zoom out *and* the app would jump to tab 6. `shortcutsConflict`
+  // cannot see the pair, so Settings shows no warning either.
+  it("leaves the AZERTY minus/underscore keys to the zoom bindings", () => {
+    const minus = keyEvent("-", { ctrlKey: true, code: "Digit6" })
+    expect(matchShortcutEvent(minus, "mod+6")).toBe(false)
+    expect(numberedTabIndexFromEvent(minus, DEFAULT_SHORTCUTS)).toBeNull()
+    expect(resolveWindowZoomAction(minus, defaultZoom)).toBe("out")
+
+    const underscore = keyEvent("_", { ctrlKey: true, code: "Digit8" })
+    expect(matchShortcutEvent(underscore, "mod+8")).toBe(false)
+    expect(numberedTabIndexFromEvent(underscore, DEFAULT_SHORTCUTS)).toBeNull()
+  })
+
+  it("still reaches tab 6 from the AZERTY spelling that types the digit", () => {
+    // Shift is how you type "6" there, and the surplus-Shift tolerance for
+    // digits already accepts it — so declining the position costs nothing.
+    expect(
+      numberedTabIndexFromEvent(
+        keyEvent("6", { ctrlKey: true, shiftKey: true, code: "Digit6" }),
+        DEFAULT_SHORTCUTS
+      )
+    ).toBe(5)
+  })
+
+  it("keeps the positional fallback for AZERTY digits nobody else claims", () => {
+    // Unshifted Digit1 types "&", which no binding owns by name.
+    expect(
+      numberedTabIndexFromEvent(
+        keyEvent("&", { ctrlKey: true, code: "Digit1" }),
+        DEFAULT_SHORTCUTS
+      )
+    ).toBe(0)
+  })
+
   it("only accepts the bound digit's own physical key", () => {
     expect(
       matchShortcutEvent(

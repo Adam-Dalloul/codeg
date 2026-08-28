@@ -47,6 +47,16 @@ describe("tab close/navigation shortcuts live in the always-mounted controller",
     expect(controllerSource).toMatch(/closeAllFileTabs\(/)
   })
 
+  // Ctrl+<digit> is a terminal control code (Ctrl+6 is vim's alternate-file
+  // Ctrl+^), so the numbered jump has to decline inside the terminal region —
+  // the same carve-out the zoom listener makes for Ctrl+-/Ctrl+=. Cmd+<digit>
+  // carries no shell meaning and is deliberately NOT excluded.
+  it("leaves Ctrl+<digit> to a focused terminal", () => {
+    expect(controllerSource).toMatch(
+      /data-terminal-panel-region="true"[\s\S]*?numberedIndex|numberedIndex[\s\S]{0,600}?data-terminal-panel-region="true"/
+    )
+  })
+
   it("removes the keydown shortcut listeners from both tab strips", () => {
     // The strips are conditionally mounted (desktop only; the file strip only
     // when a file tab is open), so they must not own any global shortcut.
