@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState, type ReactNode } from "react"
 import { Check, Copy, Loader2 } from "lucide-react"
 import { useLocale, useTranslations } from "next-intl"
 import type {
+  AgentType,
   ConversationStatus,
   DbConversationSummary,
   SessionStats,
@@ -54,6 +55,42 @@ function isKnownStatus(value: string): value is ConversationStatus {
   return (STATUS_ORDER as string[]).includes(value)
 }
 
+/**
+ * The agent + status chips that sit under a conversation's title. Shared with
+ * the sidebar's hover bubble (`sidebar-conversation-hover-details.tsx`) so the
+ * two surfaces stay identical — including the a11y detail below, which is easy
+ * to lose in a copy.
+ */
+export function SessionIdentityChips({
+  agentType,
+  status,
+}: {
+  agentType: AgentType
+  status: string
+}) {
+  const tStatus = useTranslations("Folder.statusLabels")
+  return (
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+      <span className="inline-flex items-center gap-1.5">
+        {/* Decorative: the visible label already names the agent, and the icon
+            SVG carries its own <title>, so hide it from the a11y tree to avoid
+            a duplicate reading. */}
+        <span aria-hidden="true" className="inline-flex">
+          <AgentIcon agentType={agentType} className="h-3.5 w-3.5" />
+        </span>
+        {getAgentLabel(agentType)}
+      </span>
+      <span className="inline-flex items-center gap-1.5">
+        <ConversationStatusDot
+          status={isKnownStatus(status) ? status : null}
+          size="sm"
+        />
+        {isKnownStatus(status) ? tStatus(status) : status}
+      </span>
+    </div>
+  )
+}
+
 function trimZero(value: string): string {
   return value.replace(/\.0$/, "")
 }
@@ -94,21 +131,28 @@ function resolveSessionDurationMs(
  * the cell shrink below its content so a long value wraps in place instead of
  * widening the grid track. Rendered as a `<div>` grouping `<dt>`/`<dd>`, which
  * HTML permits as a direct child of `<dl>`.
+ *
+ * Exported so the sidebar's hover bubble
+ * (`sidebar-conversation-hover-details.tsx`) renders its fields in the exact
+ * same shape as this view rather than growing a near-copy.
  */
-function InfoItem({
+export function InfoItem({
   label,
   children,
   className,
   valueClassName,
 }: {
-  label: string
+  /** Usually plain text; a node so a caller can hang a badge off the label. */
+  label: ReactNode
   children: ReactNode
   className?: string
   valueClassName?: string
 }) {
   return (
     <div className={cn("min-w-0 space-y-0.5", className)}>
-      <dt className="text-xs text-muted-foreground">{label}</dt>
+      <dt className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
+        {label}
+      </dt>
       <dd className={cn("min-w-0 leading-snug", valueClassName)}>{children}</dd>
     </div>
   )
@@ -172,7 +216,6 @@ export function SessionDetailsContent({
   active = true,
 }: SessionDetailsContentProps) {
   const t = useTranslations("Folder.sessionDetails")
-  const tStatus = useTranslations("Folder.statusLabels")
   const locale = useLocale()
 
   // The only mirrored state is the outcome of the sidebar fetch, held as one
@@ -298,29 +341,10 @@ export function SessionDetailsContent({
         <p className="wrap-anywhere text-base font-medium leading-snug">
           {formatConversationTitle(summary.title) || t("untitled")}
         </p>
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
-          <span className="inline-flex items-center gap-1.5">
-            {/* Decorative: the visible label already names the agent, and
-                the icon SVG carries its own <title>, so hide it from the
-                a11y tree to avoid a duplicate reading. */}
-            <span aria-hidden="true" className="inline-flex">
-              <AgentIcon
-                agentType={summary.agent_type}
-                className="h-3.5 w-3.5"
-              />
-            </span>
-            {getAgentLabel(summary.agent_type)}
-          </span>
-          <span className="inline-flex items-center gap-1.5">
-            <ConversationStatusDot
-              status={isKnownStatus(summary.status) ? summary.status : null}
-              size="sm"
-            />
-            {isKnownStatus(summary.status)
-              ? tStatus(summary.status)
-              : summary.status}
-          </span>
-        </div>
+        <SessionIdentityChips
+          agentType={summary.agent_type}
+          status={summary.status}
+        />
       </div>
 
       {/* Identifiers, packed two-up to keep the view short. */}
