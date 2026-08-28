@@ -1,7 +1,7 @@
 "use client"
 
-import { useMemo, type ReactNode } from "react"
-import { useLocale, useTranslations } from "next-intl"
+import type { ReactNode } from "react"
+import { useTranslations } from "next-intl"
 import type { DbConversationSummary } from "@/lib/types"
 import { formatConversationTitle } from "@/lib/conversation-title"
 import { cn } from "@/lib/utils"
@@ -20,10 +20,6 @@ interface SidebarConversationHoverDetailsProps {
  * document the bidi algorithm treats a leading `/` as neutral and moves it to
  * the end, rendering `/Users/me/codeg` as `Users/me/codeg/`. The folder picker
  * gives `folder.path` the same treatment (`shared/folder-select.tsx`).
- *
- * Timestamps deliberately stay unpinned: they come out of
- * `Intl.DateTimeFormat` in the active locale, so under Arabic they are Arabic
- * text and should follow the UI direction.
  */
 function LtrValue({
   children,
@@ -67,7 +63,6 @@ export function SidebarConversationHoverDetails({
 }: SidebarConversationHoverDetailsProps) {
   const t = useTranslations("Folder.sessionDetails")
   const tSidebar = useTranslations("Folder.sidebar")
-  const locale = useLocale()
 
   const folderId = conversation.folder_id
   // `allFolders` rather than `folders`: a conversation can live in a folder the
@@ -80,21 +75,6 @@ export function SidebarConversationHoverDetails({
   // The folder's live HEAD, kept fresh by the workspace branch poll. Only used
   // as a fallback — see below.
   const liveBranch = useAppWorkspaceStore((s) => s.branches.get(folderId))
-
-  // Short date+time: this is a glanceable bubble, not the details dialog (which
-  // uses `dateStyle: "medium"`).
-  const dateFormatter = useMemo(
-    () =>
-      new Intl.DateTimeFormat(locale, {
-        dateStyle: "short",
-        timeStyle: "short",
-      }),
-    [locale]
-  )
-  const formatDate = (iso: string): string => {
-    const date = new Date(iso)
-    return Number.isNaN(date.getTime()) ? iso : dateFormatter.format(date)
-  }
 
   const none = t("none")
   const isWorktree = folder != null && folder.parent_id != null
@@ -133,7 +113,9 @@ export function SidebarConversationHoverDetails({
         />
       </div>
 
-      <dl className="grid min-w-0 grid-cols-2 gap-x-3 gap-y-2.5 border-t pt-3">
+      {/* A plain stack rather than a grid: every field here is a path, a branch
+          or a model id — long, wrapping values that each want the full width. */}
+      <dl className="min-w-0 space-y-2.5 border-t pt-3">
         {/* The worktree badge annotates the FIELD, so it rides on the label
             rather than on the value — a worktree directory name is long enough
             that a trailing badge would routinely wrap onto a line of its own. */}
@@ -151,7 +133,6 @@ export function SidebarConversationHoverDetails({
               )}
             </>
           }
-          className="col-span-2"
           valueClassName="wrap-anywhere"
         >
           {folder ? (
@@ -160,34 +141,25 @@ export function SidebarConversationHoverDetails({
             none
           )}
         </InfoItem>
-        <InfoItem label={t("folderPath")} className="col-span-2">
-          <LtrValue>{folder?.path || none}</LtrValue>
-        </InfoItem>
-        <InfoItem label={t("gitBranch")} className="col-span-2">
+        <InfoItem label={t("gitBranch")}>
           <LtrValue>{branch || none}</LtrValue>
+        </InfoItem>
+        <InfoItem label={t("folderPath")}>
+          <LtrValue>{folder?.path || none}</LtrValue>
         </InfoItem>
         {/* `model` is empty for most live sessions (the column is only filled
             for imported ones), so render the row only when there is something
             to show instead of a shrug in every bubble. */}
         {model && (
-          <InfoItem label={t("model")} className="col-span-2">
+          <InfoItem label={t("model")}>
             {/* Sans, matching how the details dialog renders the model. */}
             <LtrValue className="font-sans">{model}</LtrValue>
           </InfoItem>
         )}
-        <InfoItem label={t("createdAt")} valueClassName="text-xs">
-          {formatDate(conversation.created_at)}
-        </InfoItem>
-        <InfoItem label={t("updatedAt")} valueClassName="text-xs">
-          {formatDate(conversation.updated_at)}
-        </InfoItem>
         {/* Re-parented out of a removed worktree: the path above is where the
             conversation lives NOW, so surface where it originally ran. */}
         {conversation.origin_cwd && (
-          <InfoItem
-            label={tSidebar("worktreeRemovedBadge")}
-            className="col-span-2"
-          >
+          <InfoItem label={tSidebar("worktreeRemovedBadge")}>
             <LtrValue>{conversation.origin_cwd}</LtrValue>
           </InfoItem>
         )}

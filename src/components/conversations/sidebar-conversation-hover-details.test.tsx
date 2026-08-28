@@ -137,9 +137,11 @@ describe("SidebarConversationHoverDetails", () => {
     const ltr = Array.from(container.querySelectorAll('dd [dir="ltr"]')).map(
       (el) => el.textContent
     )
+    // Document order, so this doubles as the pin on the field order: branch
+    // before path.
     expect(ltr).toEqual([
-      "/Users/dev/projects/codeg",
       "feature/x",
+      "/Users/dev/projects/codeg",
       "claude-opus-5",
     ])
   })
@@ -205,6 +207,20 @@ describe("SidebarConversationHoverDetails", () => {
     renderBubble(conv({ git_branch: null }))
 
     expect(fieldValue("Git Branch")).toBe("—")
+  })
+
+  // The bubble answers "where does this session live", not "when did it run".
+  // The timestamps are still in the right-click Session Details dialog.
+  it("does not show the created/updated timestamps", () => {
+    seed()
+    renderBubble(conv())
+
+    expect(screen.queryByText("Created")).toBeNull()
+    expect(screen.queryByText("Updated")).toBeNull()
+    // And no formatted timestamp under any label. Matched on a clock time
+    // rather than on the date text, which `dateStyle: "short"` renders in the
+    // runner's own timezone (and with a two-digit year).
+    expect(document.body.textContent).not.toMatch(/\d{1,2}:\d{2}/)
   })
 
   it("omits the model row when no model is recorded", () => {
