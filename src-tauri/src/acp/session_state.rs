@@ -945,6 +945,22 @@ impl SessionState {
                 // call (no concluding text) → empty, which CLEARS the field so a
                 // prior turn's text can't leak as this turn's result; the LLM
                 // reads the full result by opening the child session instead.
+                //
+                // Cleared FIRST, because a turn can end with no live message at
+                // all — cancelled before it produced anything, or one whose only
+                // chunk was an empty text delta (dropped by
+                // `append_text_delta`). Leaving the field alone there would
+                // serve the PREVIOUS turn's answer as this turn's result.
+                //
+                // Guarded on the turn actually being open, because
+                // `TurnComplete` has three emitters (stop-reason message,
+                // prompt response, and the cancel path — which deliberately
+                // does not wait for the agent, so its response can bring a
+                // second one). A repeat must not wipe the text the first one
+                // captured.
+                if self.turn_in_flight || self.live_message.is_some() {
+                    self.last_assistant_text = None;
+                }
                 if let Some(live) = self.live_message.as_ref() {
                     let after_last_tool_call = live
                         .content
@@ -968,11 +984,9 @@ impl SessionState {
                         })
                         .collect::<Vec<&str>>()
                         .join("");
-                    self.last_assistant_text = if assembled.trim().is_empty() {
-                        None
-                    } else {
-                        Some(assembled)
-                    };
+                    if !assembled.trim().is_empty() {
+                        self.last_assistant_text = Some(assembled);
+                    }
                 }
                 self.live_message = None;
                 self.active_tool_calls.clear();
@@ -3370,6 +3384,62 @@ mod tests {
             agent_type: "codex".into(),
         });
         assert_eq!(s.last_assistant_text, None);
+    }
+
+    /// A turn that never opened a live message has no text of its own either.
+    /// An agent whose only output was an empty text chunk reaches exactly that
+    /// state (`append_text_delta` drops it), and the turn still ends on
+    /// `end_turn` — so without clearing, `get_delegation_status` would hand the
+    /// PREVIOUS turn's answer back as this turn's result.
+    #[test]
+    fn turn_complete_clears_stale_text_when_the_turn_produced_nothing() {
+        let mut s = fresh_state();
+        s.status = ConnectionStatus::Prompting;
+        s.turn_in_flight = true;
+        s.last_assistant_text = Some("stale text from an earlier turn".into());
+        s.apply_event(&AcpEvent::ContentDelta {
+            text: String::new(),
+            parent_tool_use_id: None,
+        });
+        assert!(s.live_message.is_none(), "empty chunk opens no live message");
+        s.apply_event(&AcpEvent::TurnComplete {
+            session_id: "ext".into(),
+            stop_reason: "end_turn".into(),
+            agent_type: "codex".into(),
+        });
+        assert_eq!(s.last_assistant_text, None);
+    }
+
+    /// `TurnComplete` is emitted from three places, and the cancel path does
+    /// not wait for the agent — so a second one can land on an already-settled
+    /// turn. It must not wipe the text the first one captured.
+    #[test]
+    fn a_repeat_turn_complete_keeps_the_captured_text() {
+        let mut s = fresh_state();
+        s.status = ConnectionStatus::Prompting;
+        s.turn_in_flight = true;
+        s.live_message = Some(LiveMessage {
+            id: "m1".into(),
+            role: MessageRole::Assistant,
+            content: vec![LiveContentBlock::Text {
+                text: "the answer".into(),
+                parent_tool_use_id: None,
+            }],
+            started_at: Utc::now(),
+        });
+        let complete = AcpEvent::TurnComplete {
+            session_id: "ext".into(),
+            stop_reason: "cancelled".into(),
+            agent_type: "codex".into(),
+        };
+        s.apply_event(&complete);
+        assert_eq!(s.last_assistant_text.as_deref(), Some("the answer"));
+        s.apply_event(&complete);
+        assert_eq!(
+            s.last_assistant_text.as_deref(),
+            Some("the answer"),
+            "the agent's late response must not erase the captured result"
+        );
     }
 
     #[test]
