@@ -142,11 +142,13 @@ export function WorkspaceChromeController() {
 
       const numberedIndex = numberedTabIndexFromEvent(e, shortcuts)
       if (numberedIndex !== null) {
-        // Ctrl+<digit> is a control code inside a terminal — Ctrl+6 is the
-        // Ctrl+^ that switches vim's alternate file — so decline there, the
-        // same way the zoom listener declines Ctrl+-/Ctrl+= (see
-        // appearance-provider). Cmd+<digit> carries no shell meaning, so on
-        // macOS the jump keeps working over a focused terminal.
+        // A Ctrl chord belongs to a focused terminal — with the defaults it is
+        // a control code, and Ctrl+6 is the Ctrl+^ that switches vim's
+        // alternate file — so decline there, the same way the zoom listener
+        // declines Ctrl+-/Ctrl+= (see appearance-provider). This covers a
+        // remapped Ctrl binding too, which is the behaviour we want. Cmd
+        // carries no shell meaning, so on macOS the jump keeps working over a
+        // focused terminal.
         if (
           e.ctrlKey &&
           !e.metaKey &&

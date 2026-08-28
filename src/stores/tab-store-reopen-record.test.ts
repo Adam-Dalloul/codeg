@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import {
   peekClosedTab,
+  popClosedTab,
   resetClosedTabStackForTests,
 } from "@/lib/closed-tab-stack"
 import {
@@ -94,5 +95,79 @@ describe("what reopen-last-closed-tab is allowed to remember", () => {
     useTabStore.getState().closeTabsByFolder(1)
     expect(useTabStore.getState().rawTabs).toHaveLength(0)
     expect(peekClosedTab()).toBeNull()
+  })
+})
+
+// Declining to record only covers a tab that is still open. A conversation
+// closed BEFORE it was deleted is already on the stack, so the delete has to
+// reach back and remove it. `applyConversationRemove` /`applyFolderRemove` are
+// the funnels: the backend broadcasts Deleted to every client including the one
+// that asked, so they cover a local delete, another window's, and a bulk delete
+// where only some of the requests succeeded.
+describe("what a deletion retracts from the reopen stack", () => {
+  it("forgets a conversation deleted after its tab was closed", () => {
+    useTabStore.getState().closeTab("conv-2")
+    expect(peekClosedTab()).toMatchObject({ conversationId: 8 })
+
+    useAppWorkspaceStore.getState().applyConversationRemove(8)
+    expect(peekClosedTab()).toBeNull()
+  })
+
+  it("forgets a conversation deleted from another window", () => {
+    // No tab was ever closed here for it — the entry came from an earlier close
+    // in this session, and the delete arrives as a broadcast.
+    useTabStore.getState().closeTab("conv-1")
+    useTabStore.getState().closeTab("conv-2")
+    useAppWorkspaceStore.getState().applyConversationRemove(7)
+
+    expect(popClosedTab()).toMatchObject({ conversationId: 8 })
+    expect(popClosedTab()).toBeNull()
+  })
+
+  it("leaves other conversations and drafts alone", () => {
+    useTabStore.setState({
+      rawTabs: [
+        ...useTabStore.getState().rawTabs,
+        {
+          id: "draft-1",
+          kind: "conversation",
+          folderId: 1,
+          conversationId: null,
+          agentType: "claude_code",
+          title: "draft",
+          isPinned: false,
+        },
+      ],
+    })
+    useTabStore.getState().closeTab("draft-1")
+    useTabStore.getState().closeTab("conv-1")
+    useAppWorkspaceStore.getState().applyConversationRemove(8)
+
+    expect(popClosedTab()).toMatchObject({ conversationId: 7 })
+    expect(popClosedTab()).toMatchObject({ conversationId: null })
+    expect(popClosedTab()).toBeNull()
+  })
+
+  it("forgets a removed folder's history, not its neighbours'", () => {
+    useTabStore.setState({
+      rawTabs: [
+        ...useTabStore.getState().rawTabs,
+        {
+          id: "conv-3",
+          kind: "conversation",
+          folderId: 2,
+          conversationId: 9,
+          agentType: "claude_code",
+          title: "other folder",
+          isPinned: false,
+        },
+      ],
+    })
+    useTabStore.getState().closeTab("conv-2")
+    useTabStore.getState().closeTab("conv-3")
+    useAppWorkspaceStore.getState().applyFolderRemove(1)
+
+    expect(popClosedTab()).toMatchObject({ folderId: 2, conversationId: 9 })
+    expect(popClosedTab()).toBeNull()
   })
 })

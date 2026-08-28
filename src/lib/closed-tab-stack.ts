@@ -51,6 +51,25 @@ export function popClosedTab(): ClosedWorkspaceTab | null {
   return stack.pop() ?? null
 }
 
+/**
+ * Forget a conversation that no longer exists. Declining to record at close
+ * time only covers a tab that was still open — a conversation closed earlier is
+ * already on the stack, and deleting it then (from this window or another) has
+ * to reach back and remove it. Drafts never match: they carry a null
+ * `conversationId`.
+ */
+export function forgetClosedConversation(conversationId: number): void {
+  stack = stack.filter(
+    (entry) =>
+      entry.kind !== "conversation" || entry.conversationId !== conversationId
+  )
+}
+
+/** Forget everything recorded for a folder that no longer exists. */
+export function forgetClosedTabsInFolder(folderId: number): void {
+  stack = stack.filter((entry) => entry.folderId !== folderId)
+}
+
 export function peekClosedTab(): ClosedWorkspaceTab | null {
   return stack[stack.length - 1] ?? null
 }

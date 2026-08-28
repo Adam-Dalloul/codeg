@@ -12,6 +12,10 @@ import {
   reorderFolders as apiReorderFolders,
 } from "@/lib/api"
 import { toErrorMessage } from "@/lib/app-error"
+import {
+  forgetClosedConversation,
+  forgetClosedTabsInFolder,
+} from "@/lib/closed-tab-stack"
 import type {
   AgentStats,
   AgentType,
@@ -310,6 +314,14 @@ export const useAppWorkspaceStore = create<AppWorkspaceStoreState>()(
     // Remove a conversation by id. Idempotent: an unknown id leaves state
     // untouched (no re-render; keeps `stats` stable).
     applyConversationRemove: (id) => {
+      // The single funnel for "this conversation is gone": the backend
+      // broadcasts Deleted to every client including the one that asked, so
+      // this covers a local delete, another window's, and a partially-failed
+      // bulk delete (each success emits on its own). Reaching into the
+      // closed-tab stack here is what stops `reopen_last_closed_tab` from
+      // restoring a conversation that was closed BEFORE it was deleted — the
+      // close-time opt-out only sees tabs that are still open.
+      forgetClosedConversation(id)
       deletedIds.add(id)
       if (deletedIds.size > DELETED_TOMBSTONE_CAP) {
         // FIFO eviction — Set preserves insertion order.
@@ -383,6 +395,10 @@ export const useAppWorkspaceStore = create<AppWorkspaceStoreState>()(
     },
 
     applyFolderRemove: (folderId) => {
+      // Same reasoning as `applyConversationRemove`: tabs closed while the
+      // folder still existed are already on the reopen stack, and their cwd is
+      // about to stop existing.
+      forgetClosedTabsInFolder(folderId)
       rememberRemovedFolder(folderId)
       const { folders, allFolders, branches, gitHeads } = get()
       const patch: Partial<AppWorkspaceStoreState> = {}
