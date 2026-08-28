@@ -728,14 +728,6 @@ export function MessageListView({
 
   const { threadItems, nonStreamingAdapted } = useMemo(() => {
     const allTurns = timelineTurns.map((item) => item.turn)
-    const inFlightUserTurnId = detail?.in_flight_user_turn_id ?? null
-    const inFlightUserTurnIndex =
-      inFlightUserTurnId === null
-        ? -1
-        : timelineTurns.findIndex(
-            (item) =>
-              item.turn.role === "user" && item.turn.id === inFlightUserTurnId
-          )
     const streamingIndices = new Set<number>()
     const inProgressToolCallIdsByIndex = new Map<number, Set<string>>()
     timelineTurns.forEach((item, i) => {
@@ -803,12 +795,13 @@ export function MessageListView({
         kind: "turn" as const,
         group,
         phase,
-        // Persisted does not always mean completed: passive viewers can read
-        // transcript blocks written after the backend's authoritative
-        // in-flight user-turn marker without owning the live stream.
+        // Persisted does not always mean completed: a passive viewer reads
+        // transcript blocks the agent is still writing. The store flags exactly
+        // those DB records (`isInFlightRound`); reading the raw
+        // `in_flight_user_turn_id` here instead would also catch locally
+        // promoted — i.e. finished — replies, which the marker outlives.
         isResponseComplete:
-          phase === "persisted" &&
-          (inFlightUserTurnIndex < 0 || i <= inFlightUserTurnIndex),
+          phase === "persisted" && !timelineTurns[i].isInFlightRound,
         showStats: false,
         isRoleTransition: false,
         previousUserIndex: null,
@@ -873,7 +866,6 @@ export function MessageListView({
     turnAdapter,
     groupCache,
     mergedRunCache,
-    detail?.in_flight_user_turn_id,
   ])
 
   const historicalPlanEntries = useMemo(
