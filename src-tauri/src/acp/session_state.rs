@@ -1437,6 +1437,21 @@ impl SessionState {
     }
 
     fn append_text_delta(&mut self, text: &str, parent_tool_use_id: Option<&str>) {
+        // An empty text delta has nothing to render, so the only thing it could
+        // contribute is a block boundary — and the frontend reducer never
+        // creates one (it drops an empty `CONTENT_DELTA` outright, before it
+        // would even open a live message). Dropping it here too is what keeps
+        // the two block lists identical; otherwise a snapshot-hydrated client
+        // carries an empty `Text` block that the streaming client never had,
+        // and prose either side of it looks like two separate runs.
+        //
+        // Empty THINKING deltas are deliberately NOT dropped: there the empty
+        // block IS the signal (it renders the "Thinking…" indicator before any
+        // reasoning text arrives, and newer Claude models redact the text
+        // entirely while still emitting the block).
+        if text.is_empty() {
+            return;
+        }
         let live = self.ensure_live_message();
         // Merge only into a trailing block of the same kind AND the same
         // subagent attribution — main text → subagent text → main text must
@@ -2692,6 +2707,49 @@ mod tests {
             }
             other => panic!("expected parented text block, got {other:?}"),
         }
+    }
+
+    /// The frontend reducer drops an empty `CONTENT_DELTA` outright, so a
+    /// streaming client never sees an empty `Text` block. If this side kept
+    /// one, a snapshot-hydrated client would get an extra block the streaming
+    /// one lacks — and prose either side of it would render as two runs
+    /// instead of one (#494 on the snapshot path only).
+    #[test]
+    fn empty_text_delta_adds_no_block_and_never_splits_a_run() {
+        let mut s = fresh_state();
+        s.status = ConnectionStatus::Prompting;
+        s.apply_event(&AcpEvent::Thinking {
+            text: "before".into(),
+            parent_tool_use_id: None,
+        });
+        s.apply_event(&AcpEvent::ContentDelta {
+            text: String::new(),
+            parent_tool_use_id: None,
+        });
+        s.apply_event(&AcpEvent::Thinking {
+            text: " after".into(),
+            parent_tool_use_id: None,
+        });
+        let live = s.live_message.as_ref().expect("live message");
+        assert_eq!(live.content.len(), 1, "no empty Text block was inserted");
+        assert!(
+            matches!(&live.content[0], LiveContentBlock::Thinking { text, .. } if text == "before after"),
+            "the thinking run stayed one block, got {:?}",
+            live.content[0]
+        );
+    }
+
+    /// …and it must not open a live message either — same as the reducer,
+    /// which returns before `ensureLiveMessage`.
+    #[test]
+    fn empty_text_delta_does_not_open_a_live_message() {
+        let mut s = fresh_state();
+        s.status = ConnectionStatus::Prompting;
+        s.apply_event(&AcpEvent::ContentDelta {
+            text: String::new(),
+            parent_tool_use_id: None,
+        });
+        assert!(s.live_message.is_none());
     }
 
     #[test]

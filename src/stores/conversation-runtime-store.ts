@@ -926,9 +926,15 @@ function mainProseContinuations(
         bridgedBySubAgent = true
         continue
       }
-      // Phase 2 drops an empty main-thread text block, so it is neither a
-      // boundary nor a bridge here.
-      if (block.type === "text" && block.text.length === 0) continue
+      // Phase 2 drops an empty main-thread text block, so it renders nothing
+      // and cannot be a boundary — it bridges, like a sub-agent block. Neither
+      // producer of `content` should emit one (the reducer drops empty
+      // `CONTENT_DELTA`, and so does `append_text_delta`), but a snapshot from
+      // a build that predates that symmetry would otherwise re-split a run.
+      if (block.type === "text" && block.text.length === 0) {
+        bridgedBySubAgent = true
+        continue
+      }
       if (run === block.type && bridgedBySubAgent) continues.add(block)
       run = block.type
       bridgedBySubAgent = false

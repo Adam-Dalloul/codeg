@@ -2064,6 +2064,23 @@ describe("buildStreamingTurnsFromLiveMessage — subagent transcript routing (cl
     ).toEqual(["before", "after"])
   })
 
+  it("does not let a stale snapshot's empty text block re-split a run", () => {
+    // An empty text block renders nothing (Phase 2 drops it), so it is not a
+    // boundary. Neither producer emits one any more, but a snapshot taken by
+    // an older backend can still carry it.
+    const result = build([
+      { type: "thinking", text: "before" },
+      { type: "text", text: "" },
+      { type: "thinking", text: " after" },
+    ])
+    expect(
+      result.turns
+        .flatMap((t) => t.blocks)
+        .filter((b) => b.type === "thinking")
+        .map((b) => b.text)
+    ).toEqual(["before after"])
+  })
+
   it("keeps a boundary the PLAN_UPDATE reducer relocated away", () => {
     // `thinking → plan(v1) → thinking → plan(v2)` reaches the builder as two
     // adjacent thinking blocks: PLAN_UPDATE keeps one plan and moves it to the
