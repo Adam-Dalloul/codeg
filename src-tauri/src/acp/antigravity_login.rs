@@ -292,13 +292,15 @@ async fn claim_slot() -> Result<u64, AcpError> {
 /// Publish a finished handshake, unless a newer `start` has taken over.
 ///
 /// `Err` hands the attempt back so the caller can reap the child it just
-/// spawned — the newer attempt is the one the user is looking at.
-async fn install(generation: u64, pending: Pending) -> Result<(), Pending> {
+/// spawned — the newer attempt is the one the user is looking at. Boxed on both
+/// sides: `Waiting` stores it boxed anyway, and an unboxed `Pending` would make
+/// every `Ok` of this `Result` carry the several hundred bytes of the error.
+async fn install(generation: u64, pending: Box<Pending>) -> Result<(), Box<Pending>> {
     let mut slot = pending_slot().lock().await;
     if slot.generation != generation {
         return Err(pending);
     }
-    slot.state = SlotState::Waiting(Box::new(pending));
+    slot.state = SlotState::Waiting(pending);
     Ok(())
 }
 
@@ -535,7 +537,7 @@ async fn start_claimed(
 
     let handle = uuid::Uuid::new_v4().to_string();
     let credential_path = credential_path_for(runtime_env, method_id);
-    let pending = Pending {
+    let pending = Box::new(Pending {
         handle: handle.clone(),
         method_id: method_id.to_string(),
         redirect_uri: redirect_uri.clone(),
@@ -546,7 +548,7 @@ async fn start_claimed(
         responses,
         stderr: tail,
         started: Instant::now(),
-    };
+    });
     // The spawn and handshake above ran OUTSIDE the lock, so a newer `start`
     // may already have claimed the slot and shown the user a different link.
     // If so this attempt is the stale one and gets reaped, rather than
@@ -1208,7 +1210,7 @@ mod tests {
     /// need an actual agent. `cat` is the cheapest process that stays alive on
     /// a piped stdin and closes its stdout the instant it dies.
     #[cfg(unix)]
-    async fn fake_pending(handle: &str) -> (Pending, tokio::process::ChildStdout) {
+    async fn fake_pending(handle: &str) -> (Box<Pending>, tokio::process::ChildStdout) {
         let mut child = tokio::process::Command::new("/bin/cat")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -1221,7 +1223,7 @@ mod tests {
         let (_tx, responses) = mpsc::unbounded_channel();
         // `_tx` is dropped here on purpose: nothing in these tests waits on a
         // response, and a closed channel is the honest shape for a dead agent.
-        let pending = Pending {
+        let pending = Box::new(Pending {
             handle: handle.to_string(),
             method_id: "oauth-personal".to_string(),
             redirect_uri: "http://127.0.0.1:1/".to_string(),
@@ -1232,7 +1234,7 @@ mod tests {
             responses,
             stderr: Arc::new(StderrTail::new()),
             started: Instant::now(),
-        };
+        });
         (pending, stdout)
     }
 
