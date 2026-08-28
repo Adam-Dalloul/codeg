@@ -21,7 +21,10 @@
 
   font-family: var(--font-sans);
   font-size: 16px;
-  line-height: 24px;
+  /* rem 而非 24px：这条行高被所有没自带 line-height 的文字继承，写死 px 的话缩放到
+     150% 时字长到 21px、行盒却仍是 24px，小字挤成一团。1.5rem 在 100% 下算出的
+     computed 值仍是 24px（与旧写法逐像素相同），缩放时才跟着根字号一起放大。 */
+  line-height: 1.5rem;
   font-weight: 400;
 
   font-synthesis: none;
@@ -1016,6 +1019,18 @@
   --radius-2xl: calc(var(--radius) * 1.8);
   --radius-3xl: calc(var(--radius) * 2.2);
   --radius-4xl: calc(var(--radius) * 2.6);
+}
+
+/* 比 text-xs(12px) 更小的两档字号。缩放档位（80%–150%）改的是 html 的 font-size，
+   所以只有 rem 会跟着放大 —— 全仓原先散落的 `text-[11px]` / `text-[10px]` 在缩放到
+   150% 时仍是 11px/10px，旁边的 text-sm 却涨到 21px，小字被压得越来越不成比例。
+   刻意只声明 font-size、不声明 line-height：被它们替换掉的 `text-[Npx]` 任意值同样
+   只写 font-size，行高照旧由 leading-* 或继承决定，换过来在 100% 缩放下零视觉差异。 */
+@utility text-2xs {
+  font-size: 0.6875rem; /* 11px @100% */
+}
+@utility text-3xs {
+  font-size: 0.625rem; /* 10px @100% */
 }
 
 @layer base {
@@ -2347,7 +2362,11 @@ div.monaco-diff-editor.side-by-side .editor.modified {
 .browser-tab-hover::before {
   content: "";
   position: absolute;
-  inset: 2px 2px 8px 2px;
+  /* rem 而非 2/2/8/2 px：底部这一格是**镜像 `.browser-tab-seat` 的 0.5rem 座高**（凹
+     弧脚的地盘），写死 px 的话缩放到 250% 时座是 20px 而药丸只让出 8px —— 药丸下沿落进
+     脚区，上面注释里「让开脚部」的前提就不成立了。100% 下 0.125rem=2px、0.5rem=8px，
+     逐像素与原值相同。 */
+  inset: 0.125rem 0.125rem 0.5rem 0.125rem;
   z-index: -1;
   border-radius: 0.5rem;
   background-color: color-mix(in oklab, var(--background) 60%, transparent);
@@ -2408,23 +2427,35 @@ div.monaco-diff-editor.side-by-side .editor.modified {
   width: 0.5rem;
   background-color: var(--background);
 }
+/* ★ 遮罩半径必须与上面的 0.5rem 见方盒**同单位**：写死 7px/8px 时，缩放到 250% 盒子是
+   20px 见方而凹弧只有 8px 半径 —— 弧只啃掉左上角一小口，剩下的仍是实心方块，视觉上就是
+   两个「方脚」而非反向圆角（用户在 250% 下反馈「反向圆角过渡不自然」）。0.4375rem=7px、
+   0.5rem=8px @100%，逐像素与原值相同；抗锯齿带宽也随之等比。 */
 .browser-tab-seat::before {
   left: -0.5rem;
   -webkit-mask-image: radial-gradient(
     circle at top left,
-    transparent 7px,
-    #000 8px
+    transparent 0.4375rem,
+    #000 0.5rem
   );
-  mask-image: radial-gradient(circle at top left, transparent 7px, #000 8px);
+  mask-image: radial-gradient(
+    circle at top left,
+    transparent 0.4375rem,
+    #000 0.5rem
+  );
 }
 .browser-tab-seat::after {
   right: -0.5rem;
   -webkit-mask-image: radial-gradient(
     circle at top right,
-    transparent 7px,
-    #000 8px
+    transparent 0.4375rem,
+    #000 0.5rem
   );
-  mask-image: radial-gradient(circle at top right, transparent 7px, #000 8px);
+  mask-image: radial-gradient(
+    circle at top right,
+    transparent 0.4375rem,
+    #000 0.5rem
+  );
 }
 /* Workspace 背景图开启：所有 tab 全透明，seat 反向圆角默认不显示（否则透明 tab 会挂
    var(--background) 白色小圆角）。非激活 tab 的 seat 已不随 hover 显示（见上「仅激活」），

@@ -769,7 +769,7 @@ export function SidebarConversationList({
   const { resolvedTheme } = useTheme()
   const { themeColor: appThemeColor } = useThemeColor()
   const { createTerminalInDirectory } = useTerminalContext()
-  useZoomLevel()
+  const { zoomLevel } = useZoomLevel()
   const folders = useAppWorkspaceStore((s) => s.folders)
   const allFolders = useAppWorkspaceStore((s) => s.allFolders)
   const conversations = useAppWorkspaceStore((s) => s.conversations)
@@ -1960,10 +1960,14 @@ export function SidebarConversationList({
   }, [persistReorder])
 
   // ── Custom folder-drag gesture ────────────────────────────────────────────
-  // Fixed height of one folder header row (Tailwind `h-[2rem]`); the drag
-  // surface collapses every folder to just its header so the target slot is a
-  // simple `floor(pointerY / FOLDER_ROW_HEIGHT)`.
-  const FOLDER_ROW_HEIGHT = 32
+  // Height of one folder header row (Tailwind `h-[2rem]`); the drag surface
+  // collapses every folder to just its header so the target slot is a simple
+  // `floor(pointerY / FOLDER_ROW_HEIGHT)`.
+  //
+  // Read off the zoom level rather than pinned at 32: the row is 2 *rem*, so it
+  // is 48px at 150%, and a fixed 32 would map the pointer to a slot a third too
+  // far down — a drop the gesture then persists as the new folder order.
+  const FOLDER_ROW_HEIGHT = 2 * ((16 * zoomLevel) / 100)
   const DRAG_THRESHOLD_PX = 6
   const AUTOSCROLL_EDGE_PX = 28
   const AUTOSCROLL_STEP_PX = 12
@@ -2016,7 +2020,7 @@ export function SidebarConversationList({
       if (fromIndex < 0 || fromIndex === targetIndex) return
       handleReorder(applyReorder(order, fromIndex, targetIndex))
     },
-    [handleReorder]
+    [handleReorder, FOLDER_ROW_HEIGHT]
   )
 
   // While the pointer rests near a viewport edge, scroll and keep retargeting so

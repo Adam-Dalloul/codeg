@@ -2626,7 +2626,7 @@ export function FileTreeTab() {
           >
             {node.name}
           </button>
-          <span className="w-8 shrink-0 text-right text-[10px] font-medium text-muted-foreground">
+          <span className="w-8 shrink-0 text-right text-3xs font-medium text-muted-foreground">
             {node.status}
           </span>
         </FileTreeFile>

@@ -412,10 +412,10 @@ function HeadlessSignIn({
   return (
     <div className="space-y-2 rounded-md border border-dashed p-2.5">
       <div>
-        <p className="text-[11px] font-medium">
+        <p className="text-2xs font-medium">
           {t("antigravity.headless.title")}
         </p>
-        <p className="mt-0.5 text-[10px] text-muted-foreground">
+        <p className="mt-0.5 text-3xs text-muted-foreground">
           {t("antigravity.headless.description")}
         </p>
       </div>
@@ -423,11 +423,11 @@ function HeadlessSignIn({
       {pending ? (
         <div className="space-y-2">
           <div className="space-y-1">
-            <p className="text-[10px] text-muted-foreground">
+            <p className="text-3xs text-muted-foreground">
               {t("antigravity.headless.step1")}
             </p>
             <div className="flex items-start gap-1.5">
-              <code className="block flex-1 overflow-x-auto rounded bg-muted px-2 py-1 font-mono text-[10px] whitespace-nowrap text-muted-foreground">
+              <code className="block flex-1 overflow-x-auto rounded bg-muted px-2 py-1 font-mono text-3xs whitespace-nowrap text-muted-foreground">
                 {pending.authUrl}
               </code>
               <Button
@@ -465,7 +465,7 @@ function HeadlessSignIn({
           </div>
 
           <div className="space-y-1">
-            <p className="text-[10px] text-muted-foreground">
+            <p className="text-3xs text-muted-foreground">
               {t("antigravity.headless.step2", {
                 redirectUri: pending.redirectUri,
               })}
@@ -511,7 +511,7 @@ function HeadlessSignIn({
       ) : (
         <div className="space-y-1.5">
           {needsSave ? (
-            <p className="text-[10px] text-amber-600 dark:text-amber-400">
+            <p className="text-3xs text-amber-600 dark:text-amber-400">
               {t("antigravity.headless.saveFirst")}
             </p>
           ) : null}
@@ -540,8 +540,8 @@ function HeadlessSignIn({
           <p
             className={
               outcome.signedIn
-                ? "text-[11px] text-emerald-600 dark:text-emerald-400"
-                : "text-[11px] text-amber-600 dark:text-amber-400"
+                ? "text-2xs text-emerald-600 dark:text-emerald-400"
+                : "text-2xs text-amber-600 dark:text-amber-400"
             }
           >
             {outcome.signedIn
@@ -549,18 +549,16 @@ function HeadlessSignIn({
               : t("antigravity.headless.failed")}
           </p>
           {outcome.message ? (
-            <p className="text-[10px] text-muted-foreground">
-              {outcome.message}
-            </p>
+            <p className="text-3xs text-muted-foreground">{outcome.message}</p>
           ) : null}
           {/* The credential is a portable file, so a user with several headless
               machines can sign in once here and copy it to the rest. */}
           {outcome.signedIn && outcome.credentialPath ? (
             <>
-              <p className="text-[10px] text-muted-foreground">
+              <p className="text-3xs text-muted-foreground">
                 {t("antigravity.headless.credentialHint")}
               </p>
-              <code className="block overflow-x-auto rounded bg-muted px-2 py-1 font-mono text-[10px] whitespace-nowrap text-muted-foreground">
+              <code className="block overflow-x-auto rounded bg-muted px-2 py-1 font-mono text-3xs whitespace-nowrap text-muted-foreground">
                 {outcome.credentialPath}
               </code>
             </>
@@ -754,7 +752,7 @@ export function AntigravityConfigPanel({
     <div className="space-y-3 rounded-md border bg-muted/10 p-3">
       <div>
         <label className="text-xs font-medium">{t("configManagement")}</label>
-        <p className="mt-1 text-[11px] text-muted-foreground">
+        <p className="mt-1 text-2xs text-muted-foreground">
           {t("antigravity.configDescription")}
         </p>
       </div>
@@ -762,7 +760,7 @@ export function AntigravityConfigPanel({
       <div className="space-y-2 rounded-md border bg-background/60 p-2.5">
         <div className="space-y-1">
           <label
-            className="text-[11px] text-muted-foreground"
+            className="text-2xs text-muted-foreground"
             htmlFor="antigravity-auth-method"
           >
             {t("antigravity.methodLabel")}
@@ -786,7 +784,7 @@ export function AntigravityConfigPanel({
               ))}
             </SelectContent>
           </Select>
-          <p className="text-[10px] text-muted-foreground">
+          <p className="text-3xs text-muted-foreground">
             {t(`antigravity.methodHints.${method}`)}
           </p>
         </div>
@@ -794,7 +792,7 @@ export function AntigravityConfigPanel({
         {method === "gemini-api-key" ? (
           <div className="space-y-1">
             <label
-              className="text-[11px] text-muted-foreground"
+              className="text-2xs text-muted-foreground"
               htmlFor="antigravity-gemini-key"
             >
               {t("antigravity.geminiApiKeyLabel")}
@@ -834,7 +832,7 @@ export function AntigravityConfigPanel({
         {method === "agent-platform" ? (
           <div className="space-y-1">
             <label
-              className="text-[11px] text-muted-foreground"
+              className="text-2xs text-muted-foreground"
               htmlFor="antigravity-google-key"
             >
               {t("antigravity.googleApiKeyLabel")}
@@ -868,7 +866,7 @@ export function AntigravityConfigPanel({
                 )}
               </Button>
             </div>
-            <p className="text-[10px] text-muted-foreground">
+            <p className="text-3xs text-muted-foreground">
               {t("antigravity.googleApiKeyHint")}
             </p>
           </div>
@@ -879,7 +877,7 @@ export function AntigravityConfigPanel({
           <div className="grid grid-cols-2 gap-2">
             <div className="space-y-1">
               <label
-                className="text-[11px] text-muted-foreground"
+                className="text-2xs text-muted-foreground"
                 htmlFor="antigravity-gcp-project"
               >
                 {t("antigravity.gcpProjectLabel")}
@@ -897,7 +895,7 @@ export function AntigravityConfigPanel({
             </div>
             <div className="space-y-1">
               <label
-                className="text-[11px] text-muted-foreground"
+                className="text-2xs text-muted-foreground"
                 htmlFor="antigravity-gcp-location"
               >
                 {t("antigravity.gcpLocationLabel")}
@@ -917,7 +915,7 @@ export function AntigravityConfigPanel({
         ) : null}
 
         {incomplete ? (
-          <p className="text-[11px] text-amber-600 dark:text-amber-400">
+          <p className="text-2xs text-amber-600 dark:text-amber-400">
             {t(`antigravity.${incomplete}`)}
           </p>
         ) : null}
@@ -942,15 +940,15 @@ export function AntigravityConfigPanel({
             is to edit that file by hand — codeg will not touch it again. */}
         {syncSkip ? (
           <div className="space-y-1 rounded-md border border-amber-500/40 bg-amber-500/5 p-2">
-            <p className="text-[11px] text-amber-600 dark:text-amber-400">
+            <p className="text-2xs text-amber-600 dark:text-amber-400">
               {t("antigravity.syncSkipped")}
             </p>
             {syncSkip.reason ? (
-              <p className="text-[10px] text-muted-foreground">
+              <p className="text-3xs text-muted-foreground">
                 {syncSkip.reason}
               </p>
             ) : null}
-            <code className="block overflow-x-auto rounded bg-muted px-2 py-1 font-mono text-[10px] whitespace-nowrap text-muted-foreground">
+            <code className="block overflow-x-auto rounded bg-muted px-2 py-1 font-mono text-3xs whitespace-nowrap text-muted-foreground">
               {syncSkip.path}
             </code>
           </div>
@@ -958,10 +956,10 @@ export function AntigravityConfigPanel({
 
         {agent.config_file_path ? (
           <div className="space-y-1">
-            <p className="text-[10px] text-muted-foreground">
+            <p className="text-3xs text-muted-foreground">
               {t("antigravity.settingsFileHint")}
             </p>
-            <code className="block overflow-x-auto rounded bg-muted px-2 py-1 font-mono text-[10px] whitespace-nowrap text-muted-foreground">
+            <code className="block overflow-x-auto rounded bg-muted px-2 py-1 font-mono text-3xs whitespace-nowrap text-muted-foreground">
               {agent.config_file_path}
             </code>
           </div>

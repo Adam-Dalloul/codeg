@@ -123,11 +123,11 @@ export function PermissionDialog({
           {/* Only one card shows at a time, so without this the remaining
               approvals look like the agent has stopped responding. */}
           {queued > 0 ? (
-            <Badge variant="secondary" className="text-[10px] tabular-nums">
+            <Badge variant="secondary" className="text-3xs tabular-nums">
               {t("queuedCount", { count: queued })}
             </Badge>
           ) : null}
-          <Badge variant="outline" className="text-[10px]">
+          <Badge variant="outline" className="text-3xs">
             {formatKindLabel(parsed.normalizedKind, t("kindFallbackTool"))}
           </Badge>
         </div>
@@ -206,7 +206,7 @@ export function PermissionDialog({
                   className="flex items-center gap-2 text-xs"
                 >
                   {item.tool && (
-                    <Badge variant="outline" className="shrink-0 text-[10px]">
+                    <Badge variant="outline" className="shrink-0 text-3xs">
                       {item.tool}
                     </Badge>
                   )}
@@ -289,7 +289,7 @@ export function PermissionDialog({
                         {change.scope && (
                           <Badge
                             variant="outline"
-                            className="shrink-0 text-[10px]"
+                            className="shrink-0 text-3xs"
                           >
                             {t(CHANGE_SCOPE_LABEL_KEYS[change.scope])}
                           </Badge>
