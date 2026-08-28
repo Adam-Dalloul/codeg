@@ -846,6 +846,36 @@ function resolveLiveToolInput(
   return info.raw_input
 }
 
+/**
+ * Append a main-thread prose block, re-joining it with the trailing block when
+ * that block is the same kind.
+ *
+ * `liveMessage.content` is split at kind AND subagent-attribution boundaries
+ * (the reducer and the backend's `append_text_delta` share that predicate, so
+ * a snapshot-hydrated client sees the same block list a streaming one does).
+ * Attribution is a wire-level property, though, not a rendering one: parented
+ * blocks are routed out to their Agent capsule above, and what is left is one
+ * uninterrupted run of the main agent's own output that only *looks* split
+ * because a sub-agent chunk landed between two of its deltas.
+ *
+ * Rejoining is therefore a display concern and belongs here, not in the split
+ * predicate — moving it there would merge a sub-agent's prose into the main
+ * thread's. Without it, one thought renders as a wall of separate reasoning
+ * cards torn mid-word whenever sub-agents stream concurrently (#494).
+ */
+function appendProse(
+  blocks: MessageTurn["blocks"],
+  type: "text" | "thinking",
+  text: string
+): void {
+  const tail = blocks[blocks.length - 1]
+  if (tail && tail.type === type) {
+    blocks[blocks.length - 1] = { type, text: tail.text + text }
+    return
+  }
+  blocks.push({ type, text })
+}
+
 export function buildStreamingTurnsFromLiveMessage(
   conversationId: number,
   liveMessage: LiveMessage,
@@ -987,15 +1017,30 @@ export function buildStreamingTurnsFromLiveMessage(
       // tool_call and attaches it. A parented block whose parent is not a
       // classified agent (snapshot-path orphan — the reducer's
       // parent-presence gate does not cover snapshot-sourced content) is
-      // dropped by the `agentIds` check. Entries arrive pre-merged (the
-      // reducer splits blocks only at kind/attribution boundaries).
+      // dropped by the `agentIds` check.
+      //
+      // The reducer splits blocks at kind/attribution boundaries, so ONE
+      // subagent's prose arrives pre-merged only while nothing else streams:
+      // with two sub-agents running (or any main-thread chunk in between),
+      // sub-A → sub-B → sub-A is three blocks, and this transcript would show
+      // A's single paragraph as two entries torn at a chunk boundary. Re-join
+      // consecutive same-kind entries here — after attribution filtering, they
+      // were always one run of that agent's output. See #494.
       if (
         (block.type === "text" || block.type === "thinking") &&
         block.parentToolUseId
       ) {
         if (agentIds.has(block.parentToolUseId)) {
           const list = agentTranscripts.get(block.parentToolUseId) ?? []
-          list.push({ type: block.type, text: block.text })
+          const tail = list[list.length - 1]
+          if (tail && tail.type === block.type) {
+            list[list.length - 1] = {
+              type: tail.type,
+              text: tail.text + block.text,
+            }
+          } else {
+            list.push({ type: block.type, text: block.text })
+          }
           agentTranscripts.set(block.parentToolUseId, list)
         }
       } else if (positionalAgentId) {
@@ -1046,7 +1091,7 @@ export function buildStreamingTurnsFromLiveMessage(
     switch (block.type) {
       case "text":
         if (block.text.length > 0) {
-          currentBlocks.push({ type: "text", text: block.text })
+          appendProse(currentBlocks, "text", block.text)
         }
         break
       case "thinking":
@@ -1054,7 +1099,7 @@ export function buildStreamingTurnsFromLiveMessage(
         // can show its "Thinking..." indicator before any reasoning text
         // arrives (and for newer Claude models that redact reasoning text
         // entirely while still emitting thinking blocks).
-        currentBlocks.push({ type: "thinking", text: block.text })
+        appendProse(currentBlocks, "thinking", block.text)
         break
       case "plan": {
         // Carry the live plan through as a first-class `plan` block so it
