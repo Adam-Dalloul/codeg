@@ -182,6 +182,7 @@ pub fn build_router(
         )
         .route("/get_folder", post(handlers::folders::get_folder))
         .route("/open_folder", post(handlers::folders::open_folder))
+        .route("/open_in_code", post(handlers::folders::open_in_code))
         .route(
             "/open_worktree_folder",
             post(handlers::folders::open_worktree_folder),

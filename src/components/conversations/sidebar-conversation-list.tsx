@@ -48,8 +48,10 @@ import { useTerminalContext } from "@/contexts/terminal-context"
 import { useThemeColor, useZoomLevel } from "@/hooks/use-appearance"
 import { useSortedAvailableAgents } from "@/hooks/use-sorted-available-agents"
 import { useImeGuard } from "@/hooks/use-ime-guard"
+import { OpenInSubContent } from "@/components/layout/open-in-menu"
 import {
   openImportSessionsWindow,
+  openInCode,
   openProjectBootWindow,
   updateConversationTitle,
   updateConversationStatus,
@@ -200,6 +202,7 @@ const FolderHeader = memo(function FolderHeader({
   onSetDefaultAgent,
   onOpenInSystemExplorer,
   onOpenInTerminal,
+  onOpenInCode,
   isDragging,
   onGripPointerDown,
   suppressed = false,
@@ -244,6 +247,7 @@ const FolderHeader = memo(function FolderHeader({
   onSetDefaultAgent: (folderId: number, agentType: AgentType | null) => void
   onOpenInSystemExplorer: (folderId: number) => void
   onOpenInTerminal: (folderId: number) => void
+  onOpenInCode: (folderId: number) => void
   isDragging?: boolean
   /**
    * Starts a folder reorder gesture from the header's grip. Omitted on the drag
@@ -543,17 +547,15 @@ const FolderHeader = memo(function FolderHeader({
               <ExternalLink className="h-4 w-4" />
               {tFileTree("openIn")}
             </ContextMenuSubTrigger>
-            <ContextMenuSubContent>
-              <ContextMenuItem
-                disabled={!isDesktopMode}
-                onSelect={() => onOpenInSystemExplorer(folderId)}
-              >
-                {systemExplorerLabel}
-              </ContextMenuItem>
-              <ContextMenuItem onSelect={() => onOpenInTerminal(folderId)}>
-                {tFileTree("openInTerminal")}
-              </ContextMenuItem>
-            </ContextMenuSubContent>
+            <OpenInSubContent
+              explorerLabel={systemExplorerLabel}
+              terminalLabel={tFileTree("openInTerminal")}
+              codeLabel={tFileTree("openInCode")}
+              explorerDisabled={!isDesktopMode}
+              onOpenExplorer={() => onOpenInSystemExplorer(folderId)}
+              onOpenTerminal={() => onOpenInTerminal(folderId)}
+              onOpenCode={() => onOpenInCode(folderId)}
+            />
           </ContextMenuSub>
           <ContextMenuSeparator />
           <ContextMenuItem onSelect={() => onManageConversations(folderId)}>
@@ -1082,6 +1084,19 @@ export function SidebarConversationList({
       }
     },
     [folderIndex, createTerminalInDirectory, tFileTree]
+  )
+
+  const handleOpenFolderInCode = useCallback(
+    (folderId: number) => {
+      const folder = folderIndex.get(folderId)
+      if (!folder) return
+      void openInCode(folder.path).catch((error) => {
+        toast.error(tFileTree("toasts.openInCodeFailed"), {
+          description: toErrorMessage(error),
+        })
+      })
+    },
+    [folderIndex, tFileTree]
   )
 
   // virtua binds to the real OverlayScrollbars viewport element (surfaced via
@@ -2275,6 +2290,7 @@ export function SidebarConversationList({
         onSetDefaultAgent={handleChangeFolderDefaultAgent}
         onOpenInSystemExplorer={handleOpenFolderInSystemExplorer}
         onOpenInTerminal={handleOpenFolderInTerminal}
+        onOpenInCode={handleOpenFolderInCode}
         isDragging={opts.dragging}
         onGripPointerDown={opts.grip ? beginFolderDrag : undefined}
         suppressed={opts.suppressed ?? false}
