@@ -1,15 +1,26 @@
 "use client"
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react"
 import { useTranslations } from "next-intl"
 import { toast } from "sonner"
 import {
+  Check,
+  ChevronDown,
+  ChevronRight,
   CircleCheck,
   CircleDot,
   CircleMinus,
   CirclePlay,
   CircleX,
   ExternalLink,
+  GitMerge,
   GitPullRequestClosed,
   Link2,
   ListTodo,
@@ -23,6 +34,7 @@ import {
 } from "lucide-react"
 import { MessageResponse } from "@/components/ai-elements/message"
 import { formatRelative } from "@/components/conversations/sidebar-conversation-grouping"
+import { UnifiedDiffPreview } from "@/components/diff/unified-diff-preview"
 import {
   CHIP_FILL,
   ForgeLabelChip,
@@ -51,8 +63,20 @@ import {
   DrawerTitle,
   SIDE_PANEL_CONTENT_CLASS,
 } from "@/components/ui/drawer"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/instant-collapsible"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Skeleton } from "@/components/ui/skeleton"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Textarea } from "@/components/ui/textarea"
 import { useWorkbenchRoute } from "@/contexts/workbench-route-context"
 import {
@@ -60,6 +84,8 @@ import {
   forgeChangeFiles,
   forgeCreateComment,
   forgeListComments,
+  forgeMergeChange,
+  forgeMergeOptions,
   forgeSetItemState,
 } from "@/lib/api"
 import {
@@ -73,9 +99,13 @@ import type {
   ForgeChangeDetail,
   ForgeChangedFile,
   ForgeCheck,
+  ForgeCheckList,
   ForgeCheckState,
   ForgeComment,
   ForgeIssueRow,
+  ForgeMergeMethod,
+  ForgeMergeOptions,
+  ForgeMergeStrategy,
   ForgeStateAction,
   ForgeTaskLink,
 } from "@/lib/types"
@@ -109,6 +139,78 @@ const BODY_MARKDOWN =
 /** Render-time "now", as on the row: the panel re-renders with its list. */
 function relative(iso: string): string {
   return formatRelative(iso, Date.now())
+}
+
+/**
+ * "Ask the forge again", for the three collections that page independently.
+ *
+ * The spin is the request, not a decoration: each of these sections keeps what
+ * is already on screen while it re-asks (a failed refresh costs the update, not
+ * what somebody was reading), so without it a reload that changes nothing is
+ * indistinguishable from a click that missed.
+ */
+function RefreshButton({
+  label,
+  busy,
+  onClick,
+  className,
+}: {
+  label: string
+  busy: boolean
+  onClick: () => void
+  className?: string
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={busy}
+      title={label}
+      aria-label={label}
+      className={cn(
+        "inline-flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40",
+        className
+      )}
+    >
+      <RefreshCw className={cn("size-3.5", busy && "animate-spin")} />
+    </button>
+  )
+}
+
+/**
+ * A rejection with the retry that re-asks for exactly what failed.
+ *
+ * Shared by the three sections because they fail the same way and the box is
+ * where a forge error has to be READ: `invoke()` rejects with the SERIALIZED
+ * `AppCommandError`, a plain object whose `toString` is "[object Object]", and
+ * `toLocalizedErrorMessage` is what unwraps it and prefers the backend's own
+ * i18n key over the message.
+ */
+function FailureStrip({
+  error,
+  onRetry,
+}: {
+  error: unknown
+  onRetry: () => void
+}) {
+  const t = useTranslations("Forge")
+  // Root-scoped on purpose: a forge failure carries a FULL dotted i18n key
+  // (`Forge.errors.noAccount`) that a namespaced translator cannot resolve.
+  const tRoot = useTranslations()
+  return (
+    <div className="flex flex-col items-start gap-2 rounded-xl border border-destructive/40 bg-destructive/5 px-3 py-2">
+      <p className="text-xs text-destructive">
+        {toLocalizedErrorMessage(error, tRoot as unknown as AppErrorTranslator)}
+      </p>
+      <button
+        type="button"
+        onClick={onRetry}
+        className="text-[0.6875rem] font-medium text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+      >
+        {t("commentsRetry")}
+      </button>
+    </div>
+  )
 }
 
 /**
@@ -155,6 +257,7 @@ function CommentThread({
   kind,
   number,
   onPosted,
+  beforeComposer,
 }: {
   folderId: number
   kind: "issue" | "pr"
@@ -162,12 +265,13 @@ function CommentThread({
   /** A comment landed on the forge, and here it is. The caller bumps the
    *  item's count so the header stops trailing the thread underneath it. */
   onPosted: (comment: ForgeComment) => void
+  /** Dropped in between the last comment and the box, which is where a
+   *  proposed change's merge controls belong: after everything said about it,
+   *  before the place you would say the next thing. Empty for an issue, which
+   *  has nothing to land. */
+  beforeComposer?: ReactNode
 }) {
   const t = useTranslations("Forge")
-  // Root-scoped, like the page's: a forge failure carries a FULL dotted i18n
-  // key (`Forge.errors.noAccount`) that the namespaced translator above cannot
-  // resolve.
-  const tRoot = useTranslations()
   /** The pages the FORGE has served, in the order it served them. */
   const [fetched, setFetched] = useState<ForgeComment[]>([])
   /**
@@ -266,16 +370,12 @@ function CommentThread({
         {/* Back to page 1 wholesale, not "fetch what is new": the thread is
             offset-paginated, so there is no cursor to resume from — and an
             edited or deleted comment is a change no append could show. */}
-        <button
-          type="button"
+        <RefreshButton
+          label={t("commentsRefresh")}
+          busy={loading}
           onClick={() => void load(1)}
-          disabled={loading}
-          title={t("commentsRefresh")}
-          aria-label={t("commentsRefresh")}
-          className="ms-auto inline-flex size-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40"
-        >
-          <RefreshCw className={cn("size-3.5", loading && "animate-spin")} />
-        </button>
+          className="ms-auto"
+        />
       </div>
 
       {firstLoad ? (
@@ -296,26 +396,12 @@ function CommentThread({
         </p>
       ) : null}
 
+      {/* The page that FAILED, whichever kind of load asked for it. */}
       {failure != null ? (
-        <div className="flex flex-col items-start gap-2 rounded-xl border border-destructive/40 bg-destructive/5 px-3 py-2">
-          {/* A rejected `invoke()` hands back the SERIALIZED AppCommandError —
-              a plain object whose `toString` is "[object Object]". app-error
-              unwraps it and prefers the backend's own i18n key. */}
-          <p className="text-xs text-destructive">
-            {toLocalizedErrorMessage(
-              failure.error,
-              tRoot as unknown as AppErrorTranslator
-            )}
-          </p>
-          {/* The page that FAILED, whichever kind of load asked for it. */}
-          <button
-            type="button"
-            onClick={() => void load(failure.page)}
-            className="text-[0.6875rem] font-medium text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
-          >
-            {t("commentsRetry")}
-          </button>
-        </div>
+        <FailureStrip
+          error={failure.error}
+          onRetry={() => void load(failure.page)}
+        />
       ) : null}
 
       {/* Offered whenever the FORGE says there is more, even with nothing on
@@ -334,6 +420,8 @@ function CommentThread({
           {loading ? t("commentsLoading") : t("commentsMore")}
         </Button>
       ) : null}
+
+      {beforeComposer}
 
       <CommentComposer
         folderId={folderId}
@@ -606,10 +694,17 @@ function CommentSkeleton() {
   )
 }
 
+/** What [`useChangeDetail`] hands back — one answer read by three places. */
+interface ChangeDetailState {
+  detail: ForgeChangeDetail | null
+  loading: boolean
+  failure: { error: unknown } | null
+  reload: () => void
+}
+
 /**
- * What a pull request / merge request actually is, above its discussion:
- * which branches it joins, whether it can land, how big it is, and what CI
- * says about its head commit.
+ * What a pull request / merge request actually is: which branches it joins,
+ * whether it can land, how big it is, and what CI says about its head commit.
  *
  * One request, and only for a PULL REQUEST — the list row carries none of this
  * and could not: it is two or three upstream calls per item, and a list page
@@ -617,24 +712,44 @@ function CommentSkeleton() {
  * forge's cheap quota (GitHub's core 5000/hour rather than search's thirty a
  * minute), so opening item after item cannot starve the list behind it.
  *
- * Scoped to ONE item by the caller's `key`, like the thread, so there is no
- * reset logic here.
+ * It lives on the SHEET rather than inside the section that draws it because
+ * three places read it now — the branch pair in the header, the two tab badges,
+ * and the checks panel — and three components asking separately would be three
+ * requests for one answer that must not disagree.
+ *
+ * Pass `number: null` for anything that is not a change (an issue, or a change
+ * with no folder resolved): nothing is asked for, which is what keeps an issue's
+ * panel free of a request it has no use for.
  */
-function ChangeSection({
-  folderId,
-  number,
-}: {
-  folderId: number
-  number: number
-}) {
-  const t = useTranslations("Forge")
-  const tRoot = useTranslations()
+function useChangeDetail(
+  folderId: number | null,
+  number: number | null
+): ChangeDetailState {
+  /** The item this state describes. Identity, not a fetch key: the panel is
+   *  non-modal, so clicking another row swaps the item underneath without ever
+   *  closing, and there is no `key` here to remount through. */
+  const item =
+    folderId != null && number != null ? `${folderId}:${number}` : null
   const [detail, setDetail] = useState<ForgeChangeDetail | null>(null)
-  const [loading, setLoading] = useState(true)
+  const [loading, setLoading] = useState(item != null)
   const [failure, setFailure] = useState<{ error: unknown } | null>(null)
+  const [shown, setShown] = useState(item)
   const reqRef = useRef(0)
 
+  // The swap, absorbed during RENDER rather than in an effect — the same rule
+  // `DiffFileSection` follows. An effect commits one frame of the previous
+  // item's branches under the new item's title; this way the incoming item is
+  // never painted with the outgoing one's answer. `loading` is seeded here too,
+  // so the skeleton covers the gap before the effect below has fired.
+  if (item !== shown) {
+    setShown(item)
+    setDetail(null)
+    setFailure(null)
+    setLoading(item != null)
+  }
+
   const load = useCallback(async () => {
+    if (folderId == null || number == null) return
     const id = ++reqRef.current
     setLoading(true)
     setFailure(null)
@@ -656,22 +771,35 @@ function ChangeSection({
     void load()
   }, [load])
 
+  // Memoized so its identity changes exactly when the ITEM does — callers hold
+  // it in dependency arrays of their own.
+  const reload = useCallback(() => void load(), [load])
+  return { detail, loading, failure, reload }
+}
+
+/**
+ * Mergeability and CI, which are the two halves of "can this land".
+ *
+ * The tab above names the section, so there is no heading in here — and the
+ * counters that describe the change's SIZE went to the files panel, where the
+ * list they count is.
+ */
+function ChecksPanel({ change }: { change: ChangeDetailState }) {
+  const t = useTranslations("Forge")
+  const { detail, loading, failure } = change
   return (
-    <section className="flex flex-col gap-3 border-t border-border px-5 py-4">
-      <div className="flex items-center gap-2">
-        <h3 className="text-[0.6875rem] font-medium uppercase tracking-wide text-muted-foreground">
-          {t("changeSection")}
-        </h3>
-        <button
-          type="button"
-          onClick={() => void load()}
-          disabled={loading}
-          title={t("changeRefresh")}
-          aria-label={t("changeRefresh")}
-          className="ms-auto inline-flex size-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40"
-        >
-          <RefreshCw className={cn("size-3.5", loading && "animate-spin")} />
-        </button>
+    <div className="flex flex-col gap-3 px-5 py-4">
+      {/* The verdict and the reload share one row, as the files panel's size
+          line does with its own. On a row of its own the button sat against an
+          empty strip, opening a hand's width of nothing under the tabs. */}
+      <div className="flex min-w-0 items-center gap-2">
+        {detail != null ? <MergeReadiness detail={detail} /> : null}
+        <RefreshButton
+          label={t("changeRefresh")}
+          busy={loading}
+          onClick={change.reload}
+          className="ms-auto"
+        />
       </div>
 
       {detail == null && loading ? (
@@ -682,39 +810,22 @@ function ChangeSection({
       ) : null}
 
       {failure != null ? (
-        <div className="flex flex-col items-start gap-2 rounded-xl border border-destructive/40 bg-destructive/5 px-3 py-2">
-          <p className="text-xs text-destructive">
-            {toLocalizedErrorMessage(
-              failure.error,
-              tRoot as unknown as AppErrorTranslator
-            )}
-          </p>
-          <button
-            type="button"
-            onClick={() => void load()}
-            className="text-[0.6875rem] font-medium text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
-          >
-            {t("commentsRetry")}
-          </button>
-        </div>
+        <FailureStrip error={failure.error} onRetry={change.reload} />
       ) : null}
 
-      {detail != null ? (
-        <>
-          <BranchPair detail={detail} />
-          <ChangeCounters detail={detail} />
-          <ChecksStrip checks={detail.checks} />
-          <ChangedFiles folderId={folderId} number={number} />
-        </>
-      ) : null}
-    </section>
+      {detail != null ? <ChecksStrip checks={detail.checks} /> : null}
+    </div>
   )
 }
 
 /** `base ← head`, which is the sentence a proposed change IS. The head carries
  *  its repository only when that is somebody else's — a fork is the fact worth
  *  a second coordinate, and `acme/app:main ← acme/app:fix` would be noise on
- *  every other change. */
+ *  every other change.
+ *
+ *  No draft badge: this sits in the header now, and the meta line directly
+ *  above it already spells the state out — "Draft" twice, twenty pixels apart,
+ *  reads as two different facts. */
 function BranchPair({ detail }: { detail: ForgeChangeDetail }) {
   const t = useTranslations("Forge")
   const branch =
@@ -741,28 +852,22 @@ function BranchPair({ detail }: { detail: ForgeChangeDetail }) {
         {detail.head_repo ? `${detail.head_repo}:` : ""}
         {detail.head_ref}
       </span>
-      {detail.draft ? (
-        <span className="rounded-full bg-muted px-2 py-0.5 text-[0.6875rem] font-medium text-muted-foreground">
-          {t("stateDraft")}
-        </span>
-      ) : null}
     </div>
   )
 }
 
-/** Mergeability and size, on one line. Every counter is optional because the
- *  two forges answer different halves of the question — GitLab reports no line
- *  counts and no commit count on a merge request at all — and a zero would
- *  claim the change touches nothing. */
-function ChangeCounters({ detail }: { detail: ForgeChangeDetail }) {
+/** Whether the change can land, which is the question the checks panel is
+ *  about — the counters that say how BIG it is went to the files panel, beside
+ *  the list they count. */
+function MergeReadiness({ detail }: { detail: ForgeChangeDetail }) {
   const t = useTranslations("Forge")
-  const merged = detail.state === "merged"
+  // A merged change has no mergeability left to report, and both forges keep
+  // answering the question after the fact — "has conflicts" on something that
+  // already landed reads as a problem that is not there.
+  if (detail.state === "merged") return null
   return (
     <div className="flex min-w-0 flex-wrap items-center gap-x-2.5 gap-y-1 text-[0.6875rem] text-muted-foreground">
-      {/* A merged change has no mergeability left to report, and both forges
-          keep answering the question after the fact — "has conflicts" on
-          something that already landed reads as a problem that is not there. */}
-      {merged ? null : detail.mergeable === true ? (
+      {detail.mergeable === true ? (
         <span className="inline-flex items-center gap-1 font-medium text-emerald-600">
           <CircleCheck className="size-3" aria-hidden />
           {t("mergeableYes")}
@@ -782,6 +887,18 @@ function ChangeCounters({ detail }: { detail: ForgeChangeDetail }) {
           {t("mergeableUnknown")}
         </span>
       )}
+    </div>
+  )
+}
+
+/** How big the change is, above the list of what it touches. Every counter is
+ *  optional because the two forges answer different halves of the question —
+ *  GitLab reports no line counts and no commit count on a merge request at all
+ *  — and a zero would claim the change touches nothing. */
+function ChangeSize({ detail }: { detail: ForgeChangeDetail }) {
+  const t = useTranslations("Forge")
+  return (
+    <div className="flex min-w-0 flex-wrap items-center gap-x-2.5 gap-y-1 text-[0.6875rem] text-muted-foreground">
       {detail.changed_files != null ? (
         <span className="tabular-nums">
           {t("filesChanged", { count: detail.changed_files })}
@@ -802,6 +919,26 @@ function ChangeCounters({ detail }: { detail: ForgeChangeDetail }) {
   )
 }
 
+/** The three tallies worth a headline. `neutral` is in none of them on purpose:
+ *  a skipped check is not a pass, and it is not a failure either. */
+interface CheckTally {
+  passing: number
+  failing: number
+  pending: number
+}
+
+function tallyChecks(checks: ForgeCheck[]): CheckTally {
+  const counts: CheckTally = { passing: 0, failing: 0, pending: 0 }
+  for (const check of checks) {
+    if (check.state === "success") counts.passing += 1
+    else if (check.state === "failure") counts.failing += 1
+    else if (check.state === "queued" || check.state === "running") {
+      counts.pending += 1
+    }
+  }
+  return counts
+}
+
 /**
  * CI on the head commit.
  *
@@ -811,17 +948,7 @@ function ChangeCounters({ detail }: { detail: ForgeChangeDetail }) {
  */
 function ChecksStrip({ checks }: { checks: ForgeChangeDetail["checks"] }) {
   const t = useTranslations("Forge")
-  const tally = useMemo(() => {
-    const counts = { passing: 0, failing: 0, pending: 0 }
-    for (const check of checks.checks) {
-      if (check.state === "success") counts.passing += 1
-      else if (check.state === "failure") counts.failing += 1
-      else if (check.state === "queued" || check.state === "running") {
-        counts.pending += 1
-      }
-    }
-    return counts
-  }, [checks])
+  const tally = useMemo(() => tallyChecks(checks.checks), [checks])
 
   if (!checks.available) {
     return (
@@ -844,9 +971,6 @@ function ChecksStrip({ checks }: { checks: ForgeChangeDetail["checks"] }) {
   return (
     <div className="flex flex-col gap-1.5">
       <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[0.6875rem] text-muted-foreground">
-        <span className="font-medium uppercase tracking-wide">
-          {t("checks")}
-        </span>
         {/* Half an answer, said out loud beside the half it did get: the
             numbers below describe what was readable, not what ran. */}
         {checks.partial ? (
@@ -921,23 +1045,31 @@ function CheckRow({ check }: { check: ForgeCheck }) {
 }
 
 /**
- * The paths a change touches — not its diff.
+ * What a change touches, and — a row at a time — what it did to it.
  *
- * Reading the diff is what the task worktree and the app's own diff view are
- * for; this answers "what does this touch", which is the question asked while
- * deciding whether to open it at all. The list is height-bounded and scrolls
- * inside itself: a change touching two hundred files would otherwise push the
- * discussion below it out of reach.
+ * The paths answer "what does this touch", which is the question asked while
+ * deciding whether to open the change at all; the diff behind each of them
+ * answers the next one. The diff costs no request: both forges ship each file's
+ * hunks with the page itself, and the backend simply stopped discarding them
+ * (see `ForgeChangedFile::patch`).
+ *
+ * Mounted only once its tab is first opened, and kept mounted afterwards — a
+ * page of fifty files now carries fifty patches, and somebody who opened the
+ * panel to read a description should not pay for that.
  */
 function ChangedFiles({
   folderId,
   number,
+  detail,
 }: {
   folderId: number
   number: number
+  /** The change itself, for the size line above the list. Null while the
+   *  detail request is still out, or when it failed — the list stands on its
+   *  own either way. */
+  detail: ForgeChangeDetail | null
 }) {
   const t = useTranslations("Forge")
-  const tRoot = useTranslations()
   const [files, setFiles] = useState<ForgeChangedFile[]>([])
   const [nextPage, setNextPage] = useState(1)
   const [hasNext, setHasNext] = useState(false)
@@ -981,10 +1113,18 @@ function ChangedFiles({
   const firstLoad = loading && files.length === 0 && failure == null
 
   return (
-    <div className="flex flex-col gap-1.5">
-      <span className="text-[0.6875rem] font-medium uppercase tracking-wide text-muted-foreground">
-        {t("filesTitle")}
-      </span>
+    <div className="flex flex-col gap-2 px-5 py-4">
+      {/* The size line and the reload share the row the section heading used
+          to have — the tab above says "Files changed" now. */}
+      <div className="flex min-w-0 items-center gap-2">
+        {detail != null ? <ChangeSize detail={detail} /> : null}
+        <RefreshButton
+          label={t("filesRefresh")}
+          busy={loading}
+          onClick={() => void load(1)}
+          className="ms-auto"
+        />
+      </div>
       {firstLoad ? (
         <div aria-hidden className="flex flex-col gap-1">
           <Skeleton className="h-4 w-full" />
@@ -992,34 +1132,22 @@ function ChangedFiles({
         </div>
       ) : null}
       {failure != null ? (
-        <div className="flex flex-col items-start gap-1 rounded-xl border border-destructive/40 bg-destructive/5 px-3 py-2">
-          <p className="text-xs text-destructive">
-            {toLocalizedErrorMessage(
-              failure.error,
-              tRoot as unknown as AppErrorTranslator
-            )}
-          </p>
-          <button
-            type="button"
-            onClick={() => void load(failure.page)}
-            className="text-[0.6875rem] font-medium text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
-          >
-            {t("commentsRetry")}
-          </button>
-        </div>
+        <FailureStrip
+          error={failure.error}
+          onRetry={() => void load(failure.page)}
+        />
       ) : null}
       {files.length > 0 ? (
-        // Bounded and scrolled in place: without this a change touching two
-        // hundred files buries the discussion under it.
-        <ScrollArea className="max-h-64 rounded-xl border border-border">
-          <ul className="flex flex-col divide-y divide-border/40">
-            {files.map((file) => (
-              <li key={`${file.status}-${file.path}`}>
-                <ChangedFileRow file={file} />
-              </li>
-            ))}
-          </ul>
-        </ScrollArea>
+        // No scroll box of its own any more: the tab is the scroller, and a
+        // nested one would trap the wheel over the list — which matters far
+        // more now that a row can open onto a diff taller than the panel.
+        <ul className="flex flex-col divide-y divide-border/40 overflow-hidden rounded-xl border border-border">
+          {files.map((file) => (
+            <li key={`${file.status}-${file.path}`}>
+              <ChangedFileRow file={file} />
+            </li>
+          ))}
+        </ul>
       ) : null}
       {!loading && failure == null && files.length === 0 ? (
         <p className="text-[0.6875rem] text-muted-foreground">
@@ -1042,11 +1170,14 @@ function ChangedFiles({
   )
 }
 
-function ChangedFileRow({ file }: { file: ForgeChangedFile }) {
+/** The row's own line: how the file was touched, which file, and by how much.
+ *  Shared by the two shells below so an expandable row and one with nothing to
+ *  expand line up on every column. */
+function ChangedFileLine({ file }: { file: ForgeChangedFile }) {
   const t = useTranslations("Forge")
   const { mark, className, labelKey } = FILE_STATUS[file.status]
   return (
-    <div className="flex min-w-0 items-center gap-2 px-2.5 py-1 text-[0.75rem]">
+    <>
       <span
         role="img"
         aria-label={t(labelKey)}
@@ -1058,9 +1189,12 @@ function ChangedFileRow({ file }: { file: ForgeChangedFile }) {
         {mark}
       </span>
       <span
-        className="min-w-0 flex-1 truncate font-mono"
+        className="min-w-0 flex-1 truncate text-start font-mono"
         // The whole path, and where a rename came from — a truncated
-        // `src/components/forge/…` is not something you can act on.
+        // `src/components/forge/…` is not something you can act on. It sits on
+        // the path rather than on the row so that, inside the trigger below,
+        // hovering the path still answers "which file" while everywhere else
+        // on the row answers "what does clicking do".
         title={
           file.previous_path
             ? `${file.path}\n${t("fileRenamedFrom", { path: file.previous_path })}`
@@ -1074,12 +1208,626 @@ function ChangedFileRow({ file }: { file: ForgeChangedFile }) {
           {t("fileBinary")}
         </span>
       ) : (
-        <span className="shrink-0 tabular-nums text-[0.6875rem]">
-          <span className="text-emerald-600">+{file.additions ?? 0}</span>{" "}
-          <span className="text-rose-600">−{file.deletions ?? 0}</span>
-        </span>
+        <>
+          {/* Counted, so there IS text here — the forge just would not send
+              it (GitHub stops at its own size limit). Said out loud, because
+              a row that silently refused to open would read as broken. */}
+          {file.patch == null ? (
+            <span className="shrink-0 text-[0.625rem] text-muted-foreground">
+              {t("fileDiffTooLarge")}
+            </span>
+          ) : null}
+          <span className="shrink-0 tabular-nums text-[0.6875rem]">
+            <span className="text-emerald-600">+{file.additions ?? 0}</span>{" "}
+            <span className="text-rose-600">−{file.deletions ?? 0}</span>
+          </span>
+        </>
       )}
+    </>
+  )
+}
+
+const FILE_ROW =
+  "flex w-full min-w-0 items-center gap-2 px-2.5 py-1 text-[0.75rem]"
+
+/**
+ * One file, and behind it what the change did to it.
+ *
+ * The whole row is the trigger — a chevron-sized hit target on a 12px line is
+ * not one. Its accessible name comes from the row's own content, so a screen
+ * reader gets "Modified src/a.rs +10 −2" plus the expanded/collapsed state that
+ * `CollapsibleTrigger` sets; the title is the affordance for a pointer.
+ *
+ * A row with no patch is not a trigger at all: binary content, or a diff the
+ * forge withheld, has nothing to open onto, and a control that expands into an
+ * empty box is worse than no control. It keeps the chevron's width so the paths
+ * stay in one column either way.
+ */
+function ChangedFileRow({ file }: { file: ForgeChangedFile }) {
+  const t = useTranslations("Forge")
+  const [open, setOpen] = useState(false)
+  const patch = file.patch
+
+  if (patch == null) {
+    return (
+      <div className={FILE_ROW}>
+        <span aria-hidden className="size-3 shrink-0" />
+        <ChangedFileLine file={file} />
+      </div>
+    )
+  }
+
+  return (
+    <Collapsible open={open} onOpenChange={setOpen}>
+      <CollapsibleTrigger
+        title={open ? t("fileDiffHide") : t("fileDiffShow")}
+        className={cn(FILE_ROW, "text-start transition-colors hover:bg-accent")}
+      >
+        <ChevronRight
+          aria-hidden
+          className={cn(
+            "size-3 shrink-0 text-muted-foreground transition-transform",
+            open && "rotate-90"
+          )}
+        />
+        <ChangedFileLine file={file} />
+      </CollapsibleTrigger>
+      <CollapsibleContent className="border-t border-border/40 bg-muted/20 py-1">
+        {/* `embedded`: the row above already carries the path, the status mark
+            and the counters, so the preview's own card header would say all
+            three a second time. `unbounded`: the tab is the scroller, and the
+            preview's own 420px box would nest a second vertical scroll inside
+            it. Its 500-row cap and "show the remaining N lines" reveal stay,
+            which is what keeps a lockfile from freezing the panel. */}
+        <UnifiedDiffPreview diffText={patch} embedded unbounded />
+      </CollapsibleContent>
+    </Collapsible>
+  )
+}
+
+/** The three questions a change is read for, in the order they are asked. */
+type DetailTab = "conversation" | "checks" | "files"
+
+/** What the panel opens on, and the only pane mounted until another is asked
+ *  for. A module constant so the reset below compares and assigns the SAME
+ *  set — a fresh `new Set()` each render would make the state change on every
+ *  pass and loop. */
+const FIRST_TAB_ONLY: ReadonlySet<DetailTab> = new Set<DetailTab>([
+  "conversation",
+])
+
+/**
+ * One pane of the change, and the rule that keeps it alive.
+ *
+ * `forceMount` is what stops a tab switch throwing away the pane's state — the
+ * thread's loaded pages, a comment posted but not yet on a page, the file
+ * list's own paging. `hidden` is what takes the pane that is NOT on show out
+ * of the tree: the wrapper's `data-[state=inactive]:hidden` does that in a
+ * browser, but it is a stylesheet rule, and under jsdom (no Tailwind) only the
+ * attribute is honoured — without it every assertion in the tests would pass
+ * from whichever tab happened to be open.
+ *
+ * `mounted` is the other half: a pane is not rendered at all until it has been
+ * asked for once, so the files request — fifty patches on a large change — is
+ * never spent on a reader who only wanted the description.
+ */
+function TabPane({
+  value,
+  active,
+  mounted,
+  children,
+}: {
+  value: DetailTab
+  active: DetailTab
+  mounted: ReadonlySet<DetailTab>
+  children: ReactNode
+}) {
+  return (
+    <TabsContent
+      value={value}
+      forceMount
+      hidden={active !== value}
+      className="min-h-0"
+    >
+      {mounted.has(value) ? (
+        <ScrollArea className="h-full">{children}</ScrollArea>
+      ) : null}
+    </TabsContent>
+  )
+}
+
+/** A number on a tab, in the same pill the page's own tabs use. Absent rather
+ *  than zero when the forge did not count: GitLab reports no file count on a
+ *  merge request, and a `0` there would claim the change touches nothing. */
+function CountBadge({ value }: { value: number | null }) {
+  if (value == null) return null
+  return (
+    <span className="rounded-full bg-foreground/10 px-1.5 py-0.5 text-[0.6875rem] font-medium leading-none tabular-nums">
+      {value}
+    </span>
+  )
+}
+
+/**
+ * How CI is doing, on the tab rather than behind it — a red build is the one
+ * thing about a change you should not have to go looking for.
+ *
+ * One glyph for the worst thing in the list, in the priority a reviewer reads
+ * them: a failure outranks a run still going, which outranks a clean sweep.
+ * Silent when the forge would not say (no scope, no CI) and when nothing ran,
+ * because a mark for "no answer" is indistinguishable from a mark for "fine".
+ */
+function ChecksBadge({ checks }: { checks: ForgeCheckList | null }) {
+  const t = useTranslations("Forge")
+  const verdict = useMemo(() => checksVerdict(checks), [checks])
+  if (verdict == null) return null
+  const { Icon, className } = CHECK_GLYPH[verdict.state]
+  return (
+    <Icon
+      role="img"
+      aria-label={t(CHECKS_COUNT_KEY[verdict.state], { count: verdict.count })}
+      className={cn("size-3.5 shrink-0", className)}
+    />
+  )
+}
+
+/** The three states a whole list of checks can reduce to. `queued` and
+ *  `neutral` are not among them: neither is a verdict on the change. */
+type ChecksVerdict = Extract<ForgeCheckState, "failure" | "running" | "success">
+
+/** How many checks are in the state the verdict names. */
+const CHECKS_COUNT_KEY = {
+  failure: "checksFailing",
+  running: "checksPending",
+  success: "checksPassing",
+} as const satisfies Record<ChecksVerdict, string>
+
+/**
+ * A whole check list as ONE verdict, plus how many checks earned it.
+ *
+ * Shared by the tab's badge and the merge box, which must not be able to
+ * disagree — a red mark on the Checks tab over a box that says everything
+ * passed is worse than either alone. The priority is the one a reviewer reads
+ * in: a failure outranks a run still going, which outranks a clean sweep.
+ *
+ * `null` for all three ways there is nothing to say — the forge would not
+ * answer, nothing is configured, or every check is neutral — because a mark
+ * for "no answer" is indistinguishable from a mark for "fine".
+ *
+ * `complete` is what stops a green verdict overclaiming, and it is only ever
+ * false for the two cases that look identical from the counts. A `partial` list
+ * is missing entries outright — GitHub keeps its checks in two collections
+ * behind two permissions, so a token holding one of them reads a green list
+ * over a red build. And a NEUTRAL check ran without producing a verdict, which
+ * this codebase deliberately counts as neither a pass nor a failure (see
+ * `ForgeCheckState`). "All checks have passed" is false in both.
+ */
+function checksVerdict(
+  checks: ForgeCheckList | null
+): { state: ChecksVerdict; count: number; complete: boolean } | null {
+  if (checks == null || !checks.available) return null
+  const tally = tallyChecks(checks.checks)
+  const counted = tally.passing + tally.failing + tally.pending
+  const complete = !checks.partial && counted === checks.checks.length
+  if (tally.failing > 0) {
+    return { state: "failure", count: tally.failing, complete }
+  }
+  if (tally.pending > 0) {
+    return { state: "running", count: tally.pending, complete }
+  }
+  if (tally.passing > 0) {
+    return { state: "success", count: tally.passing, complete }
+  }
+  return null
+}
+
+/** The headline each verdict gets in the merge box — the sentence, where the
+ *  tab badge gets only a glyph. */
+const MERGE_CHECKS_KEY = {
+  failure: "mergeChecksFailed",
+  running: "mergeChecksPending",
+  success: "mergeChecksPassed",
+} as const satisfies Record<ChecksVerdict, string>
+
+/** What each method is called and what it does to the history. The
+ *  explanations are the point of the menu: "squash" and "rebase" name
+ *  operations whose consequence — one commit instead of six, a rewritten
+ *  branch — is what a reviewer is actually choosing between. */
+const MERGE_METHOD_TEXT = {
+  merge: { label: "mergeMethodMerge", hint: "mergeMethodMergeHint" },
+  squash: { label: "mergeMethodSquash", hint: "mergeMethodSquashHint" },
+  rebase: { label: "mergeMethodRebase", hint: "mergeMethodRebaseHint" },
+} as const satisfies Record<ForgeMergeMethod, { label: string; hint: string }>
+
+/**
+ * What `merge` is called where the REPOSITORY, not the caller, decides the
+ * shape of the result.
+ *
+ * GitLab's project setting reinterprets one method three ways, so the entry has
+ * to describe the setting rather than the verb — a fast-forward-only project
+ * offered "Create a merge commit" is promised a commit its history will never
+ * contain.
+ *
+ * `rebase_merge` gets its OWN wording rather than borrowing GitHub's "Rebase
+ * and merge", because the two are not the same operation: GitHub's rebases the
+ * commits on and stops there, while GitLab's rebases and then still writes a
+ * merge commit ("semi-linear history"). Reusing the text would have promised a
+ * linear history to every project set to it.
+ */
+const MERGE_STRATEGY_TEXT = {
+  merge_commit: MERGE_METHOD_TEXT.merge,
+  rebase_merge: {
+    label: "mergeMethodSemiLinear",
+    hint: "mergeMethodSemiLinearHint",
+  },
+  fast_forward: {
+    label: "mergeMethodFastForward",
+    hint: "mergeMethodFastForwardHint",
+  },
+} as const satisfies Record<ForgeMergeStrategy, { label: string; hint: string }>
+
+/** How one menu entry reads. Only `merge` is strategy-dependent: `squash` and
+ *  `rebase` mean the same thing wherever they are offered. */
+function mergeMethodText(
+  method: ForgeMergeMethod,
+  strategy: ForgeMergeStrategy
+) {
+  return method === "merge"
+    ? MERGE_STRATEGY_TEXT[strategy]
+    : MERGE_METHOD_TEXT[method]
+}
+
+/** Offered when the forge would not say what the repository permits. Not a
+ *  guess at the truth — it is the one method that means the same thing on both
+ *  forges, and the forge still refuses if it is wrong. */
+const FALLBACK_METHODS: readonly ForgeMergeMethod[] = ["merge"]
+
+/**
+ * Which merge methods this folder's repository permits.
+ *
+ * Its own request, fired only when the box that needs it is on screen: this is
+ * a REPOSITORY fact rather than a change's, so folding it into
+ * [`useChangeDetail`] would spend it on every change opened merely to read.
+ *
+ * A failure is not an error here — it answers `unknown`, which is a menu with
+ * one safe entry. A token that reads a pull request but not the repository's
+ * settings is common (and is exactly what a fine-grained GitHub token without
+ * "Administration: read" does), and losing the merge button over it would be
+ * the worse answer. `null` means the request has not come back yet.
+ */
+function useMergeOptions(
+  folderId: number | null,
+  enabled: boolean
+): ForgeMergeOptions | null {
+  const [options, setOptions] = useState<ForgeMergeOptions | null>(null)
+  /** The folder the answer above describes, so a folder switch cannot leave
+   *  one repository's permitted methods on another's button. */
+  const [shown, setShown] = useState<number | null>(null)
+  const reqRef = useRef(0)
+
+  // Absorbed during RENDER, the same rule `useChangeDetail` follows: an effect
+  // would commit one frame of the previous repository's menu.
+  if (folderId !== shown) {
+    setShown(folderId)
+    setOptions(null)
+  }
+
+  useEffect(() => {
+    if (folderId == null || !enabled) return
+    const id = ++reqRef.current
+    void forgeMergeOptions(folderId)
+      .then((next) => {
+        if (id === reqRef.current) setOptions(next)
+      })
+      .catch(() => {
+        if (id === reqRef.current) {
+          setOptions({
+            methods: [],
+            default_method: "merge",
+            merge_strategy: "merge_commit",
+          })
+        }
+      })
+  }, [folderId, enabled])
+
+  return options
+}
+
+/** One fact about whether the change can land, as a line of the box. */
+function MergeSignal({
+  Icon,
+  className,
+  title,
+  hint,
+  hintTitle,
+}: {
+  Icon: LucideIcon
+  className: string
+  title: string
+  hint: string
+  /** The forge's own word for the situation, where it has one. A tooltip
+   *  rather than a line, because the vocabularies do not line up between the
+   *  two forges and a translated guess would read as a diagnosis. */
+  hintTitle?: string
+}) {
+  return (
+    <div className="flex items-start gap-2.5 px-3 py-2.5">
+      <Icon aria-hidden className={cn("mt-px size-4 shrink-0", className)} />
+      <div className="min-w-0">
+        <p className="text-[0.8125rem] font-medium leading-5">{title}</p>
+        <p
+          title={hintTitle}
+          className="text-[0.6875rem] leading-4 text-muted-foreground"
+        >
+          {hint}
+        </p>
+      </div>
     </div>
+  )
+}
+
+/**
+ * Whether the change can land, and the button that lands it.
+ *
+ * Sits between the discussion and the composer — after everything said about
+ * the change, before the place you would say the next thing — because that is
+ * where the decision gets made. Both forges' own web UIs put it in exactly the
+ * same slot for the same reason.
+ *
+ * Two signals, then the action. The CI line is omitted when there is nothing to
+ * say (see [`checksVerdict`]); the conflict line is always there, because
+ * "nobody has worked it out yet" is a real answer on both forges and a box that
+ * quietly said nothing would read as "fine".
+ *
+ * The button is enabled for `mergeable == null` on purpose. That is the forge
+ * still computing, not a refusal — and the forge is the one that gets to say
+ * no, with words this panel could not have written.
+ */
+function MergeBox({
+  detail,
+  draft,
+  options,
+  method,
+  onMethodChange,
+  onMerge,
+  merging,
+}: {
+  detail: ForgeChangeDetail | null
+  draft: boolean
+  /** `null` until the repository's settings come back. */
+  options: ForgeMergeOptions | null
+  method: ForgeMergeMethod
+  onMethodChange: (method: ForgeMergeMethod) => void
+  onMerge: (method: ForgeMergeMethod) => void
+  merging: boolean
+}) {
+  const t = useTranslations("Forge")
+  const checks = useMemo(
+    () => checksVerdict(detail?.checks ?? null),
+    [detail?.checks]
+  )
+
+  // Whatever the repository allows, or the one safe entry when it would not
+  // say. Never empty: a split button with nothing behind it is a dead control.
+  const choices =
+    options != null && options.methods.length > 0
+      ? options.methods
+      : FALLBACK_METHODS
+  // What `merge` will actually do here. Unknown reads as a merge commit, which
+  // is what both forges do by default and what GitHub always does.
+  const strategy = options?.merge_strategy ?? "merge_commit"
+  // The permitted list can arrive AFTER a method was picked (or after the panel
+  // moved to another repository), so the selection is validated against it
+  // rather than trusted — merging with a method this repository forbids is a
+  // 405 the reader had no way to predict.
+  const armed = choices.includes(method) ? method : choices[0]
+
+  /** Why the button is off, or `null` when it is on. Draft outranks conflicts:
+   *  it is the one the author can clear themselves, and GitHub refuses a draft
+   *  before it even looks at the branch. */
+  const blocked = draft
+    ? t("mergeBlockedDraft")
+    : detail?.mergeable === false
+      ? t("mergeBlockedConflicts")
+      : null
+  // Nothing is known about the change yet — its conflicts, its checks, its
+  // state. Offering the button here would be offering it blind.
+  const disabled =
+    merging || detail == null || options == null || blocked != null
+
+  return (
+    <div className="overflow-hidden rounded-xl border border-border">
+      {checks != null ? (
+        <MergeSignal
+          Icon={CHECK_GLYPH[checks.state].Icon}
+          className={CHECK_GLYPH[checks.state].className}
+          // "All checks have passed" is a claim about EVERY check, so it is
+          // only made when every check is accounted for. A half-readable list
+          // or a skipped check gets the weaker headline instead — the counts
+          // below are the same either way, and they were never the overclaim.
+          title={t(
+            checks.state === "success" && !checks.complete
+              ? "mergeChecksIncomplete"
+              : MERGE_CHECKS_KEY[checks.state]
+          )}
+          hint={t(CHECKS_COUNT_KEY[checks.state], { count: checks.count })}
+        />
+      ) : null}
+
+      {detail?.mergeable === true ? (
+        <MergeSignal
+          Icon={CircleCheck}
+          className="text-emerald-600"
+          title={t("mergeNoConflicts")}
+          hint={t("mergeNoConflictsHint")}
+          hintTitle={detail.merge_state ?? undefined}
+        />
+      ) : detail?.mergeable === false ? (
+        <MergeSignal
+          Icon={TriangleAlert}
+          className="text-rose-600"
+          title={t("mergeConflicts")}
+          hint={t("mergeConflictsHint")}
+          hintTitle={detail.merge_state ?? undefined}
+        />
+      ) : (
+        <MergeSignal
+          Icon={CircleDot}
+          className="text-muted-foreground"
+          title={t("mergeableUnknown")}
+          hint={t("mergeCheckingHint")}
+          hintTitle={detail?.merge_state ?? undefined}
+        />
+      )}
+
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-t border-border bg-muted/30 px-3 py-2.5">
+        {/* One control split in two, not two buttons: the halves share an
+            outline so the chevron reads as belonging to the verb beside it. */}
+        <div className="flex items-stretch">
+          <Button
+            type="button"
+            size="sm"
+            disabled={disabled}
+            onClick={() => onMerge(armed)}
+            className={cn(
+              ROW_ACTION,
+              choices.length > 1 && "rounded-e-none pe-2.5"
+            )}
+          >
+            <GitMerge className={ROW_ACTION_GLYPH} aria-hidden />
+            {merging ? t("merging") : t("mergeSubmit")}
+          </Button>
+          {choices.length > 1 ? (
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  type="button"
+                  size="sm"
+                  disabled={disabled}
+                  aria-label={t("mergeMethodLabel")}
+                  title={t("mergeMethodLabel")}
+                  className={cn(
+                    ROW_ACTION,
+                    // A hairline of the panel's own background between the
+                    // halves — a border would be the button's colour against
+                    // itself and vanish.
+                    "ms-px rounded-s-none px-2"
+                  )}
+                >
+                  <ChevronDown className={ROW_ACTION_GLYPH} aria-hidden />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="start" className="w-72">
+                {choices.map((choice) => (
+                  <DropdownMenuItem
+                    key={choice}
+                    onSelect={() => onMethodChange(choice)}
+                    className="flex-col items-start gap-0.5"
+                  >
+                    <span className="flex items-center gap-1.5 font-medium">
+                      {/* Held in the layout rather than removed, so the
+                          labels stay in one column as the tick moves. */}
+                      <Check
+                        aria-hidden
+                        className={cn(
+                          "size-3.5 shrink-0",
+                          choice !== armed && "invisible"
+                        )}
+                      />
+                      {t(mergeMethodText(choice, strategy).label)}
+                    </span>
+                    <span className="ps-5 text-[0.6875rem] leading-4 text-muted-foreground">
+                      {t(mergeMethodText(choice, strategy).hint)}
+                    </span>
+                  </DropdownMenuItem>
+                ))}
+              </DropdownMenuContent>
+            </DropdownMenu>
+          ) : null}
+        </div>
+
+        {/* Why it is off, or — when it is on and there is a choice to make —
+            which method the button is currently armed with. The two never
+            compete: a disabled button has no method worth naming. */}
+        <p className="min-w-0 flex-1 text-[0.6875rem] leading-4 text-muted-foreground">
+          {blocked ??
+            (choices.length > 1
+              ? t(mergeMethodText(armed, strategy).label)
+              : "")}
+        </p>
+      </div>
+    </div>
+  )
+}
+
+/**
+ * The item as its author wrote it, and everything said about it since.
+ *
+ * The first tab of a change and the whole of an issue's panel: the two are the
+ * same content, so they are the same component rather than two that have to be
+ * kept in step.
+ */
+function Conversation({
+  row,
+  folderId,
+  onCommentPosted,
+  beforeComposer,
+}: {
+  row: ForgeIssueRow
+  folderId: number | null
+  onCommentPosted: (item: { isPr: boolean; number: number }) => void
+  /** A change's merge controls, for the slot between the thread and the box.
+   *  Absent for an issue — see [`CommentThread`]. */
+  beforeComposer?: ReactNode
+}) {
+  const t = useTranslations("Forge")
+  const body = row.body?.trim()
+  return (
+    <>
+      <div className="px-5 py-4">
+        {body ? (
+          // The forge's own Markdown, through the same renderer the chat
+          // uses — headings, task lists, tables, fenced code and images all
+          // come out as the author wrote them, and link clicks go through
+          // the app's link-safety routing rather than the webview.
+          <div
+            className={cn(
+              "break-words text-[0.8125rem] leading-relaxed",
+              BODY_MARKDOWN
+            )}
+          >
+            <MessageResponse>{body}</MessageResponse>
+          </div>
+        ) : (
+          <p className="py-6 text-center text-xs text-muted-foreground">
+            {t("detailNoBody")}
+          </p>
+        )}
+      </div>
+
+      {/* Keyed by the ITEM, not by the row object: the page re-reads the row
+          from the list on every render, so identity changes whenever anything
+          behind the panel refreshes — and a thread that remounted on each of
+          those would re-fetch, lose its loaded pages and scroll the reader back
+          to the top. The panel is non-modal, though, so clicking a different
+          row swaps the item underneath without ever closing; the key is what
+          resets it when that happens. */}
+      {folderId != null ? (
+        <CommentThread
+          key={`${row.is_pr ? "pr" : "issue"}-${row.number}`}
+          folderId={folderId}
+          kind={row.is_pr ? "pr" : "issue"}
+          number={row.number}
+          // The ITEM, not a row: this fires when the POST resolves, and by
+          // then a close or a list load may have produced a newer copy that a
+          // snapshot taken at submit time would overwrite.
+          onPosted={() =>
+            onCommentPosted({ isPr: row.is_pr, number: row.number })
+          }
+          beforeComposer={beforeComposer}
+        />
+      ) : null}
+    </>
   )
 }
 
@@ -1097,7 +1845,13 @@ function ChangedFileRow({ file }: { file: ForgeChangedFile }) {
  * The discussion is the one thing that does cost a request (see
  * [`CommentThread`]) — it is not in the list payload and could not be, because
  * a list page holds thirty items whose reader opens at most one. A pull
- * request costs one more (see [`ChangeSection`]), for the same reason.
+ * request costs one more (see [`useChangeDetail`]), for the same reason, and a
+ * third once its files are looked at (see [`ChangedFiles`]).
+ *
+ * A CHANGE is read through three tabs, an issue through one scroll. That is not
+ * a symmetry worth having: an issue has no checks and no files, so its tab bar
+ * would be one tab wide and say nothing — while a change without them queues
+ * its CI and its file list behind a discussion that pages, in a 32rem panel.
  *
  * It also WRITES: a comment, and the item's open/closed state. Both go through
  * the backend's own account resolution and both adopt the forge's answer
@@ -1161,6 +1915,93 @@ export function ForgeIssueDetailSheet({
     null
   )
   const [changing, setChanging] = useState(false)
+  /**
+   * The merge awaiting confirmation, or `null`. Its own state rather than a
+   * flag beside `pendingAction`: the two dialogs ask different questions about
+   * different operations, and one nullable field holding either would let a
+   * close's confirmation launch a merge.
+   *
+   * It carries the head commit as well as the method, and that is the whole
+   * point of the pair. The dialog asks about ONE commit — the one whose diff,
+   * files and checks are on screen behind it — so the sha is captured when it
+   * opens rather than read live at confirm time. Reading it live would let a
+   * refresh underneath the open dialog swap in a commit nobody reviewed, which
+   * is precisely what the sha guard exists to prevent.
+   */
+  const [pendingMerge, setPendingMerge] = useState<{
+    method: ForgeMergeMethod
+    headSha: string | null
+  } | null>(null)
+  const [merging, setMerging] = useState(false)
+  /** The method the reader chose from the menu, or `null` for "whatever the
+   *  repository prefers" — which is not known until the options land, and is
+   *  not this component's to guess. */
+  const [pickedMethod, setPickedMethod] = useState<ForgeMergeMethod | null>(
+    null
+  )
+
+  /** A change with somewhere to read it FROM. Both halves matter: an issue has
+   *  no branches, checks or files, and without a folder the backend has no
+   *  repository to resolve them against. */
+  const change =
+    row != null && row.is_pr && folderId != null
+      ? { folderId, number: row.number }
+      : null
+  const detail = useChangeDetail(
+    change?.folderId ?? null,
+    change?.number ?? null
+  )
+  /**
+   * A change there is still something to land. A merged one is done, and
+   * neither forge will merge a closed change — the box would be an offer to
+   * make a request that cannot succeed, which is the same rule the footer's
+   * state button follows for a merged item.
+   *
+   * BOTH copies have to say open, and neither is the authority. They go stale
+   * in opposite directions, so preferring either one is wrong half the time:
+   *
+   *  - the ROW comes from the list, which GitHub serves out of a search index
+   *    that lags a write by seconds (the reason `onRowUpdated` exists at all),
+   *    so a change merged in a browser a moment ago still reads `open` there;
+   *  - the DETAIL is kept across a failed refresh on purpose (see
+   *    `useChangeDetail` — a failed reload costs the update, not the branches
+   *    somebody was reading), so right after a merge whose re-read failed it is
+   *    the one still saying `open`, over a row that now says `merged`.
+   *
+   * "Whichever says it is no longer open" is the only composition that is right
+   * in both, and being wrong here means offering to merge something twice.
+   */
+  const canMerge =
+    change != null &&
+    row?.state === "open" &&
+    (detail.detail?.state ?? "open") === "open"
+  const mergeOptions = useMergeOptions(change?.folderId ?? null, canMerge)
+
+  const [tab, setTab] = useState<DetailTab>("conversation")
+  /** Which panes have ever been shown. A pane that has been visited stays
+   *  mounted for the rest of the panel's life — the thread's loaded pages, a
+   *  comment posted but not yet on a page, and the file list's own paging are
+   *  all state that must survive switching away and back. */
+  const [mounted, setMounted] = useState<ReadonlySet<DetailTab>>(FIRST_TAB_ONLY)
+  /** The item the two above describe. The panel is non-modal: clicking another
+   *  row swaps the item underneath without ever closing, and a reader who left
+   *  the previous change on its Files tab must not have this one's files
+   *  fetched before they ask. */
+  const [shownItem, setShownItem] = useState(change?.number ?? null)
+
+  if ((change?.number ?? null) !== shownItem) {
+    setShownItem(change?.number ?? null)
+    setTab("conversation")
+    setMounted(FIRST_TAB_ONLY)
+    // A method chosen for the previous change says nothing about this one, and
+    // the repository it belongs to may not even permit it.
+    setPickedMethod(null)
+  } else if (!mounted.has(tab)) {
+    // Not folded into the branch above: both queue updates for the SAME state,
+    // and this one — computed from the outgoing item's tab — would be applied
+    // last and undo the reset.
+    setMounted(new Set(mounted).add(tab))
+  }
 
   const applyState = useCallback(
     async (action: ForgeStateAction) => {
@@ -1187,6 +2028,67 @@ export function ForgeIssueDetailSheet({
     [folderId, onRowUpdated, row, tRoot]
   )
 
+  const reloadDetail = detail.reload
+  const applyMerge = useCallback(
+    async (pending: { method: ForgeMergeMethod; headSha: string | null }) => {
+      if (row == null || folderId == null) return
+      setMerging(true)
+      try {
+        const updated = await forgeMergeChange(folderId, {
+          number: row.number,
+          method: pending.method,
+          // The commit the DIALOG was armed with, not whatever the panel holds
+          // now. The diff, the file list and the checks all describe that one,
+          // so a merge that quietly landed a newer one would land code nobody
+          // in this conversation ever saw. Both forges answer 409 if the branch
+          // has moved, in their own words.
+          headSha: pending.headSha,
+        })
+        setPendingMerge(null)
+        // `null` is "it merged, and the row could not be read back" — GitHub's
+        // merge response does not contain the pull request, so the row costs a
+        // second request that can fail on its own. Flipping the state locally
+        // is exactly the guess this code refuses to make everywhere else, and
+        // it is sound HERE and only here: the merge itself returned success.
+        onRowUpdated(
+          updated != null
+            ? mergeForgeRowUpdate(row, updated)
+            : { ...row, state: "merged" }
+        )
+        // Said out loud, unlike a close: the row's glyph is the only other
+        // sign, and it is behind whatever the reader was looking at.
+        toast.success(t("mergeDone"))
+        // The detail is now stale in a way that SHOWS: `MergeReadiness` keys
+        // off its own copy of the state, so without this the Checks tab would
+        // go on offering "Can be merged" for a change that already landed.
+        reloadDetail()
+      } catch (error) {
+        // A toast for the same reason a state change uses one — the dialog
+        // this was launched from covers wherever a strip would have gone. The
+        // forge's own sentence comes through it ("Pull Request is not
+        // mergeable", "Head branch was modified. Review and try the merge
+        // again.").
+        toast.error(
+          toLocalizedErrorMessage(error, tRoot as unknown as AppErrorTranslator)
+        )
+        // The confirmation is DISMISSED on failure, unlike the close/reopen
+        // one that stays put. It has to be: the likeliest refusal is "Head
+        // branch was modified. Review and try the merge again.", and the whole
+        // answer to that is to go back and look. Leaving it open would offer a
+        // one-click retry over a panel that is about to re-read into a
+        // different commit — the review surface is the box underneath, not this
+        // dialog. The reason is in the toast, which outlives it either way.
+        setPendingMerge(null)
+        // And re-read, so what the reader goes back to is the change as it is
+        // NOW rather than the one that was just refused.
+        reloadDetail()
+      } finally {
+        setMerging(false)
+      }
+    },
+    [folderId, onRowUpdated, reloadDetail, row, t, tRoot]
+  )
+
   if (row == null) return null
 
   const chip = chipStateForLink(link)
@@ -1194,7 +2096,6 @@ export function ForgeIssueDetailSheet({
   const terminal = chip === "terminal"
   const { Icon, className: glyphClass, labelKey } = stateGlyph(row)
   const stateLabel = t(labelKey)
-  const body = row.body?.trim()
   /** Which way the state button points — and whether there is one at all.
    *
    *  A MERGED change has no state left to set: it is already closed, and
@@ -1258,6 +2159,18 @@ export function ForgeIssueDetailSheet({
                   ))}
                 </div>
               ) : null}
+              {/* Which branches a change joins is what it IS, so it stays in
+                  the header rather than going behind a tab — you should not
+                  have to leave the discussion to find out where the code is
+                  headed. A placeholder holds the line while the detail is out,
+                  so the tab strip below does not jump when it lands. */}
+              {change != null ? (
+                detail.detail != null ? (
+                  <BranchPair detail={detail.detail} />
+                ) : detail.loading ? (
+                  <Skeleton aria-hidden className="h-5 w-48" />
+                ) : null
+              ) : null}
             </div>
           </div>
           <DrawerDescription className="sr-only">
@@ -1265,59 +2178,97 @@ export function ForgeIssueDetailSheet({
           </DrawerDescription>
         </DrawerHeader>
 
-        <ScrollArea className="min-h-0 flex-1">
-          <div className="px-5 py-4">
-            {body ? (
-              // The forge's own Markdown, through the same renderer the chat
-              // uses — headings, task lists, tables, fenced code and images all
-              // come out as the author wrote them, and link clicks go through
-              // the app's link-safety routing rather than the webview.
-              <div
-                className={cn(
-                  "break-words text-[0.8125rem] leading-relaxed",
-                  BODY_MARKDOWN
-                )}
-              >
-                <MessageResponse>{body}</MessageResponse>
-              </div>
-            ) : (
-              <p className="py-6 text-center text-xs text-muted-foreground">
-                {t("detailNoBody")}
-              </p>
-            )}
-          </div>
+        {change != null ? (
+          <Tabs
+            value={tab}
+            onValueChange={(value) => setTab(value as DetailTab)}
+            // `gap-0`: the strip below draws the separation with a border, and
+            // the root's own gap would leave a bare stripe under it.
+            className="min-h-0 flex-1 gap-0"
+          >
+            {/* The same segmented control the list above the panel uses to
+                switch issues and changes — one switcher shape for the whole
+                surface, rather than a second idiom four inches away. */}
+            <div className="shrink-0 border-b border-border px-5 py-2">
+              {/* Height left alone deliberately. `TabsList` sets its own
+                  through `group-data-horizontal/tabs:h-9`, and a variant-gated
+                  rule outranks a bare `h-8` however late it is passed — the
+                  override would read as applied and render as ignored. */}
+              <TabsList aria-label={t("detailTabs")} className="w-full">
+                <TabsTrigger value="conversation" className="text-[0.8125rem]">
+                  {t("tabConversation")}
+                </TabsTrigger>
+                <TabsTrigger value="checks" className="text-[0.8125rem]">
+                  {t("checks")}
+                  <ChecksBadge checks={detail.detail?.checks ?? null} />
+                </TabsTrigger>
+                <TabsTrigger value="files" className="text-[0.8125rem]">
+                  {t("filesTitle")}
+                  <CountBadge value={detail.detail?.changed_files ?? null} />
+                </TabsTrigger>
+              </TabsList>
+            </div>
 
-          {/* Both sections are keyed by the ITEM, not by the row object: the
-              page re-reads the row from the list on every render, so identity
-              changes whenever anything behind the panel refreshes — and a
-              section that remounted on each of those would re-fetch, lose its
-              loaded pages and scroll the reader back to the top. The panel is
-              non-modal, though, so clicking a different row swaps the item
-              underneath without ever closing; the key is what resets them when
-              that happens. */}
-          {folderId != null && row.is_pr ? (
-            <ChangeSection
-              key={`change-${row.number}`}
+            <TabPane value="conversation" active={tab} mounted={mounted}>
+              <Conversation
+                row={row}
+                folderId={folderId}
+                onCommentPosted={onCommentPosted}
+                beforeComposer={
+                  canMerge ? (
+                    <MergeBox
+                      detail={detail.detail}
+                      // Same composition as `canMerge`, for the same reason:
+                      // EITHER copy calling it a draft withholds the button.
+                      // The list can be behind on a change marked ready for
+                      // review a minute ago, and a retained detail can be
+                      // behind on one marked ready since it was fetched.
+                      draft={row.draft || (detail.detail?.draft ?? false)}
+                      options={mergeOptions}
+                      method={
+                        pickedMethod ?? mergeOptions?.default_method ?? "merge"
+                      }
+                      onMethodChange={setPickedMethod}
+                      // The head is captured HERE, as the dialog opens, so the
+                      // question it asks and the request it sends describe the
+                      // same commit.
+                      onMerge={(method) =>
+                        setPendingMerge({
+                          method,
+                          headSha: detail.detail?.head_sha ?? null,
+                        })
+                      }
+                      merging={merging}
+                    />
+                  ) : undefined
+                }
+              />
+            </TabPane>
+            <TabPane value="checks" active={tab} mounted={mounted}>
+              <ChecksPanel change={detail} />
+            </TabPane>
+            <TabPane value="files" active={tab} mounted={mounted}>
+              {/* Keyed by the item for the same reason the thread is: the row
+                  object changes identity whenever the list behind the panel
+                  refreshes, and only a change of ITEM should throw the loaded
+                  pages away. */}
+              <ChangedFiles
+                key={`files-${change.number}`}
+                folderId={change.folderId}
+                number={change.number}
+                detail={detail.detail}
+              />
+            </TabPane>
+          </Tabs>
+        ) : (
+          <ScrollArea className="min-h-0 flex-1">
+            <Conversation
+              row={row}
               folderId={folderId}
-              number={row.number}
+              onCommentPosted={onCommentPosted}
             />
-          ) : null}
-
-          {folderId != null ? (
-            <CommentThread
-              key={`${row.is_pr ? "pr" : "issue"}-${row.number}`}
-              folderId={folderId}
-              kind={row.is_pr ? "pr" : "issue"}
-              number={row.number}
-              // The ITEM, not a row: this fires when the POST resolves, and by
-              // then a close or a list load may have produced a newer copy
-              // that a snapshot taken at submit time would overwrite.
-              onPosted={() =>
-                onCommentPosted({ isPr: row.is_pr, number: row.number })
-              }
-            />
-          ) : null}
-        </ScrollArea>
+          </ScrollArea>
+        )}
 
         {/* The way out to the forge and the state verb on one side, what to DO
             about the item on the other. Same pills as the row, so an item's
@@ -1478,6 +2429,55 @@ export function ForgeIssueDetailSheet({
               {changing
                 ? t("stateChanging")
                 : t(pendingAction === "reopen" ? "reopenItem" : "closeItem")}
+            </Button>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Its own dialog rather than a mode of the one above. Merging is asked
+          about for the same reason closing is — one click, nothing typed, on
+          somebody else's repository — but it names a different consequence,
+          and it is the one of the two that cannot be undone from here. */}
+      <AlertDialog
+        open={pendingMerge != null}
+        onOpenChange={(open) => {
+          if (!open && !merging) setPendingMerge(null)
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t("mergeConfirmTitle")}</AlertDialogTitle>
+            <AlertDialogDescription>
+              {t("mergeConfirmBody", {
+                title: row.title,
+                base: detail.detail?.base_ref ?? "",
+              })}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={merging}>
+              {t("cancel")}
+            </AlertDialogCancel>
+            {/* Not `AlertDialogAction`, for the same reason as above: that one
+                closes on click and would take the busy state and the failure
+                with it. This closes when the merge SUCCEEDS. */}
+            <Button
+              type="button"
+              disabled={merging || pendingMerge == null}
+              onClick={() => {
+                if (pendingMerge != null) void applyMerge(pendingMerge)
+              }}
+            >
+              {merging
+                ? t("merging")
+                : t(
+                    pendingMerge == null
+                      ? "mergeSubmit"
+                      : mergeMethodText(
+                          pendingMerge.method,
+                          mergeOptions?.merge_strategy ?? "merge_commit"
+                        ).label
+                  )}
             </Button>
           </AlertDialogFooter>
         </AlertDialogContent>

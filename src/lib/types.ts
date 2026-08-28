@@ -1586,8 +1586,50 @@ export interface ForgeCommentList {
 /** What the panel's state button does to an item (mirrors Rust
  *  ForgeStateAction). Two VERBS rather than a target state — that is what
  *  GitLab's API takes and what a button means. Merging is deliberately absent:
- *  it is a different operation with its own preconditions, not a state. */
+ *  it is a different operation with its own preconditions, not a state. It has
+ *  its own door — see `ForgeMergeMethod`. */
 export type ForgeStateAction = "close" | "reopen"
+
+/** How a change is joined to its base branch (mirrors Rust ForgeMergeMethod).
+ *
+ *  One vocabulary, two very different offers behind it. GitHub takes the method
+ *  per merge and lets a repository forbid any of the three. GitLab takes no
+ *  method at all — the PROJECT picks between a merge commit, a rebase-merge and
+ *  a fast-forward — and the only thing a caller chooses is whether to squash,
+ *  so `rebase` never reaches it. Which is why the menu is built from
+ *  `ForgeMergeOptions` rather than from this union. */
+export type ForgeMergeMethod = "merge" | "squash" | "rebase"
+
+/** What `merge` actually DOES to the history (mirrors Rust
+ *  ForgeMergeStrategy).
+ *
+ *  The method and the result are the same question on GitHub — `merge` writes a
+ *  merge commit, full stop. On GitLab they are not: the project's own setting
+ *  picks between a merge commit, a rebase-then-merge and a fast-forward, and
+ *  the API offers no override. This is what stops the menu promising a merge
+ *  commit to a fast-forward-only project. */
+export type ForgeMergeStrategy =
+  | "merge_commit"
+  | "rebase_merge"
+  | "fast_forward"
+
+/** The merge methods one repository permits (mirrors Rust ForgeMergeOptions).
+ *
+ *  Asked for separately from `ForgeChangeDetail` and only when the panel is
+ *  about to draw the button: it is a REPOSITORY fact, and folding it into the
+ *  detail would spend a request on every change opened merely to read it. */
+export interface ForgeMergeOptions {
+  /** In the order to offer them. EMPTY means the forge would not say — a token
+   *  that reads the change but not the repository's settings gets this — and
+   *  the panel then offers `merge` alone rather than entries that can only
+   *  fail. */
+  methods: ForgeMergeMethod[]
+  /** Which one starts selected. Always a member of `methods` when that is
+   *  non-empty. */
+  default_method: ForgeMergeMethod
+  /** What `merge` will do here — see `ForgeMergeStrategy`. */
+  merge_strategy: ForgeMergeStrategy
+}
 
 /** How a check ended up, in ONE vocabulary (mirrors Rust ForgeCheckState).
  *
@@ -1684,6 +1726,15 @@ export interface ForgeChangedFile {
   additions: number | null
   deletions: number | null
   binary: boolean
+  /** The file's own unified diff, as the forge shipped it with the page — it
+   *  costs no extra request, the backend simply stopped discarding it.
+   *
+   *  Null means there is nothing to open onto, for either of two reasons: the
+   *  content is binary, or the forge WITHHELD the diff (GitHub omits it past
+   *  its own size limit while still reporting the line counts). Neither is an
+   *  empty diff, which is why the row offers no reveal rather than a reveal
+   *  onto nothing. */
+  patch: string | null
 }
 
 /** One page of a change's file list (mirrors Rust ForgeChangedFileList). */

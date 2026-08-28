@@ -689,6 +689,54 @@ pub async fn forge_change_files_core(
     })
 }
 
+/// Which merge methods the folder's repository permits.
+///
+/// A repository fact, not a change's, which is why it is not a field on
+/// [`forge_change_detail_core`]: folding it in would spend a request on every
+/// change opened merely to read it. The panel asks once, and only when it is
+/// about to draw the merge button.
+pub async fn forge_merge_options_core(
+    db: &AppDatabase,
+    folder_id: i32,
+    account_id: Option<String>,
+) -> Result<forge::ForgeMergeOptions, AppCommandError> {
+    let (remote, auth) = resolve_folder_repo(db, folder_id, account_id.as_deref()).await?;
+    Ok(match remote.provider {
+        ForgeProvider::GitHub => forge::github::merge_options(&auth, &remote.owner_repo).await?,
+        ForgeProvider::GitLab => forge::gitlab::merge_options(&auth, &remote.owner_repo).await?,
+    })
+}
+
+/// Land one proposed change, and hand back the row the forge now serves.
+///
+/// The returned row is the point, exactly as it is for
+/// [`forge_set_item_state_core`]: the panel adopts the forge's copy rather than
+/// flipping `state` locally. A merge is the one write where that matters most —
+/// GitHub has no merged STATE (a merged pull request reports `closed`, and only
+/// `merged_at` tells them apart), so a local guess would paint a change that
+/// just landed as one somebody abandoned.
+///
+/// `Ok(None)` means the merge SUCCEEDED and the row could not be read back.
+/// Distinguishing that from an error is the difference between "it landed, the
+/// list will catch up" and inviting somebody to merge the same change twice.
+pub async fn forge_merge_change_core(
+    db: &AppDatabase,
+    folder_id: i32,
+    request: forge::ChangeMergeRequest,
+) -> Result<Option<forge::ForgeIssueRow>, AppCommandError> {
+    let (number, method, head_sha) = request.resolve().map_err(AppCommandError::from)?;
+    let (remote, auth) = resolve_folder_repo(db, folder_id, request.account_id.as_deref()).await?;
+    let head_sha = head_sha.as_deref();
+    Ok(match remote.provider {
+        ForgeProvider::GitHub => {
+            forge::github::merge_change(&auth, &remote.owner_repo, number, method, head_sha).await?
+        }
+        ForgeProvider::GitLab => {
+            forge::gitlab::merge_change(&auth, &remote.owner_repo, number, method, head_sha).await?
+        }
+    })
+}
+
 /// The repository's label vocabulary, for the workbench's label filter. Its
 /// own command rather than a field on the list response: the labels change far
 /// more slowly than the list, so the frontend fetches them once per repository
@@ -1058,6 +1106,26 @@ pub async fn forge_change_files(
     query: forge::ChangeFilesQuery,
 ) -> Result<forge::ForgeChangedFileList, AppCommandError> {
     forge_change_files_core(&db, folder_id, query).await
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn forge_merge_options(
+    db: tauri::State<'_, AppDatabase>,
+    folder_id: i32,
+    account_id: Option<String>,
+) -> Result<forge::ForgeMergeOptions, AppCommandError> {
+    forge_merge_options_core(&db, folder_id, account_id).await
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn forge_merge_change(
+    db: tauri::State<'_, AppDatabase>,
+    folder_id: i32,
+    request: forge::ChangeMergeRequest,
+) -> Result<Option<forge::ForgeIssueRow>, AppCommandError> {
+    forge_merge_change_core(&db, folder_id, request).await
 }
 
 #[cfg(feature = "tauri-runtime")]

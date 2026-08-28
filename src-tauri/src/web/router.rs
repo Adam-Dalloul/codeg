@@ -1381,6 +1381,14 @@ pub fn build_router(
             post(handlers::forge::forge_change_files),
         )
         .route(
+            "/forge_merge_options",
+            post(handlers::forge::forge_merge_options),
+        )
+        .route(
+            "/forge_merge_change",
+            post(handlers::forge::forge_merge_change),
+        )
+        .route(
             "/work_task_create_from_forge",
             post(handlers::forge::work_task_create_from_forge),
         )

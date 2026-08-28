@@ -36,7 +36,8 @@ use super::{
     validate_state_filter, web_origin, ForgeChangeDetail, ForgeChangedFile, ForgeChangedFileList,
     ForgeCheck, ForgeCheckList, ForgeCheckState, ForgeComment, ForgeCommentList, ForgeError,
     ForgeFileStatus, ForgeIssueList, ForgeIssueRow, ForgeItemKind, ForgeLabel, ForgeLabelList,
-    ForgeSort, ForgeStateAction, ListIssuesRequest, ResolvedNewIssue, BODY_CAP, LABEL_PAGE_SIZE,
+    ForgeMergeMethod, ForgeMergeOptions, ForgeMergeStrategy, ForgeSort, ForgeStateAction,
+    ListIssuesRequest, ResolvedNewIssue, BODY_CAP, LABEL_PAGE_SIZE,
 };
 
 // ── reads ───────────────────────────────────────────────────────────────────
@@ -666,6 +667,150 @@ async fn legacy_change_files(
     })
 }
 
+// ── merging ─────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+struct RawProjectMergeSettings {
+    /// `merge` | `rebase_merge` | `ff`.
+    #[serde(default)]
+    merge_method: Option<String>,
+    /// `never` | `always` | `default_on` | `default_off`.
+    #[serde(default)]
+    squash_option: Option<String>,
+}
+
+/// GitLab's three project-level merge methods, as the shared strategy.
+///
+/// This is NOT a choice the caller gets — the API takes no method — so it only
+/// ever describes what will happen. Describing it is the point: a project set
+/// to `ff` that was offered "Create a merge commit" would be told its history
+/// gets a merge commit it will never have.
+fn merge_strategy(merge_method: Option<&str>) -> ForgeMergeStrategy {
+    match merge_method {
+        Some("ff") => ForgeMergeStrategy::FastForward,
+        Some("rebase_merge") => ForgeMergeStrategy::RebaseMerge,
+        _ => ForgeMergeStrategy::MergeCommit,
+    }
+}
+
+/// Which merge methods this project permits.
+///
+/// GitLab's merge endpoint takes NO method: the project's own `merge_method`
+/// setting decides between a merge commit, a rebase-merge and a fast-forward,
+/// and the caller cannot override it. So the only real choice here is whether
+/// to squash first, and the menu is at most two entries deep.
+///
+/// [`ForgeMergeMethod::Rebase`] is never offered. GitLab does rebase a merge
+/// request, but through `PUT /merge_requests/{iid}/rebase` — a different
+/// operation, asynchronous, that this module does not call. An entry for it
+/// would be an offer to make a request that is never made.
+pub async fn merge_options(
+    auth: &ResolvedAuth,
+    owner_repo: &str,
+) -> Result<ForgeMergeOptions, ForgeError> {
+    let project = project_ref(owner_repo)?;
+    let url = format!("{}/projects/{project}", auth.api_base);
+    let raw: RawProjectMergeSettings = api_get(auth, &url)
+        .await?
+        .json()
+        .await
+        .map_err(|e| ForgeError::Network(format!("bad project payload: {e}")))?;
+
+    // The presence of EITHER key is what says this payload really is a
+    // project's settings — an instance old enough to omit both tells us
+    // nothing, and inventing "squash is available" from that would put an entry
+    // in the menu that 422s.
+    let squash = match (raw.merge_method.as_deref(), raw.squash_option.as_deref()) {
+        (None, None) => return Ok(ForgeMergeOptions::unknown()),
+        (_, option) => option.unwrap_or("default_off"),
+    };
+    let strategy = merge_strategy(raw.merge_method.as_deref());
+    Ok(match squash {
+        // The project REQUIRES squashing: offering "Merge" as well would offer
+        // a request GitLab rewrites into the other one.
+        "always" => ForgeMergeOptions {
+            methods: vec![ForgeMergeMethod::Squash],
+            default_method: ForgeMergeMethod::Squash,
+            merge_strategy: strategy,
+        },
+        "never" => ForgeMergeOptions {
+            methods: vec![ForgeMergeMethod::Merge],
+            default_method: ForgeMergeMethod::Merge,
+            merge_strategy: strategy,
+        },
+        // Both offered; the project says which one the box opens on.
+        other => ForgeMergeOptions {
+            methods: vec![ForgeMergeMethod::Merge, ForgeMergeMethod::Squash],
+            default_method: if other == "default_on" {
+                ForgeMergeMethod::Squash
+            } else {
+                ForgeMergeMethod::Merge
+            },
+            merge_strategy: strategy,
+        },
+    })
+}
+
+/// Merge one merge request, and hand back the row the project now serves.
+///
+/// ONE request, unlike GitHub's two: `PUT /merge_requests/{iid}/merge` answers
+/// with the merge request itself, so the row the panel adopts comes straight
+/// out of the write through the same [`RawItem`] mapper the list uses.
+/// `Ok(None)` is therefore only ever "it merged and the answer did not parse",
+/// which is not an error — the change has landed, and reporting a failure would
+/// invite somebody to try an irreversible operation a second time.
+///
+/// [`ForgeMergeMethod::Rebase`] is REFUSED rather than quietly treated as a
+/// plain merge. GitLab rebases through `PUT /merge_requests/{iid}/rebase`, an
+/// asynchronous operation this module does not call, and a caller that asked
+/// for one and got a merge commit was told the wrong thing about its own
+/// history. The panel never offers it (see [`merge_options`]); this is the
+/// guard for every other caller, the server binary's HTTP surface included.
+///
+/// `head_sha`, when given, is the commit the caller was looking at. GitLab
+/// refuses with a 409 if the source branch has moved since — which is the whole
+/// point of passing it.
+///
+/// A refusal keeps GitLab's own words — 405 for a merge request that cannot be
+/// merged (closed, draft, pipeline still running under "merge when pipeline
+/// succeeds"), 406 for one that conflicts — because `finish` files anything
+/// that is not a rate limit or an auth failure as [`ForgeError::Api`] with the
+/// body attached.
+pub async fn merge_change(
+    auth: &ResolvedAuth,
+    owner_repo: &str,
+    iid: i64,
+    method: ForgeMergeMethod,
+    head_sha: Option<&str>,
+) -> Result<Option<ForgeIssueRow>, ForgeError> {
+    let project = project_ref(owner_repo)?;
+    if iid <= 0 {
+        return Err(ForgeError::Invalid(format!("bad work item number: {iid}")));
+    }
+    if method == ForgeMergeMethod::Rebase {
+        return Err(ForgeError::Invalid(
+            "GitLab rebases through its own endpoint; it cannot be a merge method".to_string(),
+        ));
+    }
+    let url = format!(
+        "{}/projects/{project}/merge_requests/{iid}/merge",
+        auth.api_base
+    );
+    // `squash` is sent EXPLICITLY either way rather than only when squashing.
+    // The project's `squash_option` can default it to on, and omitting the
+    // field on a "Merge" would then squash a change whose author asked for the
+    // commits to be kept.
+    let mut payload = serde_json::json!({ "squash": method == ForgeMergeMethod::Squash });
+    if let Some(sha) = head_sha {
+        payload["sha"] = serde_json::Value::String(sha.to_string());
+    }
+    let response = api_put(auth, &url, &payload).await?;
+
+    // Past this line the change HAS landed, so nothing below may return `Err`.
+    let raw: Option<RawItem> = response.json().await.ok();
+    Ok(raw.map(|raw| raw.into_row(true)))
+}
+
 // ── plumbing ────────────────────────────────────────────────────────────────
 
 /// `GET {api_base}/user` → username, cached per `(api_base, account)`.
@@ -1149,6 +1294,10 @@ impl RawDiff {
             additions: (!binary).then_some(additions),
             deletions: (!binary).then_some(deletions),
             binary,
+            // The same text the counters above were counted off. Blank is
+            // already what `binary` keys off here, so the two agree by
+            // construction: a row with no counts also has nothing to open.
+            patch: (!binary).then_some(self.diff),
         }
     }
 }
@@ -2002,10 +2151,49 @@ mod tests {
             }
         });
 
+        let w = writes.clone();
+        let merge_mr = put(
+            move |Path(iid): Path<i64>, Json(body): Json<serde_json::Value>| {
+                let w = w.clone();
+                async move {
+                    w.lock().unwrap().push((
+                        "PUT".into(),
+                        format!("merge_requests/{iid}/merge"),
+                        body.clone(),
+                    ));
+                    // GitLab answers with the merge request ITSELF, which is
+                    // why this needs no second request the way GitHub's does.
+                    Json(item_json(iid, "merged"))
+                }
+            },
+        );
+
+        let project_settings = |merge_method: &'static str, squash: &'static str| {
+            get(move || async move {
+                Json(serde_json::json!({
+                    "merge_method": merge_method,
+                    "squash_option": squash,
+                }))
+            })
+        };
+
         let app = axum::Router::new()
             .route("/projects/group%2Fsub%2Fproj/issues/{iid}", edit_issue)
             .route("/projects/group%2Fsub%2Fproj/merge_requests/{iid}", edit_mr)
+            .route(
+                "/projects/group%2Fsub%2Fproj/merge_requests/{iid}/merge",
+                merge_mr,
+            )
             .route("/projects/group%2Fsub%2Fproj/issues", new_issue)
+            .route(
+                "/projects/group%2Fsub%2Fproj",
+                project_settings("merge", "default_on"),
+            )
+            .route("/projects/acme%2Falways", project_settings("ff", "always"))
+            .route("/projects/acme%2Fnever", project_settings("merge", "never"))
+            // An instance too old to report either key. Nothing is known, so
+            // nothing is claimed — see `ForgeMergeOptions::unknown`.
+            .route("/projects/acme%2Flegacy", get(|| async { Json(serde_json::json!({})) }))
             .route(
                 "/detail/projects/group%2Fsub%2Fproj/merge_requests/4",
                 get(|| async {
@@ -2174,6 +2362,117 @@ mod tests {
             .is_err());
     }
 
+    /// GitLab's merge endpoint takes NO method — the project picks between a
+    /// merge commit, a rebase-merge and a fast-forward — so the only choice
+    /// offered is whether to squash, and `squash_option` decides even that.
+    #[tokio::test]
+    async fn merge_options_offer_only_the_squash_choice_the_project_allows() {
+        let (api_base, _writes) = mock_write_api().await;
+        let auth = auth_for(api_base);
+
+        let both = merge_options(&auth, "Group/Sub/Proj").await.expect("both");
+        assert_eq!(
+            both.methods,
+            vec![ForgeMergeMethod::Merge, ForgeMergeMethod::Squash]
+        );
+        // `default_on` — the project's own preference decides which entry the
+        // box opens on, not the order they happen to be listed in.
+        assert_eq!(both.default_method, ForgeMergeMethod::Squash);
+
+        // Squashing is COMPULSORY here: offering "Merge" as well would offer a
+        // request GitLab rewrites into the other one.
+        let always = merge_options(&auth, "acme/always").await.expect("always");
+        assert_eq!(always.methods, vec![ForgeMergeMethod::Squash]);
+        assert_eq!(always.default_method, ForgeMergeMethod::Squash);
+
+        // What `Merge` will actually DO, which on GitLab is the project's
+        // choice and not the caller's. `acme/always` is a fast-forward project:
+        // labelling its entry "create a merge commit" would promise a commit
+        // its history will never contain.
+        assert_eq!(both.merge_strategy, ForgeMergeStrategy::MergeCommit);
+        assert_eq!(always.merge_strategy, ForgeMergeStrategy::FastForward);
+
+        let never = merge_options(&auth, "acme/never").await.expect("never");
+        assert_eq!(never.methods, vec![ForgeMergeMethod::Merge]);
+
+        // Neither key present: nothing is known, so nothing is offered — the
+        // panel falls back to one safe entry and lets GitLab have the last
+        // word. Inventing "squash is available" here would 422 at merge time.
+        let legacy = merge_options(&auth, "acme/legacy").await.expect("legacy");
+        assert!(legacy.methods.is_empty());
+        assert_eq!(legacy.default_method, ForgeMergeMethod::Merge);
+
+        // Rebase is never on the menu: GitLab rebases through a different
+        // endpoint, which this module does not call.
+        assert!(!both.methods.contains(&ForgeMergeMethod::Rebase));
+
+        assert!(merge_options(&auth, "no-slash").await.is_err());
+    }
+
+    /// One request, unlike GitHub's two: the merge answers with the merge
+    /// request itself, so the row comes straight out of the write.
+    #[tokio::test]
+    async fn a_merge_sends_squash_explicitly_and_reads_the_row_from_the_answer() {
+        let (api_base, writes) = mock_write_api().await;
+        let auth = auth_for(api_base);
+
+        let row = merge_change(
+            &auth,
+            "Group/Sub/Proj",
+            9,
+            ForgeMergeMethod::Squash,
+            Some("cafe123"),
+        )
+        .await
+        .expect("merge")
+        .expect("the answer IS the row here");
+        assert!(row.is_pr);
+        assert_eq!(row.state, "merged");
+        assert_eq!(row.number, 9);
+
+        merge_change(&auth, "group/sub/proj", 9, ForgeMergeMethod::Merge, None)
+            .await
+            .expect("merge without squashing");
+
+        let sent = writes.lock().unwrap().clone();
+        assert_eq!(sent[0].0, "PUT");
+        assert_eq!(sent[0].1, "merge_requests/9/merge");
+        assert_eq!(sent[0].2["squash"], true);
+        // The commit the caller was reading. GitLab refuses with a 409 if the
+        // source branch moved since, which is the point of sending it.
+        assert_eq!(sent[0].2["sha"], "cafe123");
+        // Sent EXPLICITLY as false rather than omitted: the project's
+        // `squash_option` can default it on, and a missing field would then
+        // squash a change whose author asked for the commits to be kept.
+        assert_eq!(sent[1].2["squash"], false);
+        assert!(sent[1].2.get("sha").is_none(), "absent, not null");
+
+        // REFUSED, not quietly downgraded. GitLab rebases through its own
+        // endpoint, and a caller told "rebased" that got a merge commit was
+        // told the wrong thing about its own history. The panel never offers
+        // this; the server binary's HTTP surface can still ask for it.
+        let refused = merge_change(&auth, "group/sub/proj", 9, ForgeMergeMethod::Rebase, None)
+            .await
+            .expect_err("rebase is not a merge method here");
+        assert!(matches!(refused, ForgeError::Invalid(_)));
+        assert_eq!(
+            writes.lock().unwrap().len(),
+            2,
+            "and nothing was sent for it"
+        );
+
+        assert!(
+            merge_change(&auth, "group/sub/proj", 0, ForgeMergeMethod::Merge, None)
+                .await
+                .is_err()
+        );
+        assert!(
+            merge_change(&auth, "no-slash", 9, ForgeMergeMethod::Merge, None)
+                .await
+                .is_err()
+        );
+    }
+
     /// Labels go out COMMA-JOINED here, not as a JSON array — GitHub's shape
     /// would apply no labels at all, silently.
     #[tokio::test]
@@ -2288,10 +2587,19 @@ mod tests {
         // each side of every file in the list.
         assert_eq!((page.files[0].additions, page.files[0].deletions), (Some(2), Some(1)));
         assert_eq!(page.files[0].status, ForgeFileStatus::Modified);
+        // The very text those counters were counted off, kept rather than
+        // discarded — a file row opens onto it.
+        assert_eq!(
+            page.files[0].patch.as_deref(),
+            Some("--- a/src/a.rs\n+++ b/src/a.rs\n@@ -1,2 +1,3 @@\n ctx\n-old\n+new\n+more\n")
+        );
         assert_eq!(page.files[1].status, ForgeFileStatus::Renamed);
         assert_eq!(page.files[1].previous_path.as_deref(), Some("src/old.rs"));
         assert!(page.files[2].binary);
         assert_eq!((page.files[2].additions, page.files[2].deletions), (None, None));
+        // Binary and "no diff" are one and the same answer here, unlike on
+        // GitHub: a blank `diff` is the only way GitLab says either.
+        assert!(page.files[2].patch.is_none());
         assert!(page.has_next, "from `x-next-page`, never from the row count");
     }
 

@@ -942,7 +942,8 @@ impl CommentDraft {
 /// is an action, `state = "closed"` is an assertion about a value that may have
 /// changed since the panel drew it. Merging is deliberately NOT here — it is a
 /// different operation with its own preconditions (method, conflicts, required
-/// checks), not a state to be set.
+/// checks), not a state to be set. It has its own door: see
+/// [`ChangeMergeRequest`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ForgeStateAction {
@@ -989,6 +990,131 @@ impl StateChangeRequest {
             )));
         }
         Ok((kind, self.number, self.action))
+    }
+}
+
+/// How a proposed change is joined to its base branch.
+///
+/// One vocabulary, but the two forges hand the choice over very differently.
+/// GitHub takes the method per merge (`merge_method` on the request) and lets a
+/// repository forbid any of the three. GitLab takes no method at all — the
+/// PROJECT decides between a merge commit, a rebase-merge and a fast-forward —
+/// and the only thing a caller picks is whether to squash first. Which is why
+/// [`ForgeMergeOptions`] exists: the menu is what the repository permits, not
+/// what this enum can spell.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ForgeMergeMethod {
+    Merge,
+    Squash,
+    Rebase,
+}
+
+impl ForgeMergeMethod {
+    /// GitHub's `merge_method` value on `PUT /pulls/{n}/merge`.
+    pub fn github_method(self) -> &'static str {
+        match self {
+            ForgeMergeMethod::Merge => "merge",
+            ForgeMergeMethod::Squash => "squash",
+            ForgeMergeMethod::Rebase => "rebase",
+        }
+    }
+}
+
+/// What [`ForgeMergeMethod::Merge`] actually DOES to the history here.
+///
+/// The method a caller picks and the shape of the result are the same question
+/// on GitHub — `merge` writes a merge commit, full stop. On GitLab they are
+/// not: the project's `merge_method` decides between a merge commit, a
+/// rebase-then-merge and a fast-forward, and the API offers no override. Naming
+/// that separately is what stops the menu promising a merge commit to a
+/// fast-forward-only project.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ForgeMergeStrategy {
+    MergeCommit,
+    RebaseMerge,
+    FastForward,
+}
+
+/// The merge methods one repository actually permits.
+///
+/// Asked for separately from [`ForgeChangeDetail`] and only when the panel is
+/// about to offer the button: it is a REPOSITORY fact, not a change's, and
+/// folding it into the detail would spend a request on every change opened for
+/// reading.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct ForgeMergeOptions {
+    /// In the order to offer them.
+    ///
+    /// Empty means the forge would not say — a token that can read the change
+    /// but not the repository's settings gets this, and the panel then offers
+    /// [`ForgeMergeMethod::Merge`] alone rather than three menu entries of
+    /// which two answer 405.
+    pub methods: Vec<ForgeMergeMethod>,
+    /// Which one starts selected. Always a member of `methods` when that is
+    /// non-empty.
+    pub default_method: ForgeMergeMethod,
+    /// What `Merge` will do to the history — see [`ForgeMergeStrategy`].
+    pub merge_strategy: ForgeMergeStrategy,
+}
+
+impl ForgeMergeOptions {
+    /// What is offered when the repository's own settings could not be read.
+    /// A merge commit is the one method neither forge can be configured to
+    /// forbid outright without also offering another, so it is the safest
+    /// single guess — and the forge still gets the last word.
+    pub fn unknown() -> Self {
+        Self {
+            methods: Vec::new(),
+            default_method: ForgeMergeMethod::Merge,
+            merge_strategy: ForgeMergeStrategy::MergeCommit,
+        }
+    }
+}
+
+/// A merge the panel is asking for.
+///
+/// No `kind`, unlike [`StateChangeRequest`]: only a proposed change can be
+/// merged, so a field naming the collection could only ever be wrong.
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChangeMergeRequest {
+    pub number: i64,
+    pub method: ForgeMergeMethod,
+    /// The head commit the caller was LOOKING at, when it knows one.
+    ///
+    /// Both forges take this as a precondition and refuse with a 409 when the
+    /// branch has moved since — which is the point. The panel decides with a
+    /// diff, a file list and a set of checks that all describe one commit, and
+    /// a merge that silently landed a newer one would land code nobody in that
+    /// conversation ever saw.
+    ///
+    /// `None` when the caller has no head to name (the detail request failed,
+    /// or a forge answered without one). The merge then goes through unguarded,
+    /// which is the old behaviour and still better than refusing to merge at
+    /// all.
+    #[serde(default)]
+    pub head_sha: Option<String>,
+    #[serde(default)]
+    pub account_id: Option<String>,
+}
+
+impl ChangeMergeRequest {
+    pub fn resolve(&self) -> Result<(i64, ForgeMergeMethod, Option<String>), ForgeError> {
+        if self.number <= 0 {
+            return Err(ForgeError::Invalid(format!(
+                "bad work item number: {}",
+                self.number
+            )));
+        }
+        let head_sha = self
+            .head_sha
+            .as_deref()
+            .map(str::trim)
+            .filter(|sha| !sha.is_empty())
+            .map(str::to_string);
+        Ok((self.number, self.method, head_sha))
     }
 }
 
@@ -1284,6 +1410,17 @@ pub struct ForgeChangedFile {
     pub deletions: Option<i64>,
     /// No textual diff to count or show.
     pub binary: bool,
+    /// The file's own unified diff, as the forge shipped it alongside the list.
+    ///
+    /// Costs nothing extra: both providers already send it with the page (it is
+    /// what `binary` is inferred from on GitHub and what the counters are
+    /// counted off on GitLab), so this only stops it being thrown away.
+    ///
+    /// `None` covers two different situations that both mean "no diff to show":
+    /// binary content, and a diff the forge WITHHELD — GitHub omits the patch
+    /// past its own size limit while still reporting the file's line counts.
+    /// Neither is "the diff is empty", which is why this is not a `String`.
+    pub patch: Option<String>,
 }
 
 /// One page of a change's file list.

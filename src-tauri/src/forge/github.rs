@@ -34,8 +34,9 @@ use super::{
     sanitize_web_url, truncate_chars, urlencode_query, validate_state_filter, ForgeChangeDetail,
     ForgeChangedFile, ForgeChangedFileList, ForgeCheck, ForgeCheckList, ForgeCheckState,
     ForgeComment, ForgeCommentList, ForgeError, ForgeFileStatus, ForgeIssueList, ForgeIssueRow,
-    ForgeItemKind, ForgeLabel, ForgeLabelList, ForgeStateAction, ForgeTab, ListIssuesRequest,
-    ResolvedNewIssue, BODY_CAP, LABEL_PAGE_SIZE,
+    ForgeItemKind, ForgeLabel, ForgeLabelList, ForgeMergeMethod, ForgeMergeOptions,
+    ForgeMergeStrategy, ForgeStateAction, ForgeTab, ListIssuesRequest, ResolvedNewIssue, BODY_CAP,
+    LABEL_PAGE_SIZE,
 };
 
 /// How deep search pagination goes, per GitHub's documented limit. Beyond this
@@ -862,6 +863,10 @@ pub async fn list_change_files(
                     additions: (!binary).then_some(file.additions),
                     deletions: (!binary).then_some(file.deletions),
                     binary,
+                    // An empty patch is dropped rather than passed on: a file
+                    // GitHub sent `""` for has nothing to open onto, and a row
+                    // that offered the reveal anyway would open onto nothing.
+                    patch: file.patch.filter(|patch| !patch.is_empty()),
                 }
             })
             .collect(),
@@ -882,6 +887,123 @@ fn file_status(raw: &str) -> ForgeFileStatus {
         "renamed" => ForgeFileStatus::Renamed,
         _ => ForgeFileStatus::Modified,
     }
+}
+
+// ── merging ─────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+struct RawRepoSettings {
+    /// All three default to TRUE on a repository, and `#[serde(default)]` would
+    /// default them to false — which would answer "no methods permitted" for
+    /// any payload that surprised us. `Option` keeps "GitHub did not say"
+    /// distinguishable from "GitHub said no".
+    #[serde(default)]
+    allow_merge_commit: Option<bool>,
+    #[serde(default)]
+    allow_squash_merge: Option<bool>,
+    #[serde(default)]
+    allow_rebase_merge: Option<bool>,
+}
+
+/// Which merge methods this repository permits.
+///
+/// `GET /repos/{o}/{r}` — one core-quota request, asked only when the panel is
+/// about to offer the button. A repository can forbid any of the three, and
+/// GitHub answers a forbidden one with `405 Method Not Allowed` at merge time;
+/// a menu built without this would offer entries that can only fail.
+///
+/// A token that reads the pull request but not the repository's settings is not
+/// an error here — [`ForgeMergeOptions::unknown`] is a menu with one safe entry,
+/// which is a better answer than no button at all.
+pub async fn merge_options(
+    auth: &ResolvedAuth,
+    owner_repo: &str,
+) -> Result<ForgeMergeOptions, ForgeError> {
+    let repo = super::normalize_repo(owner_repo)
+        .ok_or_else(|| ForgeError::Invalid(format!("bad repository path: {owner_repo}")))?;
+    let url = format!("{}/repos/{repo}", auth.api_base);
+    let raw: RawRepoSettings = api_get(auth, &url)
+        .await?
+        .json()
+        .await
+        .map_err(|e| ForgeError::Network(format!("bad repository payload: {e}")))?;
+
+    // Absent reads as PERMITTED: every one of these defaults to true on a new
+    // repository, and an old GitHub Enterprise that omits the key entirely
+    // permits all three. Dropping a method GitHub would have accepted is the
+    // failure that has no recovery in the UI.
+    let allowed = |flag: Option<bool>| flag.unwrap_or(true);
+    let methods: Vec<ForgeMergeMethod> = [
+        (ForgeMergeMethod::Merge, raw.allow_merge_commit),
+        (ForgeMergeMethod::Squash, raw.allow_squash_merge),
+        (ForgeMergeMethod::Rebase, raw.allow_rebase_merge),
+    ]
+    .into_iter()
+    .filter(|(_, flag)| allowed(*flag))
+    .map(|(method, _)| method)
+    .collect();
+
+    Ok(ForgeMergeOptions {
+        // A repository CAN have all three turned off (it is then merged only
+        // through a merge queue or the command line), and an empty list is the
+        // honest answer — the panel reads it as "offer the safe default and let
+        // GitHub refuse", which is what would happen anyway.
+        default_method: methods.first().copied().unwrap_or(ForgeMergeMethod::Merge),
+        methods,
+        // Not a question here: GitHub's `merge` writes a merge commit, and the
+        // other two shapes are their own methods rather than a repository
+        // setting that reinterprets this one (which is GitLab's model).
+        merge_strategy: ForgeMergeStrategy::MergeCommit,
+    })
+}
+
+/// Merge one pull request, and hand back the row the forge now serves.
+///
+/// Two requests, and the second is why the return is an `Option`. `PUT
+/// /pulls/{n}/merge` answers with `{sha, merged, message}` — not with the pull
+/// request — so the row the panel and the list adopt has to be re-read. The
+/// re-read goes through `RawIssue` exactly as [`set_item_state`] does, because
+/// the pull object carries `merged_at` at the TOP level and that timestamp is
+/// the only thing that tells a merged pull request from a closed one (GitHub
+/// has no merged state; see [`RawIssue::into_row`]).
+///
+/// `Ok(None)` means IT MERGED AND THE RE-READ FAILED. That is not an error, and
+/// making it one was a real bug: the merge is irreversible and already done, so
+/// a network blip on the second request would have reported a completed merge
+/// as a failure and invited the user to do it again.
+///
+/// `head_sha`, when given, is the commit the caller was looking at. GitHub
+/// refuses with a 409 ("Head branch was modified. Review and try the merge
+/// again.") if the branch has moved since — which is the entire point, and a
+/// sentence good enough to show as-is.
+pub async fn merge_change(
+    auth: &ResolvedAuth,
+    owner_repo: &str,
+    number: i64,
+    method: ForgeMergeMethod,
+    head_sha: Option<&str>,
+) -> Result<Option<ForgeIssueRow>, ForgeError> {
+    let repo = super::normalize_repo(owner_repo)
+        .ok_or_else(|| ForgeError::Invalid(format!("bad repository path: {owner_repo}")))?;
+    if number <= 0 {
+        return Err(ForgeError::Invalid(format!("bad work item number: {number}")));
+    }
+    let url = format!("{}/repos/{repo}/pulls/{number}/merge", auth.api_base);
+    let mut payload = serde_json::json!({ "merge_method": method.github_method() });
+    if let Some(sha) = head_sha {
+        payload["sha"] = serde_json::Value::String(sha.to_string());
+    }
+    // The response body is read and dropped on purpose: `merged` in it is
+    // always true for a 2xx, and everything the panel shows comes from the row
+    // below. A 405 (not mergeable, or this method is forbidden here) and a 409
+    // (the branch moved) have already become `ForgeError::Api` with GitHub's
+    // own sentence in them.
+    api_put(auth, &url, &payload).await?;
+
+    // Past this line the change HAS landed, so nothing below may return `Err`.
+    let url = format!("{}/repos/{repo}/pulls/{number}", auth.api_base);
+    let raw: Option<RawIssue> = async { api_get(auth, &url).await.ok()?.json().await.ok() }.await;
+    Ok(raw.map(|raw| raw.into_row(true)))
 }
 
 /// Whether GitHub's `Link` header offers a `rel="next"`.
@@ -971,6 +1093,17 @@ pub(crate) async fn api_patch(
     body: &serde_json::Value,
 ) -> Result<reqwest::Response, ForgeError> {
     send(super::http_client()?.patch(url), auth, body).await
+}
+
+/// Authenticated PUT. GitHub reserves this for the handful of endpoints that
+/// REPLACE rather than edit — merging a pull request is one — and answers PATCH
+/// on them with a 404, so it is not interchangeable with [`api_patch`].
+pub(crate) async fn api_put(
+    auth: &ResolvedAuth,
+    url: &str,
+    body: &serde_json::Value,
+) -> Result<reqwest::Response, ForgeError> {
+    send(super::http_client()?.put(url), auth, body).await
 }
 
 /// The headers and failure taxonomy every write shares. Writes are never
@@ -1725,7 +1858,7 @@ mod tests {
     /// method and path, which that one records nothing about.
     async fn mock_write_api() -> (String, Writes) {
         use axum::extract::Path;
-        use axum::routing::{patch, post};
+        use axum::routing::{patch, post, put};
         let writes: Writes = Arc::new(std::sync::Mutex::new(Vec::new()));
 
         let record = |writes: Writes, method: &'static str, path: String, body: serde_json::Value| {
@@ -1812,11 +1945,84 @@ mod tests {
             }
         });
 
+        let w = writes.clone();
+        let merge_pull = put(
+            move |Path(number): Path<i64>, Json(body): Json<serde_json::Value>| {
+                let w = w.clone();
+                async move {
+                    record(w, "PUT", format!("pulls/{number}/merge"), body.clone());
+                    // What GitHub actually answers with — NOT the pull request,
+                    // which is why the row has to be re-read afterwards.
+                    Json(serde_json::json!({
+                        "sha": "9f1c0de",
+                        "merged": true,
+                        "message": "Pull Request successfully merged",
+                    }))
+                }
+            },
+        );
+
+        // The re-read `merge_change` does. Same path as the PATCH above, which
+        // is the point: `RawIssue` reads a pull payload either way.
+        let pull_item = patch_pull.get(|Path(number): Path<i64>| async move {
+            Json(serde_json::json!({
+                "number": number,
+                "title": "Fix the timeout",
+                "state": "closed",
+                "merged_at": "2026-08-27T09:30:00Z",
+                "draft": false,
+                "comments": 4,
+                "html_url": "https://github.test/acme/app/pull/7",
+                "user": { "login": "bob" },
+                "labels": [],
+            }))
+        });
+
         let app = axum::Router::new()
             .route("/repos/acme/app/issues/{number}/comments", comments)
             .route("/repos/acme/app/issues/{number}", patch_issue)
-            .route("/repos/acme/app/pulls/{number}", patch_pull)
+            .route("/repos/acme/app/pulls/{number}", pull_item)
+            .route("/repos/acme/app/pulls/{number}/merge", merge_pull)
             .route("/repos/acme/app/issues", new_issue)
+            .route(
+                "/repos/acme/app",
+                get(|| async {
+                    Json(serde_json::json!({
+                        "allow_merge_commit": true,
+                        "allow_squash_merge": false,
+                        "allow_rebase_merge": true,
+                    }))
+                }),
+            )
+            // An instance old enough to omit the keys entirely. Every one of
+            // them defaults to ON, so silence must not read as "forbidden".
+            .route("/repos/acme/legacy", get(|| async { Json(serde_json::json!({})) }))
+            .route(
+                "/repos/acme/blocked/pulls/{number}/merge",
+                put(|| async {
+                    (
+                        axum::http::StatusCode::METHOD_NOT_ALLOWED,
+                        "{\"message\":\"Merge commits are not allowed on this repository.\"}",
+                    )
+                }),
+            )
+            // Merges fine, then refuses the re-read.
+            .route("/repos/acme/halfblind/pulls/{number}/merge", {
+                let w = writes.clone();
+                put(
+                    move |Path(number): Path<i64>, Json(body): Json<serde_json::Value>| {
+                        let w = w.clone();
+                        async move {
+                            record(w, "PUT", format!("pulls/{number}/merge"), body.clone());
+                            Json(serde_json::json!({ "sha": "9f1c0de", "merged": true }))
+                        }
+                    },
+                )
+            })
+            .route(
+                "/repos/acme/halfblind/pulls/{number}",
+                get(|| async { axum::http::StatusCode::INTERNAL_SERVER_ERROR }),
+            )
             .route(
                 "/detail/repos/acme/app/pulls/7",
                 get(|| async {
@@ -1889,6 +2095,11 @@ mod tests {
                           "additions": 0, "deletions": 0 },
                         { "filename": "gone.rs", "status": "removed",
                           "additions": 0, "deletions": 40, "patch": "@@ -1,40 +0,0 @@" },
+                        // Counted on both sides but no patch: a TEXT file whose
+                        // diff GitHub withheld for its size. Not binary, and
+                        // nothing to open onto either.
+                        { "filename": "pnpm-lock.yaml", "status": "modified",
+                          "additions": 4000, "deletions": 3000 },
                     ]))
                 }),
             )
@@ -2010,6 +2221,129 @@ mod tests {
         assert!(set_item_state(&auth, "acme/app", ForgeItemKind::Issue, 0, ForgeStateAction::Reopen)
             .await
             .is_err());
+    }
+
+    /// The menu is what the REPOSITORY permits. A method it has turned off
+    /// answers 405 at merge time, so offering it would be offering a button
+    /// that can only fail.
+    #[tokio::test]
+    async fn merge_options_drop_what_the_repository_forbids() {
+        let (api_base, _writes) = mock_write_api().await;
+        let auth = auth_for(api_base);
+
+        let options = merge_options(&auth, "Acme/App").await.expect("options");
+        assert_eq!(
+            options.methods,
+            vec![ForgeMergeMethod::Merge, ForgeMergeMethod::Rebase],
+            "squash is off on this repository"
+        );
+        // The first one still permitted, not a hard-coded Merge.
+        assert_eq!(options.default_method, ForgeMergeMethod::Merge);
+        // Not a question on GitHub: `merge` writes a merge commit, always.
+        assert_eq!(options.merge_strategy, ForgeMergeStrategy::MergeCommit);
+
+        // Silence is PERMISSION here: all three default to on, and an instance
+        // that omits the keys permits them all. Reading absent as "forbidden"
+        // would leave an empty menu on a repository that merges fine.
+        let legacy = merge_options(&auth, "acme/legacy").await.expect("legacy");
+        assert_eq!(
+            legacy.methods,
+            vec![
+                ForgeMergeMethod::Merge,
+                ForgeMergeMethod::Squash,
+                ForgeMergeMethod::Rebase
+            ]
+        );
+
+        assert!(merge_options(&auth, "not-a-repo").await.is_err());
+    }
+
+    /// Merging sends the method the caller picked, and the row comes from a
+    /// RE-READ: GitHub's merge response carries `{sha, merged, message}` and no
+    /// pull request at all, so there is nothing in it to build a row from.
+    #[tokio::test]
+    async fn a_merge_sends_the_method_and_re_reads_the_row() {
+        let (api_base, writes) = mock_write_api().await;
+        let auth = auth_for(api_base);
+
+        let row = merge_change(&auth, "Acme/App", 7, ForgeMergeMethod::Squash, Some("abc123"))
+            .await
+            .expect("merge")
+            .expect("a row came back");
+        assert!(row.is_pr);
+        // The whole reason for the second request: GitHub has no merged STATE,
+        // and the re-read's top-level `merged_at` is what turns `closed` into
+        // `merged`. A local guess would paint this one abandoned.
+        assert_eq!(row.state, "merged");
+        assert_eq!(row.number, 7);
+
+        let sent = writes.lock().unwrap().clone();
+        assert_eq!(sent.len(), 1, "only the merge is a write");
+        assert_eq!(sent[0].0, "PUT", "GitHub merges with PUT, not PATCH");
+        assert_eq!(sent[0].1, "pulls/7/merge");
+        assert_eq!(sent[0].2["merge_method"], "squash");
+        // The commit the caller was LOOKING at. Without it GitHub merges
+        // whatever the branch points at now, which after a push is code the
+        // reviewer never saw.
+        assert_eq!(sent[0].2["sha"], "abc123");
+
+        // No head to name: the guard is dropped rather than sent as a null,
+        // which GitHub would reject outright.
+        merge_change(&auth, "acme/app", 7, ForgeMergeMethod::Merge, None)
+            .await
+            .expect("merge without a head");
+        let sent = writes.lock().unwrap().clone();
+        assert!(sent[1].2.get("sha").is_none(), "absent, not null");
+
+        assert!(
+            merge_change(&auth, "acme/app", 0, ForgeMergeMethod::Merge, None)
+                .await
+                .is_err()
+        );
+        assert!(
+            merge_change(&auth, "not-a-repo", 7, ForgeMergeMethod::Merge, None)
+                .await
+                .is_err()
+        );
+    }
+
+    /// The merge landed and the row could not be read back. That is NOT a
+    /// failure: the change is on the base branch, and reporting an error would
+    /// invite somebody to run an irreversible operation a second time.
+    #[tokio::test]
+    async fn a_merge_whose_re_read_fails_is_still_a_merge() {
+        let (api_base, writes) = mock_write_api().await;
+        let auth = auth_for(api_base);
+        // `acme/halfblind` serves the merge and then 500s the re-read.
+        let row = merge_change(&auth, "acme/halfblind", 7, ForgeMergeMethod::Merge, None)
+            .await
+            .expect("the merge itself succeeded");
+        assert!(row.is_none(), "no row, but no error either");
+
+        let sent = writes.lock().unwrap().clone();
+        assert_eq!(sent.len(), 1, "the merge was still sent exactly once");
+    }
+
+    /// A refusal keeps GitHub's own sentence. "Merge commits are not allowed on
+    /// this repository" is a fact only the forge knows, and a generic "merge
+    /// failed" would send someone looking for a conflict instead of a setting.
+    #[tokio::test]
+    async fn a_refused_merge_carries_the_forges_reason() {
+        let (api_base, _writes) = mock_write_api().await;
+        let auth = auth_for(api_base);
+        let error = merge_change(&auth, "acme/blocked", 7, ForgeMergeMethod::Merge, None)
+            .await
+            .expect_err("405");
+        match error {
+            ForgeError::Api { status, message } => {
+                assert_eq!(status, 405);
+                assert!(
+                    message.contains("Merge commits are not allowed"),
+                    "the forge's own words survive: {message}"
+                );
+            }
+            other => panic!("expected an API refusal, got {other:?}"),
+        }
     }
 
     /// A new issue is created from the forge's ANSWER, not from the draft: the
@@ -2156,9 +2490,12 @@ mod tests {
         let page = list_change_files(&auth, "Acme/App", 7, 1, 50)
             .await
             .expect("files");
-        assert_eq!(page.files.len(), 4);
+        assert_eq!(page.files.len(), 5);
         assert_eq!(page.files[0].status, ForgeFileStatus::Modified);
         assert_eq!((page.files[0].additions, page.files[0].deletions), (Some(10), Some(2)));
+        // The diff rides along with the page and is kept, which is what a file
+        // row opens onto.
+        assert_eq!(page.files[0].patch.as_deref(), Some("@@ -1 +1 @@"));
         assert_eq!(page.files[1].status, ForgeFileStatus::Renamed);
         assert_eq!(page.files[1].previous_path.as_deref(), Some("src/old.rs"));
         // A rename with no content change still counted zero on both sides —
@@ -2166,7 +2503,17 @@ mod tests {
         assert!(!page.files[1].binary);
         assert!(page.files[2].binary);
         assert_eq!((page.files[2].additions, page.files[2].deletions), (None, None));
+        assert!(page.files[2].patch.is_none(), "binary: nothing to open onto");
         assert_eq!(page.files[3].status, ForgeFileStatus::Removed);
+        // Counted on both sides, so NOT binary — and still no diff, because
+        // GitHub withheld it. The two must stay tellable apart: one is a file
+        // with no text, the other a file whose text was too big to send.
+        assert!(!page.files[4].binary);
+        assert_eq!(
+            (page.files[4].additions, page.files[4].deletions),
+            (Some(4000), Some(3000))
+        );
+        assert!(page.files[4].patch.is_none(), "withheld, not empty");
         // The mock sends no `Link`, so there is no next page to offer.
         assert!(!page.has_next);
 

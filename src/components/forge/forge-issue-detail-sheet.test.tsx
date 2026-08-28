@@ -22,10 +22,14 @@ import { beforeEach, describe, expect, it, vi } from "vitest"
 import enMessages from "@/i18n/messages/en.json"
 import type {
   ForgeChangeDetail,
+  ForgeChangedFile,
+  ForgeChangedFileList,
+  ForgeCheck,
   ForgeComment,
   ForgeCommentList,
   ForgeIssueRow,
   ForgeLabel,
+  ForgeMergeOptions,
   ForgeTaskLink,
   WorkTaskStatus,
 } from "@/lib/types"
@@ -55,15 +59,22 @@ const forgeCreateComment = vi.hoisted(() => vi.fn())
 const forgeSetItemState = vi.hoisted(() => vi.fn())
 const forgeChangeDetail = vi.hoisted(() => vi.fn())
 const forgeChangeFiles = vi.hoisted(() => vi.fn())
+const forgeMergeOptions = vi.hoisted(() => vi.fn())
+const forgeMergeChange = vi.hoisted(() => vi.fn())
 vi.mock("@/lib/api", () => ({
   forgeListComments,
   forgeCreateComment,
   forgeSetItemState,
   forgeChangeDetail,
   forgeChangeFiles,
+  forgeMergeOptions,
+  forgeMergeChange,
 }))
 const toastError = vi.hoisted(() => vi.fn())
-vi.mock("sonner", () => ({ toast: { error: toastError } }))
+const toastSuccess = vi.hoisted(() => vi.fn())
+vi.mock("sonner", () => ({
+  toast: { error: toastError, success: toastSuccess },
+}))
 
 function comment(overrides: Partial<ForgeComment> = {}): ForgeComment {
   return {
@@ -105,6 +116,58 @@ function row(overrides: Partial<ForgeIssueRow> = {}): ForgeIssueRow {
     comments: 0,
     ...overrides,
   }
+}
+
+function changedFile(
+  overrides: Partial<ForgeChangedFile> = {}
+): ForgeChangedFile {
+  return {
+    path: "src/a.rs",
+    previous_path: null,
+    status: "modified",
+    additions: 10,
+    deletions: 2,
+    binary: false,
+    patch: "@@ -1,2 +1,2 @@\n ctx\n-old\n+new\n",
+    ...overrides,
+  }
+}
+
+function filePage(
+  files: ForgeChangedFile[],
+  hasNext = false
+): ForgeChangedFileList {
+  return { files, page: 1, per_page: 50, has_next: hasNext }
+}
+
+/**
+ * A change is read through tabs, and a pane is not even MOUNTED until its tab
+ * has been opened — so anything but the discussion has to be asked for here
+ * first, exactly as a reader would.
+ *
+ * Matched on the label's start because a tab carries a badge: "Checks" is
+ * "Checks 1 failing" to a screen reader, and "Files changed" is "Files
+ * changed 3".
+ */
+async function openTab(
+  user: ReturnType<typeof userEvent.setup>,
+  label: "Conversation" | "Checks" | "Files changed"
+) {
+  await user.click(screen.getByRole("tab", { name: new RegExp(`^${label}`) }))
+}
+
+/**
+ * Queries scoped to the pane ON SHOW.
+ *
+ * Every pane stays mounted once visited, so a bare `screen.getByText` reads
+ * straight through the tab you are not on — and the merge box and the checks
+ * strip deliberately say some of the same things ("1 failing", "Checking
+ * whether it can be merged…") on two different tabs. `getByRole` is what
+ * distinguishes them: the inactive panes carry `hidden`, so they are out of the
+ * accessibility tree and only the live `tabpanel` comes back.
+ */
+function pane() {
+  return within(screen.getByRole("tabpanel"))
 }
 
 function taskLink(status: WorkTaskStatus): ForgeTaskLink {
@@ -161,6 +224,9 @@ beforeEach(() => {
   // else had finished. The cases that are ABOUT the change say so themselves.
   forgeChangeDetail.mockReturnValue(new Promise(() => {}))
   forgeChangeFiles.mockReturnValue(new Promise(() => {}))
+  // And for the merge box's own repository lookup, which every OPEN change
+  // fires. The merge cases resolve it themselves.
+  forgeMergeOptions.mockReturnValue(new Promise(() => {}))
 })
 
 describe("ForgeIssueDetailSheet", () => {
@@ -769,43 +835,48 @@ describe("ForgeIssueDetailSheet change section", () => {
     expect(forgeChangeFiles).not.toHaveBeenCalled()
   })
 
-  it("draws the branch pair, the counters and the files", async () => {
+  /** Which branches a change joins is what it IS, so it stays in the header —
+   *  readable from every tab rather than behind one of them. */
+  it("names the branches in its header, fork and all", async () => {
     forgeChangeDetail.mockResolvedValue(
       change({ head_repo: "contributor/app", draft: true })
     )
-    forgeChangeFiles.mockResolvedValue({
-      files: [
-        {
-          path: "src/a.rs",
-          previous_path: null,
-          status: "modified",
-          additions: 10,
-          deletions: 2,
-          binary: false,
-        },
-        {
-          path: "logo.png",
-          previous_path: null,
-          status: "added",
-          additions: null,
-          deletions: null,
-          binary: true,
-        },
-      ],
-      page: 1,
-      per_page: 50,
-      has_next: false,
-    })
     mount(row({ is_pr: true, state: "open", draft: true }))
 
     expect(await screen.findByText("main")).toBeInTheDocument()
     // The fork is named; a same-repository head would show the branch alone.
     expect(screen.getByText("contributor/app:fix/timeout")).toBeInTheDocument()
-    expect(screen.getByText("Can be merged")).toBeInTheDocument()
+    // Once — the meta line directly above already spells the state out, and a
+    // second "Draft" beside the branches reads as a second fact.
+    expect(screen.getAllByText("Draft")).toHaveLength(1)
+  })
+
+  it("counts the change and lists its files, once their tab is opened", async () => {
+    const user = userEvent.setup()
+    forgeChangeDetail.mockResolvedValue(change())
+    forgeChangeFiles.mockResolvedValue(
+      filePage([
+        changedFile(),
+        changedFile({
+          path: "logo.png",
+          status: "added",
+          additions: null,
+          deletions: null,
+          binary: true,
+          patch: null,
+        }),
+      ])
+    )
+    mount(row({ is_pr: true, state: "open" }))
+    // A page of fifty files now carries fifty patches — nothing is spent on it
+    // until somebody asks to see the files.
+    await screen.findByText("main")
+    expect(forgeChangeFiles).not.toHaveBeenCalled()
+
+    await openTab(user, "Files changed")
+    expect(await screen.findByText("src/a.rs")).toBeInTheDocument()
     expect(screen.getByText("3 files")).toBeInTheDocument()
     expect(screen.getByText("2 commits")).toBeInTheDocument()
-
-    expect(await screen.findByText("src/a.rs")).toBeInTheDocument()
     expect(screen.getByText("+10")).toBeInTheDocument()
     // A binary file has no line counts on either forge; zeroes would claim it
     // changed nothing.
@@ -814,16 +885,12 @@ describe("ForgeIssueDetailSheet change section", () => {
   })
 
   it("tells 'no checks ran' apart from 'could not look'", async () => {
+    const user = userEvent.setup()
     forgeChangeDetail.mockResolvedValue(
       change({ checks: { checks: [], available: true, partial: false } })
     )
-    forgeChangeFiles.mockResolvedValue({
-      files: [],
-      page: 1,
-      per_page: 50,
-      has_next: false,
-    })
     mount(row({ is_pr: true }))
+    await openTab(user, "Checks")
     expect(await screen.findByText("No checks ran")).toBeInTheDocument()
     cleanup()
 
@@ -831,6 +898,7 @@ describe("ForgeIssueDetailSheet change section", () => {
       change({ checks: { checks: [], available: false, partial: false } })
     )
     mount(row({ is_pr: true }))
+    await openTab(user, "Checks")
     // Not "no checks": a token without the scope over a red build would
     // otherwise read as a green one.
     expect(
@@ -841,6 +909,7 @@ describe("ForgeIssueDetailSheet change section", () => {
   })
 
   it("counts only the check states worth a headline", async () => {
+    const user = userEvent.setup()
     forgeChangeDetail.mockResolvedValue(
       change({
         checks: {
@@ -885,17 +954,12 @@ describe("ForgeIssueDetailSheet change section", () => {
         },
       })
     )
-    forgeChangeFiles.mockResolvedValue({
-      files: [],
-      page: 1,
-      per_page: 50,
-      has_next: false,
-    })
     mount(row({ is_pr: true }))
+    await openTab(user, "Checks")
 
-    expect(await screen.findByText("1 passing")).toBeInTheDocument()
-    expect(screen.getByText("1 failing")).toBeInTheDocument()
-    expect(screen.getByText("1 in progress")).toBeInTheDocument()
+    expect(await pane().findByText("1 passing")).toBeInTheDocument()
+    expect(pane().getByText("1 failing")).toBeInTheDocument()
+    expect(pane().getByText("1 in progress")).toBeInTheDocument()
     // A red job the pipeline tolerates is a different fact from one that
     // blocks the change.
     expect(screen.getByText("may fail")).toBeInTheDocument()
@@ -905,13 +969,54 @@ describe("ForgeIssueDetailSheet change section", () => {
     expect(screen.getByRole("img", { name: "No verdict" })).toBeInTheDocument()
   })
 
+  /** A red build is the one thing about a change nobody should have to go
+   *  looking for, so the worst state in the list rides on the tab itself. */
+  it("carries the worst check state on the tab, failure over anything still running", async () => {
+    forgeChangeDetail.mockResolvedValue(
+      change({
+        checks: {
+          available: true,
+          partial: false,
+          checks: [
+            {
+              id: "1",
+              name: "build",
+              state: "running",
+              summary: null,
+              url: null,
+              allow_failure: false,
+            },
+            {
+              id: "2",
+              name: "lint",
+              state: "failure",
+              summary: null,
+              url: null,
+              allow_failure: false,
+            },
+          ],
+        },
+      })
+    )
+    mount(row({ is_pr: true }))
+    // On the TAB, without its pane ever being opened.
+    expect(
+      await screen.findByRole("tab", { name: "Checks 1 failing" })
+    ).toBeInTheDocument()
+    cleanup()
+
+    // Nothing to report is not the same as a clean sweep: a mark for "the
+    // forge would not say" is indistinguishable from a mark for "fine".
+    forgeChangeDetail.mockResolvedValue(
+      change({ checks: { checks: [], available: false, partial: false } })
+    )
+    mount(row({ is_pr: true }))
+    await screen.findByText("main")
+    expect(screen.getByRole("tab", { name: "Checks" })).toBeInTheDocument()
+  })
+
   it("says nothing about mergeability it does not know, and nothing at all once merged", async () => {
-    forgeChangeFiles.mockResolvedValue({
-      files: [],
-      page: 1,
-      per_page: 50,
-      has_next: false,
-    })
+    const user = userEvent.setup()
     // Both forges answer "not worked out yet" — GitHub with a null, GitLab
     // with `unchecked`. Reading that as "cannot be merged" would send someone
     // hunting a conflict that may not exist.
@@ -919,10 +1024,11 @@ describe("ForgeIssueDetailSheet change section", () => {
       change({ mergeable: null, merge_state: "unknown" })
     )
     mount(row({ is_pr: true }))
+    await openTab(user, "Checks")
     expect(
-      await screen.findByText("Checking whether it can be merged…")
+      await pane().findByText("Checking whether it can be merged…")
     ).toBeInTheDocument()
-    expect(screen.queryByText("Has conflicts")).not.toBeInTheDocument()
+    expect(pane().queryByText("Has conflicts")).not.toBeInTheDocument()
     cleanup()
 
     // Already landed: both forges keep answering the question, and "has
@@ -932,6 +1038,7 @@ describe("ForgeIssueDetailSheet change section", () => {
     )
     mount(row({ is_pr: true, state: "merged" }))
     expect(await screen.findByText("main")).toBeInTheDocument()
+    await openTab(user, "Checks")
     expect(screen.queryByText("Has conflicts")).not.toBeInTheDocument()
     expect(
       screen.queryByText("Checking whether it can be merged…")
@@ -939,6 +1046,7 @@ describe("ForgeIssueDetailSheet change section", () => {
   })
 
   it("omits the counters the forge did not report", async () => {
+    const user = userEvent.setup()
     // A GitLab merge request: no line counts, no commit count, and a
     // `changes_count` the backend refused to trust.
     forgeChangeDetail.mockResolvedValue(
@@ -949,18 +1057,153 @@ describe("ForgeIssueDetailSheet change section", () => {
         changed_files: null,
       })
     )
-    forgeChangeFiles.mockResolvedValue({
-      files: [],
-      page: 1,
-      per_page: 50,
-      has_next: false,
-    })
+    forgeChangeFiles.mockResolvedValue(filePage([]))
     mount(row({ is_pr: true }))
+    await openTab(user, "Checks")
     expect(await screen.findByText("Can be merged")).toBeInTheDocument()
-    // A zero here would claim the change touches nothing.
+
+    await openTab(user, "Files changed")
+    expect(await screen.findByText("No files changed")).toBeInTheDocument()
+    // A zero here would claim the change touches nothing — including on the
+    // tab, which would otherwise wear a "0" badge.
     expect(screen.queryByText(/files$/)).not.toBeInTheDocument()
     expect(screen.queryByText(/commits$/)).not.toBeInTheDocument()
     expect(screen.queryByText("+0")).not.toBeInTheDocument()
+    expect(
+      screen.getByRole("tab", { name: "Files changed" })
+    ).toBeInTheDocument()
+  })
+})
+
+/**
+ * The panel's own shape: three panes for a change, one scroll for an issue, and
+ * a pane that has been visited kept alive so switching away is not the same as
+ * throwing its state away.
+ */
+describe("ForgeIssueDetailSheet tabs", () => {
+  function change(
+    overrides: Partial<ForgeChangeDetail> = {}
+  ): ForgeChangeDetail {
+    return {
+      number: 42,
+      base_ref: "main",
+      head_ref: "fix/timeout",
+      head_repo: null,
+      head_sha: "abc123",
+      draft: false,
+      state: "open",
+      mergeable: true,
+      merge_state: "clean",
+      additions: 120,
+      deletions: 8,
+      changed_files: 3,
+      commits: 2,
+      checks: { checks: [], available: true, partial: false },
+      ...overrides,
+    }
+  }
+
+  /** An issue has no checks and no files, so its tab bar would be one tab wide
+   *  and say nothing. It keeps the single scroll. */
+  it("gives a change three panes and an issue none at all", async () => {
+    forgeListComments.mockResolvedValue(commentPage([]))
+    mount(row({ is_pr: false }))
+    await screen.findByText("No comments yet")
+    expect(screen.queryByRole("tab")).not.toBeInTheDocument()
+    cleanup()
+
+    forgeChangeDetail.mockResolvedValue(change())
+    mount(row({ is_pr: true }))
+    expect(
+      await screen.findByRole("tab", { name: "Conversation" })
+    ).toBeInTheDocument()
+    expect(screen.getAllByRole("tab")).toHaveLength(3)
+  })
+
+  /** The pane that is not on show is out of the tree, not merely painted over
+   *  — otherwise a screen reader reads all three at once. */
+  it("shows one pane at a time", async () => {
+    const user = userEvent.setup()
+    forgeChangeDetail.mockResolvedValue(change())
+    forgeListComments.mockResolvedValue(commentPage([]))
+    mount(row({ is_pr: true }))
+    await screen.findByText("No comments yet")
+    expect(screen.getByPlaceholderText("Leave a comment…")).toBeVisible()
+
+    await openTab(user, "Checks")
+    expect(await screen.findByText("No checks ran")).toBeVisible()
+    expect(screen.getByPlaceholderText("Leave a comment…")).not.toBeVisible()
+  })
+
+  /**
+   * The thread pages, and a comment posted here does not exist on any page the
+   * forge has served yet — a pane that remounted on every tab switch would
+   * re-ask for page 1 and throw both away.
+   */
+  it("keeps a visited pane's state across a round trip through another tab", async () => {
+    const user = userEvent.setup()
+    forgeChangeDetail.mockResolvedValue(change())
+    forgeListComments.mockResolvedValue(
+      commentPage([comment({ body: "first" })])
+    )
+    forgeCreateComment.mockResolvedValue(
+      comment({ id: "99", body: "and mine" })
+    )
+    mount(row({ is_pr: true }))
+    await screen.findByText("first")
+
+    await user.type(screen.getByPlaceholderText("Leave a comment…"), "and mine")
+    await user.click(screen.getByRole("button", { name: "Comment" }))
+    await screen.findByText("and mine")
+
+    await openTab(user, "Checks")
+    await openTab(user, "Conversation")
+
+    expect(screen.getByText("and mine")).toBeInTheDocument()
+    // One request for the thread, not two: the pane was never unmounted.
+    expect(forgeListComments).toHaveBeenCalledTimes(1)
+  })
+
+  /**
+   * The panel is non-modal — clicking another row swaps the item underneath
+   * without ever closing. A reader who left the previous change on its Files
+   * tab must not have this one's files fetched before they ask, and must never
+   * see the previous change's branches under this one's title.
+   */
+  it("goes back to the discussion, and to nothing fetched, when the item swaps", async () => {
+    const user = userEvent.setup()
+    forgeChangeDetail.mockResolvedValue(change())
+    forgeChangeFiles.mockResolvedValue(filePage([changedFile()]))
+    const { view } = mount(row({ is_pr: true, number: 42 }))
+    await openTab(user, "Files changed")
+    await screen.findByText("src/a.rs")
+    expect(forgeChangeFiles).toHaveBeenCalledTimes(1)
+
+    forgeChangeDetail.mockResolvedValue(
+      change({ number: 43, base_ref: "release/2", head_ref: "fix/other" })
+    )
+    view.rerender(
+      <NextIntlClientProvider locale="en" messages={enMessages}>
+        <ForgeIssueDetailSheet
+          row={row({ is_pr: true, number: 43, title: "Another change" })}
+          link={null}
+          folderId={7}
+          onOpenChange={vi.fn()}
+          onStart={vi.fn()}
+          onRowUpdated={vi.fn()}
+          onCommentPosted={vi.fn()}
+        />
+      </NextIntlClientProvider>
+    )
+
+    // Never the outgoing item's branches under the incoming item's title.
+    expect(screen.queryByText("main")).not.toBeInTheDocument()
+    expect(await screen.findByText("release/2")).toBeInTheDocument()
+    expect(screen.getByRole("tab", { name: "Conversation" })).toHaveAttribute(
+      "data-state",
+      "active"
+    )
+    expect(forgeChangeFiles).toHaveBeenCalledTimes(1)
   })
 })
 
@@ -1118,16 +1361,12 @@ describe("ForgeIssueDetailSheet write races", () => {
    *  from one endpoint and an honest empty list from the other. Drawing that
    *  as "no checks ran" is green over red. */
   it("does not call a half-readable empty check list 'no checks ran'", async () => {
-    forgeChangeFiles.mockResolvedValue({
-      files: [],
-      page: 1,
-      per_page: 50,
-      has_next: false,
-    })
+    const user = userEvent.setup()
     forgeChangeDetail.mockResolvedValue(
       change({ checks: { checks: [], available: true, partial: true } })
     )
     mount(row({ is_pr: true }))
+    await openTab(user, "Checks")
     expect(
       await screen.findByText(
         "This account cannot read the repository's checks."
@@ -1139,12 +1378,7 @@ describe("ForgeIssueDetailSheet write races", () => {
   /** With something readable, the half that arrived is shown — and said to be
    *  a half. */
   it("marks a partial check list beside the checks it did get", async () => {
-    forgeChangeFiles.mockResolvedValue({
-      files: [],
-      page: 1,
-      per_page: 50,
-      has_next: false,
-    })
+    const user = userEvent.setup()
     forgeChangeDetail.mockResolvedValue(
       change({
         checks: {
@@ -1164,7 +1398,660 @@ describe("ForgeIssueDetailSheet write races", () => {
       })
     )
     mount(row({ is_pr: true }))
+    await openTab(user, "Checks")
     expect(await screen.findByText("codecov")).toBeInTheDocument()
     expect(screen.getByText("some could not be read")).toBeInTheDocument()
+  })
+})
+
+/**
+ * A file row opens onto what the change did to it. The diff costs no request —
+ * both forges ship each file's hunks with the page itself — so the only
+ * questions here are which rows can open and what comes out when they do.
+ */
+describe("ForgeIssueDetailSheet file diffs", () => {
+  function change(): ForgeChangeDetail {
+    return {
+      number: 42,
+      base_ref: "main",
+      head_ref: "fix/timeout",
+      head_repo: null,
+      head_sha: "abc123",
+      draft: false,
+      state: "open",
+      mergeable: true,
+      merge_state: "clean",
+      additions: 1,
+      deletions: 1,
+      changed_files: 1,
+      commits: 1,
+      checks: { checks: [], available: true, partial: false },
+    }
+  }
+
+  beforeEach(() => {
+    forgeChangeDetail.mockResolvedValue(change())
+  })
+
+  it("opens a file onto its own diff, and closes it again", async () => {
+    const user = userEvent.setup()
+    forgeChangeFiles.mockResolvedValue(
+      filePage([
+        changedFile({ patch: "@@ -1,2 +1,2 @@\n ctx\n-old line\n+new line\n" }),
+      ])
+    )
+    mount(row({ is_pr: true }))
+    await openTab(user, "Files changed")
+
+    const trigger = await screen.findByRole("button", { name: /src\/a\.rs/ })
+    // Collapsed until asked: the list answers "what does this touch" first.
+    expect(trigger).toHaveAttribute("aria-expanded", "false")
+    expect(screen.queryByText("new line")).not.toBeInTheDocument()
+
+    await user.click(trigger)
+    expect(trigger).toHaveAttribute("aria-expanded", "true")
+    expect(screen.getByText("new line")).toBeInTheDocument()
+    expect(screen.getByText("old line")).toBeInTheDocument()
+
+    await user.click(trigger)
+    expect(screen.queryByText("new line")).not.toBeInTheDocument()
+  })
+
+  /** Binary content has nothing textual to show, and a control that expands
+   *  into an empty box is worse than no control. */
+  it("offers no expander on a binary file", async () => {
+    const user = userEvent.setup()
+    forgeChangeFiles.mockResolvedValue(
+      filePage([
+        changedFile({
+          path: "logo.png",
+          status: "added",
+          additions: null,
+          deletions: null,
+          binary: true,
+          patch: null,
+        }),
+      ])
+    )
+    mount(row({ is_pr: true }))
+    await openTab(user, "Files changed")
+
+    expect(await screen.findByText("logo.png")).toBeInTheDocument()
+    expect(
+      screen.queryByRole("button", { name: /logo\.png/ })
+    ).not.toBeInTheDocument()
+  })
+
+  /**
+   * Counted on both sides but no patch: a TEXT file whose diff GitHub withheld
+   * for its size. That is not the same as binary, and a row that silently
+   * refused to open would read as broken.
+   */
+  it("says so when the forge withheld a diff it did count", async () => {
+    const user = userEvent.setup()
+    forgeChangeFiles.mockResolvedValue(
+      filePage([
+        changedFile({
+          path: "pnpm-lock.yaml",
+          additions: 4000,
+          deletions: 3000,
+          binary: false,
+          patch: null,
+        }),
+      ])
+    )
+    mount(row({ is_pr: true }))
+    await openTab(user, "Files changed")
+
+    expect(await screen.findByText("diff too large")).toBeInTheDocument()
+    // Still counted — it is a text file, not a binary one.
+    expect(screen.getByText("+4000")).toBeInTheDocument()
+    expect(screen.queryByText("binary")).not.toBeInTheDocument()
+    expect(
+      screen.queryByRole("button", { name: /pnpm-lock/ })
+    ).not.toBeInTheDocument()
+  })
+})
+
+/**
+ * Landing a change from the panel.
+ *
+ * The box sits between the discussion and the composer — after everything said
+ * about the change, before the place you would say the next thing — and it is
+ * the one write here that cannot be undone from the panel afterwards. So what
+ * matters is WHEN it is offered, when it is withheld, and that the method it
+ * sends is the one on the button.
+ */
+describe("ForgeIssueDetailSheet merge box", () => {
+  function change(
+    overrides: Partial<ForgeChangeDetail> = {}
+  ): ForgeChangeDetail {
+    return {
+      number: 42,
+      base_ref: "main",
+      head_ref: "fix/timeout",
+      head_repo: null,
+      head_sha: "abc123",
+      draft: false,
+      state: "open",
+      mergeable: true,
+      merge_state: "clean",
+      additions: 1,
+      deletions: 1,
+      changed_files: 1,
+      commits: 1,
+      checks: { checks: [], available: true, partial: false },
+      ...overrides,
+    }
+  }
+
+  /** Both offered, a merge commit preselected — GitHub's usual answer. */
+  function options(
+    overrides: Partial<ForgeMergeOptions> = {}
+  ): ForgeMergeOptions {
+    return {
+      methods: ["merge", "squash", "rebase"],
+      default_method: "merge",
+      merge_strategy: "merge_commit",
+      ...overrides,
+    }
+  }
+
+  const mergeButton = () =>
+    screen.getByRole("button", { name: /^(Merge|Merging…)$/ })
+
+  beforeEach(() => {
+    forgeChangeDetail.mockResolvedValue(change())
+    forgeMergeOptions.mockResolvedValue(options())
+    forgeListComments.mockResolvedValue(commentPage([]))
+  })
+
+  it("offers the merge only on an open change", async () => {
+    // An issue has no branches to join.
+    mount(row({ is_pr: false }))
+    await waitFor(() => expect(forgeListComments).toHaveBeenCalled())
+    expect(screen.queryByRole("button", { name: "Merge" })).toBeNull()
+    // And nothing is spent finding out what the repository permits.
+    expect(forgeMergeOptions).not.toHaveBeenCalled()
+    cleanup()
+
+    // Already landed: there is nothing left to do, and neither forge would
+    // accept the request anyway.
+    forgeChangeDetail.mockResolvedValue(change({ state: "merged" }))
+    mount(row({ is_pr: true, state: "merged" }))
+    await waitFor(() => expect(forgeListComments).toHaveBeenCalled())
+    expect(screen.queryByRole("button", { name: "Merge" })).toBeNull()
+    expect(forgeMergeOptions).not.toHaveBeenCalled()
+    cleanup()
+
+    forgeChangeDetail.mockResolvedValue(change({ state: "closed" }))
+    mount(row({ is_pr: true, state: "closed" }))
+    await waitFor(() => expect(forgeListComments).toHaveBeenCalled())
+    expect(screen.queryByRole("button", { name: "Merge" })).toBeNull()
+    expect(forgeMergeOptions).not.toHaveBeenCalled()
+    cleanup()
+
+    forgeChangeDetail.mockResolvedValue(change())
+    mount(row({ is_pr: true }))
+    expect(await screen.findByRole("button", { name: "Merge" })).toBeEnabled()
+    expect(forgeMergeOptions).toHaveBeenCalledWith(7)
+  })
+
+  /** The slot the user asked for, and the reason `CommentThread` grew one:
+   *  under the discussion, over the box you would reply in. */
+  it("sits between the last comment and the composer", async () => {
+    forgeListComments.mockResolvedValue(
+      commentPage([comment({ body: "Ship it" })])
+    )
+    mount(row({ is_pr: true }))
+
+    const button = await screen.findByRole("button", { name: "Merge" })
+    const lastComment = screen.getByText("Ship it")
+    const composer = screen.getByRole("textbox", { name: "Leave a comment…" })
+    // `DOCUMENT_POSITION_FOLLOWING` — the node argument comes LATER in the
+    // document than the one the method is called on.
+    expect(
+      lastComment.compareDocumentPosition(button) &
+        Node.DOCUMENT_POSITION_FOLLOWING
+    ).toBeTruthy()
+    expect(
+      button.compareDocumentPosition(composer) &
+        Node.DOCUMENT_POSITION_FOLLOWING
+    ).toBeTruthy()
+  })
+
+  it("reads out the checks and the conflict verdict", async () => {
+    forgeChangeDetail.mockResolvedValue(
+      change({
+        checks: {
+          available: true,
+          partial: false,
+          checks: [
+            {
+              id: "1",
+              name: "build",
+              state: "success",
+              summary: null,
+              url: null,
+              allow_failure: false,
+            },
+          ],
+        },
+      })
+    )
+    mount(row({ is_pr: true }))
+
+    expect(
+      await pane().findByText("All checks have passed")
+    ).toBeInTheDocument()
+    expect(pane().getByText("1 passing")).toBeInTheDocument()
+    expect(
+      pane().getByText("No conflicts with the base branch")
+    ).toBeInTheDocument()
+    cleanup()
+
+    // Nothing ran, or the forge would not say: no headline at all, because a
+    // line for "no answer" reads as a line for "fine".
+    forgeChangeDetail.mockResolvedValue(
+      change({ checks: { checks: [], available: false, partial: false } })
+    )
+    mount(row({ is_pr: true }))
+    await screen.findByRole("button", { name: "Merge" })
+    expect(pane().queryByText("All checks have passed")).toBeNull()
+    expect(pane().queryByText("Some checks were not successful")).toBeNull()
+  })
+
+  /** "Not worked out yet" is not a refusal. Both forges answer it while a
+   *  background job runs, and disabling the button over it would withhold a
+   *  merge the forge would have accepted. */
+  it("still offers the merge while mergeability is unknown", async () => {
+    forgeChangeDetail.mockResolvedValue(
+      change({ mergeable: null, merge_state: "unknown" })
+    )
+    mount(row({ is_pr: true }))
+    expect(
+      await pane().findByText("Checking whether it can be merged…")
+    ).toBeInTheDocument()
+    expect(mergeButton()).toBeEnabled()
+  })
+
+  it.each([
+    [
+      "a draft",
+      { draft: true },
+      // Set on BOTH: the freshly-read detail is what the box believes, and a
+      // fixture where the two disagree would be testing the wrong thing.
+      { draft: true },
+      "This is a draft — mark it ready for review before merging.",
+    ],
+    [
+      "a conflict",
+      {},
+      { mergeable: false, merge_state: "dirty" },
+      "Resolve the conflicts with the base branch first.",
+    ],
+  ])(
+    "withholds the merge on %s, and says why",
+    async (_case, rowOverrides, detailOverrides, reason) => {
+      forgeChangeDetail.mockResolvedValue(change(detailOverrides))
+      mount(row({ is_pr: true, ...rowOverrides }))
+
+      await screen.findByRole("button", { name: "Merge" })
+      expect(mergeButton()).toBeDisabled()
+      // The reason is on the strip beside it, not only in a tooltip: a
+      // disabled button with no explanation reads as a broken one.
+      expect(pane().getByText(reason)).toBeInTheDocument()
+    }
+  )
+
+  /** The menu is the repository's answer, not this component's. A method the
+   *  repository has turned off answers 405, so offering it would be offering a
+   *  button that can only fail. */
+  it("offers only the methods the repository permits", async () => {
+    const user = userEvent.setup()
+    forgeMergeOptions.mockResolvedValue(
+      options({ methods: ["squash"], default_method: "squash" })
+    )
+    mount(row({ is_pr: true }))
+    await screen.findByRole("button", { name: "Merge" })
+    // One method left: there is nothing to choose, so there is no chooser.
+    expect(
+      screen.queryByRole("button", { name: "Choose a merge method" })
+    ).toBeNull()
+    cleanup()
+
+    forgeMergeOptions.mockResolvedValue(options())
+    mount(row({ is_pr: true }))
+    await screen.findByRole("button", { name: "Merge" })
+    await user.click(
+      screen.getByRole("button", { name: "Choose a merge method" })
+    )
+    expect(
+      await screen.findByRole("menuitem", { name: /Create a merge commit/ })
+    ).toBeInTheDocument()
+    expect(
+      screen.getByRole("menuitem", { name: /Squash and merge/ })
+    ).toBeInTheDocument()
+    expect(
+      screen.getByRole("menuitem", { name: /Rebase and merge/ })
+    ).toBeInTheDocument()
+  })
+
+  it("merges with the method chosen from the menu, after asking", async () => {
+    const user = userEvent.setup()
+    const merged = row({ is_pr: true, state: "merged" })
+    forgeMergeChange.mockResolvedValue(merged)
+    const { onRowUpdated } = mount(row({ is_pr: true }))
+
+    await screen.findByRole("button", { name: "Merge" })
+    await user.click(
+      screen.getByRole("button", { name: "Choose a merge method" })
+    )
+    await user.click(
+      await screen.findByRole("menuitem", { name: /Squash and merge/ })
+    )
+    await user.click(mergeButton())
+
+    // One click on somebody else's repository, with nothing typed first — the
+    // same test the close button's confirmation was written for, and this one
+    // cannot be undone from here.
+    expect(await screen.findByText("Merge this change?")).toBeInTheDocument()
+    expect(forgeMergeChange).not.toHaveBeenCalled()
+    await user.click(screen.getByRole("button", { name: "Squash and merge" }))
+
+    await waitFor(() =>
+      expect(forgeMergeChange).toHaveBeenCalledWith(7, {
+        number: 42,
+        method: "squash",
+        // The commit the panel DECIDED on — its diff, its files and its checks
+        // all describe this one. Both forges refuse with a 409 if the branch
+        // has moved, which is the point of sending it.
+        headSha: "abc123",
+      })
+    )
+    // The FORGE's row, not a local flip: GitHub has no merged state, and only
+    // its answer knows this one landed rather than closed.
+    await waitFor(() =>
+      expect(onRowUpdated).toHaveBeenCalledWith(
+        expect.objectContaining({ state: "merged" })
+      )
+    )
+    expect(toastSuccess).toHaveBeenCalledWith("Merged")
+    // The detail's own copy of the state is now stale — `MergeReadiness` reads
+    // it, and would go on offering "Can be merged" for a change that landed.
+    await waitFor(() => expect(forgeChangeDetail).toHaveBeenCalledTimes(2))
+  })
+
+  /**
+   * The forge's own sentence is the whole value of the failure: "not
+   * mergeable" and "merge commits are not allowed here" send a reader to two
+   * completely different places.
+   *
+   * And the dialog goes away. The likeliest refusal is "Head branch was
+   * modified. Review and try the merge again." — leaving a one-click retry
+   * open over a panel that is re-reading into a DIFFERENT commit is how an
+   * unreviewed head gets merged.
+   */
+  it("dismisses the confirmation and re-reads when the forge refuses", async () => {
+    const user = userEvent.setup()
+    forgeMergeChange.mockRejectedValue(
+      new Error("Head branch was modified. Review and try the merge again.")
+    )
+    const { onRowUpdated } = mount(row({ is_pr: true }))
+
+    await screen.findByRole("button", { name: "Merge" })
+    await user.click(mergeButton())
+    await user.click(
+      await screen.findByRole("button", { name: "Create a merge commit" })
+    )
+
+    await waitFor(() => expect(toastError).toHaveBeenCalled())
+    expect(onRowUpdated).not.toHaveBeenCalled()
+    await waitFor(() =>
+      expect(screen.queryByText("Merge this change?")).toBeNull()
+    )
+    // Back to the change as it is NOW, not the one that was just refused.
+    await waitFor(() => expect(forgeChangeDetail).toHaveBeenCalledTimes(2))
+  })
+
+  /** The dialog asks about ONE commit — the one whose diff, files and checks
+   *  are on screen behind it. A refresh underneath it must not be able to swap
+   *  that commit out from under the answer. */
+  it("merges the head the confirmation was armed with, not a newer one", async () => {
+    const user = userEvent.setup()
+    forgeChangeDetail.mockResolvedValue(change({ head_sha: "reviewed1" }))
+    forgeMergeChange.mockResolvedValue(row({ is_pr: true, state: "merged" }))
+    mount(row({ is_pr: true }))
+
+    await screen.findByRole("button", { name: "Merge" })
+    await user.click(mergeButton())
+    await screen.findByText("Merge this change?")
+
+    // Somebody pushes, and the panel re-reads while the dialog is open.
+    forgeChangeDetail.mockResolvedValue(change({ head_sha: "pushed2" }))
+    await user.click(
+      screen.getByRole("button", { name: "Create a merge commit" })
+    )
+
+    await waitFor(() =>
+      expect(forgeMergeChange).toHaveBeenCalledWith(
+        7,
+        expect.objectContaining({ headSha: "reviewed1" })
+      )
+    )
+  })
+})
+
+/**
+ * The four ways this box could have told somebody something untrue. Each of
+ * these was a real defect: a green headline over a half-read check list, a
+ * "create a merge commit" on a project that fast-forwards, a merge offered on
+ * a change the forge already merged, and a completed merge reported as failed.
+ */
+describe("ForgeIssueDetailSheet merge box honesty", () => {
+  function change(
+    overrides: Partial<ForgeChangeDetail> = {}
+  ): ForgeChangeDetail {
+    return {
+      number: 42,
+      base_ref: "main",
+      head_ref: "fix/timeout",
+      head_repo: null,
+      head_sha: "abc123",
+      draft: false,
+      state: "open",
+      mergeable: true,
+      merge_state: "clean",
+      additions: 1,
+      deletions: 1,
+      changed_files: 1,
+      commits: 1,
+      checks: { checks: [], available: true, partial: false },
+      ...overrides,
+    }
+  }
+
+  function check(id: string, state: ForgeCheck["state"]): ForgeCheck {
+    return {
+      id,
+      name: `check-${id}`,
+      state,
+      summary: null,
+      url: null,
+      allow_failure: false,
+    }
+  }
+
+  beforeEach(() => {
+    forgeChangeDetail.mockResolvedValue(change())
+    forgeMergeOptions.mockResolvedValue({
+      methods: ["merge", "squash"],
+      default_method: "merge",
+      merge_strategy: "merge_commit",
+    })
+    forgeListComments.mockResolvedValue(commentPage([]))
+  })
+
+  /** GitHub keeps its checks in two collections behind two permissions, so a
+   *  token holding one of them reads a green list over a red build. `partial`
+   *  is the backend saying so; "All checks have passed" would bury it. */
+  it("does not claim every check passed when the list is incomplete", async () => {
+    forgeChangeDetail.mockResolvedValue(
+      change({
+        checks: {
+          available: true,
+          partial: true,
+          checks: [check("1", "success")],
+        },
+      })
+    )
+    mount(row({ is_pr: true }))
+
+    expect(
+      await pane().findByText("Not every check reported a result")
+    ).toBeInTheDocument()
+    expect(pane().queryByText("All checks have passed")).toBeNull()
+    // The count was never the overclaim — one check really did pass.
+    expect(pane().getByText("1 passing")).toBeInTheDocument()
+    cleanup()
+
+    // A skipped check is not a pass either — this codebase's own rule for
+    // `neutral`, which `tallyChecks` counts into none of the three tallies.
+    forgeChangeDetail.mockResolvedValue(
+      change({
+        checks: {
+          available: true,
+          partial: false,
+          checks: [check("1", "success"), check("2", "neutral")],
+        },
+      })
+    )
+    mount(row({ is_pr: true }))
+    expect(
+      await pane().findByText("Not every check reported a result")
+    ).toBeInTheDocument()
+    cleanup()
+
+    // Nothing missing, nothing skipped: the strong headline is earned.
+    forgeChangeDetail.mockResolvedValue(
+      change({
+        checks: {
+          available: true,
+          partial: false,
+          checks: [check("1", "success"), check("2", "success")],
+        },
+      })
+    )
+    mount(row({ is_pr: true }))
+    expect(
+      await pane().findByText("All checks have passed")
+    ).toBeInTheDocument()
+  })
+
+  /** GitLab's merge endpoint takes no method — the PROJECT decides between a
+   *  merge commit, a rebase-merge and a fast-forward. Labelling a
+   *  fast-forward-only project "Create a merge commit" promises a commit its
+   *  history will never contain. */
+  it("names what the project will actually do, not what the verb suggests", async () => {
+    const user = userEvent.setup()
+    forgeMergeOptions.mockResolvedValue({
+      methods: ["merge", "squash"],
+      default_method: "merge",
+      merge_strategy: "fast_forward",
+    })
+    mount(row({ is_pr: true }))
+    await screen.findByRole("button", { name: "Merge" })
+    await user.click(
+      screen.getByRole("button", { name: "Choose a merge method" })
+    )
+
+    expect(
+      await screen.findByRole("menuitem", { name: /Fast-forward merge/ })
+    ).toBeInTheDocument()
+    expect(
+      screen.queryByRole("menuitem", { name: /Create a merge commit/ })
+    ).toBeNull()
+    cleanup()
+
+    // And GitLab's `rebase_merge` is NOT GitHub's "Rebase and merge": it
+    // rebases and then still writes a merge commit. Borrowing that wording
+    // would promise a linear history the project never produces.
+    forgeMergeOptions.mockResolvedValue({
+      methods: ["merge", "squash"],
+      default_method: "merge",
+      merge_strategy: "rebase_merge",
+    })
+    mount(row({ is_pr: true }))
+    await screen.findByRole("button", { name: "Merge" })
+    await user.click(
+      screen.getByRole("button", { name: "Choose a merge method" })
+    )
+    expect(
+      await screen.findByRole("menuitem", {
+        name: /Merge commit with semi-linear history/,
+      })
+    ).toBeInTheDocument()
+    expect(
+      screen.queryByRole("menuitem", { name: /^Rebase and merge/ })
+    ).toBeNull()
+  })
+
+  /** The mirror image of the stale-row case, and the reason neither copy is
+   *  the authority: `useChangeDetail` KEEPS its last answer across a failed
+   *  reload, so right after a merge whose re-read failed it is the detail that
+   *  still says `open` — over a row the merge itself just made authoritative. */
+  it("withdraws the merge when the row says merged and only the stale detail disagrees", async () => {
+    forgeChangeDetail.mockResolvedValue(change({ state: "open" }))
+    mount(row({ is_pr: true, state: "merged" }))
+
+    await waitFor(() => expect(forgeChangeDetail).toHaveBeenCalled())
+    expect(screen.queryByRole("button", { name: "Merge" })).toBeNull()
+  })
+
+  /** The row comes from GitHub's search index, which the panel's own comments
+   *  say lags a write by seconds. The detail was read directly — so when the
+   *  two disagree about whether this already landed, the detail wins. */
+  it("withdraws the merge when the fresh detail says it already landed", async () => {
+    forgeChangeDetail.mockResolvedValue(change({ state: "merged" }))
+    // The list still believes it is open.
+    mount(row({ is_pr: true, state: "open" }))
+
+    await waitFor(() => expect(forgeChangeDetail).toHaveBeenCalled())
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: "Merge" })).toBeNull()
+    )
+    cleanup()
+
+    // Same rule for the draft flag, which the list can also be behind on.
+    forgeChangeDetail.mockResolvedValue(change({ draft: true }))
+    mount(row({ is_pr: true, draft: false }))
+    await screen.findByRole("button", { name: "Merge" })
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: /^(Merge|Merging…)$/ })
+      ).toBeDisabled()
+    )
+  })
+
+  /** GitHub's merge response does not contain the pull request, so the row
+   *  costs a second request that can fail on its own. The merge is already
+   *  irreversible by then — calling it a failure would invite a second one. */
+  it("treats a merge whose row could not be re-read as merged", async () => {
+    const user = userEvent.setup()
+    forgeMergeChange.mockResolvedValue(null)
+    const { onRowUpdated } = mount(row({ is_pr: true }))
+
+    await screen.findByRole("button", { name: "Merge" })
+    await user.click(screen.getByRole("button", { name: /^(Merge|Merging…)$/ }))
+    await user.click(
+      await screen.findByRole("button", { name: "Create a merge commit" })
+    )
+
+    await waitFor(() => expect(toastSuccess).toHaveBeenCalledWith("Merged"))
+    expect(toastError).not.toHaveBeenCalled()
+    // The one place a local state flip is sound: the merge itself succeeded.
+    expect(onRowUpdated).toHaveBeenCalledWith(
+      expect.objectContaining({ state: "merged", number: 42 })
+    )
   })
 })

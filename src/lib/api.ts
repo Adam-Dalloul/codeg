@@ -32,6 +32,8 @@ import type {
   ForgeIssueList,
   ForgeIssueRow,
   ForgeLabelList,
+  ForgeMergeMethod,
+  ForgeMergeOptions,
   ForgePanelSettings,
   ForgeRemote,
   ForgeSettingsStore,
@@ -5261,6 +5263,59 @@ export async function forgeChangeFiles(
       page: query.page ?? 1,
       perPage: query.perPage ?? DEFAULT_FORGE_FILES_PAGE_SIZE,
       accountId: query.accountId ?? null,
+    },
+  })
+}
+
+/** Which merge methods the folder's repository permits.
+ *
+ *  A REPOSITORY fact, not a change's — which is why it is not a field on
+ *  `forgeChangeDetail`: folding it in would spend a request on every change
+ *  opened merely to read it. Asked once, when the panel is about to draw the
+ *  merge button. */
+export async function forgeMergeOptions(
+  folderId: number,
+  accountId?: string | null
+): Promise<ForgeMergeOptions> {
+  return getTransport().call("forge_merge_options", {
+    folderId,
+    accountId: accountId ?? null,
+  })
+}
+
+/** Land one proposed change, and get back the row the forge now serves.
+ *
+ *  The returned row is the point, as it is for `forgeSetItemState`: GitHub has
+ *  no merged STATE (a merged pull request reports `closed`, and only
+ *  `merged_at` tells them apart), so a local guess would paint a change that
+ *  just landed as one somebody abandoned.
+ *
+ *  `null` means IT MERGED AND THE ROW COULD NOT BE READ BACK — GitHub's merge
+ *  response does not contain the pull request, so the row costs a second
+ *  request that can fail on its own. It is emphatically not a failure: the
+ *  change is on the base branch, and reporting one would invite somebody to run
+ *  an irreversible operation twice.
+ *
+ *  `headSha` is the commit the caller was looking at. Both forges refuse with a
+ *  409 when the branch has moved since, which is the point of sending it: the
+ *  panel decided with a diff, a file list and a set of checks that all describe
+ *  ONE commit. */
+export async function forgeMergeChange(
+  folderId: number,
+  request: {
+    number: number
+    method: ForgeMergeMethod
+    headSha?: string | null
+    accountId?: string | null
+  }
+): Promise<ForgeIssueRow | null> {
+  return getTransport().call("forge_merge_change", {
+    folderId,
+    request: {
+      number: request.number,
+      method: request.method,
+      headSha: request.headSha ?? null,
+      accountId: request.accountId ?? null,
     },
   })
 }

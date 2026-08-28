@@ -11,8 +11,8 @@ use crate::app_state::AppState;
 use crate::commands::forge as core;
 use crate::forge::settings::{ForgePanelSettings, ForgeSettingsStore};
 use crate::forge::{
-    ChangeFilesQuery, ChangeQuery, CommentDraft, CommentFilters, CountFilters, ListFilters,
-    NewIssueDraft, StateChangeRequest,
+    ChangeFilesQuery, ChangeMergeRequest, ChangeQuery, CommentDraft, CommentFilters, CountFilters,
+    ListFilters, NewIssueDraft, StateChangeRequest,
 };
 
 #[derive(Deserialize)]
@@ -97,6 +97,21 @@ pub struct ChangeDetailParams {
 pub struct ChangeFilesParams {
     pub folder_id: i32,
     pub query: ChangeFilesQuery,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MergeOptionsParams {
+    pub folder_id: i32,
+    #[serde(default)]
+    pub account_id: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MergeChangeParams {
+    pub folder_id: i32,
+    pub request: ChangeMergeRequest,
 }
 
 #[derive(Deserialize)]
@@ -212,6 +227,24 @@ pub async fn forge_change_files(
 ) -> Result<Json<crate::forge::ForgeChangedFileList>, AppCommandError> {
     Ok(Json(
         core::forge_change_files_core(&state.db, params.folder_id, params.query).await?,
+    ))
+}
+
+pub async fn forge_merge_options(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(params): Json<MergeOptionsParams>,
+) -> Result<Json<crate::forge::ForgeMergeOptions>, AppCommandError> {
+    Ok(Json(
+        core::forge_merge_options_core(&state.db, params.folder_id, params.account_id).await?,
+    ))
+}
+
+pub async fn forge_merge_change(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(params): Json<MergeChangeParams>,
+) -> Result<Json<Option<crate::forge::ForgeIssueRow>>, AppCommandError> {
+    Ok(Json(
+        core::forge_merge_change_core(&state.db, params.folder_id, params.request).await?,
     ))
 }
 
