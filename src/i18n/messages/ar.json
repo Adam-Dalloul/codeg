@@ -5242,6 +5242,7 @@
     "commentUnknownAuthor": "غير معروف",
     "commentEmptyBody": "(تعليق فارغ)",
     "commentPlaceholder": "اكتب تعليقًا…",
+    "commentAs": "التعليق باسم {name}",
     "commentSubmit": "تعليق",
     "commentSubmitting": "جارٍ النشر…",
     "closeItem": "إغلاق",

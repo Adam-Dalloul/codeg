@@ -5242,6 +5242,7 @@
     "commentUnknownAuthor": "不明",
     "commentEmptyBody": "（本文なし）",
     "commentPlaceholder": "コメントを書く…",
+    "commentAs": "{name} としてコメントします",
     "commentSubmit": "コメント",
     "commentSubmitting": "投稿中…",
     "closeItem": "クローズ",

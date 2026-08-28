@@ -929,6 +929,7 @@ mod tests {
             api_base,
             account_id: "acc-test".into(),
             username: "alice".into(),
+            avatar_url: None,
             token: "tok-test".into(),
             scopes: vec!["repo".into()],
         }

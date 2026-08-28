@@ -5242,6 +5242,7 @@
     "commentUnknownAuthor": "未知",
     "commentEmptyBody": "（空评论）",
     "commentPlaceholder": "写下评论…",
+    "commentAs": "以 {name} 的身份评论",
     "commentSubmit": "发表评论",
     "commentSubmitting": "发表中…",
     "closeItem": "关闭",

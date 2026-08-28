@@ -5242,6 +5242,7 @@
     "commentUnknownAuthor": "未知",
     "commentEmptyBody": "（空白留言）",
     "commentPlaceholder": "寫下留言…",
+    "commentAs": "以 {name} 的身分留言",
     "commentSubmit": "發表留言",
     "commentSubmitting": "發表中…",
     "closeItem": "關閉",

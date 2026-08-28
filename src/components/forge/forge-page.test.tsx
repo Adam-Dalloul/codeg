@@ -63,6 +63,10 @@ vi.mock("@/lib/api", () => ({
   // list the moment it opens. Covered in the panel's own suite.
   forgeChangeDetail: vi.fn(() => new Promise(() => {})),
   forgeChangeFiles: vi.fn(() => new Promise(() => {})),
+  // And the composer's "posting as" lookup, fired by every panel that opens
+  // with a folder. Same reason again — it moves one avatar, and nothing here
+  // is about the avatar.
+  forgeIdentity: vi.fn(() => new Promise(() => {})),
   forgeCreateComment: vi.fn(),
   forgeSetItemState: vi.fn(),
   forgeCreateIssue: vi.fn(),
@@ -145,6 +149,7 @@ function issue(number: number, title: string): ForgeIssueRow {
     draft: false,
     labels: [],
     author: "octocat",
+    author_avatar: "https://avatars.githubusercontent.com/u/583231",
     updated_at: null,
     html_url: `https://github.com/xintaofei/codeg/issues/${number}`,
     is_pr: false,

@@ -5242,6 +5242,7 @@
     "commentUnknownAuthor": "Inconnu",
     "commentEmptyBody": "(commentaire vide)",
     "commentPlaceholder": "Écrire un commentaire…",
+    "commentAs": "Commenter en tant que {name}",
     "commentSubmit": "Commenter",
     "commentSubmitting": "Publication…",
     "closeItem": "Fermer",

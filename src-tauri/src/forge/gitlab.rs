@@ -1073,6 +1073,11 @@ impl RawItem {
                 .into_iter()
                 .filter_map(RawItemLabel::into_label)
                 .collect(),
+            author_avatar: self
+                .author
+                .as_ref()
+                .and_then(|a| a.avatar_url.as_deref())
+                .and_then(sanitize_web_url),
             author: self.author.map(|a| a.username),
             updated_at: self.updated_at,
             html_url: self.web_url,
@@ -1347,6 +1352,7 @@ mod tests {
             api_base,
             account_id: "acc-test".into(),
             username: "alice".into(),
+            avatar_url: Some("https://gitlab.test/uploads/alice.png".into()),
             token: "tok-test".into(),
             scopes: vec!["api".into()],
         }
@@ -1380,7 +1386,10 @@ mod tests {
             // What `with_labels_details=true` returns — plus one bare name, the
             // shape an instance that ignores the parameter still sends.
             "labels": [{ "name": "bug", "color": "#D9534F" }, "legacy", { "name": "" }],
-            "author": { "username": "alice" },
+            "author": {
+                "username": "alice",
+                "avatar_url": "https://gitlab.test/uploads/alice.png",
+            },
             "updated_at": "2026-08-18T00:00:00Z",
             "web_url": format!("https://gitlab.test/group/sub/proj/-/issues/{iid}"),
             "user_notes_count": iid,
@@ -1635,6 +1644,12 @@ mod tests {
             ]
         );
         assert_eq!(row.author.as_deref(), Some("alice"));
+        // Rides along with the list row — the panel's author avatar costs no
+        // request of its own.
+        assert_eq!(
+            row.author_avatar.as_deref(),
+            Some("https://gitlab.test/uploads/alice.png")
+        );
         assert!(!row.is_pr);
 
         // Offset pagination: `X-Total` is the count and `X-Next-Page` is what
@@ -1846,6 +1861,33 @@ mod tests {
         // A note whose author is gone leaves no name rather than an empty one.
         assert_eq!(page.comments[2].author, None);
         assert_eq!(page.comments[2].author_avatar, None);
+    }
+
+    /// The row's avatar goes through the same gate a note's does — it lands in
+    /// the same `<img src>`, so a `javascript:` URL is dropped rather than
+    /// forwarded, and an author GitLab no longer has leaves no picture at all.
+    #[test]
+    fn a_rows_avatar_is_sanitized_like_a_notes() {
+        let row_for = |author: serde_json::Value| {
+            let mut raw = item_json(1, "opened");
+            raw["author"] = author;
+            serde_json::from_value::<RawItem>(raw).expect("item").into_row(false)
+        };
+
+        let ok = row_for(serde_json::json!({ "username": "alice", "avatar_url": "https://a.test/1" }));
+        assert_eq!(ok.author.as_deref(), Some("alice"));
+        assert_eq!(ok.author_avatar.as_deref(), Some("https://a.test/1"));
+
+        let hostile = row_for(
+            serde_json::json!({ "username": "alice", "avatar_url": "javascript:alert(1)" }),
+        );
+        assert_eq!(hostile.author.as_deref(), Some("alice"), "the name still stands");
+        assert_eq!(hostile.author_avatar, None);
+
+        // A picture GitLab did not send, and an account it no longer has.
+        assert_eq!(row_for(serde_json::json!({ "username": "alice" })).author_avatar, None);
+        let gone = row_for(serde_json::Value::Null);
+        assert_eq!((gone.author, gone.author_avatar), (None, None));
     }
 
     /// `has_next` is the FORGE's answer, not "did anything survive filtering".

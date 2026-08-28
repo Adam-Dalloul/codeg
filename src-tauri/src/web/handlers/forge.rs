@@ -101,6 +101,14 @@ pub struct ChangeFilesParams {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct IdentityParams {
+    pub folder_id: i32,
+    #[serde(default)]
+    pub account_id: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct MergeOptionsParams {
     pub folder_id: i32,
     #[serde(default)]
@@ -227,6 +235,15 @@ pub async fn forge_change_files(
 ) -> Result<Json<crate::forge::ForgeChangedFileList>, AppCommandError> {
     Ok(Json(
         core::forge_change_files_core(&state.db, params.folder_id, params.query).await?,
+    ))
+}
+
+pub async fn forge_identity(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(params): Json<IdentityParams>,
+) -> Result<Json<crate::forge::ForgeIdentity>, AppCommandError> {
+    Ok(Json(
+        core::forge_identity_core(&state.db, params.folder_id, params.account_id).await?,
     ))
 }
 

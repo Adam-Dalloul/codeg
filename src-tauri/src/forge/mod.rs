@@ -710,6 +710,12 @@ pub struct ForgeIssueRow {
     pub draft: bool,
     pub labels: Vec<ForgeLabel>,
     pub author: Option<String>,
+    /// The author's picture, under the same rule as [`ForgeComment`]'s: `http(s)`
+    /// only, through [`sanitize_web_url`], because it goes straight into an
+    /// `<img src>`. Both forges ship it with the list row, so it costs nothing —
+    /// and without it the panel would draw an initial for the author beside
+    /// comments from that same person showing their face.
+    pub author_avatar: Option<String>,
     pub updated_at: Option<String>,
     pub html_url: String,
     pub is_pr: bool,
@@ -813,6 +819,40 @@ impl ForgeComment {
     /// anonymous author.
     pub fn author_name(raw: Option<String>) -> Option<String> {
         raw.map(|name| name.trim().to_string()).filter(|name| !name.is_empty())
+    }
+}
+
+/// Who a write against this folder would go out as.
+///
+/// The panel cannot work this out for itself. Which stored account serves a
+/// folder is decided here, from the origin remote's HOST and an optional pinned
+/// `account_id` ([`auth::resolve_forge_auth`]) — so a UI that read "the default
+/// account" would name the wrong person for every folder that is not on it.
+///
+/// Local: the answer comes from stored settings, not from the forge, so asking
+/// costs no request. Nothing secret rides along — the token stays in
+/// [`auth::ResolvedAuth`], which this is deliberately not.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct ForgeIdentity {
+    pub username: String,
+    /// `http(s)` only (see [`sanitize_web_url`]) — it goes into an `<img src>`
+    /// like any other avatar, and a stored account's URL is no more trusted
+    /// than one off the wire.
+    pub avatar_url: Option<String>,
+}
+
+impl ForgeIdentity {
+    /// The public half of a resolved identity.
+    ///
+    /// Written out field by field on purpose. A `..` spread would make every
+    /// future addition to [`auth::ResolvedAuth`] — which is where the token
+    /// lives — arrive here silently, in a struct that is serialized straight
+    /// to the UI.
+    pub fn of(auth: &auth::ResolvedAuth) -> Self {
+        Self {
+            username: auth.username.clone(),
+            avatar_url: auth.avatar_url.as_deref().and_then(sanitize_web_url),
+        }
     }
 }
 
@@ -1761,6 +1801,7 @@ mod tests {
             api_base: "https://api.github.com".into(),
             account_id: "acc".into(),
             username: "alice".into(),
+            avatar_url: None,
             token: "tok".into(),
             scopes: vec![],
         };
@@ -1775,6 +1816,42 @@ mod tests {
         // than build a link into whatever that string was.
         auth.api_base = "https://gitlab.com/weird".into();
         assert_eq!(web_origin(&auth), "https://fallback.test");
+    }
+
+    /// A name and a picture, and — the point of the type — nothing else. The
+    /// identity is built from the same value that holds the token, and it is
+    /// serialized straight to a webview.
+    #[test]
+    fn an_identity_is_a_name_and_a_picture_and_carries_no_secret() {
+        let mut auth = ResolvedAuth {
+            provider: ForgeProvider::GitHub,
+            server_host: "github.com".into(),
+            api_base: "https://api.github.com".into(),
+            account_id: "acc".into(),
+            username: "alice".into(),
+            avatar_url: Some("https://avatars.test/u/1".into()),
+            token: "ghp_secret".into(),
+            scopes: vec!["repo".into()],
+        };
+
+        let identity = ForgeIdentity::of(&auth);
+        assert_eq!(identity.username, "alice");
+        assert_eq!(identity.avatar_url.as_deref(), Some("https://avatars.test/u/1"));
+
+        // Whatever the account was stored with, it still has to survive the
+        // gate every other avatar goes through before reaching an `<img src>`.
+        auth.avatar_url = Some("javascript:alert(1)".into());
+        assert_eq!(ForgeIdentity::of(&auth).avatar_url, None);
+        auth.avatar_url = None;
+        assert_eq!(ForgeIdentity::of(&auth).avatar_url, None);
+
+        // The shape on the wire, not just the fields we happened to read: a
+        // key added here later would ship whatever it holds to the panel.
+        let json = serde_json::to_value(ForgeIdentity::of(&auth)).expect("serialize");
+        let mut keys: Vec<&str> = json.as_object().expect("object").keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(keys, ["avatar_url", "username"]);
+        assert!(!json.to_string().contains("ghp_secret"));
     }
 
     /// Paging comes off the wire and reaches two APIs that reject different

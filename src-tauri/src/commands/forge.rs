@@ -689,6 +689,27 @@ pub async fn forge_change_files_core(
     })
 }
 
+/// Who a comment on this folder's repository would be posted as.
+///
+/// The same resolution every write here goes through, answered instead of
+/// spent — so the face the composer shows is by construction the account
+/// [`forge_create_comment_core`] would use, pinned `account_id` and all. A UI
+/// that picked the default account from the settings list would name the wrong
+/// person on any folder that is not on it.
+///
+/// Local and cheap: no request leaves the machine. The token is resolved along
+/// the way (its absence is a real failure — that comment could not be posted
+/// either) and then dropped: [`forge::ForgeIdentity`] carries a name and a
+/// picture, nothing more.
+pub async fn forge_identity_core(
+    db: &AppDatabase,
+    folder_id: i32,
+    account_id: Option<String>,
+) -> Result<forge::ForgeIdentity, AppCommandError> {
+    let (_, auth) = resolve_folder_repo(db, folder_id, account_id.as_deref()).await?;
+    Ok(forge::ForgeIdentity::of(&auth))
+}
+
 /// Which merge methods the folder's repository permits.
 ///
 /// A repository fact, not a change's, which is why it is not a field on
@@ -1106,6 +1127,16 @@ pub async fn forge_change_files(
     query: forge::ChangeFilesQuery,
 ) -> Result<forge::ForgeChangedFileList, AppCommandError> {
     forge_change_files_core(&db, folder_id, query).await
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn forge_identity(
+    db: tauri::State<'_, AppDatabase>,
+    folder_id: i32,
+    account_id: Option<String>,
+) -> Result<forge::ForgeIdentity, AppCommandError> {
+    forge_identity_core(&db, folder_id, account_id).await
 }
 
 #[cfg(feature = "tauri-runtime")]

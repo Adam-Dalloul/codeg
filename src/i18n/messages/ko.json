@@ -5242,6 +5242,7 @@
     "commentUnknownAuthor": "알 수 없음",
     "commentEmptyBody": "(빈 댓글)",
     "commentPlaceholder": "댓글을 입력하세요…",
+    "commentAs": "{name}(으)로 댓글 작성",
     "commentSubmit": "댓글 작성",
     "commentSubmitting": "게시 중…",
     "closeItem": "닫기",

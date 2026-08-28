@@ -998,6 +998,7 @@ export function UnifiedDiffPreview({
   clickableFilePath = false,
   embedded = false,
   unbounded = false,
+  hideViewToggle = false,
 }: {
   diffText: string
   /** @deprecated No longer used — kept for API compat */
@@ -1019,6 +1020,18 @@ export function UnifiedDiffPreview({
    * scroll inside another one.
    */
   unbounded?: boolean
+  /**
+   * Suppress the `embedded` layout's own toggle row, for a host that renders
+   * `ViewModeToggle` itself somewhere better.
+   *
+   * The repository panel does: it mounts one preview per expanded file, so the
+   * built-in row would appear once per file, halfway down a list, and only
+   * after something was expanded — while the control belongs in the header
+   * above that list. The mode is one global preference either way (see
+   * `useDiffViewMode`), so the host's toggle and every preview under it move
+   * together through the same broadcast.
+   */
+  hideViewToggle?: boolean
 }) {
   const t = useTranslations("Folder.diffPreview")
   const { activeFolder: folder } = useActiveFolder()
@@ -1064,8 +1077,9 @@ export function UnifiedDiffPreview({
     <Frame className={className}>
       <div className={embedded ? "space-y-2" : "space-y-3"}>
         {/* Every file renders its own toggle in its header. Embedded previews
-            have no header to put it in, so they keep a row of their own. */}
-        {embedded && supportsSplitView(files) && (
+            have no header to put it in, so they keep a row of their own —
+            unless the host said it has somewhere better for it. */}
+        {embedded && !hideViewToggle && supportsSplitView(files) && (
           <div className="flex items-center justify-end">
             <ViewModeToggle view={view} onSwitch={switchView} />
           </div>
@@ -1092,15 +1106,23 @@ export function UnifiedDiffPreview({
  * one already on screen — the icon reads as "go here", which is also what the
  * `viewMode` labels say ("Switch to …"). A pair of buttons spent twice the
  * header's width to say the same thing.
+ *
+ * Exported for hosts that place it themselves (see `hideViewToggle`). Its
+ * chrome is a default rather than a fixture: a host that puts it in a row of
+ * its own icon buttons overrides `className`/`iconClassName` so the pair reads
+ * as one control set, and the *decision* — which mode is next, which glyph and
+ * which label say so — stays in one place regardless.
  */
-function ViewModeToggle({
+export function ViewModeToggle({
   view,
   onSwitch,
   className,
+  iconClassName,
 }: {
   view: DiffViewMode
   onSwitch: (mode: DiffViewMode) => void
   className?: string
+  iconClassName?: string
 }) {
   const t = useTranslations("Folder.diffPreview")
   const next: DiffViewMode = view === "split" ? "unified" : "split"
@@ -1117,7 +1139,7 @@ function ViewModeToggle({
         className
       )}
     >
-      <Icon className="h-3 w-3" />
+      <Icon className={cn("h-3 w-3", iconClassName)} />
     </button>
   )
 }

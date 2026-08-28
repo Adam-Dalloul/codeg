@@ -1380,6 +1380,7 @@ pub fn build_router(
             "/forge_change_files",
             post(handlers::forge::forge_change_files),
         )
+        .route("/forge_identity", post(handlers::forge::forge_identity))
         .route(
             "/forge_merge_options",
             post(handlers::forge::forge_merge_options),

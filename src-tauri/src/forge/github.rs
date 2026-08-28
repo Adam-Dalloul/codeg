@@ -101,6 +101,13 @@ impl RawIssue {
                 .pull_request
                 .as_ref()
                 .is_some_and(|p| p.merged_at.is_some());
+        let (author, author_avatar) = match self.user {
+            Some(user) => (
+                Some(user.login),
+                user.avatar_url.as_deref().and_then(sanitize_web_url),
+            ),
+            None => (None, None),
+        };
         ForgeIssueRow {
             is_pr,
             number: self.number,
@@ -117,7 +124,8 @@ impl RawIssue {
                 .into_iter()
                 .filter_map(|l| ForgeLabel::parse(l.name, l.color.as_deref()))
                 .collect(),
-            author: self.user.map(|u| u.login),
+            author,
+            author_avatar,
             updated_at: self.updated_at,
             html_url: self.html_url,
             comments: self.comments,
@@ -137,6 +145,10 @@ struct RawPullRequestRef {
 #[derive(Debug, Deserialize)]
 struct RawUser {
     login: String,
+    /// Shipped with every list row, so the panel's author avatar costs no
+    /// request of its own. Sanitized on the way out, never here.
+    #[serde(default)]
+    avatar_url: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1178,6 +1190,7 @@ mod tests {
             api_base,
             account_id: "acc-test".into(),
             username: "alice".into(),
+            avatar_url: Some("https://avatars.github.test/u/1".into()),
             token: "tok-test".into(),
             scopes: vec!["repo".into()],
         }
@@ -1194,7 +1207,7 @@ mod tests {
             "comments": number,
             "updated_at": "2026-08-17T00:00:00Z",
             "html_url": format!("https://github.test/acme/app/issues/{number}"),
-            "user": { "login": "alice" },
+            "user": { "login": "alice", "avatar_url": "https://avatars.github.test/u/1" },
             // Bare six-digit hex, GitHub's own spelling — no leading `#`.
             "labels": [ { "name": "bug", "color": "D73A4A" }, { "name": "" } ],
         });
@@ -1534,6 +1547,12 @@ mod tests {
             vec![ForgeLabel { name: "bug".into(), color: Some("#d73a4a".into()) }]
         );
         assert_eq!(issues.rows[0].author.as_deref(), Some("alice"));
+        // Rides along with the list row — the panel's author avatar costs no
+        // request of its own.
+        assert_eq!(
+            issues.rows[0].author_avatar.as_deref(),
+            Some("https://avatars.github.test/u/1")
+        );
         assert_eq!((issues.page, issues.per_page), (2, 20));
         assert_eq!(issues.total_count, Some(57));
         // Well under the cap, so nothing is out of reach and the footer builds
@@ -1780,6 +1799,32 @@ mod tests {
         );
         // …and a deleted account leaves no author rather than an empty name.
         assert_eq!(page.comments[1].author, None);
+    }
+
+    /// The row's avatar goes through the same gate a comment's does — it lands
+    /// in the same `<img src>`, so a `javascript:` URL is dropped rather than
+    /// forwarded, and an author GitHub no longer has leaves no picture at all.
+    #[test]
+    fn a_rows_avatar_is_sanitized_like_a_comments() {
+        let row_for = |user: serde_json::Value| {
+            let mut raw = hit(1, Kind::Issue);
+            raw["user"] = user;
+            serde_json::from_value::<RawIssue>(raw).expect("issue").into_row(false)
+        };
+
+        let ok = row_for(serde_json::json!({ "login": "alice", "avatar_url": "https://a.test/1" }));
+        assert_eq!(ok.author.as_deref(), Some("alice"));
+        assert_eq!(ok.author_avatar.as_deref(), Some("https://a.test/1"));
+
+        let hostile =
+            row_for(serde_json::json!({ "login": "alice", "avatar_url": "javascript:alert(1)" }));
+        assert_eq!(hostile.author.as_deref(), Some("alice"), "the name still stands");
+        assert_eq!(hostile.author_avatar, None);
+
+        // A picture GitHub did not send, and an account it no longer has.
+        assert_eq!(row_for(serde_json::json!({ "login": "alice" })).author_avatar, None);
+        let gone = row_for(serde_json::Value::Null);
+        assert_eq!((gone.author, gone.author_avatar), (None, None));
     }
 
     /// Paging follows the `Link` header, never "the page came back full" —

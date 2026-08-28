@@ -9,6 +9,7 @@
  * real link.
  */
 import {
+  act,
   cleanup,
   render,
   screen,
@@ -27,6 +28,7 @@ import type {
   ForgeCheck,
   ForgeComment,
   ForgeCommentList,
+  ForgeIdentity,
   ForgeIssueRow,
   ForgeLabel,
   ForgeMergeOptions,
@@ -47,11 +49,20 @@ vi.mock("@/contexts/workbench-route-context", () => ({
 }))
 // The real one reaches the workspace context (link safety routes file links
 // into the file panel), which this panel is mounted outside of. The stub keeps
-// the assertion honest where it counts: it reports WHAT it was handed, so a
-// panel that stopped sending the body through the renderer would fail.
+// the assertion honest where it counts: it reports WHAT it was handed — body
+// and typography both — so a panel that stopped sending either through the
+// renderer would fail.
 vi.mock("@/components/ai-elements/message", () => ({
-  MessageResponse: ({ children }: { children?: string }) => (
-    <div data-testid="markdown">{children}</div>
+  MessageResponse: ({
+    children,
+    className,
+  }: {
+    children?: string
+    className?: string
+  }) => (
+    <div data-testid="markdown" className={className}>
+      {children}
+    </div>
   ),
 }))
 const forgeListComments = vi.hoisted(() => vi.fn())
@@ -61,6 +72,7 @@ const forgeChangeDetail = vi.hoisted(() => vi.fn())
 const forgeChangeFiles = vi.hoisted(() => vi.fn())
 const forgeMergeOptions = vi.hoisted(() => vi.fn())
 const forgeMergeChange = vi.hoisted(() => vi.fn())
+const forgeIdentity = vi.hoisted(() => vi.fn())
 vi.mock("@/lib/api", () => ({
   forgeListComments,
   forgeCreateComment,
@@ -69,6 +81,7 @@ vi.mock("@/lib/api", () => ({
   forgeChangeFiles,
   forgeMergeOptions,
   forgeMergeChange,
+  forgeIdentity,
 }))
 const toastError = vi.hoisted(() => vi.fn())
 const toastSuccess = vi.hoisted(() => vi.fn())
@@ -110,6 +123,7 @@ function row(overrides: Partial<ForgeIssueRow> = {}): ForgeIssueRow {
     draft: false,
     labels: [label("bug")],
     author: "octocat",
+    author_avatar: "https://avatars.githubusercontent.com/u/583231",
     updated_at: null,
     html_url: "https://github.com/o/r/issues/42",
     is_pr: false,
@@ -227,6 +241,10 @@ beforeEach(() => {
   // And for the merge box's own repository lookup, which every OPEN change
   // fires. The merge cases resolve it themselves.
   forgeMergeOptions.mockReturnValue(new Promise(() => {}))
+  // And the composer's "posting as" lookup, which every mount with a folder
+  // fires. Same rule once more: the cases that are about the avatar resolve it
+  // themselves and wait for it.
+  forgeIdentity.mockReturnValue(new Promise(() => {}))
 })
 
 describe("ForgeIssueDetailSheet", () => {
@@ -240,6 +258,32 @@ describe("ForgeIssueDetailSheet", () => {
     mount(row())
     expect(screen.getByTestId("markdown")).toHaveTextContent("## Steps")
     expect(screen.queryByText("No description")).not.toBeInTheDocument()
+  })
+
+  /**
+   * The panel's typography goes to the RENDERER, not to a box around it.
+   *
+   * It has to, for the list indent to mean anything: the shared renderer sets
+   * its own, and from a wrapper the two would be descendant selectors of equal
+   * specificity settled by Tailwind's emission order. Handed to the renderer,
+   * `cn` drops the one being replaced. Nothing about that is visible under
+   * jsdom, and putting the classes back on the wrapper would look like a
+   * tidy-up.
+   */
+  it("hands the body's typography to the renderer, list indent included", async () => {
+    forgeListComments.mockResolvedValue(
+      commentPage([comment({ body: "- one\n- two" })])
+    )
+    mount(row())
+
+    // The description, and the one comment once the thread lands.
+    await waitFor(() =>
+      expect(screen.getAllByTestId("markdown")).toHaveLength(2)
+    )
+    for (const el of screen.getAllByTestId("markdown")) {
+      expect(el.className).toContain("[&_ul]:pl-5")
+      expect(el.className).toContain("[&_ol]:pl-5")
+    }
   })
 
   /** An empty body must not leave the panel looking like it failed to load.
@@ -969,6 +1013,48 @@ describe("ForgeIssueDetailSheet change section", () => {
     expect(screen.getByRole("img", { name: "No verdict" })).toBeInTheDocument()
   })
 
+  /**
+   * "Can this land" is one question with two halves — whether it merges, and
+   * how CI came out — and it used to be asked over two rows, the verdict on
+   * one and the tallies on the next, with the reload stranded beside the first.
+   */
+  it("leads with mergeability and CI on one line, the reload at its end", async () => {
+    const user = userEvent.setup()
+    forgeChangeDetail.mockResolvedValue(
+      change({
+        checks: {
+          available: true,
+          partial: false,
+          checks: [
+            {
+              id: "1",
+              name: "build",
+              state: "failure",
+              summary: null,
+              url: null,
+              allow_failure: false,
+            },
+          ],
+        },
+      })
+    )
+    mount(row({ is_pr: true }))
+    await openTab(user, "Checks")
+
+    const verdict = await pane().findByText("Can be merged")
+    const run = verdict.parentElement
+    expect(run).not.toBeNull()
+    expect(run).toContainElement(pane().getByText("1 failing"))
+
+    // And the reload closes that same row, rather than sitting on one of its
+    // own above it.
+    const reload = pane().getByRole("button", {
+      name: "Refresh the change details",
+    })
+    expect(run?.parentElement).toContainElement(reload)
+    expect(run?.parentElement?.lastElementChild).toBe(reload)
+  })
+
   /** A red build is the one thing about a change nobody should have to go
    *  looking for, so the worst state in the list rides on the tab itself. */
   it("carries the worst check state on the tab, failure over anything still running", async () => {
@@ -1510,6 +1596,48 @@ describe("ForgeIssueDetailSheet file diffs", () => {
     expect(
       screen.queryByRole("button", { name: /pnpm-lock/ })
     ).not.toBeInTheDocument()
+  })
+
+  /**
+   * Two geometry rules an open diff has to keep, both invisible under jsdom —
+   * asserted on the classes because that is where they live, and both regress
+   * silently: nothing breaks, the panel just stops being usable.
+   *
+   * The cap, because one 900-line file otherwise pushes every path under it off
+   * the panel and the list stops being a list. On the file's OWN section,
+   * because a scrollbar is drawn on the edges of the element that scrolls: cap
+   * a box around the diff instead and its horizontal bar stays at the bottom of
+   * the file, hundreds of lines below the fold. Flush, because the row above is
+   * the diff's own header — a gap there reads as a gap between two unrelated
+   * things.
+   */
+  it("caps an open diff on its own scrollport, flush against its row", async () => {
+    const user = userEvent.setup()
+    forgeChangeFiles.mockResolvedValue(
+      filePage([
+        changedFile({ patch: "@@ -1,2 +1,2 @@\n ctx\n-old line\n+new line\n" }),
+      ])
+    )
+    mount(row({ is_pr: true }))
+    await openTab(user, "Files changed")
+    await user.click(await screen.findByRole("button", { name: /src\/a\.rs/ }))
+
+    const section = screen.getByText("new line").closest("section")
+    expect(section?.className).toMatch(/max-h-\[/)
+
+    const content = section?.closest('[data-slot="collapsible-content"]')
+    expect(content).toHaveAttribute("data-state", "open")
+    // Flush: nothing between the row's border and the diff.
+    expect(content?.className).not.toMatch(/(^|\s)p[ytb]?-/)
+    // And nothing in between capping or scrolling on its own — that is the
+    // shape that strands the horizontal bar.
+    for (
+      let el = section?.parentElement;
+      el != null && el !== content;
+      el = el.parentElement
+    ) {
+      expect(el.className).not.toMatch(/max-h-|overflow-y-/)
+    }
   })
 })
 
@@ -2053,5 +2181,333 @@ describe("ForgeIssueDetailSheet merge box honesty", () => {
     expect(onRowUpdated).toHaveBeenCalledWith(
       expect.objectContaining({ state: "merged", number: 42 })
     )
+  })
+})
+
+/**
+ * One left edge down the whole conversation.
+ *
+ * The description, every comment, the merge box and the composer each sit
+ * beside a 24px gutter; before this they were four different left edges and
+ * the text column stepped in and out on the way down the tab. The assertions
+ * are about the GUTTER's occupants rather than about class names: an avatar
+ * that stopped rendering is what a reader would notice, and it is what these
+ * catch.
+ */
+describe("ForgeIssueDetailSheet conversation rail", () => {
+  beforeEach(() => {
+    forgeListComments.mockResolvedValue(commentPage([]))
+  })
+
+  /** Free: both forges ship the author's picture with the list row, so the
+   *  description's avatar costs no request of its own. */
+  it("shows the item's author beside the description", async () => {
+    mount(row({ author: "octocat" }))
+    const avatar = await screen.findByRole("img", { name: "octocat" })
+    const body = screen.getByTestId("markdown")
+    expect(
+      avatar.compareDocumentPosition(body) & Node.DOCUMENT_POSITION_FOLLOWING
+    ).toBeTruthy()
+  })
+
+  /**
+   * The gutter pins, so a thousand-word comment still says who is writing it
+   * at the bottom.
+   *
+   * Two halves, and both fail silently. The circle has to be `sticky` inside a
+   * column that has no height of its own — one that stretches to the rail, so
+   * there is something to travel in; `sticky` on a box already filling its
+   * containing block never moves. And nothing between it and the pane may
+   * clip: a single `overflow-hidden` added to a wrapper for a rounded corner
+   * turns the pinning off with no other symptom at all. Neither is observable
+   * under jsdom, which is exactly why they are worth pinning here.
+   */
+  it("pins the gutter while the block beside it scrolls past", async () => {
+    mount(row({ author: "octocat" }))
+    const avatar = await screen.findByRole("img", { name: "octocat" })
+    expect(avatar.className).toMatch(/(^|\s)sticky(\s|$)/)
+
+    // The column it travels in: sized by the rail, not by itself.
+    const column = avatar.parentElement
+    expect(column?.className).not.toMatch(/(^|\s)(h-|size-|max-h-)/)
+
+    // A clear run from there out to the pane's scrollport. `overflow-hidden`
+    // on the comment card beside it is fine and deliberate — this is about
+    // ANCESTORS.
+    const pane = avatar.closest("[data-overlayscrollbars-initialize]")
+    expect(pane).not.toBeNull()
+    for (let el = column; el != null && el !== pane; el = el.parentElement) {
+      expect(el.className).not.toMatch(/(^|\s)overflow-/)
+    }
+  })
+
+  /** A deleted account leaves a gutter, not a hole — the column has to keep
+   *  its left edge whether or not the forge remembers who wrote the thing. */
+  it("keeps the gutter when there is no author to put in it", async () => {
+    mount(row({ author: null, author_avatar: null }))
+    await waitFor(() => expect(forgeListComments).toHaveBeenCalled())
+    expect(screen.queryByRole("img", { name: "octocat" })).toBeNull()
+    // Two of them: the author nobody knows, and the account still being
+    // resolved for the composer at the bottom of the same column.
+    expect(screen.getAllByText("?")).toHaveLength(2)
+  })
+
+  /** Which account a comment is posted as is the BACKEND's decision — from the
+   *  remote's host and whatever is pinned to it — so the panel says whose it
+   *  will be rather than leaving it to be discovered afterwards. */
+  it("names the account the comment would be posted as", async () => {
+    forgeIdentity.mockResolvedValue({
+      username: "hubot",
+      avatar_url: "https://avatars.test/u/9",
+    })
+    mount(row())
+
+    const avatar = await screen.findByRole("img", {
+      name: "Commenting as hubot",
+    })
+    const composer = screen.getByRole("textbox", { name: "Leave a comment…" })
+    expect(
+      avatar.compareDocumentPosition(composer) &
+        Node.DOCUMENT_POSITION_FOLLOWING
+    ).toBeTruthy()
+    expect(forgeIdentity).toHaveBeenCalledWith(7)
+  })
+
+  /** The lookup is a nicety. Losing it must cost the NAME and nothing else —
+   *  a composer that stopped accepting comments because it could not draw a
+   *  face would be a far worse trade. */
+  it("still composes when the account cannot be resolved", async () => {
+    const user = userEvent.setup()
+    forgeIdentity.mockRejectedValue(new Error("no account for this host"))
+    forgeCreateComment.mockResolvedValue(comment({ id: "9", body: "ok" }))
+    mount(row())
+
+    await waitFor(() => expect(forgeIdentity).toHaveBeenCalled())
+    expect(screen.queryByRole("img", { name: /Commenting as/ })).toBeNull()
+
+    await user.type(
+      screen.getByRole("textbox", { name: "Leave a comment…" }),
+      "ok"
+    )
+    await user.click(screen.getByRole("button", { name: "Comment" }))
+    await waitFor(() => expect(forgeCreateComment).toHaveBeenCalled())
+  })
+
+  /** Per FOLDER, not per item: the thread below is keyed by the item and
+   *  remounts as the reader clicks through the list, and re-asking on each of
+   *  them would be a lookup per row read. */
+  it("resolves the account once for the folder, not once per item", async () => {
+    forgeIdentity.mockResolvedValue({ username: "hubot", avatar_url: null })
+    const { view } = mount(row({ number: 42 }))
+    await waitFor(() => expect(forgeIdentity).toHaveBeenCalledTimes(1))
+
+    view.rerender(
+      <NextIntlClientProvider locale="en" messages={enMessages}>
+        <ForgeIssueDetailSheet
+          row={row({ number: 43, title: "Another one" })}
+          link={null}
+          folderId={7}
+          onOpenChange={vi.fn()}
+          onStart={vi.fn()}
+          onRowUpdated={vi.fn()}
+          onCommentPosted={vi.fn()}
+        />
+      </NextIntlClientProvider>
+    )
+    await screen.findByText("Another one")
+    expect(forgeIdentity).toHaveBeenCalledTimes(1)
+  })
+
+  /** The drawer is mounted for the whole of the reader's time on the page,
+   *  with a `null` row while it is closed. Resolving an account for a composer
+   *  nobody has looked at is a keyring read spent on nothing. */
+  it("does not go looking for an account until the panel is open", async () => {
+    mount(null)
+    await waitFor(() => expect(forgeListComments).not.toHaveBeenCalled())
+    expect(forgeIdentity).not.toHaveBeenCalled()
+  })
+
+  /**
+   * A lookup left over from the repository the reader has since left must not
+   * name the account on the next panel they open.
+   *
+   * The keyed reset cannot catch this one: it keys on the FOLDER, and by the
+   * time the late answer lands the folder has already finished changing. So
+   * the in-flight request has to be invalidated on the way past — including by
+   * the renders that ask for nothing, which is every render while the panel is
+   * shut, and which is exactly the window this race lives in.
+   */
+  it("ignores an account resolved for the repository that was left", async () => {
+    // Both lookups stay in the test's hands. The window that matters is the
+    // one where the panel has reopened and its OWN answer has not arrived: a
+    // lookup that resolved would paper over the stale one a moment later, and
+    // an assertion made after that would pass either way.
+    const settle = new Map<number, (value: ForgeIdentity) => void>()
+    forgeIdentity.mockImplementation(
+      (folderId: number) =>
+        new Promise<ForgeIdentity>((resolve) => {
+          settle.set(folderId, resolve)
+        })
+    )
+
+    const panel = (item: ForgeIssueRow | null, folderId: number) => (
+      <NextIntlClientProvider locale="en" messages={enMessages}>
+        <ForgeIssueDetailSheet
+          row={item}
+          link={null}
+          folderId={folderId}
+          onOpenChange={vi.fn()}
+          onStart={vi.fn()}
+          onRowUpdated={vi.fn()}
+          onCommentPosted={vi.fn()}
+        />
+      </NextIntlClientProvider>
+    )
+
+    // Open on folder 7, with its lookup still out.
+    const { view } = mount(row(), null, { folderId: 7 })
+    await waitFor(() => expect(forgeIdentity).toHaveBeenCalledWith(7))
+
+    // Close it, then move to folder 8 while it is shut.
+    view.rerender(panel(null, 7))
+    view.rerender(panel(null, 8))
+
+    // Folder 7 finally answers, into a panel that is now somewhere else. The
+    // flush is load-bearing: without it the continuation would still be queued
+    // when the panel reopens below, and the reopen's own request would claim
+    // the counter first — the race would be won by accident rather than by the
+    // guard, and this test would pass with the guard removed.
+    settle.get(7)?.({ username: "on-a", avatar_url: null })
+    await act(async () => {})
+
+    // Reopen on 8, and let 8's lookup go out but not come back.
+    view.rerender(panel(row(), 8))
+    await waitFor(() => expect(forgeIdentity).toHaveBeenCalledWith(8))
+
+    // THE window: an anonymous gutter is the only honest thing to draw here.
+    expect(screen.queryByRole("img", { name: /Commenting as/ })).toBeNull()
+
+    // And 8's own answer still lands when it comes.
+    settle.get(8)?.({ username: "on-b", avatar_url: null })
+    await waitFor(() =>
+      expect(
+        screen.getByRole("img", { name: "Commenting as on-b" })
+      ).toBeInTheDocument()
+    )
+  })
+
+  /** The merge box is not a person, but it is in the same column — the glyph
+   *  is what keeps the box's left edge on the rail rather than 34px left of
+   *  everything above it. */
+  it("puts the merge box in the gutter too", async () => {
+    forgeChangeDetail.mockResolvedValue({
+      number: 42,
+      base_ref: "main",
+      head_ref: "fix/timeout",
+      head_repo: null,
+      head_sha: "abc123",
+      draft: false,
+      state: "open",
+      mergeable: true,
+      merge_state: "clean",
+      additions: 1,
+      deletions: 1,
+      changed_files: 1,
+      commits: 1,
+      checks: { checks: [], available: true, partial: false },
+    })
+    forgeMergeOptions.mockResolvedValue({
+      methods: ["merge"],
+      default_method: "merge",
+      merge_strategy: "merge_commit",
+    })
+    mount(row({ is_pr: true }))
+
+    const button = await screen.findByRole("button", { name: "Merge" })
+    // The box's own card, and the gutter column that has to be its previous
+    // sibling for the two to share the rail with the comments above.
+    const card = button.closest("div.rounded-xl")
+    expect(card).not.toBeNull()
+    const column = card?.previousElementSibling
+    expect(column?.firstElementChild).toHaveClass("rounded-full")
+  })
+})
+
+/**
+ * The unified/side-by-side switch, above the list rather than inside it.
+ *
+ * It used to render once per EXPANDED file, halfway down the panel and only
+ * after something had been opened — while the button it belongs beside (the
+ * reload) was in the header the whole time.
+ */
+describe("ForgeIssueDetailSheet file view toggle", () => {
+  const toggle = () => screen.queryByRole("button", { name: /Switch to/ })
+
+  beforeEach(() => {
+    forgeChangeDetail.mockResolvedValue({
+      number: 42,
+      base_ref: "main",
+      head_ref: "fix/timeout",
+      head_repo: null,
+      head_sha: "abc123",
+      draft: false,
+      state: "open",
+      mergeable: true,
+      merge_state: "clean",
+      additions: 1,
+      deletions: 1,
+      changed_files: 1,
+      commits: 1,
+      checks: { checks: [], available: true, partial: false },
+    })
+    forgeMergeOptions.mockResolvedValue({
+      methods: ["merge"],
+      default_method: "merge",
+      merge_strategy: "merge_commit",
+    })
+  })
+
+  it("offers the switch beside the reload, and an expanded file carries none", async () => {
+    const user = userEvent.setup()
+    forgeChangeFiles.mockResolvedValue(
+      filePage([
+        changedFile({ patch: "@@ -1,2 +1,2 @@\n ctx\n-old line\n+new line\n" }),
+      ])
+    )
+    mount(row({ is_pr: true }))
+    await openTab(user, "Files changed")
+
+    const control = await screen.findByRole("button", { name: /Switch to/ })
+    const reload = screen.getByRole("button", { name: "Refresh the file list" })
+    expect(
+      control.compareDocumentPosition(reload) & Node.DOCUMENT_POSITION_FOLLOWING
+    ).toBeTruthy()
+
+    // Above the list, so it is there before anything is opened — and opening a
+    // file must not add a second one.
+    await user.click(screen.getByRole("button", { name: /src\/a\.rs/ }))
+    expect(screen.getByText("new line")).toBeInTheDocument()
+    expect(screen.getAllByRole("button", { name: /Switch to/ })).toHaveLength(1)
+  })
+
+  /** A new file has no "before" side and renders identically either way, and a
+   *  diff the forge withheld cannot be opened at all — a switch over either is
+   *  a control that visibly does nothing. */
+  it("says nothing when no listed file has two sides to show", async () => {
+    const user = userEvent.setup()
+    forgeChangeFiles.mockResolvedValue(
+      filePage([
+        changedFile({ path: "src/new.rs", status: "added" }),
+        changedFile({ path: "src/huge.rs", patch: null }),
+      ])
+    )
+    mount(row({ is_pr: true }))
+    await openTab(user, "Files changed")
+
+    await screen.findByText("src/new.rs")
+    expect(toggle()).toBeNull()
+    expect(
+      screen.getByRole("button", { name: "Refresh the file list" })
+    ).toBeInTheDocument()
   })
 })

@@ -29,6 +29,7 @@ import type {
   ForgeComment,
   ForgeCreateResult,
   ForgeCommentList,
+  ForgeIdentity,
   ForgeIssueList,
   ForgeIssueRow,
   ForgeLabelList,
@@ -5264,6 +5265,24 @@ export async function forgeChangeFiles(
       perPage: query.perPage ?? DEFAULT_FORGE_FILES_PAGE_SIZE,
       accountId: query.accountId ?? null,
     },
+  })
+}
+
+/** Who a comment on this folder's repository would be posted as.
+ *
+ *  The panel cannot work this out: which stored account serves a folder is
+ *  decided in the backend, from the origin remote's HOST and an optional
+ *  pinned account, so reading "the default account" out of the settings list
+ *  would name the wrong person on every folder that is not on it.
+ *
+ *  Local — it reads stored settings and sends nothing to the forge. */
+export async function forgeIdentity(
+  folderId: number,
+  accountId?: string | null
+): Promise<ForgeIdentity> {
+  return getTransport().call("forge_identity", {
+    folderId,
+    accountId: accountId ?? null,
   })
 }
 

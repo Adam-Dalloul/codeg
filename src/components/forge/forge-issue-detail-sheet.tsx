@@ -34,7 +34,10 @@ import {
 } from "lucide-react"
 import { MessageResponse } from "@/components/ai-elements/message"
 import { formatRelative } from "@/components/conversations/sidebar-conversation-grouping"
-import { UnifiedDiffPreview } from "@/components/diff/unified-diff-preview"
+import {
+  UnifiedDiffPreview,
+  ViewModeToggle,
+} from "@/components/diff/unified-diff-preview"
 import {
   CHIP_FILL,
   ForgeLabelChip,
@@ -83,6 +86,7 @@ import {
   forgeChangeDetail,
   forgeChangeFiles,
   forgeCreateComment,
+  forgeIdentity,
   forgeListComments,
   forgeMergeChange,
   forgeMergeOptions,
@@ -92,6 +96,7 @@ import {
   type AppErrorTranslator,
   toLocalizedErrorMessage,
 } from "@/lib/app-error"
+import { useDiffViewMode } from "@/lib/diff-view-mode-prefs"
 import { mergeForgeRowUpdate } from "@/lib/forge-row-update"
 import { chipStateForLink } from "@/lib/forge-task-chip"
 import { cn } from "@/lib/utils"
@@ -102,6 +107,7 @@ import type {
   ForgeCheckList,
   ForgeCheckState,
   ForgeComment,
+  ForgeIdentity,
   ForgeIssueRow,
   ForgeMergeMethod,
   ForgeMergeOptions,
@@ -114,12 +120,20 @@ import type {
  * Typography for the item's Markdown body at the panel's scale.
  *
  * Streamdown sizes its own elements for the full-width chat column — `h1` at
- * `text-3xl`, 24px above every heading — which in a 32rem panel turns a
+ * `text-3xl`, 24px above every heading — which in a 36rem panel turns a
  * three-heading issue into a page of titles. A descendant selector outranks the
  * class Streamdown puts on the element itself, so these win without
- * `!important`. Lists and the first/last block's collapsed margin already come
- * from `MessageResponse`; `prose` is deliberately absent, as the repo has no
+ * `!important`. The first/last block's collapsed margin comes from
+ * `MessageResponse`; `prose` is deliberately absent, as the repo has no
  * typography plugin and those classes would generate nothing.
+ *
+ * The list indent is an override rather than an addition: `MessageResponse`
+ * sets `pl-3`, which puts an outside bullet almost on the text's own left edge,
+ * so a nested list reads as one flat column. That is also why this goes to the
+ * renderer's `className` and NOT onto a wrapper around it — from a wrapper the
+ * two rules would be descendant selectors of equal specificity, settled by
+ * whatever order Tailwind happened to emit them in; on the renderer, `cn` drops
+ * the one it replaces before either reaches the stylesheet.
  *
  * Deliberately NOT the task sheet's `RESULT_MARKDOWN`, which is tuned a notch
  * smaller: there the Markdown is a summary sitting among other sections, here it
@@ -133,6 +147,7 @@ const BODY_MARKDOWN =
   "[&_h1]:mt-4 [&_h2]:mt-4 [&_h3]:mt-3 [&_h4]:mt-3 " +
   "[&_h1]:mb-1.5 [&_h2]:mb-1.5 [&_h3]:mb-1 [&_h4]:mb-1 " +
   "[&_p]:mt-0 [&_p]:mb-2.5 [&_ul]:my-2 [&_ol]:my-2 [&_li]:my-0.5 " +
+  "[&_ul]:pl-5 [&_ol]:pl-5 " +
   "[&_blockquote]:my-2.5 [&_hr]:my-4 [&_table]:my-2.5 " +
   "[&_img]:max-w-full [&_img]:rounded-lg"
 
@@ -256,12 +271,17 @@ function CommentThread({
   folderId,
   kind,
   number,
+  identity,
   onPosted,
   beforeComposer,
 }: {
   folderId: number
   kind: "issue" | "pr"
   number: number
+  /** Passed through to the composer — held above this component because the
+   *  thread is keyed by the ITEM and remounts as the reader clicks the list,
+   *  while the identity is a property of the folder. */
+  identity: ForgeIdentity | null
   /** A comment landed on the forge, and here it is. The caller bumps the
    *  item's count so the header stops trailing the thread underneath it. */
   onPosted: (comment: ForgeComment) => void
@@ -427,6 +447,7 @@ function CommentThread({
         folderId={folderId}
         kind={kind}
         number={number}
+        identity={identity}
         onPosted={(comment) => {
           // Into its own slot, not into the paged collection — see `posted`
           // for why that ordering and that race both matter. Nothing is
@@ -459,11 +480,15 @@ function CommentComposer({
   folderId,
   kind,
   number,
+  identity,
   onPosted,
 }: {
   folderId: number
   kind: "issue" | "pr"
   number: number
+  /** Who the comment would be signed as, or `null` while that is still being
+   *  resolved — or could not be. See [`useForgeIdentity`]. */
+  identity: ForgeIdentity | null
   onPosted: (comment: ForgeComment) => void
 }) {
   const t = useTranslations("Forge")
@@ -497,41 +522,55 @@ function CommentComposer({
   }, [folderId, kind, number, onPosted, posting, trimmed])
 
   return (
-    <div className="flex flex-col gap-2">
-      <Textarea
-        value={body}
-        onChange={(e) => setBody(e.target.value)}
-        onKeyDown={(e) => {
-          // The shortcut both forges use. Plain Enter stays a newline: a
-          // comment is a paragraph, not a chat line.
-          if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
-            e.preventDefault()
-            void submit()
-          }
-        }}
-        disabled={posting}
-        placeholder={t("commentPlaceholder")}
-        aria-label={t("commentPlaceholder")}
-        className="min-h-20 rounded-xl text-[0.8125rem]"
+    <div className={RAIL}>
+      {/* Whose comment this will be. Named rather than merely drawn: which
+          account serves a folder is the backend's decision, and in a
+          multi-account setup it is not one the reader can otherwise see. */}
+      <RailAvatar
+        name={identity?.username ?? null}
+        src={identity?.avatar_url ?? null}
+        label={
+          identity != null
+            ? t("commentAs", { name: identity.username })
+            : undefined
+        }
       />
-      {failure != null ? (
-        <p className="text-xs text-destructive">
-          {toLocalizedErrorMessage(
-            failure.error,
-            tRoot as unknown as AppErrorTranslator
-          )}
-        </p>
-      ) : null}
-      <Button
-        type="button"
-        size="sm"
-        disabled={trimmed === "" || posting}
-        onClick={() => void submit()}
-        className={cn(ROW_ACTION, "self-end")}
-      >
-        <Send className={ROW_ACTION_GLYPH} aria-hidden />
-        {posting ? t("commentSubmitting") : t("commentSubmit")}
-      </Button>
+      <div className={cn(RAIL_BODY, "flex flex-col gap-2")}>
+        <Textarea
+          value={body}
+          onChange={(e) => setBody(e.target.value)}
+          onKeyDown={(e) => {
+            // The shortcut both forges use. Plain Enter stays a newline: a
+            // comment is a paragraph, not a chat line.
+            if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+              e.preventDefault()
+              void submit()
+            }
+          }}
+          disabled={posting}
+          placeholder={t("commentPlaceholder")}
+          aria-label={t("commentPlaceholder")}
+          className="min-h-20 rounded-xl text-[0.8125rem]"
+        />
+        {failure != null ? (
+          <p className="text-xs text-destructive">
+            {toLocalizedErrorMessage(
+              failure.error,
+              tRoot as unknown as AppErrorTranslator
+            )}
+          </p>
+        ) : null}
+        <Button
+          type="button"
+          size="sm"
+          disabled={trimmed === "" || posting}
+          onClick={() => void submit()}
+          className={cn(ROW_ACTION, "self-end")}
+        >
+          <Send className={ROW_ACTION_GLYPH} aria-hidden />
+          {posting ? t("commentSubmitting") : t("commentSubmit")}
+        </Button>
+      </div>
     </div>
   )
 }
@@ -602,27 +641,107 @@ type FileStatusLabelKey =
   | "fileRenamed"
   | "fileModified"
 
+/**
+ * The conversation's one left edge.
+ *
+ * A comment is an avatar in a 24px gutter with its body beside it. The three
+ * things in the same column that are NOT comments — the item's own
+ * description, the merge box and the composer — used to run full-bleed, so the
+ * text stepped left and right four times on the way down the tab. They line up
+ * on these two instead of on four copies of the same numbers.
+ */
+const RAIL = "flex gap-2.5"
+const RAIL_BODY = "min-w-0 flex-1"
+
+/**
+ * The gutter's own column, and what pins what sits in it.
+ *
+ * `RAIL_COLUMN` is the flex item and has no height of its own, so it stretches
+ * to the block beside it — that stretch is the whole point, because it is the
+ * travel a `sticky` circle inside it gets. Sticky on the circle alone would be
+ * sticky on a box already filling its containing block, which never moves.
+ *
+ * `top-4` is the pane's own top inset, so the first circle in a tab pins where
+ * it was already sitting rather than sliding up to meet the tab strip. Nothing
+ * between here and the pane's scrollport may clip, or the pin silently stops
+ * happening — see the test that walks that chain.
+ */
+const RAIL_COLUMN = "shrink-0"
+const RAIL_PIN = "sticky top-4"
+
+/**
+ * A person in the gutter.
+ *
+ * The fallback is a first-class state, not a stand-in for a missing URL: GitLab
+ * hands out gravatar.com URLs for accounts that never uploaded a picture, and
+ * those can take a long time to fail on a network that cannot reach them. Radix
+ * swaps the image in only once it has loaded, so the initial is what shows
+ * until (and unless) it does.
+ *
+ * `label` names the person for a reader who cannot see the picture — passed
+ * only where the name is not already written beside it, which is why a comment
+ * (whose header says who wrote it) leaves it off and the description does not.
+ */
+function RailAvatar({
+  name,
+  src,
+  label,
+}: {
+  name: string | null
+  src: string | null
+  label?: string
+}) {
+  return (
+    <div className={RAIL_COLUMN}>
+      <Avatar
+        size="sm"
+        className={cn(RAIL_PIN, "mt-0.5")}
+        {...(label != null
+          ? { role: "img", "aria-label": label, title: label }
+          : {})}
+      >
+        {src != null ? <AvatarImage src={src} alt="" /> : null}
+        <AvatarFallback className="text-[0.625rem] font-medium uppercase">
+          {name?.slice(0, 1) ?? "?"}
+        </AvatarFallback>
+      </Avatar>
+    </div>
+  )
+}
+
+/** A thing rather than a person in the gutter — the same circle at the same
+ *  size, and pinned the same way, so the column still reads as one list.
+ *  Decorative: whatever it stands in front of says out loud what it is. */
+function RailGlyph({ Icon }: { Icon: LucideIcon }) {
+  return (
+    <div className={RAIL_COLUMN}>
+      <span
+        aria-hidden
+        className={cn(
+          RAIL_PIN,
+          "mt-0.5 flex size-6 items-center justify-center rounded-full bg-muted text-muted-foreground"
+        )}
+      >
+        <Icon className="size-3.5" />
+      </span>
+    </div>
+  )
+}
+
 /** One comment: who, when, and what they wrote, in the forge's own Markdown. */
 function CommentCard({ comment }: { comment: ForgeComment }) {
   const t = useTranslations("Forge")
   const body = comment.body.trim()
   const author = comment.author
   return (
-    <article className="flex gap-2.5">
-      {/* Fallback in its own right, not a stand-in for a missing URL: GitLab
-          hands out gravatar.com URLs for accounts that never uploaded a
-          picture, and those can take a long time to fail on a network that
-          cannot reach them. Radix swaps the image in only once it has loaded,
-          so the initial is what shows until (and unless) it does. */}
-      <Avatar size="sm" className="mt-0.5">
-        {comment.author_avatar != null ? (
-          <AvatarImage src={comment.author_avatar} alt="" />
-        ) : null}
-        <AvatarFallback className="text-[0.625rem] font-medium uppercase">
-          {author?.slice(0, 1) ?? "?"}
-        </AvatarFallback>
-      </Avatar>
-      <div className="min-w-0 flex-1 overflow-hidden rounded-xl border border-border">
+    <article className={RAIL}>
+      <RailAvatar name={author} src={comment.author_avatar} />
+      <div
+        className={cn(
+          RAIL_BODY,
+          "overflow-hidden rounded-xl border border-border"
+        )}
+      >
         <header className="flex items-center gap-1.5 border-b border-border bg-muted/40 px-3 py-1.5 text-[0.6875rem]">
           <span className="min-w-0 truncate font-medium">
             {author ?? t("commentUnknownAuthor")}
@@ -658,13 +777,8 @@ function CommentCard({ comment }: { comment: ForgeComment }) {
           ) : null}
         </header>
         {body ? (
-          <div
-            className={cn(
-              "break-words px-3 py-2 text-[0.8125rem] leading-relaxed",
-              BODY_MARKDOWN
-            )}
-          >
-            <MessageResponse>{body}</MessageResponse>
+          <div className="break-words px-3 py-2 text-[0.8125rem] leading-relaxed">
+            <MessageResponse className={BODY_MARKDOWN}>{body}</MessageResponse>
           </div>
         ) : (
           <p className="px-3 py-2 text-xs italic text-muted-foreground">
@@ -789,16 +903,23 @@ function ChecksPanel({ change }: { change: ChangeDetailState }) {
   const { detail, loading, failure } = change
   return (
     <div className="flex flex-col gap-3 px-5 py-4">
-      {/* The verdict and the reload share one row, as the files panel's size
-          line does with its own. On a row of its own the button sat against an
-          empty strip, opening a hand's width of nothing under the tabs. */}
+      {/* One line above the list, and the reload at the end of it. The verdict
+          and the tallies were two rows saying one sentence — "can this land",
+          answered by mergeability and then by CI — which spent a second line to
+          fit six words, and read as two unrelated strips. Both groups wrap
+          inside the same run, so a narrow panel reflows them together instead
+          of keeping two half-empty rows. */}
       <div className="flex min-w-0 items-center gap-2">
-        {detail != null ? <MergeReadiness detail={detail} /> : null}
+        <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2.5 gap-y-1 text-[0.6875rem] text-muted-foreground">
+          {detail != null ? <MergeReadiness detail={detail} /> : null}
+          {detail != null ? <ChecksSummary checks={detail.checks} /> : null}
+        </div>
+        {/* No `ms-auto`: the run above takes the free space, so the button
+            holds the row's end whether or not either group said anything. */}
         <RefreshButton
           label={t("changeRefresh")}
           busy={loading}
           onClick={change.reload}
-          className="ms-auto"
         />
       </div>
 
@@ -813,7 +934,7 @@ function ChecksPanel({ change }: { change: ChangeDetailState }) {
         <FailureStrip error={failure.error} onRetry={change.reload} />
       ) : null}
 
-      {detail != null ? <ChecksStrip checks={detail.checks} /> : null}
+      {detail != null ? <ChecksList checks={detail.checks} /> : null}
     </div>
   )
 }
@@ -858,36 +979,39 @@ function BranchPair({ detail }: { detail: ForgeChangeDetail }) {
 
 /** Whether the change can land, which is the question the checks panel is
  *  about — the counters that say how BIG it is went to the files panel, beside
- *  the list they count. */
+ *  the list they count.
+ *
+ *  One span, not a row: it shares its line with the check tallies, and its
+ *  size and colour come from the run that holds both. */
 function MergeReadiness({ detail }: { detail: ForgeChangeDetail }) {
   const t = useTranslations("Forge")
   // A merged change has no mergeability left to report, and both forges keep
   // answering the question after the fact — "has conflicts" on something that
   // already landed reads as a problem that is not there.
   if (detail.state === "merged") return null
+  if (detail.mergeable === true) {
+    return (
+      <span className="inline-flex items-center gap-1 font-medium text-emerald-600">
+        <CircleCheck className="size-3" aria-hidden />
+        {t("mergeableYes")}
+      </span>
+    )
+  }
+  if (detail.mergeable === false) {
+    return (
+      <span
+        title={detail.merge_state ?? undefined}
+        className="inline-flex items-center gap-1 font-medium text-rose-600"
+      >
+        <TriangleAlert className="size-3" aria-hidden />
+        {t("mergeableNo")}
+      </span>
+    )
+  }
+  // Neither forge has finished working it out. NOT "cannot be merged" — that
+  // would send someone hunting a conflict that may not exist.
   return (
-    <div className="flex min-w-0 flex-wrap items-center gap-x-2.5 gap-y-1 text-[0.6875rem] text-muted-foreground">
-      {detail.mergeable === true ? (
-        <span className="inline-flex items-center gap-1 font-medium text-emerald-600">
-          <CircleCheck className="size-3" aria-hidden />
-          {t("mergeableYes")}
-        </span>
-      ) : detail.mergeable === false ? (
-        <span
-          title={detail.merge_state ?? undefined}
-          className="inline-flex items-center gap-1 font-medium text-rose-600"
-        >
-          <TriangleAlert className="size-3" aria-hidden />
-          {t("mergeableNo")}
-        </span>
-      ) : (
-        // Neither forge has finished working it out. NOT "cannot be merged" —
-        // that would send someone hunting a conflict that may not exist.
-        <span title={detail.merge_state ?? undefined}>
-          {t("mergeableUnknown")}
-        </span>
-      )}
-    </div>
+    <span title={detail.merge_state ?? undefined}>{t("mergeableUnknown")}</span>
   )
 }
 
@@ -940,22 +1064,22 @@ function tallyChecks(checks: ForgeCheck[]): CheckTally {
 }
 
 /**
- * CI on the head commit.
+ * How CI came out, in the one line the panel leads with.
  *
  * "Could not read the checks" and "nothing ran" are drawn as different things
  * on purpose — a token without the scope, or a repository with CI switched
  * off, would otherwise print "no checks" over a build that is red.
+ *
+ * Spans and not a strip of its own: it shares its line with the mergeability
+ * verdict beside it (see [`ChecksPanel`]), which is the other half of the same
+ * question.
  */
-function ChecksStrip({ checks }: { checks: ForgeChangeDetail["checks"] }) {
+function ChecksSummary({ checks }: { checks: ForgeChangeDetail["checks"] }) {
   const t = useTranslations("Forge")
   const tally = useMemo(() => tallyChecks(checks.checks), [checks])
 
   if (!checks.available) {
-    return (
-      <p className="text-[0.6875rem] text-muted-foreground">
-        {t("checksUnavailable")}
-      </p>
-    )
+    return <span>{t("checksUnavailable")}</span>
   }
   if (checks.checks.length === 0) {
     // "Nothing ran" is a claim about the repository; "we saw nothing" is a
@@ -963,42 +1087,46 @@ function ChecksStrip({ checks }: { checks: ForgeChangeDetail["checks"] }) {
     // two permissions, so an empty list from a half-readable pair means the
     // second one — and printing "no checks ran" there would be green over red.
     return (
-      <p className="text-[0.6875rem] text-muted-foreground">
-        {t(checks.partial ? "checksUnavailable" : "checksEmpty")}
-      </p>
+      <span>{t(checks.partial ? "checksUnavailable" : "checksEmpty")}</span>
     )
   }
   return (
-    <div className="flex flex-col gap-1.5">
-      <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[0.6875rem] text-muted-foreground">
-        {/* Half an answer, said out loud beside the half it did get: the
-            numbers below describe what was readable, not what ran. */}
-        {checks.partial ? (
-          <span className="text-amber-600">{t("checksPartial")}</span>
-        ) : null}
-        {/* Only the non-zero ones: "0 failing" beside "3 passing" is a line of
-            reassurance nobody asked for, and it pushes the number that matters
-            off the end on a narrow panel. */}
-        {tally.failing > 0 ? (
-          <span className="font-medium text-rose-600">
-            {t("checksFailing", { count: tally.failing })}
-          </span>
-        ) : null}
-        {tally.pending > 0 ? (
-          <span>{t("checksPending", { count: tally.pending })}</span>
-        ) : null}
-        {tally.passing > 0 ? (
-          <span>{t("checksPassing", { count: tally.passing })}</span>
-        ) : null}
-      </div>
-      <ul className="flex flex-col divide-y divide-border/40 overflow-hidden rounded-xl border border-border">
-        {checks.checks.map((check) => (
-          <li key={check.id}>
-            <CheckRow check={check} />
-          </li>
-        ))}
-      </ul>
-    </div>
+    <>
+      {/* Half an answer, said out loud beside the half it did get: the numbers
+          after it describe what was readable, not what ran. */}
+      {checks.partial ? (
+        <span className="text-amber-600">{t("checksPartial")}</span>
+      ) : null}
+      {/* Only the non-zero ones: "0 failing" beside "3 passing" is a line of
+          reassurance nobody asked for, and it pushes the number that matters
+          off the end on a narrow panel. */}
+      {tally.failing > 0 ? (
+        <span className="font-medium text-rose-600">
+          {t("checksFailing", { count: tally.failing })}
+        </span>
+      ) : null}
+      {tally.pending > 0 ? (
+        <span>{t("checksPending", { count: tally.pending })}</span>
+      ) : null}
+      {tally.passing > 0 ? (
+        <span>{t("checksPassing", { count: tally.passing })}</span>
+      ) : null}
+    </>
+  )
+}
+
+/** The checks themselves, one row each. Nothing at all when there are none to
+ *  list — the line above has already said which kind of "none" it is. */
+function ChecksList({ checks }: { checks: ForgeChangeDetail["checks"] }) {
+  if (!checks.available || checks.checks.length === 0) return null
+  return (
+    <ul className="flex flex-col divide-y divide-border/40 overflow-hidden rounded-xl border border-border">
+      {checks.checks.map((check) => (
+        <li key={check.id}>
+          <CheckRow check={check} />
+        </li>
+      ))}
+    </ul>
   )
 }
 
@@ -1070,6 +1198,7 @@ function ChangedFiles({
   detail: ForgeChangeDetail | null
 }) {
   const t = useTranslations("Forge")
+  const [view, switchView] = useDiffViewMode()
   const [files, setFiles] = useState<ForgeChangedFile[]>([])
   const [nextPage, setNextPage] = useState(1)
   const [hasNext, setHasNext] = useState(false)
@@ -1111,18 +1240,41 @@ function ChangedFiles({
   }, [load])
 
   const firstLoad = loading && files.length === 0 && failure == null
+  /** Whether inline-vs-side-by-side is a question worth offering here. A new
+   *  file has no "before" side and renders the same in both — the rule
+   *  `supportsSplitView` applies to a parsed diff, decided from the row data
+   *  instead, so a fifty-file change does not parse fifty patches to draw one
+   *  button. A file the forge withheld cannot be opened at all. */
+  const splittable = files.some(
+    (file) => file.patch != null && file.status !== "added"
+  )
 
   return (
     <div className="flex flex-col gap-2 px-5 py-4">
-      {/* The size line and the reload share the row the section heading used
-          to have — the tab above says "Files changed" now. */}
+      {/* The size line and the two controls share the row the section heading
+          used to have — the tab above says "Files changed" now. */}
       <div className="flex min-w-0 items-center gap-2">
         {detail != null ? <ChangeSize detail={detail} /> : null}
+        {/* Up here rather than inside each expanded file: one preview is
+            mounted per open row, so the toggle's own row would appear once per
+            file, halfway down the list, and only after something was opened.
+            The mode is a single global preference, so this and every diff below
+            it move together. */}
+        {splittable ? (
+          <ViewModeToggle
+            view={view}
+            onSwitch={switchView}
+            // `RefreshButton`'s own box, so the two read as one pair rather
+            // than as two kinds of control four pixels apart.
+            className="ms-auto size-6 rounded-md border-0 bg-transparent hover:bg-accent hover:text-foreground"
+            iconClassName="size-3.5"
+          />
+        ) : null}
         <RefreshButton
           label={t("filesRefresh")}
           busy={loading}
           onClick={() => void load(1)}
-          className="ms-auto"
+          className={splittable ? undefined : "ms-auto"}
         />
       </div>
       {firstLoad ? (
@@ -1138,9 +1290,11 @@ function ChangedFiles({
         />
       ) : null}
       {files.length > 0 ? (
-        // No scroll box of its own any more: the tab is the scroller, and a
-        // nested one would trap the wheel over the list — which matters far
-        // more now that a row can open onto a diff taller than the panel.
+        // No scroll box of its own: the tab is the scroller, and a nested one
+        // would trap the wheel over the paths — the one place in this panel
+        // where a reader is skimming rather than reading. An OPEN diff caps
+        // itself (see `ChangedFileRow`), which is a box around content nobody
+        // skims, and is what keeps the list from being pushed off the panel.
         <ul className="flex flex-col divide-y divide-border/40 overflow-hidden rounded-xl border border-border">
           {files.map((file) => (
             <li key={`${file.status}-${file.path}`}>
@@ -1272,14 +1426,28 @@ function ChangedFileRow({ file }: { file: ForgeChangedFile }) {
         />
         <ChangedFileLine file={file} />
       </CollapsibleTrigger>
-      <CollapsibleContent className="border-t border-border/40 bg-muted/20 py-1">
+      <CollapsibleContent className="border-t border-border/40 bg-muted/20">
         {/* `embedded`: the row above already carries the path, the status mark
             and the counters, so the preview's own card header would say all
-            three a second time. `unbounded`: the tab is the scroller, and the
-            preview's own 420px box would nest a second vertical scroll inside
-            it. Its 500-row cap and "show the remaining N lines" reveal stay,
-            which is what keeps a lockfile from freezing the panel. */}
-        <UnifiedDiffPreview diffText={patch} embedded unbounded />
+            three a second time. `hideViewToggle`: the list's header carries one
+            for every file.
+
+            Bounded — the preview's own 420px cap, and NOT a box around it.
+            The cap is what keeps one 900-line file from pushing every path
+            under it off the panel, but it has to be the diff's own scrollport:
+            a scrollbar is drawn on the edges of the element that scrolls, so a
+            cap one level up leaves the HORIZONTAL bar at the bottom of the
+            file — hundreds of lines below the fold, reachable only by scrolling
+            to the end of the very thing you were trying to scroll sideways.
+            Bounded, both bars sit on the edges of the box you can see.
+
+            Its 500-row cap and "show the remaining N lines" reveal are the same
+            either way, which is what keeps a lockfile from freezing the panel.
+
+            The tab underneath stays the scroller for everything else, and the
+            wheel carries on down it once a diff reaches its end — nothing here
+            contains the overscroll. */}
+        <UnifiedDiffPreview diffText={patch} embedded hideViewToggle />
       </CollapsibleContent>
     </Collapsible>
   )
@@ -1477,6 +1645,65 @@ function mergeMethodText(
     : MERGE_METHOD_TEXT[method]
 }
 
+/**
+ * Who a comment posted from this panel would be signed as.
+ *
+ * Asked of the backend because only it knows: the account is resolved from the
+ * folder's origin remote HOST and whatever is pinned to it, so reading "the
+ * default account" out of the settings list would name the wrong person on
+ * every folder that is not on it. The call is local — stored settings, no
+ * request to the forge.
+ *
+ * Per FOLDER, which is why it is held up on the sheet rather than in the
+ * composer: [`CommentThread`] is keyed by the item and remounts as the reader
+ * clicks through the list, and the answer would be re-asked on every one of
+ * them. And only while the panel is OPEN — the drawer stays mounted with a
+ * `null` row for the whole of the reader's time on the page, and a lookup for
+ * a composer nobody has looked at is a keyring read for nothing.
+ *
+ * A failure answers `null` and says nothing. The composer draws an anonymous
+ * gutter and still posts — and if the account really is missing, the POST is
+ * where that gets said, in the one place it can be acted on.
+ */
+function useForgeIdentity(
+  folderId: number | null,
+  enabled: boolean
+): ForgeIdentity | null {
+  const [identity, setIdentity] = useState<ForgeIdentity | null>(null)
+  /** The folder the answer above describes. */
+  const [shown, setShown] = useState<number | null>(null)
+  const reqRef = useRef(0)
+
+  // Absorbed during RENDER, as [`useMergeOptions`] does: an effect would commit
+  // one frame naming the account of the repository the panel just left. Keyed
+  // on the FOLDER alone, so closing the panel keeps the answer rather than
+  // blanking the avatar every time it is reopened.
+  if (folderId !== shown) {
+    setShown(folderId)
+    setIdentity(null)
+  }
+
+  useEffect(() => {
+    // Claimed BEFORE the early return, so a run that asks for nothing still
+    // invalidates whatever the last one had in flight. Otherwise a lookup for
+    // the folder the panel was last opened on lands after the reader has
+    // switched repositories — the reset above has already been and gone by
+    // then, because it keys on the folder and the folder stopped changing —
+    // and the next open names an account from the repository before this one.
+    const id = ++reqRef.current
+    if (folderId == null || !enabled) return
+    void forgeIdentity(folderId)
+      .then((next) => {
+        if (id === reqRef.current) setIdentity(next)
+      })
+      .catch(() => {
+        if (id === reqRef.current) setIdentity(null)
+      })
+  }, [folderId, enabled])
+
+  return identity
+}
+
 /** Offered when the forge would not say what the repository permits. Not a
  *  guess at the truth — it is the one method that means the same thing on both
  *  forges, and the forge still refuses if it is wrong. */
@@ -1636,125 +1863,137 @@ function MergeBox({
     merging || detail == null || options == null || blocked != null
 
   return (
-    <div className="overflow-hidden rounded-xl border border-border">
-      {checks != null ? (
-        <MergeSignal
-          Icon={CHECK_GLYPH[checks.state].Icon}
-          className={CHECK_GLYPH[checks.state].className}
-          // "All checks have passed" is a claim about EVERY check, so it is
-          // only made when every check is accounted for. A half-readable list
-          // or a skipped check gets the weaker headline instead — the counts
-          // below are the same either way, and they were never the overclaim.
-          title={t(
-            checks.state === "success" && !checks.complete
-              ? "mergeChecksIncomplete"
-              : MERGE_CHECKS_KEY[checks.state]
-          )}
-          hint={t(CHECKS_COUNT_KEY[checks.state], { count: checks.count })}
-        />
-      ) : null}
-
-      {detail?.mergeable === true ? (
-        <MergeSignal
-          Icon={CircleCheck}
-          className="text-emerald-600"
-          title={t("mergeNoConflicts")}
-          hint={t("mergeNoConflictsHint")}
-          hintTitle={detail.merge_state ?? undefined}
-        />
-      ) : detail?.mergeable === false ? (
-        <MergeSignal
-          Icon={TriangleAlert}
-          className="text-rose-600"
-          title={t("mergeConflicts")}
-          hint={t("mergeConflictsHint")}
-          hintTitle={detail.merge_state ?? undefined}
-        />
-      ) : (
-        <MergeSignal
-          Icon={CircleDot}
-          className="text-muted-foreground"
-          title={t("mergeableUnknown")}
-          hint={t("mergeCheckingHint")}
-          hintTitle={detail?.merge_state ?? undefined}
-        />
-      )}
-
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-t border-border bg-muted/30 px-3 py-2.5">
-        {/* One control split in two, not two buttons: the halves share an
-            outline so the chevron reads as belonging to the verb beside it. */}
-        <div className="flex items-stretch">
-          <Button
-            type="button"
-            size="sm"
-            disabled={disabled}
-            onClick={() => onMerge(armed)}
-            className={cn(
-              ROW_ACTION,
-              choices.length > 1 && "rounded-e-none pe-2.5"
+    // In the conversation's gutter like everything above it. The glyph is the
+    // rail's own vocabulary rather than a fourth verdict: what the box thinks
+    // of the change is in its two signal rows, and a coloured circle out here
+    // would be a coarser opinion competing with them.
+    <div className={RAIL}>
+      <RailGlyph Icon={GitMerge} />
+      <div
+        className={cn(
+          RAIL_BODY,
+          "overflow-hidden rounded-xl border border-border"
+        )}
+      >
+        {checks != null ? (
+          <MergeSignal
+            Icon={CHECK_GLYPH[checks.state].Icon}
+            className={CHECK_GLYPH[checks.state].className}
+            // "All checks have passed" is a claim about EVERY check, so it is
+            // only made when every check is accounted for. A half-readable list
+            // or a skipped check gets the weaker headline instead — the counts
+            // below are the same either way, and they were never the overclaim.
+            title={t(
+              checks.state === "success" && !checks.complete
+                ? "mergeChecksIncomplete"
+                : MERGE_CHECKS_KEY[checks.state]
             )}
-          >
-            <GitMerge className={ROW_ACTION_GLYPH} aria-hidden />
-            {merging ? t("merging") : t("mergeSubmit")}
-          </Button>
-          {choices.length > 1 ? (
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button
-                  type="button"
-                  size="sm"
-                  disabled={disabled}
-                  aria-label={t("mergeMethodLabel")}
-                  title={t("mergeMethodLabel")}
-                  className={cn(
-                    ROW_ACTION,
-                    // A hairline of the panel's own background between the
-                    // halves — a border would be the button's colour against
-                    // itself and vanish.
-                    "ms-px rounded-s-none px-2"
-                  )}
-                >
-                  <ChevronDown className={ROW_ACTION_GLYPH} aria-hidden />
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="start" className="w-72">
-                {choices.map((choice) => (
-                  <DropdownMenuItem
-                    key={choice}
-                    onSelect={() => onMethodChange(choice)}
-                    className="flex-col items-start gap-0.5"
-                  >
-                    <span className="flex items-center gap-1.5 font-medium">
-                      {/* Held in the layout rather than removed, so the
-                          labels stay in one column as the tick moves. */}
-                      <Check
-                        aria-hidden
-                        className={cn(
-                          "size-3.5 shrink-0",
-                          choice !== armed && "invisible"
-                        )}
-                      />
-                      {t(mergeMethodText(choice, strategy).label)}
-                    </span>
-                    <span className="ps-5 text-[0.6875rem] leading-4 text-muted-foreground">
-                      {t(mergeMethodText(choice, strategy).hint)}
-                    </span>
-                  </DropdownMenuItem>
-                ))}
-              </DropdownMenuContent>
-            </DropdownMenu>
-          ) : null}
-        </div>
+            hint={t(CHECKS_COUNT_KEY[checks.state], { count: checks.count })}
+          />
+        ) : null}
 
-        {/* Why it is off, or — when it is on and there is a choice to make —
+        {detail?.mergeable === true ? (
+          <MergeSignal
+            Icon={CircleCheck}
+            className="text-emerald-600"
+            title={t("mergeNoConflicts")}
+            hint={t("mergeNoConflictsHint")}
+            hintTitle={detail.merge_state ?? undefined}
+          />
+        ) : detail?.mergeable === false ? (
+          <MergeSignal
+            Icon={TriangleAlert}
+            className="text-rose-600"
+            title={t("mergeConflicts")}
+            hint={t("mergeConflictsHint")}
+            hintTitle={detail.merge_state ?? undefined}
+          />
+        ) : (
+          <MergeSignal
+            Icon={CircleDot}
+            className="text-muted-foreground"
+            title={t("mergeableUnknown")}
+            hint={t("mergeCheckingHint")}
+            hintTitle={detail?.merge_state ?? undefined}
+          />
+        )}
+
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-t border-border bg-muted/30 px-3 py-2.5">
+          {/* One control split in two, not two buttons: the halves share an
+            outline so the chevron reads as belonging to the verb beside it. */}
+          <div className="flex items-stretch">
+            <Button
+              type="button"
+              size="sm"
+              disabled={disabled}
+              onClick={() => onMerge(armed)}
+              className={cn(
+                ROW_ACTION,
+                choices.length > 1 && "rounded-e-none pe-2.5"
+              )}
+            >
+              <GitMerge className={ROW_ACTION_GLYPH} aria-hidden />
+              {merging ? t("merging") : t("mergeSubmit")}
+            </Button>
+            {choices.length > 1 ? (
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button
+                    type="button"
+                    size="sm"
+                    disabled={disabled}
+                    aria-label={t("mergeMethodLabel")}
+                    title={t("mergeMethodLabel")}
+                    className={cn(
+                      ROW_ACTION,
+                      // A hairline of the panel's own background between the
+                      // halves — a border would be the button's colour against
+                      // itself and vanish.
+                      "ms-px rounded-s-none px-2"
+                    )}
+                  >
+                    <ChevronDown className={ROW_ACTION_GLYPH} aria-hidden />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="start" className="w-72">
+                  {choices.map((choice) => (
+                    <DropdownMenuItem
+                      key={choice}
+                      onSelect={() => onMethodChange(choice)}
+                      className="flex-col items-start gap-0.5"
+                    >
+                      <span className="flex items-center gap-1.5 font-medium">
+                        {/* Held in the layout rather than removed, so the
+                          labels stay in one column as the tick moves. */}
+                        <Check
+                          aria-hidden
+                          className={cn(
+                            "size-3.5 shrink-0",
+                            choice !== armed && "invisible"
+                          )}
+                        />
+                        {t(mergeMethodText(choice, strategy).label)}
+                      </span>
+                      <span className="ps-5 text-[0.6875rem] leading-4 text-muted-foreground">
+                        {t(mergeMethodText(choice, strategy).hint)}
+                      </span>
+                    </DropdownMenuItem>
+                  ))}
+                </DropdownMenuContent>
+              </DropdownMenu>
+            ) : null}
+          </div>
+
+          {/* Why it is off, or — when it is on and there is a choice to make —
             which method the button is currently armed with. The two never
             compete: a disabled button has no method worth naming. */}
-        <p className="min-w-0 flex-1 text-[0.6875rem] leading-4 text-muted-foreground">
-          {blocked ??
-            (choices.length > 1
-              ? t(mergeMethodText(armed, strategy).label)
-              : "")}
-        </p>
+          <p className="min-w-0 flex-1 text-[0.6875rem] leading-4 text-muted-foreground">
+            {blocked ??
+              (choices.length > 1
+                ? t(mergeMethodText(armed, strategy).label)
+                : "")}
+          </p>
+        </div>
       </div>
     </div>
   )
@@ -1770,11 +2009,14 @@ function MergeBox({
 function Conversation({
   row,
   folderId,
+  identity,
   onCommentPosted,
   beforeComposer,
 }: {
   row: ForgeIssueRow
   folderId: number | null
+  /** Who a comment from here would be signed as — see [`useForgeIdentity`]. */
+  identity: ForgeIdentity | null
   onCommentPosted: (item: { isPr: boolean; number: number }) => void
   /** A change's merge controls, for the slot between the thread and the box.
    *  Absent for an issue — see [`CommentThread`]. */
@@ -1784,25 +2026,37 @@ function Conversation({
   const body = row.body?.trim()
   return (
     <>
-      <div className="px-5 py-4">
-        {body ? (
-          // The forge's own Markdown, through the same renderer the chat
-          // uses — headings, task lists, tables, fenced code and images all
-          // come out as the author wrote them, and link clicks go through
-          // the app's link-safety routing rather than the webview.
-          <div
-            className={cn(
-              "break-words text-[0.8125rem] leading-relaxed",
-              BODY_MARKDOWN
-            )}
-          >
-            <MessageResponse>{body}</MessageResponse>
-          </div>
-        ) : (
-          <p className="py-6 text-center text-xs text-muted-foreground">
-            {t("detailNoBody")}
-          </p>
-        )}
+      {/* The description is the first thing said about the item, so it sits in
+          the same column as everything said after it — the author in the
+          gutter, the text where a comment's text is. The avatar is NAMED here
+          and not on a comment: a comment's own header says who wrote it, and
+          nothing else in this pane says who opened the item. */}
+      <div className={cn(RAIL, "px-5 py-4")}>
+        <RailAvatar
+          name={row.author}
+          src={row.author_avatar}
+          label={row.author ?? undefined}
+        />
+        <div className={RAIL_BODY}>
+          {body ? (
+            // The forge's own Markdown, through the same renderer the chat
+            // uses — headings, task lists, tables, fenced code and images all
+            // come out as the author wrote them, and link clicks go through
+            // the app's link-safety routing rather than the webview.
+            <div className="break-words text-[0.8125rem] leading-relaxed">
+              <MessageResponse className={BODY_MARKDOWN}>
+                {body}
+              </MessageResponse>
+            </div>
+          ) : (
+            // Left where the text would be, as a comment's own empty body is —
+            // centred across the panel it would no longer belong to the avatar
+            // beside it.
+            <p className="text-xs italic text-muted-foreground">
+              {t("detailNoBody")}
+            </p>
+          )}
+        </div>
       </div>
 
       {/* Keyed by the ITEM, not by the row object: the page re-reads the row
@@ -1818,6 +2072,7 @@ function Conversation({
           folderId={folderId}
           kind={row.is_pr ? "pr" : "issue"}
           number={row.number}
+          identity={identity}
           // The ITEM, not a row: this fires when the POST resolves, and by
           // then a close or a list load may have produced a newer copy that a
           // snapshot taken at submit time would overwrite.
@@ -1851,7 +2106,7 @@ function Conversation({
  * A CHANGE is read through three tabs, an issue through one scroll. That is not
  * a symmetry worth having: an issue has no checks and no files, so its tab bar
  * would be one tab wide and say nothing — while a change without them queues
- * its CI and its file list behind a discussion that pages, in a 32rem panel.
+ * its CI and its file list behind a discussion that pages, in a 36rem panel.
  *
  * It also WRITES: a comment, and the item's open/closed state. Both go through
  * the backend's own account resolution and both adopt the forge's answer
@@ -1976,6 +2231,10 @@ export function ForgeIssueDetailSheet({
     row?.state === "open" &&
     (detail.detail?.state ?? "open") === "open"
   const mergeOptions = useMergeOptions(change?.folderId ?? null, canMerge)
+  /** Held HERE, above the thread that remounts per item — the account is a
+   *  property of the folder, not of the item being read. Gated on the panel
+   *  being open, because the drawer is mounted whether or not it is. */
+  const identity = useForgeIdentity(folderId, row != null)
 
   const [tab, setTab] = useState<DetailTab>("conversation")
   /** Which panes have ever been shown. A pane that has been visited stays
@@ -2213,6 +2472,7 @@ export function ForgeIssueDetailSheet({
               <Conversation
                 row={row}
                 folderId={folderId}
+                identity={identity}
                 onCommentPosted={onCommentPosted}
                 beforeComposer={
                   canMerge ? (
@@ -2265,6 +2525,7 @@ export function ForgeIssueDetailSheet({
             <Conversation
               row={row}
               folderId={folderId}
+              identity={identity}
               onCommentPosted={onCommentPosted}
             />
           </ScrollArea>
