@@ -884,16 +884,33 @@ function appendProse(
 }
 
 /**
- * The main-thread prose blocks that continue the previous one — i.e. every
- * block between them belongs to a sub-agent and is therefore out-of-band for
- * the main thread: parented prose (routed to the Agent capsule) and the
- * sub-agent's own child tool calls (nested into the Agent card).
+ * The main-thread prose blocks that continue the previous one — i.e. the wire
+ * put at least one SUB-AGENT block between them (parented prose, routed to the
+ * Agent capsule; or the sub-agent's own child tool calls, nested into the Agent
+ * card) and nothing else. Those are out-of-band for the main thread, so the
+ * split they caused is an artifact, not a boundary.
  *
- * Computed over `liveMessage.content`, NOT over the array Phase 2 walks: by
- * then `collapseLiveCollabBlocks` has already dropped a completed codex
- * `closeAgent` tool call, and prose on either side of a dropped boundary must
- * stay two blocks. Prose is never dropped or rewritten by that collapse, so
- * the surviving blocks are identity-stable across it.
+ * Two rules keep this from fusing across a real boundary that something
+ * upstream erased:
+ *
+ * 1. Computed over `liveMessage.content`, NOT the array Phase 2 walks: by then
+ *    `collapseLiveCollabBlocks` has dropped a completed codex `closeAgent`,
+ *    and prose on either side of it must stay two blocks. That collapse never
+ *    drops or rewrites prose and preserves order, so prose blocks are
+ *    identity-stable across it.
+ * 2. A sub-agent block must ACTUALLY sit between the two. The split predicate
+ *    (`applyStreamingAction` / `append_text_delta`) merges same-kind same-
+ *    attribution deltas, so it can never leave two same-kind main-thread prose
+ *    blocks directly adjacent — that shape means something was removed. The
+ *    `PLAN_UPDATE` reducer is one such remover: it keeps at most one plan block
+ *    and relocates it to the end, so `thinking → plan(v1) → thinking → plan(v2)`
+ *    reaches us as two adjacent thinking blocks.
+ *
+ * Rule 2 is positional, so it cannot recover a plan that was relocated out from
+ * between two prose blocks that ALSO have a sub-agent block between them; the
+ * plan's original position is simply not in the state we are given. Closing
+ * that would mean making `PLAN_UPDATE` replace in place instead of relocating —
+ * a deliberate, separately-specified invariant on both sides of the wire.
  */
 function mainProseContinuations(
   content: LiveContentBlock[],
@@ -901,24 +918,31 @@ function mainProseContinuations(
 ): Set<LiveContentBlock> {
   const continues = new Set<LiveContentBlock>()
   let run: "text" | "thinking" | null = null
+  let bridgedBySubAgent = false
   for (const block of content) {
     if (block.type === "text" || block.type === "thinking") {
       // A sub-agent's own prose: out-of-band, and not a boundary either.
-      if (block.parentToolUseId) continue
-      // Phase 2 drops an empty main-thread text block, so it is not a
-      // boundary here either.
+      if (block.parentToolUseId) {
+        bridgedBySubAgent = true
+        continue
+      }
+      // Phase 2 drops an empty main-thread text block, so it is neither a
+      // boundary nor a bridge here.
       if (block.type === "text" && block.text.length === 0) continue
-      if (run === block.type) continues.add(block)
+      if (run === block.type && bridgedBySubAgent) continues.add(block)
       run = block.type
+      bridgedBySubAgent = false
       continue
     }
     if (
       block.type === "tool_call" &&
       childToolCallIds.has(block.info.tool_call_id)
     ) {
+      bridgedBySubAgent = true
       continue
     }
     run = null
+    bridgedBySubAgent = false
   }
   return continues
 }
