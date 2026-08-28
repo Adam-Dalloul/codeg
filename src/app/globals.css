@@ -21,10 +21,20 @@
 
   font-family: var(--font-sans);
   font-size: 16px;
-  /* rem 而非 24px：这条行高被所有没自带 line-height 的文字继承，写死 px 的话缩放到
-     150% 时字长到 21px、行盒却仍是 24px，小字挤成一团。1.5rem 在 100% 下算出的
-     computed 值仍是 24px（与旧写法逐像素相同），缩放时才跟着根字号一起放大。 */
-  line-height: 1.5rem;
+  /* 这条行高被所有没自带 line-height 的文字继承，必须跟着根字号一起放大：写死 24px
+     的话缩放到 300% 时字长到 42px、行盒却仍是 24px，`truncate` 的 overflow:hidden
+     会把侧栏导航标签、会话标题、文件夹选择器的汉字上下各切掉几像素。
+
+     em 而非 rem：**根元素上的 rem 在 WebKit 里不解析为根字号，而是解析为 font-size
+     的初始值 16px**。缩放是 AppearanceProvider 往 <html> 上写 font-size 实现的，
+     于是 `1.5rem` 在这里被永久钉死在 24px —— 不是失效竞态，300% 冷启动同样是 24px。
+     Chromium 按规范解析为 1.5×根字号，所以这个 bug 只在桌面端（Tauri = WKWebView）
+     出现，浏览器里跑 server 模式看不到。根元素上的 em 就是它自己的 font-size，两个
+     引擎都实时解析：100% 下算出 24px（与旧写法逐像素相同），300% 下 72px。
+
+     `calc(1.5 * 1rem)` 和 `var(--lh)`（值为 1.5rem）在 WebKit 上同样被钉死，换写法
+     绕不过去；要留在 :root 上就只能用 em。 */
+  line-height: 1.5em;
   font-weight: 400;
 
   font-synthesis: none;
