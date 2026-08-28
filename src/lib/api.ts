@@ -2741,6 +2741,11 @@ export async function openFolder(path: string): Promise<FolderDetail> {
   return getTransport().call("open_folder", { path })
 }
 
+/** Open a file or directory in Visual Studio Code on the workspace host. */
+export async function openInCode(path: string): Promise<void> {
+  return getTransport().call("open_in_code", { path })
+}
+
 /**
  * Open a freshly created git worktree directory as a folder, recording the root
  * folder it descends from (`sourceFolderId` is the folder the worktree was
