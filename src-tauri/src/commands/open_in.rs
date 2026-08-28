@@ -190,7 +190,8 @@ fn resolve_vscode_launch() -> Option<VsCodeLaunch> {
 /// still-running `std::process::Child` never reaps it, so on unix every launch
 /// would leave a `<defunct>` entry behind for the lifetime of the app. Tokio's
 /// `Child` hands itself to the runtime's orphan queue on drop, which reaps it
-/// on the next `SIGCHLD` whenever Code eventually exits.
+/// on a best-effort basis once Code exits — no promise about how soon, but it
+/// does eventually clear, which the std handle never does.
 ///
 /// A `.cmd` / `.bat` shim is passed to `Command` as the program, NOT hand-wrapped
 /// in `cmd /C`: std recognizes the extension and builds the `cmd.exe` line itself
@@ -369,9 +370,15 @@ mod tests {
     /// the stub is a `.cmd`: hand-wrapping it in `cmd /C` truncates the argument
     /// at the `&` and runs the remainder as a command. Elsewhere the stub is
     /// `/bin/sh` reading a quoted `"$1"`, so this only pins the arg down.
+    ///
+    /// The name is deliberately free of whitespace. `append_arg` — the quoting
+    /// the hand-rolled wrapper would have gotten — quotes on space/tab alone, so
+    /// a name like `a & b` would come out quoted and survive cmd either way,
+    /// leaving nothing to discriminate. (Which does assume the temp root itself
+    /// has no space in it; it doesn't on CI.)
     #[tokio::test]
     async fn spawn_passes_shell_metacharacters_through_intact() {
-        let (target, recorded) = record_launch_arg("open in code & canary").await;
+        let (target, recorded) = record_launch_arg("open&canary").await;
         let expected = target.to_string_lossy();
         assert!(
             recorded.contains(expected.as_ref()),
