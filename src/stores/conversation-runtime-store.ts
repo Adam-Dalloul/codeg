@@ -67,6 +67,23 @@ export interface ConversationTimelineTurn {
   // Tool call IDs whose results are still streaming (only set for streaming-phase items).
   // The adapter uses this to keep the tool in "running" state while exposing partial output.
   inProgressToolCallIds?: Set<string>
+  /**
+   * This is a DB-persisted record of the round the backend says is STILL
+   * RUNNING (it follows `detail.in_flight_user_turn_id`), so its "persisted"
+   * phase does NOT mean finished — a passive viewer reads these blocks as the
+   * agent writes them. Consumers that treat persisted as complete (the
+   * completed-turn collapse, the per-reply stats row and artifacts card) must
+   * check this too.
+   *
+   * Only ever set on turns projected from `detail.turns`. A locally promoted
+   * turn is complete by construction (`COMPLETE_TURN` fires at TurnComplete),
+   * and the marker in `detail` can outlive that completion indefinitely —
+   * `completeTurn` deliberately never refetches, and the live-transcript viewer
+   * has no settle-time refetch — so deriving this from the raw marker over the
+   * whole timeline would strand a finished reply as "running" for the life of
+   * the view.
+   */
+  isInFlightRound?: boolean
 }
 
 /**
@@ -2705,20 +2722,16 @@ function timelinePrefixDepsEqual(
  * precisely the ones the adapter would otherwise paint as settled. Blocks
  * without a `tool_use_id` are skipped: the adapter can't key them either.
  *
- * Returns an empty map when the backend reports no in-flight turn, or when the
- * prompt it named isn't in this window (older history page) — the caller then
- * behaves exactly as before.
+ * `promptIdx` is the in-flight prompt's index in `turns`, or -1 when the backend
+ * reports no in-flight turn or named a prompt outside this window (older
+ * history page); the map is then empty and the caller behaves exactly as before.
  */
 function collectInFlightPersistedToolCalls(
   turns: MessageTurn[],
-  inFlightPromptId: string | null
+  promptIdx: number
 ): Map<number, Set<string>> {
   const out = new Map<number, Set<string>>()
-  if (inFlightPromptId === null) return out
-  const promptIdx = turns.findIndex(
-    (t) => t.role === "user" && t.id === inFlightPromptId
-  )
-  if (promptIdx === -1) return out
+  if (promptIdx < 0) return out
   for (let i = promptIdx + 1; i < turns.length; i++) {
     const turn = turns[i]
     if (turn.role !== "assistant") continue
@@ -2857,9 +2870,19 @@ function computeTimelinePrefix(
   // codex code-mode script that never `text()`s its call settles with none.
   // Scoping to turns AFTER that prompt is what keeps an orphan left by an
   // earlier interrupted round from re-acquiring a spinner it will never lose.
+  // Where the still-running round starts inside the persisted projection. -1
+  // when the backend reports no in-flight prompt, or names one this window
+  // doesn't contain — the whole projection then reads as settled history.
+  const inFlightRoundStart =
+    inFlightPromptId === null
+      ? -1
+      : visiblePersistedTurns.findIndex(
+          (t) => t.role === "user" && t.id === inFlightPromptId
+        )
+
   const inFlightToolCallIdsByIndex = collectInFlightPersistedToolCalls(
     visiblePersistedTurns,
-    inFlightPromptId
+    inFlightRoundStart
   )
 
   // Keys carry NO positional index: prepending older history (reverse
@@ -2872,6 +2895,7 @@ function computeTimelinePrefix(
       turn,
       phase: "persisted" as const,
       inProgressToolCallIds: inFlightToolCallIdsByIndex.get(i),
+      isInFlightRound: inFlightRoundStart >= 0 && i > inFlightRoundStart,
     })
   )
 

@@ -3088,6 +3088,8 @@
         "tokenCacheRead": "キャッシュ読取",
         "tokenCacheWrite": "キャッシュ書込",
         "duration": "所要時間",
+        "worked": "作業しました",
+        "workedFor": "{duration} 作業しました",
         "completedAt": "完了時刻",
         "jumpToPreviousUserMessage": "前のユーザーメッセージへ",
         "showMore": "もっと見る",

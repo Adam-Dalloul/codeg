@@ -3088,6 +3088,8 @@
         "tokenCacheRead": "قراءة التخزين المؤقت",
         "tokenCacheWrite": "كتابة التخزين المؤقت",
         "duration": "المدة",
+        "worked": "تم العمل",
+        "workedFor": "عمل لمدة {duration}",
         "completedAt": "وقت الإنجاز",
         "jumpToPreviousUserMessage": "الانتقال إلى رسالة المستخدم",
         "showMore": "عرض المزيد",

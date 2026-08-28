@@ -32,6 +32,7 @@ function assistantItem(
       ...groupOverrides,
     },
     phase: "persisted",
+    isResponseComplete: true,
     showStats: false,
     isRoleTransition: false,
     previousUserIndex: null,
@@ -131,6 +132,7 @@ function makeItem(
     kind: "turn",
     group,
     phase,
+    isResponseComplete: phase === "persisted",
     showStats: false,
     isRoleTransition: false,
     previousUserIndex: null,
@@ -208,6 +210,25 @@ describe("mergeConsecutiveAssistantTurns merged-run cache", () => {
 
     expect(out2[0]).not.toBe(out1[0])
     expect(out2[2]).toBe(out1[2])
+  })
+
+  it("rebuilds when a persisted run changes from in-flight to completed", () => {
+    const cache: MergedAssistantRunCache = new WeakMap()
+    const g1 = makeGroup("assistant", "a1")
+    const g2 = makeGroup("assistant", "a2")
+    const firstItems = [makeItem(g1, 0), makeItem(g2, 1)]
+    if (firstItems[1].kind !== "turn") throw new Error("expected turn")
+    firstItems[1].isResponseComplete = false
+
+    const out1 = mergeConsecutiveAssistantTurns(firstItems, cache)
+    const out2 = mergeConsecutiveAssistantTurns(
+      [makeItem(g1, 0), makeItem(g2, 1)],
+      cache
+    )
+
+    expect(out2[0]).not.toBe(out1[0])
+    if (out2[0].kind !== "turn") throw new Error("expected turn")
+    expect(out2[0].isResponseComplete).toBe(true)
   })
 
   it("misses when the run gains a member, then caches the new membership", () => {
