@@ -1,5 +1,6 @@
 import { create } from "zustand"
 import type {
+  LiveContentBlock,
   LiveMessage,
   ToolCallInfo,
 } from "@/contexts/acp-connections-context"
@@ -848,7 +849,7 @@ function resolveLiveToolInput(
 
 /**
  * Append a main-thread prose block, re-joining it with the trailing block when
- * that block is the same kind.
+ * `continuesRun` says the two were one run the wire happened to tear apart.
  *
  * `liveMessage.content` is split at kind AND subagent-attribution boundaries
  * (the reducer and the backend's `append_text_delta` share that predicate, so
@@ -862,18 +863,64 @@ function resolveLiveToolInput(
  * predicate — moving it there would merge a sub-agent's prose into the main
  * thread's. Without it, one thought renders as a wall of separate reasoning
  * cards torn mid-word whenever sub-agents stream concurrently (#494).
+ *
+ * The tail check is a guard, not the decision: `continuesRun` is computed
+ * against the ORIGINAL event stream by `mainProseContinuations`, because a
+ * same-kind tail alone cannot tell a sub-agent tear from a real boundary that
+ * something upstream removed.
  */
 function appendProse(
   blocks: MessageTurn["blocks"],
   type: "text" | "thinking",
-  text: string
+  text: string,
+  continuesRun: boolean
 ): void {
   const tail = blocks[blocks.length - 1]
-  if (tail && tail.type === type) {
+  if (continuesRun && tail && tail.type === type) {
     blocks[blocks.length - 1] = { type, text: tail.text + text }
     return
   }
   blocks.push({ type, text })
+}
+
+/**
+ * The main-thread prose blocks that continue the previous one — i.e. every
+ * block between them belongs to a sub-agent and is therefore out-of-band for
+ * the main thread: parented prose (routed to the Agent capsule) and the
+ * sub-agent's own child tool calls (nested into the Agent card).
+ *
+ * Computed over `liveMessage.content`, NOT over the array Phase 2 walks: by
+ * then `collapseLiveCollabBlocks` has already dropped a completed codex
+ * `closeAgent` tool call, and prose on either side of a dropped boundary must
+ * stay two blocks. Prose is never dropped or rewritten by that collapse, so
+ * the surviving blocks are identity-stable across it.
+ */
+function mainProseContinuations(
+  content: LiveContentBlock[],
+  childToolCallIds: Set<string>
+): Set<LiveContentBlock> {
+  const continues = new Set<LiveContentBlock>()
+  let run: "text" | "thinking" | null = null
+  for (const block of content) {
+    if (block.type === "text" || block.type === "thinking") {
+      // A sub-agent's own prose: out-of-band, and not a boundary either.
+      if (block.parentToolUseId) continue
+      // Phase 2 drops an empty main-thread text block, so it is not a
+      // boundary here either.
+      if (block.type === "text" && block.text.length === 0) continue
+      if (run === block.type) continues.add(block)
+      run = block.type
+      continue
+    }
+    if (
+      block.type === "tool_call" &&
+      childToolCallIds.has(block.info.tool_call_id)
+    ) {
+      continue
+    }
+    run = null
+  }
+  return continues
 }
 
 export function buildStreamingTurnsFromLiveMessage(
@@ -926,9 +973,11 @@ export function buildStreamingTurnsFromLiveMessage(
   // Live subagent transcripts, keyed by the launching Agent tool call's id.
   // Fed by parented text/thinking blocks (claude-agent-acp ≥0.63 subagent
   // transcripts); attached to the in-progress Agent card's tool_result as
-  // `agent_transcript`. Entries arrive pre-merged (the reducer splits blocks
-  // only at kind/attribution boundaries), so they are pushed as-is.
+  // `agent_transcript`.
   const agentTranscripts = new Map<string, AgentTranscriptEntry[]>()
+  // Agent id → the kind of prose that agent is currently in the middle of, or
+  // absent once its own tool call ended that run. Drives the rejoin above.
+  const transcriptRun = new Map<string, "text" | "thinking">()
 
   // Cache inferred tool names — inferLiveToolName is called per tool_call
   // in both Phase 1 and Phase 2; caching avoids redundant computation.
@@ -1008,6 +1057,9 @@ export function buildStreamingTurnsFromLiveMessage(
           agentChildren
             .get(resolvedParent)
             ?.push({ info: block.info, toolName })
+          // This agent stopped talking to run a tool: its next chunk starts a
+          // new transcript entry rather than rejoining the previous one.
+          transcriptRun.delete(resolvedParent)
         }
       }
     } else {
@@ -1024,8 +1076,10 @@ export function buildStreamingTurnsFromLiveMessage(
       // with two sub-agents running (or any main-thread chunk in between),
       // sub-A → sub-B → sub-A is three blocks, and this transcript would show
       // A's single paragraph as two entries torn at a chunk boundary. Re-join
-      // consecutive same-kind entries here — after attribution filtering, they
-      // were always one run of that agent's output. See #494.
+      // them via `transcriptRun`, which tracks each agent's OWN run: another
+      // agent's chunk (or the main thread's) never interrupts it, but this
+      // agent's own tool call does — that is a real boundary in its output,
+      // and fusing across it would run two paragraphs together. See #494.
       if (
         (block.type === "text" || block.type === "thinking") &&
         block.parentToolUseId
@@ -1033,7 +1087,11 @@ export function buildStreamingTurnsFromLiveMessage(
         if (agentIds.has(block.parentToolUseId)) {
           const list = agentTranscripts.get(block.parentToolUseId) ?? []
           const tail = list[list.length - 1]
-          if (tail && tail.type === block.type) {
+          if (
+            transcriptRun.get(block.parentToolUseId) === block.type &&
+            tail &&
+            tail.type === block.type
+          ) {
             list[list.length - 1] = {
               type: tail.type,
               text: tail.text + block.text,
@@ -1042,6 +1100,7 @@ export function buildStreamingTurnsFromLiveMessage(
             list.push({ type: block.type, text: block.text })
           }
           agentTranscripts.set(block.parentToolUseId, list)
+          transcriptRun.set(block.parentToolUseId, block.type)
         }
       } else if (positionalAgentId) {
         // A non-tool block (text/thinking/plan) means the main agent is
@@ -1062,6 +1121,12 @@ export function buildStreamingTurnsFromLiveMessage(
   const groups: MessageTurn["blocks"][] = [[]]
   let currentGroupHasCompletedTool = false
   const inProgressToolCallIds = new Set<string>()
+  // Which main-thread prose blocks are a continuation of the previous one
+  // (computed against the pre-collapse stream — see mainProseContinuations).
+  const continuesProse = mainProseContinuations(
+    liveMessage.content,
+    childToolCallIds
+  )
 
   for (const block of content) {
     // Parented subagent text/thinking never enters the main thread: it was
@@ -1091,7 +1156,12 @@ export function buildStreamingTurnsFromLiveMessage(
     switch (block.type) {
       case "text":
         if (block.text.length > 0) {
-          appendProse(currentBlocks, "text", block.text)
+          appendProse(
+            currentBlocks,
+            "text",
+            block.text,
+            continuesProse.has(block)
+          )
         }
         break
       case "thinking":
@@ -1099,7 +1169,12 @@ export function buildStreamingTurnsFromLiveMessage(
         // can show its "Thinking..." indicator before any reasoning text
         // arrives (and for newer Claude models that redact reasoning text
         // entirely while still emitting thinking blocks).
-        appendProse(currentBlocks, "thinking", block.text)
+        appendProse(
+          currentBlocks,
+          "thinking",
+          block.text,
+          continuesProse.has(block)
+        )
         break
       case "plan": {
         // Carry the live plan through as a first-class `plan` block so it

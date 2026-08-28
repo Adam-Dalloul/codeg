@@ -1981,6 +1981,33 @@ describe("buildStreamingTurnsFromLiveMessage — subagent transcript routing (cl
     ])
   })
 
+  it("keeps a subagent's own tool call as a boundary in its transcript", () => {
+    // Another agent's chunks do not interrupt A's run, but A stopping to run
+    // a tool does — fusing across it would run two paragraphs together.
+    const result = build([
+      agentCall("toolu_a"),
+      { type: "thinking", text: "before", parentToolUseId: "toolu_a" },
+      {
+        type: "tool_call",
+        info: toolInfo({
+          tool_call_id: "toolu_child",
+          title: "Read",
+          meta: { claudeCode: { parentToolUseId: "toolu_a" } },
+        }),
+      },
+      { type: "thinking", text: "after", parentToolUseId: "toolu_a" },
+    ])
+    const carrier = result.turns
+      .flatMap((t) => t.blocks)
+      .find((b) => b.type === "tool_result")
+    expect(
+      carrier?.type === "tool_result" ? carrier.agent_transcript : null
+    ).toEqual([
+      { type: "thinking", text: "before" },
+      { type: "thinking", text: "after" },
+    ])
+  })
+
   it("keeps a main-thread run split across a turn boundary", () => {
     // A completed tool between two thinking blocks opens a new turn group —
     // rejoining must not reach back across it.
@@ -1997,6 +2024,44 @@ describe("buildStreamingTurnsFromLiveMessage — subagent transcript routing (cl
         t.blocks.filter((b) => b.type === "thinking").map((b) => b.text)
       )
     ).toEqual([["before"], ["after"]])
+  })
+
+  it("keeps a boundary that preprocessing removed (codex collab close)", () => {
+    // collapseLiveCollabBlocks folds a completed `closeAgent` into the spawn
+    // capsule, so by Phase 2 the two texts look adjacent. They are not: a real
+    // top-level tool call stood between them on the wire.
+    const collab = (id: string, title: string): LiveContentBlock => ({
+      type: "tool_call",
+      info: {
+        tool_call_id: id,
+        title,
+        kind: "other",
+        status: "completed",
+        content: null,
+        raw_input: JSON.stringify({
+          senderThreadId: "main",
+          receiverThreadIds: ["a1"],
+          agentsStates: { a1: { status: "completed", message: null } },
+        }),
+        raw_output_chunks: [],
+        raw_output_total_bytes: 0,
+        locations: null,
+        meta: null,
+        images: [],
+      },
+    })
+    const result = build([
+      collab("collab-spawn", "spawnAgent"),
+      { type: "text", text: "before" },
+      collab("collab-close", "closeAgent"),
+      { type: "text", text: "after" },
+    ])
+    expect(
+      result.turns
+        .flatMap((t) => t.blocks)
+        .filter((b) => b.type === "text")
+        .map((b) => b.text)
+    ).toEqual(["before", "after"])
   })
 
   it("keeps a plan block between two thinking blocks from fusing them", () => {
