@@ -2710,82 +2710,16 @@ fn map_session_config_options(
         .collect()
 }
 
-/// Defensive fallback for Codex's approval-preset selector.
-///
-/// codex-acp 1.0.0 advertises its modes through *both* standard ACP
-/// `SessionModes` and an `id = "mode"` config option (see `AgentMode.ts`'s
-/// `toSessionModeState()` + `toConfigOption()`), so this synthesizer is
-/// normally a no-op — the early return fires because the agent already
-/// surfaced "mode". We keep it only as a safety net: if a future build ever
-/// omits the "mode" config option (older 0.16.0 did this when the sandbox
-/// policy didn't match a preset, e.g. after `writable_roots` injection), the
-/// user would otherwise lose the preset picker entirely, because the composer
-/// hides the standard mode selector whenever any config option exists. Codex's
-/// `set_config_option` handler accepts `config_id = "mode"` regardless of
-/// whether it was advertised.
-///
-/// The preset ids/names/descriptions below MUST match the live adapter
-/// vocabulary (`read-only` / `agent` / `agent-full-access`, default `agent`);
-/// the legacy 0.16.0 ids (`auto` / `full-access`) are no longer accepted.
-fn ensure_codex_mode_option(options: &mut Vec<SessionConfigOptionInfo>) {
-    if options.iter().any(|o| o.id == "mode") {
-        return;
-    }
-    options.insert(
-        0,
-        SessionConfigOptionInfo {
-            id: "mode".to_string(),
-            name: "Approval Preset".to_string(),
-            description: Some(
-                "Choose an approval and sandboxing preset for your session".to_string(),
-            ),
-            category: Some("mode".to_string()),
-            kind: SessionConfigKindInfo::Select(SessionConfigSelectInfo {
-                current_value: "agent".to_string(),
-                options: vec![
-                    SessionConfigSelectOptionInfo {
-                        value: "read-only".to_string(),
-                        name: "Read-only".to_string(),
-                        description: Some(
-                            "Requires approval to edit files and run commands.".to_string(),
-                        ),
-                    },
-                    SessionConfigSelectOptionInfo {
-                        value: "agent".to_string(),
-                        name: "Agent".to_string(),
-                        description: Some("Read and edit files, and run commands.".to_string()),
-                    },
-                    SessionConfigSelectOptionInfo {
-                        value: "agent-full-access".to_string(),
-                        name: "Agent (full access)".to_string(),
-                        description: Some(
-                            "Codex can edit files outside this workspace and run commands with \
-                             network access."
-                                .to_string(),
-                        ),
-                    },
-                ],
-                groups: vec![],
-            }),
-        },
-    );
-}
-
 async fn emit_session_config_options_values(
     state: &Arc<RwLock<SessionState>>,
     emitter: &EventEmitter,
-    agent_type: AgentType,
     config_options: Vec<SessionConfigOption>,
 ) {
-    let mut mapped = map_session_config_options(&config_options);
-    if agent_type == AgentType::Codex {
-        ensure_codex_mode_option(&mut mapped);
-    }
     emit_with_state(
         state,
         emitter,
         AcpEvent::SessionConfigOptions {
-            config_options: mapped,
+            config_options: map_session_config_options(&config_options),
         },
     )
     .await;
@@ -3589,7 +3523,7 @@ async fn apply_and_emit_session_config_options(
         initial_config_options,
     )
     .await;
-    emit_session_config_options_values(state, emitter, agent_type, updated).await;
+    emit_session_config_options_values(state, emitter, updated).await;
 }
 
 /// Grok's initialize still advertises `image: false` — the coding model
@@ -3762,6 +3696,21 @@ fn build_client_capabilities(
     // with no filesystem watcher; codeg is not one. Nothing else in either
     // release depends on it, and both adapters no-op without the
     // advertisement, so staying out costs us nothing.
+    //
+    // codex-acp 1.7.0 added a third, "nativeSubagentSessions" (the draft ACP
+    // subagent RFD; the canonical gate is a `clientCapabilities.subagents: {}`
+    // field, with this AIR key as the fallback for SDKs that strip it). It must
+    // stay out for a harder reason than cost: `agent-client-protocol-schema`
+    // 0.11.7 cannot RECEIVE the result. Its `SessionUpdate` is an
+    // internally-tagged enum with no catch-all arm, so the `subagent_spawned` /
+    // `subagent_state_update` notifications would fail to deserialize — and
+    // since the adapter switches child messages, thoughts, tools and
+    // permissions onto a child session id announced only in that first
+    // notification, opting in would make subagent work vanish from the timeline
+    // rather than render better. Without the advertisement the lifecycle stays
+    // the legacy `subAgentActivity` tool call codeg already renders, whose
+    // shape is unchanged from 1.4.0. Revisit when the schema crate ships both
+    // the capability field and the update variants.
     if matches!(agent_type, AgentType::ClaudeCode | AgentType::Codex) {
         meta.insert(
             "jetbrains".to_string(),
@@ -6203,6 +6152,8 @@ async fn handle_permission_request(
         }
     }
 
+    hoist_request_permission_meta(&mut tool_call_value, req.meta.as_ref());
+
     admit_permission(
         perms,
         state,
@@ -6289,7 +6240,6 @@ async fn set_session_config_option(
     session_id: &SessionId,
     state: &Arc<RwLock<SessionState>>,
     emitter: &EventEmitter,
-    agent_type: AgentType,
     config_id: String,
     value_id: String,
 ) -> Result<(), sacp::Error> {
@@ -6313,7 +6263,7 @@ async fn set_session_config_option(
     {
         emit_with_state(state, emitter, rejection).await;
     }
-    emit_session_config_options_values(state, emitter, agent_type, updated).await;
+    emit_session_config_options_values(state, emitter, updated).await;
     Ok(())
 }
 
@@ -6500,11 +6450,13 @@ async fn apply_preferred_session_options(
     let mut options = initial_config_options;
     for (config_id, value_id) in preferred_config_values {
         // Skip the round-trip when the agent's current value already matches.
-        // Note: codex-acp 1.0.0 advertises "mode" as a config option (so the
-        // match check below normally fires), but we still do NOT skip when a
-        // requested config_id is absent from the advertised options — older or
-        // edge-case builds accept `set_config_option` for an unadvertised "mode"
-        // (see `ensure_codex_mode_option`), so let the agent decide.
+        // Note: codex-acp advertises "mode" as a config option (so the match
+        // check below normally fires), but we still do NOT skip when a
+        // requested config_id is absent from the advertised options — an agent
+        // may accept `set_config_option` for an id it never advertised. codex
+        // does: its `applySessionConfigOption` switches on `configId` alone,
+        // with no advertised-list check (verified in the 1.7.0 bundle). So let
+        // the agent decide.
         let advertised = options.iter().find(|o| o.id.to_string() == *config_id);
         let already_matches =
             advertised.is_some_and(|o| config_option_already_holds(o, value_id.as_str()));
@@ -8535,8 +8487,7 @@ async fn run_conversation_loop<'a>(
                                         .await
                                     } else {
                                         set_session_config_option(
-                                            &cx, &sid, state, emitter, agent_type, config_id,
-                                            value_id,
+                                            &cx, &sid, state, emitter, config_id, value_id,
                                         )
                                         .await
                                     };
@@ -8811,10 +8762,7 @@ async fn run_conversation_loop<'a>(
                 let set_result = if agent_type == AgentType::Grok {
                     set_grok_config_option(&cx, &sid, state, emitter, config_id, value_id).await
                 } else {
-                    set_session_config_option(
-                        &cx, &sid, state, emitter, agent_type, config_id, value_id,
-                    )
-                    .await
+                    set_session_config_option(&cx, &sid, state, emitter, config_id, value_id).await
                 };
                 if let Err(e) = set_result {
                     emit_with_state(
@@ -10100,6 +10048,53 @@ fn is_codex_plan_review(
         .and_then(|codex| codex.get("kind"))
         .and_then(serde_json::Value::as_str)
         == Some("plan_review")
+}
+
+/// Copy a permission request's REQUEST-level `_meta.permission` onto the card's
+/// tool call, where the dialog can reach it.
+///
+/// `session/request_permission` carries presentation data at two levels: on each
+/// option (`PermissionOptionInfo.meta`, already forwarded verbatim) and on the
+/// request itself. Only the tool call and the options reach the frontend —
+/// `AcpEvent::PermissionRequest` has no request-meta field — so without this the
+/// request level is dropped on the floor.
+///
+/// That became load-bearing in codex-acp 1.7.0, which moved Codex's own reason
+/// for asking out of `toolCall.title` (1.4.0 sent
+/// `params.reason ?? "Permissions Request"`) into
+/// `_meta.permission = {version: 1, title, description?}`. The title is now one
+/// of four fixed strings and the reason lives only in `description`, so a card
+/// built from the tool call alone would read "Edit files" where it used to
+/// explain WHY the edit needs approval. claude-agent-acp does not send this
+/// block; nothing changes for it.
+///
+/// Hoisting rather than adding an event field is deliberate: the tool call is
+/// already the card's payload end-to-end (`PendingPermissionState.tool_call`,
+/// the snapshot, the WebSocket envelope, `parsePermissionToolCall`), so the
+/// reason survives a reconnect and a snapshot restore for free. `_meta` is
+/// namespaced by producer, and `permission` is unclaimed at tool-call level —
+/// codex's permission tool calls carry no `_meta` at all, and claude's carries
+/// only `claudeCode`. An existing `_meta.permission` is therefore never
+/// overwritten: the insert is skipped if the key is already present.
+fn hoist_request_permission_meta(
+    tool_call: &mut serde_json::Value,
+    request_meta: Option<&serde_json::Map<String, serde_json::Value>>,
+) {
+    let Some(permission) = request_meta.and_then(|m| m.get("permission")) else {
+        return;
+    };
+    let Some(obj) = tool_call.as_object_mut() else {
+        return;
+    };
+    let meta = obj
+        .entry("_meta")
+        .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+    let Some(meta) = meta.as_object_mut() else {
+        // A non-object `_meta` is malformed; leave it exactly as the agent sent
+        // it rather than replacing content the card may still be parsing.
+        return;
+    };
+    meta.entry("permission").or_insert_with(|| permission.clone());
 }
 
 /// True when an `initialize` response advertises the ACP steering extension —
@@ -12068,7 +12063,7 @@ async fn emit_conversation_update(
             .await;
         }
         SessionUpdate::ConfigOptionUpdate(update) => {
-            emit_session_config_options_values(state, emitter, agent_type, update.config_options)
+            emit_session_config_options_values(state, emitter, update.config_options)
                 .await;
         }
         SessionUpdate::AvailableCommandsUpdate(update) => {
@@ -13168,12 +13163,16 @@ mod tests {
             assert!(capabilities
                 .iter()
                 .any(|v| v.as_str() == Some("sessionFailure")));
-            // And nothing else. Adding a capability here is not free: it is
-            // what turns a per-prompt request on, and "agentFileChangeReport"
+            // And nothing else. Adding a capability here is not free — it is
+            // what turns the corresponding behavior on, and neither of the two
+            // that exist is wanted: "agentFileChangeReport"
             // (claude-agent-acp 0.69.0 / codex-acp 1.4.0) buys an extra model
             // round-trip per turn for a clamped, self-reported subset of what
-            // the `workspace_state` watcher already sees. See the reasoning at
-            // the advertisement site before relaxing this.
+            // the `workspace_state` watcher already sees, and
+            // "nativeSubagentSessions" (codex-acp 1.7.0) would move subagent
+            // output onto child session ids carried by `SessionUpdate` variants
+            // `agent-client-protocol-schema` 0.11.7 cannot deserialize at all.
+            // See the reasoning at the advertisement site before relaxing this.
             assert_eq!(
                 capabilities,
                 &vec![serde_json::Value::String("sessionFailure".to_string())],
@@ -13307,6 +13306,76 @@ mod tests {
         assert!(parse_steer_outcome(&serde_json::json!({"outcome": "queued"})).is_err());
         assert!(parse_steer_outcome(&serde_json::json!({})).is_err());
         assert!(parse_steer_outcome(&serde_json::json!({"outcome": 1})).is_err());
+    }
+
+    #[test]
+    fn hoist_request_permission_meta_carries_the_codex_reason_onto_the_card() {
+        // codex-acp 1.7.0: the title is a fixed string and the REASON only
+        // exists at request level, so the card is built from a tool call that
+        // does not explain itself until this hoist runs.
+        let mut tool_call = serde_json::json!({
+            "toolCallId": "command-7",
+            "kind": "execute",
+            "status": "pending",
+            "title": "Run command",
+            "rawInput": { "command": "npm test", "cwd": "/workspace" }
+        });
+        let request_meta = meta_map(serde_json::json!({
+            "permission": {
+                "version": 1,
+                "title": "Run command?",
+                "description": "The test suite needs to run outside the current sandbox."
+            }
+        }));
+        hoist_request_permission_meta(&mut tool_call, Some(&request_meta));
+        assert_eq!(
+            tool_call["_meta"]["permission"]["description"],
+            serde_json::json!("The test suite needs to run outside the current sandbox.")
+        );
+        // Untouched otherwise — the standard fields stay the authority.
+        assert_eq!(tool_call["title"], serde_json::json!("Run command"));
+    }
+
+    #[test]
+    fn hoist_request_permission_meta_preserves_existing_tool_call_meta() {
+        // An agent-supplied `_meta` must survive: claude puts `claudeCode.title`
+        // there and the dialog prefers it over the raw title. And a tool call
+        // that already carried `permission` wins over the request level — it is
+        // the more specific of the two.
+        let mut tool_call = serde_json::json!({
+            "toolCallId": "t1",
+            "_meta": { "claudeCode": { "title": "Run the test suite" },
+                       "permission": { "version": 1, "description": "from the tool call" } }
+        });
+        let request_meta = meta_map(serde_json::json!({
+            "permission": { "version": 1, "description": "from the request" }
+        }));
+        hoist_request_permission_meta(&mut tool_call, Some(&request_meta));
+        assert_eq!(
+            tool_call["_meta"]["claudeCode"]["title"],
+            serde_json::json!("Run the test suite")
+        );
+        assert_eq!(
+            tool_call["_meta"]["permission"]["description"],
+            serde_json::json!("from the tool call")
+        );
+    }
+
+    #[test]
+    fn hoist_request_permission_meta_is_a_noop_without_a_permission_block() {
+        // Every agent but codex ≥1.7.0 sends no request-level `permission`, and
+        // codex's own plan-review request sends `codex` instead. Neither may
+        // grow a stray `_meta` key.
+        for request_meta in [
+            None,
+            Some(meta_map(serde_json::json!({
+                "codex": { "kind": "plan_review", "planItemId": "p1" }
+            }))),
+        ] {
+            let mut tool_call = serde_json::json!({ "toolCallId": "t1" });
+            hoist_request_permission_meta(&mut tool_call, request_meta.as_ref());
+            assert_eq!(tool_call, serde_json::json!({ "toolCallId": "t1" }));
+        }
     }
 
     #[test]

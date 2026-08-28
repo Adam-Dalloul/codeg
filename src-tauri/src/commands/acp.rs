@@ -3980,6 +3980,24 @@ pub(crate) fn grok_launch_permission_mode() -> Option<String> {
 /// launch-time channel that makes the user's own config mean anything, exactly
 /// like [`grok_launch_permission_mode`] above.
 ///
+/// ## What the three presets mean (codex-acp ≥1.7.0)
+///
+/// | preset | sandbox | approvals reviewer |
+/// |---|---|---|
+/// | `read-only` ("Ask for approval") | workspace-write | `user` |
+/// | `agent` ("Approve for me", DEFAULT) | workspace-write | `auto_review` |
+/// | `agent-full-access` ("Full access") | danger-full-access | policy `never` |
+///
+/// 1.7.0 redefined these. `read-only` used to carry a genuinely read-only
+/// sandbox; it now carries `workspaceWrite` like `agent`, and the two are
+/// separated by a new `approvalsReviewer` axis instead — `user` routes every
+/// escalation to the person, `auto_review` puts codex's Guardian model in front
+/// of it and only forwards what that judges unsafe (verified in the `@openai/
+/// codex` 0.148 binary: an `ApprovalsReviewer` enum plus a `guardian_*`
+/// telemetry surface carrying `risk_level` / `user_authorization`; codex's own
+/// `AskForApproval` vocabulary lists `on_request` and `on_request_auto_review`
+/// as DISTINCT policies).
+///
 /// ## Why it keys off the sandbox
 ///
 /// The sandbox is the only axis where guessing wrong ENLARGES access, so it
@@ -3989,6 +4007,33 @@ pub(crate) fn grok_launch_permission_mode() -> Option<String> {
 /// 1. never widen the sandbox — the result is identical or tighter;
 /// 2. never select `never` (no approvals at all) unless the config already says
 ///    exactly that.
+///
+/// ## Why the reviewer axis is NOT used to select
+///
+/// It is tempting to answer 1.7.0's redefinition by injecting `read-only` (the
+/// only user-reviewed preset) whenever the config asks to be consulted. That is
+/// wrong for two independent reasons:
+///
+/// - **It breaks older adapters.** `supports_custom_version()` is true for npx
+///   agents, so a user may pin codex-acp ≤1.6.2, where `read-only` is still a
+///   genuinely READ-ONLY sandbox. Injecting it for a `workspace-write` config
+///   would leave that agent unable to write any file — a silent, hard break.
+///   No preset injection is version-stable across the 1.6/1.7 boundary
+///   (`read-only` changed sandbox, `agent` changed reviewer), and
+///   `INITIAL_AGENT_MODE` is decided BEFORE launch, so the adapter's real
+///   version is not knowable here without an `npm list -g` spawn on the connect
+///   path.
+/// - **It could not help the majority anyway.** This mapping only fires when
+///   the user wrote a `sandbox_mode`. Everyone else gets no injection and so
+///   lands on the adapter's default `agent` — i.e. `auto_review` — regardless.
+///   Overriding the vendor's consent default for the minority who happened to
+///   write a sandbox key, while breaking their older pins, is not a coherent
+///   trade.
+///
+/// So the reviewer change is treated as what it is: an upstream default that
+/// every ACP client now inherits. codeg DISCLOSES it in the Codex panel, and the
+/// composer's approval-preset selector ("Ask for approval") remains the
+/// first-class, per-session control for a user who wants to adjudicate directly.
 ///
 /// ## What is deliberately NOT preserved
 ///
@@ -4001,6 +4046,14 @@ pub(crate) fn grok_launch_permission_mode() -> Option<String> {
 /// `on-request` PLUS a widened sandbox. Mapping is therefore strictly better on
 /// the sandbox axis and neutral on the approval axis; the panel discloses the
 /// approval loss to the user rather than pretending it away.
+///
+/// **The read-only sandbox, on codex-acp ≥1.7.0.** No preset carries one any
+/// more, and the adapter re-sends the selected preset's `sandboxPolicy` on every
+/// `runTurn`, so neither `config.toml` nor the `CODEX_CONFIG` session-config
+/// channel can put it back. `read-only` is still the right target for a
+/// read-only config — it is the tightest preset on both adapter generations —
+/// but on ≥1.7.0 the session really is workspace-writable, which the panel says
+/// out loud rather than papering over.
 fn codex_initial_agent_mode(settings: &CodexSandboxSettings) -> Option<&'static str> {
     // `default_permissions` makes codex resolve everything through that named
     // profile and IGNORE the root sandbox/approval keys entirely (the panel
@@ -4026,6 +4079,9 @@ fn codex_initial_agent_mode(settings: &CodexSandboxSettings) -> Option<&'static 
     // `on-request` and dropped anything outside `CODEX_APPROVAL_POLICIES`.
     let never = settings.approval_policy.as_deref() == Some("never");
     match settings.sandbox_mode.as_deref() {
+        // The tightest preset on BOTH adapter generations: a real read-only
+        // sandbox on ≤1.6.2, and workspace-write with user-adjudicated
+        // approvals on ≥1.7.0 (see the note above on what 1.7.0 removed).
         Some("read-only") => Some("read-only"),
         Some("workspace-write") => Some("agent"),
         // Full access is the one preset that removes approvals entirely, so it
@@ -13123,6 +13179,33 @@ mod tests {
         for policy in ["", "approval_policy = \"untrusted\"\n"] {
             let toml = format!("{policy}sandbox_mode = \"workspace-write\"\n");
             assert_eq!(initial_mode_for(&toml), Some("agent"));
+        }
+    }
+
+    #[test]
+    fn codex_initial_agent_mode_keeps_a_writable_config_writable_on_every_adapter() {
+        // Regression guard for a fix that looks right and is not. codex-acp
+        // 1.7.0 turned `read-only` into a workspace-write preset whose
+        // approvals are user-adjudicated, which invites mapping EVERY
+        // approval-wanting config onto it. But `supports_custom_version()` is
+        // true for npx agents, and on a user-pinned ≤1.6.2 that preset is still
+        // a genuinely READ-ONLY sandbox — the agent would silently be unable to
+        // write a single file. `INITIAL_AGENT_MODE` is chosen before launch, so
+        // the running adapter's version is not knowable here; the mapping must
+        // therefore stay keyed on the sandbox, which is the axis whose meaning
+        // did not move. See the "Why the reviewer axis is NOT used" note above.
+        for policy in [
+            "",
+            "approval_policy = \"on-request\"\n",
+            "approval_policy = \"on-failure\"\n",
+            "approval_policy = \"untrusted\"\n",
+        ] {
+            let toml = format!("{policy}sandbox_mode = \"workspace-write\"\n");
+            assert_eq!(
+                initial_mode_for(&toml),
+                Some("agent"),
+                "a writable config must never be handed the read-only preset ({policy:?})"
+            );
         }
     }
 

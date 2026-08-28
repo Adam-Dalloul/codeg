@@ -1955,6 +1955,44 @@ function codexWorkspaceWriteApplies(mode: CodexSandboxModeChoice): boolean {
   return mode === "workspace-write" || mode === CODEX_SANDBOX_UNSET
 }
 
+/**
+ * Whether `default_permissions` leaves `sandbox_mode` able to seed the ACP
+ * session's starting approval preset. False when it shadows the root keys:
+ * codex then resolves everything through that profile, and
+ * `codex_initial_agent_mode` (commands/acp.rs) declines to map a shadowed
+ * config at all — so no preset is injected and the adapter's own default stands.
+ *
+ * This is the shadowing gate specifically, not a complete "will a preset be
+ * seeded" predicate: an unshadowed but UNSET `sandbox_mode` also maps to
+ * `None`. The unset case needs no gate here, because the copy this guards is
+ * about what the selected mode does and the select already reads "not set".
+ *
+ * Every claim the panel makes about the seeded preset has to be gated on this,
+ * or it describes an injection that never happens. `sandboxShadowedWarning`
+ * above already explains the shadowing itself.
+ */
+export function codexSandboxSeedsAcpPreset(shadowed: boolean): boolean {
+  return !shadowed
+}
+
+/**
+ * Whether to warn that the ACP adapter cannot honor a read-only sandbox.
+ *
+ * Fires exactly when codeg will inject the `read-only` preset, because the
+ * warning's second half promises that every escalation reaches the user — true
+ * of that preset on codex-acp ≥1.7.0 (`approvalsReviewer: "user"`), and false
+ * of the `agent` default a shadowed config falls back to (`auto_review`, where
+ * a model forwards only what it judges unsafe). Showing it for a shadowed
+ * config would pair "your sandbox key is ignored" with "you will be asked about
+ * everything" — the second being a guarantee codeg is not making.
+ */
+export function showsCodexReadOnlyAcpWarning(
+  mode: CodexSandboxModeChoice,
+  shadowed: boolean
+): boolean {
+  return mode === "read-only" && codexSandboxSeedsAcpPreset(shadowed)
+}
+
 /** The draft slice the sandbox payload is derived from. */
 export type CodexSandboxDraftFields = {
   codexApprovalPolicy: CodexApprovalPolicyChoice
@@ -8616,9 +8654,28 @@ export function AcpAgentSettings() {
                             starting approval preset (#442), so it reaches
                             ordinary prompts even though approval_policy does
                             not. Worth stating next to the control that does it. */}
-                        <p className="text-[10px] text-muted-foreground">
-                          {t("codex.sandboxModeSeedsPresetHint")}
-                        </p>
+                        {codexSandboxSeedsAcpPreset(
+                          selectedDraft.codexSandboxShadowed
+                        ) ? (
+                          <p className="text-[10px] text-muted-foreground">
+                            {t("codex.sandboxModeSeedsPresetHint")}
+                          </p>
+                        ) : null}
+                        {/* codex-acp 1.7.0 redefined its `read-only` preset to
+                            carry a workspace-write sandbox, and it re-sends
+                            that policy every turn — so an ACP session cannot
+                            honor a read-only sandbox at all any more. This
+                            control keeps working for codex CLI/IDE sessions,
+                            which is exactly why the divergence has to be said
+                            out loud rather than left to look effective. */}
+                        {showsCodexReadOnlyAcpWarning(
+                          selectedDraft.codexSandboxMode,
+                          selectedDraft.codexSandboxShadowed
+                        ) ? (
+                          <p className="text-[10px] text-yellow-500">
+                            {t("codex.sandboxModeReadOnlyAcpWarning")}
+                          </p>
+                        ) : null}
                       </div>
 
                       {codexWorkspaceWriteApplies(
