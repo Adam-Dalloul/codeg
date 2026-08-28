@@ -3,15 +3,21 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
 use crate::app_error::AppCommandError;
-use crate::process::std_command;
+use crate::process::tokio_command;
 
 /// Open a file or directory in Visual Studio Code.
 ///
 /// Resolves the `code` CLI (and well-known install locations) and launches it
-/// detached so the editor outlives this call. Works in both desktop and
+/// without waiting, so the editor outlives this call. Works in both desktop and
 /// server mode: the host that owns the workspace path is the one that spawns
 /// Code.
-pub fn open_in_code_core(path: String) -> Result<(), AppCommandError> {
+///
+/// A successful return only means the process was spawned — Code deciding it
+/// cannot show a window (a host with no display, say) surfaces nowhere.
+///
+/// `async` because [`spawn_vscode`] needs a tokio runtime in scope, not because
+/// it awaits anything.
+pub async fn open_in_code_core(path: String) -> Result<(), AppCommandError> {
     let target = validate_open_in_code_path(&path)?;
     let launch = resolve_vscode_launch().ok_or_else(|| {
         AppCommandError::dependency_missing(
@@ -23,7 +29,7 @@ pub fn open_in_code_core(path: String) -> Result<(), AppCommandError> {
 
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
 pub async fn open_in_code(path: String) -> Result<(), AppCommandError> {
-    open_in_code_core(path)
+    open_in_code_core(path).await
 }
 
 fn validate_open_in_code_path(path: &str) -> Result<PathBuf, AppCommandError> {
@@ -52,18 +58,13 @@ struct VsCodeLaunch {
     program: PathBuf,
     /// Extra args inserted before the target path (`open -a "Visual Studio Code"`).
     args_prefix: Vec<OsString>,
-    /// `.cmd` / `.bat` shims cannot be CreateProcess'd; wrap them in `cmd /C`.
-    uses_cmd_wrapper: bool,
 }
 
 impl VsCodeLaunch {
     fn from_binary(program: PathBuf) -> Self {
-        let program = prefer_gui_binary(program);
-        let uses_cmd_wrapper = is_windows_script(&program);
         Self {
-            program,
+            program: prefer_gui_binary(program),
             args_prefix: Vec::new(),
-            uses_cmd_wrapper,
         }
     }
 
@@ -72,19 +73,8 @@ impl VsCodeLaunch {
         Self {
             program: PathBuf::from("open"),
             args_prefix: vec![OsString::from("-a"), OsString::from(app_name)],
-            uses_cmd_wrapper: false,
         }
     }
-}
-
-fn is_windows_script(path: &Path) -> bool {
-    matches!(
-        path.extension()
-            .and_then(|ext| ext.to_str())
-            .map(|ext| ext.to_ascii_lowercase())
-            .as_deref(),
-        Some("cmd" | "bat")
-    )
 }
 
 /// Prefer `Code.exe` next to a `bin/code.cmd` shim so we spawn a GUI binary
@@ -194,14 +184,23 @@ fn resolve_vscode_launch() -> Option<VsCodeLaunch> {
     None
 }
 
+/// Spawn Code and walk away.
+///
+/// `tokio_command` rather than the std one on purpose: dropping the handle of a
+/// still-running `std::process::Child` never reaps it, so on unix every launch
+/// would leave a `<defunct>` entry behind for the lifetime of the app. Tokio's
+/// `Child` hands itself to the runtime's orphan queue on drop, which reaps it
+/// on the next `SIGCHLD` whenever Code eventually exits.
+///
+/// A `.cmd` / `.bat` shim is passed to `Command` as the program, NOT hand-wrapped
+/// in `cmd /C`: std recognizes the extension and builds the `cmd.exe` line itself
+/// with batch-specific quoting (`make_bat_command_line`), which neutralizes the
+/// `& | ^ < > %` a workspace file name is free to contain. Spelling the wrapper
+/// out by hand instead gets the standard `CommandLineToArgvW` quoting, which
+/// leaves those characters live for cmd to parse — a file named `a&calc` in a
+/// cloned repo would then run `calc`.
 fn spawn_vscode(launch: &VsCodeLaunch, target: &Path) -> Result<(), AppCommandError> {
-    let mut command = if launch.uses_cmd_wrapper {
-        let mut cmd = std_command("cmd");
-        cmd.arg("/C").arg(&launch.program);
-        cmd
-    } else {
-        std_command(&launch.program)
-    };
+    let mut command = tokio_command(&launch.program);
     for arg in &launch.args_prefix {
         command.arg(arg);
     }
@@ -299,12 +298,15 @@ mod tests {
         assert_eq!(resolved, dir.path());
     }
 
+    /// A `.cmd` shim stays the program. Wrapping it in `cmd /C` by hand would
+    /// hand the target path to cmd under `CommandLineToArgvW` quoting, which
+    /// leaves `&` live — see [`spawn_vscode`]. `Command` does the wrapping
+    /// itself, with batch-safe quoting.
     #[test]
-    fn from_binary_marks_cmd_wrapper_on_scripts() {
+    fn from_binary_keeps_windows_shim_as_the_program() {
         let launch = VsCodeLaunch::from_binary(PathBuf::from("C:/tools/code.cmd"));
-        assert!(launch.uses_cmd_wrapper);
-        let exe = VsCodeLaunch::from_binary(PathBuf::from("C:/tools/Code.exe"));
-        assert!(!exe.uses_cmd_wrapper);
+        assert_eq!(launch.program, PathBuf::from("C:/tools/code.cmd"));
+        assert!(launch.args_prefix.is_empty(), "{launch:?}");
     }
 
     #[test]
@@ -338,16 +340,23 @@ mod tests {
         }
     }
 
-    #[test]
-    fn spawn_runs_stub_with_target_path() {
+    /// Run the stub against `dir/<target_name>` and return what it recorded as
+    /// its first argument.
+    async fn record_launch_arg(target_name: &str) -> (PathBuf, String) {
         let dir = tempfile::tempdir().expect("tempdir");
-        let target = dir.path().join("workspace");
+        let target = dir.path().join(target_name);
         fs::create_dir(&target).expect("mkdir target");
         let marker = dir.path().join("marker.txt");
         let stub = write_stub_recorder(dir.path(), &marker);
         let launch = VsCodeLaunch::from_binary(stub);
         spawn_vscode(&launch, &target).expect("spawn stub");
         let recorded = wait_for_marker(&marker);
+        (target, recorded)
+    }
+
+    #[tokio::test]
+    async fn spawn_runs_stub_with_target_path() {
+        let (target, recorded) = record_launch_arg("workspace").await;
         let expected = target.to_string_lossy();
         assert!(
             recorded.contains(expected.as_ref()),
@@ -355,9 +364,25 @@ mod tests {
         );
     }
 
-    #[test]
-    fn open_in_code_core_errors_when_path_missing() {
+    /// `&` is a legal file-name character on every platform codeg ships to, and
+    /// a cmd command separator on one of them. The teeth are on Windows, where
+    /// the stub is a `.cmd`: hand-wrapping it in `cmd /C` truncates the argument
+    /// at the `&` and runs the remainder as a command. Elsewhere the stub is
+    /// `/bin/sh` reading a quoted `"$1"`, so this only pins the arg down.
+    #[tokio::test]
+    async fn spawn_passes_shell_metacharacters_through_intact() {
+        let (target, recorded) = record_launch_arg("open in code & canary").await;
+        let expected = target.to_string_lossy();
+        assert!(
+            recorded.contains(expected.as_ref()),
+            "stub recorded {recorded:?}, expected to contain {expected:?} whole"
+        );
+    }
+
+    #[tokio::test]
+    async fn open_in_code_core_errors_when_path_missing() {
         let err = open_in_code_core("/no/such/codeg/open-in-code-target".into())
+            .await
             .expect_err("missing path");
         assert!(err.message.contains("does not exist"), "{err:?}");
     }

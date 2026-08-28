@@ -61,7 +61,7 @@ pub async fn open_folder(
 pub async fn open_in_code(
     Json(params): Json<AddFolderParams>,
 ) -> Result<Json<()>, AppCommandError> {
-    crate::commands::open_in::open_in_code_core(params.path)?;
+    crate::commands::open_in::open_in_code_core(params.path).await?;
     Ok(Json(()))
 }
 
