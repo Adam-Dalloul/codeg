@@ -2705,6 +2705,7 @@
           "downloadFailed": "La descarga de {agent} falló: {message}",
           "sessionLoadResourceNotFound": "Error al cargar la sesión de {agent}. Recarga para reintentar o inicia una nueva conversación.",
           "sessionLoadUnavailable": "{agent} no pudo restaurar esta sesión; es posible que haya finalizado o que el agente se haya detenido. Recarga para reintentar o inicia una nueva conversación.",
+          "sessionArchived": "La sesión anterior fue archivada por {agent}. Ejecuta {command} en una terminal para restaurarla y recargarla, o inicia una conversación nueva.",
           "turnFailedRefusal": "{agent} rechazó continuar este turno. Suele indicar un error de backend o pasarela. Revisa los registros del agente.",
           "turnFailedMaxTokens": "{agent} alcanzó el límite máximo de tokens para este turno.",
           "turnFailedMaxTurnRequests": "{agent} alcanzó el número máximo de solicitudes permitidas para este turno.",

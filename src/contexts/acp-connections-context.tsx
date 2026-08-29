@@ -4089,6 +4089,22 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
                 return t("backendErrors.sessionLoadUnavailable", {
                   agent: agentLabel,
                 })
+              case "session_archived": {
+                // The archived session id rides in the raw RPC body (Codex:
+                // "session <id> is archived. Run `codex unarchive <id>`…").
+                // Surface the exact command instead of making the user hunt
+                // for the id; a body without a parseable id falls back to the
+                // raw message so nothing actionable is lost.
+                const id = e.message.match(
+                  /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/
+                )?.[0]
+                return id
+                  ? t("backendErrors.sessionArchived", {
+                      agent: agentLabel,
+                      command: `codex unarchive ${id}`,
+                    })
+                  : e.message
+              }
               default:
                 return e.message
             }
