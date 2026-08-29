@@ -5235,7 +5235,8 @@
     "pickFolder": "Escolha uma pasta de projeto",
     "noRemote": "Esta pasta não tem um remoto reconhecível (origin)",
     "errors": {
-      "noAccount": "Nenhuma conta {provider} configurada para {host}. Adicione uma em Configurações → Controle de versão para carregar este repositório."
+      "noAccount": "Nenhuma conta {provider} configurada para {host}. Adicione uma em Configurações → Controle de versão para carregar este repositório.",
+      "unsupportedHost": "O painel do repositório só oferece suporte a GitHub e GitLab, e {host} não é reconhecido como nenhum dos dois. Se for uma instância auto-hospedada do GitHub Enterprise ou do GitLab, adicione uma conta para ela em Configurações → Controle de versão."
     },
     "addAccount": "Adicionar uma conta",
     "empty": "Nada por aqui",

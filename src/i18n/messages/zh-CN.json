@@ -5235,7 +5235,8 @@
     "pickFolder": "选择项目文件夹",
     "noRemote": "该文件夹没有可识别的代码托管远端（origin）",
     "errors": {
-      "noAccount": "还没有为 {host} 配置 {provider} 账号。请在「设置 → 版本控制」中添加后再加载该仓库。"
+      "noAccount": "还没有为 {host} 配置 {provider} 账号。请在「设置 → 版本控制」中添加后再加载该仓库。",
+      "unsupportedHost": "仓库面板目前仅支持 GitHub 和 GitLab，而 {host} 不是其中任何一种。如果它是自建的 GitHub Enterprise 或 GitLab 实例，请在「设置 → 版本控制」中为它添加账号。"
     },
     "addAccount": "添加账号",
     "empty": "暂无内容",

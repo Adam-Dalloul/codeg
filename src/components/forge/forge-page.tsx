@@ -64,7 +64,6 @@ import {
   FolderSelect,
   type FolderSelectOption,
 } from "@/components/shared/folder-select"
-import { ForgeBetaBadge } from "@/components/forge/forge-beta-badge"
 import { OPEN_FORGE_SETTINGS_EVENT } from "@/components/forge/forge-chrome-actions"
 import { ForgeIssueDetailSheet } from "@/components/forge/forge-issue-detail-sheet"
 import { ForgeIssueRowItem } from "@/components/forge/forge-issue-row"
@@ -90,7 +89,9 @@ import { buildForgeSourceKey } from "@/lib/forge-source-key"
 import {
   FORGE_PAGE_SIZES,
   loadForgePageSize,
+  loadForgeTab,
   saveForgePageSize,
+  saveForgeTab,
   type ForgePageSize,
 } from "@/lib/forge-list-prefs"
 import { pageCount, pageSlots } from "@/lib/forge-pagination"
@@ -130,6 +131,12 @@ const LABEL_SCOPE_SEP = String.fromCharCode(0)
  *  generic code that other failures share, and offering "add an account" for
  *  a dead token or a mismatched pin would send the user somewhere useless. */
 const NO_ACCOUNT_I18N_KEY = "Forge.errors.noAccount"
+
+/** Must mirror `UNSUPPORTED_HOST_I18N_KEY` in src-tauri/src/forge/mod.rs.
+ *  `Forge`-scoped here because this page renders the message itself, off
+ *  `ForgeRemote.supported`, rather than waiting for the backend to raise it —
+ *  the same words either way, from the same entry. */
+const UNSUPPORTED_HOST_KEY = "errors.unsupportedHost"
 
 /** How long typing has to stop before the filter becomes a request. GitHub's
  *  search endpoint allows THIRTY calls a minute (its own quota, separate from
@@ -322,7 +329,32 @@ export function repoWebUrl(remote: ForgeRemote): string {
 
 export function ForgePageTitle() {
   const t = useTranslations("Forge")
-  return <WorkbenchPageTitle title={t("title")} badge={<ForgeBetaBadge />} />
+  return <WorkbenchPageTitle title={t("title")} />
+}
+
+/**
+ * The way out of the two dead ends adding an account can actually fix: a forge
+ * host with no credential yet, and a host whose name says nothing about which
+ * forge it runs (declaring an account for it is what tells us).
+ *
+ * The label is passed in rather than translated here so this stays a leaf both
+ * branches can drop in place — they already hold the translator.
+ */
+function AddAccountButton({ label }: { label: string }) {
+  return (
+    <Button
+      size="sm"
+      variant="secondary"
+      onClick={() => {
+        void openSettingsWindow("version-control").catch(() => {
+          // Settings is a separate window; a failure to open it must not take
+          // down the page that offered the button.
+        })
+      }}
+    >
+      {label}
+    </Button>
+  )
 }
 
 function loadStoredFolderId(): number | null {
@@ -369,7 +401,8 @@ export function ForgePage() {
 
   const [remote, setRemote] = useState<ForgeRemote | null>(null)
   const [remoteLoading, setRemoteLoading] = useState(false)
-  const [tab, setTab] = useState<ForgeTab>("issues")
+  // Restored synchronously, like the page size below and for the same reason.
+  const [tab, setTab] = useState<ForgeTab>(loadForgeTab)
   // Open by default: a triage list opens on the work that is still work.
   const [stateFilter, setStateFilter] = useState<StateFilter>("open")
   const [assignedMe, setAssignedMe] = useState(false)
@@ -474,6 +507,22 @@ export function ForgePage() {
     }
   }, [effectiveFolderId])
 
+  /**
+   * The remote only when codeg can actually read it.
+   *
+   * A repository on Bitbucket, Gitee or someone's Gitea parses into perfectly
+   * good coordinates and resolves to a provider — the last-resort GitHub guess
+   * — that no call of ours can answer. Everything which would SPEND a request,
+   * or offer an action that needs one, hangs off this rather than off `remote`,
+   * so such a host costs nothing and is explained (see the `supported` branch
+   * below) instead of failing later as a raw API error. `remote` itself stays
+   * whole: the repository is still worth naming in the bar at the top.
+   *
+   * Same object or null, so its identity is as stable as `remote`'s — these
+   * are fetch dependencies.
+   */
+  const readable = remote?.supported ? remote : null
+
   /** Which list the rows belong to — see [`LoadedList`]. */
   const listScope = `${effectiveFolderId}:${tab}`
   /** Which RESULT SET the badges count — see [`TabCounts`]. No tab, no page,
@@ -517,7 +566,7 @@ export function ForgePage() {
   }, [])
 
   const fetchPage = useCallback(async () => {
-    if (effectiveFolderId == null || remote == null) return
+    if (effectiveFolderId == null || readable == null) return
     const id = ++reqRef.current
     setLoading(true)
     setError(null)
@@ -561,7 +610,7 @@ export function ForgePage() {
     }
   }, [
     effectiveFolderId,
-    remote,
+    readable,
     listScope,
     countsScope,
     claimCount,
@@ -585,7 +634,7 @@ export function ForgePage() {
    */
   const fetchCount = useCallback(
     async (which: ForgeTab) => {
-      if (effectiveFolderId == null || remote == null) return
+      if (effectiveFolderId == null || readable == null) return
       const scope = countsScope
       const id = claimCount(which)
       probingRef.current[which] = `${scope}:${which}`
@@ -613,7 +662,7 @@ export function ForgePage() {
     },
     [
       effectiveFolderId,
-      remote,
+      readable,
       countsScope,
       claimCount,
       recordCount,
@@ -627,8 +676,8 @@ export function ForgePage() {
   // (Re)load on any filter/paging/remote change. `page` is in `fetchPage`'s
   // deps, so a page click IS the refetch — there is no separate trigger.
   useEffect(() => {
-    if (remote != null) void fetchPage()
-  }, [remote, fetchPage])
+    if (readable != null) void fetchPage()
+  }, [readable, fetchPage])
 
   // Read through a ref so the probe below can consult the numbers it writes
   // without depending on them — a dependency there would re-arm the effect
@@ -665,7 +714,7 @@ export function ForgePage() {
   useEffect(() => {
     publishRefresh({
       refresh:
-        remote == null
+        readable == null
           ? null
           : () => {
               // Both, or "reload" would leave a stale number sitting on the
@@ -683,7 +732,7 @@ export function ForgePage() {
     fetchPage,
     fetchCount,
     otherTab,
-    remote,
+    readable,
     loading,
     countsLoading,
   ])
@@ -743,7 +792,7 @@ export function ForgePage() {
   // search's much smaller one. Best-effort: a repository whose labels cannot be
   // read still lists perfectly well, it just offers no label filter.
   useEffect(() => {
-    if (effectiveFolderId == null || remote == null) return
+    if (effectiveFolderId == null || readable == null) return
     let cancelled = false
     setLabelOptions([])
     setLabelsTruncated(false)
@@ -759,7 +808,7 @@ export function ForgePage() {
     return () => {
       cancelled = true
     }
-  }, [effectiveFolderId, remote])
+  }, [effectiveFolderId, readable])
 
   /** Any change that redefines the result set puts you back on page 1 —
    *  otherwise a narrower filter lands on a page number that no longer
@@ -1081,7 +1130,7 @@ export function ForgePage() {
               request tab too — "file an issue about this" is exactly the
               thought a review produces, and putting it behind a tab switch
               would be hiding it. */}
-          {remote != null && effectiveFolderId != null ? (
+          {readable != null && effectiveFolderId != null ? (
             <Button
               type="button"
               size="sm"
@@ -1097,7 +1146,13 @@ export function ForgePage() {
           <Tabs
             className="shrink-0 sm:ms-auto"
             value={tab}
-            onValueChange={(v) => resetTo(() => setTab(v as ForgeTab))}
+            onValueChange={(v) => {
+              // Written on the CLICK, not from an effect on `tab`: the value
+              // worth remembering is the one the user chose, and an effect
+              // would also persist the initial value it just read back.
+              saveForgeTab(v as ForgeTab)
+              resetTo(() => setTab(v as ForgeTab))
+            }}
           >
             <TabsList className="h-8">
               <TabsTrigger value="issues">
@@ -1251,6 +1306,19 @@ export function ForgePage() {
           <ListSkeleton rows={skeletonRows} />
         ) : remote == null ? (
           <EmptyHint text={t("noRemote")} />
+        ) : !remote.supported ? (
+          // Said BEFORE anything is fetched, and in place of the list: the
+          // remote is real, it just is not one of the two forges codeg speaks.
+          // What used to happen here was a request nobody could serve, reported
+          // as whatever the wrong API said back — "no GitHub account for
+          // gitee.com", or a raw 404 — neither of which names the actual
+          // limitation. The account button stays, because it is also the way IN
+          // for a self-hosted instance under a name that says nothing (declaring
+          // an account for the host is what tells us which forge it runs).
+          <EmptyHint
+            text={t(UNSUPPORTED_HOST_KEY, { host: remote.server_host })}
+            action={<AddAccountButton label={t("addAccount")} />}
+          />
         ) : failure != null ? (
           <EmptyHint
             text={failure.message}
@@ -1259,18 +1327,7 @@ export function ForgePage() {
               // or a stale pinned account id lands here too, and sending those
               // to the "add" flow would be advice that cannot work.
               failure.needsAccount ? (
-                <Button
-                  size="sm"
-                  variant="secondary"
-                  onClick={() => {
-                    void openSettingsWindow("version-control").catch(() => {
-                      // Settings is a separate window; a failure to open it
-                      // must not take down the page that offered the button.
-                    })
-                  }}
-                >
-                  {t("addAccount")}
-                </Button>
+                <AddAccountButton label={t("addAccount")} />
               ) : null
             }
           />
@@ -1306,7 +1363,7 @@ export function ForgePage() {
         )}
       </ScrollArea>
 
-      {remote != null && failure == null ? (
+      {readable != null && failure == null ? (
         list != null ? (
           <ListFooter
             list={list}
@@ -1349,11 +1406,11 @@ export function ForgePage() {
         onCommentPosted={countComment}
       />
 
-      {remote != null && effectiveFolderId != null ? (
+      {readable != null && effectiveFolderId != null ? (
         <ForgeNewIssueDialog
           open={newIssueOpen}
           folderId={effectiveFolderId}
-          repo={remote.owner_repo}
+          repo={readable.owner_repo}
           // The vocabulary the label FILTER already fetched for this
           // repository — one read serves both, and the dialog must not wait on
           // a round trip to draw.
@@ -1374,10 +1431,10 @@ export function ForgePage() {
         />
       ) : null}
 
-      {startRow != null && remote != null && effectiveFolderId != null ? (
+      {startRow != null && readable != null && effectiveFolderId != null ? (
         <ForgeStartDialog
           row={startRow}
-          remote={remote}
+          remote={readable}
           folderId={effectiveFolderId}
           // Resolved for the folder on screen: its own panel settings if it has
           // any, else the global row (see `effectiveForgeSettings`).

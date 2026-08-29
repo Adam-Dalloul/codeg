@@ -46,6 +46,7 @@ const REMOTE: ForgeRemote = {
   owner_repo: "xintaofei/codeg",
   remote_url: "https://github.com/xintaofei/codeg.git",
   provider: "github",
+  supported: true,
 }
 
 vi.mock("@/lib/api", () => ({
@@ -296,6 +297,64 @@ describe("ForgePage list failures", () => {
   })
 })
 
+/**
+ * A repository codeg cannot read at all — Bitbucket, Gitee, somebody's Gitea.
+ *
+ * Its remote parses perfectly well and resolves to a provider, because the
+ * backend's last resort for an unrecognized host is GitHub. What it does NOT
+ * resolve to is an API that can answer, so the panel used to spend the request
+ * anyway and report back whatever the wrong forge said — "no GitHub account for
+ * gitee.com", or a raw API failure — neither of which names the real limit.
+ */
+describe("ForgePage on a host that is neither forge", () => {
+  const UNSUPPORTED: ForgeRemote = {
+    server_host: "gitee.com",
+    owner_repo: "someone/thing",
+    remote_url: "https://gitee.com/someone/thing.git",
+    // What the backend guessed, and exactly why the flag has to be separate:
+    // the provider alone cannot tell this apart from a self-hosted Enterprise.
+    provider: "github",
+    supported: false,
+  }
+
+  it("says only GitHub and GitLab are supported, and asks nothing of either", async () => {
+    vi.mocked(folderForgeRemote).mockResolvedValue(UNSUPPORTED)
+    mount()
+
+    expect(
+      await screen.findByText(
+        "The repository panel supports GitHub and GitLab only, and gitee.com is not recognized as either. If it is a self-hosted GitHub Enterprise or GitLab instance, add an account for it under Settings → Version Control."
+      )
+    ).toBeInTheDocument()
+    // No request is worth spending on a host no credential of ours fits — not
+    // the list, not the hidden tab's badge, not the label vocabulary.
+    expect(forgeListIssues).not.toHaveBeenCalled()
+    expect(forgeTabCount).not.toHaveBeenCalled()
+    expect(forgeListLabels).not.toHaveBeenCalled()
+  })
+
+  it("offers no write it could not carry out, and still names the repository", async () => {
+    const user = userEvent.setup()
+    vi.mocked(folderForgeRemote).mockResolvedValue(UNSUPPORTED)
+    mount()
+    await screen.findByRole("button", { name: "Add an account" })
+
+    // The bar still says which repository this is — the folder is real, and
+    // being unreadable is not a reason to stop naming it.
+    expect(
+      screen.getByRole("button", { name: /someone\/thing/ })
+    ).toBeInTheDocument()
+    expect(
+      screen.queryByRole("button", { name: "New issue" })
+    ).not.toBeInTheDocument()
+
+    // The account button stays, because declaring an account for the host is
+    // also how a self-hosted instance under an unrelated name gets in.
+    await user.click(screen.getByRole("button", { name: "Add an account" }))
+    expect(openSettingsWindow).toHaveBeenCalledWith("version-control")
+  })
+})
+
 describe("repoWebUrl", () => {
   const at = (overrides: Partial<ForgeRemote>): ForgeRemote => ({
     ...REMOTE,
@@ -409,6 +468,44 @@ describe("ForgePage pagination", () => {
     vi.mocked(forgeListIssues).mockClear()
     mount()
     await waitFor(() => expect(sentQueries()[0].perPage).toBe(50))
+  })
+
+  /**
+   * The switcher position is remembered for the same reason the page SIZE is
+   * and the page NUMBER is not: it says which list you work in, not where you
+   * happened to be in one. Someone who lives in pull requests should not have
+   * to click past Issues every time the panel opens.
+   */
+  it("remembers which tab was last open, and opens there next time", async () => {
+    const user = userEvent.setup()
+    vi.mocked(forgeListIssues).mockResolvedValue(listOf([issue(1, "a row")]))
+    mount()
+    await screen.findByText("a row")
+    // Loose match: the tab carries its count badge in its accessible name.
+    await user.click(screen.getByRole("tab", { name: /Pull requests/ }))
+    await waitFor(() => expect(lastQuery()).toMatchObject({ tab: "prs" }))
+    expect(localStorage.getItem("workspace:forge-tab")).toBe("prs")
+
+    // A fresh mount opens on it — first request and all, so the remembered
+    // tab costs no round trip on the one it is not.
+    cleanup()
+    vi.mocked(forgeListIssues).mockClear()
+    mount()
+    await waitFor(() => expect(sentQueries()[0].tab).toBe("prs"))
+  })
+
+  it("opens on Issues when nothing was remembered, or the entry is junk", async () => {
+    vi.mocked(forgeListIssues).mockResolvedValue(listOf([issue(1, "a row")]))
+    mount()
+    await waitFor(() => expect(sentQueries()[0].tab).toBe("issues"))
+
+    // A hand-edited entry names a tab the switcher cannot show and no list can
+    // be fetched for, so it reads back as the default rather than as itself.
+    cleanup()
+    vi.mocked(forgeListIssues).mockClear()
+    localStorage.setItem("workspace:forge-tab", "merge-requests")
+    mount()
+    await waitFor(() => expect(sentQueries()[0].tab).toBe("issues"))
   })
 
   /** Narrowing the result set redefines what "page 4" means; the old number

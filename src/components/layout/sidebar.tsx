@@ -25,7 +25,6 @@ import {
   SidebarConversationList,
   type SidebarConversationListHandle,
 } from "@/components/conversations/sidebar-conversation-list"
-import { ForgeBetaBadge } from "@/components/forge/forge-beta-badge"
 import { Button } from "@/components/ui/button"
 import {
   DropdownMenu,
@@ -564,7 +563,6 @@ export function Sidebar() {
               if (isMobile) toggle()
               setRoute("forge")
             }}
-            trailing={<ForgeBetaBadge className="ml-auto" />}
           />
         )}
       </div>

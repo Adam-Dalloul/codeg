@@ -1772,6 +1772,12 @@ export interface ForgeRemote {
   /** Which forge this host is — decided by the backend from the configured
    *  accounts and the hostname, never chosen here. */
   provider: ForgeProviderId
+  /** Whether `provider` is KNOWN rather than assumed — an account configured
+   *  for the host, or a hostname naming one of the two forges. `false` is a
+   *  remote that parsed perfectly well but lives somewhere codeg cannot read
+   *  (Bitbucket, Gitee, a Gitea): the panel says only GitHub and GitLab are
+   *  supported rather than spending a call that fails as a raw API error. */
+  supported: boolean
 }
 
 /** Latest task (any state) for a source key — the row chip's data. */
