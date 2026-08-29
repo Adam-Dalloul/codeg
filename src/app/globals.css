@@ -1549,6 +1549,83 @@
   }
 }
 
+/* Reply fold body — the "Worked for …" header's progress section
+   (`CompletedTurnContent`). Unlike the tool collapsibles above, this one DOES
+   animate its height: it is the one fold per reply the reader toggles by hand,
+   and the answer below reading as pushed down / pulled back up is the whole
+   point of the affordance.
+
+   Driven by `grid-template-rows: 0fr ↔ 1fr`, never by a measured pixel height.
+   `instant-collapsible` exists precisely because Radix measured content height
+   on every open-on-mount and turned a long history into a forced-layout storm;
+   this keeps that promise — no JS reads layout, the engine interpolates the
+   track. The single child carries the clipping (and all the padding, so the
+   collapsed track really reaches zero instead of stalling at its own padding).
+
+   Kept as a CSS animation rather than a transition because `instant-collapsible`
+   holds closing content mounted by watching `animationName` / `animationend`. */
+.reply-fold-body {
+  display: grid;
+  grid-template-rows: 1fr;
+}
+
+.reply-fold-body > * {
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* easeOutCubic opening (the body decelerates into place as it pushes the answer
+   down) against easeInCubic closing (it accelerates away as it folds up). A
+   single sharp ease-out on both ends made the open read as a snap.
+
+   The enter animation is opt-in via `.reply-fold-enter`, which the component
+   adds only for a real closed→open toggle. A body that MOUNTS open — the row
+   key flipping at settlement, the detail refetch, the virtualizer recycling the
+   row — must paint expanded rather than replay the unfold. The exit animation
+   is unconditional: it is what unmounts the content. */
+.reply-fold-body[data-state="open"].reply-fold-enter {
+  animation: reply-fold-open 200ms cubic-bezier(0.33, 1, 0.68, 1);
+}
+
+.reply-fold-body[data-state="closed"] {
+  animation: reply-fold-close 160ms cubic-bezier(0.32, 0, 0.67, 0) forwards;
+}
+
+@keyframes reply-fold-open {
+  from {
+    grid-template-rows: 0fr;
+    opacity: 0;
+  }
+  to {
+    grid-template-rows: 1fr;
+    opacity: 1;
+  }
+}
+
+@keyframes reply-fold-close {
+  from {
+    grid-template-rows: 1fr;
+    opacity: 1;
+  }
+  to {
+    grid-template-rows: 0fr;
+    opacity: 0;
+  }
+}
+
+/* Reduced motion: snap. The close animation still has to RUN (it is what
+   unmounts the content — see the `animationend` presence check in
+   `instant-collapsible`), so shorten it to a single frame rather than removing
+   it, and drop the height travel so nothing slides. */
+@media (prefers-reduced-motion: reduce) {
+  .reply-fold-body[data-state="open"].reply-fold-enter {
+    animation: none;
+  }
+  .reply-fold-body[data-state="closed"] {
+    animation: reply-fold-close 1ms linear forwards;
+  }
+}
+
 /* Welcome-page quick actions: the skill rail (see quick-actions.tsx). A plain
    horizontal scroller — paging is done by the two arrow buttons calling
    `scrollBy`, so nothing here animates. The native scrollbar is hidden: the row

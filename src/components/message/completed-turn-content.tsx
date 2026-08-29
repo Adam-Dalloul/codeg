@@ -10,6 +10,7 @@ import {
 } from "@/lib/adapters/ai-elements-adapter"
 import { formatElapsedLabel } from "@/lib/format-elapsed"
 import { cn } from "@/lib/utils"
+import { Shimmer } from "@/components/ai-elements/shimmer"
 import {
   Collapsible,
   CollapsibleContent,
@@ -52,61 +53,194 @@ function hasVisibleAnswer(answer: AdaptedContentPart[]): boolean {
 }
 
 /**
- * Which turns the reader has opened, keyed by the group's `parts` array. The
- * thread is virtualized: scrolling a turn past the overscan buffer unmounts it,
- * and an uncontrolled Collapsible would forget the expansion — so scrolling
- * away from a turn you opened and back re-hides its work. `parts` is the right
- * key because it is exactly as stable as the turn's identity (it comes from the
- * per-turn adapter cache and the merged-run cache in `message-list-view`), and
- * being weak it is collected with the turn rather than accumulating per
- * conversation. Re-adapted content (a streaming turn settling, a merged run
- * gaining a member) yields a new array and starts collapsed, which is the
- * intent.
+ * Manual fold overrides for turns OUTSIDE the current round, keyed by the
+ * group's `parts` array and stamped with the fold epoch.
+ *
+ * Weak on `parts` because the thread is virtualized: scrolling a turn past the
+ * overscan buffer unmounts it, and an uncontrolled Collapsible would forget the
+ * expansion — so scrolling away from a turn you opened and back would re-hide
+ * its work. For settled history `parts` is exactly as stable as the turn's
+ * identity (it comes from the per-turn adapter cache and the merged-run cache
+ * in `message-list-view`), and being weak it is collected with the turn rather
+ * than accumulating per conversation.
+ *
+ * The epoch stamp is what makes "sending a new message folds everything above
+ * it" a single number bump rather than a walk over the thread: an entry written
+ * under an earlier epoch simply stops matching.
+ *
+ * The CURRENT round deliberately does NOT live here. Its `parts` array is
+ * replaced twice on the way into history (the stream settling into a promoted
+ * local turn, then the authoritative detail refetch), so anything keyed on it
+ * would drop the expansion mid-read — which is exactly the "the reply folds
+ * itself up the moment it finishes" behaviour this replaces. `message-list-view`
+ * owns that one state positionally and passes it down controlled.
  */
-const expandedTurns = new WeakMap<AdaptedContentPart[], boolean>()
+const manualFold = new WeakMap<
+  AdaptedContentPart[],
+  { epoch: number; open: boolean }
+>()
+
+/**
+ * Shared between the interactive trigger and the static (nothing-to-fold) row
+ * so a turn's header keeps the same shape whether or not it can be folded.
+ *
+ * `w-full` with the chevron sitting right after the label (not pushed to the
+ * far edge): the rule underneath is a section divider and spans the reply,
+ * while the control it belongs to reads as one unit. No corner radius — a
+ * radius curls the ends of a lone `border-b` up into little hooks.
+ */
+const HEADER_CLASS =
+  "flex w-full items-center gap-1 border-b border-border/50 pb-1.5 text-xs font-medium text-muted-foreground/70"
 
 export const CompletedTurnContent = memo(function CompletedTurnContent({
   parts,
   durationMs,
   completed,
+  currentRound = false,
+  roundOpen = true,
+  onRoundOpenChange,
+  foldEpoch = 0,
 }: {
   parts: AdaptedContentPart[]
   durationMs?: number | null
   completed: boolean
+  /** This reply is the thread's current round — the newest assistant run, from
+   *  the moment the agent started replying until the next user send. Its fold
+   *  state is owned by `message-list-view` (see `manualFold`). */
+  currentRound?: boolean
+  /** Current-round fold state. Only read when `currentRound`. */
+  roundOpen?: boolean
+  onRoundOpenChange?: (open: boolean) => void
+  /** Bumped by `message-list-view` on every user send. */
+  foldEpoch?: number
 }) {
   const t = useTranslations("Folder.chat.messageList")
   const tElapsed = useTranslations("Folder.chat.liveTurnStats")
   const split = useMemo(() => splitAssistantTurnParts(parts), [parts])
-  const [open, setOpen] = useState(() => expandedTurns.get(parts) ?? false)
-  const handleOpenChange = useCallback(
-    (next: boolean) => {
-      expandedTurns.set(parts, next)
-      setOpen(next)
-    },
-    [parts]
-  )
 
-  // Collapsing trades the process away to keep the answer. With no answer left
-  // over there is nothing to keep, and the reply renders as an empty bubble
-  // carrying a lone "Worked for …" chip — which is exactly the shape of the
-  // turns a reader most needs to see: one stopped mid-tool-call (agents leave
-  // no closing prose), a Cline reply whose `attempt_completion` card IS the
-  // answer, a plan-mode turn that ends on ExitPlanMode with the plan inside
-  // that card. Leave those expanded rather than hide a whole turn behind a
-  // chevron.
-  if (
-    !completed ||
-    split.progress.length === 0 ||
-    !hasVisibleAnswer(split.answer)
-  ) {
-    return <ContentPartsRenderer parts={parts} role="assistant" />
+  const [localOpen, setLocalOpen] = useState(() => {
+    const entry = manualFold.get(parts)
+    if (entry?.epoch === foldEpoch) return entry.open
+    // A reply still being written is never folded by default — folding it is
+    // an explicit act. Normally `currentRound` covers the live reply, but a
+    // host that tracks no rounds at all (the delegation-child viewer) leans on
+    // this, and it keeps the component honest on its own.
+    return !completed
+  })
+
+  // Derived-state-during-render, not an effect: the fold has to be settled in
+  // the same render that reads it, or sending a message would paint one frame
+  // of the previous round still expanded before collapsing it.
+  const [foldMark, setFoldMark] = useState({ epoch: foldEpoch, currentRound })
+  if (foldMark.epoch !== foldEpoch || foldMark.currentRound !== currentRound) {
+    setFoldMark({ epoch: foldEpoch, currentRound })
+    if (foldMark.epoch !== foldEpoch) {
+      // A new user message folds everything above it, including whatever the
+      // reader had opened by hand. Everything above is settled by definition;
+      // the `!completed` case is steering (a send lands mid-reply), where the
+      // reply being written must stay open.
+      setLocalOpen(!completed)
+    } else if (foldMark.currentRound && !currentRound) {
+      // A newer round took over this position without a send in between (a
+      // background/loop turn). Carry the outgoing round's expansion into local
+      // state so it doesn't snap shut under the reader.
+      setLocalOpen(roundOpen)
+    }
   }
 
-  const duration =
+  const open = currentRound ? roundOpen : localOpen
+
+  // The unfold animation belongs to a real closed→open TOGGLE, never to a mount
+  // that starts open. This component remounts constantly while staying open:
+  // the row key flips from `streaming-…` to `persisted-…` the instant a reply
+  // settles, the authoritative detail refetch renames the turn and flips it
+  // again, and the virtualizer recycles any row scrolled past its overscan
+  // buffer. Without this gate each of those replays a 200ms unfold, so a
+  // finished reply appears to collapse and re-open by itself — precisely the
+  // behaviour the round model exists to prevent.
+  //
+  // Only the ENTER side is gated. The exit animation must always run: it is
+  // what unmounts the content (see the presence check in `instant-collapsible`).
+  const [openMark, setOpenMark] = useState({ open, animateEnter: false })
+  if (openMark.open !== open) setOpenMark({ open, animateEnter: open })
+  const animateEnter = openMark.open === open && openMark.animateEnter
+
+  const handleOpenChange = useCallback(
+    (next: boolean) => {
+      if (currentRound) {
+        onRoundOpenChange?.(next)
+        return
+      }
+      manualFold.set(parts, { epoch: foldEpoch, open: next })
+      setLocalOpen(next)
+    },
+    [currentRound, foldEpoch, onRoundOpenChange, parts]
+  )
+
+  const elapsed =
     typeof durationMs === "number" && durationMs > 0
       ? formatElapsedLabel(durationMs, tElapsed)
       : null
-  const summary = duration ? t("workedFor", { duration }) : t("worked")
+
+  // Folding trades the process away to keep the answer. With no answer left
+  // over there is nothing to keep, and the reply would fold to a lone header —
+  // which is exactly the shape of the turns a reader most needs to see: one
+  // stopped mid-tool-call (agents leave no closing prose), a Cline reply whose
+  // `attempt_completion` card IS the answer, a plan-mode turn that ends on
+  // ExitPlanMode with the plan inside that card. Those settle un-foldable.
+  //
+  // A live reply is exempt from the answer half of that rule: its closing prose
+  // has not been written yet, so applying it would withhold the toggle for the
+  // whole stream and hand it over one beat before the turn ends. Folding a live
+  // reply is then an explicit choice; the round settling re-applies the rule.
+  const foldable =
+    split.progress.length > 0 && (!completed || hasVisibleAnswer(split.answer))
+
+  const label = !completed
+    ? t("working")
+    : elapsed
+      ? t("workedFor", { duration: elapsed })
+      : t("worked")
+
+  // Every assistant reply with content carries a header. Gating it on "has work
+  // to fold or a duration to show" made it blink out at the worst moment: a
+  // reply settles BEFORE the post-turn reparse backfills `duration_ms`, so a
+  // text-only reply went "Working…" → no header at all → "Worked for 3s" a
+  // second later. The settled-no-duration label holds that slot.
+  const labelNode = completed ? (
+    <span className="min-w-0 truncate tabular-nums">{label}</span>
+  ) : (
+    <Shimmer
+      as="span"
+      className="min-w-0 truncate"
+      duration={1}
+      shineColor="var(--primary)"
+    >
+      {label}
+    </Shimmer>
+  )
+
+  if (!foldable) {
+    // Parsers leave empty placeholder turns between tool exchanges;
+    // `mergeConsecutiveAssistantTurns` only swallows them mid-run, so a lone
+    // one reaches here with nothing in it at all. It has no content for a
+    // header to head — heading it would turn an invisible turn into a visible
+    // empty one. Settled turns only: a live reply's header is the point, even
+    // before its first token lands.
+    const blank =
+      completed &&
+      split.progress.length === 0 &&
+      !hasVisibleAnswer(split.answer)
+    if (blank) {
+      return <ContentPartsRenderer parts={parts} role="assistant" />
+    }
+    return (
+      <div className="space-y-3">
+        <div className={HEADER_CLASS}>{labelNode}</div>
+        <ContentPartsRenderer parts={parts} role="assistant" />
+      </div>
+    )
+  }
 
   return (
     <div className="space-y-4">
@@ -115,27 +249,42 @@ export const CompletedTurnContent = memo(function CompletedTurnContent({
         open={open}
         onOpenChange={handleOpenChange}
       >
-        <CollapsibleTrigger className="group inline-flex items-center gap-1.5 rounded-md px-1 py-1 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background">
-          <ChevronRightIcon
-            aria-hidden="true"
-            className="size-3 shrink-0 opacity-60 transition-transform group-data-[state=open]:rotate-90"
-          />
-          <span className="tabular-nums">{summary}</span>
-        </CollapsibleTrigger>
-        <CollapsibleContent
+        {/* No hover treatment at all — the header is a quiet label the reader
+            scans past, and the chevron carries the affordance. Closed points
+            along the reading direction, open points down at what it revealed:
+            the same disclosure triangle every other fold in the thread uses. */}
+        <CollapsibleTrigger
           className={cn(
-            "w-full outline-none",
-            "data-[state=open]:animate-in data-[state=closed]:animate-out",
-            "data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0"
+            HEADER_CLASS,
+            "group focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
           )}
         >
-          <div className="mt-3 border-s border-border/70 ps-3">
-            <ContentPartsRenderer parts={split.progress} role="assistant" />
+          {labelNode}
+          <ChevronRightIcon
+            aria-hidden="true"
+            className="size-3.5 shrink-0 opacity-50 transition-transform group-data-[state=open]:rotate-90"
+          />
+        </CollapsibleTrigger>
+        {/* `reply-fold-body` (globals.css) slides the body open and shut on a
+            grid track. The inner div is the clipped grid item — it must stay a
+            single child, and the spacing has to live INSIDE it or the closed
+            track never reaches zero. */}
+        <CollapsibleContent
+          className={cn(
+            "reply-fold-body w-full outline-none",
+            animateEnter && "reply-fold-enter"
+          )}
+        >
+          <div>
+            <div className="pt-3">
+              <ContentPartsRenderer parts={split.progress} role="assistant" />
+            </div>
           </div>
         </CollapsibleContent>
       </Collapsible>
-      {/* Non-empty by construction: the no-answer case returned above. */}
-      <ContentPartsRenderer parts={split.answer} role="assistant" />
+      {split.answer.length > 0 && (
+        <ContentPartsRenderer parts={split.answer} role="assistant" />
+      )}
     </div>
   )
 })
