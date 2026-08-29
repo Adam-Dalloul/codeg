@@ -2379,7 +2379,10 @@ export type AcpEvent =
       type: "session_load_failed"
       session_id: string
       message: string
-      /** Stable backend identifier — currently `"resource_not_found"`. */
+      /**
+       * Stable backend identifier: `"resource_not_found"`,
+       * `"session_unavailable"`, or `"session_archived"`.
+       */
       code: string
     }
   | {

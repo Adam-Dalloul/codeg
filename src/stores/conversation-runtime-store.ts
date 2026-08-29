@@ -154,11 +154,11 @@ export interface ConversationRuntimeSession {
   detailLoading: boolean
   detailError: string | null
 
-  // ACP `session/load` failed in a non-recoverable way (currently only when
-  // the agent reports ResourceNotFound for the historical session_id). Set
-  // by the connections layer via setAcpLoadError; cleared by the user
-  // pressing Reload, by a successful detail refetch, or when a new ACP
-  // session takes over.
+  // ACP `session/load` failed in a way codeg cannot paper over: the agent
+  // reports ResourceNotFound for the historical session_id, the session or
+  // process died, or the session is archived. Set by the connections layer
+  // via setAcpLoadError; cleared by the user pressing Reload, by a successful
+  // detail refetch, or when a new ACP session takes over.
   acpLoadError: string | null
 
   // Active session accumulated turns (promoted optimistic + completed streaming)
