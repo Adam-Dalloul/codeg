@@ -3063,6 +3063,8 @@
         "errorTitle": "Sitzung konnte nicht geladen werden",
         "errorActionReload": "Neu laden",
         "errorActionNewSession": "Neue Konversation",
+        "errorActionCopyCommand": "Befehl kopieren",
+        "errorActionCommandCopied": "Kopiert",
         "emptyConversation": "Keine Nachrichten in dieser Unterhaltung.",
         "systemMessage": "Systemnachricht",
         "copyMessage": "Kopieren",

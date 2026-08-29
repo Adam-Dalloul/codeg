@@ -3063,6 +3063,8 @@
         "errorTitle": "فشل تحميل الجلسة",
         "errorActionReload": "إعادة تحميل",
         "errorActionNewSession": "محادثة جديدة",
+        "errorActionCopyCommand": "نسخ الأمر",
+        "errorActionCommandCopied": "تم النسخ",
         "emptyConversation": "لا توجد رسائل في هذه المحادثة.",
         "systemMessage": "رسالة النظام",
         "copyMessage": "نسخ",

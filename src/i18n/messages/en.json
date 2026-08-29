@@ -3063,6 +3063,8 @@
         "errorTitle": "Session load failed",
         "errorActionReload": "Reload",
         "errorActionNewSession": "New conversation",
+        "errorActionCopyCommand": "Copy command",
+        "errorActionCommandCopied": "Copied",
         "emptyConversation": "No messages in this conversation.",
         "systemMessage": "System message",
         "copyMessage": "Copy",

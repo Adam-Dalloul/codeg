@@ -3063,6 +3063,8 @@
         "errorTitle": "세션 불러오기 실패",
         "errorActionReload": "다시 불러오기",
         "errorActionNewSession": "새 대화",
+        "errorActionCopyCommand": "명령 복사",
+        "errorActionCommandCopied": "복사됨",
         "emptyConversation": "이 대화에는 메시지가 없습니다.",
         "systemMessage": "시스템 메시지",
         "copyMessage": "복사",

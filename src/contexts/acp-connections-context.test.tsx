@@ -2326,6 +2326,12 @@ describe("session_load_failed archived-session recovery", () => {
     expect(lastArchivedCall()?.[1]?.command).toBe(
       `codex unarchive ${ARCHIVED_SID}`
     )
+    // Parked beside the message too: the banner renders the prose in a
+    // single-line ellipsized strip, so the copy action is what actually
+    // gets the id into the user's hands.
+    expect(h.store!.getConnection(TAB)!.loadErrorCommand).toBe(
+      `codex unarchive ${ARCHIVED_SID}`
+    )
   })
 
   it("still names the command when the error body does not spell out the id", async () => {
@@ -2348,6 +2354,53 @@ describe("session_load_failed archived-session recovery", () => {
     expect(lastArchivedCall()?.[1]?.command).toBe(
       `codex unarchive ${ARCHIVED_SID}`
     )
+    // Parked beside the message too: the banner renders the prose in a
+    // single-line ellipsized strip, so the copy action is what actually
+    // gets the id into the user's hands.
+    expect(h.store!.getConnection(TAB)!.loadErrorCommand).toBe(
+      `codex unarchive ${ARCHIVED_SID}`
+    )
+  })
+
+  it("offers no command for the load failures that have no way back", async () => {
+    // resource_not_found / session_unavailable are genuinely lost sessions;
+    // a copy button would imply a recovery that does not exist.
+    const handlers = await connectOwner("codex")
+
+    const codes = ["resource_not_found", "session_unavailable"] as const
+    codes.forEach((code, i) => {
+      emitAcpEvent(handlers, {
+        seq: i + 1,
+        connection_id: "spawned-conn",
+        type: "session_load_failed",
+        session_id: ARCHIVED_SID,
+        message: RAW,
+        code,
+      })
+      expect(h.store!.getConnection(TAB)!.loadErrorCommand).toBeNull()
+    })
+  })
+
+  it("drops the command when the load error is cleared", async () => {
+    // Reload clears the banner; a stale command would outlive the failure it
+    // belongs to and reappear beside the next one.
+    const handlers = await connectOwner("codex")
+
+    emitAcpEvent(handlers, {
+      seq: 1,
+      connection_id: "spawned-conn",
+      type: "session_load_failed",
+      session_id: ARCHIVED_SID,
+      message: RAW,
+      code: "session_archived",
+    })
+    expect(h.store!.getConnection(TAB)!.loadErrorCommand).not.toBeNull()
+
+    act(() => {
+      h.actions!.clearAcpLoadError(TAB)
+    })
+    expect(h.store!.getConnection(TAB)!.loadError).toBeNull()
+    expect(h.store!.getConnection(TAB)!.loadErrorCommand).toBeNull()
   })
 
   it("keeps the agent's own text rather than prescribing a codex command to a non-codex agent", async () => {
@@ -2369,6 +2422,9 @@ describe("session_load_failed archived-session recovery", () => {
     expect(
       h.tCalls.some(([key]) => key === "backendErrors.sessionArchived")
     ).toBe(false)
+    // No command either — the copy button must not appear offering a codex
+    // incantation to a Claude session.
+    expect(h.store!.getConnection(TAB)!.loadErrorCommand).toBeNull()
   })
 })
 

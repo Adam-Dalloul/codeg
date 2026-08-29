@@ -3063,6 +3063,8 @@
         "errorTitle": "會話載入失敗",
         "errorActionReload": "重新載入",
         "errorActionNewSession": "新建會話",
+        "errorActionCopyCommand": "複製指令",
+        "errorActionCommandCopied": "已複製",
         "emptyConversation": "目前會話暫無訊息。",
         "systemMessage": "系統訊息",
         "copyMessage": "複製",

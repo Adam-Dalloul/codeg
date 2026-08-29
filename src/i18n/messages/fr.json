@@ -3063,6 +3063,8 @@
         "errorTitle": "Échec du chargement de la session",
         "errorActionReload": "Recharger",
         "errorActionNewSession": "Nouvelle conversation",
+        "errorActionCopyCommand": "Copier la commande",
+        "errorActionCommandCopied": "Copié",
         "emptyConversation": "Aucun message dans cette conversation.",
         "systemMessage": "Message système",
         "copyMessage": "Copier",

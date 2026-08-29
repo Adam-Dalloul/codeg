@@ -3063,6 +3063,8 @@
         "errorTitle": "セッションの読み込みに失敗しました",
         "errorActionReload": "再読み込み",
         "errorActionNewSession": "新規会話",
+        "errorActionCopyCommand": "コマンドをコピー",
+        "errorActionCommandCopied": "コピーしました",
         "emptyConversation": "この会話にはメッセージがありません。",
         "systemMessage": "システムメッセージ",
         "copyMessage": "コピー",

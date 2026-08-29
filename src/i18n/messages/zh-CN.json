@@ -3063,6 +3063,8 @@
         "errorTitle": "会话加载失败",
         "errorActionReload": "重新加载",
         "errorActionNewSession": "新建会话",
+        "errorActionCopyCommand": "复制命令",
+        "errorActionCommandCopied": "已复制",
         "emptyConversation": "当前会话暂无消息。",
         "systemMessage": "系统消息",
         "copyMessage": "复制",

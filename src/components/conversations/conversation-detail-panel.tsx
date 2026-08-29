@@ -3,6 +3,8 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   AlertCircle,
+  Check,
+  Copy,
   Download,
   FileCode,
   FileImage,
@@ -28,7 +30,7 @@ import { useTabActions, useTabStore } from "@/contexts/tab-context"
 import { groupOfTab, isReparentUnmount } from "@/stores/tab-store"
 import { computeRects, leafIds } from "@/lib/tab-group-layout"
 import { useTaskContext } from "@/contexts/task-context"
-import { cn, randomUUID } from "@/lib/utils"
+import { cn, copyTextToClipboard, randomUUID } from "@/lib/utils"
 import { buildAskPrompt, buildQuotedMarkdown } from "@/lib/message-quote"
 import {
   ASK_SELECTION_PARKED_EVENT,
@@ -1690,6 +1692,30 @@ const ConversationTabView = memo(function ConversationTabView({
     closeTab(tabId)
   }, [closeTab, folder, openNewConversationTab, tabId, workingDirForConnection])
 
+  // Some load failures come with a shell command that undoes them (today:
+  // `codex unarchive <id>`). The banner names it in prose, but prose here is
+  // one ellipsized line — so offer the exact string as a copy action too,
+  // rather than asking the user to retype a session id they may not even be
+  // able to see. Read off the connection, which is where the connections
+  // layer parks it beside the localized message.
+  const recoveryCommand = conn.loadErrorCommand
+  const [commandCopied, setCommandCopied] = useState(false)
+  const copiedResetRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  useEffect(
+    () => () => {
+      if (copiedResetRef.current) clearTimeout(copiedResetRef.current)
+    },
+    []
+  )
+  const handleCopyRecoveryCommand = useCallback(async () => {
+    if (!recoveryCommand) return
+    const ok = await copyTextToClipboard(recoveryCommand)
+    if (!ok) return
+    setCommandCopied(true)
+    if (copiedResetRef.current) clearTimeout(copiedResetRef.current)
+    copiedResetRef.current = setTimeout(() => setCommandCopied(false), 1500)
+  }, [recoveryCommand])
+
   // A session/load failure no longer hijacks the whole message area (the
   // transcript stays readable — see message-list-view's blockingLoadError);
   // instead the failure lands here, as a banner docked where the composer
@@ -1708,6 +1734,28 @@ const ConversationTabView = memo(function ConversationTabView({
         >
           {acpLoadError}
         </span>
+        {/* Deliberately outside `canShowDetailErrorActions`: that gate exists
+            because Reload refetches the DB detail and New session opens a tab
+            in the folder, so both need a conversation id and a folder. Copying
+            a string needs neither — withholding the one recovery the user can
+            still act on would be the wrong call. */}
+        {recoveryCommand && (
+          <button
+            type="button"
+            onClick={handleCopyRecoveryCommand}
+            title={recoveryCommand}
+            className="flex shrink-0 items-center gap-1 rounded border border-destructive/40 px-2 py-0.5 font-medium transition-colors hover:bg-destructive/10"
+          >
+            {commandCopied ? (
+              <Check aria-hidden="true" className="h-3 w-3" />
+            ) : (
+              <Copy aria-hidden="true" className="h-3 w-3" />
+            )}
+            {commandCopied
+              ? tMessageList("errorActionCommandCopied")
+              : tMessageList("errorActionCopyCommand")}
+          </button>
+        )}
         {canShowDetailErrorActions && (
           <>
             <button

@@ -233,14 +233,23 @@ export interface ConnectionState {
   sessionFailures: SessionFailureRecord[]
   error: string | null
   /**
-   * Set when the agent rejected `session/load` non-recoverably (currently
-   * only `Resource not found` for an expired/missing historical session).
-   * Distinct from `error` because the UI surfaces it inline in the message
-   * list with reload / new-conversation actions, instead of as a toast.
-   * Cleared on the next CONNECTION_CREATED for the same key, or by
+   * Set when the agent rejected `session/load` in a way codeg cannot paper
+   * over: no record of the session, the session/process died, or it is
+   * archived. Distinct from `error` because the UI surfaces it inline in the
+   * message list with reload / new-conversation actions, instead of as a
+   * toast. Cleared on the next CONNECTION_CREATED for the same key, or by
    * CLEAR_ACP_LOAD_ERROR (Reload button).
    */
   loadError: string | null
+  /**
+   * A shell command that undoes the failure in `loadError`, when one exists
+   * (today: `codex unarchive <id>` for an archived rollout). Kept beside the
+   * localized message rather than only inside it so the banner can offer a
+   * copy action — the message renders in a single-line ellipsized strip, and
+   * a 36-char session id is exactly what gets truncated away. `null` whenever
+   * there is nothing runnable to hand the user. Cleared with `loadError`.
+   */
+  loadErrorCommand: string | null
   /**
    * Highest envelope.seq applied to this connection. Used to dedup the
    * live `acp://event` stream against the snapshot endpoint: a
@@ -579,7 +588,13 @@ type Action =
       retry: ClaudeApiRetryState | null
     }
   | { type: "ERROR"; contextKey: string; message: string }
-  | { type: "ACP_LOAD_ERROR"; contextKey: string; message: string }
+  | {
+      type: "ACP_LOAD_ERROR"
+      contextKey: string
+      message: string
+      /** Runnable recovery for this failure, or null when there is none. */
+      command?: string | null
+    }
   | { type: "CLEAR_ACP_LOAD_ERROR"; contextKey: string }
   | {
       type: "AVAILABLE_COMMANDS"
@@ -1303,6 +1318,7 @@ function connectionsReducer(
         sessionFailures: [],
         error: null,
         loadError: null,
+        loadErrorCommand: null,
         lastAppliedSeq: 0,
         isDelegationChild: false,
         parentToolUseId: null,
@@ -1360,6 +1376,7 @@ function connectionsReducer(
         sessionFailures: [],
         error: null,
         loadError: null,
+        loadErrorCommand: null,
         lastAppliedSeq: 0,
         isDelegationChild: true,
         parentToolUseId: action.parentToolUseId,
@@ -2384,17 +2401,20 @@ function connectionsReducer(
       next.set(action.contextKey, {
         ...conn,
         loadError: action.message,
+        loadErrorCommand: action.command ?? null,
       })
       return next
     }
 
     case "CLEAR_ACP_LOAD_ERROR": {
       const conn = state.get(action.contextKey)
-      if (!conn || conn.loadError === null) return state
+      if (!conn || (conn.loadError === null && conn.loadErrorCommand === null))
+        return state
       const next = new Map(state)
       next.set(action.contextKey, {
         ...conn,
         loadError: null,
+        loadErrorCommand: null,
       })
       return next
     }
@@ -2562,9 +2582,9 @@ export interface AcpActionsValue {
    */
   registerLiveMessageSink(contextKey: string, sink: LiveMessageSink): () => void
   /**
-   * Clear `loadError` set by a `session/load` failure so the next auto-connect
-   * attempt isn't gated by stale failure state. Wired to the Reload button in
-   * the conversation detail panel.
+   * Clear `loadError` (and its `loadErrorCommand`) set by a `session/load`
+   * failure so the next auto-connect attempt isn't gated by stale failure
+   * state. Wired to the Reload button in the conversation detail panel.
    */
   clearAcpLoadError(contextKey: string): void
   /**
@@ -4080,6 +4100,28 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
           // something intelligible rather than getting swallowed.
           const nc = storeRef.current.connections.get(contextKey)
           const agentLabel = nc ? getAgentLabel(nc.agentType) : ""
+          // The one command that undoes `codex archive`, or null when there is
+          // nothing runnable to offer. Derived once, outside the message, so
+          // the banner can hand the user the exact string to paste instead of
+          // relying on them transcribing a UUID out of prose that a one-line
+          // strip may well have ellipsed away.
+          //
+          // The id comes off the event, not the raw RPC body: `session_id` IS
+          // the session the load just failed for, so it is exact by
+          // construction, while the body only spells it out by convention and
+          // re-parsing it would drift the moment codex rewords the error.
+          //
+          // The classification is matched on the wire message, so it is not
+          // codex-exclusive by construction. Only name the codex command when
+          // codex is actually the agent — telling anyone else to run it would
+          // be worse than saying nothing. They fall back to the agent's own
+          // text, which already carries whatever recovery it wants to offer.
+          const recoveryCommand =
+            e.code === "session_archived" &&
+            nc?.agentType === "codex" &&
+            e.session_id
+              ? `codex unarchive ${e.session_id}`
+              : null
           const localizedMessage = (() => {
             switch (e.code) {
               case "resource_not_found":
@@ -4090,27 +4132,13 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
                 return t("backendErrors.sessionLoadUnavailable", {
                   agent: agentLabel,
                 })
-              case "session_archived": {
-                // `codex archive` parks a rollout; the way back is one command
-                // naming the session id. Take that id from the event, not from
-                // the raw RPC body: `session_id` IS the session the load just
-                // failed for, so it is exact by construction, while the body
-                // only spells it out by convention and re-parsing it would
-                // drift the moment codex rewords the error.
-                //
-                // The classification is matched on the wire message, so it is
-                // not codex-exclusive by construction. Only name the codex
-                // command when codex is actually the agent — telling anyone
-                // else to run it would be worse than saying nothing. They fall
-                // back to the agent's own text, which already carries whatever
-                // recovery it wants to offer.
-                return nc?.agentType === "codex" && e.session_id
+              case "session_archived":
+                return recoveryCommand
                   ? t("backendErrors.sessionArchived", {
                       agent: agentLabel,
-                      command: `codex unarchive ${e.session_id}`,
+                      command: recoveryCommand,
                     })
                   : e.message
-              }
               default:
                 return e.message
             }
@@ -4119,6 +4147,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
             type: "ACP_LOAD_ERROR",
             contextKey,
             message: localizedMessage,
+            command: recoveryCommand,
           })
           break
         }
