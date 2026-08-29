@@ -6,6 +6,7 @@ import {
   resetClosedTabStackForTests,
 } from "@/lib/closed-tab-stack"
 import {
+  isConversationDeleted,
   resetAppWorkspaceStore,
   useAppWorkspaceStore,
 } from "./app-workspace-store"
@@ -146,6 +147,19 @@ describe("what a deletion retracts from the reopen stack", () => {
     expect(popClosedTab()).toMatchObject({ conversationId: 7 })
     expect(popClosedTab()).toMatchObject({ conversationId: null })
     expect(popClosedTab()).toBeNull()
+  })
+
+  // A remote delete does NOT close an open tab (only the sidebar row goes), so
+  // the user can close that tab by hand afterwards and record it. The purge
+  // already ran, so only the tombstone catches this one — which is why the
+  // reopen handler asks `isConversationDeleted` before restoring.
+  it("tombstones a conversation deleted while its tab was still open", () => {
+    useAppWorkspaceStore.getState().applyConversationRemove(8)
+    useTabStore.getState().closeTab("conv-2")
+
+    expect(peekClosedTab()).toMatchObject({ conversationId: 8 })
+    expect(isConversationDeleted(8)).toBe(true)
+    expect(isConversationDeleted(7)).toBe(false)
   })
 
   it("forgets a removed folder's history, not its neighbours'", () => {

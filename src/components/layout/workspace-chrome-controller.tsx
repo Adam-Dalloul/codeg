@@ -16,7 +16,10 @@ import {
 import { useWorkbenchRoute } from "@/contexts/workbench-route-context"
 import { useSearchDialog } from "@/contexts/search-dialog-context"
 import { useShortcutSettings } from "@/hooks/use-shortcut-settings"
-import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
+import {
+  isConversationDeleted,
+  useAppWorkspaceStore,
+} from "@/stores/app-workspace-store"
 import { popClosedTab } from "@/lib/closed-tab-stack"
 import {
   matchShortcutEvent,
@@ -212,6 +215,11 @@ export function WorkspaceChromeController() {
             return
           }
           if (closed.conversationId != null) {
+            // A deletion seen at any point wins. `applyConversationRemove`
+            // purges what is on the stack when it runs, but a tab that was
+            // still open then gets recorded afterwards, when the user closes
+            // it by hand — that entry can only be caught here.
+            if (isConversationDeleted(closed.conversationId)) continue
             openConversations()
             openTab(
               closed.folderId,

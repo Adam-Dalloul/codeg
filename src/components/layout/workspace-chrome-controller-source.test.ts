@@ -57,6 +57,15 @@ describe("tab close/navigation shortcuts live in the always-mounted controller",
     )
   })
 
+  // The stack is purged when a delete arrives, but a tab that was still open
+  // then is recorded afterwards (a remote delete does not close it). Restoring
+  // has to consult the tombstone, not just trust the entry.
+  it("checks the delete tombstone before restoring a conversation", () => {
+    expect(controllerSource).toMatch(
+      /isConversationDeleted\(closed\.conversationId\)/
+    )
+  })
+
   it("removes the keydown shortcut listeners from both tab strips", () => {
     // The strips are conditionally mounted (desktop only; the file strip only
     // when a file tab is open), so they must not own any global shortcut.

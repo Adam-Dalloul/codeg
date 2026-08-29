@@ -156,6 +156,17 @@ const DELETED_TOMBSTONE_CAP = 512
 // reused, so the tombstone is permanent; the set is FIFO-bounded.
 const deletedIds = new Set<number>()
 
+/**
+ * Has this client seen `id` deleted? `reopen_last_closed_tab` asks before it
+ * restores a conversation: `applyConversationRemove` purges what is on the
+ * stack at that moment, but a tab that was still OPEN when the delete landed
+ * gets recorded afterwards, when the user closes it by hand. Consulting the
+ * tombstone at restore time means a deletion seen at any point wins.
+ */
+export function isConversationDeleted(id: number): boolean {
+  return deletedIds.has(id)
+}
+
 // Folder removals, as `folder id → the mutation sequence number it landed at`.
 // `fetchFolders` replaces both lists wholesale, so a snapshot that was ALREADY
 // IN FLIGHT when a removal arrived would put the folder straight back on screen;
