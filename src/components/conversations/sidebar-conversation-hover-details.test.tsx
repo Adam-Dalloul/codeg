@@ -102,13 +102,21 @@ afterEach(() => {
 })
 
 describe("SidebarConversationHoverDetails", () => {
-  it("shows the full title with the agent and status chips", () => {
+  it("shows the full title with the agent chip", () => {
     seed()
     renderBubble(conv())
 
     expect(screen.getByText("Wire up the parser")).toBeDefined()
     expect(screen.getByText("Claude Code")).toBeDefined()
-    expect(screen.getByText("In Progress")).toBeDefined()
+  })
+
+  // The row the bubble hangs off already badges running and cancelled, so the
+  // chip only repeated what the pointer was resting on. The dialog keeps it.
+  it("does not show the status chip", () => {
+    seed()
+    renderBubble(conv({ status: "in_progress" }))
+
+    expect(screen.queryByText("In Progress")).toBeNull()
   })
 
   it("names the folder and shows its absolute path", () => {
@@ -134,15 +142,15 @@ describe("SidebarConversationHoverDetails", () => {
       conv({ git_branch: "feature/x", model: "claude-opus-5" })
     )
 
-    const ltr = Array.from(container.querySelectorAll('dd [dir="ltr"]')).map(
+    const ltr = Array.from(container.querySelectorAll('[dir="ltr"]')).map(
       (el) => el.textContent
     )
-    // Document order, so this doubles as the pin on the field order: branch
-    // before path.
+    // Document order, so this doubles as the pin on the layout: the model chip
+    // sits above the field list, and within it branch comes before path.
     expect(ltr).toEqual([
+      "claude-opus-5",
       "feature/x",
       "/Users/dev/projects/codeg",
-      "claude-opus-5",
     ])
   })
 
@@ -223,18 +231,32 @@ describe("SidebarConversationHoverDetails", () => {
     expect(document.body.textContent).not.toMatch(/\d{1,2}:\d{2}/)
   })
 
-  it("omits the model row when no model is recorded", () => {
+  // The model reads as a chip beside the agent, not as a labelled field: there
+  // is no "Model" label anywhere in the bubble now.
+  it("shows the model as a chip beside the agent", () => {
+    seed()
+    renderBubble(conv({ model: "claude-opus-5" }))
+
+    expect(screen.getByText("claude-opus-5")).toBeDefined()
+    expect(screen.queryByText("Model")).toBeNull()
+    // Beside the agent rather than down in the field list.
+    expect(screen.getByText("claude-opus-5").closest("dl")).toBeNull()
+
+    // Punctuation between two labels, not content, so it stays out of the a11y
+    // tree — and it shares one flex item with the model name, which is what
+    // keeps a wrapping model id from stranding it on the line above.
+    const dot = screen.getByText("·")
+    expect(dot.getAttribute("aria-hidden")).toBe("true")
+    expect(dot.parentElement?.textContent).toBe("·claude-opus-5")
+  })
+
+  it("omits the model chip and its separator when no model is recorded", () => {
     seed()
     renderBubble(conv({ model: null }))
 
     expect(screen.queryByText("Model")).toBeNull()
-  })
-
-  it("shows the model row when one is recorded", () => {
-    seed()
-    renderBubble(conv({ model: "claude-opus-5" }))
-
-    expect(fieldValue("Model")).toBe("claude-opus-5")
+    expect(screen.queryByText("claude-opus-5")).toBeNull()
+    expect(screen.queryByText("·")).toBeNull()
   })
 
   it("shows the original path when the source worktree was removed", () => {

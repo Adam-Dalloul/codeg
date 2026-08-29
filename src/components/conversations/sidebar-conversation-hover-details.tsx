@@ -107,14 +107,20 @@ export function SidebarConversationHoverDetails({
         <p className="wrap-anywhere line-clamp-3 text-sm font-medium leading-snug">
           {formatConversationTitle(conversation.title) || t("untitled")}
         </p>
+        {/* No status chip: the row the pointer is resting on already badges the
+            two states worth flagging — a spinner while running, a cross when
+            cancelled — and the rest read as ordinary either way. `model` is
+            empty for most live sessions (the column is only filled for imported
+            ones), and the chip drops out with it. */}
         <SessionIdentityChips
           agentType={conversation.agent_type}
-          status={conversation.status}
+          model={model}
         />
       </div>
 
-      {/* A plain stack rather than a grid: every field here is a path, a branch
-          or a model id — long, wrapping values that each want the full width. */}
+      {/* A plain stack rather than a grid: every field here is a folder, a
+          branch or a path — long, wrapping values that each want the full
+          width. */}
       <dl className="min-w-0 space-y-2.5 border-t pt-3">
         {/* The worktree badge annotates the FIELD, so it rides on the label
             rather than on the value — a worktree directory name is long enough
@@ -147,15 +153,6 @@ export function SidebarConversationHoverDetails({
         <InfoItem label={t("folderPath")}>
           <LtrValue>{folder?.path || none}</LtrValue>
         </InfoItem>
-        {/* `model` is empty for most live sessions (the column is only filled
-            for imported ones), so render the row only when there is something
-            to show instead of a shrug in every bubble. */}
-        {model && (
-          <InfoItem label={t("model")}>
-            {/* Sans, matching how the details dialog renders the model. */}
-            <LtrValue className="font-sans">{model}</LtrValue>
-          </InfoItem>
-        )}
         {/* Re-parented out of a removed worktree: the path above is where the
             conversation lives NOW, so surface where it originally ran. */}
         {conversation.origin_cwd && (
