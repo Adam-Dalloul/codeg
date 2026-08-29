@@ -5,7 +5,7 @@ import {
   canRemoveWorktree,
   deliveredPrUrl,
   hasNothingToMerge,
-  isFolderMerging,
+  isAnotherTaskMerging,
   isMergeQueued,
   isWorktreeGone,
   mergeQueueRanks,
@@ -145,10 +145,23 @@ describe("the merge queue", () => {
     expect(ranks.get(1)).toBe(2)
   })
 
-  it("knows when a project's merge slot is busy", () => {
-    const tasks = [task({ id: 1 }), task({ id: 2, status: "merging" })]
-    expect(isFolderMerging(tasks, 1)).toBe(true)
-    expect(isFolderMerging(tasks, 2)).toBe(false)
+  it("knows when a project's merge slot is busy with someone else", () => {
+    const mine = task({ id: 1 })
+    const tasks = [mine, task({ id: 2, status: "merging" })]
+    expect(isAnotherTaskMerging(tasks, mine)).toBe(true)
+    // Another PROJECT's landing is not this project's slot.
+    expect(isAnotherTaskMerging(tasks, task({ id: 3, folder_id: 2 }))).toBe(
+      false
+    )
+  })
+
+  it("does not count the subject task's own merge", () => {
+    // The window this exists for: the engine flips review→merging and
+    // broadcasts it seconds before the dispatch call returns, so the row the
+    // open dialog reads says "merging" while its own submit is still in
+    // flight. Counting that would tell the user another task holds the slot.
+    const mine = task({ id: 1, status: "merging" })
+    expect(isAnotherTaskMerging([mine], mine)).toBe(false)
   })
 })
 

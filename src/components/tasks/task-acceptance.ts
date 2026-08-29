@@ -79,12 +79,28 @@ export function isMergeQueued(task: WorkTask): boolean {
 }
 
 /**
- * Whether a merge of this task's project is running right now. Merges are
- * serial per project (one base branch, one landing at a time), so this is what
- * turns the merge button's "merge" into "queue".
+ * Whether a merge of this task's project is running right now — ANOTHER task's,
+ * never `task`'s own. Merges are serial per project (one base branch, one
+ * landing at a time), so this is what turns the merge button's "merge" into
+ * "queue".
+ *
+ * Excluding the subject is the whole point, not a detail: the engine flips
+ * review→merging and BROADCASTS it before the dispatch call returns (launching
+ * the merge session takes seconds), so a plain "is any task of this folder
+ * merging" goes true for the very task the user just accepted. That is a lie
+ * with a nasty shape — for the width of their own dispatch it tells them the
+ * project is busy with some other task and that their merge went into a queue.
  */
-export function isFolderMerging(tasks: WorkTask[], folderId: number): boolean {
-  return tasks.some((t) => t.folder_id === folderId && t.status === "merging")
+export function isAnotherTaskMerging(
+  tasks: WorkTask[],
+  task: WorkTask
+): boolean {
+  return tasks.some(
+    (t) =>
+      t.id !== task.id &&
+      t.folder_id === task.folder_id &&
+      t.status === "merging"
+  )
 }
 
 /**
