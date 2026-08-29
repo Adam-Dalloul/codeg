@@ -478,6 +478,14 @@ describe("ConversationDetailPanel session-load failure surface", () => {
     // command to copy.
     expect(banner).toContain("{recoveryCommand && (")
     expect(banner).toContain("handleCopyRecoveryCommand")
+    // Every action is shrink-0 and the message is the only elastic child, so
+    // a third action has to be able to wrap. Without `flex-wrap` plus a floor
+    // under the message, the row silently pushes "New conversation" outside
+    // the banner at narrow widths (measured 34-172px past the edge at
+    // 320-384px) — i.e. adding a recovery action would break the two that
+    // were already there.
+    expect(banner).toContain("flex w-full flex-wrap items-center")
+    expect(banner).toContain("min-w-40 flex-1 overflow-hidden")
     // The shell renders the banner inside the composer dock, constrained to
     // the same message-column width as the input it replaces.
     const dockIdx = conversationShellSource.indexOf("{composerBanner && (")

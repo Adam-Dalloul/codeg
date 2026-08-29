@@ -97,6 +97,15 @@ import {
 import { useAlertContext, type AlertAction } from "@/contexts/alert-context"
 import { useActiveFolder } from "@/contexts/active-folder-context"
 
+/**
+ * A session id we are willing to interpolate into a shell command we hand the
+ * user to run (`codex unarchive <id>`). Anchored and UUID-shaped on purpose:
+ * the whole string must be an id, so no whitespace or shell metacharacter can
+ * ride along and turn one command into two. Codex rollout ids are UUIDs.
+ */
+const SESSION_UUID =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
 // ── Shared types (re-exported for consumers) ──
 
 /** ACP extensibility metadata attached to tool calls. */
@@ -4116,10 +4125,17 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
           // codex is actually the agent — telling anyone else to run it would
           // be worse than saying nothing. They fall back to the agent's own
           // text, which already carries whatever recovery it wants to offer.
+          //
+          // The id is also shape-checked before it goes into the string. This
+          // is a command we are inviting the user to paste into a shell, so it
+          // must not be able to carry anything but a session id — a `session_id`
+          // holding a space and a second word would become a second command.
+          // Codex rollout ids are UUIDs; anything else falls back to the raw
+          // message rather than composing a line we can't vouch for.
           const recoveryCommand =
             e.code === "session_archived" &&
             nc?.agentType === "codex" &&
-            e.session_id
+            SESSION_UUID.test(e.session_id)
               ? `codex unarchive ${e.session_id}`
               : null
           const localizedMessage = (() => {

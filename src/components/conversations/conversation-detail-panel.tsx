@@ -1723,13 +1723,19 @@ const ConversationTabView = memo(function ConversationTabView({
   // conversations only: drafts never session/load.
   const acpLoadErrorBanner =
     hasPersistedConversation && acpLoadError ? (
+      // `flex-wrap` + a message floor, because the actions are all `shrink-0`
+      // and the row has no other give: without them a third action pushes the
+      // message to zero width and shoves "New conversation" outside the
+      // banner (measured: 34-172px past the edge at 320-384px, worse in
+      // French/German). Wrapping costs a second row only when the panel is
+      // actually too narrow — at >=700px this lays out exactly as before.
       <div
         role="alert"
-        className="flex w-full items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive"
+        className="flex w-full flex-wrap items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive"
       >
         <AlertCircle aria-hidden="true" className="h-4 w-4 shrink-0" />
         <span
-          className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap"
+          className="min-w-40 flex-1 overflow-hidden text-ellipsis whitespace-nowrap"
           title={acpLoadError}
         >
           {acpLoadError}
