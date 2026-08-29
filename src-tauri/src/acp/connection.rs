@@ -7386,6 +7386,13 @@ fn stop_reason_to_str(reason: StopReason) -> &'static str {
 /// same `SessionLoadFailed` banner (Reload / New conversation) instead of a raw
 /// protocol error.
 ///
+/// A third case is archived rather than lost: `codex archive <id>` parks a
+/// rollout, and a later `session/load` answers -32603 with a body naming both
+/// the session and the command that brings it back. That one is a *recoverable*
+/// state, so it earns its own code — the banner can name the fix — but it takes
+/// the same banner rather than the silent `session/new` fallback, which would
+/// orphan a history the user is one command away from restoring.
+///
 /// Returns `None` for failures that must keep the existing behavior:
 /// "Method not found" (agent lacks resume → silent `session/new` fallback),
 /// "Authentication required" (silent stop), and any other error (emit
@@ -7396,6 +7403,14 @@ fn classify_session_load_failure(
 ) -> Option<&'static str> {
     if matches!(code, sacp::schema::ErrorCode::ResourceNotFound) {
         return Some("resource_not_found");
+    }
+    // codex-acp on an archived rollout: the -32603 body reads
+    // "session <id> is archived. Run `codex unarchive <id>` …". Matched on the
+    // wire message for the same reason as the family below — the code is a
+    // generic Internal error. Checked BEFORE that family so the more specific
+    // (and recoverable) verdict wins if a body ever carries both signals.
+    if message.contains("is archived") {
+        return Some("session_archived");
     }
     // Upstream signals for an unrecoverable session (claude-agent-acp 0.58.1):
     //  - "process exited"    → "Claude Code process exited with code 1",
@@ -13478,6 +13493,46 @@ mod tests {
             ),
             Some("session_unavailable"),
         );
+    }
+
+    #[test]
+    fn classify_load_failure_names_an_archived_session() {
+        // The reported case: `codex archive <id>`, then reopen the conversation.
+        // codex-acp answers session/load with a generic -32603 whose data names
+        // the session and the command that restores it.
+        let archived = "Internal error: {\n  \"details\": \"session \
+             019bf0c4-4d1a-7c3e-9f21-6a0e5b8d2c47 is archived. Run `codex \
+             unarchive 019bf0c4-4d1a-7c3e-9f21-6a0e5b8d2c47` to restore it.\"\n}";
+        assert_eq!(
+            classify_session_load_failure(sacp::schema::ErrorCode::InternalError, archived),
+            Some("session_archived"),
+        );
+
+        // Archived is the more specific verdict: a body carrying both signals
+        // must not degrade into the generic "unavailable" family, which offers
+        // the user no way back.
+        assert_eq!(
+            classify_session_load_failure(
+                sacp::schema::ErrorCode::InternalError,
+                "Session not found: session abc is archived.",
+            ),
+            Some("session_archived"),
+        );
+
+        // Codex reads history back out of its own rollout store, so an archived
+        // session must stop with the banner — silently opening a new session
+        // would orphan history that one command restores.
+        assert!(!recovers_load_failure_locally(
+            AgentType::Codex,
+            Some("session_archived")
+        ));
+        // A custom agent's history is codeg's own transcript, so it keeps the
+        // silent local recovery it has for the other classified failures.
+        let custom = AgentType::custom("glm-acp-agent").expect("valid id");
+        assert!(recovers_load_failure_locally(
+            custom,
+            Some("session_archived")
+        ));
     }
 
     #[test]
