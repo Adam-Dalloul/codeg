@@ -4073,10 +4073,11 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
         }
         case "session_load_failed": {
           flushStreamingQueue()
-          // Localize via the stable `code` field (currently only
-          // "resource_not_found" — JSON-RPC -32002). Fall back to the raw
-          // agent message so an unknown future code still surfaces something
-          // intelligible rather than getting swallowed.
+          // Localize via the stable `code` field ("resource_not_found" —
+          // JSON-RPC -32002 — plus "session_unavailable" and
+          // "session_archived", both matched on the wire message). Fall back
+          // to the raw agent message so an unknown future code still surfaces
+          // something intelligible rather than getting swallowed.
           const nc = storeRef.current.connections.get(contextKey)
           const agentLabel = nc ? getAgentLabel(nc.agentType) : ""
           const localizedMessage = (() => {
@@ -4090,18 +4091,23 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
                   agent: agentLabel,
                 })
               case "session_archived": {
-                // The archived session id rides in the raw RPC body (Codex:
-                // "session <id> is archived. Run `codex unarchive <id>`…").
-                // Surface the exact command instead of making the user hunt
-                // for the id; a body without a parseable id falls back to the
-                // raw message so nothing actionable is lost.
-                const id = e.message.match(
-                  /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/
-                )?.[0]
-                return id
+                // `codex archive` parks a rollout; the way back is one command
+                // naming the session id. Take that id from the event, not from
+                // the raw RPC body: `session_id` IS the session the load just
+                // failed for, so it is exact by construction, while the body
+                // only spells it out by convention and re-parsing it would
+                // drift the moment codex rewords the error.
+                //
+                // The classification is matched on the wire message, so it is
+                // not codex-exclusive by construction. Only name the codex
+                // command when codex is actually the agent — telling anyone
+                // else to run it would be worse than saying nothing. They fall
+                // back to the agent's own text, which already carries whatever
+                // recovery it wants to offer.
+                return nc?.agentType === "codex" && e.session_id
                   ? t("backendErrors.sessionArchived", {
                       agent: agentLabel,
-                      command: `codex unarchive ${id}`,
+                      command: `codex unarchive ${e.session_id}`,
                     })
                   : e.message
               }
