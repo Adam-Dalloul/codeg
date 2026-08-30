@@ -1716,10 +1716,14 @@
         "folderRemoved": "폴더 {name}을(를) 제거했습니다",
         "openFolderFailed": "폴더를 열 수 없습니다",
         "removeFolderFailed": "폴더 제거 실패: {message}",
-        "reorderFoldersFailed": "폴더 순서 변경 실패: {message}",
         "changeFolderColorFailed": "색상 변경 실패: {message}",
         "setFolderAliasFailed": "별칭 설정 실패: {message}",
-        "changeFolderDefaultAgentFailed": "기본 에이전트 설정 실패: {message}"
+        "changeFolderDefaultAgentFailed": "기본 에이전트 설정 실패: {message}",
+        "createGroupFailed": "그룹 생성 실패: {message}",
+        "updateGroupFailed": "그룹 업데이트 실패: {message}",
+        "deleteGroupFailed": "그룹 삭제 실패: {message}",
+        "moveToGroupFailed": "폴더 이동 실패: {message}",
+        "applyLayoutFailed": "폴더 순서 저장 실패: {message}"
       },
       "statsLabel": "{folders}개 폴더 · {convos}개 대화",
       "reorderHandle": "드래그하여 순서 변경",
@@ -1804,7 +1808,24 @@
       "automations": "자동화",
       "tasks": "할 일",
       "loadingSubsessions": "하위 대화 로드 중…",
-      "forge": "리포지토리 패널"
+      "forge": "리포지토리 패널",
+      "folderGroup": {
+        "newGroup": "새 그룹",
+        "newGroupTitle": "새 폴더 그룹",
+        "defaultName": "새 그룹",
+        "namePlaceholder": "그룹 이름",
+        "rename": "그룹 이름 변경…",
+        "renameTitle": "폴더 그룹 이름 변경",
+        "delete": "그룹 삭제",
+        "deleteConfirmTitle": "이 그룹을 삭제할까요?",
+        "deleteConfirmDescription": "\"{name}\"이(가) 삭제됩니다. 그룹 안의 폴더 {count}개는 작업 공간에 그대로 남아 최상위로 이동합니다.",
+        "countUnit": "폴더 {count}개",
+        "empty": "이 그룹에 폴더가 없습니다",
+        "moveToGroup": "그룹으로 이동",
+        "removeFromGroup": "그룹 없음",
+        "newGroupAndMove": "새 그룹…",
+        "dropToUngroup": "여기에 놓으면 그룹에서 제외됩니다"
+      }
     },
     "conversation": {
       "reloadFailed": "대화 다시 불러오기 실패: {message}",

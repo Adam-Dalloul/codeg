@@ -362,7 +362,70 @@ export interface FolderDetail {
    * folder's real `path`/`id`.
    */
   alias: string | null
+  /**
+   * Sidebar folder group this folder sits in, or null for top level. Purely a
+   * sidebar-organisation concept: never consulted for cwd, agent or
+   * conversation resolution. Always null on worktree children — they follow
+   * their repo, which is what carries the whole family into a group.
+   *
+   * May name a group that no longer exists (deleted in another window between
+   * this snapshot and the group list's); `buildSidebarLayout` falls such a
+   * folder back to the top level rather than hiding it.
+   */
+  group_id: number | null
 }
+
+/**
+ * A sidebar folder group: a named, optionally colored band that holds folders.
+ * Groups never nest and never hold conversations directly.
+ *
+ * `sort_order` is its position among TOP-LEVEL siblings, sharing one numeric
+ * space with the `sort_order` of ungrouped folders — that shared sequence is
+ * what lets groups and loose folders interleave in a single list.
+ */
+export interface FolderGroupDetail {
+  id: number
+  name: string
+  /**
+   * A {@link FolderThemeColor} value, or `"inherit"` for the app theme. Tints
+   * only the group's own header row; member folders keep their own color.
+   */
+  color: string
+  sort_order: number
+}
+
+/** Which kind of sidebar entry a {@link SidebarLayoutEntry} names. */
+export type SidebarEntryKind = "folder" | "group"
+
+/**
+ * One row of the sidebar's desired layout, as submitted after a drag. The
+ * client sends the COMPLETE visible layout — the top-level sequence followed by
+ * each group's members, in render order — and the backend assigns `sort_order`
+ * from a per-container counter. Positional, so the client never computes
+ * `sort_order` values itself; idempotent, so a replay is a no-op.
+ */
+export interface SidebarLayoutEntry {
+  kind: SidebarEntryKind
+  id: number
+  /** Only meaningful for `folder` entries: the group it lands in, or null for
+   *  top level. Always null for `group` entries — groups never nest. */
+  groupId: number | null
+}
+
+/**
+ * Payload for the global `folder-group://changed` side-channel. Group CRUD
+ * carries its detail so clients apply it without a re-fetch; `layout` carries
+ * nothing on purpose — one drag rewrites `group_id`/`sort_order` across every
+ * visible folder, so a single "re-read both lists" nudge is smaller and
+ * order-independent compared to a burst of per-row upserts. Mirrors the Rust
+ * `FolderGroupChange` (serde `tag = "kind"`).
+ */
+export type FolderGroupChange =
+  | { kind: "upsert"; group: FolderGroupDetail }
+  | { kind: "deleted"; id: number }
+  | { kind: "layout" }
+
+export const FOLDER_GROUP_CHANGED_EVENT = "folder-group://changed"
 
 /**
  * Result of `createChatConversation`: the new conversation id plus the hidden

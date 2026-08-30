@@ -1716,10 +1716,14 @@
         "folderRemoved": "Carpeta {name} eliminada",
         "openFolderFailed": "Error al abrir carpeta",
         "removeFolderFailed": "Error al eliminar carpeta: {message}",
-        "reorderFoldersFailed": "Error al reordenar carpetas: {message}",
         "changeFolderColorFailed": "Error al cambiar el color: {message}",
         "setFolderAliasFailed": "Error al establecer el alias: {message}",
-        "changeFolderDefaultAgentFailed": "Error al establecer agente predeterminado: {message}"
+        "changeFolderDefaultAgentFailed": "Error al establecer agente predeterminado: {message}",
+        "createGroupFailed": "Error al crear el grupo: {message}",
+        "updateGroupFailed": "Error al actualizar el grupo: {message}",
+        "deleteGroupFailed": "Error al eliminar el grupo: {message}",
+        "moveToGroupFailed": "Error al mover la carpeta: {message}",
+        "applyLayoutFailed": "Error al guardar el orden de las carpetas: {message}"
       },
       "statsLabel": "{folders} carpetas · {convos} conversaciones",
       "reorderHandle": "Arrastrar para reordenar",
@@ -1804,7 +1808,24 @@
       "automations": "Automatizaciones",
       "tasks": "Tareas pendientes",
       "loadingSubsessions": "Cargando subconversaciones…",
-      "forge": "Panel del repositorio"
+      "forge": "Panel del repositorio",
+      "folderGroup": {
+        "newGroup": "Nuevo grupo",
+        "newGroupTitle": "Nuevo grupo de carpetas",
+        "defaultName": "Nuevo grupo",
+        "namePlaceholder": "Nombre del grupo",
+        "rename": "Renombrar grupo…",
+        "renameTitle": "Renombrar grupo de carpetas",
+        "delete": "Eliminar grupo",
+        "deleteConfirmTitle": "¿Eliminar este grupo?",
+        "deleteConfirmDescription": "Se eliminará «{name}». {count, plural, one {La # carpeta que contiene permanece} other {Las # carpetas que contiene permanecen}} en el espacio de trabajo y {count, plural, one {vuelve} other {vuelven}} al nivel superior.",
+        "countUnit": "{count, plural, one {# carpeta} other {# carpetas}}",
+        "empty": "No hay carpetas en este grupo",
+        "moveToGroup": "Mover al grupo",
+        "removeFromGroup": "Sin grupo",
+        "newGroupAndMove": "Nuevo grupo…",
+        "dropToUngroup": "Suelta aquí para quitar del grupo"
+      }
     },
     "conversation": {
       "reloadFailed": "No se pudo recargar la conversación: {message}",

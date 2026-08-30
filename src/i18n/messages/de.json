@@ -1716,10 +1716,14 @@
         "folderRemoved": "Ordner {name} entfernt",
         "openFolderFailed": "Ordner konnte nicht geöffnet werden",
         "removeFolderFailed": "Ordner konnte nicht entfernt werden: {message}",
-        "reorderFoldersFailed": "Ordner konnten nicht neu sortiert werden: {message}",
         "changeFolderColorFailed": "Farbe konnte nicht geändert werden: {message}",
         "setFolderAliasFailed": "Alias konnte nicht festgelegt werden: {message}",
-        "changeFolderDefaultAgentFailed": "Standard-Agent konnte nicht gesetzt werden: {message}"
+        "changeFolderDefaultAgentFailed": "Standard-Agent konnte nicht gesetzt werden: {message}",
+        "createGroupFailed": "Gruppe konnte nicht erstellt werden: {message}",
+        "updateGroupFailed": "Gruppe konnte nicht aktualisiert werden: {message}",
+        "deleteGroupFailed": "Gruppe konnte nicht gelöscht werden: {message}",
+        "moveToGroupFailed": "Ordner konnte nicht verschoben werden: {message}",
+        "applyLayoutFailed": "Ordnerreihenfolge konnte nicht gespeichert werden: {message}"
       },
       "statsLabel": "{folders} Ordner · {convos} Konversationen",
       "reorderHandle": "Zum Neuordnen ziehen",
@@ -1804,7 +1808,24 @@
       "automations": "Automatisierungen",
       "tasks": "To-dos",
       "loadingSubsessions": "Unterkonversationen werden geladen…",
-      "forge": "Repository-Panel"
+      "forge": "Repository-Panel",
+      "folderGroup": {
+        "newGroup": "Neue Gruppe",
+        "newGroupTitle": "Neue Ordnergruppe",
+        "defaultName": "Neue Gruppe",
+        "namePlaceholder": "Gruppenname",
+        "rename": "Gruppe umbenennen…",
+        "renameTitle": "Ordnergruppe umbenennen",
+        "delete": "Gruppe löschen",
+        "deleteConfirmTitle": "Diese Gruppe löschen?",
+        "deleteConfirmDescription": "„{name}“ wird entfernt. Die {count, plural, one {# Ordner darin bleibt} other {# Ordner darin bleiben}} im Arbeitsbereich und {count, plural, one {wechselt} other {wechseln}} zurück auf die oberste Ebene.",
+        "countUnit": "{count, plural, one {# Ordner} other {# Ordner}}",
+        "empty": "Keine Ordner in dieser Gruppe",
+        "moveToGroup": "In Gruppe verschieben",
+        "removeFromGroup": "Keine Gruppe",
+        "newGroupAndMove": "Neue Gruppe…",
+        "dropToUngroup": "Hier ablegen, um aus der Gruppe zu entfernen"
+      }
     },
     "conversation": {
       "reloadFailed": "Konversation konnte nicht neu geladen werden: {message}",

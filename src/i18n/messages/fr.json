@@ -1716,10 +1716,14 @@
         "folderRemoved": "Dossier {name} retiré",
         "openFolderFailed": "Échec de l'ouverture du dossier",
         "removeFolderFailed": "Échec de la suppression du dossier : {message}",
-        "reorderFoldersFailed": "Échec du réordonnancement des dossiers : {message}",
         "changeFolderColorFailed": "Échec du changement de couleur : {message}",
         "setFolderAliasFailed": "Échec de la définition de l'alias : {message}",
-        "changeFolderDefaultAgentFailed": "Échec de la définition de l'agent par défaut : {message}"
+        "changeFolderDefaultAgentFailed": "Échec de la définition de l'agent par défaut : {message}",
+        "createGroupFailed": "Échec de la création du groupe : {message}",
+        "updateGroupFailed": "Échec de la mise à jour du groupe : {message}",
+        "deleteGroupFailed": "Échec de la suppression du groupe : {message}",
+        "moveToGroupFailed": "Échec du déplacement du dossier : {message}",
+        "applyLayoutFailed": "Échec de l'enregistrement de l'ordre des dossiers : {message}"
       },
       "statsLabel": "{folders} dossiers · {convos} conversations",
       "reorderHandle": "Glisser pour réorganiser",
@@ -1804,7 +1808,24 @@
       "automations": "Automatisations",
       "tasks": "Tâches à faire",
       "loadingSubsessions": "Chargement des sous-conversations…",
-      "forge": "Panneau du dépôt"
+      "forge": "Panneau du dépôt",
+      "folderGroup": {
+        "newGroup": "Nouveau groupe",
+        "newGroupTitle": "Nouveau groupe de dossiers",
+        "defaultName": "Nouveau groupe",
+        "namePlaceholder": "Nom du groupe",
+        "rename": "Renommer le groupe…",
+        "renameTitle": "Renommer le groupe de dossiers",
+        "delete": "Supprimer le groupe",
+        "deleteConfirmTitle": "Supprimer ce groupe ?",
+        "deleteConfirmDescription": "« {name} » sera supprimé. {count, plural, one {Le # dossier qu'il contient reste} other {Les # dossiers qu'il contient restent}} dans l'espace de travail et {count, plural, one {revient} other {reviennent}} au niveau supérieur.",
+        "countUnit": "{count, plural, one {# dossier} other {# dossiers}}",
+        "empty": "Aucun dossier dans ce groupe",
+        "moveToGroup": "Déplacer vers le groupe",
+        "removeFromGroup": "Aucun groupe",
+        "newGroupAndMove": "Nouveau groupe…",
+        "dropToUngroup": "Déposer ici pour retirer du groupe"
+      }
     },
     "conversation": {
       "reloadFailed": "Échec du rechargement de la conversation : {message}",

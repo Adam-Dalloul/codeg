@@ -1716,10 +1716,14 @@
         "folderRemoved": "تمت إزالة المجلد {name}",
         "openFolderFailed": "فشل فتح المجلد",
         "removeFolderFailed": "فشل إزالة المجلد: {message}",
-        "reorderFoldersFailed": "فشل إعادة ترتيب المجلدات: {message}",
         "changeFolderColorFailed": "فشل تغيير اللون: {message}",
         "setFolderAliasFailed": "فشل تعيين الاسم المستعار: {message}",
-        "changeFolderDefaultAgentFailed": "فشل تعيين الوكيل الافتراضي: {message}"
+        "changeFolderDefaultAgentFailed": "فشل تعيين الوكيل الافتراضي: {message}",
+        "createGroupFailed": "فشل إنشاء المجموعة: {message}",
+        "updateGroupFailed": "فشل تحديث المجموعة: {message}",
+        "deleteGroupFailed": "فشل حذف المجموعة: {message}",
+        "moveToGroupFailed": "فشل نقل المجلد: {message}",
+        "applyLayoutFailed": "فشل حفظ ترتيب المجلدات: {message}"
       },
       "statsLabel": "{folders} مجلدات · {convos} محادثة",
       "reorderHandle": "اسحب لإعادة الترتيب",
@@ -1804,7 +1808,24 @@
       "automations": "الأتمتة",
       "tasks": "المهام قيد الانتظار",
       "loadingSubsessions": "جارٍ تحميل المحادثات الفرعية…",
-      "forge": "لوحة المستودع"
+      "forge": "لوحة المستودع",
+      "folderGroup": {
+        "newGroup": "مجموعة جديدة",
+        "newGroupTitle": "مجموعة مجلدات جديدة",
+        "defaultName": "مجموعة جديدة",
+        "namePlaceholder": "اسم المجموعة",
+        "rename": "إعادة تسمية المجموعة…",
+        "renameTitle": "إعادة تسمية مجموعة المجلدات",
+        "delete": "حذف المجموعة",
+        "deleteConfirmTitle": "حذف هذه المجموعة؟",
+        "deleteConfirmDescription": "ستتم إزالة \"{name}\". تبقى المجلدات ({count}) بداخلها في مساحة العمل وتعود إلى المستوى الأعلى.",
+        "countUnit": "{count} مجلد",
+        "empty": "لا توجد مجلدات في هذه المجموعة",
+        "moveToGroup": "نقل إلى مجموعة",
+        "removeFromGroup": "بدون مجموعة",
+        "newGroupAndMove": "مجموعة جديدة…",
+        "dropToUngroup": "أفلِت هنا لإزالته من المجموعة"
+      }
     },
     "conversation": {
       "reloadFailed": "فشل إعادة تحميل المحادثة: {message}",

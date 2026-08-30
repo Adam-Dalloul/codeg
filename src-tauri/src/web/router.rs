@@ -203,7 +203,30 @@ pub fn build_router(
             "/remove_folder_from_workspace",
             post(handlers::folders::remove_folder_from_workspace),
         )
-        .route("/reorder_folders", post(handlers::folders::reorder_folders))
+        .route(
+            "/list_folder_groups",
+            post(handlers::folders::list_folder_groups),
+        )
+        .route(
+            "/create_folder_group",
+            post(handlers::folders::create_folder_group),
+        )
+        .route(
+            "/update_folder_group",
+            post(handlers::folders::update_folder_group),
+        )
+        .route(
+            "/delete_folder_group",
+            post(handlers::folders::delete_folder_group),
+        )
+        .route(
+            "/apply_sidebar_layout",
+            post(handlers::folders::apply_sidebar_layout),
+        )
+        .route(
+            "/set_folder_group",
+            post(handlers::folders::set_folder_group),
+        )
         .route(
             "/update_folder_color",
             post(handlers::folders::update_folder_color),

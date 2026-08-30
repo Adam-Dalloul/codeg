@@ -88,6 +88,8 @@ import type {
   CustomImportResult,
   FolderHistoryEntry,
   FolderDetail,
+  FolderGroupDetail,
+  SidebarLayoutEntry,
   FolderLinkDetail,
   FolderLinkPlan,
   FolderLinkRequestItem,
@@ -2017,8 +2019,46 @@ export async function removeFolderFromWorkspace(
   return getTransport().call("remove_folder_from_workspace", { folderId })
 }
 
-export async function reorderFolders(ids: number[]): Promise<void> {
-  return getTransport().call("reorder_folders", { ids })
+export async function listFolderGroups(): Promise<FolderGroupDetail[]> {
+  return getTransport().call("list_folder_groups", {})
+}
+
+export async function createFolderGroup(
+  name: string,
+  color?: FolderThemeColor
+): Promise<FolderGroupDetail> {
+  return getTransport().call("create_folder_group", { name, color })
+}
+
+/** Patch a group's name and/or color. An omitted field is left alone, so the
+ *  rename dialog and the color picker never clobber each other. */
+export async function updateFolderGroup(
+  groupId: number,
+  patch: { name?: string; color?: FolderThemeColor }
+): Promise<FolderGroupDetail> {
+  return getTransport().call("update_folder_group", { groupId, ...patch })
+}
+
+/** Delete a group. Member folders are NOT removed from the workspace — they
+ *  return to the top level. */
+export async function deleteFolderGroup(groupId: number): Promise<void> {
+  return getTransport().call("delete_folder_group", { groupId })
+}
+
+/** Persist the whole sidebar layout after a drag. See {@link SidebarLayoutEntry}. */
+export async function applySidebarLayout(
+  entries: SidebarLayoutEntry[]
+): Promise<void> {
+  return getTransport().call("apply_sidebar_layout", { entries })
+}
+
+/** Move one folder into (`groupId`) or out of (`null`) a group, appending it to
+ *  the target container. The context-menu path, which has no drop position. */
+export async function setFolderGroup(
+  folderId: number,
+  groupId: number | null
+): Promise<void> {
+  return getTransport().call("set_folder_group", { folderId, groupId })
 }
 
 export async function updateFolderColor(

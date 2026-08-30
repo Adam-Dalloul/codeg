@@ -1716,10 +1716,14 @@
         "folderRemoved": "フォルダ {name} を削除しました",
         "openFolderFailed": "フォルダを開けませんでした",
         "removeFolderFailed": "フォルダの削除に失敗しました: {message}",
-        "reorderFoldersFailed": "フォルダの並べ替えに失敗しました: {message}",
         "changeFolderColorFailed": "色の変更に失敗しました: {message}",
         "setFolderAliasFailed": "エイリアスの設定に失敗しました: {message}",
-        "changeFolderDefaultAgentFailed": "デフォルトエージェントの設定に失敗しました: {message}"
+        "changeFolderDefaultAgentFailed": "デフォルトエージェントの設定に失敗しました: {message}",
+        "createGroupFailed": "グループの作成に失敗しました: {message}",
+        "updateGroupFailed": "グループの更新に失敗しました: {message}",
+        "deleteGroupFailed": "グループの削除に失敗しました: {message}",
+        "moveToGroupFailed": "フォルダの移動に失敗しました: {message}",
+        "applyLayoutFailed": "フォルダの並び順の保存に失敗しました: {message}"
       },
       "statsLabel": "{folders} フォルダ · {convos} 会話",
       "reorderHandle": "ドラッグして並べ替え",
@@ -1804,7 +1808,24 @@
       "automations": "オートメーション",
       "tasks": "ToDo タスク",
       "loadingSubsessions": "サブ会話を読み込み中…",
-      "forge": "リポジトリパネル"
+      "forge": "リポジトリパネル",
+      "folderGroup": {
+        "newGroup": "新しいグループ",
+        "newGroupTitle": "新しいフォルダグループ",
+        "defaultName": "新しいグループ",
+        "namePlaceholder": "グループ名",
+        "rename": "グループ名を変更…",
+        "renameTitle": "フォルダグループの名前を変更",
+        "delete": "グループを削除",
+        "deleteConfirmTitle": "このグループを削除しますか？",
+        "deleteConfirmDescription": "「{name}」を削除します。グループ内の {count} 個のフォルダはワークスペースに残り、最上位に戻ります。",
+        "countUnit": "{count} 個のフォルダ",
+        "empty": "このグループにフォルダはありません",
+        "moveToGroup": "グループへ移動",
+        "removeFromGroup": "グループなし",
+        "newGroupAndMove": "新しいグループ…",
+        "dropToUngroup": "ここにドロップしてグループから外す"
+      }
     },
     "conversation": {
       "reloadFailed": "会話の再読み込みに失敗しました: {message}",

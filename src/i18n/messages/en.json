@@ -1716,10 +1716,14 @@
         "folderRemoved": "Removed folder {name}",
         "openFolderFailed": "Failed to open folder",
         "removeFolderFailed": "Failed to remove folder: {message}",
-        "reorderFoldersFailed": "Failed to reorder folders: {message}",
         "changeFolderColorFailed": "Failed to change folder color: {message}",
         "setFolderAliasFailed": "Failed to set alias: {message}",
-        "changeFolderDefaultAgentFailed": "Failed to set default agent: {message}"
+        "changeFolderDefaultAgentFailed": "Failed to set default agent: {message}",
+        "createGroupFailed": "Failed to create group: {message}",
+        "updateGroupFailed": "Failed to update group: {message}",
+        "deleteGroupFailed": "Failed to delete group: {message}",
+        "moveToGroupFailed": "Failed to move folder: {message}",
+        "applyLayoutFailed": "Failed to save the folder order: {message}"
       },
       "statsLabel": "{folders} folders · {convos} conversations",
       "reorderHandle": "Drag to reorder",
@@ -1804,7 +1808,24 @@
       "automations": "Automations",
       "tasks": "To-dos",
       "loadingSubsessions": "Loading sub-conversations…",
-      "forge": "Repository panel"
+      "forge": "Repository panel",
+      "folderGroup": {
+        "newGroup": "New group",
+        "newGroupTitle": "New folder group",
+        "defaultName": "New group",
+        "namePlaceholder": "Group name",
+        "rename": "Rename group…",
+        "renameTitle": "Rename folder group",
+        "delete": "Delete group",
+        "deleteConfirmTitle": "Delete this group?",
+        "deleteConfirmDescription": "\"{name}\" will be removed. The {count, plural, one {# folder} other {# folders}} inside it stay in the workspace and move back to the top level.",
+        "countUnit": "{count, plural, one {# folder} other {# folders}}",
+        "empty": "No folders in this group",
+        "moveToGroup": "Move to group",
+        "removeFromGroup": "No group",
+        "newGroupAndMove": "New group…",
+        "dropToUngroup": "Drop here to remove from group"
+      }
     },
     "conversation": {
       "reloadFailed": "Failed to reload conversation: {message}",

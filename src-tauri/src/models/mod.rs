@@ -27,8 +27,8 @@ pub use conversation::{
     ScanSessionStatus, SelectedSessionKey, SessionStats, SidebarData,
 };
 pub use folder::{
-    FolderCommandInfo, FolderDetail, FolderHistoryEntry, OpenedTab, OpenedTabsSnapshot,
-    SaveTabsOutcome,
+    FolderCommandInfo, FolderDetail, FolderGroupDetail, FolderHistoryEntry, OpenedTab,
+    OpenedTabsSnapshot, SaveTabsOutcome, SidebarEntryKind, SidebarLayoutEntry,
 };
 pub use message::{
     AgentExecutionStats, AgentToolCall, ContentBlock, ImageData, MessageRole, MessageTurn,
