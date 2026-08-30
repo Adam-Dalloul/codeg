@@ -88,9 +88,24 @@ const manualFold = new WeakMap<
  * far edge): the rule underneath is a section divider and spans the reply,
  * while the control it belongs to reads as one unit. No corner radius — a
  * radius curls the ends of a lone `border-b` up into little hooks.
+ *
+ * The rule is tinted from `--foreground` rather than taking `--border`, which
+ * it cannot use at any opacity: `--border` is a near-white `oklch(0.922)` in
+ * light and `white/10%` in dark, so the usual `border-border/50` came out at
+ * roughly `oklch(0.96)` on white and white at 5% on near-black — invisible in
+ * both, and worst in dark. A foreground tint inverts with the theme instead —
+ * the same derivation as task-card's outline and `--ws-chrome-border`, which
+ * both reach for `--foreground` for exactly this reason.
+ *
+ * The TINT is what buys the legibility here, not the strength: at 10% this
+ * lands about where `--border` would if it were used undiluted, except it now
+ * holds up in dark and over a workspace background image, where the token
+ * washes out. Deliberately no heavier — the header is a quiet label the reader
+ * scans past, and a rule spanning the full width of every reply in the thread
+ * carries far more weight than a lone boxed card's outline does.
  */
 const HEADER_CLASS =
-  "flex w-full items-center gap-1 border-b border-border/50 pb-1.5 text-xs font-medium text-muted-foreground/70"
+  "flex w-full items-center gap-1 border-b border-foreground/10 pb-1.5 text-xs font-medium text-muted-foreground/70"
 
 export const CompletedTurnContent = memo(function CompletedTurnContent({
   parts,
