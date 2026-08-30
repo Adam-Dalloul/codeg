@@ -13,6 +13,7 @@ use sea_orm::{
 use crate::acp::connection::{
     spawn_agent_connection, AgentConnection, ConnectionCommand, GoalControlAction, SteerOutcome,
 };
+use crate::acp::agent_mentions::strip_route_separator_from_prompt;
 use crate::acp::error::AcpError;
 use crate::acp::feedback::{
     bounded_feedback_batch, FeedbackItem, FeedbackStatus, PendingFeedback,
@@ -727,7 +728,7 @@ impl ConnectionManager {
     async fn send_prompt_inner(
         &self,
         conn_id: &str,
-        blocks: Vec<PromptInputBlock>,
+        mut blocks: Vec<PromptInputBlock>,
         user_message: Option<(String, Vec<crate::acp::UserMessageBlock>)>,
     ) -> Result<(), AcpError> {
         // Reject an empty prompt BEFORE touching the concurrency gate. An empty
@@ -740,6 +741,11 @@ impl ConnectionManager {
             return Err(AcpError::protocol(
                 "prompt must contain at least one content block".to_string(),
             ));
+        }
+        if strip_route_separator_from_prompt(&mut blocks) {
+            tracing::debug!(
+                "[ACP][{conn_id}] removed the reserved routing separator from an outgoing prompt"
+            );
         }
         let (cmd_tx, state_arc) = {
             let connections = self.connections.lock().await;
@@ -880,6 +886,14 @@ impl ConnectionManager {
             return Err(AcpError::protocol(
                 "prompt must contain at least one content block".to_string(),
             ));
+        }
+        // Scrub the reserved separator HERE, before the conversation row, the
+        // optimistic broadcast, and the ledger all take their copy of `blocks`,
+        // so every persisted / displayed / on-the-wire copy is byte-identical.
+        if strip_route_separator_from_prompt(&mut blocks) {
+            tracing::debug!(
+                "[ACP][{conn_id}] removed the reserved routing separator from an outgoing prompt"
+            );
         }
         // Caller-supplied conversation_id requires folder_id (we include it in
         // the emitted ConversationLinked event so subscribers don't have to
@@ -1307,7 +1321,10 @@ impl ConnectionManager {
         // for a prompt that never reached the agent, so without this the
         // lifecycle subscriber's PendingReview write also never fires and the
         // row would be stuck until a follow-up `send_prompt_linked` re-flipped it.
-        match self.send_prompt_inner(conn_id, blocks, user_message).await {
+        match self
+            .send_prompt_inner(conn_id, blocks, user_message)
+            .await
+        {
             Ok(()) => {
                 // The prompt reached the agent: surface it to the chat-channel
                 // "user message" event feed. Notification-only — never gates the
@@ -4011,6 +4028,127 @@ mod tests {
             um.1.iter().any(|t| t == "hello viewers"),
             "user_message must carry the prompt text, got {um:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn linked_ui_prompt_leaves_the_user_blocks_untouched() {
+        use crate::db::test_helpers;
+
+        let db = test_helpers::fresh_in_memory_db().await;
+        let folder_id = test_helpers::seed_folder(&db, "/tmp/agent-routes").await;
+        let mgr = ConnectionManager::new();
+        let conn_id = "conn-agent-routes";
+        let mut cmd_rx = insert_live_connection(
+            &mgr,
+            conn_id,
+            AgentType::Codex,
+            Some(PathBuf::from("/tmp/agent-routes")),
+        )
+        .await;
+
+        mgr.send_prompt_linked_with_message_id(
+            &db,
+            conn_id,
+            vec![PromptInputBlock::Text {
+                text: "ask [@Antigravity](codeg://agent/antigravity) to review".into(),
+            }],
+            Some(folder_id),
+            None,
+            None,
+            Some("optimistic-route".into()),
+        )
+        .await
+        .unwrap();
+
+        let command = cmd_rx.try_recv().expect("one prompt command");
+        let ConnectionCommand::Prompt {
+            blocks,
+            user_message,
+        } = command
+        else {
+            panic!("expected prompt command");
+        };
+        // The routing frame is appended at the agent boundary in the connection
+        // loop, never here: what the manager enqueues, persists and broadcasts
+        // is exactly what the user typed.
+        assert!(matches!(
+            blocks.as_slice(),
+            [PromptInputBlock::Text { text }]
+                if text == "ask [@Antigravity](codeg://agent/antigravity) to review"
+        ));
+        let (message_id, user_blocks) = user_message.expect("root prompt is broadcast");
+        assert_eq!(message_id, "optimistic-route");
+        assert!(matches!(
+            user_blocks.as_slice(),
+            [crate::acp::types::UserMessageBlock::Text { text }]
+                if text == "ask [@Antigravity](codeg://agent/antigravity) to review"
+        ));
+    }
+
+    #[tokio::test]
+    async fn reserved_route_separator_is_scrubbed_not_rejected() {
+        // The separator is invisible and usually arrives inside content the user
+        // did not author — an attached file's bytes land in `Resource.text`.
+        // Rejecting made such a message permanently unsendable; the prompt must
+        // go through with the character removed from EVERY copy.
+        use crate::db::test_helpers;
+
+        let db = test_helpers::fresh_in_memory_db().await;
+        let folder_id = test_helpers::seed_folder(&db, "/tmp/route-separator").await;
+        let mgr = ConnectionManager::new();
+        let conn_id = "conn-route-separator";
+        let mut cmd_rx = insert_live_connection(
+            &mgr,
+            conn_id,
+            AgentType::Codex,
+            Some(PathBuf::from("/tmp/route-separator")),
+        )
+        .await;
+
+        mgr.send_prompt_linked_with_message_id(
+            &db,
+            conn_id,
+            vec![
+                PromptInputBlock::Text {
+                    text: "user\u{001e}frame".into(),
+                },
+                PromptInputBlock::Resource {
+                    uri: "file:///tmp/records.dat".into(),
+                    mime_type: Some("text/plain".into()),
+                    text: Some("row-a\u{001e}row-b".into()),
+                    blob: None,
+                },
+            ],
+            Some(folder_id),
+            None,
+            None,
+            Some("optimistic-reserved".into()),
+        )
+        .await
+        .expect("an invisible control character must not block the send");
+
+        let ConnectionCommand::Prompt {
+            blocks,
+            user_message,
+            ..
+        } = cmd_rx.try_recv().expect("the prompt still reaches the agent")
+        else {
+            panic!("expected prompt command");
+        };
+        assert!(matches!(
+            blocks.as_slice(),
+            [
+                PromptInputBlock::Text { text },
+                PromptInputBlock::Resource { text: Some(resource), .. },
+            ] if text == "userframe" && resource == "row-arow-b"
+        ));
+        // The broadcast copy is projected from the SAME scrubbed blocks, so the
+        // stored, displayed, and on-the-wire messages cannot drift apart.
+        let (_, user_blocks) = user_message.expect("root prompt is broadcast");
+        assert!(matches!(
+            user_blocks.first(),
+            Some(crate::acp::types::UserMessageBlock::Text { text }) if text == "userframe"
+        ));
     }
 
     #[tokio::test]
