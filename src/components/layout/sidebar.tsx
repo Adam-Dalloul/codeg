@@ -8,6 +8,7 @@ import {
   ListChevronsUpDown,
   LayoutTemplate,
   ListTodo,
+  Map as MapIcon,
   Menu,
   MessagesSquare,
   SquarePen,
@@ -102,6 +103,7 @@ const NAV_ITEM_ICONS: Record<SidebarNavItemId, LucideIcon> = {
   automations: Zap,
   tasks: ListTodo,
   forge: LayoutTemplate,
+  canvas: MapIcon,
 }
 
 /**
@@ -562,6 +564,17 @@ export function Sidebar() {
             onClick={() => {
               if (isMobile) toggle()
               setRoute("forge")
+            }}
+          />
+        )}
+        {isNavItemVisible(navItems, "canvas") && (
+          <SidebarNavButton
+            icon={MapIcon}
+            label={t("canvas")}
+            active={routeId === "canvas"}
+            onClick={() => {
+              if (isMobile) toggle()
+              setRoute("canvas")
             }}
           />
         )}

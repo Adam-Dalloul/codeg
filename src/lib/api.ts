@@ -93,6 +93,11 @@ import type {
   FolderLinkDetail,
   FolderLinkPlan,
   FolderLinkRequestItem,
+  CanvasMutation,
+  CanvasNode,
+  CanvasNodeKind,
+  CanvasNodeMovePayload,
+  CanvasSnapshot,
   CreateChatConversationResult,
   CreateChatDirResult,
   WorktreeResolution,
@@ -2775,6 +2780,92 @@ export async function removeFolderLink(
   deleteLink = true
 ): Promise<void> {
   return getTransport().call("remove_folder_link", { linkId, deleteLink })
+}
+
+// ─── Conversation canvas ───
+
+/** Input for `canvasCreateNode`. Binding fields are kind-specific (validated
+ *  server-side): folder → folderId, agent → agentType, conversation →
+ *  conversationId; custom starts empty; note uses content. */
+export interface CreateCanvasNodeInput {
+  kind: CanvasNodeKind
+  folderId?: number
+  agentType?: string
+  conversationId?: number
+  title?: string
+  content?: string
+  color?: string
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
+/** Field-by-field patch: absent = untouched, empty string clears a nullable
+ *  text field. `memberAdd` / `memberRemove` are atomic server-side list ops
+ *  (custom regions only). */
+export interface CanvasNodePatchInput {
+  title?: string
+  content?: string
+  color?: string
+  collapsed?: boolean
+  x?: number
+  y?: number
+  width?: number
+  height?: number
+  memberAdd?: number
+  memberRemove?: number
+}
+
+/** The full canvas node set plus the revision it was read at. */
+export async function canvasListNodes(): Promise<CanvasSnapshot> {
+  return getTransport().call("canvas_list_nodes", {})
+}
+
+export async function canvasCreateNode(
+  input: CreateCanvasNodeInput
+): Promise<CanvasMutation<CanvasNode>> {
+  return getTransport().call("canvas_create_node", { input })
+}
+
+export async function canvasUpdateNode(
+  nodeId: number,
+  patch: CanvasNodePatchInput
+): Promise<CanvasMutation<CanvasNode>> {
+  return getTransport().call("canvas_update_node", { nodeId, patch })
+}
+
+/** Batch position write (drag drop, auto-arrange): one revision bump, one
+ *  event, however many nodes moved. The value echoes the moves as actually
+ *  written — clamped, deleted-node ghosts dropped — apply THAT optimistically,
+ *  not the request. */
+export async function canvasMoveNodes(
+  moves: CanvasNodeMovePayload[]
+): Promise<CanvasMutation<CanvasNodeMovePayload[]>> {
+  return getTransport().call("canvas_move_nodes", { moves })
+}
+
+/** Drag a member card out of a region onto open canvas. Custom regions MOVE
+ *  the membership (stale retries reject as not_found); folder/agent regions
+ *  COPY. One transaction, one event either way. */
+export async function canvasDetachMember(
+  regionId: number,
+  conversationId: number,
+  x: number,
+  y: number
+): Promise<CanvasMutation<CanvasNode>> {
+  return getTransport().call("canvas_detach_member", {
+    regionId,
+    conversationId,
+    x,
+    y,
+  })
+}
+
+export async function canvasDeleteNode(
+  nodeId: number
+): Promise<CanvasMutation<null>> {
+  return getTransport().call("canvas_delete_node", { nodeId })
 }
 
 export async function openFolder(path: string): Promise<FolderDetail> {

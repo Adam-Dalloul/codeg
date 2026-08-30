@@ -263,6 +263,31 @@ pub fn build_router(
             "/remove_folder_link",
             post(handlers::folder_links::remove_folder_link),
         )
+        // ─── Canvas ───
+        .route(
+            "/canvas_list_nodes",
+            post(handlers::canvas::canvas_list_nodes),
+        )
+        .route(
+            "/canvas_create_node",
+            post(handlers::canvas::canvas_create_node),
+        )
+        .route(
+            "/canvas_update_node",
+            post(handlers::canvas::canvas_update_node),
+        )
+        .route(
+            "/canvas_move_nodes",
+            post(handlers::canvas::canvas_move_nodes),
+        )
+        .route(
+            "/canvas_detach_member",
+            post(handlers::canvas::canvas_detach_member),
+        )
+        .route(
+            "/canvas_delete_node",
+            post(handlers::canvas::canvas_delete_node),
+        )
         .route(
             "/add_folder_to_history",
             post(handlers::folders::add_folder_to_history),

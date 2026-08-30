@@ -9,6 +9,7 @@ import {
   LayoutTemplate,
   ListChecks,
   ListTodo,
+  Map as MapIcon,
   MonitorCloud,
   PawPrint,
   Rocket,
@@ -251,6 +252,10 @@ export function QuickActionsDropdown() {
           <DropdownMenuItem onSelect={() => setRoute("forge")}>
             <LayoutTemplate />
             {tSidebar("forge")}
+          </DropdownMenuItem>
+          <DropdownMenuItem onSelect={() => setRoute("canvas")}>
+            <MapIcon />
+            {tSidebar("canvas")}
           </DropdownMenuItem>
 
           {desktop && (

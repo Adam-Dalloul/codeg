@@ -1,0 +1,228 @@
+"use client"
+
+import { useMemo, useState } from "react"
+import { useReactFlow } from "@xyflow/react"
+import {
+  Bot,
+  Folder,
+  MessageSquare,
+  Plus,
+  Sparkles,
+  StickyNote,
+} from "lucide-react"
+import { useTranslations } from "next-intl"
+import { AgentIcon } from "@/components/agent-icon"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
+import { useAcpAgents } from "@/hooks/use-acp-agents"
+import type { CreateCanvasNodeInput } from "@/lib/api"
+import { formatConversationTitle } from "@/lib/conversation-title"
+import { getAgentLabel } from "@/lib/custom-agents"
+import { formatFolderLabelWithAlias } from "@/lib/folder-display"
+import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
+import {
+  CARD_HEIGHT,
+  CARD_WIDTH,
+  compareByRecency,
+  isCanvasEligible,
+} from "./canvas-model"
+
+/** Default footprints for freshly added elements (region fits a 3-column
+ *  member grid; see canvas-model geometry). */
+const REGION_W = 720
+const REGION_H = 344
+const NOTE_W = 208
+const NOTE_H = 144
+
+interface AddNodeMenuProps {
+  onCreate: (input: CreateCanvasNodeInput) => void
+  /** Extra classes for the trigger button (toolbar styling owns the look). */
+  triggerClassName?: string
+}
+
+/**
+ * The toolbar "+" menu: every way to put something new on the canvas — a
+ * folder region (open workspace folders), an agent region (installed agents),
+ * a single conversation card (recent root conversations, filterable), a
+ * hand-curated custom region, or a sticky note.
+ */
+export function AddNodeMenu({ onCreate, triggerClassName }: AddNodeMenuProps) {
+  const t = useTranslations("Canvas")
+  const { screenToFlowPosition } = useReactFlow()
+  const folders = useAppWorkspaceStore((s) => s.folders)
+  const conversations = useAppWorkspaceStore((s) => s.conversations)
+  const { agents } = useAcpAgents()
+  const [query, setQuery] = useState("")
+
+  const recentConversations = useMemo(() => {
+    const eligible = conversations.filter(isCanvasEligible)
+    eligible.sort(compareByRecency)
+    const q = query.trim().toLowerCase()
+    const filtered = q
+      ? eligible.filter((c) => (c.title ?? "").toLowerCase().includes(q))
+      : eligible
+    return filtered.slice(0, 15)
+  }, [conversations, query])
+
+  /** Viewport-center drop point for a new element, nudged per call so two
+   *  adds in a row don't stack perfectly. */
+  const dropPoint = (width: number, height: number) => {
+    const center = screenToFlowPosition({
+      x: window.innerWidth / 2,
+      y: window.innerHeight / 2,
+    })
+    const jitter = () => Math.round(Math.random() * 64 - 32)
+    return {
+      x: center.x - width / 2 + jitter(),
+      y: center.y - height / 2 + jitter(),
+    }
+  }
+
+  const createRegion = (
+    partial: Partial<CreateCanvasNodeInput> & {
+      kind: CreateCanvasNodeInput["kind"]
+    }
+  ) => {
+    const { x, y } = dropPoint(REGION_W, REGION_H)
+    onCreate({ x, y, width: REGION_W, height: REGION_H, ...partial })
+  }
+
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button
+          type="button"
+          className={triggerClassName}
+          aria-label={t("addNode")}
+          title={t("addNode")}
+        >
+          <Plus className="size-3.5" />
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start" side="bottom" className="w-52">
+        <DropdownMenuSub>
+          <DropdownMenuSubTrigger>
+            <Folder className="text-muted-foreground" />
+            {t("addFolderRegion")}
+          </DropdownMenuSubTrigger>
+          <DropdownMenuSubContent className="max-h-72 overflow-y-auto">
+            {folders.length === 0 ? (
+              <div className="px-3 py-2 text-xs text-muted-foreground">
+                {t("noFolders")}
+              </div>
+            ) : (
+              folders.map((f) => (
+                <DropdownMenuItem
+                  key={f.id}
+                  onSelect={() =>
+                    createRegion({ kind: "folder", folderId: f.id })
+                  }
+                >
+                  <Folder className="text-muted-foreground" />
+                  <span className="min-w-0 truncate">
+                    {formatFolderLabelWithAlias(f)}
+                  </span>
+                </DropdownMenuItem>
+              ))
+            )}
+          </DropdownMenuSubContent>
+        </DropdownMenuSub>
+        <DropdownMenuSub>
+          <DropdownMenuSubTrigger>
+            <Bot className="text-muted-foreground" />
+            {t("addAgentRegion")}
+          </DropdownMenuSubTrigger>
+          <DropdownMenuSubContent className="max-h-72 overflow-y-auto">
+            {agents.map((a) => (
+              <DropdownMenuItem
+                key={a.agent_type}
+                onSelect={() =>
+                  createRegion({ kind: "agent", agentType: a.agent_type })
+                }
+              >
+                <AgentIcon agentType={a.agent_type} className="size-4" />
+                <span className="min-w-0 truncate">
+                  {getAgentLabel(a.agent_type)}
+                </span>
+              </DropdownMenuItem>
+            ))}
+          </DropdownMenuSubContent>
+        </DropdownMenuSub>
+        <DropdownMenuSub>
+          <DropdownMenuSubTrigger>
+            <MessageSquare className="text-muted-foreground" />
+            {t("addConversationCard")}
+          </DropdownMenuSubTrigger>
+          <DropdownMenuSubContent className="w-64">
+            <input
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder={t("searchConversations")}
+              className="mx-1 mb-1 w-[calc(100%-0.5rem)] rounded-lg border border-input bg-background px-2 py-1 text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              onKeyDown={(e) => e.stopPropagation()}
+            />
+            <div className="max-h-64 overflow-y-auto">
+              {recentConversations.length === 0 ? (
+                <div className="px-3 py-2 text-xs text-muted-foreground">
+                  {t("noConversations")}
+                </div>
+              ) : (
+                recentConversations.map((c) => (
+                  <DropdownMenuItem
+                    key={c.id}
+                    onSelect={() => {
+                      const { x, y } = dropPoint(CARD_WIDTH, CARD_HEIGHT)
+                      onCreate({
+                        kind: "conversation",
+                        conversationId: c.id,
+                        x,
+                        y,
+                        width: CARD_WIDTH,
+                        height: CARD_HEIGHT,
+                      })
+                    }}
+                  >
+                    <AgentIcon agentType={c.agent_type} className="size-4" />
+                    <span className="min-w-0 truncate">
+                      {c.title
+                        ? formatConversationTitle(c.title)
+                        : t("untitled")}
+                    </span>
+                  </DropdownMenuItem>
+                ))
+              )}
+            </div>
+          </DropdownMenuSubContent>
+        </DropdownMenuSub>
+        <DropdownMenuSeparator />
+        <DropdownMenuItem onSelect={() => createRegion({ kind: "custom" })}>
+          <Sparkles className="text-muted-foreground" />
+          {t("addCustomRegion")}
+        </DropdownMenuItem>
+        <DropdownMenuItem
+          onSelect={() => {
+            const { x, y } = dropPoint(NOTE_W, NOTE_H)
+            onCreate({
+              kind: "note",
+              x,
+              y,
+              width: NOTE_W,
+              height: NOTE_H,
+            })
+          }}
+        >
+          <StickyNote className="text-muted-foreground" />
+          {t("addNote")}
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  )
+}

@@ -2764,3 +2764,75 @@ div.monaco-diff-editor.side-by-side .editor.modified {
   --tu-seq-6: color-mix(in oklab, var(--tu-accent) 81%, var(--card));
   --tu-seq-7: var(--tu-accent);
 }
+
+/* ─── Conversation canvas (ReactFlow) ─── */
+
+/* Running-conversation breathing ring: opacity only, on the card's ring —
+   no transform, no layout work. Guarded by motion-safe at the usage site. */
+@keyframes canvas-breathe {
+  0%,
+  100% {
+    box-shadow:
+      var(--tw-ring-offset-shadow, 0 0 #0000),
+      var(--tw-ring-shadow, 0 0 #0000);
+  }
+  50% {
+    box-shadow:
+      var(--tw-ring-offset-shadow, 0 0 #0000),
+      0 0 0 3px color-mix(in oklab, var(--primary) 14%, transparent);
+  }
+}
+
+.canvas-surface {
+  /* Dots grid ink; when the workspace background image is on, the surface
+     turns transparent so the image shows through — drop the dot ink so the
+     grid reads as texture, not noise. */
+  --canvas-dot-color: color-mix(
+    in oklab,
+    var(--muted-foreground) 22%,
+    transparent
+  );
+  /* ReactFlow theme variables → app tokens, all 12 presets + dark for free. */
+  --xy-background-color: transparent;
+  --xy-minimap-background-color: var(--card);
+  --xy-minimap-mask-background-color: color-mix(
+    in oklab,
+    var(--muted-foreground) 12%,
+    transparent
+  );
+  --xy-minimap-node-background-color: color-mix(
+    in oklab,
+    var(--muted-foreground) 30%,
+    transparent
+  );
+  --xy-selection-background-color: color-mix(
+    in oklab,
+    var(--primary) 8%,
+    transparent
+  );
+  --xy-selection-border-default: 1px solid
+    color-mix(in oklab, var(--primary) 45%, transparent);
+  --xy-node-border-radius: 0.75rem;
+  background-color: var(--background);
+}
+[data-workspace-bg="on"] .canvas-surface {
+  background-color: transparent;
+  --canvas-dot-color: color-mix(
+    in oklab,
+    var(--muted-foreground) 12%,
+    transparent
+  );
+}
+.canvas-surface .canvas-dots circle {
+  fill: var(--canvas-dot-color);
+}
+.canvas-surface .canvas-minimap {
+  border-radius: 0.75rem;
+  border: 1px solid var(--border);
+  overflow: hidden;
+}
+/* RF wraps each custom node in an absolutely-positioned div; the default
+   focus outline fights the cards' own selected ring. */
+.canvas-surface .react-flow__node:focus {
+  outline: none;
+}
