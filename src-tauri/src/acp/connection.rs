@@ -90,6 +90,28 @@ fn merge_agent_env(
     merged.into_iter().collect()
 }
 
+/// Whether a Cursor launch gets the root `--force` (Run Everything) flag, from
+/// the panel's `CURSOR_FORCE` knob.
+///
+/// The knob is TRI-state on purpose. It used to be written as "1" for on and
+/// *deleted* for off, which made "the user chose Ask" indistinguishable from
+/// "never configured" — and since the panel rendered the missing key as Run
+/// Everything while this function rendered it as Ask, the switch showed one
+/// thing and the session did another. Off is now written as an explicit "0",
+/// and both sides read the same rule: unset means Ask.
+///
+/// Unset resolving to Ask (not Run Everything) is deliberate. It is what every
+/// Cursor session has actually been doing all along, so no existing install
+/// silently loses its confirmation prompts; `--force` also turns cursor's own
+/// sandbox off (`approvalMode: unrestricted` → `insecure_none`), which is not
+/// something to switch on for someone who never asked.
+pub(crate) fn cursor_force_enabled(value: Option<&str>) -> bool {
+    let Some(value) = value.map(str::trim) else {
+        return false;
+    };
+    value == "1" || value.eq_ignore_ascii_case("true")
+}
+
 /// Cursor subscription-mode launch policy. When the user picked the official
 /// subscription (browser login), guarantee the launched CLI sees NONE of the
 /// custom-endpoint credentials — not even a stale `CURSOR_API_KEY` /
@@ -1684,12 +1706,9 @@ async fn build_agent(
                 // apply, and an org policy can downgrade it to rule-based
                 // approval). Sourced from the panel's permission-mode
                 // control (env_json key CURSOR_FORCE — codeg-side knob; the
-                // CLI reads no such env var).
-                if runtime_env
-                    .get("CURSOR_FORCE")
-                    .map(|v| v.trim())
-                    .is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-                {
+                // CLI reads no such env var). Unset means Ask; see
+                // `cursor_force_enabled`.
+                if cursor_force_enabled(runtime_env.get("CURSOR_FORCE").map(String::as_str)) {
                     cmd_args.insert(0, "--force".to_string());
                 }
             }
@@ -13903,6 +13922,22 @@ mod tests {
             assert!(!env.iter().any(|(k, _)| k == "CURSOR_API_KEY"));
             assert!(!env.iter().any(|(k, _)| k == "CURSOR_API_BASE_URL"));
         }
+    }
+
+    #[test]
+    fn cursor_force_knob_is_tri_state() {
+        // On.
+        for on in ["1", "true", "TRUE", " 1 "] {
+            assert!(cursor_force_enabled(Some(on)), "{on:?} must enable --force");
+        }
+        // Explicitly off — the value the panel now writes for "Ask before
+        // running", which has to be distinguishable from the unset case.
+        for off in ["0", "false", "", "  "] {
+            assert!(!cursor_force_enabled(Some(off)), "{off:?} must not force");
+        }
+        // Never configured. Ask, matching what Cursor sessions have always
+        // actually done, and matching what the panel now shows.
+        assert!(!cursor_force_enabled(None));
     }
 
     #[test]
