@@ -47,6 +47,24 @@ const REM_SIZING =
 /** Utilities that are safe because they don't resolve against a font size. */
 const ALLOWED = new Set(["w-full", "h-full", "min-w-0", "min-h-0"])
 
+/** Everything in a collapsed card's box that is not the title, in board units.
+ *  Constant only because the card opted out of the appearance zoom — see the
+ *  block comment above.
+ *
+ *  The BORDER is the easy one to forget and the expensive one to get wrong:
+ *  Tailwind's preflight makes everything `border-box`, so the card's 1px rule
+ *  is spent out of the same 132 as its padding. Two pixels is a quarter of a
+ *  line, and `line-clamp` clips to the box rather than to whole lines — a
+ *  budget that is 1.25 short doesn't drop the fourth line, it slices it
+ *  lengthwise. */
+const CARD_CHROME =
+  2 + // border, top and bottom
+  16 + // py-2
+  14 + // icon row (size-3.5 sets it, not the 10px text)
+  7 + // above the title
+  7 + // below the title
+  13.75 // footer line box (11px × leading-tight)
+
 /** Every board element and the root element the board sizes. All four opt out
  *  of the appearance zoom the same way. */
 const BOARD_NODES = [
@@ -87,6 +105,14 @@ describe("canvas card footprint", () => {
       )
       expect(offenders).toEqual([])
     }
+  })
+
+  it("a card being dragged keeps its footprint", () => {
+    // A tilt is a bigger bounding box than the slot it came from: the region
+    // grid has exactly zero slack between columns, so a card rotated even a
+    // degree overlaps the neighbours it is being dragged past — and the drag
+    // already reads as one, since ReactFlow selects a node before it moves it.
+    expect(code(readNode("conversation-card-node.tsx"))).not.toMatch(/rotate-/)
   })
 
   it("the expanded card keeps its body selectable and drags by its title bar", () => {
@@ -161,16 +187,70 @@ describe("board units", () => {
 
   it("the collapsed card's title takes every whole line the box has room for", () => {
     // The point of board units: this arithmetic is a CONSTANT now, so the clamp
-    // can be one too. 132 box − 51.75 chrome (16 padding + 14 top row + 4 + 4 +
-    // 13.75 footer) = 80.25, and four 17.875 lines (13px × leading-snug) fit
-    // with room to spare. Clamping lower truncates a title the card has space
-    // for (the complaint); higher would clip a line in half, since `line-clamp`
-    // clips to the box rather than to whole lines.
+    // can be one too. Four 17.875 lines (13px × leading-snug) plus the chrome
+    // around them is 131.25 of the 132. Clamping lower truncates a title the
+    // card has space for (the original complaint); higher would be clipped
+    // through the middle of a line.
     const source = code(readNode("conversation-card-node.tsx"))
     expect(source).toContain("line-clamp-4")
     expect(source).toContain("text-[13px]")
     expect(source).toContain("leading-snug")
-    expect(51.75 + 4 * 17.875).toBeLessThanOrEqual(CARD_HEIGHT)
-    expect(51.75 + 5 * 17.875).toBeGreaterThan(CARD_HEIGHT)
+    expect(CARD_CHROME + 4 * 17.875).toBeLessThanOrEqual(CARD_HEIGHT)
+    expect(CARD_CHROME + 5 * 17.875).toBeGreaterThan(CARD_HEIGHT)
+  })
+
+  it("puts the same gap above the title as below it", () => {
+    // The two halves of one decision, in different elements: the title's top
+    // margin and the footer's top padding. They were 4 and 4 with the whole
+    // remainder falling into the footer's `mt-auto`, which is 4 above and 12.75
+    // below — a full card that looks like it is sliding upwards, and the third
+    // time this card's vertical rhythm has been reported. Equal only holds
+    // while both numbers are stated AND both fit: `mt-auto` absorbs a surplus
+    // into the bottom gap alone, and a deficit comes out of the title, which is
+    // the only thing here allowed to shrink.
+    const source = code(readNode("conversation-card-node.tsx"))
+    expect(source).toMatch(/mt-\[7px\] line-clamp-4/)
+    expect(source).toMatch(/mt-auto[^"]*pt-\[7px\]/)
+  })
+
+  it("states the header row's height instead of discovering it", () => {
+    // Four things of four different sizes sit on that row — a 14px mark, a 6px
+    // dot, 10px text and a pill — and `items-center` only centres them all on
+    // one line if the line's height is a decision rather than a side effect of
+    // whichever child happens to be tallest today.
+    const source = code(readNode("conversation-card-node.tsx"))
+    expect(source).toMatch(/flex h-3\.5 shrink-0 items-center/)
+  })
+
+  it("keeps every 10px label in the header on one line box", () => {
+    // The model name inherits `leading-tight` from the row; the child-count
+    // badge used to override it with `leading-none` (plus `py-px`) so it
+    // wouldn't set the row's height. Same size text, one gap apart, 1.25 of
+    // baseline between them. The row states its height now, so the badge has no
+    // reason to differ.
+    const badge = code(readNode("conversation-card-node.tsx")).match(
+      /className="inline-flex shrink-0 items-center[^"]*"/
+    )
+    expect(badge, "no child-count badge found").not.toBeNull()
+    expect(badge![0]).not.toContain("leading-")
+    expect(badge![0]).not.toContain("py-px")
+  })
+
+  it("pushes a region's title down by half the padding under it", () => {
+    // The header band is REGION_HEADER_HEIGHT tall and the member grid starts a
+    // further REGION_PADDING down, so a title centred in the band sits twice as
+    // far from the first card as from the top of the region. Twelve of top
+    // padding moves a centred row down by six and evens the two out — but only
+    // while there IS a grid: a collapsed region is a bare 40-tall capsule.
+    const source = code(readNode("region-node.tsx"))
+    expect(source).toMatch(/!collapsed && "pt-3"/)
+  })
+
+  it("gives a new note the height of a collapsed card", () => {
+    // Notes annotate the board's rows, so one dropped beside a row of cards
+    // has to line up with it. Derived, not copied — a literal would go stale
+    // the next time the card's box moves.
+    const menu = code(readSource("src/components/canvas/add-node-menu.tsx"))
+    expect(menu).toMatch(/NOTE_H = CARD_HEIGHT/)
   })
 })

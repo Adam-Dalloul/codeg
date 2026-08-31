@@ -6,7 +6,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   Background,
   BackgroundVariant,
-  MiniMap,
   ReactFlow,
   ReactFlowProvider,
   SelectionMode,
@@ -66,8 +65,9 @@ import { applyMovesTo, useCanvasStore } from "@/stores/canvas-store"
 import { NOTE_H, NOTE_W } from "./add-node-menu"
 import { CanvasConversationDrawer } from "./canvas-conversation-drawer"
 import { useCanvasData } from "./canvas-data"
-import { CanvasDock, CanvasZoomPanel } from "./canvas-dock"
+import { CanvasDock, CanvasViewportPanel } from "./canvas-dock"
 import {
+  BOARD_DOT_GAP,
   DETAIL_CARD_HEIGHT,
   DETAIL_CARD_WIDTH,
   REGION_PADDING,
@@ -420,6 +420,7 @@ function CanvasFlow() {
           draftId: draft.id,
           target: draft.target,
           agentType: draft.agentType,
+          color: draft.color ?? null,
         } satisfies ConversationDraftData,
       }
     })
@@ -762,6 +763,19 @@ function CanvasFlow() {
     [setDraftsPersisted]
   )
 
+  /** Colour an unsent draft. Stored on the local draft rather than patched onto
+   *  a row, because there is no row yet — `materializeDraft` hands it to the one
+   *  the first send creates, so the colour survives the moment the card stops
+   *  being a draft. */
+  const setDraftColor = useCallback(
+    (draftId: string, color: string) => {
+      setDraftsPersisted((prev) =>
+        prev.map((d) => (d.id === draftId ? { ...d, color } : d))
+      )
+    },
+    [setDraftsPersisted]
+  )
+
   /** Re-point an unsent draft at another folder (or at chat mode). Purely local
    *  — nothing exists on the backend until the first message, so switching is
    *  just a different target for that first send. */
@@ -795,6 +809,10 @@ function CanvasFlow() {
       const created = await createNode({
         kind: "conversation",
         conversationId,
+        // The draft's colour becomes the row's, in the same write that creates
+        // it. Omitted when empty — the palette clears by re-picking, and the
+        // column's own "no colour" is null, not "".
+        ...(draft.color ? { color: draft.color } : {}),
         x: pos?.x ?? draft.x,
         y: pos?.y ?? draft.y,
         width: size?.width ?? draft.width,
@@ -932,6 +950,7 @@ function CanvasFlow() {
       setDraftSending,
       setDraftAgent,
       setDraftTarget,
+      setDraftColor,
       materializeDraft,
     }),
     [
@@ -958,6 +977,7 @@ function CanvasFlow() {
       setDraftSending,
       setDraftAgent,
       setDraftTarget,
+      setDraftColor,
       materializeDraft,
     ]
   )
@@ -1001,7 +1021,10 @@ function CanvasFlow() {
           alignCandidatesRef.current,
           // Constant on SCREEN: the same few pixels of pointer travel must
           // reach a guide whether the board is zoomed in or out.
-          ALIGN_TOLERANCE_PX / Math.max(zoomRef.current, 0.01)
+          ALIGN_TOLERANCE_PX / Math.max(zoomRef.current, 0.01),
+          // The dots, as the fallback for whichever axis found no neighbour —
+          // which on an infinite board is most of a drag.
+          BOARD_DOT_GAP
         )
         snapDx = dx
         snapDy = dy
@@ -1897,7 +1920,7 @@ function CanvasFlow() {
         >
           <Background
             variant={BackgroundVariant.Dots}
-            gap={24}
+            gap={BOARD_DOT_GAP}
             size={1.5}
             className="canvas-dots"
           />
@@ -1955,13 +1978,6 @@ function CanvasFlow() {
               </div>
             </ViewportPortal>
           )}
-          <MiniMap
-            pannable
-            zoomable
-            position="top-right"
-            className="canvas-minimap"
-            data-canvas-export-skip=""
-          />
           <CanvasDock
             onCreate={(input) => void createNode(input)}
             onNewConversation={startDraft}
@@ -1975,7 +1991,9 @@ function CanvasFlow() {
             onGroupSelection={() => void groupSelection()}
             onDeleteSelection={() => void deleteSelection()}
           />
-          <CanvasZoomPanel />
+          {/* The map lives in here too, above the zoom controls — one stack in
+              one corner, so neither has to be positioned around the other. */}
+          <CanvasViewportPanel />
         </ReactFlow>
 
         {/* Owned by the view, not by the card that opened it — see the note in

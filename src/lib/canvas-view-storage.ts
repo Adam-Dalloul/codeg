@@ -22,6 +22,7 @@ const VIEWPORT_KEY = "workspace:canvas-viewport"
 const EXPANDED_CARDS_KEY = "workspace:canvas-expanded-cards"
 const EXPANDED_REGIONS_KEY = "workspace:canvas-expanded-regions"
 const DRAFTS_KEY = "workspace:canvas-drafts"
+const MINIMAP_KEY = "workspace:canvas-minimap"
 
 /** Mirrors ReactFlow's `Viewport`. Zoom is clamped to the same range the flow
  *  is configured with, so a corrupted entry can never strand the board at a
@@ -40,6 +41,10 @@ export interface CanvasDraftCard {
   id: string
   target: { folderId: number } | { chat: true }
   agentType: AgentType
+  /** Chosen before the card has a row to store it on; carried into that row
+   *  when the first message creates it (see `materializeDraft`). Absent or
+   *  empty means no colour — the palette clears by re-picking. */
+  color?: string
   x: number
   y: number
   width: number
@@ -127,6 +132,22 @@ export function saveCanvasExpandedRegions(ids: readonly number[]): void {
   writeJson(EXPANDED_REGIONS_KEY, [...ids])
 }
 
+/**
+ * Whether the navigator map is showing above the viewport controls.
+ *
+ * Absent, corrupt, or anything but a literal `false` means shown: the map is
+ * the default because it is how a board bigger than the window stays
+ * comprehensible, and a user who has never touched the toggle should not have
+ * to find it. Only an explicit dismissal is remembered.
+ */
+export function loadCanvasMinimapVisible(): boolean {
+  return readJson(MINIMAP_KEY) !== false
+}
+
+export function saveCanvasMinimapVisible(visible: boolean): void {
+  writeJson(MINIMAP_KEY, visible)
+}
+
 function parseDraft(value: unknown): CanvasDraftCard | null {
   if (!value || typeof value !== "object") return null
   const obj = value as Record<string, unknown>
@@ -156,6 +177,11 @@ function parseDraft(value: unknown): CanvasDraftCard | null {
     id: obj.id,
     target: parsedTarget,
     agentType: obj.agentType as AgentType,
+    // Read leniently and never fatal: an unrecognised value is dropped by
+    // `normalizeFolderThemeColor` at paint time anyway, and losing a whole
+    // draft — the card AND the text typed into it — over a decoration would be
+    // wildly out of proportion.
+    ...(typeof obj.color === "string" ? { color: obj.color } : {}),
     x: obj.x,
     y: obj.y,
     width: obj.width,

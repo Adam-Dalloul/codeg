@@ -1,7 +1,19 @@
 "use client"
 
-import type { ReactNode } from "react"
-import { Panel, useReactFlow, useStore, type Node } from "@xyflow/react"
+import {
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react"
+import {
+  MiniMap,
+  Panel,
+  useReactFlow,
+  useStore,
+  type Node,
+} from "@xyflow/react"
 import {
   ChevronsDownUp,
   ChevronsUpDown,
@@ -13,6 +25,7 @@ import {
   ImageDown,
   LayoutGrid,
   Loader2,
+  Map as MapIcon,
   Maximize2,
   Minimize2,
   Palette,
@@ -31,6 +44,10 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import type { CreateCanvasNodeInput } from "@/lib/api"
+import {
+  loadCanvasMinimapVisible,
+  saveCanvasMinimapVisible,
+} from "@/lib/canvas-view-storage"
 import { cn } from "@/lib/utils"
 import { AddNodeMenu } from "./add-node-menu"
 import type {
@@ -51,8 +68,9 @@ import type { ConversationDraftData } from "./nodes/conversation-detail-node"
 /**
  * The canvas's action surface: a bottom-centred dock whose left half is always
  * the same board-level tools and whose right half is whatever the current
- * selection can do — plus the zoom pill in the corner (`CanvasZoomPanel`),
- * which is the one control that belongs nowhere near a selection.
+ * selection can do — plus the viewport stack in the corner
+ * (`CanvasViewportPanel`), the map and zoom controls that belong nowhere near a
+ * selection.
  *
  * One surface on purpose. Element actions used to be spread across a card
  * context menu, a region header dropdown and a hover button in a note's corner
@@ -62,32 +80,54 @@ import type { ConversationDraftData } from "./nodes/conversation-detail-node"
  * in the place you last saw them.
  */
 
-const DOCK_BUTTON =
-  "inline-flex size-8 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-foreground/10 hover:text-foreground disabled:pointer-events-none disabled:opacity-40"
+const DOCK_BUTTON_SHAPE =
+  "inline-flex size-8 shrink-0 items-center justify-center rounded-full transition-colors"
 
-const DOCK_BUTTON_DANGER =
-  "inline-flex size-8 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
+const DOCK_BUTTON = `${DOCK_BUTTON_SHAPE} text-muted-foreground hover:bg-foreground/10 hover:text-foreground disabled:pointer-events-none disabled:opacity-40`
+
+/** A toggle that is currently ON. Filled rather than tinted, and the same
+ *  filled-primary the dock's other on/off cell uses (`GridChoice`): a hover
+ *  wash would be indistinguishable from the pointer merely being here.
+ *
+ *  A separate class list, not extra classes appended to the one above — two
+ *  `hover:bg-*` rules of the same variant have equal specificity, so which one
+ *  wins is decided by their order in the generated stylesheet. */
+const DOCK_BUTTON_PRESSED = `${DOCK_BUTTON_SHAPE} bg-primary text-primary-foreground disabled:pointer-events-none disabled:opacity-40`
+
+const DOCK_BUTTON_DANGER = `${DOCK_BUTTON_SHAPE} text-muted-foreground hover:bg-destructive/10 hover:text-destructive`
 
 function DockButton({
   label,
   onClick,
   disabled,
   danger,
+  /** For the buttons that are toggles rather than verbs: fills the button while
+   *  it is on. The label already says which way it will go ("Hide map"), but
+   *  that only reaches someone who reads it — the state has to be visible. */
+  pressed,
   children,
 }: {
   label: string
   onClick: () => void
   disabled?: boolean
   danger?: boolean
+  pressed?: boolean
   children: ReactNode
 }) {
   return (
     <button
       type="button"
-      className={danger ? DOCK_BUTTON_DANGER : DOCK_BUTTON}
+      className={
+        danger
+          ? DOCK_BUTTON_DANGER
+          : pressed
+            ? DOCK_BUTTON_PRESSED
+            : DOCK_BUTTON
+      }
       onClick={onClick}
       disabled={disabled}
       aria-label={label}
+      aria-pressed={pressed}
       title={label}
     >
       {children}
@@ -95,15 +135,27 @@ function DockButton({
   )
 }
 
+// Matches the local idiom in `agent-selector.tsx` / `suggestion-popup.tsx`:
+// measure before paint in the browser, fall back to `useEffect` on the static
+// prerender where `useLayoutEffect` would warn.
+const useIsomorphicLayoutEffect =
+  typeof window !== "undefined" ? useLayoutEffect : useEffect
+
 /** Long enough to read as a move, short enough not to fight a second click. */
 const ZOOM_STEP_DURATION_MS = 150
+
+/** ReactFlow's own minimap proportions (200 × 150), kept as the map is resized
+ *  to the pill's width. */
+const MINIMAP_ASPECT = 150 / 200
+const MINIMAP_FALLBACK_WIDTH = 200
 
 /** Float slop: `zoomTo(2)` lands on 1.9999999999999998 often enough that an
  *  exact `>= maxZoom` would leave the button live at the stop. */
 const ZOOM_EPSILON = 0.001
 
 /**
- * Viewport zoom, in its own pill in the bottom-right corner.
+ * Everything that moves the viewport rather than the board: the navigator map
+ * and, under it, the zoom pill — one stack in the bottom-right corner.
  *
  * Deliberately NOT in the dock: the dock is a selection-driven strip whose
  * contents change as you click around the board, and a zoom readout that slides
@@ -111,52 +163,138 @@ const ZOOM_EPSILON = 0.001
  * also collided head-on with "add to canvas" — both spelled `Plus`, one row
  * apart. Circled glyphs, a fixed corner, nothing else in it.
  *
+ * The map sits with the control that shows and hides it, and both are the same
+ * kind of thing — "where am I on this board" — so they share a corner rather
+ * than facing each other across the window. That it is ONE flex column and not
+ * two separately-positioned panels is the load-bearing part: ReactFlow's panels
+ * are all absolutely positioned in the same container, and two of them in one
+ * corner have to be kept apart by hand-computed offsets that go stale the
+ * moment either one changes size.
+ *
  * Its own component so it can subscribe to the LIVE zoom: `canvas-view` keeps
  * the zoom in a ref (deliberately — the drag path reads it every frame and must
  * not re-render), so the readout has to come from ReactFlow's store instead. The
  * selector returns a number, so zustand bails out on every pan and re-renders
  * only when the zoom actually moves.
  */
-export function CanvasZoomPanel() {
+export function CanvasViewportPanel() {
   const t = useTranslations("Canvas")
   const { zoomIn, zoomOut, zoomTo } = useReactFlow()
   const zoom = useStore((s) => s.transform[2])
   const minZoom = useStore((s) => s.minZoom)
   const maxZoom = useStore((s) => s.maxZoom)
+  // Device-local, like the viewport itself — see `canvas-view-storage`. Owned
+  // here rather than by the view: nothing else on the board cares whether the
+  // map is up.
+  const [mapVisible, setMapVisible] = useState(loadCanvasMinimapVisible)
+
+  // The map is drawn as wide as the pill under it, and that width has to be
+  // MEASURED. ReactFlow sizes the minimap from `style.width`/`style.height`,
+  // which it also divides by (`boundingRect.width / elementWidth`) to build the
+  // svg's viewBox — so those two must be plain numbers; `"100%"` yields a NaN
+  // viewBox and a blank map. The pill, meanwhile, is drawn entirely in rem, and
+  // the appearance zoom works by writing a font-size onto `<html>`: any px
+  // constant here would match at 100% and drift at every other step. Reading
+  // the rendered box is the only thing that stays true at all of them (the zoom
+  // is a root font-size, not a transform, so this is real CSS px).
+  //
+  // No feedback loop: the column is `items-end`, which does not stretch its
+  // children, so the map's width cannot feed back into the pill's.
+  const pillRef = useRef<HTMLDivElement | null>(null)
+  const [pillWidth, setPillWidth] = useState(0)
+  useIsomorphicLayoutEffect(() => {
+    const el = pillRef.current
+    if (!el) return
+    const measure = () => setPillWidth(el.getBoundingClientRect().width)
+    measure()
+    // Catches the appearance zoom changing under us — the pill is rem, so a new
+    // root font-size resizes it without anything here re-rendering.
+    const observer = new ResizeObserver(measure)
+    observer.observe(el)
+    return () => observer.disconnect()
+  }, [])
+  // Only ever used where there is no layout to read (the static prerender, and
+  // jsdom): the layout effect above lands the real width before the first
+  // paint. `MINIMAP_ASPECT` is ReactFlow's own 200×150 — the ask is about the
+  // width, and a map whose height didn't follow would flatten into a strip at
+  // the larger zoom steps.
+  const mapWidth = pillWidth || MINIMAP_FALLBACK_WIDTH
 
   return (
     <Panel position="bottom-right" data-canvas-export-skip="">
-      <div
-        className="flex items-center gap-0.5 rounded-full border border-border bg-background/95 p-1 shadow-lg supports-backdrop-filter:backdrop-blur-sm"
-        role="toolbar"
-        aria-label={t("zoomControls")}
-      >
-        <DockButton
-          label={t("zoomOut")}
-          onClick={() => void zoomOut({ duration: ZOOM_STEP_DURATION_MS })}
-          disabled={zoom <= minZoom + ZOOM_EPSILON}
+      <div className="flex flex-col items-end gap-2">
+        {/* Unmounted rather than hidden: the map re-renders every node on every
+            viewport change, and a map nobody is looking at should not be paying
+            for that.
+
+            The inline style is load-bearing and deliberately NOT a stylesheet
+            rule. MiniMap renders its own ReactFlow `<Panel>`, which the vendor
+            stylesheet makes `position: absolute; margin: 15px` — inside THIS
+            panel that drops it straight onto the buttons below. An override in
+            `globals.css` wins on specificity but only if it arrives, and the
+            dev server has served a stale CSS chunk for this exact rule; an
+            inline style is immune to which chunk turned up and to any later
+            cascade layer. `width`/`height` are here for a different reason:
+            MiniMap reads them to size its svg AND to build its viewBox, so they
+            are the only way to give the map a size at all. */}
+        {mapVisible && (
+          <MiniMap
+            pannable
+            zoomable
+            className="canvas-minimap shadow-lg"
+            style={{
+              position: "static",
+              margin: 0,
+              width: mapWidth,
+              height: Math.round(mapWidth * MINIMAP_ASPECT),
+            }}
+          />
+        )}
+        <div
+          ref={pillRef}
+          className="flex items-center gap-0.5 rounded-full border border-border bg-background/95 p-1 shadow-lg supports-backdrop-filter:backdrop-blur-sm"
+          role="toolbar"
+          aria-label={t("viewportControls")}
         >
-          <CircleMinus className="size-4" />
-        </DockButton>
-        {/* The readout doubles as "back to 100%" — the one zoom level a user
-            asks for by name. Fixed width so 8% → 100% → 200% doesn't shove the
-            neighbouring buttons sideways as the board moves. */}
-        <button
-          type="button"
-          className="inline-flex h-8 w-12 shrink-0 items-center justify-center rounded-full font-mono text-[0.6875rem] text-muted-foreground transition-colors hover:bg-foreground/10 hover:text-foreground"
-          onClick={() => void zoomTo(1, { duration: ZOOM_STEP_DURATION_MS })}
-          aria-label={t("resetZoom")}
-          title={t("resetZoom")}
-        >
-          {Math.round(zoom * 100)}%
-        </button>
-        <DockButton
-          label={t("zoomIn")}
-          onClick={() => void zoomIn({ duration: ZOOM_STEP_DURATION_MS })}
-          disabled={zoom >= maxZoom - ZOOM_EPSILON}
-        >
-          <CirclePlus className="size-4" />
-        </DockButton>
+          <DockButton
+            label={mapVisible ? t("hideMinimap") : t("showMinimap")}
+            pressed={mapVisible}
+            onClick={() => {
+              const next = !mapVisible
+              setMapVisible(next)
+              saveCanvasMinimapVisible(next)
+            }}
+          >
+            <MapIcon className="size-4" />
+          </DockButton>
+          <DockDivider />
+          <DockButton
+            label={t("zoomOut")}
+            onClick={() => void zoomOut({ duration: ZOOM_STEP_DURATION_MS })}
+            disabled={zoom <= minZoom + ZOOM_EPSILON}
+          >
+            <CircleMinus className="size-4" />
+          </DockButton>
+          {/* The readout doubles as "back to 100%" — the one zoom level a user
+              asks for by name. Fixed width so 8% → 100% → 200% doesn't shove
+              the neighbouring buttons sideways as the board moves. */}
+          <button
+            type="button"
+            className="inline-flex h-8 w-12 shrink-0 items-center justify-center rounded-full font-mono text-[0.6875rem] text-muted-foreground transition-colors hover:bg-foreground/10 hover:text-foreground"
+            onClick={() => void zoomTo(1, { duration: ZOOM_STEP_DURATION_MS })}
+            aria-label={t("resetZoom")}
+            title={t("resetZoom")}
+          >
+            {Math.round(zoom * 100)}%
+          </button>
+          <DockButton
+            label={t("zoomIn")}
+            onClick={() => void zoomIn({ duration: ZOOM_STEP_DURATION_MS })}
+            disabled={zoom >= maxZoom - ZOOM_EPSILON}
+          >
+            <CirclePlus className="size-4" />
+          </DockButton>
+        </div>
       </div>
     </Panel>
   )
@@ -351,6 +489,7 @@ function CardActions({
     deleteNode,
     openConversation,
     openConversationDrawer,
+    patchNode,
   } = useCanvasView()
   const conversation = data.conversation
   const { pinDbId, regionDbId } = data
@@ -405,6 +544,21 @@ function CardActions({
       >
         <ExternalLink className="size-4" />
       </DockButton>
+      {/* Only a pinned card: colour lives on the canvas row, and a member card
+          has none of its own — it wears its region's, which is set from the
+          region's own palette. Offered in both forms, since the colour follows
+          the card when it expands. */}
+      {pinDbId != null && (
+        <DockMenu
+          label={t("color")}
+          trigger={<ColorDot value={data.color ?? null} className="size-4" />}
+        >
+          <ColorPalette
+            value={data.color ?? null}
+            onSelect={(color) => void patchNode(pinDbId, { color })}
+          />
+        </DockMenu>
+      )}
       {regionDbId != null && (
         <>
           <DockButton
@@ -439,19 +593,37 @@ function CardActions({
 
 function DraftActions({ data }: { data: ConversationDraftData }) {
   const t = useTranslations("Canvas")
-  const { dismissDraft, sendingDrafts } = useCanvasView()
+  const { dismissDraft, sendingDrafts, setDraftColor } = useCanvasView()
   // Nothing to discard once the first send is minting the row: `dismissDraft`
   // refuses anyway, and a button that silently does nothing is worse than no
   // button. The card's own control disappears for the same window.
+  //
+  // The palette goes with it, and deliberately: through that window the draft
+  // is turning into a persisted card, and a colour picked mid-flight would have
+  // to race the `createNode` that is already carrying the old one. It comes
+  // straight back on the card itself, from its own row.
   if (sendingDrafts.has(data.draftId)) return null
   return (
-    <DockButton
-      label={t("discardDraft")}
-      danger
-      onClick={() => dismissDraft(data.draftId)}
-    >
-      <X className="size-4" />
-    </DockButton>
+    <>
+      {/* Same picker the other elements get. A draft has no row yet, so this
+          one writes to the local draft — see `setDraftColor`. */}
+      <DockMenu
+        label={t("color")}
+        trigger={<ColorDot value={data.color ?? null} className="size-4" />}
+      >
+        <ColorPalette
+          value={data.color ?? null}
+          onSelect={(color) => setDraftColor(data.draftId, color)}
+        />
+      </DockMenu>
+      <DockButton
+        label={t("discardDraft")}
+        danger
+        onClick={() => dismissDraft(data.draftId)}
+      >
+        <X className="size-4" />
+      </DockButton>
+    </>
   )
 }
 
@@ -559,10 +731,32 @@ export function CanvasDock({
           "rounded-full border border-border bg-background/95 p-1 shadow-lg supports-backdrop-filter:backdrop-blur-sm"
         )}
         // The strip is CENTRED, so half of whatever it grows to reaches toward
-        // the corner the zoom pill sits in. Folding early is the price of never
-        // hiding a control under another one; `18rem` is two pill widths plus
-        // both panel margins.
-        style={{ maxWidth: `max(15rem, calc(${boardWidth}px - 18rem))` }}
+        // the corner the viewport panel sits in. Folding early is the price of
+        // never hiding a control under another one.
+        //
+        // The corner is ONE width in one unit: the map is drawn to the pill's
+        // measured width, so whether it is up or not, that corner is exactly
+        // the pill — `10.5rem` of rem-scaled boxes plus `3px` that isn't (the
+        // divider's hairline and the pill's two borders). No overlap needs
+        // `W <= X - 30px - 2C`, hence the reserve below: `2 × 10.5rem` and
+        // `2 × 3px + two 15px panel margins`. Exact at every zoom step, where
+        // the old two-armed `max()` was a bound that had to over-reserve at one
+        // end to be safe at the other.
+        //
+        // Two, not three, panel margins: a bottom-centre panel gets `left: 50%`
+        // — which positions its MARGIN edge — and then a `translateX(-15px)`
+        // that exists to cancel exactly that margin, so this strip is truly
+        // centred and its own 15px never reaches the corner. Only the corner
+        // panel's margin is real here, counted once on each side.
+        //
+        // The floor is a threshold, not a guarantee: a centred box with a
+        // minimum width always reaches a corner box eventually, and below
+        // `floor + reserve` of board there is no arrangement that fits both.
+        // `9rem` keeps four buttons on a row and puts that point at ~516px of
+        // board — narrow enough that the window, not the fold, is the problem.
+        style={{
+          maxWidth: `max(9rem, calc(${boardWidth}px - 21rem - 36px))`,
+        }}
         role="toolbar"
         aria-label={t("canvasActions")}
       >

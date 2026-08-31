@@ -44,6 +44,18 @@ describe("what a pan does to the board's chrome", () => {
     ).toMatch(/transition:\s*opacity/)
   })
 
+  it("leaves the map's positioning to the component", () => {
+    // What takes the map out of its own Panel's absolute positioning is an
+    // inline style (see `canvas-viewport-panel.test`), because a stylesheet
+    // rule only wins if it arrives — the dev server served a stale chunk of
+    // this very rule once, and the map landed on the buttons. Two owners of one
+    // layout decision is how that gets missed, so this file asserts the rule
+    // does NOT try to own it.
+    const body = ruleBody(/\.canvas-surface\s+\.canvas-minimap\s*\{([^}]*)\}/)
+    expect(body).not.toMatch(/position:/)
+    expect(body).not.toMatch(/margin:/)
+  })
+
   it("still forces the grabbing cursor everywhere", () => {
     // Every element on the board declares its own cursor (a card's text, the
     // composer), so this one has to beat all of them — it is what makes the

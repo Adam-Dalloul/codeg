@@ -94,6 +94,9 @@ export interface CanvasViewContextValue {
   setDraftAgent: (draftId: string, agentType: AgentType) => void
   /** Switch a draft's target folder (or chat mode) before its first message. */
   setDraftTarget: (draftId: string, target: NewConversationTarget) => void
+  /** Colour a draft. Held on the local draft — it has no row yet — and handed
+   *  to the row its first send creates. Empty string clears it. */
+  setDraftColor: (draftId: string, color: string) => void
   /** The draft's first send created a row: persist the card in its place. */
   materializeDraft: (draftId: string, conversationId: number) => Promise<void>
 }

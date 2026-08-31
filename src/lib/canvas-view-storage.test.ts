@@ -4,9 +4,11 @@ import {
   CANVAS_MIN_ZOOM,
   loadCanvasDrafts,
   loadCanvasExpandedCards,
+  loadCanvasMinimapVisible,
   loadCanvasViewport,
   saveCanvasDrafts,
   saveCanvasExpandedCards,
+  saveCanvasMinimapVisible,
   saveCanvasViewport,
   type CanvasDraftCard,
 } from "./canvas-view-storage"
@@ -21,6 +23,7 @@ import {
 const VIEWPORT_KEY = "workspace:canvas-viewport"
 const CARDS_KEY = "workspace:canvas-expanded-cards"
 const DRAFTS_KEY = "workspace:canvas-drafts"
+const MINIMAP_KEY = "workspace:canvas-minimap"
 
 describe("canvas view storage", () => {
   beforeEach(() => {
@@ -123,6 +126,39 @@ describe("canvas view storage", () => {
     expect(loaded[0].x).toBe(0)
   })
 
+  it("remembers a draft's colour without ever failing a draft over it", () => {
+    // The colour has nowhere else to live until the first send creates the row
+    // that will hold it, so it has to survive a reload here.
+    const draft: CanvasDraftCard = {
+      id: "abc",
+      target: { chat: true },
+      agentType: "codex",
+      color: "sky",
+      x: 0,
+      y: 0,
+      width: 520,
+      height: 560,
+    }
+    saveCanvasDrafts([draft])
+    expect(loadCanvasDrafts()).toEqual([draft])
+
+    localStorage.setItem(
+      DRAFTS_KEY,
+      JSON.stringify([
+        // Junk in the one field that is pure decoration. Dropping the draft
+        // would take the card AND the text typed into it with it — the colour
+        // is simply forgotten instead, and an unknown name would be ignored at
+        // paint time anyway.
+        { ...draft, id: "wrong-type", color: 7 },
+        { ...draft, id: "unknown-name", color: "not-a-colour" },
+      ])
+    )
+    const loaded = loadCanvasDrafts()
+    expect(loaded.map((d) => d.id)).toEqual(["wrong-type", "unknown-name"])
+    expect(loaded[0].color).toBeUndefined()
+    expect(loaded[1].color).toBe("not-a-colour")
+  })
+
   it("clears the draft entry rather than storing an empty list", () => {
     saveCanvasDrafts([
       {
@@ -137,5 +173,25 @@ describe("canvas view storage", () => {
     ])
     saveCanvasDrafts([])
     expect(localStorage.getItem(DRAFTS_KEY)).toBeNull()
+  })
+
+  it("shows the navigator map until it is explicitly dismissed", () => {
+    // The asymmetry is the point: this is the one entry whose default is ON, so
+    // "nothing remembered" has to mean shown. Reading it as a plain truthiness
+    // check would hide the map for every user who has never opened the canvas.
+    expect(loadCanvasMinimapVisible()).toBe(true)
+    localStorage.setItem(MINIMAP_KEY, "null")
+    expect(loadCanvasMinimapVisible()).toBe(true)
+    localStorage.setItem(MINIMAP_KEY, "not json")
+    expect(loadCanvasMinimapVisible()).toBe(true)
+    localStorage.setItem(MINIMAP_KEY, '"false"')
+    expect(loadCanvasMinimapVisible()).toBe(true)
+  })
+
+  it("round-trips a dismissed map", () => {
+    saveCanvasMinimapVisible(false)
+    expect(loadCanvasMinimapVisible()).toBe(false)
+    saveCanvasMinimapVisible(true)
+    expect(loadCanvasMinimapVisible()).toBe(true)
   })
 })

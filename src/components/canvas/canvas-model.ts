@@ -46,6 +46,12 @@ export const REGION_COLLAPSED_HEIGHT = 40
  *  reserves — not an overlay — so the last card row is never covered by it. */
 export const REGION_FOOTER_HEIGHT = 36
 
+/** Spacing of the dot lattice the board is drawn on. One constant for two
+ *  consumers — the `<Background>` that paints the dots and the drag snapping
+ *  that lands elements on them (`computeAlignment`'s `gridGap`). Split them and
+ *  the board would snap to dots that aren't where it drew any. */
+export const BOARD_DOT_GAP = 24
+
 /** Footprint a pinned card takes when expanded into a live conversation. Used
  *  only while the stored geometry is still the SUMMARY footprint — once the
  *  user resizes a detail card, their size is what persists and wins. */
@@ -499,16 +505,24 @@ function edgesY(r: CanvasRect): number[] {
  * distance it wants by the current zoom: a fixed flow tolerance would feel
  * sticky when zoomed in and unreachable when zoomed out, because the same 6px
  * of pointer travel covers a different amount of board.
+ *
+ * `gridGap` adds the board's dot lattice as a per-axis FALLBACK: an axis that
+ * found nothing to align to lands its leading edge on the nearest dot instead
+ * of nowhere in particular. Elements win over dots because the user put the
+ * elements there; the dots are what's left when there is nothing else, which is
+ * most of an infinite board.
  */
 export function computeAlignment(
   moving: CanvasRect,
   others: readonly CanvasRect[],
-  tolerance: number
+  tolerance: number,
+  gridGap?: number
 ): AlignmentResult {
   // `!(> 0)` rather than `<= 0`: a NaN tolerance (a zoom that hasn't been read
   // yet divides into one) would pass every comparison below and snap the
   // element to the first candidate it saw.
-  if (!(tolerance > 0) || others.length === 0) return NO_ALIGNMENT
+  if (!(tolerance > 0)) return NO_ALIGNMENT
+  if (others.length === 0 && !(gridGap && gridGap > 0)) return NO_ALIGNMENT
 
   let bestX: { delta: number; at: number; other: CanvasRect } | null = null
   let bestY: { delta: number; at: number; other: CanvasRect } | null = null
@@ -534,15 +548,30 @@ export function computeAlignment(
     }
   }
 
+  // The lattice, on whichever axis is still free. Its own tolerance is capped
+  // at a quarter of the gap: the caller's is a screen distance divided by the
+  // zoom, so a board at 50% would hand over half a gap — a capture zone
+  // covering the entire lattice, and no way left to put anything BETWEEN two
+  // dots. A quarter caps the zone at half, which still feels magnetic.
+  const gridDx =
+    gridGap && gridGap > 0 && !bestX
+      ? snapToLattice(moving.x, gridGap, Math.min(tolerance, gridGap / 4))
+      : 0
+  const gridDy =
+    gridGap && gridGap > 0 && !bestY
+      ? snapToLattice(moving.y, gridGap, Math.min(tolerance, gridGap / 4))
+      : 0
+
+  const dx = bestX?.delta ?? gridDx
+  const dy = bestY?.delta ?? gridDy
+
   // Both guides span the box as it will FINALLY sit — with both corrections
-  // applied, not just their own axis's. Using a half-snapped box makes a guide
-  // stop short of (or overshoot) the element it claims to touch by the other
-  // axis's delta, which is exactly the case where the user is watching closely.
-  const snapped: CanvasRect = {
-    ...moving,
-    x: moving.x + (bestX?.delta ?? 0),
-    y: moving.y + (bestY?.delta ?? 0),
-  }
+  // applied, not just their own axis's, and a LATTICE correction on the other
+  // axis counts just as much as an element one. Using a half-snapped box makes
+  // a guide stop short of (or overshoot) the element it claims to touch by the
+  // other axis's delta, which is exactly the case where the user is watching
+  // closely.
+  const snapped: CanvasRect = { ...moving, x: moving.x + dx, y: moving.y + dy }
   const guides: AlignmentGuide[] = []
   if (bestX) {
     guides.push({
@@ -566,7 +595,17 @@ export function computeAlignment(
       ),
     })
   }
-  return { dx: bestX?.delta ?? 0, dy: bestY?.delta ?? 0, guides }
+  // No guide for a lattice snap: the dots are already drawn, and a hairline to
+  // one of them would be a line the user cannot act on.
+  return { dx, dy, guides }
+}
+
+/** Nudge onto the nearest multiple of `gap`, or 0 if the nearest one is further
+ *  than `tolerance` away. */
+function snapToLattice(value: number, gap: number, tolerance: number): number {
+  if (!(tolerance > 0)) return 0
+  const delta = Math.round(value / gap) * gap - value
+  return Math.abs(delta) <= tolerance ? delta : 0
 }
 
 /**
@@ -644,10 +683,13 @@ export interface ConversationCardData {
    *  so offering "remove from region" there is offering a button that can only
    *  fail. */
   regionOwnsMembers?: boolean
-  /** The owning region's colour. A region's colour tints everything it holds,
-   *  not just its own frame, so the member card has to know it — member cards
-   *  are separate RF nodes, not children of the region's DOM. */
-  regionColor?: string | null
+  /** The colour this card wears, whatever its source: a pinned card's own row
+   *  (`canvas_node.color`, which every kind has), or — for a member card — the
+   *  region that holds it, since a region's colour tints everything inside it
+   *  and member cards are separate RF nodes rather than children of the
+   *  region's DOM. A member has no row of its own to colour, which is also why
+   *  the dock only offers the palette on a pinned card. */
+  color?: string | null
   /** The conversation's folder, resolved for display: a worktree shows its
    *  parent repo's name, so the card reads "repo + branch" the way the composer
    *  row does. `null` for a folderless chat conversation (its hidden chat folder
@@ -844,6 +886,7 @@ export function deriveFlowGraph(input: DeriveFlowInput): DeriveFlowResult {
           conversation,
           conversationId: dbNode.conversation_id ?? -1,
           pinDbId: dbNode.id,
+          color: dbNode.color,
           folderName: cardFolderName(conversation),
           unresolved: unresolvedPin,
         } satisfies ConversationCardData,
@@ -969,7 +1012,7 @@ export function deriveFlowGraph(input: DeriveFlowInput): DeriveFlowResult {
           conversationId: conversation.id,
           regionDbId: dbNode.id,
           regionOwnsMembers: dbNode.kind === "custom",
-          regionColor: dbNode.color,
+          color: dbNode.color,
           folderName: cardFolderName(conversation),
           unresolved: false,
         } satisfies ConversationCardData,

@@ -29,8 +29,9 @@ export type ConversationCardFlowNode = Node<
  * the root font-size, so a rem box would outgrow its grid slot and overlap its
  * neighbours, and rem CONTENTS in a flow-unit box would outgrow the box — which
  * is exactly how this card ended up clipping a title through the middle of a
- * line. The numbers below (a 132-tall box holding 51.75 of chrome and four
- * 17.875 title lines) only hold because of that.
+ * line. The numbers below (a 132-tall box holding 59.75 of chrome — border
+ * included, since everything here is `border-box` — and four 17.875 title
+ * lines) only hold because of that.
  *
  * The card is deliberately quiet: hover moves the border and nothing else. It
  * carries no menu and no hover bubble — right-click is the pan gesture on this
@@ -40,7 +41,6 @@ export type ConversationCardFlowNode = Node<
 export const ConversationCardNode = memo(function ConversationCardNode({
   data,
   selected,
-  dragging,
 }: NodeProps<ConversationCardFlowNode>) {
   const t = useTranslations("Canvas")
   const { selectedConversationIds, deleteNode } = useCanvasView()
@@ -83,31 +83,35 @@ export const ConversationCardNode = memo(function ConversationCardNode({
     <div
       className={cn(
         // `canvas-board-units` is what makes the arithmetic below a constant:
-        // the chrome costs 51.75 of the box's 132 at every appearance zoom, so
+        // the chrome costs 59.75 of the box's 132 at every appearance zoom, so
         // the title's four lines always fit and never get sliced.
+        //
+        // Nothing here reacts to `dragging`. A card being dragged is already
+        // selected — ReactFlow selects before it moves anything — so the ring
+        // says so, and a card that also tilts is a sticker effect on an element
+        // whose whole job is to land on an exact grid slot.
         "canvas-board-units flex h-full w-full flex-col overflow-hidden rounded-xl border bg-card px-2.5 py-2 transition-colors",
         "border-foreground/15 hover:border-foreground/30",
         running &&
           "ring-1 ring-primary/30 motion-safe:[animation:canvas-breathe_2.6s_ease-in-out_infinite]",
         selected && "border-primary ring-2 ring-primary/25",
-        mirrored && "border-primary/50 ring-2 ring-primary/15",
-        dragging && "-rotate-1"
+        mirrored && "border-primary/50 ring-2 ring-primary/15"
       )}
     >
-      {/* The owning region's colour, carried in through node data. Lighter than
-          the region's own wash: this sits on the card's OPAQUE surface (the
-          region's is on a translucent frame), so the same opacity would read as
-          a slab and drown the title. */}
-      <ColorWash
-        color={data.regionColor}
-        className="rounded-xl"
-        opacity={0.08}
-      />
-      {/* `leading-tight` so the row is as tall as its ICONS: the model name is
-          10px text, but at the inherited 1.5 line-height its line box is taller
-          than the 14px icons beside it and would quietly set the row's
-          height. */}
-      <div className="relative flex shrink-0 items-center gap-1.5 leading-tight">
+      {/* The card's colour: its own if it is pinned, its region's if it is a
+          member (see `ConversationCardData.color`). Lighter than a region's own
+          wash — this sits on the card's OPAQUE surface where the region's sits
+          on a translucent frame, so the same opacity would read as a slab and
+          drown the title. */}
+      <ColorWash color={data.color} className="rounded-xl" opacity={0.08} />
+      {/* One row, one height, one line box. `h-3.5` states the height rather
+          than letting the tallest child discover it — with `items-center` that
+          is what actually centres four things of four different sizes (a 14px
+          mark, a 6px dot, 10px text, a pill) on one line. `leading-tight` is
+          inherited by every piece of text in here, so the model name and the
+          badge's count share a baseline; at the board's 1.5 the 10px text would
+          also outgrow the icons beside it. */}
+      <div className="relative flex h-3.5 shrink-0 items-center gap-1.5 leading-tight">
         <AgentIcon
           agentType={conversation.agent_type}
           className="size-3.5 shrink-0"
@@ -132,10 +136,12 @@ export const ConversationCardNode = memo(function ConversationCardNode({
         </span>
         {conversation.child_count > 0 && (
           <span
-            // `leading-none`, not a line-height taller than the icons it sits
-            // with: this badge would otherwise SET the row's height and take the
-            // extra out of the title below it.
-            className="inline-flex shrink-0 items-center gap-0.5 rounded-full bg-primary/10 px-1.5 py-px font-mono text-[10px] font-medium leading-none text-primary"
+            // No line-height or padding of its own: the count and the model
+            // name are the same 10px text one gap apart, so they have to sit in
+            // the same line box or their baselines disagree by the difference.
+            // It used to say `leading-none py-px` to keep from setting the
+            // row's height — the row states its own height now, so it can't.
+            className="inline-flex shrink-0 items-center gap-0.5 rounded-full bg-primary/10 px-1.5 font-mono text-[10px] font-medium text-primary"
             title={t("childCount", {
               count: conversation.child_count,
             })}
@@ -145,16 +151,23 @@ export const ConversationCardNode = memo(function ConversationCardNode({
           </span>
         )}
       </div>
-      {/* Four lines: 51.75 of the box's 132 goes to the chrome above and below,
-          which leaves 80.25 — room for four 17.875 lines with a little over
-          half a line to spare. Fewer would truncate a title the card has the
-          space to show (the whole complaint), more would be clipped through the
-          middle of a line by `line-clamp`, which clips to the BOX and not to
-          whole lines. The leftover belongs to the footer's `mt-auto`, so it
-          reads as separation rather than a blank line, and `min-h-0` keeps the
+      {/* Four lines, with the same 7 above as below — this margin and the
+          footer's `pt-[7px]` are one decision, not two, and 7 is what the box
+          affords rather than a taste. The node wrapper is 132 and everything
+          here is `border-box`, so the 1px border and the 16 of `py-2` come off
+          the top: 114 to spend, of which the icon row takes 14, four 17.875
+          title lines take 71.5 and the footer takes 13.75, leaving 14.75 for
+          the two gaps. Splitting that evenly is the point — it used to fall
+          entirely into the footer's `mt-auto`, which is 4 above the title and
+          12.75 below, and made a full card look like it was sliding upwards.
+
+          Four is also the ceiling: `line-clamp` clips to the BOX rather than to
+          whole lines, so a budget half a line short doesn't truncate, it slices
+          the last line lengthwise — which is what an 8 here would do, by 1.25.
+          The 0.75 left over still goes to `mt-auto`, and `min-h-0` keeps the
           order of sacrifice right if a future row ever overflows: the title
           gives, the two metadata rows don't. */}
-      <p className="relative mt-1 line-clamp-4 min-h-0 text-[13px] font-medium leading-snug">
+      <p className="relative mt-[7px] line-clamp-4 min-h-0 text-[13px] font-medium leading-snug">
         {title}
       </p>
       {/* Where the conversation lives: folder on the left, branch on the right.
@@ -162,7 +175,7 @@ export const ConversationCardNode = memo(function ConversationCardNode({
           a non-git folder has no branch), so neither is allowed to reserve space
           the other could use — hence `min-w-0` on each and `justify-between`
           rather than a fixed spacer. */}
-      <div className="relative mt-auto flex min-w-0 shrink-0 items-center justify-between gap-1.5 pt-1 text-[11px] leading-tight text-muted-foreground">
+      <div className="relative mt-auto flex min-w-0 shrink-0 items-center justify-between gap-1.5 pt-[7px] text-[11px] leading-tight text-muted-foreground">
         {data.folderName ? (
           <span
             className="flex min-w-0 items-center gap-0.5"

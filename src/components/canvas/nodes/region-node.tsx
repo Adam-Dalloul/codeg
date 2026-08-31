@@ -152,7 +152,18 @@ export const RegionNode = memo(function RegionNode({
         }
       />
       <div
-        className="relative flex shrink-0 items-center gap-1.5 px-3"
+        className={cn(
+          "relative flex shrink-0 items-center gap-1.5 px-3",
+          // The band is 40 and the grid below it starts at 40 + REGION_PADDING,
+          // so a title centred in the band has 10.25 above it and 22.25 to the
+          // first card — it reads as pinned to the top of the region. Twelve of
+          // top padding moves a centred row down by six, which is exactly half
+          // the padding that follows, and both gaps land on 16.25.
+          //
+          // Not when collapsed: the region is then a 40-tall capsule with
+          // nothing under it, and there is no gap below to compensate for.
+          !collapsed && "pt-3"
+        )}
         style={{ height: REGION_HEADER_HEIGHT }}
       >
         {headerIcon}

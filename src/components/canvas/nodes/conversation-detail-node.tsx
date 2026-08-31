@@ -18,6 +18,7 @@ import {
   type ConversationCardData,
   type NewConversationTarget,
 } from "../canvas-model"
+import { ColorWash } from "../canvas-swatches"
 import { useCanvasView } from "../canvas-view-context"
 import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
 
@@ -30,6 +31,9 @@ export interface ConversationDraftData {
   draftId: string
   target: NewConversationTarget
   agentType: AgentType
+  /** Set before the card has a row of its own; the send that mints the row
+   *  carries it over, so the colour outlives the draft. */
+  color?: string | null
   [key: string]: unknown
 }
 
@@ -57,6 +61,7 @@ function DetailFrame({
   selected,
   title,
   icon,
+  color,
   actions,
   onResizeEnd,
   onActivate,
@@ -65,6 +70,9 @@ function DetailFrame({
   selected?: boolean
   title: React.ReactNode
   icon?: React.ReactNode
+  /** The card's colour, same row and same wash as its collapsed form — a
+   *  colour that vanished on expanding would read as having been lost. */
+  color?: string | null
   actions: React.ReactNode
   onResizeEnd?: (geometry: {
     x: number
@@ -96,6 +104,10 @@ function DetailFrame({
         if (e.button === 0) onActivate?.()
       }}
     >
+      {/* Behind the whole window, clipped to its radius. The two rows below say
+          `relative` for this: the wash is a positioned box and would otherwise
+          paint over static siblings — i.e. over the entire conversation. */}
+      <ColorWash color={color} className="rounded-2xl" opacity={0.08} />
       {onResizeEnd && (
         <NodeResizer
           isVisible={Boolean(selected)}
@@ -116,7 +128,7 @@ function DetailFrame({
       <div
         className={cn(
           DRAG_HANDLE_CLASS,
-          "flex h-9 shrink-0 cursor-grab items-center gap-1.5 border-b border-border/70 px-2.5 select-none active:cursor-grabbing"
+          "relative flex h-9 shrink-0 cursor-grab items-center gap-1.5 border-b border-border/70 px-2.5 select-none active:cursor-grabbing"
         )}
       >
         {icon}
@@ -125,7 +137,7 @@ function DetailFrame({
         </span>
         {actions}
       </div>
-      <div className="flex min-h-0 flex-1 flex-col">{children}</div>
+      <div className="relative flex min-h-0 flex-1 flex-col">{children}</div>
     </div>
   )
 }
@@ -172,6 +184,7 @@ export const ConversationDetailNode = memo(function ConversationDetailNode({
   return (
     <DetailFrame
       selected={selected}
+      color={data.color}
       onActivate={live ? undefined : () => activateSurface(contextKey)}
       icon={
         <>
@@ -270,6 +283,7 @@ export const ConversationDraftNode = memo(function ConversationDraftNode({
   return (
     <DetailFrame
       selected={selected}
+      color={data.color}
       onActivate={live ? undefined : () => activateSurface(contextKey)}
       icon={
         <AgentIcon agentType={data.agentType} className="size-3.5 shrink-0" />

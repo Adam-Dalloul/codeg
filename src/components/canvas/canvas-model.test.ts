@@ -20,6 +20,7 @@ import {
   regionHeightForRows,
   regionWidthForColumns,
   rowsForRegionHeight,
+  BOARD_DOT_GAP,
   compareByRecency,
   computeAlignment,
   computeRegionMembers,
@@ -399,6 +400,76 @@ describe("computeAlignment", () => {
   it("does nothing without candidates or with a zero tolerance", () => {
     expect(computeAlignment(box(0, 0), [], 6).guides).toEqual([])
     expect(computeAlignment(box(196, 0), [box(200, 0)], 0).dx).toBe(0)
+  })
+
+  describe("the dot lattice", () => {
+    // The board is drawn on a grid of dots (BOARD_DOT_GAP), and most of a drag
+    // happens nowhere near another element. The lattice is what an axis falls
+    // back to so a card put down on empty board still lands on something.
+
+    it("snaps to the nearest dot with nothing else in range", () => {
+      // 3 past a dot at 96, 4 shy of one at 216.
+      const r = computeAlignment(box(99, 212), [], 6, BOARD_DOT_GAP)
+      expect(r.dx).toBe(-3)
+      expect(r.dy).toBe(4)
+    })
+
+    it("still snaps when there are no candidates at all", () => {
+      // The empty-board case is the one that matters most, and it used to be an
+      // early return.
+      expect(computeAlignment(box(97, 0), [], 6, BOARD_DOT_GAP).dx).toBe(-1)
+    })
+
+    it("lets a neighbour win the axis it is on", () => {
+      // Left edge 2 shy of a neighbour's AND 1 past a dot: the neighbour wins,
+      // because the user put the neighbour there. The other axis is free, so it
+      // still takes the lattice.
+      const r = computeAlignment(box(97, 99), [box(99, 900)], 6, BOARD_DOT_GAP)
+      expect(r.dx).toBe(2)
+      expect(r.dy).toBe(-3)
+    })
+
+    it("draws no guide for a lattice snap", () => {
+      // The dots are already on screen; a hairline to one of them would be a
+      // line the user cannot act on.
+      expect(
+        computeAlignment(box(99, 99), [], 6, BOARD_DOT_GAP).guides
+      ).toEqual([])
+    })
+
+    it("caps its reach at a quarter of the gap", () => {
+      // The caller's tolerance is a screen distance over the zoom, so a board at
+      // 50% hands over 12 — half a gap, which would make every point on the
+      // board within reach of a dot and leave no way to sit between two. 8 away
+      // from a dot must NOT snap even though the caller allowed 12.
+      const r = computeAlignment(box(104, 0), [], 12, BOARD_DOT_GAP)
+      expect(r.dx).toBe(0)
+      // 5 away is inside the cap of 6, and still snaps.
+      expect(computeAlignment(box(101, 0), [], 12, BOARD_DOT_GAP).dx).toBe(-5)
+    })
+
+    it("spans a guide across the box as the lattice will leave it", () => {
+      // A guide is drawn along the axis that matched an element, but it spans
+      // the OTHER axis — where a lattice snap may just have moved the box. Left
+      // it out and the hairline stops short of (or runs past) the very edge it
+      // claims to touch, by up to the capture distance.
+      const r = computeAlignment(
+        { x: 97, y: 99, width: 100, height: 100 },
+        [{ x: 99, y: 400, width: 100, height: 100 }],
+        6,
+        BOARD_DOT_GAP
+      )
+      expect(r.dy).toBe(-3) // 99 → 96, the nearest dot
+      expect(r.guides).toEqual([
+        { axis: "x", at: 99, from: 96, to: 500 }, // 96, not 99
+      ])
+    })
+
+    it("is off unless a gap is passed", () => {
+      // Every other caller of this function (there is one, but still) gets the
+      // old behaviour untouched.
+      expect(computeAlignment(box(99, 99), [], 6).dx).toBe(0)
+    })
   })
 })
 
@@ -835,6 +906,39 @@ describe("region grid geometry", () => {
   it("never reports zero columns for a frame narrower than one card", () => {
     expect(columnsForRegionWidth(10)).toBe(1)
     expect(rowsForRegionHeight(10)).toBe(1)
+  })
+})
+
+describe("deriveFlowGraph — the colour a card wears", () => {
+  // `canvas_node.color` belongs to every kind of row, so a pinned card can be
+  // coloured like a region or a note. A member card has no row of its own —
+  // members are ids on the region's row — so it wears the region's, which is
+  // also why the dock only offers the palette on a pinned card.
+  it("gives a pinned card its own row's colour", () => {
+    const pin = node(1, {
+      kind: "conversation",
+      conversation_id: 10,
+      color: "amber",
+    })
+    const { nodes } = deriveFlowGraph({
+      dbNodes: [pin],
+      conversations: [conv(10)],
+      allFolders: [folder(1)],
+      ...NO_DRAG,
+    })
+    expect((nodes[0].data as ConversationCardData).color).toBe("amber")
+  })
+
+  it("gives a member card the colour of the region holding it", () => {
+    const region = node(1, { kind: "folder", folder_id: 1, color: "violet" })
+    const { nodes } = deriveFlowGraph({
+      dbNodes: [region],
+      conversations: [conv(10)],
+      allFolders: [folder(1)],
+      ...NO_DRAG,
+    })
+    const member = nodes.find((n) => n.type === "conversationCard")!
+    expect((member.data as ConversationCardData).color).toBe("violet")
   })
 })
 

@@ -2876,6 +2876,11 @@ div.monaco-diff-editor.side-by-side .editor.modified {
 .canvas-surface .canvas-dots circle {
   fill: var(--canvas-dot-color);
 }
+/* Appearance only. What takes the map OUT of the absolute positioning its own
+   `<Panel>` wrapper comes with — so it can stack above the zoom controls rather
+   than land on them — is an inline style on the component, deliberately: see
+   the note in `canvas-dock`. Do not re-add `position`/`margin` here; two owners
+   of one layout decision is how it got broken the first time. */
 .canvas-surface .canvas-minimap {
   border-radius: 0.75rem;
   border: 1px solid var(--border);
@@ -2884,9 +2889,9 @@ div.monaco-diff-editor.side-by-side .editor.modified {
 }
 /* Out of the way while the board is being dragged. The map is an orientation
    aid for a board that is standing still; during a pan it is a bright rectangle
-   redrawing itself in the corner the user is dragging TOWARDS. Opacity rather
-   than `display: none` so nothing relayouts and the map keeps its own size —
-   and so it fades back in rather than popping. */
+   redrawing itself while the thing it depicts moves under it. Opacity rather
+   than `display: none` so the controls beneath it don't jump up and back, and
+   so it fades in rather than popping. */
 .canvas-surface[data-canvas-panning] .canvas-minimap {
   opacity: 0;
 }

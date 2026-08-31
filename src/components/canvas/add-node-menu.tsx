@@ -44,7 +44,11 @@ import {
 const REGION_W = 720
 const REGION_H = 344
 export const NOTE_W = 208
-export const NOTE_H = 144
+/** A note is as tall as a collapsed card on purpose: notes are annotations ON
+ *  the board's rows, and one dropped beside a row of cards should line up with
+ *  it rather than hang off the bottom. Derived rather than copied so it cannot
+ *  drift the next time the card's box changes. */
+export const NOTE_H = CARD_HEIGHT
 
 interface AddNodeMenuProps {
   onCreate: (input: CreateCanvasNodeInput) => void
