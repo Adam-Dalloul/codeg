@@ -3,7 +3,7 @@
 import { createContext, useContext } from "react"
 import type { CanvasNodePatchInput } from "@/lib/api"
 import type { AgentType, DbConversationSummary } from "@/lib/types"
-import type { NewConversationTarget } from "./add-node-menu"
+import type { NewConversationTarget } from "./canvas-model"
 
 /**
  * Actions and interaction state the custom ReactFlow node components need from

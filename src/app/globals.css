@@ -2849,6 +2849,17 @@ div.monaco-diff-editor.side-by-side .editor.modified {
 .canvas-surface .react-flow__pane {
   user-select: none;
 }
+/* …and for the duration of the drag, nothing on the board is selectable at all.
+   The rule above only refuses the ANCHOR; a subtree that opts back in is still
+   fair game for a selection sweeping through it, and two of them do opt back in
+   — a card body says `select-text`, and form controls get it from the UA
+   stylesheet. `!important` is what beats those, and the attribute is what keeps
+   it to the gesture (`use-canvas-marquee-text-guard`), so selecting a reply
+   inside a card is untouched. Same shape as the panning cursor below. */
+.canvas-surface[data-canvas-marquee],
+.canvas-surface[data-canvas-marquee] * {
+  user-select: none !important;
+}
 /* Right-drag panning is ours, not d3-zoom's (every draggable node carries the
    `nopan` class its filter refuses), so the grabbing cursor is ours too — and
    it has to beat every element's own cursor, including a card's text. */

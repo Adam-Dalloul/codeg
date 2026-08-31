@@ -89,7 +89,12 @@ export const ConversationCardNode = memo(function ConversationCardNode({
       <HoverCardTrigger asChild>
         <div
           className={cn(
-            "flex h-full w-full flex-col overflow-hidden rounded-xl border bg-card p-3 transition-colors",
+            // Tight on purpose: the box is a fixed 132 PX tall while everything
+            // in it is sized in rem, so the app's zoom control shrinks the
+            // budget the title has to live in (see CARD_HEIGHT's note). Every
+            // margin here is paid for at 1.5× — at the old `p-3` the second
+            // line of a title was already being sliced in half.
+            "flex h-full w-full flex-col overflow-hidden rounded-xl border bg-card px-2.5 py-2 transition-colors",
             "border-foreground/15 hover:border-foreground/30",
             running &&
               "ring-1 ring-primary/30 motion-safe:[animation:canvas-breathe_2.6s_ease-in-out_infinite]",
@@ -107,7 +112,11 @@ export const ConversationCardNode = memo(function ConversationCardNode({
             className="rounded-xl"
             opacity={0.08}
           />
-          <div className="relative flex items-center gap-1.5">
+          {/* `leading-tight` so the row is as tall as its ICONS: the model name
+              is 10px text, but at the inherited 1.5 line-height its line box is
+              taller than the 14px icons beside it and would quietly set the
+              row's height. */}
+          <div className="relative flex shrink-0 items-center gap-1.5 leading-tight">
             <AgentIcon
               agentType={conversation.agent_type}
               className="size-3.5 shrink-0"
@@ -132,7 +141,10 @@ export const ConversationCardNode = memo(function ConversationCardNode({
             </span>
             {conversation.child_count > 0 && (
               <span
-                className="inline-flex shrink-0 items-center gap-0.5 rounded-full bg-primary/10 px-1.5 py-px font-mono text-[0.625rem] font-medium leading-4 text-primary"
+                // `leading-none`, not a line-height taller than the icons it
+                // sits with: this badge would otherwise SET the row's height
+                // and take the extra out of the title below it.
+                className="inline-flex shrink-0 items-center gap-0.5 rounded-full bg-primary/10 px-1.5 py-px font-mono text-[0.625rem] font-medium leading-none text-primary"
                 title={t("childCount", {
                   count: conversation.child_count,
                 })}
@@ -142,7 +154,14 @@ export const ConversationCardNode = memo(function ConversationCardNode({
               </span>
             )}
           </div>
-          <p className="relative mt-1.5 line-clamp-2 min-h-0 flex-1 text-[0.8125rem] font-medium leading-snug">
+          {/* Two lines, and the free space belongs to the FOOTER's `mt-auto`,
+              not to this box: a `flex-1` title would swallow the slack, and
+              since `line-clamp` clips to the box rather than to whole lines,
+              whatever the chrome rows left over — 1.5 lines at a high app zoom
+              — is what the reader got, sliced through the middle of a line.
+              `min-h-0` keeps the order of sacrifice right if it ever does
+              overflow: the title gives, the two metadata rows don't. */}
+          <p className="relative mt-1 line-clamp-2 min-h-0 text-[0.8125rem] font-medium leading-tight">
             {title}
           </p>
           {/* Where the conversation lives: folder on the left, branch on the
@@ -150,7 +169,7 @@ export const ConversationCardNode = memo(function ConversationCardNode({
               no folder; a non-git folder has no branch), so neither is allowed
               to reserve space the other could use — hence `min-w-0` on each and
               `justify-between` rather than a fixed spacer. */}
-          <div className="relative mt-auto flex min-w-0 items-center justify-between gap-1.5 text-[0.6875rem] text-muted-foreground">
+          <div className="relative mt-auto flex min-w-0 shrink-0 items-center justify-between gap-1.5 pt-1 text-[0.6875rem] leading-tight text-muted-foreground">
             {data.folderName ? (
               <span
                 className="flex min-w-0 items-center gap-0.5"

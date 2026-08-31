@@ -46,18 +46,13 @@ const REGION_H = 344
 export const NOTE_W = 208
 export const NOTE_H = 144
 
-/** Where a brand-new conversation should live: a workspace folder, or chat mode
- *  (a hidden folder the backend mints on first send). */
-export type NewConversationTarget = { folderId: number } | { chat: true }
-
 interface AddNodeMenuProps {
   onCreate: (input: CreateCanvasNodeInput) => void
   /** Drop a client-local draft conversation card at a canvas point. Nothing is
-   *  persisted until the first message — see `canvas-view`'s draft handling. */
-  onNewConversation: (
-    target: NewConversationTarget,
-    point: { x: number; y: number }
-  ) => void
+   *  persisted until the first message — see `canvas-view`'s draft handling.
+   *  Where the conversation will live is the view's call
+   *  (`resolveNewConversationTarget`), not a question for this menu. */
+  onNewConversation: (point: { x: number; y: number }) => void
   /** Extra classes for the trigger button (toolbar styling owns the look). */
   triggerClassName?: string
   /** Which way the menu opens — "top" for the bottom dock. */
@@ -130,42 +125,18 @@ export function AddNodeMenu({
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start" side={side} className="w-52">
-        <DropdownMenuSub>
-          <DropdownMenuSubTrigger>
-            <MessageSquarePlus className="text-muted-foreground" />
-            {t("newConversation")}
-          </DropdownMenuSubTrigger>
-          <DropdownMenuSubContent className="max-h-72 overflow-y-auto">
-            <DropdownMenuItem
-              onSelect={() =>
-                onNewConversation(
-                  { chat: true },
-                  dropPoint(DETAIL_CARD_WIDTH, DETAIL_CARD_HEIGHT)
-                )
-              }
-            >
-              <MessageSquare className="text-muted-foreground" />
-              {t("newChatConversation")}
-            </DropdownMenuItem>
-            {folders.length > 0 && <DropdownMenuSeparator />}
-            {folders.map((f) => (
-              <DropdownMenuItem
-                key={f.id}
-                onSelect={() =>
-                  onNewConversation(
-                    { folderId: f.id },
-                    dropPoint(DETAIL_CARD_WIDTH, DETAIL_CARD_HEIGHT)
-                  )
-                }
-              >
-                <Folder className="text-muted-foreground" />
-                <span className="min-w-0 truncate">
-                  {formatFolderLabelWithAlias(f)}
-                </span>
-              </DropdownMenuItem>
-            ))}
-          </DropdownMenuSubContent>
-        </DropdownMenuSub>
+        {/* One click, one card. The folder it belongs to is the workspace's
+            active one (chat mode when there is none) — the same answer the tab
+            strip's new-conversation button gives without asking, and the card's
+            own folder chip stays editable right up to the first message. */}
+        <DropdownMenuItem
+          onSelect={() =>
+            onNewConversation(dropPoint(DETAIL_CARD_WIDTH, DETAIL_CARD_HEIGHT))
+          }
+        >
+          <MessageSquarePlus className="text-muted-foreground" />
+          {t("newConversation")}
+        </DropdownMenuItem>
         <DropdownMenuSeparator />
         <DropdownMenuSub>
           <DropdownMenuSubTrigger>

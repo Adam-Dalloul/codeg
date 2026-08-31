@@ -30,6 +30,7 @@ import {
   parseMemberNodeId,
   parseRegionNodeId,
   regionNodeId,
+  resolveNewConversationTarget,
   type CanvasDragSource,
   type ConversationCardData,
   type RegionNodeData,
@@ -891,5 +892,38 @@ describe("deriveFlowGraph — the folder a card names in its footer", () => {
       ...NO_DRAG,
     })
     expect((nodes[0].data as ConversationCardData).folderName).toBeNull()
+  })
+})
+
+describe("resolveNewConversationTarget", () => {
+  it("starts a draft in the workspace's active folder", () => {
+    expect(resolveNewConversationTarget(7, [folder(3), folder(7)])).toEqual({
+      folderId: 7,
+    })
+  })
+
+  it("falls back to chat mode when nothing is active", () => {
+    // The canvas is reachable with no conversation tab open at all. Asking the
+    // user to pick a folder first is exactly what this replaced, so the
+    // fallback has to be a real target rather than a refusal.
+    expect(resolveNewConversationTarget(null, [folder(3)])).toEqual({
+      chat: true,
+    })
+  })
+
+  it("treats an active chat folder as chat mode", () => {
+    // Chat mode IS a folder — a hidden one the backend mints — so the active id
+    // is set while in it. Passing that id back as a folder target would pin the
+    // draft to someone else's private chat folder.
+    expect(
+      resolveNewConversationTarget(4, [folder(4, { kind: "chat" })])
+    ).toEqual({ chat: true })
+  })
+
+  it("falls back when the active folder is gone", () => {
+    // The id outlives the row: closing or deleting a folder leaves the active
+    // id pointing at nothing until the next tab switch, and a draft aimed at a
+    // folder that no longer exists has nowhere to send its first message.
+    expect(resolveNewConversationTarget(9, [folder(3)])).toEqual({ chat: true })
   })
 })

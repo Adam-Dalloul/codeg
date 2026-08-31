@@ -60,9 +60,9 @@ import {
 import { cn, randomUUID } from "@/lib/utils"
 import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
 import { applyMovesTo, useCanvasStore } from "@/stores/canvas-store"
-import { NOTE_H, NOTE_W, type NewConversationTarget } from "./add-node-menu"
+import { NOTE_H, NOTE_W } from "./add-node-menu"
 import { useCanvasData } from "./canvas-data"
-import { CanvasDock } from "./canvas-dock"
+import { CanvasDock, CanvasZoomPanel } from "./canvas-dock"
 import {
   DETAIL_CARD_HEIGHT,
   DETAIL_CARD_WIDTH,
@@ -78,6 +78,7 @@ import {
   regionHeightForRows,
   regionNodeId,
   regionWidthForColumns,
+  resolveNewConversationTarget,
   rowsForRegionHeight,
   seedRegionsFromFolders,
   type AlignmentGuide,
@@ -85,6 +86,7 @@ import {
   type CanvasDropHint,
   type CanvasRect,
   type ConversationCardData,
+  type NewConversationTarget,
   type PinRect,
   type RegionRect,
 } from "./canvas-model"
@@ -100,6 +102,7 @@ import {
 } from "./nodes/conversation-detail-node"
 import { NoteNode } from "./nodes/note-node"
 import { RegionNode } from "./nodes/region-node"
+import { useCanvasMarqueeTextGuard } from "./use-canvas-marquee-text-guard"
 import { useCanvasRightDragPan } from "./use-canvas-right-drag-pan"
 
 // Each component takes the NARROW NodeProps of its own node type; the registry
@@ -152,6 +155,7 @@ function CanvasFlow() {
   const { fitView, screenToFlowPosition } = useReactFlow()
   const surfaceRef = useRef<HTMLDivElement>(null)
   useCanvasRightDragPan(surfaceRef)
+  useCanvasMarqueeTextGuard(surfaceRef)
 
   const dbNodes = useCanvasStore((s) => s.nodes)
   const hydrated = useCanvasStore((s) => s.hydrated)
@@ -159,6 +163,10 @@ function CanvasFlow() {
   const allFolders = useAppWorkspaceStore((s) => s.allFolders)
   const folderGroups = useAppWorkspaceStore((s) => s.folderGroups)
   const openFolders = useAppWorkspaceStore((s) => s.folders)
+  // Where a new conversation goes by default. Driven by the active TAB behind
+  // this route, which is exactly what makes the canvas agree with the tab
+  // strip's own new-conversation button.
+  const activeFolderId = useAppWorkspaceStore((s) => s.activeFolderId)
 
   // ── View state (client-local, restored from the last visit) ──
 
@@ -1477,7 +1485,12 @@ function CanvasFlow() {
   // ── Toolbar actions ──
 
   const startDraft = useCallback(
-    (target: NewConversationTarget, point: { x: number; y: number }) => {
+    (point: { x: number; y: number }) => {
+      // Where it lives is decided here rather than asked for: one gesture puts
+      // a card on the board, and the card's own folder chip retargets it until
+      // the first message. Both entry points (the "+" menu and Cmd/Ctrl+N) come
+      // through this function, so they can't drift apart.
+      const target = resolveNewConversationTarget(activeFolderId, allFolders)
       // A best guess only: the card's AgentSelector corrects it through
       // `onFallback` once the fresh agent list says this one isn't usable —
       // the same self-correction draft TABS rely on.
@@ -1507,7 +1520,7 @@ function CanvasFlow() {
         },
       ])
     },
-    [allFolders, activateSurface, setDraftsPersisted]
+    [activeFolderId, allFolders, activateSurface, setDraftsPersisted]
   )
 
   // ── Element shortcuts ──
@@ -1561,13 +1574,10 @@ function CanvasFlow() {
           x: window.innerWidth / 2,
           y: window.innerHeight / 2,
         })
-        startDraft(
-          { chat: true },
-          {
-            x: center.x - DETAIL_CARD_WIDTH / 2,
-            y: center.y - DETAIL_CARD_HEIGHT / 2,
-          }
-        )
+        startDraft({
+          x: center.x - DETAIL_CARD_WIDTH / 2,
+          y: center.y - DETAIL_CARD_HEIGHT / 2,
+        })
         return
       }
       if (mod && e.key.toLowerCase() === "a") {
@@ -1884,6 +1894,7 @@ function CanvasFlow() {
             onGroupSelection={() => void groupSelection()}
             onDeleteSelection={() => void deleteSelection()}
           />
+          <CanvasZoomPanel />
         </ReactFlow>
 
         {!hydrated && (

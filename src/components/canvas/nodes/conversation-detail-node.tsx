@@ -13,10 +13,13 @@ import {
   CanvasConversationSurface,
   type CanvasDraftTarget,
 } from "../canvas-conversation-surface"
-import { DRAG_HANDLE_CLASS, type ConversationCardData } from "../canvas-model"
+import {
+  DRAG_HANDLE_CLASS,
+  type ConversationCardData,
+  type NewConversationTarget,
+} from "../canvas-model"
 import { useCanvasView } from "../canvas-view-context"
 import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
-import type { NewConversationTarget } from "../add-node-menu"
 
 export type ConversationDetailFlowNode = Node<
   ConversationCardData,

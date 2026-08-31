@@ -5,6 +5,8 @@ import { Panel, useReactFlow, useStore, type Node } from "@xyflow/react"
 import {
   ChevronsDownUp,
   ChevronsUpDown,
+  CircleMinus,
+  CirclePlus,
   Expand,
   ExternalLink,
   Grid2x2,
@@ -13,10 +15,8 @@ import {
   Loader2,
   Maximize2,
   Minimize2,
-  Minus,
   Palette,
   Pencil,
-  Plus,
   Sparkles,
   Trash2,
   Unlink,
@@ -31,7 +31,7 @@ import {
 } from "@/components/ui/dropdown-menu"
 import type { CreateCanvasNodeInput } from "@/lib/api"
 import { cn } from "@/lib/utils"
-import { AddNodeMenu, type NewConversationTarget } from "./add-node-menu"
+import { AddNodeMenu } from "./add-node-menu"
 import type {
   ConversationCardData,
   NoteNodeData,
@@ -48,9 +48,10 @@ import { useCanvasView } from "./canvas-view-context"
 import type { ConversationDraftData } from "./nodes/conversation-detail-node"
 
 /**
- * The canvas's single action surface: a bottom-centred dock whose left half is
- * always the same board-level tools and whose right half is whatever the
- * current selection can do.
+ * The canvas's action surface: a bottom-centred dock whose left half is always
+ * the same board-level tools and whose right half is whatever the current
+ * selection can do — plus the zoom pill in the corner (`CanvasZoomPanel`),
+ * which is the one control that belongs nowhere near a selection.
  *
  * One surface on purpose. Element actions used to be spread across a card
  * context menu, a region header dropdown and a hover button in a note's corner
@@ -101,18 +102,21 @@ const ZOOM_STEP_DURATION_MS = 150
 const ZOOM_EPSILON = 0.001
 
 /**
- * Viewport zoom, sitting with `fitView` on the dock's board-tools half — zoom
- * is a view control, not an element verb, and the board already answers "where
- * are the view tools?" with this dock.
+ * Viewport zoom, in its own pill in the bottom-right corner.
+ *
+ * Deliberately NOT in the dock: the dock is a selection-driven strip whose
+ * contents change as you click around the board, and a zoom readout that slides
+ * sideways every time you select a region is a control you have to hunt for. It
+ * also collided head-on with "add to canvas" — both spelled `Plus`, one row
+ * apart. Circled glyphs, a fixed corner, nothing else in it.
  *
  * Its own component so it can subscribe to the LIVE zoom: `canvas-view` keeps
  * the zoom in a ref (deliberately — the drag path reads it every frame and must
- * not re-render), so the readout has to come from ReactFlow's store instead.
- * Scoping the subscription here keeps the rest of the dock out of it; the
+ * not re-render), so the readout has to come from ReactFlow's store instead. The
  * selector returns a number, so zustand bails out on every pan and re-renders
  * only when the zoom actually moves.
  */
-function ZoomControls() {
+export function CanvasZoomPanel() {
   const t = useTranslations("Canvas")
   const { zoomIn, zoomOut, zoomTo } = useReactFlow()
   const zoom = useStore((s) => s.transform[2])
@@ -120,34 +124,40 @@ function ZoomControls() {
   const maxZoom = useStore((s) => s.maxZoom)
 
   return (
-    <>
-      <DockButton
-        label={t("zoomOut")}
-        onClick={() => void zoomOut({ duration: ZOOM_STEP_DURATION_MS })}
-        disabled={zoom <= minZoom + ZOOM_EPSILON}
+    <Panel position="bottom-right" data-canvas-export-skip="">
+      <div
+        className="flex items-center gap-0.5 rounded-full border border-border bg-background/95 p-1 shadow-lg supports-backdrop-filter:backdrop-blur-sm"
+        role="toolbar"
+        aria-label={t("zoomControls")}
       >
-        <Minus className="size-4" />
-      </DockButton>
-      {/* The readout doubles as "back to 100%" — the one zoom level a user asks
-          for by name. Fixed width so 8% → 100% → 200% doesn't shove the
-          neighbouring buttons sideways as the board moves. */}
-      <button
-        type="button"
-        className="inline-flex h-8 w-12 shrink-0 items-center justify-center rounded-full font-mono text-[0.6875rem] text-muted-foreground transition-colors hover:bg-foreground/10 hover:text-foreground"
-        onClick={() => void zoomTo(1, { duration: ZOOM_STEP_DURATION_MS })}
-        aria-label={t("resetZoom")}
-        title={t("resetZoom")}
-      >
-        {Math.round(zoom * 100)}%
-      </button>
-      <DockButton
-        label={t("zoomIn")}
-        onClick={() => void zoomIn({ duration: ZOOM_STEP_DURATION_MS })}
-        disabled={zoom >= maxZoom - ZOOM_EPSILON}
-      >
-        <Plus className="size-4" />
-      </DockButton>
-    </>
+        <DockButton
+          label={t("zoomOut")}
+          onClick={() => void zoomOut({ duration: ZOOM_STEP_DURATION_MS })}
+          disabled={zoom <= minZoom + ZOOM_EPSILON}
+        >
+          <CircleMinus className="size-4" />
+        </DockButton>
+        {/* The readout doubles as "back to 100%" — the one zoom level a user
+            asks for by name. Fixed width so 8% → 100% → 200% doesn't shove the
+            neighbouring buttons sideways as the board moves. */}
+        <button
+          type="button"
+          className="inline-flex h-8 w-12 shrink-0 items-center justify-center rounded-full font-mono text-[0.6875rem] text-muted-foreground transition-colors hover:bg-foreground/10 hover:text-foreground"
+          onClick={() => void zoomTo(1, { duration: ZOOM_STEP_DURATION_MS })}
+          aria-label={t("resetZoom")}
+          title={t("resetZoom")}
+        >
+          {Math.round(zoom * 100)}%
+        </button>
+        <DockButton
+          label={t("zoomIn")}
+          onClick={() => void zoomIn({ duration: ZOOM_STEP_DURATION_MS })}
+          disabled={zoom >= maxZoom - ZOOM_EPSILON}
+        >
+          <CirclePlus className="size-4" />
+        </DockButton>
+      </div>
+    </Panel>
   )
 }
 
@@ -434,10 +444,7 @@ function DraftActions({ data }: { data: ConversationDraftData }) {
 
 interface CanvasDockProps {
   onCreate: (input: CreateCanvasNodeInput) => void
-  onNewConversation: (
-    target: NewConversationTarget,
-    point: { x: number; y: number }
-  ) => void
+  onNewConversation: (point: { x: number; y: number }) => void
   onFitView: () => void
   onAutoArrange: () => void
   onExportPng: () => void
@@ -466,6 +473,12 @@ export function CanvasDock({
   onDeleteSelection,
 }: CanvasDockProps) {
   const t = useTranslations("Canvas")
+  // The board's own width (ReactFlow tracks it with a ResizeObserver), not the
+  // window's: this route sits beside the workspace sidebar, so `100vw` would
+  // overstate the room by the whole sidebar and let the strip run under the
+  // zoom pill. Kept in the same units the pill is drawn in — the reserve below
+  // is `rem`, so it grows with the app's zoom exactly as the pill does.
+  const boardWidth = useStore((s) => s.width)
 
   const single = selectedNodes.length === 1 ? selectedNodes[0] : null
   let elementActions: ReactNode = null
@@ -529,9 +542,14 @@ export function CanvasDock({
           // Fully rounded and wrapping: the element half grows and shrinks with
           // the selection, and a narrow window must fold it rather than push it
           // off the edge.
-          "flex max-w-[min(56rem,calc(100vw-3rem))] flex-wrap items-center justify-center gap-0.5",
+          "flex flex-wrap items-center justify-center gap-0.5",
           "rounded-full border border-border bg-background/95 p-1 shadow-lg supports-backdrop-filter:backdrop-blur-sm"
         )}
+        // The strip is CENTRED, so half of whatever it grows to reaches toward
+        // the corner the zoom pill sits in. Folding early is the price of never
+        // hiding a control under another one; `18rem` is two pill widths plus
+        // both panel margins.
+        style={{ maxWidth: `max(15rem, calc(${boardWidth}px - 18rem))` }}
         role="toolbar"
         aria-label={t("canvasActions")}
       >
@@ -544,7 +562,6 @@ export function CanvasDock({
         <DockButton label={t("fitView")} onClick={onFitView}>
           <Expand className="size-4" />
         </DockButton>
-        <ZoomControls />
         <DockButton label={t("autoArrange")} onClick={onAutoArrange}>
           <LayoutGrid className="size-4" />
         </DockButton>

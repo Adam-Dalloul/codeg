@@ -59,6 +59,34 @@ export const DRAG_HANDLE_SELECTOR = `.${DRAG_HANDLE_CLASS}`
  *  list. */
 export const MAX_VISIBLE_MEMBERS = 24
 
+/** Where a brand-new conversation should live: a workspace folder, or chat mode
+ *  (a hidden folder the backend mints on first send). */
+export type NewConversationTarget = { folderId: number } | { chat: true }
+
+/**
+ * Where a new conversation card starts out, given the workspace's active
+ * folder — the folder of the active TAB, kept in `app-workspace-store`.
+ *
+ * Same rule the tab strip's own new-conversation button follows
+ * (`tabs/tab-bar.tsx`): use the active folder, and fall back to a folderless
+ * chat rather than asking. On the canvas the fallback is doubly safe, because
+ * the draft card's folder chip stays editable until the first message is sent —
+ * picking here is a starting point, not a commitment.
+ *
+ * The id is re-resolved against the folder list rather than trusted: a folder
+ * can be closed or deleted while its id is still the active one, and a draft
+ * pointed at a folder that no longer exists would have nowhere to send.
+ */
+export function resolveNewConversationTarget(
+  activeFolderId: number | null,
+  folders: readonly FolderDetail[]
+): NewConversationTarget {
+  if (activeFolderId == null) return { chat: true }
+  const folder = folders.find((f) => f.id === activeFolderId)
+  if (!folder || folder.kind === "chat") return { chat: true }
+  return { folderId: folder.id }
+}
+
 /** The width a region needs to fit exactly `columns` cards per row (and the
  *  height for `rows` rows of them). Resizing snaps to these values, so a region
  *  never sits at a width that renders a ragged half-column of dead space. */
