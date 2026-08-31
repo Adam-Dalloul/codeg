@@ -46,8 +46,21 @@ export const NoteNode = memo(function NoteNode({
     if (!editing) setDraft(remote)
   }
 
+  // Unsaved text, mirrored for the unmount path below. Written from the event
+  // handlers — never from an effect: a passive effect for the last keystroke
+  // may still be queued when the node goes away, and it is exactly that last
+  // keystroke the unmount save exists to keep. Cleared synchronously by
+  // `commit` so a blur followed immediately by an unmount can't send the same
+  // patch twice.
+  const pendingRef = useRef<{
+    text: string
+    nodeId: number
+    patch: typeof patchNode
+  } | null>(null)
+
   const commit = () => {
     setEditing(false)
+    pendingRef.current = null
     // On save failure the draft is KEPT (patchNode toasts): resetting to the
     // stored value would throw away the user's text, and the kept draft doubles
     // as the retry payload for the next commit.
@@ -56,34 +69,22 @@ export const NoteNode = memo(function NoteNode({
     }
   }
 
+  const edit = (text: string) => {
+    setDraft(text)
+    pendingRef.current =
+      text === (dbNode.content ?? "")
+        ? null
+        : { text, nodeId: dbNode.id, patch: patchNode }
+  }
+
   // Blur is the normal way out, but not the only way the editor can end: the
   // canvas route unmounts on a view switch, ReactFlow culls off-screen nodes,
   // and a remote delete takes the node with it — none of which fire blur. Save
   // whatever was typed on the way out rather than dropping it.
-  const pendingRef = useRef<{
-    text: string
-    stored: string
-    nodeId: number
-    patch: typeof patchNode
-  } | null>(null)
-  // Synced in an effect, not during render: by the time the unmount cleanup
-  // below runs, this has already been written for the last committed render.
-  useEffect(() => {
-    pendingRef.current = editing
-      ? {
-          text: draft,
-          stored: dbNode.content ?? "",
-          nodeId: dbNode.id,
-          patch: patchNode,
-        }
-      : null
-  })
   useEffect(
     () => () => {
       const pending = pendingRef.current
-      if (pending && pending.text !== pending.stored) {
-        void pending.patch(pending.nodeId, { content: pending.text })
-      }
+      if (pending) void pending.patch(pending.nodeId, { content: pending.text })
     },
     []
   )
@@ -119,7 +120,7 @@ export const NoteNode = memo(function NoteNode({
         <textarea
           autoFocus
           value={draft}
-          onChange={(e) => setDraft(e.target.value)}
+          onChange={(e) => edit(e.target.value)}
           onBlur={commit}
           onKeyDown={(e) => {
             // Escape leaves edit mode; every other key belongs to the text, and

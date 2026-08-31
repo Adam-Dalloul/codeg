@@ -259,6 +259,9 @@ function CanvasFlow() {
   /** Alt suspends snapping — the standard escape hatch for placing something
    *  one pixel off a line on purpose. */
   const altHeldRef = useRef(false)
+  /** The correction the most recent drag frame actually painted — the value the
+   *  drop must reuse so release changes nothing on screen. */
+  const lastSnapRef = useRef<{ dx: number; dy: number }>({ dx: 0, dy: 0 })
   const [alignGuides, setAlignGuides] = useState<readonly AlignmentGuide[]>([])
   useEffect(() => {
     const sync = (e: KeyboardEvent) => {
@@ -916,11 +919,13 @@ function CanvasFlow() {
         )
         snapDx = dx
         snapDy = dy
+        lastSnapRef.current = { dx, dy }
         setAlignGuides((prev) =>
           prev.length === 0 && guides.length === 0 ? prev : guides
         )
       }
     } else if (primary && altHeldRef.current) {
+      lastSnapRef.current = { dx: 0, dy: 0 }
       setAlignGuides((prev) => (prev.length === 0 ? prev : []))
     }
 
@@ -1043,6 +1048,7 @@ function CanvasFlow() {
     // settling would otherwise leave its lines on screen through a new one that
     // never snaps at all (a member card), pointing at nothing.
     setAlignGuides((prev) => (prev.length === 0 ? prev : []))
+    lastSnapRef.current = { dx: 0, dy: 0 }
     return ++dragTokenRef.current
   }, [])
 
@@ -1095,26 +1101,20 @@ function CanvasFlow() {
     [beginDrag, dbNodes, conversations, allFolders]
   )
 
-  /** The correction the gesture's snap would apply at these final positions.
-   *  Same inputs as the per-frame call, so it reproduces exactly what the last
-   *  frame drew rather than trusting a remembered delta. */
+  /** The correction the last painted frame applied.
+   *
+   *  Replayed, not recomputed: what the board must persist is what the user
+   *  SAW. Recomputing at release would consult the live Alt state and zoom, so
+   *  tapping Alt after the final mouse move (or releasing it) would hand back a
+   *  different answer than the frame still on screen — and the card would jump
+   *  on mouseup, which is precisely the mismatch snapping exists to avoid. */
   const snapForFinalPositions = useCallback(
     (dragged: Node[]): { dx: number; dy: number } => {
       const primary = alignPrimaryRef.current
-      if (!primary || altHeldRef.current) return { dx: 0, dy: 0 }
-      const lead = dragged.find((n) => n.id === primary.id)
-      if (!lead) return { dx: 0, dy: 0 }
-      const { dx, dy } = computeAlignment(
-        {
-          x: lead.position.x,
-          y: lead.position.y,
-          width: primary.width,
-          height: primary.height,
-        },
-        alignCandidatesRef.current,
-        ALIGN_TOLERANCE_PX / Math.max(zoomRef.current, 0.01)
-      )
-      return { dx, dy }
+      if (!primary || !dragged.some((n) => n.id === primary.id)) {
+        return { dx: 0, dy: 0 }
+      }
+      return lastSnapRef.current
     },
     []
   )
@@ -1302,6 +1302,12 @@ function CanvasFlow() {
                 y: n.position.y + snap.dy,
               },
             }))
+      // The grabbed node from the SNAPPED set, not the raw parameter: the drop
+      // is classified from this position, and reading the uncorrected one would
+      // file a card by where the pointer was rather than where the card visibly
+      // came to rest — the two differ by up to the snap tolerance, which is
+      // exactly enough to land on the wrong side of a region edge.
+      const grabbed = dragged.find((n) => n.id === node.id) ?? node
       const draggedIds = dragged.map((n) => n.id)
       // Only this gesture's own source counts: a stale one left by a drag still
       // settling would re-home a card the user never dropped there.
@@ -1328,7 +1334,7 @@ function CanvasFlow() {
       const hint = source
         ? computeDropHint(
             source,
-            absoluteDragPosition(source, node.position, regions),
+            absoluteDragPosition(source, grabbed.position, regions),
             regions,
             pins
           )
