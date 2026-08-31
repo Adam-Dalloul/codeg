@@ -3473,6 +3473,8 @@
         "createAutomationNoName": "Automatisierung wird erstellt",
         "createWorkTask": "Arbeitsaufgabe {title} wird erstellt",
         "createWorkTaskNoTitle": "Arbeitsaufgabe wird erstellt",
+        "resumeDelegation": "Aufgabe {task} wird fortgesetzt",
+        "resumeDelegationNoId": "Delegierte Aufgabe wird fortgesetzt",
         "promptLabel": "Anweisung",
         "verdict": {
           "success": "erfolgreich",

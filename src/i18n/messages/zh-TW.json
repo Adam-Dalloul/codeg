@@ -3473,6 +3473,8 @@
         "createAutomationNoName": "建立自動化",
         "createWorkTask": "建立待辦任務 {title}",
         "createWorkTaskNoTitle": "建立待辦任務",
+        "resumeDelegation": "恢復任務 {task}",
+        "resumeDelegationNoId": "恢復委派任務",
         "promptLabel": "指令",
         "verdict": {
           "success": "成功",

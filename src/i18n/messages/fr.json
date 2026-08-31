@@ -3473,6 +3473,8 @@
         "createAutomationNoName": "Création d’une automatisation",
         "createWorkTask": "Création de la tâche {title}",
         "createWorkTaskNoTitle": "Création d’une tâche",
+        "resumeDelegation": "Reprise de la tâche {task}",
+        "resumeDelegationNoId": "Reprise d'une tâche déléguée",
         "promptLabel": "Instruction",
         "verdict": {
           "success": "réussie",

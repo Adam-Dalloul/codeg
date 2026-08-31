@@ -3473,6 +3473,8 @@
         "createAutomationNoName": "자동화 생성 중",
         "createWorkTask": "작업 항목 {title} 생성 중",
         "createWorkTaskNoTitle": "작업 항목 생성 중",
+        "resumeDelegation": "작업 {task} 재개 중",
+        "resumeDelegationNoId": "위임 작업 재개 중",
         "promptLabel": "프롬프트",
         "verdict": {
           "success": "성공",

@@ -3290,6 +3290,126 @@ impl crate::acp::delegation::spawner::ConnectionSpawner for ConnectionManagerSpa
         })
     }
 
+    async fn spawn_for_resume(
+        &self,
+        parent_connection_id: &str,
+        agent_type: AgentType,
+        working_dir: Option<String>,
+        external_session_id: &str,
+        preferred_mode_id: Option<String>,
+        preferred_config_values: BTreeMap<String, String>,
+    ) -> Result<crate::acp::delegation::spawner::ResumedSpawn, crate::acp::delegation::spawner::SpawnerError>
+    {
+        use crate::acp::delegation::spawner::{ResumedSpawn, SpawnerError};
+        // Same parent inheritance as `spawn` — a resumed child whose emitter is
+        // wired to a different broadcaster would stream to nobody.
+        let (emitter, owner_window, parent_working_dir) = {
+            let conns = self.manager.connections.lock().await;
+            let parent = conns.get(parent_connection_id).ok_or_else(|| {
+                SpawnerError::Spawn(format!(
+                    "parent connection {parent_connection_id} not found"
+                ))
+            })?;
+            let pwd = {
+                let s = parent.state.read().await;
+                s.working_dir
+                    .as_ref()
+                    .map(|p| p.to_string_lossy().to_string())
+            };
+            (
+                parent.emitter.clone(),
+                parent.owner_window_label.clone(),
+                pwd,
+            )
+        };
+        let effective_working_dir = working_dir.or(parent_working_dir);
+
+        let runtime_env = crate::commands::acp::build_session_runtime_env(
+            &self.db,
+            agent_type,
+            None,
+            self.data_dir.as_path(),
+        )
+        .await
+        .map_err(|e| SpawnerError::Spawn(e.to_string()))?;
+
+        // Detect dedup reuse BEFORE spawning, with the SAME lookup
+        // `spawn_agent` runs at its own entry: a live connection for this
+        // (agent, working_dir, session_id) — e.g. the user has the canceled
+        // child session open in a tab — makes `spawn_agent` return that
+        // connection instead of creating one. The broker must know, because
+        // its failure teardown may only disconnect a connection this call
+        // actually created. A connection appearing in the pre-check→spawn
+        // window is missed, but that window is milliseconds and a misfire
+        // additionally requires the send itself to fail.
+        let working_dir_path = effective_working_dir.as_ref().map(std::path::PathBuf::from);
+        let pre_existing = self
+            .manager
+            .find_connection_for_reuse(
+                agent_type,
+                working_dir_path.as_ref(),
+                Some(external_session_id),
+            )
+            .await;
+
+        // `session_id = Some(..)` is the whole difference vs `spawn`: the
+        // connection loads the child's prior agent session (and its context)
+        // instead of minting a fresh one.
+        let connection_id = self
+            .manager
+            .spawn_agent(
+                agent_type,
+                effective_working_dir,
+                Some(external_session_id.to_string()),
+                runtime_env,
+                owner_window,
+                emitter,
+                preferred_mode_id,
+                preferred_config_values,
+            )
+            .await
+            .map_err(|e| SpawnerError::Spawn(e.to_string()))?;
+        let reused = pre_existing.as_deref() == Some(connection_id.as_str());
+        Ok(ResumedSpawn {
+            connection_id,
+            reused,
+        })
+    }
+
+    async fn send_resume_prompt(
+        &self,
+        conn_id: &str,
+        prompt: String,
+        folder_id: i32,
+        child_conversation_id: i32,
+    ) -> Result<(), crate::acp::delegation::spawner::SpawnerError> {
+        use crate::acp::delegation::spawner::SpawnerError;
+        // Adopt the child's EXISTING row (caller-supplied path) — no delegation
+        // link: the row already carries parent_id / parent_tool_use_id /
+        // delegation_call_id from the original delegation, and
+        // `send_prompt_linked` rejects a link combined with an explicit
+        // conversation_id precisely because adopted rows own their linkage.
+        self.manager
+            .send_prompt_linked(
+                &self.db,
+                conn_id,
+                vec![PromptInputBlock::Text { text: prompt }],
+                Some(folder_id),
+                Some(child_conversation_id),
+                None,
+            )
+            .await
+            .map(|_| ())
+            .map_err(|e| SpawnerError::Send(e.to_string()))
+    }
+
+    async fn has_live_connection_for_conversation(&self, conversation_id: i32) -> bool {
+        self.manager
+            .find_connection_by_conversation_id(conversation_id)
+            .await
+            .is_some()
+    }
+
     async fn cancel(
         &self,
         conn_id: &str,

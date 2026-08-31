@@ -3473,6 +3473,8 @@
         "createAutomationNoName": "自動化を作成中",
         "createWorkTask": "作業タスク {title} を作成中",
         "createWorkTaskNoTitle": "作業タスクを作成中",
+        "resumeDelegation": "タスク {task} を再開中",
+        "resumeDelegationNoId": "委任タスクを再開中",
         "promptLabel": "プロンプト",
         "verdict": {
           "success": "成功",

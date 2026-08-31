@@ -3473,6 +3473,8 @@
         "createAutomationNoName": "إنشاء أتمتة",
         "createWorkTask": "إنشاء مهمة العمل {title}",
         "createWorkTaskNoTitle": "إنشاء مهمة عمل",
+        "resumeDelegation": "استئناف المهمة {task}",
+        "resumeDelegationNoId": "استئناف مهمة مفوضة",
         "promptLabel": "التعليمات",
         "verdict": {
           "success": "ناجحة",
