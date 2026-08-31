@@ -138,6 +138,12 @@ const NO_ACCOUNT_I18N_KEY = "Forge.errors.noAccount"
  *  the same words either way, from the same entry. */
 const UNSUPPORTED_HOST_KEY = "errors.unsupportedHost"
 
+/** Must mirror `WRONG_FORGE_I18N_KEY` in src-tauri/src/forge/mod.rs. The
+ *  backend sends this only after it has ALREADY corrected which forge the host
+ *  is, so the recovery is to ask again rather than to tell the user anything —
+ *  see `forgeCorrectedRef`. */
+const WRONG_FORGE_I18N_KEY = "Forge.errors.wrongForge"
+
 /** How long typing has to stop before the filter becomes a request. GitHub's
  *  search endpoint allows THIRTY calls a minute (its own quota, separate from
  *  the 5000/hour core one), so a per-keystroke fetch would exhaust it inside
@@ -543,6 +549,16 @@ export function ForgePage() {
 
   const [remote, setRemote] = useState<ForgeRemote | null>(null)
   const [remoteLoading, setRemoteLoading] = useState(false)
+  /** Bumped when the backend reports it had this host's forge wrong. It is a
+   *  dependency of the remote lookup, so bumping it re-derives `provider` —
+   *  which is what makes the correction visible in the tab wording too, not
+   *  just in which client the next request uses. */
+  const [forgeCorrection, setForgeCorrection] = useState(0)
+  /** Folders already corrected once. The backend cannot report `WrongForge`
+   *  twice for the same host (it caches the detection before returning), so a
+   *  second report means something else is wrong and the error belongs on
+   *  screen rather than in another silent retry. */
+  const forgeCorrectedRef = useRef<Set<number>>(new Set())
   // Restored synchronously, like the page size below and for the same reason.
   const [tab, setTab] = useState<ForgeTab>(loadForgeTab)
   // Open by default: a triage list opens on the work that is still work.
@@ -647,7 +663,7 @@ export function ForgePage() {
     return () => {
       cancelled = true
     }
-  }, [effectiveFolderId])
+  }, [effectiveFolderId, forgeCorrection])
 
   /**
    * The remote only when codeg can actually read it.
@@ -757,6 +773,19 @@ export function ForgePage() {
       recordCount(countsScope, tab, result.incomplete ? null : data.total_count)
     } catch (e) {
       if (id !== reqRef.current) return
+      // "This host is a GitLab, not a GitHub" is a fact the backend just
+      // learned and has already acted on — showing it to the user would be
+      // reporting our own bookkeeping as their problem. Ask again instead;
+      // the retry goes to the right client and simply works.
+      if (
+        extractAppCommandError(e)?.i18n_key === WRONG_FORGE_I18N_KEY &&
+        effectiveFolderId != null &&
+        !forgeCorrectedRef.current.has(effectiveFolderId)
+      ) {
+        forgeCorrectedRef.current.add(effectiveFolderId)
+        setForgeCorrection((n) => n + 1)
+        return
+      }
       setLoaded(null)
       setError({ raw: e })
     } finally {

@@ -5270,7 +5270,8 @@
     "noRemote": "This folder has no recognizable forge remote (origin)",
     "errors": {
       "noAccount": "No {provider} account is configured for {host}. Add one under Settings → Version Control to load this repository.",
-      "unsupportedHost": "The repository panel supports GitHub and GitLab only, and {host} is not recognized as either. If it is a self-hosted GitHub Enterprise or GitLab instance, add an account for it under Settings → Version Control."
+      "unsupportedHost": "The repository panel supports GitHub and GitLab only, and {host} is not recognized as either. If it is a self-hosted GitHub Enterprise or GitLab instance, add an account for it under Settings → Version Control.",
+      "wrongForge": "{host} is a {provider}, not the forge codeg had it classified as. The detection has been corrected — reload to retry."
     },
     "addAccount": "Add an account",
     "empty": "Nothing here",

@@ -9,6 +9,9 @@
 //! current default account" at call time, so a later `is_default` flip cannot
 //! silently change which identity a task writes with.
 
+use std::collections::HashMap;
+use std::sync::{LazyLock, RwLock};
+
 use sea_orm::DatabaseConnection;
 
 use super::{ForgeError, ForgeProvider};
@@ -201,47 +204,74 @@ pub struct HostProfile {
 ///
 /// The user's own accounts come first: adding a GitLab credential for
 /// `git.corp.com` IS the statement that `git.corp.com` is a GitLab, and typing
-/// `https://host/gitlab` as its server URL is the statement about where. Only
-/// when nothing is declared does the hostname get a vote, and the last resort
-/// is GitHub — the incumbent, and the behaviour every existing install has.
+/// `https://host/gitlab` as its server URL is the statement about where.
+///
+/// When nothing is declared the instance itself is asked ([`detect_forge`]),
+/// because the hostname is a poor witness: a self-hosted GitLab is at least as
+/// likely to be called `git.corp.com` or a bare IP as `gitlab.corp.com`, and
+/// guessing GitHub there sends every call to `/api/v3`, which GitLab answers
+/// with a 410 that means nothing to the person reading it. The hostname keeps
+/// its vote as the last resort, so a host that cannot be reached behaves
+/// exactly as it did before.
 pub async fn host_profile(conn: &DatabaseConnection, server_host: &str) -> HostProfile {
     let accounts = load_accounts(conn).await.unwrap_or_default().accounts;
-    host_profile_in(server_host, &accounts)
+    let host = server_host.trim().to_ascii_lowercase();
+    let authority = authority_in(&host, &accounts);
+    let base_path = authority
+        .map(|a| path_of_server_url(&a.server_url))
+        .unwrap_or_default();
+
+    // A declaration is the end of the question — never probe over it.
+    if let Some(declared) = declared_provider(authority) {
+        // Declared implies an account on the host, so this is `recognized` by
+        // the pure half's rule too, not a separate answer.
+        return HostProfile {
+            provider: declared,
+            base_path,
+            recognized: true,
+        };
+    }
+
+    // Nothing declared. Rather than guess from the hostname and be wrong for
+    // every self-hosted GitLab that is not literally named `gitlab.*`, ASK the
+    // instance what it is. Only a conclusive answer is taken; anything else
+    // falls through to the same guess this has always made, so a host that is
+    // slow, offline or behind a proxy is no worse off than before.
+    let origin = server_origin(&host, authority.map_or("", |a| a.server_url.as_str()));
+    if let Some(detected) = detect_forge(&host, &origin).await {
+        // The instance ANSWERED, and that is the strongest witness there is:
+        // stronger than an account (which vouches for a host without saying
+        // what it runs) and stronger than the name (which is why this probe
+        // exists). It is also the only witness a host with neither can
+        // produce, so without this a `git.corp.com` the probe just proved is a
+        // GitLab would still be shown as "only GitHub and GitLab are
+        // supported" — the two halves of this file contradicting each other.
+        return HostProfile {
+            provider: detected,
+            base_path,
+            recognized: true,
+        };
+    }
+
+    // Nothing declared and nothing detected: the same last resort the pure half
+    // takes, `recognized` included.
+    HostProfile {
+        provider: guess_provider(&host),
+        base_path,
+        recognized: authority.is_some() || provider_from_host_name(&host).is_some(),
+    }
 }
 
-/// Pure half of [`host_profile`].
+/// Pure half of [`host_profile`] — the answer WITHOUT the network probe, which
+/// is what every caller that only has a stored account list can know. The
+/// async half agrees with this whenever a provider is declared, and improves on
+/// it (never contradicts a declaration) when one is not.
 pub fn host_profile_in(server_host: &str, accounts: &[GitHubAccount]) -> HostProfile {
     let host = server_host.trim().to_ascii_lowercase();
-    // A default account speaks for its host before a non-default one does.
-    let on_host: Vec<&GitHubAccount> = {
-        let (default, rest): (Vec<_>, Vec<_>) = accounts
-            .iter()
-            .filter(|a| host_of_server_url(&a.server_url) == host)
-            .partition(|a| a.is_default);
-        default.into_iter().chain(rest).collect()
-    };
-
-    // ONE account speaks for the host, and BOTH answers come from it. Taking
-    // them from different accounts is how a stray secondary credential at
-    // `https://host/gitlab` could strip a root install's `gitlab/team/app`
-    // down to `team/app` and send every call to a repository that is not the
-    // one on screen. Preference: the first account that declares a provider
-    // (that declaration is the most deliberate thing a user can say about a
-    // host), else the default one, else the first.
-    let authority = on_host
-        .iter()
-        .find(|a| {
-            a.provider
-                .as_deref()
-                .is_some_and(|p| ForgeProvider::parse(p).is_ok())
-        })
-        .or_else(|| on_host.first())
-        .copied();
+    let authority = authority_in(&host, accounts);
 
     let named = provider_from_host_name(&host);
-    let provider = authority
-        .and_then(|a| a.provider.as_deref())
-        .and_then(|p| ForgeProvider::parse(p).ok())
+    let provider = declared_provider(authority)
         // Self-hosted with nothing declared: the name is all there is, and
         // anything it does not name stays GitHub — what this codebase did
         // before GitLab existed.
@@ -284,6 +314,191 @@ pub fn provider_from_host_name(server_host: &str) -> Option<ForgeProvider> {
         return Some(ForgeProvider::GitHub);
     }
     None
+}
+
+/// ONE account speaks for the host, and BOTH answers come from it. Taking them
+/// from different accounts is how a stray secondary credential at
+/// `https://host/gitlab` could strip a root install's `gitlab/team/app` down to
+/// `team/app` and send every call to a repository that is not the one on
+/// screen. Preference: the first account that declares a provider (that
+/// declaration is the most deliberate thing a user can say about a host), else
+/// the default one, else the first.
+fn authority_in<'a>(host: &str, accounts: &'a [GitHubAccount]) -> Option<&'a GitHubAccount> {
+    // A default account speaks for its host before a non-default one does.
+    let on_host: Vec<&GitHubAccount> = {
+        let (default, rest): (Vec<_>, Vec<_>) = accounts
+            .iter()
+            .filter(|a| host_of_server_url(&a.server_url) == host)
+            .partition(|a| a.is_default);
+        default.into_iter().chain(rest).collect()
+    };
+    on_host
+        .iter()
+        .find(|a| {
+            a.provider
+                .as_deref()
+                .is_some_and(|p| ForgeProvider::parse(p).is_ok())
+        })
+        .or_else(|| on_host.first())
+        .copied()
+}
+
+/// What the authoritative account SAYS this host is, if it says anything.
+fn declared_provider(authority: Option<&GitHubAccount>) -> Option<ForgeProvider> {
+    authority
+        .and_then(|a| a.provider.as_deref())
+        .and_then(|p| ForgeProvider::parse(p).ok())
+}
+
+/// Last resort when nothing is declared and the instance did not answer: the
+/// name is all there is, and anything it does not name stays GitHub — what
+/// this codebase did before GitLab existed.
+///
+/// The TOTAL half of [`provider_from_host_name`], and deliberately not a second
+/// copy of the rule: the difference between them is only what "the name says
+/// nothing" turns into. Here it is the GitHub incumbent, because a caller
+/// picking a client needs an answer; there it stays `None`, because a caller
+/// deciding what to TELL the user needs to know the answer was a guess.
+fn guess_provider(host: &str) -> ForgeProvider {
+    provider_from_host_name(host).unwrap_or(ForgeProvider::GitHub)
+}
+
+/// Hosts whose forge has been established by evidence rather than by spelling —
+/// either the probe below got a conclusive answer, or the instance announced
+/// itself in an error (see `github::finish`, where GitLab's "API V3 is no
+/// longer supported" is exactly such an announcement).
+///
+/// Process-lifetime only, and deliberately so: it is a cache of something
+/// re-derivable, not a setting. Nothing the user can see gets written, so a
+/// wrong entry cannot outlive a restart.
+/// An entry means the host ANSWERED; `None` inside it means the answer was
+/// "not a GitLab" — a verdict worth keeping, because without it every request
+/// to a GitHub Enterprise would re-probe (`folder_forge_remote_core`, and so
+/// this function, runs on every forge call).
+static DETECTED_FORGE: LazyLock<RwLock<HashMap<String, Option<ForgeProvider>>>> =
+    LazyLock::new(|| RwLock::new(HashMap::new()));
+
+/// Record what a host turned out to be. Called from the probe and from the
+/// error path that recognises a GitLab answering a GitHub Enterprise request.
+pub(crate) fn remember_forge(host: &str, provider: ForgeProvider) {
+    record_verdict(host, Some(provider));
+}
+
+fn record_verdict(host: &str, verdict: Option<ForgeProvider>) {
+    let host = host.trim().to_ascii_lowercase();
+    if host.is_empty() {
+        return;
+    }
+    if let Ok(mut guard) = DETECTED_FORGE.write() {
+        guard.insert(host, verdict);
+    }
+}
+
+/// The positive answer only — "we know this host is X". Production code reads
+/// [`recall_verdict`] instead, because it has to tell "not a GitLab" apart from
+/// "no answer yet"; this is the shape the tests assert against.
+#[cfg(test)]
+pub(crate) fn recall_forge(host: &str) -> Option<ForgeProvider> {
+    DETECTED_FORGE.read().ok()?.get(host).copied().flatten()
+}
+
+/// Whether the host has answered at all, and what it said. `Some(None)` is
+/// "asked and answered: not a GitLab"; `None` is "never got a usable answer".
+fn recall_verdict(host: &str) -> Option<Option<ForgeProvider>> {
+    DETECTED_FORGE.read().ok()?.get(host).copied()
+}
+
+#[cfg(test)]
+pub(crate) fn forget_forge(host: &str) {
+    if let Ok(mut guard) = DETECTED_FORGE.write() {
+        guard.remove(&host.trim().to_ascii_lowercase());
+    }
+}
+
+/// A path no forge routes. Asking for it is how "this host serves the GitLab
+/// API" is told apart from "this host answers everything the same way".
+const NONEXISTENT_PATH: &str = "__codeg_forge_probe";
+
+/// What one probe request came back as. Only the two facts the verdict needs.
+struct Answer {
+    status: u16,
+    json: bool,
+}
+
+/// Statuses that mean "ask again later", not "this is not a GitLab". A GitLab
+/// mid-deploy is a 502 from its own reverse proxy; recording that as a verdict
+/// would pin the host to the hostname guess until codeg restarts, which is the
+/// very failure this path exists to remove.
+fn is_transient(status: u16) -> bool {
+    status >= 500 || status == 408 || status == 429
+}
+
+async fn ask(client: &reqwest::Client, url: String) -> Option<Answer> {
+    let response = client
+        .get(url)
+        .header("User-Agent", "codeg")
+        .header("Accept", "application/json")
+        // Short on purpose: this runs before the panel can draw, and a slow
+        // answer is worth less than falling back to the guess immediately.
+        .timeout(std::time::Duration::from_secs(5))
+        .send()
+        .await
+        .ok()?;
+    let json = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.to_ascii_lowercase().contains("json"));
+    Some(Answer { status: response.status().as_u16(), json })
+}
+
+/// Ask `origin` which forge it is, once per host per process.
+///
+/// The question is `GET {origin}/api/v4/version`. GitLab mounts it and answers
+/// 200 with a token or 401 without — either way it EXISTS; GitHub Enterprise,
+/// which mounts its API at `/api/v3`, answers 404.
+///
+/// A JSON 401 alone is NOT enough. An authenticating gateway in front of a
+/// GitHub Enterprise can answer exactly that to every request, and believing it
+/// would break a setup that works today. So a 401 is confirmed against a path
+/// nothing routes: GitLab answers `{"error":"404 Not Found"}` there, while a
+/// blanket gateway answers 401 again and the probe declines to conclude.
+///
+/// Two failures are deliberately NOT recorded, so they are re-asked rather than
+/// remembered: an unreachable host, and a transient server status
+/// ([`is_transient`]). Everything else IS recorded — including "answered, not a
+/// GitLab" — because `folder_forge_remote_core` runs on every forge call, and
+/// an uncached negative would put a probe in front of each one.
+async fn detect_forge(host: &str, origin: &str) -> Option<ForgeProvider> {
+    if let Some(verdict) = recall_verdict(host) {
+        return verdict;
+    }
+    // The public hosts are not worth a round trip; their names ARE the answer.
+    if host == "github.com" || host == "gitlab.com" {
+        return None;
+    }
+    let client = super::http_client().ok()?;
+
+    let probe = ask(&client, format!("{origin}/api/v4/version")).await?;
+    if is_transient(probe.status) {
+        return None;
+    }
+    let looks_like_gitlab = matches!(probe.status, 200 | 401) && probe.json;
+
+    let verdict = if looks_like_gitlab {
+        let control = ask(&client, format!("{origin}/api/v4/{NONEXISTENT_PATH}")).await?;
+        if is_transient(control.status) {
+            return None;
+        }
+        // Routed endpoints exist and unrouted ones do not — the shape of a
+        // real API, and what a catch-all cannot reproduce.
+        (control.status == 404).then_some(ForgeProvider::GitLab)
+    } else {
+        None
+    };
+
+    record_verdict(host, verdict);
+    verdict
 }
 
 /// The path component of a stored `server_url`, without surrounding slashes.
@@ -779,5 +994,184 @@ mod tests {
             resolve_forge_auth(conn, gh, "gitlab.com", Some("acc-gitlab")).await,
             Err(ForgeError::Auth(_))
         ));
+    }
+
+    // ── forge detection ────────────────────────────────────────────────────
+
+    /// A server that answers `/api/v4/version` with `status` and `content_type`
+    /// and 404s everything else — the shape of a real API, and what the probe
+    /// checks for. Axum's own fallback supplies the 404 for the control path,
+    /// which is exactly what GitLab does there.
+    async fn mock_instance(status: u16, content_type: &'static str) -> String {
+        use axum::routing::get;
+        let app = axum::Router::new().route(
+            "/api/v4/version",
+            get(move || async move {
+                (
+                    axum::http::StatusCode::from_u16(status).unwrap(),
+                    [(axum::http::header::CONTENT_TYPE, content_type)],
+                    "{\"message\":\"401 Unauthorized\"}",
+                )
+            }),
+        );
+        serve(app).await
+    }
+
+    /// A server that answers EVERY path the same way — an authenticating
+    /// gateway, which is what the control request exists to catch.
+    async fn mock_catch_all(status: u16, content_type: &'static str) -> String {
+        let app = axum::Router::new().fallback(move || async move {
+            (
+                axum::http::StatusCode::from_u16(status).unwrap(),
+                [(axum::http::header::CONTENT_TYPE, content_type)],
+                "{\"message\":\"401 Unauthorized\"}",
+            )
+        });
+        serve(app).await
+    }
+
+    async fn serve(app: axum::Router) -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        format!("http://{addr}")
+    }
+
+    /// The whole point: a GitLab that is NOT called `gitlab.*`. The hostname
+    /// says GitHub, the instance says otherwise, and the instance wins — which
+    /// is what stops `/api/v3` (and its 410) from ever being requested.
+    #[tokio::test]
+    async fn an_instance_that_serves_v4_is_detected_as_gitlab() {
+        let host = "probe-serves-v4.test";
+        forget_forge(host);
+        // Unauthenticated GitLab answers 401, and that is enough: the endpoint
+        // EXISTS, which is the fact being tested for.
+        let origin = mock_instance(401, "application/json").await;
+        assert_eq!(detect_forge(host, &origin).await, Some(ForgeProvider::GitLab));
+        // The guess this overrode would have been GitHub, and with it /api/v3.
+        assert_eq!(guess_provider(host), ForgeProvider::GitHub);
+        // Conclusive answers are cached, so the round trip is paid once.
+        assert_eq!(recall_forge(host), Some(ForgeProvider::GitLab));
+        forget_forge(host);
+    }
+
+    /// No `/api/v4` means "not a GitLab", which is NOT the same as "a GitHub":
+    /// the caller keeps its existing guess.
+    ///
+    /// The host ANSWERED though, so that is recorded — `folder_forge_remote_core`
+    /// runs on every forge call, and without a cached negative every GitHub
+    /// Enterprise request would carry a fresh probe.
+    #[tokio::test]
+    async fn a_host_without_v4_leaves_the_guess_alone() {
+        let host = "probe-no-v4.test";
+        forget_forge(host);
+        let origin = mock_instance(404, "text/plain").await;
+        assert_eq!(detect_forge(host, &origin).await, None);
+        assert_eq!(recall_verdict(host), Some(None), "answered: not a GitLab");
+        assert_eq!(recall_forge(host), None);
+        forget_forge(host);
+    }
+
+    /// An SSO portal in front of a GitHub Enterprise can answer 401 to
+    /// anything — but it answers with a login page. Requiring JSON is what
+    /// keeps that from being read as "this is a GitLab".
+    #[tokio::test]
+    async fn an_html_401_is_not_a_gitlab() {
+        let host = "probe-sso-portal.test";
+        forget_forge(host);
+        let origin = mock_instance(401, "text/html; charset=utf-8").await;
+        assert_eq!(detect_forge(host, &origin).await, None);
+        forget_forge(host);
+    }
+
+    /// The regression this guards: a gateway that answers JSON 401 to EVERY
+    /// path. It is indistinguishable from GitLab on `/api/v4/version` alone, so
+    /// believing that one answer would move a working GitHub Enterprise onto
+    /// the GitLab client and break it. A real API 404s a path it does not
+    /// route; a catch-all cannot.
+    #[tokio::test]
+    async fn a_gateway_that_401s_everything_is_not_taken_for_a_gitlab() {
+        let host = "probe-catch-all.test";
+        forget_forge(host);
+        let origin = mock_catch_all(401, "application/json").await;
+        assert_eq!(detect_forge(host, &origin).await, None);
+        // Still a verdict: the gateway is not going to change its mind, and
+        // re-probing it on every forge call would be pure cost.
+        assert_eq!(recall_verdict(host), Some(None));
+        forget_forge(host);
+    }
+
+    /// A GitLab that is mid-deploy answers 502 through its own reverse proxy.
+    /// That is "ask again later", NOT "not a GitLab" — recording it would pin
+    /// the host to the hostname guess until codeg restarts, which is the exact
+    /// failure this detection exists to remove.
+    #[tokio::test]
+    async fn a_transient_server_error_is_not_a_verdict() {
+        let host = "probe-restarting.test";
+        forget_forge(host);
+        let origin = mock_catch_all(502, "text/html").await;
+        assert_eq!(detect_forge(host, &origin).await, None);
+        assert_eq!(recall_verdict(host), None, "502 is not an answer");
+        forget_forge(host);
+    }
+
+    /// The cache has THREE states, and the middle one is the one worth having:
+    /// "asked, and it is not a GitLab" is what stops a GitHub Enterprise from
+    /// re-probing on every call, while "never got an answer" has to stay
+    /// distinct from it so an unreachable host is re-asked instead of pinned to
+    /// the hostname guess for the life of the process.
+    ///
+    /// Exercised through the recorder rather than through a dead port: this
+    /// machine may sit behind a proxy, which answers for unreachable origins
+    /// and would make a connection-level test assert the proxy's behaviour.
+    #[test]
+    fn the_cache_tells_a_negative_verdict_apart_from_no_verdict() {
+        let (answered_gitlab, answered_not, unasked) = (
+            "verdict-gitlab.test",
+            "verdict-negative.test",
+            "verdict-absent.test",
+        );
+        for h in [answered_gitlab, answered_not, unasked] {
+            forget_forge(h);
+        }
+
+        remember_forge(answered_gitlab, ForgeProvider::GitLab);
+        record_verdict(answered_not, None);
+
+        assert_eq!(recall_verdict(answered_gitlab), Some(Some(ForgeProvider::GitLab)));
+        assert_eq!(recall_forge(answered_gitlab), Some(ForgeProvider::GitLab));
+
+        assert_eq!(recall_verdict(answered_not), Some(None), "asked: not a GitLab");
+        assert_eq!(recall_forge(answered_not), None);
+
+        assert_eq!(recall_verdict(unasked), None, "never asked");
+
+        for h in [answered_gitlab, answered_not, unasked] {
+            forget_forge(h);
+        }
+    }
+
+    /// What `github::finish` does when GitLab announces itself in a 410: the
+    /// answer is remembered, so the probe is not even consulted next time and
+    /// an unreachable origin cannot undo the correction.
+    #[tokio::test]
+    async fn a_remembered_forge_short_circuits_the_probe() {
+        let host = "probe-remembered.test";
+        forget_forge(host);
+        remember_forge(host, ForgeProvider::GitLab);
+        // Nothing is listening on this origin; the cache answers anyway.
+        assert_eq!(
+            detect_forge(host, "http://127.0.0.1:1").await,
+            Some(ForgeProvider::GitLab)
+        );
+        forget_forge(host);
+    }
+
+    /// The public hosts are decided by name and never probed — a round trip
+    /// per panel load to learn something already known.
+    #[tokio::test]
+    async fn the_public_hosts_are_never_probed() {
+        assert_eq!(detect_forge("github.com", "http://127.0.0.1:1").await, None);
+        assert_eq!(detect_forge("gitlab.com", "http://127.0.0.1:1").await, None);
     }
 }

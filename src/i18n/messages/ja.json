@@ -5270,7 +5270,8 @@
     "noRemote": "このフォルダには認識できるリモート（origin）がありません",
     "errors": {
       "noAccount": "{host} の {provider} アカウントが設定されていません。「設定 → バージョン管理」で追加するとこのリポジトリを読み込めます。",
-      "unsupportedHost": "リポジトリパネルは GitHub と GitLab にのみ対応しており、{host} はそのどちらとしても認識できません。自己ホスト型の GitHub Enterprise または GitLab インスタンスであれば、「設定 → バージョン管理」でアカウントを追加してください。"
+      "unsupportedHost": "リポジトリパネルは GitHub と GitLab にのみ対応しており、{host} はそのどちらとしても認識できません。自己ホスト型の GitHub Enterprise または GitLab インスタンスであれば、「設定 → バージョン管理」でアカウントを追加してください。",
+      "wrongForge": "{host} は {provider} でした。別のフォージとして扱われていましたが、判定を修正しました。再読み込みしてください。"
     },
     "addAccount": "アカウントを追加",
     "empty": "表示する項目がありません",

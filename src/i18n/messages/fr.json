@@ -5270,7 +5270,8 @@
     "noRemote": "Ce dossier n'a pas de remote reconnaissable (origin)",
     "errors": {
       "noAccount": "Aucun compte {provider} n'est configuré pour {host}. Ajoutez-en un dans Paramètres → Contrôle de version pour charger ce dépôt.",
-      "unsupportedHost": "Le panneau du dépôt ne prend en charge que GitHub et GitLab, et {host} n'est reconnu comme ni l'un ni l'autre. S'il s'agit d'une instance auto-hébergée de GitHub Enterprise ou de GitLab, ajoutez-y un compte dans Paramètres → Contrôle de version."
+      "unsupportedHost": "Le panneau du dépôt ne prend en charge que GitHub et GitLab, et {host} n'est reconnu comme ni l'un ni l'autre. S'il s'agit d'une instance auto-hébergée de GitHub Enterprise ou de GitLab, ajoutez-y un compte dans Paramètres → Contrôle de version.",
+      "wrongForge": "{host} est un {provider}, et non la forge sous laquelle il était classé. La détection a été corrigée — rechargez pour réessayer."
     },
     "addAccount": "Ajouter un compte",
     "empty": "Rien à afficher",
