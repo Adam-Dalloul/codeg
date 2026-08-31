@@ -724,10 +724,14 @@ impl TaskEngine {
         Ok(())
     }
 
-    /// Cancel a task from any non-terminal state except merging. Worktree is
-    /// kept (the card offers cleanup separately). `reason` is the user's own
-    /// note for the timeline; internal cancels (a conversation the user stopped
-    /// from the chat UI, a delete) pass None.
+    /// Cancel a task from any non-terminal state except merging. The worktree
+    /// is kept — removing it is a separate call the callers chain on when the
+    /// user asked for it (`work_task_cancel_core`'s checkbox, the delete path),
+    /// and it has to come after this one returns: the removal refuses while a
+    /// live agent connection is still on the task, and shedding that connection
+    /// is the last thing we do below. `reason` is the user's own note for the
+    /// timeline; internal cancels (a conversation the user stopped from the
+    /// chat UI, a delete) pass None.
     pub async fn cancel(
         self: &Arc<Self>,
         task_id: i32,
@@ -5087,21 +5091,62 @@ impl TaskEngine {
 
     // ── worktree cleanup ────────────────────────────────────────────────────
 
-    /// Remove a task's worktree + branch (user action from the card, or the
-    /// post-merge checkbox). Takes the per-folder git lock.
+    /// Remove a task's worktree + branch (user action from the card, the
+    /// post-merge checkbox, or the cancel dialog's). Takes the task lock and
+    /// then the per-folder git lock, in that order.
+    ///
+    /// The TASK lock is what makes this safe against a launch, and the folder
+    /// lock cannot stand in for it: [`Self::launch`] holds the task lock across
+    /// its whole setup — `ensure_worktree` included — and takes no folder lock
+    /// at all, so a folder-scoped removal runs straight through a checkout that
+    /// is being created. Reachable whenever the row leaves a launchable state
+    /// and comes back: cancel (`canceled`) → the user requeues (`todo`, a pure
+    /// DB write that waits on nothing) → the pump claims and launches, all
+    /// while this call sits between its status read and its removal. Nothing
+    /// else about that sequence is wrong — the fresh run mints its own worktree
+    /// — but deleting the directory out from under `ensure_worktree` is.
+    ///
+    /// Hence read the status twice: once before the lock so a `running` task
+    /// fails fast instead of queueing behind its own init command (which can be
+    /// a whole `pnpm install`), and once after, because only the second read is
+    /// serialized against the launch it is trying to exclude.
+    ///
+    /// Ordering is deadlock-free by inspection: the task lock is only ever
+    /// taken here, in [`Self::cancel`], and in [`Self::launch`], and none of
+    /// those three is reachable while a folder lock is held (`launch` runs in
+    /// its own spawned task, and `cancel`'s only nested wait is the pump lock).
     pub async fn cleanup_task(&self, task_id: i32) -> Result<(), String> {
+        /// Statuses whose worktree is either in use or about to be — the launch
+        /// path owns it, not the user.
+        fn in_use(status: &WorkTaskStatus) -> bool {
+            matches!(
+                status,
+                WorkTaskStatus::Queued
+                    | WorkTaskStatus::Preparing
+                    | WorkTaskStatus::Running
+                    | WorkTaskStatus::AwaitingInput
+                    | WorkTaskStatus::Merging
+            )
+        }
+        const REFUSAL: &str = "cancel or finish the task before removing its worktree";
+
         let task = work_task_service::get_model(&self.db.conn, task_id)
             .await
             .map_err(|e| e.to_string())?;
-        if matches!(
-            task.status,
-            WorkTaskStatus::Queued
-                | WorkTaskStatus::Preparing
-                | WorkTaskStatus::Running
-                | WorkTaskStatus::AwaitingInput
-                | WorkTaskStatus::Merging
-        ) {
-            return Err("cancel or finish the task before removing its worktree".to_string());
+        if in_use(&task.status) {
+            return Err(REFUSAL.to_string());
+        }
+        let task_guard = self.task_lock(task_id).await;
+        let _task_guard = task_guard.lock().await;
+        // Re-read under the lock: whatever claimed the row while we waited is
+        // now either fully set up (and refused here) or still blocked on this
+        // lock at the top of `launch` — where it re-reads its own status and
+        // gives up if a cancel moved the row on.
+        let task = work_task_service::get_model(&self.db.conn, task_id)
+            .await
+            .map_err(|e| e.to_string())?;
+        if in_use(&task.status) {
+            return Err(REFUSAL.to_string());
         }
         let lock = self.folder_lock(task.folder_id).await;
         let _guard = lock.lock().await;
@@ -9996,6 +10041,50 @@ mod tests {
         assert_eq!(task.worktree_folder_id, None, "detached");
         assert!(!f.worktree.exists(), "and really gone from disk");
         assert!(!f.engine.index.lock().await.contains_key(ZOMBIE), "retired");
+    }
+
+    /// The removal has to serialize against a LAUNCH, and the folder git lock
+    /// cannot do that: `launch` holds the TASK lock across its whole setup —
+    /// `ensure_worktree` included — and takes no folder lock at all.
+    ///
+    /// The sequence that gets there is ordinary board use: a cancel that was
+    /// asked to take the worktree along leaves the row `canceled`, the user
+    /// requeues it (a pure DB write that waits on no lock), and the pump
+    /// launches it — all while the removal sits between its status read and its
+    /// `git worktree remove`. Nothing about the requeue is wrong; the fresh run
+    /// would mint its own checkout. Deleting the directory out from under
+    /// `ensure_worktree` is.
+    ///
+    /// Holding the task lock here stands in for that launch: without the lock
+    /// on the removal's side, the worktree is gone before the guard is dropped.
+    #[tokio::test]
+    async fn worktree_removal_waits_for_the_task_lock() {
+        let f = delivery_fixture(FakeForge::default()).await;
+        let engine = f.engine.clone();
+        let task_id = f.task_id;
+
+        // Stand in for a launch that has the row and is inside its setup.
+        let held = engine.task_lock(task_id).await;
+        let guard = held.lock().await;
+
+        let removal = tokio::spawn({
+            let engine = engine.clone();
+            async move { engine.cleanup_task(task_id).await }
+        });
+
+        // Long enough that an unserialized removal — a few DB reads and a
+        // `git worktree remove` — would have finished several times over.
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        assert!(
+            f.worktree.exists(),
+            "the checkout must survive while the launch holds the task lock"
+        );
+        assert!(!removal.is_finished(), "and the removal must still be parked");
+
+        drop(guard);
+        removal.await.expect("join").expect("cleanup");
+        assert!(!f.worktree.exists(), "and go once the lock is free");
+        assert_eq!(row(&engine, task_id).await.worktree_folder_id, None);
     }
 
     /// Drain everything the fixture's engine has broadcast so far.

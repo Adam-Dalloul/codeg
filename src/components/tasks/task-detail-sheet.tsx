@@ -1260,9 +1260,10 @@ export function TaskDetailSheet({
           {/* Footer: everything that does NOT advance the task's state — the
               status's own actions live in the action zone / acceptance panel
               above. Left: session viewer, edit (while editable), cleanup
-              retry; right: the worktree a finished task is still holding, then
-              the destructive delete (`merging` cannot be deleted), which takes
-              the worktree along as a checkbox in its own confirm. */}
+              retry; right: the worktree a settled (done / canceled) task is
+              still holding, then the destructive delete (`merging` cannot be
+              deleted), which takes the worktree along as a checkbox in its own
+              confirm. */}
           {task.conversation_id != null ||
           canEdit ||
           task.status !== "merging" ? (
@@ -1293,9 +1294,9 @@ export function TaskDetailSheet({
               ) : null}
               <div className="flex-1" />
               {/* Beside "delete", because that is the other way to be rid of
-                  this worktree — and glyph-only, because a done task's leftover
-                  checkout is a housekeeping detail, not a decision the drawer
-                  should press on the user every time they open it. */}
+                  this worktree — and glyph-only, because a settled task's
+                  leftover checkout is a housekeeping detail, not a decision the
+                  drawer should press on the user every time they open it. */}
               {canRemoveWorktree(task) ? (
                 <FooterIconAction
                   icon={FolderX}

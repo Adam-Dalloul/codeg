@@ -27,10 +27,18 @@ export function worktreeWasRemoved(task: WorkTask): boolean {
 
 /**
  * Whether the drawer should offer to remove the worktree on its own — a task
- * that FINISHED still sitting on the checkout it ran in. Both acceptances
- * (merge, complete) offer to take the worktree along and both let the user say
- * no, so a `done` task can keep a checkout nobody will open again; this is how
- * that disk is reclaimed without deleting the task itself.
+ * that STOPPED still sitting on the checkout it ran in. Every way of stopping
+ * offers to take the worktree along and every one of them lets the user say no
+ * (the acceptances' checkbox, the cancel dialog's), so a settled task can keep
+ * a checkout nobody will open again; this is how that disk is reclaimed without
+ * deleting the task itself.
+ *
+ * Two statuses qualify, for the same reason from opposite ends: `done` (the
+ * work landed, or there was none) and `canceled` (the work was abandoned). A
+ * canceled task can still be requeued, which is why the removal stays an
+ * explicit, separate gesture here rather than something the cancel does on its
+ * own — but leaving it unofferable meant the only way to reclaim that disk was
+ * to delete the task, losing the record of why it was stopped.
  *
  * Two exclusions, both about not offering the same call twice:
  * - a worktree already gone (`isWorktreeGone`) has nothing to remove — the card
@@ -41,7 +49,7 @@ export function worktreeWasRemoved(task: WorkTask): boolean {
  */
 export function canRemoveWorktree(task: WorkTask): boolean {
   return (
-    task.status === "done" &&
+    (task.status === "done" || task.status === "canceled") &&
     !isWorktreeGone(task) &&
     task.cleanup_state !== "failed"
   )

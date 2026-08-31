@@ -201,21 +201,23 @@ describe("worktreeWasRemoved", () => {
 describe("canRemoveWorktree", () => {
   const done = { status: "done" } as const
 
-  it("offers the removal to a finished task still holding its worktree", () => {
-    // The merge / complete dialogs both let the user KEEP the worktree, so
-    // this is the state the drawer's own removal exists for.
+  it("offers the removal to a settled task still holding its worktree", () => {
+    // Every way of stopping lets the user KEEP the worktree — the merge /
+    // complete dialogs' checkbox, and the cancel dialog's — so this is the
+    // state the drawer's own removal exists for. Canceled counts: that task
+    // can still be requeued, but a checkout the user has no intention of
+    // reopening should be reclaimable without deleting the task (and with it
+    // the record of why it was stopped).
     expect(canRemoveWorktree(task({ ...done }))).toBe(true)
+    expect(canRemoveWorktree(task({ status: "canceled" }))).toBe(true)
   })
 
-  it("stays out of an unfinished task's way", () => {
+  it("stays out of an unsettled task's way", () => {
     // Mid-run the checkout is in use, and a reviewed task's worktree is what
     // the acceptance is about to read — neither is housekeeping.
     for (const status of ["todo", "running", "review", "merging"] as const) {
       expect(canRemoveWorktree(task({ status }))).toBe(false)
     }
-    // Canceled keeps its worktree on purpose: that task can be requeued, and
-    // requeuing wants the checkout it left behind.
-    expect(canRemoveWorktree(task({ status: "canceled" }))).toBe(false)
   })
 
   it("says nothing when there is no worktree left to remove", () => {
@@ -227,6 +229,11 @@ describe("canRemoveWorktree", () => {
     expect(canRemoveWorktree(task({ ...done, worktree_missing: true }))).toBe(
       false
     )
+    // A canceled task that took its worktree along with the stop is in exactly
+    // the same place — the checkbox already did this call.
+    expect(
+      canRemoveWorktree(task({ status: "canceled", worktree_folder_id: null }))
+    ).toBe(false)
   })
 
   it("defers to the retry entry after a failed cleanup", () => {

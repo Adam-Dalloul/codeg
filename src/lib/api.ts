@@ -3549,12 +3549,22 @@ export async function workTaskReturn(
  * Stop a task. `reason` (optional) is the user's own note about why — it lands
  * on the `canceled` entry of the progress timeline and is never replayed into
  * a later run's prompt (a requeue carries its own note for that).
+ *
+ * `deleteWorktree` takes the checkout along once the stop lands — best-effort,
+ * so a removal that fails leaves a retryable `cleanup_state` on the card and
+ * the task is canceled either way. It also deletes the work branch, which is
+ * why the dialog leaves the box unchecked by default.
  */
 export async function workTaskCancel(
   id: number,
-  reason?: string | null
+  reason?: string | null,
+  deleteWorktree = false
 ): Promise<void> {
-  return getTransport().call("work_task_cancel", { id, reason: reason ?? null })
+  return getTransport().call("work_task_cancel", {
+    id,
+    reason: reason ?? null,
+    deleteWorktree,
+  })
 }
 
 /** Dispatch the agent-driven merge (`message: null` = the agent writes the
