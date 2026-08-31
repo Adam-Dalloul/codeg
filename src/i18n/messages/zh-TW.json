@@ -5235,7 +5235,8 @@
     "pickFolder": "選擇專案資料夾",
     "noRemote": "該資料夾沒有可識別的程式碼託管遠端（origin）",
     "errors": {
-      "noAccount": "尚未為 {host} 設定 {provider} 帳號。請先在「設定 → 版本控制」中新增，才能載入這個儲存庫。"
+      "noAccount": "尚未為 {host} 設定 {provider} 帳號。請先在「設定 → 版本控制」中新增，才能載入這個儲存庫。",
+      "wrongForge": "{host} 實際上是 {provider}，先前被誤判為另一種程式碼託管服務。已自動更正，請重新載入。"
     },
     "addAccount": "新增帳號",
     "empty": "暫無內容",

@@ -5235,7 +5235,8 @@
     "pickFolder": "Projektordner wählen",
     "noRemote": "Dieser Ordner hat kein erkennbares Forge-Remote (origin)",
     "errors": {
-      "noAccount": "Für {host} ist kein {provider}-Konto konfiguriert. Füge unter Einstellungen → Versionskontrolle eines hinzu, um dieses Repository zu laden."
+      "noAccount": "Für {host} ist kein {provider}-Konto konfiguriert. Füge unter Einstellungen → Versionskontrolle eines hinzu, um dieses Repository zu laden.",
+      "wrongForge": "{host} ist ein {provider} und nicht die Forge, als die es eingestuft war. Die Erkennung wurde korrigiert — neu laden, um es erneut zu versuchen."
     },
     "addAccount": "Konto hinzufügen",
     "empty": "Nichts zu zeigen",

@@ -158,6 +158,10 @@ impl ForgeItemKind {
 /// forge page's own `useTranslations("Forge")` cannot resolve it.
 pub const NO_ACCOUNT_I18N_KEY: &str = "Forge.errors.noAccount";
 
+/// i18n key for [`ForgeError::WrongForge`]. Root-dotted for the same reason
+/// [`NO_ACCOUNT_I18N_KEY`] is.
+pub const WRONG_FORGE_I18N_KEY: &str = "Forge.errors.wrongForge";
+
 #[derive(Debug, thiserror::Error)]
 pub enum ForgeError {
     /// No usable account/token for the requested host (or the token is dead).
@@ -170,6 +174,12 @@ pub enum ForgeError {
     /// [`ForgeError::Auth`]: adding another account fixes none of them.
     #[error("no {} account for host {host}", provider.display_name())]
     NoAccount { provider: ForgeProvider, host: String },
+    /// The host answered in a way only the OTHER forge answers — codeg had it
+    /// classified wrong and now knows better. Recoverable by construction: the
+    /// detection cache has already been corrected by the time this is
+    /// returned, so repeating the request routes it to the right client.
+    #[error("{host} is a {}, not the forge it was addressed as", detected.display_name())]
+    WrongForge { host: String, detected: ForgeProvider },
     /// Primary or secondary rate limit; honor `retry_after` when present.
     #[error("forge rate limited")]
     RateLimited { retry_after: Option<u64> },
@@ -199,6 +209,13 @@ impl From<ForgeError> for crate::app_error::AppCommandError {
                 ]);
                 E::configuration_missing(err.to_string())
                     .with_i18n(NO_ACCOUNT_I18N_KEY, params)
+            }
+            ForgeError::WrongForge { host, detected } => {
+                let params = std::collections::BTreeMap::from([
+                    ("host".to_string(), host.clone()),
+                    ("provider".to_string(), detected.display_name().to_string()),
+                ]);
+                E::network(err.to_string()).with_i18n(WRONG_FORGE_I18N_KEY, params)
             }
             ForgeError::RateLimited { retry_after } => E::network("forge rate limit reached")
                 .with_detail(match retry_after {

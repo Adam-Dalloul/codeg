@@ -5235,7 +5235,8 @@
     "pickFolder": "Escolha uma pasta de projeto",
     "noRemote": "Esta pasta não tem um remoto reconhecível (origin)",
     "errors": {
-      "noAccount": "Nenhuma conta {provider} configurada para {host}. Adicione uma em Configurações → Controle de versão para carregar este repositório."
+      "noAccount": "Nenhuma conta {provider} configurada para {host}. Adicione uma em Configurações → Controle de versão para carregar este repositório.",
+      "wrongForge": "{host} é um {provider}, não a forja com que estava classificado. A detecção foi corrigida — recarregue para tentar novamente."
     },
     "addAccount": "Adicionar uma conta",
     "empty": "Nada por aqui",

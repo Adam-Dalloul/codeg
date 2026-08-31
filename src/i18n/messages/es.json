@@ -5235,7 +5235,8 @@
     "pickFolder": "Elige una carpeta de proyecto",
     "noRemote": "Esta carpeta no tiene un remoto reconocible (origin)",
     "errors": {
-      "noAccount": "No hay ninguna cuenta de {provider} configurada para {host}. Añade una en Configuración → Control de versiones para cargar este repositorio."
+      "noAccount": "No hay ninguna cuenta de {provider} configurada para {host}. Añade una en Configuración → Control de versiones para cargar este repositorio.",
+      "wrongForge": "{host} es un {provider}, no la forja con la que estaba clasificado. La detección se ha corregido: vuelve a cargar para reintentar."
     },
     "addAccount": "Añadir una cuenta",
     "empty": "No hay nada aquí",
