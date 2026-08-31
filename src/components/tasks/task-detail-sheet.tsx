@@ -1671,6 +1671,7 @@ const EVENT_KIND_KEYS = {
   preflight_result: "eventPreflight",
   cleanup_failed: "eventCleanupFailed",
   resume_fallback: "eventResumeFallback",
+  context_compact: "eventContextCompact",
   user_action: "eventUserAction",
   diff_stat: "eventDiffStat",
   forge_writeback: "eventForgeWriteback",
@@ -1837,6 +1838,22 @@ function timelineDetail(event: WorkTaskEvent): string | null {
     }
     case "cleanup_failed":
       return str("error")
+    case "context_compact": {
+      const status = str("status")
+      const pct = (k: string) =>
+        typeof p[k] === "number" ? `${(p[k] as number).toFixed(1)}%` : null
+      const before = pct("before_percent")
+      const after = pct("after_percent")
+      // The pair is the whole story ("91.2% → 34.8%"); a run that never got
+      // to compact shows why instead.
+      const span =
+        before && after ? `${before} → ${after}` : (before ?? str("reason"))
+      return (
+        [status, span, str("detail"), str("error")]
+          .filter(Boolean)
+          .join(" · ") || null
+      )
+    }
     case "user_action": {
       const action = str("action")
       const feedback = str("feedback")
