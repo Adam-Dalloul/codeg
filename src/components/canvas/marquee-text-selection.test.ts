@@ -40,7 +40,15 @@ function mountSurface() {
 }
 
 function press(target: Element, button = 0) {
-  target.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button }))
+  // `cancelable` so the guard's `preventDefault` is observable — that call is
+  // the whole fix for editable content, which no stylesheet can reach.
+  const event = new MouseEvent("mousedown", {
+    bubbles: true,
+    cancelable: true,
+    button,
+  })
+  target.dispatchEvent(event)
+  return event
 }
 
 function release(target: Element, button = 0) {
@@ -48,11 +56,14 @@ function release(target: Element, button = 0) {
 }
 
 /** Stands in for the document's selection so the assertion is "we collapsed
- *  whatever was selected", not jsdom's own Selection bookkeeping. */
-function stubSelection() {
+ *  whatever was selected", not jsdom's own Selection bookkeeping. Pass a live
+ *  range to model "something is selected right now". */
+function stubSelection(selected = false) {
   const removeAllRanges = vi.fn()
   vi.spyOn(window, "getSelection").mockReturnValue({
     removeAllRanges,
+    rangeCount: selected ? 1 : 0,
+    isCollapsed: !selected,
   } as unknown as Selection)
   return removeAllRanges
 }
@@ -76,6 +87,55 @@ describe("useCanvasMarqueeTextGuard", () => {
     // selected — so a selection made inside a card would otherwise stay lit
     // however much blank board the user clicked afterwards.
     expect(removeAllRanges).toHaveBeenCalledTimes(1)
+  })
+
+  it("refuses the press's default, so no anchor is ever dropped", () => {
+    stubSelection()
+    const { surface, pane } = mountSurface()
+    renderHook(() => useCanvasMarqueeTextGuard({ current: surface }))
+
+    expect(press(pane).defaultPrevented).toBe(true)
+
+    // The CSS half of this fix cannot reach an editing host — engines allow
+    // selection inside editable content before they consult `user-select` at
+    // all — and the card's composer is one. Killing the anchor is what covers
+    // it, and it is the only thing that does.
+  })
+
+  it("takes focus off the composer the way the press it cancelled would have", () => {
+    stubSelection()
+    const { surface, pane, card } = mountSurface()
+    const input = document.createElement("input")
+    card.appendChild(input)
+    input.focus()
+    expect(document.activeElement).toBe(input)
+    renderHook(() => useCanvasMarqueeTextGuard({ current: surface }))
+
+    press(pane)
+
+    // `preventDefault` also cancels the focus move that pressing blank space
+    // normally performs. Without this, clicking away from a card's composer
+    // leaves the caret in it and the next thing typed lands somewhere the user
+    // is no longer looking.
+    expect(document.activeElement).toBe(document.body)
+  })
+
+  it("clears a selection that still manages to appear mid-gesture", () => {
+    const removeAllRanges = stubSelection(true)
+    const { surface, pane } = mountSurface()
+    renderHook(() => useCanvasMarqueeTextGuard({ current: surface }))
+
+    press(pane)
+    expect(removeAllRanges).toHaveBeenCalledTimes(1)
+    document.dispatchEvent(new Event("selectionchange"))
+
+    expect(removeAllRanges).toHaveBeenCalledTimes(2)
+
+    // ...and only for the gesture: once the button is up, selecting is the
+    // user's business again.
+    release(pane)
+    document.dispatchEvent(new Event("selectionchange"))
+    expect(removeAllRanges).toHaveBeenCalledTimes(2)
   })
 
   it("lets go on mouseup", () => {

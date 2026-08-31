@@ -5513,6 +5513,8 @@
     "createRegionFromSelection": "تجميع في منطقة",
     "selectedCount": "{count} محدد",
     "openInWorkspace": "فتح في مساحة العمل",
+    "openDetailPanel": "فتح في اللوحة الجانبية",
+    "detailPanelDescription": "المحادثة الكاملة للبطاقة المحددة، دون مغادرة اللوحة.",
     "expandConversation": "توسيع المحادثة",
     "collapseConversation": "طي المحادثة",
     "cardMenu": "خيارات البطاقة",

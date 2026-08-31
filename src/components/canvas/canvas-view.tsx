@@ -58,9 +58,13 @@ import {
   type DbConversationSummary,
 } from "@/lib/types"
 import { cn, randomUUID } from "@/lib/utils"
-import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
+import {
+  isConversationDeleted,
+  useAppWorkspaceStore,
+} from "@/stores/app-workspace-store"
 import { applyMovesTo, useCanvasStore } from "@/stores/canvas-store"
 import { NOTE_H, NOTE_W } from "./add-node-menu"
+import { CanvasConversationDrawer } from "./canvas-conversation-drawer"
 import { useCanvasData } from "./canvas-data"
 import { CanvasDock, CanvasZoomPanel } from "./canvas-dock"
 import {
@@ -136,7 +140,7 @@ function parseDraftNodeId(rfId: string): string | null {
   return rfId.startsWith(DRAFT_PREFIX) ? rfId.slice(DRAFT_PREFIX.length) : null
 }
 
-/** ACP connection keys for the two live-conversation surfaces. Both must be
+/** ACP connection keys for the three live-conversation surfaces. Each must be
  *  stable for the surface's whole life — `useConnectionLifecycle` keys its
  *  connection on this string. */
 function draftSurfaceKey(draftId: string): string {
@@ -145,6 +149,16 @@ function draftSurfaceKey(draftId: string): string {
 
 function pinSurfaceKey(pinDbId: number): string {
   return `canvas-node-${pinDbId}`
+}
+
+/** The side panel's key is per CONVERSATION, not per card: it can be opened
+ *  from a pinned card or from a region member (which has no node of its own),
+ *  and the same conversation must land on the same key either way. Distinct
+ *  from the card's key on purpose — with both open, the second surface joins
+ *  the first one's connection as a co-controlling viewer rather than starting a
+ *  second agent (see the discovery gate in `acp-connections-context`). */
+function drawerSurfaceKey(conversationId: number): string {
+  return `canvas-drawer-${conversationId}`
 }
 
 function CanvasFlow() {
@@ -190,6 +204,13 @@ function CanvasFlow() {
     () => new Set()
   )
   const { registerLiveSurfaceKeys } = useAcpActions()
+  // The conversation showing in the side panel, by id. Session-only, and held
+  // HERE rather than in the card that opened it: ReactFlow culls nodes outside
+  // the viewport, so a panel owned by a card would close itself the first time
+  // the user panned away from that card.
+  const [drawerConversationId, setDrawerConversationId] = useState<
+    number | null
+  >(null)
 
   const [drafts, setDrafts] = useState<readonly CanvasDraftCard[]>(() =>
     loadCanvasDrafts()
@@ -572,6 +593,46 @@ function CanvasFlow() {
     [surfaceKeys]
   )
 
+  /** The side panel's conversation, re-resolved rather than snapshotted so a
+   *  rename or a status change reaches its header — and so the panel empties
+   *  itself if the conversation is deleted out from under it. */
+  const drawerConversation = useMemo(
+    () =>
+      drawerConversationId == null
+        ? null
+        : (conversations.find((c) => c.id === drawerConversationId) ?? null),
+    [conversations, drawerConversationId]
+  )
+
+  // A deleted conversation closes the panel for real, rather than leaving it
+  // holding an id nothing resolves. Controlled `open` going false does NOT emit
+  // `onOpenChange` (that fires for user-driven closes), so without this the id
+  // would sit there until the next manual close — and the connection key below
+  // would stay claimed, pinning a connection the idle sweep is meant to reclaim.
+  //
+  // Only once the list has settled: "not in the list" has to mean deleted, not
+  // "not loaded yet". Today `refreshConversations` publishes only on success, so
+  // there is no empty window to trip over — but a panel that closes itself on a
+  // slow refresh would be a maddening bug to find, and this effect should not
+  // depend on that staying true.
+  // ...with one thing that outranks the list: a deletion seen at any point
+  // wins. `refreshConversations` replaces the list wholesale without consulting
+  // the tombstone, so a refresh that was already in flight when the delete
+  // landed can put the row back — and this panel would then re-mount a live
+  // surface on a conversation that no longer exists.
+  const conversationsLoading = useAppWorkspaceStore(
+    (s) => s.conversationsLoading
+  )
+  useEffect(() => {
+    if (drawerConversationId == null) return
+    if (isConversationDeleted(drawerConversationId)) {
+      setDrawerConversationId(null)
+      return
+    }
+    if (conversationsLoading) return
+    if (drawerConversation == null) setDrawerConversationId(null)
+  }, [conversationsLoading, drawerConversationId, drawerConversation])
+
   /** Connection keys with a surface actually MOUNTED right now. */
   const mountedSurfaceKeys = useMemo(() => {
     const keys = new Set<string>()
@@ -579,8 +640,23 @@ function CanvasFlow() {
       if (dbNodes.has(pinDbId)) keys.add(contextKeyForPin(pinDbId))
     }
     for (const draft of drafts) keys.add(draftSurfaceKey(draft.id))
+    // Off the RESOLVED conversation, not the id: the panel renders its surface
+    // on exactly the same condition, and "mounted" has to mean mounted.
+    if (drawerConversation) {
+      keys.add(drawerSurfaceKey(drawerConversation.id))
+    }
     return keys
-  }, [detailCards, dbNodes, drafts, contextKeyForPin])
+  }, [detailCards, dbNodes, drafts, drawerConversation, contextKeyForPin])
+
+  const openConversationDrawer = useCallback(
+    (conversationId: number) => {
+      setDrawerConversationId(conversationId)
+      // Opening the panel IS the interaction that promotes it: unlike a card
+      // restored from a previous visit, nobody arrives here without asking.
+      activateSurface(drawerSurfaceKey(conversationId))
+    },
+    [activateSurface]
+  )
 
   // Tell the connection provider which surfaces are on screen. Its idle sweep
   // reclaims any connection that is neither the single `activeKey` nor an open
@@ -847,6 +923,7 @@ function CanvasFlow() {
       endNodeResize,
       deleteNode,
       openConversation,
+      openConversationDrawer,
       contextKeyForPin,
       draftSurfaceKey,
       saveSelectionAsNote,
@@ -873,6 +950,7 @@ function CanvasFlow() {
       endNodeResize,
       deleteNode,
       openConversation,
+      openConversationDrawer,
       contextKeyForPin,
       saveSelectionAsNote,
       dismissDraft,
@@ -1861,14 +1939,17 @@ function CanvasFlow() {
           {dropHint?.type === "merge" && (
             <ViewportPortal>
               <div
-                className="pointer-events-none absolute flex items-start justify-center rounded-2xl border-2 border-dashed border-primary/70 bg-primary/5"
+                // Board units: this is drawn in flow coordinates like the
+                // region it previews, so its label has to be measured the same
+                // way or the chip outgrows the ghost it sits in.
+                className="canvas-board-units pointer-events-none absolute flex items-start justify-center rounded-2xl border-2 border-dashed border-primary/70 bg-primary/5"
                 style={{
                   transform: `translate(${dropHint.rect.x}px, ${dropHint.rect.y}px)`,
                   width: dropHint.rect.width,
                   height: dropHint.rect.height,
                 }}
               >
-                <span className="mt-1 rounded-full bg-primary/90 px-2 py-0.5 text-[0.6875rem] font-medium text-primary-foreground">
+                <span className="mt-1 rounded-full bg-primary/90 px-2 py-0.5 text-[11px] font-medium text-primary-foreground">
                   {t("mergeIntoNewRegion")}
                 </span>
               </div>
@@ -1896,6 +1977,25 @@ function CanvasFlow() {
           />
           <CanvasZoomPanel />
         </ReactFlow>
+
+        {/* Owned by the view, not by the card that opened it — see the note in
+            `canvas-conversation-drawer`. A React child of the surface so it
+            renders inside the canvas's provider (and so anything IT opens
+            stacks on it), while its DOM portals to the body — which is also
+            what stands the board's shortcuts down while the panel has focus:
+            they are scoped to elements the surface contains. */}
+        <CanvasConversationDrawer
+          conversation={drawerConversation}
+          contextKey={
+            drawerConversation ? drawerSurfaceKey(drawerConversation.id) : null
+          }
+          onOpenChange={(open) => {
+            if (!open) setDrawerConversationId(null)
+          }}
+          onOpenInWorkspace={() => {
+            if (drawerConversation) openConversation(drawerConversation, true)
+          }}
+        />
 
         {!hydrated && (
           <div className="absolute inset-0 flex items-center justify-center">

@@ -5513,6 +5513,8 @@
     "createRegionFromSelection": "領域にまとめる",
     "selectedCount": "{count} 件選択中",
     "openInWorkspace": "ワークスペースで開く",
+    "openDetailPanel": "サイドパネルで開く",
+    "detailPanelDescription": "キャンバスを離れずに、選択したカードの会話をすべて表示します。",
     "expandConversation": "会話を展開",
     "collapseConversation": "会話を折りたたむ",
     "cardMenu": "カードのオプション",

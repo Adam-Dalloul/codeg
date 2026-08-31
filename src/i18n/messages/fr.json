@@ -5513,6 +5513,8 @@
     "createRegionFromSelection": "Regrouper dans une région",
     "selectedCount": "{count} sélectionnés",
     "openInWorkspace": "Ouvrir dans l'espace de travail",
+    "openDetailPanel": "Ouvrir dans le panneau latéral",
+    "detailPanelDescription": "La conversation complète de la carte sélectionnée, sans quitter le canevas.",
     "expandConversation": "Développer la conversation",
     "collapseConversation": "Réduire la conversation",
     "cardMenu": "Options de la carte",

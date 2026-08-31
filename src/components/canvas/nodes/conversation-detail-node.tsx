@@ -78,7 +78,12 @@ function DetailFrame({
   return (
     <div
       className={cn(
-        "flex h-full w-full cursor-auto flex-col overflow-hidden rounded-2xl border bg-card transition-colors select-text",
+        // The whole conversation inside here renders in board units too (see
+        // `canvas-board-units` in globals.css): a card on this board is drawn at
+        // the board's scale, and the board is zoomed with its own control. The
+        // menus it opens are portalled out and stay on the app's scale, which is
+        // right — those are chrome, not board content.
+        "canvas-board-units flex h-full w-full cursor-auto flex-col overflow-hidden rounded-2xl border bg-card transition-colors select-text",
         selected
           ? "border-primary ring-2 ring-primary/25"
           : "border-foreground/15"
@@ -115,7 +120,7 @@ function DetailFrame({
         )}
       >
         {icon}
-        <span className="min-w-0 flex-1 truncate text-[0.8125rem] font-semibold">
+        <span className="min-w-0 flex-1 truncate text-[13px] font-semibold">
           {title}
         </span>
         {actions}

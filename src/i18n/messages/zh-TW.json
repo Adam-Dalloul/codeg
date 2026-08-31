@@ -5513,6 +5513,8 @@
     "createRegionFromSelection": "收進新區域",
     "selectedCount": "已選 {count} 個",
     "openInWorkspace": "在工作區開啟",
+    "openDetailPanel": "在側欄開啟對話",
+    "detailPanelDescription": "在不離開畫布的前提下，檢視所選卡片的完整對話。",
     "expandConversation": "展開會話",
     "collapseConversation": "收合會話",
     "cardMenu": "卡片選項",

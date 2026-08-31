@@ -93,8 +93,10 @@ export const NoteNode = memo(function NoteNode({
     <div
       className={cn(
         // Sized by the RF node wrapper (derive feeds width/height, including
-        // live NodeResizer dimensions).
-        "relative flex h-full w-full flex-col rounded-xl border bg-card transition-colors",
+        // live NodeResizer dimensions), and written in those same units —
+        // `canvas-board-units` keeps the text from outgrowing a box the board
+        // measures in flow units (see globals.css).
+        "canvas-board-units relative flex h-full w-full flex-col rounded-xl border bg-card transition-colors",
         "border-foreground/15 hover:border-foreground/30",
         selected && "border-primary ring-2 ring-primary/25"
       )}
@@ -134,14 +136,14 @@ export const NoteNode = memo(function NoteNode({
             e.stopPropagation()
           }}
           placeholder={t("notePlaceholder")}
-          className="nodrag nowheel relative min-h-0 flex-1 resize-none rounded-xl bg-transparent p-3 text-[0.8125rem] leading-relaxed outline-none select-text placeholder:text-muted-foreground/50"
+          className="nodrag nowheel relative min-h-0 flex-1 resize-none rounded-xl bg-transparent p-3 text-[13px] leading-relaxed outline-none select-text placeholder:text-muted-foreground/50"
         />
       ) : (
         // `overflow-hidden` rather than a scrollbar: at rest the note is a card
         // to be moved, and a scroll region here would swallow the drag.
         <div
           className={cn(
-            "relative min-h-0 flex-1 overflow-hidden p-3 text-[0.8125rem] leading-relaxed whitespace-pre-wrap",
+            "relative min-h-0 flex-1 overflow-hidden p-3 text-[13px] leading-relaxed whitespace-pre-wrap",
             !draft && "text-muted-foreground/50"
           )}
         >

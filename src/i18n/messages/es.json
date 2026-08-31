@@ -5513,6 +5513,8 @@
     "createRegionFromSelection": "Agrupar en una región",
     "selectedCount": "{count} seleccionados",
     "openInWorkspace": "Abrir en el espacio de trabajo",
+    "openDetailPanel": "Abrir en el panel lateral",
+    "detailPanelDescription": "La conversación completa de la tarjeta seleccionada, sin salir del lienzo.",
     "expandConversation": "Expandir conversación",
     "collapseConversation": "Contraer conversación",
     "cardMenu": "Opciones de la tarjeta",

@@ -5513,6 +5513,8 @@
     "createRegionFromSelection": "In einen Bereich gruppieren",
     "selectedCount": "{count} ausgewählt",
     "openInWorkspace": "Im Arbeitsbereich öffnen",
+    "openDetailPanel": "In der Seitenleiste öffnen",
+    "detailPanelDescription": "Die vollständige Unterhaltung der ausgewählten Karte, ohne die Leinwand zu verlassen.",
     "expandConversation": "Unterhaltung ausklappen",
     "collapseConversation": "Unterhaltung einklappen",
     "cardMenu": "Kartenoptionen",

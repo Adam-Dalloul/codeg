@@ -65,6 +65,12 @@ export interface CanvasViewContextValue {
   /** Leave the canvas and open the conversation in the workspace. */
   openConversation: (conversation: DbConversationSummary, pin: boolean) => void
   /**
+   * Show a conversation in the side panel: the whole conversation, without
+   * giving it board space or (for a region member) taking it out of its region,
+   * which expanding in place has to do first.
+   */
+  openConversationDrawer: (conversationId: number) => void
+  /**
    * The ACP connection key a pinned card's live surface must use. Normally
    * derived from the node id, but a card that grew out of a draft INHERITS the
    * draft's key so the swap is invisible to the connection layer (the draft is

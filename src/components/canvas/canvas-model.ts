@@ -15,16 +15,22 @@ import type {
  * parameters, never as module state.
  */
 
-/** Fixed conversation-card footprint, in CSS PIXELS. Mirrors the backend's
+/** Fixed conversation-card footprint, in BOARD UNITS. Mirrors the backend's
  *  CARD_WIDTH/CARD_HEIGHT so a card pinned by `canvas_detach_member` lands
  *  exactly where the drag ghost showed it.
  *
- *  ⚠️ These numbers own the card's rendered size: the card component must take
- *  its box from the ReactFlow node wrapper (`h-full w-full`), never from a
- *  rem-based utility like `w-56`. The app's zoom control writes
- *  `font-size: 16 * zoom/100` onto `<html>` (see `appearance-provider.tsx`), so
- *  a rem footprint drifts away from these px slots at any zoom ≠ 100% — cards
- *  then overlap their neighbours and spill past the region border. */
+ *  ⚠️ Board units are the canvas's whole coordinate system — every number in
+ *  this file, every position ReactFlow renders, every geometry column in
+ *  SQLite. They cannot follow the app's zoom control (which writes
+ *  `font-size: 16 * zoom/100` onto `<html>`; see `appearance-provider.tsx`),
+ *  because a rem is not a coordinate. So the board opts out of that zoom on
+ *  BOTH sides and keeps its own: node components take their box from the RF
+ *  wrapper (`h-full w-full`, never a rem utility like `w-56`), and their
+ *  contents are drawn in board units too, via the `canvas-board-units` class in
+ *  globals.css. Break either half and the two disagree at every zoom but 100% —
+ *  cards overlapping their neighbours in the one direction, a title clipped
+ *  through the middle of a line in the other. Zooming the board is the corner
+ *  control's job. */
 export const CARD_WIDTH = 224
 export const CARD_HEIGHT = 132
 

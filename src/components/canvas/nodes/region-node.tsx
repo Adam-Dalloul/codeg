@@ -116,8 +116,12 @@ export const RegionNode = memo(function RegionNode({
     <div
       className={cn(
         // Size comes from the RF node wrapper (derive feeds width/height,
-        // including live NodeResizer dimensions) — never from local style.
-        "relative flex h-full w-full flex-col rounded-2xl border bg-card/50 transition-colors",
+        // including live NodeResizer dimensions) — never from local style, and
+        // `canvas-board-units` puts the contents in those same units: the header
+        // band and the "+N" footer are fixed flow-unit heights the grid math
+        // reserves, so type that grew with the appearance zoom would spill out
+        // of them.
+        "canvas-board-units relative flex h-full w-full flex-col rounded-2xl border bg-card/50 transition-colors",
         collapsed && "rounded-full",
         unresolved
           ? "border-dashed border-foreground/20"
@@ -163,12 +167,12 @@ export const RegionNode = memo(function RegionNode({
               if (e.key === "Escape") endRename()
             }}
             placeholder={fallbackName}
-            className="nodrag min-w-0 flex-1 rounded-md border border-input bg-background px-1.5 py-0.5 text-[0.8125rem] font-semibold outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            className="nodrag min-w-0 flex-1 rounded-md border border-input bg-background px-1.5 py-0.5 text-[13px] font-semibold outline-none focus-visible:ring-2 focus-visible:ring-ring"
           />
         ) : (
           <span
             className={cn(
-              "min-w-0 flex-1 truncate text-[0.8125rem] font-semibold",
+              "min-w-0 flex-1 truncate text-[13px] font-semibold",
               unresolved && "text-muted-foreground"
             )}
             onDoubleClick={() => setRenamingRegionId(dbNode.id)}
@@ -178,14 +182,14 @@ export const RegionNode = memo(function RegionNode({
         )}
         {runningCount > 0 && (
           <span
-            className="inline-flex shrink-0 items-center gap-1 rounded-full bg-primary/10 px-1.5 py-px font-mono text-[0.625rem] font-medium leading-4 text-primary"
+            className="inline-flex shrink-0 items-center gap-1 rounded-full bg-primary/10 px-1.5 py-px font-mono text-[10px] font-medium leading-4 text-primary"
             title={t("runningCount", { count: runningCount })}
           >
             <span className="size-1.5 rounded-full bg-primary motion-safe:animate-pulse" />
             {runningCount}
           </span>
         )}
-        <span className="shrink-0 font-mono text-[0.6875rem] text-muted-foreground">
+        <span className="shrink-0 font-mono text-[11px] text-muted-foreground">
           {memberTotal}
         </span>
       </div>
@@ -219,7 +223,7 @@ export const RegionNode = memo(function RegionNode({
       {!collapsed && hiddenCount > 0 && (
         <button
           type="button"
-          className="nodrag absolute inset-x-0 bottom-0 flex items-center justify-center gap-1.5 rounded-b-2xl border-t border-foreground/10 bg-card/80 text-[0.75rem] font-medium text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground supports-backdrop-filter:backdrop-blur-sm"
+          className="nodrag absolute inset-x-0 bottom-0 flex items-center justify-center gap-1.5 rounded-b-2xl border-t border-foreground/10 bg-card/80 text-[12px] font-medium text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground supports-backdrop-filter:backdrop-blur-sm"
           style={{ height: REGION_FOOTER_HEIGHT }}
           onClick={() => setRegionExpanded(dbNode.id, true)}
         >

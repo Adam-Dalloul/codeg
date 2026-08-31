@@ -16,6 +16,7 @@ import {
   Maximize2,
   Minimize2,
   Palette,
+  PanelRight,
   Pencil,
   Sparkles,
   Trash2,
@@ -349,6 +350,7 @@ function CardActions({
     removeMember,
     deleteNode,
     openConversation,
+    openConversationDrawer,
   } = useCanvasView()
   const conversation = data.conversation
   const { pinDbId, regionDbId } = data
@@ -374,17 +376,28 @@ function CardActions({
           <Minimize2 className="size-4" />
         </DockButton>
       ) : (
-        <DockButton
-          label={t("expandConversation")}
-          onClick={() => {
-            if (pinDbId != null) setCardDetail(pinDbId, true)
-            else if (regionDbId != null) {
-              void detachMember(regionDbId, conversation.id, { expand: true })
-            }
-          }}
-        >
-          <Expand className="size-4" />
-        </DockButton>
+        <>
+          <DockButton
+            label={t("expandConversation")}
+            onClick={() => {
+              if (pinDbId != null) setCardDetail(pinDbId, true)
+              else if (regionDbId != null) {
+                void detachMember(regionDbId, conversation.id, { expand: true })
+              }
+            }}
+          >
+            <Expand className="size-4" />
+          </DockButton>
+          {/* The other way into the same conversation. Expanding gives it board
+              space and, for a region member, takes it out of the region first;
+              this one leaves the board exactly as it is. */}
+          <DockButton
+            label={t("openDetailPanel")}
+            onClick={() => openConversationDrawer(conversation.id)}
+          >
+            <PanelRight className="size-4" />
+          </DockButton>
+        </>
       )}
       <DockButton
         label={t("openInWorkspace")}

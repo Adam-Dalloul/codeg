@@ -15,12 +15,19 @@ import { useEffect, type RefObject } from "react"
  * when the marquee rectangle never went near it.
  *
  * `user-select: none` on the pane (see `globals.css`) refuses the anchor, but it
- * cannot be the whole fix, in both directions:
+ * cannot be the whole fix, in three directions:
  *
  *  - A subtree that opts back IN is selectable again — the card body says
  *    `select-text` out loud, and `<input>`/`<textarea>` do it through the UA
  *    stylesheet. So the drag is hard-disabled for the whole surface while it
  *    runs, via `data-canvas-marquee` (the same shape as `data-canvas-panning`).
+ *  - `user-select` does not reach an EDITING HOST at all. Engines allow
+ *    selection inside editable content before they ever consult the property
+ *    (WebKit's `Node::canStartSelection` answers "yes, editable" up front), so
+ *    no declaration — `!important` included — keeps a sweep out of a card's
+ *    composer, which is a contenteditable. That is why the press itself is now
+ *    `preventDefault`ed: an anchor that never exists cannot be extended into
+ *    anything, editable or not.
  *  - Refusing the anchor also refuses the side effect nobody notices until it is
  *    gone: pressing on blank space is what COLLAPSES the previous selection.
  *    Without it, a selection made inside a card stays lit no matter where the
@@ -53,6 +60,7 @@ export function useCanvasMarqueeTextGuard(
       window.removeEventListener("mousemove", onMouseMove, true)
       window.removeEventListener("mouseup", onMouseUp, true)
       window.removeEventListener("blur", stop)
+      document.removeEventListener("selectionchange", onSelectionChange)
     }
 
     const onMouseUp = (e: MouseEvent) => {
@@ -71,6 +79,19 @@ export function useCanvasMarqueeTextGuard(
       if ((e.buttons & PRIMARY_BUTTON_MASK) === 0) stop()
     }
 
+    // Belt and braces for the gesture's own duration. Suppressing the press
+    // should mean no selection ever grows, but editing hosts are precisely the
+    // place where engines ignore every declarative signal, and this is the one
+    // symptom the user sees. Clearing re-fires this handler with an empty
+    // selection, which the guard below returns on, so it cannot loop.
+    const onSelectionChange = () => {
+      const selection = window.getSelection()
+      if (!selection || selection.rangeCount === 0 || selection.isCollapsed) {
+        return
+      }
+      selection.removeAllRanges()
+    }
+
     const onMouseDown = (e: MouseEvent) => {
       if (e.button !== 0) return
       const target = e.target
@@ -81,12 +102,31 @@ export function useCanvasMarqueeTextGuard(
         return
       }
       window.getSelection()?.removeAllRanges()
+      // No anchor, for anything — see the note about editing hosts above. The
+      // marquee itself is unaffected: ReactFlow draws it from POINTER events,
+      // which a suppressed `mousedown` default does not touch.
+      e.preventDefault()
+      // ...but the default this cancels also included moving focus off whatever
+      // had it. Pressing blank board has to blur the composer it came from, or
+      // the next thing typed goes into an input the user is no longer looking
+      // at. Body is where the press would have left focus anyway, and the
+      // board's own shortcuts are scoped to accept exactly that (see
+      // `canvas-view`'s keydown handler).
+      const active = document.activeElement
+      if (
+        active instanceof HTMLElement &&
+        active !== document.body &&
+        surface.contains(active)
+      ) {
+        active.blur()
+      }
       surface.setAttribute(MARQUEE_ATTR, "")
       window.addEventListener("mousemove", onMouseMove, true)
       window.addEventListener("mouseup", onMouseUp, true)
       // Alt-tabbing away mid-drag: the release lands in another application and
       // no `mouseup` ever arrives here.
       window.addEventListener("blur", stop)
+      document.addEventListener("selectionchange", onSelectionChange)
     }
 
     // Capture, and on the surface rather than the pane: the pane is mounted by

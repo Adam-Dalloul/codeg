@@ -5513,6 +5513,8 @@
     "createRegionFromSelection": "영역으로 묶기",
     "selectedCount": "{count}개 선택됨",
     "openInWorkspace": "작업 공간에서 열기",
+    "openDetailPanel": "사이드 패널에서 열기",
+    "detailPanelDescription": "캔버스를 벗어나지 않고 선택한 카드의 전체 대화를 봅니다.",
     "expandConversation": "대화 펼치기",
     "collapseConversation": "대화 접기",
     "cardMenu": "카드 옵션",

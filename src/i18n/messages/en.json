@@ -5513,6 +5513,8 @@
     "createRegionFromSelection": "Group into a region",
     "selectedCount": "{count} selected",
     "openInWorkspace": "Open in workspace",
+    "openDetailPanel": "Open in side panel",
+    "detailPanelDescription": "The full conversation for the selected card, without leaving the canvas.",
     "expandConversation": "Expand conversation",
     "collapseConversation": "Collapse conversation",
     "cardMenu": "Card options",
