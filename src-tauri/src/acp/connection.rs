@@ -2729,9 +2729,14 @@ async fn emit_selectors_ready(state: &Arc<RwLock<SessionState>>, emitter: &Event
     emit_with_state(state, emitter, AcpEvent::SelectorsReady).await;
 }
 
+/// The conventional id of a model selector. ACP reserves none — `category:
+/// "model"` is the spec-level signal — but every agent codeg drives spells the
+/// id this way, and the frontend's `isModelConfigOption` accepts either.
+const MODEL_CONFIG_OPTION_ID: &str = "model";
+
 /// Synthesized config-option id for Grok's model picker (drives the composer's
 /// grouped model selector via the frontend's `isModelConfigOption`).
-const GROK_MODEL_OPTION_ID: &str = "model";
+const GROK_MODEL_OPTION_ID: &str = MODEL_CONFIG_OPTION_ID;
 
 /// Synthesized config-option id for Grok's per-session reasoning-effort selector.
 /// Grok ships effort choices in `x.ai/sessionConfig` under `category:"mode"`
@@ -3638,6 +3643,19 @@ fn claude_raw_sdk_session_meta(
 ///   `claude_chunk_parent_tool_use_id`). The adapter checks strictly
 ///   `=== true`, and a pre-0.63 binary ignores the unknown key, so this is
 ///   inert everywhere it isn't understood.
+/// - Any agent that launches `cursor-agent … acp` (the built-in Cursor entry
+///   and custom agents wrapping the same binary — see
+///   `registry::uses_cursor_acp_backend`): `_meta["parameterizedModelPicker"]
+///   = true`. cursor-agent's ACP layer reads exactly this key
+///   (`clientSupportsParameterizedModelPicker`, strictly `=== true`) to pick
+///   between its two model-picker shapes. Without it the `model` select is the
+///   EXPLODED variant list — one row per model×parameter combination, valued
+///   by the variant string — and `set_config_option` accepts no other id. With
+///   it the picker splits into a `model` select over model names plus one
+///   option per model parameter (`fast`, thinking level), which is the only
+///   way Composer's Fast switch is reachable. A build that predates the key
+///   ignores it and stays on variants, so this is inert where it isn't
+///   understood.
 fn build_client_capabilities(
     agent_type: AgentType,
     host_tools: HostToolsPolicy,
@@ -3717,6 +3735,16 @@ fn build_client_capabilities(
             serde_json::json!({
                 "air": { "version": 1, "capabilities": ["sessionFailure"] }
             }),
+        );
+    }
+    // Cursor ACP gates Composer 2.5's `fast` parameter behind this client
+    // capability. Without it the agent advertises only the default variant
+    // (Fast); with it the model picker splits into separate `model` and
+    // `fast` config options that `session/set_config_option` can set.
+    if registry::uses_cursor_acp_backend(agent_type) {
+        meta.insert(
+            "parameterizedModelPicker".to_string(),
+            serde_json::Value::Bool(true),
         );
     }
     if !meta.is_empty() {
@@ -6334,6 +6362,46 @@ fn config_option_already_holds(option: &SessionConfigOption, value: &str) -> boo
     }
 }
 
+/// Whether an advertised option IS the agent's model selector. ACP reserves no
+/// id for it, so match either signal — the `category` every agent that has a
+/// model publishes it under (see [`current_model_id_from_opts`]) or the
+/// conventional `model` id, the same pair the frontend's `isModelConfigOption`
+/// checks.
+fn is_model_config_option(option: &SessionConfigOption) -> bool {
+    matches!(option.category, Some(SessionConfigOptionCategory::Model))
+        || option.id.to_string() == MODEL_CONFIG_OPTION_ID
+}
+
+/// Saved preferences in application order: the model selector first, then every
+/// other id in its natural (sorted) order.
+///
+/// Order is load-bearing because a model switch RE-SCOPES the options hanging
+/// off it. Cursor's parameterized picker is the case that forced this: it
+/// answers `set_config_option("model", …)` by reloading THAT model's own saved
+/// (or default) parameter values, and rejects a parameter id the model in
+/// effect does not define. Replaying by raw key order would put `fast` before
+/// `model` and lose it to the switch — or hard-fail it against the outgoing
+/// model. Grok's dedicated path (`apply_grok_preferred_options`) already
+/// hard-codes the same order for the same reason; this is the generic half.
+///
+/// A preferred id the agent never advertised is ordered as a non-model option
+/// unless it is literally `model` — the fallback stays deliberately narrow
+/// because an unadvertised id is still sent (see `apply_preferred_session_options`).
+fn order_preferred_config_values<'a>(
+    options: &[SessionConfigOption],
+    preferred: &'a BTreeMap<String, String>,
+) -> Vec<(&'a String, &'a String)> {
+    let (model_first, rest): (Vec<_>, Vec<_>) = preferred.iter().partition(|(config_id, _)| {
+        options
+            .iter()
+            .find(|o| o.id.to_string() == **config_id)
+            .map_or(config_id.as_str() == MODEL_CONFIG_OPTION_ID, |o| {
+                is_model_config_option(o)
+            })
+    });
+    model_first.into_iter().chain(rest).collect()
+}
+
 /// Wire-level half of `set_session_config_option`: send the JSON-RPC request and
 /// return the agent's new config-options list, without touching SessionState or
 /// emitting events. Used at session-init to apply saved preferences before the
@@ -6448,7 +6516,11 @@ async fn apply_preferred_session_options(
 
     let session_id = session.session_id().clone();
     let mut options = initial_config_options;
-    for (config_id, value_id) in preferred_config_values {
+    // Model first — see `order_preferred_config_values`. Ordered once against
+    // the INITIAL list: every later list is the same agent's answer to a set,
+    // so the model selector cannot move between ids mid-replay.
+    let ordered = order_preferred_config_values(&options, preferred_config_values);
+    for (config_id, value_id) in ordered {
         // Skip the round-trip when the agent's current value already matches.
         // Note: codex-acp advertises "mode" as a config option (so the match
         // check below normally fires), but we still do NOT skip when a
@@ -13220,6 +13292,155 @@ mod tests {
     }
 
     #[test]
+    fn client_capabilities_advertise_parameterized_model_picker_for_cursor() {
+        let caps = serde_json::to_value(build_client_capabilities(
+            AgentType::Cursor,
+            HostToolsPolicy::Default,
+        ))
+        .unwrap();
+        assert_eq!(
+            caps.get("_meta")
+                .and_then(|m| m.get("parameterizedModelPicker"))
+                .and_then(|v| v.as_bool()),
+            Some(true),
+            "Cursor initialize must advertise parameterizedModelPicker"
+        );
+        // Cursor must not pick up Claude/Codex-only extensions.
+        assert!(caps
+            .get("_meta")
+            .and_then(|m| m.get("jetbrains"))
+            .is_none());
+        assert!(caps
+            .get("_meta")
+            .and_then(|m| m.get("subagent-transcript"))
+            .is_none());
+    }
+
+    #[test]
+    fn client_capabilities_advertise_parameterized_model_picker_for_custom_cursor_agent() {
+        use std::collections::BTreeMap;
+
+        use crate::acp::custom_registry::{
+            hydrate, hydrate_test_guard, BinaryPlatformSpec, CustomAgentDef, CustomAgentSpec,
+            CustomDistributionKind,
+        };
+
+        let _guard = hydrate_test_guard();
+        // Every platform, because `build_meta` REJECTS a binary def with no
+        // entry for the machine it runs on — a windows-only spec would leave
+        // the id unregistered on every other host and this test would then be
+        // asserting against `unregistered_meta`, not a cursor launch recipe.
+        let mut binary = BTreeMap::new();
+        for platform in [
+            "darwin-aarch64",
+            "darwin-x86_64",
+            "linux-aarch64",
+            "linux-x86_64",
+            "windows-aarch64",
+            "windows-x86_64",
+        ] {
+            binary.insert(
+                platform.to_string(),
+                BinaryPlatformSpec {
+                    archive: format!(
+                        "https://downloads.cursor.com/lab/2026.08.11-e8db854/{platform}/agent-cli-package.tar.gz"
+                    ),
+                    cmd: if platform.starts_with("windows") {
+                        "./dist-package/cursor-agent.cmd".into()
+                    } else {
+                        "./dist-package/cursor-agent".into()
+                    },
+                    args: vec!["acp".into()],
+                    ..Default::default()
+                },
+            );
+        }
+        let def = CustomAgentDef {
+            registry_id: "test-cursor-acp".into(),
+            name: "Test Cursor ACP".into(),
+            description: String::new(),
+            version: "1.0.0".into(),
+            distribution_kind: CustomDistributionKind::Binary,
+            spec: CustomAgentSpec {
+                binary,
+                ..Default::default()
+            },
+            icon_url: None,
+            skills_shared_store: false,
+            skills_dir: None,
+            source: Default::default(),
+            version_probe: None,
+            supports_mcp: true,
+        };
+        assert!(
+            hydrate(&[def]).is_empty(),
+            "the def must actually register — an unregistered id falls back to \
+             unregistered_meta, which advertises nothing"
+        );
+        let caps = serde_json::to_value(build_client_capabilities(
+            AgentType::Custom("test-cursor-acp"),
+            HostToolsPolicy::Default,
+        ))
+        .unwrap();
+        assert_eq!(
+            caps.get("_meta")
+                .and_then(|m| m.get("parameterizedModelPicker"))
+                .and_then(|v| v.as_bool()),
+            Some(true),
+            "custom cursor-agent acp must advertise parameterizedModelPicker"
+        );
+        hydrate(&[]);
+    }
+
+    #[test]
+    fn client_capabilities_skip_parameterized_model_picker_for_non_cursor_custom_agent() {
+        use crate::acp::custom_registry::{
+            hydrate, hydrate_test_guard, CustomAgentDef, CustomAgentSpec, CustomDistributionKind,
+            NpxSpec,
+        };
+
+        let _guard = hydrate_test_guard();
+        let def = CustomAgentDef {
+            registry_id: "test-codex-acp".into(),
+            name: "Test Codex ACP".into(),
+            description: String::new(),
+            version: "1.7.0".into(),
+            distribution_kind: CustomDistributionKind::Npx,
+            spec: CustomAgentSpec {
+                npx: Some(NpxSpec {
+                    package: "@agentclientprotocol/codex-acp@1.7.0".into(),
+                    args: vec![],
+                    env: Default::default(),
+                    cmd: Some("codex-acp".into()),
+                    node_required: None,
+                }),
+                ..Default::default()
+            },
+            icon_url: None,
+            skills_shared_store: false,
+            skills_dir: None,
+            source: Default::default(),
+            version_probe: None,
+            supports_mcp: true,
+        };
+        // Same reason as the cursor case: an unregistered id would satisfy the
+        // negative assertion for the wrong reason.
+        assert!(hydrate(&[def]).is_empty());
+        let caps = serde_json::to_value(build_client_capabilities(
+            AgentType::Custom("test-codex-acp"),
+            HostToolsPolicy::Default,
+        ))
+        .unwrap();
+        assert!(
+            caps.get("_meta")
+                .and_then(|m| m.get("parameterizedModelPicker"))
+                .is_none(),
+            "non-cursor custom agents must not advertise parameterizedModelPicker"
+        );
+        hydrate(&[]);
+    }
+
+    #[test]
     fn version_at_least_is_strict_semver_and_fails_closed() {
         assert!(version_at_least("0.64.0", "0.64.0"));
         assert!(version_at_least("0.64.1", "0.64.0"));
@@ -14514,6 +14735,15 @@ mod tests {
         let deepseek = caps_of(AgentType::DeepSeek);
         assert!(deepseek.get("elicitation").is_some());
         assert!(deepseek.get("_meta").is_none());
+
+        // Cursor: parameterized model picker only (no elicitation / AIR).
+        let cursor = caps_of(AgentType::Cursor);
+        assert_eq!(
+            cursor["_meta"]["parameterizedModelPicker"],
+            serde_json::Value::Bool(true)
+        );
+        assert!(cursor.get("elicitation").is_none());
+        assert!(cursor["_meta"].get("jetbrains").is_none());
 
         // Everyone else: neither gate; fs + terminal always advertised.
         let other = caps_of(AgentType::Gemini);
@@ -19523,6 +19753,93 @@ mod tests {
         let untyped = UntypedMessage::new("session/new", req).expect("builds");
         assert_eq!(untyped.method(), "session/new");
         assert_eq!(untyped.params(), &expected);
+    }
+
+    /// The saved-preference replay must set the model BEFORE anything scoped to
+    /// it. Cursor's parameterized picker (unlocked by
+    /// `_meta.parameterizedModelPicker`) ships `fast` / thinking options that
+    /// belong to the CURRENT model: setting `model` reloads that model's own
+    /// parameter values, and setting a parameter the model in effect does not
+    /// define is rejected outright. Raw key order is alphabetical, which puts
+    /// `fast` first — exactly backwards.
+    #[test]
+    fn preferred_config_values_apply_the_model_first() {
+        let options: Vec<SessionConfigOption> = serde_json::from_value(serde_json::json!([
+            {
+                "type": "select",
+                "id": "mode",
+                "name": "Mode",
+                "category": "mode",
+                "currentValue": "agent",
+                "options": [{"value": "agent", "name": "Agent"}]
+            },
+            {
+                "type": "select",
+                "id": "model",
+                "name": "Model",
+                "category": "model",
+                "currentValue": "composer-2.5",
+                "options": [{"value": "composer-2.5", "name": "Composer 2.5"}]
+            },
+            {
+                "type": "select",
+                "id": "fast",
+                "name": "Fast",
+                "category": "model_config",
+                "currentValue": "true",
+                "options": [{"value": "true", "name": "On"}, {"value": "false", "name": "Off"}]
+            },
+        ]))
+        .expect("parses");
+
+        let preferred = BTreeMap::from([
+            ("fast".to_string(), "false".to_string()),
+            ("mode".to_string(), "plan".to_string()),
+            ("model".to_string(), "composer-2.5".to_string()),
+        ]);
+        let ordered: Vec<&str> = order_preferred_config_values(&options, &preferred)
+            .into_iter()
+            .map(|(id, _)| id.as_str())
+            .collect();
+        assert_eq!(
+            ordered,
+            vec!["model", "fast", "mode"],
+            "model leads; the rest keep their sorted order"
+        );
+
+        // An agent that labels its model selector only by category still leads.
+        let by_category: Vec<SessionConfigOption> = serde_json::from_value(serde_json::json!([
+            {
+                "type": "select",
+                "id": "llm",
+                "name": "Model",
+                "category": "model",
+                "currentValue": "a",
+                "options": [{"value": "a", "name": "A"}]
+            },
+        ]))
+        .expect("parses");
+        let preferred = BTreeMap::from([
+            ("effort".to_string(), "high".to_string()),
+            ("llm".to_string(), "b".to_string()),
+        ]);
+        let ordered: Vec<&str> = order_preferred_config_values(&by_category, &preferred)
+            .into_iter()
+            .map(|(id, _)| id.as_str())
+            .collect();
+        assert_eq!(ordered, vec!["llm", "effort"]);
+
+        // Nothing model-shaped: the order is untouched, and an id the agent
+        // never advertised is still replayed (it is not codeg's call to drop).
+        let preferred = BTreeMap::from([
+            ("a_thing".to_string(), "1".to_string()),
+            ("z_thing".to_string(), "2".to_string()),
+        ]);
+        let ordered: Vec<&str> = order_preferred_config_values(&[], &preferred)
+            .into_iter()
+            .map(|(id, _)| id.as_str())
+            .collect();
+        assert_eq!(ordered, vec!["a_thing", "z_thing"]);
     }
 
     #[test]
