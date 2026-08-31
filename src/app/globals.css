@@ -2836,6 +2836,19 @@ div.monaco-diff-editor.side-by-side .editor.modified {
 .canvas-surface .react-flow__node:focus {
   outline: none;
 }
+/* A left-drag on empty board draws the marquee — and ReactFlow deliberately
+   does NOT `preventDefault` that pointerdown (it only does so when the press
+   landed on a child), so the browser drops a text-selection anchor on the pane
+   as well. The drag then sweeps a native selection through every `select-text`
+   region in DOCUMENT order, which is why an expanded card's transcript
+   highlighted even when the marquee never touched it. Refusing to start a
+   selection on the pane removes the anchor; `.select-text` inside a card opts
+   itself back in, so dragging within a transcript still selects its text. Same
+   mechanism ReactFlow already applies to `.react-flow__node` — this just puts
+   it one level up, on their shared container. */
+.canvas-surface .react-flow__pane {
+  user-select: none;
+}
 /* Right-drag panning is ours, not d3-zoom's (every draggable node carries the
    `nopan` class its filter refuses), so the grabbing cursor is ours too — and
    it has to beat every element's own cursor, including a card's text. */

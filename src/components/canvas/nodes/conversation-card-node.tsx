@@ -2,7 +2,7 @@
 
 import { memo } from "react"
 import type { NodeProps, Node } from "@xyflow/react"
-import { Bot, GitBranch, Trash2, Unlink } from "lucide-react"
+import { Bot, Folder, GitBranch, Trash2, Unlink } from "lucide-react"
 import { useTranslations } from "next-intl"
 import { AgentIcon } from "@/components/agent-icon"
 import { ConversationStatusDot } from "@/components/conversations/conversation-status-dot"
@@ -117,7 +117,19 @@ export const ConversationCardNode = memo(function ConversationCardNode({
               size="sm"
               className={cn(running && "motion-safe:animate-pulse")}
             />
-            <span className="min-w-0 flex-1" />
+            {/* The model sits with the agent it belongs to — "which brain is
+                this" is one fact, and splitting it across the card's two ends
+                made the reader assemble it. Empty until the backend has seen a
+                model for the session (`seed_model_if_empty`), so the row must
+                read fine without it: the flex spacer is the same element either
+                way, just carrying text when there is text. */}
+            <span
+              className="min-w-0 flex-1 truncate font-mono text-[0.625rem] text-muted-foreground"
+              dir="ltr"
+              title={conversation.model ?? undefined}
+            >
+              {conversation.model}
+            </span>
             {conversation.child_count > 0 && (
               <span
                 className="inline-flex shrink-0 items-center gap-0.5 rounded-full bg-primary/10 px-1.5 py-px font-mono text-[0.625rem] font-medium leading-4 text-primary"
@@ -133,18 +145,32 @@ export const ConversationCardNode = memo(function ConversationCardNode({
           <p className="relative mt-1.5 line-clamp-2 min-h-0 flex-1 text-[0.8125rem] font-medium leading-snug">
             {title}
           </p>
-          <div className="relative mt-auto flex min-w-0 items-center gap-1.5 text-[0.6875rem] text-muted-foreground">
+          {/* Where the conversation lives: folder on the left, branch on the
+              right. Both truncate and both may be absent (a folderless chat has
+              no folder; a non-git folder has no branch), so neither is allowed
+              to reserve space the other could use — hence `min-w-0` on each and
+              `justify-between` rather than a fixed spacer. */}
+          <div className="relative mt-auto flex min-w-0 items-center justify-between gap-1.5 text-[0.6875rem] text-muted-foreground">
+            {data.folderName ? (
+              <span
+                className="flex min-w-0 items-center gap-0.5"
+                title={data.folderName}
+              >
+                <Folder className="size-2.5 shrink-0" aria-hidden="true" />
+                <span className="truncate">{data.folderName}</span>
+              </span>
+            ) : (
+              <span />
+            )}
             {conversation.git_branch && (
-              <span className="flex min-w-0 items-center gap-0.5">
+              <span
+                className="flex min-w-0 items-center gap-0.5"
+                title={conversation.git_branch}
+              >
                 <GitBranch className="size-2.5 shrink-0" aria-hidden="true" />
                 <span dir="ltr" className="truncate font-mono">
                   {conversation.git_branch}
                 </span>
-              </span>
-            )}
-            {conversation.model && (
-              <span className="min-w-0 truncate font-mono" dir="ltr">
-                {conversation.model}
               </span>
             )}
           </div>

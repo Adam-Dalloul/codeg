@@ -5,6 +5,7 @@ import {
   createFolderGroup as apiCreateFolderGroup,
   deleteFolderGroup as apiDeleteFolderGroup,
   getFolder as apiGetFolder,
+  getGitHead,
   listAllConversations,
   listAllFolderDetails,
   listFolderGroups,
@@ -103,6 +104,13 @@ export interface AppWorkspaceStoreState {
   setBranch: (folderId: number, branch: string | null) => void
   /** Equality-guarded merge of one folder's polled HEAD into branches/gitHeads. */
   applyGitHead: (folderId: number, head: GitHeadInfo) => void
+  /**
+   * Resolve one folder's HEAD on demand, for a surface showing a folder the
+   * active-folder poll isn't covering. Fire-and-forget and idempotent: a folder
+   * whose HEAD is already known, or whose fetch is already in flight, costs
+   * nothing, so N mounted branch chips across M folders make M requests.
+   */
+  ensureGitHead: (folderId: number, path: string) => void
   /**
    * Insert/replace a folder in local state, mirroring the backend's list
    * split: a `kind === "chat"` folder goes into `allFolders` only (matching
@@ -275,6 +283,23 @@ function forgetDeletedGroup(groupId: number): void {
 // completion would leave the sidebar showing the second-to-last order.
 let folderFetchSeq = 0
 let lastAppliedFolderFetch = 0
+
+/**
+ * Folders whose on-demand HEAD read is in flight (see `ensureGitHead`), each
+ * stamped with a token identifying the read that owns the slot. A canvas board
+ * mounts one branch chip per card, so without this the same folder would be
+ * asked N times in the same frame.
+ *
+ * A token rather than a bare id because a folder row can be removed and revived
+ * under the SAME id — a retried task re-creating its worktree does exactly that
+ * (see `upsertFolder`). `removedFolderSeq` cannot tell the two incarnations
+ * apart, since `upsertFolder` forgets the tombstone the moment the row is back.
+ * `applyFolderRemove` drops the slot, so the revived folder is free to ask
+ * again, and the older read recognises that it no longer owns the slot and
+ * discards its answer instead of writing the departed directory's branch onto
+ * the new one.
+ */
+const gitHeadInFlight = new Map<number, symbol>()
 
 /**
  * Undo an optimistic folder/group mutation whose request failed, then re-read
@@ -496,6 +521,40 @@ export const useAppWorkspaceStore = create<AppWorkspaceStoreState>()(
       if (Object.keys(patch).length > 0) set(patch)
     },
 
+    ensureGitHead: (folderId, path) => {
+      if (!path) return
+      // Already resolved, or someone else is already asking. `gitHeads` is the
+      // authority here rather than `branches`: `branches` is pre-seeded from the
+      // folder row's `git_branch` (always null today) for EVERY folder, so it
+      // can never answer "do we know this folder's HEAD?".
+      if (get().gitHeads.has(folderId)) return
+      if (gitHeadInFlight.has(folderId)) return
+      const token = Symbol(folderId)
+      gitHeadInFlight.set(folderId, token)
+      void getGitHead(path)
+        .then((head) => {
+          // Only if this read still owns the slot. A folder removed (and maybe
+          // revived under the same id) while we were waiting has had the slot
+          // dropped by `applyFolderRemove`, and the answer we are holding is
+          // about the directory that used to be there.
+          if (gitHeadInFlight.get(folderId) !== token) return
+          get().applyGitHead(folderId, head)
+        })
+        .catch((err) => {
+          console.error("[AppWorkspace] ensureGitHead failed:", err)
+        })
+        .finally(() => {
+          // Released on failure too, so a folder that was mid-clone (or briefly
+          // unreachable) can be asked again on the next mount instead of being
+          // stuck reading "no branch" for the rest of the session. Only ever OUR
+          // slot: a newer read for a revived id owns it now and must not have it
+          // cleared out from under it.
+          if (gitHeadInFlight.get(folderId) === token) {
+            gitHeadInFlight.delete(folderId)
+          }
+        })
+    },
+
     upsertFolder: (detail) => {
       // The folder exists again (a retried task re-creating its worktree revives
       // the very same row/id) — drop any tombstone so refetches keep it.
@@ -527,6 +586,13 @@ export const useAppWorkspaceStore = create<AppWorkspaceStoreState>()(
       // about to stop existing.
       forgetClosedTabsInFolder(folderId)
       rememberRemovedFolder(folderId)
+      // Disown any on-demand HEAD read still running for this folder. Dropping
+      // the slot does two things at once: the id is free to be asked about again
+      // the moment it comes back (`upsertFolder` revives the very same row id
+      // after a retried task re-creates its worktree), and the older read finds
+      // itself no longer the owner and discards its answer instead of writing
+      // the departed directory's branch onto the new one.
+      gitHeadInFlight.delete(folderId)
       const { folders, allFolders, branches, gitHeads } = get()
       const patch: Partial<AppWorkspaceStoreState> = {}
       if (folders.some((f) => f.id === folderId)) {
@@ -842,6 +908,7 @@ export function resetAppWorkspaceStore() {
   deletedIds.clear()
   removedFolderSeq.clear()
   deletedGroupSeq.clear()
+  gitHeadInFlight.clear()
   folderMutationSeq = 0
   folderFetchSeq = 0
   lastAppliedFolderFetch = 0

@@ -1,3 +1,4 @@
+import { resolveFolderDisplayName } from "@/lib/folder-display"
 import type {
   CanvasNode,
   CanvasNodeMovePayload,
@@ -613,6 +614,13 @@ export interface ConversationCardData {
    *  not just its own frame, so the member card has to know it — member cards
    *  are separate RF nodes, not children of the region's DOM. */
   regionColor?: string | null
+  /** The conversation's folder, resolved for display: a worktree shows its
+   *  parent repo's name, so the card reads "repo + branch" the way the composer
+   *  row does. `null` for a folderless chat conversation (its hidden chat folder
+   *  is an implementation detail, not a place). Resolved here rather than in the
+   *  card because the derivation already holds the folder list — a card per
+   *  conversation subscribing to the workspace store would not scale. */
+  folderName?: string | null
   /** Set on top-level pinned cards: the backing DB row id. */
   pinDbId?: number
   unresolved: boolean
@@ -721,6 +729,20 @@ export function deriveFlowGraph(input: DeriveFlowInput): DeriveFlowResult {
     ? new Map(folderGroups.map((g) => [g.id, g]))
     : undefined
 
+  /** The folder label a summary card puts in its footer — see
+   *  `ConversationCardData.folderName`. */
+  const cardFolderName = (
+    conversation: DbConversationSummary | null
+  ): string | null => {
+    if (!conversation) return null
+    const folder = foldersById.get(conversation.folder_id)
+    // A chat conversation's folder is a hidden bookkeeping row, not a place the
+    // user chose — the composer's own picker calls this state "chat mode" and
+    // shows no folder either.
+    if (!folder || folder.kind === "chat") return null
+    return resolveFolderDisplayName(folder, allFolders)
+  }
+
   const sorted = [...dbNodes].sort((a, b) => a.id - b.id)
   const topNodes: CanvasFlowNode[] = []
   const memberNodes: CanvasFlowNode[] = []
@@ -788,6 +810,7 @@ export function deriveFlowGraph(input: DeriveFlowInput): DeriveFlowResult {
           conversation,
           conversationId: dbNode.conversation_id ?? -1,
           pinDbId: dbNode.id,
+          folderName: cardFolderName(conversation),
           unresolved: unresolvedPin,
         } satisfies ConversationCardData,
       })
@@ -913,6 +936,7 @@ export function deriveFlowGraph(input: DeriveFlowInput): DeriveFlowResult {
           regionDbId: dbNode.id,
           regionOwnsMembers: dbNode.kind === "custom",
           regionColor: dbNode.color,
+          folderName: cardFolderName(conversation),
           unresolved: false,
         } satisfies ConversationCardData,
       })

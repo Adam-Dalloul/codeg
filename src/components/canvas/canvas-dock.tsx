@@ -1,7 +1,7 @@
 "use client"
 
 import type { ReactNode } from "react"
-import { Panel, type Node } from "@xyflow/react"
+import { Panel, useReactFlow, useStore, type Node } from "@xyflow/react"
 import {
   ChevronsDownUp,
   ChevronsUpDown,
@@ -13,8 +13,10 @@ import {
   Loader2,
   Maximize2,
   Minimize2,
+  Minus,
   Palette,
   Pencil,
+  Plus,
   Sparkles,
   Trash2,
   Unlink,
@@ -88,6 +90,64 @@ function DockButton({
     >
       {children}
     </button>
+  )
+}
+
+/** Long enough to read as a move, short enough not to fight a second click. */
+const ZOOM_STEP_DURATION_MS = 150
+
+/** Float slop: `zoomTo(2)` lands on 1.9999999999999998 often enough that an
+ *  exact `>= maxZoom` would leave the button live at the stop. */
+const ZOOM_EPSILON = 0.001
+
+/**
+ * Viewport zoom, sitting with `fitView` on the dock's board-tools half — zoom
+ * is a view control, not an element verb, and the board already answers "where
+ * are the view tools?" with this dock.
+ *
+ * Its own component so it can subscribe to the LIVE zoom: `canvas-view` keeps
+ * the zoom in a ref (deliberately — the drag path reads it every frame and must
+ * not re-render), so the readout has to come from ReactFlow's store instead.
+ * Scoping the subscription here keeps the rest of the dock out of it; the
+ * selector returns a number, so zustand bails out on every pan and re-renders
+ * only when the zoom actually moves.
+ */
+function ZoomControls() {
+  const t = useTranslations("Canvas")
+  const { zoomIn, zoomOut, zoomTo } = useReactFlow()
+  const zoom = useStore((s) => s.transform[2])
+  const minZoom = useStore((s) => s.minZoom)
+  const maxZoom = useStore((s) => s.maxZoom)
+
+  return (
+    <>
+      <DockButton
+        label={t("zoomOut")}
+        onClick={() => void zoomOut({ duration: ZOOM_STEP_DURATION_MS })}
+        disabled={zoom <= minZoom + ZOOM_EPSILON}
+      >
+        <Minus className="size-4" />
+      </DockButton>
+      {/* The readout doubles as "back to 100%" — the one zoom level a user asks
+          for by name. Fixed width so 8% → 100% → 200% doesn't shove the
+          neighbouring buttons sideways as the board moves. */}
+      <button
+        type="button"
+        className="inline-flex h-8 w-12 shrink-0 items-center justify-center rounded-full font-mono text-[0.6875rem] text-muted-foreground transition-colors hover:bg-foreground/10 hover:text-foreground"
+        onClick={() => void zoomTo(1, { duration: ZOOM_STEP_DURATION_MS })}
+        aria-label={t("resetZoom")}
+        title={t("resetZoom")}
+      >
+        {Math.round(zoom * 100)}%
+      </button>
+      <DockButton
+        label={t("zoomIn")}
+        onClick={() => void zoomIn({ duration: ZOOM_STEP_DURATION_MS })}
+        disabled={zoom >= maxZoom - ZOOM_EPSILON}
+      >
+        <Plus className="size-4" />
+      </DockButton>
+    </>
   )
 }
 
@@ -484,6 +544,7 @@ export function CanvasDock({
         <DockButton label={t("fitView")} onClick={onFitView}>
           <Expand className="size-4" />
         </DockButton>
+        <ZoomControls />
         <DockButton label={t("autoArrange")} onClick={onAutoArrange}>
           <LayoutGrid className="size-4" />
         </DockButton>

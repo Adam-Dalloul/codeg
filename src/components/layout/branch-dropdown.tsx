@@ -168,6 +168,19 @@ export function BranchDropdown({ folder, isChatMode }: BranchDropdownProps) {
   const isRepo = head ? head.is_repo : branch !== null
   const isDetached = !branch && !!head?.detached
 
+  // Resolve this folder's HEAD ourselves when nothing else has. The workspace
+  // polls exactly ONE folder (the active tab's), and the folder row's
+  // `git_branch` column is always null — so every chip mounted for some other
+  // folder used to read `isRepo === false` and render "no branch" forever. That
+  // is what a canvas board is: many folders on screen at once, none of them the
+  // active tab. Idempotent + in-flight-deduped in the store, so N chips over M
+  // folders make M requests; the active folder's poll keeps owning freshness.
+  const ensureGitHead = useAppWorkspaceStore((s) => s.ensureGitHead)
+  useEffect(() => {
+    if (isChatMode || head || !folderId || !folderPath) return
+    ensureGitHead(folderId, folderPath)
+  }, [isChatMode, head, folderId, folderPath, ensureGitHead])
+
   const [branchList, setBranchList] = useState<GitBranchList>({
     local: [],
     remote: [],

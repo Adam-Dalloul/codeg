@@ -836,3 +836,60 @@ describe("region grid geometry", () => {
     expect(rowsForRegionHeight(10)).toBe(1)
   })
 })
+
+describe("deriveFlowGraph — the folder a card names in its footer", () => {
+  // Resolved here rather than in the component: the derivation already holds
+  // the folder list, and a card per conversation subscribing to the workspace
+  // store would put a store read on every tile of a large board.
+  it("names the conversation's own folder on a pinned card", () => {
+    const pin = node(1, { kind: "conversation", conversation_id: 10 })
+    const { nodes } = deriveFlowGraph({
+      dbNodes: [pin],
+      conversations: [conv(10, { folder_id: 3 })],
+      allFolders: [folder(3, { name: "codeg" })],
+      ...NO_DRAG,
+    })
+    expect((nodes[0].data as ConversationCardData).folderName).toBe("codeg")
+  })
+
+  it("names the parent repo for a conversation living in a worktree", () => {
+    // The worktree's own directory name is `codeg-fix-abc`; what pairs with the
+    // branch chip beside it is the repo, exactly as the composer row reads.
+    const region = node(1, { kind: "folder", folder_id: 4 })
+    const { nodes } = deriveFlowGraph({
+      dbNodes: [region],
+      conversations: [conv(10, { folder_id: 4 })],
+      allFolders: [
+        folder(3, { name: "codeg" }),
+        folder(4, { name: "codeg-fix-abc", parent_id: 3 }),
+      ],
+      ...NO_DRAG,
+    })
+    const member = nodes.find((n) => n.type === "conversationCard")!
+    expect((member.data as ConversationCardData).folderName).toBe("codeg")
+  })
+
+  it("leaves a folderless chat conversation without a folder", () => {
+    // A chat conversation's folder is a hidden bookkeeping row, not a place the
+    // user picked — the composer's own picker shows no folder there either.
+    const pin = node(1, { kind: "conversation", conversation_id: 10 })
+    const { nodes } = deriveFlowGraph({
+      dbNodes: [pin],
+      conversations: [conv(10, { folder_id: 9 })],
+      allFolders: [folder(9, { name: "chat-9", kind: "chat" })],
+      ...NO_DRAG,
+    })
+    expect((nodes[0].data as ConversationCardData).folderName).toBeNull()
+  })
+
+  it("stays null rather than guessing when the folder is unknown", () => {
+    const pin = node(1, { kind: "conversation", conversation_id: 10 })
+    const { nodes } = deriveFlowGraph({
+      dbNodes: [pin],
+      conversations: [conv(10, { folder_id: 404 })],
+      allFolders: [folder(3)],
+      ...NO_DRAG,
+    })
+    expect((nodes[0].data as ConversationCardData).folderName).toBeNull()
+  })
+})

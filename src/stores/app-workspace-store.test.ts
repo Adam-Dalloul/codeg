@@ -7,6 +7,7 @@ import type { DbConversationSummary, FolderDetail } from "@/lib/types"
 
 vi.mock("@/lib/api", () => ({
   getFolder: vi.fn(),
+  getGitHead: vi.fn(),
   listOpenFolderDetails: vi.fn(async () => []),
   listAllFolderDetails: vi.fn(async () => []),
   listFolderGroups: vi.fn(async () => []),
@@ -22,9 +23,10 @@ vi.mock("@/lib/api", () => ({
   setFolderGroup: vi.fn(),
 }))
 
-const { getFolder, listAllFolderDetails, listOpenFolderDetails } =
+const { getFolder, getGitHead, listAllFolderDetails, listOpenFolderDetails } =
   await import("@/lib/api")
 const mockGetFolder = vi.mocked(getFolder)
+const mockGetGitHead = vi.mocked(getGitHead)
 const mockListAllFolders = vi.mocked(listAllFolderDetails)
 const mockListOpenFolders = vi.mocked(listOpenFolderDetails)
 
@@ -595,5 +597,197 @@ describe("folder groups", () => {
       expect(useAppWorkspaceStore.getState().folders).toHaveLength(1)
     })
     expect(useAppWorkspaceStore.getState().folders[0].group_id).toBe(7)
+  })
+})
+
+describe("ensureGitHead — HEAD for a folder the poll doesn't cover", () => {
+  // The workspace polls exactly ONE folder (the active tab's), and the folder
+  // row's `git_branch` column is never written — so any surface showing several
+  // folders at once (a canvas board of conversation cards) had no way to learn
+  // its folders' branches and rendered every chip as "no branch".
+  beforeEach(() => {
+    mockGetGitHead.mockReset()
+  })
+
+  it("resolves an unknown folder's HEAD into branches and gitHeads", async () => {
+    mockGetGitHead.mockResolvedValue({
+      is_repo: true,
+      branch: "feature/x",
+      detached: false,
+      short_sha: "abc1234",
+    })
+
+    useAppWorkspaceStore.getState().ensureGitHead(9, "/tmp/repo")
+
+    await vi.waitFor(() => {
+      expect(useAppWorkspaceStore.getState().gitHeads.get(9)?.branch).toBe(
+        "feature/x"
+      )
+    })
+    // Both maps, because the chip reads `branches` for the label and `gitHeads`
+    // for "is this a repo at all".
+    expect(useAppWorkspaceStore.getState().branches.get(9)).toBe("feature/x")
+    expect(mockGetGitHead).toHaveBeenCalledWith("/tmp/repo")
+  })
+
+  it("does not re-ask for a folder whose HEAD is already known", () => {
+    useAppWorkspaceStore.getState().applyGitHead(9, {
+      is_repo: true,
+      branch: "main",
+      detached: false,
+      short_sha: "abc1234",
+    })
+
+    useAppWorkspaceStore.getState().ensureGitHead(9, "/tmp/repo")
+
+    expect(mockGetGitHead).not.toHaveBeenCalled()
+  })
+
+  it("asks once when every card on a board asks at the same time", async () => {
+    // A board mounts one branch chip per card. Without in-flight dedup, twenty
+    // cards over one folder would be twenty `git rev-parse` round trips in a
+    // single frame — and `gitHeads` cannot answer for them, because none of them
+    // has resolved yet.
+    let resolveHead: (value: {
+      is_repo: boolean
+      branch: string | null
+      detached: boolean
+      short_sha: string | null
+    }) => void = () => {}
+    mockGetGitHead.mockReturnValue(
+      new Promise((resolve) => {
+        resolveHead = resolve
+      })
+    )
+
+    const { ensureGitHead } = useAppWorkspaceStore.getState()
+    ensureGitHead(9, "/tmp/repo")
+    ensureGitHead(9, "/tmp/repo")
+    ensureGitHead(9, "/tmp/repo")
+
+    expect(mockGetGitHead).toHaveBeenCalledTimes(1)
+
+    resolveHead({
+      is_repo: true,
+      branch: "main",
+      detached: false,
+      short_sha: "abc1234",
+    })
+    await vi.waitFor(() => {
+      expect(useAppWorkspaceStore.getState().gitHeads.has(9)).toBe(true)
+    })
+  })
+
+  it("lets a failed read be retried instead of pinning the folder to 'no branch'", async () => {
+    mockGetGitHead.mockRejectedValueOnce(new Error("boom"))
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {})
+
+    useAppWorkspaceStore.getState().ensureGitHead(9, "/tmp/repo")
+    await vi.waitFor(() => {
+      expect(errors).toHaveBeenCalled()
+    })
+    expect(useAppWorkspaceStore.getState().gitHeads.has(9)).toBe(false)
+
+    // The in-flight slot has to be released on failure too — otherwise a folder
+    // that was mid-clone (or briefly unreachable) reads "no branch" for the rest
+    // of the session, with nothing left to ask again.
+    mockGetGitHead.mockResolvedValue({
+      is_repo: true,
+      branch: "main",
+      detached: false,
+      short_sha: "abc1234",
+    })
+    useAppWorkspaceStore.getState().ensureGitHead(9, "/tmp/repo")
+    await vi.waitFor(() => {
+      expect(useAppWorkspaceStore.getState().gitHeads.get(9)?.branch).toBe(
+        "main"
+      )
+    })
+    errors.mockRestore()
+  })
+
+  it("does not revive the HEAD of a folder removed while the read was in flight", async () => {
+    let resolveHead: (value: {
+      is_repo: boolean
+      branch: string | null
+      detached: boolean
+      short_sha: string | null
+    }) => void = () => {}
+    mockGetGitHead.mockReturnValue(
+      new Promise((resolve) => {
+        resolveHead = resolve
+      })
+    )
+    useAppWorkspaceStore.setState({ allFolders: [makeFolder({ id: 9 })] })
+
+    useAppWorkspaceStore.getState().ensureGitHead(9, "/tmp/repo")
+    useAppWorkspaceStore.getState().applyFolderRemove(9)
+    resolveHead({
+      is_repo: true,
+      branch: "main",
+      detached: false,
+      short_sha: "abc1234",
+    })
+
+    await vi.waitFor(() => {
+      expect(mockGetGitHead).toHaveBeenCalled()
+    })
+    expect(useAppWorkspaceStore.getState().gitHeads.has(9)).toBe(false)
+  })
+
+  it("re-reads for a folder id that was removed and revived mid-flight", async () => {
+    // A retried task re-creates its worktree and `upsertFolder` revives the very
+    // same row id — which also forgets the removal tombstone. So "was this id
+    // removed since my request started?" cannot be the guard: by the time the
+    // old read lands, the tombstone is gone and its answer describes a directory
+    // that no longer exists.
+    const settle: Array<
+      (value: {
+        is_repo: boolean
+        branch: string | null
+        detached: boolean
+        short_sha: string | null
+      }) => void
+    > = []
+    mockGetGitHead.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          settle.push(resolve)
+        })
+    )
+    useAppWorkspaceStore.setState({ allFolders: [makeFolder({ id: 9 })] })
+
+    useAppWorkspaceStore.getState().ensureGitHead(9, "/tmp/repo")
+    useAppWorkspaceStore.getState().applyFolderRemove(9)
+    useAppWorkspaceStore.getState().upsertFolder(makeFolder({ id: 9 }))
+
+    // The revived folder's chip must not be silenced by the dead read's slot.
+    useAppWorkspaceStore.getState().ensureGitHead(9, "/tmp/repo")
+    expect(mockGetGitHead).toHaveBeenCalledTimes(2)
+
+    // Old read lands last and must lose: it is the departed worktree's branch.
+    settle[1]({
+      is_repo: true,
+      branch: "task/new",
+      detached: false,
+      short_sha: "bbb2222",
+    })
+    settle[0]({
+      is_repo: true,
+      branch: "task/gone",
+      detached: false,
+      short_sha: "aaa1111",
+    })
+
+    await vi.waitFor(() => {
+      expect(useAppWorkspaceStore.getState().gitHeads.get(9)?.branch).toBe(
+        "task/new"
+      )
+    })
+    // A moment for the stale resolution to have had its chance to overwrite.
+    await Promise.resolve()
+    expect(useAppWorkspaceStore.getState().gitHeads.get(9)?.branch).toBe(
+      "task/new"
+    )
   })
 })
