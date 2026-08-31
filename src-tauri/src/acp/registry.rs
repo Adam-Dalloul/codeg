@@ -446,8 +446,7 @@ fn distribution_uses_cursor_acp(distribution: &AgentDistribution) -> bool {
             ..
         } => {
             launch_spec_uses_cursor_acp(cmd, args)
-                || system_cmd
-                    .is_some_and(|(c, a)| launch_spec_uses_cursor_acp(c, a))
+                || system_cmd.is_some_and(|(c, a)| launch_spec_uses_cursor_acp(c, a))
         }
     }
 }
@@ -460,7 +459,7 @@ fn launch_spec_uses_cursor_acp(cmd: &str, args: &[&str]) -> bool {
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or(trimmed);
-    base.eq_ignore_ascii_case("cursor-agent") && args.iter().any(|a| *a == "acp")
+    base.eq_ignore_ascii_case("cursor-agent") && args.contains(&"acp")
 }
 
 pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
@@ -1721,10 +1720,7 @@ mod tests {
         ));
         assert!(!launch_spec_uses_cursor_acp("cursor-agent", &[]));
         assert!(!launch_spec_uses_cursor_acp("codex-acp", &[]));
-        assert!(!launch_spec_uses_cursor_acp(
-            "cursor-agent",
-            &["stdio"]
-        ));
+        assert!(!launch_spec_uses_cursor_acp("cursor-agent", &["stdio"]));
     }
 
     // Only Claude Code and Codex ship as a third-party ACP adapter wrapping a
