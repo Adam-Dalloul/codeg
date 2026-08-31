@@ -86,6 +86,14 @@ function applyChange(
       nodes.set(change.node.id, change.node)
       break
     }
+    case "grouped":
+      // Delete before insert: the absorbed pins and the region that swallowed
+      // them committed together, and the new region's id can never collide with
+      // one of them (it was just allocated), so the order is only about reading
+      // as one step. Both halves are idempotent.
+      for (const id of change.deleted_ids) nodes.delete(id)
+      nodes.set(change.node.id, change.node)
+      break
     case "pruned":
       for (const id of change.deleted_ids) nodes.delete(id)
       for (const node of change.updated) nodes.set(node.id, node)

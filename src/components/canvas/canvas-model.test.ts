@@ -8,12 +8,20 @@ import {
   CARD_GAP,
   CARD_HEIGHT,
   CARD_WIDTH,
+  DETAIL_CARD_HEIGHT,
+  DETAIL_CARD_WIDTH,
   MAX_VISIBLE_MEMBERS,
   REGION_COLLAPSED_HEIGHT,
+  REGION_FOOTER_HEIGHT,
   REGION_HEADER_HEIGHT,
   REGION_PADDING,
-  classifyDrop,
+  computeDropHint,
+  columnsForRegionWidth,
+  regionHeightForRows,
+  regionWidthForColumns,
+  rowsForRegionHeight,
   compareByRecency,
+  computeAlignment,
   computeRegionMembers,
   deriveFlowGraph,
   layoutRegionGrid,
@@ -22,9 +30,13 @@ import {
   parseMemberNodeId,
   parseRegionNodeId,
   regionNodeId,
+  type CanvasDragSource,
   type ConversationCardData,
   type RegionNodeData,
 } from "./canvas-model"
+
+/** Every card on the board renders at the fixed summary footprint. */
+const CARD_BOX = { width: CARD_WIDTH, height: CARD_HEIGHT }
 
 function conv(
   id: number,
@@ -72,6 +84,7 @@ function node(id: number, over: Partial<CanvasNode> = {}): CanvasNode {
     id,
     kind: "custom",
     folder_id: null,
+    folder_group_id: null,
     agent_type: null,
     conversation_id: null,
     member_ids: [],
@@ -79,6 +92,8 @@ function node(id: number, over: Partial<CanvasNode> = {}): CanvasNode {
     content: null,
     color: null,
     collapsed: false,
+    grid_columns: 0,
+    grid_rows: 0,
     x: 0,
     y: 0,
     width: 720,
@@ -199,39 +214,190 @@ describe("layoutRegionGrid", () => {
   })
 })
 
-describe("classifyDrop", () => {
+describe("computeDropHint", () => {
   const regions = [
     { dbId: 1, kind: "custom" as const, x: 0, y: 0, width: 400, height: 300 },
     { dbId: 2, kind: "folder" as const, x: 600, y: 0, width: 400, height: 300 },
     // Overlaps region 1; higher id = painted on top, must win the hit.
     { dbId: 3, kind: "custom" as const, x: 200, y: 0, width: 400, height: 300 },
   ]
+  const pins = [
+    { dbId: 10, conversationId: 100, x: 1400, y: 700, ...CARD_BOX },
+    { dbId: 11, conversationId: 101, x: 2000, y: 700, ...CARD_BOX },
+  ]
+  const member: CanvasDragSource = {
+    kind: "member",
+    regionDbId: 1,
+    conversationId: 7,
+  }
+  const pin: CanvasDragSource = {
+    kind: "pin",
+    pinDbId: 11,
+    conversationId: 101,
+  }
 
-  it("open canvas → detach at the drop point", () => {
-    expect(classifyDrop({ x: 1500, y: 800 }, regions, 1)).toEqual({
+  it("open canvas → the drop point, wherever the card came from", () => {
+    expect(computeDropHint(member, { x: 1500, y: 1500 }, regions, [])).toEqual({
       type: "canvas",
       x: 1500,
-      y: 800,
+      y: 1500,
+    })
+    expect(computeDropHint(pin, { x: 1500, y: 1500 }, regions, [])).toEqual({
+      type: "canvas",
+      x: 1500,
+      y: 1500,
     })
   })
 
   it("hit on the source region → same (snap back)", () => {
-    // Card center at (112+66, 66+50) inside region 1 only.
-    expect(classifyDrop({ x: -50, y: 20 }, regions, 1)).toEqual({
+    // Card center at (-50+112, 20+66) — inside region 1 only.
+    expect(computeDropHint(member, { x: -50, y: 20 }, regions, [])).toEqual({
       type: "same",
     })
   })
 
-  it("hit on another custom region → copy target; topmost id wins overlap", () => {
+  it("hit on another custom region → that region; topmost id wins overlap", () => {
     // Center lands where regions 1 and 3 overlap → 3 wins.
-    const drop = classifyDrop({ x: 200, y: 50 }, regions, 1)
-    expect(drop).toEqual({ type: "custom", regionId: 3 })
+    expect(computeDropHint(member, { x: 200, y: 50 }, regions, [])).toEqual({
+      type: "region",
+      regionDbId: 3,
+    })
+    // A loose card gets the same target — that's how it joins a region.
+    expect(computeDropHint(pin, { x: 200, y: 50 }, regions, [])).toEqual({
+      type: "region",
+      regionDbId: 3,
+    })
   })
 
-  it("hit on a binding region → invalid (bindings are computed, not curated)", () => {
-    expect(classifyDrop({ x: 700, y: 50 }, regions, 1)).toEqual({
-      type: "invalid",
+  it("hit on a binding region → a plain move, not a rejection", () => {
+    // Folder/agent members are computed: there is nothing to drop INTO, and
+    // snapping the card back would read as a broken drag.
+    expect(computeDropHint(member, { x: 700, y: 50 }, regions, [])).toEqual({
+      type: "canvas",
+      x: 700,
+      y: 50,
     })
+  })
+
+  it("card over card → a two-column frame anchored on the STATIONARY card", () => {
+    // Dragged card's centre inside pin 10.
+    const hint = computeDropHint(member, { x: 1450, y: 720 }, regions, pins)
+    expect(hint).toEqual({
+      type: "merge",
+      targetPinDbId: 10,
+      targetConversationId: 100,
+      rect: {
+        x: 1400 - REGION_PADDING,
+        y: 700 - REGION_HEADER_HEIGHT - REGION_PADDING,
+        width: regionWidthForColumns(2),
+        height: regionHeightForRows(1),
+      },
+    })
+  })
+
+  it("never merges a card with itself or with its own conversation", () => {
+    // Pin 11 dragged onto its own slot, and a member card of the SAME
+    // conversation dropped on pin 11's mirror: both are no-ops, not a region
+    // holding one conversation twice.
+    expect(computeDropHint(pin, { x: 2050, y: 720 }, regions, pins)).toEqual({
+      type: "canvas",
+      x: 2050,
+      y: 720,
+    })
+    const mirror: CanvasDragSource = {
+      kind: "member",
+      regionDbId: 1,
+      conversationId: 101,
+    }
+    expect(computeDropHint(mirror, { x: 2050, y: 720 }, regions, pins)).toEqual(
+      {
+        type: "canvas",
+        x: 2050,
+        y: 720,
+      }
+    )
+  })
+
+  it("a card inside a region is never a merge target", () => {
+    // Region 1 covers the point; the loose card sitting under it loses.
+    // Centre at (132, 126): inside region 1 only, and right on top of a loose
+    // card — the region still wins, so a card can never be merged through a
+    // frame that already owns that space.
+    const covered = [
+      { dbId: 12, conversationId: 102, x: 20, y: 60, ...CARD_BOX },
+    ]
+    expect(computeDropHint(pin, { x: 20, y: 60 }, regions, covered)).toEqual({
+      type: "region",
+      regionDbId: 1,
+    })
+  })
+})
+
+describe("computeAlignment", () => {
+  const box = (x: number, y: number, width = 100, height = 100) => ({
+    x,
+    y,
+    width,
+    height,
+  })
+
+  it("reports nothing when every line is out of range", () => {
+    const r = computeAlignment(box(0, 0), [box(500, 500)], 6)
+    expect(r).toEqual({ dx: 0, dy: 0, guides: [] })
+  })
+
+  it("snaps a near-miss left edge onto its neighbour's", () => {
+    // 4px shy of sharing a left edge, inside a 6px tolerance.
+    const r = computeAlignment(box(196, 400), [box(200, 0)], 6)
+    expect(r.dx).toBe(4)
+    expect(r.guides).toContainEqual({
+      axis: "x",
+      at: 200,
+      // Spans both boxes, so the line visibly touches what it aligned.
+      from: 0,
+      to: 500,
+    })
+  })
+
+  it("aligns the two axes independently, against different neighbours", () => {
+    // Left edge 3 shy of the first neighbour's, top edge 3 past the second's:
+    // both correct, each against a different box. This is what guides buy over
+    // a grid — an element can line up with two different things at once.
+    const r = computeAlignment(box(197, 303), [box(200, 0), box(900, 300)], 6)
+    expect(r.dx).toBe(3)
+    expect(r.dy).toBe(-3)
+    expect(r.guides.map((g) => `${g.axis}@${g.at}`)).toEqual(["x@200", "y@300"])
+  })
+
+  it("ignores a tolerance that isn't a positive number", () => {
+    // A zoom read before the viewport settles divides into NaN; every
+    // comparison against it is false, which would otherwise mean "in range".
+    const r = computeAlignment(box(0, 0), [box(9999, 9999)], Number.NaN)
+    expect(r).toEqual({ dx: 0, dy: 0, guides: [] })
+  })
+
+  it("takes the SMALLEST correction when several lines are in range", () => {
+    // Left edge 5 away, centre 1 away: the centre wins, because a snap should
+    // move the element as little as the alignment allows.
+    const r = computeAlignment(box(0, 0, 100, 100), [box(5, 900, 100, 100)], 6)
+    expect(r.dx).toBe(5)
+    const closer = computeAlignment(
+      box(0, 0, 100, 100),
+      [box(5, 900, 100, 100), box(1, 900, 100, 100)],
+      6
+    )
+    expect(closer.dx).toBe(1)
+  })
+
+  it("centres align, not just edges", () => {
+    // Moving centre 50; other centre 53 → 3 across, inside tolerance.
+    const r = computeAlignment(box(0, 0, 100, 100), [box(3, 900, 100, 100)], 6)
+    expect(r.dx).toBe(3)
+  })
+
+  it("does nothing without candidates or with a zero tolerance", () => {
+    expect(computeAlignment(box(0, 0), [], 6).guides).toEqual([])
+    expect(computeAlignment(box(196, 0), [box(200, 0)], 0).dx).toBe(0)
   })
 })
 
@@ -255,12 +421,30 @@ describe("packLayout", () => {
     const moves = packLayout(
       [a, b],
       new Map([
-        [1, 800],
-        [2, 100],
+        [1, { width: 100, height: 800 }],
+        [2, { width: 100, height: 100 }],
       ]),
       { gap: 10, rowWidth: 1000 }
     )
     expect(moves).toEqual([{ id: 2, x: 110, y: 0 }])
+  })
+
+  it("reserves the rendered WIDTH, so an expanded card can't overlap", () => {
+    // The shape that made auto-arrange overlap: an expanded card renders at the
+    // detail footprint while its row still holds the summary one, because the
+    // user never resized it. Packing against the row put the next node 224+gap
+    // away from a card 520 wide.
+    const expanded = node(1, { width: CARD_WIDTH, height: CARD_HEIGHT })
+    const other = node(2, { x: 900, y: 900, width: CARD_WIDTH, height: 100 })
+    const moves = packLayout(
+      [expanded, other],
+      new Map([
+        [1, { width: 520, height: 560 }],
+        [2, { width: CARD_WIDTH, height: 100 }],
+      ]),
+      { gap: 20, rowWidth: 4000 }
+    )
+    expect(moves).toEqual([{ id: 2, x: 540, y: 0 }])
   })
 })
 
@@ -336,14 +520,14 @@ describe("deriveFlowGraph", () => {
 
   it("collapsed regions render as a capsule with no member cards", () => {
     const region = node(1, { kind: "folder", folder_id: 1, collapsed: true })
-    const { nodes, renderedHeights } = deriveFlowGraph({
+    const { nodes, renderedSizes } = deriveFlowGraph({
       dbNodes: [region],
       conversations,
       allFolders: folders,
       ...NO_DRAG,
     })
     expect(nodes).toHaveLength(1)
-    expect(renderedHeights.get(1)).toBe(REGION_COLLAPSED_HEIGHT)
+    expect(renderedSizes.get(1)?.height).toBe(REGION_COLLAPSED_HEIGHT)
   })
 
   it("caps visible members at MAX_VISIBLE_MEMBERS until expanded", () => {
@@ -458,5 +642,197 @@ describe("deriveFlowGraph", () => {
     expect(nodes[0].width).toBe(CARD_WIDTH)
     expect(nodes[0].height).toBe(CARD_HEIGHT)
     expect((nodes[0].data as ConversationCardData).conversation?.id).toBe(10)
+  })
+
+  it("expands a pinned card into a detail node at the detail footprint", () => {
+    // Every pin is born at the summary footprint (`canvas_detach_member` and
+    // the add-menu both write CARD_WIDTH/CARD_HEIGHT), which is the sentinel
+    // for "the user has never sized this card".
+    const pin = node(2, {
+      kind: "conversation",
+      conversation_id: 10,
+      width: CARD_WIDTH,
+      height: CARD_HEIGHT,
+    })
+    const { nodes } = deriveFlowGraph({
+      dbNodes: [pin],
+      conversations,
+      allFolders: folders,
+      ...NO_DRAG,
+      detailCards: new Set([2]),
+    })
+    expect(nodes[0].type).toBe("conversationDetail")
+    expect(nodes[0].width).toBe(DETAIL_CARD_WIDTH)
+    expect(nodes[0].height).toBe(DETAIL_CARD_HEIGHT)
+  })
+
+  it("keeps a resized detail card's own size instead of the default", () => {
+    const pin = node(2, {
+      kind: "conversation",
+      conversation_id: 10,
+      width: 640,
+      height: 700,
+    })
+    const { nodes } = deriveFlowGraph({
+      dbNodes: [pin],
+      conversations,
+      allFolders: folders,
+      ...NO_DRAG,
+      detailCards: new Set([2]),
+    })
+    expect(nodes[0].width).toBe(640)
+    expect(nodes[0].height).toBe(700)
+    // Collapsed again it is a summary tile, whatever the stored size says.
+    const collapsed = deriveFlowGraph({
+      dbNodes: [pin],
+      conversations,
+      allFolders: folders,
+      ...NO_DRAG,
+    })
+    expect(collapsed.nodes[0].type).toBe("conversationCard")
+    expect(collapsed.nodes[0].width).toBe(CARD_WIDTH)
+  })
+
+  it("an unresolved pin never expands — there is nothing to show", () => {
+    const pin = node(2, {
+      kind: "conversation",
+      conversation_id: 999,
+      width: CARD_WIDTH,
+      height: CARD_HEIGHT,
+    })
+    const { nodes } = deriveFlowGraph({
+      dbNodes: [pin],
+      conversations,
+      allFolders: folders,
+      ...NO_DRAG,
+      detailCards: new Set([2]),
+    })
+    expect(nodes[0].type).toBe("conversationCard")
+    expect((nodes[0].data as ConversationCardData).unresolved).toBe(true)
+  })
+
+  it("a pinned column count owns the frame width, whatever the stored one says", () => {
+    // Stored width says 3 columns' worth; the pinned shape says 2. The frame
+    // must follow the SHAPE, or the grid would lay out 2 columns inside a
+    // 3-column frame (or worse, N columns inside a narrower one).
+    const region = node(1, {
+      kind: "folder",
+      folder_id: 1,
+      width: regionWidthForColumns(3),
+      grid_columns: 2,
+    })
+    const { nodes, regionRects } = deriveFlowGraph({
+      dbNodes: [region],
+      conversations,
+      allFolders: folders,
+      ...NO_DRAG,
+    })
+    expect(nodes[0].width).toBe(regionWidthForColumns(2))
+    expect(regionRects[0].width).toBe(regionWidthForColumns(2))
+    // Two members, two columns → same row.
+    expect(nodes[1].position.y).toBe(nodes[2].position.y)
+  })
+
+  it("a pinned row count caps the visible members and reserves the footer", () => {
+    const many = Array.from({ length: 6 }, (_, i) =>
+      conv(20 + i, { updated_at: `2026-08-30T1${i}:00:00Z` })
+    )
+    const region = node(1, {
+      kind: "folder",
+      folder_id: 1,
+      grid_columns: 2,
+      grid_rows: 2,
+    })
+    const { nodes } = deriveFlowGraph({
+      dbNodes: [region],
+      conversations: many,
+      allFolders: folders,
+      ...NO_DRAG,
+    })
+    const data = nodes[0].data as RegionNodeData
+    expect(data.memberTotal).toBe(6)
+    expect(data.visibleCount).toBe(4)
+    expect(nodes).toHaveLength(5) // region + 4 cards
+    // Height = the declared 2-row frame PLUS the "+N" bar, so the bar can never
+    // sit on top of the last card row.
+    expect(nodes[0].height).toBe(regionHeightForRows(2) + REGION_FOOTER_HEIGHT)
+  })
+
+  it("expanding the region lifts the row cap and drops the footer", () => {
+    const many = Array.from({ length: 6 }, (_, i) =>
+      conv(20 + i, { updated_at: `2026-08-30T1${i}:00:00Z` })
+    )
+    const region = node(1, {
+      kind: "folder",
+      folder_id: 1,
+      grid_columns: 2,
+      grid_rows: 2,
+    })
+    const { nodes } = deriveFlowGraph({
+      dbNodes: [region],
+      conversations: many,
+      allFolders: folders,
+      ...NO_DRAG,
+      expandedRegions: new Set([1]),
+    })
+    expect((nodes[0].data as RegionNodeData).visibleCount).toBe(6)
+    expect(nodes[0].height).toBe(regionHeightForRows(3))
+  })
+
+  it("group regions resolve every folder in the group, worktrees included", () => {
+    const groupFolders = [
+      folder(1, { group_id: 7 }),
+      folder(2, { group_id: 7 }),
+      // Worktree child of a grouped repo: follows its parent into the group
+      // even though it carries no group_id of its own.
+      folder(3, { parent_id: 1, group_id: null }),
+      folder(4, { group_id: null }),
+    ]
+    const rows = [
+      conv(30, { folder_id: 1 }),
+      conv(31, { folder_id: 2 }),
+      conv(32, { folder_id: 3 }),
+      conv(33, { folder_id: 4 }),
+    ]
+    const region = node(1, { kind: "group", folder_group_id: 7 })
+    const members = computeRegionMembers(region, rows, groupFolders)
+    expect(members.map((m) => m.id).sort()).toEqual([30, 31, 32])
+  })
+
+  it("a group region whose group is gone renders unresolved, not empty", () => {
+    const region = node(1, { kind: "group", folder_group_id: 7 })
+    const { nodes } = deriveFlowGraph({
+      dbNodes: [region],
+      conversations,
+      allFolders: folders,
+      folderGroups: [],
+      ...NO_DRAG,
+    })
+    expect((nodes[0].data as RegionNodeData).unresolved).toBe(true)
+    expect(nodes).toHaveLength(1)
+  })
+})
+
+describe("region grid geometry", () => {
+  it("round-trips column and row counts through the frame size", () => {
+    for (const n of [1, 2, 3, 4, 6, 12]) {
+      expect(columnsForRegionWidth(regionWidthForColumns(n))).toBe(n)
+      expect(rowsForRegionHeight(regionHeightForRows(n))).toBe(n)
+    }
+  })
+
+  it("quantizes a ragged drag width down to whole cards", () => {
+    // Mid-drag the resizer hands us anything; snapping to the column count it
+    // has fully cleared is what makes the frame step one card at a time.
+    const ragged = regionWidthForColumns(3) - 40
+    expect(columnsForRegionWidth(ragged)).toBe(2)
+    expect(regionWidthForColumns(columnsForRegionWidth(ragged))).toBe(
+      regionWidthForColumns(2)
+    )
+  })
+
+  it("never reports zero columns for a frame narrower than one card", () => {
+    expect(columnsForRegionWidth(10)).toBe(1)
+    expect(rowsForRegionHeight(10)).toBe(1)
   })
 })

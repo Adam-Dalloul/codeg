@@ -14,6 +14,7 @@ function makeNode(id: number, over: Partial<CanvasNode> = {}): CanvasNode {
     id,
     kind: "note",
     folder_id: null,
+    folder_group_id: null,
     agent_type: null,
     conversation_id: null,
     member_ids: [],
@@ -21,6 +22,8 @@ function makeNode(id: number, over: Partial<CanvasNode> = {}): CanvasNode {
     content: null,
     color: null,
     collapsed: false,
+    grid_columns: 0,
+    grid_rows: 0,
     x: 0,
     y: 0,
     width: 200,
@@ -215,5 +218,39 @@ describe("canvas-store revision protocol", () => {
     await first
     expect(store().lastRevision).toBe(2)
     expect(store().nodes.has(1)).toBe(false)
+  })
+
+  it("a grouped event drops the absorbed pins and inserts the region as one step", () => {
+    const pinA = makeNode(1, { kind: "conversation", conversation_id: 100 })
+    const pinB = makeNode(2, { kind: "conversation", conversation_id: 200 })
+    store().acceptSnapshot(snapshot(4, [pinA, pinB, makeNode(3)]))
+
+    const region = makeNode(9, { kind: "custom", member_ids: [100, 200] })
+    store().handleCanvasChanged({
+      kind: "grouped",
+      node: region,
+      deleted_ids: [1, 2],
+      revision: 5,
+    })
+
+    expect(store().lastRevision).toBe(5)
+    expect([...store().nodes.keys()]).toEqual([3, 9])
+    expect(store().nodes.get(9)?.member_ids).toEqual([100, 200])
+  })
+
+  it("re-applying a grouped payload is idempotent", () => {
+    const region = makeNode(9, { kind: "custom", member_ids: [100] })
+    store().acceptSnapshot(snapshot(4, [makeNode(1)]))
+    const change: CanvasChange = {
+      kind: "grouped",
+      node: region,
+      deleted_ids: [1],
+      revision: 5,
+    }
+    store().handleCanvasChanged(change)
+    // Same revision again: dropped as stale, and state is unchanged either way.
+    store().handleCanvasChanged(change)
+    expect([...store().nodes.keys()]).toEqual([9])
+    expect(store().lastRevision).toBe(5)
   })
 })

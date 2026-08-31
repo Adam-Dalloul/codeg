@@ -5,7 +5,9 @@ import { useReactFlow } from "@xyflow/react"
 import {
   Bot,
   Folder,
+  Layers,
   MessageSquare,
+  MessageSquarePlus,
   Plus,
   Sparkles,
   StickyNote,
@@ -31,6 +33,8 @@ import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
 import {
   CARD_HEIGHT,
   CARD_WIDTH,
+  DETAIL_CARD_HEIGHT,
+  DETAIL_CARD_WIDTH,
   compareByRecency,
   isCanvasEligible,
 } from "./canvas-model"
@@ -39,13 +43,25 @@ import {
  *  member grid; see canvas-model geometry). */
 const REGION_W = 720
 const REGION_H = 344
-const NOTE_W = 208
-const NOTE_H = 144
+export const NOTE_W = 208
+export const NOTE_H = 144
+
+/** Where a brand-new conversation should live: a workspace folder, or chat mode
+ *  (a hidden folder the backend mints on first send). */
+export type NewConversationTarget = { folderId: number } | { chat: true }
 
 interface AddNodeMenuProps {
   onCreate: (input: CreateCanvasNodeInput) => void
+  /** Drop a client-local draft conversation card at a canvas point. Nothing is
+   *  persisted until the first message — see `canvas-view`'s draft handling. */
+  onNewConversation: (
+    target: NewConversationTarget,
+    point: { x: number; y: number }
+  ) => void
   /** Extra classes for the trigger button (toolbar styling owns the look). */
   triggerClassName?: string
+  /** Which way the menu opens — "top" for the bottom dock. */
+  side?: "top" | "bottom"
 }
 
 /**
@@ -54,10 +70,16 @@ interface AddNodeMenuProps {
  * a single conversation card (recent root conversations, filterable), a
  * hand-curated custom region, or a sticky note.
  */
-export function AddNodeMenu({ onCreate, triggerClassName }: AddNodeMenuProps) {
+export function AddNodeMenu({
+  onCreate,
+  onNewConversation,
+  triggerClassName,
+  side = "bottom",
+}: AddNodeMenuProps) {
   const t = useTranslations("Canvas")
   const { screenToFlowPosition } = useReactFlow()
   const folders = useAppWorkspaceStore((s) => s.folders)
+  const folderGroups = useAppWorkspaceStore((s) => s.folderGroups)
   const conversations = useAppWorkspaceStore((s) => s.conversations)
   const { agents } = useAcpAgents()
   const [query, setQuery] = useState("")
@@ -104,10 +126,47 @@ export function AddNodeMenu({ onCreate, triggerClassName }: AddNodeMenuProps) {
           aria-label={t("addNode")}
           title={t("addNode")}
         >
-          <Plus className="size-3.5" />
+          <Plus className="size-4" />
         </button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="start" side="bottom" className="w-52">
+      <DropdownMenuContent align="start" side={side} className="w-52">
+        <DropdownMenuSub>
+          <DropdownMenuSubTrigger>
+            <MessageSquarePlus className="text-muted-foreground" />
+            {t("newConversation")}
+          </DropdownMenuSubTrigger>
+          <DropdownMenuSubContent className="max-h-72 overflow-y-auto">
+            <DropdownMenuItem
+              onSelect={() =>
+                onNewConversation(
+                  { chat: true },
+                  dropPoint(DETAIL_CARD_WIDTH, DETAIL_CARD_HEIGHT)
+                )
+              }
+            >
+              <MessageSquare className="text-muted-foreground" />
+              {t("newChatConversation")}
+            </DropdownMenuItem>
+            {folders.length > 0 && <DropdownMenuSeparator />}
+            {folders.map((f) => (
+              <DropdownMenuItem
+                key={f.id}
+                onSelect={() =>
+                  onNewConversation(
+                    { folderId: f.id },
+                    dropPoint(DETAIL_CARD_WIDTH, DETAIL_CARD_HEIGHT)
+                  )
+                }
+              >
+                <Folder className="text-muted-foreground" />
+                <span className="min-w-0 truncate">
+                  {formatFolderLabelWithAlias(f)}
+                </span>
+              </DropdownMenuItem>
+            ))}
+          </DropdownMenuSubContent>
+        </DropdownMenuSub>
+        <DropdownMenuSeparator />
         <DropdownMenuSub>
           <DropdownMenuSubTrigger>
             <Folder className="text-muted-foreground" />
@@ -130,6 +189,31 @@ export function AddNodeMenu({ onCreate, triggerClassName }: AddNodeMenuProps) {
                   <span className="min-w-0 truncate">
                     {formatFolderLabelWithAlias(f)}
                   </span>
+                </DropdownMenuItem>
+              ))
+            )}
+          </DropdownMenuSubContent>
+        </DropdownMenuSub>
+        <DropdownMenuSub>
+          <DropdownMenuSubTrigger>
+            <Layers className="text-muted-foreground" />
+            {t("addGroupRegion")}
+          </DropdownMenuSubTrigger>
+          <DropdownMenuSubContent className="max-h-72 overflow-y-auto">
+            {folderGroups.length === 0 ? (
+              <div className="px-3 py-2 text-xs text-muted-foreground">
+                {t("noGroups")}
+              </div>
+            ) : (
+              folderGroups.map((g) => (
+                <DropdownMenuItem
+                  key={g.id}
+                  onSelect={() =>
+                    createRegion({ kind: "group", folderGroupId: g.id })
+                  }
+                >
+                  <Layers className="text-muted-foreground" />
+                  <span className="min-w-0 truncate">{g.name}</span>
                 </DropdownMenuItem>
               ))
             )}

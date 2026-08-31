@@ -149,6 +149,17 @@ export function AgentSelector({
   // One pass, two answers: how many pills fit, and where the droplet goes.
   // Both read the same boxes, and the fit result changes those boxes, so
   // splitting them would just make the two measurements disagree for a frame.
+  //
+  // ⚠️ Every measurement here is LAYOUT px (`offsetWidth` / `offsetLeft`), never
+  // `getBoundingClientRect()`. The rects are in SCREEN px — scaled by any CSS
+  // transform above us — while `scrollWidth` below (the label's natural width)
+  // is not, so mixing the two makes the fit arithmetic wrong the moment this
+  // selector is rendered inside something scaled. The infinite-conversation
+  // canvas does exactly that: a card at 60% zoom compared a shrunken `inner`
+  // against a full-size `labelWidth` and collapsed the row, and the droplet —
+  // positioned with screen px inside the scaled subtree — sat off its pill
+  // entirely. `offsetWidth`/`offsetLeft` are transform-independent, which also
+  // covers the app's own zoom control rewriting the root font-size.
   const measure = useCallback(() => {
     const wrapper = wrapperRef.current
     const frame = frameRef.current
@@ -159,12 +170,12 @@ export function AgentSelector({
     // is handed down by the layout and never reflects what we put inside it.
     // That is what makes this loop converge: dropping a pill narrows the frame
     // but leaves `outer` untouched.
-    const outer = wrapper.getBoundingClientRect().width
+    const outer = wrapper.offsetWidth
     let unit = 0
     let samples = 0
     for (const [agentType, el] of itemRefs.current) {
       if (agentType === selected) continue
-      const width = el.getBoundingClientRect().width
+      const width = el.offsetWidth
       // Smallest sample wins: a pill that was just deselected is still
       // shrinking out of its label, and its in-flight width would overstate
       // how much room its settled siblings need.
@@ -208,7 +219,7 @@ export function AgentSelector({
     } else if (selectedWidth + others * unit <= inner) {
       next = null
     } else {
-      const moreWidth = moreRef.current?.getBoundingClientRect().width || unit
+      const moreWidth = moreRef.current?.offsetWidth || unit
       const fits = Math.floor((inner - selectedWidth - moreWidth) / unit)
       next = Math.max(0, Math.min(others, fits))
     }
@@ -225,11 +236,11 @@ export function AgentSelector({
       setIndicator(null)
       return
     }
-    const frameRect = frame.getBoundingClientRect()
-    const btnRect = btn.getBoundingClientRect()
+    // `offsetLeft` is already relative to the frame: it is `position: relative`,
+    // making it the offsetParent of every pill.
     setIndicator({
-      left: btnRect.left - frameRect.left,
-      width: btnRect.width,
+      left: btn.offsetLeft,
+      width: btn.offsetWidth,
     })
   }, [agents.length, selected])
 

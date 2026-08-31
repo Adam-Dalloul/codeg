@@ -17,7 +17,7 @@ use std::sync::OnceLock;
 use tokio::sync::Mutex;
 
 use crate::db::entities::canvas_node::{self, CanvasNodeKind};
-use crate::db::entities::{conversation, folder};
+use crate::db::entities::{conversation, folder, folder_group};
 use crate::db::error::DbError;
 use crate::db::service::app_metadata_service;
 
@@ -29,6 +29,12 @@ const CANVAS_REVISION_KEY: &str = "canvas_revision";
 /// Hard cap on a custom region's member list. Whole-node JSON read/write is the
 /// storage model, so the list must stay small enough to rewrite on every add.
 pub const MAX_CUSTOM_MEMBERS: usize = 200;
+
+/// Upper bound on a pinned grid axis. Not a layout limit — the frontend derives
+/// far more columns than this from a wide region — but a sanity clamp so a
+/// fat-fingered value can't make a region's derived width explode past
+/// [`MAX_NODE_SIZE`] and strand it off-screen. 0 stays "auto".
+pub const MAX_GRID_AXIS: i32 = 12;
 
 /// Geometry clamps: a node the user cannot see or grab again is unrecoverable
 /// short of SQL, so reject degenerate sizes and non-finite coordinates at the
@@ -147,14 +153,24 @@ fn normalize_color(v: Option<String>) -> Result<Option<String>, DbError> {
     }
 }
 
+/// Trim a pinned grid axis to `0..=MAX_GRID_AXIS`. Absent / negative reads as
+/// auto rather than an error: the axis is a display preference, and rejecting
+/// the whole write over one would lose a legitimate geometry change with it.
+fn clamp_grid_axis(v: Option<i32>) -> i32 {
+    v.unwrap_or(0).clamp(0, MAX_GRID_AXIS)
+}
+
 pub struct NewCanvasNode {
     pub kind: CanvasNodeKind,
     pub folder_id: Option<i32>,
+    pub folder_group_id: Option<i32>,
     pub agent_type: Option<String>,
     pub conversation_id: Option<i32>,
     pub title: Option<String>,
     pub content: Option<String>,
     pub color: Option<String>,
+    pub grid_columns: Option<i32>,
+    pub grid_rows: Option<i32>,
     pub x: f64,
     pub y: f64,
     pub width: f64,
@@ -171,6 +187,8 @@ pub struct CanvasNodePatch {
     pub content: Option<String>,
     pub color: Option<String>,
     pub collapsed: Option<bool>,
+    pub grid_columns: Option<i32>,
+    pub grid_rows: Option<i32>,
     pub x: Option<f64>,
     pub y: Option<f64>,
     pub width: Option<f64>,
@@ -190,6 +208,7 @@ pub async fn create_node(
     // forced to NULL rather than trusted from the caller, so a row can never
     // carry a stale cross-kind reference.
     let mut folder_id = None;
+    let mut folder_group_id = None;
     let mut agent_type = None;
     let mut conversation_id = None;
     match input.kind {
@@ -206,6 +225,23 @@ pub async fn create_node(
                 return Err(DbError::NotFound(format!("folder {id} not found")));
             }
             folder_id = Some(id);
+        }
+        CanvasNodeKind::Group => {
+            let id = input
+                .folder_group_id
+                .ok_or_else(|| DbError::Validation("group region needs folder_group_id".into()))?;
+            // Folder groups are HARD-deleted, so unlike the folder check this
+            // one is the only chance to catch a bad id — but the reference stays
+            // soft afterwards (a region whose group is later deleted renders as
+            // unresolved rather than vanishing, matching folder regions).
+            let exists = folder_group::Entity::find_by_id(id)
+                .one(&txn)
+                .await?
+                .is_some();
+            if !exists {
+                return Err(DbError::NotFound(format!("folder group {id} not found")));
+            }
+            folder_group_id = Some(id);
         }
         CanvasNodeKind::Agent => {
             let agent = input
@@ -234,6 +270,7 @@ pub async fn create_node(
         id: NotSet,
         kind: Set(input.kind),
         folder_id: Set(folder_id),
+        folder_group_id: Set(folder_group_id),
         agent_type: Set(agent_type),
         conversation_id: Set(conversation_id),
         member_ids: Set(match input.kind {
@@ -256,6 +293,18 @@ pub async fn create_node(
         }),
         color: Set(normalize_color(input.color)?),
         collapsed: Set(false),
+        // Grid shape is meaningless for a pinned card or a note; forcing 0
+        // keeps those rows from carrying state nothing reads.
+        grid_columns: Set(if input.kind.is_region() {
+            clamp_grid_axis(input.grid_columns)
+        } else {
+            0
+        }),
+        grid_rows: Set(if input.kind.is_region() {
+            clamp_grid_axis(input.grid_rows)
+        } else {
+            0
+        }),
         x: Set(clamp_coord(input.x)?),
         y: Set(clamp_coord(input.y)?),
         width: Set(clamp_size(input.width)?),
@@ -267,6 +316,205 @@ pub async fn create_node(
     let revision = bump_revision(&txn).await?;
     txn.commit().await?;
     Ok((row, revision))
+}
+
+pub struct GroupIntoRegion {
+    /// Existing custom region to fold the conversations into. `None` creates a
+    /// new custom region from the geometry below; `Some` merges into that
+    /// region and ignores the geometry entirely (the frame is already placed).
+    pub target_region_id: Option<i32>,
+    pub title: Option<String>,
+    pub color: Option<String>,
+    /// Conversations to seed the new custom region with, in the caller's order.
+    pub member_ids: Vec<i32>,
+    /// Pinned `conversation` cards the selection swallowed. Absorbed into the
+    /// region and deleted here so the loose card doesn't stay stranded under the
+    /// frame it was just collected into.
+    pub consume_node_ids: Vec<i32>,
+    pub grid_columns: Option<i32>,
+    pub grid_rows: Option<i32>,
+    /// Where to put a NEW region. Required when `target_region_id` is absent
+    /// and meaningless when it is present (that frame is already placed), so it
+    /// is optional here rather than a set of zeros the merge path has to invent
+    /// — a zero size would silently clamp to the 48px minimum instead of
+    /// failing, which is a mystery region rather than an error.
+    pub geometry: Option<RegionGeometry>,
+}
+
+pub struct RegionGeometry {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+}
+
+/// What [`group_into_region`] committed: the region (created or merged into),
+/// the pinned cards that were ACTUALLY deleted (raced/mistyped ids dropped,
+/// mirroring `move_nodes`), and the revision of the single event describing
+/// both halves.
+pub struct GroupIntoRegionOutcome {
+    pub node: canvas_node::Model,
+    pub deleted_ids: Vec<i32>,
+    pub revision: i64,
+}
+
+/// "Collect these conversations into a region", as ONE transaction: the region
+/// is created (or extended) with its member list already validated, and the
+/// loose pinned cards it absorbed are deleted alongside. Doing this as
+/// `create` + N × `member_add` + M × `delete` would spray a dozen revisions for
+/// one gesture and leave every intermediate state observable (a region that
+/// exists but is empty, cards that vanished before their region appeared).
+///
+/// Three canvas gestures share it: box-select → collect, a pinned card dragged
+/// into an existing custom region, and two cards dropped onto each other. All
+/// three are the same shape — "this region now holds these conversations, and
+/// these loose cards are gone" — which is exactly what the `Grouped` broadcast
+/// carries.
+pub async fn group_into_region(
+    conn: &DatabaseConnection,
+    input: GroupIntoRegion,
+) -> Result<GroupIntoRegionOutcome, DbError> {
+    let _guard = revision_lock().lock().await;
+    let txn = conn.begin().await?;
+
+    // Dedupe preserving the caller's order: the same conversation can be
+    // selected twice (a member card and its mirror in another region), and the
+    // member list is a set.
+    let mut members: Vec<i32> = Vec::with_capacity(input.member_ids.len());
+    for id in input.member_ids {
+        if members.contains(&id) {
+            continue;
+        }
+        if members.len() >= MAX_CUSTOM_MEMBERS {
+            return Err(DbError::Validation(format!(
+                "a region holds at most {MAX_CUSTOM_MEMBERS} conversations"
+            )));
+        }
+        require_live_conversation(&txn, id).await?;
+        members.push(id);
+    }
+
+    // Resolve the destination BEFORE anything is deleted: a consumed card may
+    // only be destroyed once the conversation it was showing is guaranteed a
+    // seat in the region (see the adoption check below).
+    let target = match input.target_region_id {
+        // Merge into an existing frame. Only custom regions have a member list
+        // to write: a folder/group/agent region's members are a live binding,
+        // so "drop a card in here" has no meaning there.
+        Some(region_id) => {
+            let region = canvas_node::Entity::find_by_id(region_id)
+                .one(&txn)
+                .await?
+                .ok_or_else(|| DbError::NotFound(format!("canvas node {region_id} not found")))?;
+            if region.kind != CanvasNodeKind::Custom {
+                return Err(DbError::Validation(
+                    "only custom regions can absorb conversations".into(),
+                ));
+            }
+            Some(region)
+        }
+        None => None,
+    };
+
+    // The member list this call will leave behind — the union for a merge, the
+    // selection itself for a new region.
+    let final_members = match &target {
+        Some(region) => {
+            let mut merged = parse_member_ids(region.member_ids.as_deref());
+            for id in &members {
+                if merged.contains(id) {
+                    continue;
+                }
+                if merged.len() >= MAX_CUSTOM_MEMBERS {
+                    return Err(DbError::Validation(format!(
+                        "a region holds at most {MAX_CUSTOM_MEMBERS} conversations"
+                    )));
+                }
+                merged.push(*id);
+            }
+            merged
+        }
+        None => members,
+    };
+
+    // Only pinned cards are consumable. A region or note in the selection keeps
+    // living where it is — collecting a conversation is a membership change,
+    // not a licence to delete arbitrary nodes the caller named.
+    let mut deleted_ids = Vec::new();
+    if !input.consume_node_ids.is_empty() {
+        let doomed = canvas_node::Entity::find()
+            .filter(canvas_node::Column::Id.is_in(input.consume_node_ids.iter().copied()))
+            .filter(canvas_node::Column::Kind.eq(CanvasNodeKind::Conversation))
+            .all(&txn)
+            .await?;
+        // Consuming a card is "the region took it over", so the takeover has to
+        // be real. Deleting a card whose conversation ends up in no member list
+        // would destroy the only handle the user had on that conversation —
+        // silently, and inside the same event that claims it was collected.
+        for card in &doomed {
+            let adopted = card
+                .conversation_id
+                .is_some_and(|cid| final_members.contains(&cid));
+            if !adopted {
+                return Err(DbError::Validation(
+                    "a consumed card's conversation must be a member of the region".into(),
+                ));
+            }
+        }
+        deleted_ids = doomed.iter().map(|n| n.id).collect();
+        if !deleted_ids.is_empty() {
+            canvas_node::Entity::delete_many()
+                .filter(canvas_node::Column::Id.is_in(deleted_ids.iter().copied()))
+                .exec(&txn)
+                .await?;
+        }
+    }
+
+    let now = Utc::now();
+    let node = match target {
+        Some(region) => {
+            let mut active = region.into_active_model();
+            active.member_ids = Set(Some(encode_member_ids(&final_members)));
+            active.updated_at = Set(now);
+            active.update(&txn).await?
+        }
+        None => {
+            let geometry = input.geometry.ok_or_else(|| {
+                DbError::Validation("a new region needs its geometry".into())
+            })?;
+            canvas_node::ActiveModel {
+                id: NotSet,
+                kind: Set(CanvasNodeKind::Custom),
+                folder_id: Set(None),
+                folder_group_id: Set(None),
+                agent_type: Set(None),
+                conversation_id: Set(None),
+                member_ids: Set(Some(encode_member_ids(&final_members))),
+                title: Set(normalize_text(input.title)),
+                content: Set(None),
+                color: Set(normalize_color(input.color)?),
+                collapsed: Set(false),
+                grid_columns: Set(clamp_grid_axis(input.grid_columns)),
+                grid_rows: Set(clamp_grid_axis(input.grid_rows)),
+                x: Set(clamp_coord(geometry.x)?),
+                y: Set(clamp_coord(geometry.y)?),
+                width: Set(clamp_size(geometry.width)?),
+                height: Set(clamp_size(geometry.height)?),
+                created_at: Set(now),
+                updated_at: Set(now),
+            }
+            .insert(&txn)
+            .await?
+        }
+    };
+
+    let revision = bump_revision(&txn).await?;
+    txn.commit().await?;
+    Ok(GroupIntoRegionOutcome {
+        node,
+        deleted_ids,
+        revision,
+    })
 }
 
 pub async fn update_node(
@@ -323,6 +571,19 @@ pub async fn update_node(
     }
     if let Some(collapsed) = patch.collapsed {
         active.collapsed = Set(collapsed);
+    }
+    if patch.grid_columns.is_some() || patch.grid_rows.is_some() {
+        if !kind.is_region() {
+            return Err(DbError::Validation(
+                "grid shape only applies to regions".into(),
+            ));
+        }
+        if let Some(columns) = patch.grid_columns {
+            active.grid_columns = Set(clamp_grid_axis(Some(columns)));
+        }
+        if let Some(rows) = patch.grid_rows {
+            active.grid_rows = Set(clamp_grid_axis(Some(rows)));
+        }
     }
     if let Some(x) = patch.x {
         active.x = Set(clamp_coord(x)?);
@@ -443,7 +704,7 @@ pub async fn detach_member(
             active.update(&txn).await?;
             Some(region_id)
         }
-        CanvasNodeKind::Folder | CanvasNodeKind::Agent => None,
+        CanvasNodeKind::Folder | CanvasNodeKind::Group | CanvasNodeKind::Agent => None,
         CanvasNodeKind::Conversation | CanvasNodeKind::Note => {
             return Err(DbError::Validation(format!(
                 "canvas node {region_id} is not a region"
@@ -458,6 +719,7 @@ pub async fn detach_member(
         id: NotSet,
         kind: Set(CanvasNodeKind::Conversation),
         folder_id: Set(None),
+        folder_group_id: Set(None),
         agent_type: Set(None),
         conversation_id: Set(Some(conversation_id)),
         member_ids: Set(None),
@@ -465,6 +727,8 @@ pub async fn detach_member(
         content: Set(None),
         color: Set(None),
         collapsed: Set(false),
+        grid_columns: Set(0),
+        grid_rows: Set(0),
         x: Set(clamp_coord(x)?),
         y: Set(clamp_coord(y)?),
         width: Set(CARD_WIDTH),
@@ -500,6 +764,41 @@ pub async fn delete_node(
     let revision = bump_revision(&txn).await?;
     txn.commit().await?;
     Ok(Some(revision))
+}
+
+/// Delete several nodes at once (multi-select on the canvas): one transaction,
+/// one bump, one event — deleting them one by one would spray a revision per
+/// node and let every client watch the selection disappear in pieces. Ids that
+/// no longer exist are skipped, and the ids ACTUALLY deleted come back so the
+/// broadcast describes what the database did rather than what was asked.
+/// `None` when nothing existed to delete (no bump, no event).
+pub async fn delete_nodes(
+    conn: &DatabaseConnection,
+    ids: &[i32],
+) -> Result<Option<(Vec<i32>, i64)>, DbError> {
+    if ids.is_empty() {
+        return Ok(None);
+    }
+    let _guard = revision_lock().lock().await;
+    let txn = conn.begin().await?;
+    let existing: Vec<i32> = canvas_node::Entity::find()
+        .filter(canvas_node::Column::Id.is_in(ids.iter().copied()))
+        .all(&txn)
+        .await?
+        .into_iter()
+        .map(|n| n.id)
+        .collect();
+    if existing.is_empty() {
+        txn.commit().await?;
+        return Ok(None);
+    }
+    canvas_node::Entity::delete_many()
+        .filter(canvas_node::Column::Id.is_in(existing.iter().copied()))
+        .exec(&txn)
+        .await?;
+    let revision = bump_revision(&txn).await?;
+    txn.commit().await?;
+    Ok(Some((existing, revision)))
 }
 
 /// What the deletion funnel changed: pinned nodes removed, custom regions whose

@@ -2836,3 +2836,10 @@ div.monaco-diff-editor.side-by-side .editor.modified {
 .canvas-surface .react-flow__node:focus {
   outline: none;
 }
+/* Right-drag panning is ours, not d3-zoom's (every draggable node carries the
+   `nopan` class its filter refuses), so the grabbing cursor is ours too — and
+   it has to beat every element's own cursor, including a card's text. */
+.canvas-surface[data-canvas-panning],
+.canvas-surface[data-canvas-panning] * {
+  cursor: grabbing !important;
+}

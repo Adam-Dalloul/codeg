@@ -1,24 +1,31 @@
 "use client"
 
-import { memo, useState } from "react"
+import { memo, useEffect, useRef, useState } from "react"
 import { NodeResizer, type Node, type NodeProps } from "@xyflow/react"
-import { Trash2 } from "lucide-react"
 import { useTranslations } from "next-intl"
-import {
-  THEME_COLOR_PREVIEW,
-  normalizeFolderThemeColor,
-  FOLDER_THEME_COLOR_INHERIT,
-} from "@/lib/theme-presets"
 import { cn } from "@/lib/utils"
 import type { NoteNodeData } from "../canvas-model"
+import { ColorWash } from "../canvas-swatches"
 import { useCanvasView } from "../canvas-view-context"
 
 export type NoteFlowNode = Node<NoteNodeData, "note">
 
 /**
- * A sticky note. The textarea is `nodrag nowheel` (typing and scrolling must
- * not pan the canvas); edits are committed on blur as a single patch — notes
- * are annotations, not collaborative documents, so LWW per blur is plenty.
+ * A sticky note. Two states, because a note has to be both movable and
+ * writable and a textarea cannot be both:
+ *
+ *   at rest — plain text, no `nodrag`, so the WHOLE note is a drag handle
+ *   editing — a focused textarea, `nodrag nowheel`, entered by double-click
+ *
+ * It used to be a textarea at all times, filling the node and carrying
+ * `nodrag`, which left the note with no grabbable pixel anywhere: typing worked
+ * and dragging was impossible. Double-click is the same gesture that renames a
+ * region, so "double-click to edit the text" already reads as the board's rule.
+ *
+ * Edits commit on exit (blur or Escape) as a single patch — notes are
+ * annotations, not collaborative documents, so LWW per edit session is plenty.
+ * Colour and delete live in the action dock with every other element's verbs;
+ * the note itself is just the paper.
  */
 export const NoteNode = memo(function NoteNode({
   data,
@@ -26,34 +33,71 @@ export const NoteNode = memo(function NoteNode({
 }: NodeProps<NoteFlowNode>) {
   const t = useTranslations("Canvas")
   const { dbNode } = data
-  const { patchNode, endNodeResize, deleteNode } = useCanvasView()
+  const { patchNode, endNodeResize } = useCanvasView()
   const [draft, setDraft] = useState(dbNode.content ?? "")
-  const [focused, setFocused] = useState(false)
-  // Remote edits land while we're NOT editing; while focused the local draft
+  const [editing, setEditing] = useState(false)
+  // Remote edits land while we're NOT editing; while editing the local draft
   // wins (same freeze idea as dragging). Adjust-during-render, not an effect:
   // track the last remote value seen and resync the draft when it moves.
   const [lastRemote, setLastRemote] = useState(dbNode.content ?? "")
   const remote = dbNode.content ?? ""
   if (remote !== lastRemote) {
     setLastRemote(remote)
-    if (!focused) setDraft(remote)
+    if (!editing) setDraft(remote)
   }
 
-  const normalized = normalizeFolderThemeColor(dbNode.color)
-  const tint =
-    normalized === FOLDER_THEME_COLOR_INHERIT
-      ? null
-      : THEME_COLOR_PREVIEW[normalized]
+  const commit = () => {
+    setEditing(false)
+    // On save failure the draft is KEPT (patchNode toasts): resetting to the
+    // stored value would throw away the user's text, and the kept draft doubles
+    // as the retry payload for the next commit.
+    if (draft !== (dbNode.content ?? "")) {
+      void patchNode(dbNode.id, { content: draft })
+    }
+  }
+
+  // Blur is the normal way out, but not the only way the editor can end: the
+  // canvas route unmounts on a view switch, ReactFlow culls off-screen nodes,
+  // and a remote delete takes the node with it — none of which fire blur. Save
+  // whatever was typed on the way out rather than dropping it.
+  const pendingRef = useRef<{
+    text: string
+    stored: string
+    nodeId: number
+    patch: typeof patchNode
+  } | null>(null)
+  // Synced in an effect, not during render: by the time the unmount cleanup
+  // below runs, this has already been written for the last committed render.
+  useEffect(() => {
+    pendingRef.current = editing
+      ? {
+          text: draft,
+          stored: dbNode.content ?? "",
+          nodeId: dbNode.id,
+          patch: patchNode,
+        }
+      : null
+  })
+  useEffect(
+    () => () => {
+      const pending = pendingRef.current
+      if (pending && pending.text !== pending.stored) {
+        void pending.patch(pending.nodeId, { content: pending.text })
+      }
+    },
+    []
+  )
 
   return (
     <div
       className={cn(
         // Sized by the RF node wrapper (derive feeds width/height, including
         // live NodeResizer dimensions).
-        "group/note relative flex h-full w-full flex-col rounded-xl border bg-card transition-colors",
+        "relative flex h-full w-full flex-col rounded-xl border bg-card transition-colors",
         "border-foreground/15 hover:border-foreground/30",
         selected && "border-primary ring-2 ring-primary/25"
       )}
+      onDoubleClick={() => setEditing(true)}
     >
       <NodeResizer
         isVisible={Boolean(selected)}
@@ -70,37 +114,39 @@ export const NoteNode = memo(function NoteNode({
           })
         }
       />
-      {tint && (
-        <div
-          className="pointer-events-none absolute inset-0 rounded-xl opacity-[0.12]"
-          style={{ backgroundColor: tint }}
-          aria-hidden="true"
+      <ColorWash color={dbNode.color} className="rounded-xl" />
+      {editing ? (
+        <textarea
+          autoFocus
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onBlur={commit}
+          onKeyDown={(e) => {
+            // Escape leaves edit mode; every other key belongs to the text, and
+            // must not reach the board's element shortcuts (Delete would remove
+            // the note out from under the cursor).
+            if (e.key === "Escape") {
+              e.stopPropagation()
+              e.currentTarget.blur()
+              return
+            }
+            e.stopPropagation()
+          }}
+          placeholder={t("notePlaceholder")}
+          className="nodrag nowheel relative min-h-0 flex-1 resize-none rounded-xl bg-transparent p-3 text-[0.8125rem] leading-relaxed outline-none select-text placeholder:text-muted-foreground/50"
         />
+      ) : (
+        // `overflow-hidden` rather than a scrollbar: at rest the note is a card
+        // to be moved, and a scroll region here would swallow the drag.
+        <div
+          className={cn(
+            "relative min-h-0 flex-1 overflow-hidden p-3 text-[0.8125rem] leading-relaxed whitespace-pre-wrap",
+            !draft && "text-muted-foreground/50"
+          )}
+        >
+          {draft || t("noteEmptyHint")}
+        </div>
       )}
-      <textarea
-        value={draft}
-        onChange={(e) => setDraft(e.target.value)}
-        onFocus={() => setFocused(true)}
-        onBlur={() => {
-          setFocused(false)
-          // On save failure the draft is KEPT (patchNode toasts): resetting
-          // to the stored value would throw away the user's text, and the
-          // kept draft doubles as the retry payload for the next blur.
-          if (draft !== (dbNode.content ?? "")) {
-            void patchNode(dbNode.id, { content: draft })
-          }
-        }}
-        placeholder={t("notePlaceholder")}
-        className="nodrag nowheel relative min-h-0 flex-1 resize-none rounded-xl bg-transparent p-3 text-[0.8125rem] leading-relaxed outline-none placeholder:text-muted-foreground/50"
-      />
-      <button
-        type="button"
-        className="nodrag absolute right-1.5 top-1.5 inline-flex size-6 items-center justify-center rounded-md text-muted-foreground opacity-0 transition-opacity hover:bg-destructive/10 hover:text-destructive focus-visible:opacity-100 group-hover/note:opacity-100"
-        onClick={() => void deleteNode(dbNode.id)}
-        aria-label={t("removeNote")}
-      >
-        <Trash2 className="size-3" />
-      </button>
     </div>
   )
 })

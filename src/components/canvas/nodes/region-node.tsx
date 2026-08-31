@@ -2,102 +2,65 @@
 
 import { memo, useState } from "react"
 import { NodeResizer, type Node, type NodeProps } from "@xyflow/react"
-import {
-  ChevronsDownUp,
-  ChevronsUpDown,
-  Folder,
-  MoreHorizontal,
-  Pencil,
-  Plus,
-  Sparkles,
-  Trash2,
-  Unlink,
-} from "lucide-react"
+import { ChevronDown, Folder, Layers, Sparkles, Unlink } from "lucide-react"
 import { useTranslations } from "next-intl"
 import { AgentIcon } from "@/components/agent-icon"
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuSub,
-  DropdownMenuSubContent,
-  DropdownMenuSubTrigger,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu"
 import { getAgentLabel } from "@/lib/custom-agents"
 import { formatFolderLabelWithAlias } from "@/lib/folder-display"
-import {
-  THEME_COLORS,
-  THEME_COLOR_PREVIEW,
-  normalizeFolderThemeColor,
-  FOLDER_THEME_COLOR_INHERIT,
-} from "@/lib/theme-presets"
 import { cn } from "@/lib/utils"
 import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
 import {
-  MAX_VISIBLE_MEMBERS,
+  REGION_FOOTER_HEIGHT,
   REGION_HEADER_HEIGHT,
   type RegionNodeData,
 } from "../canvas-model"
+import { ColorWash } from "../canvas-swatches"
 import { useCanvasView } from "../canvas-view-context"
 
 export type RegionFlowNode = Node<RegionNodeData, "region">
 
-/** Accent chip for the region header + the color picker swatches. */
-function ColorDot({
-  value,
-  active,
-}: {
-  value: string | null
-  active?: boolean
-}) {
-  const normalized = normalizeFolderThemeColor(value)
-  const preview =
-    normalized === FOLDER_THEME_COLOR_INHERIT
-      ? null
-      : THEME_COLOR_PREVIEW[normalized]
-  return (
-    <span
-      className={cn(
-        "relative inline-flex size-3 shrink-0 items-center justify-center rounded-full border border-foreground/20",
-        active && "ring-2 ring-ring ring-offset-1 ring-offset-background"
-      )}
-      style={
-        preview
-          ? { backgroundColor: preview, borderColor: "transparent" }
-          : undefined
-      }
-      aria-hidden="true"
-    />
-  )
-}
-
 /**
- * A canvas region: a live binding (folder / agent) or a hand-curated `custom`
- * collection. Member cards are separate RF child nodes laid out by
- * `layoutRegionGrid`; this component renders only the frame and header, so its
- * height must track `renderedHeight` (grid growth) rather than the stored one.
+ * A canvas region: a live binding (folder / folder group / agent) or a
+ * hand-curated `custom` collection. Member cards are separate RF child nodes
+ * laid out by `layoutRegionGrid`; this component renders only the frame and
+ * header, so its height must track `renderedHeight` (grid growth) rather than
+ * the stored one.
+ *
+ * Its verbs (rename, grid, colour, collapse, delete) live in the action dock,
+ * not in a header menu — one action surface for every element type. Renaming is
+ * the one that still happens HERE, because the input belongs on the title;
+ * `renamingRegionId` is what the dock flips to start it.
  */
 export const RegionNode = memo(function RegionNode({
   data,
   selected,
 }: NodeProps<RegionFlowNode>) {
   const t = useTranslations("Canvas")
-  const { dbNode, memberTotal, runningCount, unresolved } = data
+  const { dbNode, memberTotal, visibleCount, runningCount, unresolved } = data
   const {
     expandedRegions,
-    expandRegion,
+    setRegionExpanded,
+    renamingRegionId,
+    setRenamingRegionId,
+    dropTargetRegionId,
     patchNode,
     endNodeResize,
-    deleteNode,
   } = useCanvasView()
-  const [editing, setEditing] = useState(false)
-  const [draft, setDraft] = useState("")
+  // `null` = untouched since the rename started, so the input shows the stored
+  // title. Rename can begin from the dock (which knows nothing about this
+  // component's state) as well as from a double-click here, so seeding on the
+  // way IN would leave the dock's path editing an empty string — and committing
+  // it would wipe the title.
+  const [draft, setDraft] = useState<string | null>(null)
 
   const folder = useAppWorkspaceStore((s) =>
     dbNode.kind === "folder" && dbNode.folder_id != null
       ? s.allFolders.find((f) => f.id === dbNode.folder_id)
+      : undefined
+  )
+  const folderGroup = useAppWorkspaceStore((s) =>
+    dbNode.kind === "group" && dbNode.folder_group_id != null
+      ? s.folderGroups.find((g) => g.id === dbNode.folder_group_id)
       : undefined
   )
 
@@ -106,19 +69,34 @@ export const RegionNode = memo(function RegionNode({
       ? folder
         ? formatFolderLabelWithAlias(folder)
         : t("unresolvedFolder")
-      : dbNode.kind === "agent"
-        ? getAgentLabel(dbNode.agent_type ?? "")
-        : t("customRegion")
+      : dbNode.kind === "group"
+        ? (folderGroup?.name ?? t("unresolvedGroup"))
+        : dbNode.kind === "agent"
+          ? getAgentLabel(dbNode.agent_type ?? "")
+          : t("customRegion")
   const name = dbNode.title?.trim() || fallbackName
 
   const collapsed = dbNode.collapsed
   const expanded = expandedRegions.has(dbNode.id)
-  const hiddenCount = expanded ? 0 : memberTotal - MAX_VISIBLE_MEMBERS
+  // Derived from what the grid ACTUALLY laid out — the cap moves with the
+  // region's grid shape (`grid_rows × columns`), so a constant would lie.
+  const hiddenCount = expanded ? 0 : memberTotal - visibleCount
+  const editing = renamingRegionId === dbNode.id
+  // A card is hovering this region mid-drag: show where it would land.
+  const dropTarget = dropTargetRegionId === dbNode.id
+
+  const stored = dbNode.title ?? ""
+  const draftValue = draft ?? stored
+
+  const endRename = () => {
+    setRenamingRegionId(null)
+    setDraft(null)
+  }
 
   const commitRename = () => {
-    setEditing(false)
-    const next = draft.trim()
-    if (next !== (dbNode.title ?? "")) {
+    endRename()
+    const next = draftValue.trim()
+    if (next !== stored) {
       void patchNode(dbNode.id, { title: next })
     }
   }
@@ -128,6 +106,8 @@ export const RegionNode = memo(function RegionNode({
       <AgentIcon agentType={dbNode.agent_type} className="size-3.5 shrink-0" />
     ) : dbNode.kind === "folder" ? (
       <Folder className="size-3.5 shrink-0 text-muted-foreground" />
+    ) : dbNode.kind === "group" ? (
+      <Layers className="size-3.5 shrink-0 text-muted-foreground" />
     ) : (
       <Sparkles className="size-3.5 shrink-0 text-muted-foreground" />
     )
@@ -142,9 +122,16 @@ export const RegionNode = memo(function RegionNode({
         unresolved
           ? "border-dashed border-foreground/20"
           : "border-foreground/15",
-        selected && "border-primary ring-2 ring-primary/25"
+        selected && "border-primary ring-2 ring-primary/25",
+        dropTarget && "border-primary bg-primary/5 ring-2 ring-primary/40"
       )}
     >
+      {/* Behind everything, clipped to the frame's own radius — including the
+          capsule shape a collapsed region takes. */}
+      <ColorWash
+        color={dbNode.color}
+        className={collapsed ? "rounded-full" : "rounded-2xl"}
+      />
       <NodeResizer
         isVisible={Boolean(selected) && !collapsed}
         minWidth={260}
@@ -161,20 +148,19 @@ export const RegionNode = memo(function RegionNode({
         }
       />
       <div
-        className="flex shrink-0 items-center gap-1.5 px-3"
+        className="relative flex shrink-0 items-center gap-1.5 px-3"
         style={{ height: REGION_HEADER_HEIGHT }}
       >
-        <ColorDot value={dbNode.color} />
         {headerIcon}
         {editing ? (
           <input
             autoFocus
-            value={draft}
+            value={draftValue}
             onChange={(e) => setDraft(e.target.value)}
             onBlur={commitRename}
             onKeyDown={(e) => {
               if (e.key === "Enter") commitRename()
-              if (e.key === "Escape") setEditing(false)
+              if (e.key === "Escape") endRename()
             }}
             placeholder={fallbackName}
             className="nodrag min-w-0 flex-1 rounded-md border border-input bg-background px-1.5 py-0.5 text-[0.8125rem] font-semibold outline-none focus-visible:ring-2 focus-visible:ring-ring"
@@ -185,10 +171,7 @@ export const RegionNode = memo(function RegionNode({
               "min-w-0 flex-1 truncate text-[0.8125rem] font-semibold",
               unresolved && "text-muted-foreground"
             )}
-            onDoubleClick={() => {
-              setDraft(dbNode.title ?? "")
-              setEditing(true)
-            }}
+            onDoubleClick={() => setRenamingRegionId(dbNode.id)}
           >
             {name}
           </span>
@@ -205,73 +188,6 @@ export const RegionNode = memo(function RegionNode({
         <span className="shrink-0 font-mono text-[0.6875rem] text-muted-foreground">
           {memberTotal}
         </span>
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <button
-              type="button"
-              className="nodrag inline-flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-foreground/10 hover:text-foreground"
-              aria-label={t("regionMenu")}
-            >
-              <MoreHorizontal className="size-3.5" />
-            </button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" className="nodrag w-44">
-            <DropdownMenuItem
-              onSelect={() => {
-                setDraft(dbNode.title ?? "")
-                setEditing(true)
-              }}
-            >
-              <Pencil className="text-muted-foreground" />
-              {t("rename")}
-            </DropdownMenuItem>
-            <DropdownMenuItem
-              onSelect={() =>
-                void patchNode(dbNode.id, { collapsed: !collapsed })
-              }
-            >
-              {collapsed ? (
-                <ChevronsUpDown className="text-muted-foreground" />
-              ) : (
-                <ChevronsDownUp className="text-muted-foreground" />
-              )}
-              {collapsed ? t("expand") : t("collapse")}
-            </DropdownMenuItem>
-            <DropdownMenuSub>
-              <DropdownMenuSubTrigger>
-                <ColorDot value={dbNode.color} />
-                <span className="ml-2">{t("color")}</span>
-              </DropdownMenuSubTrigger>
-              <DropdownMenuSubContent className="nodrag">
-                <div className="grid grid-cols-6 gap-1 p-1">
-                  {THEME_COLORS.map((c) => (
-                    <button
-                      key={c}
-                      type="button"
-                      className="inline-flex size-6 items-center justify-center rounded-md transition-colors hover:bg-foreground/10"
-                      onClick={() =>
-                        void patchNode(dbNode.id, {
-                          color: c === dbNode.color ? "" : c,
-                        })
-                      }
-                      aria-label={c}
-                    >
-                      <ColorDot value={c} active={dbNode.color === c} />
-                    </button>
-                  ))}
-                </div>
-              </DropdownMenuSubContent>
-            </DropdownMenuSub>
-            <DropdownMenuSeparator />
-            <DropdownMenuItem
-              variant="destructive"
-              onSelect={() => void deleteNode(dbNode.id)}
-            >
-              <Trash2 />
-              {t("removeRegion")}
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
       </div>
 
       {!collapsed && unresolved && (
@@ -281,7 +197,9 @@ export const RegionNode = memo(function RegionNode({
             aria-hidden="true"
           />
           <p className="max-w-56 text-xs text-muted-foreground">
-            {t("unresolvedFolderHint")}
+            {dbNode.kind === "group"
+              ? t("unresolvedGroupHint")
+              : t("unresolvedFolderHint")}
           </p>
         </div>
       )}
@@ -294,17 +212,20 @@ export const RegionNode = memo(function RegionNode({
         </div>
       )}
 
+      {/* A real footer ROW, not a floating chip: the derive layer reserves
+          REGION_FOOTER_HEIGHT for it, so it can never sit on top of the last
+          card row — and a full-width bar with its own rule reads as an action
+          instead of decoration. */}
       {!collapsed && hiddenCount > 0 && (
-        <div className="absolute inset-x-0 bottom-0 flex justify-center pb-2">
-          <button
-            type="button"
-            className="nodrag inline-flex items-center gap-1 rounded-full border border-foreground/15 bg-background/90 px-2.5 py-1 text-[0.6875rem] font-medium text-muted-foreground shadow-sm transition-colors hover:text-foreground supports-backdrop-filter:backdrop-blur-sm"
-            onClick={() => expandRegion(dbNode.id)}
-          >
-            <Plus className="size-3" aria-hidden="true" />
-            {t("showMore", { count: hiddenCount })}
-          </button>
-        </div>
+        <button
+          type="button"
+          className="nodrag absolute inset-x-0 bottom-0 flex items-center justify-center gap-1.5 rounded-b-2xl border-t border-foreground/10 bg-card/80 text-[0.75rem] font-medium text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground supports-backdrop-filter:backdrop-blur-sm"
+          style={{ height: REGION_FOOTER_HEIGHT }}
+          onClick={() => setRegionExpanded(dbNode.id, true)}
+        >
+          <ChevronDown className="size-3.5" aria-hidden="true" />
+          {t("showMore", { count: hiddenCount })}
+        </button>
       )}
     </div>
   )

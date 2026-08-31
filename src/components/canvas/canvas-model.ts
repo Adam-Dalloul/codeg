@@ -3,6 +3,7 @@ import type {
   CanvasNodeMovePayload,
   DbConversationSummary,
   FolderDetail,
+  FolderGroupDetail,
 } from "@/lib/types"
 
 /**
@@ -13,9 +14,16 @@ import type {
  * parameters, never as module state.
  */
 
-/** Fixed conversation-card footprint. Width matches Tailwind `w-56`; both
- *  values mirror the backend's CARD_WIDTH/CARD_HEIGHT so a card pinned by
- *  `canvas_detach_member` lands exactly where the drag ghost showed it. */
+/** Fixed conversation-card footprint, in CSS PIXELS. Mirrors the backend's
+ *  CARD_WIDTH/CARD_HEIGHT so a card pinned by `canvas_detach_member` lands
+ *  exactly where the drag ghost showed it.
+ *
+ *  ⚠️ These numbers own the card's rendered size: the card component must take
+ *  its box from the ReactFlow node wrapper (`h-full w-full`), never from a
+ *  rem-based utility like `w-56`. The app's zoom control writes
+ *  `font-size: 16 * zoom/100` onto `<html>` (see `appearance-provider.tsx`), so
+ *  a rem footprint drifts away from these px slots at any zoom ≠ 100% — cards
+ *  then overlap their neighbours and spill past the region border. */
 export const CARD_WIDTH = 224
 export const CARD_HEIGHT = 132
 
@@ -27,10 +35,81 @@ export const REGION_PADDING = 12
 export const CARD_GAP = 12
 /** Height of a collapsed region capsule (header only). */
 export const REGION_COLLAPSED_HEIGHT = 40
+/** Height of the region's bottom "+N more" bar. A real row of chrome the grid
+ *  reserves — not an overlay — so the last card row is never covered by it. */
+export const REGION_FOOTER_HEIGHT = 36
 
-/** Cards shown in a region before the "+N" expander takes over. A cap, not
- *  pagination: canvases curate, they don't list. */
+/** Footprint a pinned card takes when expanded into a live conversation. Used
+ *  only while the stored geometry is still the SUMMARY footprint — once the
+ *  user resizes a detail card, their size is what persists and wins. */
+export const DETAIL_CARD_WIDTH = 520
+export const DETAIL_CARD_HEIGHT = 560
+
+/** The live-conversation cards' drag handle (their title bar). Fed to
+ *  ReactFlow's per-node `dragHandle`, which is what lets the rest of the card be
+ *  an ordinary document: selectable text, clickable composer, scrollable
+ *  transcript. The class name lives here because the derive layer and the card
+ *  component both have to spell it identically. */
+export const DRAG_HANDLE_CLASS = "canvas-card-drag-handle"
+export const DRAG_HANDLE_SELECTOR = `.${DRAG_HANDLE_CLASS}`
+
+/** Cards shown in a region before the "+N" expander takes over, when the region
+ *  has no pinned row count. A cap, not pagination: canvases curate, they don't
+ *  list. */
 export const MAX_VISIBLE_MEMBERS = 24
+
+/** The width a region needs to fit exactly `columns` cards per row (and the
+ *  height for `rows` rows of them). Resizing snaps to these values, so a region
+ *  never sits at a width that renders a ragged half-column of dead space. */
+export function regionWidthForColumns(columns: number): number {
+  const n = Math.max(1, Math.round(columns))
+  return REGION_PADDING * 2 + n * CARD_WIDTH + (n - 1) * CARD_GAP
+}
+
+export function regionHeightForRows(rows: number): number {
+  const n = Math.max(1, Math.round(rows))
+  return (
+    REGION_HEADER_HEIGHT +
+    REGION_PADDING * 2 +
+    n * CARD_HEIGHT +
+    (n - 1) * CARD_GAP
+  )
+}
+
+/** Inverse of [`regionWidthForColumns`]: how many whole cards fit across a
+ *  region of this width (at least one — a region narrower than a card still
+ *  shows it, clipped, rather than rendering an empty frame). */
+export function columnsForRegionWidth(width: number): number {
+  const usable = Math.max(width - REGION_PADDING * 2, CARD_WIDTH)
+  return Math.max(1, Math.floor((usable + CARD_GAP) / (CARD_WIDTH + CARD_GAP)))
+}
+
+export function rowsForRegionHeight(height: number): number {
+  const usable = Math.max(
+    height - REGION_HEADER_HEIGHT - REGION_PADDING * 2,
+    CARD_HEIGHT
+  )
+  return Math.max(1, Math.floor((usable + CARD_GAP) / (CARD_HEIGHT + CARD_GAP)))
+}
+
+/** The column count a region actually lays out at: its pinned `grid_columns`
+ *  when set, otherwise derived from the width. One place, because the grid, the
+ *  visible-member cap and the resize snap all have to agree. */
+export function effectiveColumns(
+  node: CanvasNode,
+  regionWidth: number
+): number {
+  return node.grid_columns > 0
+    ? node.grid_columns
+    : columnsForRegionWidth(regionWidth)
+}
+
+/** How many member cards a region shows before the "+N" bar takes over.
+ *  A pinned row count makes the region a fixed viewport onto its members
+ *  (rows × columns); without one it falls back to the flat cap. */
+export function visibleMemberCap(node: CanvasNode, columns: number): number {
+  return node.grid_rows > 0 ? node.grid_rows * columns : MAX_VISIBLE_MEMBERS
+}
 
 /** ReactFlow node ids. Regions/notes/pins are DB rows (`region-<dbId>`);
  *  member cards are DERIVED (`member-<regionDbId>-<convId>`, parented to the
@@ -89,9 +168,10 @@ export function compareByRecency(
 /**
  * The conversations a region shows, sorted. Folder regions merge the bound
  * folder with its worktree children (direct `parent_id` children only — a
- * region bound to a child shows just that child); agent regions match by
- * agent type across the workspace; custom regions resolve their pinned ids
- * (a stale id — deleted before the prune landed — silently drops out).
+ * region bound to a child shows just that child); group regions do the same for
+ * every folder in the bound sidebar group; agent regions match by agent type
+ * across the workspace; custom regions resolve their pinned ids (a stale id —
+ * deleted before the prune landed — silently drops out).
  */
 export function computeRegionMembers(
   node: CanvasNode,
@@ -104,6 +184,23 @@ export function computeRegionMembers(
       const folderIds = new Set<number>([node.folder_id])
       for (const f of allFolders) {
         if (f.parent_id === node.folder_id) folderIds.add(f.id)
+      }
+      return conversations
+        .filter((c) => folderIds.has(c.folder_id) && isCanvasEligible(c))
+        .sort(compareByRecency)
+    }
+    case "group": {
+      if (node.folder_group_id == null) return []
+      // Only `regular` folders carry a `group_id`; worktree children follow
+      // their parent repo into the group (the same merge folder regions do), so
+      // resolve the group's folders first and then absorb their children.
+      const folderIds = new Set<number>()
+      for (const f of allFolders) {
+        if (f.group_id === node.folder_group_id) folderIds.add(f.id)
+      }
+      for (const f of allFolders) {
+        if (f.parent_id != null && folderIds.has(f.parent_id))
+          folderIds.add(f.id)
       }
       return conversations
         .filter((c) => folderIds.has(c.folder_id) && isCanvasEligible(c))
@@ -139,10 +236,20 @@ export function computeRegionMembers(
 export function isUnresolvedBinding(
   node: CanvasNode,
   conversationsById: ReadonlyMap<number, DbConversationSummary>,
-  foldersById: ReadonlyMap<number, FolderDetail>
+  foldersById: ReadonlyMap<number, FolderDetail>,
+  folderGroupsById?: ReadonlyMap<number, FolderGroupDetail>
 ): boolean {
   if (node.kind === "folder") {
     return node.folder_id == null || !foldersById.has(node.folder_id)
+  }
+  if (node.kind === "group") {
+    // Groups are hard-deleted, so a missing one is permanent — but the region
+    // still renders as an unresolved frame rather than vanishing, matching
+    // folder regions (and leaving the user something to delete or re-bind).
+    return (
+      node.folder_group_id == null ||
+      (folderGroupsById != null && !folderGroupsById.has(node.folder_group_id))
+    )
   }
   if (node.kind === "conversation") {
     return (
@@ -162,16 +269,17 @@ export interface GridLayout {
 }
 
 /** Grid-managed member placement inside a region. Members are never freely
- *  positioned — the grid owns them; a drop inside the same region snaps back. */
+ *  positioned — the grid owns them; a drop inside the same region snaps back.
+ *  `pinnedColumns > 0` overrides the width-derived column count. */
 export function layoutRegionGrid(
   count: number,
-  regionWidth: number
+  regionWidth: number,
+  pinnedColumns = 0
 ): GridLayout {
-  const usable = Math.max(regionWidth - REGION_PADDING * 2, CARD_WIDTH)
-  const columns = Math.max(
-    1,
-    Math.floor((usable + CARD_GAP) / (CARD_WIDTH + CARD_GAP))
-  )
+  const columns =
+    pinnedColumns > 0
+      ? Math.round(pinnedColumns)
+      : columnsForRegionWidth(regionWidth)
   const positions: { x: number; y: number }[] = []
   for (let i = 0; i < count; i++) {
     const col = i % columns
@@ -192,70 +300,264 @@ export function layoutRegionGrid(
   return { positions, contentHeight, columns }
 }
 
-export type CanvasDrop =
-  /** Dropped on open canvas: detach (custom = move, bindings = copy). */
-  | { type: "canvas"; x: number; y: number }
-  /** Dropped into a custom region: copy membership there. */
-  | { type: "custom"; regionId: number }
-  /** Dropped back into its own region — snap to grid, no command. */
-  | { type: "same" }
-  /** Dropped onto a non-droppable node — snap back, no command. */
-  | { type: "invalid" }
-
-interface RegionRect {
-  dbId: number
-  kind: CanvasNode["kind"]
+export interface CanvasRect {
   x: number
   y: number
   width: number
   height: number
 }
 
+export interface RegionRect extends CanvasRect {
+  dbId: number
+  kind: CanvasNode["kind"]
+}
+
+/** A top-level pinned conversation card, for card-onto-card hit testing.
+ *  Expanded (detail) cards are deliberately excluded by the caller: a 520×560
+ *  window is a place you read in, not a tile you stack. */
+export interface PinRect extends CanvasRect {
+  dbId: number
+  conversationId: number
+}
+
+/** Where a dragged conversation card is about to land. Purely geometric — what
+ *  the caller DOES with it depends on where the card came from (a member card's
+ *  `canvas` is a detach; a pinned card's is a plain move). */
+export type CanvasDropHint =
+  /** Over open canvas. */
+  | { type: "canvas"; x: number; y: number }
+  /** Over a custom region: it takes the conversation as a member. */
+  | { type: "region"; regionDbId: number }
+  /** Over another loose card: dropping collects both into a new custom region,
+   *  laid out where `rect` shows — iPhone's "drop an app on an app". */
+  | {
+      type: "merge"
+      targetPinDbId: number
+      targetConversationId: number
+      rect: CanvasRect
+    }
+  /** Back over its own region — snap to grid, no command. */
+  | { type: "same" }
+
+/** Who is being dragged. A member card belongs to a region's grid; a pinned
+ *  card is a free-floating top-level node. */
+export type CanvasDragSource =
+  | { kind: "member"; regionDbId: number; conversationId: number }
+  | { kind: "pin"; pinDbId: number; conversationId: number }
+
 /**
- * Classify where a dragged member card landed. `pos` is the card's absolute
- * canvas position (its top-left); the hit point is the CARD CENTER, which is
- * what the drag reads as "where the user is pointing". The topmost (= last in
- * paint order, here: highest db id) hit wins; a hit on the source region is
- * `same`; a hit on any other region kind is only a valid target when it's
- * `custom`. Top-level notes and pinned cards are deliberately NOT hit-tested:
- * they aren't containers, so landing on one means "place the card here,
- * overlapping" — the same as open canvas.
+ * Classify where a dragged conversation card currently is. `pos` is the card's
+ * absolute canvas position (its top-left); the hit point is the CARD CENTER,
+ * which is what the drag reads as "where the user is pointing".
+ *
+ * Regions are tested first and the topmost (= last in paint order, here:
+ * highest db id) wins. A hit on the source region is `same`; a hit on a
+ * binding region (folder / group / agent) is `canvas` rather than a rejection —
+ * their member list is computed, so there is nothing to drop INTO, and pretending
+ * otherwise by snapping the card back would read as a broken drag. Only when no
+ * region is hit do loose cards get tested, so a card sitting inside a region's
+ * frame can never be a merge target.
+ *
+ * Called on every drag frame (to paint the hint) and once again at drop, so the
+ * preview and the committed action can never disagree.
  */
-export function classifyDrop(
+export function computeDropHint(
+  source: CanvasDragSource,
   pos: { x: number; y: number },
-  regions: RegionRect[],
-  sourceRegionId: number
-): CanvasDrop {
+  regions: readonly RegionRect[],
+  pins: readonly PinRect[]
+): CanvasDropHint {
   const cx = pos.x + CARD_WIDTH / 2
   const cy = pos.y + CARD_HEIGHT / 2
-  let hit: RegionRect | null = null
+  const hits = (r: CanvasRect) =>
+    cx >= r.x && cx <= r.x + r.width && cy >= r.y && cy <= r.y + r.height
+
+  let region: RegionRect | null = null
   for (const r of regions) {
-    if (cx < r.x || cx > r.x + r.width || cy < r.y || cy > r.y + r.height) {
-      continue
-    }
-    if (!hit || r.dbId > hit.dbId) hit = r
+    if (!hits(r)) continue
+    if (!region || r.dbId > region.dbId) region = r
   }
-  if (!hit) return { type: "canvas", x: pos.x, y: pos.y }
-  if (hit.dbId === sourceRegionId) return { type: "same" }
-  if (hit.kind === "custom") return { type: "custom", regionId: hit.dbId }
-  return { type: "invalid" }
+  if (region) {
+    if (source.kind === "member" && region.dbId === source.regionDbId) {
+      return { type: "same" }
+    }
+    if (region.kind === "custom") {
+      return { type: "region", regionDbId: region.dbId }
+    }
+    return { type: "canvas", x: pos.x, y: pos.y }
+  }
+
+  let pin: PinRect | null = null
+  for (const p of pins) {
+    if (source.kind === "pin" && p.dbId === source.pinDbId) continue
+    if (p.conversationId === source.conversationId) continue
+    if (!hits(p)) continue
+    if (!pin || p.dbId > pin.dbId) pin = p
+  }
+  if (pin) {
+    return {
+      type: "merge",
+      targetPinDbId: pin.dbId,
+      targetConversationId: pin.conversationId,
+      // The frame grows AROUND the stationary card, the way an iPhone folder
+      // opens around the icon you dropped onto — and it is exactly the region
+      // the drop will create, so the preview is the commitment.
+      rect: {
+        x: pin.x - REGION_PADDING,
+        y: pin.y - REGION_HEADER_HEIGHT - REGION_PADDING,
+        width: regionWidthForColumns(2),
+        height: regionHeightForRows(1),
+      },
+    }
+  }
+  return { type: "canvas", x: pos.x, y: pos.y }
+}
+
+/** The box a node actually occupies on screen, which is not always the box in
+ *  its DB row — see `renderedSizes`. */
+export interface CanvasSize {
+  width: number
+  height: number
+}
+
+// ─── Drag alignment ───
+
+/** One drawn guide: the line everything snapped to, and how far it reaches. */
+export interface AlignmentGuide {
+  /** `x` = a vertical line at `at`; `y` = a horizontal one. */
+  axis: "x" | "y"
+  at: number
+  /** Span along the OTHER axis, so the line only covers the elements it
+   *  relates — a full-viewport rule says nothing about what lined up. */
+  from: number
+  to: number
+}
+
+export interface AlignmentResult {
+  /** Correction to apply to the moving rect, 0 when nothing was in range. */
+  dx: number
+  dy: number
+  guides: AlignmentGuide[]
+}
+
+const NO_ALIGNMENT: AlignmentResult = { dx: 0, dy: 0, guides: [] }
+
+/** The three lines an edge can align to, per axis. */
+function edgesX(r: CanvasRect): number[] {
+  return [r.x, r.x + r.width / 2, r.x + r.width]
+}
+function edgesY(r: CanvasRect): number[] {
+  return [r.y, r.y + r.height / 2, r.y + r.height]
+}
+
+/**
+ * Figma-style alignment for a dragged element: find the nearest edge or centre
+ * line within `tolerance` on each axis, return the nudge that lands on it plus
+ * the guides to draw.
+ *
+ * Each axis is decided independently — a card can snap its left edge to one
+ * neighbour while its top edge lines up with another, which is the whole point
+ * of guides over a grid. Ties go to the smallest correction, so the element
+ * moves as little as the alignment allows.
+ *
+ * `tolerance` is in FLOW units and the caller is expected to divide the screen
+ * distance it wants by the current zoom: a fixed flow tolerance would feel
+ * sticky when zoomed in and unreachable when zoomed out, because the same 6px
+ * of pointer travel covers a different amount of board.
+ */
+export function computeAlignment(
+  moving: CanvasRect,
+  others: readonly CanvasRect[],
+  tolerance: number
+): AlignmentResult {
+  // `!(> 0)` rather than `<= 0`: a NaN tolerance (a zoom that hasn't been read
+  // yet divides into one) would pass every comparison below and snap the
+  // element to the first candidate it saw.
+  if (!(tolerance > 0) || others.length === 0) return NO_ALIGNMENT
+
+  let bestX: { delta: number; at: number; other: CanvasRect } | null = null
+  let bestY: { delta: number; at: number; other: CanvasRect } | null = null
+
+  for (const other of others) {
+    for (const from of edgesX(moving)) {
+      for (const to of edgesX(other)) {
+        const delta = to - from
+        if (Math.abs(delta) > tolerance) continue
+        if (!bestX || Math.abs(delta) < Math.abs(bestX.delta)) {
+          bestX = { delta, at: to, other }
+        }
+      }
+    }
+    for (const from of edgesY(moving)) {
+      for (const to of edgesY(other)) {
+        const delta = to - from
+        if (Math.abs(delta) > tolerance) continue
+        if (!bestY || Math.abs(delta) < Math.abs(bestY.delta)) {
+          bestY = { delta, at: to, other }
+        }
+      }
+    }
+  }
+
+  // Both guides span the box as it will FINALLY sit — with both corrections
+  // applied, not just their own axis's. Using a half-snapped box makes a guide
+  // stop short of (or overshoot) the element it claims to touch by the other
+  // axis's delta, which is exactly the case where the user is watching closely.
+  const snapped: CanvasRect = {
+    ...moving,
+    x: moving.x + (bestX?.delta ?? 0),
+    y: moving.y + (bestY?.delta ?? 0),
+  }
+  const guides: AlignmentGuide[] = []
+  if (bestX) {
+    guides.push({
+      axis: "x",
+      at: bestX.at,
+      from: Math.min(snapped.y, bestX.other.y),
+      to: Math.max(
+        snapped.y + snapped.height,
+        bestX.other.y + bestX.other.height
+      ),
+    })
+  }
+  if (bestY) {
+    guides.push({
+      axis: "y",
+      at: bestY.at,
+      from: Math.min(snapped.x, bestY.other.x),
+      to: Math.max(
+        snapped.x + snapped.width,
+        bestY.other.x + bestY.other.width
+      ),
+    })
+  }
+  return { dx: bestX?.delta ?? 0, dy: bestY?.delta ?? 0, guides }
 }
 
 /**
  * Shelf-packing auto-arrange: sort by height (regions first, tallest first),
  * fill left-to-right shelves up to a target row width, top-align each shelf.
  * Returns only the nodes that actually move.
+ *
+ * Both axes come from `renderedSizes`, never from the row. The stored geometry
+ * is regularly NOT what is on screen: an expanded card renders 520 wide while
+ * its row still holds the 224 summary footprint, and a region with a pinned
+ * grid shape derives its width from that shape and overrides the stored one.
+ * Packing against the row reserved the smaller box and the bigger one then
+ * overlapped its neighbour — which is what "auto-arrange overlaps" was.
  */
 export function packLayout(
   nodes: CanvasNode[],
-  renderedHeights: ReadonlyMap<number, number>,
+  renderedSizes: ReadonlyMap<number, CanvasSize>,
   opts: { gap?: number; rowWidth?: number } = {}
 ): CanvasNodeMovePayload[] {
   const gap = opts.gap ?? 48
   const rowWidth = opts.rowWidth ?? 2400
+  const sizeOf = (node: CanvasNode): CanvasSize =>
+    renderedSizes.get(node.id) ?? { width: node.width, height: node.height }
   const sorted = [...nodes].sort((a, b) => {
-    const ha = renderedHeights.get(a.id) ?? a.height
-    const hb = renderedHeights.get(b.id) ?? b.height
+    const ha = sizeOf(a).height
+    const hb = sizeOf(b).height
     if (ha !== hb) return hb - ha
     return a.id - b.id
   })
@@ -264,8 +566,8 @@ export function packLayout(
   let shelfY = 0
   let shelfHeight = 0
   for (const node of sorted) {
-    const h = renderedHeights.get(node.id) ?? node.height
-    if (shelfX > 0 && shelfX + node.width > rowWidth) {
+    const { width, height } = sizeOf(node)
+    if (shelfX > 0 && shelfX + width > rowWidth) {
       shelfY += shelfHeight + gap
       shelfX = 0
       shelfHeight = 0
@@ -273,8 +575,8 @@ export function packLayout(
     if (node.x !== shelfX || node.y !== shelfY) {
       moves.push({ id: node.id, x: shelfX, y: shelfY })
     }
-    shelfX += node.width + gap
-    shelfHeight = Math.max(shelfHeight, h)
+    shelfX += width + gap
+    shelfHeight = Math.max(shelfHeight, height)
   }
   return moves
 }
@@ -285,6 +587,10 @@ export interface RegionNodeData {
   dbNode: CanvasNode
   /** Total members the region resolves to (visible cards may be capped). */
   memberTotal: number
+  /** Cards actually laid out right now — `memberTotal - visibleCount` is what
+   *  the "+N" footer offers, and the cap depends on the region's grid shape, so
+   *  the component must not recompute it from a constant. */
+  visibleCount: number
   /** Members currently `in_progress` — the header's running badge. */
   runningCount: number
   unresolved: boolean
@@ -298,6 +604,15 @@ export interface ConversationCardData {
   conversationId: number
   /** Set on derived member cards: the region that owns the grid slot. */
   regionDbId?: number
+  /** Set alongside `regionDbId`. Only a custom region has a member LIST to
+   *  remove from — every other kind computes its members from a live binding,
+   *  so offering "remove from region" there is offering a button that can only
+   *  fail. */
+  regionOwnsMembers?: boolean
+  /** The owning region's colour. A region's colour tints everything it holds,
+   *  not just its own frame, so the member card has to know it — member cards
+   *  are separate RF nodes, not children of the region's DOM. */
+  regionColor?: string | null
   /** Set on top-level pinned cards: the backing DB row id. */
   pinDbId?: number
   unresolved: boolean
@@ -313,7 +628,7 @@ export interface NoteNodeData {
  *  kept RF-import-free so the derivation stays a plain testable function). */
 export interface CanvasFlowNode {
   id: string
-  type: "region" | "conversationCard" | "note"
+  type: "region" | "conversationCard" | "conversationDetail" | "note"
   position: { x: number; y: number }
   parentId?: string
   data: RegionNodeData | ConversationCardData | NoteNodeData
@@ -321,12 +636,19 @@ export interface CanvasFlowNode {
   height?: number
   draggable?: boolean
   selectable?: boolean
+  /** CSS selector of the node's drag handle. Set on live-conversation cards so
+   *  only their title bar drags: the body has to stay a normal document you can
+   *  select text in and click into. */
+  dragHandle?: string
 }
 
 export interface DeriveFlowInput {
   dbNodes: Iterable<CanvasNode>
   conversations: DbConversationSummary[]
   allFolders: FolderDetail[]
+  /** Sidebar folder groups, for resolving `kind=group` regions. Optional so
+   *  existing callers/tests that have no group regions stay valid. */
+  folderGroups?: FolderGroupDetail[]
   /** Regions whose "+N" expander is open (UI state, never persisted). */
   expandedRegions: ReadonlySet<number>
   /**
@@ -349,47 +671,62 @@ export interface DeriveFlowInput {
    * cleared by the resize-end commit.
    */
   sizeOverlay?: ReadonlyMap<string, { width: number; height: number }>
+  /**
+   * Pinned conversation nodes (by db id) rendered as a full inline conversation
+   * instead of a summary tile. Client-local UI state, exactly like
+   * `expandedRegions` — a detail card is a way of LOOKING at the canvas, not a
+   * property of the board every other client should inherit.
+   *
+   * Only top-level pins can carry it: a 520×560 surface inside a region's
+   * uniform grid would tear the row apart, so expanding a MEMBER card detaches
+   * it into a pin first (`canvas_detach_member`) and expands that.
+   */
+  detailCards?: ReadonlySet<number>
 }
 
 export interface DeriveFlowResult {
   nodes: CanvasFlowNode[]
   /** Absolute region rects for drop classification, in derive order. */
-  regionRects: {
-    dbId: number
-    kind: CanvasNode["kind"]
-    x: number
-    y: number
-    width: number
-    height: number
-  }[]
-  /** Rendered (not stored) heights, for shelf packing. */
-  renderedHeights: Map<number, number>
+  regionRects: RegionRect[]
+  /** Absolute rects of the loose SUMMARY cards — the merge targets for the
+   *  card-onto-card gesture. Expanded cards are left out on purpose. */
+  pinRects: PinRect[]
+  /** Rendered (not stored) boxes, for shelf packing. Both axes: an expanded
+   *  card and a grid-shaped region both render at a size their row doesn't
+   *  hold. */
+  renderedSizes: Map<number, CanvasSize>
 }
 
 /**
  * DB nodes + live workspace state → the full RF node array. Output order is
  * regions/notes/pins by ascending db id, then member cards — RF requires a
  * parent before its children, and ascending id doubles as the paint order that
- * `classifyDrop` mirrors (highest id wins a hit).
+ * `computeDropHint` mirrors (highest id wins a hit).
  */
 export function deriveFlowGraph(input: DeriveFlowInput): DeriveFlowResult {
   const {
     dbNodes,
     conversations,
     allFolders,
+    folderGroups,
     expandedRegions,
     overlay,
     frozenMembers,
     sizeOverlay,
+    detailCards,
   } = input
   const conversationsById = new Map(conversations.map((c) => [c.id, c]))
   const foldersById = new Map(allFolders.map((f) => [f.id, f]))
+  const folderGroupsById = folderGroups
+    ? new Map(folderGroups.map((g) => [g.id, g]))
+    : undefined
 
   const sorted = [...dbNodes].sort((a, b) => a.id - b.id)
   const topNodes: CanvasFlowNode[] = []
   const memberNodes: CanvasFlowNode[] = []
-  const regionRects: DeriveFlowResult["regionRects"] = []
-  const renderedHeights = new Map<number, number>()
+  const regionRects: RegionRect[] = []
+  const pinRects: PinRect[] = []
+  const renderedSizes = new Map<number, CanvasSize>()
 
   for (const dbNode of sorted) {
     const rfId = regionNodeId(dbNode.id)
@@ -400,7 +737,7 @@ export function deriveFlowGraph(input: DeriveFlowInput): DeriveFlowResult {
     if (dbNode.kind === "note") {
       const width = liveSize?.width ?? dbNode.width
       const height = liveSize?.height ?? dbNode.height
-      renderedHeights.set(dbNode.id, height)
+      renderedSizes.set(dbNode.id, { width, height })
       topNodes.push({
         id: rfId,
         type: "note",
@@ -417,32 +754,62 @@ export function deriveFlowGraph(input: DeriveFlowInput): DeriveFlowResult {
         dbNode.conversation_id != null
           ? (conversationsById.get(dbNode.conversation_id) ?? null)
           : null
-      renderedHeights.set(dbNode.id, CARD_HEIGHT)
+      const unresolvedPin = isUnresolvedBinding(
+        dbNode,
+        conversationsById,
+        foldersById,
+        folderGroupsById
+      )
+      // A card with no conversation left to show has nothing to expand INTO —
+      // it renders the "removed" shell either way, at the summary footprint.
+      const detail = !unresolvedPin && (detailCards?.has(dbNode.id) ?? false)
+      // Detail cards keep the user's own size once they've resized one; until
+      // then the stored geometry is still the summary footprint, which would
+      // render the conversation in a 224×132 slot.
+      const width = detail
+        ? dbNode.width > CARD_WIDTH
+          ? (liveSize?.width ?? dbNode.width)
+          : (liveSize?.width ?? DETAIL_CARD_WIDTH)
+        : CARD_WIDTH
+      const height = detail
+        ? dbNode.height > CARD_HEIGHT
+          ? (liveSize?.height ?? dbNode.height)
+          : (liveSize?.height ?? DETAIL_CARD_HEIGHT)
+        : CARD_HEIGHT
+      renderedSizes.set(dbNode.id, { width, height })
       topNodes.push({
         id: rfId,
-        type: "conversationCard",
+        type: detail ? "conversationDetail" : "conversationCard",
         position,
-        width: CARD_WIDTH,
-        height: CARD_HEIGHT,
+        width,
+        height,
+        dragHandle: detail ? DRAG_HANDLE_SELECTOR : undefined,
         data: {
           conversation,
           conversationId: dbNode.conversation_id ?? -1,
           pinDbId: dbNode.id,
-          unresolved: isUnresolvedBinding(
-            dbNode,
-            conversationsById,
-            foldersById
-          ),
+          unresolved: unresolvedPin,
         } satisfies ConversationCardData,
       })
+      if (!detail && conversation) {
+        pinRects.push({
+          dbId: dbNode.id,
+          conversationId: conversation.id,
+          x: position.x,
+          y: position.y,
+          width,
+          height,
+        })
+      }
       continue
     }
 
-    // Region kinds: folder / agent / custom.
+    // Region kinds: folder / group / agent / custom.
     const unresolved = isUnresolvedBinding(
       dbNode,
       conversationsById,
-      foldersById
+      foldersById,
+      folderGroupsById
     )
     const frozen = frozenMembers?.get(dbNode.id)
     // An unresolved binding shows the hint state, never cards — stale member
@@ -455,26 +822,50 @@ export function deriveFlowGraph(input: DeriveFlowInput): DeriveFlowResult {
             .filter((c): c is DbConversationSummary => c != null)
         : computeRegionMembers(dbNode, conversations, allFolders)
     const expanded = expandedRegions.has(dbNode.id)
+    // A pinned column count OWNS the frame width: a stored width that drifted
+    // from it (menu change, older row, another client) would lay out N columns
+    // inside a frame sized for something else — which is exactly how cards end
+    // up spilling past the border. A live resize still wins, because the view
+    // quantizes it to whole columns before it ever gets here.
+    const regionWidth =
+      liveSize?.width ??
+      (dbNode.grid_columns > 0
+        ? regionWidthForColumns(dbNode.grid_columns)
+        : dbNode.width)
+    // Mid-resize the drag is the truth (quantized upstream); at rest the pinned
+    // count is.
+    const columns = liveSize
+      ? columnsForRegionWidth(regionWidth)
+      : effectiveColumns(dbNode, regionWidth)
+    const cap = visibleMemberCap(dbNode, columns)
     const visible =
-      expanded || dbNode.collapsed
-        ? members
-        : members.slice(0, MAX_VISIBLE_MEMBERS)
+      expanded || dbNode.collapsed ? members : members.slice(0, cap)
     const shown = dbNode.collapsed ? [] : visible
-    const regionWidth = liveSize?.width ?? dbNode.width
-    const grid = layoutRegionGrid(shown.length, regionWidth)
-    // The "+N" expander floats along the bottom edge; reserve a row of chrome
-    // for it so it never overlaps the last card row.
-    const expanderPad =
-      !dbNode.collapsed && !expanded && members.length > MAX_VISIBLE_MEMBERS
-        ? 36
+    const grid = layoutRegionGrid(shown.length, regionWidth, columns)
+    // The "+N" bar is a real row of chrome at the bottom, not an overlay —
+    // reserve its height so it can never sit on top of the last card row.
+    const footerPad =
+      !dbNode.collapsed && !expanded && members.length > cap
+        ? REGION_FOOTER_HEIGHT
+        : 0
+    // With rows pinned the frame keeps its declared shape even while
+    // under-filled — a "3 × 2 region" that holds one conversation still reads
+    // as a 3 × 2 region.
+    const declaredHeight =
+      dbNode.grid_rows > 0
+        ? regionHeightForRows(dbNode.grid_rows) + footerPad
         : 0
     const renderedHeight = dbNode.collapsed
       ? REGION_COLLAPSED_HEIGHT
       : Math.max(
           liveSize?.height ?? dbNode.height,
-          grid.contentHeight + expanderPad
+          grid.contentHeight + footerPad,
+          declaredHeight
         )
-    renderedHeights.set(dbNode.id, renderedHeight)
+    renderedSizes.set(dbNode.id, {
+      width: regionWidth,
+      height: renderedHeight,
+    })
 
     let runningCount = 0
     for (const m of members) {
@@ -490,6 +881,7 @@ export function deriveFlowGraph(input: DeriveFlowInput): DeriveFlowResult {
       data: {
         dbNode,
         memberTotal: members.length,
+        visibleCount: shown.length,
         runningCount,
         unresolved,
         renderedHeight,
@@ -519,13 +911,20 @@ export function deriveFlowGraph(input: DeriveFlowInput): DeriveFlowResult {
           conversation,
           conversationId: conversation.id,
           regionDbId: dbNode.id,
+          regionOwnsMembers: dbNode.kind === "custom",
+          regionColor: dbNode.color,
           unresolved: false,
         } satisfies ConversationCardData,
       })
     }
   }
 
-  return { nodes: [...topNodes, ...memberNodes], regionRects, renderedHeights }
+  return {
+    nodes: [...topNodes, ...memberNodes],
+    regionRects,
+    pinRects,
+    renderedSizes,
+  }
 }
 
 /** Seed layout for the empty-canvas CTA: one folder region per open workspace

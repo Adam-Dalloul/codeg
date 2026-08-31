@@ -273,6 +273,10 @@ pub fn build_router(
             post(handlers::canvas::canvas_create_node),
         )
         .route(
+            "/canvas_group_into_region",
+            post(handlers::canvas::canvas_group_into_region),
+        )
+        .route(
             "/canvas_update_node",
             post(handlers::canvas::canvas_update_node),
         )
@@ -287,6 +291,10 @@ pub fn build_router(
         .route(
             "/canvas_delete_node",
             post(handlers::canvas::canvas_delete_node),
+        )
+        .route(
+            "/canvas_delete_nodes",
+            post(handlers::canvas::canvas_delete_nodes),
         )
         .route(
             "/add_folder_to_history",

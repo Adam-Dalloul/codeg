@@ -16,6 +16,7 @@ import { formatConversationTitle } from "@/lib/conversation-title"
 import type { ConversationStatus } from "@/lib/types"
 import { cn } from "@/lib/utils"
 import type { ConversationCardData } from "../canvas-model"
+import { ColorWash } from "../canvas-swatches"
 import { useCanvasView } from "../canvas-view-context"
 
 export type ConversationCardFlowNode = Node<
@@ -26,8 +27,20 @@ export type ConversationCardFlowNode = Node<
 /**
  * One conversation on the canvas — either a derived member card inside a
  * region's grid or a standalone pinned card (a `kind=conversation` DB row).
- * Fixed w-56 footprint (CARD_WIDTH/CARD_HEIGHT in canvas-model.ts — keep in
- * sync); hover moves the border only, per the task-card house rule.
+ *
+ * ⚠️ The card takes its box from the ReactFlow node wrapper (`h-full w-full`),
+ * which the derive layer sizes in PIXELS from CARD_WIDTH/CARD_HEIGHT. It must
+ * never size itself with a rem utility (`w-56`, `h-[8.25rem]`): the app's zoom
+ * control rewrites the root font-size, so a rem footprint grows past its px grid
+ * slot at any zoom above 100% — neighbouring cards then overlap and the last
+ * column spills outside the region border. Text inside stays in rem on purpose;
+ * it's clamped, not load-bearing.
+ *
+ * Hover moves the border only, per the task-card house rule.
+ *
+ * The card carries no menu of its own: right-click is the pan gesture on this
+ * board, and every verb (expand, open in workspace, remove) lives in the action
+ * dock keyed off the selection.
  */
 export const ConversationCardNode = memo(function ConversationCardNode({
   data,
@@ -43,7 +56,7 @@ export const ConversationCardNode = memo(function ConversationCardNode({
   // member simply drops out of the grid.
   if (!conversation) {
     return (
-      <div className="flex h-[8.25rem] w-56 flex-col items-start justify-between rounded-xl border border-dashed border-foreground/20 bg-card/60 p-3 opacity-70">
+      <div className="flex h-full w-full flex-col items-start justify-between overflow-hidden rounded-xl border border-dashed border-foreground/20 bg-card/60 p-3 opacity-70">
         <div className="flex items-center gap-1.5 text-muted-foreground">
           <Unlink className="size-3.5" aria-hidden="true" />
           <span className="text-xs">{t("unresolvedConversation")}</span>
@@ -76,16 +89,25 @@ export const ConversationCardNode = memo(function ConversationCardNode({
       <HoverCardTrigger asChild>
         <div
           className={cn(
-            "flex h-[8.25rem] w-56 flex-col rounded-xl border bg-card p-3 transition-colors",
+            "flex h-full w-full flex-col overflow-hidden rounded-xl border bg-card p-3 transition-colors",
             "border-foreground/15 hover:border-foreground/30",
             running &&
               "ring-1 ring-primary/30 motion-safe:[animation:canvas-breathe_2.6s_ease-in-out_infinite]",
             selected && "border-primary ring-2 ring-primary/25",
             mirrored && "border-primary/50 ring-2 ring-primary/15",
-            dragging && "-rotate-1 shadow-lg"
+            dragging && "-rotate-1"
           )}
         >
-          <div className="flex items-center gap-1.5">
+          {/* The owning region's colour, carried in through node data. Lighter
+              than the region's own wash: this sits on the card's OPAQUE surface
+              (the region's is on a translucent frame), so the same opacity
+              would read as a slab and drown the title. */}
+          <ColorWash
+            color={data.regionColor}
+            className="rounded-xl"
+            opacity={0.08}
+          />
+          <div className="relative flex items-center gap-1.5">
             <AgentIcon
               agentType={conversation.agent_type}
               className="size-3.5 shrink-0"
@@ -99,17 +121,19 @@ export const ConversationCardNode = memo(function ConversationCardNode({
             {conversation.child_count > 0 && (
               <span
                 className="inline-flex shrink-0 items-center gap-0.5 rounded-full bg-primary/10 px-1.5 py-px font-mono text-[0.625rem] font-medium leading-4 text-primary"
-                title={t("childCount", { count: conversation.child_count })}
+                title={t("childCount", {
+                  count: conversation.child_count,
+                })}
               >
                 <Bot className="size-2.5" aria-hidden="true" />
                 {conversation.child_count}
               </span>
             )}
           </div>
-          <p className="mt-1.5 line-clamp-2 min-h-0 flex-1 text-[0.8125rem] font-medium leading-snug">
+          <p className="relative mt-1.5 line-clamp-2 min-h-0 flex-1 text-[0.8125rem] font-medium leading-snug">
             {title}
           </p>
-          <div className="mt-auto flex min-w-0 items-center gap-1.5 text-[0.6875rem] text-muted-foreground">
+          <div className="relative mt-auto flex min-w-0 items-center gap-1.5 text-[0.6875rem] text-muted-foreground">
             {conversation.git_branch && (
               <span className="flex min-w-0 items-center gap-0.5">
                 <GitBranch className="size-2.5 shrink-0" aria-hidden="true" />

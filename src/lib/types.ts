@@ -668,19 +668,23 @@ export const CONVERSATIONS_BULK_CHANGED_EVENT = "conversations://bulk-changed"
 /** What a canvas node is bound to. Mirrors the Rust `CanvasNodeKind`. */
 export type CanvasNodeKind =
   | "folder"
+  | "group"
   | "agent"
   | "conversation"
   | "custom"
   | "note"
 
 /** One element on the conversation canvas. Mirrors the Rust `CanvasNode`:
- *  a binding region (folder / agent / single conversation), a hand-curated
- *  `custom` region, or a sticky `note`. `folder_id` / `conversation_id` are
- *  soft references — a binding whose target is gone renders as unresolved. */
+ *  a binding region (folder / folder group / agent / single conversation), a
+ *  hand-curated `custom` region, or a sticky `note`. `folder_id` /
+ *  `folder_group_id` / `conversation_id` are soft references — a binding whose
+ *  target is gone renders as unresolved. */
 export interface CanvasNode {
   id: number
   kind: CanvasNodeKind
   folder_id: number | null
+  /** kind=group: the sidebar folder group this region mirrors. */
+  folder_group_id: number | null
   agent_type: string | null
   conversation_id: number | null
   /** kind=custom: pinned conversation ids in insertion order; `[]` otherwise. */
@@ -689,6 +693,14 @@ export interface CanvasNode {
   content: string | null
   color: string | null
   collapsed: boolean
+  /**
+   * Region grid shape. `0` on an axis means AUTO — columns are derived from the
+   * region width, rows are capped by `MAX_VISIBLE_MEMBERS`. A non-zero value
+   * pins that axis, which is what makes a resize step by whole cards. Always 0
+   * on pinned cards and notes.
+   */
+  grid_columns: number
+  grid_rows: number
   x: number
   y: number
   width: number
@@ -730,6 +742,13 @@ export type CanvasChange =
       kind: "detached"
       removed_from: number | null
       node: CanvasNode
+      revision: number
+    }
+  | {
+      kind: "grouped"
+      node: CanvasNode
+      /** Pinned cards the new region absorbed, deleted in the same commit. */
+      deleted_ids: number[]
       revision: number
     }
   | {

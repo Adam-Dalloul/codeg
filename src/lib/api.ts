@@ -2785,16 +2785,20 @@ export async function removeFolderLink(
 // ─── Conversation canvas ───
 
 /** Input for `canvasCreateNode`. Binding fields are kind-specific (validated
- *  server-side): folder → folderId, agent → agentType, conversation →
- *  conversationId; custom starts empty; note uses content. */
+ *  server-side): folder → folderId, group → folderGroupId, agent → agentType,
+ *  conversation → conversationId; custom starts empty; note uses content. */
 export interface CreateCanvasNodeInput {
   kind: CanvasNodeKind
   folderId?: number
+  folderGroupId?: number
   agentType?: string
   conversationId?: number
   title?: string
   content?: string
   color?: string
+  /** Pinned grid axes (regions only); omitted / 0 = auto. */
+  gridColumns?: number
+  gridRows?: number
   x: number
   y: number
   width: number
@@ -2809,12 +2813,47 @@ export interface CanvasNodePatchInput {
   content?: string
   color?: string
   collapsed?: boolean
+  /** Pinned grid axes; regions only (a non-region patch is rejected). 0 = auto. */
+  gridColumns?: number
+  gridRows?: number
   x?: number
   y?: number
   width?: number
   height?: number
   memberAdd?: number
   memberRemove?: number
+}
+
+/** Input for `canvasGroupIntoRegion` — every "collect these conversations"
+ *  gesture: box-select → new region, a pinned card dragged into a custom
+ *  region, and two cards dropped onto each other. */
+export interface GroupIntoRegionInput {
+  /** Existing custom region to merge into. Omit to create a new one from the
+   *  geometry below (which is then ignored — the frame is already placed). */
+  targetRegionId?: number
+  title?: string
+  color?: string
+  /** Conversations to seed the region with; duplicates collapse server-side. */
+  memberIds: number[]
+  /** Pinned cards the selection swallowed, deleted in the same transaction.
+   *  Ids that aren't pinned cards are ignored, not rejected. */
+  consumeNodeIds: number[]
+  gridColumns?: number
+  gridRows?: number
+  /** Where a NEW region goes — all four together, or none at all when merging
+   *  into an existing frame. A half-specified frame is rejected rather than
+   *  silently placed. */
+  x?: number
+  y?: number
+  width?: number
+  height?: number
+}
+
+/** What the gesture actually committed — the region plus the pins that were
+ *  really deleted (raced ids dropped), mirroring the `grouped` event payload. */
+export interface GroupIntoRegionResult {
+  node: CanvasNode
+  deletedIds: number[]
 }
 
 /** The full canvas node set plus the revision it was read at. */
@@ -2826,6 +2865,16 @@ export async function canvasCreateNode(
   input: CreateCanvasNodeInput
 ): Promise<CanvasMutation<CanvasNode>> {
   return getTransport().call("canvas_create_node", { input })
+}
+
+/** "Collect these conversations into a region": the region write, its member
+ *  list and the deletion of the pinned cards it absorbed, as ONE transaction and
+ *  ONE revision. Doing it as create + N × memberAdd + M × delete would spray a
+ *  dozen events for one gesture and make every intermediate state observable. */
+export async function canvasGroupIntoRegion(
+  input: GroupIntoRegionInput
+): Promise<CanvasMutation<GroupIntoRegionResult>> {
+  return getTransport().call("canvas_group_into_region", { input })
 }
 
 export async function canvasUpdateNode(
@@ -2866,6 +2915,14 @@ export async function canvasDeleteNode(
   nodeId: number
 ): Promise<CanvasMutation<null>> {
   return getTransport().call("canvas_delete_node", { nodeId })
+}
+
+/** Delete a whole multi-selection in one transaction and one `pruned` event.
+ *  The value is the ids ACTUALLY deleted (ghosts dropped) — apply that. */
+export async function canvasDeleteNodes(
+  nodeIds: number[]
+): Promise<CanvasMutation<number[]>> {
+  return getTransport().call("canvas_delete_nodes", { nodeIds })
 }
 
 export async function openFolder(path: string): Promise<FolderDetail> {

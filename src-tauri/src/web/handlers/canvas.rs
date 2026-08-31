@@ -6,7 +6,10 @@ use serde::Deserialize;
 use crate::app_error::AppCommandError;
 use crate::app_state::AppState;
 use crate::commands::canvas as canvas_commands;
-use crate::commands::canvas::{CanvasNodeMovePayload, CanvasNodePatchInput, CreateCanvasNode};
+use crate::commands::canvas::{
+    CanvasNodeMovePayload, CanvasNodePatchInput, CreateCanvasNode, GroupIntoRegionInput,
+    GroupIntoRegionResult,
+};
 use crate::models::canvas::{CanvasMutation, CanvasNode, CanvasSnapshot};
 
 pub async fn canvas_list_nodes(
@@ -28,6 +31,21 @@ pub async fn canvas_create_node(
 ) -> Result<Json<CanvasMutation<CanvasNode>>, AppCommandError> {
     Ok(Json(
         canvas_commands::canvas_create_node_core(&state.emitter, &state.db, params.input).await?,
+    ))
+}
+
+#[derive(Deserialize)]
+pub struct GroupIntoRegionParams {
+    pub input: GroupIntoRegionInput,
+}
+
+pub async fn canvas_group_into_region(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(params): Json<GroupIntoRegionParams>,
+) -> Result<Json<CanvasMutation<GroupIntoRegionResult>>, AppCommandError> {
+    Ok(Json(
+        canvas_commands::canvas_group_into_region_core(&state.emitter, &state.db, params.input)
+            .await?,
     ))
 }
 
@@ -105,6 +123,22 @@ pub async fn canvas_delete_node(
 ) -> Result<Json<CanvasMutation<()>>, AppCommandError> {
     Ok(Json(
         canvas_commands::canvas_delete_node_core(&state.emitter, &state.db, params.node_id)
+            .await?,
+    ))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteManyParams {
+    pub node_ids: Vec<i32>,
+}
+
+pub async fn canvas_delete_nodes(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(params): Json<DeleteManyParams>,
+) -> Result<Json<CanvasMutation<Vec<i32>>>, AppCommandError> {
+    Ok(Json(
+        canvas_commands::canvas_delete_nodes_core(&state.emitter, &state.db, params.node_ids)
             .await?,
     ))
 }

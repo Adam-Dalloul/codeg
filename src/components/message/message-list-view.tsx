@@ -119,6 +119,12 @@ interface MessageListViewProps {
    * on the same terms as `onQuoteSelection`. MUST be referentially stable.
    */
   onAskSelection?: (selection: string, question: string) => void
+  /**
+   * Keep a text selection from this transcript as a note next to it. Only the
+   * canvas has a board to put one on, so every other surface omits it and the
+   * action isn't offered. MUST be referentially stable.
+   */
+  onSaveNoteSelection?: (text: string) => void
 }
 
 export interface ResolvedMessageGroup {
@@ -831,6 +837,7 @@ export function MessageListView({
   userTurnHeader = null,
   onQuoteSelection,
   onAskSelection,
+  onSaveNoteSelection,
 }: MessageListViewProps) {
   const t = useTranslations("Folder.chat.messageList")
   const sharedT = useTranslations("Folder.chat.shared")
@@ -1409,6 +1416,7 @@ export function MessageListView({
           containerRef={selectionBoxRef}
           onQuote={onQuoteSelection}
           onAsk={onAskSelection}
+          onSaveAsNote={onSaveNoteSelection}
         />
       </div>
     </SessionViewerHost>

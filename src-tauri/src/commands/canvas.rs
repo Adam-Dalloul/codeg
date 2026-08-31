@@ -62,6 +62,16 @@ pub enum CanvasChange {
         node: Box<CanvasNode>,
         revision: i64,
     },
+    /// Conversations collected into a region — a box-selection made into a new
+    /// one, a card dragged into an existing one, or two cards dropped onto each
+    /// other: the region and the pinned cards it absorbed, in one transaction
+    /// and one event. Apply order is delete-then-upsert; both halves are
+    /// idempotent.
+    Grouped {
+        node: Box<CanvasNode>,
+        deleted_ids: Vec<i32>,
+        revision: i64,
+    },
     /// Deletion-funnel cleanup after conversations were removed: pinned nodes
     /// dropped and custom regions scrubbed, as one batch event.
     Pruned {
@@ -88,6 +98,8 @@ pub struct CreateCanvasNode {
     #[serde(default)]
     pub folder_id: Option<i32>,
     #[serde(default)]
+    pub folder_group_id: Option<i32>,
+    #[serde(default)]
     pub agent_type: Option<String>,
     #[serde(default)]
     pub conversation_id: Option<i32>,
@@ -97,10 +109,86 @@ pub struct CreateCanvasNode {
     pub content: Option<String>,
     #[serde(default)]
     pub color: Option<String>,
+    #[serde(default)]
+    pub grid_columns: Option<i32>,
+    #[serde(default)]
+    pub grid_rows: Option<i32>,
     pub x: f64,
     pub y: f64,
     pub width: f64,
     pub height: f64,
+}
+
+/// Request shape for `canvas_group_into_region` — every "collect these
+/// conversations" gesture: box-select → new region, a pinned card dragged into
+/// a custom region, and two cards dropped onto each other.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GroupIntoRegionInput {
+    /// Existing custom region to merge into. Absent = create a new one from the
+    /// geometry below.
+    #[serde(default)]
+    pub target_region_id: Option<i32>,
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub color: Option<String>,
+    /// Required, not defaulted: "collect nothing" is never a gesture, and an
+    /// omitted list would quietly build an empty region instead of saying the
+    /// request was malformed. Matches `GroupIntoRegionInput` in `lib/api.ts`,
+    /// where both are non-optional.
+    pub member_ids: Vec<i32>,
+    /// Pinned conversation cards the selection swallowed; deleted in the same
+    /// transaction. Non-pin ids are ignored, not rejected.
+    pub consume_node_ids: Vec<i32>,
+    #[serde(default)]
+    pub grid_columns: Option<i32>,
+    #[serde(default)]
+    pub grid_rows: Option<i32>,
+    /// Where a NEW region goes. Omitted when merging into an existing one —
+    /// see `canvas_service::GroupIntoRegion::geometry`.
+    #[serde(default)]
+    pub x: Option<f64>,
+    #[serde(default)]
+    pub y: Option<f64>,
+    #[serde(default)]
+    pub width: Option<f64>,
+    #[serde(default)]
+    pub height: Option<f64>,
+}
+
+/// The frame for a NEW region, or `None` when merging into one that already has
+/// its own. All four fields or none of them: a half-specified frame is a caller
+/// bug either way, and both ways of papering over it are worse than the error —
+/// inventing the missing sides places a region nobody asked for, and dropping
+/// the whole frame turns a malformed create into a silent one.
+fn region_geometry(
+    input: &GroupIntoRegionInput,
+) -> Result<Option<canvas_service::RegionGeometry>, AppCommandError> {
+    match (input.x, input.y, input.width, input.height) {
+        (Some(x), Some(y), Some(width), Some(height)) => {
+            Ok(Some(canvas_service::RegionGeometry {
+                x,
+                y,
+                width,
+                height,
+            }))
+        }
+        (None, None, None, None) => Ok(None),
+        _ => Err(AppCommandError::invalid_input(
+            "a region frame needs x, y, width and height together",
+        )),
+    }
+}
+
+/// Response of `canvas_group_into_region`: the region plus the pinned cards
+/// actually deleted, mirroring the `Grouped` event payload so an optimistic
+/// client applies exactly what the broadcast will.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GroupIntoRegionResult {
+    pub node: CanvasNode,
+    pub deleted_ids: Vec<i32>,
 }
 
 /// Field-by-field patch; absent = untouched, empty string clears a nullable
@@ -116,6 +204,10 @@ pub struct CanvasNodePatchInput {
     pub color: Option<String>,
     #[serde(default)]
     pub collapsed: Option<bool>,
+    #[serde(default)]
+    pub grid_columns: Option<i32>,
+    #[serde(default)]
+    pub grid_rows: Option<i32>,
     #[serde(default)]
     pub x: Option<f64>,
     #[serde(default)]
@@ -137,6 +229,8 @@ impl From<CanvasNodePatchInput> for canvas_service::CanvasNodePatch {
             content: p.content,
             color: p.color,
             collapsed: p.collapsed,
+            grid_columns: p.grid_columns,
+            grid_rows: p.grid_rows,
             x: p.x,
             y: p.y,
             width: p.width,
@@ -181,11 +275,14 @@ pub async fn canvas_create_node_core(
         canvas_service::NewCanvasNode {
             kind: input.kind,
             folder_id: input.folder_id,
+            folder_group_id: input.folder_group_id,
             agent_type: input.agent_type,
             conversation_id: input.conversation_id,
             title: input.title,
             content: input.content,
             color: input.color,
+            grid_columns: input.grid_columns,
+            grid_rows: input.grid_rows,
             x: input.x,
             y: input.y,
             width: input.width,
@@ -206,6 +303,49 @@ pub async fn canvas_create_node_core(
     Ok(CanvasMutation {
         value: node,
         revision,
+    })
+}
+
+pub async fn canvas_group_into_region_core(
+    emitter: &EventEmitter,
+    db: &AppDatabase,
+    input: GroupIntoRegionInput,
+) -> Result<CanvasMutation<GroupIntoRegionResult>, AppCommandError> {
+    // Read the frame before the request is taken apart: a malformed one is
+    // rejected without ever reaching the write lock.
+    let geometry = region_geometry(&input)?;
+    let _order = event_order_lock().lock().await;
+    let outcome = canvas_service::group_into_region(
+        &db.conn,
+        canvas_service::GroupIntoRegion {
+            target_region_id: input.target_region_id,
+            title: input.title,
+            color: input.color,
+            member_ids: input.member_ids,
+            consume_node_ids: input.consume_node_ids,
+            grid_columns: input.grid_columns,
+            grid_rows: input.grid_rows,
+            geometry,
+        },
+    )
+    .await
+    .map_err(map_db)?;
+    let node = CanvasNode::from(outcome.node);
+    emit_event(
+        emitter,
+        CANVAS_CHANGED_EVENT,
+        CanvasChange::Grouped {
+            node: Box::new(node.clone()),
+            deleted_ids: outcome.deleted_ids.clone(),
+            revision: outcome.revision,
+        },
+    );
+    Ok(CanvasMutation {
+        value: GroupIntoRegionResult {
+            node,
+            deleted_ids: outcome.deleted_ids,
+        },
+        revision: outcome.revision,
     })
 }
 
@@ -357,6 +497,48 @@ pub async fn canvas_delete_node_core(
     }
 }
 
+/// Batch delete for a multi-selection: one transaction, one event. Reuses the
+/// `Pruned` payload — "these ids are gone, these nodes changed" is exactly what
+/// it means, and the client already applies it idempotently.
+pub async fn canvas_delete_nodes_core(
+    emitter: &EventEmitter,
+    db: &AppDatabase,
+    node_ids: Vec<i32>,
+) -> Result<CanvasMutation<Vec<i32>>, AppCommandError> {
+    let _order = event_order_lock().lock().await;
+    match canvas_service::delete_nodes(&db.conn, &node_ids)
+        .await
+        .map_err(map_db)?
+    {
+        Some((deleted_ids, revision)) => {
+            emit_event(
+                emitter,
+                CANVAS_CHANGED_EVENT,
+                CanvasChange::Pruned {
+                    deleted_ids: deleted_ids.clone(),
+                    updated: Vec::new(),
+                    revision,
+                },
+            );
+            Ok(CanvasMutation {
+                value: deleted_ids,
+                revision,
+            })
+        }
+        // Empty batch / every id already gone: no bump, no event — report the
+        // current revision so the response stays coherent for the caller.
+        None => {
+            let revision = canvas_service::get_revision(&db.conn)
+                .await
+                .map_err(map_db)?;
+            Ok(CanvasMutation {
+                value: Vec::new(),
+                revision,
+            })
+        }
+    }
+}
+
 /// Deletion-funnel hook, called from `delete_conversation_with_cleanup_core`
 /// right next to the tab cleanup (same reasoning: conversation deletion is
 /// soft, so no FK cascade will ever scrub the references). Best-effort at this
@@ -413,6 +595,16 @@ pub async fn canvas_create_node(
 
 #[cfg(feature = "tauri-runtime")]
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn canvas_group_into_region(
+    app: tauri::AppHandle,
+    db: tauri::State<'_, AppDatabase>,
+    input: GroupIntoRegionInput,
+) -> Result<CanvasMutation<GroupIntoRegionResult>, AppCommandError> {
+    canvas_group_into_region_core(&EventEmitter::Tauri(app), &db, input).await
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
 pub async fn canvas_update_node(
     app: tauri::AppHandle,
     db: tauri::State<'_, AppDatabase>,
@@ -456,6 +648,16 @@ pub async fn canvas_delete_node(
     canvas_delete_node_core(&EventEmitter::Tauri(app), &db, node_id).await
 }
 
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn canvas_delete_nodes(
+    app: tauri::AppHandle,
+    db: tauri::State<'_, AppDatabase>,
+    node_ids: Vec<i32>,
+) -> Result<CanvasMutation<Vec<i32>>, AppCommandError> {
+    canvas_delete_nodes_core(&EventEmitter::Tauri(app), &db, node_ids).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -470,16 +672,29 @@ mod tests {
         CreateCanvasNode {
             kind,
             folder_id: None,
+            folder_group_id: None,
             agent_type: None,
             conversation_id: None,
             title: None,
             content: None,
             color: None,
+            grid_columns: None,
+            grid_rows: None,
             x: 100.0,
             y: 80.0,
             width: 480.0,
             height: 320.0,
         }
+    }
+
+    /// A bare region of the given kind, returning its id — the setup step of
+    /// every test that cares about what happens TO a region.
+    async fn seed_region(db: &AppDatabase, kind: CanvasNodeKind) -> i32 {
+        canvas_create_node_core(&emitter(), db, region_input(kind))
+            .await
+            .expect("create region")
+            .value
+            .id
     }
 
     #[tokio::test]
@@ -833,6 +1048,424 @@ mod tests {
         assert_eq!(revision, 3);
         assert_eq!(nodes.len(), 3);
     }
+
+    async fn seed_group(db: &AppDatabase, name: &str) -> i32 {
+        crate::db::service::folder_group_service::create_folder_group(
+            &db.conn,
+            name.to_string(),
+            None,
+        )
+        .await
+        .expect("seed folder group")
+        .id
+    }
+
+    #[tokio::test]
+    async fn group_regions_require_a_live_folder_group() {
+        let db = fresh_in_memory_db().await;
+
+        let missing = canvas_create_node_core(
+            &emitter(),
+            &db,
+            CreateCanvasNode {
+                folder_group_id: Some(4242),
+                ..region_input(CanvasNodeKind::Group)
+            },
+        )
+        .await;
+        assert!(missing.is_err(), "unknown group id must not create a region");
+        assert_eq!(
+            canvas_list_nodes_core(&db).await.expect("snapshot").revision,
+            0,
+            "a rejected create must not bump the revision"
+        );
+
+        let unbound =
+            canvas_create_node_core(&emitter(), &db, region_input(CanvasNodeKind::Group)).await;
+        assert!(unbound.is_err(), "group region needs folder_group_id");
+
+        let group_id = seed_group(&db, "Work").await;
+        let created = canvas_create_node_core(
+            &emitter(),
+            &db,
+            CreateCanvasNode {
+                folder_group_id: Some(group_id),
+                ..region_input(CanvasNodeKind::Group)
+            },
+        )
+        .await
+        .expect("create group region");
+        assert_eq!(created.value.folder_group_id, Some(group_id));
+        assert_eq!(created.value.folder_id, None);
+    }
+
+    #[tokio::test]
+    async fn grid_shape_is_clamped_and_region_only() {
+        let db = fresh_in_memory_db().await;
+        let folder_id = seed_folder(&db, "/tmp/canvas-grid").await;
+        let conv = seed_conversation(&db, folder_id, AgentType::ClaudeCode).await;
+
+        let region = canvas_create_node_core(
+            &emitter(),
+            &db,
+            CreateCanvasNode {
+                grid_columns: Some(99),
+                grid_rows: Some(-4),
+                ..region_input(CanvasNodeKind::Custom)
+            },
+        )
+        .await
+        .expect("create custom region");
+        assert_eq!(
+            region.value.grid_columns,
+            canvas_service::MAX_GRID_AXIS,
+            "an out-of-range column count clamps instead of failing the write"
+        );
+        assert_eq!(region.value.grid_rows, 0, "negative reads as auto");
+
+        let patched = canvas_update_node_core(
+            &emitter(),
+            &db,
+            region.value.id,
+            CanvasNodePatchInput {
+                grid_columns: Some(3),
+                grid_rows: Some(2),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("patch grid");
+        assert_eq!(patched.value.grid_columns, 3);
+        assert_eq!(patched.value.grid_rows, 2);
+
+        let pin = canvas_create_node_core(
+            &emitter(),
+            &db,
+            CreateCanvasNode {
+                conversation_id: Some(conv),
+                grid_columns: Some(4),
+                ..region_input(CanvasNodeKind::Conversation)
+            },
+        )
+        .await
+        .expect("create pin");
+        assert_eq!(
+            pin.value.grid_columns, 0,
+            "a pinned card never carries a grid shape"
+        );
+
+        let rejected = canvas_update_node_core(
+            &emitter(),
+            &db,
+            pin.value.id,
+            CanvasNodePatchInput {
+                grid_columns: Some(2),
+                ..Default::default()
+            },
+        )
+        .await;
+        assert!(rejected.is_err(), "grid shape is region-only");
+    }
+
+    #[tokio::test]
+    async fn group_into_region_rejects_a_dead_conversation_without_bumping() {
+        let db = fresh_in_memory_db().await;
+        let folder_id = seed_folder(&db, "/tmp/canvas-select-dead").await;
+        let conv = seed_conversation(&db, folder_id, AgentType::ClaudeCode).await;
+        crate::db::service::conversation_service::soft_delete(&db.conn, conv)
+            .await
+            .expect("soft delete");
+
+        let result = canvas_group_into_region_core(
+            &emitter(),
+            &db,
+            GroupIntoRegionInput {
+                target_region_id: None,
+                title: None,
+                color: None,
+                member_ids: vec![conv],
+                consume_node_ids: Vec::new(),
+                grid_columns: None,
+                grid_rows: None,
+                x: Some(0.0),
+                y: Some(0.0),
+                width: Some(400.0),
+                height: Some(300.0),
+            },
+        )
+        .await;
+
+        assert!(result.is_err(), "a deleted conversation cannot be collected");
+        let snapshot = canvas_list_nodes_core(&db).await.expect("snapshot");
+        assert_eq!(snapshot.revision, 0);
+        assert!(
+            snapshot.nodes.is_empty(),
+            "the transaction rolled back whole"
+        );
+    }
+
+    /// Dragging a pinned card into an existing custom region: the member lands
+    /// in the region and the loose card is gone, in one revision.
+    #[tokio::test]
+    async fn group_into_existing_region_merges_members_and_consumes_the_pin() {
+        let db = fresh_in_memory_db().await;
+        let folder_id = seed_folder(&db, "/tmp/canvas-group-into").await;
+        let seated = seed_conversation(&db, folder_id, AgentType::ClaudeCode).await;
+        let dragged = seed_conversation(&db, folder_id, AgentType::ClaudeCode).await;
+
+        let region = seed_region(&db, CanvasNodeKind::Custom).await;
+        canvas_update_node_core(
+            &emitter(),
+            &db,
+            region,
+            CanvasNodePatchInput {
+                member_add: Some(seated),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("seed member");
+        let pin = canvas_create_node_core(
+            &emitter(),
+            &db,
+            CreateCanvasNode {
+                conversation_id: Some(dragged),
+                ..region_input(CanvasNodeKind::Conversation)
+            },
+        )
+        .await
+        .expect("create pin");
+
+        let before = canvas_list_nodes_core(&db).await.expect("snapshot").revision;
+        let merged = canvas_group_into_region_core(
+            &emitter(),
+            &db,
+            GroupIntoRegionInput {
+                target_region_id: Some(region),
+                title: None,
+                color: None,
+                // `seated` is already there: the merge is a set union, not an
+                // append, or a re-drop would double the card.
+                member_ids: vec![dragged, seated],
+                consume_node_ids: vec![pin.value.id],
+                grid_columns: None,
+                grid_rows: None,
+                // No geometry: the frame is already on the board.
+                x: None,
+                y: None,
+                width: None,
+                height: None,
+            },
+        )
+        .await
+        .expect("merge into region");
+
+        assert_eq!(merged.value.node.id, region, "no new region was created");
+        assert_eq!(merged.value.node.member_ids, vec![seated, dragged]);
+        assert_eq!(merged.value.deleted_ids, vec![pin.value.id]);
+        assert_eq!(
+            merged.revision,
+            before + 1,
+            "membership + deletion is ONE bump"
+        );
+    }
+
+    /// Creating a region without saying where it goes is a caller bug, not a
+    /// region at the 48px minimum in the top-left corner.
+    #[tokio::test]
+    async fn group_into_a_new_region_requires_geometry() {
+        let db = fresh_in_memory_db().await;
+        let folder_id = seed_folder(&db, "/tmp/canvas-no-geometry").await;
+        let conv = seed_conversation(&db, folder_id, AgentType::ClaudeCode).await;
+
+        let rejected = canvas_group_into_region_core(
+            &emitter(),
+            &db,
+            GroupIntoRegionInput {
+                target_region_id: None,
+                title: None,
+                color: None,
+                member_ids: vec![conv],
+                consume_node_ids: Vec::new(),
+                grid_columns: None,
+                grid_rows: None,
+                x: Some(10.0),
+                y: Some(10.0),
+                // Half a frame is no frame.
+                width: None,
+                height: None,
+            },
+        )
+        .await;
+
+        assert!(rejected.is_err());
+        assert_eq!(
+            canvas_list_nodes_core(&db).await.expect("snapshot").revision,
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn group_into_region_rejects_a_binding_region_target() {
+        let db = fresh_in_memory_db().await;
+        let folder_id = seed_folder(&db, "/tmp/canvas-group-binding").await;
+        let conv = seed_conversation(&db, folder_id, AgentType::ClaudeCode).await;
+        let folder_region = canvas_create_node_core(
+            &emitter(),
+            &db,
+            CreateCanvasNode {
+                folder_id: Some(folder_id),
+                ..region_input(CanvasNodeKind::Folder)
+            },
+        )
+        .await
+        .expect("create folder region");
+
+        let before = canvas_list_nodes_core(&db).await.expect("snapshot").revision;
+        let rejected = canvas_group_into_region_core(
+            &emitter(),
+            &db,
+            GroupIntoRegionInput {
+                target_region_id: Some(folder_region.value.id),
+                title: None,
+                color: None,
+                member_ids: vec![conv],
+                consume_node_ids: Vec::new(),
+                grid_columns: None,
+                grid_rows: None,
+                x: None,
+                y: None,
+                width: None,
+                height: None,
+            },
+        )
+        .await;
+
+        assert!(
+            rejected.is_err(),
+            "a folder region's members are a live binding"
+        );
+        assert_eq!(
+            canvas_list_nodes_core(&db).await.expect("snapshot").revision,
+            before,
+            "a rejected merge does not bump"
+        );
+    }
+
+    /// The merge path ignores geometry, but "ignores" must not mean "accepts
+    /// anything": a caller that half-fills the frame has a bug worth hearing
+    /// about, and staying silent here is what let the create path's own
+    /// half-frame slip through as a plain "needs geometry".
+    #[tokio::test]
+    async fn merging_still_rejects_a_half_specified_frame() {
+        let db = fresh_in_memory_db().await;
+        let folder_id = seed_folder(&db, "/tmp/canvas-merge-half-frame").await;
+        let conv = seed_conversation(&db, folder_id, AgentType::ClaudeCode).await;
+        let region = seed_region(&db, CanvasNodeKind::Custom).await;
+        let before = canvas_list_nodes_core(&db).await.expect("snapshot").revision;
+
+        let rejected = canvas_group_into_region_core(
+            &emitter(),
+            &db,
+            GroupIntoRegionInput {
+                target_region_id: Some(region),
+                title: None,
+                color: None,
+                member_ids: vec![conv],
+                consume_node_ids: Vec::new(),
+                grid_columns: None,
+                grid_rows: None,
+                x: Some(10.0),
+                y: None,
+                width: None,
+                height: None,
+            },
+        )
+        .await;
+
+        assert!(rejected.is_err());
+        assert_eq!(
+            canvas_list_nodes_core(&db).await.expect("snapshot").revision,
+            before,
+            "a rejected merge does not bump"
+        );
+    }
+
+    /// Consuming a card means the region took it over. If the takeover isn't in
+    /// the member list the card is simply destroyed — and the `Grouped` event
+    /// would report that loss as a successful collection.
+    #[tokio::test]
+    async fn a_consumed_card_the_region_never_adopts_is_refused() {
+        let db = fresh_in_memory_db().await;
+        let folder_id = seed_folder(&db, "/tmp/canvas-orphan-consume").await;
+        let stranded = seed_conversation(&db, folder_id, AgentType::ClaudeCode).await;
+        let region = seed_region(&db, CanvasNodeKind::Custom).await;
+        let pin = canvas_create_node_core(
+            &emitter(),
+            &db,
+            CreateCanvasNode {
+                conversation_id: Some(stranded),
+                ..region_input(CanvasNodeKind::Conversation)
+            },
+        )
+        .await
+        .expect("create pin");
+        let before = canvas_list_nodes_core(&db).await.expect("snapshot").revision;
+
+        let rejected = canvas_group_into_region_core(
+            &emitter(),
+            &db,
+            GroupIntoRegionInput {
+                target_region_id: Some(region),
+                title: None,
+                color: None,
+                // The card is named for deletion, its conversation for nothing.
+                member_ids: Vec::new(),
+                consume_node_ids: vec![pin.value.id],
+                grid_columns: None,
+                grid_rows: None,
+                x: None,
+                y: None,
+                width: None,
+                height: None,
+            },
+        )
+        .await;
+
+        assert!(rejected.is_err());
+        let after = canvas_list_nodes_core(&db).await.expect("snapshot");
+        assert_eq!(after.revision, before, "a refused consume does not bump");
+        assert!(
+            after.nodes.iter().any(|n| n.id == pin.value.id),
+            "the card the region declined to adopt is still on the board"
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_nodes_removes_the_batch_in_one_revision() {
+        let db = fresh_in_memory_db().await;
+        let first = seed_region(&db, CanvasNodeKind::Custom).await;
+        let second = seed_region(&db, CanvasNodeKind::Custom).await;
+        let before = canvas_list_nodes_core(&db).await.expect("snapshot").revision;
+
+        let deleted = canvas_delete_nodes_core(&emitter(), &db, vec![first, second, 4242])
+            .await
+            .expect("delete batch");
+        assert_eq!(deleted.value, vec![first, second], "ghost ids are skipped");
+        assert_eq!(deleted.revision, before + 1);
+        assert!(canvas_list_nodes_core(&db)
+            .await
+            .expect("snapshot")
+            .nodes
+            .is_empty());
+
+        // Nothing left to delete: no bump, no phantom event.
+        let noop = canvas_delete_nodes_core(&emitter(), &db, vec![first])
+            .await
+            .expect("delete gone");
+        assert!(noop.value.is_empty());
+        assert_eq!(noop.revision, deleted.revision);
+    }
 }
 
 /// Event-shape coverage: the funnel prune emits ONE `Pruned` event carrying the
@@ -858,11 +1491,14 @@ mod broadcast_tests {
             CreateCanvasNode {
                 kind: crate::db::entities::canvas_node::CanvasNodeKind::Conversation,
                 folder_id: None,
+                folder_group_id: None,
                 agent_type: None,
                 conversation_id: Some(conv),
                 title: None,
                 content: None,
                 color: None,
+                grid_columns: None,
+                grid_rows: None,
                 x: 0.0,
                 y: 0.0,
                 width: 200.0,
@@ -890,5 +1526,155 @@ mod broadcast_tests {
             Some(1)
         );
         assert!(rx.try_recv().is_err(), "exactly one event for the prune");
+    }
+
+    fn pin_input(conversation_id: i32) -> CreateCanvasNode {
+        CreateCanvasNode {
+            kind: CanvasNodeKind::Conversation,
+            folder_id: None,
+            folder_group_id: None,
+            agent_type: None,
+            conversation_id: Some(conversation_id),
+            title: None,
+            content: None,
+            color: None,
+            grid_columns: None,
+            grid_rows: None,
+            x: 0.0,
+            y: 0.0,
+            width: 224.0,
+            height: 132.0,
+        }
+    }
+
+    #[tokio::test]
+    async fn group_into_new_region_collects_and_consumes_in_one_event() {
+        let db = fresh_in_memory_db().await;
+        let folder_id = seed_folder(&db, "/tmp/canvas-select").await;
+        let first = seed_conversation(&db, folder_id, AgentType::ClaudeCode).await;
+        let second = seed_conversation(&db, folder_id, AgentType::ClaudeCode).await;
+
+        let noop = EventEmitter::Noop;
+        let pin = canvas_create_node_core(&noop, &db, pin_input(first))
+            .await
+            .expect("create pin");
+        // A region is NOT a pin: naming it must not delete it.
+        let bystander = canvas_create_node_core(
+            &noop,
+            &db,
+            CreateCanvasNode {
+                kind: CanvasNodeKind::Custom,
+                conversation_id: None,
+                width: 480.0,
+                height: 320.0,
+                ..pin_input(first)
+            },
+        )
+        .await
+        .expect("create bystander region");
+
+        let broadcaster = Arc::new(WebEventBroadcaster::new());
+        let mut rx = broadcaster.subscribe();
+        let emitter = EventEmitter::test_web_only(broadcaster.clone());
+
+        let created = canvas_group_into_region_core(
+            &emitter,
+            &db,
+            GroupIntoRegionInput {
+                target_region_id: None,
+                title: Some("  Selection  ".into()),
+                color: None,
+                // `first` twice: the same conversation can be selected through
+                // two mirrors of itself.
+                member_ids: vec![first, second, first],
+                consume_node_ids: vec![pin.value.id, bystander.value.id, 9999],
+                grid_columns: Some(2),
+                grid_rows: None,
+                x: Some(10.0),
+                y: Some(20.0),
+                width: Some(500.0),
+                height: Some(400.0),
+            },
+        )
+        .await
+        .expect("create region from selection");
+
+        assert_eq!(created.value.node.member_ids, vec![first, second]);
+        assert_eq!(created.value.node.title.as_deref(), Some("Selection"));
+        assert_eq!(created.value.node.grid_columns, 2);
+        assert_eq!(
+            created.value.deleted_ids,
+            vec![pin.value.id],
+            "only pinned cards are consumable"
+        );
+
+        let event = rx.try_recv().expect("one canvas event");
+        assert_eq!(event.channel, CANVAS_CHANGED_EVENT);
+        assert_eq!(event.payload["kind"], "grouped");
+        assert_eq!(event.payload["revision"], created.revision);
+        assert!(
+            rx.try_recv().is_err(),
+            "the whole gesture broadcasts exactly once"
+        );
+
+        let snapshot = canvas_list_nodes_core(&db).await.expect("snapshot");
+        assert_eq!(snapshot.revision, created.revision);
+        assert!(
+            snapshot.nodes.iter().all(|n| n.id != pin.value.id),
+            "the consumed pin is gone"
+        );
+        assert!(
+            snapshot.nodes.iter().any(|n| n.id == bystander.value.id),
+            "the bystander region survived"
+        );
+    }
+
+    /// Multi-select delete: one `Pruned` event for the whole batch, not one
+    /// `Deleted` per node (which would make every other client watch the
+    /// selection disappear in pieces, each costing a revision).
+    #[tokio::test]
+    async fn delete_nodes_broadcasts_one_pruned_event() {
+        let db = fresh_in_memory_db().await;
+        let folder_id = seed_folder(&db, "/tmp/canvas-batch-delete").await;
+        let conv = seed_conversation(&db, folder_id, AgentType::ClaudeCode).await;
+
+        let noop = EventEmitter::Noop;
+        let first = canvas_create_node_core(&noop, &db, pin_input(conv))
+            .await
+            .expect("create pin");
+        let second = canvas_create_node_core(
+            &noop,
+            &db,
+            CreateCanvasNode {
+                kind: CanvasNodeKind::Note,
+                conversation_id: None,
+                ..pin_input(conv)
+            },
+        )
+        .await
+        .expect("create note");
+
+        let broadcaster = Arc::new(WebEventBroadcaster::new());
+        let mut rx = broadcaster.subscribe();
+        let emitter = EventEmitter::test_web_only(broadcaster.clone());
+
+        let deleted =
+            canvas_delete_nodes_core(&emitter, &db, vec![first.value.id, second.value.id])
+                .await
+                .expect("delete batch");
+
+        let event = rx.try_recv().expect("one canvas event");
+        assert_eq!(event.channel, CANVAS_CHANGED_EVENT);
+        assert_eq!(event.payload["kind"], "pruned");
+        assert_eq!(event.payload["revision"], deleted.revision);
+        assert!(
+            rx.try_recv().is_err(),
+            "the whole batch broadcasts exactly once"
+        );
+        assert!(canvas_list_nodes_core(&db)
+            .await
+            .expect("snapshot")
+            .nodes
+            .is_empty());
     }
 }
