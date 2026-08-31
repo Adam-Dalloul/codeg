@@ -53,6 +53,7 @@ import {
   buildBranchTree,
   buildRemoteBranchSections,
   localBranchItems,
+  worktreeBranchLeaves,
 } from "@/lib/branch-tree"
 import { BranchSelectorList } from "@/components/layout/branch-selector-list"
 import type {
@@ -200,6 +201,18 @@ export function BranchDropdown({ folder, isChatMode }: BranchDropdownProps) {
   const worktreeBranchSet = useMemo(
     () => new Set(branchList.worktree_branches),
     [branchList.worktree_branches]
+  )
+  // The worktree shortcut section: the branches this repo has checked out
+  // elsewhere, listed above Local so switching to a worktree is one place to
+  // look instead of a hunt through every local branch. They stay in the local
+  // tree too — `local` is still the full `git branch` list.
+  const worktreeLeaves = useMemo(
+    () =>
+      worktreeBranchLeaves(
+        branchList.worktree_branches,
+        branchList.main_worktree_branch
+      ),
+    [branchList.worktree_branches, branchList.main_worktree_branch]
   )
   const localNodes = useMemo(
     () => buildBranchTree(localBranchItems(branchList.local), "local"),
@@ -700,6 +713,7 @@ export function BranchDropdown({ folder, isChatMode }: BranchDropdownProps) {
         >
           <BranchSelectorList
             operations={operations}
+            worktreeLeaves={worktreeLeaves}
             localNodes={localNodes}
             remoteSections={remoteSections}
             localCount={branchList.local.length}

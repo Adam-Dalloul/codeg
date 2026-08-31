@@ -2239,6 +2239,8 @@
       "stashChanges": "Guardar alterações...",
       "stashPop": "Aplicar stash...",
       "manageRemotes": "Gerenciar remotos...",
+      "worktreeBranches": "Worktrees ({count, plural, one {#} other {#}})",
+      "noWorktreeBranches": "Nenhum worktree",
       "localBranches": "Branches locais ({count, plural, one {#} other {#}})",
       "noLocalBranches": "Sem branches locais",
       "remoteBranches": "Branches remotas ({count, plural, one {#} other {#}})",

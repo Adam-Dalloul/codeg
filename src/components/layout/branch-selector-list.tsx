@@ -43,13 +43,20 @@ import {
   type BranchLeafAction,
   type BranchOperationMeta,
   type BranchRow,
+  type BranchSectionScope,
 } from "@/lib/branch-selector-rows"
 import { collectGroupKeys } from "@/lib/branch-tree"
-import type { BranchTreeNode, RemoteBranchSection } from "@/lib/branch-tree"
+import type {
+  BranchTreeLeaf,
+  BranchTreeNode,
+  RemoteBranchSection,
+} from "@/lib/branch-tree"
 
 interface BranchSelectorListProps {
   /** Operations with pre-translated labels (search matches on these). */
   operations: BranchOperationMeta[]
+  /** Flat worktree shortcut leaves; empty hides the section (see row model). */
+  worktreeLeaves: BranchTreeLeaf[]
   localNodes: BranchTreeNode[]
   remoteSections: RemoteBranchSection[]
   localCount: number
@@ -102,6 +109,26 @@ const OP_ICONS: Record<string, LucideIcon> = {
   newBranch: GitBranchPlus,
   newWorktree: FolderGit2,
   init: GitBranch,
+}
+
+// Header text per section, all `({count})` messages in the same namespace.
+const SECTION_LABEL_KEYS: Record<
+  BranchSectionScope,
+  "worktreeBranches" | "localBranches" | "remoteBranches"
+> = {
+  worktree: "worktreeBranches",
+  local: "localBranches",
+  remote: "remoteBranches",
+}
+
+// …and the placeholder each shows when it has nothing to list.
+const EMPTY_LABEL_KEYS: Record<
+  BranchSectionScope,
+  "noWorktreeBranches" | "noLocalBranches" | "noRemoteBranches"
+> = {
+  worktree: "noWorktreeBranches",
+  local: "noLocalBranches",
+  remote: "noRemoteBranches",
 }
 
 const ACTION_ICONS: Record<BranchLeafAction, LucideIcon> = {
@@ -158,6 +185,7 @@ interface ActionBubble {
 // selection on WKWebView; see session-selectors-panel.tsx).
 export function BranchSelectorList({
   operations,
+  worktreeLeaves,
   localNodes,
   remoteSections,
   localCount,
@@ -328,6 +356,7 @@ export function BranchSelectorList({
     () =>
       buildBranchRows({
         operations,
+        worktreeLeaves,
         localNodes,
         remoteSections,
         localCount,
@@ -339,6 +368,7 @@ export function BranchSelectorList({
       }),
     [
       operations,
+      worktreeLeaves,
       localNodes,
       remoteSections,
       localCount,
@@ -588,7 +618,7 @@ export function BranchSelectorList({
           className="py-1.5 pr-3 text-sm text-muted-foreground/70"
           style={{ paddingLeft: branchRowPaddingLeft("dropdown", 1) }}
         >
-          {row.scope === "local" ? t("noLocalBranches") : t("noRemoteBranches")}
+          {t(EMPTY_LABEL_KEYS[row.scope])}
         </div>
       )
     }
@@ -630,9 +660,7 @@ export function BranchSelectorList({
       const depth = row.kind === "section" ? 0 : row.depth
       const label =
         row.kind === "section"
-          ? row.scope === "local"
-            ? t("localBranches", { count: row.count })
-            : t("remoteBranches", { count: row.count })
+          ? t(SECTION_LABEL_KEYS[row.scope], { count: row.count })
           : row.label
       return (
         <button

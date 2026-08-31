@@ -2239,6 +2239,8 @@
       "stashChanges": "贮藏更改...",
       "stashPop": "取消贮藏...",
       "manageRemotes": "管理远程...",
+      "worktreeBranches": "工作树 ({count})",
+      "noWorktreeBranches": "无工作树",
       "localBranches": "本地分支 ({count})",
       "noLocalBranches": "无本地分支",
       "remoteBranches": "远程分支 ({count})",

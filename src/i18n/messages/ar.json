@@ -2239,6 +2239,8 @@
       "stashChanges": "...تخبئة التغييرات",
       "stashPop": "استرجاع stash...",
       "manageRemotes": "إدارة المستودعات البعيدة...",
+      "worktreeBranches": "Worktrees ({count, plural, one {#} other {#}})",
+      "noWorktreeBranches": "لا توجد worktrees",
       "localBranches": "الفروع المحلية ({count, plural, one {#} other {#}})",
       "noLocalBranches": "لا توجد فروع محلية",
       "remoteBranches": "الفروع البعيدة ({count, plural, one {#} other {#}})",

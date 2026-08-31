@@ -2239,6 +2239,8 @@
       "stashChanges": "スタッシュ...",
       "stashPop": "stash を pop...",
       "manageRemotes": "リモート管理...",
+      "worktreeBranches": "ワークツリー ({count, plural, one {#} other {#}})",
+      "noWorktreeBranches": "ワークツリーなし",
       "localBranches": "ローカルブランチ ({count, plural, one {#} other {#}})",
       "noLocalBranches": "ローカルブランチはありません",
       "remoteBranches": "リモートブランチ ({count, plural, one {#} other {#}})",
