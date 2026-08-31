@@ -115,19 +115,33 @@ pub async fn resolve_forge_auth(
             .copied()
             .ok_or_else(|| {
                 // …unless there is no reason to believe this host is a forge we
-                // speak at all: nothing configured for it AND a name that does
-                // not claim to be GitHub or GitLab. Telling a Bitbucket or
-                // Gitee user their "GitHub account" is missing sends them to
-                // add a credential that would not help. Note the test is for
-                // accounts on the HOST, not for the ones that serve `provider`
-                // — the same deliberate optimism as `HostProfile::recognized`,
-                // and for the same reason: a configured host keeps the
-                // behaviour it has, whichever forge a caller thinks it is.
+                // speak at all: nothing configured for it, nothing detected on
+                // it, AND a name that does not claim to be GitHub or GitLab.
+                // Telling a Bitbucket or Gitee user their "GitHub account" is
+                // missing sends them to add a credential that would not help.
+                // Note the test is for accounts on the HOST, not for the ones
+                // that serve `provider` — the same deliberate optimism as
+                // `HostProfile::recognized`, and for the same reason: a
+                // configured host keeps the behaviour it has, whichever forge a
+                // caller thinks it is.
                 let configured = settings
                     .accounts
                     .iter()
                     .any(|a| host_of_server_url(&a.server_url) == host);
-                if !configured && provider_from_host_name(&host).is_none() {
+                // The probe's verdict vouches for a host exactly as an account
+                // or a forge-claiming name does, and it has to be consulted
+                // HERE or the two halves of this file contradict each other:
+                // `host_profile` marks a detected GitLab `recognized`, which is
+                // what lets the panel spend a request on it, and this function
+                // would then answer that request with "not a forge we speak" —
+                // about an instance codeg positively identified. What such a
+                // user is missing is an ACCOUNT, and that is what to say.
+                //
+                // Only a POSITIVE verdict counts. `Some(None)` is "asked, and
+                // it is not a GitLab", which is the Bitbucket/Gitee case the
+                // name rule already owns and must keep owning.
+                let detected = recall_verdict(&host).flatten().is_some();
+                if !configured && !detected && provider_from_host_name(&host).is_none() {
                     ForgeError::UnsupportedHost { host: host.clone() }
                 } else {
                     ForgeError::NoAccount {
@@ -216,20 +230,17 @@ pub struct HostProfile {
 pub async fn host_profile(conn: &DatabaseConnection, server_host: &str) -> HostProfile {
     let accounts = load_accounts(conn).await.unwrap_or_default().accounts;
     let host = server_host.trim().to_ascii_lowercase();
-    let authority = authority_in(&host, &accounts);
-    let base_path = authority
-        .map(|a| path_of_server_url(&a.server_url))
-        .unwrap_or_default();
 
+    // Everything knowable without the network — the mount path, the provider
+    // and the `recognized` rule. Deriving it HERE rather than restating it is
+    // what keeps the two halves from drifting: the probe below can only
+    // replace the provider, and only when it has a conclusive answer.
+    let profile = host_profile_in(&host, &accounts);
+
+    let authority = authority_in(&host, &accounts);
     // A declaration is the end of the question — never probe over it.
-    if let Some(declared) = declared_provider(authority) {
-        // Declared implies an account on the host, so this is `recognized` by
-        // the pure half's rule too, not a separate answer.
-        return HostProfile {
-            provider: declared,
-            base_path,
-            recognized: true,
-        };
+    if declared_provider(authority).is_some() {
+        return profile;
     }
 
     // Nothing declared. Rather than guess from the hostname and be wrong for
@@ -238,27 +249,20 @@ pub async fn host_profile(conn: &DatabaseConnection, server_host: &str) -> HostP
     // falls through to the same guess this has always made, so a host that is
     // slow, offline or behind a proxy is no worse off than before.
     let origin = server_origin(&host, authority.map_or("", |a| a.server_url.as_str()));
-    if let Some(detected) = detect_forge(&host, &origin).await {
+    match detect_forge(&host, &origin).await {
         // The instance ANSWERED, and that is the strongest witness there is:
         // stronger than an account (which vouches for a host without saying
         // what it runs) and stronger than the name (which is why this probe
         // exists). It is also the only witness a host with neither can
-        // produce, so without this a `git.corp.com` the probe just proved is a
-        // GitLab would still be shown as "only GitHub and GitLab are
-        // supported" — the two halves of this file contradicting each other.
-        return HostProfile {
+        // produce, so without `recognized` a `git.corp.com` the probe just
+        // proved is a GitLab would still be shown as "only GitHub and GitLab
+        // are supported" — the two halves contradicting each other.
+        Some(detected) => HostProfile {
             provider: detected,
-            base_path,
             recognized: true,
-        };
-    }
-
-    // Nothing declared and nothing detected: the same last resort the pure half
-    // takes, `recognized` included.
-    HostProfile {
-        provider: guess_provider(&host),
-        base_path,
-        recognized: authority.is_some() || provider_from_host_name(&host).is_some(),
+            ..profile
+        },
+        None => profile,
     }
 }
 
@@ -270,18 +274,17 @@ pub fn host_profile_in(server_host: &str, accounts: &[GitHubAccount]) -> HostPro
     let host = server_host.trim().to_ascii_lowercase();
     let authority = authority_in(&host, accounts);
 
-    let named = provider_from_host_name(&host);
-    let provider = declared_provider(authority)
-        // Self-hosted with nothing declared: the name is all there is, and
-        // anything it does not name stays GitHub — what this codebase did
-        // before GitLab existed.
-        .or(named)
-        .unwrap_or(ForgeProvider::GitHub);
+    // Self-hosted with nothing declared: the name is all there is, and
+    // anything it does not name stays GitHub — what this codebase did before
+    // GitLab existed.
+    let provider = declared_provider(authority).unwrap_or_else(|| guess_provider(&host));
 
     // An account on the host counts even when it declares no provider: adding
     // a credential for a host means its token was validated against one of the
     // two APIs, which is a stronger statement about the host than its name is.
-    let recognized = authority.is_some() || named.is_some();
+    // Note this asks whether the name says ANYTHING, which is not the same
+    // question `provider` asked — `guess_provider` answers GitHub either way.
+    let recognized = authority.is_some() || provider_from_host_name(&host).is_some();
 
     // An EMPTY path from the authoritative account is an answer, not a miss:
     // it says this instance is mounted at the root.
@@ -802,6 +805,50 @@ mod tests {
         assert_eq!(provider_from_host_name("bitbucket.org"), None);
         assert_eq!(provider_from_host_name(""), None);
         assert_eq!(provider_from_host_name("   "), None);
+    }
+
+    /// What the instance itself said vouches for it, exactly as an account or a
+    /// forge-claiming name does. Without this the two halves of the forge work
+    /// contradict each other on the SAME host: `host_profile` marks a detected
+    /// GitLab `recognized` — which is what lets the panel spend a request on it
+    /// — and this function then answers that request with "not a forge codeg
+    /// speaks", about an instance the probe positively identified. What the
+    /// user is actually missing is an account, and that is the actionable
+    /// thing to say.
+    ///
+    /// Neither half had this alone: without the probe such a host was never
+    /// `recognized`, so no request was spent and nothing contradicted anything.
+    #[tokio::test]
+    async fn a_detected_forge_is_vouched_for_even_when_nothing_else_speaks_for_the_host() {
+        let db = crate::db::test_helpers::fresh_in_memory_db().await;
+        // A real GitLab whose name claims nothing, with no account configured.
+        let host = "vouched-by-probe.example";
+        forget_forge(host);
+        assert_eq!(provider_from_host_name(host), None, "the name says nothing");
+
+        let refuse = || async {
+            resolve_forge_auth(&db.conn, ForgeProvider::GitLab, host, None)
+                .await
+                .expect_err("nothing is configured, so nothing can resolve")
+        };
+
+        // Nothing vouches for it yet: the honest answer is "not a forge we speak".
+        assert!(matches!(refuse().await, ForgeError::UnsupportedHost { .. }));
+
+        // …until the instance answers for itself.
+        remember_forge(host, ForgeProvider::GitLab);
+        assert!(
+            matches!(refuse().await, ForgeError::NoAccount { .. }),
+            "a proven GitLab with no credential needs an account, not an explanation"
+        );
+
+        // A NEGATIVE verdict is not a vouching: "asked, and it is not a GitLab"
+        // is the Bitbucket/Gitee case, which the name rule still owns.
+        forget_forge(host);
+        record_verdict(host, None);
+        assert!(matches!(refuse().await, ForgeError::UnsupportedHost { .. }));
+
+        forget_forge(host);
     }
 
     /// A GitLab mounted under a relative URL root (`https://host/gitlab`) puts
