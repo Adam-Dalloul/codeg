@@ -5530,6 +5530,10 @@
     "showFewerMembers": "Afficher moins",
     "detachToCanvas": "Sortir sur le canevas",
     "deleteSelected": "Supprimer la sélection",
+    "confirmDeleteTitle": "Supprimer la sélection ?",
+    "confirmDeleteNotes": "{count, plural, one {# note que vous avez écrite sera supprimée} other {# notes que vous avez écrites seront supprimées}} définitivement. Cette action est irréversible.",
+    "confirmDeleteCancel": "Annuler",
+    "confirmDeleteConfirm": "Supprimer",
     "canvasActions": "Actions du canevas",
     "mergeIntoNewRegion": "Nouvelle région"
   }

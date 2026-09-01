@@ -5530,6 +5530,10 @@
     "showFewerMembers": "إظهار أقل",
     "detachToCanvas": "إخراج إلى اللوحة",
     "deleteSelected": "حذف المحدد",
+    "confirmDeleteTitle": "حذف العناصر المحددة؟",
+    "confirmDeleteNotes": "سيتم حذف الملاحظات التي كتبتها ({count}) نهائيًا. لا يمكن التراجع عن هذا الإجراء.",
+    "confirmDeleteCancel": "إلغاء",
+    "confirmDeleteConfirm": "حذف",
     "canvasActions": "إجراءات اللوحة",
     "mergeIntoNewRegion": "منطقة جديدة"
   }

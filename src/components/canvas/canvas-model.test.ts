@@ -26,6 +26,7 @@ import {
   computeRegionMembers,
   deriveFlowGraph,
   layoutRegionGrid,
+  noteHoldsProse,
   memberNodeId,
   packLayout,
   parseMemberNodeId,
@@ -111,6 +112,42 @@ const NO_DRAG = {
   overlay: new Map<string, { x: number; y: number }>(),
   frozenMembers: null,
 }
+
+describe("noteHoldsProse — what the delete gestures stop to ask about", () => {
+  it("is true only for a note that actually holds text", () => {
+    expect(
+      noteHoldsProse(node(1, { kind: "note", content: "worth keeping" }))
+    ).toBe(true)
+    // An empty sheet carries nothing the user typed, and asking about it would
+    // train the reflex the prompt exists to interrupt.
+    expect(noteHoldsProse(node(1, { kind: "note", content: null }))).toBe(false)
+    expect(noteHoldsProse(node(1, { kind: "note", content: "" }))).toBe(false)
+    expect(noteHoldsProse(node(1, { kind: "note", content: "  \n\t " }))).toBe(
+      false
+    )
+  })
+
+  it("is false for every node whose content lives somewhere else", () => {
+    // Deleting these unpins or unframes; the conversation itself survives, so
+    // there is nothing here a confirmation could save. A region is not a note
+    // however much text it carries.
+    expect(noteHoldsProse(node(2, { kind: "custom", content: "x" }))).toBe(
+      false
+    )
+    expect(noteHoldsProse(node(3, { kind: "folder", content: "x" }))).toBe(
+      false
+    )
+    expect(
+      noteHoldsProse(node(4, { kind: "conversation", content: "x" }))
+    ).toBe(false)
+  })
+
+  it("is false for a row the store does not have", () => {
+    // Both delete paths look the row up by id, and a node deleted underneath
+    // us (remote delete, stale selection) is nothing left to protect.
+    expect(noteHoldsProse(undefined)).toBe(false)
+  })
+})
 
 describe("node id codecs", () => {
   it("round-trips region and member ids", () => {

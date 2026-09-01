@@ -5530,6 +5530,10 @@
     "showFewerMembers": "간략히 표시",
     "detachToCanvas": "캔버스로 꺼내기",
     "deleteSelected": "선택 항목 삭제",
+    "confirmDeleteTitle": "선택 항목을 삭제할까요?",
+    "confirmDeleteNotes": "작성한 메모 {count}개가 완전히 삭제됩니다. 이 작업은 되돌릴 수 없습니다.",
+    "confirmDeleteCancel": "취소",
+    "confirmDeleteConfirm": "삭제",
     "canvasActions": "캔버스 작업",
     "mergeIntoNewRegion": "새 영역"
   }

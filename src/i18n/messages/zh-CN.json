@@ -5530,6 +5530,10 @@
     "showFewerMembers": "收起多余会话",
     "detachToCanvas": "移出到画布",
     "deleteSelected": "删除所选",
+    "confirmDeleteTitle": "删除选中内容？",
+    "confirmDeleteNotes": "你写下的 {count} 条便签将被永久删除，此操作无法撤销。",
+    "confirmDeleteCancel": "取消",
+    "confirmDeleteConfirm": "删除",
     "canvasActions": "画布操作",
     "mergeIntoNewRegion": "新建区域"
   }

@@ -5530,6 +5530,10 @@
     "showFewerMembers": "Mostrar menos",
     "detachToCanvas": "Sacar al lienzo",
     "deleteSelected": "Eliminar selección",
+    "confirmDeleteTitle": "¿Eliminar la selección?",
+    "confirmDeleteNotes": "{count, plural, one {Se eliminará definitivamente # nota que escribiste} other {Se eliminarán definitivamente # notas que escribiste}}. Esta acción no se puede deshacer.",
+    "confirmDeleteCancel": "Cancelar",
+    "confirmDeleteConfirm": "Eliminar",
     "canvasActions": "Acciones del lienzo",
     "mergeIntoNewRegion": "Nueva región"
   }

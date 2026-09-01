@@ -708,6 +708,28 @@ export interface NoteNodeData {
   [key: string]: unknown
 }
 
+/**
+ * Whether deleting this row would destroy prose the user typed by hand.
+ *
+ * The board has no undo, so every delete path stops to ask when it would take
+ * one of these — and only then. Everything else on the canvas is an
+ * ARRANGEMENT of something that lives elsewhere: removing a card unpins a
+ * conversation, removing a region unframes it, and the conversation itself is
+ * untouched either way. A note is the one node whose content exists nowhere
+ * but the note. An empty one is a blank sheet and carries nothing to lose.
+ *
+ * Takes the DB row rather than a rendered node so both delete paths ask the
+ * identical question. The dock's per-node delete only ever has an id, and the
+ * rendered note carries its text as draft state that lags the row anyway — so
+ * the store is the one place both can look, and `notesAtRisk` is where they do.
+ */
+export function noteHoldsProse(
+  dbNode: Pick<CanvasNode, "kind" | "content"> | undefined
+): boolean {
+  if (dbNode?.kind !== "note") return false
+  return (dbNode.content ?? "").trim() !== ""
+}
+
 /** ReactFlow-compatible node shape (structurally a subset of RF's `Node`,
  *  kept RF-import-free so the derivation stays a plain testable function). */
 export interface CanvasFlowNode {

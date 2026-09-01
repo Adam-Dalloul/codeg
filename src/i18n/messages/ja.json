@@ -5530,6 +5530,10 @@
     "showFewerMembers": "表示を減らす",
     "detachToCanvas": "キャンバスへ出す",
     "deleteSelected": "選択項目を削除",
+    "confirmDeleteTitle": "選択項目を削除しますか？",
+    "confirmDeleteNotes": "書き込んだ {count} 件のメモが完全に削除されます。この操作は取り消せません。",
+    "confirmDeleteCancel": "キャンセル",
+    "confirmDeleteConfirm": "削除",
     "canvasActions": "キャンバス操作",
     "mergeIntoNewRegion": "新しい領域"
   }

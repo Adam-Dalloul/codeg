@@ -5530,6 +5530,10 @@
     "showFewerMembers": "收起多餘對話",
     "detachToCanvas": "移出到畫布",
     "deleteSelected": "刪除所選",
+    "confirmDeleteTitle": "刪除選取內容？",
+    "confirmDeleteNotes": "你寫下的 {count} 則便利貼將被永久刪除，此操作無法復原。",
+    "confirmDeleteCancel": "取消",
+    "confirmDeleteConfirm": "刪除",
     "canvasActions": "畫布操作",
     "mergeIntoNewRegion": "新增區域"
   }

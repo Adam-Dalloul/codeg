@@ -5530,6 +5530,10 @@
     "showFewerMembers": "Mostrar menos",
     "detachToCanvas": "Tirar para o quadro",
     "deleteSelected": "Excluir seleção",
+    "confirmDeleteTitle": "Excluir a seleção?",
+    "confirmDeleteNotes": "{count, plural, one {# nota que você escreveu será excluída} other {# notas que você escreveu serão excluídas}} definitivamente. Não é possível desfazer.",
+    "confirmDeleteCancel": "Cancelar",
+    "confirmDeleteConfirm": "Excluir",
     "canvasActions": "Ações do quadro",
     "mergeIntoNewRegion": "Nova região"
   }

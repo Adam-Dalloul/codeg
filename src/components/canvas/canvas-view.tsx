@@ -56,12 +56,27 @@ import {
   type CanvasNodeMovePayload,
   type DbConversationSummary,
 } from "@/lib/types"
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog"
 import { cn, randomUUID } from "@/lib/utils"
 import {
   isConversationDeleted,
   useAppWorkspaceStore,
 } from "@/stores/app-workspace-store"
-import { applyMovesTo, useCanvasStore } from "@/stores/canvas-store"
+import {
+  applyMovesTo,
+  beginContentWrite,
+  hasContentWriteInFlight,
+  useCanvasStore,
+} from "@/stores/canvas-store"
 import { NOTE_H, NOTE_W } from "./add-node-menu"
 import { CanvasConversationDrawer } from "./canvas-conversation-drawer"
 import { useCanvasData } from "./canvas-data"
@@ -76,6 +91,7 @@ import {
   computeDropHint,
   computeRegionMembers,
   deriveFlowGraph,
+  noteHoldsProse,
   packLayout,
   parseMemberNodeId,
   parseRegionNodeId,
@@ -243,6 +259,15 @@ function CanvasFlow() {
     () => new Set()
   )
   const [renamingRegionId, setRenamingRegionId] = useState<number | null>(null)
+  // The delete waiting on the user's answer, or null for "not asking".
+  // `notes` is how many written notes it would take, so the dialog can say
+  // what is at stake. `run` is the delete itself, CAPTURED when the question
+  // was asked — the alternative, re-reading the live selection on confirm,
+  // lets the prompt describe one set of nodes and the confirm delete another.
+  const [pendingDelete, setPendingDelete] = useState<{
+    notes: number
+    run: () => Promise<void>
+  } | null>(null)
   // Transient drag positions (RF node id → parent-relative position). State,
   // not a ref: the derive layer must re-run as the pointer moves.
   const [overlay, setOverlay] = useState<
@@ -451,6 +476,11 @@ function CanvasFlow() {
 
   const patchNode = useCallback(
     async (nodeId: number, patch: CanvasNodePatchInput) => {
+      // Text in flight is tracked so the delete confirmations can see it — the
+      // cached row still reads EMPTY until this resolves. See
+      // `beginContentWrite` for why that matters and why it lives in the store.
+      const endWrite =
+        patch.content !== undefined ? beginContentWrite(nodeId) : null
       try {
         const res = await canvasUpdateNode(nodeId, patch)
         useCanvasStore
@@ -460,10 +490,29 @@ function CanvasFlow() {
           )
       } catch (e) {
         toast.error(toErrorMessage(e))
+      } finally {
+        endWrite?.()
       }
     },
     []
   )
+
+  /**
+   * How many of these nodes would take prose with them — the one question both
+   * delete paths ask, against the store rather than the rendered nodes so a
+   * caller holding only an id asks it the same way.
+   *
+   * Counts a note whose text is STILL IN FLIGHT as at risk even though the
+   * cached row looks empty. Deliberately conservative: a patch that CLEARS a
+   * note is in flight too, and asking about a note the user just emptied costs
+   * one dialog, while the other error costs the paragraph they just typed.
+   */
+  const notesAtRisk = useCallback((ids: readonly number[]) => {
+    const rows = useCanvasStore.getState().nodes
+    return ids.filter(
+      (id) => noteHoldsProse(rows.get(id)) || hasContentWriteInFlight(id)
+    ).length
+  }, [])
 
   const forgetNodes = useCallback(
     (ids: readonly number[]) => {
@@ -477,7 +526,7 @@ function CanvasFlow() {
     [setDetailCardsPersisted]
   )
 
-  const deleteNode = useCallback(
+  const commitDeleteNode = useCallback(
     async (nodeId: number) => {
       try {
         const res = await canvasDeleteNode(nodeId)
@@ -490,6 +539,26 @@ function CanvasFlow() {
       }
     },
     [forgetNodes]
+  )
+
+  /**
+   * Single-node delete, and the SECOND door into destroying a note: the dock
+   * renders a trash button for whatever one node is selected, so a written note
+   * can be deleted here without the selection gesture ever running. The guard
+   * therefore sits on this chokepoint rather than on its callers — the dock's
+   * note button, its region button and the card's unpin all come through here,
+   * and only the note among them can take prose with it.
+   */
+  const deleteNode = useCallback(
+    async (nodeId: number) => {
+      const notes = notesAtRisk([nodeId])
+      if (notes > 0) {
+        setPendingDelete({ notes, run: () => commitDeleteNode(nodeId) })
+        return
+      }
+      await commitDeleteNode(nodeId)
+    },
+    [commitDeleteNode, notesAtRisk]
   )
 
   const createNode = useCallback(async (input: CreateCanvasNodeInput) => {
@@ -1518,12 +1587,21 @@ function CanvasFlow() {
   // ── Selection actions ──
 
   /** Top-level pinned cards in the current selection — the only nodes the
-   *  "collect" gesture consumes (a region or note keeps living where it is). */
+   *  "collect" gesture consumes (a region or note keeps living where it is).
+   *
+   *  `noteIds` is what the delete gesture asks about before it fires: of
+   *  everything on this board, a note's text is the only thing the user typed
+   *  by hand and the only thing a delete cannot give back. Cards and regions
+   *  are arrangements of things that live elsewhere — re-pinning a card is
+   *  tedious, losing a paragraph is not the same kind of loss. Ids rather than
+   *  a count, because whether a note is EMPTY is answered at delete time (see
+   *  `notesAtRisk`), not when the selection was last derived. */
   const selection = useMemo(() => {
     const memberIds: number[] = []
     const consumeNodeIds: number[] = []
     const deletableIds: number[] = []
     const draftIds: string[] = []
+    const noteIds: number[] = []
     for (const n of selectedNodes) {
       const draftId = parseDraftNodeId(n.id)
       if (draftId != null) {
@@ -1532,6 +1610,10 @@ function CanvasFlow() {
       }
       const dbId = parseRegionNodeId(n.id)
       if (dbId != null) deletableIds.push(dbId)
+      if (n.type === "note") {
+        if (dbId != null) noteIds.push(dbId)
+        continue
+      }
       if (n.type !== "conversationCard" && n.type !== "conversationDetail") {
         continue
       }
@@ -1540,7 +1622,7 @@ function CanvasFlow() {
       memberIds.push(data.conversation.id)
       if (data.pinDbId != null) consumeNodeIds.push(data.pinDbId)
     }
-    return { memberIds, consumeNodeIds, deletableIds, draftIds }
+    return { memberIds, consumeNodeIds, deletableIds, draftIds, noteIds }
   }, [selectedNodes])
 
   const groupSelection = useCallback(async () => {
@@ -1568,7 +1650,7 @@ function CanvasFlow() {
     }
   }, [selection, selectedNodes, groupIntoRegion])
 
-  const deleteSelection = useCallback(async () => {
+  const commitDeleteSelection = useCallback(async () => {
     for (const draftId of selection.draftIds) dismissDraft(draftId)
     if (selection.deletableIds.length === 0) return
     try {
@@ -1582,6 +1664,31 @@ function CanvasFlow() {
       toast.error(toErrorMessage(e))
     }
   }, [selection, dismissDraft, forgetNodes])
+
+  /**
+   * Delete is destructive and the board has no undo, so a selection holding
+   * written notes stops to ask. Both entry points come through here — the
+   * Delete/Backspace chord and the dock's button — so neither can skip it.
+   *
+   * The ask is scoped to notes with text in them on purpose. Confirming every
+   * delete would train the reflex it is meant to interrupt, and there is
+   * nothing to protect in the common case: removing a card unpins it, removing
+   * a region unframes it, and both leave the conversation itself untouched. An
+   * empty note is a blank sheet — no keystroke of the user's dies with it.
+   *
+   * Backspace is what makes this worth a dialog rather than a toast. A note is
+   * single-click to SELECT and double-click to EDIT, so the click that looks
+   * like "put the cursor in my note" leaves the board holding the key, and in
+   * a webview Backspace has decades of "go back" behind it.
+   */
+  const deleteSelection = useCallback(async () => {
+    const notes = notesAtRisk(selection.noteIds)
+    if (notes > 0) {
+      setPendingDelete({ notes, run: commitDeleteSelection })
+      return
+    }
+    await commitDeleteSelection()
+  }, [selection.noteIds, commitDeleteSelection, notesAtRisk])
 
   // ── Toolbar actions ──
 
@@ -1642,7 +1749,10 @@ function CanvasFlow() {
         if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return
         if (
           target.closest(
-            '[role="dialog"],[role="menu"],[role="listbox"],[data-radix-popper-content-wrapper]'
+            // `alertdialog` is its own role, not a kind of `dialog` — the
+            // delete confirmation renders as one, and a Delete pressed on its
+            // buttons must not re-enter the gesture that opened it.
+            '[role="dialog"],[role="alertdialog"],[role="menu"],[role="listbox"],[data-radix-popper-content-wrapper]'
           )
         ) {
           return
@@ -2051,6 +2161,33 @@ function CanvasFlow() {
             </button>
           </div>
         )}
+        <AlertDialog
+          open={pendingDelete !== null}
+          onOpenChange={(open) => {
+            if (!open) setPendingDelete(null)
+          }}
+        >
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>{t("confirmDeleteTitle")}</AlertDialogTitle>
+              <AlertDialogDescription>
+                {t("confirmDeleteNotes", { count: pendingDelete?.notes ?? 0 })}
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel>{t("confirmDeleteCancel")}</AlertDialogCancel>
+              <AlertDialogAction
+                onClick={() => {
+                  const run = pendingDelete?.run
+                  setPendingDelete(null)
+                  void run?.()
+                }}
+              >
+                {t("confirmDeleteConfirm")}
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
       </div>
     </CanvasViewProvider>
   )

@@ -5530,6 +5530,10 @@
     "showFewerMembers": "Show fewer",
     "detachToCanvas": "Move out to canvas",
     "deleteSelected": "Delete selection",
+    "confirmDeleteTitle": "Delete selection?",
+    "confirmDeleteNotes": "{count, plural, one {# note you wrote} other {# notes you wrote}} will be deleted for good. This cannot be undone.",
+    "confirmDeleteCancel": "Cancel",
+    "confirmDeleteConfirm": "Delete",
     "canvasActions": "Canvas actions",
     "mergeIntoNewRegion": "New region"
   }

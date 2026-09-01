@@ -5530,6 +5530,10 @@
     "showFewerMembers": "Weniger anzeigen",
     "detachToCanvas": "Auf die Leinwand herausziehen",
     "deleteSelected": "Auswahl löschen",
+    "confirmDeleteTitle": "Auswahl löschen?",
+    "confirmDeleteNotes": "{count, plural, one {# selbst geschriebene Notiz wird} other {# selbst geschriebene Notizen werden}} endgültig gelöscht. Das lässt sich nicht rückgängig machen.",
+    "confirmDeleteCancel": "Abbrechen",
+    "confirmDeleteConfirm": "Löschen",
     "canvasActions": "Leinwand-Aktionen",
     "mergeIntoNewRegion": "Neuer Bereich"
   }
