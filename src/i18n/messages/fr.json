@@ -1739,7 +1739,7 @@
       "viewOptions": "Options d'affichage",
       "listOptions": "Liste des conversations",
       "showCompleted": "Afficher les conversations terminées",
-      "showWorktrees": "Afficher les dossiers de worktree",
+      "showWorktrees": "Afficher les branches de worktree",
       "showRecent": "Afficher le groupe Récents",
       "navigationItems": "Éléments de navigation",
       "moreOptions": "Plus d'options",

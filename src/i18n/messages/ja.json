@@ -1739,7 +1739,7 @@
       "viewOptions": "表示オプション",
       "listOptions": "会話リスト",
       "showCompleted": "完了した会話を表示",
-      "showWorktrees": "ワークツリーフォルダを表示",
+      "showWorktrees": "ワークツリーブランチを表示",
       "showRecent": "「最近」グループを表示",
       "navigationItems": "ナビゲーション項目",
       "moreOptions": "その他のオプション",

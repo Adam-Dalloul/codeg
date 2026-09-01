@@ -1739,7 +1739,7 @@
       "viewOptions": "显示选项",
       "listOptions": "会话列表",
       "showCompleted": "显示已完成会话",
-      "showWorktrees": "显示工作树文件夹",
+      "showWorktrees": "显示工作树分支",
       "showRecent": "显示「最近」分组",
       "navigationItems": "菜单导航项",
       "moreOptions": "更多选项",
