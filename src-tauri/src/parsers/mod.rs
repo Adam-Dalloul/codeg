@@ -298,6 +298,14 @@ pub fn build_agent_parser(agent_type: AgentType) -> Box<dyn AgentParser> {
 /// with no content at all was a transport-only record and is dropped rather
 /// than rendered as a phantom turn.
 ///
+/// Not every agent hands the frame back the way it was sent: Antigravity's ACP
+/// server joins the prompt's text blocks with a space and replaces each
+/// separator with one, so its trajectory holds the frame's body with the
+/// separators gone. That form is matched on the body alone and removed here
+/// too — which is also why the [`sanitize_text`] trim below is not optional for
+/// those agents, since the spaces that replaced the separators survive the
+/// strip.
+///
 /// Dropping the emptied block — not just emptying it — is what keeps an
 /// `@`-mention turn from growing a blank band when it is reopened from history.
 /// `append_agent_routes` appends the frame as its OWN prompt block, and the
@@ -356,8 +364,8 @@ fn sanitize_summary(summary: &mut ConversationSummary) {
         sanitize_text(title);
         // Titles are capped by their parser BEFORE reaching here, so a frame can
         // straddle the cut and survive `sanitize_text`, which only removes whole
-        // frames. Anything from a leftover separator on is truncated frame.
-        crate::acp::agent_mentions::cut_at_route_separator(title);
+        // frames. Anything from a leftover marker on is truncated frame.
+        crate::acp::agent_mentions::cut_at_route_frame_marker(title);
         if title.trim().is_empty() {
             summary.title = None;
         }
@@ -1598,6 +1606,67 @@ mod route_sanitizer_tests {
             detail.turns[0].blocks.as_slice(),
             [ContentBlock::Text { text }] if text == visible
         ));
+    }
+
+    /// Antigravity does not persist the prompt verbatim: its ACP server joins
+    /// the text blocks with a space and replaces each separator with one, so the
+    /// trajectory holds ONE block of prose with the frame trailing it and no
+    /// separator anywhere. The whole frame used to render inside the user's
+    /// bubble when such a session was reopened — and, sliced by the title cap,
+    /// inside the sidebar title as well.
+    #[test]
+    fn a_frame_an_agent_stored_without_separators_leaves_neither_prose_nor_title() {
+        let visible = "ask [@A](codeg://agent/antigravity) to help";
+        let frame = routing_frame("antigravity");
+        // ` ` block join + each separator rewritten to ` `.
+        let persisted = format!("{visible} {}", frame.replace('\u{001e}', " "));
+        assert!(!persisted.contains('\u{001e}'), "fixture must lose its separators");
+
+        // The title the parser hands over: folded, then capped mid-frame — the
+        // cap is 100 chars and the body alone runs past 500.
+        let capped = super::title_from_user_text(&persisted);
+        assert!(
+            capped.contains("codeg_internal_agent_routes"),
+            "fixture must straddle the frame, or the cut proves nothing"
+        );
+        let detail = sanitized(Fixture {
+            summary: summary(Some(&capped), 1),
+            turns: vec![turn(TurnRole::User, &persisted)],
+        });
+
+        assert!(matches!(
+            detail.turns[0].blocks.as_slice(),
+            [ContentBlock::Text { text }] if text == visible
+        ));
+        assert_eq!(detail.summary.title.as_deref(), Some("ask @A to help"));
+    }
+
+    /// The 100-char cap can land INSIDE the descriptor prefix rather than
+    /// before it, for any first prompt whose prose length falls in a 37-wide
+    /// band. A separator can never be halved that way, so this shape only
+    /// exists for the agents that rewrite the separators away.
+    #[test]
+    fn a_title_capped_halfway_through_the_marker_still_leaks_nothing() {
+        let prose = format!("{} ask [@A](codeg://agent/antigravity) to help", "x".repeat(66));
+        let frame = routing_frame("antigravity");
+        let persisted = format!("{prose} {}", frame.replace('\u{001e}', " "));
+
+        let capped = super::title_from_user_text(&persisted);
+        let marker = "{\"kind\":\"codeg_internal_agent_routes\"";
+        assert!(
+            capped.contains("{\"kind\":\"codeg") && !capped.contains(marker),
+            "the cap must land INSIDE the marker, or this repeats the previous \
+             test — got {capped:?}"
+        );
+
+        let detail = sanitized(Fixture {
+            summary: summary(Some(&capped), 1),
+            turns: vec![turn(TurnRole::User, &persisted)],
+        });
+        assert_eq!(
+            detail.summary.title.as_deref(),
+            Some(format!("{} ask @A to help", "x".repeat(66)).as_str())
+        );
     }
 
     #[test]
