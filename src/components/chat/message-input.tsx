@@ -81,6 +81,7 @@ import {
   InlineSessionConfigToggle,
 } from "@/components/chat/session-config-selector"
 import { ModelOptionPicker } from "@/components/chat/model-option-picker"
+import { SelectorTooltip } from "@/components/chat/selector-tooltip"
 import {
   SessionSelectorsPanel,
   type SessionSelectorGroup,
@@ -1968,24 +1969,31 @@ export function MessageInput({
                         open={collapsedSelectorsOpen}
                         onOpenChange={setCollapsedSelectorsOpen}
                       >
-                        <PopoverTrigger asChild>
-                          <Button
-                            variant="ghost"
-                            size="icon-xs"
-                            className="shrink-0"
-                            title={t("agentSettings")}
-                            aria-label={t("agentSettings")}
-                          >
-                            {agentType ? (
-                              <AgentIcon
-                                agentType={agentType}
-                                className="size-3"
-                              />
-                            ) : (
-                              <Cog className="size-3" />
-                            )}
-                          </Button>
-                        </PopoverTrigger>
+                        {/* Suppressed while the panel is open — the Popover is
+                            non-modal, so the trigger keeps taking hover under
+                            it (see SelectorTooltip). */}
+                        <SelectorTooltip
+                          label={t("agentSettings")}
+                          suppressed={collapsedSelectorsOpen}
+                        >
+                          <PopoverTrigger asChild>
+                            <Button
+                              variant="ghost"
+                              size="icon-xs"
+                              className="shrink-0"
+                              aria-label={t("agentSettings")}
+                            >
+                              {agentType ? (
+                                <AgentIcon
+                                  agentType={agentType}
+                                  className="size-3"
+                                />
+                              ) : (
+                                <Cog className="size-3" />
+                              )}
+                            </Button>
+                          </PopoverTrigger>
+                        </SelectorTooltip>
                         <PopoverContent
                           ref={collapsedSelectorsGuard.contentRef}
                           side="top"
