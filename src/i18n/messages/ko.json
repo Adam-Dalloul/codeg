@@ -934,14 +934,13 @@
       "apiKeyHint": "DEEPSEEK_API_KEY로 에이전트에 전달됩니다. 환경 변수가 자격 증명 파일보다 우선하므로 터미널로 로그인한다면 비워 두세요."
     },
     "codex": {
-      "configDescription": "API URL, API Key, 모델 이름, reasoning effort를 빠르게 설정하고 `auth.json` / `config.toml`과 동기화합니다.",
+      "configDescription": "API URL, API Key, 모델 이름을 빠르게 설정하고 `auth.json` / `config.toml`과 동기화합니다.",
       "authMode": "인증 방식",
       "chatgptSubscription": "공식 구독",
       "chatgptSubscriptionHint": "ChatGPT 공식 구독으로 로그인, API Key 불필요",
       "apiKeyHint": "API Key로 OpenAI 또는 호환 API 서비스에 연결",
       "selectProvider": "Provider 선택",
       "modelName": "모델 이름",
-      "selectReasoningEffort": "Reasoning Effort 선택",
       "enableWebsocket": "WebSocket 활성화",
       "enableWebsocketAria": "Codex Provider용 WebSocket 활성화",
       "enableSkills": "Skills 활성화",

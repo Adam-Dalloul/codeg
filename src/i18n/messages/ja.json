@@ -934,14 +934,13 @@
       "apiKeyHint": "DEEPSEEK_API_KEY としてエージェントに渡されます。環境変数は認証情報ファイルより優先されるため、ターミナルでログインする場合は空のままにしてください。"
     },
     "codex": {
-      "configDescription": "API URL、API Key、モデル名、reasoning effort を素早く設定でき、`auth.json` / `config.toml` と同期します。",
+      "configDescription": "API URL、API Key、モデル名を素早く設定でき、`auth.json` / `config.toml` と同期します。",
       "authMode": "認証方式",
       "chatgptSubscription": "公式サブスクリプション",
       "chatgptSubscriptionHint": "ChatGPT 公式サブスクリプションでログイン、API Key 不要",
       "apiKeyHint": "API Key で OpenAI または互換 API サービスに接続",
       "selectProvider": "プロバイダーを選択",
       "modelName": "モデル名",
-      "selectReasoningEffort": "Reasoning Effort を選択",
       "enableWebsocket": "WebSocket を有効化",
       "enableWebsocketAria": "Codex Provider の WebSocket を有効化",
       "enableSkills": "Skills を有効化",

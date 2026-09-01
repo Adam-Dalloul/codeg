@@ -934,14 +934,13 @@
       "apiKeyHint": "Wird dem Agenten als DEEPSEEK_API_KEY übergeben. Eine Umgebungsvariable hat Vorrang vor der Zugangsdatendatei – lass das Feld leer, wenn du dich im Terminal anmeldest."
     },
     "codex": {
-      "configDescription": "Unterstützt schnelle Konfiguration von API-URL, API-Key, Modellname und reasoning effort und synchronisiert mit `auth.json` / `config.toml`.",
+      "configDescription": "Unterstützt schnelle Konfiguration von API-URL, API-Key und Modellname und synchronisiert mit `auth.json` / `config.toml`.",
       "authMode": "Authentifizierungsmodus",
       "chatgptSubscription": "Offizielles Abonnement",
       "chatgptSubscriptionHint": "Mit offiziellem ChatGPT-Abonnement anmelden, kein API Key erforderlich",
       "apiKeyHint": "Mit API Key zu OpenAI oder kompatiblen API-Diensten verbinden",
       "selectProvider": "Provider auswählen",
       "modelName": "Modellname",
-      "selectReasoningEffort": "Reasoning Effort auswählen",
       "enableWebsocket": "WebSocket aktivieren",
       "enableWebsocketAria": "WebSocket für Codex Provider aktivieren",
       "enableSkills": "Skills aktivieren",

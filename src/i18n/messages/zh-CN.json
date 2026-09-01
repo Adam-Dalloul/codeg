@@ -934,14 +934,13 @@
       "apiKeyHint": "以 DEEPSEEK_API_KEY 传给智能体。环境变量的优先级高于凭据文件，因此若用终端登录，这里留空即可。"
     },
     "codex": {
-      "configDescription": "支持 API URL、API Key、模型名称、Reasoning Effort 快捷配置，并与 `auth.json` / `config.toml` 双向联动。",
+      "configDescription": "支持 API URL、API Key、模型名称快捷配置，并与 `auth.json` / `config.toml` 双向联动。",
       "authMode": "认证方式",
       "chatgptSubscription": "官网订阅",
       "chatgptSubscriptionHint": "使用 ChatGPT 官网订阅登录，无需配置 API Key",
       "apiKeyHint": "使用 API Key 连接 OpenAI 或兼容的 API 服务",
       "selectProvider": "选择 Provider",
       "modelName": "模型名称",
-      "selectReasoningEffort": "选择 Reasoning Effort",
       "enableWebsocket": "启用 WebSocket",
       "enableWebsocketAria": "Codex Provider 启用 WebSocket",
       "enableSkills": "启用 Skills",

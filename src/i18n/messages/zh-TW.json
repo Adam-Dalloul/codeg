@@ -934,14 +934,13 @@
       "apiKeyHint": "以 DEEPSEEK_API_KEY 傳給智慧體。環境變數的優先權高於憑證檔，因此若用終端機登入，這裡留空即可。"
     },
     "codex": {
-      "configDescription": "支援 API URL、API Key、模型名稱、Reasoning Effort 快捷配置，並與 `auth.json` / `config.toml` 雙向聯動。",
+      "configDescription": "支援 API URL、API Key、模型名稱快捷配置，並與 `auth.json` / `config.toml` 雙向聯動。",
       "authMode": "認證方式",
       "chatgptSubscription": "官網訂閱",
       "chatgptSubscriptionHint": "使用 ChatGPT 官網訂閱登入，無需配置 API Key",
       "apiKeyHint": "使用 API Key 連接 OpenAI 或相容的 API 服務",
       "selectProvider": "選擇 Provider",
       "modelName": "模型名稱",
-      "selectReasoningEffort": "選擇 Reasoning Effort",
       "enableWebsocket": "啟用 WebSocket",
       "enableWebsocketAria": "Codex Provider 啟用 WebSocket",
       "enableSkills": "啟用 Skills",

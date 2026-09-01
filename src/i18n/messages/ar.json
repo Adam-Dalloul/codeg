@@ -934,14 +934,13 @@
       "apiKeyHint": "يُمرَّر إلى الوكيل باسم DEEPSEEK_API_KEY. متغيّر البيئة له أسبقية على ملف بيانات الاعتماد، لذا اترك الحقل فارغًا إن كنت تسجّل الدخول من الطرفية."
     },
     "codex": {
-      "configDescription": "يدعم الإعداد السريع لعنوان API ومفتاح API واسم النموذج وجهد الاستدلال، مع المزامنة مع `auth.json` / `config.toml`.",
+      "configDescription": "يدعم الإعداد السريع لعنوان API ومفتاح API واسم النموذج، مع المزامنة مع `auth.json` / `config.toml`.",
       "authMode": "طريقة المصادقة",
       "chatgptSubscription": "اشتراك رسمي",
       "chatgptSubscriptionHint": "تسجيل الدخول باشتراك ChatGPT الرسمي، لا حاجة لـ API Key",
       "apiKeyHint": "الاتصال باستخدام API Key بخدمات OpenAI أو الخدمات المتوافقة",
       "selectProvider": "اختر المزود",
       "modelName": "اسم النموذج",
-      "selectReasoningEffort": "اختر Reasoning Effort",
       "enableWebsocket": "تفعيل WebSocket",
       "enableWebsocketAria": "تفعيل WebSocket لـ Codex Provider",
       "enableSkills": "تفعيل Skills",

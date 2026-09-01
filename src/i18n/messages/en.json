@@ -934,14 +934,13 @@
       "apiKeyHint": "Passed to the agent as DEEPSEEK_API_KEY. An environment variable outranks the credentials file, so leave this empty if you sign in through the terminal."
     },
     "codex": {
-      "configDescription": "Supports quick configuration for API URL, API Key, model name and reasoning effort, and syncs with `auth.json` / `config.toml`.",
+      "configDescription": "Supports quick configuration for API URL, API Key and model name, and syncs with `auth.json` / `config.toml`.",
       "authMode": "Auth Mode",
       "chatgptSubscription": "Official Subscription",
       "chatgptSubscriptionHint": "Log in with ChatGPT official subscription, no API Key required",
       "apiKeyHint": "Connect using API Key to OpenAI or compatible API services",
       "selectProvider": "Select Provider",
       "modelName": "Model Name",
-      "selectReasoningEffort": "Select Reasoning Effort",
       "enableWebsocket": "Enable WebSocket",
       "enableWebsocketAria": "Enable WebSocket for Codex Provider",
       "enableSkills": "Enable Skills",

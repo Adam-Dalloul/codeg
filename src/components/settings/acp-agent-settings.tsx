@@ -196,7 +196,6 @@ interface AgentDraft {
   codexAuthMode: CodexAuthMode
   codexModelProvider: string
   codexProviderOptions: string[]
-  codexReasoningEffort: CodexReasoningEffort
   codexSupportsWebsockets: boolean
   codexSkills: boolean
   /** `[features].default_mode_request_user_input` — see
@@ -1777,7 +1776,6 @@ function ensureOpenCodeProviderNpm(configText: string): string {
 interface CodexTomlImportantValues {
   model: string
   modelProvider: string
-  modelReasoningEffort: CodexReasoningEffort
   providerNames: string[]
   providerBaseUrls: Record<string, string>
   providerSupportsWebsockets: Record<string, boolean>
@@ -1792,7 +1790,6 @@ interface CodexImportantValues {
   apiKey: string | null
   model: string
   modelProvider: string
-  reasoningEffort: CodexReasoningEffort
   providerOptions: string[]
   supportsWebsockets: boolean
   skills: boolean
@@ -1838,37 +1835,6 @@ const CODEX_AUTH_MODES = [
   "model_provider",
 ] as const
 type CodexAuthMode = (typeof CODEX_AUTH_MODES)[number]
-
-type CodexReasoningEffort = "low" | "medium" | "high" | "xhigh"
-
-const CODEX_REASONING_EFFORT_OPTIONS: ReadonlyArray<{
-  value: CodexReasoningEffort
-  label: string
-  description: string
-}> = [
-  {
-    value: "low",
-    label: "Low",
-    description: "Fast responses with lighter reasoning",
-  },
-  {
-    value: "medium",
-    label: "Medium",
-    description: "Balances speed and reasoning depth for everyday tasks",
-  },
-  {
-    value: "high",
-    label: "High",
-    description: "Greater reasoning depth for complex problems",
-  },
-  {
-    value: "xhigh",
-    label: "Extra High",
-    description: "Extra high reasoning depth for complex problems",
-  },
-]
-
-const CODEX_DEFAULT_REASONING_EFFORT: CodexReasoningEffort = "high"
 
 /** The draft value meaning "leave the key out of config.toml", i.e. let codex
  * apply its own default. */
@@ -2105,21 +2071,6 @@ export function codexSandboxSaveConfig(
   return Object.keys(patch).length > 0 ? patch : undefined
 }
 
-function normalizeCodexReasoningEffort(
-  value: string
-): CodexReasoningEffort | null {
-  const normalized = value.trim().toLowerCase()
-  if (
-    normalized === "low" ||
-    normalized === "medium" ||
-    normalized === "high" ||
-    normalized === "xhigh"
-  ) {
-    return normalized
-  }
-  return null
-}
-
 function buildCodexProviderOptions(
   activeProvider: string,
   providerNames: string[]
@@ -2220,8 +2171,6 @@ function extractCodexTomlImportantValues(
   const providerNames = new Set<string>()
   let model = ""
   let modelProvider = ""
-  let modelReasoningEffort: CodexReasoningEffort =
-    CODEX_DEFAULT_REASONING_EFFORT
   let featureResponsesWebsocketsV2 = false
   let featureSkills = false
   let featureDefaultModeRequestUserInput = false
@@ -2264,12 +2213,6 @@ function extractCodexTomlImportantValues(
       }
       if (assignment.key === "model_provider") {
         modelProvider = assignment.value
-        continue
-      }
-      if (assignment.key === "model_reasoning_effort") {
-        modelReasoningEffort =
-          normalizeCodexReasoningEffort(assignment.value) ??
-          CODEX_DEFAULT_REASONING_EFFORT
         continue
       }
       if (
@@ -2385,7 +2328,6 @@ function extractCodexTomlImportantValues(
   return {
     model,
     modelProvider,
-    modelReasoningEffort,
     providerNames: Array.from(providerNames),
     providerBaseUrls,
     providerSupportsWebsockets,
@@ -2496,7 +2438,6 @@ export function extractCodexImportantValues(
         : null,
     model: toml.model,
     modelProvider: activeProvider,
-    reasoningEffort: toml.modelReasoningEffort,
     providerOptions: buildCodexProviderOptions(
       activeProvider,
       toml.providerNames
@@ -2555,10 +2496,6 @@ function preferredTomlRootInsertionIndex(lines: string[], key: string): number {
   if (key === "model") {
     const providerIndex = findTomlRootAssignmentIndex(lines, "model_provider")
     return providerIndex >= 0 ? providerIndex : 0
-  }
-  if (key === "model_reasoning_effort") {
-    const modelIndex = findTomlRootAssignmentIndex(lines, "model")
-    return modelIndex >= 0 ? modelIndex + 1 : 0
   }
   let insertAt = findTomlRootEndIndex(lines)
   while (insertAt > 0 && lines[insertAt - 1].trim() === "") {
@@ -3084,7 +3021,6 @@ export function patchCodexConfigTomlText(
     apiBaseUrl?: string
     model?: string
     modelProvider?: string
-    modelReasoningEffort?: string
     supportsWebsockets?: boolean
     skills?: boolean
     defaultModeRequestUserInput?: boolean
@@ -3105,16 +3041,6 @@ export function patchCodexConfigTomlText(
   }
   if (typeof patch.model === "string") {
     nextTomlText = updateTomlRootStringKey(nextTomlText, "model", patch.model)
-  }
-  if (typeof patch.modelReasoningEffort === "string") {
-    const reasoningEffort =
-      normalizeCodexReasoningEffort(patch.modelReasoningEffort) ??
-      CODEX_DEFAULT_REASONING_EFFORT
-    nextTomlText = updateTomlRootStringKey(
-      nextTomlText,
-      "model_reasoning_effort",
-      reasoningEffort
-    )
   }
   if (typeof patch.apiBaseUrl === "string") {
     const tomlValues = extractCodexTomlImportantValues(nextTomlText)
@@ -3165,11 +3091,6 @@ export function patchCodexConfigTomlText(
       normalizedTomlValues.model
     )
   }
-  nextTomlText = updateTomlRootStringKey(
-    nextTomlText,
-    "model_reasoning_effort",
-    normalizedTomlValues.modelReasoningEffort
-  )
   const activeProvider =
     normalizedTomlValues.modelProvider.trim() || CODEX_DEFAULT_MODEL_PROVIDER
   // This key is rewritten on EVERY patch, including ones that have nothing to
@@ -3765,7 +3686,6 @@ function buildAgentDraft(agent: AcpAgentInfo): AgentDraft {
     codexAuthMode,
     codexModelProvider: codexImportant.modelProvider,
     codexProviderOptions: codexImportant.providerOptions,
-    codexReasoningEffort: codexImportant.reasoningEffort,
     codexSupportsWebsockets: codexImportant.supportsWebsockets,
     codexSkills: codexImportant.skills,
     codexDefaultModeRequestUserInput:
@@ -5514,12 +5434,6 @@ export function AcpAgentSettings() {
     selectedNeedsModelProvider && selectedDraft?.modelProviderId == null
   const selectedConfigText = selectedDraft?.configText ?? ""
   const selectedOpenCodeAuthJsonText = selectedDraft?.openCodeAuthJsonText ?? ""
-  const selectedCodexReasoningEffortOption =
-    selectedAgent?.agent_type === "codex" && selectedDraft
-      ? (CODEX_REASONING_EFFORT_OPTIONS.find(
-          (option) => option.value === selectedDraft.codexReasoningEffort
-        ) ?? null)
-      : null
   // Inline validation for `writable_roots`: codex would accept a relative entry
   // and resolve it against CODEX_HOME, so it is surfaced before the save throws.
   const codexRelativeWritableRoot =
@@ -7210,7 +7124,6 @@ export function AcpAgentSettings() {
         model: important.model,
         codexModelProvider: important.modelProvider,
         codexProviderOptions: important.providerOptions,
-        codexReasoningEffort: important.reasoningEffort,
         codexSupportsWebsockets: important.supportsWebsockets,
         codexSkills: important.skills,
         codexDefaultModeRequestUserInput: important.defaultModeRequestUserInput,
@@ -7264,7 +7177,6 @@ export function AcpAgentSettings() {
           model: synced.model,
           codexModelProvider: synced.modelProvider,
           codexProviderOptions: synced.providerOptions,
-          codexReasoningEffort: synced.reasoningEffort,
           codexSupportsWebsockets: synced.supportsWebsockets,
           codexSkills: synced.skills,
           codexDefaultModeRequestUserInput: synced.defaultModeRequestUserInput,
@@ -7299,7 +7211,6 @@ export function AcpAgentSettings() {
         model: synced.model,
         codexModelProvider: CODEX_DEFAULT_MODEL_PROVIDER,
         codexProviderOptions: synced.providerOptions,
-        codexReasoningEffort: synced.reasoningEffort,
         codexSupportsWebsockets: synced.supportsWebsockets,
         codexSkills: synced.skills,
         codexDefaultModeRequestUserInput: synced.defaultModeRequestUserInput,
@@ -7340,10 +7251,7 @@ export function AcpAgentSettings() {
   )
 
   const handleCodexImportantConfigChange = useCallback(
-    (
-      key: "apiBaseUrl" | "apiKey" | "model" | "reasoningEffort",
-      value: string
-    ) => {
+    (key: "apiBaseUrl" | "apiKey" | "model", value: string) => {
       if (
         !selectedAgent ||
         !selectedDraft ||
@@ -7364,18 +7272,12 @@ export function AcpAgentSettings() {
           ? patchCodexConfigTomlText(selectedDraft.codexConfigTomlText, {
               apiBaseUrl: value,
               modelProvider: selectedDraft.codexModelProvider,
-              modelReasoningEffort: selectedDraft.codexReasoningEffort,
             })
           : key === "model"
             ? patchCodexConfigTomlText(selectedDraft.codexConfigTomlText, {
                 model: value,
-                modelReasoningEffort: selectedDraft.codexReasoningEffort,
               })
-            : key === "reasoningEffort"
-              ? patchCodexConfigTomlText(selectedDraft.codexConfigTomlText, {
-                  modelReasoningEffort: value,
-                })
-              : selectedDraft.codexConfigTomlText
+            : selectedDraft.codexConfigTomlText
       if (nextAuth.recoveredFromInvalid) {
         toast.warning(t("warnings.authRecoveredStructured"))
       }
@@ -7384,20 +7286,12 @@ export function AcpAgentSettings() {
         nextToml
       )
       updateSelectedDraft((current) => ({
-        ...(key === "reasoningEffort"
-          ? {
-              ...current,
-              codexReasoningEffort:
-                normalizeCodexReasoningEffort(value) ??
-                CODEX_DEFAULT_REASONING_EFFORT,
-            }
-          : applyImportantFieldToDraft(current, key, value)),
+        ...applyImportantFieldToDraft(current, key, value),
         apiBaseUrl: synced.apiBaseUrl,
         apiKey: synced.apiKey ?? current.apiKey,
         model: synced.model,
         codexModelProvider: synced.modelProvider,
         codexProviderOptions: synced.providerOptions,
-        codexReasoningEffort: synced.reasoningEffort,
         codexSupportsWebsockets: synced.supportsWebsockets,
         codexSkills: synced.skills,
         codexDefaultModeRequestUserInput: synced.defaultModeRequestUserInput,
@@ -7435,7 +7329,6 @@ export function AcpAgentSettings() {
         model: synced.model,
         codexModelProvider: synced.modelProvider,
         codexProviderOptions: synced.providerOptions,
-        codexReasoningEffort: synced.reasoningEffort,
         codexSupportsWebsockets: synced.supportsWebsockets,
         codexSkills: synced.skills,
         codexDefaultModeRequestUserInput: synced.defaultModeRequestUserInput,
@@ -7469,7 +7362,6 @@ export function AcpAgentSettings() {
         model: synced.model,
         codexModelProvider: synced.modelProvider,
         codexProviderOptions: synced.providerOptions,
-        codexReasoningEffort: synced.reasoningEffort,
         codexSupportsWebsockets: synced.supportsWebsockets,
         codexSkills: synced.skills,
         codexDefaultModeRequestUserInput: synced.defaultModeRequestUserInput,
@@ -7503,7 +7395,6 @@ export function AcpAgentSettings() {
         model: synced.model,
         codexModelProvider: synced.modelProvider,
         codexProviderOptions: synced.providerOptions,
-        codexReasoningEffort: synced.reasoningEffort,
         codexSupportsWebsockets: synced.supportsWebsockets,
         codexSkills: synced.skills,
         codexDefaultModeRequestUserInput: synced.defaultModeRequestUserInput,
@@ -7537,7 +7428,6 @@ export function AcpAgentSettings() {
         model: synced.model,
         codexModelProvider: synced.modelProvider,
         codexProviderOptions: synced.providerOptions,
-        codexReasoningEffort: synced.reasoningEffort,
         codexSupportsWebsockets: synced.supportsWebsockets,
         codexSkills: synced.skills,
         codexDefaultModeRequestUserInput: synced.defaultModeRequestUserInput,
@@ -8414,38 +8304,6 @@ export function AcpAgentSettings() {
                         />
                       </div>
                     )}
-
-                    <div className="space-y-1.5">
-                      <label className="text-2xs text-muted-foreground">
-                        Reasoning Effort
-                      </label>
-                      <Select
-                        value={selectedDraft.codexReasoningEffort}
-                        onValueChange={(nextValue) => {
-                          handleCodexImportantConfigChange(
-                            "reasoningEffort",
-                            nextValue
-                          )
-                        }}
-                      >
-                        <SelectTrigger className="w-full">
-                          <SelectValue
-                            placeholder={t("codex.selectReasoningEffort")}
-                          />
-                        </SelectTrigger>
-                        <SelectContent align="start">
-                          {CODEX_REASONING_EFFORT_OPTIONS.map((option) => (
-                            <SelectItem key={option.value} value={option.value}>
-                              {option.label}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                      <p className="text-2xs text-muted-foreground">
-                        {selectedCodexReasoningEffortOption?.description ??
-                          "Greater reasoning depth for complex problems"}
-                      </p>
-                    </div>
 
                     <div className="space-y-1.5">
                       <div className="flex items-center justify-between rounded-md border px-3 py-2">
