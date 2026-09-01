@@ -732,6 +732,52 @@ mod tests {
         assert_eq!(snapshot.nodes.len(), 2);
     }
 
+    /// Every mutation transaction opens with `claim_writer` so SQLite hands it
+    /// the writer lock instead of a read snapshot it would fail to promote
+    /// (`SQLITE_BUSY_SNAPSHOT`). That claim is a write, so it must not be
+    /// mistaken for a bump: revisions are a DENSE sequence, and a client that
+    /// sees one skipped treats it as a gap and refetches the whole snapshot.
+    ///
+    /// So drive the paths that write nothing — a move and a delete naming ids
+    /// that do not exist — and pin that the counter did not move, and that the
+    /// next real mutation is still the immediate successor.
+    #[tokio::test]
+    async fn a_mutation_that_changes_nothing_consumes_no_revision() {
+        let db = fresh_in_memory_db().await;
+        let region = seed_region(&db, CanvasNodeKind::Custom).await;
+        let after_create = canvas_list_nodes_core(&db).await.expect("snapshot").revision;
+        assert_eq!(after_create, 1, "the one real mutation so far");
+
+        let moved = canvas_move_nodes_core(
+            &emitter(),
+            &db,
+            vec![CanvasNodeMovePayload {
+                id: region + 4242, // no such node
+                x: 10.0,
+                y: 10.0,
+            }],
+        )
+        .await
+        .expect("move of a ghost is not an error");
+        assert!(moved.value.is_empty(), "nothing was written");
+        assert_eq!(moved.revision, after_create, "and nothing was consumed");
+
+        let deleted = canvas_delete_nodes_core(&emitter(), &db, vec![region + 4242])
+            .await
+            .expect("delete of a ghost is not an error");
+        assert!(deleted.value.is_empty());
+        assert_eq!(deleted.revision, after_create);
+
+        // The real one that follows is the immediate successor — no gap for a
+        // client to trip over.
+        let next = seed_region(&db, CanvasNodeKind::Custom).await;
+        assert_ne!(next, region);
+        assert_eq!(
+            canvas_list_nodes_core(&db).await.expect("snapshot").revision,
+            after_create + 1
+        );
+    }
+
     #[tokio::test]
     async fn create_rejects_missing_bindings_and_dead_conversations() {
         let db = fresh_in_memory_db().await;

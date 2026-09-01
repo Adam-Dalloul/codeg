@@ -9,6 +9,7 @@
 //! (unlike the tabs CAS, which protects whole-set replacement).
 
 use chrono::Utc;
+use sea_orm::sea_query::Expr;
 use sea_orm::{
     ActiveModelTrait, ActiveValue::NotSet, ColumnTrait, ConnectionTrait, DatabaseConnection,
     EntityTrait, IntoActiveModel, QueryFilter, QueryOrder, Set, TransactionTrait,
@@ -17,7 +18,7 @@ use std::sync::OnceLock;
 use tokio::sync::Mutex;
 
 use crate::db::entities::canvas_node::{self, CanvasNodeKind};
-use crate::db::entities::{conversation, folder, folder_group};
+use crate::db::entities::{app_metadata, conversation, folder, folder_group};
 use crate::db::error::DbError;
 use crate::db::service::app_metadata_service;
 
@@ -64,6 +65,52 @@ async fn bump_revision<C: ConnectionTrait>(conn: &C) -> Result<i64, DbError> {
     let next = get_revision(conn).await? + 1;
     app_metadata_service::upsert_value(conn, CANVAS_REVISION_KEY, &next.to_string()).await?;
     Ok(next)
+}
+
+/// The opening statement of every canvas mutation's transaction, and the reason
+/// each one below starts with a call to it.
+///
+/// SeaORM's SQLite backend can only open a transaction with a plain (deferred)
+/// `BEGIN` — access mode isn't configurable per transaction — so a transaction
+/// whose FIRST statement is a `SELECT` takes a read snapshot and only tries to
+/// become a writer later. If any other pooled connection commits in between,
+/// SQLite cannot promote that now-stale snapshot and fails the WHOLE
+/// transaction with `SQLITE_BUSY_SNAPSHOT` (517): surfaced to the user as
+/// "database is locked" with nothing actually deadlocked, and NOT retried by
+/// `busy_timeout`, which only covers ordinary lock contention.
+///
+/// Every mutation here leads with reads — liveness checks, the row it is about
+/// to rewrite — and the runtime pool has five connections, so the losing side of
+/// that race is ordinary use: dragging a card while an agent streams (the ACP
+/// transcript write-behind holds its own connection for the whole turn) is the
+/// shape that produced it. `acp::manager::persist_fork_outcome` documents the
+/// same hazard and `folder_group_service` sidesteps it; this is the same rule.
+///
+/// Touching the revision row is the cheapest claim available and needs no new
+/// table. The value is deliberately left ALONE: [`bump_revision`] still owns the
+/// counter at the end of the transaction, so a mutation that turns out to be a
+/// no-op (or rolls back) consumes no revision and leaves no gap in the sequence
+/// clients use to tell "applied" from "refetch the snapshot".
+///
+/// `rows_affected == 0` means the first-ever mutation on a fresh database, where
+/// there is no row to touch: create it, so the claim is a write either way. "0"
+/// is what [`get_revision`] already reads a missing row as, so this is not a
+/// bump either.
+///
+/// Applied to ALL of them, including `delete_node`, which happens to already
+/// open with a `DELETE`: the invariant is "canvas transactions claim first", and
+/// one that holds only by accident of statement order breaks the next time
+/// someone adds a check above the write.
+async fn claim_writer<C: ConnectionTrait>(conn: &C) -> Result<(), DbError> {
+    let touched = app_metadata::Entity::update_many()
+        .col_expr(app_metadata::Column::UpdatedAt, Expr::value(Utc::now()))
+        .filter(app_metadata::Column::Key.eq(CANVAS_REVISION_KEY))
+        .exec(conn)
+        .await?;
+    if touched.rows_affected == 0 {
+        app_metadata_service::upsert_value(conn, CANVAS_REVISION_KEY, "0").await?;
+    }
+    Ok(())
 }
 
 /// Read the node set and the revision in a single transaction so a concurrent
@@ -203,6 +250,7 @@ pub async fn create_node(
 ) -> Result<(canvas_node::Model, i64), DbError> {
     let _guard = revision_lock().lock().await;
     let txn = conn.begin().await?;
+    claim_writer(&txn).await?;
 
     // Kind-specific binding invariants. The unrelated binding columns are
     // forced to NULL rather than trusted from the caller, so a row can never
@@ -376,6 +424,7 @@ pub async fn group_into_region(
 ) -> Result<GroupIntoRegionOutcome, DbError> {
     let _guard = revision_lock().lock().await;
     let txn = conn.begin().await?;
+    claim_writer(&txn).await?;
 
     // Dedupe preserving the caller's order: the same conversation can be
     // selected twice (a member card and its mirror in another region), and the
@@ -524,6 +573,7 @@ pub async fn update_node(
 ) -> Result<(canvas_node::Model, i64), DbError> {
     let _guard = revision_lock().lock().await;
     let txn = conn.begin().await?;
+    claim_writer(&txn).await?;
 
     let existing = canvas_node::Entity::find_by_id(node_id)
         .one(&txn)
@@ -628,6 +678,7 @@ pub async fn move_nodes(
     }
     let _guard = revision_lock().lock().await;
     let txn = conn.begin().await?;
+    claim_writer(&txn).await?;
     let now = Utc::now();
     let mut applied = Vec::with_capacity(moves.len());
     for m in moves {
@@ -682,6 +733,7 @@ pub async fn detach_member(
 ) -> Result<DetachOutcome, DbError> {
     let _guard = revision_lock().lock().await;
     let txn = conn.begin().await?;
+    claim_writer(&txn).await?;
 
     let region = canvas_node::Entity::find_by_id(region_id)
         .one(&txn)
@@ -756,6 +808,7 @@ pub async fn delete_node(
 ) -> Result<Option<i64>, DbError> {
     let _guard = revision_lock().lock().await;
     let txn = conn.begin().await?;
+    claim_writer(&txn).await?;
     let removed = canvas_node::Entity::delete_by_id(node_id).exec(&txn).await?;
     if removed.rows_affected == 0 {
         txn.commit().await?;
@@ -781,6 +834,7 @@ pub async fn delete_nodes(
     }
     let _guard = revision_lock().lock().await;
     let txn = conn.begin().await?;
+    claim_writer(&txn).await?;
     let existing: Vec<i32> = canvas_node::Entity::find()
         .filter(canvas_node::Column::Id.is_in(ids.iter().copied()))
         .all(&txn)
@@ -824,6 +878,7 @@ pub async fn prune_for_conversations(
     }
     let _guard = revision_lock().lock().await;
     let txn = conn.begin().await?;
+    claim_writer(&txn).await?;
 
     let doomed = canvas_node::Entity::find()
         .filter(canvas_node::Column::ConversationId.is_in(conversation_ids.iter().copied()))
