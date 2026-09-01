@@ -1998,7 +1998,6 @@
         "title": "快捷操作",
         "groups": {
           "workspace": "工作区",
-          "sessions": "会话",
           "navigation": "菜单导航",
           "more": "更多"
         },

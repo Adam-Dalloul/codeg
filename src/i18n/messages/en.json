@@ -1998,7 +1998,6 @@
         "title": "Quick actions",
         "groups": {
           "workspace": "Workspace",
-          "sessions": "Sessions",
           "navigation": "Navigation",
           "more": "More"
         },

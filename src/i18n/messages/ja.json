@@ -1998,7 +1998,6 @@
         "title": "クイック操作",
         "groups": {
           "workspace": "ワークスペース",
-          "sessions": "セッション",
           "navigation": "ナビゲーション",
           "more": "その他"
         },

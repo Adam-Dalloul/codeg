@@ -1998,7 +1998,6 @@
         "title": "Schnellaktionen",
         "groups": {
           "workspace": "Arbeitsbereich",
-          "sessions": "Sitzungen",
           "navigation": "Navigation",
           "more": "Mehr"
         },
