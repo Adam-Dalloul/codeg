@@ -3,7 +3,7 @@
 import { memo, useCallback, useState } from "react"
 import {
   ChevronRight,
-  Folders,
+  Layers,
   MoreHorizontal,
   Palette,
   Pencil,
@@ -15,6 +15,7 @@ import {
   FOLDER_THEME_COLOR_INHERIT,
   THEME_COLOR_PREVIEW,
   THEME_COLORS,
+  folderTitleTintVars,
   type FolderThemeColor,
   type ThemeColor,
 } from "@/lib/theme-presets"
@@ -47,7 +48,10 @@ import { SubsessionAncestorRails } from "./sidebar-conversation-card"
  * group sits at the same top-level indent as an ungrouped folder and the two
  * interleave in one list, so they have to read as siblings. Same `h-[2rem]`
  * outer box (virtua's fixed item size), same rounded-full hover pill, same
- * rail-axis glyph, same hover-revealed trailing `⋯`.
+ * rail-axis glyph, same hover-revealed trailing `⋯` — and, past geometry, the
+ * same title type (size, weight and colour) and the same running-sessions
+ * badge. The one thing that sets a group apart is its glyph: Layers, not a
+ * folder.
  *
  * Owns its own `useTranslations` rather than receiving `t`: next-intl returns a
  * fresh `t` on every parent render, so a `t` prop would defeat this component's
@@ -56,7 +60,7 @@ import { SubsessionAncestorRails } from "./sidebar-conversation-card"
 export const SidebarFolderGroupHeader = memo(function SidebarFolderGroupHeader({
   groupId,
   name,
-  count,
+  runningCount,
   expanded,
   onToggle,
   onRename,
@@ -70,9 +74,14 @@ export const SidebarFolderGroupHeader = memo(function SidebarFolderGroupHeader({
 }: {
   groupId: number
   name: string
-  /** How many folders the group holds. Zero renders no badge — the group's
-   *  empty-state hint row below it already says so. */
-  count: number
+  /**
+   * How many sessions are currently RUNNING (`in_progress`) across every folder
+   * in the group — the folder header's badge, one level up, and zero renders no
+   * badge at all. Deliberately not "how many folders it holds": that number was
+   * a different question asked in the same slot as the folder rows' live-activity
+   * badge, and the rows under an open group already answer it.
+   */
+  runningCount: number
   expanded: boolean
   onToggle?: (groupId: number) => void
   onRename?: (groupId: number, name: string) => void
@@ -114,6 +123,10 @@ export const SidebarFolderGroupHeader = memo(function SidebarFolderGroupHeader({
     if (trimmed && trimmed !== name) onRename?.(groupId, trimmed)
     setRenameOpen(false)
   }, [renameValue, name, groupId, onRename])
+
+  // The group's chosen colour paints its TITLE and nothing else — same contract
+  // as a folder's (see `folderTitleTintVars`); undefined for `inherit`.
+  const titleTint = folderTitleTintVars(themeColor)
 
   const row = (
     <div className={cn("relative h-[2rem]", isDragging && "opacity-60")}>
@@ -157,28 +170,46 @@ export const SidebarFolderGroupHeader = memo(function SidebarFolderGroupHeader({
               transform: "translate(-50%, -50%)",
             }}
           >
-            <Folders className="h-[0.875rem] w-[0.875rem]" />
+            {/* Layers, not a folder glyph: a group is a layer OVER folders, and
+                at 14px the stacked-sheets outline is the one shape that reads
+                as "container of the folders below" rather than "one more
+                folder" beside `FolderOpen`/`FolderClosed`. */}
+            <Layers className="h-[0.875rem] w-[0.875rem]" />
           </span>
           <div className="flex min-w-0 flex-1 items-center gap-[0.5rem]">
-            {/* Medium weight (the folder header is `normal`) is the one
-                      typographic difference: it is what makes a group read as
-                      the container of the rows indented under it rather than
-                      just another folder at the same indent. */}
-            <span className="min-w-0 flex-shrink truncate text-left text-[0.875rem] font-medium text-sidebar-foreground/85">
+            {/* Typographically identical to a folder title — same size, same
+                      `normal` weight, same colour (`/75`, or the chosen tint) —
+                      so the two read as siblings in one column. What marks a
+                      group as the container of the rows under it is the Layers
+                      glyph and the indent beneath it, not a heavier title. */}
+            <span
+              style={titleTint}
+              className={cn(
+                "min-w-0 flex-shrink truncate text-left text-[0.875rem] font-normal",
+                titleTint ? "folder-title-tint" : "text-sidebar-foreground/75"
+              )}
+            >
               {name}
             </span>
-            {count > 0 && (
+            {/* Live-activity badge, byte-identical to the folder header's: the
+                      number of RUNNING sessions anywhere in the group, amber to
+                      match the spinner on the cards, and nothing at all when
+                      none are. A collapsed group is exactly when this is the
+                      only way to see that work is under way in there. */}
+            {runningCount > 0 && (
               <span
+                title={t("runningCountBadge", { count: runningCount })}
                 className={cn(
                   "inline-flex shrink-0 items-center justify-center",
                   "h-[0.9375rem] min-w-[1rem] rounded-[0.3125rem] px-[0.25rem]",
                   "text-[0.625rem] font-semibold leading-none tabular-nums",
-                  "bg-sidebar-foreground/8 text-muted-foreground"
+                  "bg-amber-500/12 text-amber-700",
+                  "dark:bg-amber-400/15 dark:text-amber-300"
                 )}
               >
-                <span aria-hidden>{count}</span>
+                <span aria-hidden>{runningCount}</span>
                 <span className="sr-only">
-                  {t("folderGroup.countUnit", { count })}
+                  {t("runningCountBadge", { count: runningCount })}
                 </span>
               </span>
             )}

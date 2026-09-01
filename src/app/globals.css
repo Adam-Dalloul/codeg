@@ -1393,6 +1393,29 @@
   }
 }
 
+/* Sidebar folder / folder-group TITLES painted in the folder's chosen colour.
+   Same shape as `.forge-label` above: `folderTitleTintVars()` (theme-presets.ts)
+   writes BOTH themes' values as inline custom properties and these rules pick
+   the set, because an inline style cannot see the theme class on the root — and
+   because picking in JS would flash the light colour on every cold start in dark
+   mode. The colour deliberately lands on the title TEXT ONLY; the row around it
+   (hover pill, badges, and every conversation card under it) stays on the app
+   theme. Unlayered like the chips, so it beats a Tailwind `text-*` utility if
+   the two ever meet on one element. */
+.folder-title-tint {
+  color: var(--folder-title-light);
+}
+
+.dark .folder-title-tint {
+  color: var(--folder-title-dark);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not(.light) .folder-title-tint {
+    color: var(--folder-title-dark);
+  }
+}
+
 /* The forge workbench's "a request is out" sweep (see `PendingBar`). Its own
    keyframes rather than an animation utility: the travel is expressed in the
    SWEEP's width, not the track's, so it has to run from fully off one edge

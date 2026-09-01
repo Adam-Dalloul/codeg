@@ -6,7 +6,7 @@ import {
   Download,
   FolderGit2,
   FolderOpenDot,
-  FolderPlus,
+  LayersPlus,
   SquarePen,
 } from "lucide-react"
 import { useTranslations } from "next-intl"
@@ -211,7 +211,7 @@ export const SidebarSectionHeader = memo(function SidebarSectionHeader({
                 aria-label={t("folderGroup.newGroup")}
                 className={actionButtonClassName}
               >
-                <FolderPlus className="h-[0.875rem] w-[0.875rem]" />
+                <LayersPlus className="h-[0.875rem] w-[0.875rem]" />
               </button>
             )}
             {onImportSessions != null && (

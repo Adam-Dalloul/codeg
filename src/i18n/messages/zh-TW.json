@@ -1827,7 +1827,6 @@
         "delete": "刪除分組",
         "deleteConfirmTitle": "刪除此分組？",
         "deleteConfirmDescription": "將刪除「{name}」。組內的 {count} 個資料夾會保留在工作區，並回到頂層。",
-        "countUnit": "{count} 個資料夾",
         "empty": "分組內尚無資料夾",
         "moveToGroup": "移動到分組",
         "removeFromGroup": "不分組",

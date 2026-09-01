@@ -1827,7 +1827,6 @@
         "delete": "グループを削除",
         "deleteConfirmTitle": "このグループを削除しますか？",
         "deleteConfirmDescription": "「{name}」を削除します。グループ内の {count} 個のフォルダはワークスペースに残り、最上位に戻ります。",
-        "countUnit": "{count} 個のフォルダ",
         "empty": "このグループにフォルダはありません",
         "moveToGroup": "グループへ移動",
         "removeFromGroup": "グループなし",

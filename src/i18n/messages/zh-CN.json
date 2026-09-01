@@ -1827,7 +1827,6 @@
         "delete": "删除分组",
         "deleteConfirmTitle": "删除该分组？",
         "deleteConfirmDescription": "将删除“{name}”。组内的 {count} 个文件夹会保留在工作区，并回到顶层。",
-        "countUnit": "{count} 个文件夹",
         "empty": "分组内暂无文件夹",
         "moveToGroup": "移动到分组",
         "removeFromGroup": "不分组",

@@ -1371,8 +1371,13 @@ describe("SidebarConversationList — expand / collapse all", () => {
 })
 
 describe("SidebarConversationList — folder groups", () => {
-  function group(id: number, name: string, sortOrder: number) {
-    return { id, name, color: "inherit", sort_order: sortOrder }
+  function group(
+    id: number,
+    name: string,
+    sortOrder: number,
+    color = "inherit"
+  ) {
+    return { id, name, color, sort_order: sortOrder }
   }
 
   beforeEach(() => {
@@ -1445,5 +1450,96 @@ describe("SidebarConversationList — folder groups", () => {
         localStorage.getItem("workspace:sidebar-folder-group-expanded") ?? "{}"
       )
     ).toEqual({ 7: false })
+  })
+
+  // The heading's badge counts RUNNING sessions across the whole group (the
+  // folder header's badge, one level up) — not how many folders it holds.
+  function groupWith(
+    members: number[],
+    conversations: DbConversationSummary[],
+    groupColor = "inherit"
+  ) {
+    // The collapse test above persists `{7: false}` and nothing clears
+    // localStorage between tests, so a group seeded here would start collapsed
+    // (members hidden) purely because of test order.
+    localStorage.removeItem("workspace:sidebar-folder-group-expanded")
+    const folders = members.map(
+      (id, i) =>
+        ({
+          ...folder(id, `Member ${id}`),
+          sort_order: i + 1,
+          group_id: 7,
+        }) as FolderDetail
+    )
+    useAppWorkspaceStore.setState({
+      folders,
+      allFolders: folders,
+      folderGroups: [group(7, "Work", 1, groupColor)],
+      conversations,
+    })
+  }
+
+  it("badges the group with the running sessions of ALL its folders", () => {
+    groupWith(
+      [5, 6],
+      [
+        conv(11, 5, { status: "in_progress" }),
+        conv(12, 5, { status: "done" }),
+        conv(13, 6, { status: "in_progress" }),
+      ]
+    )
+    const { container } = render(tree())
+
+    const heading = container.querySelector('[data-folder-group-id="7"]')
+    expect(heading?.textContent).toContain("2")
+    // Same label the folder headers use, so the two badges read as one signal.
+    expect(
+      heading?.querySelector('[title="2 sessions running"]')
+    ).not.toBeNull()
+  })
+
+  it("renders no group badge when nothing in it is running", () => {
+    groupWith([5], [conv(11, 5, { status: "done" })])
+    const { container } = render(tree())
+
+    const heading = container.querySelector('[data-folder-group-id="7"]')
+    expect(heading?.textContent).toBe("Work")
+  })
+
+  // A folder / group colour is a label for the ROW, not a skin for the sessions
+  // under it: the list must not wrap anything in a `data-theme` scope any more.
+  it("never re-themes conversation cards with the folder colour", () => {
+    groupWith([5], [conv(11, 5)])
+    const { container } = render(tree())
+
+    expect(container.querySelector("[data-conversation-id]")).not.toBeNull()
+    expect(container.querySelectorAll("[data-theme]")).toHaveLength(0)
+  })
+
+  // The colour lands on the title text of both row kinds, through the same
+  // mechanism, so a group and a folder tint identically.
+  it("tints the group and folder titles with the chosen colour", () => {
+    groupWith([5], [], "red")
+    const { getByText } = render(tree())
+
+    // `folder()` seeds every folder as "blue".
+    for (const title of [getByText("Member 5"), getByText("Work")]) {
+      expect(title.className).toContain("folder-title-tint")
+      expect(title.className).not.toContain("text-sidebar-foreground/")
+      const style = title.getAttribute("style") ?? ""
+      expect(style).toContain("--folder-title-light")
+      expect(style).toContain("--folder-title-dark")
+    }
+  })
+
+  // `inherit` is the default, and it must stay on the plain sidebar colour —
+  // the same one a folder title falls back to — rather than pick a tint.
+  it("leaves an uncoloured group title on the default sidebar colour", () => {
+    groupWith([5], [])
+    const title = render(tree()).getByText("Work")
+
+    expect(title.className).toContain("text-sidebar-foreground/75")
+    expect(title.className).not.toContain("folder-title-tint")
+    expect(title.getAttribute("style")).toBeNull()
   })
 })

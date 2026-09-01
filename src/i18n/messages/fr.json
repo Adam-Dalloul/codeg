@@ -1827,7 +1827,6 @@
         "delete": "Supprimer le groupe",
         "deleteConfirmTitle": "Supprimer ce groupe ?",
         "deleteConfirmDescription": "« {name} » sera supprimé. {count, plural, one {Le # dossier qu'il contient reste} other {Les # dossiers qu'il contient restent}} dans l'espace de travail et {count, plural, one {revient} other {reviennent}} au niveau supérieur.",
-        "countUnit": "{count, plural, one {# dossier} other {# dossiers}}",
         "empty": "Aucun dossier dans ce groupe",
         "moveToGroup": "Déplacer vers le groupe",
         "removeFromGroup": "Aucun groupe",

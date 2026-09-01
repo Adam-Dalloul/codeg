@@ -12,7 +12,6 @@ import {
   type Ref,
 } from "react"
 import { useTranslations } from "next-intl"
-import { useTheme } from "next-themes"
 import { toast } from "sonner"
 import { Virtualizer, type VirtualizerHandle } from "virtua"
 import {
@@ -27,9 +26,9 @@ import {
   FolderGit2,
   FolderOpen,
   FolderOpenDot,
-  FolderPlus,
   FolderRoot,
-  Folders,
+  Layers,
+  LayersPlus,
   Link2,
   ListChecks,
   Loader2,
@@ -93,6 +92,7 @@ import {
   FOLDER_THEME_COLOR_INHERIT,
   THEME_COLOR_PREVIEW,
   THEME_COLORS,
+  folderTitleTintVars,
   normalizeFolderThemeColor,
   type FolderThemeColor,
   type ThemeColor,
@@ -362,6 +362,15 @@ const FolderHeader = memo(function FolderHeader({
     setAliasDialogOpen(false)
   }, [aliasValue, folderId, onSetAlias])
 
+  const titleTint = folderTitleTintVars(themeColor)
+  // The `[ name ]` half of an aliased label is normally a DEEPER shade than the
+  // alias beside it. A tinted title has no deeper shade to reach for (the tint
+  // is already pinned to the one lightness that clears AA on this surface), so
+  // it just inherits — the brackets alone carry the alias/name split there.
+  const bracketClassName = titleTint
+    ? "text-current"
+    : "text-sidebar-foreground"
+
   return (
     <>
       <ContextMenu>
@@ -427,9 +436,19 @@ const FolderHeader = memo(function FolderHeader({
                   )}
                 </span>
                 <div className="flex min-w-0 flex-1 items-center gap-[0.5rem]">
+                  {/* The folder's chosen colour lands HERE and nowhere else: the
+                      row's hover pill, its badges and every conversation card
+                      under it stay on the app theme. `folderTitleTintVars`
+                      writes both themes' values as inline custom properties and
+                      `.folder-title-tint` (globals.css) picks one; `inherit`
+                      returns undefined and the default class carries the day. */}
                   <span
+                    style={titleTint}
                     className={cn(
-                      "min-w-0 flex-shrink truncate text-left text-[0.875rem] font-normal text-sidebar-foreground/75"
+                      "min-w-0 flex-shrink truncate text-left text-[0.875rem] font-normal",
+                      titleTint
+                        ? "folder-title-tint"
+                        : "text-sidebar-foreground/75"
                     )}
                   >
                     {variant === "worktree" ? (
@@ -438,7 +457,7 @@ const FolderHeader = memo(function FolderHeader({
                       <FolderAliasLabel
                         name={folderName}
                         alias={worktreeHeaderAlias(folderAlias, worktreeBranch)}
-                        bracketClassName="text-sidebar-foreground"
+                        bracketClassName={bracketClassName}
                       />
                     ) : variant === "root" ? (
                       // The container repo's own-sessions sub-group is labeled
@@ -450,7 +469,7 @@ const FolderHeader = memo(function FolderHeader({
                       <FolderAliasLabel
                         name={folderName}
                         alias={folderAlias}
-                        bracketClassName="text-sidebar-foreground"
+                        bracketClassName={bracketClassName}
                       />
                     )}
                   </span>
@@ -721,7 +740,7 @@ const FolderHeader = memo(function FolderHeader({
           {folderGroups != null && onMoveToGroup != null && (
             <ContextMenuSub>
               <ContextMenuSubTrigger>
-                <Folders className="h-4 w-4" />
+                <Layers className="h-4 w-4" />
                 {t("folderGroup.moveToGroup")}
               </ContextMenuSubTrigger>
               <ContextMenuSubContent className="min-w-[12rem]">
@@ -757,7 +776,7 @@ const FolderHeader = memo(function FolderHeader({
                     <ContextMenuItem
                       onSelect={() => onNewGroupWithFolder(folderId)}
                     >
-                      <FolderPlus className="h-4 w-4" />
+                      <LayersPlus className="h-4 w-4" />
                       {t("folderGroup.newGroupAndMove")}
                     </ContextMenuItem>
                   </>
@@ -854,7 +873,6 @@ export function SidebarConversationList({
   const tFolderDropdown = useTranslations("Folder.folderNameDropdown")
   const tFileTree = useTranslations("Folder.fileTreeTab")
   const tRemote = useTranslations("RemoteWorkspace")
-  const { resolvedTheme } = useTheme()
   const { themeColor: appThemeColor } = useThemeColor()
   const { createTerminalInDirectory } = useTerminalContext()
   const { zoomLevel } = useZoomLevel()
@@ -1437,8 +1455,6 @@ export function SidebarConversationList({
     () => new Set(containerChildren.keys()),
     [containerChildren]
   )
-
-  const darkMode = resolvedTheme === "dark"
 
   // Flat row model for windowing — the pinned section, the folders section, and
   // every conversation live in this ONE array fed to the single Virtualizer (no
@@ -2510,27 +2526,14 @@ export function SidebarConversationList({
   const showEmptyWorkspaceActions =
     folders.length === 0 && conversations.length === 0
 
+  // A folder's chosen colour, for the header's colour picker and for the tint
+  // its TITLE takes. It used to also drive a per-row `data-theme` wrapper, which
+  // re-themed every conversation card under the folder (hover pill, selection,
+  // the whole token set) while barely showing on the title itself — the reverse
+  // of what picking a folder colour means. The tint now lands on the title text
+  // and nothing else; cards always render in the app theme.
   const folderThemeColor = (folderId: number): FolderThemeColor =>
     normalizeFolderThemeColor(folderIndex.get(folderId)?.color)
-
-  // Scopes one theme color (and the dark-mode flip) to a single virtual row.
-  const themeScope = (themeColor: FolderThemeColor, child: React.ReactNode) => (
-    <div
-      className={cn(
-        darkMode && themeColor !== FOLDER_THEME_COLOR_INHERIT && "dark"
-      )}
-      data-theme={
-        themeColor === FOLDER_THEME_COLOR_INHERIT ? undefined : themeColor
-      }
-    >
-      {child}
-    </div>
-  )
-
-  // A per-row theme wrapper replaces the old per-folder-group wrapper: it scopes
-  // the folder's accent color (and dark-mode flip) to that single virtual row.
-  const themeWrap = (folderId: number, child: React.ReactNode) =>
-    themeScope(folderThemeColor(folderId), child)
 
   // Which group each folder belongs to, straight off the resolved layout, so it
   // agrees with what is actually rendered (including mid-drag) rather than with
@@ -2561,6 +2564,23 @@ export function SidebarConversationList({
     const kids = containerChildren.get(repoId)
     if (kids) {
       for (const kid of kids) total += folderRunningCounts.get(kid) ?? 0
+    }
+    return total
+  }
+
+  // The same number one level up: a GROUP's badge is the running sessions across
+  // every folder in it. Members are always reorderable top-level folders, so
+  // `containerRunningCount` is the right per-member term in both worktree modes
+  // — with "Show worktrees" on it adds the worktree children (their own display
+  // groups), with it off `folderRunningCounts` has already folded them in.
+  //
+  // Computed here at render, deliberately NOT in `buildRows`: like the folder
+  // badge, a status event must move one number on one memoized header, never
+  // rebuild the row model.
+  const groupRunningCount = (groupId: number): number => {
+    let total = 0
+    for (const memberId of layout.membersByGroup.get(groupId) ?? []) {
+      total += containerRunningCount(memberId)
     }
     return total
   }
@@ -2712,19 +2732,17 @@ export function SidebarConversationList({
     if (row.kind === "folder-group") {
       const group = folderGroups.find((g) => g.id === row.groupId)
       if (!group) return null
-      const themeColor = normalizeFolderThemeColor(group.color)
-      return themeScope(
-        themeColor,
+      return (
         <SidebarFolderGroupHeader
           groupId={row.groupId}
           name={group.name}
-          count={row.count}
+          runningCount={groupRunningCount(row.groupId)}
           expanded={row.expanded}
           onToggle={toggleFolderGroup}
           onRename={handleRenameGroup}
           onChangeColor={handleChangeGroupColor}
           onDelete={handleDeleteGroup}
-          themeColor={themeColor}
+          themeColor={normalizeFolderThemeColor(group.color)}
           appThemeColor={appThemeColor}
           isDragging={dragging?.kind === "group" && dragging.id === row.groupId}
           onGripPointerDown={beginGroupDrag}
@@ -2746,33 +2764,27 @@ export function SidebarConversationList({
       )
     }
     if (row.kind === "folder") {
-      return themeWrap(
-        row.folderId,
-        folderHeaderElement(row.folderId, {
-          dragging: dragging?.kind === "folder" && dragging.id === row.folderId,
-          // Worktree child headers follow their parent and never reorder on
-          // their own, so they are not drag initiators (no grip). Only
-          // reorderable top-level repos keep the grip.
-          grip: !(showWorktrees && childToParent.has(row.folderId)),
-          // While this folder's sticky overlay is showing, the overlay is the
-          // accessible control; make the (occluded) in-list copy inert so it is
-          // not a duplicate tab stop / announcement.
-          suppressed: stickyFolderId === row.folderId,
-        })
-      )
+      return folderHeaderElement(row.folderId, {
+        dragging: dragging?.kind === "folder" && dragging.id === row.folderId,
+        // Worktree child headers follow their parent and never reorder on
+        // their own, so they are not drag initiators (no grip). Only
+        // reorderable top-level repos keep the grip.
+        grip: !(showWorktrees && childToParent.has(row.folderId)),
+        // While this folder's sticky overlay is showing, the overlay is the
+        // accessible control; make the (occluded) in-list copy inert so it is
+        // not a duplicate tab stop / announcement.
+        suppressed: stickyFolderId === row.folderId,
+      })
     }
     if (row.kind === "root-group") {
       // A container repo's own-sessions sub-group. Shares the repo id (for its
       // bucket / count / theme) but is its own row kind with its own toggle, and
       // is never draggable (it follows the container).
-      return themeWrap(
-        row.folderId,
-        folderHeaderElement(row.folderId, {
-          dragging: false,
-          grip: false,
-          rootGroup: true,
-        })
-      )
+      return folderHeaderElement(row.folderId, {
+        dragging: false,
+        grip: false,
+        rootGroup: true,
+      })
     }
     if (row.kind === "empty") {
       // A worktree / root sub-group's empty hint is indented one level so its
@@ -2783,8 +2795,7 @@ export function SidebarConversationList({
         showWorktrees &&
         (childToParent.has(row.folderId) || containerRepoIds.has(row.folderId))
       const depth = (nested ? 1 : 0) + groupDepth(row.folderId)
-      return themeWrap(
-        row.folderId,
+      return (
         // Full row height (h-[2rem], the fixed virtua item size) so the container
         // connector spine stays continuous THROUGH an empty sub-group ("no
         // conversations") instead of breaking at a shorter box. The ancestor rail
@@ -2938,13 +2949,10 @@ export function SidebarConversationList({
       )
     }
     const conv = row.conversation
-    // Theme the row by its display group. With "Show worktrees" off a worktree
-    // conversation renders under its parent group (themed as the parent); on, it
-    // renders under its own worktree header (themed as itself). `displayChildToParent`
-    // captures both — empty when the toggle is on.
-    const groupId = displayChildToParent.get(conv.folder_id) ?? conv.folder_id
-    return themeWrap(
-      groupId,
+    // No folder tint reaches this row: a card always renders in the app theme,
+    // whichever colour its folder carries. The colour is a label for the FOLDER,
+    // not a skin for the sessions inside it.
+    return (
       <SidebarConversationCard
         conversation={conv}
         isSelected={
@@ -3111,30 +3119,23 @@ export function SidebarConversationList({
                           return (
                             <div key={`g-${groupId}`} className="h-[2rem]" />
                           )
-                        const themeColor = normalizeFolderThemeColor(
-                          group.color
-                        )
                         return (
                           <div key={`g-${groupId}`}>
-                            {themeScope(
-                              themeColor,
-                              <SidebarFolderGroupHeader
-                                presentation
-                                groupId={groupId}
-                                name={group.name}
-                                count={
-                                  layout.membersByGroup.get(groupId)?.length ??
-                                  0
-                                }
-                                expanded={false}
-                                themeColor={themeColor}
-                                appThemeColor={appThemeColor}
-                                isDragging={
-                                  dragging.kind === "group" &&
-                                  dragging.id === groupId
-                                }
-                              />
-                            )}
+                            <SidebarFolderGroupHeader
+                              presentation
+                              groupId={groupId}
+                              name={group.name}
+                              runningCount={groupRunningCount(groupId)}
+                              expanded={false}
+                              themeColor={normalizeFolderThemeColor(
+                                group.color
+                              )}
+                              appThemeColor={appThemeColor}
+                              isDragging={
+                                dragging.kind === "group" &&
+                                dragging.id === groupId
+                              }
+                            />
                           </div>
                         )
                       }
@@ -3148,17 +3149,14 @@ export function SidebarConversationList({
                               : undefined
                           }
                         >
-                          {themeWrap(
-                            folderId,
-                            folderHeaderElement(folderId, {
-                              dragging:
-                                dragging.kind === "folder" &&
-                                dragging.id === folderId,
-                              collapsed: true,
-                              grip: false,
-                              flat: true,
-                            })
-                          )}
+                          {folderHeaderElement(folderId, {
+                            dragging:
+                              dragging.kind === "folder" &&
+                              dragging.id === folderId,
+                            collapsed: true,
+                            grip: false,
+                            flat: true,
+                          })}
                         </div>
                       )
                     })}
@@ -3196,8 +3194,8 @@ export function SidebarConversationList({
                 overlay is the keyboard/AT path to toggle/act on that folder.
                 `grip:false` — reordering is driven from the in-list header,
                 whose geometry the custom drag gesture relies on. `bg-sidebar`
-                lives inside themeWrap so it picks up the folder's themed
-                background and occludes the rows scrolling beneath it.
+                is what occludes the rows scrolling beneath it — plain app-theme
+                sidebar, exactly the colour those rows are painted on.
               */}
               {stickyFolderId !== null && (
                 <div
@@ -3208,16 +3206,13 @@ export function SidebarConversationList({
                   )}
                   style={{ willChange: "transform" }}
                 >
-                  {themeWrap(
-                    stickyFolderId,
-                    <div className="pointer-events-auto bg-sidebar">
-                      {folderHeaderElement(stickyFolderId, {
-                        dragging: false,
-                        grip: false,
-                        onToggle: handleOverlayToggle,
-                      })}
-                    </div>
-                  )}
+                  <div className="pointer-events-auto bg-sidebar">
+                    {folderHeaderElement(stickyFolderId, {
+                      dragging: false,
+                      grip: false,
+                      onToggle: handleOverlayToggle,
+                    })}
+                  </div>
                 </div>
               )}
             </div>
@@ -3249,7 +3244,7 @@ export function SidebarConversationList({
                 hover-revealed button, reachable without aiming at a 24px
                 target. */}
             <ContextMenuItem onSelect={openNewGroupDialog}>
-              <FolderPlus className="h-4 w-4" />
+              <LayersPlus className="h-4 w-4" />
               {t("folderGroup.newGroup")}
             </ContextMenuItem>
             <ContextMenuItem onSelect={handleOpenImportWindow}>

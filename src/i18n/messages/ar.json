@@ -1827,7 +1827,6 @@
         "delete": "حذف المجموعة",
         "deleteConfirmTitle": "حذف هذه المجموعة؟",
         "deleteConfirmDescription": "ستتم إزالة \"{name}\". تبقى المجلدات ({count}) بداخلها في مساحة العمل وتعود إلى المستوى الأعلى.",
-        "countUnit": "{count} مجلد",
         "empty": "لا توجد مجلدات في هذه المجموعة",
         "moveToGroup": "نقل إلى مجموعة",
         "removeFromGroup": "بدون مجموعة",

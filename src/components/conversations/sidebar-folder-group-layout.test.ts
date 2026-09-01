@@ -532,7 +532,11 @@ describe("buildRows with folder groups", () => {
       "chats-empty",
     ])
     const header = rows.find((r) => r.kind === "folder-group")
-    expect(header).toMatchObject({ groupId: 7, count: 1, expanded: false })
+    expect(header).toEqual({
+      kind: "folder-group",
+      groupId: 7,
+      expanded: false,
+    })
   })
 
   it("counts FOLDERS, not top-level entries, on the section header", () => {

@@ -1005,8 +1005,6 @@ export interface SectionHeaderRow {
 export interface FolderGroupHeaderRow {
   kind: "folder-group"
   groupId: number
-  /** How many folders it holds — shown beside the name. */
-  count: number
   expanded: boolean
 }
 
@@ -1408,12 +1406,10 @@ export function buildRows(args: {
       }
       const members = resolved.membersByGroup.get(entry.id) ?? []
       const expanded = groupExpanded[entry.id] ?? true
-      rows.push({
-        kind: "folder-group",
-        groupId: entry.id,
-        count: members.length,
-        expanded,
-      })
+      // No member count on the row: the heading's badge shows RUNNING sessions,
+      // which the render layer derives from live conversation state rather than
+      // from the row model (a status event must never rebuild rows).
+      rows.push({ kind: "folder-group", groupId: entry.id, expanded })
       if (!expanded) continue
       if (members.length === 0) {
         // A group you just created has no members yet; without this the heading

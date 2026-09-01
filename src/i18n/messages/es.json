@@ -1827,7 +1827,6 @@
         "delete": "Eliminar grupo",
         "deleteConfirmTitle": "¿Eliminar este grupo?",
         "deleteConfirmDescription": "Se eliminará «{name}». {count, plural, one {La # carpeta que contiene permanece} other {Las # carpetas que contiene permanecen}} en el espacio de trabajo y {count, plural, one {vuelve} other {vuelven}} al nivel superior.",
-        "countUnit": "{count, plural, one {# carpeta} other {# carpetas}}",
         "empty": "No hay carpetas en este grupo",
         "moveToGroup": "Mover al grupo",
         "removeFromGroup": "Sin grupo",

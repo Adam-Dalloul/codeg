@@ -1827,7 +1827,6 @@
         "delete": "Gruppe löschen",
         "deleteConfirmTitle": "Diese Gruppe löschen?",
         "deleteConfirmDescription": "„{name}“ wird entfernt. Die {count, plural, one {# Ordner darin bleibt} other {# Ordner darin bleiben}} im Arbeitsbereich und {count, plural, one {wechselt} other {wechseln}} zurück auf die oberste Ebene.",
-        "countUnit": "{count, plural, one {# Ordner} other {# Ordner}}",
         "empty": "Keine Ordner in dieser Gruppe",
         "moveToGroup": "In Gruppe verschieben",
         "removeFromGroup": "Keine Gruppe",

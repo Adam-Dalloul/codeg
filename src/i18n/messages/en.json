@@ -1827,7 +1827,6 @@
         "delete": "Delete group",
         "deleteConfirmTitle": "Delete this group?",
         "deleteConfirmDescription": "\"{name}\" will be removed. The {count, plural, one {# folder} other {# folders}} inside it stay in the workspace and move back to the top level.",
-        "countUnit": "{count, plural, one {# folder} other {# folders}}",
         "empty": "No folders in this group",
         "moveToGroup": "Move to group",
         "removeFromGroup": "No group",
