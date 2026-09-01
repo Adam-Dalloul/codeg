@@ -3076,6 +3076,12 @@ export const ContentPartsRenderer = memo(function ContentPartsRenderer({
 }: ContentPartsRendererProps) {
   const renderPart = (part: AdaptedContentPart, keyId: string): ReactNode => {
     if (part.type === "text") {
+      // An empty text part renders nothing but still earns a `space-y-4` gap
+      // below, which reads as a blank band inside the bubble. A user turn is
+      // final by the time it is rendered, so an empty one is always residue —
+      // never a stream that has not produced its first token yet, which is why
+      // this is scoped to `user` and assistant text is left to render as-is.
+      if (role === "user" && part.text.trim().length === 0) return null
       return (
         <TextPart
           key={`text-${keyId}`}
