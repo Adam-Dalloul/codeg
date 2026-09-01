@@ -407,6 +407,10 @@
         "title": "关闭当前标签",
         "description": "关闭当前会话或文件标签"
       },
+      "reopen_last_closed_tab": {
+        "title": "重新打开关闭的标签",
+        "description": "重新打开最近关闭的会话或文件标签"
+      },
       "close_all_file_tabs": {
         "title": "关闭全部文件标签",
         "description": "当文件面板处于活动状态时关闭所有打开的文件标签"
@@ -418,6 +422,42 @@
       "prev_tab": {
         "title": "上一个标签页",
         "description": "切换到上一个会话或文件标签页"
+      },
+      "switch_tab_1": {
+        "title": "切换到第 1 个标签",
+        "description": "跳转到第 1 个会话或文件标签"
+      },
+      "switch_tab_2": {
+        "title": "切换到第 2 个标签",
+        "description": "跳转到第 2 个会话或文件标签"
+      },
+      "switch_tab_3": {
+        "title": "切换到第 3 个标签",
+        "description": "跳转到第 3 个会话或文件标签"
+      },
+      "switch_tab_4": {
+        "title": "切换到第 4 个标签",
+        "description": "跳转到第 4 个会话或文件标签"
+      },
+      "switch_tab_5": {
+        "title": "切换到第 5 个标签",
+        "description": "跳转到第 5 个会话或文件标签"
+      },
+      "switch_tab_6": {
+        "title": "切换到第 6 个标签",
+        "description": "跳转到第 6 个会话或文件标签"
+      },
+      "switch_tab_7": {
+        "title": "切换到第 7 个标签",
+        "description": "跳转到第 7 个会话或文件标签"
+      },
+      "switch_tab_8": {
+        "title": "切换到第 8 个标签",
+        "description": "跳转到第 8 个会话或文件标签"
+      },
+      "switch_tab_9": {
+        "title": "切换到第 9 个标签",
+        "description": "跳转到第 9 个会话或文件标签"
       },
       "send_message": {
         "title": "发送消息",
@@ -2489,9 +2529,9 @@
       "workspace": "工作区",
       "retry": "重试",
       "git": "Git",
-      "openInFileManager": "在文件管理器打开",
-      "openInFinder": "在访达打开",
-      "openInExplorer": "在资源管理器打开",
+      "openInFileManager": "文件管理器",
+      "openInFinder": "访达",
+      "openInExplorer": "资源管理器",
       "attachToCurrentSession": "添加到会话",
       "compareWithBranch": "与分支比较...",
       "reloadFromDisk": "从磁盘重新加载",
@@ -2499,7 +2539,8 @@
       "newFile": "文件",
       "newDirectory": "目录",
       "openIn": "打开于",
-      "openInTerminal": "在终端打开",
+      "openInTerminal": "终端",
+      "openInCode": "VS Code",
       "linkedFolder": "关联的文件夹",
       "copyPath": "复制路径",
       "upload": "上传文件/目录",
@@ -2518,6 +2559,7 @@
       "toasts": {
         "openDirectoryFailed": "打开目录失败",
         "openBuiltinTerminalFailed": "无法打开内置终端",
+        "openInCodeFailed": "无法在 Code 打开",
         "openCommitWindowFailed": "打开提交窗口失败",
         "noAddableFilesInDir": "该目录下没有可添加到 VCS 的变更文件",
         "noRollbackFilesInDir": "该目录下没有可回滚的变更文件",
@@ -2703,6 +2745,7 @@
           "downloadFailed": "{agent} 下载失败：{message}",
           "sessionLoadResourceNotFound": "{agent} 会话加载失败，可重新加载重试，或开始新会话。",
           "sessionLoadUnavailable": "{agent} 无法恢复此会话，它可能已结束或 agent 已停止。可重新加载重试，或开始新会话。",
+          "sessionArchived": "原会话已在 {agent} 侧归档，可在终端运行 {command} 找回历史后重载，或直接开始新会话。",
           "turnFailedRefusal": "{agent} 拒绝继续本轮回复，通常意味着后端或网关出错，请检查代理日志。",
           "turnFailedMaxTokens": "{agent} 已达到本轮回复的最大 Token 限制。",
           "turnFailedMaxTurnRequests": "{agent} 已达到本轮回复允许的最大请求次数。",
@@ -3060,6 +3103,8 @@
         "errorTitle": "会话加载失败",
         "errorActionReload": "重新加载",
         "errorActionNewSession": "新建会话",
+        "errorActionCopyCommand": "复制命令",
+        "errorActionCommandCopied": "已复制",
         "emptyConversation": "当前会话暂无消息。",
         "systemMessage": "系统消息",
         "copyMessage": "复制",
@@ -3088,8 +3133,9 @@
         "tokenCacheRead": "缓存读取",
         "tokenCacheWrite": "缓存写入",
         "duration": "耗时",
-        "worked": "已工作",
+        "worked": "工作已结束",
         "workedFor": "工作了 {duration}",
+        "working": "正在工作中...",
         "completedAt": "完成时间",
         "jumpToPreviousUserMessage": "跳转到上一条用户消息",
         "showMore": "展开",
@@ -5189,7 +5235,8 @@
     "pickFolder": "选择项目文件夹",
     "noRemote": "该文件夹没有可识别的代码托管远端（origin）",
     "errors": {
-      "noAccount": "还没有为 {host} 配置 {provider} 账号。请在「设置 → 版本控制」中添加后再加载该仓库。"
+      "noAccount": "还没有为 {host} 配置 {provider} 账号。请在「设置 → 版本控制」中添加后再加载该仓库。",
+      "wrongForge": "{host} 实际上是 {provider}，此前被误判为另一种代码托管服务。已自动更正，请重新加载。"
     },
     "addAccount": "添加账号",
     "empty": "暂无内容",

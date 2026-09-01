@@ -407,6 +407,10 @@
         "title": "現在のタブを閉じる",
         "description": "現在の会話またはファイルタブを閉じます"
       },
+      "reopen_last_closed_tab": {
+        "title": "閉じたタブを再開",
+        "description": "直前に閉じた会話またはファイルタブを開く"
+      },
       "close_all_file_tabs": {
         "title": "すべてのファイルタブを閉じる",
         "description": "ファイルペインがアクティブなときに開いているすべてのファイルタブを閉じます"
@@ -418,6 +422,42 @@
       "prev_tab": {
         "title": "前のタブ",
         "description": "前の会話またはファイルタブに切り替える"
+      },
+      "switch_tab_1": {
+        "title": "タブ 1 に切り替え",
+        "description": "1 番目の会話またはファイルタブに移動"
+      },
+      "switch_tab_2": {
+        "title": "タブ 2 に切り替え",
+        "description": "2 番目の会話またはファイルタブに移動"
+      },
+      "switch_tab_3": {
+        "title": "タブ 3 に切り替え",
+        "description": "3 番目の会話またはファイルタブに移動"
+      },
+      "switch_tab_4": {
+        "title": "タブ 4 に切り替え",
+        "description": "4 番目の会話またはファイルタブに移動"
+      },
+      "switch_tab_5": {
+        "title": "タブ 5 に切り替え",
+        "description": "5 番目の会話またはファイルタブに移動"
+      },
+      "switch_tab_6": {
+        "title": "タブ 6 に切り替え",
+        "description": "6 番目の会話またはファイルタブに移動"
+      },
+      "switch_tab_7": {
+        "title": "タブ 7 に切り替え",
+        "description": "7 番目の会話またはファイルタブに移動"
+      },
+      "switch_tab_8": {
+        "title": "タブ 8 に切り替え",
+        "description": "8 番目の会話またはファイルタブに移動"
+      },
+      "switch_tab_9": {
+        "title": "タブ 9 に切り替え",
+        "description": "9 番目の会話またはファイルタブに移動"
       },
       "send_message": {
         "title": "メッセージを送信",
@@ -2489,9 +2529,9 @@
       "workspace": "ワークスペース",
       "retry": "再試行",
       "git": "Git",
-      "openInFileManager": "ファイルマネージャーで開く",
-      "openInFinder": "Finderで開く",
-      "openInExplorer": "エクスプローラーで開く",
+      "openInFileManager": "ファイルマネージャー",
+      "openInFinder": "Finder",
+      "openInExplorer": "エクスプローラー",
       "attachToCurrentSession": "セッションに追加",
       "compareWithBranch": "ブランチと比較...",
       "reloadFromDisk": "ディスクから再読み込み",
@@ -2499,7 +2539,8 @@
       "newFile": "ファイル",
       "newDirectory": "ディレクトリ",
       "openIn": "で開く",
-      "openInTerminal": "ターミナルで開く",
+      "openInTerminal": "ターミナル",
+      "openInCode": "VS Code",
       "linkedFolder": "リンク済みフォルダー",
       "copyPath": "パスをコピー",
       "upload": "ファイル/フォルダをアップロード",
@@ -2518,6 +2559,7 @@
       "toasts": {
         "openDirectoryFailed": "ディレクトリを開けませんでした",
         "openBuiltinTerminalFailed": "内蔵ターミナルを開けませんでした",
+        "openInCodeFailed": "Code で開けませんでした",
         "openCommitWindowFailed": "コミットウィンドウを開けませんでした",
         "noAddableFilesInDir": "このディレクトリには VCS に追加できる変更ファイルがありません",
         "noRollbackFilesInDir": "このディレクトリにはロールバックできる変更ファイルがありません",
@@ -2703,6 +2745,7 @@
           "downloadFailed": "{agent} のダウンロードに失敗しました: {message}",
           "sessionLoadResourceNotFound": "{agent} セッションの読み込みに失敗しました。再読み込みして再試行するか、新しい会話を開始してください。",
           "sessionLoadUnavailable": "{agent} はこのセッションを復元できませんでした。セッションが終了したか、エージェントが停止した可能性があります。再読み込みして再試行するか、新しい会話を開始してください。",
+          "sessionArchived": "以前のセッションは {agent} 側でアーカイブされています。ターミナルで {command} を実行して復元してから再読み込みするか、新しい会話を開始してください。",
           "turnFailedRefusal": "{agent} がこのターンの続行を拒否しました。バックエンドまたはゲートウェイのエラーが原因の可能性があります。エージェントのログを確認してください。",
           "turnFailedMaxTokens": "{agent} がこのターンの最大トークン数に達しました。",
           "turnFailedMaxTurnRequests": "{agent} がこのターンで許可された最大リクエスト数に達しました。",
@@ -3060,6 +3103,8 @@
         "errorTitle": "セッションの読み込みに失敗しました",
         "errorActionReload": "再読み込み",
         "errorActionNewSession": "新規会話",
+        "errorActionCopyCommand": "コマンドをコピー",
+        "errorActionCommandCopied": "コピーしました",
         "emptyConversation": "この会話にはメッセージがありません。",
         "systemMessage": "システムメッセージ",
         "copyMessage": "コピー",
@@ -3088,8 +3133,9 @@
         "tokenCacheRead": "キャッシュ読取",
         "tokenCacheWrite": "キャッシュ書込",
         "duration": "所要時間",
-        "worked": "作業しました",
+        "worked": "作業完了",
         "workedFor": "{duration} 作業しました",
+        "working": "作業中...",
         "completedAt": "完了時刻",
         "jumpToPreviousUserMessage": "前のユーザーメッセージへ",
         "showMore": "もっと見る",
@@ -5189,7 +5235,8 @@
     "pickFolder": "プロジェクトフォルダを選択",
     "noRemote": "このフォルダには認識できるリモート（origin）がありません",
     "errors": {
-      "noAccount": "{host} の {provider} アカウントが設定されていません。「設定 → バージョン管理」で追加するとこのリポジトリを読み込めます。"
+      "noAccount": "{host} の {provider} アカウントが設定されていません。「設定 → バージョン管理」で追加するとこのリポジトリを読み込めます。",
+      "wrongForge": "{host} は {provider} でした。別のフォージとして扱われていましたが、判定を修正しました。再読み込みしてください。"
     },
     "addAccount": "アカウントを追加",
     "empty": "表示する項目がありません",

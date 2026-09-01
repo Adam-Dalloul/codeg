@@ -21,10 +21,20 @@
 
   font-family: var(--font-sans);
   font-size: 16px;
-  /* rem 而非 24px：这条行高被所有没自带 line-height 的文字继承，写死 px 的话缩放到
-     150% 时字长到 21px、行盒却仍是 24px，小字挤成一团。1.5rem 在 100% 下算出的
-     computed 值仍是 24px（与旧写法逐像素相同），缩放时才跟着根字号一起放大。 */
-  line-height: 1.5rem;
+  /* 这条行高被所有没自带 line-height 的文字继承，必须跟着根字号一起放大：写死 24px
+     的话缩放到 300% 时字长到 42px、行盒却仍是 24px，`truncate` 的 overflow:hidden
+     会把侧栏导航标签、会话标题、文件夹选择器的汉字上下各切掉几像素。
+
+     em 而非 rem：**根元素上的 rem 在 WebKit 里不解析为根字号，而是解析为 font-size
+     的初始值 16px**。缩放是 AppearanceProvider 往 <html> 上写 font-size 实现的，
+     于是 `1.5rem` 在这里被永久钉死在 24px —— 不是失效竞态，300% 冷启动同样是 24px。
+     Chromium 按规范解析为 1.5×根字号，所以这个 bug 只在桌面端（Tauri = WKWebView）
+     出现，浏览器里跑 server 模式看不到。根元素上的 em 就是它自己的 font-size，两个
+     引擎都实时解析：100% 下算出 24px（与旧写法逐像素相同），300% 下 72px。
+
+     `calc(1.5 * 1rem)` 和 `var(--lh)`（值为 1.5rem）在 WebKit 上同样被钉死，换写法
+     绕不过去；要留在 :root 上就只能用 em。 */
+  line-height: 1.5em;
   font-weight: 400;
 
   font-synthesis: none;
@@ -1536,6 +1546,83 @@
   }
   to {
     opacity: 1;
+  }
+}
+
+/* Reply fold body — the "Worked for …" header's progress section
+   (`CompletedTurnContent`). Unlike the tool collapsibles above, this one DOES
+   animate its height: it is the one fold per reply the reader toggles by hand,
+   and the answer below reading as pushed down / pulled back up is the whole
+   point of the affordance.
+
+   Driven by `grid-template-rows: 0fr ↔ 1fr`, never by a measured pixel height.
+   `instant-collapsible` exists precisely because Radix measured content height
+   on every open-on-mount and turned a long history into a forced-layout storm;
+   this keeps that promise — no JS reads layout, the engine interpolates the
+   track. The single child carries the clipping (and all the padding, so the
+   collapsed track really reaches zero instead of stalling at its own padding).
+
+   Kept as a CSS animation rather than a transition because `instant-collapsible`
+   holds closing content mounted by watching `animationName` / `animationend`. */
+.reply-fold-body {
+  display: grid;
+  grid-template-rows: 1fr;
+}
+
+.reply-fold-body > * {
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* easeOutCubic opening (the body decelerates into place as it pushes the answer
+   down) against easeInCubic closing (it accelerates away as it folds up). A
+   single sharp ease-out on both ends made the open read as a snap.
+
+   The enter animation is opt-in via `.reply-fold-enter`, which the component
+   adds only for a real closed→open toggle. A body that MOUNTS open — the row
+   key flipping at settlement, the detail refetch, the virtualizer recycling the
+   row — must paint expanded rather than replay the unfold. The exit animation
+   is unconditional: it is what unmounts the content. */
+.reply-fold-body[data-state="open"].reply-fold-enter {
+  animation: reply-fold-open 200ms cubic-bezier(0.33, 1, 0.68, 1);
+}
+
+.reply-fold-body[data-state="closed"] {
+  animation: reply-fold-close 160ms cubic-bezier(0.32, 0, 0.67, 0) forwards;
+}
+
+@keyframes reply-fold-open {
+  from {
+    grid-template-rows: 0fr;
+    opacity: 0;
+  }
+  to {
+    grid-template-rows: 1fr;
+    opacity: 1;
+  }
+}
+
+@keyframes reply-fold-close {
+  from {
+    grid-template-rows: 1fr;
+    opacity: 1;
+  }
+  to {
+    grid-template-rows: 0fr;
+    opacity: 0;
+  }
+}
+
+/* Reduced motion: snap. The close animation still has to RUN (it is what
+   unmounts the content — see the `animationend` presence check in
+   `instant-collapsible`), so shorten it to a single frame rather than removing
+   it, and drop the height travel so nothing slides. */
+@media (prefers-reduced-motion: reduce) {
+  .reply-fold-body[data-state="open"].reply-fold-enter {
+    animation: none;
+  }
+  .reply-fold-body[data-state="closed"] {
+    animation: reply-fold-close 1ms linear forwards;
   }
 }
 

@@ -56,21 +56,33 @@ function isKnownStatus(value: string): value is ConversationStatus {
 }
 
 /**
- * The agent + status chips that sit under a conversation's title. Shared with
- * the sidebar's hover bubble (`sidebar-conversation-hover-details.tsx`) so the
- * two surfaces stay identical — including the a11y detail below, which is easy
- * to lose in a copy.
+ * The identity chips that sit under a conversation's title: the agent always,
+ * then the model and the status when the surface wants them. Shared with the
+ * sidebar's hover bubble (`sidebar-conversation-hover-details.tsx`) so the two
+ * stay identical — including the a11y details below, which are easy to lose in
+ * a copy.
+ *
+ * The two surfaces ask for different chips because they sit beside different
+ * things. This dialog spells the model out in its own labelled field and its
+ * status is worth naming next to the title, so it passes `status` and no
+ * `model`. The bubble hangs off a row that already badges a running or
+ * cancelled session, and has no field to spare for the model, so it does the
+ * reverse.
  */
 export function SessionIdentityChips({
   agentType,
   status,
+  model,
 }: {
   agentType: AgentType
-  status: string
+  /** Omit to drop the status chip. */
+  status?: string | null
+  /** Omit (or pass empty) to drop the model chip. */
+  model?: string | null
 }) {
   const tStatus = useTranslations("Folder.statusLabels")
   return (
-    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+    <div className="flex flex-wrap items-center gap-x-1 gap-y-1 text-xs text-muted-foreground">
       <span className="inline-flex items-center gap-1.5">
         {/* Decorative: the visible label already names the agent, and the icon
             SVG carries its own <title>, so hide it from the a11y tree to avoid
@@ -80,13 +92,34 @@ export function SessionIdentityChips({
         </span>
         {getAgentLabel(agentType)}
       </span>
-      <span className="inline-flex items-center gap-1.5">
-        <ConversationStatusDot
-          status={isKnownStatus(status) ? status : null}
-          size="sm"
-        />
-        {isKnownStatus(status) ? tStatus(status) : status}
-      </span>
+      {model && (
+        // The separator rides INSIDE the model chip, with the row's own gap
+        // repeated around it so it sits evenly between the two names, and so
+        // the two are one flex item: a dot of its own would be left on the line
+        // above when a long model id wraps, orphaned at the end of it. Wrapping
+        // rather than truncating — a chip row has no width of its own to
+        // truncate against, and a model id is the kind of value whose tail is
+        // what distinguishes it.
+        <span className="inline-flex min-w-0 items-center gap-x-1">
+          <span aria-hidden="true">·</span>
+          <span dir="ltr" className="wrap-anywhere min-w-0 font-mono">
+            {model}
+          </span>
+        </span>
+      )}
+      {status != null && (
+        // `ms-2` puts back what the row gap gave up. That gap is tight so the
+        // model's separator can hug the two names it divides; this chip is a
+        // second label rather than a division, and reads as crowded against the
+        // agent without the 0.75rem it had.
+        <span className="ms-2 inline-flex items-center gap-1.5">
+          <ConversationStatusDot
+            status={isKnownStatus(status) ? status : null}
+            size="sm"
+          />
+          {isKnownStatus(status) ? tStatus(status) : status}
+        </span>
+      )}
     </div>
   )
 }

@@ -407,6 +407,10 @@
         "title": "Aktuellen Tab schließen",
         "description": "Schließt den aktuellen Konversations- oder Dateitab"
       },
+      "reopen_last_closed_tab": {
+        "title": "Geschlossenen Tab wiederöffnen",
+        "description": "Den zuletzt geschlossenen Konversations- oder Datei-Tab wieder öffnen"
+      },
       "close_all_file_tabs": {
         "title": "Alle Dateitabs schließen",
         "description": "Schließt alle geöffneten Dateitabs, wenn der Dateibereich aktiv ist"
@@ -418,6 +422,42 @@
       "prev_tab": {
         "title": "Vorheriger Tab",
         "description": "Zum vorherigen Konversations- oder Datei-Tab wechseln"
+      },
+      "switch_tab_1": {
+        "title": "Zu Tab 1 wechseln",
+        "description": "Zum 1. Konversations- oder Datei-Tab springen"
+      },
+      "switch_tab_2": {
+        "title": "Zu Tab 2 wechseln",
+        "description": "Zum 2. Konversations- oder Datei-Tab springen"
+      },
+      "switch_tab_3": {
+        "title": "Zu Tab 3 wechseln",
+        "description": "Zum 3. Konversations- oder Datei-Tab springen"
+      },
+      "switch_tab_4": {
+        "title": "Zu Tab 4 wechseln",
+        "description": "Zum 4. Konversations- oder Datei-Tab springen"
+      },
+      "switch_tab_5": {
+        "title": "Zu Tab 5 wechseln",
+        "description": "Zum 5. Konversations- oder Datei-Tab springen"
+      },
+      "switch_tab_6": {
+        "title": "Zu Tab 6 wechseln",
+        "description": "Zum 6. Konversations- oder Datei-Tab springen"
+      },
+      "switch_tab_7": {
+        "title": "Zu Tab 7 wechseln",
+        "description": "Zum 7. Konversations- oder Datei-Tab springen"
+      },
+      "switch_tab_8": {
+        "title": "Zu Tab 8 wechseln",
+        "description": "Zum 8. Konversations- oder Datei-Tab springen"
+      },
+      "switch_tab_9": {
+        "title": "Zu Tab 9 wechseln",
+        "description": "Zum 9. Konversations- oder Datei-Tab springen"
       },
       "send_message": {
         "title": "Nachricht senden",
@@ -2489,9 +2529,9 @@
       "workspace": "Arbeitsbereich",
       "retry": "Erneut versuchen",
       "git": "Git",
-      "openInFileManager": "Im Dateimanager öffnen",
-      "openInFinder": "In Finder öffnen",
-      "openInExplorer": "In Explorer öffnen",
+      "openInFileManager": "Dateimanager",
+      "openInFinder": "Finder",
+      "openInExplorer": "Explorer",
       "attachToCurrentSession": "Zur Sitzung hinzufügen",
       "compareWithBranch": "Mit Branch vergleichen...",
       "reloadFromDisk": "Von Datenträger neu laden",
@@ -2499,7 +2539,8 @@
       "newFile": "Datei",
       "newDirectory": "Verzeichnis",
       "openIn": "Öffnen in",
-      "openInTerminal": "Im Terminal öffnen",
+      "openInTerminal": "Terminal",
+      "openInCode": "VS Code",
       "linkedFolder": "Verknüpfter Ordner",
       "copyPath": "Pfad kopieren",
       "upload": "Dateien/Ordner hochladen",
@@ -2518,6 +2559,7 @@
       "toasts": {
         "openDirectoryFailed": "Verzeichnis konnte nicht geöffnet werden",
         "openBuiltinTerminalFailed": "Integriertes Terminal konnte nicht geöffnet werden",
+        "openInCodeFailed": "In Code öffnen fehlgeschlagen",
         "openCommitWindowFailed": "Commit-Fenster konnte nicht geöffnet werden",
         "noAddableFilesInDir": "Keine geänderten Dateien in diesem Verzeichnis können zu VCS hinzugefügt werden",
         "noRollbackFilesInDir": "Keine geänderten Dateien in diesem Verzeichnis können zurückgesetzt werden",
@@ -2703,6 +2745,7 @@
           "downloadFailed": "{agent}-Download fehlgeschlagen: {message}",
           "sessionLoadResourceNotFound": "{agent}-Sitzung konnte nicht geladen werden. Neu laden, um es erneut zu versuchen, oder eine neue Konversation starten.",
           "sessionLoadUnavailable": "{agent} konnte diese Sitzung nicht wiederherstellen – sie wurde möglicherweise beendet oder der Agent wurde gestoppt. Neu laden, um es erneut zu versuchen, oder eine neue Konversation starten.",
+          "sessionArchived": "Die vorherige Sitzung wurde auf {agent}-Seite archiviert. Führe {command} im Terminal aus, um sie wiederherzustellen und neu zu laden, oder starte eine neue Unterhaltung.",
           "turnFailedRefusal": "{agent} hat die Fortsetzung dieser Runde abgelehnt. Häufig deutet das auf einen Backend- oder Gateway-Fehler hin. Bitte prüfen Sie die Agent-Logs.",
           "turnFailedMaxTokens": "{agent} hat das Token-Limit für diese Runde erreicht.",
           "turnFailedMaxTurnRequests": "{agent} hat die maximale Anzahl zulässiger Anfragen für diese Runde erreicht.",
@@ -3060,6 +3103,8 @@
         "errorTitle": "Sitzung konnte nicht geladen werden",
         "errorActionReload": "Neu laden",
         "errorActionNewSession": "Neue Konversation",
+        "errorActionCopyCommand": "Befehl kopieren",
+        "errorActionCommandCopied": "Kopiert",
         "emptyConversation": "Keine Nachrichten in dieser Unterhaltung.",
         "systemMessage": "Systemnachricht",
         "copyMessage": "Kopieren",
@@ -3088,8 +3133,9 @@
         "tokenCacheRead": "Cache-Lesen",
         "tokenCacheWrite": "Cache-Schreiben",
         "duration": "Dauer",
-        "worked": "Gearbeitet",
+        "worked": "Arbeit beendet",
         "workedFor": "{duration} gearbeitet",
+        "working": "Arbeitet...",
         "completedAt": "Abgeschlossen um",
         "jumpToPreviousUserMessage": "Zur Benutzernachricht springen",
         "showMore": "Mehr anzeigen",
@@ -5189,7 +5235,8 @@
     "pickFolder": "Projektordner wählen",
     "noRemote": "Dieser Ordner hat kein erkennbares Forge-Remote (origin)",
     "errors": {
-      "noAccount": "Für {host} ist kein {provider}-Konto konfiguriert. Füge unter Einstellungen → Versionskontrolle eines hinzu, um dieses Repository zu laden."
+      "noAccount": "Für {host} ist kein {provider}-Konto konfiguriert. Füge unter Einstellungen → Versionskontrolle eines hinzu, um dieses Repository zu laden.",
+      "wrongForge": "{host} ist ein {provider} und nicht die Forge, als die es eingestuft war. Die Erkennung wurde korrigiert — neu laden, um es erneut zu versuchen."
     },
     "addAccount": "Konto hinzufügen",
     "empty": "Nichts zu zeigen",

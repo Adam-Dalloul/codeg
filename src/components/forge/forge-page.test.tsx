@@ -271,6 +271,74 @@ describe("ForgePage list failures", () => {
     expect(openSettingsWindow).toHaveBeenCalledWith("version-control")
   })
 
+  /**
+   * Issue #611: a self-hosted GitLab that codeg had classified as a GitHub
+   * Enterprise. The backend recognises GitLab's "API V3 is no longer supported"
+   * 410 and CORRECTS ITSELF before returning, so `wrongForge` describes
+   * bookkeeping that is already fixed — putting it on screen would report our
+   * own mistake as the user's problem. The panel asks again instead.
+   *
+   * The second `folderForgeRemote` answer is the point of re-deriving the
+   * remote rather than just re-listing: `provider` is what the tab wording
+   * reads, so the correction has to reach it too.
+   */
+  it("silently retries a wrong-forge failure instead of showing it", async () => {
+    vi.mocked(folderForgeRemote)
+      .mockResolvedValueOnce(REMOTE)
+      .mockResolvedValue({
+        ...REMOTE,
+        server_host: "git.corp.com",
+        provider: "gitlab",
+      })
+    vi.mocked(forgeListIssues)
+      .mockRejectedValueOnce(
+        backendError({
+          code: "network_error",
+          message:
+            "git.corp.com is a GitLab, not the forge it was addressed as",
+          i18n_key: "Forge.errors.wrongForge",
+          i18n_params: { host: "git.corp.com", provider: "GitLab" },
+        })
+      )
+      .mockResolvedValue(listOf([issue(42, "Login times out")]))
+    mount()
+
+    // The retry's rows, not the failure.
+    expect(await screen.findByText("Login times out")).toBeInTheDocument()
+    expect(
+      screen.queryByText(/not the forge codeg had it classified as/)
+    ).not.toBeInTheDocument()
+    // Re-derived, so the panel now calls them merge requests. The accessible
+    // name carries the count badge too, hence the regex.
+    expect(vi.mocked(folderForgeRemote).mock.calls.length).toBeGreaterThan(1)
+    expect(
+      await screen.findByRole("tab", { name: /Merge requests/ })
+    ).toBeInTheDocument()
+  })
+
+  /**
+   * One retry, not a loop. The backend caches the detection before it reports
+   * `wrongForge`, so a SECOND one means something else is wrong — and a panel
+   * that kept retrying would spin instead of saying so.
+   */
+  it("shows a wrong-forge failure that survives the retry", async () => {
+    vi.mocked(forgeListIssues).mockRejectedValue(
+      backendError({
+        code: "network_error",
+        message: "git.corp.com is a GitLab, not the forge it was addressed as",
+        i18n_key: "Forge.errors.wrongForge",
+        i18n_params: { host: "git.corp.com", provider: "GitLab" },
+      })
+    )
+    mount()
+
+    expect(
+      await screen.findByText(
+        "git.corp.com is a GitLab, not the forge codeg had it classified as. The detection has been corrected — reload to retry."
+      )
+    ).toBeInTheDocument()
+  })
+
   it("recovers: a later successful fetch clears the failure", async () => {
     const user = userEvent.setup()
     vi.mocked(forgeListIssues)
