@@ -235,6 +235,14 @@ export const CompletedTurnContent = memo(function CompletedTurnContent({
     </Shimmer>
   )
 
+  // Streamdown's incomplete-markdown repair (remend) may only run on text that
+  // is still being written. On settled text it appends a closer after spans
+  // that are ALREADY complete — a glob inside code, an identifier like `_meta`
+  // — leaving a stray `*` / `_`; landing after a final code fence, that closer
+  // reopens the block (#555). Every branch below renders some slice of this one
+  // turn, so they all get the same answer.
+  const isStreaming = !completed
+
   if (!foldable) {
     // Parsers leave empty placeholder turns between tool exchanges;
     // `mergeConsecutiveAssistantTurns` only swallows them mid-run, so a lone
@@ -247,12 +255,22 @@ export const CompletedTurnContent = memo(function CompletedTurnContent({
       split.progress.length === 0 &&
       !hasVisibleAnswer(split.answer)
     if (blank) {
-      return <ContentPartsRenderer parts={parts} role="assistant" />
+      return (
+        <ContentPartsRenderer
+          parts={parts}
+          role="assistant"
+          isStreaming={isStreaming}
+        />
+      )
     }
     return (
       <div className="space-y-3">
         <div className={HEADER_CLASS}>{labelNode}</div>
-        <ContentPartsRenderer parts={parts} role="assistant" />
+        <ContentPartsRenderer
+          parts={parts}
+          role="assistant"
+          isStreaming={isStreaming}
+        />
       </div>
     )
   }
@@ -292,13 +310,21 @@ export const CompletedTurnContent = memo(function CompletedTurnContent({
         >
           <div>
             <div className="pt-3">
-              <ContentPartsRenderer parts={split.progress} role="assistant" />
+              <ContentPartsRenderer
+                parts={split.progress}
+                role="assistant"
+                isStreaming={isStreaming}
+              />
             </div>
           </div>
         </CollapsibleContent>
       </Collapsible>
       {split.answer.length > 0 && (
-        <ContentPartsRenderer parts={split.answer} role="assistant" />
+        <ContentPartsRenderer
+          parts={split.answer}
+          role="assistant"
+          isStreaming={isStreaming}
+        />
       )}
     </div>
   )
