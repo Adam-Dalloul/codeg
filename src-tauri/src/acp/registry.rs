@@ -809,8 +809,8 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             name: "OpenClaw",
             description: "OpenClaw is a personal AI assistant you run on your own devices.",
             distribution: AgentDistribution::Npx {
-                version: "2026.7.1",
-                package: "openclaw@2026.7.1",
+                version: "2026.8.1",
+                package: "openclaw@2026.8.1",
                 cmd: "openclaw",
                 args: &["acp"],
                 env: &[],
@@ -888,8 +888,8 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             // Docker / Nix are the supported channels. The npm `hermes-agent`
             // package is a COMMUNITY bridge (wyrtensi/hermes-agent-npm, not
             // Nous Research), pinned here at an exact, audited version: its
-            // postinstall clones the OFFICIAL repo at tag v2026.8.27 verifying
-            // the full commit SHA (5fc308a7…), bootstraps an isolated Python
+            // postinstall clones the OFFICIAL repo at tag v2026.8.31 verifying
+            // the full commit SHA (29112bef…), bootstraps an isolated Python
             // 3.11 venv with a checksum-pinned uv, and `uv sync --locked
             // --extra all` (⊇ the acp+mcp extras) from upstream's lockfile —
             // all inside the npm package directory; config/credentials stay in
@@ -897,8 +897,8 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             // console script, so `hermes acp` is the same adapter the official
             // install runs. Keep the pin EXACT on version bumps and re-audit
             // the wrapper diff — the exact pin is what bounds the third-party
-            // trust surface. 0.20.6 audited, and this bump is the cheap kind
-            // (same as 0.20.4→0.20.5): every file in the tarball EXCEPT
+            // trust surface. 0.21.0 audited, and this bump is the cheap kind
+            // (same as 0.20.4→0.20.5→0.20.6): every file in the tarball EXCEPT
             // `package.json` is byte-identical to the fully-read 0.20.4 wrapper
             // — `bin/`, the whole `lib/` (incl. `runtime-checkout.js`), and
             // `scripts/postinstall.js` with its `fetchAndVerifyPinnedTag` hard
@@ -906,16 +906,16 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             // its checksum-pinned `uv` installer / venv bootstrap. That last
             // one is byte-identical by sha256, not just by diff. `package.json`
             // moves only the version and the upstream pin. That new pin
-            // resolves as advertised: the annotated tag v2026.8.27
-            // dereferences to exactly 5fc308a7…, tagged by Teknium.
+            // resolves as advertised: the annotated tag v2026.8.31
+            // dereferences to exactly 29112bef…, tagged by Teknium.
             //
             // Launch preference: `resolve_npx_command("hermes")` checks PATH
             // first, so an official-installer `hermes` (which self-updates)
             // naturally outranks the npm-managed copy; the npm global install
             // is the managed/one-click channel codeg's Install button drives.
             distribution: AgentDistribution::Npx {
-                version: "0.20.6",
-                package: "hermes-agent@0.20.6",
+                version: "0.21.0",
+                package: "hermes-agent@0.21.0",
                 cmd: "hermes",
                 args: &["acp"],
                 env: &[],
@@ -930,8 +930,8 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             name: "CodeBuddy",
             description: "Tencent Cloud's official AI coding assistant (ACP)",
             distribution: AgentDistribution::Npx {
-                version: "2.141.0",
-                package: "@tencent-ai/codebuddy-code@2.141.0",
+                version: "2.143.0",
+                package: "@tencent-ai/codebuddy-code@2.143.0",
                 cmd: "codebuddy",
                 args: &["--acp"],
                 env: &[],
@@ -1040,27 +1040,30 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             // `models` that the composer's selectors and context ring read, and
             // prompting straight after it works. It also skips `session/load`'s
             // history replay, which codeg only drained to discard. The 1.0.1–
-            // 1.0.5 patches add nothing further here: re-probed live against the
-            // 1.0.5 binary, `initialize` still answers `sessionCapabilities:
-            // {list, resume, close}` plus the same
+            // 1.0.13 patches add nothing further here: re-probed live against
+            // the 1.0.13 binary, `initialize` still answers
+            // `sessionCapabilities: {list, resume, close}` plus the same
             // `promptCapabilities.embeddedContext`, so the resume rung stands.
             distribution: AgentDistribution::Npx {
-                version: "1.0.5",
-                package: "@xai-official/grok@1.0.5",
+                version: "1.0.13",
+                package: "@xai-official/grok@1.0.13",
                 cmd: "grok",
                 // Only the ACP subcommand lives here. Grok's ROOT-level launch
                 // flags (`--no-auto-update` always, `--permission-mode <value>`
                 // only for a non-default permission mode) MUST precede this
                 // subcommand — `grok agent stdio` itself rejects them (re-verified
-                // against 1.0.5: it still only accepts --debug/--debug-file/
+                // against 1.0.13: it still only accepts --debug/--debug-file/
                 // --leader-socket) — so `build_agent` inserts them ahead of these
                 // args rather than appending after. Since 1.0.3 `grok --help` no
                 // longer LISTS `--no-auto-update`, but it is still accepted:
                 // clap hard-errors on an unknown argument, and
-                // `grok --no-auto-update agent stdio` initializes clean.
+                // `grok --no-auto-update agent stdio` initializes clean. The
+                // root `--permission-mode` still takes exactly the six values
+                // `GrokSettings::permission_mode` can hold (default/acceptEdits/
+                // auto/dontAsk/bypassPermissions/plan).
                 args: &["agent", "stdio"],
                 env: &[],
-                // `@xai-official/grok@1.0.5` declares `engines.node: ">=20"`;
+                // `@xai-official/grok@1.0.13` declares `engines.node: ">=20"`;
                 // surface that in preflight so Node 18 isn't silently accepted.
                 node_required: Some("20.0.0"),
             },
@@ -1264,8 +1267,8 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             // own copy AES-GCM-encrypted under the machine key, so it is not
             // the source). `engines.node: ">=20"`.
             distribution: AgentDistribution::Npx {
-                version: "1.1.33",
-                package: "@qoder-ai/qodercli@1.1.33",
+                version: "1.1.40",
+                package: "@qoder-ai/qodercli@1.1.40",
                 cmd: "qoder",
                 args: &["--acp"],
                 env: &[],
@@ -1625,8 +1628,8 @@ mod tests {
         );
         assert_npx_version(
             AgentType::OpenClaw,
-            "2026.7.1",
-            "openclaw@2026.7.1",
+            "2026.8.1",
+            "openclaw@2026.8.1",
             Some("22.22.3"),
         );
         assert_npx_version(
@@ -1637,8 +1640,8 @@ mod tests {
         );
         assert_npx_version(
             AgentType::CodeBuddy,
-            "2.141.0",
-            "@tencent-ai/codebuddy-code@2.141.0",
+            "2.143.0",
+            "@tencent-ai/codebuddy-code@2.143.0",
             Some("22.0.0"),
         );
         // Kimi Code must never land on 0.37.0–0.38.0: every session in that
@@ -1658,8 +1661,8 @@ mod tests {
         assert_npx_version(AgentType::Pi, "0.0.33", "pi-acp@0.0.33", Some("22.0.0"));
         assert_npx_version(
             AgentType::Grok,
-            "1.0.5",
-            "@xai-official/grok@1.0.5",
+            "1.0.13",
+            "@xai-official/grok@1.0.13",
             Some("20.0.0"),
         );
         assert_npx_version(
@@ -1670,8 +1673,8 @@ mod tests {
         );
         assert_npx_version(
             AgentType::Qoder,
-            "1.1.33",
-            "@qoder-ai/qodercli@1.1.33",
+            "1.1.40",
+            "@qoder-ai/qodercli@1.1.40",
             Some("20.0.0"),
         );
         assert_binary_version(AgentType::OpenCode, "1.18.25", "/releases/download/v1.18.25/");
@@ -1681,8 +1684,8 @@ mod tests {
         // audited wrapper code is only what the pinned version ships.
         assert_npx_version(
             AgentType::Hermes,
-            "0.20.6",
-            "hermes-agent@0.20.6",
+            "0.21.0",
+            "hermes-agent@0.21.0",
             Some("20.0.0"),
         );
     }
