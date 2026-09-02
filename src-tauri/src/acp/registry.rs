@@ -577,9 +577,112 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             // can advertise `["sessionFailure", "agentFileChangeReport"]` — an
             // ADDITIVE element in an array codeg only ever membership-tests,
             // so the session-failure gate is unaffected.
+            // 0.70.0 (#1002) is provider plumbing only: the
+            // `providers/list|set|disable` methods and the `providers: {}`
+            // advertisement (both already in 0.69.0) now also cover LOADED
+            // sessions — a switch respawns the SDK behind the live session
+            // with a rebuilt routing env (base-URL/Bedrock/Vertex vars,
+            // local credential checks bypassed via "acp-proxy" sentinels).
+            // All of it sits inside client-called requests codeg never
+            // sends; dependencies, the session_update surface and the Node
+            // floor are unchanged (tarball-diffed — the ambient additions
+            // are a "Claude ACP started" boot line and provider-resolution
+            // logging).
+            // 0.71.0 (nine PRs; claude-agent-sdk 0.3.232→0.3.238, which
+            // vendors runtime 2.1.238; zod floor raised to ^4, #1057; dist
+            // split into modules) adds five session_update KINDS, every one
+            // gated on a client advertisement codeg does not make:
+            // `subagent_spawned`/`subagent_state_update` (#1017) ride only
+            // for a client advertising `clientCapabilities.subagents`
+            // (inexpressible in `agent-client-protocol-schema` 0.11.7) or
+            // AIR `nativeSubagentSessions`, and `async_task_spawned`/
+            // `_progress`/`_state_update` only behind AIR `asyncTasks` —
+            // codeg's AIR array is pinned to exactly ["sessionFailure"]
+            // (tested), which the no-catch-all `SessionUpdate` argument in
+            // codex-acp 1.7.0's NOT-adopted paragraph makes load-bearing:
+            // the same "would fail to deserialize" logic applies verbatim.
+            // Without the advertisements the legacy shape is intact
+            // (tarball-verified): `subagent-transcript` streaming,
+            // `_meta.claudeCode.parentToolUseId`, permissions on the root
+            // session. The advertisement array grows to [sessionFailure,
+            // agentFileChangeReport, nativeSubagentSessions, asyncTasks] and
+            // `sessionCapabilities` gains `subagents: {}` — additive shapes
+            // codeg membership-tests or ignores. What codeg's wire DOES
+            // gain: (a) real session titles (#984) — the CLI's own
+            // auto-titler never arms under the Agent SDK, so the old
+            // turn-end pull mostly republished the raw first prompt; the
+            // adapter now asks for a generated title (a background
+            // `generate_session_title` control request, once per session,
+            // needs ≥10 chars of context, a user /rename always wins) over
+            // the SAME `session_info_update {title, updatedAt}` wire the
+            // SessionInfoUpdate arm already feeds to `publish_native_title`;
+            // the transcript-tail fallback in background_watch.rs stays as
+            // the backstop. (b) The permission layer is rebuilt
+            // (`src/permissions/*`): the option-level `_meta.permission =
+            // {version, changes[]}` contract from 0.64.1/#930 is GONE, and
+            // claude joins codex-acp 1.7.0's REQUEST-level
+            // `_meta.permission = {version: 1, title, description?}`
+            // (description = "Reason: <decisionReason>") — exactly what
+            // `hoist_request_permission_meta` forwards, so the card's reason
+            // line lights up for claude with no code change while
+            // `parsePermissionOptionChanges` simply no longer fires for it.
+            // ExitPlanMode approval gains clear-context lanes (#1004): new
+            // opaque option ids under standard kinds, and accepting one
+            // swaps the underlying SDK session while the SAME ACP turn stays
+            // in flight (`current_mode_update` + `config_option_update`
+            // mid-turn, then the plan continuation streams on) — transparent
+            // to codeg's turn-scoped runtime by construction. (c) Modes
+            // (#1025): the advertised list is now default/acceptEdits/plan/
+            // auto (+ bypassPermissions behind the adapter's ALLOW_BYPASS),
+            // `dontAsk` is still parsed but no longer advertised, and each
+            // mode/option carries `_meta.kind` (standard/plan/auto_review/
+            // full_access) — additive, unread. (d) The prompt response gains
+            // `_meta.quota = {token_count, model_usage[]}` (#1037),
+            // deliberately codex-shaped — unread here, input for a future
+            // usage surface. (e) `session/fork` (registered since 0.69.0)
+            // honors an AIR fork point (`_meta.jetbrains.air.fork.messageId`,
+            // #1046) — client-called; codeg doesn't. (f) #1045: a
+            // `_session/steering` arriving while a permission/elicitation
+            // card is open is delivered at non-interrupting priority instead
+            // of aborting the running cycle into the open prompt; the
+            // `promptRequired` contract is unchanged (tarball-verified), so
+            // the 0.65.0 floor keeps holding, just safer. The Windows
+            // `PowerShell` shell tool is now recognized alongside Bash (same
+            // description-title treatment).
+            // 0.72.0 moves both SDKs (@agentclientprotocol/sdk 1.3.0→1.4.0,
+            // claude-agent-sdk 0.3.238→0.3.252 = runtime 2.1.252) and rides
+            // the new runtime in #1065: a PostModelSwitch hook (fires on CLI
+            // 2.1.251+ only) mirrors switches the adapter didn't drive — a
+            // `/model x` typed as a prompt — back into the picker through
+            // the EXISTING `config_option_update`/`current_mode_update`
+            // surfaces; PreModelSwitch hooks can veto (`setModel` then fails
+            // with "Model switch blocked by a PreModelSwitch hook"); effort
+            // now seeds from the CLI's persisted per-model settings unless
+            // the user pinned it via the picker this session; and results
+            // echo the triggering send's `user_message_uuid` (SDK 0.3.246+),
+            // upgrading the adapter's internal orphan-result heuristics to
+            // an exact join. The ACP SDK bump is API-surface only:
+            // `unstable_createElicitation`/`unstable_completeElicitation`
+            // lose their prefixes while the wire methods stay
+            // `elicitation/create`/`elicitation/complete` (schema method
+            // tables diffed byte-identical) — moot here anyway, codeg
+            // advertises elicitation for codex and deepseek only.
+            // 0.73.0 (#1066) is the runtime and nothing else: dist/ is
+            // byte-identical to 0.72.0's and the only manifest change is
+            // claude-agent-sdk 0.3.252→0.3.257 (runtime 2.1.257). That is
+            // the point of this pin: model availability ships in the
+            // runtime — the API refuses new model ids on old ones ("Claude
+            // Code 2.1.247 does not support this model; version 2.1.251 or
+            // newer is required" for `claude-fable-5-1`, and the old pin's
+            // SDK 0.3.232 vendors 2.1.232) — so from 0.72.0 on the dynamic
+            // model config option lists new Anthropic models with no codeg
+            // change (verified live over stdio: 0.73.0 initializes and
+            // session/new's model option offers Default/Opus 1M/Fable/
+            // Sonnet/Haiku). `engines.node` stays ">=22" across 0.70–0.73,
+            // so `node_required` holds.
             distribution: AgentDistribution::Npx {
-                version: "0.69.0",
-                package: "@agentclientprotocol/claude-agent-acp@0.69.0",
+                version: "0.73.0",
+                package: "@agentclientprotocol/claude-agent-acp@0.73.0",
                 cmd: "claude-agent-acp",
                 args: &[],
                 env: &[],
@@ -734,8 +837,11 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             // standard ACP fields `parse_permission_tool_call` already reads
             // (`rawInput.command/cwd/url/additionalPermissions`, `locations`,
             // `content`). `handle_permission_request` hoists the request meta
-            // onto the card so the reason survives; claude-agent-acp 0.69.0
-            // still emits `changes[]`, so that parser stays. Codex's option
+            // onto the card so the reason survives; claude-agent-acp joined
+            // this request-level contract in 0.71.0 (its `changes[]` ended at
+            // 0.70.0), so the option-level parser now serves codex's
+            // description-only MCP-approval options and any custom agent
+            // still speaking `changes[]`. Codex's option
             // IDs were also renamed (`allow_for_session`,
             // `accept_execpolicy_amendment`, `apply_network_policy_amendment:N`
             // …) — inert here, codeg only echoes back the selected id — and
@@ -1616,8 +1722,8 @@ mod tests {
     fn registry_pins_current_acp_agent_versions() {
         assert_npx_version(
             AgentType::ClaudeCode,
-            "0.69.0",
-            "@agentclientprotocol/claude-agent-acp@0.69.0",
+            "0.73.0",
+            "@agentclientprotocol/claude-agent-acp@0.73.0",
             Some("22.0.0"),
         );
         assert_npx_version(

@@ -3737,18 +3737,22 @@ fn build_client_capabilities(
     //
     // codex-acp 1.7.0 added a third, "nativeSubagentSessions" (the draft ACP
     // subagent RFD; the canonical gate is a `clientCapabilities.subagents: {}`
-    // field, with this AIR key as the fallback for SDKs that strip it). It must
+    // field, with this AIR key as the fallback for SDKs that strip it);
+    // claude-agent-acp 0.71.0 speaks it too, plus a fourth, "asyncTasks"
+    // (`async_task_spawned` / `async_task_progress` /
+    // `async_task_state_update`), gated the same way. They must
     // stay out for a harder reason than cost: `agent-client-protocol-schema`
-    // 0.11.7 cannot RECEIVE the result. Its `SessionUpdate` is an
+    // 0.11.7 cannot RECEIVE the results. Its `SessionUpdate` is an
     // internally-tagged enum with no catch-all arm, so the `subagent_spawned` /
     // `subagent_state_update` notifications would fail to deserialize — and
-    // since the adapter switches child messages, thoughts, tools and
+    // since the adapters switch child messages, thoughts, tools and
     // permissions onto a child session id announced only in that first
     // notification, opting in would make subagent work vanish from the timeline
     // rather than render better. Without the advertisement the lifecycle stays
-    // the legacy `subAgentActivity` tool call codeg already renders, whose
-    // shape is unchanged from 1.4.0. Revisit when the schema crate ships both
-    // the capability field and the update variants.
+    // what codeg already renders — codex's legacy `subAgentActivity` tool call
+    // (unchanged from 1.4.0) and claude's `subagent-transcript` streaming
+    // (verified intact through 0.73.0). Revisit when the schema crate ships
+    // both the capability field and the update variants.
     if matches!(agent_type, AgentType::ClaudeCode | AgentType::Codex) {
         meta.insert(
             "jetbrains".to_string(),
@@ -10224,8 +10228,10 @@ fn is_codex_plan_review(
 /// `_meta.permission = {version: 1, title, description?}`. The title is now one
 /// of four fixed strings and the reason lives only in `description`, so a card
 /// built from the tool call alone would read "Edit files" where it used to
-/// explain WHY the edit needs approval. claude-agent-acp does not send this
-/// block; nothing changes for it.
+/// explain WHY the edit needs approval. claude-agent-acp joined with its
+/// 0.71.0 permission rebuild — same `{version: 1, title, description?}`, the
+/// SDK's decisionReason riding in `description` as "Reason: …" — so the hoist
+/// serves both built-ins.
 ///
 /// Hoisting rather than adding an event field is deliberate: the tool call is
 /// already the card's payload end-to-end (`PendingPermissionState.tool_call`,
@@ -13323,14 +13329,17 @@ mod tests {
                 .iter()
                 .any(|v| v.as_str() == Some("sessionFailure")));
             // And nothing else. Adding a capability here is not free — it is
-            // what turns the corresponding behavior on, and neither of the two
+            // what turns the corresponding behavior on, and none of the three
             // that exist is wanted: "agentFileChangeReport"
             // (claude-agent-acp 0.69.0 / codex-acp 1.4.0) buys an extra model
             // round-trip per turn for a clamped, self-reported subset of what
-            // the `workspace_state` watcher already sees, and
-            // "nativeSubagentSessions" (codex-acp 1.7.0) would move subagent
+            // the `workspace_state` watcher already sees;
+            // "nativeSubagentSessions" (codex-acp 1.7.0 / claude-agent-acp
+            // 0.71.0) would move subagent
             // output onto child session ids carried by `SessionUpdate` variants
-            // `agent-client-protocol-schema` 0.11.7 cannot deserialize at all.
+            // `agent-client-protocol-schema` 0.11.7 cannot deserialize at all;
+            // and "asyncTasks" (claude-agent-acp 0.71.0) rides the same
+            // undeliverable `async_task_*` variants.
             // See the reasoning at the advertisement site before relaxing this.
             assert_eq!(
                 capabilities,

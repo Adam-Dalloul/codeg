@@ -39,13 +39,19 @@
 //!
 //! * **Session title** — Claude Code's generated name arrives as a dedicated
 //!   `ai-title` transcript record whenever the background summarizer finishes,
-//!   routinely AFTER the turn that triggered it ended. The ACP adapter only
-//!   pulls the name at turn-end (`maybeUpdateSessionTitle`, claude-agent-acp
-//!   0.69.0), so on a short session there is nothing to read yet and no wire
-//!   event ever follows. These bytes are already being tailed, so the records
-//!   are folded here and handed to [`publish_native_title`] — the same path a
-//!   live ACP title takes. Not activity: it rides alongside the activity event
-//!   rather than inside it (see `run_watch`).
+//!   routinely AFTER the turn that triggered it ended. Through claude-agent-acp
+//!   0.70.0 the adapter only pulled the name at turn-end
+//!   (`maybeUpdateSessionTitle`), so on a short session there was nothing to
+//!   read yet and no wire event ever followed. 0.71.0 (#984) asks the CLI to
+//!   generate one at turn-end instead (`SessionTitles`, a background
+//!   `generate_session_title` control request), so a wire title now usually
+//!   does follow — but generation needs ten characters of collected context
+//!   and can return null, so this fold stays the backstop. These bytes are
+//!   already being tailed, so the records are folded here and handed to
+//!   [`publish_native_title`] — the same skip-cached path a live ACP title
+//!   takes, which also absorbs the overlap when both fire. Not activity: it
+//!   rides alongside the activity event rather than inside it (see
+//!   `run_watch`).
 //!
 //! The watcher is connection-scoped on purpose: background work cannot outlive
 //! the agent CLI process, whose lifetime IS the connection's. Poll ticks are
