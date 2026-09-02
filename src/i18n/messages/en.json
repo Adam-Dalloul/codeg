@@ -3392,7 +3392,6 @@
         },
         "planMode": {
           "entered": "Entered plan mode",
-          "planLabel": "Plan",
           "reviewApproved": "Plan approved — implementing",
           "reviewKept": "Kept in plan mode",
           "reviewPending": "Awaiting plan decision",

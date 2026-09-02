@@ -3392,7 +3392,6 @@
         },
         "planMode": {
           "entered": "계획 모드 시작",
-          "planLabel": "계획",
           "reviewApproved": "계획 승인됨 — 실행 중",
           "reviewKept": "계획 모드 유지",
           "reviewPending": "계획 결정 대기 중",

@@ -19,9 +19,13 @@ import { isContextCompactionMeta } from "@/lib/context-compaction"
 import { isUnsettledToolCall } from "@/lib/tool-call-lifecycle"
 import { feedbackCheckHasContent } from "@/lib/feedback-check"
 import {
+  extractPlanMarkdown,
   isPlanLikeToolName,
   isPlanModeToolName,
   parseTodosFromJson,
+  // plan-parse's separator-stripping form, distinct from the underscore-
+  // preserving `normalizeToolName` imported above from tool-call-normalization.
+  normalizeToolName as normalizePlanToolName,
 } from "@/lib/plan-parse"
 import {
   tokenizeReferenceLinks,
@@ -1809,6 +1813,45 @@ function buildToolResultMap(
  * the renderer can keep showing the running spinner while the live output
  * streams in.
  */
+/**
+ * Drop an assistant text part that only repeats a plan already rendered as a
+ * card by a `plan_review` tool call in the SAME turn.
+ *
+ * codex publishes its Plan-mode plan on two live channels at once: as an
+ * ordinary `agent_message` (so it streams as normal assistant prose) and as
+ * `rawInput.plan` on the plan-review permission request codeg seeds a tool call
+ * from. Both land in one turn — the live turn splitter only cuts a new turn on
+ * a content block that FOLLOWS a completed tool call — so the reader sees the
+ * whole plan twice, once bare and once boxed.
+ *
+ * The card wins: it carries the title, the clamp and the decision marker. Only
+ * an exact match (after trimming) is dropped, so a message that merely quotes
+ * or extends the plan keeps its text.
+ */
+export function dropPlanTextDuplicatedByReviewCard(
+  parts: AdaptedContentPart[]
+): AdaptedContentPart[] {
+  const planned = new Set<string>()
+  for (const part of parts) {
+    if (part.type !== "tool-call") continue
+    if (normalizePlanToolName(part.toolName) !== "planreview") continue
+    let parsed: unknown
+    try {
+      parsed = part.input ? JSON.parse(part.input) : null
+    } catch {
+      continue
+    }
+    const record = asRecord(parsed)
+    const plan = record ? extractPlanMarkdown(record) : null
+    if (plan) planned.add(plan.trim())
+  }
+  if (planned.size === 0) return parts
+
+  return parts.filter(
+    (part) => part.type !== "text" || !planned.has(part.text.trim())
+  )
+}
+
 export function adaptMessageTurn(
   turn: MessageTurn,
   text: AdapterMessageText,
@@ -2049,7 +2092,9 @@ export function adaptMessageTurn(
             groupConsecutiveDelegationStatus(
               groupConsecutiveToolCalls(
                 dropEmptyInFlightToolCalls(
-                  dropHiddenFeedbackChecks(adaptedContent)
+                  dropHiddenFeedbackChecks(
+                    dropPlanTextDuplicatedByReviewCard(adaptedContent)
+                  )
                 )
               )
             )

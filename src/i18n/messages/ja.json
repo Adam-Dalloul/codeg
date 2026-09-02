@@ -3392,7 +3392,6 @@
         },
         "planMode": {
           "entered": "計画モードを開始",
-          "planLabel": "計画",
           "reviewApproved": "計画を承認 — 実行します",
           "reviewKept": "プランモードを維持",
           "reviewPending": "計画の判断待ち",

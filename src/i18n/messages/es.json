@@ -3392,7 +3392,6 @@
         },
         "planMode": {
           "entered": "Modo de planificación iniciado",
-          "planLabel": "Plan",
           "reviewApproved": "Plan aprobado: implementando",
           "reviewKept": "Se mantuvo en modo plan",
           "reviewPending": "Esperando la decisión sobre el plan",
