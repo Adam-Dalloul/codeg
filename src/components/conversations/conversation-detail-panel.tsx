@@ -1348,6 +1348,15 @@ const ConversationTabView = memo(function ConversationTabView({
         // Same two-row reshuffle as fork-send: the current row now points at
         // S2 and a sibling preserves S1.
         refreshConversations()
+        // Unlike fork-send, this row's HISTORY just changed: the whole point is
+        // that S2 ends at the chosen turn. The turns rendered right now came
+        // from S1 — the persisted detail plus every turn this session streamed
+        // — so leaving them would show the fork with the parent's full history
+        // until the tab is closed and reopened. The default (no `preserveLive`)
+        // drops the live buffers and re-reads the row, which now resolves to
+        // S2. Nothing is in flight to protect: the backend refuses a fork while
+        // a turn is running.
+        refetchDetail(effectiveConversationId)
       } catch (err) {
         // A turn in flight is transient here, not a failure to report as one —
         // there is no draft to re-queue, so say so and let the user retry.
@@ -1370,6 +1379,7 @@ const ConversationTabView = memo(function ConversationTabView({
       connStatus,
       effectiveConversationId,
       folderId,
+      refetchDetail,
       refreshConversations,
       setExternalId,
       t,
