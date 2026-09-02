@@ -725,6 +725,124 @@ describe("adaptMessageTurn proposed plan", () => {
     const adapted = wrap("Just a normal reply.")
     expect(adapted.content.map((p) => p.type)).toEqual(["text"])
   })
+
+  // Regression: any agent may write *about* the tag. Verbatim from a Claude
+  // Code reply that explained this very parser — the unclosed mention inside a
+  // code span used to swallow the rest of the sentence into a plan card.
+  it("keeps a tag quoted in an inline code span as plain text", () => {
+    const text =
+      "**缺陷 A — 计划卡片**。新增 `event_msg.item_completed` 分支，" +
+      "并把助手的 `<proposed_plan>` 记录从 promotion 闸门前拦下来单独处理。"
+    const adapted = wrap(text)
+    expect(adapted.content.map((p) => p.type)).toEqual(["text"])
+    expect(adapted.content[0]).toMatchObject({ type: "text", text })
+  })
+
+  it("keeps a quoted open/close pair inside one code span as plain text", () => {
+    const text = "| **2** | `<proposed_plan>…</proposed_plan>` ← 计划回来了 |"
+    const adapted = wrap(text)
+    expect(adapted.content.map((p) => p.type)).toEqual(["text"])
+    expect(adapted.content[0]).toMatchObject({ type: "text", text })
+  })
+
+  it("keeps several quoted mentions in one block as plain text", () => {
+    const text =
+      "| 助手正文落在哪 | `item_completed`(14) + `<proposed_plan>`(15) | 正常 |\n" +
+      "解析器两份都不要：`<proposed_plan>` 撞上 promotion 闸门。"
+    const adapted = wrap(text)
+    expect(adapted.content.map((p) => p.type)).toEqual(["text"])
+    expect(adapted.content[0]).toMatchObject({ type: "text", text })
+  })
+
+  it("keeps tags inside a fenced code block as plain text", () => {
+    const text =
+      "codex writes the record like this:\n\n" +
+      "```text\n<proposed_plan>\n# Plan\n</proposed_plan>\n```\n\nThat is all."
+    const adapted = wrap(text)
+    expect(adapted.content.map((p) => p.type)).toEqual(["text"])
+    expect(adapted.content[0]).toMatchObject({ type: "text", text })
+  })
+
+  // Mid-stream the closing backtick has not arrived, so the code-span check
+  // cannot see the quote yet; the opener is still mid-line, which is what stops
+  // a half-typed sentence from flashing a plan card.
+  it("keeps a half-typed quote as plain text while the turn streams", () => {
+    const adapted = wrap("并把助手的 `<proposed_plan>", true)
+    expect(adapted.content.map((p) => p.type)).toEqual(["text"])
+  })
+
+  it("ignores an indented tag markdown would render as code", () => {
+    const adapted = wrap("Example:\n\n    <proposed_plan>\n    # Plan")
+    expect(adapted.content.map((p) => p.type)).toEqual(["text"])
+  })
+
+  // A tab reaches CommonMark's four-column indent on its own.
+  it("ignores a tab-indented tag", () => {
+    const adapted = wrap("Example:\n\n\t<proposed_plan>\n\t# Plan")
+    expect(adapted.content.map((p) => p.type)).toEqual(["text"])
+  })
+
+  // A CRLF line slice ends in `\r`, which `.` never matches — leaving it in
+  // makes every fence unrecognisable and silently disables the code-block
+  // guard on Windows-style text.
+  it("keeps tags inside a CRLF fenced code block as plain text", () => {
+    const text =
+      "before\r\n```text\r\n<proposed_plan>\r\n# Plan\r\n" +
+      "</proposed_plan>\r\n```\r\nafter"
+    const adapted = wrap(text)
+    expect(adapted.content.map((p) => p.type)).toEqual(["text"])
+    expect(adapted.content[0]).toMatchObject({ type: "text", text })
+  })
+
+  it("still lifts a real plan from CRLF text", () => {
+    const adapted = wrap(
+      "Here is my plan.\r\n<proposed_plan>\r\n# Plan\r\n\r\n- step one\r\n" +
+        "</proposed_plan>\r\nProceeding."
+    )
+    expect(adapted.content.map((p) => p.type)).toEqual([
+      "text",
+      "proposed-plan",
+      "text",
+    ])
+    expect(adapted.content[1]).toMatchObject({
+      markdown: "# Plan\r\n\r\n- step one",
+      isStreaming: false,
+    })
+  })
+
+  it("still lifts a real plan from a block that also quotes the tag", () => {
+    const adapted = wrap(
+      "The `<proposed_plan>` tag wraps it.\n" +
+        "<proposed_plan>\n# Plan\n\n- step one\n</proposed_plan>\nProceeding."
+    )
+    expect(adapted.content.map((p) => p.type)).toEqual([
+      "text",
+      "proposed-plan",
+      "text",
+    ])
+    expect(adapted.content[0]).toMatchObject({
+      text: "The `<proposed_plan>` tag wraps it.\n",
+    })
+    expect(adapted.content[1]).toMatchObject({
+      markdown: "# Plan\n\n- step one",
+      isStreaming: false,
+    })
+  })
+
+  it("closes on the real tag, not one quoted inside the plan body", () => {
+    const adapted = wrap(
+      "<proposed_plan>\n# Plan\n\n```text\n</proposed_plan>\n```\n" +
+        "</proposed_plan>\nProceeding."
+    )
+    expect(adapted.content.map((p) => p.type)).toEqual([
+      "proposed-plan",
+      "text",
+    ])
+    expect(adapted.content[0]).toMatchObject({
+      markdown: "# Plan\n\n```text\n</proposed_plan>\n```",
+    })
+    expect(adapted.content[1]).toMatchObject({ text: "\nProceeding." })
+  })
 })
 
 describe("adaptMessageTurn goal update text", () => {
