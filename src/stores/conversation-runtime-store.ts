@@ -596,6 +596,13 @@ interface BuiltStreamingTurns {
   inProgressToolCallIds: Set<string>
 }
 
+/** One turn under construction inside a live message. Assistant groups are the
+ *  reply's rounds; a `user` group is a message the user sent mid-turn. */
+interface StreamingGroup {
+  role: "assistant" | "user"
+  blocks: MessageTurn["blocks"]
+}
+
 // Cache joined chunk output keyed by chunks-array identity. The ACP reducer
 // creates a new chunks array only when streaming output actually changes, so
 // a WeakMap keyed on the array reference lets repeated renders reuse the
@@ -1166,7 +1173,11 @@ export function buildStreamingTurnsFromLiveMessage(
   // pattern: each "round" (text/thinking + tool calls + tool results) is a
   // separate turn. A new turn starts when a text/thinking/plan block appears
   // after completed tool calls in the current group.
-  const groups: MessageTurn["blocks"][] = [[]]
+  // Each group becomes one turn. Assistant groups are the reply, split into
+  // rounds as before; a `user` group is a message the user sent mid-turn
+  // (native steering), which both ends the round before it and keeps the reply
+  // to it in a round of its own.
+  const groups: StreamingGroup[] = [{ role: "assistant", blocks: [] }]
   let currentGroupHasCompletedTool = false
   const inProgressToolCallIds = new Set<string>()
   // Which main-thread prose blocks are a continuation of the previous one
@@ -1189,17 +1200,32 @@ export function buildStreamingTurnsFromLiveMessage(
       continue
     }
 
+    // A mid-turn user message is a hard turn boundary in both directions: it
+    // closes whatever the agent had said so far and opens a fresh assistant
+    // group for the reply to it, so the two replies can never render as one
+    // run-on bubble. Unconditional — unlike a content block, it splits even
+    // when the current group has no completed tool call.
+    if (block.type === "steering") {
+      groups.push({
+        role: "user",
+        blocks: [{ type: "text", text: block.text }],
+      })
+      groups.push({ role: "assistant", blocks: [] })
+      currentGroupHasCompletedTool = false
+      continue
+    }
+
     const isContentBlock =
       block.type === "text" ||
       block.type === "thinking" ||
       block.type === "plan"
 
     if (isContentBlock && currentGroupHasCompletedTool) {
-      groups.push([])
+      groups.push({ role: "assistant", blocks: [] })
       currentGroupHasCompletedTool = false
     }
 
-    const currentBlocks = groups[groups.length - 1]
+    const currentBlocks = groups[groups.length - 1].blocks
 
     switch (block.type) {
       case "text":
@@ -1431,14 +1457,14 @@ export function buildStreamingTurnsFromLiveMessage(
 
   const timestamp = new Date(liveMessage.startedAt).toISOString()
   const turns = groups
-    .filter((blocks) => blocks.length > 0)
-    .map((blocks, i) => ({
+    .filter((group) => group.blocks.length > 0)
+    .map((group, i) => ({
       id:
         i === 0
           ? `live-${conversationId}-${liveMessage.id}`
           : `live-${conversationId}-${liveMessage.id}-${i}`,
-      role: "assistant" as const,
-      blocks,
+      role: group.role,
+      blocks: group.blocks,
       timestamp,
     }))
 
@@ -3137,6 +3163,54 @@ function computeTimelinePrefix(
   return entry
 }
 
+/**
+ * Hide the persisted copy of a message the user sent mid-turn, when the live
+ * stream is already showing it.
+ *
+ * The agent writes a steered message into its own transcript, so a detail
+ * fetch that lands DURING the turn brings it back as an ordinary user turn —
+ * under a parser id, which no id-keyed dedup can match to the live copy. Both
+ * would render.
+ *
+ * The live copy is the one to keep: it sits between the two halves of the
+ * reply, where the message was actually sent, while the persisted copy is
+ * appended after the in-flight prompt with the reply's first half suppressed
+ * around it (see `visiblePersistedTurns`), which would put the interruption
+ * before the text it interrupted.
+ *
+ * Matched on CONTENT, the same way `APPEND_VIEWER_USER_TURN` reconciles the
+ * two id namespaces of one prompt. Scoped tightly, because suppressing a user
+ * turn is the one failure that hides a message rather than duplicating it:
+ * only persisted-phase turns, never the in-flight prompt itself (a steer that
+ * repeats the prompt verbatim leaves the prompt alone), and only when the tail
+ * actually carries a steered turn — so a timeline with no steering does no
+ * work here at all.
+ */
+function suppressPersistedSteeredPrompts(
+  prefix: ConversationTimelineTurn[],
+  tail: ConversationTimelineTurn[],
+  session: ConversationRuntimeSession
+): ConversationTimelineTurn[] {
+  let steeredKeys: Set<string> | null = null
+  for (const item of tail) {
+    if (item.turn.role !== "user") continue
+    steeredKeys ??= new Set<string>()
+    steeredKeys.add(userTurnContentKey(item.turn))
+  }
+  if (!steeredKeys) return prefix
+  const inFlightPromptId = session.detail?.in_flight_user_turn_id ?? null
+  const filtered = prefix.filter(
+    (item) =>
+      !(
+        item.phase === "persisted" &&
+        item.turn.role === "user" &&
+        item.turn.id !== inFlightPromptId &&
+        steeredKeys.has(userTurnContentKey(item.turn))
+      )
+  )
+  return filtered.length === prefix.length ? prefix : filtered
+}
+
 function computeTimeline(
   state: ConversationRuntimeState,
   conversationId: number
@@ -3185,9 +3259,8 @@ function computeTimeline(
       }
       seenTailKeys?.add(key)
     }
-    deduped = collides
-      ? dedupeTimeline(prefix.concat(tail))
-      : prefix.concat(tail)
+    const head = suppressPersistedSteeredPrompts(prefix, tail, session)
+    deduped = collides ? dedupeTimeline(head.concat(tail)) : head.concat(tail)
   }
 
   timelineCache.set(session, deduped)

@@ -4066,3 +4066,153 @@ describe("live surfaces that are not tabs", () => {
     }
   })
 })
+
+/**
+ * A message the user sends mid-turn over the native `_session/steering`
+ * channel is spliced into the live turn, so the transcript can render it as a
+ * user turn between the two halves of the reply.
+ *
+ * The discriminator is that the note is ALREADY `delivered` when it is
+ * submitted: `FeedbackItem::new_delivered` (src-tauri/src/acp/feedback.rs) has
+ * exactly one caller, the native push path, and it exists precisely because
+ * the adapter has already consumed the text by then. A `pending` note is the
+ * cooperative `check_user_feedback` pull channel, which the agent reads as a
+ * tool result and never as a user message.
+ */
+describe("AcpConnectionsProvider mid-turn steering messages", () => {
+  async function connectOwner(): Promise<AttachHandlers> {
+    h.acpFindConnectionForConversation.mockResolvedValue(null)
+    await mountProvider()
+    await act(async () => {
+      await h.actions!.connect(TAB, "claude_code", "/tmp/x", "sess-1", 42)
+    })
+    return latestAttachHandlers()
+  }
+
+  function conn() {
+    return h.store!.getConnection(TAB)!
+  }
+
+  function steeringBlocks() {
+    return (conn().liveMessage?.content ?? []).filter(
+      (b) => b.type === "steering"
+    )
+  }
+
+  function submitted(
+    seq: number,
+    id: string,
+    text: string,
+    status: "pending" | "delivered"
+  ): EventEnvelope {
+    return {
+      seq,
+      connection_id: "spawned-conn",
+      type: "feedback_submitted",
+      item: { id, text, created_at: "2026-06-07T00:00:00Z", status },
+    } as unknown as EventEnvelope
+  }
+
+  it("splices a delivered note into the running turn and records the adoption", async () => {
+    const handlers = await connectOwner()
+    emitAcpEvent(handlers, {
+      seq: 1,
+      connection_id: "spawned-conn",
+      type: "status_changed",
+      status: "prompting",
+    })
+    emitAcpEvent(handlers, {
+      seq: 2,
+      connection_id: "spawned-conn",
+      type: "content_delta",
+      text: "half one",
+    } as unknown as EventEnvelope)
+    emitAcpEvent(handlers, submitted(3, "n1", "use the other API", "delivered"))
+
+    expect(steeringBlocks()).toEqual([
+      { type: "steering", id: "n1", text: "use the other API" },
+    ])
+    expect(conn().steeredMessageIds).toEqual(["n1"])
+  })
+
+  it("ignores a pending note - the pull channel is not a user message", async () => {
+    const handlers = await connectOwner()
+    emitAcpEvent(handlers, {
+      seq: 1,
+      connection_id: "spawned-conn",
+      type: "status_changed",
+      status: "prompting",
+    })
+    emitAcpEvent(handlers, submitted(2, "n1", "waiting note", "pending"))
+
+    expect(steeringBlocks()).toEqual([])
+    expect(conn().steeredMessageIds).toEqual([])
+  })
+
+  it("is idempotent - the submit broadcast reaches the sender too", async () => {
+    const handlers = await connectOwner()
+    emitAcpEvent(handlers, {
+      seq: 1,
+      connection_id: "spawned-conn",
+      type: "status_changed",
+      status: "prompting",
+    })
+    emitAcpEvent(handlers, submitted(2, "n1", "same note", "delivered"))
+    emitAcpEvent(handlers, submitted(3, "n1", "same note", "delivered"))
+
+    expect(steeringBlocks()).toHaveLength(1)
+    expect(conn().steeredMessageIds).toEqual(["n1"])
+  })
+
+  it("refuses a note that arrives with no turn running", async () => {
+    // The native submit is recorded ungated on the backend, so a note can land
+    // just after the turn settled. There is nothing to split then, and
+    // appending would graft it onto the finished turn. The note keeps its
+    // strip instead (it is absent from `steeredMessageIds`), and the agent
+    // recorded it either way, so a reload still shows it.
+    const handlers = await connectOwner()
+    emitAcpEvent(handlers, {
+      seq: 1,
+      connection_id: "spawned-conn",
+      type: "status_changed",
+      status: "prompting",
+    })
+    emitAcpEvent(handlers, {
+      seq: 2,
+      connection_id: "spawned-conn",
+      type: "status_changed",
+      status: "connected",
+    })
+    emitAcpEvent(handlers, submitted(3, "n1", "too late", "delivered"))
+
+    expect(steeringBlocks()).toEqual([])
+    expect(conn().steeredMessageIds).toEqual([])
+  })
+
+  it("starts each turn with no adoptions carried over", async () => {
+    const handlers = await connectOwner()
+    emitAcpEvent(handlers, {
+      seq: 1,
+      connection_id: "spawned-conn",
+      type: "status_changed",
+      status: "prompting",
+    })
+    emitAcpEvent(handlers, submitted(2, "n1", "first turn", "delivered"))
+    expect(conn().steeredMessageIds).toEqual(["n1"])
+
+    emitAcpEvent(handlers, {
+      seq: 3,
+      connection_id: "spawned-conn",
+      type: "status_changed",
+      status: "connected",
+    })
+    emitAcpEvent(handlers, {
+      seq: 4,
+      connection_id: "spawned-conn",
+      type: "status_changed",
+      status: "prompting",
+    })
+    expect(conn().steeredMessageIds).toEqual([])
+    expect(steeringBlocks()).toEqual([])
+  })
+})

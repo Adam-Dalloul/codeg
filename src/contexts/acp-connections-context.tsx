@@ -195,6 +195,17 @@ export type LiveContentBlock =
   | { type: "thinking"; text: string; parentToolUseId?: string }
   | { type: "plan"; entries: PlanEntryInfo[] }
   | { type: "tool_call"; info: ToolCallInfo }
+  /**
+   * A message the user sent WHILE this turn was running, injected into it via
+   * the native `_session/steering` channel. Not agent output: it marks the
+   * point in the stream where the user interrupted, so
+   * `buildStreamingTurnsFromLiveMessage` can close the assistant turn here,
+   * render the message as its own user turn, and start the reply to it as a
+   * new turn. Mirrors what the transcript projection already does with a
+   * mid-turn `user_message_chunk` (see `parsers/acp_native.rs`), so the live
+   * view and a reload agree. `id` is the feedback note id.
+   */
+  | { type: "steering"; id: string; text: string }
 
 export interface LiveMessage {
   id: string
@@ -225,6 +236,19 @@ export interface ConnectionState {
    *  event or a snapshot's `pending_user_message`. A VIEWER mirrors this into
    *  the runtime as a synthesized user turn; `null` outside an active turn. */
   pendingUserMessage: PendingUserMessage | null
+  /**
+   * Feedback-note ids whose text this turn's `liveMessage` adopted as a
+   * `steering` block, i.e. the mid-turn messages now rendered as user turns in
+   * the transcript. The notes list above the composer reads this to drop their
+   * strips: one message shows in exactly one place. Reset with `liveMessage`
+   * at the start of every turn.
+   *
+   * The reducer is the single decider — a note it could NOT adopt (it arrived
+   * out of turn) is absent here, so its strip stays. Deriving this in the
+   * notes hook instead would race the reducer's own view of the status and
+   * could leave a message showing nowhere at all.
+   */
+  steeredMessageIds: string[]
   pendingQuestion: PendingQuestion | null
   /** Awaiting-answer multiple-choice `ask_user_question` (the codeg-mcp blocking
    *  tool). Set from a `question_request` event or a snapshot's
@@ -590,6 +614,12 @@ type Action =
       type: "PLAN_UPDATE"
       contextKey: string
       entries: PlanEntryInfo[]
+    }
+  | {
+      type: "STEERING_MESSAGE"
+      contextKey: string
+      id: string
+      text: string
     }
   | {
       type: "CLAUDE_API_RETRY"
@@ -1122,6 +1152,10 @@ function ensureLiveMessage(prev: LiveMessage | null): LiveMessage {
   }
 }
 
+/** Shared empty `steeredMessageIds`, so a turn that steers nothing (almost all
+ *  of them) keeps a stable reference through `connRenderEqual`. */
+const EMPTY_STEERED_MESSAGE_IDS: string[] = []
+
 /** Last time an out-of-turn drop was logged — module-level sampling clock. */
 let lastOutOfTurnDropLogAt = 0
 
@@ -1320,6 +1354,7 @@ function connectionsReducer(
         liveMessage: null,
         pendingPermission: null,
         pendingUserMessage: null,
+        steeredMessageIds: EMPTY_STEERED_MESSAGE_IDS,
         pendingQuestion: null,
         pendingAskQuestion: null,
         pendingPlanApproval: null,
@@ -1378,6 +1413,7 @@ function connectionsReducer(
         liveMessage: null,
         pendingPermission: null,
         pendingUserMessage: null,
+        steeredMessageIds: EMPTY_STEERED_MESSAGE_IDS,
         pendingQuestion: null,
         pendingAskQuestion: null,
         pendingPlanApproval: null,
@@ -1572,6 +1608,8 @@ function connectionsReducer(
         updated.pendingQuestion = null
         updated.claudeApiRetry = null
         updated.error = null
+        // Steering adoptions belong to the turn whose stream they split.
+        updated.steeredMessageIds = EMPTY_STEERED_MESSAGE_IDS
         // Starting a prompt past an active AIR failure acknowledges it —
         // settle EVERYTHING (watermarks retained). A failure that is still
         // real re-arms via a higher revision on the same id.
@@ -2343,6 +2381,34 @@ function connectionsReducer(
         ...conn,
         liveMessage: { ...prev, content: newContent },
         claudeApiRetry: null,
+      })
+      return next
+    }
+
+    case "STEERING_MESSAGE": {
+      const conn = state.get(action.contextKey)
+      if (!conn) return state
+      // Same out-of-turn guard as PLAN_UPDATE / TOOL_CALL / streaming deltas:
+      // there is no running turn to split, and appending would graft the
+      // message onto the PREVIOUS turn's completed liveMessage. The note keeps
+      // its strip in that case (it is absent from `steeredMessageIds`), and
+      // the agent recorded it either way, so a reload still shows it.
+      if (conn.status !== "prompting") return state
+      // Idempotent by note id: the submit broadcast reaches every attached
+      // client, and one client is also the sender.
+      if (conn.steeredMessageIds.includes(action.id)) return state
+      const prev = ensureLiveMessage(conn.liveMessage)
+      const next = new Map(state)
+      next.set(action.contextKey, {
+        ...conn,
+        liveMessage: {
+          ...prev,
+          content: [
+            ...prev.content,
+            { type: "steering" as const, id: action.id, text: action.text },
+          ],
+        },
+        steeredMessageIds: [...conn.steeredMessageIds, action.id],
       })
       return next
     }
@@ -3529,6 +3595,28 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
           })
           scheduleToolCallUpdateFlush()
           break
+        case "feedback_submitted": {
+          // A note that is ALREADY `delivered` when it is submitted was pushed
+          // into the running turn over the native `_session/steering` channel
+          // (`FeedbackItem::new_delivered` is that path's only producer). The
+          // agent has the text as a user message, so the transcript shows it
+          // as one: it closes the assistant turn at this point in the stream
+          // and the reply to it starts a new turn.
+          //
+          // A `pending` note is the cooperative `check_user_feedback` pull
+          // channel — the agent has not read it, and when it does it arrives
+          // as a tool result, never a user message. Those stay in the notes
+          // list above the composer, which is where a reload leaves them too.
+          if (e.item.status !== "delivered") break
+          flushStreamingQueue()
+          dispatch({
+            type: "STEERING_MESSAGE",
+            contextKey,
+            id: e.item.id,
+            text: e.item.text,
+          })
+          break
+        }
         case "permission_resolved":
           // Backend signals a permission was answered (this window's local
           // respondPermission, a sibling window, a server-mode peer, or

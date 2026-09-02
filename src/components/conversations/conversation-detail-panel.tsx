@@ -1944,6 +1944,9 @@ const ConversationTabView = memo(function ConversationTabView({
     connectionId: conn.connectionId,
     connStatus,
     enabled: feedbackEnabled,
+    // Notes the transcript adopted as mid-turn user turns show as messages,
+    // not as strips above the composer.
+    steeredMessageIds: conn.steeredMessageIds,
     onResendAsPrompt: resendFeedbackAsPrompt,
   })
   // Composer "insert into current turn" (native steering only). Rethrows —
