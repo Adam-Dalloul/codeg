@@ -2019,11 +2019,12 @@ const ConversationTabView = memo(function ConversationTabView({
     steeredMessageIds: conn.steeredMessageIds,
     onResendAsPrompt: resendFeedbackAsPrompt,
   })
-  // Composer "insert into current turn" (native steering only). Rethrows —
-  // MessageInput owns the enqueue fallback and draft-preservation policy, so
-  // this wrapper must not swallow the turn-end race the way `submit` does.
-  // `blocks` rides along when the draft carries attachments (images steer
-  // too); `text` stays the recorded/display form.
+  // Composer mid-turn send, over whichever live-feedback channel this session
+  // has (native push or the pull tool). Rethrows — MessageInput owns the
+  // enqueue fallback and draft-preservation policy, so this wrapper must not
+  // swallow the turn-end race the way `submit` does. `blocks` rides along when
+  // the draft carries attachments (images steer too); `text` stays the
+  // recorded/display form.
   const feedbackSteer = feedback.steer
   const handleSteer = useCallback(
     async (text: string, blocks?: PromptInputBlock[]) => {
@@ -2115,13 +2116,17 @@ const ConversationTabView = memo(function ConversationTabView({
       onSaveQueueEdit={handleSaveQueueEdit}
       onCancelQueueEdit={handleQueueCancelEdit}
       onSteer={
-        // Native channel only: on pull sessions the prompting branch must
-        // stay pixel-identical (Stop button alone). The prompting scope
-        // itself is enforced where the button renders.
-        feedback.featureEnabled && feedback.channel === "native"
+        // Any working delivery channel, not just the native push: the pull
+        // tool records a waiting note the agent reads on its next check, and
+        // `steerChannel` swaps the copy so pull sessions never promise an
+        // instant insert. Sessions with NEITHER channel keep the historical
+        // prompting branch (Stop button alone, Enter queues). The prompting
+        // scope itself is enforced where the button renders.
+        feedback.featureEnabled && feedback.steerAvailable
           ? handleSteer
           : undefined
       }
+      steerChannel={feedback.channel}
     >
       {isWelcomeMode ? (
         // Same overlay scrollbar as the sidebar / file lists (os-theme-codeg)

@@ -1281,4 +1281,32 @@ describe("MessageInput native steering (insert into current turn)", () => {
       expect(serializeDocToText(editor.state.doc)).not.toContain("late note")
     )
   })
+
+  it("labels the mid-turn action honestly on the pull channel", async () => {
+    // A pull-tool session gets the same split, but its action must never
+    // promise an instant insert: the note is recorded as waiting and read on
+    // the agent's next check, so the copy says exactly that.
+    const user = userEvent.setup()
+    const onSteer = vi.fn().mockResolvedValue(undefined)
+    const editor = await mountPrompting({ onSteer, steerChannel: "pull" })
+    typeDraft(editor, "check the tests")
+    await waitFor(() =>
+      expect(screen.getByLabelText(MI.steerAsNote)).toBeInTheDocument()
+    )
+    expect(screen.queryByLabelText(MI.steerIntoTurn)).toBeNull()
+
+    // The action itself rides the same steer path — only the copy differs.
+    await user.click(screen.getByLabelText(MI.steerAsNote))
+    await user.click(
+      await screen.findByRole("menuitem", { name: MI.steerAsNote })
+    )
+    await waitFor(() =>
+      expect(onSteer).toHaveBeenCalledWith("check the tests", undefined)
+    )
+    await waitFor(() =>
+      expect(serializeDocToText(editor.state.doc)).not.toContain(
+        "check the tests"
+      )
+    )
+  })
 })

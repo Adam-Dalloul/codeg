@@ -282,6 +282,7 @@ describe("useSessionFeedback", () => {
 
     await waitFor(() => expect(result.current.canSubmit).toBe(true))
     expect(result.current.channel).toBe("native")
+    expect(result.current.steerAvailable).toBe(true)
   })
 
   it("stays on the pull channel when only the tool is available", async () => {
@@ -295,6 +296,26 @@ describe("useSessionFeedback", () => {
 
     await waitFor(() => expect(result.current.canSubmit).toBe(true))
     expect(result.current.channel).toBe("pull")
+    // The pull tool is a working delivery channel — the composer's mid-turn
+    // send must be offered here too, not only on native sessions.
+    expect(result.current.steerAvailable).toBe(true)
+  })
+
+  it("reports no steer channel when the session has neither", async () => {
+    // No tool (launched before the feature was enabled / agent without MCP)
+    // and no native steering: the composer must keep its historical Stop-only
+    // prompting form, so `steerAvailable` stays false even mid-turn.
+    mockSnapshot.mockResolvedValue(
+      snapshot({
+        feedback_tool_available: false,
+        native_steering_available: false,
+      })
+    )
+    const { result } = renderHook(() => useSessionFeedback(baseProps))
+
+    await waitFor(() => expect(mockSnapshot).toHaveBeenCalled())
+    expect(result.current.steerAvailable).toBe(false)
+    expect(result.current.canSubmit).toBe(false)
   })
 
   it("steer appends optimistically on success and RETHROWS on failure", async () => {
