@@ -1,6 +1,13 @@
 "use client"
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react"
 import { useTranslations } from "next-intl"
 import { toast } from "sonner"
 import { AgentSelector } from "@/components/chat/agent-selector"
@@ -70,6 +77,12 @@ import { useShallow } from "zustand/react/shallow"
  * co-controlling viewer (see the discovery gate in `acp-connections-context`).
  */
 
+// Matches the repo's other pre-paint effects (`agent-selector`,
+// `use-reference-search`): the same hook, minus the warning under the static
+// export's prerender, where there is no layout to read.
+const useIsomorphicLayoutEffect =
+  typeof window !== "undefined" ? useLayoutEffect : useEffect
+
 /** Where an unsent draft card will create its conversation. */
 export type CanvasDraftTarget =
   | { kind: "folder"; folderId: number; workingDir: string }
@@ -110,13 +123,23 @@ interface CanvasConversationSurfaceProps {
   className?: string
 }
 
-/** Stable negative runtime key for a draft (mirrors `ConversationTabView`'s
- *  `buildVirtualConversationId`): the runtime session must exist before the row
- *  does, and it must not move when the row arrives. */
-function buildVirtualConversationId(seed: string): number {
+/**
+ * Stable negative runtime key for a draft (mirrors `ConversationTabView`'s
+ * `buildVirtualConversationId`): the runtime session must exist before the row
+ * does, and it must not move when the row arrives.
+ *
+ * Seeded on the CONTEXT KEY rather than on the draft's own id because the two
+ * cards involved in a first send are not the same card. The draft's transcript
+ * — the optimistic user turn, the reply in flight, `awaiting_persist` — lives
+ * under this id, and the pinned card that replaces it mounts on the real
+ * conversation id. That card INHERITS the draft's context key (see
+ * `materializeDraft`), so this function is how the hand-off names the session
+ * it has to carry over. Exported for exactly that one caller.
+ */
+export function draftRuntimeConversationId(contextKey: string): number {
   let hash = 0
-  for (let i = 0; i < seed.length; i += 1) {
-    hash = (hash * 31 + seed.charCodeAt(i)) | 0
+  for (let i = 0; i < contextKey.length; i += 1) {
+    hash = (hash * 31 + contextKey.charCodeAt(i)) | 0
   }
   return -(Math.abs(hash) + 1)
 }
@@ -161,6 +184,7 @@ export function CanvasConversationSurface({
     appendOptimisticTurn,
     removeOptimisticTurn,
     completeTurn,
+    migrateConversation,
     setDbConversationId,
     setExternalId,
     setLiveMessage,
@@ -175,7 +199,7 @@ export function CanvasConversationSurface({
   // Fixed at mount, like the tab view's: a draft streams under a virtual id and
   // must keep it after the real row lands, or the live turn loses its session.
   const [effectiveConversationId] = useState(
-    () => conversationId ?? buildVirtualConversationId(contextKey)
+    () => conversationId ?? draftRuntimeConversationId(contextKey)
   )
   const [createdConversationId, setCreatedConversationId] = useState<
     number | null
@@ -185,6 +209,39 @@ export function CanvasConversationSurface({
   useEffect(() => {
     dbConversationIdRef.current = dbConversationId
   }, [dbConversationId])
+
+  /**
+   * Adopt the session a draft was streaming into, if this card is the one that
+   * replaced it.
+   *
+   * A pinned card minted by a first send INHERITS the draft's connection key
+   * (see `materializeDraft`), and the draft ran under the runtime id that key
+   * derives — there was no row yet when the user hit send, so the message they
+   * sent, the reply already answering it, and the `awaiting_persist` that keeps
+   * the next detail fetch from overwriting either, are all still filed under
+   * it. Without this the card mounts on an empty session: the transcript says
+   * there are no messages yet, and since the live sink follows the connection
+   * key, the agent's answer arrives on its own with the user's message missing.
+   *
+   * It belongs HERE, in the arriving card, and not in the swap that creates it.
+   * ReactFlow applies a changed `nodes` prop from a PASSIVE effect
+   * (`StoreUpdater`), so the draft card outlives the render that drops it from
+   * the board's node list — and a browser paint can fall in that gap. Moving
+   * the session out any earlier empties it under a card that is still on
+   * screen, which paints exactly the "no messages yet" this repairs.
+   *
+   * A layout effect lands it before this card's own first paint. Cards that
+   * never were drafts name a session that was never created, and the reducer
+   * ignores those; running twice is likewise a no-op, since the second call
+   * finds nothing to move.
+   */
+  useIsomorphicLayoutEffect(() => {
+    if (conversationId == null) return
+    migrateConversation(
+      draftRuntimeConversationId(contextKey),
+      effectiveConversationId
+    )
+  }, [contextKey, conversationId, effectiveConversationId, migrateConversation])
 
   const [modeId, setModeId] = useState<string | null>(() =>
     getSavedModeId(agentType)
@@ -389,8 +446,22 @@ export function CanvasConversationSurface({
       // No message queue on this surface: a send the backend bounces (a turn
       // already in flight) rolls back and surfaces as a toast rather than
       // silently parking the draft somewhere the card doesn't render.
+      //
+      // Rolled back against BOTH ids the turn can be filed under. A rejection
+      // is a round trip of its own, so it can land after the row has arrived
+      // and the card that replaced this one has adopted the session onto the
+      // row id (see the hand-off above). Naming only the id this component
+      // mounted with would then no-op on a session that no longer exists and
+      // strand the failed message on the card that took over — dimmed, under a
+      // typing indicator, with `awaiting_persist` pinned so no refetch clears
+      // it either. Both calls ignore a turn that isn't there, so this is
+      // unconditional rather than a guess about which one won.
       const onSendFailed = () => {
         removeOptimisticTurn(effectiveConversationId, optimisticTurn.id)
+        const persistedId = dbConversationIdRef.current
+        if (persistedId != null && persistedId !== effectiveConversationId) {
+          removeOptimisticTurn(persistedId, optimisticTurn.id)
+        }
       }
 
       const persistedId = dbConversationIdRef.current

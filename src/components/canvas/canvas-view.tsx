@@ -85,6 +85,7 @@ import {
   BOARD_DOT_GAP,
   DETAIL_CARD_HEIGHT,
   DETAIL_CARD_WIDTH,
+  DRAG_HANDLE_SELECTOR,
   REGION_PADDING,
   columnsForRegionWidth,
   computeAlignment,
@@ -441,6 +442,16 @@ function CanvasFlow() {
         width: size?.width ?? draft.width,
         height: size?.height ?? draft.height,
         selected: selectedIds.has(rfId),
+        // Same title-bar-only handle the expanded card uses, and for a reason
+        // that is invisible until someone types into the card: a node with NO
+        // `dragHandle` passes d3-drag's filter on every mousedown anywhere in
+        // it, and d3 answers by installing a capture-phase `selectstart`
+        // preventDefault on the window for the life of the gesture. The browser
+        // asks permission to move a caret through that same event, so a click
+        // inside the composer focused the textarea but could not put the cursor
+        // where it was clicked, and no text in the card could be selected. The
+        // handle is what keeps the filter from matching in the body at all.
+        dragHandle: DRAG_HANDLE_SELECTOR,
         data: {
           draftId: draft.id,
           target: draft.target,
@@ -889,12 +900,25 @@ function CanvasFlow() {
       })
       if (!created) return
       const key = draftSurfaceKey(draftId)
+      // Inheriting the key is also what carries the RUNTIME session across: the
+      // message the user just sent, and the reply already answering it, are
+      // filed under the id that key derives, and the arriving card adopts them
+      // in a layout effect. That has to happen on the far side of this swap —
+      // ReactFlow applies a changed `nodes` prop from a passive effect, so the
+      // draft card is still mounted (and paintable) after this returns. See
+      // `CanvasConversationSurface`'s hand-off effect.
       setSurfaceKeys((prev) => new Map(prev).set(created.id, key))
       activateSurface(key)
       // Open the persisted card in detail mode BEFORE removing the draft so the
       // surface the user is watching swaps in place rather than blinking away.
       setDetailCardsPersisted((prev) => new Set(prev).add(created.id))
-      dismissDraft(draftId)
+      // Deliberately not `dismissDraft`: its guard refuses to drop a draft whose
+      // first send is in flight, which is exactly the state this one is in. That
+      // guard exists for the three DISCARD paths, where dropping the card would
+      // strand a conversation nobody can see. This is the hand-off — the row is
+      // created, the card that shows it is on screen, and leaving the draft up
+      // would put a second surface on the same connection key.
+      setDraftsPersisted((prev) => prev.filter((d) => d.id !== draftId))
     },
     [
       drafts,
@@ -903,7 +927,7 @@ function CanvasFlow() {
       createNode,
       activateSurface,
       setDetailCardsPersisted,
-      dismissDraft,
+      setDraftsPersisted,
     ]
   )
 
