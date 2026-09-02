@@ -4266,6 +4266,13 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
                 return t("backendErrors.sessionLoadUnavailable", {
                   agent: agentLabel,
                 })
+              // Unlike its neighbours this one is temporary and self-clearing,
+              // so the message says what holds the session rather than what
+              // went wrong: the fork took the lock, closing it gives it back.
+              case "session_busy":
+                return t("backendErrors.sessionLoadBusy", {
+                  agent: agentLabel,
+                })
               case "session_archived":
                 return recoveryCommand
                   ? t("backendErrors.sessionArchived", {

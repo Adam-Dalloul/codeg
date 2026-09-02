@@ -295,8 +295,23 @@ export interface MessageTurn {
    * Present only where the turn can be a fork point ("fork from here"), which
    * today means Claude assistant turns. Its absence does NOT mean the turn
    * cannot be forked at: codex forks by content fingerprint instead, resolved
-   * entirely in the backend. Use `canForkFromTurn` rather than testing this. */
+   * entirely in the backend — so never gate the fork affordance on this. */
   agent_message_id?: string | null
+  /** CLIENT-ONLY, never on the wire. The id the PARSER gave this turn.
+   *
+   * A turn produced in the current session is named
+   * `live-<conversationId>-<liveMessageId>` by `buildStreamingTurnsFromLiveMessage`
+   * and keeps that name after it settles into `localTurns`. The backend has
+   * never heard of it — it resolves turns against a fresh parse, whose turns are
+   * `turn-N` — so asking the backend to act on "this turn" by its live id
+   * silently finds nothing. "Fork from here" hit exactly that: it degraded to a
+   * tail fork, and the forked session came out identical to its parent.
+   *
+   * Backfilled by the post-turn reparse (`computeTurnMetadataPatches`), which
+   * already aligns parsed turns onto local ones to fill in usage/duration.
+   * Absent on turns that came from the parser to begin with — those already ARE
+   * `turn-N` — so read it as `turn.source_turn_id ?? turn.id`. */
+  source_turn_id?: string | null
 }
 
 export interface ConversationDetail {
@@ -2575,7 +2590,11 @@ export type AcpEvent =
       message: string
       /**
        * Stable backend identifier: `"resource_not_found"`,
-       * `"session_unavailable"`, or `"session_archived"`.
+       * `"session_unavailable"`, `"session_archived"`, or `"session_busy"`.
+       *
+       * The first three mean the session is gone. `"session_busy"` does not —
+       * another live session holds it (codex keeps the parent thread's writer
+       * after a fork), and it clears when that one closes.
        */
       code: string
     }

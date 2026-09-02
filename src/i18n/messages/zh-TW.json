@@ -2768,6 +2768,7 @@
           "downloadFailed": "{agent} 下載失敗：{message}",
           "sessionLoadResourceNotFound": "{agent} 會話載入失敗，可重新載入重試，或開始新會話。",
           "sessionLoadUnavailable": "{agent} 無法還原此會話，它可能已結束或 agent 已停止。可重新載入重試，或開始新會話。",
+          "sessionLoadBusy": "這份歷史正被從它分叉出來的工作階段佔用。關閉那個工作階段後，重新載入即可開啟。",
           "sessionArchived": "原會話已在 {agent} 側歸檔，可在終端機執行 {command} 找回歷史後重新載入，或直接開始新會話。",
           "turnFailedRefusal": "{agent} 拒絕繼續此輪回覆，通常代表後端或網關出錯，請檢查代理日誌。",
           "turnFailedMaxTokens": "{agent} 已達到此輪回覆的最大 Token 限制。",

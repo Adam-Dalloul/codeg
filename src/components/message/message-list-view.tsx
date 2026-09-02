@@ -835,8 +835,17 @@ const HistoricalMessageGroup = memo(function HistoricalMessageGroup({
             // reply", and a merged group ends where the reply does. Gated on a
             // settled turn — forking mid-stream would name a message the agent
             // is still writing.
+            //
+            // `source_turn_id` first: a turn produced in THIS session is named
+            // `live-…`, which the backend cannot resolve against its own parse
+            // — sending it forked at the tail and produced a copy of the parent.
+            // The post-turn reparse backfills the parser's name; `id` is the
+            // right answer only for turns that came from the parser already.
             onForkFromTurn && isResponseComplete && sourceTurns?.length
-              ? () => onForkFromTurn(sourceTurns[sourceTurns.length - 1].id)
+              ? () => {
+                  const turn = sourceTurns[sourceTurns.length - 1]
+                  onForkFromTurn(turn.source_turn_id ?? turn.id)
+                }
               : undefined
           }
         />

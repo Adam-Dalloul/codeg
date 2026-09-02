@@ -7662,6 +7662,19 @@ fn classify_session_load_failure(
     if message.contains("is archived") {
         return Some("session_archived");
     }
+    // codex holds a per-thread writer lock, and `session/fork` releases only the
+    // CHILD's (`threadUnsubscribe({threadId: response.thread.id})` in codex-acp
+    // 1.8.0) — the parent stays open in the forking process. Opening the sibling
+    // row codeg creates to keep the pre-fork history therefore lands here with
+    // "thread <id> already has an active writer".
+    //
+    // Nothing is lost and nothing is broken: the session is busy, not gone. That
+    // is why it must never fall through to `session/new` — doing so rebinds that
+    // row to a fresh empty session and destroys the only pointer to the history
+    // it exists to preserve. Closing the forked session frees the lock.
+    if message.contains("already has an active writer") {
+        return Some("session_busy");
+    }
     // Upstream signals for an unrecoverable session (claude-agent-acp 0.58.1):
     //  - "process exited"    → "Claude Code process exited with code 1",
     //                          "The Claude Agent process exited unexpectedly…"
@@ -7689,7 +7702,15 @@ fn classify_session_load_failure(
 /// `classified` is [`classify_session_load_failure`]'s verdict; `None` (an
 /// unexpected failure) is never recovered here — it keeps the existing
 /// emit-then-fall-back-to-`session/new` behaviour.
+///
+/// `session_busy` is excluded outright, for ANY agent. Every other verdict means
+/// the session is gone, so opening a fresh one and linking the history forward
+/// loses nothing; a busy session is still there, and starting over would replace
+/// a live history with an empty session for a lock that clears on its own.
 fn recovers_load_failure_locally(agent_type: AgentType, classified: Option<&'static str>) -> bool {
+    if classified == Some("session_busy") {
+        return false;
+    }
     classified.is_some() && transcript_dir_for(agent_type).is_some()
 }
 
@@ -14076,6 +14097,35 @@ mod tests {
             custom,
             Some("session_archived")
         ));
+    }
+
+    /// After a codex fork, the sibling row codeg creates to keep the pre-fork
+    /// history points at the PARENT thread — whose writer the forking process
+    /// still holds, because `session/fork` only unsubscribes the child. Opening
+    /// it must stop with a banner, never fall through to `session/new`: that
+    /// rebinds the row to a fresh empty session and destroys the only pointer to
+    /// the history the row exists for. The lock clears when the fork is closed.
+    #[test]
+    fn classify_load_failure_names_a_session_another_client_holds() {
+        let busy = "Internal error: {\n  \"details\": \"thread \
+             01a0626c-c601-78f1-a13d-2b26dd168501 already has an active \
+             writer\"\n}";
+        assert_eq!(
+            classify_session_load_failure(sacp::schema::ErrorCode::InternalError, busy),
+            Some("session_busy"),
+        );
+
+        assert!(!recovers_load_failure_locally(
+            AgentType::Codex,
+            Some("session_busy")
+        ));
+        // Unlike every other verdict, this one is refused for a custom agent
+        // too: the others mean the session is GONE, so opening a fresh one and
+        // linking the transcript forward loses nothing. A busy session is still
+        // there, and starting over would trade a live history for an empty
+        // session to work around a lock that clears on its own.
+        let custom = AgentType::custom("glm-acp-agent").expect("valid id");
+        assert!(!recovers_load_failure_locally(custom, Some("session_busy")));
     }
 
     #[test]
