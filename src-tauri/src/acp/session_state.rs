@@ -490,6 +490,12 @@ pub struct SessionState {
     /// deterministic snapshot order.
     pub async_tasks: BTreeMap<String, AsyncTaskRecord>,
 
+    /// When the last async-task delta of any kind landed. Bounds the keep-alive
+    /// exemption in `has_active_background_work` exactly the way
+    /// `background_activity_at` bounds the watcher's half — see
+    /// [`Self::has_live_async_task`].
+    pub async_task_activity_at: Option<DateTime<Utc>>,
+
     /// Concatenated text content of the just-completed turn's assistant
     /// message. Captured at TurnComplete (just before live_message is
     /// cleared) so the lifecycle subscriber can surface it as the
@@ -612,6 +618,7 @@ impl SessionState {
             goal_active: false,
             session_failures: BTreeMap::new(),
             async_tasks: BTreeMap::new(),
+            async_task_activity_at: None,
             last_assistant_text: None,
             pending_user_message: None,
             pending_user_message_started_at: None,
@@ -668,6 +675,19 @@ impl SessionState {
             AcpEvent::SessionStarted { session_id } => {
                 if self.external_id.as_deref() != Some(session_id.as_str()) {
                     self.external_id_changed_at = Some(std::time::SystemTime::now());
+                    // The AIR task table is keyed to the session we just left.
+                    // Its rows can never settle here again: the adapter
+                    // publishes their terminal frames on the OLD session id, and
+                    // `ActiveSessionHandler` stops routing that id to this
+                    // connection the moment we attach to the new one. Keeping
+                    // them would leave the strip showing tasks that can never
+                    // finish and — because a live row exempts this connection
+                    // from idle reaping — pin the agent CLI alive for good. A
+                    // fork is the ordinary way here: a background task outlives
+                    // the turn that started it, and "fork from here" is only
+                    // accepted between turns.
+                    self.async_tasks.clear();
+                    self.async_task_activity_at = None;
                 }
                 self.external_id = Some(session_id.clone());
                 self.status = ConnectionStatus::Connected;
@@ -1250,6 +1270,11 @@ impl SessionState {
                         );
                     }
                 }
+                // Stamped for EVERY delta, including one we just dropped: the
+                // adapter is demonstrably still talking about background work
+                // on this connection, which is the only thing the keep-alive
+                // window asks.
+                self.async_task_activity_at = Some(Utc::now());
             }
             AcpEvent::ClaudeSdkMessage { .. }
             | AcpEvent::ConfigOptionRejected { .. }
@@ -1288,7 +1313,7 @@ impl SessionState {
         // and reaping only resumes once BOTH have let go. That asymmetry is
         // deliberate — a false "still running" costs one idle connection, a
         // false "settled" kills the agent CLI and the work with it.
-        if self.has_live_async_task() {
+        if self.has_live_async_task(now) {
             return true;
         }
         if self.background_outstanding == 0 {
@@ -1300,19 +1325,35 @@ impl SessionState {
         }
     }
 
-    /// Whether any AIR async task is still non-terminal.
+    /// Whether any AIR async task is still non-terminal AND the adapter has
+    /// said something about async tasks recently enough to believe it.
     ///
-    /// Unbounded by wall-clock age, unlike the watcher's side of
-    /// `has_active_background_work`: this table is fed by the adapter's own
-    /// authoritative lifecycle rather than by polling a transcript, and the
-    /// adapter closes every task it announced — on its terminal edge, on the
-    /// replace-semantics liveness level that supersedes it, and on shutdown
-    /// (`finishAll`). A row can therefore only stay live while the connection
-    /// is live, which is exactly the window the exemption is for.
-    pub fn has_live_async_task(&self) -> bool {
-        self.async_tasks
+    /// The age bound is the same belt-and-suspenders the watcher's half of
+    /// `has_active_background_work` carries, for the same reason: a row that
+    /// never reaches a terminal state would otherwise exempt this connection
+    /// from idle reaping FOREVER, and the exemption is the only thing standing
+    /// between an idle connection and being reaped. The adapter does close every
+    /// task it announced (terminal edge, superseding liveness level, and the
+    /// end-of-stream / reset / stream-error `finishAll` paths), but a row can
+    /// still strand when the terminal frame is published on a session id this
+    /// connection has already left — a fork is the ordinary way there. That case
+    /// is handled directly (`SessionStarted` clears the table on a session-id
+    /// change); this window is what catches the ones nobody predicted.
+    ///
+    /// Refreshed by ANY async-task delta, so a task that keeps reporting keeps
+    /// its exemption for as long as it runs.
+    pub fn has_live_async_task(&self, now: DateTime<Utc>) -> bool {
+        if !self
+            .async_tasks
             .values()
             .any(|t| !crate::acp::types::async_task_state_is_terminal(&t.state))
+        {
+            return false;
+        }
+        match self.async_task_activity_at {
+            Some(at) => now.signed_duration_since(at) < background_keepalive_max_age(),
+            None => false,
+        }
     }
 
     /// A single-line "what the sub-agent is doing right now" hint, used by the
@@ -2211,6 +2252,65 @@ mod tests {
             },
         });
         assert!(!s.has_active_background_work(now));
+    }
+
+    /// The exemption is what stops the idle sweep, so a row that never reaches a
+    /// terminal state would otherwise hold the agent CLI open forever. Bounded
+    /// by the same window as the watcher's half, and refreshed by any delta —
+    /// a task that keeps reporting keeps its exemption for as long as it runs.
+    #[test]
+    fn a_silent_async_task_stops_deferring_the_sweep_after_the_keepalive_window() {
+        let mut s = fresh_state();
+        let now = Utc::now();
+        s.apply_event(&AcpEvent::AsyncTask {
+            delta: async_task_delta("t1", true),
+        });
+        assert!(s.has_active_background_work(now));
+
+        let past_window = now + background_keepalive_max_age() + chrono::Duration::seconds(1);
+        assert!(
+            !s.has_active_background_work(past_window),
+            "a row that never settles must not exempt the connection forever"
+        );
+
+        // Any delta re-arms it, terminal state notwithstanding: the adapter is
+        // demonstrably still talking about this task.
+        s.apply_event(&AcpEvent::AsyncTask {
+            delta: AsyncTaskDelta {
+                last_tool_name: Some("Bash".into()),
+                ..async_task_delta("t1", false)
+            },
+        });
+        assert!(s.has_active_background_work(Utc::now()));
+    }
+
+    /// A fork attaches to a NEW session id on the same process. The old
+    /// session's task rows can never settle here again — their terminal frames
+    /// are published on the id `ActiveSessionHandler` has stopped routing to
+    /// this connection — so they must go, or the strip shows work that never
+    /// finishes and the keep-alive pins the CLI open.
+    #[test]
+    fn a_session_id_change_drops_the_previous_session_tasks() {
+        let mut s = fresh_state();
+        s.apply_event(&AcpEvent::SessionStarted {
+            session_id: "s1".into(),
+        });
+        s.apply_event(&AcpEvent::AsyncTask {
+            delta: async_task_delta("t1", true),
+        });
+        assert!(s.has_active_background_work(Utc::now()));
+
+        // A duplicate announcement of the SAME id is a replay, not a fork.
+        s.apply_event(&AcpEvent::SessionStarted {
+            session_id: "s1".into(),
+        });
+        assert_eq!(s.async_tasks.len(), 1);
+
+        s.apply_event(&AcpEvent::SessionStarted {
+            session_id: "s2".into(),
+        });
+        assert!(s.async_tasks.is_empty());
+        assert!(!s.has_active_background_work(Utc::now()));
     }
 
     #[test]

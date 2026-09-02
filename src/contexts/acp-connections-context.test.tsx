@@ -862,6 +862,45 @@ describe("AcpConnectionsProvider AIR async tasks", () => {
     expect(settled).toHaveLength(1)
     expect(settled[0]).toMatchObject({ state: "completed", name: "pnpm test" })
   })
+
+  // A fork attaches to a NEW session id. The old session's tasks can never
+  // settle again — the adapter publishes their terminal frames on the id the
+  // connection has left — so the backend drops its table and this reducer has
+  // to follow. It can't wait for a snapshot to do it: an empty snapshot table
+  // reads as "nothing to say", not "clear yours".
+  it("drops task rows when the session id changes, but not on a replay", async () => {
+    const handlers = await connectOwner()
+    emitAcpEvent(handlers, {
+      seq: 1,
+      connection_id: "spawned-conn",
+      type: "session_started",
+      session_id: "s1",
+    })
+    emitAcpEvent(handlers, {
+      seq: 2,
+      connection_id: "spawned-conn",
+      type: "async_task",
+      delta: { task_id: "t1", spawned: true, name: "watch", can_stop: true },
+    })
+    expect(h.store!.getConnection(TAB)?.asyncTasks).toHaveLength(1)
+
+    // Re-announcing the SAME id is a replay, not a fork.
+    emitAcpEvent(handlers, {
+      seq: 3,
+      connection_id: "spawned-conn",
+      type: "session_started",
+      session_id: "s1",
+    })
+    expect(h.store!.getConnection(TAB)?.asyncTasks).toHaveLength(1)
+
+    emitAcpEvent(handlers, {
+      seq: 4,
+      connection_id: "spawned-conn",
+      type: "session_started",
+      session_id: "s2",
+    })
+    expect(h.store!.getConnection(TAB)?.asyncTasks).toHaveLength(0)
+  })
 })
 
 // The composer's connection-status popover. Unlike `reapplyConfig` (live owners

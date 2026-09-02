@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest"
 
 import {
+  adoptUnknownAsyncTasks,
   isAsyncTaskTerminal,
   liveAsyncTasks,
   mergeAsyncTasks,
@@ -124,6 +125,46 @@ describe("mergeAsyncTasks", () => {
     const current = upsertAsyncTask([], SPAWN)
     expect(mergeAsyncTasks(current, [])).toBe(current)
     expect(mergeAsyncTasks(current, undefined)).toBe(current)
+  })
+})
+
+describe("adoptUnknownAsyncTasks", () => {
+  it("never walks a finished task back to running", () => {
+    // The stale branch's whole reason to exist. The client applied the terminal
+    // delta at seq 11; the snapshot was taken at seq 10 and still says running.
+    // Replacing by id would resurrect it, and the live event that would correct
+    // it is already below the applied watermark — it is never replayed.
+    const live = upsertAsyncTask(
+      upsertAsyncTask([], SPAWN),
+      delta("t1", false, { state: "completed", summary: "all green" })
+    )
+    const staleSnapshot: AsyncTaskRecord[] = [{ ...live[0], state: "running" }]
+
+    const adopted = adoptUnknownAsyncTasks(live, staleSnapshot)
+    expect(adopted).toBe(live)
+    expect(adopted[0].state).toBe("completed")
+    expect(adopted[0].summary).toBe("all green")
+  })
+
+  it("still adopts ids the client never saw announced", () => {
+    // A client that attached mid-episode has no other source for work already
+    // running, so "don't clobber" must not become "don't learn".
+    const live = upsertAsyncTask([], SPAWN)
+    const staleSnapshot: AsyncTaskRecord[] = [
+      { ...live[0], state: "running" },
+      { ...live[0], task_id: "t2", name: "deploy watch" },
+    ]
+
+    const adopted = adoptUnknownAsyncTasks(live, staleSnapshot)
+    expect(adopted).toHaveLength(2)
+    expect(adopted[1].task_id).toBe("t2")
+    expect(adopted[0]).toBe(live[0])
+  })
+
+  it("returns the same reference for an empty or absent table", () => {
+    const current = upsertAsyncTask([], SPAWN)
+    expect(adoptUnknownAsyncTasks(current, [])).toBe(current)
+    expect(adoptUnknownAsyncTasks(current, undefined)).toBe(current)
   })
 })
 

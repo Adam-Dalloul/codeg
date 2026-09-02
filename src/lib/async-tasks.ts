@@ -101,6 +101,11 @@ export function upsertAsyncTask(
  * backend already merged them — so this REPLACES by id rather than patching,
  * and appends ids the client hasn't seen.
  *
+ * ONLY for a snapshot newer than everything this client has applied. The rows
+ * carry no revision, so "replace by id" is only sound while the snapshot is
+ * known to be the fresher of the two; for a snapshot the client has already
+ * overtaken use [`adoptUnknownAsyncTasks`].
+ *
  * Returns the same array reference when nothing changed.
  */
 export function mergeAsyncTasks(
@@ -114,16 +119,46 @@ export function mergeAsyncTasks(
     const target = next ?? current
     const index = target.findIndex((t) => t.task_id === record.task_id)
     if (index >= 0) {
-      // The snapshot is the backend's own merge of every delta, so it is at
-      // least as new as anything this client applied. Same-content replays are
-      // cheap; skipping them here would need a per-row watermark the wire
-      // doesn't carry.
       next ??= [...current]
-      next[next.findIndex((t) => t.task_id === record.task_id)] = record
+      next[index] = record
     } else {
       next ??= [...current]
       next.push(record)
     }
+  }
+  return next ?? current
+}
+
+/**
+ * Fold a STALE snapshot in without letting it overwrite anything.
+ *
+ * A snapshot whose `eventSeq` the client has already passed was generated
+ * BEFORE deltas this client applied, so its rows can be older — replacing by id
+ * would walk a task the client already saw finish back to `running`, and the
+ * live terminal event is not replayed to correct it (its seq is already below
+ * the applied watermark). Rows are unversioned, so there is no per-row way to
+ * tell which of the two is newer.
+ *
+ * Adding is still safe and still worth doing: a client that attached mid-episode
+ * never saw the announcement of work already running, and the snapshot is its
+ * only way to learn about it. So take the ids we don't have and leave the ones
+ * we do alone — the "can only add, never clobber" rule the failure-record merge
+ * gets from its revision counter, enforced structurally here instead.
+ *
+ * Returns the same array reference when nothing changed.
+ */
+export function adoptUnknownAsyncTasks(
+  current: AsyncTaskRecord[],
+  incoming: AsyncTaskRecord[] | null | undefined
+): AsyncTaskRecord[] {
+  if (!incoming || incoming.length === 0) return current
+  let next: AsyncTaskRecord[] | null = null
+  for (const record of incoming) {
+    if (!record?.task_id) continue
+    const target = next ?? current
+    if (target.some((t) => t.task_id === record.task_id)) continue
+    next ??= [...current]
+    next.push(record)
   }
   return next ?? current
 }

@@ -8457,13 +8457,19 @@ async fn run_conversation_loop<'a>(
                                         .await;
                                     }
                                     // Consumed before the typed pipeline (see
-                                    // `air_async_task_delta`). Counts as turn
-                                    // output: a turn whose only visible result
-                                    // is "I launched a background job" is not
-                                    // an empty turn, and the diagnosis path
-                                    // would otherwise call it one.
+                                    // `air_async_task_delta`). Only a SPAWN
+                                    // counts as this turn's output: a turn whose
+                                    // only visible result is "I launched a
+                                    // background job" is not an empty turn, but
+                                    // a progress/state tick from a task an
+                                    // EARLIER turn started is not this turn's
+                                    // work — background frames arrive inside
+                                    // later turns as a matter of course, and
+                                    // letting them set the flag would silence
+                                    // the empty-turn diagnosis for a prompt the
+                                    // agent really did answer with nothing.
                                     if let Some(delta) = air_async_task_delta(&dispatch) {
-                                        probe.saw_agent_output = true;
+                                        probe.saw_agent_output |= delta.spawned;
                                         emit_with_state(
                                             &st,
                                             &h,
@@ -11784,6 +11790,16 @@ fn air_async_task_delta(dispatch: &Dispatch) -> Option<AsyncTaskDelta> {
     let Dispatch::Notification(msg) = dispatch else {
         return None;
     };
+    // Method-checked as well as shape-checked. These frames only ever ride on
+    // `session/update`, and claiming a dispatch before the typed pipeline is
+    // destructive — nothing downstream gets a second look at it — so a future
+    // extension method that happens to nest an `update.sessionUpdate` must not
+    // be swallowed here. (Session scoping is already settled upstream: this
+    // dispatch came off an `ActiveSession` read, which only yields frames whose
+    // session id matches.)
+    if msg.method() != "session/update" {
+        return None;
+    }
     let update = msg.params.get("update")?;
     let spawned = match update.get("sessionUpdate").and_then(|v| v.as_str())? {
         "async_task_spawned" => true,
