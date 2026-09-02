@@ -215,4 +215,44 @@ mod tests {
         assert_eq!(got, crate::parsers::truncate_str(&long, 100));
         assert!(got.ends_with("..."));
     }
+
+    /// The two Claude producers must NORMALIZE identically, or they stop being
+    /// repeats of each other.
+    ///
+    /// claude-agent-acp 0.73.0 publishes its generated title over the wire
+    /// (here) AND persists it to the session file, where the transcript watcher
+    /// and the detail-fetch backfill read it back through
+    /// `parsers::claude::capture_title_record`. Both then race into
+    /// `publish_native_title`, whose skip-cache only collapses IDENTICAL
+    /// strings — and whose doc notes that two producers admitting DIFFERENT
+    /// strings can broadcast out of order. So a divergence in trimming or in
+    /// the length cap would not merely differ cosmetically: it would turn every
+    /// long title into a permanent two-writer ping-pong on the sidebar row.
+    ///
+    /// Asserting against the transcript helper rather than a literal is the
+    /// point — a future change to either cap has to change both.
+    #[test]
+    fn agrees_with_the_transcript_producer_on_normalization() {
+        for raw in [
+            "  Fix login flow  ",
+            "a",
+            &"b".repeat(100),
+            &"c".repeat(101),
+            &format!("  {}  ", "d".repeat(150)),
+        ] {
+            let record = serde_json::json!({ "type": "ai-title", "aiTitle": raw });
+            let (mut custom, mut ai) = (None, None);
+            crate::parsers::claude::capture_title_record(
+                &record,
+                "ai-title",
+                &mut custom,
+                &mut ai,
+            );
+            assert_eq!(
+                native_title_from_session_info(Some(raw)),
+                ai,
+                "wire and transcript producers disagree on {raw:?}"
+            );
+        }
+    }
 }
