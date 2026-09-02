@@ -15,6 +15,106 @@ use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 const MAX_STDERR_CAPTURE_BYTES: usize = 1024 * 1024;
 
+fn is_windows_unc_path(path: &str) -> bool {
+    let lower = path.to_ascii_lowercase();
+    lower.starts_with(r"\\?\unc\")
+        || (path.starts_with(r"\\") && !path.starts_with(r"\\?\") && !path.starts_with(r"\\.\"))
+}
+
+fn is_windows_batch_file(command: &std::path::Path) -> bool {
+    let lower = command.to_string_lossy().to_ascii_lowercase();
+    lower.ends_with(".cmd") || lower.ends_with(".bat")
+}
+
+#[cfg(windows)]
+fn system_cmd_exe() -> PathBuf {
+    // Avoid resolving cmd.exe from a potentially untrusted workspace. Agent
+    // environment overrides are applied only after this path is selected.
+    std::env::var_os("SystemRoot")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(r"C:\Windows"))
+        .join("System32")
+        .join("cmd.exe")
+}
+
+/// Append one argument using the same defensive quoting rules Rust's standard
+/// library applies when it launches a Windows batch file. In particular, cmd
+/// metacharacters stay quoted and percent signs cannot expand environment vars.
+#[cfg(any(windows, test))]
+fn append_windows_batch_arg(output: &mut String, arg: &str) -> std::io::Result<()> {
+    if arg.contains(['\r', '\n', '\0']) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "batch file arguments may not contain line breaks or NUL bytes",
+        ));
+    }
+
+    const UNQUOTED: &str = r"#$*+-./:?@\_";
+    let quote = arg.is_empty()
+        || arg.ends_with('\\')
+        || arg.chars().any(|ch| {
+            (ch.is_ascii() && !(ch.is_ascii_alphanumeric() || UNQUOTED.contains(ch)))
+                || ch.is_control()
+        });
+
+    if quote {
+        output.push('"');
+    }
+    let mut backslashes = 0;
+    for ch in arg.chars() {
+        if ch == '\\' {
+            backslashes += 1;
+            continue;
+        }
+        if ch == '"' {
+            output.extend(std::iter::repeat_n('\\', backslashes * 2));
+            output.push_str("\"\"");
+        } else {
+            output.extend(std::iter::repeat_n('\\', backslashes));
+            if ch == '%' || ch == '\r' {
+                output.push_str("%%cd:~,");
+            }
+            output.push(ch);
+        }
+        backslashes = 0;
+    }
+    if quote {
+        output.extend(std::iter::repeat_n('\\', backslashes * 2));
+        output.push('"');
+    } else {
+        output.extend(std::iter::repeat_n('\\', backslashes));
+    }
+    Ok(())
+}
+
+#[cfg(any(windows, test))]
+fn make_unc_batch_command_line(
+    cwd: &str,
+    command: &std::path::Path,
+    args: &[String],
+) -> std::io::Result<String> {
+    let mut line = String::from("/e:ON /v:OFF /d /s /c \"pushd ");
+    append_windows_batch_arg(&mut line, cwd)?;
+    // Do not use `call`: it reparses arguments and can expand metacharacters a
+    // second time. The batch file may take over this short-lived cmd process.
+    line.push_str(" && ");
+    append_windows_batch_arg(
+        &mut line,
+        command.to_str().ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "batch file path is not valid Unicode",
+            )
+        })?,
+    )?;
+    for arg in args {
+        line.push(' ');
+        append_windows_batch_arg(&mut line, arg)?;
+    }
+    line.push('"');
+    Ok(line)
+}
+
 /// Direction of a line being sent or received.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LineDirection {
@@ -273,8 +373,37 @@ impl AcpAgent {
     > {
         match &self.server {
             sacp::schema::McpServer::Stdio(stdio) => {
-                let mut cmd = tokio::process::Command::new(&stdio.command);
-                cmd.args(&stdio.args);
+                #[cfg(windows)]
+                let mut cmd = {
+                    use std::os::windows::process::CommandExt;
+
+                    let unc_cwd = self
+                        .current_dir
+                        .as_ref()
+                        .and_then(|dir| dir.to_str())
+                        .filter(|dir| is_windows_unc_path(dir));
+                    if let Some(dir) = unc_cwd.filter(|_| is_windows_batch_file(&stdio.command)) {
+                        // cmd.exe cannot use a UNC path as its process cwd. `pushd`
+                        // maps the share to a temporary drive before launching the
+                        // batch-backed agent, preserving the requested project cwd.
+                        let command_line =
+                            make_unc_batch_command_line(dir, &stdio.command, &stdio.args)
+                                .map_err(sacp::Error::into_internal_error)?;
+                        let mut command = tokio::process::Command::new(system_cmd_exe());
+                        command.as_std_mut().raw_arg(command_line);
+                        command
+                    } else {
+                        let mut command = tokio::process::Command::new(&stdio.command);
+                        command.args(&stdio.args);
+                        command
+                    }
+                };
+                #[cfg(not(windows))]
+                let mut cmd = {
+                    let mut command = tokio::process::Command::new(&stdio.command);
+                    command.args(&stdio.args);
+                    command
+                };
                 for env_var in &stdio.env {
                     // codeg convention: an empty value means "ensure this var is
                     // ABSENT from the child" (strip an inherited value) rather
@@ -291,7 +420,12 @@ impl AcpAgent {
                     }
                 }
                 if let Some(dir) = &self.current_dir {
-                    cmd.current_dir(dir);
+                    let handled_by_pushd = cfg!(windows)
+                        && dir.to_str().is_some_and(is_windows_unc_path)
+                        && is_windows_batch_file(&stdio.command);
+                    if !handled_by_pushd {
+                        cmd.current_dir(dir);
+                    }
                 }
                 #[cfg(windows)]
                 {
@@ -1010,6 +1144,51 @@ mod tests {
             assert!(reported, "the reaper never observed the child's death");
         });
         let _ = std::fs::remove_file(&ready);
+    }
+
+    #[test]
+    fn detects_windows_unc_paths_without_misclassifying_device_or_drive_paths() {
+        assert!(is_windows_unc_path(
+            r"\\wsl.localhost\Ubuntu\home\user\repo"
+        ));
+        assert!(is_windows_unc_path(r"\\wsl$\Ubuntu\home\user\repo"));
+        assert!(is_windows_unc_path(r"\\?\UNC\server\share\repo"));
+        assert!(!is_windows_unc_path(r"C:\Users\user\repo"));
+        assert!(!is_windows_unc_path(r"\\?\C:\Users\user\repo"));
+        assert!(!is_windows_unc_path(r"\\.\pipe\codeg"));
+    }
+
+    #[test]
+    fn detects_batch_launchers_case_insensitively() {
+        assert!(is_windows_batch_file(std::path::Path::new("hermes.CmD")));
+        assert!(is_windows_batch_file(std::path::Path::new("agent.BAT")));
+        assert!(!is_windows_batch_file(std::path::Path::new("agent.exe")));
+        assert!(!is_windows_batch_file(std::path::Path::new("hermes")));
+    }
+
+    #[test]
+    fn unc_batch_command_uses_pushd_and_escapes_cmd_metacharacters() {
+        let command = make_unc_batch_command_line(
+            r"\\wsl.localhost\Ubuntu\home\a&b\repo",
+            std::path::Path::new(r"C:\Program Files\nodejs\hermes.cmd"),
+            &["acp".into(), "100% ready".into(), "x&whoami".into()],
+        )
+        .expect("valid command line");
+
+        assert_eq!(
+            command,
+            r#"/e:ON /v:OFF /d /s /c "pushd "\\wsl.localhost\Ubuntu\home\a&b\repo" && "C:\Program Files\nodejs\hermes.cmd" acp "100%%cd:~,% ready" "x&whoami"""#
+        );
+    }
+
+    #[test]
+    fn unc_batch_command_rejects_line_breaks() {
+        assert!(make_unc_batch_command_line(
+            r"\\wsl.localhost\Ubuntu\home\user\repo",
+            std::path::Path::new("hermes.cmd"),
+            &["line\nbreak".into()],
+        )
+        .is_err());
     }
 
     #[cfg(unix)]
