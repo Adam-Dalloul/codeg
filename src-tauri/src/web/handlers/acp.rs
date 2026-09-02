@@ -456,6 +456,27 @@ pub async fn acp_fork(
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct AcpStopAsyncTaskParams {
+    pub connection_id: String,
+    pub task_id: String,
+}
+
+/// `Ok(false)` = the adapter declined to stop the task — a real answer, not a
+/// failure, so it is a 200 with `false` rather than an error status.
+pub async fn acp_stop_async_task(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(params): Json<AcpStopAsyncTaskParams>,
+) -> Result<Json<bool>, AppCommandError> {
+    let stopped = state
+        .connection_manager
+        .stop_async_task(&params.connection_id, &params.task_id)
+        .await
+        .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+    Ok(Json(stopped))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AcpRespondPermissionParams {
     pub connection_id: String,
     pub request_id: String,

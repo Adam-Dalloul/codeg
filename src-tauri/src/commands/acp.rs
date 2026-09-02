@@ -10144,6 +10144,19 @@ pub async fn acp_fork(
         .await
 }
 
+/// Stop one AIR async task. `Ok(false)` = the adapter declined (unknown,
+/// already terminal, or a stop already in flight) — a real answer, not a
+/// failure.
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn acp_stop_async_task(
+    connection_id: String,
+    task_id: String,
+    manager: State<'_, ConnectionManager>,
+) -> Result<bool, AcpError> {
+    manager.stop_async_task(&connection_id, &task_id).await
+}
+
 #[cfg(feature = "tauri-runtime")]
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
 pub async fn acp_respond_permission(

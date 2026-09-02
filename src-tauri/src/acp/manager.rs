@@ -1528,6 +1528,42 @@ impl ConnectionManager {
         self.cancel(db, conn_id).await
     }
 
+    /// Stop one AIR async task (`_session/async_task/stop`).
+    ///
+    /// Returns the adapter's own verdict, not "the request went through": it
+    /// answers `false` for a task it declines to stop. Unshielded, unlike
+    /// `submit_feedback_native` — there is nothing to persist on this path, so a
+    /// caller that disconnects mid-await leaves no half-written state, and the
+    /// user-visible result arrives on the session channel regardless of who is
+    /// still listening for the reply.
+    ///
+    /// The task id is NOT pre-validated against `SessionState.async_tasks`. The
+    /// adapter owns that table's real lifecycle (its `claimStop` already refuses
+    /// unknown, terminal, and already-stopping tasks), and a local check could
+    /// only ever be staler than the adapter's — it would turn a race into a
+    /// silent no-op rather than the `false` the caller can report.
+    pub async fn stop_async_task(&self, conn_id: &str, task_id: &str) -> Result<bool, AcpError> {
+        let cmd_tx = {
+            let connections = self.connections.lock().await;
+            connections
+                .get(conn_id)
+                .ok_or_else(|| AcpError::ConnectionNotFound(conn_id.into()))?
+                .cmd_tx
+                .clone()
+        };
+        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+        cmd_tx
+            .send(ConnectionCommand::StopAsyncTask {
+                task_id: task_id.to_string(),
+                reply: reply_tx,
+            })
+            .await
+            .map_err(|_| AcpError::ProcessExited)?;
+        reply_rx
+            .await
+            .map_err(|_| AcpError::protocol("Async task stop reply channel closed".to_string()))?
+    }
+
     pub async fn cancel(&self, db: &DatabaseConnection, conn_id: &str) -> Result<(), AcpError> {
         let (cmd_tx, state_arc, emitter) = {
             let connections = self.connections.lock().await;

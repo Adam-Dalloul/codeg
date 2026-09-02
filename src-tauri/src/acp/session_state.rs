@@ -14,9 +14,9 @@ use crate::acp::feedback::{FeedbackItem, FeedbackStatus};
 use crate::acp::plan_approval::PendingPlanApprovalState;
 use crate::acp::question::PendingQuestionState;
 use crate::acp::types::{
-    AcpEvent, AvailableCommandInfo, ConfigStaleKind, ConnectionStatus, EventEnvelope,
-    GrokModelSpec, PromptCapabilitiesInfo, SessionConfigOptionInfo, SessionFailureRecord,
-    SessionModeStateInfo, ToolCallImageInfo,
+    AcpEvent, AsyncTaskRecord, AvailableCommandInfo, ConfigStaleKind, ConnectionStatus,
+    EventEnvelope, GrokModelSpec, PromptCapabilitiesInfo, SessionConfigOptionInfo,
+    SessionFailureRecord, SessionModeStateInfo, ToolCallImageInfo,
 };
 use crate::models::agent::AgentType;
 use crate::models::message::MessageRole;
@@ -477,6 +477,19 @@ pub struct SessionState {
     /// subsequent live events. BTreeMap for a deterministic snapshot order.
     pub session_failures: BTreeMap<String, SessionFailureRecord>,
 
+    /// AIR async tasks projected by task id (see [`AsyncTaskRecord`]) — the
+    /// merged form of the deltas on `AcpEvent::AsyncTask`.
+    ///
+    /// Terminal rows are RETAINED for the connection's lifetime rather than
+    /// dropped on their last state update. The adapter revises a task after it
+    /// settles (a late `outputFilePath`, and a `task_notification` that corrects
+    /// a best-effort `stopped` into the real `completed`/`failed`), so an
+    /// evicted row would be re-created by its own correction — as a fresh
+    /// "running" one, since `spawned` is what carries the identity. Presentation
+    /// decides what to show; this table decides what is true. BTreeMap for a
+    /// deterministic snapshot order.
+    pub async_tasks: BTreeMap<String, AsyncTaskRecord>,
+
     /// Concatenated text content of the just-completed turn's assistant
     /// message. Captured at TurnComplete (just before live_message is
     /// cleared) so the lifecycle subscriber can surface it as the
@@ -598,6 +611,7 @@ impl SessionState {
             goal_actions: None,
             goal_active: false,
             session_failures: BTreeMap::new(),
+            async_tasks: BTreeMap::new(),
             last_assistant_text: None,
             pending_user_message: None,
             pending_user_message_started_at: None,
@@ -1216,6 +1230,27 @@ impl SessionState {
                         .insert(record.id.clone(), record.clone());
                 }
             }
+            AcpEvent::AsyncTask { delta } => {
+                // The SAME merge the frontend reducer applies, so a client
+                // seeded from the snapshot and one that watched every delta
+                // hold identical rows. Only a `spawned` frame may create:
+                // progress naming an unknown task means we failed to read its
+                // announcement, and a row we can't name or type is worse than
+                // no row (see `AsyncTaskDelta::spawned`).
+                match self.async_tasks.get_mut(&delta.task_id) {
+                    Some(existing) => delta.apply_to(existing),
+                    None if delta.spawned => {
+                        self.async_tasks
+                            .insert(delta.task_id.clone(), delta.to_record());
+                    }
+                    None => {
+                        tracing::debug!(
+                            task_id = %delta.task_id,
+                            "[ACP] ignoring async-task delta for an unannounced task"
+                        );
+                    }
+                }
+            }
             AcpEvent::ClaudeSdkMessage { .. }
             | AcpEvent::ConfigOptionRejected { .. }
             | AcpEvent::SessionLoadFailed { .. }
@@ -1245,6 +1280,17 @@ impl SessionState {
     /// `background_outstanding` here — this check is the belt to that
     /// suspenders.)
     pub fn has_active_background_work(&self, now: DateTime<Utc>) -> bool {
+        // OR, not a sum. The two sources — the transcript watcher's
+        // `background_outstanding` and the AIR async-task table — observe
+        // overlapping work through different channels, so adding them would
+        // double-count the same background shell. An OR cannot: whichever
+        // source still believes work is pending keeps the connection alive,
+        // and reaping only resumes once BOTH have let go. That asymmetry is
+        // deliberate — a false "still running" costs one idle connection, a
+        // false "settled" kills the agent CLI and the work with it.
+        if self.has_live_async_task() {
+            return true;
+        }
         if self.background_outstanding == 0 {
             return false;
         }
@@ -1252,6 +1298,21 @@ impl SessionState {
             Some(at) => now.signed_duration_since(at) < background_keepalive_max_age(),
             None => false,
         }
+    }
+
+    /// Whether any AIR async task is still non-terminal.
+    ///
+    /// Unbounded by wall-clock age, unlike the watcher's side of
+    /// `has_active_background_work`: this table is fed by the adapter's own
+    /// authoritative lifecycle rather than by polling a transcript, and the
+    /// adapter closes every task it announced — on its terminal edge, on the
+    /// replace-semantics liveness level that supersedes it, and on shutdown
+    /// (`finishAll`). A row can therefore only stay live while the connection
+    /// is live, which is exactly the window the exemption is for.
+    pub fn has_live_async_task(&self) -> bool {
+        self.async_tasks
+            .values()
+            .any(|t| !crate::acp::types::async_task_state_is_terminal(&t.state))
     }
 
     /// A single-line "what the sub-agent is doing right now" hint, used by the
@@ -1636,6 +1697,7 @@ impl SessionState {
             config_stale_kind: self.config_stale_kind,
             last_error: self.last_error.clone(),
             session_failures: self.session_failures.values().cloned().collect(),
+            async_tasks: self.async_tasks.values().cloned().collect(),
             goal_actions: self.goal_actions.clone(),
             event_seq: self.event_seq,
         }
@@ -1752,6 +1814,13 @@ pub struct LiveSessionSnapshot {
     /// common case) to keep the wire shape byte-identical pre-feature.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub session_failures: Vec<SessionFailureRecord>,
+    /// AIR async tasks, merged (see `SessionState.async_tasks`). Terminal rows
+    /// included: they carry the ids the subsequent live deltas revise, so a
+    /// client seeded without them would re-create a settled task as a running
+    /// one on its next correction. Omitted while empty (the common case) to
+    /// keep the wire shape byte-identical pre-feature.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub async_tasks: Vec<AsyncTaskRecord>,
     /// Goal-control action vocabulary the goal card gates its buttons on
     /// (see `SessionState.goal_actions`): the advertised list for neutral-goal
     /// adapters, the legacy ["pause","clear"] pair for the rest.
@@ -1858,9 +1927,9 @@ fn extract_tool_call_id(tool_call: &serde_json::Value) -> String {
 mod tests {
     use super::*;
     use crate::acp::types::{
-        AcpEvent, ConnectionStatus, DelegationResultSummary, EventEnvelope, PromptCapabilitiesInfo,
-        SessionConfigKindInfo, SessionConfigOptionInfo, SessionConfigSelectInfo, SessionModeInfo,
-        SessionModeStateInfo, UserMessageBlock,
+        AcpEvent, AsyncTaskDelta, AsyncTaskUsage, ConnectionStatus, DelegationResultSummary,
+        EventEnvelope, PromptCapabilitiesInfo, SessionConfigKindInfo, SessionConfigOptionInfo,
+        SessionConfigSelectInfo, SessionModeInfo, SessionModeStateInfo, UserMessageBlock,
     };
 
     fn fresh_state() -> SessionState {
@@ -2005,6 +2074,143 @@ mod tests {
             f.get("id").and_then(|v| v.as_str()) == Some("t1:error")
                 && f.get("revision").and_then(|v| v.as_u64()) == Some(4)
         }));
+    }
+
+    fn async_task_delta(task_id: &str, spawned: bool) -> AsyncTaskDelta {
+        AsyncTaskDelta {
+            task_id: task_id.into(),
+            spawned,
+            name: None,
+            task_type: None,
+            description: None,
+            show_in_transcript: None,
+            can_stop: None,
+            state: None,
+            summary: None,
+            last_tool_name: None,
+            usage: None,
+            output_file_path: None,
+            tool_call_id: None,
+        }
+    }
+
+    /// Only the spawn frame carries a task's identity, so it is the only one
+    /// allowed to create a row: a progress delta for an id we never saw
+    /// announced means codeg failed to read the announcement, and a row with a
+    /// placeholder name and no type is worse than no row at all.
+    #[test]
+    fn async_task_rows_are_created_only_by_a_spawn_delta() {
+        let mut s = fresh_state();
+        s.apply_event(&AcpEvent::AsyncTask {
+            delta: async_task_delta("ghost", false),
+        });
+        assert!(s.async_tasks.is_empty());
+
+        let spawn = AsyncTaskDelta {
+            name: Some("pnpm test".into()),
+            task_type: Some("shell".into()),
+            description: Some("pnpm test --watch".into()),
+            show_in_transcript: Some(false),
+            can_stop: Some(true),
+            ..async_task_delta("t1", true)
+        };
+        s.apply_event(&AcpEvent::AsyncTask { delta: spawn });
+        let row = &s.async_tasks["t1"];
+        assert_eq!(row.name, "pnpm test");
+        assert_eq!(row.task_type, "shell");
+        assert!(!row.show_in_transcript);
+        assert!(row.can_stop);
+        // A spawn frame carries no state field; the row starts live.
+        assert_eq!(row.state, "running");
+    }
+
+    /// Progress/state deltas are PARTIAL: an absent field must leave the stored
+    /// value alone, or the first progress tick would blank out the task's name.
+    #[test]
+    fn async_task_deltas_revise_only_the_fields_they_carry() {
+        let mut s = fresh_state();
+        s.apply_event(&AcpEvent::AsyncTask {
+            delta: AsyncTaskDelta {
+                name: Some("pnpm test".into()),
+                task_type: Some("shell".into()),
+                ..async_task_delta("t1", true)
+            },
+        });
+        s.apply_event(&AcpEvent::AsyncTask {
+            delta: AsyncTaskDelta {
+                last_tool_name: Some("Bash".into()),
+                usage: Some(AsyncTaskUsage {
+                    total_tokens: 1200,
+                    tool_uses: 3,
+                    duration_ms: 4500,
+                }),
+                output_file_path: Some("/tmp/tasks/t1.output".into()),
+                ..async_task_delta("t1", false)
+            },
+        });
+        let row = &s.async_tasks["t1"];
+        assert_eq!(row.name, "pnpm test");
+        assert_eq!(row.task_type, "shell");
+        assert_eq!(row.last_tool_name.as_deref(), Some("Bash"));
+        assert_eq!(row.usage.as_ref().unwrap().total_tokens, 1200);
+        assert_eq!(row.output_file_path.as_deref(), Some("/tmp/tasks/t1.output"));
+
+        // The adapter revises a task AFTER it settles — correcting a
+        // best-effort `stopped` into the real outcome, or attaching a late
+        // output path. Retaining the row is what lets that correction land as a
+        // revision instead of resurrecting the task as a fresh running one.
+        s.apply_event(&AcpEvent::AsyncTask {
+            delta: AsyncTaskDelta {
+                state: Some("stopped".into()),
+                ..async_task_delta("t1", false)
+            },
+        });
+        assert_eq!(s.async_tasks["t1"].state, "stopped");
+        s.apply_event(&AcpEvent::AsyncTask {
+            delta: AsyncTaskDelta {
+                state: Some("completed".into()),
+                summary: Some("all green".into()),
+                ..async_task_delta("t1", false)
+            },
+        });
+        assert_eq!(s.async_tasks["t1"].state, "completed");
+        assert_eq!(s.async_tasks["t1"].summary.as_deref(), Some("all green"));
+
+        // The whole table rides the snapshot so a client attaching mid-session
+        // merges subsequent deltas against the same rows.
+        let snap = s.to_snapshot();
+        assert_eq!(snap.async_tasks.len(), 1);
+        assert_eq!(snap.async_tasks[0].task_id, "t1");
+    }
+
+    /// Reaping an idle connection kills the agent CLI, and with it any
+    /// background work. A live async task must hold the connection open on its
+    /// own — the transcript watcher is a separate, overlapping observer, so the
+    /// two combine by OR (never a sum, which would double-count one shell).
+    #[test]
+    fn a_live_async_task_alone_defers_the_idle_sweep() {
+        let mut s = fresh_state();
+        let now = Utc::now();
+        assert!(!s.has_active_background_work(now));
+
+        s.apply_event(&AcpEvent::AsyncTask {
+            delta: AsyncTaskDelta {
+                name: Some("watch".into()),
+                ..async_task_delta("t1", true)
+            },
+        });
+        // No `BackgroundActivity` has ever arrived, so this exemption is coming
+        // from the async-task table alone.
+        assert_eq!(s.background_outstanding, 0);
+        assert!(s.has_active_background_work(now));
+
+        s.apply_event(&AcpEvent::AsyncTask {
+            delta: AsyncTaskDelta {
+                state: Some("completed".into()),
+                ..async_task_delta("t1", false)
+            },
+        });
+        assert!(!s.has_active_background_work(now));
     }
 
     #[test]
