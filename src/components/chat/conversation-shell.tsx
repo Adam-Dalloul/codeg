@@ -117,10 +117,13 @@ interface ConversationShellProps {
   onSaveQueueEdit?: (draft: PromptDraft) => void
   onCancelQueueEdit?: () => void
   onForkSend?: (draft: PromptDraft, modeId?: string | null) => void
-  /** Inject the draft's text into the RUNNING turn (native live-feedback
-   *  steering). Present only for sessions on the native channel; threaded
-   *  straight through to the composer. */
+  /** Send the draft's text into the RUNNING turn over the session's live-
+   *  feedback channel. Present only for sessions with a working delivery
+   *  channel; threaded straight through to the composer. */
   onSteer?: (text: string) => Promise<void>
+  /** Which channel `onSteer` rides (picks the composer's honest copy);
+   *  threaded straight through. See `MessageInput`. */
+  steerChannel?: "native" | "pull"
   /** Optional banner pinned to the top of the panel, above the message area
    *  (e.g. the "restart to apply" config-stale banner). Renders nothing when
    *  omitted. */
@@ -187,6 +190,7 @@ export function ConversationShell({
   onCancelQueueEdit,
   onForkSend,
   onSteer,
+  steerChannel,
   topBanner,
   injectContent,
   onInjectConsumed,
@@ -348,6 +352,7 @@ export function ConversationShell({
               onCancelQueueEdit={onCancelQueueEdit}
               onForkSend={onForkSend}
               onSteer={onSteer}
+              steerChannel={steerChannel}
               onAddFeedback={onAddFeedback}
               feedbackAddDisabled={feedbackAddDisabled}
               injectContent={injectContent}
