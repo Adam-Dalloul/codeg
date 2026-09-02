@@ -2436,14 +2436,25 @@ impl CodexParser {
         // and as `response_item.image_generation_call`, sharing the same call_id/id.
         // Emit at most one ContentBlock::Image per id to avoid duplicate display.
         let mut emitted_image_ids: HashSet<String> = HashSet::new();
-        // Streaming reasoning buffer. Codex emits one `event_msg.agent_reasoning`
-        // per reasoning section, then groups the same sections into a single
-        // `response_item.reasoning.summary`. We buffer the per-section events and
-        // let the grouped summary supersede them (one 思考 card per turn, live
-        // parity); the buffer is only flushed on its own — as one joined Thinking
-        // block — when no grouped summary arrives (interrupted/older rollouts),
-        // so streaming reasoning is never lost. `pending_reasoning_ts` stamps the
-        // fallback block with the last buffered section's time.
+        // Streaming reasoning buffer, held open across a whole reasoning RUN —
+        // every section codex wrote before the next visible record (a tool call,
+        // a message, …). Live streams such a run as one growing thought, so
+        // history has to as well, and neither of codex's two on-disk records is
+        // that run on its own:
+        //   - `event_msg.agent_reasoning` — one per section;
+        //   - `response_item.reasoning.summary` — the sections of ONE model
+        //     response, grouped. A long run spans several responses, so codex
+        //     writes several of these back to back (up to 28 in real rollouts),
+        //     and emitting a card per record is what tore one thought into a
+        //     column of 思考 cards.
+        // So `grouped_reasoning` accumulates the settled text of the run while
+        // `pending_reasoning` holds the section events not yet restated by a
+        // grouped summary; the summary supersedes them (it is the same text,
+        // grouped) and joins the run. Both are flushed as ONE Thinking block
+        // when the run ends, so an interrupted rollout that never wrote its
+        // summary still keeps its streaming reasoning. `pending_reasoning_ts`
+        // stamps that block with the run's last reasoning record.
+        let mut grouped_reasoning: Vec<String> = Vec::new();
         let mut pending_reasoning: Vec<String> = Vec::new();
         let mut pending_reasoning_ts: Option<DateTime<Utc>> = None;
 
@@ -2574,14 +2585,15 @@ impl CodexParser {
 
                         let timestamp = parse_codex_timestamp(&value).unwrap_or_else(Utc::now);
 
-                        // A new reasoning section keeps buffering; `token_count` is
-                        // metadata with no visible message and never splits a run.
-                        // Anything else closes an open reasoning run — flush any
-                        // buffered streaming reasoning that never got a grouped
-                        // summary so it isn't lost or reordered behind this event.
+                        // A new reasoning section keeps the run open; `token_count`
+                        // is metadata with no visible message and never splits one.
+                        // Anything else closes the run — emit the reasoning gathered
+                        // so far as one card, here, so it can't be reordered behind
+                        // this event.
                         if payload_type != "agent_reasoning" && payload_type != "token_count" {
                             flush_pending_reasoning(
                                 &mut messages,
+                                &mut grouped_reasoning,
                                 &mut pending_reasoning,
                                 pending_reasoning_ts,
                             );
@@ -2885,14 +2897,15 @@ impl CodexParser {
                                 plan_rendered = true;
                             }
                             "agent_reasoning" => {
-                                // Buffer this streaming reasoning section. The grouped
+                                // Buffer this streaming reasoning section into the
+                                // open run. The grouped
                                 // `response_item.reasoning.summary` (parsed in the
                                 // `response_item` match below) normally arrives right
-                                // after the section events and supersedes the buffer,
-                                // so history shows ONE 思考 card per turn (live parity)
-                                // instead of one card per section. If no grouped
-                                // summary arrives (interrupted/older rollouts), the
-                                // buffer is flushed on its own and nothing is lost.
+                                // after the section events and supersedes the buffer
+                                // with the same text; either way the run renders as
+                                // ONE 思考 card (live parity) instead of one card per
+                                // section, and if no grouped summary arrives
+                                // (interrupted/older rollouts) nothing is lost.
                                 let text = payload
                                     .get("text")
                                     .and_then(|t| t.as_str())
@@ -3057,13 +3070,26 @@ impl CodexParser {
                                                 None => round,
                                             });
                                         }
-                                        if let (Some(pending), Some(last_msg)) = (
-                                            pending_round_usage.clone(),
+                                        // A `token_count` that lands INSIDE an open
+                                        // reasoning run reports what the response
+                                        // that produced that reasoning spent, and
+                                        // the run's card has not been emitted yet.
+                                        // Attaching now would bill the round to the
+                                        // previous turn, so let it keep waiting for
+                                        // the card the run is still gathering.
+                                        let last_assistant = if grouped_reasoning.is_empty()
+                                            && pending_reasoning.is_empty()
+                                        {
                                             messages
                                                 .iter_mut()
                                                 .rev()
-                                                .find(|m| matches!(m.role, MessageRole::Assistant)),
-                                        ) {
+                                                .find(|m| matches!(m.role, MessageRole::Assistant))
+                                        } else {
+                                            None
+                                        };
+                                        if let (Some(pending), Some(last_msg)) =
+                                            (pending_round_usage.clone(), last_assistant)
+                                        {
                                             last_msg.usage = Some(match last_msg.usage {
                                                 Some(ref existing) => {
                                                     codex_usage_add(existing, &pending)
@@ -3093,13 +3119,14 @@ impl CodexParser {
                             payload.get("type").and_then(|t| t.as_str()).unwrap_or("");
                         let timestamp = parse_codex_timestamp(&value).unwrap_or_else(Utc::now);
 
-                        // A `reasoning` item resolves the buffered streaming sections
-                        // (handled in its arm). Any other response item closes an open
-                        // reasoning run — flush buffered streaming reasoning that never
-                        // got a grouped summary so it isn't lost or reordered.
+                        // A `reasoning` item joins the open run (handled in its arm).
+                        // Any other response item closes it — emit the reasoning
+                        // gathered so far as one card, here, so it can't be reordered
+                        // behind this item.
                         if payload_type != "reasoning" {
                             flush_pending_reasoning(
                                 &mut messages,
+                                &mut grouped_reasoning,
                                 &mut pending_reasoning,
                                 pending_reasoning_ts,
                             );
@@ -3107,17 +3134,24 @@ impl CodexParser {
 
                         match payload_type {
                             "reasoning" => {
-                                // Codex records a reasoning turn as a `summary` array
-                                // of `{type:"summary_text", text}` parts — one part per
-                                // section — grouping the same sections the streaming
-                                // `event_msg.agent_reasoning` events carry one-by-one
-                                // (buffered in `pending_reasoning`). Join the parts into
-                                // ONE Thinking block (live parity: a single 思考 card
-                                // per turn) and discard the buffer it supersedes. An
-                                // empty summary (encrypted-only reasoning, the common
-                                // case) carries no surfaced text, so fall back to any
-                                // buffered streaming sections (interrupted/older
-                                // rollouts) and otherwise emit nothing.
+                                // Codex records one model response's reasoning as a
+                                // `summary` array of `{type:"summary_text", text}`
+                                // parts — one part per section — grouping the same
+                                // sections the streaming `event_msg.agent_reasoning`
+                                // events carry one-by-one (buffered in
+                                // `pending_reasoning`). So this item settles the
+                                // buffer, superseding it; it does NOT end the run,
+                                // because the next record may be one more of these
+                                // (a run spanning several model responses) and live
+                                // shows that as a single growing thought. The card
+                                // is emitted when something visible finally closes
+                                // the run.
+                                //
+                                // An empty summary (encrypted-only reasoning, the
+                                // common case) restates nothing, so it must not
+                                // clear the buffer — it only seals what is buffered
+                                // so far, keeping those sections out of reach of a
+                                // LATER summary that never covered them.
                                 let text = payload
                                     .get("summary")
                                     .and_then(|s| s.as_array())
@@ -3134,22 +3168,10 @@ impl CodexParser {
                                     .unwrap_or_default();
                                 if !text.is_empty() {
                                     pending_reasoning.clear();
-                                    messages.push(UnifiedMessage {
-                                        id: format!("thinking-{}", messages.len()),
-                                        role: MessageRole::Assistant,
-                                        content: vec![ContentBlock::Thinking { text }],
-                                        timestamp,
-                                        usage: None,
-                                        duration_ms: None,
-                                        model: None,
-                                        completed_at: Some(timestamp),
-                                    });
+                                    grouped_reasoning.push(text);
+                                    pending_reasoning_ts = Some(timestamp);
                                 } else {
-                                    flush_pending_reasoning(
-                                        &mut messages,
-                                        &mut pending_reasoning,
-                                        pending_reasoning_ts,
-                                    );
+                                    grouped_reasoning.append(&mut pending_reasoning);
                                 }
                             }
                             "function_call" | "custom_tool_call" => {
@@ -3915,10 +3937,32 @@ impl CodexParser {
             }
         }
 
-        // Streaming reasoning at the very end of a truncated/interrupted rollout
-        // (the `agent_reasoning` events were written but the file ended before the
-        // grouped `response_item.reasoning` summary) — flush it so it isn't lost.
-        flush_pending_reasoning(&mut messages, &mut pending_reasoning, pending_reasoning_ts);
+        // A reasoning run the file ended on — either the last thing the session
+        // did, or a truncated/interrupted rollout whose `agent_reasoning` events
+        // were written before the grouped summary. Emit it so it isn't lost.
+        flush_pending_reasoning(
+            &mut messages,
+            &mut grouped_reasoning,
+            &mut pending_reasoning,
+            pending_reasoning_ts,
+        );
+
+        // A round still waiting for an assistant message to bill — the transcript
+        // ended before the next `token_count` could hand it to one (a run's card
+        // was only just flushed above, or the model went straight to a tool call
+        // and never spoke again). Bill it here rather than discard it.
+        if let (Some(pending), Some(last_msg)) = (
+            pending_round_usage.take(),
+            messages
+                .iter_mut()
+                .rev()
+                .find(|m| matches!(m.role, MessageRole::Assistant)),
+        ) {
+            last_msg.usage = Some(match last_msg.usage {
+                Some(ref existing) => codex_usage_add(existing, &pending),
+                None => pending,
+            });
+        }
 
         // Fill in subagent tool call stats (and, only as a fallback, the result)
         // on each spawn execution capsule.
@@ -4446,20 +4490,30 @@ fn push_turn_start(turn_starts: &mut Vec<DateTime<Utc>>, ts: DateTime<Utc>) {
     }
 }
 
-/// Emit any buffered streaming `agent_reasoning` sections as a single Thinking
-/// message and clear the buffer. No-op when the buffer is empty. Used only as a
-/// fallback when the grouped `response_item.reasoning.summary` (which normally
-/// supersedes and clears the buffer) is absent — e.g. an interrupted rollout —
-/// so streaming reasoning is preserved as one 思考 card instead of being lost.
+/// Close an open reasoning run: emit everything it gathered as a single Thinking
+/// message and reset both buffers. No-op when the run is empty.
+///
+/// `grouped` is the settled text — the summaries codex wrote for each model
+/// response the run spanned — and `pending` the streaming sections no summary
+/// has restated yet (an interrupted rollout, or the tail of a run that is still
+/// being written). Joining the two in that order is the run in document order,
+/// which is the one 思考 card live shows for it.
 fn flush_pending_reasoning(
     messages: &mut Vec<UnifiedMessage>,
+    grouped: &mut Vec<String>,
     pending: &mut Vec<String>,
     ts: Option<DateTime<Utc>>,
 ) {
-    if pending.is_empty() {
+    if grouped.is_empty() && pending.is_empty() {
         return;
     }
-    let text = pending.join("\n\n");
+    let text = grouped
+        .iter()
+        .chain(pending.iter())
+        .cloned()
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    grouped.clear();
     pending.clear();
     let timestamp = ts.unwrap_or_else(Utc::now);
     messages.push(UnifiedMessage {
@@ -7641,12 +7695,12 @@ mod tests {
             .collect()
     }
 
-    /// Codex surfaces one reasoning turn twice: as per-section
+    /// Codex surfaces one model response's reasoning twice: as per-section
     /// `event_msg.agent_reasoning` events (one per `**Header**` section) AND as a
     /// single `response_item.reasoning` whose `summary` array groups the same
-    /// sections. History must render ONE 思考 card per turn (live parity), so the
-    /// grouped summary is parsed and the split events are ignored — never one card
-    /// per section.
+    /// sections. History must render ONE 思考 card (live parity), so the grouped
+    /// summary is parsed and the split events it restates are dropped — never one
+    /// card per section.
     #[test]
     fn reasoning_summary_groups_sections_into_single_thinking_block() {
         let lines = vec![
@@ -7844,6 +7898,278 @@ mod tests {
             thinking_texts(&detail),
             vec!["**Plan**\n\nthinking".to_string()]
         );
+
+        let _ = fs::remove_file(path);
+    }
+
+    /// One `response_item.reasoning` covers ONE model response. A long think
+    /// spans several, so codex writes several of them back to back with nothing
+    /// visible in between (up to 28 in a real rollout) — and live streams that
+    /// as a single growing thought. History must too: the run is one 思考 card,
+    /// and only a visible record (here a tool call) starts the next one.
+    #[test]
+    fn consecutive_reasoning_items_merge_into_one_thinking_block() {
+        let lines = vec![
+            rollout_line(
+                "2026-09-02T08:40:00Z",
+                "event_msg",
+                serde_json::json!({"type": "user_message", "message": "继续"}),
+            ),
+            rollout_line(
+                "2026-09-02T08:42:00Z",
+                "event_msg",
+                serde_json::json!({"type": "agent_reasoning", "text": "**A**\n\nbody A"}),
+            ),
+            rollout_line(
+                "2026-09-02T08:42:01Z",
+                "event_msg",
+                serde_json::json!({"type": "agent_reasoning", "text": "**B**\n\nbody B"}),
+            ),
+            rollout_line(
+                "2026-09-02T08:42:02Z",
+                "response_item",
+                serde_json::json!({
+                    "type": "reasoning",
+                    "id": "rs_1",
+                    "summary": [
+                        {"type": "summary_text", "text": "**A**\n\nbody A"},
+                        {"type": "summary_text", "text": "**B**\n\nbody B"}
+                    ]
+                }),
+            ),
+            // Second model response, still nothing visible in between.
+            rollout_line(
+                "2026-09-02T08:42:03Z",
+                "event_msg",
+                serde_json::json!({"type": "agent_reasoning", "text": "**C**\n\nbody C"}),
+            ),
+            rollout_line(
+                "2026-09-02T08:42:04Z",
+                "response_item",
+                serde_json::json!({
+                    "type": "reasoning",
+                    "id": "rs_2",
+                    "summary": [{"type": "summary_text", "text": "**C**\n\nbody C"}]
+                }),
+            ),
+            // A tool call closes the run — what follows is a NEW thought.
+            rollout_line(
+                "2026-09-02T08:42:05Z",
+                "response_item",
+                serde_json::json!({
+                    "type": "function_call",
+                    "name": "shell",
+                    "call_id": "call_1",
+                    "arguments": "{\"command\":[\"ls\"]}"
+                }),
+            ),
+            rollout_line(
+                "2026-09-02T08:42:06Z",
+                "response_item",
+                serde_json::json!({
+                    "type": "function_call_output",
+                    "call_id": "call_1",
+                    "output": "a.txt"
+                }),
+            ),
+            rollout_line(
+                "2026-09-02T08:42:07Z",
+                "event_msg",
+                serde_json::json!({"type": "agent_reasoning", "text": "**D**\n\nbody D"}),
+            ),
+            rollout_line(
+                "2026-09-02T08:42:08Z",
+                "response_item",
+                serde_json::json!({
+                    "type": "reasoning",
+                    "id": "rs_3",
+                    "summary": [{"type": "summary_text", "text": "**D**\n\nbody D"}]
+                }),
+            ),
+            rollout_line(
+                "2026-09-02T08:42:09Z",
+                "event_msg",
+                serde_json::json!({"type": "agent_message", "message": "done"}),
+            ),
+        ];
+        let path = write_temp_rollout("reasoning-run", &lines);
+        let parser = CodexParser::new();
+        let detail = parser
+            .parse_conversation_detail(&path, "reasoning-run")
+            .expect("parse ok");
+
+        assert_eq!(
+            thinking_texts(&detail),
+            vec![
+                "**A**\n\nbody A\n\n**B**\n\nbody B\n\n**C**\n\nbody C".to_string(),
+                "**D**\n\nbody D".to_string(),
+            ],
+            "a run of reasoning items is ONE card; a tool call starts the next"
+        );
+
+        let _ = fs::remove_file(path);
+    }
+
+    /// An empty (encrypted-only) summary restates nothing, so it must not let a
+    /// LATER summary — which only ever covers the sections after it — take the
+    /// buffered sections before it down with the ones it supersedes.
+    #[test]
+    fn an_empty_reasoning_summary_mid_run_keeps_the_sections_before_it() {
+        let lines = vec![
+            rollout_line(
+                "2026-09-02T08:40:00Z",
+                "event_msg",
+                serde_json::json!({"type": "user_message", "message": "go"}),
+            ),
+            rollout_line(
+                "2026-09-02T08:42:00Z",
+                "event_msg",
+                serde_json::json!({"type": "agent_reasoning", "text": "**A**\n\nbody A"}),
+            ),
+            rollout_line(
+                "2026-09-02T08:42:01Z",
+                "response_item",
+                serde_json::json!({
+                    "type": "reasoning",
+                    "id": "rs_enc",
+                    "summary": [],
+                    "encrypted_content": "gAAAredacted"
+                }),
+            ),
+            rollout_line(
+                "2026-09-02T08:42:02Z",
+                "event_msg",
+                serde_json::json!({"type": "agent_reasoning", "text": "**B**\n\nbody B"}),
+            ),
+            rollout_line(
+                "2026-09-02T08:42:03Z",
+                "response_item",
+                serde_json::json!({
+                    "type": "reasoning",
+                    "id": "rs_2",
+                    "summary": [{"type": "summary_text", "text": "**B**\n\nbody B"}]
+                }),
+            ),
+            rollout_line(
+                "2026-09-02T08:42:04Z",
+                "event_msg",
+                serde_json::json!({"type": "agent_message", "message": "done"}),
+            ),
+        ];
+        let path = write_temp_rollout("reasoning-encrypted-mid", &lines);
+        let parser = CodexParser::new();
+        let detail = parser
+            .parse_conversation_detail(&path, "reasoning-encrypted-mid")
+            .expect("parse ok");
+
+        assert_eq!(
+            thinking_texts(&detail),
+            vec!["**A**\n\nbody A\n\n**B**\n\nbody B".to_string()],
+            "the section before an encrypted-only item must survive the next summary"
+        );
+
+        let _ = fs::remove_file(path);
+    }
+
+    /// A `token_count` that lands inside an open reasoning run reports what the
+    /// response that produced that reasoning spent. The run's card does not
+    /// exist yet, so the round must wait for it instead of being billed to the
+    /// turn before — which would move real spend onto an unrelated reply.
+    #[test]
+    fn a_token_count_inside_a_reasoning_run_bills_the_runs_own_card() {
+        let lines = vec![
+            rollout_line(
+                "2026-09-02T08:40:00Z",
+                "event_msg",
+                serde_json::json!({"type": "user_message", "message": "go"}),
+            ),
+            rollout_line(
+                "2026-09-02T08:41:00Z",
+                "event_msg",
+                serde_json::json!({"type": "agent_message", "message": "first"}),
+            ),
+            rollout_line(
+                "2026-09-02T08:41:01Z",
+                "event_msg",
+                serde_json::json!({"type": "token_count", "info": {
+                    "total_token_usage": {"input_tokens": 1000, "cached_input_tokens": 0, "output_tokens": 50}
+                }}),
+            ),
+            rollout_line(
+                "2026-09-02T08:42:00Z",
+                "event_msg",
+                serde_json::json!({"type": "agent_reasoning", "text": "**A**\n\nbody A"}),
+            ),
+            rollout_line(
+                "2026-09-02T08:42:01Z",
+                "response_item",
+                serde_json::json!({
+                    "type": "reasoning",
+                    "id": "rs_1",
+                    "summary": [{"type": "summary_text", "text": "**A**\n\nbody A"}]
+                }),
+            ),
+            // Mid-run: the response that wrote **A** reporting its own spend.
+            rollout_line(
+                "2026-09-02T08:42:02Z",
+                "event_msg",
+                serde_json::json!({"type": "token_count", "info": {
+                    "total_token_usage": {"input_tokens": 1600, "cached_input_tokens": 0, "output_tokens": 80}
+                }}),
+            ),
+            rollout_line(
+                "2026-09-02T08:42:03Z",
+                "event_msg",
+                serde_json::json!({"type": "agent_reasoning", "text": "**B**\n\nbody B"}),
+            ),
+            rollout_line(
+                "2026-09-02T08:42:04Z",
+                "response_item",
+                serde_json::json!({
+                    "type": "reasoning",
+                    "id": "rs_2",
+                    "summary": [{"type": "summary_text", "text": "**B**\n\nbody B"}]
+                }),
+            ),
+        ];
+        let path = write_temp_rollout("reasoning-usage", &lines);
+        let parser = CodexParser::new();
+        let detail = parser
+            .parse_conversation_detail(&path, "reasoning-usage")
+            .expect("parse ok");
+
+        let usage_of = |wanted: &str| -> u64 {
+            detail
+                .turns
+                .iter()
+                .find(|t| {
+                    t.blocks.iter().any(|b| match (b, wanted) {
+                        (ContentBlock::Thinking { .. }, "thinking") => true,
+                        (ContentBlock::Text { text }, "first") => text == "first",
+                        _ => false,
+                    })
+                })
+                .and_then(|t| t.usage.as_ref())
+                .map(|u| {
+                    u.input_tokens
+                        + u.output_tokens
+                        + u.cache_creation_input_tokens
+                        + u.cache_read_input_tokens
+                })
+                .unwrap_or(0)
+        };
+
+        assert_eq!(
+            usage_of("first"),
+            1_050,
+            "the reply before the run keeps only its own round"
+        );
+        assert_eq!(
+            usage_of("thinking"),
+            630,
+            "the round spent inside the run belongs to the run's card"
+        );
+        assert_eq!(turn_usage_total(&detail), 1_680, "no round is lost");
 
         let _ = fs::remove_file(path);
     }
