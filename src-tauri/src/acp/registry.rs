@@ -940,8 +940,8 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             name: "Cline",
             description: "Autonomous coding agent CLI",
             distribution: AgentDistribution::Npx {
-                version: "3.0.60",
-                package: "cline@3.0.60",
+                version: "3.0.61",
+                package: "cline@3.0.61",
                 cmd: "cline",
                 args: &["--acp"],
                 env: &[],
@@ -954,39 +954,39 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             name: "OpenCode",
             description: "The open source coding agent",
             distribution: AgentDistribution::Binary {
-                version: "1.18.25",
+                version: "1.18.26",
                 cmd: "opencode",
                 args: &["acp"],
                 env: &[],
                 platforms: &[
                     PlatformBinary {
                         platform: "darwin-aarch64",
-                        url: "https://github.com/anomalyco/opencode/releases/download/v1.18.25/opencode-darwin-arm64.zip",
+                        url: "https://github.com/anomalyco/opencode/releases/download/v1.18.26/opencode-darwin-arm64.zip",
                         sha256: None,
                     },
                     PlatformBinary {
                         platform: "darwin-x86_64",
-                        url: "https://github.com/anomalyco/opencode/releases/download/v1.18.25/opencode-darwin-x64.zip",
+                        url: "https://github.com/anomalyco/opencode/releases/download/v1.18.26/opencode-darwin-x64.zip",
                         sha256: None,
                     },
                     PlatformBinary {
                         platform: "linux-aarch64",
-                        url: "https://github.com/anomalyco/opencode/releases/download/v1.18.25/opencode-linux-arm64.tar.gz",
+                        url: "https://github.com/anomalyco/opencode/releases/download/v1.18.26/opencode-linux-arm64.tar.gz",
                         sha256: None,
                     },
                     PlatformBinary {
                         platform: "linux-x86_64",
-                        url: "https://github.com/anomalyco/opencode/releases/download/v1.18.25/opencode-linux-x64.tar.gz",
+                        url: "https://github.com/anomalyco/opencode/releases/download/v1.18.26/opencode-linux-x64.tar.gz",
                         sha256: None,
                     },
                     PlatformBinary {
                         platform: "windows-aarch64",
-                        url: "https://github.com/anomalyco/opencode/releases/download/v1.18.25/opencode-windows-arm64.zip",
+                        url: "https://github.com/anomalyco/opencode/releases/download/v1.18.26/opencode-windows-arm64.zip",
                         sha256: None,
                     },
                     PlatformBinary {
                         platform: "windows-x86_64",
-                        url: "https://github.com/anomalyco/opencode/releases/download/v1.18.25/opencode-windows-x64.zip",
+                        url: "https://github.com/anomalyco/opencode/releases/download/v1.18.26/opencode-windows-x64.zip",
                         sha256: None,
                     },
                 ],
@@ -1083,15 +1083,28 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             // `session/new` is spawned, its tools reach the model as
             // `mcp__<server>__<tool>`, `tools/call` runs, and the result comes
             // back — same for a server in Kimi's own `~/.kimi-code/mcp.json`.
-            // For 0.39.1 the check is the cheaper source-level one, since the
-            // failure is a single missing match arm: `dist/main.mjs` still
+            // From 0.39.1 on the check is the cheaper source-level one, since
+            // the failure is a single missing match arm: `dist/main.mjs` still
             // gives `acpMcpServersToConfigRecord` its absent-`type` arm
             // emitting `{transport:"stdio", …, runtime_id:"local"}`, and the
             // "does not declare a runtime identity" throw is nowhere in the
             // bundle. Any future bump must re-check at least this much.
+            //
+            // 0.40.1 passes that check unchanged, and the rest of the surface
+            // codeg touches is identical to 0.39.1: same 37 `runtime_id` sites,
+            // the same `mcp.json` Zod schema (see `commands/mcp.rs`), and a
+            // live `initialize` still answering `sessionCapabilities: {list,
+            // resume, close, delete, fork, additionalDirectories}` with
+            // image + embeddedContext prompts and MCP http+sse. The bundle
+            // SHRANK by ~68KB, which looks alarming and is not: 0.40.0 finally
+            // deleted the legacy ACP server class that still called the dead
+            // `acpMcpServersToConfigs`. Grepping capabilities without checking
+            // which class you landed in used to find that stale copy first and
+            // report `sessionCapabilities: {list, resume}` — a phantom
+            // regression; it is gone now, so a single hit is the live one.
             distribution: AgentDistribution::Npx {
-                version: "0.39.1",
-                package: "@moonshot-ai/kimi-code@0.39.1",
+                version: "0.40.1",
+                package: "@moonshot-ai/kimi-code@0.40.1",
                 cmd: "kimi",
                 args: &["acp"],
                 env: &[],
@@ -1202,39 +1215,39 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             // (downloads.cursor.com/lab/<version>/<os>/<arch>/...); custom
             // versions substitute into the same pattern.
             distribution: AgentDistribution::Binary {
-                version: "2026.08.11-e8db854",
+                version: "2026.08.31-4057e58",
                 cmd: "cursor-agent",
                 args: &["acp"],
                 env: &[],
                 platforms: &[
                     PlatformBinary {
                         platform: "darwin-aarch64",
-                        url: "https://downloads.cursor.com/lab/2026.08.11-e8db854/darwin/arm64/agent-cli-package.tar.gz",
+                        url: "https://downloads.cursor.com/lab/2026.08.31-4057e58/darwin/arm64/agent-cli-package.tar.gz",
                         sha256: None,
                     },
                     PlatformBinary {
                         platform: "darwin-x86_64",
-                        url: "https://downloads.cursor.com/lab/2026.08.11-e8db854/darwin/x64/agent-cli-package.tar.gz",
+                        url: "https://downloads.cursor.com/lab/2026.08.31-4057e58/darwin/x64/agent-cli-package.tar.gz",
                         sha256: None,
                     },
                     PlatformBinary {
                         platform: "linux-aarch64",
-                        url: "https://downloads.cursor.com/lab/2026.08.11-e8db854/linux/arm64/agent-cli-package.tar.gz",
+                        url: "https://downloads.cursor.com/lab/2026.08.31-4057e58/linux/arm64/agent-cli-package.tar.gz",
                         sha256: None,
                     },
                     PlatformBinary {
                         platform: "linux-x86_64",
-                        url: "https://downloads.cursor.com/lab/2026.08.11-e8db854/linux/x64/agent-cli-package.tar.gz",
+                        url: "https://downloads.cursor.com/lab/2026.08.31-4057e58/linux/x64/agent-cli-package.tar.gz",
                         sha256: None,
                     },
                     PlatformBinary {
                         platform: "windows-aarch64",
-                        url: "https://downloads.cursor.com/lab/2026.08.11-e8db854/windows/arm64/agent-cli-package.zip",
+                        url: "https://downloads.cursor.com/lab/2026.08.31-4057e58/windows/arm64/agent-cli-package.zip",
                         sha256: None,
                     },
                     PlatformBinary {
                         platform: "windows-x86_64",
-                        url: "https://downloads.cursor.com/lab/2026.08.11-e8db854/windows/x64/agent-cli-package.zip",
+                        url: "https://downloads.cursor.com/lab/2026.08.31-4057e58/windows/x64/agent-cli-package.zip",
                         sha256: None,
                     },
                 ],
@@ -1384,8 +1397,8 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             // own copy AES-GCM-encrypted under the machine key, so it is not
             // the source). `engines.node: ">=20"`.
             distribution: AgentDistribution::Npx {
-                version: "1.1.40",
-                package: "@qoder-ai/qodercli@1.1.40",
+                version: "1.1.41",
+                package: "@qoder-ai/qodercli@1.1.41",
                 cmd: "qoder",
                 args: &["--acp"],
                 env: &[],
@@ -1655,8 +1668,8 @@ mod tests {
         let meta = get_agent_meta(AgentType::Cursor);
         assert_binary_version(
             AgentType::Cursor,
-            "2026.08.11-e8db854",
-            "/lab/2026.08.11-e8db854/",
+            "2026.08.31-4057e58",
+            "/lab/2026.08.31-4057e58/",
         );
         match meta.distribution {
             AgentDistribution::Binary {
@@ -1751,8 +1764,8 @@ mod tests {
         );
         assert_npx_version(
             AgentType::Cline,
-            "3.0.60",
-            "cline@3.0.60",
+            "3.0.61",
+            "cline@3.0.61",
             Some("22.0.0"),
         );
         assert_npx_version(
@@ -1765,8 +1778,8 @@ mod tests {
         // range dies on the codeg-mcp stdio entry (see the registry entry).
         assert_npx_version(
             AgentType::KimiCode,
-            "0.39.1",
-            "@moonshot-ai/kimi-code@0.39.1",
+            "0.40.1",
+            "@moonshot-ai/kimi-code@0.40.1",
             Some("22.19.0"),
         );
         assert_npx_version(
@@ -1790,11 +1803,11 @@ mod tests {
         );
         assert_npx_version(
             AgentType::Qoder,
-            "1.1.40",
-            "@qoder-ai/qodercli@1.1.40",
+            "1.1.41",
+            "@qoder-ai/qodercli@1.1.41",
             Some("20.0.0"),
         );
-        assert_binary_version(AgentType::OpenCode, "1.18.25", "/releases/download/v1.18.25/");
+        assert_binary_version(AgentType::OpenCode, "1.18.26", "/releases/download/v1.18.26/");
         // Hermes rides the community npm bridge (upstream retired its PyPI
         // channel at 0.19.0; see the registry entry). The npm package version
         // tracks the upstream version 1:1, and the pin must stay EXACT — the
