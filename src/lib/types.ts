@@ -2959,9 +2959,8 @@ export interface AsyncTaskRecord {
   task_type: string
   description: string
   /** Whether the task earns its own transcript card upstream. The strip renders
-   *  either way; `false` marks work already drawn as an ordinary tool call (a
-   *  background `Bash` is), so the row can say so instead of reading as a
-   *  second, separate piece of work. */
+   *  either way and does not read this today; `false` marks work already drawn
+   *  as an ordinary tool call (a background `Bash` is). */
   show_in_transcript: boolean
   /** Whether `_session/async_task/stop` is offered for this task. */
   can_stop: boolean

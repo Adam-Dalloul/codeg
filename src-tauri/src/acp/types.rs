@@ -136,10 +136,11 @@ pub struct AsyncTaskRecord {
     pub task_type: String,
     pub description: String,
     /// Whether this task earns its own transcript card upstream. codeg renders
-    /// the live strip regardless (that is AIR's always-on task panel); the flag
-    /// is carried because it marks the tasks already drawn as an ordinary tool
-    /// call — a background `Bash` is one — which the strip labels accordingly
-    /// instead of implying a second, separate piece of work.
+    /// the live strip regardless — that is AIR's always-on task panel, and the
+    /// strip answers "is it still running", which no transcript card can. Not
+    /// currently read by any surface; carried so a client that does want to
+    /// distinguish a task already drawn as an ordinary tool call (a background
+    /// `Bash` is one) from a standalone job doesn't need a wire change.
     pub show_in_transcript: bool,
     /// Whether `_session/async_task/stop` is offered. The adapter announces
     /// `true` for every task it publishes; it is carried rather than assumed so

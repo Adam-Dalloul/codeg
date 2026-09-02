@@ -3589,10 +3589,8 @@
         "openOutput": "Sortie",
         "stop": "Arrêter",
         "tokens": "{count} jetons",
-        "alsoInTranscript": "affichée ci-dessus",
         "stopDeclined": "Impossible d'arrêter cette tâche : elle est peut-être déjà terminée.",
-        "stopFailed": "Échec de l'arrêt de la tâche : {error}",
-        "openOutputFailed": "Impossible d'ouvrir la sortie de la tâche : {error}"
+        "stopFailed": "Échec de l'arrêt de la tâche : {error}"
       },
       "proposedPlan": {
         "title": "Plan proposé",

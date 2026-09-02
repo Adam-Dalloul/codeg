@@ -3589,10 +3589,8 @@
         "openOutput": "المخرجات",
         "stop": "إيقاف",
         "tokens": "{count} رمز",
-        "alsoInTranscript": "معروضة أعلاه",
         "stopDeclined": "تعذّر إيقاف هذه المهمة، ربما تكون قد انتهت بالفعل.",
-        "stopFailed": "فشل إيقاف المهمة: {error}",
-        "openOutputFailed": "تعذّر فتح مخرجات المهمة: {error}"
+        "stopFailed": "فشل إيقاف المهمة: {error}"
       },
       "proposedPlan": {
         "title": "الخطة المقترحة",

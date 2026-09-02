@@ -3589,10 +3589,8 @@
         "openOutput": "Ausgabe",
         "stop": "Stoppen",
         "tokens": "{count} Tokens",
-        "alsoInTranscript": "oben angezeigt",
         "stopDeclined": "Diese Aufgabe konnte nicht gestoppt werden – sie ist möglicherweise bereits beendet.",
-        "stopFailed": "Aufgabe konnte nicht gestoppt werden: {error}",
-        "openOutputFailed": "Aufgabenausgabe konnte nicht geöffnet werden: {error}"
+        "stopFailed": "Aufgabe konnte nicht gestoppt werden: {error}"
       },
       "proposedPlan": {
         "title": "Vorgeschlagener Plan",

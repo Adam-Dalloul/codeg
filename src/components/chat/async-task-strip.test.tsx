@@ -4,18 +4,11 @@ import { NextIntlClientProvider } from "next-intl"
 import { describe, expect, it, vi, beforeEach } from "vitest"
 
 const mocks = vi.hoisted(() => ({
-  isLocalDesktop: vi.fn(() => true),
-  openPath: vi.fn(),
-  toastError: vi.fn(),
+  openFilePreview: vi.fn(),
 }))
 
-vi.mock("@/lib/platform", () => ({
-  isLocalDesktop: mocks.isLocalDesktop,
-  openPath: mocks.openPath,
-}))
-
-vi.mock("sonner", () => ({
-  toast: { error: mocks.toastError },
+vi.mock("@/contexts/workspace-context", () => ({
+  useWorkspaceActions: () => ({ openFilePreview: mocks.openFilePreview }),
 }))
 
 import { AsyncTaskStrip } from "./async-task-strip"
@@ -46,9 +39,7 @@ function renderStrip(ui: React.ReactNode) {
 const t = enMessages.Folder.chat.asyncTasks
 
 beforeEach(() => {
-  mocks.isLocalDesktop.mockReturnValue(true)
-  mocks.openPath.mockReset()
-  mocks.toastError.mockClear()
+  mocks.openFilePreview.mockReset()
 })
 
 describe("AsyncTaskStrip", () => {
@@ -90,47 +81,28 @@ describe("AsyncTaskStrip", () => {
     ).not.toBeInTheDocument()
   })
 
-  it("offers the output file only where opening one does something", async () => {
-    const withOutput = task({ output_file_path: "/tmp/tasks/t1.output" })
-    const { unmount } = renderStrip(<AsyncTaskStrip tasks={[withOutput]} />)
-    await userEvent.click(screen.getByRole("button", { name: t.openOutput }))
-    expect(mocks.openPath).toHaveBeenCalledWith("/tmp/tasks/t1.output")
-    unmount()
-
-    // `openPath` silently no-ops in web and remote-desktop windows, where the
-    // path belongs to another host — rendering the button there is a lie.
-    mocks.isLocalDesktop.mockReturnValue(false)
-    renderStrip(<AsyncTaskStrip tasks={[withOutput]} />)
-    expect(
-      screen.queryByRole("button", { name: t.openOutput })
-    ).not.toBeInTheDocument()
-  })
-
-  it("reports a refused open instead of dropping the rejection", async () => {
-    // The path is the adapter's and the opener plugin validates it against the
-    // capability scope, so a path outside that scope is refused at the door.
-    // Unhandled, the rejection surfaced as a bare "Not allowed to open path"
-    // with nothing to act on; the toast names the path, which is what a scope
-    // widening needs.
-    mocks.openPath.mockRejectedValue(
-      new Error("Not allowed to open path /private/tmp/claude-501/x.output")
-    )
+  it("reads the output in a file tab, not through the OS opener", async () => {
+    // Claude writes task logs under the OS temp root. The opener plugin
+    // validates against `opener:allow-open-path`, which grants `$HOME`, so
+    // every one of those was refused at the door — and widening that scope to
+    // a temp tree the adapter picked is the wrong trade for reading a log.
+    // `openFilePreview` takes an absolute path anywhere and reads through
+    // codeg's own backend, so it needs no scope and works in web as well.
     renderStrip(
       <AsyncTaskStrip
         tasks={[task({ output_file_path: "/private/tmp/claude-501/x.output" })]}
       />
     )
     await userEvent.click(screen.getByRole("button", { name: t.openOutput }))
-    expect(mocks.toastError).toHaveBeenCalledTimes(1)
-    expect(mocks.toastError.mock.calls[0]![0]).toContain(
+    expect(mocks.openFilePreview).toHaveBeenCalledWith(
       "/private/tmp/claude-501/x.output"
     )
   })
 
-  it("marks a task that is already drawn as its own tool call", () => {
-    renderStrip(
-      <AsyncTaskStrip tasks={[task({ show_in_transcript: false })]} />
-    )
-    expect(screen.getByText(t.alsoInTranscript)).toBeInTheDocument()
+  it("offers no output button for a task that reported no path", () => {
+    renderStrip(<AsyncTaskStrip tasks={[task()]} />)
+    expect(
+      screen.queryByRole("button", { name: t.openOutput })
+    ).not.toBeInTheDocument()
   })
 })

@@ -26,10 +26,9 @@
 
 import { useCallback, useState } from "react"
 import { useTranslations } from "next-intl"
-import { toast } from "sonner"
 import {
   Activity,
-  ExternalLink,
+  FileText,
   Loader2,
   PauseCircle,
   Square,
@@ -40,8 +39,7 @@ import {
 import { Button } from "@/components/ui/button"
 import { Shimmer } from "@/components/ai-elements/shimmer"
 import { cn } from "@/lib/utils"
-import { toErrorMessage } from "@/lib/app-error"
-import { isLocalDesktop, openPath } from "@/lib/platform"
+import { useWorkspaceActions } from "@/contexts/workspace-context"
 import { formatTokenCount } from "@/lib/token-format"
 import { liveAsyncTasks } from "@/lib/async-tasks"
 import type { AsyncTaskRecord } from "@/lib/types"
@@ -83,24 +81,24 @@ function AsyncTaskRow({
   onStop?: (taskId: string) => Promise<boolean>
 }) {
   const t = useTranslations("Folder.chat.asyncTasks")
+  const { openFilePreview } = useWorkspaceActions()
   const [stopping, setStopping] = useState(false)
   const paused = task.state === "paused"
   const Icon = TASK_ICONS[task.task_type] ?? Activity
 
-  // The path is the ADAPTER's, not ours, and the opener plugin validates it
-  // against the scope in `capabilities/default.json`. Claude writes task logs
-  // under the OS temp root, not `$HOME`, so the scope has to name both — and a
-  // future adapter could pick a third place. Report the refusal instead of
-  // letting the rejection escape unhandled: the message names the path it
-  // wouldn't open, which is the one thing needed to widen the scope.
-  const handleOpenOutput = useCallback(async () => {
+  // Read it in a file tab, the same way a file named in the transcript opens
+  // (`reply-artifacts`). NOT the OS opener: that path is validated against the
+  // `opener:allow-open-path` scope, which grants `$HOME` — and Claude writes
+  // task logs under the OS temp root, so every one of them was refused at the
+  // door. Widening the scope to cover a temp tree the adapter chose is the
+  // wrong trade for reading a log file, and it would still hand a `.output`
+  // extension to whatever the OS guesses. `openFilePreview` takes an absolute
+  // path anywhere, reads through codeg's own backend, and works in web too —
+  // so this button no longer needs `isLocalDesktop()` gating either.
+  const handleOpenOutput = useCallback(() => {
     if (!task.output_file_path) return
-    try {
-      await openPath(task.output_file_path)
-    } catch (err) {
-      toast.error(t("openOutputFailed", { error: toErrorMessage(err) }))
-    }
-  }, [t, task.output_file_path])
+    void openFilePreview(task.output_file_path)
+  }, [openFilePreview, task.output_file_path])
 
   const handleStop = useCallback(async () => {
     if (!onStop || stopping) return
@@ -147,31 +145,21 @@ function AsyncTaskRow({
           </Shimmer>
         )}
       </span>
-      {/* `show_in_transcript: false` means the task is already drawn as its own
-          tool call above. Saying so keeps the row from reading as a second,
-          separate job the agent started. */}
-      {!task.show_in_transcript && (
-        <span className="shrink-0 text-muted-foreground/70">
-          {t("alsoInTranscript")}
-        </span>
-      )}
       {meta.length > 0 && (
         <span className="min-w-0 truncate text-muted-foreground/70 tabular-nums">
           {meta.join(" · ")}
         </span>
       )}
       <span className="ms-auto flex shrink-0 items-center gap-1">
-        {/* Only on a local desktop: `openPath` silently no-ops in web and
-            remote-desktop windows, where the path belongs to another host. */}
-        {task.output_file_path && isLocalDesktop() && (
+        {task.output_file_path && (
           <Button
             type="button"
             variant="ghost"
             size="sm"
             className="h-6 gap-1 px-2 text-xs"
-            onClick={() => void handleOpenOutput()}
+            onClick={handleOpenOutput}
           >
-            <ExternalLink aria-hidden="true" className="size-3" />
+            <FileText aria-hidden="true" className="size-3" />
             {t("openOutput")}
           </Button>
         )}

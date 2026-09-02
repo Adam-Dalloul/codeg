@@ -3589,10 +3589,8 @@
         "openOutput": "輸出",
         "stop": "停止",
         "tokens": "{count} tokens",
-        "alsoInTranscript": "見上方",
         "stopDeclined": "無法停止該任務，它可能已經結束。",
-        "stopFailed": "停止任務失敗：{error}",
-        "openOutputFailed": "無法開啟工作輸出：{error}"
+        "stopFailed": "停止任務失敗：{error}"
       },
       "proposedPlan": {
         "title": "計劃提案",

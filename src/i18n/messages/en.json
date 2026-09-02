@@ -3589,10 +3589,8 @@
         "openOutput": "Output",
         "stop": "Stop",
         "tokens": "{count} tokens",
-        "alsoInTranscript": "shown above",
         "stopDeclined": "That task could not be stopped — it may have already finished.",
-        "stopFailed": "Failed to stop the task: {error}",
-        "openOutputFailed": "Couldn't open the task output: {error}"
+        "stopFailed": "Failed to stop the task: {error}"
       },
       "proposedPlan": {
         "title": "Proposed plan",

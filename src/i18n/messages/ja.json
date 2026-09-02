@@ -3589,10 +3589,8 @@
         "openOutput": "出力",
         "stop": "停止",
         "tokens": "{count} トークン",
-        "alsoInTranscript": "上に表示",
         "stopDeclined": "このタスクは停止できませんでした。すでに終了している可能性があります。",
-        "stopFailed": "タスクの停止に失敗しました: {error}",
-        "openOutputFailed": "タスク出力を開けませんでした: {error}"
+        "stopFailed": "タスクの停止に失敗しました: {error}"
       },
       "proposedPlan": {
         "title": "提案された計画",
