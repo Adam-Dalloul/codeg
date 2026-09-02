@@ -16093,6 +16093,26 @@ wire_api = "chat"
         assert!(npm_install_attempts("cline@3.0.9", Some("nightly"), true).is_err());
     }
 
+    // The latest channel introduces a NEW SPEC SHAPE (`<name>@latest`), and the
+    // spec — not the agent type — is what every downstream step keys off.
+    // `npm_package_requires_scripts` is the one that bites: hermes-agent's
+    // postinstall bootstraps its runtime, and it is the only package codeg
+    // force-enables lifecycle scripts for. A spec shape that hid the package
+    // name from it would install a shim that only fails later, at connect,
+    // with "runtime is not ready". Both attempts must be recognized, since
+    // either one can be the spec that actually lands.
+    #[test]
+    fn the_latest_spec_still_names_the_package_downstream_readers_key_off() {
+        let (latest, pinned) = npm_install_attempts("hermes-agent@0.21.0", None, true).unwrap();
+        assert_eq!(latest, "hermes-agent@latest");
+        assert!(npm_package_requires_scripts(&latest));
+        assert!(npm_package_requires_scripts(&pinned.unwrap()));
+        // And the `@latest` tag is never mistaken for a version number, so a
+        // successful latest install falls through to the real post-install
+        // probe instead of recording "latest" as the installed version.
+        assert_eq!(version_from_package_spec(&latest), None);
+    }
+
     // Only the exact (trimmed) sentinel opts into the latest channel; absence
     // and every other value stay on the pin, matching the frontend reader.
     #[test]
