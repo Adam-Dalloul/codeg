@@ -3591,7 +3591,8 @@
         "tokens": "{count} tokens",
         "alsoInTranscript": "mostrada acima",
         "stopDeclined": "Não foi possível parar essa tarefa — ela pode já ter terminado.",
-        "stopFailed": "Falha ao parar a tarefa: {error}"
+        "stopFailed": "Falha ao parar a tarefa: {error}",
+        "openOutputFailed": "Não foi possível abrir a saída da tarefa: {error}"
       },
       "proposedPlan": {
         "title": "Plano proposto",

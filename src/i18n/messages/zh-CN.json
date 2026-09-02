@@ -3591,7 +3591,8 @@
         "tokens": "{count} tokens",
         "alsoInTranscript": "见上方",
         "stopDeclined": "无法停止该任务，它可能已经结束。",
-        "stopFailed": "停止任务失败：{error}"
+        "stopFailed": "停止任务失败：{error}",
+        "openOutputFailed": "打不开任务输出：{error}"
       },
       "proposedPlan": {
         "title": "计划提案",

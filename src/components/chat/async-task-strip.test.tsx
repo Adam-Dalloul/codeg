@@ -6,11 +6,16 @@ import { describe, expect, it, vi, beforeEach } from "vitest"
 const mocks = vi.hoisted(() => ({
   isLocalDesktop: vi.fn(() => true),
   openPath: vi.fn(),
+  toastError: vi.fn(),
 }))
 
 vi.mock("@/lib/platform", () => ({
   isLocalDesktop: mocks.isLocalDesktop,
   openPath: mocks.openPath,
+}))
+
+vi.mock("sonner", () => ({
+  toast: { error: mocks.toastError },
 }))
 
 import { AsyncTaskStrip } from "./async-task-strip"
@@ -42,7 +47,8 @@ const t = enMessages.Folder.chat.asyncTasks
 
 beforeEach(() => {
   mocks.isLocalDesktop.mockReturnValue(true)
-  mocks.openPath.mockClear()
+  mocks.openPath.mockReset()
+  mocks.toastError.mockClear()
 })
 
 describe("AsyncTaskStrip", () => {
@@ -98,6 +104,27 @@ describe("AsyncTaskStrip", () => {
     expect(
       screen.queryByRole("button", { name: t.openOutput })
     ).not.toBeInTheDocument()
+  })
+
+  it("reports a refused open instead of dropping the rejection", async () => {
+    // The path is the adapter's and the opener plugin validates it against the
+    // capability scope, so a path outside that scope is refused at the door.
+    // Unhandled, the rejection surfaced as a bare "Not allowed to open path"
+    // with nothing to act on; the toast names the path, which is what a scope
+    // widening needs.
+    mocks.openPath.mockRejectedValue(
+      new Error("Not allowed to open path /private/tmp/claude-501/x.output")
+    )
+    renderStrip(
+      <AsyncTaskStrip
+        tasks={[task({ output_file_path: "/private/tmp/claude-501/x.output" })]}
+      />
+    )
+    await userEvent.click(screen.getByRole("button", { name: t.openOutput }))
+    expect(mocks.toastError).toHaveBeenCalledTimes(1)
+    expect(mocks.toastError.mock.calls[0]![0]).toContain(
+      "/private/tmp/claude-501/x.output"
+    )
   })
 
   it("marks a task that is already drawn as its own tool call", () => {

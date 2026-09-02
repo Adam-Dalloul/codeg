@@ -1,8 +1,7 @@
 "use client"
 
 /**
- * Live AIR async tasks, docked under the composer beside the session-failure
- * strips (`conversation-shell`).
+ * Live AIR async tasks, pinned above the transcript in `conversation-shell`.
  *
  * These are Claude's NON-AGENT background jobs — a `Bash(run_in_background)`
  * shell, a workflow, a monitor — reported on the adapter's own lifecycle
@@ -12,15 +11,22 @@
  * transcript can't tell a live task from one whose CLI died. This strip is the
  * authoritative answer, and it is the only surface that can offer a stop.
  *
+ * ABOVE the messages rather than docked under the composer: the strip is the
+ * status of work happening NOW, and the composer end of the shell is where
+ * transient things (a retry line, the last error) come and go while the user is
+ * reading the tail of the turn. Anchored to the top it stays put while the
+ * transcript scrolls under it, so a task's row doesn't shift out from under the
+ * pointer on its way to the stop button.
+ *
  * Only non-terminal tasks render (`liveAsyncTasks`). A settled task leaves at
  * once — its outcome belongs to the transcript, and a permanent list of
- * finished jobs docked under the composer would grow all session. Terminal rows
- * stay in the reducer table as the ids later corrections revise; see
- * `lib/async-tasks.ts`.
+ * finished jobs would grow all session. Terminal rows stay in the reducer table
+ * as the ids later corrections revise; see `lib/async-tasks.ts`.
  */
 
 import { useCallback, useState } from "react"
 import { useTranslations } from "next-intl"
+import { toast } from "sonner"
 import {
   Activity,
   ExternalLink,
@@ -34,6 +40,7 @@ import {
 import { Button } from "@/components/ui/button"
 import { Shimmer } from "@/components/ai-elements/shimmer"
 import { cn } from "@/lib/utils"
+import { toErrorMessage } from "@/lib/app-error"
 import { isLocalDesktop, openPath } from "@/lib/platform"
 import { formatTokenCount } from "@/lib/token-format"
 import { liveAsyncTasks } from "@/lib/async-tasks"
@@ -60,7 +67,7 @@ export function AsyncTaskStrip({
   if (live.length === 0) return null
 
   return (
-    <div className="border-t border-border bg-muted/30">
+    <div className="border-b border-border bg-muted/30">
       {live.map((task) => (
         <AsyncTaskRow key={task.task_id} task={task} onStop={onStop} />
       ))}
@@ -79,6 +86,21 @@ function AsyncTaskRow({
   const [stopping, setStopping] = useState(false)
   const paused = task.state === "paused"
   const Icon = TASK_ICONS[task.task_type] ?? Activity
+
+  // The path is the ADAPTER's, not ours, and the opener plugin validates it
+  // against the scope in `capabilities/default.json`. Claude writes task logs
+  // under the OS temp root, not `$HOME`, so the scope has to name both — and a
+  // future adapter could pick a third place. Report the refusal instead of
+  // letting the rejection escape unhandled: the message names the path it
+  // wouldn't open, which is the one thing needed to widen the scope.
+  const handleOpenOutput = useCallback(async () => {
+    if (!task.output_file_path) return
+    try {
+      await openPath(task.output_file_path)
+    } catch (err) {
+      toast.error(t("openOutputFailed", { error: toErrorMessage(err) }))
+    }
+  }, [t, task.output_file_path])
 
   const handleStop = useCallback(async () => {
     if (!onStop || stopping) return
@@ -147,7 +169,7 @@ function AsyncTaskRow({
             variant="ghost"
             size="sm"
             className="h-6 gap-1 px-2 text-xs"
-            onClick={() => void openPath(task.output_file_path as string)}
+            onClick={() => void handleOpenOutput()}
           >
             <ExternalLink aria-hidden="true" className="size-3" />
             {t("openOutput")}

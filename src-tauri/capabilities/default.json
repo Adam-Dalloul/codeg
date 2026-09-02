@@ -40,6 +40,15 @@
       "allow": [
         {
           "path": "$HOME/**"
+        },
+        {
+          "path": "$TEMP/**"
+        },
+        {
+          "path": "/tmp/**"
+        },
+        {
+          "path": "/private/tmp/**"
         }
       ]
     },

@@ -276,6 +276,16 @@ export function ConversationShell({
   return (
     <div className="relative flex h-full min-h-0 flex-col">
       {topBanner}
+
+      {/* Above the transcript, not down in the composer dock: this is the state
+          of work running RIGHT NOW, and pinning it here keeps it still while the
+          messages scroll under it — the stop button doesn't move out from under
+          the pointer. The dock below is for things that come and go with the
+          turn (retry line, last error). */}
+      {asyncTasks && asyncTasks.length > 0 && (
+        <AsyncTaskStrip tasks={asyncTasks} onStop={onStopAsyncTask} />
+      )}
+
       <div className="flex-1 min-h-0">{children}</div>
 
       <PermissionDialog
@@ -373,10 +383,6 @@ export function ConversationShell({
           onAction={onSessionFailureAction}
           onDismiss={onSessionFailureDismiss}
         />
-      )}
-
-      {asyncTasks && asyncTasks.length > 0 && (
-        <AsyncTaskStrip tasks={asyncTasks} onStop={onStopAsyncTask} />
       )}
 
       {retryLineText && (
