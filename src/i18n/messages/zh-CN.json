@@ -3585,6 +3585,14 @@
         "cardFinishedWithStatus": "后台任务已结束（{status}）",
         "cardResultPending": "结果尚未返回"
       },
+      "asyncTasks": {
+        "openOutput": "输出",
+        "stop": "停止",
+        "tokens": "{count} tokens",
+        "alsoInTranscript": "见上方",
+        "stopDeclined": "无法停止该任务，它可能已经结束。",
+        "stopFailed": "停止任务失败：{error}"
+      },
       "proposedPlan": {
         "title": "计划提案",
         "planning": "规划中…"

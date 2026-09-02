@@ -3585,6 +3585,14 @@
         "cardFinishedWithStatus": "Background task finished ({status})",
         "cardResultPending": "Result not returned yet"
       },
+      "asyncTasks": {
+        "openOutput": "Output",
+        "stop": "Stop",
+        "tokens": "{count} tokens",
+        "alsoInTranscript": "shown above",
+        "stopDeclined": "That task could not be stopped — it may have already finished.",
+        "stopFailed": "Failed to stop the task: {error}"
+      },
       "proposedPlan": {
         "title": "Proposed plan",
         "planning": "Planning…"

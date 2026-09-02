@@ -18,6 +18,7 @@ import { useAcpActions } from "@/contexts/acp-connections-context"
 import { useConnectionLifecycle } from "@/hooks/use-connection-lifecycle"
 import { useConversationDetail } from "@/hooks/use-conversation-detail"
 import {
+  acpStopAsyncTask,
   createChatConversation,
   createConversation,
   createChatDir,
@@ -179,6 +180,7 @@ export function CanvasConversationSurface({
 }: CanvasConversationSurfaceProps) {
   const t = useTranslations("Canvas")
   const sharedT = useTranslations("Folder.chat.shared")
+  const tAsyncTasks = useTranslations("Folder.chat.asyncTasks")
   const acpActions = useAcpActions()
   const {
     appendOptimisticTurn,
@@ -582,6 +584,25 @@ export function CanvasConversationSurface({
     [acpActions, contextKey]
   )
 
+  /** Stop one AIR async task. `false` (the adapter declined) is surfaced —
+   *  a successful stop announces itself by the row leaving the strip, so
+   *  silence would be indistinguishable from a click that did nothing. */
+  const handleStopAsyncTask = useCallback(
+    async (taskId: string) => {
+      const connectionId = conn.connectionId
+      if (!connectionId) return false
+      try {
+        const stopped = await acpStopAsyncTask(connectionId, taskId)
+        if (!stopped) toast.warning(tAsyncTasks("stopDeclined"))
+        return stopped
+      } catch (err) {
+        toast.error(tAsyncTasks("stopFailed", { error: toErrorMessage(err) }))
+        return false
+      }
+    },
+    [conn.connectionId, tAsyncTasks]
+  )
+
   const connectionModes = useMemo(
     () => conn.modes?.available_modes ?? [],
     [conn.modes]
@@ -616,6 +637,8 @@ export function CanvasConversationSurface({
           error={conn.error ?? autoConnectError ?? createError}
           claudeApiRetry={conn.claudeApiRetry}
           sessionFailures={conn.sessionFailures}
+          asyncTasks={conn.asyncTasks}
+          onStopAsyncTask={handleStopAsyncTask}
           pendingPermission={conn.pendingPermission}
           pendingQuestion={conn.pendingQuestion}
           pendingAskQuestion={conn.pendingAskQuestion}

@@ -3585,6 +3585,14 @@
         "cardFinishedWithStatus": "Hintergrundaufgabe beendet ({status})",
         "cardResultPending": "Ergebnis steht noch aus"
       },
+      "asyncTasks": {
+        "openOutput": "Ausgabe",
+        "stop": "Stoppen",
+        "tokens": "{count} Tokens",
+        "alsoInTranscript": "oben angezeigt",
+        "stopDeclined": "Diese Aufgabe konnte nicht gestoppt werden – sie ist möglicherweise bereits beendet.",
+        "stopFailed": "Aufgabe konnte nicht gestoppt werden: {error}"
+      },
       "proposedPlan": {
         "title": "Vorgeschlagener Plan",
         "planning": "Wird geplant…"

@@ -75,6 +75,7 @@ import { isDesktop } from "@/lib/platform"
 import { leftChromeReserve, rightChromeReserve } from "@/lib/window-chrome"
 import {
   acpFork,
+  acpStopAsyncTask,
   createChatConversation,
   createChatDir,
   createConversation,
@@ -246,6 +247,7 @@ const ConversationTabView = memo(function ConversationTabView({
   const tDiag = useTranslations("DiagnosticsSettings")
   const sharedT = useTranslations("Folder.chat.shared")
   const tMessageList = useTranslations("Folder.chat.messageList")
+  const tAsyncTasks = useTranslations("Folder.chat.asyncTasks")
   const refreshConversations = useAppWorkspaceStore(
     (s) => s.refreshConversations
   )
@@ -1374,6 +1376,30 @@ const ConversationTabView = memo(function ConversationTabView({
     ]
   )
 
+  /** Stop one AIR async task. Returns the adapter's verdict so the strip can
+   *  release its button; `false` (the adapter declined) is reported, because
+   *  nothing else would tell the user their click did nothing — a successful
+   *  stop announces itself by the row disappearing. */
+  const handleStopAsyncTask = useCallback(
+    async (taskId: string) => {
+      const connectionId = conn.connectionId
+      if (!connectionId) return false
+      try {
+        const stopped = await acpStopAsyncTask(connectionId, taskId)
+        if (!stopped) toast.warning(tAsyncTasks("stopDeclined"))
+        return stopped
+      } catch (err) {
+        toast.error(
+          tAsyncTasks("stopFailed", {
+            error: err instanceof Error ? err.message : String(err),
+          })
+        )
+        return false
+      }
+    },
+    [conn.connectionId, tAsyncTasks]
+  )
+
   const handleOpenAgentsSettings = useCallback(() => {
     openSettingsWindow("agents", { agentType: selectedAgent }).catch((err) => {
       console.error(
@@ -2047,6 +2073,14 @@ const ConversationTabView = memo(function ConversationTabView({
           : undefined
       }
       onSessionFailureDismiss={handleSessionFailureDismiss}
+      asyncTasks={conn.asyncTasks}
+      onStopAsyncTask={
+        // Owners of a live connection only — same gate as the failure actions:
+        // a viewer has no connection to send the stop on.
+        conn.connectionId !== null && !conn.isViewer
+          ? handleStopAsyncTask
+          : undefined
+      }
       pendingPermission={conn.pendingPermission}
       pendingQuestion={conn.pendingQuestion}
       pendingAskQuestion={conn.pendingAskQuestion}

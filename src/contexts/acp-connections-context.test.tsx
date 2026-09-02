@@ -785,6 +785,85 @@ describe("AcpConnectionsProvider AIR session-failure lifecycle", () => {
   })
 })
 
+// AIR async tasks: Claude's background shells / workflows / monitors. The wire
+// carries PARTIAL deltas keyed by task id, so the reducer owns a merge that has
+// to match `SessionState::apply_event` — including its refusal to invent a row
+// for a task it never saw announced.
+describe("AcpConnectionsProvider AIR async tasks", () => {
+  async function connectOwner(): Promise<AttachHandlers> {
+    h.acpFindConnectionForConversation.mockResolvedValue(null)
+    await mountProvider()
+    await act(async () => {
+      await h.actions!.connect(TAB, "claude_code", "/tmp/x", "sess-1", 42)
+    })
+    return latestAttachHandlers()
+  }
+
+  it("merges partial deltas into one row and refuses to create from a progress tick", async () => {
+    const handlers = await connectOwner()
+    // Progress for an unannounced task: its identity frame was missed, so a
+    // placeholder row would be worse than none.
+    emitAcpEvent(handlers, {
+      seq: 1,
+      connection_id: "spawned-conn",
+      type: "async_task",
+      delta: { task_id: "ghost", spawned: false, state: "running" },
+    })
+    expect(h.store!.getConnection(TAB)?.asyncTasks).toHaveLength(0)
+
+    emitAcpEvent(handlers, {
+      seq: 2,
+      connection_id: "spawned-conn",
+      type: "async_task",
+      delta: {
+        task_id: "t1",
+        spawned: true,
+        name: "pnpm test",
+        task_type: "shell",
+        description: "pnpm test --watch",
+        show_in_transcript: true,
+        can_stop: true,
+      },
+    })
+    // Absent fields must leave the announced identity alone.
+    emitAcpEvent(handlers, {
+      seq: 3,
+      connection_id: "spawned-conn",
+      type: "async_task",
+      delta: {
+        task_id: "t1",
+        spawned: false,
+        last_tool_name: "Bash",
+        output_file_path: "/tmp/tasks/t1.output",
+      },
+    })
+
+    const tasks = h.store!.getConnection(TAB)?.asyncTasks ?? []
+    expect(tasks).toHaveLength(1)
+    expect(tasks[0]).toMatchObject({
+      task_id: "t1",
+      name: "pnpm test",
+      task_type: "shell",
+      state: "running",
+      last_tool_name: "Bash",
+      output_file_path: "/tmp/tasks/t1.output",
+    })
+
+    // Settled rows are RETAINED — the adapter revises a finished task (a late
+    // output path, or correcting a best-effort `stopped` into the real
+    // outcome), and an evicted row would come back nameless.
+    emitAcpEvent(handlers, {
+      seq: 4,
+      connection_id: "spawned-conn",
+      type: "async_task",
+      delta: { task_id: "t1", spawned: false, state: "completed" },
+    })
+    const settled = h.store!.getConnection(TAB)?.asyncTasks ?? []
+    expect(settled).toHaveLength(1)
+    expect(settled[0]).toMatchObject({ state: "completed", name: "pnpm test" })
+  })
+})
+
 // The composer's connection-status popover. Unlike `reapplyConfig` (live owners
 // only), this has to work from EVERY state the icon can show — including the
 // states where the store holds no entry at all.

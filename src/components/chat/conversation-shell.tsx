@@ -12,12 +12,14 @@ import type {
   PromptInputBlock,
   QuestionAnswer,
   SessionConfigOptionInfo,
+  AsyncTaskRecord,
   SessionFailureRecord,
   SessionModeInfo,
   AvailableCommandInfo,
 } from "@/lib/types"
 import type { SessionFailureAction } from "@/lib/session-failures"
 import { SessionFailureBanner } from "@/components/chat/session-failure-banner"
+import { AsyncTaskStrip } from "@/components/chat/async-task-strip"
 import type {
   PendingPermission,
   PendingQuestion,
@@ -52,6 +54,12 @@ interface ConversationShellProps {
    *  every surface with a live store — dismissing is client-local, so viewers
    *  get it too. */
   onSessionFailureDismiss?: (ids: string[]) => void
+  /** AIR async tasks for this connection. The strip filters to the live ones
+   *  itself; omit/empty renders nothing. */
+  asyncTasks?: AsyncTaskRecord[]
+  /** Stops one async task. Omitted for read-only surfaces — the stop buttons
+   *  are then hidden, which is right: a viewer has no connection to ask. */
+  onStopAsyncTask?: (taskId: string) => Promise<boolean>
   pendingPermission: PendingPermission | null
   pendingQuestion: PendingQuestion | null
   /** Awaiting-answer multiple-choice `ask_user_question`. */
@@ -142,6 +150,8 @@ export function ConversationShell({
   sessionFailures,
   onSessionFailureAction,
   onSessionFailureDismiss,
+  asyncTasks,
+  onStopAsyncTask,
   pendingPermission,
   pendingQuestion,
   pendingAskQuestion,
@@ -363,6 +373,10 @@ export function ConversationShell({
           onAction={onSessionFailureAction}
           onDismiss={onSessionFailureDismiss}
         />
+      )}
+
+      {asyncTasks && asyncTasks.length > 0 && (
+        <AsyncTaskStrip tasks={asyncTasks} onStop={onStopAsyncTask} />
       )}
 
       {retryLineText && (

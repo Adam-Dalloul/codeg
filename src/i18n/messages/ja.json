@@ -3585,6 +3585,14 @@
         "cardFinishedWithStatus": "バックグラウンドタスクが終了しました（{status}）",
         "cardResultPending": "結果はまだ返っていません"
       },
+      "asyncTasks": {
+        "openOutput": "出力",
+        "stop": "停止",
+        "tokens": "{count} トークン",
+        "alsoInTranscript": "上に表示",
+        "stopDeclined": "このタスクは停止できませんでした。すでに終了している可能性があります。",
+        "stopFailed": "タスクの停止に失敗しました: {error}"
+      },
       "proposedPlan": {
         "title": "提案された計画",
         "planning": "計画中…"

@@ -372,6 +372,22 @@ export async function acpFork(
   }
 }
 
+/**
+ * Stop one AIR async task (`_session/async_task/stop`).
+ *
+ * Resolves to the adapter's own verdict, NOT "the request went through": it
+ * answers `false` for a task it declines to stop (unknown, already finished, or
+ * a stop already in flight). The visible result — the task's terminal state and
+ * the agent's acknowledgement — arrives on the session channel either way, so
+ * callers use this only to avoid claiming they stopped something they didn't.
+ */
+export async function acpStopAsyncTask(
+  connectionId: string,
+  taskId: string
+): Promise<boolean> {
+  return getTransport().call("acp_stop_async_task", { connectionId, taskId })
+}
+
 export async function acpRespondPermission(
   connectionId: string,
   requestId: string,

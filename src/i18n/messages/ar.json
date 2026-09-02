@@ -3585,6 +3585,14 @@
         "cardFinishedWithStatus": "انتهت مهمة الخلفية ({status})",
         "cardResultPending": "لم تصل النتيجة بعد"
       },
+      "asyncTasks": {
+        "openOutput": "المخرجات",
+        "stop": "إيقاف",
+        "tokens": "{count} رمز",
+        "alsoInTranscript": "معروضة أعلاه",
+        "stopDeclined": "تعذّر إيقاف هذه المهمة، ربما تكون قد انتهت بالفعل.",
+        "stopFailed": "فشل إيقاف المهمة: {error}"
+      },
       "proposedPlan": {
         "title": "الخطة المقترحة",
         "planning": "جارٍ التخطيط…"
