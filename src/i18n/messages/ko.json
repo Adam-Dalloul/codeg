@@ -2860,7 +2860,6 @@
         "steerIntoTurn": "현재 턴에 삽입",
         "steerQueuedInstead": "대신 대기열에 추가되었습니다. 다음 턴에 전송됩니다.",
         "steerFailed": "현재 턴에 삽입하지 못했습니다",
-        "steerAttachmentsUnsupported": "텍스트만 지원됩니다. 첨부 파일이 있는 초안은 대기열을 이용하세요.",
         "slashCommands": "슬래시 명령",
         "slashSearchPlaceholder": "명령 검색...",
         "slashSearchEmpty": "일치하는 명령이 없습니다",

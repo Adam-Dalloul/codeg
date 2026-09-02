@@ -2860,7 +2860,6 @@
         "steerIntoTurn": "In laufenden Turn einfügen",
         "steerQueuedInstead": "Stattdessen in die Warteschlange gestellt – wird mit dem nächsten Turn gesendet.",
         "steerFailed": "Konnte nicht in den laufenden Turn eingefügt werden",
-        "steerAttachmentsUnsupported": "Nur Text – Entwürfe mit Anhängen laufen über die Warteschlange.",
         "slashCommands": "Slash-Befehle",
         "slashSearchPlaceholder": "Befehle suchen...",
         "slashSearchEmpty": "Keine passenden Befehle",

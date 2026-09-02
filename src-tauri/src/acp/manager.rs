@@ -2469,10 +2469,15 @@ impl ConnectionManager {
     /// steer and the note would strand (the frontend falls back to an ordinary
     /// prompt). The append rides `emit_with_state` so `SessionState.feedback`,
     /// the ring buffer, and every attached client stay in lockstep.
+    /// `blocks`, when present, is the full prompt-block draft (text plus
+    /// image attachments) to deliver on the native wire instead of the bare
+    /// `text` — `text` then serves as the recorded note. Only the native
+    /// channel can carry blocks; see the pull-path gate below.
     pub async fn submit_feedback(
         &self,
         conn_id: &str,
         text: String,
+        blocks: Option<Vec<PromptInputBlock>>,
     ) -> Result<FeedbackItem, AcpError> {
         let trimmed = text.trim();
         if trimmed.is_empty() {
@@ -2484,6 +2489,7 @@ impl ConnectionManager {
             )));
         }
         let text = trimmed.to_string();
+        let blocks = blocks.filter(|b| !b.is_empty());
         let (state, cmd_tx, emitter) = {
             let connections = self.connections.lock().await;
             let conn = connections
@@ -2512,7 +2518,19 @@ impl ConnectionManager {
         }
 
         if native {
-            return Self::submit_feedback_native(conn_id, state, cmd_tx, emitter, text).await;
+            return Self::submit_feedback_native(conn_id, state, cmd_tx, emitter, text, blocks)
+                .await;
+        }
+
+        // The pull tool delivers plain text (`PendingFeedback`), so a draft
+        // carrying attachment blocks cannot ride it without silently dropping
+        // them. This only arises when the channel downgraded between the
+        // frontend's channel read and this call (startedNewTurn latch);
+        // `NoActiveTurn` is the rejection the caller already maps to its
+        // queue fallback, which re-routes the WHOLE draft — attachments
+        // included — as the next turn's prompt.
+        if blocks.is_some() {
+            return Err(AcpError::NoActiveTurn);
         }
 
         let item = FeedbackItem::new_pending(
@@ -2567,6 +2585,7 @@ impl ConnectionManager {
         cmd_tx: tokio::sync::mpsc::Sender<ConnectionCommand>,
         emitter: EventEmitter,
         text: String,
+        blocks: Option<Vec<PromptInputBlock>>,
     ) -> Result<FeedbackItem, AcpError> {
         // Cheap pre-flight, NOT the authoritative check (that's the loop's
         // idle arm replying `NoActiveTurn`): skip the round-trip when no turn
@@ -2574,13 +2593,31 @@ impl ConnectionManager {
         if !state.read().await.turn_in_flight {
             return Err(AcpError::NoActiveTurn);
         }
+        // The wire payload: the caller's full draft when it carried blocks
+        // (attachments included), else the recorded text as a single block —
+        // byte-identical to the historical text-only steer. Uploaded-image
+        // markers (web / remote mode) are re-hydrated exactly like a prompt's,
+        // AFTER the admission checks above so a rejected steer never triggers
+        // file reads, and BEFORE the shield below so a failure aborts with no
+        // side effects.
+        let wire_blocks = match blocks {
+            Some(mut blocks) => {
+                crate::acp::prompt_hydration::hydrate_prompt_blocks(
+                    &mut blocks,
+                    &crate::paths::codeg_uploads_root(),
+                )
+                .await?;
+                blocks
+            }
+            None => vec![PromptInputBlock::Text { text: text.clone() }],
+        };
         let conn_id_for_task = conn_id.to_string();
         let handle = tokio::spawn(async move {
             let outcome: Result<FeedbackItem, AcpError> = async {
                 let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
                 cmd_tx
                     .send(ConnectionCommand::Steer {
-                        text: text.clone(),
+                        blocks: wire_blocks,
                         reply: reply_tx,
                     })
                     .await
@@ -7395,7 +7432,7 @@ mod tests {
         // (e.g. its session started before the feature was enabled), even mid-turn.
         let state = mgr.get_state("c1").await.unwrap();
         state.write().await.turn_in_flight = true;
-        let err = mgr.submit_feedback("c1", "note".into()).await.unwrap_err();
+        let err = mgr.submit_feedback("c1", "note".into(), None).await.unwrap_err();
         assert!(matches!(err, AcpError::FeedbackDisabled));
         assert!(state.read().await.feedback.is_empty());
     }
@@ -7407,7 +7444,7 @@ mod tests {
             .await;
         // Tool available but no turn in flight → nothing to steer.
         set_feedback_tool_available(&mgr, "c1").await;
-        let err = mgr.submit_feedback("c1", "note".into()).await.unwrap_err();
+        let err = mgr.submit_feedback("c1", "note".into(), None).await.unwrap_err();
         assert!(matches!(err, AcpError::NoActiveTurn));
         // And nothing was appended.
         let state = mgr.get_state("c1").await.unwrap();
@@ -7418,7 +7455,7 @@ mod tests {
     async fn submit_feedback_missing_connection_errors() {
         let mgr = ConnectionManager::new();
         let err = mgr
-            .submit_feedback("nope", "note".into())
+            .submit_feedback("nope", "note".into(), None)
             .await
             .unwrap_err();
         assert!(matches!(err, AcpError::ConnectionNotFound(_)));
@@ -7431,7 +7468,7 @@ mod tests {
             .await;
         mark_feedback_ready(&mgr, "c1").await;
         let item = mgr
-            .submit_feedback("c1", "  use UserService  ".into())
+            .submit_feedback("c1", "  use UserService  ".into(), None)
             .await
             .unwrap();
         assert_eq!(item.status, FeedbackStatus::Pending);
@@ -7451,16 +7488,16 @@ mod tests {
         mark_feedback_ready(&mgr, "c1").await;
         // Empty / whitespace-only → rejected, nothing appended.
         for empty in ["", "   ", "\n\t "] {
-            let err = mgr.submit_feedback("c1", empty.into()).await.unwrap_err();
+            let err = mgr.submit_feedback("c1", empty.into(), None).await.unwrap_err();
             assert!(matches!(err, AcpError::InvalidFeedback(_)));
         }
         // Oversized → rejected.
         let huge = "x".repeat(MAX_FEEDBACK_CHARS + 1);
-        let err = mgr.submit_feedback("c1", huge).await.unwrap_err();
+        let err = mgr.submit_feedback("c1", huge, None).await.unwrap_err();
         assert!(matches!(err, AcpError::InvalidFeedback(_)));
         // Exactly at the bound is accepted.
         let at_bound = "y".repeat(MAX_FEEDBACK_CHARS);
-        assert!(mgr.submit_feedback("c1", at_bound).await.is_ok());
+        assert!(mgr.submit_feedback("c1", at_bound, None).await.is_ok());
         let state = mgr.get_state("c1").await.unwrap();
         assert_eq!(state.read().await.feedback.len(), 1, "only the valid note stuck");
     }
@@ -7475,16 +7512,16 @@ mod tests {
     }
 
     /// Play the connection loop's role: receive one `Steer` command and reply
-    /// the given outcome. Returns the text the command carried.
+    /// the given outcome. Returns the blocks the command carried.
     fn answer_steer(
         mut rx: tokio::sync::mpsc::Receiver<ConnectionCommand>,
         outcome: Result<SteerOutcome, AcpError>,
-    ) -> tokio::task::JoinHandle<String> {
+    ) -> tokio::task::JoinHandle<Vec<PromptInputBlock>> {
         tokio::spawn(async move {
             match rx.recv().await {
-                Some(ConnectionCommand::Steer { text, reply }) => {
+                Some(ConnectionCommand::Steer { blocks, reply }) => {
                     let _ = reply.send(outcome);
-                    text
+                    blocks
                 }
                 _ => panic!("expected a Steer command"),
             }
@@ -7504,12 +7541,18 @@ mod tests {
         set_feedback_tool_available(&mgr, "c1").await;
         let fake_loop = answer_steer(rx, Ok(SteerOutcome::Injected));
 
-        let item = mgr.submit_feedback("c1", "  ship it  ".into()).await.unwrap();
+        let item = mgr.submit_feedback("c1", "  ship it  ".into(), None).await.unwrap();
         assert_eq!(item.status, FeedbackStatus::Delivered);
         assert!(item.delivered_at.is_some());
         assert_eq!(item.text, "ship it");
-        // The wire carried the trimmed text.
-        assert_eq!(fake_loop.await.unwrap(), "ship it");
+        // The wire carried the trimmed text as a single block (a blocks-less
+        // submit stays byte-identical to the historical text-only steer).
+        assert_eq!(
+            fake_loop.await.unwrap(),
+            vec![PromptInputBlock::Text {
+                text: "ship it".into()
+            }]
+        );
 
         let state = mgr.get_state("c1").await.unwrap();
         {
@@ -7525,6 +7568,64 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn native_submit_with_blocks_carries_the_draft_and_records_the_text() {
+        // A draft with an image attachment steers as its full block list (the
+        // wire payload) while the recorded note stays the display text — the
+        // strip/snapshot/broadcast never carry image bytes.
+        let mgr = ConnectionManager::new();
+        let rx = mgr
+            .insert_test_connection_live("c1", AgentType::ClaudeCode, None, EventEmitter::Noop)
+            .await;
+        mark_native_steering_ready(&mgr, "c1").await;
+        let fake_loop = answer_steer(rx, Ok(SteerOutcome::Injected));
+
+        let draft = vec![
+            PromptInputBlock::Text {
+                text: "make it match this mock".into(),
+            },
+            PromptInputBlock::Image {
+                data: "aGk=".into(),
+                mime_type: "image/png".into(),
+                uri: None,
+            },
+        ];
+        let item = mgr
+            .submit_feedback("c1", "make it match this mock".into(), Some(draft.clone()))
+            .await
+            .unwrap();
+        assert_eq!(item.status, FeedbackStatus::Delivered);
+        assert_eq!(item.text, "make it match this mock");
+        // The wire carried the caller's blocks verbatim, attachment included.
+        assert_eq!(fake_loop.await.unwrap(), draft);
+    }
+
+    #[tokio::test]
+    async fn pull_submit_with_blocks_rejects_instead_of_dropping_attachments() {
+        // The pull tool delivers plain text, so a blocks-bearing note on a
+        // pull-only session (native downgraded mid-race) must reject with
+        // NoActiveTurn — the caller's queue fallback re-routes the whole
+        // draft — rather than deliver the text and silently drop the image.
+        let mgr = ConnectionManager::new();
+        mgr.insert_test_connection("c1", AgentType::ClaudeCode, None, EventEmitter::Noop)
+            .await;
+        mark_feedback_ready(&mgr, "c1").await;
+        let draft = vec![PromptInputBlock::Image {
+            data: "aGk=".into(),
+            mime_type: "image/png".into(),
+            uri: None,
+        }];
+        let err = mgr
+            .submit_feedback("c1", "1 attachment".into(), Some(draft))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, AcpError::NoActiveTurn));
+        // Nothing recorded: the content is still draft-owned.
+        let state = mgr.get_state("c1").await.unwrap();
+        assert!(state.read().await.feedback.is_empty());
+        assert!(mgr.read_pending_feedback("c1").await.is_empty());
+    }
+
+    #[tokio::test]
     async fn native_submit_prompt_required_maps_to_no_active_turn_and_records_nothing() {
         let mgr = ConnectionManager::new();
         let rx = mgr
@@ -7533,7 +7634,7 @@ mod tests {
         mark_native_steering_ready(&mgr, "c1").await;
         let fake_loop = answer_steer(rx, Ok(SteerOutcome::PromptRequired));
 
-        let err = mgr.submit_feedback("c1", "note".into()).await.unwrap_err();
+        let err = mgr.submit_feedback("c1", "note".into(), None).await.unwrap_err();
         assert!(matches!(err, AcpError::NoActiveTurn));
         let _ = fake_loop.await;
 
@@ -7557,7 +7658,7 @@ mod tests {
 
         // The adapter ignored the opt-in: content consumed → recorded
         // Delivered (never resent), and the session downgrades to pull.
-        let item = mgr.submit_feedback("c1", "note one".into()).await.unwrap();
+        let item = mgr.submit_feedback("c1", "note one".into(), None).await.unwrap();
         assert_eq!(item.status, FeedbackStatus::Delivered);
         let _ = fake_loop.await;
         let state = mgr.get_state("c1").await.unwrap();
@@ -7569,7 +7670,7 @@ mod tests {
         // The NEXT note rides the pull path: lands Pending, no Steer command
         // (the loop receiver was consumed above — a native attempt would fail
         // on the dead channel, so an Ok(Pending) proves the pull branch ran).
-        let second = mgr.submit_feedback("c1", "note two".into()).await.unwrap();
+        let second = mgr.submit_feedback("c1", "note two".into(), None).await.unwrap();
         assert_eq!(second.status, FeedbackStatus::Pending);
         let pending = mgr.read_pending_feedback("c1").await;
         assert_eq!(pending.len(), 1);
@@ -7602,7 +7703,7 @@ mod tests {
             }
         });
 
-        let item = mgr.submit_feedback("c1", "late note".into()).await.unwrap();
+        let item = mgr.submit_feedback("c1", "late note".into(), None).await.unwrap();
         assert_eq!(item.status, FeedbackStatus::Delivered);
         let _ = fake_loop.await;
         assert_eq!(state.read().await.feedback.len(), 1);
@@ -7644,7 +7745,7 @@ mod tests {
         // caller future.
         let timed = tokio::time::timeout(
             std::time::Duration::from_millis(100),
-            mgr.submit_feedback("c1", "shielded note".into()),
+            mgr.submit_feedback("c1", "shielded note".into(), None),
         )
         .await;
         assert!(
@@ -7684,7 +7785,7 @@ mod tests {
         mark_native_steering_ready(&mgr, "c1").await;
         // feedback_tool_available stays false.
         let fake_loop = answer_steer(rx, Ok(SteerOutcome::Injected));
-        let item = mgr.submit_feedback("c1", "no tool needed".into()).await.unwrap();
+        let item = mgr.submit_feedback("c1", "no tool needed".into(), None).await.unwrap();
         assert_eq!(item.status, FeedbackStatus::Delivered);
         let _ = fake_loop.await;
     }
@@ -8023,8 +8124,8 @@ mod tests {
         mgr.insert_test_connection("c1", AgentType::ClaudeCode, None, EventEmitter::Noop)
             .await;
         mark_feedback_ready(&mgr, "c1").await;
-        let a = mgr.submit_feedback("c1", "a".into()).await.unwrap();
-        let b = mgr.submit_feedback("c1", "b".into()).await.unwrap();
+        let a = mgr.submit_feedback("c1", "a".into(), None).await.unwrap();
+        let b = mgr.submit_feedback("c1", "b".into(), None).await.unwrap();
 
         // READ returns both pending notes (insert order) WITHOUT mutating state.
         let pending = mgr.read_pending_feedback("c1").await;

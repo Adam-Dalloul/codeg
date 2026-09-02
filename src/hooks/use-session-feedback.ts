@@ -27,7 +27,11 @@ import { useAcpEvent } from "@/contexts/acp-connections-context"
 import { acpGetSessionSnapshot, submitSessionFeedback } from "@/lib/api"
 import { toErrorMessage } from "@/lib/app-error"
 import { isNoActiveTurnRejection } from "@/lib/turn-busy"
-import type { ConnectionStatus, FeedbackItem } from "@/lib/types"
+import type {
+  ConnectionStatus,
+  FeedbackItem,
+  PromptInputBlock,
+} from "@/lib/types"
 
 /** Merge snapshot-hydrated notes with live ones, keyed by id; live entries win
  *  (they carry the most recent status). Snapshot order first, live-only after. */
@@ -77,8 +81,12 @@ export interface UseSessionFeedback {
    *  every failure — including the turn-end `NoActiveTurn` race — is
    *  RETHROWN untouched (no toast, no reroute). The composer owns its own
    *  fallback (enqueue) and draft-preservation policy, which `submit`'s
-   *  dialog-shaped error handling would preempt. */
-  steer: (text: string) => Promise<FeedbackItem>
+   *  dialog-shaped error handling would preempt. `blocks` carries the full
+   *  draft when it holds attachments (native wire only; the backend's
+   *  `NoActiveTurn` rejection on the pull path reroutes it to the queue
+   *  whole, so an attachment is never silently dropped); `text` stays the
+   *  recorded/display form. */
+  steer: (text: string, blocks?: PromptInputBlock[]) => Promise<FeedbackItem>
 }
 
 export function useSessionFeedback({
@@ -354,12 +362,15 @@ export function useSessionFeedback({
   // queue on `NoActiveTurn`, keep the draft on real failures. Shared with
   // `submit`: the optimistic note append and the channel reconciliation.
   const steer = useCallback(
-    async (rawText: string): Promise<FeedbackItem> => {
+    async (
+      rawText: string,
+      blocks?: PromptInputBlock[]
+    ): Promise<FeedbackItem> => {
       const text = rawText.trim()
       if (!text || !connectionId) {
         throw new Error("nothing to steer")
       }
-      const item = await submitSessionFeedback(connectionId, text)
+      const item = await submitSessionFeedback(connectionId, text, blocks)
       // A resolution that landed after a connection switch must not touch the
       // new connection's channel state or note list (reconcileChannel guards
       // itself too; the append needs the same protection).

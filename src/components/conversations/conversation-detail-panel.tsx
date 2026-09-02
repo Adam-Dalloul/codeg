@@ -111,6 +111,7 @@ import {
   type MessageTurn,
   type PlanApprovalAnswer,
   type PromptDraft,
+  type PromptInputBlock,
   type QuestionAnswer,
   type UserMessageBlock,
 } from "@/lib/types"
@@ -1949,10 +1950,12 @@ const ConversationTabView = memo(function ConversationTabView({
   // Composer "insert into current turn" (native steering only). Rethrows —
   // MessageInput owns the enqueue fallback and draft-preservation policy, so
   // this wrapper must not swallow the turn-end race the way `submit` does.
+  // `blocks` rides along when the draft carries attachments (images steer
+  // too); `text` stays the recorded/display form.
   const feedbackSteer = feedback.steer
   const handleSteer = useCallback(
-    async (text: string) => {
-      await feedbackSteer(text)
+    async (text: string, blocks?: PromptInputBlock[]) => {
+      await feedbackSteer(text, blocks)
     },
     [feedbackSteer]
   )

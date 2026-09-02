@@ -2862,7 +2862,6 @@
         "steerIntoTurn": "Insert into current turn",
         "steerQueuedInstead": "Queued instead — it will be sent with the next turn.",
         "steerFailed": "Couldn't insert into the current turn",
-        "steerAttachmentsUnsupported": "Text only — drafts with attachments go through the queue.",
         "slashCommands": "Slash commands",
         "slashSearchPlaceholder": "Search commands...",
         "slashSearchEmpty": "No matching commands",

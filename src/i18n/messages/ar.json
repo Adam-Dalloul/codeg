@@ -2860,7 +2860,6 @@
         "steerIntoTurn": "إدراج في الدور الحالي",
         "steerQueuedInstead": "أُضيفت إلى قائمة الانتظار — ستُرسل مع الدور التالي.",
         "steerFailed": "تعذّر الإدراج في الدور الحالي",
-        "steerAttachmentsUnsupported": "نص فقط — المسودات التي تحتوي على مرفقات تمر عبر قائمة الانتظار.",
         "slashCommands": "أوامر الشرطة المائلة",
         "slashSearchPlaceholder": "البحث عن الأوامر...",
         "slashSearchEmpty": "لا توجد أوامر مطابقة",
