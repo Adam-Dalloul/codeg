@@ -3803,20 +3803,40 @@ fn build_client_capabilities(
     // release depends on it, and both adapters no-op without the
     // advertisement, so staying out costs us nothing.
     //
-    // codex-acp 1.7.0 added a third, "nativeSubagentSessions" (the draft ACP
-    // subagent RFD; the canonical gate is a `clientCapabilities.subagents: {}`
-    // field, with this AIR key as the fallback for SDKs that strip it). It must
-    // stay out for a harder reason than cost: `agent-client-protocol-schema`
-    // 0.11.7 cannot RECEIVE the result. Its `SessionUpdate` is an
-    // internally-tagged enum with no catch-all arm, so the `subagent_spawned` /
-    // `subagent_state_update` notifications would fail to deserialize — and
-    // since the adapter switches child messages, thoughts, tools and
-    // permissions onto a child session id announced only in that first
-    // notification, opting in would make subagent work vanish from the timeline
-    // rather than render better. Without the advertisement the lifecycle stays
-    // the legacy `subAgentActivity` tool call codeg already renders, whose
-    // shape is unchanged from 1.4.0. Revisit when the schema crate ships both
-    // the capability field and the update variants.
+    // codex-acp 1.7.0 and claude-agent-acp 0.73.0 have a third,
+    // "nativeSubagentSessions" (the draft ACP subagent RFD; the canonical gate
+    // is a `clientCapabilities.subagents: {}` field, with this AIR key as the
+    // fallback for SDKs that strip it). It stays out — and the reason is no
+    // longer "the schema crate can't deserialize it". `air_async_task_delta`
+    // proves a raw pre-dispatch reader gets around that for any variant. The
+    // reason is that advertising DELETES the frame codeg renders subagents
+    // from, and replaces it with strictly less:
+    //
+    // * The adapter suppresses the `Agent`/`Task` tool call outright once the
+    //   capability is on — `NativeSubagentRuntime.route()` returns null for it,
+    //   commented "Native Agent/Task control calls are intentionally not
+    //   transcript tools". codex does the same to its `subAgentActivity` item.
+    // * That tool call is codeg's whole anchor. `conversation-runtime-store`
+    //   registers its id as an "agent" capsule, nests the child's tool calls
+    //   under it by `meta.claudeCode.parentToolUseId`, and attaches the child's
+    //   prose to it as `agent_transcript`.
+    // * `subagent_spawned` cannot replace it: it carries `subagentSessionId`,
+    //   `name`, `task` and an empty `capabilities` — and NO `parentToolUseId`.
+    //   The child's own updates keep theirs, but it names the tool call that
+    //   was just suppressed, so every one of them would arrive as an orphan.
+    // * The child's output is not new information either. `route()` rewrites
+    //   only `sessionId`; the `_meta.claudeCode.parentToolUseId` codeg already
+    //   routes on rides through untouched. So opting in would move the same
+    //   content onto a session id codeg would then have to map back — to a
+    //   capsule it no longer receives.
+    //
+    // Net: the advertisement trades a precise rendering for a poorer one plus a
+    // connection-level session router, against a spec that is still an
+    // UNMERGED draft (agent-client-protocol#1992) whose adapter file calls
+    // itself "Temporary typed surface … replaced by SDK exports when the draft
+    // ships". Revisit when the draft lands and the announcement carries enough
+    // to rebuild the capsule — a parent tool-use id, or the child tool calls
+    // arriving with one codeg has seen.
     if matches!(agent_type, AgentType::ClaudeCode | AgentType::Codex) {
         let mut capabilities = vec!["sessionFailure"];
         if agent_type == AgentType::ClaudeCode {
@@ -13537,10 +13557,11 @@ mod tests {
             // (claude-agent-acp 0.69.0 / codex-acp 1.4.0) buys an extra model
             // round-trip per turn for a clamped, self-reported subset of what
             // the `workspace_state` watcher already sees, and
-            // "nativeSubagentSessions" (codex-acp 1.7.0) would move subagent
-            // output onto child session ids carried by `SessionUpdate` variants
-            // `agent-client-protocol-schema` 0.11.7 cannot deserialize at all.
-            // See the reasoning at the advertisement site before relaxing this.
+            // "nativeSubagentSessions" would make both adapters SUPPRESS the
+            // `Agent`/`Task` tool call that codeg builds its whole subagent
+            // rendering around, replacing it with an announcement that carries
+            // no parent tool-use id to rebuild it from. See the reasoning at
+            // the advertisement site before relaxing this.
             let expected: Vec<serde_json::Value> = if agent == AgentType::ClaudeCode {
                 vec!["sessionFailure".into(), "asyncTasks".into()]
             } else {
