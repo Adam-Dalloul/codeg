@@ -1322,6 +1322,58 @@ const ConversationTabView = memo(function ConversationTabView({
     ]
   )
 
+  // "Fork from here": fork at a rendered assistant turn instead of at the tail,
+  // and DON'T send anything. Unlike fork-send there is no draft to protect, so a
+  // failure is just reported — the session is untouched, and the same click can
+  // be retried or aimed at a different turn.
+  //
+  // Which turns the agent can actually name is the backend's call
+  // (`resolve_fork_point`): a turn it cannot name forks at the tail rather than
+  // failing, so this never has to reason about per-agent identity.
+  const handleForkFromTurn = useCallback(
+    async (turnId: string) => {
+      const connectionId = conn.connectionId
+      if (!connectionId || connStatus !== "connected") return
+      try {
+        const { forkedSessionId } = await acpFork(
+          connectionId,
+          dbConvIdRef.current,
+          folderId,
+          turnId
+        )
+        sessionIdRef.current = forkedSessionId
+        setExternalId(effectiveConversationId, forkedSessionId)
+        // Same two-row reshuffle as fork-send: the current row now points at
+        // S2 and a sibling preserves S1.
+        refreshConversations()
+      } catch (err) {
+        // A turn in flight is transient here, not a failure to report as one —
+        // there is no draft to re-queue, so say so and let the user retry.
+        toast.error(
+          err instanceof TurnBusyError
+            ? t("forkSessionBusy")
+            : t("forkSessionFailed", {
+                error:
+                  err instanceof Error
+                    ? err.message
+                    : typeof err === "object" && err !== null
+                      ? JSON.stringify(err)
+                      : String(err),
+              })
+        )
+      }
+    },
+    [
+      conn.connectionId,
+      connStatus,
+      effectiveConversationId,
+      folderId,
+      refreshConversations,
+      setExternalId,
+      t,
+    ]
+  )
+
   const handleOpenAgentsSettings = useCallback(() => {
     openSettingsWindow("agents", { agentType: selectedAgent }).catch((err) => {
       console.error(
@@ -1919,6 +1971,17 @@ const ConversationTabView = memo(function ConversationTabView({
         // rather than a usable composer here — a transcript whose composer is
         // blocked (session/load failure) can still spawn the question elsewhere.
         onAskSelection={canAskSelection ? handleAskSelection : undefined}
+        // Same three preconditions as fork-send, minus the queue guard: this
+        // fork carries no draft, so a non-empty queue is not at risk of being
+        // jumped. A turn in flight is still rejected — by the backend, which is
+        // the only place that can see it without racing.
+        onForkFromTurn={
+          connStatus === "connected" &&
+          hasPersistedConversation &&
+          conn.supportsFork
+            ? handleForkFromTurn
+            : undefined
+        }
       />
     </GoalControlProvider>
   )

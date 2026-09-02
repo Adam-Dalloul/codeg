@@ -350,13 +350,18 @@ export async function acpFork(
   // the connection is already linked (a new-conversation-then-fork). See
   // `ConnectionManager::fork_session`.
   conversationId?: number | null,
-  folderId?: number | null
+  folderId?: number | null,
+  // "Fork from here": the rendered turn to fork at. Omit to fork at the tail,
+  // which is what fork-send does. A turn the agent cannot name also forks at
+  // the tail rather than failing — the backend decides, see `resolve_fork_point`.
+  forkFromTurnId?: string | null
 ): Promise<ForkResult> {
   try {
     return await getTransport().call("acp_fork", {
       connectionId,
       conversationId: conversationId ?? null,
       folderId: folderId ?? null,
+      forkFromTurnId: forkFromTurnId ?? null,
     })
   } catch (e) {
     // A fork is serialized with prompts on the backend: it returns

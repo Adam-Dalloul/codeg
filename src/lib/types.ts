@@ -288,6 +288,15 @@ export interface MessageTurn {
    * `timestamp + duration_ms` — those two fields encode unrelated spans in
    * most parsers. */
   completed_at?: string | null
+  /** The id the AGENT knows this turn's message by, when codeg can name it the
+   * same way the agent does — `id` above is positional (`turn-3`) and names
+   * nothing an agent could look up.
+   *
+   * Present only where the turn can be a fork point ("fork from here"), which
+   * today means Claude assistant turns. Its absence does NOT mean the turn
+   * cannot be forked at: codex forks by content fingerprint instead, resolved
+   * entirely in the backend. Use `canForkFromTurn` rather than testing this. */
+  agent_message_id?: string | null
 }
 
 export interface ConversationDetail {
