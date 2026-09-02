@@ -10127,11 +10127,20 @@ pub async fn acp_fork(
     connection_id: String,
     conversation_id: Option<i32>,
     folder_id: Option<i32>,
+    // "Fork from here": the rendered turn to fork at. `None` = fork at the
+    // tail, the composer's fork-send behaviour.
+    fork_from_turn_id: Option<String>,
     db: State<'_, AppDatabase>,
     manager: State<'_, ConnectionManager>,
 ) -> Result<ForkResultInfo, AcpError> {
     manager
-        .fork_session(&db, &connection_id, conversation_id, folder_id)
+        .fork_session(
+            &db,
+            &connection_id,
+            conversation_id,
+            folder_id,
+            fork_from_turn_id,
+        )
         .await
 }
 

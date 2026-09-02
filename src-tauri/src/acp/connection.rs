@@ -957,6 +957,10 @@ pub enum ConnectionCommand {
         option_id: String,
     },
     Fork {
+        /// Fork at a chosen message instead of the tail. `None` keeps the
+        /// tail-fork the fork-send composer has always done; see
+        /// [`crate::acp::fork::ForkPoint`] for how each agent resolves it.
+        fork_point: Option<crate::acp::fork::ForkPoint>,
         reply:
             tokio::sync::oneshot::Sender<Result<crate::acp::types::ForkProtocolResult, AcpError>>,
     },
@@ -9013,7 +9017,7 @@ async fn run_conversation_loop<'a>(
                     inj.broker.cancel_by_parent_turn(conn_id).await;
                 }
             }
-            Some(ConnectionCommand::Fork { reply }) => {
+            Some(ConnectionCommand::Fork { fork_point, reply }) => {
                 if !supports_fork {
                     let _ = reply.send(Err(AcpError::protocol(
                         "This agent does not support session/fork".to_string(),
@@ -9023,10 +9027,13 @@ async fn run_conversation_loop<'a>(
                 let cx = session.connection();
                 let sid = session.session_id().clone();
                 tracing::info!(
-                    "[ACP] Sending session/fork for session_id={} cwd={}",
-                    sid.0, cwd
+                    "[ACP] Sending session/fork for session_id={} cwd={} fork_point={:?}",
+                    sid.0,
+                    cwd,
+                    fork_point.as_ref().map(|p| &p.message_id)
                 );
-                let result = crate::acp::fork::fork_session(&cx, &sid, cwd).await;
+                let result =
+                    crate::acp::fork::fork_session(&cx, &sid, cwd, fork_point.as_ref()).await;
                 match result {
                     Ok((fork_response, fork_models_raw)) => {
                         tracing::info!(

@@ -2576,6 +2576,7 @@ impl CodexParser {
                                     duration_ms: None,
                                     model: None,
                                     completed_at: Some(timestamp),
+                                agent_message_id: None,
                                 });
                             }
                             "agent_message" => {
@@ -2605,6 +2606,7 @@ impl CodexParser {
                                     duration_ms: None,
                                     model: None,
                                     completed_at: Some(timestamp),
+                                agent_message_id: None,
                                 });
                             }
                             "thread_goal_updated" => {
@@ -2684,6 +2686,7 @@ impl CodexParser {
                                         duration_ms: None,
                                         model: None,
                                         completed_at: Some(timestamp),
+                                    agent_message_id: None,
                                     });
                                 }
                             }
@@ -2774,6 +2777,7 @@ impl CodexParser {
                                     duration_ms: None,
                                     model: None,
                                     completed_at: Some(timestamp),
+                                agent_message_id: None,
                                 });
                                 if !call_id.is_empty() {
                                     emitted_image_ids.insert(call_id);
@@ -2968,6 +2972,7 @@ impl CodexParser {
                                         duration_ms: None,
                                         model: None,
                                         completed_at: Some(timestamp),
+                                    agent_message_id: None,
                                     });
                                 } else {
                                     flush_pending_reasoning(
@@ -3083,6 +3088,7 @@ impl CodexParser {
                                             duration_ms: None,
                                             model: None,
                                             completed_at: Some(timestamp),
+                                        agent_message_id: None,
                                         });
                                     }
                                     "wait_agent" => {
@@ -3145,6 +3151,7 @@ impl CodexParser {
                                             duration_ms: None,
                                             model: None,
                                             completed_at: Some(timestamp),
+                                        agent_message_id: None,
                                         });
                                     }
                                     _ => {
@@ -3218,6 +3225,7 @@ impl CodexParser {
                                             duration_ms: None,
                                             model: None,
                                             completed_at: Some(timestamp),
+                                        agent_message_id: None,
                                         });
                                     }
                                 }
@@ -3327,6 +3335,7 @@ impl CodexParser {
                                         duration_ms: None,
                                         model: None,
                                         completed_at: Some(timestamp),
+                                    agent_message_id: None,
                                     });
                                 } else if is_spawn {
                                     if let Some(output_obj) = parse_codex_json_output(payload) {
@@ -3353,6 +3362,7 @@ impl CodexParser {
                                         duration_ms: None,
                                         model: None,
                                         completed_at: Some(timestamp),
+                                    agent_message_id: None,
                                     });
                                 } else if is_wait {
                                     // Emit one `collab_agent` capsule per wait,
@@ -3399,6 +3409,7 @@ impl CodexParser {
                                             duration_ms: None,
                                             model: None,
                                             completed_at: Some(timestamp),
+                                        agent_message_id: None,
                                         });
                                         messages.push(UnifiedMessage {
                                             id: format!("tool-result-{}", messages.len()),
@@ -3415,6 +3426,7 @@ impl CodexParser {
                                             duration_ms: None,
                                             model: None,
                                             completed_at: Some(timestamp),
+                                        agent_message_id: None,
                                         });
                                     }
                                 } else if is_close {
@@ -3536,6 +3548,7 @@ impl CodexParser {
                                         duration_ms: None,
                                         model: None,
                                         completed_at: Some(timestamp),
+                                    agent_message_id: None,
                                     });
                                 }
                             }
@@ -3574,6 +3587,7 @@ impl CodexParser {
                                             duration_ms: None,
                                             model: None,
                                             completed_at: Some(timestamp),
+                                        agent_message_id: None,
                                         });
                                         continue;
                                     }
@@ -3679,6 +3693,7 @@ impl CodexParser {
                                     duration_ms: None,
                                     model: None,
                                     completed_at: Some(timestamp),
+                                agent_message_id: None,
                                 });
                                 if !id.is_empty() {
                                     emitted_image_ids.insert(id);
@@ -3821,6 +3836,7 @@ impl CodexParser {
                     duration_ms: None,
                     model: None,
                     completed_at: Some(pending.timestamp),
+                agent_message_id: None,
                 })
                 .collect();
             messages.splice(insert_at..insert_at, group);
@@ -3876,6 +3892,7 @@ impl CodexParser {
                         duration_ms: None,
                         model: None,
                         completed_at: first_timestamp,
+                    agent_message_id: None,
                     },
                 );
             }
@@ -4248,6 +4265,7 @@ fn flush_pending_reasoning(
         duration_ms: None,
         model: None,
         completed_at: Some(timestamp),
+    agent_message_id: None,
     });
 }
 
@@ -4973,6 +4991,7 @@ fn group_into_turns(messages: Vec<UnifiedMessage>) -> Vec<MessageTurn> {
                 duration_ms: None,
                 model: None,
                 completed_at: msg.completed_at,
+            agent_message_id: None,
             });
             i += 1;
         } else if matches!(msg.role, MessageRole::System) {
@@ -4985,6 +5004,7 @@ fn group_into_turns(messages: Vec<UnifiedMessage>) -> Vec<MessageTurn> {
                 duration_ms: None,
                 model: None,
                 completed_at: msg.completed_at,
+            agent_message_id: None,
             });
             i += 1;
         } else {
@@ -5025,6 +5045,7 @@ fn group_into_turns(messages: Vec<UnifiedMessage>) -> Vec<MessageTurn> {
                 duration_ms,
                 model: turn_model,
                 completed_at,
+            agent_message_id: None,
             });
         }
     }
@@ -5715,6 +5736,7 @@ mod tests {
             duration_ms: None,
             model: None,
             completed_at: Some(now),
+        agent_message_id: None,
         }];
 
         assert!(should_skip_duplicate_user_message(

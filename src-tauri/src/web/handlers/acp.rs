@@ -325,6 +325,10 @@ pub struct AcpForkParams {
     pub conversation_id: Option<i32>,
     #[serde(default)]
     pub folder_id: Option<i32>,
+    /// "Fork from here": the rendered turn to fork at. Absent = fork at the
+    /// tail, the composer's fork-send behaviour.
+    #[serde(default)]
+    pub fork_from_turn_id: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -432,6 +436,7 @@ pub async fn acp_fork(
             &params.connection_id,
             params.conversation_id,
             params.folder_id,
+            params.fork_from_turn_id,
         )
         .await
         .map_err(|e| {
