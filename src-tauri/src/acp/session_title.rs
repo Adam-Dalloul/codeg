@@ -5,12 +5,23 @@
 //! conversation was loaded from disk. These helpers extract a usable title
 //! from the live notification so the lifecycle worker can write it immediately.
 //!
-//! Not every agent can push. Claude Code's adapter has no wire event for its
-//! generated title — it reads the name back out of the session file at
-//! turn-end — so `acp::background_watch` reads the same `ai-title` /
-//! `custom-title` records off the transcript it is already tailing and hands
-//! them to [`publish_native_title`], which is the one place that decides
-//! whether a title reaches the lifecycle worker.
+//! Not every agent can push, and Claude Code could not until recently: through
+//! claude-agent-acp 0.72.0 its adapter had no wire event for the generated
+//! title — it read the name back out of the session file at turn-end — so
+//! `acp::background_watch` reads the same `ai-title` / `custom-title` records
+//! off the transcript it is already tailing and hands them to
+//! [`publish_native_title`], which is the one place that decides whether a
+//! title reaches the lifecycle worker.
+//!
+//! 0.73.0 adds the wire event (`session-titles.js`: Claude Code's own
+//! auto-titling never arms under the Agent SDK, so the adapter now asks the CLI
+//! via `generate_session_title` and publishes the result as
+//! `session_info_update.title`). That makes the two producers below REAL for
+//! Claude rather than theoretical, which is what the single critical section in
+//! [`publish_native_title`] was already built for. The transcript path stays:
+//! it also carries `custom-title` and pre-0.73 installs, and the adapter
+//! persists its generated title into the same session file, so both producers
+//! converge on one string and the skip-cache absorbs the duplicate.
 
 use std::sync::Arc;
 

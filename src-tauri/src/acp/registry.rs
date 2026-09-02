@@ -577,9 +577,77 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             // can advertise `["sessionFailure", "agentFileChangeReport"]` — an
             // ADDITIVE element in an array codeg only ever membership-tests,
             // so the session-failure gate is unaffected.
+            //
+            // 0.70.0–0.73.0 is a large release (the package grows 692K → 1.1M
+            // and gains twelve modules), but the `initialize` response barely
+            // moves: a function-body diff shows ONLY
+            // `sessionCapabilities.subagents: {}` and two new AIR capability
+            // names. `sessionCapabilities.fork` was already there in 0.69.0, so
+            // `supports_fork` has been on for Claude all along. Wire-visible
+            // changes, in the order they matter to codeg:
+            //
+            // (a) The permission layer was rebuilt into `dist/permissions/**`
+            // and option-level `_meta.permission.changes[]` is GONE — the whole
+            // subtree contains exactly ONE `_meta`, the REQUEST-level
+            // `{version: 1, title, description?}` that `presentation.js` emits
+            // (`description` is `Reason: <decisionReason>`). This is the same
+            // move codex made in 1.7.0, so `hoist_request_permission_meta` in
+            // connection.rs already carries it onto the card — and it is now
+            // the ONLY source of a Claude permission heading, because
+            // `buildClaudePermissionPresentation` builds its tool call from
+            // `toolInfoFromToolUse`, which returns `{title, kind, content}` and
+            // no `_meta.claudeCode` at all. What is genuinely lost is the
+            // per-option scope chip (`lifetime.scope`), and that is ACCEPTED:
+            // 0.73.0 writes the grant AND its duration into the option NAME
+            // instead ("Yes, and always allow access to <paths> from this
+            // project", "Yes, during this session", "Yes, and don't ask again
+            // for <prefix> commands"), which the button already renders. The
+            // option IDs were renamed too (`allow-once`, `allow-with-updates`,
+            // `allow-skill-exact`, `allow-skill-prefix`, `exit-plan-*`,
+            // `reject`) — inert, codeg only echoes the selected id back.
+            // `parsePermissionOptionChanges` is NOT dead code: `supports_custom_version()`
+            // is true for npx, so a user pinned to 0.64.1–0.72.0 still gets
+            // `changes[]`.
+            //
+            // (b) `session-titles.js`: Claude Code's own auto-title generation
+            // never runs under the Agent SDK (the latch that arms it is pre-set
+            // on the headless path), so `SDKSessionInfo.summary` degraded to the
+            // raw first prompt. 0.73.0 asks the CLI for a real title via the
+            // `generate_session_title` control request and publishes it as
+            // `session_info_update.title` — the channel `acp::session_title`
+            // already consumes. It generates at most ONCE per session and adopts
+            // `info.customTitle` (a user `/rename` or an earlier generated title)
+            // without re-titling, so codeg needs no extra guard.
+            //
+            // (c) `fork-session.js` reads the SAME AIR fork point codex 1.8.0
+            // does — `_meta.jetbrains.air.fork = {version: 1, messageId}`, with
+            // the same `:segment:\d+$` suffix stripped before matching — and
+            // falls back to a tail fork when the block is absent. It ignores
+            // `messageFingerprint`/`messageOccurrence` (codex reads those), so
+            // sending all three is forward-compatible. The `messageId` to send
+            // is the top-level one `applyMessageId` stamps on message/thought
+            // chunks (present since ≤0.69.0; `ContentChunk::message_id` behind
+            // the schema's `unstable_message_id` feature).
+            //
+            // (d) NOT adopted, and still gated bilaterally: the AIR capability
+            // array grew to `["sessionFailure", "agentFileChangeReport",
+            // "nativeSubagentSessions", "asyncTasks"]`. codeg advertises only
+            // `sessionFailure`, so `native-subagents.js` and `async-tasks.js`
+            // stay dark and this upgrade carries no regression risk. See
+            // `build_client_capabilities` for why each is out.
+            //
+            // Also new and reachable through existing generic paths:
+            // `exit-plan.js` + `clear-context-coordinator.js` give ExitPlanMode
+            // its own option set, including three "accept the plan AND clear
+            // context" variants (`exit-plan-clear-{auto,bypass,accept-edits}`,
+            // named `Yes, clear context (N% used) and …`) that swap Claude's
+            // private conversation while the ACP turn stays open;
+            // `tool-result-meta.js` parses the SDK's `tool_result_meta` sidecar
+            // (`nonExecutionKind` + `userFeedback`) but only feeds exit-plan's
+            // internal reconciliation. `engines.node` stays ">=22".
             distribution: AgentDistribution::Npx {
-                version: "0.69.0",
-                package: "@agentclientprotocol/claude-agent-acp@0.69.0",
+                version: "0.73.0",
+                package: "@agentclientprotocol/claude-agent-acp@0.73.0",
                 cmd: "claude-agent-acp",
                 args: &[],
                 env: &[],
@@ -778,9 +846,58 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             // `promptRequired` opt-in (tarball grep: zero hits ⇒ the arm below
             // stays None), and there is still no `engines.node`, so the 20.0.0
             // floor is retained.
+            //
+            // 1.8.0 adds two modules (`src/SessionFork.ts`,
+            // `src/TitleGenerator.ts`) and REMOVES no string literal, so every
+            // surface above still holds. Its `initialize` response differs from
+            // 1.7.0's by exactly one field — `sessionCapabilities.fork: {}` —
+            // which is what `supports_fork` is derived from, so codex sessions
+            // gain the fork entry point on this bump alone.
+            //
+            // (a) `session/fork` forwards to the app-server `thread/fork`, and
+            // honours an AIR fork point in the request `_meta`:
+            // `jetbrains.air.fork = {version: 1, messageId,
+            // messageFingerprint?: "sha256:<64 hex>", messageOccurrence?: >=1}`.
+            // It resolves the id against `thread.turns[].items[].id` (stripping
+            // a `:segment:\d+$` suffix first), then falls back to hashing each
+            // `agentMessage` text and taking the Nth match. Absent the block it
+            // forks at the tail — codeg's current behaviour. claude-agent-acp
+            // 0.73.0 reads the same block (messageId only), so ONE client-side
+            // implementation covers both.
+            //
+            // (b) `TitleGenerator` runs an ephemeral thread on `gpt-5.6-luna`
+            // with a JSON output schema for a 3–7 word title, then
+            // `thread/name/set`; the resulting `thread/name/updated` surfaces as
+            // `session_info_update.title`, which `acp::session_title` already
+            // consumes. It tracks a three-state `sessionTitleSource`
+            // (explicit / fallback / unset) and never overwrites a `/rename`.
+            // 1.8.0 also publishes a fallback title (first user message, else
+            // the thread preview) on load.
+            //
+            // (c) Chunks now carry the top-level ACP `messageId`
+            // (`createAgentMessageChunk` / `createUserMessageChunk` /
+            // `createAgentThoughtChunk`) — the id (a) wants back.
+            //
+            // (d) `@openai/codex` moves ^0.148 → ^0.152, four minors of core.
+            // New app-server literals in the bundle include `writeStdin`,
+            // `mcpServer/oauth/login`, `mcpServer/event/stream/notification`,
+            // `modelProvider/authRecovery{Started,Completed}`,
+            // `reauthenticationRequired`, `project/changed` +
+            // `thread/project/updated`, `thread/realtime/item/*` and
+            // `autoApprovalReview/strictReviewRequired`. None of them is
+            // reachable over ACP today, but the jump is large enough that the
+            // 1.7.0 approval-preset table above (sandbox/reviewer per preset)
+            // must be re-audited against codex core before anything is derived
+            // from it again.
+            //
+            // Still NOT adopted, unchanged from 1.7.0: native subagent
+            // sessions and `agentFileChangeReport` (the AIR array is the same
+            // three names). Steering still ships no `promptRequired` opt-in
+            // (tarball grep: zero hits), and there is still no `engines.node`,
+            // so the 20.0.0 floor is retained.
             distribution: AgentDistribution::Npx {
-                version: "1.7.0",
-                package: "@agentclientprotocol/codex-acp@1.7.0",
+                version: "1.8.0",
+                package: "@agentclientprotocol/codex-acp@1.8.0",
                 cmd: "codex-acp",
                 args: &[],
                 env: &[],
@@ -1616,8 +1733,8 @@ mod tests {
     fn registry_pins_current_acp_agent_versions() {
         assert_npx_version(
             AgentType::ClaudeCode,
-            "0.69.0",
-            "@agentclientprotocol/claude-agent-acp@0.69.0",
+            "0.73.0",
+            "@agentclientprotocol/claude-agent-acp@0.73.0",
             Some("22.0.0"),
         );
         assert_npx_version(
@@ -1654,8 +1771,8 @@ mod tests {
         );
         assert_npx_version(
             AgentType::Codex,
-            "1.7.0",
-            "@agentclientprotocol/codex-acp@1.7.0",
+            "1.8.0",
+            "@agentclientprotocol/codex-acp@1.8.0",
             Some("20.0.0"),
         );
         assert_npx_version(AgentType::Pi, "0.0.33", "pi-acp@0.0.33", Some("22.0.0"));

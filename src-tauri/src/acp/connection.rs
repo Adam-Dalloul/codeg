@@ -10224,8 +10224,17 @@ fn is_codex_plan_review(
 /// `_meta.permission = {version: 1, title, description?}`. The title is now one
 /// of four fixed strings and the reason lives only in `description`, so a card
 /// built from the tool call alone would read "Edit files" where it used to
-/// explain WHY the edit needs approval. claude-agent-acp does not send this
-/// block; nothing changes for it.
+/// explain WHY the edit needs approval.
+///
+/// claude-agent-acp 0.73.0 made the same move, which is why this must stay
+/// UNGATED. There it is not merely load-bearing but the ONLY source of a
+/// heading: its rebuilt `permissions/` layer emits exactly one `_meta` in the
+/// whole subtree — this request-level block, whose `description` is
+/// `Reason: <decisionReason>` — and the permission tool call it pairs with is
+/// built from `toolInfoFromToolUse`, which returns `{title, kind, content}` and
+/// no `_meta.claudeCode` at all. So the dialog's preferred
+/// `_meta.claudeCode.title` is absent on 0.73.0 cards and falls through to what
+/// this hoists.
 ///
 /// Hoisting rather than adding an event field is deliberate: the tool call is
 /// already the card's payload end-to-end (`PendingPermissionState.tool_call`,
@@ -10233,7 +10242,8 @@ fn is_codex_plan_review(
 /// reason survives a reconnect and a snapshot restore for free. `_meta` is
 /// namespaced by producer, and `permission` is unclaimed at tool-call level —
 /// codex's permission tool calls carry no `_meta` at all, and claude's carries
-/// only `claudeCode`. An existing `_meta.permission` is therefore never
+/// only `claudeCode` (nothing at all since 0.73.0). An existing
+/// `_meta.permission` is therefore never
 /// overwritten: the insert is skipped if the key is already present.
 fn hoist_request_permission_meta(
     tool_call: &mut serde_json::Value,
