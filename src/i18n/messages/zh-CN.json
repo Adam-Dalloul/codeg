@@ -3395,7 +3395,6 @@
         },
         "planMode": {
           "entered": "进入计划模式",
-          "planLabel": "计划",
           "reviewApproved": "已批准执行计划",
           "reviewKept": "保持在计划模式",
           "reviewPending": "等待计划决定",

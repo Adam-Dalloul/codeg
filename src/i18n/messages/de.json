@@ -3395,7 +3395,6 @@
         },
         "planMode": {
           "entered": "Planungsmodus gestartet",
-          "planLabel": "Plan",
           "reviewApproved": "Plan genehmigt – wird umgesetzt",
           "reviewKept": "Im Planmodus geblieben",
           "reviewPending": "Warte auf Planentscheidung",
