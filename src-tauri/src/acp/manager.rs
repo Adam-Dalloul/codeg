@@ -3267,9 +3267,16 @@ impl crate::acp::delegation::spawner::ConnectionSpawner for ConnectionManagerSpa
             })?
             .to_string_lossy()
             .to_string();
-        let folder = crate::db::service::folder_service::add_folder(&self.db.conn, &folder_path)
-            .await
-            .map_err(|e| SpawnerError::Send(format!("add_folder: {e}")))?;
+        // `ensure_folder_for_path`, NOT `add_folder`: the row exists to carry the
+        // child's `folder_id` and to resolve its cwd on resume, and neither of
+        // those reads `is_open`. Opening it would turn whatever `working_dir` the
+        // agent picked — a PR checkout under /tmp, a throwaway worktree — into a
+        // top-level project in the user's sidebar, and would silently reopen a
+        // folder the user had closed.
+        let folder =
+            crate::db::service::folder_service::ensure_folder_for_path(&self.db.conn, &folder_path)
+                .await
+                .map_err(|e| SpawnerError::Send(format!("ensure_folder_for_path: {e}")))?;
 
         let result = self
             .manager
