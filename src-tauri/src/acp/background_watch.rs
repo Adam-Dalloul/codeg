@@ -112,6 +112,20 @@ const MAX_EPISODE_MESSAGES: usize = 512;
 /// boundary rotation always wins for multi-turn episodes.
 const FORCE_ROTATE_MESSAGES: usize = MAX_EPISODE_MESSAGES * 2;
 
+/// Every run of whitespace as a single space, ends trimmed. Used by
+/// [`PromptLedger::consume_matching`] to compare a sent prompt against an
+/// initiator text the transcript only lets us RECONSTRUCT.
+fn collapse_whitespace(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for word in text.split_whitespace() {
+        if !out.is_empty() {
+            out.push(' ');
+        }
+        out.push_str(word);
+    }
+    out
+}
+
 /// Fingerprints of prompts codeg itself sent on this connection, so the
 /// watcher can tell wire-rendered foreground turns apart from out-of-turn
 /// activity. Shared between the connection loop (writer, on every
@@ -167,17 +181,33 @@ impl PromptLedger {
     /// exactly once per sent prompt, so a later same-text autonomous re-fire
     /// finds no entry and classifies as out-of-turn. The record may carry
     /// appended wrapper content after the sent text, hence prefix matching.
+    ///
+    /// The comparison also runs over collapsed whitespace, because a slash
+    /// command's initiator text is RECONSTRUCTED rather than read back: the
+    /// CLI persists the invocation as command tags, and
+    /// [`slash_command_display`] rebuilds it as `"/name" + ' ' + trimmed args`.
+    /// That normalizes whatever separator the sender actually typed, so a
+    /// prompt sent as `/goal  ship it` (the composer inserts a space after the
+    /// command badge and the sender types another) reads back as
+    /// `/goal ship it` and misses on bytes. The miss is not cosmetic: the
+    /// command then classifies as an out-of-turn initiator, and the whole
+    /// wire-rendered turn re-surfaces as a background overlay beside itself.
+    /// Collapsing keeps the match exact in words and order.
     fn consume_matching(&self, initiator_text: &str) -> bool {
         let text = initiator_text.trim();
         if text.is_empty() {
             return false;
         }
+        let collapsed = collapse_whitespace(text);
         let mut entries = self.entries.lock().unwrap_or_else(|p| p.into_inner());
         entries.retain(|e| e.recorded_at.elapsed() < LEDGER_TTL);
-        if let Some(pos) = entries
-            .iter()
-            .position(|e| text == e.fingerprint || text.starts_with(e.fingerprint.as_str()))
-        {
+        if let Some(pos) = entries.iter().position(|e| {
+            if text == e.fingerprint || text.starts_with(e.fingerprint.as_str()) {
+                return true;
+            }
+            let fingerprint = collapse_whitespace(&e.fingerprint);
+            collapsed == fingerprint || collapsed.starts_with(fingerprint.as_str())
+        }) {
             entries.remove(pos);
             return true;
         }
@@ -1950,6 +1980,55 @@ mod tests {
         assert!(
             !turns.is_empty(),
             "an autonomous initiator after the reply is out-of-turn as before"
+        );
+    }
+
+    /// The command record is the only one the ledger can match, and its
+    /// initiator text is REBUILT from command tags — `slash_command_display`
+    /// joins the name and the trimmed args with a single space, whatever the
+    /// sender typed. The composer inserts a space after a command badge, so a
+    /// sender who types their own lands two, and the rebuilt text no longer
+    /// starts with the fingerprint. That miss leaves the submission window
+    /// unarmed and every following side record classifies out-of-turn, which
+    /// is the same duplicated `/goal` turn as above by a different route.
+    #[test]
+    fn a_command_matches_the_ledger_despite_a_rebuilt_separator() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = temp_session(&dir);
+        let ledger = PromptLedger::shared();
+        // As SENT: two spaces after the command badge.
+        ledger.record_text("/goal  build a test page");
+
+        let mut ws = WatchState::new();
+        ws.session_id = Some("s1".into());
+        ws.epoch = Some(epoch("2020-01-01T00:00:00Z"));
+        ws.adopt_file(path.clone());
+
+        // As PERSISTED: the CLI trims the args, so the display form rebuilds
+        // with one space.
+        let command = r#"{"type":"user","timestamp":"2026-07-07T03:50:00.000Z","uuid":"u-cmd","promptId":"p1","message":{"role":"user","content":"<command-name>/goal</command-name>\n<command-args>build a test page</command-args>"}}"#;
+        let hook = r#"{"type":"user","timestamp":"2026-07-07T03:50:00.200Z","uuid":"u-hook","promptId":"p1","isMeta":true,"userType":"external","message":{"role":"user","content":"A session-scoped Stop hook is now active with condition: build a test page."}}"#;
+        write_lines(&path, &[command, hook, &assistant_text("a1", "On it.")]);
+        let event = tick_prompting(&mut ws, &ledger);
+        assert!(
+            event.is_none() || unpack(event.unwrap()).0.is_empty(),
+            "the wire renders this turn — a rebuilt separator must not turn it \
+             into an overlay copy"
+        );
+    }
+
+    #[test]
+    fn ledger_matches_on_collapsed_whitespace_only_for_the_same_words() {
+        let ledger = PromptLedger::shared();
+        ledger.record_text("/goal  build a test page");
+        assert!(
+            !ledger.consume_matching("/goal build a different page"),
+            "collapsing whitespace must not match different words"
+        );
+        assert!(ledger.consume_matching("/goal build a test page"));
+        assert!(
+            !ledger.consume_matching("/goal build a test page"),
+            "a collapsed match consumes the entry exactly once"
         );
     }
 
