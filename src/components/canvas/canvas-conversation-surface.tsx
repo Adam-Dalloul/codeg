@@ -187,6 +187,7 @@ export function CanvasConversationSurface({
     removeOptimisticTurn,
     completeTurn,
     migrateConversation,
+    refetchDetail,
     setDbConversationId,
     setExternalId,
     setLiveMessage,
@@ -202,6 +203,18 @@ export function CanvasConversationSurface({
   // must keep it after the real row lands, or the live turn loses its session.
   const [effectiveConversationId] = useState(
     () => conversationId ?? draftRuntimeConversationId(contextKey)
+  )
+  // Whether this card is RE-ENTERING a runtime session some earlier surface
+  // already loaded, rather than opening one cold — see the repair effect below.
+  // Read at mount, before the hand-off effect can create one, so a card
+  // arriving from a draft (whose session is still filed under the draft's
+  // virtual id) correctly reads false and is left alone.
+  const [reEnteringSession] = useState(
+    () =>
+      conversationId != null &&
+      useConversationRuntimeStore
+        .getState()
+        .byConversationId.get(conversationId)?.detail != null
   )
   const [createdConversationId, setCreatedConversationId] = useState<
     number | null
@@ -369,6 +382,81 @@ export function CanvasConversationSurface({
   })
   const connStatus = conn.status
   const connSessionId = conn.sessionId
+
+  /**
+   * Re-entry repair: let the database have the last word on a session this
+   * card is coming back to.
+   *
+   * The canvas is a full-page route, so leaving it for the tasks or token page
+   * UNMOUNTS every card, while the workspace's own tabs are merely hidden. A
+   * card therefore has to survive its conversation moving on without it, and
+   * the runtime session it leaves behind does not:
+   *
+   *   - the live-message sink is registered by THIS component, so `liveMessage`
+   *     stops advancing the instant the card unmounts while the agent keeps
+   *     streaming. The global `turn_complete` handler that promotes turns for
+   *     conversations with no tab open then drains that frozen partial into
+   *     `localTurns`, where it masks the complete persisted reply;
+   *   - `awaiting_persist`, pinned by the send, is cleared only by a completion
+   *     this client observed — a turn that ends unwatched, or dies with its
+   *     connection and emits no completion at all, leaves it pinned with the
+   *     optimistic user turn duplicated underneath;
+   *   - and `useConversationDetail` never re-fetches a detail it already holds,
+   *     so none of it heals. Collapsing and re-expanding the card, or coming
+   *     back tomorrow, shows the same truncated transcript until the app
+   *     restarts.
+   *
+   * Unpinning `awaiting_persist` first is what lets `FETCH_DETAIL_SUCCESS`
+   * replace those buffers, and it re-arms the `SET_LIVE_MESSAGE` guard against
+   * the settled replay a reconnect pushes — which is why this effect is
+   * declared ABOVE the sink registration below, whose setup replays that very
+   * message. It is gated on this card's own connection not being the one
+   * prompting, because then the send really is still in flight. A turn running
+   * anywhere ELSE is protected by the fetch itself: the backend stamps
+   * `in_flight_user_turn_id` on a mid-turn detail and the reducer keeps every
+   * live buffer for those — so a reply streaming in right now survives this
+   * untouched, and only a settled one is replaced.
+   *
+   * The one state neither guard covers is a prompt that has left `handleSend`
+   * but not yet reached the backend: `sendPrompt` does not set `prompting`
+   * optimistically, and the detail cannot be marked in-flight for a turn nobody
+   * has been told about. Re-entering THERE would clear the optimistic echo of a
+   * message that is on its way. Reaching it means leaving the canvas and coming
+   * back inside a single `acp_prompt` round trip — two deliberate navigations,
+   * milliseconds apart — and the message itself is not lost either way, since
+   * the backend goes on to persist it and the next fetch shows it. Closing it
+   * would take a send timestamp the runtime store does not keep; it is left
+   * open knowingly rather than by omission.
+   *
+   * Latching after ONE pass — even a pass that found the card's own connection
+   * prompting and so left the pin alone — is likewise deliberate. This is the
+   * fallback for turns that ended while the card was ABSENT; a turn that ends
+   * while it is MOUNTED is settled by the prompting → idle edge below, which
+   * fires for a connection that was removed as readily as one that finished
+   * (`useConnection` reports a missing entry as `status: null`). Retrying here
+   * would only race that.
+   */
+  const repairedRef = useRef(false)
+  useEffect(() => {
+    if (!reEnteringSession || repairedRef.current) return
+    repairedRef.current = true
+    const session = useConversationRuntimeStore
+      .getState()
+      .byConversationId.get(effectiveConversationId)
+    if (
+      session?.syncState === "awaiting_persist" &&
+      connStatus !== "prompting"
+    ) {
+      setSyncState(effectiveConversationId, "idle")
+    }
+    refetchDetail(effectiveConversationId)
+  }, [
+    connStatus,
+    effectiveConversationId,
+    reEnteringSession,
+    refetchDetail,
+    setSyncState,
+  ])
 
   // Streaming deltas → runtime store, keyed by the CONNECTION and written into
   // this card's runtime session. Registered per contextKey, so a workspace tab
