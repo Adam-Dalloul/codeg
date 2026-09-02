@@ -680,6 +680,13 @@
     "emptyNoAgent": "Nenhum agente disponível.",
     "configManagement": "Gerenciamento de configuração",
     "envVars": "Variáveis de ambiente",
+    "adapterChannel": {
+      "label": "Versão do adaptador",
+      "description": "Instalar e Atualizar usam a versão que o codeg revisou e fixou. Com Mais recente, passa a ser instalada a versão de npm mais nova do pacote naquele momento; se essa instalação falhar, o codeg volta para a versão fixada e registra isso no log de instalação.",
+      "pinned": "Fixada (recomendada)",
+      "latest": "Mais recente (não revisada)",
+      "latestWarning": "As versões mais novas não são revisadas e podem quebrar este agente no codeg; às vezes uma versão é até sabidamente defeituosa. O status da versão mostra o que foi realmente instalado."
+    },
     "hostTools": {
       "label": "Deixar o agente cuidar de arquivos e comandos",
       "description": "O codeg deixa de atender o acesso a arquivos e os comandos de terminal, de modo que o agente os executa no próprio processo — onde o sandbox e as regras de permissão dele realmente se aplicam. A delegação a outros agentes também é desativada, pois levaria o mesmo trabalho de volta ao codeg. O codeg não adiciona sandbox algum, então ative isto apenas se o agente tiver um configurado."
@@ -1387,7 +1394,8 @@
       "localUnrecognized": "{versionText}. A versão local não é comparável; tente atualizar para sobrescrever a instalação.",
       "upgradeAvailable": "{versionText}. Atualização disponível.",
       "remoteUnavailable": "{versionText}. A versão remota está indisponível no momento.",
-      "latest": "{versionText}. Já está na versão mais recente."
+      "latest": "{versionText}. Já está na versão mais recente.",
+      "latestChannel": "{versionText}. Canal de versão mais recente ativo; Atualizar instala a versão mais nova."
     },
     "adapter": {
       "label": "Adaptador ACP",

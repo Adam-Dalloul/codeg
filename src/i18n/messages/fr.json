@@ -680,6 +680,13 @@
     "emptyNoAgent": "Aucun agent disponible.",
     "configManagement": "Gestion de configuration",
     "envVars": "Variables d'environnement",
+    "adapterChannel": {
+      "label": "Version de l'adaptateur",
+      "description": "Installer et Mettre à niveau utilisent la version examinée et épinglée par codeg. Avec Dernière, c'est la version npm la plus récente du paquet qui est installée ; si cette installation échoue, codeg revient à la version épinglée et l'indique dans le journal d'installation.",
+      "pinned": "Épinglée (recommandée)",
+      "latest": "Dernière (non examinée)",
+      "latestWarning": "Les versions les plus récentes ne sont pas examinées et peuvent casser cet agent dans codeg ; il arrive même qu'une version soit connue pour être défectueuse. Le statut de version affiche ce qui est réellement installé."
+    },
     "hostTools": {
       "label": "Laisser l'agent gérer les fichiers et les commandes",
       "description": "codeg cesse d'assurer l'accès aux fichiers et les commandes de terminal : l'agent les exécute dans son propre processus, là où son bac à sable et ses règles d'autorisation s'appliquent réellement. La délégation à d'autres agents est également désactivée, car elle ferait repasser le même travail par codeg. codeg n'ajoute aucun bac à sable, n'activez donc ceci que si l'agent en a un configuré."
@@ -1387,7 +1394,8 @@
       "localUnrecognized": "{versionText}. La version locale n’est pas comparable ; essayez une mise à niveau pour écraser l’installation.",
       "upgradeAvailable": "{versionText}. Mise à niveau disponible.",
       "remoteUnavailable": "{versionText}. La version distante est actuellement indisponible.",
-      "latest": "{versionText}. Déjà à jour."
+      "latest": "{versionText}. Déjà à jour.",
+      "latestChannel": "{versionText}. Le canal Dernière est actif ; Mettre à niveau installe la version la plus récente."
     },
     "adapter": {
       "label": "Adaptateur ACP",
