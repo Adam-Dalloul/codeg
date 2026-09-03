@@ -603,11 +603,10 @@ interface StreamingGroup {
   blocks: MessageTurn["blocks"]
   /**
    * Overrides the live message's start for this group. Only a `user` group sets
-   * it, to the instant the message was actually sent (the note's `created_at`,
-   * stamped where the agent runs). Beyond being the honest time to show, it is
-   * the bound `suppressPersistedSteeredPrompts` compares the agent's own copy
-   * against — a copy of THIS message cannot predate its injection, and the same
-   * words from an earlier round cannot postdate it.
+   * it, to the instant the message was actually sent (the note's `created_at`)
+   * rather than the moment the reply it interrupted began. Display only —
+   * `suppressPersistedSteeredPrompts` reads that instant off the block itself,
+   * so an unreadable stamp falling back here can never widen its bound.
    */
   timestamp?: string
 }
@@ -3212,11 +3211,13 @@ function computeTimelinePrefix(
  * user turn is the one failure that hides a message rather than duplicating
  * it, so the match is bounded by WHEN:
  *
- *   - each `steering` block carries the instant the backend injected it (the
- *     note's `created_at`), stamped on the machine the agent runs on;
- *   - the agent's copy is written after that, so a persisted turn older than
- *     the injection is by construction a different message — including this
- *     round's own prompt, which the agent wrote before the user steered.
+ *   - each `steering` block carries the note's `created_at`, taken on the
+ *     agent's machine BEFORE the backend handed it the text (an invariant of
+ *     `submit_feedback_native`);
+ *   - the agent's copy is therefore written after it, so a persisted turn
+ *     older than that instant is by construction a different message —
+ *     including this round's own prompt, which the agent wrote before the user
+ *     steered.
  *
  * Candidates are further limited to turns the DETAIL projected, so every
  * timestamp compared comes from the agent's own clock; a promoted `localTurns`

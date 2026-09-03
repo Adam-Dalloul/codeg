@@ -205,11 +205,12 @@ export type LiveContentBlock =
    * mid-turn `user_message_chunk` (see `parsers/acp_native.rs`), so the live
    * view and a reload agree. `id` is the feedback note id.
    *
-   * `createdAt` (ISO, the note's `created_at`) is when the backend injected the
-   * text — stamped on the machine the agent runs on, so it is directly
-   * comparable with the timestamps the agent writes into its own transcript.
-   * That is what lets the runtime store tell the agent's copy of THIS message
-   * from the same words sent in an earlier round (see
+   * `createdAt` (ISO, the note's `created_at`) is taken before the backend
+   * hands the text to the agent (`submit_feedback_native`), on the machine the
+   * agent runs on — so it is directly comparable with, and earlier than, the
+   * timestamp the agent writes when it records this message in its own
+   * transcript. That ordering is what lets the runtime store tell the agent's
+   * copy of THIS message from the same words sent in an earlier round (see
    * `suppressPersistedSteeredPrompts`), and it is the time the message shows.
    */
   | { type: "steering"; id: string; text: string; createdAt: string }
