@@ -1045,9 +1045,10 @@ describe("MessageInput mid-turn send (live-feedback channel)", () => {
     )
 
     await user.click(screen.getByLabelText(MI.steerIntoTurn))
-    await user.click(
-      await screen.findByRole("menuitem", { name: MI.steerIntoTurn })
-    )
+    const item = await screen.findByRole("menuitem", { name: MI.steerIntoTurn })
+    // The glyph promises what the label does — the bolt is the instant insert.
+    expect(item.querySelector(".lucide-zap")).not.toBeNull()
+    await user.click(item)
     await waitFor(() => expect(onSteer).toHaveBeenCalledWith("go left"))
     // Unsettled: the draft must survive until the backend confirms.
     expect(serializeDocToText(editor.state.doc)).toContain("go left")
@@ -1126,9 +1127,12 @@ describe("MessageInput mid-turn send (live-feedback channel)", () => {
 
     // The action itself rides the same steer path — only the copy differs.
     await user.click(screen.getByLabelText(MI.steerAsNote))
-    await user.click(
-      await screen.findByRole("menuitem", { name: MI.steerAsNote })
-    )
+    const item = await screen.findByRole("menuitem", { name: MI.steerAsNote })
+    // ...and so does the glyph: the notes strip's waiting clock, never the
+    // instant-insert bolt.
+    expect(item.querySelector(".lucide-clock")).not.toBeNull()
+    expect(item.querySelector(".lucide-zap")).toBeNull()
+    await user.click(item)
     await waitFor(() => expect(onSteer).toHaveBeenCalledWith("check the tests"))
     await waitFor(() =>
       expect(serializeDocToText(editor.state.doc)).not.toContain(
@@ -1149,6 +1153,16 @@ describe("MessageInput mid-turn send (live-feedback channel)", () => {
       expect(screen.getByLabelText(MI.steerAsNote)).toBeInTheDocument()
     )
     expect(screen.queryByLabelText(MI.steerIntoTurn)).toBeNull()
+    // The menu item, not just the trigger: they read from `steerChannel`
+    // independently, so a default that leaked into only one of them would
+    // still promise an insert somewhere.
+    await userEvent.setup().click(screen.getByLabelText(MI.steerAsNote))
+    expect(
+      await screen.findByRole("menuitem", { name: MI.steerAsNote })
+    ).toBeInTheDocument()
+    expect(
+      screen.queryByRole("menuitem", { name: MI.steerIntoTurn })
+    ).toBeNull()
   })
 
   it("names the note, not an insert, when a pull send fails", async () => {
@@ -1178,6 +1192,9 @@ describe("MessageInput mid-turn send (live-feedback channel)", () => {
           expect.anything()
         )
       )
+      // Exactly one toast: raising the insert copy alongside the note copy is
+      // the same overpromise, just louder.
+      expect(errorToast).toHaveBeenCalledTimes(1)
       // Same draft policy as native: a real failure keeps the text for retry.
       expect(serializeDocToText(editor.state.doc)).toContain("keep me")
     } finally {

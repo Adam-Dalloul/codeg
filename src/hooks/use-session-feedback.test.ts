@@ -37,7 +37,10 @@ vi.mock("sonner", () => ({
   toast: { error: vi.fn(), info: vi.fn(), success: vi.fn() },
 }))
 
-import { useSessionFeedback } from "./use-session-feedback"
+import {
+  useSessionFeedback,
+  type UseSessionFeedbackArgs,
+} from "./use-session-feedback"
 import { acpGetSessionSnapshot, submitSessionFeedback } from "@/lib/api"
 import { isNoActiveTurnRejection } from "@/lib/turn-busy"
 import { toast } from "sonner"
@@ -322,6 +325,29 @@ describe("useSessionFeedback", () => {
       await Promise.resolve()
     })
     expect(result.current.steerAvailable).toBe(false)
+    expect(result.current.canSubmit).toBe(false)
+  })
+
+  it("drops the steer channel when switching to a session without one", async () => {
+    // The flags only ever UPGRADE from a snapshot, so the per-connection reset
+    // is the sole thing standing between a capable session and the next tab
+    // inheriting its channel. Without it the composer would keep offering the
+    // mid-turn send on a session whose backend rejects every note.
+    const { result, rerender } = renderHook(
+      (props: UseSessionFeedbackArgs) => useSessionFeedback(props),
+      { initialProps: baseProps as UseSessionFeedbackArgs }
+    )
+    await waitFor(() => expect(result.current.steerAvailable).toBe(true))
+
+    mockSnapshot.mockResolvedValue(
+      snapshot({
+        feedback_tool_available: false,
+        native_steering_available: false,
+      })
+    )
+    rerender({ ...baseProps, connectionId: "c2" })
+
+    await waitFor(() => expect(result.current.steerAvailable).toBe(false))
     expect(result.current.canSubmit).toBe(false)
   })
 
