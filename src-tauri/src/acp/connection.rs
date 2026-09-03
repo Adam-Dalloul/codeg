@@ -1336,6 +1336,26 @@ async fn record_turn_end(
 /// model at all publishes it on. `None` when the agent exposes no model
 /// selector — most custom agents don't, and a fabricated label would be worse
 /// than an empty field.
+/// The value every advertised config option currently holds, keyed by option
+/// id, in exactly the shape [`apply_preferred_session_options`] consumes for
+/// `preferred_config_values` (a select's value id; `"true"`/`"false"` for a
+/// boolean — see `config_option_already_holds`).
+///
+/// Used to carry a session's selectors across a fork.
+fn current_config_option_values(
+    opts: &[SessionConfigOptionInfo],
+) -> BTreeMap<String, String> {
+    opts.iter()
+        .map(|opt| {
+            let value = match &opt.kind {
+                SessionConfigKindInfo::Select(sel) => sel.current_value.clone(),
+                SessionConfigKindInfo::Boolean(b) => b.current_value.to_string(),
+            };
+            (opt.id.clone(), value)
+        })
+        .collect()
+}
+
 fn current_model_id_from_opts(opts: &[SessionConfigOptionInfo]) -> Option<String> {
     opts.iter()
         .find(|o| o.category.as_deref() == Some("model"))
@@ -7523,9 +7543,39 @@ async fn handle_fork_or_exit(
     let fork_models_raw = fork_info.fork_models_raw;
     let new_sid = fork_resp.session_id.0.to_string();
 
+    // Carry the parent session's selectors across the fork, read BEFORE any
+    // emit below replaces them with the new session's.
+    //
+    // A fork continues the same conversation, so its mode and model must
+    // continue too — but nothing on the agent side arranges that. `session/new`
+    // semantics apply: claude builds the resumed session from its own defaults,
+    // and codex's fork response describes the thread as freshly configured. The
+    // gap only became visible once the fork stopped attaching claude's
+    // (empty, modes-less) fork response, because an empty response overwrote
+    // nothing and the composer simply kept showing the parent's selectors; a
+    // populated one resets them. Restoring them here is the same machinery a
+    // reconnect uses, and it is a no-op per option when the value already
+    // matches, so an agent that does inherit pays nothing.
+    let (inherited_mode_id, inherited_config_values) = {
+        let snapshot = state.read().await;
+        (
+            snapshot.current_mode.clone(),
+            snapshot
+                .config_options
+                .as_deref()
+                .map(current_config_option_values)
+                .unwrap_or_default(),
+        )
+    };
+
     tracing::info!(
         "[ACP] Fork transition: attaching to forked session {} (original: {})",
         new_sid, fork_info.original_session_id
+    );
+    tracing::info!(
+        "[ACP] Fork inheriting selectors: mode={:?} config={:?}",
+        inherited_mode_id,
+        inherited_config_values
     );
 
     // Reply protocol-level result to manager.fork_session, which will combine
@@ -7639,8 +7689,8 @@ async fn handle_fork_or_exit(
         agent_type,
         grok_meta.as_ref(),
         grok_model_specs.as_ref(),
-        None,
-        &BTreeMap::new(),
+        inherited_mode_id.as_deref(),
+        &inherited_config_values,
         initial_config_options.unwrap_or_default(),
     )
     .await;
@@ -16784,6 +16834,70 @@ mod tests {
         );
         assert_eq!(current_model_id_from_opts(&[select("m", "model", "")]), None);
         assert_eq!(current_model_id_from_opts(&[]), None);
+    }
+
+    /// A fork continues the conversation, so it must continue the conversation's
+    /// selectors: `handle_fork_or_exit` reads the parent session's options and
+    /// replays them onto the forked one as preferred values. That only works if
+    /// the extraction speaks the shape `apply_preferred_session_options` (and
+    /// `config_option_already_holds`) consume — a select's value id, and a
+    /// boolean as "true"/"false".
+    #[test]
+    fn current_config_option_values_round_trips_what_the_preference_replay_expects() {
+        let opts = vec![
+            SessionConfigOptionInfo {
+                id: "model".to_string(),
+                name: "Model".to_string(),
+                description: None,
+                category: Some("model".to_string()),
+                kind: SessionConfigKindInfo::Select(SessionConfigSelectInfo {
+                    current_value: "opus".to_string(),
+                    options: Vec::new(),
+                    groups: Vec::new(),
+                }),
+            },
+            SessionConfigOptionInfo {
+                id: "auto_approve".to_string(),
+                name: "Auto-approve".to_string(),
+                description: None,
+                category: None,
+                kind: SessionConfigKindInfo::Boolean(SessionConfigBooleanInfo {
+                    current_value: true,
+                }),
+            },
+        ];
+
+        let values = current_config_option_values(&opts);
+        assert_eq!(values.get("model").map(String::as_str), Some("opus"));
+        assert_eq!(values.get("auto_approve").map(String::as_str), Some("true"));
+
+        // Each extracted value must satisfy the same equality the replay uses to
+        // skip a round trip, or restoring a selector would re-set every option.
+        for opt in &opts {
+            let schema = SessionConfigOption::new(
+                opt.id.clone(),
+                opt.name.clone(),
+                match &opt.kind {
+                    SessionConfigKindInfo::Select(sel) => {
+                        SessionConfigKind::Select(sacp::schema::SessionConfigSelect::new(
+                            sel.current_value.clone(),
+                            sacp::schema::SessionConfigSelectOptions::Ungrouped(Vec::new()),
+                        ))
+                    }
+                    SessionConfigKindInfo::Boolean(b) => {
+                        SessionConfigKind::Boolean(sacp::schema::SessionConfigBoolean::new(b.current_value))
+                    }
+                },
+            );
+            let extracted = values.get(&opt.id).expect("every option is extracted");
+            assert!(
+                config_option_already_holds(&schema, extracted),
+                "option {} must read back as already holding {extracted}",
+                opt.id
+            );
+        }
+
+        assert!(current_config_option_values(&[]).is_empty());
     }
 
     #[test]

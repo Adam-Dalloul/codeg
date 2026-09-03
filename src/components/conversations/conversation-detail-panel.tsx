@@ -488,20 +488,37 @@ const ConversationTabView = memo(function ConversationTabView({
       })
     )
 
-  // Two-source resolution for the session id passed to acp_connect:
-  //   1. detail.summary.external_id — DB value, available for tabs opened
-  //      from the sidebar (effectiveConversationId equals the real cid).
-  //   2. runtimeExternalId — populated by the connSessionId effect
-  //      below when SessionStarted fires. This is the ONLY source for tabs
-  //      that started as a new conversation: their effectiveConversationId
-  //      is locked to a virtual negative id (line 186 useState initializer
-  //      runs once), useConversationDetail skips fetching for virtual ids,
-  //      and detail stays null forever. Without this fallback, every
-  //      reconnect on a new-conversation tab passes sessionId=undefined →
-  //      backend takes session/new → DB.external_id is overwritten on the
-  //      next prompt → original sid orphaned, agent loses prior context.
+  // Session id passed to acp_connect. `runtimeExternalId` is the single
+  // resolution point, NOT a fallback behind `detail`: it is fed by BOTH
+  // sources — the effect below writes `detail.summary.external_id` into it
+  // whenever the DB value changes, and the `connSessionId` effect writes the
+  // live session id — so it is always the more recently established of the
+  // two. `detail` remains as the fallback for the first render after a cold
+  // open, before that effect has run.
+  //
+  // Ordering it the other way round silently un-forked a conversation. A fork
+  // re-points THIS row at S2 and inserts a sibling row holding S1; the panel
+  // learns S2 immediately (`setExternalId` from the fork response) but
+  // `detail` still holds S1 until its refetch lands. With `detail` winning,
+  // the next reconnect asked for S1 — which the new sibling row now owns — so
+  // the tab re-homed onto the sibling and the user was looking at the pre-fork
+  // history again, `[Fork]` row abandoned. Forking from there forked S1 a
+  // second time, which is exactly the chain the conversation table records:
+  // each row created at one fork's timestamp, then itself forked at the next.
+  // Because the tab landed on a session it had not established, the composer's
+  // selectors came back as the agent's defaults too — the reported "model
+  // changed after forking".
+  //
+  // The `detail` fallback still matters for tabs that started as a new
+  // conversation: their `effectiveConversationId` is locked to a virtual
+  // negative id (line 186's useState initializer runs once),
+  // useConversationDetail skips fetching for virtual ids, and `detail` stays
+  // null forever — there, `runtimeExternalId` is the ONLY source, and without
+  // it every reconnect passes sessionId=undefined → backend takes session/new
+  // → DB.external_id is overwritten on the next prompt → original sid
+  // orphaned, agent loses prior context.
   const externalId =
-    detail?.summary.external_id ?? runtimeExternalId ?? undefined
+    runtimeExternalId ?? detail?.summary.external_id ?? undefined
   // For persisted conversations opened from the sidebar, wait until the
   // session's external_id has been resolved before auto-connecting.
   // Otherwise the auto-connect effect fires with sessionId=undefined and
