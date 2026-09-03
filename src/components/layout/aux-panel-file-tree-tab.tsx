@@ -736,7 +736,16 @@ function RenderNode({
 
     return (
       <ContextMenu>
-        <ContextMenuTrigger>
+        {/*
+          asChild merges the Radix trigger's pointerdown / contextmenu handlers
+          and `WebkitTouchCallout: none` style into the FileTreeFile's own div —
+          without it, the trigger renders a bare span around a div (which the
+          HTML parser splits into siblings) and iOS Safari's native callout
+          eats the long-press gesture before the 700ms Radix timer can open the
+          menu. See aux-panel-file-tree-tab.tsx around the RootDropFolder
+          wrapper for the same pattern.
+        */}
+        <ContextMenuTrigger asChild>
           <FileTreeFile
             path={node.path}
             name={node.name}
@@ -915,7 +924,12 @@ function RenderNode({
 
   return (
     <ContextMenu>
-      <ContextMenuTrigger>
+      {/*
+        asChild merges the Radix trigger's pointerdown / contextmenu handlers
+        and `WebkitTouchCallout: none` style into the FileTreeFolder's own div
+        — same reasoning as the FileTreeFile wrapper above.
+      */}
+      <ContextMenuTrigger asChild>
         <FileTreeFolder
           path={node.path}
           name={node.name}
@@ -2893,7 +2907,16 @@ export function FileTreeTab() {
             >
               {folder?.path && (
                 <ContextMenu>
-                  <ContextMenuTrigger>
+                  {/*
+                    asChild merges the Radix trigger's pointerdown / contextmenu
+                    handlers and `WebkitTouchCallout: none` style into the
+                    RootDropFolder's own div. Without it the trigger renders a
+                    bare span, whose HTML parser rules disallow div children —
+                    the div ends up as the span's sibling, iOS Safari shows its
+                    native callout on long-press, and the gesture never reaches
+                    the Radix long-press timer.
+                  */}
+                  <ContextMenuTrigger asChild>
                     <DesktopDropDirContext.Provider value={desktopDropDir}>
                       <RootDropFolder name={rootNodeName} dnd={treeDndValue}>
                         {nodes.map((node) => (
