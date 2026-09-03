@@ -1359,13 +1359,38 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             //   后台才是 `card: "generic"` + 裸字符串 `rawInput`），所以 codeg
             //   的终端工具卡在两个平台上拿到的形状一致。
             //
+            // 0.8.0 加的是**消息级 fork**，读的就是 claude-agent-acp 0.73.0 与
+            // codex-acp 1.8.0 那个 `_meta.jetbrains.air.fork` 块（同样先剥
+            // `:segment:\d+$`，块缺席时仍退化成尾部 fork），所以接线全在
+            // `acp::fork::resolve_fork_point` 的新 arm 里，协议层不用动：
+            //
+            // * id 侧**两种都认**：它自己盖在 message/thought chunk 上的 wire id
+            //   （`<turn>:<step>`），以及会话日志里那条 `message.id`。后者是
+            //   `parsers::deepseek` 现在记进 `agent_message_id` 的那个——上游把它
+            //   明写成「留给直接读 JSONL 的客户端」，codeg 正是。
+            //   `dependencies` 与 0.7.0 逐字节相同（`dsh-*` 全停在 0.1.1-rc.2，
+            //   `@agentclientprotocol/sdk` 停在 1.4.0），日志布局因此没动。
+            // * 指纹侧**同时按逐条消息和逐回合两种口径算**，两边都中且指向不同回合
+            //   时报 `-32602`（而不是被 `rethrowMissingSession` 误判成 `-32002`，
+            //   那会让客户端把一条好会话从列表里摘掉）。codeg 一个日志回合只渲染
+            //   一条 assistant 气泡，命中的是逐回合那一档；id 命中时指纹压根不看，
+            //   所以那条歧义路径实际走不到。
+            // * `initialize.js` 的 diff 只有 `AGENT_INFO.version` 一行，
+            //   `sessionCapabilities`（含无条件的 `fork: {}`）与
+            //   `promptCapabilities` 都没动，上面那串能力断言仍然成立。
+            // * `agent_message_chunk` / `agent_thought_chunk` / `user_message_chunk`
+            //   现在带 `messageId`。对 codeg 是**惰性**的：schema crate 的
+            //   `message_id` 在没开的 `unstable_message_id` feature 后面，而整个
+            //   crate 没有 `deny_unknown_fields`，未知字段被 serde 丢掉。分叉点取
+            //   自解析出来的日志而不是 live 转写，所以也没有开它的理由。
+            //
             // Keep `version` and `package` moving together: `version` is what
             // the agents list shows as the upgrade target beside the installed
             // version, so a drift leaves the Upgrade button installing one
             // version while the row keeps calling it stale.
             distribution: AgentDistribution::Npx {
-                version: "0.7.0",
-                package: "deepseek-acp@0.7.0",
+                version: "0.8.0",
+                package: "deepseek-acp@0.8.0",
                 cmd: "deepseek-acp",
                 args: &[],
                 env: &[],
@@ -1797,8 +1822,8 @@ mod tests {
         );
         assert_npx_version(
             AgentType::DeepSeek,
-            "0.7.0",
-            "deepseek-acp@0.7.0",
+            "0.8.0",
+            "deepseek-acp@0.8.0",
             Some("22.0.0"),
         );
         assert_npx_version(

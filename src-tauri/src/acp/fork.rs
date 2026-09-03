@@ -13,11 +13,11 @@ use crate::models::message::{ContentBlock, MessageTurn, TurnRole};
 
 /// Where in the history to fork, for the agents that can honour it.
 ///
-/// Rides as `_meta.jetbrains.air.fork` on `session/fork`. Both adapters that
-/// implement it read the same block and both fall back to forking at the TAIL
-/// when it is absent, so omitting this is always the old behaviour.
+/// Rides as `_meta.jetbrains.air.fork` on `session/fork`. Every adapter that
+/// implements it reads the same block and they all fall back to forking at the
+/// TAIL when it is absent, so omitting this is always the old behaviour.
 ///
-/// The two resolve it differently, which is why both halves exist:
+/// They resolve it differently, which is why all three halves exist:
 ///
 /// * **claude-agent-acp 0.73.0** matches `message_id` against its own
 ///   `messageIdForGrouping` (the API message id, else the record uuid) and
@@ -29,9 +29,18 @@ use crate::models::message::{ContentBlock, MessageTurn, TurnRole};
 ///   codeg cannot produce one it would recognise — the fingerprint is the only
 ///   path that resolves there, and `message_id` is sent as codeg's own turn id
 ///   purely because the field is required.
+/// * **deepseek-acp 0.8.0** is the only one that can use BOTH halves, so codeg
+///   sends both. Its id side accepts either the wire id it stamps on message
+///   chunks (`<turn>:<step>`) or the session log's own `message.id`, and
+///   `crate::parsers::deepseek` records the latter. Its fingerprint side hashes
+///   the history TWICE — once per assistant message, once per whole turn — and
+///   refuses (`invalid_params`) when the two land on different turns; codeg
+///   renders one bubble per log turn, so the per-turn reading is the one that
+///   matches, and the id is what keeps the ambiguous case from ever being
+///   reached.
 ///
-/// Both strip a trailing `:segment:<n>` before matching, so ids must not carry
-/// one.
+/// All three strip a trailing `:segment:<n>` before matching, so ids must not
+/// carry one.
 #[derive(Debug, Clone)]
 pub struct ForkPoint {
     pub message_id: String,
@@ -59,12 +68,29 @@ fn turn_text(turn: &MessageTurn) -> String {
         .collect()
 }
 
+/// 1-based index of `turns[idx]` among the assistant turns sharing its
+/// fingerprint — what both fingerprint-matching adapters count, so an answer
+/// repeated verbatim earlier in the session still forks at the right one.
+///
+/// Assistant turns only: both hash agent messages, so a user turn with
+/// identical text must not shift the count.
+fn fingerprint_occurrence(turns: &[MessageTurn], idx: usize, fingerprint: &str) -> usize {
+    turns[..idx]
+        .iter()
+        .filter(|t| {
+            matches!(t.role, TurnRole::Assistant)
+                && fingerprint_agent_message(&turn_text(t)) == fingerprint
+        })
+        .count()
+        + 1
+}
+
 /// Build the fork point naming `turn_id`, or `None` when this agent/turn cannot
 /// be named — in which case the caller forks at the tail, as before.
 ///
-/// Only ASSISTANT turns are fork points: both adapters resolve the id against an
-/// agent message, and "continue from my own prompt" is already what a plain
-/// fork-send does.
+/// Only ASSISTANT turns are fork points: every adapter resolves the point
+/// against an agent message, and "continue from my own prompt" is already what
+/// a plain fork-send does.
 pub fn resolve_fork_point(
     turns: &[MessageTurn],
     turn_id: &str,
@@ -93,20 +119,41 @@ pub fn resolve_fork_point(
                 return None;
             }
             let fingerprint = fingerprint_agent_message(&text);
-            // Codex counts occurrences over agent messages in order, so an
-            // answer repeated verbatim earlier in the session still forks at
-            // the right one.
-            let occurrence = turns[..idx]
-                .iter()
-                .filter(|t| {
-                    matches!(t.role, TurnRole::Assistant) && fingerprint_agent_message(&turn_text(t)) == fingerprint
-                })
-                .count()
-                + 1;
+            let occurrence = fingerprint_occurrence(turns, idx, &fingerprint);
             Some(ForkPoint {
                 message_id: turn_id.to_string(),
                 message_fingerprint: Some(fingerprint),
                 message_occurrence: u32::try_from(occurrence).ok(),
+            })
+        }
+        // DeepSeek reads both halves, so send both. The id resolves on its own
+        // whenever the log named the message, and the fingerprint is what still
+        // resolves when it did not (a log written without an `id`, or a parse
+        // that began mid-log). Sending the fingerprint alongside an id costs
+        // nothing: the adapter stops at the first id that matches and never
+        // looks at it.
+        AgentType::DeepSeek => {
+            let text = turn_text(turn);
+            let fingerprint = (!text.trim().is_empty()).then(|| fingerprint_agent_message(&text));
+            // Neither half can name this turn — an assistant bubble opened by a
+            // tool result alone, with no message of its own to point at.
+            if turn.agent_message_id.is_none() && fingerprint.is_none() {
+                return None;
+            }
+            let occurrence = fingerprint
+                .as_ref()
+                .map(|fp| fingerprint_occurrence(turns, idx, fp));
+            Some(ForkPoint {
+                // Same reasoning as codex when the log named nothing: the field
+                // is required, and codeg's own turn id is deliberately
+                // something DeepSeek will not find, which is what makes it fall
+                // through to the fingerprint.
+                message_id: turn
+                    .agent_message_id
+                    .clone()
+                    .unwrap_or_else(|| turn_id.to_string()),
+                message_fingerprint: fingerprint,
+                message_occurrence: occurrence.and_then(|n| u32::try_from(n).ok()),
             })
         }
         // Every other agent either has no `session/fork` or no fork point in
@@ -312,13 +359,85 @@ mod tests {
         assert!(resolve_fork_point(&[t], "turn-1", AgentType::Codex).is_none());
     }
 
+    /// DeepSeek is the one adapter that reads BOTH halves, so both are sent —
+    /// unlike Claude, whose arm must leave the fingerprint out.
+    #[test]
+    fn deepseek_sends_the_log_id_and_the_fingerprint_together() {
+        let turns = vec![
+            turn("turn-0", TurnRole::User, "hi", None),
+            turn("turn-1", TurnRole::Assistant, "hello", Some("uuid-a2")),
+        ];
+        let point = resolve_fork_point(&turns, "turn-1", AgentType::DeepSeek).unwrap();
+        assert_eq!(point.message_id, "uuid-a2");
+        assert_eq!(
+            point.message_fingerprint.as_deref(),
+            Some(fingerprint_agent_message("hello").as_str())
+        );
+        assert_eq!(point.message_occurrence, Some(1));
+    }
+
+    /// A log that named nothing still forks by content, the codex shape: the id
+    /// is codeg's own turn id, which DeepSeek cannot match, so it falls through
+    /// to the fingerprint instead of failing.
+    #[test]
+    fn deepseek_falls_back_to_the_fingerprint_with_no_log_id() {
+        let turns = vec![turn("turn-1", TurnRole::Assistant, "hello", None)];
+        let point = resolve_fork_point(&turns, "turn-1", AgentType::DeepSeek).unwrap();
+        assert_eq!(point.message_id, "turn-1");
+        assert_eq!(
+            point.message_fingerprint.as_deref(),
+            Some(fingerprint_agent_message("hello").as_str())
+        );
+    }
+
+    /// An id with no text is still a fork point on DeepSeek — a bubble whose
+    /// whole turn was tool calls names a message the adapter can look up, which
+    /// is exactly what codex cannot do.
+    #[test]
+    fn deepseek_forks_a_textless_turn_by_its_id_alone() {
+        let mut t = turn("turn-1", TurnRole::Assistant, "", Some("uuid-a1"));
+        t.blocks = Vec::new();
+        let point = resolve_fork_point(&[t], "turn-1", AgentType::DeepSeek).unwrap();
+        assert_eq!(point.message_id, "uuid-a1");
+        // Nothing to hash, so no fingerprint — and none to count occurrences of.
+        assert!(point.message_fingerprint.is_none());
+        assert!(point.message_occurrence.is_none());
+    }
+
+    /// Neither half available (a bubble opened by a tool result alone) is not a
+    /// fork point; the caller degrades to the tail.
+    #[test]
+    fn deepseek_declines_a_turn_with_neither_id_nor_text() {
+        let mut t = turn("turn-1", TurnRole::Assistant, "", None);
+        t.blocks = vec![ContentBlock::Text { text: "   ".into() }];
+        assert!(resolve_fork_point(&[t], "turn-1", AgentType::DeepSeek).is_none());
+    }
+
+    /// The fingerprint half counts the same way codex's does, so a repeated
+    /// answer in a log that named nothing still forks at the one clicked.
+    #[test]
+    fn deepseek_counts_repeated_answers() {
+        let turns = vec![
+            turn("turn-0", TurnRole::Assistant, "same", None),
+            turn("turn-1", TurnRole::User, "again", None),
+            turn("turn-2", TurnRole::Assistant, "same", None),
+        ];
+        assert_eq!(
+            resolve_fork_point(&turns, "turn-2", AgentType::DeepSeek)
+                .unwrap()
+                .message_occurrence,
+            Some(2)
+        );
+    }
+
     /// Forking "up to" a user turn is what a plain fork-send already does, and
-    /// neither adapter resolves an id against a user message.
+    /// no adapter resolves an id against a user message.
     #[test]
     fn user_turns_are_not_fork_points() {
         let turns = vec![turn("turn-0", TurnRole::User, "hi", Some("msg_01"))];
         assert!(resolve_fork_point(&turns, "turn-0", AgentType::ClaudeCode).is_none());
         assert!(resolve_fork_point(&turns, "turn-0", AgentType::Codex).is_none());
+        assert!(resolve_fork_point(&turns, "turn-0", AgentType::DeepSeek).is_none());
     }
 
     /// Every other agent forks at the tail — advertising a fork point they do
