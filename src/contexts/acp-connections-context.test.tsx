@@ -4215,4 +4215,56 @@ describe("AcpConnectionsProvider mid-turn steering messages", () => {
     expect(conn().steeredMessageIds).toEqual([])
     expect(steeringBlocks()).toEqual([])
   })
+
+  it("gives the note its strip back when a snapshot replaces the live message", async () => {
+    // A mid-turn re-attach (WS reconnect in server mode) hydrates the backend's
+    // live message, which carries no steering block — the wire has no such kind
+    // — so the spliced message is gone from the transcript. Holding on to the
+    // adoption there would hide the strip for a message that is now rendered
+    // NOWHERE, the one failure worse than rendering it twice.
+    const handlers = await connectOwner()
+    emitAcpEvent(handlers, {
+      seq: 1,
+      connection_id: "spawned-conn",
+      type: "status_changed",
+      status: "prompting",
+    })
+    emitAcpEvent(handlers, submitted(2, "n1", "use the other API", "delivered"))
+    expect(conn().steeredMessageIds).toEqual(["n1"])
+
+    h.denormalizeSnapshot.mockReturnValue({
+      connectionId: "spawned-conn",
+      status: "prompting",
+      sessionId: null,
+      modes: null,
+      configOptions: null,
+      availableCommands: null,
+      usage: null,
+      liveMessage: {
+        id: "lm-server",
+        role: "assistant",
+        content: [{ type: "text", text: "half one" }],
+        startedAt: 0,
+      },
+      pendingPermission: null,
+      pendingAskQuestion: null,
+      pendingUserMessage: null,
+      promptCapabilities: null,
+      selectorsReady: false,
+      supportsFork: false,
+      configStale: false,
+      configStaleKind: null,
+      backgroundOutstanding: 0,
+      activeDelegations: [],
+      lastError: null,
+      lastErrorDetails: null,
+      eventSeq: 9,
+    })
+    hydrateSnapshot(handlers, {
+      event_seq: 9,
+    } as unknown as LiveSessionSnapshot)
+
+    expect(steeringBlocks()).toEqual([])
+    expect(conn().steeredMessageIds).toEqual([])
+  })
 })

@@ -2752,4 +2752,91 @@ describe("conversation timeline - a steered message survives a mid-turn reload o
       "continue",
     ])
   })
+
+  it("leaves an earlier round's identical prompt in history", async () => {
+    // Steered text is short and repeatable ("continue", "stop"), and content is
+    // the only thing linking the live copy to the persisted one. Matching it
+    // across the whole window would hide the SAME words the user sent three
+    // rounds ago for as long as this turn runs. The persisted copy can only
+    // have been written during the running turn, so the round's prompt is the
+    // scope boundary.
+    renderProvider(<RuntimeCapture />)
+    const api = () => runtimeHolder.current!
+    act(() => {
+      api().setLiveMessage(
+        99,
+        {
+          id: "lm-3",
+          role: "assistant",
+          content: [
+            { type: "text", text: "half one" },
+            { type: "steering", id: "note-1", text: "continue" },
+            { type: "text", text: "half two" },
+          ],
+          startedAt: 0,
+        },
+        true
+      )
+    })
+    mockGetFolderConversation.mockResolvedValueOnce(
+      detailWith(
+        [
+          turn("p-1", "user", "continue"), // an earlier round, same words
+          turn("p-2", "assistant", "sure"),
+          turn("p-3", "user", "now do the thing"), // this turn's prompt
+          turn("p-4", "user", "continue"), // the agent's copy of the steer
+        ],
+        "p-3"
+      )
+    )
+    await act(async () => {
+      api().refetchDetail(99, { preserveLive: true })
+    })
+    // History intact; only the copy inside the running round is folded away.
+    expect(userTexts(api().getTimelineTurns(99))).toEqual([
+      "continue",
+      "now do the thing",
+      "continue",
+    ])
+    const steered = api()
+      .getTimelineTurns(99)
+      .filter(
+        (t) =>
+          t.turn.role === "user" &&
+          t.turn.blocks[0]?.type === "text" &&
+          t.turn.blocks[0].text === "continue"
+      )
+    expect(steered.map((t) => t.phase)).toEqual(["persisted", "streaming"])
+  })
+
+  it("suppresses nothing when the round's prompt is not in the window", async () => {
+    // Reverse infinite scroll can leave the loaded window starting after the
+    // in-flight prompt. With no anchor there is no way to tell this round's
+    // copy from an older message, so both copies render — a duplicate, never a
+    // disappearance.
+    renderProvider(<RuntimeCapture />)
+    const api = () => runtimeHolder.current!
+    act(() => {
+      api().setLiveMessage(
+        99,
+        {
+          id: "lm-4",
+          role: "assistant",
+          content: [{ type: "steering", id: "note-1", text: "continue" }],
+          startedAt: 0,
+        },
+        true
+      )
+    })
+    mockGetFolderConversation.mockResolvedValueOnce(
+      detailWith([turn("p-9", "user", "continue")], "p-3")
+    )
+    await act(async () => {
+      api().refetchDetail(99, { preserveLive: true })
+    })
+    expect(userTexts(api().getTimelineTurns(99))).toEqual([
+      "continue",
+      "continue",
+    ])
+  })
 })

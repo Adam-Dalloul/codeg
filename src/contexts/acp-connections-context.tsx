@@ -1537,6 +1537,15 @@ function connectionsReducer(
         availableCommands: action.patch.availableCommands,
         usage: action.patch.usage,
         liveMessage: hydratedLiveMessage,
+        // The snapshot's live message REPLACES the local one, and the wire has
+        // no `steering` block (the backend never records one — see
+        // `snapshot-denormalize`), so every adopted mid-turn message is gone
+        // from the transcript with it. Keeping the adoption ids past that would
+        // hide the strips for messages that are no longer rendered anywhere,
+        // which is the one failure worse than showing them twice. Drop them:
+        // the notes list (hydrated from the same snapshot's `feedback`) shows
+        // those messages as strips again.
+        steeredMessageIds: EMPTY_STEERED_MESSAGE_IDS,
         pendingPermission: hydratedPendingPermission,
         pendingAskQuestion: action.patch.pendingAskQuestion,
         pendingPlanApproval: action.patch.pendingPlanApproval,

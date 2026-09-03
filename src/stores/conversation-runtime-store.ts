@@ -3181,10 +3181,20 @@ function computeTimelinePrefix(
  * Matched on CONTENT, the same way `APPEND_VIEWER_USER_TURN` reconciles the
  * two id namespaces of one prompt. Scoped tightly, because suppressing a user
  * turn is the one failure that hides a message rather than duplicating it:
- * only persisted-phase turns, never the in-flight prompt itself (a steer that
- * repeats the prompt verbatim leaves the prompt alone), and only when the tail
- * actually carries a steered turn — so a timeline with no steering does no
- * work here at all.
+ * only persisted-phase turns, only ones AFTER the prompt that opened the
+ * running turn, and only when the tail actually carries a steered turn — so a
+ * timeline with no steering does no work here at all.
+ *
+ * The round anchor is what keeps this from eating history. Content is the only
+ * thing linking the two copies, and steered text is typically short and
+ * repeatable ("continue", "stop", "not done") — matched across the whole loaded
+ * window, a steer would hide the identical prompt the user sent three rounds
+ * ago, and hide it for as long as the turn ran. The persisted copy can only
+ * have been written DURING the running turn, so everything at or before that
+ * turn's prompt is out of reach by construction. No anchor — the backend
+ * reports no in-flight prompt, or names one outside the loaded window — means
+ * no round to scope to, so nothing is suppressed and the two copies coexist:
+ * a visible duplicate, never a hidden message.
  */
 function suppressPersistedSteeredPrompts(
   prefix: ConversationTimelineTurn[],
@@ -3199,12 +3209,17 @@ function suppressPersistedSteeredPrompts(
   }
   if (!steeredKeys) return prefix
   const inFlightPromptId = session.detail?.in_flight_user_turn_id ?? null
+  if (inFlightPromptId === null) return prefix
+  const anchor = prefix.findIndex(
+    (item) => item.turn.role === "user" && item.turn.id === inFlightPromptId
+  )
+  if (anchor === -1) return prefix
   const filtered = prefix.filter(
-    (item) =>
+    (item, i) =>
       !(
+        i > anchor &&
         item.phase === "persisted" &&
         item.turn.role === "user" &&
-        item.turn.id !== inFlightPromptId &&
         steeredKeys.has(userTurnContentKey(item.turn))
       )
   )
