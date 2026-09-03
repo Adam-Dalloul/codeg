@@ -2055,7 +2055,26 @@
       "closeOthers": "إغلاق البقية",
       "closeAll": "إغلاق الكل",
       "hideTerminal": "إخفاء الطرفية ({shortcut})",
-      "openFolderFirst": "افتح مجلدا أولا"
+      "openFolderFirst": "افتح مجلدا أولا",
+      "keybar": {
+        "label": "مفاتيح الطرفية الافتراضية",
+        "show": "إظهار المفاتيح الافتراضية",
+        "hide": "إخفاء المفاتيح الافتراضية",
+        "esc": "ESC",
+        "tab": "TAB",
+        "ctrl": "CTRL",
+        "alt": "ALT",
+        "slash": "/",
+        "dash": "—",
+        "home": "HOME",
+        "end": "END",
+        "pgup": "PGUP",
+        "pgdn": "PGDN",
+        "up": "↑",
+        "down": "↓",
+        "left": "←",
+        "right": "→"
+      }
     },
     "workspaceDialog": {
       "title": "فتح مجلد",

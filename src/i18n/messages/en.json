@@ -2055,7 +2055,26 @@
       "closeOthers": "Close Others",
       "closeAll": "Close All",
       "hideTerminal": "Hide Terminal ({shortcut})",
-      "openFolderFirst": "Open a folder first"
+      "openFolderFirst": "Open a folder first",
+      "keybar": {
+        "label": "Terminal virtual keys",
+        "show": "Show virtual keys",
+        "hide": "Hide virtual keys",
+        "esc": "ESC",
+        "tab": "TAB",
+        "ctrl": "CTRL",
+        "alt": "ALT",
+        "slash": "/",
+        "dash": "—",
+        "home": "HOME",
+        "end": "END",
+        "pgup": "PGUP",
+        "pgdn": "PGDN",
+        "up": "↑",
+        "down": "↓",
+        "left": "←",
+        "right": "→"
+      }
     },
     "workspaceDialog": {
       "title": "Open Folder",

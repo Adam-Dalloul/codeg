@@ -2055,7 +2055,26 @@
       "closeOthers": "Andere schließen",
       "closeAll": "Alle schließen",
       "hideTerminal": "Terminal ausblenden ({shortcut})",
-      "openFolderFirst": "Öffnen Sie zuerst einen Ordner"
+      "openFolderFirst": "Öffnen Sie zuerst einen Ordner",
+      "keybar": {
+        "label": "Virtuelle Terminaltasten",
+        "show": "Virtuelle Tasten anzeigen",
+        "hide": "Virtuelle Tasten ausblenden",
+        "esc": "ESC",
+        "tab": "TAB",
+        "ctrl": "CTRL",
+        "alt": "ALT",
+        "slash": "/",
+        "dash": "—",
+        "home": "HOME",
+        "end": "END",
+        "pgup": "PGUP",
+        "pgdn": "PGDN",
+        "up": "↑",
+        "down": "↓",
+        "left": "←",
+        "right": "→"
+      }
     },
     "workspaceDialog": {
       "title": "Ordner öffnen",
