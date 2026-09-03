@@ -112,18 +112,39 @@ const MAX_EPISODE_MESSAGES: usize = 512;
 /// boundary rotation always wins for multi-turn episodes.
 const FORCE_ROTATE_MESSAGES: usize = MAX_EPISODE_MESSAGES * 2;
 
-/// Every run of whitespace as a single space, ends trimmed. Used by
-/// [`PromptLedger::consume_matching`] to compare a sent prompt against an
-/// initiator text the transcript only lets us RECONSTRUCT.
-fn collapse_whitespace(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    for word in text.split_whitespace() {
-        if !out.is_empty() {
-            out.push(' ');
+/// How a transcript record supplied its turn-initiating text. Verbatim text
+/// can use the ledger's ordinary prefix match; a slash command reconstructed
+/// from tags needs the narrower command-separator normalization below.
+#[derive(Debug, PartialEq, Eq)]
+enum TurnInitiatorText {
+    Verbatim(String),
+    ReconstructedSlashCommand(String),
+}
+
+impl TurnInitiatorText {
+    fn as_str(&self) -> &str {
+        match self {
+            Self::Verbatim(text) | Self::ReconstructedSlashCommand(text) => text,
         }
-        out.push_str(word);
     }
-    out
+}
+
+/// Reproduce the one lossy transformation made by [`slash_command_display`]:
+/// whitespace separating the command name from its arguments becomes one
+/// space. Whitespace *inside* the arguments remains byte-for-byte significant.
+fn reconstructed_slash_command_fingerprint(text: &str) -> Option<String> {
+    let text = text.trim();
+    let name_end = text.find(char::is_whitespace).unwrap_or(text.len());
+    let name = &text[..name_end];
+    if !name.starts_with('/') {
+        return None;
+    }
+    let args = text[name_end..].trim();
+    if args.is_empty() {
+        Some(name.to_string())
+    } else {
+        Some(format!("{name} {args}"))
+    }
 }
 
 /// Fingerprints of prompts codeg itself sent on this connection, so the
@@ -179,34 +200,33 @@ impl PromptLedger {
     /// Match `initiator_text` (the transcript turn's initiating user text)
     /// against the unconsumed fingerprints; on match the entry is consumed —
     /// exactly once per sent prompt, so a later same-text autonomous re-fire
-    /// finds no entry and classifies as out-of-turn. The record may carry
-    /// appended wrapper content after the sent text, hence prefix matching.
+    /// finds no entry and classifies as out-of-turn. A verbatim record may
+    /// carry appended wrapper content after the sent text, hence its prefix
+    /// matching fallback.
     ///
-    /// The comparison also runs over collapsed whitespace, because a slash
-    /// command's initiator text is RECONSTRUCTED rather than read back: the
-    /// CLI persists the invocation as command tags, and
+    /// A slash command's initiator text is RECONSTRUCTED rather than read back:
+    /// the CLI persists the invocation as command tags, and
     /// [`slash_command_display`] rebuilds it as `"/name" + ' ' + trimmed args`.
-    /// That normalizes whatever separator the sender actually typed, so a
-    /// prompt sent as `/goal  ship it` (the composer inserts a space after the
-    /// command badge and the sender types another) reads back as
-    /// `/goal ship it` and misses on bytes. The miss is not cosmetic: the
-    /// command then classifies as an out-of-turn initiator, and the whole
-    /// wire-rendered turn re-surfaces as a background overlay beside itself.
-    /// Collapsing keeps the match exact in words and order.
-    fn consume_matching(&self, initiator_text: &str) -> bool {
-        let text = initiator_text.trim();
+    /// For that record type only, reproduce the same separator normalization on
+    /// the fingerprint. Normalizing every whitespace run would conflate
+    /// semantically different ordinary prompts and command arguments, risking
+    /// suppression of a genuine out-of-turn turn.
+    fn consume_matching(&self, initiator: &TurnInitiatorText) -> bool {
+        let text = initiator.as_str().trim();
         if text.is_empty() {
             return false;
         }
-        let collapsed = collapse_whitespace(text);
         let mut entries = self.entries.lock().unwrap_or_else(|p| p.into_inner());
         entries.retain(|e| e.recorded_at.elapsed() < LEDGER_TTL);
-        if let Some(pos) = entries.iter().position(|e| {
-            if text == e.fingerprint || text.starts_with(e.fingerprint.as_str()) {
-                return true;
+        if let Some(pos) = entries.iter().position(|e| match initiator {
+            TurnInitiatorText::Verbatim(_) => {
+                text == e.fingerprint || text.starts_with(e.fingerprint.as_str())
             }
-            let fingerprint = collapse_whitespace(&e.fingerprint);
-            collapsed == fingerprint || collapsed.starts_with(fingerprint.as_str())
+            TurnInitiatorText::ReconstructedSlashCommand(_) => {
+                text == e.fingerprint
+                    || reconstructed_slash_command_fingerprint(&e.fingerprint).as_deref()
+                        == Some(text)
+            }
         }) {
             entries.remove(pos);
             return true;
@@ -1171,8 +1191,9 @@ impl WatchState {
             self.foreground_awaiting_reply = false;
         }
 
-        if let Some(initiator_text) = turn_initiator_text(value) {
-            if ledger.consume_matching(&initiator_text) {
+        if let Some(initiator) = turn_initiator_text(value) {
+            let initiator_text = initiator.as_str();
+            if ledger.consume_matching(&initiator) {
                 // A codeg-sent prompt: the wire renders this turn. Close any
                 // open episode first (flush its final state) and go silent.
                 tracing::debug!("[bg-watch] foreground turn matched ledger");
@@ -1191,7 +1212,7 @@ impl WatchState {
             if self.foreground_awaiting_reply
                 && self.foreground_submission_id.is_some()
                 && record_submission_id(value) == self.foreground_submission_id
-                && task_notification_origin_id(&initiator_text).is_none()
+                && task_notification_origin_id(initiator_text).is_none()
             {
                 // Still inside the matched prompt's own submission — command
                 // output, the instruction `/goal` injects, image metadata. None
@@ -1223,7 +1244,7 @@ impl WatchState {
                         self.file.clone().unwrap_or_else(|| PathBuf::from("")),
                     ),
                     emitted_hashes: HashMap::new(),
-                    origin_task_id: task_notification_origin_id(&initiator_text),
+                    origin_task_id: task_notification_origin_id(initiator_text),
                 });
             }
             self.mode = Mode::Background;
@@ -1345,7 +1366,7 @@ fn user_record_text(value: &serde_json::Value) -> Option<String> {
 ///   still rendering it — never a boundary;
 /// * everything else user-typed/injected (real prompts, `<task-notification>`
 ///   records, cron prompts) initiates.
-fn turn_initiator_text(value: &serde_json::Value) -> Option<String> {
+fn turn_initiator_text(value: &serde_json::Value) -> Option<TurnInitiatorText> {
     if value.get("type").and_then(|t| t.as_str()) != Some("user") {
         return None;
     }
@@ -1358,9 +1379,9 @@ fn turn_initiator_text(value: &serde_json::Value) -> Option<String> {
         // A slash command persists as command tags; codeg sent the display
         // form ("/name args"), so match the ledger against that.
         if let Some(display) = slash_command_display(s) {
-            return Some(display);
+            return Some(TurnInitiatorText::ReconstructedSlashCommand(display));
         }
-        return Some(s.to_string());
+        return Some(TurnInitiatorText::Verbatim(s.to_string()));
     }
 
     let arr = content.as_array()?;
@@ -1378,7 +1399,7 @@ fn turn_initiator_text(value: &serde_json::Value) -> Option<String> {
     if text.starts_with(CONTEXT_CONTINUATION_PREFIX) {
         return None;
     }
-    Some(text)
+    Some(TurnInitiatorText::Verbatim(text))
 }
 
 /// The submission a record belongs to. Claude Code stamps every user record it
@@ -2018,17 +2039,47 @@ mod tests {
     }
 
     #[test]
-    fn ledger_matches_on_collapsed_whitespace_only_for_the_same_words() {
+    fn ledger_normalizes_only_a_reconstructed_command_separator() {
         let ledger = PromptLedger::shared();
-        ledger.record_text("/goal  build a test page");
+        ledger.record_text("/goal  build  a test page");
         assert!(
-            !ledger.consume_matching("/goal build a different page"),
-            "collapsing whitespace must not match different words"
+            !ledger.consume_matching(&TurnInitiatorText::ReconstructedSlashCommand(
+                "/goal build a test page".into()
+            )),
+            "whitespace inside the arguments remains significant"
         );
-        assert!(ledger.consume_matching("/goal build a test page"));
         assert!(
-            !ledger.consume_matching("/goal build a test page"),
-            "a collapsed match consumes the entry exactly once"
+            ledger.consume_matching(&TurnInitiatorText::ReconstructedSlashCommand(
+                "/goal build  a test page".into()
+            ))
+        );
+        assert!(
+            !ledger.consume_matching(&TurnInitiatorText::ReconstructedSlashCommand(
+                "/goal build  a test page".into()
+            )),
+            "a reconstructed match consumes the entry exactly once"
+        );
+
+        let ledger = PromptLedger::shared();
+        ledger.record_text("build  a test page");
+        assert!(
+            !ledger.consume_matching(&TurnInitiatorText::Verbatim("build a test page".into())),
+            "ordinary prompt whitespace must remain byte-for-byte significant"
+        );
+        assert!(ledger.consume_matching(&TurnInitiatorText::Verbatim("build  a test page".into())));
+
+        let ledger = PromptLedger::shared();
+        ledger.record_text("/goal  build");
+        assert!(
+            !ledger.consume_matching(&TurnInitiatorText::ReconstructedSlashCommand(
+                "/goal builder".into()
+            )),
+            "reconstructed command arguments do not use the verbatim prefix fallback"
+        );
+        assert!(
+            ledger.consume_matching(&TurnInitiatorText::ReconstructedSlashCommand(
+                "/goal build".into()
+            ))
         );
     }
 
@@ -2827,9 +2878,11 @@ mod tests {
     fn ledger_prefix_matches_and_consumes_once() {
         let ledger = PromptLedger::shared();
         ledger.record_text("deploy the app");
-        assert!(ledger.consume_matching("deploy the app\n<system-hint>extra</system-hint>"));
+        assert!(ledger.consume_matching(&TurnInitiatorText::Verbatim(
+            "deploy the app\n<system-hint>extra</system-hint>".into()
+        )));
         assert!(
-            !ledger.consume_matching("deploy the app"),
+            !ledger.consume_matching(&TurnInitiatorText::Verbatim("deploy the app".into())),
             "an entry is consumed exactly once"
         );
     }
@@ -2845,11 +2898,15 @@ mod tests {
             serde_json::from_str(&notification("x", "completed")).unwrap();
         assert!(turn_initiator_text(&note)
             .unwrap()
+            .as_str()
             .starts_with("<task-notification>"));
 
         // cron prompt (isMeta + string): initiates with the prompt text.
         let cron: serde_json::Value = serde_json::from_str(&cron_prompt("check weather")).unwrap();
-        assert_eq!(turn_initiator_text(&cron).as_deref(), Some("check weather"));
+        assert_eq!(
+            turn_initiator_text(&cron).as_ref().map(|text| text.as_str()),
+            Some("check weather")
+        );
 
         // context-continuation summary: never a boundary.
         let cont = format!(
@@ -2862,7 +2919,12 @@ mod tests {
         // slash command record matches via its display form.
         let cmd = r#"{"type":"user","uuid":"u-cmd","message":{"role":"user","content":"<command-name>/init</command-name><command-args>now</command-args>"}}"#;
         let cmd: serde_json::Value = serde_json::from_str(cmd).unwrap();
-        assert_eq!(turn_initiator_text(&cmd).as_deref(), Some("/init now"));
+        assert_eq!(
+            turn_initiator_text(&cmd),
+            Some(TurnInitiatorText::ReconstructedSlashCommand(
+                "/init now".into()
+            ))
+        );
     }
 
     /// The whole point of reading titles here: Claude Code's background
