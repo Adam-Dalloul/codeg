@@ -1252,10 +1252,12 @@ const ConversationTabView = memo(function ConversationTabView({
     handleSendRef.current = handleSend
   }, [handleSend])
 
-  // "Fork from here": fork at a rendered assistant turn instead of at the tail,
-  // and DON'T send anything. Unlike fork-send there is no draft to protect, so a
-  // failure is just reported — the session is untouched, and the same click can
-  // be retried or aimed at a different turn.
+  // "Fork from here": fork at a rendered assistant turn, sending nothing. The
+  // ONLY fork entry point — the composer's fork-and-send was removed once this
+  // existed, since the tail is just one of the turns this can be aimed at.
+  //
+  // No draft is at stake, so a failure is simply reported: the session is
+  // untouched and the same click can be retried, or aimed elsewhere.
   //
   // Which turns the agent can actually name is the backend's call
   // (`resolve_fork_point`): a turn it cannot name forks at the tail rather than
@@ -1293,11 +1295,11 @@ const ConversationTabView = memo(function ConversationTabView({
         )
         sessionIdRef.current = forkedSessionId
         setExternalId(effectiveConversationId, forkedSessionId)
-        // Same two-row reshuffle as fork-send: the current row now points at
-        // S2 and a sibling preserves S1.
+        // The backend's two-row reshuffle: the current row now points at S2
+        // and a freshly inserted sibling preserves S1.
         refreshConversations()
-        // Unlike fork-send, this row's HISTORY just changed: the whole point is
-        // that S2 ends at the chosen turn. The turns rendered right now came
+        // This row's HISTORY just changed — the whole point is that S2 ends
+        // at the chosen turn. The turns rendered right now came
         // from S1 — the persisted detail plus every turn this session streamed
         // — so leaving them would show the fork with the parent's full history
         // until the tab is closed and reopened.

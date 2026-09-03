@@ -345,15 +345,15 @@ export async function acpFork(
   connectionId: string,
   // Linkage for a conversation opened from history: its connection resumed via
   // session_id but the row isn't bound to the connection until the first prompt
-  // fires, and a fork-send forks BEFORE that prompt. Passing these lets the
-  // backend adopt the row so the fork doesn't reject as unlinked. Ignored once
-  // the connection is already linked (a new-conversation-then-fork). See
-  // `ConnectionManager::fork_session`.
+  // fires, and forking from a rendered turn needs no prompt at all. Passing
+  // these lets the backend adopt the row so the fork doesn't reject as
+  // unlinked. Ignored once the connection is already linked (a
+  // new-conversation-then-fork). See `ConnectionManager::fork_session`.
   conversationId?: number | null,
   folderId?: number | null,
-  // "Fork from here": the rendered turn to fork at. Omit to fork at the tail,
-  // which is what fork-send does. A turn the agent cannot name also forks at
-  // the tail rather than failing — the backend decides, see `resolve_fork_point`.
+  // "Fork from here": the rendered turn to fork at. The UI always passes one;
+  // omitting it forks at the tail, which the backend also falls back to for a
+  // turn the agent cannot name — its call, see `resolve_fork_point`.
   forkFromTurnId?: string | null
 ): Promise<ForkResult> {
   try {
