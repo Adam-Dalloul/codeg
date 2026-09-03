@@ -2839,4 +2839,53 @@ describe("conversation timeline - a steered message survives a mid-turn reload o
       "continue",
     ])
   })
+
+  it("leaves a promoted local turn from an earlier round alone", async () => {
+    // `localTurns` render as phase "persisted" but are NOT part of the detail's
+    // projection of this round — a mid-turn refetch preserves them, so an
+    // earlier round's promoted prompt sits in the timeline after this round's
+    // anchor. Only what the detail itself lists after the in-flight prompt can
+    // be the agent's copy.
+    renderProvider(<RuntimeCapture />)
+    const api = () => runtimeHolder.current!
+    const earlierReply: LiveMessage = {
+      id: "lm-earlier",
+      role: "assistant",
+      content: [{ type: "text", text: "done" }],
+      startedAt: 0,
+    }
+    act(() => {
+      api().appendOptimisticTurn(99, turn("o-1", "user", "continue"), "o-1")
+    })
+    act(() => {
+      api().completeTurn(99, earlierReply)
+    })
+    act(() => {
+      api().setLiveMessage(
+        99,
+        {
+          id: "lm-5",
+          role: "assistant",
+          content: [
+            { type: "text", text: "half one" },
+            { type: "steering", id: "note-1", text: "continue" },
+            { type: "text", text: "half two" },
+          ],
+          startedAt: 0,
+        },
+        true
+      )
+    })
+    mockGetFolderConversation.mockResolvedValueOnce(
+      detailWith([turn("p-1", "user", "now do the thing")], "p-1")
+    )
+    await act(async () => {
+      api().refetchDetail(99, { preserveLive: true })
+    })
+    expect(userTexts(api().getTimelineTurns(99))).toEqual([
+      "now do the thing",
+      "continue", // the earlier round's promoted prompt
+      "continue", // this round's steer, live
+    ])
+  })
 })

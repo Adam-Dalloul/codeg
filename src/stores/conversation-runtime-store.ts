@@ -3180,21 +3180,23 @@ function computeTimelinePrefix(
  *
  * Matched on CONTENT, the same way `APPEND_VIEWER_USER_TURN` reconciles the
  * two id namespaces of one prompt. Scoped tightly, because suppressing a user
- * turn is the one failure that hides a message rather than duplicating it:
- * only persisted-phase turns, only ones AFTER the prompt that opened the
- * running turn, and only when the tail actually carries a steered turn — so a
- * timeline with no steering does no work here at all.
+ * turn is the one failure that hides a message rather than duplicating it: only
+ * turns the DETAIL carries after the prompt that opened the running turn, and
+ * only when the tail actually carries a steered turn — so a timeline with no
+ * steering does no work here at all.
  *
- * The round anchor is what keeps this from eating history. Content is the only
- * thing linking the two copies, and steered text is typically short and
- * repeatable ("continue", "stop", "not done") — matched across the whole loaded
- * window, a steer would hide the identical prompt the user sent three rounds
- * ago, and hide it for as long as the turn ran. The persisted copy can only
- * have been written DURING the running turn, so everything at or before that
- * turn's prompt is out of reach by construction. No anchor — the backend
- * reports no in-flight prompt, or names one outside the loaded window — means
- * no round to scope to, so nothing is suppressed and the two copies coexist:
- * a visible duplicate, never a hidden message.
+ * That scope is what keeps this from eating history. Content is the only thing
+ * linking the two copies, and steered text is short and repeatable ("continue",
+ * "stop", "not done") — matched across the whole loaded window, a steer would
+ * hide the identical prompt the user sent three rounds ago, and keep it hidden
+ * for as long as the turn ran. The agent writes its copy DURING the running
+ * turn, so the candidates are exactly the persisted user turns after that
+ * turn's prompt; anything else — earlier history, a promoted `localTurns` copy
+ * of an earlier round's prompt (`preserveLive` keeps those across a mid-turn
+ * refetch) — is a different message. With no anchor at all (the backend reports
+ * no in-flight prompt, or names one outside the loaded window) there is no
+ * round to scope to, so nothing is suppressed and the two copies coexist: a
+ * visible duplicate, never a hidden message.
  */
 function suppressPersistedSteeredPrompts(
   prefix: ConversationTimelineTurn[],
@@ -3208,18 +3210,28 @@ function suppressPersistedSteeredPrompts(
     steeredKeys.add(userTurnContentKey(item.turn))
   }
   if (!steeredKeys) return prefix
+  const detailTurns = session.detail?.turns
   const inFlightPromptId = session.detail?.in_flight_user_turn_id ?? null
-  if (inFlightPromptId === null) return prefix
-  const anchor = prefix.findIndex(
-    (item) => item.turn.role === "user" && item.turn.id === inFlightPromptId
+  if (!detailTurns || inFlightPromptId === null) return prefix
+  const anchor = detailTurns.findIndex(
+    (turn) => turn.role === "user" && turn.id === inFlightPromptId
   )
   if (anchor === -1) return prefix
+  // Ids are unique across the timeline's phases (a same-id copy in another
+  // phase is the same turn — see `dedupeTimeline`), so membership alone locates
+  // this round's persisted user turns.
+  const candidateIds = new Set<string>()
+  for (let i = anchor + 1; i < detailTurns.length; i++) {
+    const turn = detailTurns[i]!
+    if (turn.role === "user") candidateIds.add(turn.id)
+  }
+  if (candidateIds.size === 0) return prefix
   const filtered = prefix.filter(
-    (item, i) =>
+    (item) =>
       !(
-        i > anchor &&
         item.phase === "persisted" &&
         item.turn.role === "user" &&
+        candidateIds.has(item.turn.id) &&
         steeredKeys.has(userTurnContentKey(item.turn))
       )
   )
