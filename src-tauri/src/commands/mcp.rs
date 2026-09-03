@@ -2865,127 +2865,105 @@ fn remove_antigravity_server_at(path: &Path, id: &str) -> Result<bool, AppComman
     Ok(removed)
 }
 
-fn scan_local_servers() -> Result<Vec<LocalMcpServer>, AppCommandError> {
+type LocalMcpReadResult = Result<BTreeMap<String, Value>, AppCommandError>;
+type LocalMcpReadFn = fn() -> LocalMcpReadResult;
+
+#[derive(Clone, Copy)]
+struct LocalMcpReader {
+    source: &'static str,
+    app: McpAppType,
+    read: LocalMcpReadFn,
+}
+
+impl LocalMcpReader {
+    const fn new(source: &'static str, app: McpAppType, read: LocalMcpReadFn) -> Self {
+        Self { source, app, read }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum LocalMcpScanMode {
+    BestEffort,
+    Strict,
+}
+
+fn local_mcp_readers() -> [LocalMcpReader; 14] {
+    [
+        LocalMcpReader::new("Claude Code", McpAppType::ClaudeCode, read_claude_servers),
+        LocalMcpReader::new("Codex", McpAppType::Codex, read_codex_servers),
+        LocalMcpReader::new("OpenCode", McpAppType::OpenCode, read_opencode_servers),
+        LocalMcpReader::new("Gemini", McpAppType::Gemini, read_gemini_servers),
+        LocalMcpReader::new("OpenClaw", McpAppType::OpenClaw, read_openclaw_servers),
+        LocalMcpReader::new("Cline", McpAppType::Cline, read_cline_servers),
+        LocalMcpReader::new("Hermes", McpAppType::Hermes, read_hermes_servers),
+        LocalMcpReader::new("CodeBuddy", McpAppType::CodeBuddy, read_codebuddy_servers),
+        LocalMcpReader::new("Kimi Code", McpAppType::KimiCode, read_kimi_code_servers),
+        LocalMcpReader::new("Grok", McpAppType::Grok, read_grok_servers),
+        LocalMcpReader::new("Cursor", McpAppType::Cursor, read_cursor_servers),
+        LocalMcpReader::new("DeepSeek", McpAppType::DeepSeek, read_deepseek_servers),
+        LocalMcpReader::new(
+            "Antigravity",
+            McpAppType::Antigravity,
+            read_antigravity_servers,
+        ),
+        LocalMcpReader::new("Qoder", McpAppType::Qoder, read_qoder_servers),
+    ]
+}
+
+fn scan_local_servers_from_readers(
+    readers: &[LocalMcpReader],
+    mode: LocalMcpScanMode,
+) -> Result<Vec<LocalMcpServer>, AppCommandError> {
     let mut merged: BTreeMap<String, (Value, BTreeSet<McpAppType>)> = BTreeMap::new();
-
-    for (id, spec) in read_claude_servers()? {
-        let entry = merged
-            .entry(id)
-            .or_insert_with(|| (spec.clone(), BTreeSet::new()));
-        entry.1.insert(McpAppType::ClaudeCode);
-    }
-
-    for (id, spec) in read_codex_servers()? {
-        let entry = merged
-            .entry(id)
-            .or_insert_with(|| (spec.clone(), BTreeSet::new()));
-        entry.1.insert(McpAppType::Codex);
-    }
-
-    for (id, spec) in read_opencode_servers()? {
-        let entry = merged
-            .entry(id)
-            .or_insert_with(|| (spec.clone(), BTreeSet::new()));
-        entry.1.insert(McpAppType::OpenCode);
-    }
-
-    for (id, spec) in read_gemini_servers()? {
-        let entry = merged
-            .entry(id)
-            .or_insert_with(|| (spec.clone(), BTreeSet::new()));
-        entry.1.insert(McpAppType::Gemini);
-    }
-
     // OpenClaw is the one agent that shares a key with Kimi (`auth`), so keep
     // what its own config declares: below, that is what tells Kimi's pass an
     // OpenClaw setting from an echo codeg once wrote into some other agent's
     // file — and it has to be the VALUE, since the agent that wins the merge may
     // carry neither. See `KIMI_SHARED_KEYS`.
     let mut openclaw_declares: BTreeMap<String, Map<String, Value>> = BTreeMap::new();
-    for (id, spec) in read_openclaw_servers()? {
-        let declared: Map<String, Value> = KIMI_SHARED_KEYS
-            .iter()
-            .filter_map(|key| {
-                spec.get(*key)
-                    .map(|value| ((*key).to_string(), value.clone()))
-            })
-            .collect();
-        if !declared.is_empty() {
-            openclaw_declares.insert(id.clone(), declared);
+
+    for reader in readers {
+        let servers = match (reader.read)() {
+            Ok(servers) => servers,
+            Err(err) if mode == LocalMcpScanMode::BestEffort => {
+                tracing::warn!(
+                    source = reader.source,
+                    app = ?reader.app,
+                    error = %err,
+                    "[MCP] failed to scan local MCP source; skipping"
+                );
+                continue;
+            }
+            Err(err) => return Err(err),
+        };
+
+        for (id, spec) in servers {
+            if reader.app == McpAppType::OpenClaw {
+                let declared: Map<String, Value> = KIMI_SHARED_KEYS
+                    .iter()
+                    .filter_map(|key| {
+                        spec.get(*key)
+                            .map(|value| ((*key).to_string(), value.clone()))
+                    })
+                    .collect();
+                if !declared.is_empty() {
+                    openclaw_declares.insert(id.clone(), declared);
+                }
+            }
+
+            let entry = merged
+                .entry(id.clone())
+                .or_insert_with(|| (spec.clone(), BTreeSet::new()));
+            if reader.app == McpAppType::KimiCode {
+                // Kimi models fields no other agent does, and this merge is
+                // first-writer-wins — so when an earlier agent already claimed the id,
+                // fold Kimi's own fields back in or they never reach the editor (and the
+                // next save writes them off disk). See `merge_kimi_extension_fields`.
+                let owner_values = openclaw_declares.remove(&id).unwrap_or_default();
+                merge_kimi_extension_fields(&mut entry.0, &spec, &owner_values);
+            }
+            entry.1.insert(reader.app);
         }
-        let entry = merged
-            .entry(id)
-            .or_insert_with(|| (spec.clone(), BTreeSet::new()));
-        entry.1.insert(McpAppType::OpenClaw);
-    }
-
-    for (id, spec) in read_cline_servers()? {
-        let entry = merged
-            .entry(id)
-            .or_insert_with(|| (spec.clone(), BTreeSet::new()));
-        entry.1.insert(McpAppType::Cline);
-    }
-
-    for (id, spec) in read_hermes_servers()? {
-        let entry = merged
-            .entry(id)
-            .or_insert_with(|| (spec.clone(), BTreeSet::new()));
-        entry.1.insert(McpAppType::Hermes);
-    }
-
-    for (id, spec) in read_codebuddy_servers()? {
-        let entry = merged
-            .entry(id)
-            .or_insert_with(|| (spec.clone(), BTreeSet::new()));
-        entry.1.insert(McpAppType::CodeBuddy);
-    }
-
-    for (id, spec) in read_kimi_code_servers()? {
-        let owner_values = openclaw_declares.remove(&id).unwrap_or_default();
-        let entry = merged
-            .entry(id)
-            .or_insert_with(|| (spec.clone(), BTreeSet::new()));
-        // Kimi models fields no other agent does, and this merge is
-        // first-writer-wins — so when an earlier agent already claimed the id,
-        // fold Kimi's own fields back in or they never reach the editor (and the
-        // next save writes them off disk). See `merge_kimi_extension_fields`.
-        merge_kimi_extension_fields(&mut entry.0, &spec, &owner_values);
-        entry.1.insert(McpAppType::KimiCode);
-    }
-
-    for (id, spec) in read_grok_servers()? {
-        let entry = merged
-            .entry(id)
-            .or_insert_with(|| (spec.clone(), BTreeSet::new()));
-        entry.1.insert(McpAppType::Grok);
-    }
-
-    for (id, spec) in read_cursor_servers()? {
-        let entry = merged
-            .entry(id)
-            .or_insert_with(|| (spec.clone(), BTreeSet::new()));
-        entry.1.insert(McpAppType::Cursor);
-    }
-
-    for (id, spec) in read_deepseek_servers()? {
-        let entry = merged
-            .entry(id)
-            .or_insert_with(|| (spec.clone(), BTreeSet::new()));
-        entry.1.insert(McpAppType::DeepSeek);
-    }
-
-    for (id, spec) in read_antigravity_servers()? {
-        let entry = merged
-            .entry(id)
-            .or_insert_with(|| (spec.clone(), BTreeSet::new()));
-        entry.1.insert(McpAppType::Antigravity);
-    }
-
-    for (id, spec) in read_qoder_servers()? {
-        let entry = merged
-            .entry(id)
-            .or_insert_with(|| (spec.clone(), BTreeSet::new()));
-        entry.1.insert(McpAppType::Qoder);
     }
 
     Ok(merged
@@ -2998,8 +2976,16 @@ fn scan_local_servers() -> Result<Vec<LocalMcpServer>, AppCommandError> {
         .collect())
 }
 
+fn scan_local_servers() -> Result<Vec<LocalMcpServer>, AppCommandError> {
+    scan_local_servers_from_readers(&local_mcp_readers(), LocalMcpScanMode::BestEffort)
+}
+
+fn scan_local_servers_strict() -> Result<Vec<LocalMcpServer>, AppCommandError> {
+    scan_local_servers_from_readers(&local_mcp_readers(), LocalMcpScanMode::Strict)
+}
+
 fn find_local_server(server_id: &str) -> Result<Option<LocalMcpServer>, AppCommandError> {
-    let servers = scan_local_servers()?;
+    let servers = scan_local_servers_strict()?;
     Ok(servers.into_iter().find(|item| item.id == server_id))
 }
 
@@ -5866,6 +5852,136 @@ fn resolve_smithery_install_spec_with_selection(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_claude_servers() -> Result<BTreeMap<String, Value>, AppCommandError> {
+        Ok(BTreeMap::from([
+            (
+                "claude-only".to_string(),
+                json!({"type": "stdio", "command": "claude-only"}),
+            ),
+            (
+                "shared".to_string(),
+                json!({"type": "stdio", "command": "claude-wins"}),
+            ),
+        ]))
+    }
+
+    fn test_gemini_servers() -> Result<BTreeMap<String, Value>, AppCommandError> {
+        Ok(BTreeMap::from([
+            (
+                "gemini-only".to_string(),
+                json!({"type": "stdio", "command": "gemini-only"}),
+            ),
+            (
+                "shared".to_string(),
+                json!({"type": "stdio", "command": "gemini-loses"}),
+            ),
+        ]))
+    }
+
+    fn test_broken_antigravity_servers() -> Result<BTreeMap<String, Value>, AppCommandError> {
+        Err(mcp_configuration_invalid("broken Antigravity fixture"))
+    }
+
+    fn test_openclaw_servers() -> Result<BTreeMap<String, Value>, AppCommandError> {
+        Ok(BTreeMap::from([(
+            "shared-remote".to_string(),
+            json!({
+                "type": "http",
+                "url": "https://example.test/mcp",
+                "auth": "oauth"
+            }),
+        )]))
+    }
+
+    fn test_kimi_servers() -> Result<BTreeMap<String, Value>, AppCommandError> {
+        Ok(BTreeMap::from([(
+            "shared-remote".to_string(),
+            json!({
+                "type": "http",
+                "url": "https://example.test/mcp",
+                "bearerTokenEnvVar": "MCP_TOKEN"
+            }),
+        )]))
+    }
+
+    #[test]
+    fn best_effort_scan_keeps_valid_sources_around_a_failed_source() {
+        let readers = [
+            LocalMcpReader::new("Claude Code", McpAppType::ClaudeCode, test_claude_servers),
+            LocalMcpReader::new(
+                "Antigravity",
+                McpAppType::Antigravity,
+                test_broken_antigravity_servers,
+            ),
+            LocalMcpReader::new("Gemini", McpAppType::Gemini, test_gemini_servers),
+        ];
+
+        let servers = scan_local_servers_from_readers(&readers, LocalMcpScanMode::BestEffort)
+            .expect("best-effort scan");
+
+        assert_eq!(
+            servers
+                .iter()
+                .map(|server| server.id.as_str())
+                .collect::<Vec<_>>(),
+            ["claude-only", "gemini-only", "shared"]
+        );
+        let shared = servers
+            .iter()
+            .find(|server| server.id == "shared")
+            .expect("shared server");
+        assert_eq!(shared.spec["command"], "claude-wins");
+        assert_eq!(shared.apps, [McpAppType::ClaudeCode, McpAppType::Gemini]);
+    }
+
+    #[test]
+    fn strict_scan_still_fails_on_a_single_broken_source() {
+        let readers = [
+            LocalMcpReader::new("Claude Code", McpAppType::ClaudeCode, test_claude_servers),
+            LocalMcpReader::new(
+                "Antigravity",
+                McpAppType::Antigravity,
+                test_broken_antigravity_servers,
+            ),
+            LocalMcpReader::new("Gemini", McpAppType::Gemini, test_gemini_servers),
+        ];
+
+        assert!(
+            scan_local_servers_from_readers(&readers, LocalMcpScanMode::Strict).is_err(),
+            "strict callers must remain fail-closed"
+        );
+    }
+
+    #[test]
+    fn empty_antigravity_file_remains_a_reader_error() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("mcp_config.json");
+        std::fs::write(&path, "").expect("seed empty config");
+
+        assert!(
+            read_antigravity_servers_at(&path).is_err(),
+            "best-effort behavior belongs to aggregate scanning, not file parsing"
+        );
+    }
+
+    #[test]
+    fn successful_scan_preserves_openclaw_and_kimi_merge_rules() {
+        let readers = [
+            LocalMcpReader::new("OpenClaw", McpAppType::OpenClaw, test_openclaw_servers),
+            LocalMcpReader::new("Kimi Code", McpAppType::KimiCode, test_kimi_servers),
+        ];
+
+        let servers = scan_local_servers_from_readers(&readers, LocalMcpScanMode::BestEffort)
+            .expect("successful scan");
+
+        assert_eq!(servers.len(), 1);
+        let shared = &servers[0];
+        assert_eq!(shared.id, "shared-remote");
+        assert_eq!(shared.spec["auth"], "oauth");
+        assert_eq!(shared.spec["bearerTokenEnvVar"], "MCP_TOKEN");
+        assert_eq!(shared.apps, [McpAppType::OpenClaw, McpAppType::KimiCode]);
+    }
 
     #[test]
     fn normalize_mcp_type_canonical_pass_through() {
