@@ -85,7 +85,6 @@ import {
 import { isWindowedDetail } from "@/lib/turn-window"
 import {
   flushRetryDelayMs,
-  forkSendBlockedByQueue,
   isConnectionReady,
   shouldQueueDirectSend,
   shouldRejectDuplicateCreate,
@@ -1253,94 +1252,6 @@ const ConversationTabView = memo(function ConversationTabView({
     handleSendRef.current = handleSend
   }, [handleSend])
 
-  const handleForkSend = useCallback(
-    // Fire-and-forget: the input clears the draft synchronously on click (like a
-    // normal send), so there is no in-flight editable window. If the fork can't
-    // run right now — disconnected, or the queue is non-empty (a fork is an
-    // immediate session side effect and must not jump ahead of queued items) —
-    // the draft is NOT lost: it is queued as a normal send (it flushes after any
-    // queued items). The same on a fork failure.
-    async (draft: PromptDraft, selectedModeIdArg?: string | null) => {
-      const connectionId = conn.connectionId
-      if (
-        !connectionId ||
-        connStatus !== "connected" ||
-        // Read the queue length SYNCHRONOUSLY so a draft re-queued by a same-
-        // tick bounce is seen even before React commits. The UI also hides the
-        // fork affordance while the queue is non-empty; this is the guard.
-        forkSendBlockedByQueue(mqGetQueueLength())
-      ) {
-        mqEnqueue(draft, selectedModeIdArg ?? null)
-        return
-      }
-      try {
-        // Backend performs all DB writes in one transaction-shaped call:
-        // - current row: external_id=S2, title="[Fork] ..."
-        // - sibling row: created with external_id=S1, status=pending_review
-        // Pass (conversationId, folderId) so a conversation opened from history
-        // — whose connection resumed via session_id but isn't row-linked until
-        // its first prompt — is adopted by the backend before forking (a
-        // fork-send forks BEFORE that prompt). No-op once already linked. Use
-        // the real persisted DB id (`dbConvIdRef`, same as the send path below),
-        // NOT the runtime key `effectiveConversationId` which can be virtual.
-        const { forkedSessionId } = await acpFork(
-          connectionId,
-          dbConvIdRef.current,
-          folderId
-        )
-        // Update runtime session id to S2 (frontend in-memory state only)
-        sessionIdRef.current = forkedSessionId
-        setExternalId(effectiveConversationId, forkedSessionId)
-
-        // NOTE: a fork is a transcript discontinuity — the row's session flips
-        // S1→S2, and S2 is a COPY of S1's transcript plus the turns to come.
-        // The pre-fork history is NOT re-surfaced here: the backend background
-        // watcher correctly excludes the fork-copied prefix from the out-of-turn
-        // overlay (see `baseline_offset_since`), so `detail.turns` (S1 parse) +
-        // the new local turns render each exchange exactly once. No detail
-        // refetch is needed or wanted — an early one races the forked turn and
-        // can drop the just-sent message.
-        refreshConversations()
-        // Send the message on the forked session (S2)
-        handleSend(draft, selectedModeIdArg)
-      } catch (err) {
-        // Busy (a turn is in flight, e.g. another co-controlling client started
-        // one): NOT a fork failure — silently re-queue, like a normal bounce.
-        // It sends after the current turn.
-        if (err instanceof TurnBusyError) {
-          mqEnqueue(draft, selectedModeIdArg ?? null)
-          return
-        }
-        // Real fork failure: surface it. EXPLICIT product decision — fork-send
-        // is best-effort, so the draft is never lost; it is re-queued and sent
-        // on the current (un-forked) session.
-        toast.error(
-          t("forkSessionFailed", {
-            error:
-              err instanceof Error
-                ? err.message
-                : typeof err === "object" && err !== null
-                  ? JSON.stringify(err)
-                  : String(err),
-          })
-        )
-        mqEnqueue(draft, selectedModeIdArg ?? null)
-      }
-    },
-    [
-      conn.connectionId,
-      connStatus,
-      mqGetQueueLength,
-      mqEnqueue,
-      effectiveConversationId,
-      folderId,
-      handleSend,
-      refreshConversations,
-      setExternalId,
-      t,
-    ]
-  )
-
   // "Fork from here": fork at a rendered assistant turn instead of at the tail,
   // and DON'T send anything. Unlike fork-send there is no draft to protect, so a
   // failure is just reported — the session is untouched, and the same click can
@@ -2052,10 +1963,10 @@ const ConversationTabView = memo(function ConversationTabView({
         // rather than a usable composer here — a transcript whose composer is
         // blocked (session/load failure) can still spawn the question elsewhere.
         onAskSelection={canAskSelection ? handleAskSelection : undefined}
-        // Same three preconditions as fork-send, minus the queue guard: this
-        // fork carries no draft, so a non-empty queue is not at risk of being
-        // jumped. A turn in flight is still rejected — by the backend, which is
-        // the only place that can see it without racing.
+        // Fork carries no draft, so — unlike a send — a non-empty queue is
+        // not at risk of being jumped and needs no guard here. A turn in
+        // flight is still rejected, by the backend, which is the only place
+        // that can see it without racing.
         onForkFromTurn={
           connStatus === "connected" &&
           hasPersistedConversation &&
@@ -2183,14 +2094,6 @@ const ConversationTabView = memo(function ConversationTabView({
       isEditingQueueItem={mqEditingItemId != null}
       onSaveQueueEdit={handleSaveQueueEdit}
       onCancelQueueEdit={handleQueueCancelEdit}
-      onForkSend={
-        connStatus === "connected" &&
-        hasPersistedConversation &&
-        conn.supportsFork &&
-        !forkSendBlockedByQueue(msgQueue.length)
-          ? handleForkSend
-          : undefined
-      }
       onSteer={
         // Native channel only: on pull sessions the prompting branch must
         // stay pixel-identical (Stop button alone). The prompting scope

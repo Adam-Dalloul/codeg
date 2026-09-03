@@ -124,7 +124,6 @@ interface ConversationShellProps {
   isEditingQueueItem?: boolean
   onSaveQueueEdit?: (draft: PromptDraft) => void
   onCancelQueueEdit?: () => void
-  onForkSend?: (draft: PromptDraft, modeId?: string | null) => void
   /** Inject the draft's text into the RUNNING turn (native live-feedback
    *  steering). Present only for sessions on the native channel; threaded
    *  straight through to the composer. */
@@ -195,7 +194,6 @@ export function ConversationShell({
   isEditingQueueItem,
   onSaveQueueEdit,
   onCancelQueueEdit,
-  onForkSend,
   onSteer,
   topBanner,
   injectContent,
@@ -366,7 +364,6 @@ export function ConversationShell({
               isEditingQueueItem={isEditingQueueItem}
               onSaveQueueEdit={onSaveQueueEdit}
               onCancelQueueEdit={onCancelQueueEdit}
-              onForkSend={onForkSend}
               onSteer={onSteer}
               onAddFeedback={onAddFeedback}
               feedbackAddDisabled={feedbackAddDisabled}

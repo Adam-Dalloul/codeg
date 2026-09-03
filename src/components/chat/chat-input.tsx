@@ -58,7 +58,6 @@ interface ChatInputProps {
   isEditingQueueItem?: boolean
   onSaveQueueEdit?: (draft: PromptDraft) => void
   onCancelQueueEdit?: () => void
-  onForkSend?: (draft: PromptDraft, modeId?: string | null) => void
   /** Inject the draft's text into the RUNNING turn over the native steering
    *  channel. Present only when the session's live-feedback channel is native
    *  (`useSessionFeedback().channel === "native"`); resolves once recorded,
@@ -120,7 +119,6 @@ export const ChatInput = memo(function ChatInput({
   isEditingQueueItem,
   onSaveQueueEdit,
   onCancelQueueEdit,
-  onForkSend,
   onSteer,
   onAddFeedback,
   feedbackAddDisabled,
@@ -216,7 +214,6 @@ export const ChatInput = memo(function ChatInput({
         isEditingQueueItem={isEditingQueueItem}
         onSaveQueueEdit={onSaveQueueEdit}
         onCancelQueueEdit={onCancelQueueEdit}
-        onForkSend={onForkSend}
         onSteer={onSteer}
         onAddFeedback={onAddFeedback}
         feedbackAddDisabled={feedbackAddDisabled}
