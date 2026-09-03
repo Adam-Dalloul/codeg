@@ -9,6 +9,7 @@ import {
 } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { NextIntlClientProvider } from "next-intl"
+import { toast } from "sonner"
 import type { ComponentProps } from "react"
 import type { Editor } from "@tiptap/core"
 import { afterEach, describe, expect, it, vi } from "vitest"
@@ -967,7 +968,7 @@ describe("MessageInput slash menu while the agent connects", () => {
   })
 })
 
-describe("MessageInput native steering (insert into current turn)", () => {
+describe("MessageInput mid-turn send (live-feedback channel)", () => {
   afterEach(() => {
     cleanup()
     composerHandle.current = null
@@ -984,6 +985,9 @@ describe("MessageInput native steering (insert into current turn)", () => {
       disabled: true,
       onCancel: vi.fn(),
       onEnqueue: vi.fn(),
+      // The prop defaults to the weaker `pull` promise, so the native cases
+      // below have to say so explicitly; the pull case overrides it back.
+      steerChannel: "native",
       ...props,
     })
     await waitFor(
@@ -1131,5 +1135,53 @@ describe("MessageInput native steering (insert into current turn)", () => {
         "check the tests"
       )
     )
+  })
+
+  it("defaults to the pull copy when no channel is declared", async () => {
+    // The weaker promise is the default: a call site that wires `onSteer` but
+    // forgets `steerChannel` must understate delivery, never claim an insert.
+    const editor = await mountPrompting({
+      onSteer: vi.fn(),
+      steerChannel: undefined,
+    })
+    typeDraft(editor, "no channel declared")
+    await waitFor(() =>
+      expect(screen.getByLabelText(MI.steerAsNote)).toBeInTheDocument()
+    )
+    expect(screen.queryByLabelText(MI.steerIntoTurn)).toBeNull()
+  })
+
+  it("names the note, not an insert, when a pull send fails", async () => {
+    // The failure toast is the last place the pull channel could overpromise:
+    // "couldn't insert into the current turn" would describe a delivery this
+    // session never attempted.
+    const user = userEvent.setup()
+    const { isNoActiveTurnRejection } = await import("@/lib/turn-busy")
+    vi.mocked(isNoActiveTurnRejection).mockReturnValue(false)
+    const errorToast = vi.spyOn(toast, "error").mockImplementation(() => "")
+    try {
+      const onSteer = vi.fn().mockRejectedValue(new Error("boom"))
+      const editor = await mountPrompting({ onSteer, steerChannel: "pull" })
+      typeDraft(editor, "keep me")
+      await waitFor(() =>
+        expect(screen.getByLabelText(MI.steerAsNote)).toBeInTheDocument()
+      )
+
+      await user.click(screen.getByLabelText(MI.steerAsNote))
+      await user.click(
+        await screen.findByRole("menuitem", { name: MI.steerAsNote })
+      )
+
+      await waitFor(() =>
+        expect(errorToast).toHaveBeenCalledWith(
+          MI.steerNoteFailed,
+          expect.anything()
+        )
+      )
+      // Same draft policy as native: a real failure keeps the text for retry.
+      expect(serializeDocToText(editor.state.doc)).toContain("keep me")
+    } finally {
+      errorToast.mockRestore()
+    }
   })
 })

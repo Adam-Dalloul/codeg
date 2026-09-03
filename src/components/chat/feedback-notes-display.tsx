@@ -4,8 +4,9 @@
  * Read-only list of live-feedback notes for the current turn, shown above the
  * composer (styled like the message queue). Each note flips from "waiting"
  * (Clock) to "received" (Check) once the agent reads it via
- * `check_user_feedback`. Notes are sent from the composer "+" menu dialog and
- * are not editable/removable here.
+ * `check_user_feedback`. Notes are sent from the composer "+" menu dialog or,
+ * on a pull-channel session, from the composer's mid-turn send; they are not
+ * editable/removable here.
  */
 
 import { useMemo } from "react"

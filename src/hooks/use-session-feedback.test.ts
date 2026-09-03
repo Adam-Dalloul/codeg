@@ -313,7 +313,14 @@ describe("useSessionFeedback", () => {
     )
     const { result } = renderHook(() => useSessionFeedback(baseProps))
 
-    await waitFor(() => expect(mockSnapshot).toHaveBeenCalled())
+    // Both flags START false, so asserting before the reads land would pass
+    // no matter what the hook does with them. Wait for BOTH snapshot reads
+    // (hydrate + self-heal, each fired on mount) and flush their resolutions
+    // first — only then does `false` mean "the snapshot said no channel".
+    await waitFor(() => expect(mockSnapshot).toHaveBeenCalledTimes(2))
+    await act(async () => {
+      await Promise.resolve()
+    })
     expect(result.current.steerAvailable).toBe(false)
     expect(result.current.canSubmit).toBe(false)
   })

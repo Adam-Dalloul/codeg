@@ -64,12 +64,12 @@ export interface UseSessionFeedback {
    *  copy and the composer's mid-turn send entry. Backend-synthesized — never
    *  derived from agent type here. */
   channel: "native" | "pull"
-  /** Whether THIS session has a working mid-turn delivery channel at all:
-   *  native push or the pull tool. Gates the composer's mid-turn send
-   *  affordance (`channel` picks its copy); a session with neither keeps the
-   *  historical Stop-only prompting form. Distinct from `canSubmit`, which
-   *  additionally folds in the prompting scope — the composer enforces that
-   *  where the button renders. */
+  /** Whether THIS session has a working mid-turn delivery channel at all: a
+   *  live connection plus native push or the pull tool. Gates the composer's
+   *  mid-turn send affordance (`channel` picks its copy); a session with
+   *  neither keeps the historical Stop-only prompting form. Distinct from
+   *  `canSubmit`, which additionally folds in the feature flag and the
+   *  prompting scope — the composer enforces that where the button renders. */
   steerAvailable: boolean
   /** Whether to render the read-only notes list above the composer. */
   showList: boolean
@@ -385,9 +385,13 @@ export function useSessionFeedback({
   const openDialog = useCallback(() => setDialogOpen(true), [])
   const closeDialog = useCallback(() => setDialogOpen(false), [])
 
-  const steerAvailable = toolAvailable || nativeSteering
-  const canSubmit =
-    enabled && Boolean(connectionId) && steerAvailable && isPrompting
+  // `connectionId` belongs here, not only in `canSubmit`: a note rides
+  // `submitSessionFeedback(connectionId, …)`, so without one there is no
+  // channel to offer — the composer would surface a mid-turn send whose only
+  // possible outcome is `steer`'s "nothing to steer" rejection.
+  const steerAvailable =
+    Boolean(connectionId) && (toolAvailable || nativeSteering)
+  const canSubmit = enabled && steerAvailable && isPrompting
   const channel: "native" | "pull" = nativeSteering ? "native" : "pull"
   const showList = notes.length > 0 && isPrompting
 

@@ -9,6 +9,7 @@ import {
   Check,
   ChevronUp,
   ClipboardPaste,
+  Clock,
   Cog,
   Copy,
   GitFork,
@@ -224,8 +225,10 @@ interface MessageInputProps {
   /** Which channel {@link onSteer} rides (`useSessionFeedback().channel`).
    *  Picks the honest copy for the mid-turn action: `native` = inserted into
    *  the turn immediately, `pull` = recorded as a note the agent reads on its
-   *  next `check_user_feedback` call. Defaults to `native` (the only channel
-   *  that offered the action before this prop existed). */
+   *  next `check_user_feedback` call. Defaults to `pull` — the weaker promise
+   *  — so a caller that wires `onSteer` and forgets this understates delivery
+   *  rather than claiming an insert that never happened (same reason
+   *  `FeedbackDialog.channel` defaults to `pull`). */
   steerChannel?: "native" | "pull"
   /** Open the live-feedback dialog (from the "+" menu). When omitted the entry
    *  is hidden (feature off). */
@@ -333,7 +336,7 @@ export function MessageInput({
   onCancelQueueEdit,
   onForkSend,
   onSteer,
-  steerChannel = "native",
+  steerChannel = "pull",
   onAddFeedback,
   feedbackAddDisabled,
   injectContent,
@@ -1720,7 +1723,14 @@ export function MessageInput({
                     : undefined
                 }
               >
-                <Zap className="h-4 w-4" />
+                {/* Icon carries the same promise as the label: the bolt is
+                    the instant insert, the clock is the note that waits —
+                    the very glyph the notes strip uses for `pending`. */}
+                {steerChannel === "pull" ? (
+                  <Clock className="h-4 w-4" />
+                ) : (
+                  <Zap className="h-4 w-4" />
+                )}
                 {t(steerChannel === "pull" ? "steerAsNote" : "steerIntoTurn")}
               </DropdownMenuItem>
             </DropdownMenuContent>
