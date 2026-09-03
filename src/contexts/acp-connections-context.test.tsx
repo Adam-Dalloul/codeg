@@ -4080,6 +4080,11 @@ describe("live surfaces that are not tabs", () => {
  * tool result and never as a user message.
  */
 describe("AcpConnectionsProvider mid-turn steering messages", () => {
+  /** The note's `created_at`: when the backend injected the text. Carried onto
+   *  the block so the runtime store can tell the agent's own copy of THIS
+   *  message from the same words sent in an earlier round. */
+  const STEER_AT = "2026-06-07T00:00:00Z"
+
   async function connectOwner(): Promise<AttachHandlers> {
     h.acpFindConnectionForConversation.mockResolvedValue(null)
     await mountProvider()
@@ -4109,7 +4114,7 @@ describe("AcpConnectionsProvider mid-turn steering messages", () => {
       seq,
       connection_id: "spawned-conn",
       type: "feedback_submitted",
-      item: { id, text, created_at: "2026-06-07T00:00:00Z", status },
+      item: { id, text, created_at: STEER_AT, status },
     } as unknown as EventEnvelope
   }
 
@@ -4130,7 +4135,12 @@ describe("AcpConnectionsProvider mid-turn steering messages", () => {
     emitAcpEvent(handlers, submitted(3, "n1", "use the other API", "delivered"))
 
     expect(steeringBlocks()).toEqual([
-      { type: "steering", id: "n1", text: "use the other API" },
+      {
+        type: "steering",
+        id: "n1",
+        text: "use the other API",
+        createdAt: STEER_AT,
+      },
     ])
     expect(conn().steeredMessageIds).toEqual(["n1"])
   })

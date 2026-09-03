@@ -204,8 +204,15 @@ export type LiveContentBlock =
    * new turn. Mirrors what the transcript projection already does with a
    * mid-turn `user_message_chunk` (see `parsers/acp_native.rs`), so the live
    * view and a reload agree. `id` is the feedback note id.
+   *
+   * `createdAt` (ISO, the note's `created_at`) is when the backend injected the
+   * text — stamped on the machine the agent runs on, so it is directly
+   * comparable with the timestamps the agent writes into its own transcript.
+   * That is what lets the runtime store tell the agent's copy of THIS message
+   * from the same words sent in an earlier round (see
+   * `suppressPersistedSteeredPrompts`), and it is the time the message shows.
    */
-  | { type: "steering"; id: string; text: string }
+  | { type: "steering"; id: string; text: string; createdAt: string }
 
 export interface LiveMessage {
   id: string
@@ -620,6 +627,8 @@ type Action =
       contextKey: string
       id: string
       text: string
+      /** The note's `created_at` (ISO) — see the `steering` block. */
+      createdAt: string
     }
   | {
       type: "CLAUDE_API_RETRY"
@@ -1545,6 +1554,15 @@ function connectionsReducer(
         // which is the one failure worse than showing them twice. Drop them:
         // the notes list (hydrated from the same snapshot's `feedback`) shows
         // those messages as strips again.
+        //
+        // Unconditional, including a null `liveMessage` — where the runtime
+        // mirror keeps the previous one (it never writes null) and the steered
+        // turn is still on screen for now. Holding the ids would be right for
+        // that frame and wrong from the next delta on, which rebuilds the live
+        // message without the block and would leave the message nowhere for
+        // the rest of the turn. The cost is the opposite way round: a message
+        // whose persisted copy the transcript is already showing gets a strip
+        // beside it until the turn ends. Turn-scoped, and visible.
         steeredMessageIds: EMPTY_STEERED_MESSAGE_IDS,
         pendingPermission: hydratedPendingPermission,
         pendingAskQuestion: action.patch.pendingAskQuestion,
@@ -2414,7 +2432,12 @@ function connectionsReducer(
           ...prev,
           content: [
             ...prev.content,
-            { type: "steering" as const, id: action.id, text: action.text },
+            {
+              type: "steering" as const,
+              id: action.id,
+              text: action.text,
+              createdAt: action.createdAt,
+            },
           ],
         },
         steeredMessageIds: [...conn.steeredMessageIds, action.id],
@@ -3623,6 +3646,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
             contextKey,
             id: e.item.id,
             text: e.item.text,
+            createdAt: e.item.created_at,
           })
           break
         }

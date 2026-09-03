@@ -2480,17 +2480,51 @@ describe("buildStreamingTurnsFromLiveMessage — codex search/list-files command
  * which flushes the assistant turn and pushes a user turn), so this is what
  * makes the live view agree with a reload.
  */
+/** When the backend injected the steered message — its note's `created_at`,
+ *  stamped where the agent runs. Later than the `turn()` helper's default
+ *  timestamp below, so an unrelated turn from earlier history is provably
+ *  older than any steer in these tests. */
+const STEER_AT = "2026-05-28T00:05:00.000Z"
+/** A turn the agent wrote after that injection — i.e. its own copy. */
+const AFTER_STEER = "2026-05-28T00:05:01.000Z"
+
 describe("buildStreamingTurnsFromLiveMessage - mid-turn steering messages", () => {
   function live(content: LiveContentBlock[]): LiveMessage {
     return { id: "lm-steer", role: "assistant", content, startedAt: 0 }
   }
+
+  it("stamps the message with the instant it was sent, not the turn's start", () => {
+    const turns = buildStreamingTurnsFromLiveMessage(
+      1,
+      live([
+        { type: "text", text: "working on it" },
+        { type: "steering", id: "note-1", text: "stop", createdAt: STEER_AT },
+      ])
+    ).turns
+    const [reply, user] = turns
+    expect(user.timestamp).toBe(STEER_AT)
+    expect(reply.timestamp).toBe(new Date(0).toISOString())
+  })
+
+  it("falls back to the turn's start when the stamp is unreadable", () => {
+    const turns = buildStreamingTurnsFromLiveMessage(
+      1,
+      live([{ type: "steering", id: "note-1", text: "stop", createdAt: "" }])
+    ).turns
+    expect(turns[0].timestamp).toBe(new Date(0).toISOString())
+  })
 
   it("renders a delivered mid-turn message as its own user turn", () => {
     const turns = buildStreamingTurnsFromLiveMessage(
       1,
       live([
         { type: "text", text: "working on it" },
-        { type: "steering", id: "note-1", text: "actually, use the other API" },
+        {
+          type: "steering",
+          id: "note-1",
+          text: "actually, use the other API",
+          createdAt: STEER_AT,
+        },
       ])
     ).turns
 
@@ -2506,7 +2540,12 @@ describe("buildStreamingTurnsFromLiveMessage - mid-turn steering messages", () =
       1,
       live([
         { type: "text", text: "I will report both links once CI is green." },
-        { type: "steering", id: "note-1", text: "not done" },
+        {
+          type: "steering",
+          id: "note-1",
+          text: "not done",
+          createdAt: STEER_AT,
+        },
         { type: "text", text: "Not done - those are the two PRs..." },
       ])
     ).turns
@@ -2531,7 +2570,7 @@ describe("buildStreamingTurnsFromLiveMessage - mid-turn steering messages", () =
       1,
       live([
         { type: "thinking", text: "hmm" },
-        { type: "steering", id: "note-1", text: "stop" },
+        { type: "steering", id: "note-1", text: "stop", createdAt: STEER_AT },
         { type: "text", text: "ok" },
       ])
     ).turns
@@ -2545,7 +2584,7 @@ describe("buildStreamingTurnsFromLiveMessage - mid-turn steering messages", () =
       1,
       live([
         { type: "text", text: "first" },
-        { type: "steering", id: "note-1", text: "wait" },
+        { type: "steering", id: "note-1", text: "wait", createdAt: STEER_AT },
         { type: "text", text: "second" },
       ])
     ).turns
@@ -2558,9 +2597,9 @@ describe("buildStreamingTurnsFromLiveMessage - mid-turn steering messages", () =
       1,
       live([
         { type: "text", text: "a" },
-        { type: "steering", id: "n1", text: "one" },
+        { type: "steering", id: "n1", text: "one", createdAt: STEER_AT },
         { type: "text", text: "b" },
-        { type: "steering", id: "n2", text: "two" },
+        { type: "steering", id: "n2", text: "two", createdAt: STEER_AT },
         { type: "text", text: "c" },
       ])
     ).turns
@@ -2614,13 +2653,14 @@ describe("conversation timeline - a steered message survives a mid-turn reload o
   function turn(
     id: string,
     role: "user" | "assistant",
-    text: string
+    text: string,
+    timestamp = "2026-05-28T00:00:00.000Z"
   ): MessageTurn {
     return {
       id,
       role,
       blocks: [{ type: "text" as const, text }],
-      timestamp: "2026-05-28T00:00:00.000Z",
+      timestamp,
     }
   }
 
@@ -2683,7 +2723,12 @@ describe("conversation timeline - a steered message survives a mid-turn reload o
           role: "assistant",
           content: [
             { type: "text", text: "half one" },
-            { type: "steering", id: "note-1", text: "use the other API" },
+            {
+              type: "steering",
+              id: "note-1",
+              text: "use the other API",
+              createdAt: STEER_AT,
+            },
             { type: "text", text: "half two" },
           ],
           startedAt: 0,
@@ -2693,14 +2738,17 @@ describe("conversation timeline - a steered message survives a mid-turn reload o
     })
 
     // A mid-turn detail fetch lands, carrying the agent's own record of that
-    // same message under a parser id.
+    // same message under a parser id — written after the injection, which is
+    // what marks it as this message's copy. The backend cannot stamp an
+    // in-flight prompt here: it matches the pending prompt against the
+    // transcript TAIL, and the tail is now the steered message.
     mockGetFolderConversation.mockResolvedValueOnce(
       detailWith(
         [
           turn("p-1", "user", "the original prompt"),
-          turn("p-2", "user", "use the other API"),
+          turn("p-2", "user", "use the other API", AFTER_STEER),
         ],
-        "p-1"
+        null
       )
     )
     await act(async () => {
@@ -2724,7 +2772,11 @@ describe("conversation timeline - a steered message survives a mid-turn reload o
     expect(steered[0].phase).toBe("streaming")
   })
 
-  it("never suppresses the in-flight prompt, even when a steer repeats it", async () => {
+  it("never suppresses this round's prompt, even when a steer repeats it", async () => {
+    // And with NO in-flight stamp, which is the shape the backend produces
+    // once the steered message is on the transcript tail: the prompt is safe
+    // because the agent wrote it before the user steered, not because it was
+    // named.
     renderProvider(<RuntimeCapture />)
     const api = () => runtimeHolder.current!
     act(() => {
@@ -2733,20 +2785,27 @@ describe("conversation timeline - a steered message survives a mid-turn reload o
         {
           id: "lm-2",
           role: "assistant",
-          content: [{ type: "steering", id: "note-1", text: "continue" }],
+          content: [
+            {
+              type: "steering",
+              id: "note-1",
+              text: "continue",
+              createdAt: STEER_AT,
+            },
+          ],
           startedAt: 0,
         },
         true
       )
     })
     mockGetFolderConversation.mockResolvedValueOnce(
-      detailWith([turn("p-1", "user", "continue")], "p-1")
+      detailWith([turn("p-1", "user", "continue")], null)
     )
     await act(async () => {
       api().refetchDetail(99, { preserveLive: true })
     })
     // Both survive: hiding a prompt is the one failure worse than showing a
-    // duplicate, so the in-flight turn is always exempt.
+    // duplicate.
     expect(userTexts(api().getTimelineTurns(99))).toEqual([
       "continue",
       "continue",
@@ -2757,9 +2816,8 @@ describe("conversation timeline - a steered message survives a mid-turn reload o
     // Steered text is short and repeatable ("continue", "stop"), and content is
     // the only thing linking the live copy to the persisted one. Matching it
     // across the whole window would hide the SAME words the user sent three
-    // rounds ago for as long as this turn runs. The persisted copy can only
-    // have been written during the running turn, so the round's prompt is the
-    // scope boundary.
+    // rounds ago for as long as this turn runs. Only a turn written after the
+    // injection can be a copy of it.
     renderProvider(<RuntimeCapture />)
     const api = () => runtimeHolder.current!
     act(() => {
@@ -2770,7 +2828,12 @@ describe("conversation timeline - a steered message survives a mid-turn reload o
           role: "assistant",
           content: [
             { type: "text", text: "half one" },
-            { type: "steering", id: "note-1", text: "continue" },
+            {
+              type: "steering",
+              id: "note-1",
+              text: "continue",
+              createdAt: STEER_AT,
+            },
             { type: "text", text: "half two" },
           ],
           startedAt: 0,
@@ -2784,9 +2847,9 @@ describe("conversation timeline - a steered message survives a mid-turn reload o
           turn("p-1", "user", "continue"), // an earlier round, same words
           turn("p-2", "assistant", "sure"),
           turn("p-3", "user", "now do the thing"), // this turn's prompt
-          turn("p-4", "user", "continue"), // the agent's copy of the steer
+          turn("p-4", "user", "continue", AFTER_STEER), // the agent's copy
         ],
-        "p-3"
+        null
       )
     )
     await act(async () => {
@@ -2809,9 +2872,8 @@ describe("conversation timeline - a steered message survives a mid-turn reload o
     expect(steered.map((t) => t.phase)).toEqual(["persisted", "streaming"])
   })
 
-  it("suppresses nothing when the round's prompt is not in the window", async () => {
-    // Reverse infinite scroll can leave the loaded window starting after the
-    // in-flight prompt. With no anchor there is no way to tell this round's
+  it("suppresses nothing when the message carries no readable instant", async () => {
+    // An unparseable stamp on either side leaves no way to tell this round's
     // copy from an older message, so both copies render — a duplicate, never a
     // disappearance.
     renderProvider(<RuntimeCapture />)
@@ -2822,14 +2884,16 @@ describe("conversation timeline - a steered message survives a mid-turn reload o
         {
           id: "lm-4",
           role: "assistant",
-          content: [{ type: "steering", id: "note-1", text: "continue" }],
-          startedAt: 0,
+          content: [
+            { type: "steering", id: "note-1", text: "continue", createdAt: "" },
+          ],
+          startedAt: Date.parse(STEER_AT),
         },
         true
       )
     })
     mockGetFolderConversation.mockResolvedValueOnce(
-      detailWith([turn("p-9", "user", "continue")], "p-3")
+      detailWith([turn("p-9", "user", "continue", AFTER_STEER)], null)
     )
     await act(async () => {
       api().refetchDetail(99, { preserveLive: true })
@@ -2842,10 +2906,9 @@ describe("conversation timeline - a steered message survives a mid-turn reload o
 
   it("leaves a promoted local turn from an earlier round alone", async () => {
     // `localTurns` render as phase "persisted" but are NOT part of the detail's
-    // projection of this round — a mid-turn refetch preserves them, so an
-    // earlier round's promoted prompt sits in the timeline after this round's
-    // anchor. Only what the detail itself lists after the in-flight prompt can
-    // be the agent's copy.
+    // projection — a mid-turn refetch preserves them, and they are stamped from
+    // the client clock, so they are never compared against the injection
+    // instant. Only what the detail itself lists can be the agent's copy.
     renderProvider(<RuntimeCapture />)
     const api = () => runtimeHolder.current!
     const earlierReply: LiveMessage = {
@@ -2868,7 +2931,12 @@ describe("conversation timeline - a steered message survives a mid-turn reload o
           role: "assistant",
           content: [
             { type: "text", text: "half one" },
-            { type: "steering", id: "note-1", text: "continue" },
+            {
+              type: "steering",
+              id: "note-1",
+              text: "continue",
+              createdAt: STEER_AT,
+            },
             { type: "text", text: "half two" },
           ],
           startedAt: 0,
