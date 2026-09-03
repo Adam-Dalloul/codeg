@@ -5291,6 +5291,8 @@ async fn run_connection(
                                 terminal_runtime.clone(),
                                 &cwd,
                                 &cwd_string,
+                                supports_resume,
+                                &mcp_servers,
                                 &prompt_ledger,
                                 delegation_injection.as_ref(),
                                 &stderr_tail,
@@ -5528,6 +5530,8 @@ async fn run_connection(
                             terminal_runtime.clone(),
                             &cwd,
                             &cwd_string,
+                            supports_resume,
+                            &mcp_servers,
                             &prompt_ledger,
                             delegation_injection.as_ref(),
                             &stderr_tail,
@@ -5713,6 +5717,8 @@ async fn run_connection(
                             terminal_runtime.clone(),
                             &cwd,
                             &cwd_string,
+                            supports_resume,
+                            &mcp_servers,
                             &prompt_ledger,
                             delegation_injection.as_ref(),
                             &stderr_tail,
@@ -5793,6 +5799,8 @@ async fn run_connection(
                     terminal_runtime.clone(),
                     &cwd,
                     &cwd_string,
+                    supports_resume,
+                    &mcp_servers,
                     &prompt_ledger,
                     delegation_injection.as_ref(),
                     &stderr_tail,
@@ -7471,9 +7479,9 @@ struct ForkExitInfo {
 /// After `run_conversation_loop` returns, handle normal exit or fork transition.
 ///
 /// When fork is requested, the original session has already been dropped by the
-/// caller.  We attach to the forked session (S2) directly using the
-/// `ForkSessionResponse` — no separate `session/load` is needed because S2 was
-/// just created in-memory by the agent on this connection.
+/// caller. The forked session (S2) is then RE-ESTABLISHED with `session/resume`
+/// before it is attached — see the comment at the resume call for why the
+/// `ForkSessionResponse` alone is not enough to prompt on.
 #[allow(clippy::too_many_arguments)]
 async fn handle_fork_or_exit(
     loop_result: Result<Option<ForkExitInfo>, sacp::Error>,
@@ -7484,8 +7492,13 @@ async fn handle_fork_or_exit(
     perms: &PendingPermissions,
     cmd_rx: &mut mpsc::Receiver<ConnectionCommand>,
     terminal_runtime: Arc<TerminalRuntime>,
-    _cwd: &std::path::Path,
+    cwd: &std::path::Path,
     cwd_string: &str,
+    // `session_capabilities.resume` from initialize, plus the connection's MCP
+    // server list: together they are everything `build_resume_session_request`
+    // needs to make the forked session real on the agent.
+    supports_resume: bool,
+    mcp_servers: &[McpServer],
     // Threaded through from run_connection: the connection-scoped prompt
     // ledger (the forked session's loop keeps fingerprinting into the SAME
     // ledger the still-running watcher consumes from).
@@ -7524,21 +7537,85 @@ async fn handle_fork_or_exit(
             original_session_id: fork_info.original_session_id,
         }));
 
-    // Build a NewSessionResponse from the ForkSessionResponse so we can
-    // attach directly — the forked session is already live on this process.
-    let initial_config_options = fork_resp.config_options.clone();
-    let new_resp = NewSessionResponse::new(fork_resp.session_id)
-        .modes(fork_resp.modes)
-        .config_options(fork_resp.config_options)
-        .meta(fork_resp.meta);
+    // Make the forked session REAL on the agent before anything prompts on it.
+    //
+    // `session/fork` hands back a session id, but on both adapters that
+    // implement it that id is not yet usable — in two different, equally silent
+    // ways:
+    //
+    //   * claude-agent-acp 0.73.0's `unstable_forkSession` returns the SDK's
+    //     `{ sessionId }` verbatim and never inserts it into its own `sessions`
+    //     map, so the first `session/prompt` hits the `if (!session) throw new
+    //     Error("Session not found")` guard at the top of `prompt()`. It also
+    //     returns no modes and no config options at all.
+    //   * codex-acp 1.8.0's `SessionFork` calls `threadUnsubscribe` on the
+    //     freshly forked thread to release its writer lock. A prompt on it then
+    //     runs to completion inside codex — the rollout file grows — but the
+    //     core streams no `turn/*` notifications to an unsubscribed thread, so
+    //     `runTurn` awaits a completion event that never arrives: the turn hangs
+    //     forever and not one token reaches the transcript.
+    //
+    // `session/resume` repairs both: claude's `getOrCreateSession` creates the
+    // session under the SAME id (`createSession` uses `resume` as the id), and
+    // codex's `resumeSession` re-subscribes the thread. Both adapters advertise
+    // it. Resume — not load — because load would replay the whole forked history
+    // for us to drain and discard; the transcript the user sees comes from the
+    // disk parser (same reasoning as the reconnect ladder above).
+    //
+    // Degradation is deliberate and total: an agent that forks WITHOUT
+    // advertising resume, or whose resume fails, falls back to attaching the
+    // fork response exactly as before. Neither is worse off than it was before
+    // this call existed.
+    let resumed = if supports_resume {
+        let resume_req = build_resume_session_request(
+            agent_type,
+            SessionId::new(new_sid.clone()),
+            cwd,
+            mcp_servers.to_vec(),
+        );
+        match send_resume_session(&cx, resume_req).await {
+            Ok(pair) => Some(pair),
+            Err(e) => {
+                tracing::warn!(
+                    "[ACP] session/resume on the forked session failed ({e}); \
+                     attaching to the fork response as-is"
+                );
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    // Prefer the resume response: it describes the session as the agent holds it
+    // right now, and for claude it is the ONLY source of modes/config options.
+    let (initial_config_options, new_resp, models_raw) = match resumed {
+        Some((resume_resp, resume_models_raw)) => (
+            resume_resp.config_options.clone(),
+            NewSessionResponse::new(SessionId::new(new_sid.clone()))
+                .modes(resume_resp.modes)
+                .config_options(resume_resp.config_options)
+                .meta(resume_resp.meta),
+            resume_models_raw,
+        ),
+        None => (
+            fork_resp.config_options.clone(),
+            NewSessionResponse::new(fork_resp.session_id)
+                .modes(fork_resp.modes)
+                .config_options(fork_resp.config_options)
+                .meta(fork_resp.meta),
+            fork_models_raw,
+        ),
+    };
     let grok_meta = if agent_type == AgentType::Grok {
         new_resp.meta.clone()
     } else {
         None
     };
-    // Opportunistic: grok may carry per-model effort data on a fork response.
+    // Opportunistic: grok may carry per-model effort data on a fork (or, when
+    // the fork was re-established above, a resume) response.
     let grok_model_specs =
-        (agent_type == AgentType::Grok).then(|| parse_grok_model_specs(fork_models_raw.as_ref()));
+        (agent_type == AgentType::Grok).then(|| parse_grok_model_specs(models_raw.as_ref()));
     let mut session = cx.attach_session(new_resp, Default::default())?;
 
     // A fork is a new session id, hence a new transcript file. Its history
@@ -7598,8 +7675,10 @@ async fn handle_fork_or_exit(
         perms,
         cmd_rx,
         terminal_runtime,
-        _cwd,
+        cwd,
         cwd_string,
+        supports_resume,
+        mcp_servers,
         prompt_ledger,
         delegation_injection,
         stderr_tail,
