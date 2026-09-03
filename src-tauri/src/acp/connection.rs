@@ -3587,6 +3587,12 @@ async fn apply_and_emit_session_config_options(
     preferred_config_values: &BTreeMap<String, String>,
     initial_config_options: Vec<SessionConfigOption>,
 ) {
+    // Every establishment starts from an empty ledger. `SessionState` outlives a
+    // fork transition, so without this the child would inherit — and defend —
+    // whatever the parent asserted, on paths that never write it back: Grok's
+    // dedicated branch below, and the empty-preferences early return inside
+    // `apply_preferred_session_options`. See `SessionState::asserted_config_values`.
+    state.write().await.asserted_config_values.clear();
     if agent_type == AgentType::Grok {
         let specs = grok_model_specs.cloned().unwrap_or_default();
         if let Some(mut opts) = synthesize_grok_config_options(grok_meta, &specs) {
@@ -6460,6 +6466,16 @@ async fn set_session_config_option(
     config_id: String,
     value_id: String,
 ) -> Result<(), sacp::Error> {
+    // An explicit set means someone has taken ownership of this option — the
+    // user in the composer, or the post-establishment re-assert (already
+    // drained). Either way the establishment-time value stops being the one to
+    // defend, or the user's own pick would be reverted by the next push.
+    // Establishment itself goes through `..._inner` and is unaffected.
+    state
+        .write()
+        .await
+        .asserted_config_values
+        .remove(&config_id);
     // The whole selector transport carries values as opaque strings; only here,
     // at the wire, does the option's advertised kind decide how to encode it.
     let is_boolean = state
@@ -6739,7 +6755,71 @@ async fn apply_preferred_session_options(
         }
     }
 
+    // Record what the agent CONFIRMED, not what we asked for, so a rejected or
+    // rewritten pick is never re-asserted against the agent's own verdict
+    // (`config_option_rejection` already tells the user about those). See
+    // `SessionState::asserted_config_values` for why this is retained at all.
+    let settled = current_config_option_values(&map_session_config_options(&options));
+    //
+    // Assigned unconditionally, empty result included: establishment OWNS the
+    // ledger. `SessionState` spans fork transitions, so merging into whatever
+    // the previous session left behind would defend values this session never
+    // asserted — and, when the agent rejected them here, values it has already
+    // refused once.
+    state.write().await.asserted_config_values = preferred_config_values
+        .iter()
+        .filter(|(config_id, value_id)| settled.get(*config_id) == Some(*value_id))
+        .map(|(config_id, value_id)| (config_id.clone(), value_id.clone()))
+        .collect();
+
     options
+}
+
+/// Compare an agent-pushed config-option list against the values codeg asserted
+/// at session establishment and return the ones the push contradicts, removing
+/// each from the ledger as it is returned, **in application order**.
+///
+/// Removing on read is what bounds this: an option can be re-asserted at most
+/// once per session, so an agent that re-pins unconditionally costs one extra
+/// round-trip instead of an endless ping-pong. An empty ledger (the state after
+/// the first prompt, and for every agent that doesn't push) makes this a cheap
+/// read of a `BTreeMap` that is almost always empty.
+///
+/// The order is not cosmetic, and a `BTreeMap`'s alphabetical one is wrong.
+/// Reverting a model re-pin is precisely the case where a single push drifts
+/// BOTH the model and the effort hanging off it, and replaying `effort` before
+/// `model` lets the model switch re-scope effort right back — with both ledger
+/// entries already spent. `order_preferred_config_values` is the same
+/// model-first rule the establishment replay uses, for the same reason.
+async fn take_asserted_config_drift(
+    state: &Arc<RwLock<SessionState>>,
+    pushed: &[SessionConfigOption],
+) -> Vec<(String, String)> {
+    if state.read().await.asserted_config_values.is_empty() {
+        return Vec::new();
+    }
+    let pushed_values = current_config_option_values(&map_session_config_options(pushed));
+    let drifted: BTreeMap<String, String> = {
+        let mut snapshot = state.write().await;
+        let drifted: BTreeMap<String, String> = snapshot
+            .asserted_config_values
+            .iter()
+            .filter(|(config_id, asserted)| {
+                pushed_values
+                    .get(*config_id)
+                    .is_some_and(|pushed| pushed != *asserted)
+            })
+            .map(|(config_id, asserted)| (config_id.clone(), asserted.clone()))
+            .collect();
+        for config_id in drifted.keys() {
+            snapshot.asserted_config_values.remove(config_id);
+        }
+        drifted
+    };
+    order_preferred_config_values(pushed, &drifted)
+        .into_iter()
+        .map(|(config_id, value_id)| (config_id.clone(), value_id.clone()))
+        .collect()
 }
 
 const TERMINAL_POLL_INTERVAL_MS: u64 = 200;
@@ -7485,12 +7565,36 @@ fn prepare_agent_bound_prompt(
     map_prompt_blocks(blocks)
 }
 
+/// The mode a fork should carry into its child: the event-tracked mode of the
+/// live parent, but only when that parent actually advertises modes.
+///
+/// `SessionState` spans nested fork transitions, so `current_mode` alone can
+/// belong to an ancestor. `parent_modes` is the capability gate that discards
+/// it — see [`ForkExitInfo::inherited_mode_id`].
+fn live_mode_for_fork(
+    state: &SessionState,
+    parent_modes: Option<&SessionModeState>,
+) -> Option<String> {
+    parent_modes.and(state.current_mode.clone())
+}
+
 /// Result when the conversation loop exits due to a fork request.
 struct ForkExitInfo {
     fork_response: sacp::schema::ForkSessionResponse,
     /// Raw top-level `models` from the fork response (Grok per-model effort data),
     /// captured before the typed deserialize drops it. `None` when absent.
     fork_models_raw: Option<serde_json::Value>,
+    /// The parent's live mode, or `None` when the parent advertised no modes.
+    ///
+    /// Captured here rather than read off `SessionState` in the fork handler
+    /// because `emit_session_modes` is a no-op for a modes-less session
+    /// (`connection.rs`, `if let Some(mode_state) = modes`), so
+    /// `current_mode` survives a transition into one and would hand an
+    /// ancestor's mode to a child that does advertise modes. The parent's
+    /// `ActiveSession` is the only capability answer that can't go stale.
+    /// Its `current_mode_id` is NOT used — codeg tracks mode changes through
+    /// events, and the attach-time snapshot never sees them.
+    inherited_mode_id: Option<String>,
     original_session_id: String,
     reply: tokio::sync::oneshot::Sender<Result<crate::acp::types::ForkProtocolResult, AcpError>>,
     connection: ConnectionTo<Agent>,
@@ -7556,17 +7660,19 @@ async fn handle_fork_or_exit(
     // populated one resets them. Restoring them here is the same machinery a
     // reconnect uses, and it is a no-op per option when the value already
     // matches, so an agent that does inherit pays nothing.
-    let (inherited_mode_id, inherited_config_values) = {
-        let snapshot = state.read().await;
-        (
-            snapshot.current_mode.clone(),
-            snapshot
-                .config_options
-                .as_deref()
-                .map(current_config_option_values)
-                .unwrap_or_default(),
-        )
-    };
+    //
+    // Mode comes pre-gated from the fork request (`ForkExitInfo::
+    // inherited_mode_id`); config values are read here because
+    // `emit_session_config_options_values` always writes the list — an agent
+    // with no config options leaves an empty one, not a stale one.
+    let inherited_mode_id = fork_info.inherited_mode_id;
+    let inherited_config_values = state
+        .read()
+        .await
+        .config_options
+        .as_deref()
+        .map(current_config_option_values)
+        .unwrap_or_default();
 
     tracing::info!(
         "[ACP] Fork transition: attaching to forked session {} (original: {})",
@@ -7694,6 +7800,16 @@ async fn handle_fork_or_exit(
         initial_config_options.unwrap_or_default(),
     )
     .await;
+    tracing::info!(
+        "[ACP] Fork selectors after restore: mode={:?} model={:?}",
+        state.read().await.current_mode,
+        state
+            .read()
+            .await
+            .config_options
+            .as_deref()
+            .and_then(current_model_id_from_opts)
+    );
     emit_selectors_ready(state, emitter).await;
 
     let loop_result = run_conversation_loop(
@@ -8321,6 +8437,12 @@ async fn run_conversation_loop<'a>(
     // the same failure (the agent is speaking a protocol we can't read), so the
     // operator wants one signal, not three interleaved ones.
     let mut drop_log_throttle = LeadingEdgeThrottle::new(DROPPED_UPDATE_LOG_WINDOW);
+    // Options an agent push reverted after codeg asserted them at establishment.
+    // Queued rather than re-asserted in place because the select below borrows
+    // `session` for `read_update`, and the re-assert needs its connection;
+    // drained immediately after the select, still inside the idle loop (the
+    // OUTER loop only advances on a command, which may never come).
+    let mut config_drift_to_reassert: Vec<(String, String)> = Vec::new();
     loop {
         // Wait for either a user command or a session update (e.g. available_commands_update)
         let cmd = loop {
@@ -8340,9 +8462,17 @@ async fn run_conversation_loop<'a>(
                             if let Some(delta) = air_async_task_delta(&dispatch) {
                                 emit_with_state(&st, &h, AcpEvent::AsyncTask { delta }).await;
                             } else {
+                            let drift = &mut config_drift_to_reassert;
                             let _ = MatchDispatch::new(dispatch)
                                 .if_notification(
                                     async |notif: SessionNotification| {
+                                        // BEFORE the emit: it overwrites the very
+                                        // state the comparison reads.
+                                        if let SessionUpdate::ConfigOptionUpdate(update) = &notif.update {
+                                            drift.extend(
+                                                take_asserted_config_drift(&st, &update.config_options).await,
+                                            );
+                                        }
                                         emit_conversation_update(&st, &h, agent_type, notif.update, cwd_opt, &mut raw_output_cache, &mut cb_state).await;
                                         Ok(())
                                     },
@@ -8362,6 +8492,25 @@ async fn run_conversation_loop<'a>(
                     }
                 }
             }
+            // Reached only on the update arm (the command arm breaks out), so
+            // `session` is free again here.
+            for (config_id, value_id) in std::mem::take(&mut config_drift_to_reassert) {
+                tracing::info!(
+                    "[ACP] re-asserting '{config_id}'='{value_id}' — the agent reverted it \
+                     after codeg applied it at session establishment"
+                );
+                let cx = session.connection();
+                let sid = session.session_id().clone();
+                if let Err(e) =
+                    set_session_config_option(&cx, &sid, state, emitter, config_id.clone(), value_id)
+                        .await
+                {
+                    // Advisory: the agent is running what it pushed and has already
+                    // told the frontend so. Failing the connection over a selector
+                    // would be far worse than the value not being restored.
+                    tracing::warn!("[ACP] failed to re-assert '{config_id}' after a revert: {e}");
+                }
+            }
         };
         match cmd {
             Some(ConnectionCommand::Prompt {
@@ -8373,6 +8522,11 @@ async fn run_conversation_loop<'a>(
                 // consumed: the transcript record this prompt becomes must
                 // classify as wire-rendered foreground, not overlay.
                 prompt_ledger.record_prompt_blocks(&blocks);
+                // Establishment is over the moment the user speaks: from here a
+                // config push is attributable to the prompt (`/model` typed in
+                // chat is one), so codeg stops arbitrating and the agent owns
+                // the selectors. See `SessionState::asserted_config_values`.
+                state.write().await.asserted_config_values.clear();
                 // Cursor's ACP store carries no per-turn timestamps at all
                 // (see `crate::turn_timings`), so codeg journals its own
                 // observation of the turn span: hash + ordinal here (before
@@ -9322,6 +9476,8 @@ async fn run_conversation_loop<'a>(
                 }
                 let cx = session.connection();
                 let sid = session.session_id().clone();
+                let inherited_mode_id =
+                    live_mode_for_fork(&*state.read().await, session.modes().as_ref());
                 tracing::info!(
                     "[ACP] Sending session/fork for session_id={} cwd={} fork_point={:?}",
                     sid.0,
@@ -9339,6 +9495,7 @@ async fn run_conversation_loop<'a>(
                         return Ok(Some(ForkExitInfo {
                             fork_response,
                             fork_models_raw,
+                            inherited_mode_id,
                             original_session_id: sid.0.to_string(),
                             reply,
                             connection: cx,
@@ -12611,6 +12768,19 @@ async fn emit_conversation_update(
             .await;
         }
         SessionUpdate::ConfigOptionUpdate(update) => {
+            // Agent-initiated push, applied verbatim: it reports what the agent
+            // is actually running, and nothing here distinguishes "the user
+            // typed /model" from "the agent re-pinned its own default". Logged
+            // because it can silently overwrite a value codeg just applied.
+            //
+            // Whether an establishment-time value gets defended against this is
+            // decided one level up, in the idle loop's copy of this arm
+            // (`take_asserted_config_drift`) — it has to run BEFORE this emit,
+            // which overwrites the state the comparison reads.
+            tracing::info!(
+                "[ACP] agent pushed config_option_update: model={:?}",
+                current_model_id_from_opts(&map_session_config_options(&update.config_options))
+            );
             emit_session_config_options_values(state, emitter, update.config_options)
                 .await;
         }
@@ -20600,6 +20770,173 @@ mod tests {
             .map(|(id, _)| id.as_str())
             .collect();
         assert_eq!(ordered, vec!["a_thing", "z_thing"]);
+    }
+
+    /// The claude shape: a model select plus the effort option that hangs off it.
+    fn asserted_drift_options(model: &str, effort: &str) -> Vec<SessionConfigOption> {
+        serde_json::from_value(serde_json::json!([
+            {
+                "type": "select",
+                "id": "model",
+                "name": "Model",
+                "category": "model",
+                "currentValue": model,
+                "options": [
+                    {"value": "sonnet[1m]", "name": "Sonnet"},
+                    {"value": "claude-fable-5-1[1m]", "name": "Fable"},
+                ],
+            },
+            {
+                "type": "select",
+                "id": "effort",
+                "name": "Effort",
+                "currentValue": effort,
+                "options": [{"value": "high", "name": "High"}, {"value": "medium", "name": "Medium"}],
+            },
+        ]))
+        .expect("parses")
+    }
+
+    fn asserted_drift_state(asserted: &[(&str, &str)]) -> Arc<RwLock<SessionState>> {
+        let mut st = SessionState::new(
+            "conn-drift".to_string(),
+            AgentType::ClaudeCode,
+            None,
+            "win".to_string(),
+            None,
+        );
+        st.asserted_config_values = asserted
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        Arc::new(RwLock::new(st))
+    }
+
+    /// The fork symptom in miniature: codeg applies the parent's `sonnet[1m]`,
+    /// claude answers OK, then ~2ms later pushes its own re-pin. Effort rides
+    /// along because a model switch re-scopes it — one push, two reverted
+    /// options, and BOTH have to come back.
+    ///
+    /// Order is the load-bearing half: alphabetically `effort` precedes `model`,
+    /// and replaying it first lets the model switch re-scope effort straight
+    /// back — with both ledger entries already spent, so nothing defends it a
+    /// second time. Model must lead, exactly as in the establishment replay.
+    #[tokio::test]
+    async fn an_agent_push_that_reverts_an_asserted_value_is_reported_as_drift() {
+        let state = asserted_drift_state(&[("model", "sonnet[1m]"), ("effort", "high")]);
+
+        let drift = take_asserted_config_drift(
+            &state,
+            &asserted_drift_options("claude-fable-5-1[1m]", "medium"),
+        )
+        .await;
+
+        assert_eq!(
+            drift,
+            vec![
+                ("model".to_string(), "sonnet[1m]".to_string()),
+                ("effort".to_string(), "high".to_string()),
+            ],
+            "both reverted options come back, at the values codeg applied, model first"
+        );
+    }
+
+    /// Removing on read is the whole ping-pong bound: an agent that re-pins
+    /// unconditionally costs exactly one extra round-trip, then wins.
+    #[tokio::test]
+    async fn each_asserted_option_is_defended_at_most_once() {
+        let state = asserted_drift_state(&[("model", "sonnet[1m]")]);
+        let pushed = asserted_drift_options("claude-fable-5-1[1m]", "high");
+
+        assert_eq!(take_asserted_config_drift(&state, &pushed).await.len(), 1);
+        assert!(
+            take_asserted_config_drift(&state, &pushed).await.is_empty(),
+            "a second identical push must not start a set_config_option loop"
+        );
+        assert!(state.read().await.asserted_config_values.is_empty());
+    }
+
+    /// Silence in the two cases that must stay silent: a push that agrees, and
+    /// the post-prompt state where the agent owns the selectors outright.
+    #[tokio::test]
+    async fn an_agreeing_push_and_an_empty_ledger_produce_no_drift() {
+        let agreeing = asserted_drift_state(&[("model", "sonnet[1m]"), ("effort", "high")]);
+        assert!(
+            take_asserted_config_drift(&agreeing, &asserted_drift_options("sonnet[1m]", "high"))
+                .await
+                .is_empty()
+        );
+        assert_eq!(
+            agreeing.read().await.asserted_config_values.len(),
+            2,
+            "an agreeing push consumes nothing — the next one still gets defended"
+        );
+
+        let after_first_prompt = asserted_drift_state(&[]);
+        assert!(take_asserted_config_drift(
+            &after_first_prompt,
+            &asserted_drift_options("claude-fable-5-1[1m]", "medium")
+        )
+        .await
+        .is_empty());
+    }
+
+    /// An option the push doesn't mention at all is not drift — a partial list
+    /// is the agent narrowing what it reports, not reverting what it omits.
+    #[tokio::test]
+    async fn an_option_absent_from_the_push_is_not_drift() {
+        let state = asserted_drift_state(&[("model", "sonnet[1m]"), ("sandbox", "read-only")]);
+
+        let drift = take_asserted_config_drift(
+            &state,
+            &asserted_drift_options("claude-fable-5-1[1m]", "high"),
+        )
+        .await;
+
+        assert_eq!(drift, vec![("model".to_string(), "sonnet[1m]".to_string())]);
+        assert_eq!(
+            state.read().await.asserted_config_values.keys().collect::<Vec<_>>(),
+            vec!["sandbox"],
+            "the unmentioned option stays defended"
+        );
+    }
+
+    /// `emit_session_modes` is a no-op for a modes-less session, so
+    /// `current_mode` outlives a transition into one. Without the parent's
+    /// capability gate a fork would hand that ancestor's mode to a child that
+    /// does advertise modes.
+    #[test]
+    fn a_modes_less_parent_does_not_pass_an_ancestors_mode_to_the_fork() {
+        let mut st = SessionState::new(
+            "conn-fork-mode".to_string(),
+            AgentType::ClaudeCode,
+            None,
+            "win".to_string(),
+            None,
+        );
+        st.apply_event(&AcpEvent::ModeChanged {
+            mode_id: "bypassPermissions".to_string(),
+        });
+        assert_eq!(st.current_mode.as_deref(), Some("bypassPermissions"));
+
+        assert_eq!(
+            live_mode_for_fork(&st, None),
+            None,
+            "a parent with no modes has no mode to inherit, stale value or not"
+        );
+
+        let modes = SessionModeState::new(
+            "default".to_string(),
+            vec![sacp::schema::SessionMode::new(
+                "bypassPermissions",
+                "Bypass",
+            )],
+        );
+        assert_eq!(
+            live_mode_for_fork(&st, Some(&modes)).as_deref(),
+            Some("bypassPermissions"),
+            "the event-tracked mode is inherited, not the attach-time snapshot's"
+        );
     }
 
     #[test]

@@ -331,6 +331,25 @@ pub struct SessionState {
     /// non-Grok agents and when the response carried no `models` (flat fallback).
     /// Backend-internal — not serialized.
     pub grok_model_specs: Option<std::collections::HashMap<String, GrokModelSpec>>,
+
+    /// Config-option values codeg asserted while establishing this session
+    /// (`apply_preferred_session_options`) and the agent confirmed — the user's
+    /// saved preferences on a connect, the parent's selectors on a fork.
+    ///
+    /// Kept only until the user's first prompt, to arbitrate ONE race: an agent
+    /// may re-pin its own model AFTER answering our `set_config_option`, and the
+    /// resulting `config_option_update` push is indistinguishable from the user
+    /// picking that model themselves. Claude does exactly this on the resume
+    /// that re-establishes a forked session — the push lands ~2ms after our
+    /// apply and silently reverts it, and effort follows because a model switch
+    /// re-scopes the effort option. Before the user has said anything, such a
+    /// push can only be establishment noise, so the connection re-asserts once
+    /// (see `take_asserted_config_drift`). Once a prompt is sent, every push is
+    /// attributable to what the user asked for — `/model` typed in chat is one —
+    /// so the map is cleared and the agent wins from then on.
+    ///
+    /// Backend-internal — not serialized, not carried on `to_snapshot()`.
+    pub asserted_config_values: BTreeMap<String, String>,
     pub prompt_capabilities: Option<PromptCapabilitiesInfo>,
     pub fork_supported: bool,
     pub available_commands: Vec<AvailableCommandInfo>,
@@ -597,6 +616,7 @@ impl SessionState {
             current_mode: None,
             config_options: None,
             grok_model_specs: None,
+            asserted_config_values: BTreeMap::new(),
             prompt_capabilities: None,
             fork_supported: false,
             available_commands: Vec::new(),
