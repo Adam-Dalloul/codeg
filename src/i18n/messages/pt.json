@@ -3132,6 +3132,7 @@
         "systemMessage": "Mensagem do sistema",
         "copyMessage": "Copiar",
         "forkFromHere": "Bifurcar a partir daqui",
+        "forkBusy": "Não é possível bifurcar enquanto há um turno em andamento",
         "copied": "Copiado",
         "selectionActions": "Ações de seleção",
         "selectionCopy": "Copiar texto",

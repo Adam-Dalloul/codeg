@@ -3132,6 +3132,7 @@
         "systemMessage": "رسالة النظام",
         "copyMessage": "نسخ",
         "forkFromHere": "تفريع من هنا",
+        "forkBusy": "لا يمكن التفريع أثناء تنفيذ دور",
         "copied": "تم النسخ",
         "selectionActions": "إجراءات التحديد",
         "selectionCopy": "نسخ النص",

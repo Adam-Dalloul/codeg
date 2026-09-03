@@ -132,9 +132,12 @@ interface MessageListViewProps {
   /**
    * Fork the session at a rendered assistant turn ("fork from here"). Undefined
    * hides the affordance everywhere in this view — pass it only where a fork
-   * can actually run (live connection, agent supports `session/fork`, no turn
-   * in flight). Embeds that are not the owning conversation surface leave it
-   * unset.
+   * can actually run (live connection, agent supports `session/fork`). Embeds
+   * that are not the owning conversation surface leave it unset.
+   *
+   * "No turn in flight" is deliberately NOT part of this gate: that condition
+   * is transient and comes back, so the view renders it as a disabled button
+   * (see `forkBusy`) rather than making every reply's footer flicker.
    */
   onForkFromTurn?: (turnId: string) => void
 }
@@ -766,6 +769,7 @@ const HistoricalMessageGroup = memo(function HistoricalMessageGroup({
   onRoundOpenChange,
   foldEpoch = 0,
   onForkFromTurn,
+  forkDisabled = false,
 }: {
   group: ResolvedMessageGroup
   dimmed?: boolean
@@ -778,6 +782,7 @@ const HistoricalMessageGroup = memo(function HistoricalMessageGroup({
   onRoundOpenChange?: (open: boolean) => void
   foldEpoch?: number
   onForkFromTurn?: (turnId: string) => void
+  forkDisabled?: boolean
 }) {
   if (group.role === "system") {
     return <CollapsibleSystemMessage parts={group.parts} />
@@ -830,6 +835,7 @@ const HistoricalMessageGroup = memo(function HistoricalMessageGroup({
           isResponseComplete={isResponseComplete}
           copyText={extractTextFromParts(group.parts)}
           completedAt={group.completed_at}
+          forkDisabled={forkDisabled}
           onForkFromHere={
             // The group's LAST turn: forking is "up to and including this
             // reply", and a merged group ends where the reply does. Gated on a
@@ -1162,6 +1168,12 @@ export function MessageListView({
     [historicalPlanEntries]
   )
 
+  // A turn in flight doesn't take the fork affordance away, it greys it out:
+  // the host keeps `onForkFromTurn` set for the whole "prompting" window (see
+  // its gate in `conversation-detail-panel`), and every reply's footer says
+  // "not right now" instead of dropping its button and shifting the icon row.
+  const forkBusy = connStatus === "prompting"
+
   const renderThreadItem = useCallback(
     (item: ThreadRenderItem) => {
       switch (item.kind) {
@@ -1194,6 +1206,7 @@ export function MessageListView({
                 onRoundOpenChange={handleRoundOpenChange}
                 foldEpoch={fold.epoch}
                 onForkFromTurn={onForkFromTurn}
+                forkDisabled={forkBusy}
               />
             </div>
           )
@@ -1218,6 +1231,7 @@ export function MessageListView({
       fold.epoch,
       handleRoundOpenChange,
       onForkFromTurn,
+      forkBusy,
     ]
   )
 

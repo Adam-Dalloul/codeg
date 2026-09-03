@@ -3132,6 +3132,7 @@
         "systemMessage": "系統訊息",
         "copyMessage": "複製",
         "forkFromHere": "從此處分叉",
+        "forkBusy": "目前有回合正在進行，暫不可分叉",
         "copied": "已複製",
         "selectionActions": "選取內容操作",
         "selectionCopy": "複製文字",

@@ -3132,6 +3132,7 @@
         "systemMessage": "System message",
         "copyMessage": "Copy",
         "forkFromHere": "Fork from here",
+        "forkBusy": "Can't fork while a turn is running",
         "copied": "Copied",
         "selectionActions": "Selection actions",
         "selectionCopy": "Copy Text",

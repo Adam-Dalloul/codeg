@@ -3132,6 +3132,7 @@
         "systemMessage": "Systemnachricht",
         "copyMessage": "Kopieren",
         "forkFromHere": "Ab hier verzweigen",
+        "forkBusy": "Verzweigen nicht möglich, während ein Zug läuft",
         "copied": "Kopiert",
         "selectionActions": "Auswahlaktionen",
         "selectionCopy": "Text kopieren",

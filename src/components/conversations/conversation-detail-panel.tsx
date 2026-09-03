@@ -1262,10 +1262,16 @@ const ConversationTabView = memo(function ConversationTabView({
   // Which turns the agent can actually name is the backend's call
   // (`resolve_fork_point`): a turn it cannot name forks at the tail rather than
   // failing, so this never has to reason about per-agent identity.
+  //
+  // Liveness is read off `connStatusRef` rather than captured: this callback is
+  // handed to every rendered reply, so taking `connStatus` as a dependency
+  // would swap its identity at both ends of every turn and re-render the whole
+  // mounted transcript window for nothing. The ref is also the fresher answer
+  // at click time.
   const handleForkFromTurn = useCallback(
     async (turnId: string) => {
       const connectionId = conn.connectionId
-      if (!connectionId || connStatus !== "connected") return
+      if (!connectionId || connStatusRef.current !== "connected") return
       // Snapshot which live turns belong to the PRE-fork session, before the
       // await. The fork RPC is a window in which a send can still start — a
       // queued auto-flush, a fast typist, another client — and such a turn
@@ -1334,7 +1340,6 @@ const ConversationTabView = memo(function ConversationTabView({
     },
     [
       conn.connectionId,
-      connStatus,
       effectiveConversationId,
       folderId,
       refetchDetail,
@@ -1969,8 +1974,15 @@ const ConversationTabView = memo(function ConversationTabView({
         // not at risk of being jumped and needs no guard here. A turn in
         // flight is still rejected, by the backend, which is the only place
         // that can see it without racing.
+        //
+        // "prompting" belongs on this side of the gate (same shape as the
+        // goal-control gate above): this answers "can this surface fork at
+        // all", and a turn in flight is a passing "not right now" that the
+        // view greys the button out for. Dropping the handler instead made
+        // every reply's fork icon disappear for the length of each reply.
+        // `handleForkFromTurn` re-checks liveness at click time.
         onForkFromTurn={
-          connStatus === "connected" &&
+          (connStatus === "connected" || connStatus === "prompting") &&
           hasPersistedConversation &&
           conn.supportsFork
             ? handleForkFromTurn
