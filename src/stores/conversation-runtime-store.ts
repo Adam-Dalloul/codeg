@@ -1670,17 +1670,6 @@ function updateSessionInState(
  * fine. Unknown block types are serialized whole rather than collapsed to their
  * tag, so no distinguishing content is silently dropped.
  */
-/** `userTurnContentKey` for a mid-turn steered message, whose persisted copy is
- *  a user turn carrying exactly its text (see `suppressPersistedSteeredPrompts`). */
-function steeredContentKey(text: string): string {
-  return userTurnContentKey({
-    id: "",
-    role: "user",
-    blocks: [{ type: "text", text }],
-    timestamp: "",
-  })
-}
-
 function userTurnContentKey(turn: MessageTurn): string {
   return JSON.stringify(
     turn.blocks.map((b) => {
@@ -1694,6 +1683,17 @@ function userTurnContentKey(turn: MessageTurn): string {
       }
     })
   )
+}
+
+/** The same key for a mid-turn steered message, whose persisted copy is a user
+ *  turn carrying exactly its text (see `suppressPersistedSteeredPrompts`). */
+function steeredContentKey(text: string): string {
+  return userTurnContentKey({
+    id: "",
+    role: "user",
+    blocks: [{ type: "text", text }],
+    timestamp: "",
+  })
 }
 
 /**
