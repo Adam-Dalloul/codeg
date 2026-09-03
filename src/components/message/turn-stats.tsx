@@ -7,8 +7,8 @@ import {
   CheckIcon,
   Coins,
   CopyIcon,
-  GitFork,
   ListTodo,
+  Split,
 } from "lucide-react"
 import { useLocale, useTranslations } from "next-intl"
 import {
@@ -187,7 +187,7 @@ export function TurnStats({
                 className={iconButtonClass}
                 aria-label={t("forkFromHere")}
               >
-                <GitFork aria-hidden="true" className="h-3.5 w-3.5" />
+                <Split aria-hidden="true" className="h-3.5 w-3.5" />
               </button>
             </TooltipTrigger>
             <TooltipContent side="top">{t("forkFromHere")}</TooltipContent>
