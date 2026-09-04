@@ -413,6 +413,34 @@ describe("useSessionFeedback", () => {
     expect(result.current.notesExpired).toBe(false)
   })
 
+  it.each(["connecting", "disconnected", "error"] as const)(
+    "does not call the turn over on a %s session",
+    async (connStatus) => {
+      // Only a live, IDLE session proves the turn ended. These three can read
+      // "not prompting" with the agent still running and the note still
+      // consumable — a mid-turn attach hydrates in `connecting`, and the
+      // liveness sweep flips to `disconnected` when the terminal event never
+      // arrived. Offering "send as message" there buys a duplicate: the user
+      // queues a copy, the agent goes on to read the original.
+      const { result } = renderHook(
+        (p: UseSessionFeedbackArgs) => useSessionFeedback(p),
+        { initialProps: { ...baseProps, connStatus } as UseSessionFeedbackArgs }
+      )
+      await waitFor(() => expect(capturedHandler).toBeTruthy())
+      act(() =>
+        capturedHandler!({
+          seq: 0,
+          connection_id: "c1",
+          type: "feedback_submitted",
+          item: note("n1", "use pnpm"),
+        } as EventEnvelope)
+      )
+
+      expect(result.current.notesExpired).toBe(false)
+      expect(result.current.showList).toBe(false)
+    }
+  )
+
   it("resendNote sends the note's text as a message and retires the row", async () => {
     const onResendAsPrompt = vi.fn()
     const { result } = await endTurnWith([note("n1", "use pnpm")], {
@@ -422,18 +450,56 @@ describe("useSessionFeedback", () => {
     act(() => result.current.resendNote("n1"))
 
     expect(onResendAsPrompt).toHaveBeenCalledWith("use pnpm")
+    expect(onResendAsPrompt).toHaveBeenCalledTimes(1)
     expect(result.current.showList).toBe(false)
   })
 
-  it("dismissNote retires the row without sending anything", async () => {
+  it("resendNote sends once even when clicked twice in a tick", async () => {
+    // Both calls see the row: it only leaves on the next render. Resending is
+    // the one action here that would actually reach the agent twice.
     const onResendAsPrompt = vi.fn()
     const { result } = await endTurnWith([note("n1", "use pnpm")], {
       onResendAsPrompt,
     })
 
+    act(() => {
+      result.current.resendNote("n1")
+      result.current.resendNote("n1")
+    })
+
+    expect(onResendAsPrompt).toHaveBeenCalledTimes(1)
+  })
+
+  it("dismissNote retires only its own row, and sends nothing", async () => {
+    const onResendAsPrompt = vi.fn()
+    const { result } = await endTurnWith(
+      [note("n1", "use pnpm"), note("n2", "and run the tests")],
+      { onResendAsPrompt }
+    )
+
     act(() => result.current.dismissNote("n1"))
 
     expect(onResendAsPrompt).not.toHaveBeenCalled()
+    expect(result.current.notes.map((n) => n.id)).toEqual(["n2"])
+  })
+
+  it("keeps a retired row retired against a late submit broadcast", async () => {
+    const { result } = await endTurnWith([note("n1", "use pnpm")])
+    act(() => result.current.dismissNote("n1"))
+    expect(result.current.showList).toBe(false)
+
+    // The broadcast for that very note arriving out of order must not re-add
+    // the row the user already dealt with.
+    act(() =>
+      capturedHandler!({
+        seq: 0,
+        connection_id: "c1",
+        type: "feedback_submitted",
+        item: note("n1", "use pnpm"),
+      } as EventEnvelope)
+    )
+
+    expect(result.current.notes).toHaveLength(0)
     expect(result.current.showList).toBe(false)
   })
 

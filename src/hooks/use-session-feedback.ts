@@ -465,6 +465,10 @@ export function useSessionFeedback({
   // this sends immediately rather than parking.
   const resendNote = useCallback(
     (id: string) => {
+      // Tombstone first, not `notesRef`: two clicks landing in the same tick
+      // both still see the note (the row only leaves on the next render), and
+      // resending is the one action here that must not happen twice.
+      if (dismissedRef.current.has(id)) return
       const note = notesRef.current.find((n) => n.id === id)
       if (!note) return
       dismissedRef.current.add(id)
@@ -500,9 +504,18 @@ export function useSessionFeedback({
     () => unadoptedNotes.filter((n) => n.status === "pending"),
     [unadoptedNotes]
   )
-  const visibleNotes = isPrompting ? unadoptedNotes : unreadNotes
-  const showList = visibleNotes.length > 0
-  const notesExpired = !isPrompting && showList
+  // A live, IDLE session is the only proof the turn actually ended. Not merely
+  // `!isPrompting`: a mid-turn attach hydrates while the entry is still
+  // `connecting` (`CONNECTION_CREATED` seeds it), and `markConnectionGone`
+  // flips to `disconnected` precisely when the terminal event never arrived —
+  // both can read "not prompting" with the agent still running and the note
+  // still consumable. Calling that expired is the expensive mistake: the user
+  // resends a copy, the agent then reads the original, and the same
+  // instruction lands twice. So the ambiguous states keep the historical hide.
+  const turnEnded = connStatus === "connected"
+  const visibleNotes = turnEnded ? unreadNotes : unadoptedNotes
+  const showList = visibleNotes.length > 0 && (isPrompting || turnEnded)
+  const notesExpired = turnEnded && visibleNotes.length > 0
 
   return useMemo(
     () => ({
