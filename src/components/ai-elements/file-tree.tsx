@@ -85,6 +85,19 @@ const FileTreeContext = createContext<FileTreeContextType>({
   keyboardNavigation: false,
 })
 
+/**
+ * True when the enclosing tree runs in roving-focus mode, i.e. the container is
+ * the single tab stop and rows are driven by `aria-activedescendant`.
+ *
+ * Trailing row widgets (see {@link FileTreeFolderProps.actions}) must read this
+ * and take themselves out of the tab order: a natively focusable widget on every
+ * row would put the tree's whole row count back into the tab sequence, and the
+ * arrow keys would land on the widget instead of the container that owns them.
+ */
+export function useFileTreeRovingFocus(): boolean {
+  return useContext(FileTreeContext).keyboardNavigation
+}
+
 export type FileTreeProps = Omit<HTMLAttributes<HTMLDivElement>, "onSelect"> & {
   expanded?: Set<string>
   defaultExpanded?: Set<string>
@@ -191,10 +204,16 @@ export type FileTreeFolderProps = HTMLAttributes<HTMLDivElement> & {
   suffix?: ReactNode
   suffixClassName?: string
   /**
-   * Right-aligned trailing widget (e.g. a "more" menu button). Rendered
-   * inside a `FileTreeActions` wrapper so click/keydown don't bubble up to
-   * the row's own handlers (e.g. the expand/collapse click). Clicks on the
-   * widget are the caller's responsibility.
+   * Right-aligned trailing widget (e.g. a "more" menu button). Rendered as a
+   * SIBLING of the header button — HTML forbids a button inside a button, and
+   * React reports the nesting as a hydration error — inside a `FileTreeActions`
+   * wrapper so click/keydown don't bubble up to the row's own handlers (e.g.
+   * the expand/collapse click). Clicks on the widget are the caller's
+   * responsibility. Passing this switches the header to a wrapped layout; rows
+   * without actions render exactly as before.
+   *
+   * Both row kinds carry the `file-tree-row` Tailwind group, so a widget can
+   * reveal itself on row hover with `group-hover/file-tree-row:…`.
    */
   actions?: ReactNode
   /**
@@ -270,6 +289,77 @@ export const FileTreeFolder = ({
     [isExpanded, name, path]
   )
 
+  // A selected row — or a directory being hovered as a drop target — gets the
+  // same static tint with NO hover change; only idle rows show the hover
+  // affordance.
+  const highlightClassName =
+    dropActive || isSelected ? "bg-muted-foreground/20" : "hover:bg-muted/50"
+
+  const header = (
+    <CollapsibleTrigger asChild>
+      <button
+        className={cn(
+          "flex w-max min-w-full items-center gap-1 rounded py-1 text-left transition-colors",
+          depth == null ? "pl-2" : null,
+          // The header keeps spanning the whole row even when an action sits on
+          // top of it — every drag/drop handler and the `data-tree-drop-dir`
+          // hit-test marker live here, so shrinking it would shrink the folder's
+          // drop area. The action is overlaid instead, and the reserved right
+          // padding keeps the longest name from running under it.
+          actions ? "pr-8" : "pr-2",
+          // Without an action the header IS the row and owns the highlight; with
+          // one, the highlight moves to the wrapper below so hovering the action
+          // can't switch the tint off (CSS :hover propagates to ancestors, never
+          // to siblings).
+          actions ? null : highlightClassName,
+          rowClassName
+        )}
+        style={rowPaddingLeftStyle(depth, rowStyle)}
+        onClick={handleSelect}
+        type="button"
+        // Scroll target for keyboard navigation: the header button (not the
+        // outer treeitem, whose box spans the whole expanded subtree and
+        // would scroll past the header).
+        data-tree-row-path={path}
+        data-tree-drop-dir={dropTargetDir}
+        {...rowRest}
+        // The header is a native <button> (default tab stop). In roving
+        // mode force it out of the tab order so the container stays the
+        // single focus host and Enter/Space can't fire on a folder whose
+        // DOM focus differs from the active row; otherwise keep any
+        // caller-provided tabIndex unchanged.
+        tabIndex={keyboardNavigation ? -1 : rowRest.tabIndex}
+      >
+        <ChevronRightIcon
+          className={cn(
+            "size-4 shrink-0 text-muted-foreground transition-transform",
+            isExpanded && "rotate-90"
+          )}
+        />
+        <FileTreeIcon>
+          {isExpanded ? (
+            <FolderOpenIcon
+              className={cn("size-4 text-blue-500", iconClassName)}
+            />
+          ) : (
+            <FolderIcon className={cn("size-4 text-blue-500", iconClassName)} />
+          )}
+        </FileTreeIcon>
+        <FileTreeName className={nameClassName}>{name}</FileTreeName>
+        {suffix ? (
+          <span
+            className={cn(
+              "ml-1 shrink-0 whitespace-nowrap text-muted-foreground/60",
+              suffixClassName
+            )}
+          >
+            {suffix}
+          </span>
+        ) : null}
+      </button>
+    </CollapsibleTrigger>
+  )
+
   return (
     <FileTreeFolderContext.Provider value={folderContextValue}>
       <Collapsible onOpenChange={handleOpenChange} open={isExpanded}>
@@ -282,66 +372,26 @@ export const FileTreeFolder = ({
           tabIndex={keyboardNavigation ? -1 : 0}
           {...props}
         >
-          <CollapsibleTrigger asChild>
-            <button
+          {actions ? (
+            // The action has to be a SIBLING of the header — HTML forbids a
+            // button inside a button and React reports the nesting as a
+            // hydration error — but it still has to sit inside the row's
+            // highlight, so it is overlaid on the header rather than placed
+            // after it.
+            <div
               className={cn(
-                "flex w-max min-w-full items-center gap-1 rounded py-1 text-left transition-colors",
-                depth == null ? "px-2" : "pr-2",
-                // A selected row — or a directory being hovered as a drop target
-                // — gets the same static tint with NO hover change; only idle
-                // rows show the hover affordance.
-                dropActive || isSelected
-                  ? "bg-muted-foreground/20"
-                  : "hover:bg-muted/50",
-                rowClassName
+                "group/file-tree-row relative flex w-max min-w-full items-center rounded transition-colors",
+                highlightClassName
               )}
-              style={rowPaddingLeftStyle(depth, rowStyle)}
-              onClick={handleSelect}
-              type="button"
-              // Scroll target for keyboard navigation: the header button (not the
-              // outer treeitem, whose box spans the whole expanded subtree and
-              // would scroll past the header).
-              data-tree-row-path={path}
-              data-tree-drop-dir={dropTargetDir}
-              {...rowRest}
-              // The header is a native <button> (default tab stop). In roving
-              // mode force it out of the tab order so the container stays the
-              // single focus host and Enter/Space can't fire on a folder whose
-              // DOM focus differs from the active row; otherwise keep any
-              // caller-provided tabIndex unchanged.
-              tabIndex={keyboardNavigation ? -1 : rowRest.tabIndex}
             >
-              <ChevronRightIcon
-                className={cn(
-                  "size-4 shrink-0 text-muted-foreground transition-transform",
-                  isExpanded && "rotate-90"
-                )}
-              />
-              <FileTreeIcon>
-                {isExpanded ? (
-                  <FolderOpenIcon
-                    className={cn("size-4 text-blue-500", iconClassName)}
-                  />
-                ) : (
-                  <FolderIcon
-                    className={cn("size-4 text-blue-500", iconClassName)}
-                  />
-                )}
-              </FileTreeIcon>
-              <FileTreeName className={nameClassName}>{name}</FileTreeName>
-              {suffix ? (
-                <span
-                  className={cn(
-                    "ml-1 shrink-0 whitespace-nowrap text-muted-foreground/60",
-                    suffixClassName
-                  )}
-                >
-                  {suffix}
-                </span>
-              ) : null}
-              {actions ? <FileTreeActions>{actions}</FileTreeActions> : null}
-            </button>
-          </CollapsibleTrigger>
+              {header}
+              <FileTreeActions className="absolute inset-y-0 right-2">
+                {actions}
+              </FileTreeActions>
+            </div>
+          ) : (
+            header
+          )}
           <CollapsibleContent>
             {/* With explicit `depth`, descendants indent themselves via
                 padding, so this wrapper adds NO left inset (keeping their
@@ -378,7 +428,8 @@ export type FileTreeFileProps = HTMLAttributes<HTMLDivElement> & {
    * Right-aligned trailing widget (e.g. a "more" menu button). Rendered
    * inside a `FileTreeActions` wrapper so click/keydown don't bubble up to
    * the row's own handlers (e.g. opening a file preview). Clicks on the
-   * widget are the caller's responsibility.
+   * widget are the caller's responsibility. See
+   * {@link FileTreeFolderProps.actions} for the row-hover group name.
    */
   actions?: ReactNode
 }
@@ -417,7 +468,7 @@ export const FileTreeFile = ({
     <FileTreeFileContext.Provider value={fileContextValue}>
       <div
         className={cn(
-          "flex w-max min-w-full cursor-pointer items-center gap-1 rounded py-1 transition-colors",
+          "group/file-tree-row flex w-max min-w-full cursor-pointer items-center gap-1 rounded py-1 transition-colors",
           depth == null ? "px-2" : "pr-2",
           // Selected rows keep a static tint (no hover change); idle rows show
           // the hover affordance.

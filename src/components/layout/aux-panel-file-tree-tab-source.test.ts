@@ -61,6 +61,35 @@ describe("aux file tree badges links from the node's own symlink flag", () => {
   })
 })
 
+describe("aux file tree row context menus stay reachable", () => {
+  // Radix's `asChild` clones the child ELEMENT and hands it the trigger's
+  // props. A child that drops unknown props — a Context.Provider, or a
+  // component that doesn't spread `...props` — leaves the trigger with no DOM
+  // element at all: no listener, no menu, on right-click, long-press, or the
+  // row's ⋯ button. That failure is silent, so lock the two shapes it needs.
+  it("never hands an asChild trigger a context provider", () => {
+    expect(auxSource).not.toMatch(
+      /<ContextMenuTrigger[^>]*asChild[^>]*>\s*(\{\/\*[\s\S]*?\*\/\}\s*)?<[A-Z][\w]*\.Provider\b/
+    )
+  })
+
+  it("gives the workspace-root trigger the row component itself", () => {
+    expect(auxSource).toMatch(
+      /<ContextMenuTrigger asChild>\s*<RootDropFolder\b/
+    )
+  })
+
+  it("forwards the trigger's props through RootDropFolder onto the row", () => {
+    const start = auxSource.indexOf("function RootDropFolder(")
+    expect(start).toBeGreaterThan(-1)
+    const body = auxSource.slice(start, start + 1200)
+    // Collected off the signature...
+    expect(body).toMatch(/\.\.\.props\s*\n\s*\}:/)
+    // ...and spread onto the FileTreeFolder that renders the row's div.
+    expect(body).toMatch(/<FileTreeFolder\b[\s\S]{0,400}\{\.\.\.props\}/)
+  })
+})
+
 describe("aux file tree Open in submenu includes Code", () => {
   it("offers VS Code next to Explorer and Terminal", () => {
     expect(auxSource).toMatch(/OpenInSubContent/)

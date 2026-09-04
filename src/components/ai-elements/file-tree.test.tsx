@@ -1,5 +1,5 @@
 import { render, screen } from "@testing-library/react"
-import { describe, expect, it } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 
 import { FileTree, FileTreeFile, FileTreeFolder } from "./file-tree"
 
@@ -57,5 +57,82 @@ describe("FileTree keyboard focus topology", () => {
     expect(folderButton.tabIndex).toBe(0)
     expect(fileItem.tabIndex).toBe(0)
     expect(container).not.toHaveAttribute("aria-activedescendant")
+  })
+})
+
+describe("FileTree trailing row actions", () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  function renderWithActions() {
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {})
+    const view = render(
+      <FileTree expanded={new Set(["dir"])}>
+        <FileTreeFolder
+          path="dir"
+          name="dir"
+          depth={0}
+          actions={
+            <button type="button" aria-label="folder action">
+              ⋯
+            </button>
+          }
+        >
+          <FileTreeFile
+            path="dir/file.ts"
+            name="file.ts"
+            depth={1}
+            actions={
+              <button type="button" aria-label="file action">
+                ⋯
+              </button>
+            }
+          />
+        </FileTreeFolder>
+      </FileTree>
+    )
+    return { ...view, consoleError }
+  }
+
+  it("keeps the folder's action out of the header button", () => {
+    // The folder header is a native <button>. HTML forbids a button inside a
+    // button and React reports the nesting as a hydration error, so the action
+    // must be a sibling — not a child — of the header.
+    const { container, consoleError } = renderWithActions()
+
+    expect(container.querySelector("button button")).toBeNull()
+    expect(consoleError).not.toHaveBeenCalled()
+  })
+
+  it("leaves the folder header's accessible name to the folder alone", () => {
+    // A nested action would be walked into the header's name computation, so
+    // the row would announce as "dir ⋯" instead of "dir".
+    renderWithActions()
+
+    expect(screen.getByRole("button", { name: "dir" })).toBeInTheDocument()
+  })
+
+  it("renders both rows' actions", () => {
+    renderWithActions()
+
+    expect(screen.getByLabelText("folder action")).toBeInTheDocument()
+    expect(screen.getByLabelText("file action")).toBeInTheDocument()
+  })
+
+  it("publishes the row-hover group both rows' actions can reveal from", () => {
+    // The action is hidden at rest and revealed on row hover; :hover only
+    // propagates to ancestors, so the group has to sit on an element that
+    // encloses BOTH the row content and the action.
+    const { container } = renderWithActions()
+
+    for (const action of [
+      screen.getByLabelText("folder action"),
+      screen.getByLabelText("file action"),
+    ]) {
+      const group = action.closest(".group\\/file-tree-row")
+      expect(group).not.toBeNull()
+      expect(container.contains(group)).toBe(true)
+    }
   })
 })
