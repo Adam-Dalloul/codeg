@@ -175,6 +175,12 @@ export type ThreadRenderItem =
        *  `armed` flag this is what makes a run "the current round" — see the
        *  fold state below. */
       isLastAssistantRun: boolean
+      /** Nothing follows this item in the thread — not a user message, not a
+       *  compaction divider. Distinct from `isLastAssistantRun`, which is still
+       *  true for a reply the user interrupted at its very end (that promotes
+       *  as assistant then user message, so the newest REPLY is not the tail).
+       *  Read by the fork gate, where the two differ by a wrong fork point. */
+      isThreadTail: boolean
       /** Raw assistant sub-turn(s) that compose this reply — fed to the
        *  per-reply artifacts card so it can list files changed this reply. */
       sourceTurns: MessageTurn[]
@@ -765,19 +771,23 @@ const UserMessageTaskButton = memo(function UserMessageTaskButton({
  * A turn this session streamed carries a `live-…` id until the post-turn
  * reparse backfills the parser's name (`source_turn_id`). The backend cannot
  * resolve such an id and deliberately degrades to a TAIL fork rather than
- * refusing the click, which is exactly right for the newest reply — the tail IS
- * that reply — and a silent lie for any earlier one.
+ * refusing the click. That is exactly right at the END of the thread — the tail
+ * IS the fork point — and a silent lie anywhere before it.
  *
- * Earlier ones are reachable: a reply the user steered mid-turn promotes as
- * assistant / user message / assistant, so its first half is a settled,
- * non-tail group carrying a fork button while the backfill is still a second
- * and a half away. Exported for tests.
+ * Anywhere before it is reachable: a reply the user steered mid-turn promotes
+ * as assistant / user message / assistant, so its first half is a settled
+ * group carrying a fork button while the backfill is a second and a half away.
+ * The exception is therefore the thread TAIL, not the newest assistant reply:
+ * steer at the very end of a turn and the promotion is assistant + user message
+ * with nothing after it, which leaves the newest reply one message short of the
+ * tail — and the parse ending on a user turn means `source_turn_id` never
+ * arrives to correct it (see `computeTurnMetadataPatches`). Exported for tests.
  */
 export function isForkPointUnnamed(
   forkPoint: MessageTurn | null,
-  isLastAssistantRun: boolean
+  isThreadTail: boolean
 ): boolean {
-  if (forkPoint === null || isLastAssistantRun) return false
+  if (forkPoint === null || isThreadTail) return false
   return forkPoint.source_turn_id == null && isLiveTurnId(forkPoint.id)
 }
 
@@ -794,7 +804,7 @@ const HistoricalMessageGroup = memo(function HistoricalMessageGroup({
   foldEpoch = 0,
   onForkFromTurn,
   forkDisabled = false,
-  isLastAssistantRun = false,
+  isThreadTail = false,
 }: {
   group: ResolvedMessageGroup
   dimmed?: boolean
@@ -808,9 +818,9 @@ const HistoricalMessageGroup = memo(function HistoricalMessageGroup({
   foldEpoch?: number
   onForkFromTurn?: (turnId: string) => void
   forkDisabled?: boolean
-  /** Whether this is the newest reply in the thread — the one position where a
-   *  turn the backend can't name still forks where the user pointed. */
-  isLastAssistantRun?: boolean
+  /** Whether nothing follows this group in the thread — the one position where
+   *  a turn the backend cannot name still forks where the user pointed. */
+  isThreadTail?: boolean
 }) {
   if (group.role === "system") {
     return <CollapsibleSystemMessage parts={group.parts} />
@@ -821,7 +831,7 @@ const HistoricalMessageGroup = memo(function HistoricalMessageGroup({
   const forkPoint = sourceTurns?.length
     ? sourceTurns[sourceTurns.length - 1]
     : null
-  const forkPointUnnamed = isForkPointUnnamed(forkPoint, isLastAssistantRun)
+  const forkPointUnnamed = isForkPointUnnamed(forkPoint, isThreadTail)
 
   return (
     <div className={dimmed ? "opacity-70" : undefined}>
@@ -1091,6 +1101,7 @@ export function MessageListView({
         isRoleTransition: false,
         previousUserIndex: null,
         isLastAssistantRun: false,
+        isThreadTail: false,
         sourceTurns: singletonSourceTurns(allTurns[i]),
       }
     })
@@ -1114,6 +1125,7 @@ export function MessageListView({
       item.isRoleTransition = false
       item.previousUserIndex = null
       item.isLastAssistantRun = false
+      item.isThreadTail = false
 
       // isRoleTransition: role differs from previous turn item
       if (idx > 0) {
@@ -1141,6 +1153,16 @@ export function MessageListView({
     if (lastAssistantItem) {
       lastAssistantItem.isLastAssistantRun = true
       lastAssistantRunning = !lastAssistantItem.isResponseComplete
+    }
+    // The thread's last rendered element, which is what the backend's tail fork
+    // would land on — a user message or a compaction divider after the newest
+    // reply means that reply is NOT it. Blocks that render nothing are stepped
+    // over: they occupy an index without occupying the thread.
+    for (let idx = items.length - 1; idx >= 0; idx--) {
+      const item = items[idx]
+      if (item.kind === "turn" && isEmptyTurnItem(item)) continue
+      if (item.kind === "turn") item.isThreadTail = true
+      break
     }
 
     const lastPhase = timelineTurns[timelineTurns.length - 1]?.phase ?? null
@@ -1241,7 +1263,7 @@ export function MessageListView({
                 foldEpoch={fold.epoch}
                 onForkFromTurn={onForkFromTurn}
                 forkDisabled={forkBusy}
-                isLastAssistantRun={item.isLastAssistantRun}
+                isThreadTail={item.isThreadTail}
               />
             </div>
           )

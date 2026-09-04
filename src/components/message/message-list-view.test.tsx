@@ -42,6 +42,7 @@ function assistantItem(
     isRoleTransition: false,
     previousUserIndex: null,
     isLastAssistantRun: false,
+    isThreadTail: false,
     sourceTurns: [],
   }
 }
@@ -334,6 +335,7 @@ function makeItem(
     isRoleTransition: false,
     previousUserIndex: null,
     isLastAssistantRun: false,
+    isThreadTail: false,
     sourceTurns: singletonSourceTurns(turn(group.id)),
   }
 }
@@ -629,12 +631,22 @@ describe("isForkPointUnnamed", () => {
     }
   }
 
-  it("withholds a live-named reply that is not the newest one", () => {
+  it("withholds a live-named reply that is not the thread's last item", () => {
     expect(isForkPointUnnamed(forkTurn("live-7-lm-1"), false)).toBe(true)
   })
 
-  it("allows the newest reply — there the tail IS the fork point", () => {
+  it("allows one at the end of the thread — there the tail IS the fork point", () => {
     expect(isForkPointUnnamed(forkTurn("live-7-lm-1"), true)).toBe(false)
+  })
+
+  it("withholds the newest REPLY when a message follows it", () => {
+    // Steering at the very end of a turn promotes as assistant + user message
+    // with nothing after it: the reply is the newest one, and still not the
+    // tail. The backend's tail fork would land after the steered message, and
+    // a parse ending on a user turn never backfills a name to correct it — so
+    // "newest assistant run" is the wrong exception and `isThreadTail` is the
+    // right one.
+    expect(isForkPointUnnamed(forkTurn("live-7-lm"), false)).toBe(true)
   })
 
   it("allows it again once the reparse names it", () => {
