@@ -61,6 +61,48 @@ describe("aux file tree badges links from the node's own symlink flag", () => {
   })
 })
 
+describe("aux file tree row context menus stay reachable", () => {
+  // Radix's `asChild` clones the child ELEMENT and hands it the trigger's
+  // props. A child that drops unknown props — a Context.Provider, or a
+  // component that doesn't spread `...props` — leaves the trigger with no DOM
+  // element at all: no listener, no menu, on right-click, long-press, or the
+  // row's ⋯ button. That failure is silent, so lock the two shapes it needs.
+  it("never hands an asChild trigger a context provider", () => {
+    expect(auxSource).not.toMatch(
+      /<ContextMenuTrigger[^>]*asChild[^>]*>\s*(\{\/\*[\s\S]*?\*\/\}\s*)?<[A-Z][\w]*\.Provider\b/
+    )
+  })
+
+  it("gives the workspace-root trigger the row component itself", () => {
+    expect(auxSource).toMatch(
+      /<ContextMenuTrigger asChild>\s*<RootDropFolder\b/
+    )
+  })
+
+  it("keeps the long-press hook off the tree's nested triggers", () => {
+    // A folder's trigger encloses its expanded descendants' triggers, so ONE
+    // touch pointerdown reaches every ancestor's copy of the hook. Each arms
+    // its own timer and each dispatches its own contextmenu from its OWN
+    // element, so long-pressing a nested file opened its menu AND both
+    // ancestors' — the outermost winning the screen. Radix's built-in
+    // long-press survives nesting because all the triggers share one bubbling
+    // event that the innermost `preventDefault`s; separate dispatches have no
+    // such interlock. The ⋯ button is the touch entry point instead.
+    expect(auxSource).not.toMatch(/useLongPressToOpenMenu/)
+    expect(auxSource).not.toMatch(/longPressHandlers/)
+  })
+
+  it("forwards the trigger's props through RootDropFolder onto the row", () => {
+    const start = auxSource.indexOf("function RootDropFolder(")
+    expect(start).toBeGreaterThan(-1)
+    const body = auxSource.slice(start, start + 1200)
+    // Collected off the signature...
+    expect(body).toMatch(/\.\.\.props\s*\n\s*\}:/)
+    // ...and spread onto the FileTreeFolder that renders the row's div.
+    expect(body).toMatch(/<FileTreeFolder\b[\s\S]{0,400}\{\.\.\.props\}/)
+  })
+})
+
 describe("aux file tree Open in submenu includes Code", () => {
   it("offers VS Code next to Explorer and Terminal", () => {
     expect(auxSource).toMatch(/OpenInSubContent/)

@@ -2605,6 +2605,7 @@
       "openInTerminal": "터미널",
       "openInCode": "VS Code",
       "linkedFolder": "연결된 폴더",
+      "moreActions": "더 많은 작업",
       "copyPath": "경로 복사",
       "upload": "파일/폴더 업로드",
       "download": "파일 다운로드",

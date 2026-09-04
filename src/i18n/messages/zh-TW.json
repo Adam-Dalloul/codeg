@@ -2605,6 +2605,7 @@
       "openInTerminal": "終端",
       "openInCode": "VS Code",
       "linkedFolder": "已連結的資料夾",
+      "moreActions": "更多操作",
       "copyPath": "複製路徑",
       "upload": "上傳檔案/目錄",
       "download": "下載檔案",
