@@ -106,15 +106,37 @@ pub(crate) const RETRY_THE_CLEANUP: &str = "Remove them, then retry the cleanup.
 /// means we could not prove the directory is safe to destroy. The operation
 /// waiting on this answer is `git worktree remove --force`, so guessing "clean"
 /// there trades a recoverable stall for unrecoverable files.
+///
+/// The `.git` marker is checked FIRST, and not as an optimization: `has_changes`
+/// runs `git status` with the path as its working directory, and git walks UP
+/// from there. A shell with no marker left is not a checkout git can speak for,
+/// so whatever it answers is about the repository that ENCLOSES the shell — the
+/// project itself whenever the folder's worktree root is a path inside it. That
+/// answer is a clean `Ok(false)` or a dirty `Ok(true)` about somebody else's
+/// files, and neither is this path's; only the directory probe below is.
 async fn path_holds_uncommitted(path: &str) -> bool {
+    match std::fs::symlink_metadata(Path::new(path).join(".git")) {
+        Ok(_) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return shell_holds_entries(path),
+        // Could not even look at the marker — no proof of anything. Fail closed.
+        Err(_) => return true,
+    }
     match task_git::has_changes(path).await {
         Ok(dirty) => dirty,
-        Err(_) => match std::fs::read_dir(path) {
-            // `Some(Err(_))` is deliberately still "holds work": even learning
-            // whether an entry exists has to succeed before removal is safe.
-            Ok(mut entries) => entries.next().is_some(),
-            Err(e) => e.kind() != std::io::ErrorKind::NotFound,
-        },
+        Err(_) => shell_holds_entries(path),
+    }
+}
+
+/// The one thing left to ask about a directory git has stopped speaking for: is
+/// it strictly empty? Anything else — an entry of any kind, or a failure to read
+/// the directory at all — is "holds work", because a `--force` removal is what
+/// waits on the answer. Only a path that is gone reads as nothing to lose.
+fn shell_holds_entries(path: &str) -> bool {
+    match std::fs::read_dir(path) {
+        // `Some(Err(_))` is deliberately still "holds work": even learning
+        // whether an entry exists has to succeed before removal is safe.
+        Ok(mut entries) => entries.next().is_some(),
+        Err(e) => e.kind() != std::io::ErrorKind::NotFound,
     }
 }
 
@@ -10210,6 +10232,101 @@ mod tests {
                 .await
                 .is_ok(),
             "the branch survives with the sentinel"
+        );
+    }
+
+    /// A repository with `layout` applied to it, for the probe tests below:
+    /// returns `(tempdir, repo path, worktree path)`. The two tests that pass
+    /// `"sibling"` reproduce the DEFAULT worktree layout — beside the project,
+    /// outside every repository — which is the only layout in which a shell has
+    /// no enclosing repository for `git status` to answer about instead.
+    fn probe_repo(layout: &str) -> (tempfile::TempDir, std::path::PathBuf, std::path::PathBuf) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let repo = dir.path().join("repo");
+        std::fs::create_dir(&repo).expect("mkdir");
+        git_run(&repo, &["init", "-q", "-b", "main"]);
+        std::fs::write(repo.join("a.txt"), "one\n").expect("write");
+        git_run(&repo, &["add", "-A"]);
+        git_run(&repo, &["commit", "-q", "-m", "base"]);
+        let worktree = match layout {
+            "sibling" => dir.path().join("wt"),
+            _ => repo.join("wt"),
+        };
+        (dir, repo, worktree)
+    }
+
+    /// THE probe behind issue #642's dead-end retry, exercised where the bug
+    /// actually happens. `has_changes` runs `git status` from the path itself,
+    /// so a shell in the default layout — beside the project, no repository
+    /// above it — makes git error, and reading that error as "dirty" is what
+    /// made the retry offer the same refusal forever. An empty shell has, by
+    /// definition, nothing a `--force` removal could take.
+    #[tokio::test]
+    async fn an_empty_shell_beside_a_project_reads_as_clean() {
+        let (_dir, _repo, worktree) = probe_repo("sibling");
+        std::fs::create_dir(&worktree).expect("empty shell");
+
+        assert!(
+            !path_holds_uncommitted(worktree.to_str().expect("utf-8")).await,
+            "an empty post-removal shell holds nothing"
+        );
+    }
+
+    /// The other half of the same answer: outside a repository git errors on a
+    /// shell whatever is in it, so emptiness is the ONLY thing separating a
+    /// harmless leftover from files nothing can give back.
+    #[tokio::test]
+    async fn a_file_in_a_shell_beside_a_project_still_reads_as_dirty() {
+        let (_dir, _repo, worktree) = probe_repo("sibling");
+        std::fs::create_dir(&worktree).expect("shell");
+        std::fs::write(worktree.join("sentinel.txt"), "not in git\n").expect("sentinel");
+
+        assert!(
+            path_holds_uncommitted(worktree.to_str().expect("utf-8")).await,
+            "a shell with an entry in it is not removable"
+        );
+    }
+
+    /// A worktree root configured INSIDE the project (a relative
+    /// `worktree_root`, which the setting takes at face value) puts the shell
+    /// under the project's own `.git`. `git status` then answers happily — about
+    /// the PROJECT — so a project with a stray file of its own would answer
+    /// "dirty" for a shell holding nothing, and #642's retry would still never
+    /// converge. Without a `.git` marker the path is not a checkout git speaks
+    /// for, and its answer must not be read as this path's.
+    #[tokio::test]
+    async fn an_empty_shell_inside_a_dirty_project_reads_as_clean() {
+        let (_dir, repo, worktree) = probe_repo("nested");
+        std::fs::write(repo.join("stray.txt"), "the project's own mess\n").expect("stray");
+        std::fs::create_dir(&worktree).expect("empty shell");
+
+        assert!(
+            !path_holds_uncommitted(worktree.to_str().expect("utf-8")).await,
+            "the project's dirt is not the shell's"
+        );
+    }
+
+    /// And the marker check must not short-circuit the case it is guarding: a
+    /// checkout that still HAS its `.git` is exactly what `git status` is for,
+    /// uncommitted work included.
+    #[tokio::test]
+    async fn an_intact_worktree_is_still_measured_by_git() {
+        let (_dir, repo, worktree) = probe_repo("sibling");
+        let worktree_path = worktree.to_str().expect("utf-8");
+        git_run(
+            &repo,
+            &["worktree", "add", "-q", "-b", "task/probe", worktree_path],
+        );
+        assert!(
+            !path_holds_uncommitted(worktree_path).await,
+            "a fresh checkout holds nothing"
+        );
+
+        std::fs::write(worktree.join("edit.txt"), "unstaged\n").expect("edit");
+
+        assert!(
+            path_holds_uncommitted(worktree_path).await,
+            "an uncommitted file in a live checkout is work"
         );
     }
 

@@ -563,6 +563,19 @@ pub async fn branch_holds_unlanded_work(
     }
 }
 
+/// The failure of [`remove_worktree_and_branch`]'s filesystem half reports
+/// through the SAME channel its git half does — `cleanup_state`, rendered
+/// verbatim on the task card — and `AppCommandError`'s `Display` is its
+/// `message` alone, detail dropped. So the message has to carry the path and
+/// the OS reason itself: `AppCommandError::io` would leave "I/O operation
+/// failed" on that card and nothing else, which is the dead end this whole
+/// path exists to get users out of.
+fn shell_error(worktree_path: &str, what: &str, err: &std::io::Error) -> AppCommandError {
+    AppCommandError::io_error(format!(
+        "the worktree directory '{worktree_path}' {what}: {err}"
+    ))
+}
+
 /// Remove a task worktree directory + its branch. Runs from the project repo.
 /// Tolerant of a directory already gone (prunes the stale registration), an
 /// empty directory shell left by a partially successful removal, and a branch
@@ -589,7 +602,7 @@ pub async fn remove_worktree_and_branch(
         match std::fs::symlink_metadata(std::path::Path::new(worktree_path).join(".git")) {
             Ok(_) => true,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
-            Err(e) => return Err(AppCommandError::io(e)),
+            Err(e) => return Err(shell_error(worktree_path, "could not be read", &e)),
         };
     let shell_already_gone = if marker_exists {
         false
@@ -597,7 +610,7 @@ pub async fn remove_worktree_and_branch(
         match std::fs::remove_dir(worktree_path) {
             Ok(()) => true,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => true,
-            Err(e) => return Err(AppCommandError::io(e)),
+            Err(e) => return Err(shell_error(worktree_path, "could not be removed", &e)),
         }
     };
 
@@ -1130,10 +1143,12 @@ mod tests {
     }
 
     /// The engine normally catches contents before calling this layer, but a
-    /// file can appear after git has removed the checkout marker but before the
-    /// task retries. Git may still have the path registered and would then
-    /// recursively remove it, so the missing `.git` marker must fail closed
-    /// whenever the shell is no longer empty.
+    /// file can appear after git has removed the checkout marker and before the
+    /// task retries. Git is not the risk here — it validates the `.git` marker
+    /// and refuses the removal outright, contents untouched. The risk is the
+    /// marker-less path this function grew FOR empty shells, which is the only
+    /// code that will delete such a directory at all: it must stay
+    /// non-recursive, so that a file makes it fail closed and keep the branch.
     #[tokio::test]
     async fn registered_worktree_without_git_marker_never_takes_a_sentinel() {
         let dir = tempfile::tempdir().expect("tempdir");
