@@ -564,9 +564,10 @@ pub async fn branch_holds_unlanded_work(
 }
 
 /// Remove a task worktree directory + its branch. Runs from the project repo.
-/// Tolerant of a directory already gone (prunes the stale registration) and of
-/// a branch already deleted; `-D` is required because a squash-landed branch is
-/// unmerged in git's eyes.
+/// Tolerant of a directory already gone (prunes the stale registration), an
+/// empty directory shell left by a partially successful removal, and a branch
+/// already deleted; `-D` is required because a squash-landed branch is unmerged
+/// in git's eyes.
 ///
 /// `expected_tip` turns the branch delete into a COMPARE-AND-DELETE: the ref
 /// goes only if it still points at that commit, and a branch that moved is an
@@ -581,13 +582,48 @@ pub async fn remove_worktree_and_branch(
     work_branch: Option<&str>,
     expected_tip: Option<&str>,
 ) -> Result<(), AppCommandError> {
-    let removed = run_git(repo_path, &["worktree", "remove", "--force", worktree_path]).await?;
-    if !removed.status.success() {
-        if std::path::Path::new(worktree_path).exists() {
-            return Err(git_command_error("worktree remove", &removed.stderr));
+    // A real checkout keeps the established git removal path. Only a missing
+    // marker identifies a detached shell that is safe to consume directly,
+    // and even then `remove_dir` must atomically prove the shell is still empty.
+    let marker_exists =
+        match std::fs::symlink_metadata(std::path::Path::new(worktree_path).join(".git")) {
+            Ok(_) => true,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
+            Err(e) => return Err(AppCommandError::io(e)),
+        };
+    let shell_already_gone = if marker_exists {
+        false
+    } else {
+        match std::fs::remove_dir(worktree_path) {
+            Ok(()) => true,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => true,
+            Err(e) => return Err(AppCommandError::io(e)),
         }
-        // Directory already gone — drop the stale registration so the branch
-        // delete below isn't blocked by a phantom checkout.
+    };
+
+    let mut needs_prune = shell_already_gone;
+    if !shell_already_gone {
+        let removed = run_git(repo_path, &["worktree", "remove", "--force", worktree_path]).await?;
+        if !removed.status.success() {
+            // On Windows git can remove the registration and every checkout
+            // file, then fail its final directory removal because a process
+            // briefly holds the directory open. Recover that exact empty shell,
+            // including on a later retry. `remove_dir` is intentionally
+            // non-recursive: an ignored artifact or a file created after the
+            // clean probe makes it fail closed, preserving both the file and the
+            // branch below.
+            match std::fs::remove_dir(worktree_path) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(_) => return Err(git_command_error("worktree remove", &removed.stderr)),
+            }
+            needs_prune = true;
+        }
+    }
+    if needs_prune {
+        // Directory already gone (or its empty shell removed) — drop any stale
+        // registration so the branch delete below isn't blocked by a phantom
+        // checkout.
         let prune = run_git(repo_path, &["worktree", "prune"]).await?;
         if !prune.status.success() {
             return Err(git_command_error("worktree prune", &prune.stderr));
@@ -1091,6 +1127,55 @@ mod tests {
         remove_worktree_and_branch(repo_path, gone_path, Some("task/gone"), Some(&gone_tip))
             .await
             .expect("a second pass finds nothing to do and says so quietly");
+    }
+
+    /// The engine normally catches contents before calling this layer, but a
+    /// file can appear after git has removed the checkout marker but before the
+    /// task retries. Git may still have the path registered and would then
+    /// recursively remove it, so the missing `.git` marker must fail closed
+    /// whenever the shell is no longer empty.
+    #[tokio::test]
+    async fn registered_worktree_without_git_marker_never_takes_a_sentinel() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let repo = dir.path().join("repo");
+        std::fs::create_dir(&repo).expect("mkdir");
+        let repo_path = repo.to_str().expect("utf-8 path");
+        git_run(&repo, &["init", "-q", "-b", "main"]);
+        std::fs::write(repo.join("a.txt"), "one\n").expect("write");
+        git_run(&repo, &["add", "-A"]);
+        git_run(&repo, &["commit", "-q", "-m", "base"]);
+
+        let worktree = dir.path().join("wt-sentinel");
+        let worktree_path = worktree.to_str().expect("utf-8 worktree");
+        git_run(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "task/sentinel",
+                worktree_path,
+            ],
+        );
+        std::fs::remove_file(worktree.join(".git")).expect("remove worktree marker");
+        std::fs::remove_file(worktree.join("a.txt")).expect("remove tracked contents");
+        std::fs::write(worktree.join("sentinel.txt"), "keep me\n").expect("sentinel");
+
+        remove_worktree_and_branch(repo_path, worktree_path, Some("task/sentinel"), None)
+            .await
+            .expect_err("a non-empty detached shell must fail closed");
+
+        assert_eq!(
+            std::fs::read_to_string(worktree.join("sentinel.txt")).expect("read sentinel"),
+            "keep me\n"
+        );
+        assert!(
+            rev_parse(repo_path, "refs/heads/task/sentinel")
+                .await
+                .is_ok(),
+            "the branch is not deleted after the directory refusal"
+        );
     }
 
     /// A retry after the checkout was removed must get the SAME branch back,

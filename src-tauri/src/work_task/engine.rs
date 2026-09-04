@@ -98,17 +98,23 @@ pub(crate) const RETRY_THE_CLEANUP: &str = "Remove them, then retry the cleanup.
 /// The probe every worktree-removal gate shares: does this checkout still hold
 /// work (tracked edits or files git has never seen)?
 ///
-/// FAILS CLOSED. Exactly one reason for git being unable to answer is safe to
-/// read as "clean" — the checkout is already off disk, so there is nothing left
-/// to lose, and the removal paths handle a missing directory on their own. Any
-/// OTHER failure (a corrupt index, a permission error, a transient git fault)
-/// means we could not prove the directory is safe to destroy, and the operation
-/// waiting on this answer is `git worktree remove --force`. Guessing "clean"
+/// FAILS CLOSED. Only two reasons for git being unable to answer are safe to
+/// read as "clean": the checkout is already off disk, or git removed its
+/// registration and contents but left a readable, strictly empty directory
+/// behind. Any entry in that shell (ignored and hidden files included), a
+/// corrupt index, a permission error, or another transient filesystem failure
+/// means we could not prove the directory is safe to destroy. The operation
+/// waiting on this answer is `git worktree remove --force`, so guessing "clean"
 /// there trades a recoverable stall for unrecoverable files.
 async fn path_holds_uncommitted(path: &str) -> bool {
     match task_git::has_changes(path).await {
         Ok(dirty) => dirty,
-        Err(_) => Path::new(path).exists(),
+        Err(_) => match std::fs::read_dir(path) {
+            // `Some(Err(_))` is deliberately still "holds work": even learning
+            // whether an entry exists has to succeed before removal is safe.
+            Ok(mut entries) => entries.next().is_some(),
+            Err(e) => e.kind() != std::io::ErrorKind::NotFound,
+        },
     }
 }
 
@@ -10129,6 +10135,82 @@ mod tests {
         assert_eq!(task.worktree_folder_id, None, "detached");
         assert!(!f.worktree.exists(), "and really gone from disk");
         assert!(!f.engine.index.lock().await.contains_key(ZOMBIE), "retired");
+    }
+
+    /// Git for Windows can finish the destructive part of `worktree remove`
+    /// (registration and checkout contents) but fail to remove the now-empty
+    /// directory. That first pass leaves the task flagged for cleanup; its retry
+    /// must recognize the harmless shell, finish the branch/DB cleanup, and not
+    /// report files that do not exist.
+    #[tokio::test]
+    async fn worktree_cleanup_retry_converges_an_empty_detached_shell() {
+        let f = delivery_fixture(FakeForge::default()).await;
+        let worktree = f.worktree.to_str().expect("utf-8 worktree");
+        git_run(&f.root, &["worktree", "remove", "--force", worktree]);
+        std::fs::create_dir(&f.worktree).expect("empty shell");
+        work_task_service::set_cleanup_state(
+            &f.engine.db.conn,
+            f.task_id,
+            true,
+            Some("the first removal stopped after git detached it".into()),
+        )
+        .await
+        .expect("flag failed cleanup");
+
+        f.engine
+            .cleanup_task(f.task_id)
+            .await
+            .expect("retry cleanup");
+
+        let task = row(&f.engine, f.task_id).await;
+        assert_eq!(task.cleanup_state, None, "the retry is fully settled");
+        assert_eq!(
+            task.worktree_folder_id, None,
+            "folder bookkeeping converged"
+        );
+        assert!(!f.worktree.exists(), "the empty shell is gone");
+        assert!(
+            task_git::rev_parse(f.root.to_str().unwrap(), "refs/heads/task/7")
+                .await
+                .is_err(),
+            "the requested work branch goes too"
+        );
+    }
+
+    /// A missing `.git` file alone is not proof that the directory is a harmless
+    /// post-removal shell. Files may have appeared after the partial teardown,
+    /// and none of them is recoverable through git, so the retry must preserve
+    /// both the sentinel and the branch.
+    #[tokio::test]
+    async fn worktree_cleanup_retry_preserves_a_file_in_a_detached_shell() {
+        let f = delivery_fixture(FakeForge::default()).await;
+        let worktree = f.worktree.to_str().expect("utf-8 worktree");
+        git_run(&f.root, &["worktree", "remove", "--force", worktree]);
+        std::fs::create_dir(&f.worktree).expect("empty shell");
+        std::fs::write(f.worktree.join("sentinel.txt"), "not in git\n").expect("sentinel");
+
+        let err = f
+            .engine
+            .cleanup_task(f.task_id)
+            .await
+            .expect_err("a non-empty shell is not removable");
+
+        assert!(err.holds_work, "the retry is refused as a data-safety gate");
+        assert_eq!(
+            std::fs::read_to_string(f.worktree.join("sentinel.txt")).expect("read sentinel"),
+            "not in git\n"
+        );
+        let task = row(&f.engine, f.task_id).await;
+        assert!(
+            task.worktree_folder_id.is_some(),
+            "the retry remains available"
+        );
+        assert!(
+            task_git::rev_parse(f.root.to_str().unwrap(), "refs/heads/task/7")
+                .await
+                .is_ok(),
+            "the branch survives with the sentinel"
+        );
     }
 
     /// The removal underneath is `worktree remove --force`, and a stop pressed
