@@ -2164,6 +2164,17 @@
       "officeServerInstallHint": "O OfficeCLI precisa estar instalado no host do servidor. Execute este comando lá e tente novamente:",
       "officeRemoteDesktopUnsupported": "A pré-visualização ao vivo não está disponível em uma janela de área de trabalho remota. Abra este espaço de trabalho na interface web do servidor para visualizar arquivos do Office."
     },
+    "fileViewer": {
+      "title": "Pré-visualização do ficheiro",
+      "description": "Um ficheiro referenciado nesta conversa, aberto ao lado.",
+      "openInWorkspace": "Abrir na área de trabalho",
+      "back": "Voltar",
+      "preview": "Pré-visualizar",
+      "source": "Código",
+      "loading": "A carregar...",
+      "cannotResolve": "Não é possível resolver este caminho de ficheiro.",
+      "tooLargeToPreview": "Este ficheiro é demasiado grande para pré-visualizar aqui. Abra-o na área de trabalho."
+    },
     "branchDropdown": {
       "toasts": {
         "commitCodeCompleted": "Commit de código concluído",

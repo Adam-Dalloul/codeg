@@ -2164,6 +2164,17 @@
       "officeServerInstallHint": "OfficeCLI muss auf dem Server-Host installiert sein. Führe diesen Befehl dort aus und versuche es erneut:",
       "officeRemoteDesktopUnsupported": "Die Live-Vorschau ist in einem Remote-Desktop-Fenster nicht verfügbar. Öffne diesen Arbeitsbereich in der Web-Oberfläche des Servers, um Office-Dateien anzusehen."
     },
+    "fileViewer": {
+      "title": "Dateivorschau",
+      "description": "Eine in dieser Unterhaltung referenzierte Datei, daneben geöffnet.",
+      "openInWorkspace": "Im Arbeitsbereich öffnen",
+      "back": "Zurück",
+      "preview": "Vorschau",
+      "source": "Quelltext",
+      "loading": "Wird geladen...",
+      "cannotResolve": "Dieser Dateipfad kann nicht aufgelöst werden.",
+      "tooLargeToPreview": "Diese Datei ist zu groß für eine Vorschau hier. Öffne sie stattdessen im Arbeitsbereich."
+    },
     "branchDropdown": {
       "toasts": {
         "commitCodeCompleted": "Code-Commit abgeschlossen",

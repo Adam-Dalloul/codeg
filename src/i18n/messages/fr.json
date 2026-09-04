@@ -2164,6 +2164,17 @@
       "officeServerInstallHint": "OfficeCLI doit être installé sur l'hôte du serveur. Exécutez cette commande là-bas, puis réessayez :",
       "officeRemoteDesktopUnsupported": "L'aperçu en direct n'est pas disponible dans une fenêtre de bureau à distance. Ouvrez cet espace de travail dans l'interface web du serveur pour prévisualiser les fichiers Office."
     },
+    "fileViewer": {
+      "title": "Aperçu du fichier",
+      "description": "Un fichier référencé dans cette conversation, ouvert à côté.",
+      "openInWorkspace": "Ouvrir dans l'espace de travail",
+      "back": "Retour",
+      "preview": "Aperçu",
+      "source": "Source",
+      "loading": "Chargement...",
+      "cannotResolve": "Impossible de résoudre ce chemin de fichier.",
+      "tooLargeToPreview": "Ce fichier est trop volumineux pour être prévisualisé ici. Ouvrez-le dans l'espace de travail."
+    },
     "branchDropdown": {
       "toasts": {
         "commitCodeCompleted": "Commit de code terminé",

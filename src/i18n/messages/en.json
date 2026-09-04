@@ -2164,6 +2164,17 @@
       "officeServerInstallHint": "OfficeCLI must be installed on the server host. Run this command there, then retry:",
       "officeRemoteDesktopUnsupported": "Live preview isn't available in a remote-desktop window. Open this workspace in the server's web UI to preview Office files."
     },
+    "fileViewer": {
+      "title": "File preview",
+      "description": "A file referenced in this conversation, opened beside it.",
+      "openInWorkspace": "Open in workspace",
+      "back": "Back",
+      "preview": "Preview",
+      "source": "Source",
+      "loading": "Loading...",
+      "cannotResolve": "Cannot resolve this file path.",
+      "tooLargeToPreview": "This file is too large to preview here. Open it in the workspace instead."
+    },
     "branchDropdown": {
       "toasts": {
         "commitCodeCompleted": "Code commit completed",

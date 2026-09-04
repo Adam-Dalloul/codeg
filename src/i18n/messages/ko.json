@@ -2164,6 +2164,17 @@
       "officeServerInstallHint": "OfficeCLI는 서버 호스트에 설치해야 합니다. 서버에서 다음 명령을 실행한 후 다시 시도하세요:",
       "officeRemoteDesktopUnsupported": "원격 데스크톱 창에서는 실시간 미리보기를 사용할 수 없습니다. Office 파일을 미리 보려면 서버의 웹 UI에서 이 작업 공간을 여세요."
     },
+    "fileViewer": {
+      "title": "파일 미리보기",
+      "description": "이 대화에서 참조된 파일을 옆에서 엽니다.",
+      "openInWorkspace": "작업 공간에서 열기",
+      "back": "뒤로",
+      "preview": "미리보기",
+      "source": "소스",
+      "loading": "불러오는 중...",
+      "cannotResolve": "이 파일 경로를 확인할 수 없습니다.",
+      "tooLargeToPreview": "이 파일은 너무 커서 여기서 미리 볼 수 없습니다. 작업 공간에서 여세요."
+    },
     "branchDropdown": {
       "toasts": {
         "commitCodeCompleted": "코드 커밋이 완료되었습니다",

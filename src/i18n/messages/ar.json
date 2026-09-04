@@ -2164,6 +2164,17 @@
       "officeServerInstallHint": "يجب تثبيت OfficeCLI على مضيف الخادم. شغّل هذا الأمر هناك ثم أعد المحاولة:",
       "officeRemoteDesktopUnsupported": "المعاينة المباشرة غير متاحة في نافذة سطح المكتب البعيد. افتح مساحة العمل هذه في واجهة الويب الخاصة بالخادم لمعاينة ملفات Office."
     },
+    "fileViewer": {
+      "title": "معاينة الملف",
+      "description": "ملف مشار إليه في هذه المحادثة، مفتوح بجانبها.",
+      "openInWorkspace": "فتح في مساحة العمل",
+      "back": "رجوع",
+      "preview": "معاينة",
+      "source": "المصدر",
+      "loading": "جارٍ التحميل...",
+      "cannotResolve": "تعذّر تحليل مسار الملف هذا.",
+      "tooLargeToPreview": "هذا الملف أكبر من أن تتم معاينته هنا. افتحه في مساحة العمل بدلاً من ذلك."
+    },
     "branchDropdown": {
       "toasts": {
         "commitCodeCompleted": "اكتمل التزام الكود",

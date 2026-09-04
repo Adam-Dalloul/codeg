@@ -2164,6 +2164,17 @@
       "officeServerInstallHint": "OfficeCLI 需安装在服务器主机上。请在服务器上运行以下命令后重试：",
       "officeRemoteDesktopUnsupported": "远程桌面窗口暂不支持实时预览。请在服务器的 Web 界面中打开此工作区来预览 Office 文件。"
     },
+    "fileViewer": {
+      "title": "文件预览",
+      "description": "会话中引用的文件，在旁边打开。",
+      "openInWorkspace": "在工作区打开",
+      "back": "返回",
+      "preview": "预览",
+      "source": "源码",
+      "loading": "加载中...",
+      "cannotResolve": "无法解析该文件路径。",
+      "tooLargeToPreview": "文件太大，无法在此预览。请在工作区打开。"
+    },
     "branchDropdown": {
       "toasts": {
         "commitCodeCompleted": "提交代码完成",
