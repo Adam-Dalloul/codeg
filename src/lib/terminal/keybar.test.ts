@@ -46,6 +46,35 @@ describe("termKeySeq 基础序列", () => {
   })
 })
 
+describe("termKeySeq 应用光标键模式（DECCKM）", () => {
+  it("DECCKM 开启：无修饰符的方向键/Home/End 走 SS3（ESC O X）", () => {
+    expect(termKeySeq("up", OFF, true)).toBe("\x1bOA")
+    expect(termKeySeq("down", OFF, true)).toBe("\x1bOB")
+    expect(termKeySeq("right", OFF, true)).toBe("\x1bOC")
+    expect(termKeySeq("left", OFF, true)).toBe("\x1bOD")
+    expect(termKeySeq("home", OFF, true)).toBe("\x1bOH")
+    expect(termKeySeq("end", OFF, true)).toBe("\x1bOF")
+  })
+
+  it("DECCKM 不影响非光标键", () => {
+    expect(termKeySeq("pgup", OFF, true)).toBe("\x1b[5~")
+    expect(termKeySeq("pgdn", OFF, true)).toBe("\x1b[6~")
+    expect(termKeySeq("esc", OFF, true)).toBe("\x1b")
+    expect(termKeySeq("tab", OFF, true)).toBe("\t")
+  })
+
+  it("带修饰符时 DECCKM 让位给 CSI 1;<m>X", () => {
+    expect(termKeySeq("up", { ctrl: true, alt: false }, true)).toBe("\x1b[1;5A")
+    expect(termKeySeq("home", { ctrl: false, alt: true }, true)).toBe(
+      "\x1b[1;3H"
+    )
+  })
+
+  it("默认参数保持 DECCKM 关闭的历史行为", () => {
+    expect(termKeySeq("up", OFF)).toBe(termKeySeq("up", OFF, false))
+  })
+})
+
 describe("termKeySeq 闩锁修饰", () => {
   it("Ctrl+方向键 = ESC[1;5X", () => {
     expect(termKeySeq("up", { ctrl: true, alt: false })).toBe("\x1b[1;5A")
@@ -101,10 +130,28 @@ describe("applyTermMods 软键盘闩锁包装", () => {
     expect(applyTermMods("abc", { ctrl: true, alt: false }).out).toBe("\x01bc")
   })
 
-  it("CTRL+非字母原样透传（仍消费闩锁）", () => {
+  it("CTRL+@A-Z[\\]^_ → 0x00–0x1f（Ctrl+[=ESC、Ctrl+\\=SIGQUIT、Ctrl+_=undo）", () => {
+    const ctrl = { ctrl: true, alt: false }
+    expect(applyTermMods("[", ctrl).out).toBe("\x1b")
+    expect(applyTermMods("\\", ctrl).out).toBe("\x1c")
+    expect(applyTermMods("]", ctrl).out).toBe("\x1d")
+    expect(applyTermMods("_", ctrl).out).toBe("\x1f")
+    expect(applyTermMods("@", ctrl).out).toBe("\x00")
+  })
+
+  it("CTRL+空格 → NUL；CTRL+? → DEL", () => {
+    expect(applyTermMods(" ", { ctrl: true, alt: false }).out).toBe("\x00")
+    expect(applyTermMods("?", { ctrl: true, alt: false }).out).toBe("\x7f")
+  })
+
+  it("CTRL+无控制码形态的字符原样透传（仍消费闩锁）", () => {
     const r = applyTermMods("1", { ctrl: true, alt: false })
     expect(r.out).toBe("1")
     expect(r.consumed).toBe(true)
+  })
+
+  it("CTRL+ALT 叠加 = meta + 控制码", () => {
+    expect(applyTermMods("a", { ctrl: true, alt: true }).out).toBe("\x1b\x01")
   })
 
   it("ALT+输入 → 前缀 ESC", () => {

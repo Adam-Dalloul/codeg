@@ -14,7 +14,7 @@ interface TermKeybarProps {
   onToggleMod: (mod: "ctrl" | "alt") => void
   /** 按下普通键（ESC/TAB/方向键 等）——不消费闩锁，由父级在发完字节后复位。 */
   onPressKey: (key: TermKeyBarKey) => void
-  /** IME 组合进行中时禁用整组按钮（避免送出误触发的控制码）。 */
+  /** 禁用整组按钮。当前无调用方使用，保留给「输入被阻塞时置灰」这类场景。 */
   disabled?: boolean
 }
 
@@ -25,8 +25,8 @@ interface TermKeybarProps {
  *   · `onPointerDown` 触发 + `preventDefault`：按钮不夺走 xterm helper textarea
  *     的焦点，软键盘保持弹出。
  *   · CTRL/ALT 互斥闩锁：armed 状态由父级 state 控制，本组件只渲染高亮。
- *   · 桌面端由父级用媒体查询（`useMediaQuery("(max-width: 768px)")`）判定，
- *     此处不再二次过滤，避免 SSR/CSR 不一致导致水合闪烁。
+ *   · 桌面端由父级用 `useIsMobile()` 判定后整体不挂载，此处不再二次过滤，
+ *     避免 SSR/CSR 不一致导致水合闪烁。
  */
 export function TermKeybar({
   mods,
