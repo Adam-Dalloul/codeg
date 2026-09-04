@@ -682,6 +682,13 @@
     "emptyNoAgent": "사용 가능한 에이전트가 없습니다.",
     "configManagement": "구성 관리",
     "envVars": "환경 변수",
+    "adapterChannel": {
+      "label": "어댑터 버전",
+      "description": "설치와 업그레이드는 codeg가 검토해 고정한 버전을 사용합니다. 최신 버전을 선택하면 해당 패키지의 그 시점 최신 npm 릴리스를 설치하며, 최신 버전 설치에 실패하면 고정 버전으로 되돌리고 설치 로그에 남깁니다.",
+      "pinned": "고정 버전 (권장)",
+      "latest": "최신 버전 (미검토)",
+      "latestWarning": "최신 릴리스는 검토되지 않아 codeg에서 이 에이전트가 깨질 수 있으며, 간혹 알려진 문제가 있는 릴리스일 수도 있습니다. 실제 설치된 버전은 버전 상태에 표시됩니다."
+    },
     "hostTools": {
       "label": "파일과 명령을 에이전트가 직접 처리",
       "description": "codeg가 파일 접근과 터미널 명령을 대신 처리하지 않고 에이전트가 자체 프로세스에서 실행합니다. 그래야 에이전트 자체의 샌드박스와 권한 규칙이 적용됩니다. 다른 에이전트에 위임하는 기능도 함께 꺼집니다. 같은 작업이 다시 codeg를 거치게 되기 때문입니다. codeg는 자체 샌드박스를 제공하지 않으므로 에이전트에 샌드박스를 구성한 경우에만 켜세요."
@@ -1389,7 +1396,8 @@
       "localUnrecognized": "{versionText}. 로컬 버전을 비교할 수 없습니다. 덮어쓰기 설치를 위해 업그레이드를 시도하세요.",
       "upgradeAvailable": "{versionText}. 업그레이드가 가능합니다.",
       "remoteUnavailable": "{versionText}. 현재 원격 버전을 사용할 수 없습니다.",
-      "latest": "{versionText}. 이미 최신입니다."
+      "latest": "{versionText}. 이미 최신입니다.",
+      "latestChannel": "{versionText}. 최신 버전 채널이 켜져 있습니다. 업그레이드하면 최신 릴리스를 설치합니다."
     },
     "adapter": {
       "label": "ACP 어댑터",
