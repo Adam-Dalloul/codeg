@@ -644,18 +644,42 @@ pub async fn remove_worktree_and_branch(
     // call and the `std::fs` call below cannot land on different directories,
     // which for the one destructive call here is the whole point. Folder paths
     // are stored exactly as they were given, so neither is hypothetical.
-    let target = std::path::absolute(std::path::Path::new(repo_path).join(worktree_path))
-        .map_err(AppCommandError::io)?;
-    // Lossy only to hand git a `&str`. A mangled path is still absolute, so the
-    // worst it can do is make git refuse; every removal below uses `target`.
-    let target_arg = target.to_string_lossy().into_owned();
+    let joined = std::path::Path::new(repo_path).join(worktree_path);
+    // `join` drops the base when the right-hand side brings its own prefix. On
+    // Unix that means an absolute path, which is what we want. On Windows it
+    // also means a DRIVE-RELATIVE one (`C:trees`), which names a directory only
+    // a per-drive current directory can finish — and the app's is not the one
+    // git would use from `repo_path`, so the two halves would resolve it apart.
+    // There is no safe guess about which directory that is, and this function
+    // deletes directories, so it stops instead.
+    if joined.is_relative() && !joined.starts_with(repo_path) {
+        return Err(AppCommandError::new(
+            AppErrorCode::InvalidInput,
+            format!(
+                "the worktree path '{worktree_path}' is relative to a drive rather than \
+                 to '{repo_path}', so it does not name one directory"
+            ),
+        ));
+    }
+    let target = std::path::absolute(&joined).map_err(AppCommandError::io)?;
+    // Refused rather than made lossy: a `\u{FFFD}` substituted into an absolute
+    // path is still an absolute path, and git would go delete THAT one while
+    // every removal below still used the bytes in `target`. Handing git a
+    // different directory than the one we probed is the single thing this
+    // resolution exists to prevent.
+    let Some(target_arg) = target.to_str() else {
+        return Err(AppCommandError::new(
+            AppErrorCode::InvalidInput,
+            format!("the worktree path '{worktree_path}' does not resolve to valid UTF-8"),
+        ));
+    };
     // Git first, always — including for a directory it will refuse. Refusing is
     // ALL it does: `worktree remove` validates the `.git` marker before it
     // deletes anything, so a shell git will not speak for arrives at the
     // recovery below exactly as it was. Asking it first is therefore free of
     // risk, and it leaves ONE removal path here instead of a pre-check that
     // has to re-derive what git is about to say.
-    let removed = run_git(repo_path, &["worktree", "remove", "--force", &target_arg]).await?;
+    let removed = run_git(repo_path, &["worktree", "remove", "--force", target_arg]).await?;
     let needs_prune = if removed.status.success() {
         false
     } else {
