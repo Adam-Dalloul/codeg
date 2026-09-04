@@ -73,8 +73,8 @@ interface TerminalViewProps {
   isActive: boolean
   isVisible: boolean
   /**
-   * 移动端虚拟键栏可见性。父级基于 `useMediaQuery("(max-width: 768px)")` 判定
-   * 是否折叠；桌面端永远为 false。
+   * 移动端虚拟键栏可见性。父级基于 `useIsMobile()` + 折叠开关判定；桌面端
+   * 永远为 false。
    */
   keybarVisible?: boolean
   onProcessExited?: (terminalId: string) => void
@@ -132,22 +132,32 @@ export function TerminalView({
 
   const pressKey = (key: TermKeyBarKey) => {
     const cur = modsRef.current
-    const data = termKeySeq(key, cur)
+    // DECCKM：应用光标键模式下方向键/Home/End 必须发 ESC O X，否则 vim/htop
+    // 之类按 terminfo 匹配的程序会把 ESC [ A 拆成三个键。
+    const appCursorKeys =
+      termRef.current?.modes.applicationCursorKeysMode ?? false
+    const data = termKeySeq(key, cur, appCursorKeys)
     if (cur.ctrl || cur.alt) setMods({ ctrl: false, alt: false }) // 闩锁被消费
     writeQueueRef.current?.enqueue(data)
     termRef.current?.focus()
   }
 
-  // 失活时复位闩锁：避免切走再切回后第一下输入被意外包装成 Ctrl/Alt。
+  // 键栏收敛三个条件：移动端命中 + 父级未折叠（都由 keybarVisible 带下来）+
+  // 当前 tab 是活动 tab（否则隐藏 tab 上挂着的死按钮会浪费 DOM 与焦点环）。
+  const showKeybar = keybarVisible && isActive && isVisible
+
+  // 键栏一旦不可见就复位闩锁。armed 状态只由键栏按钮高亮呈现，收起键栏（切走
+  // tab、收起面板、折叠键栏）后闩锁仍然生效的话，下一个软键盘字符会被无声地
+  // 包装成控制码，而屏幕上没有任何东西提示它 armed 过。
   useEffect(() => {
-    if (!isActive) setMods({ ctrl: false, alt: false })
-  }, [isActive])
+    if (!showKeybar) setMods({ ctrl: false, alt: false })
+  }, [showKeybar])
 
   // ---- 软键盘弹起跟随 ----
   // 键盘打开时 visualViewport 被压缩：算出底部被遮住的像素数 kbdLift，
   // 用 max-height 钳制 xterm + 键栏所在的 flex 容器 —— 键栏作为最后一个
   // flex 子项自然抬到键盘上方；xterm 随容器变小，原有 ResizeObserver 自动
-  // refit + 发 terminal_resize（与 pios 的 drawer 缩高 + fit 同语义）。
+  // refit + 发 terminal_resize。
   const [kbdLift, setKbdLift] = useState(0)
   useEffect(() => {
     if (!keybarVisible) {
@@ -496,31 +506,32 @@ export function TerminalView({
       aria-hidden={!isActive}
     >
       {/* xterm + 键栏所在的 flex 列：kbdLift 收缩外层高度，让键栏抬到软键盘上方。
-          keybarVisible 仅移动端为真，桌面端 TermKeybar 内部不渲染。
-          showKeybar 收敛三个条件：移动端命中 + 父级未折叠 + 当前 tab 是活动 tab
-          （否则隐藏 tab 上挂着的死按钮会浪费 DOM 与焦点环）。 */}
-      {(() => {
-        const showKeybar = keybarVisible && isActive && isVisible
-        return (
-          <div
-            className="flex h-full w-full min-h-0 flex-col gap-1"
-            style={
-              showKeybar && kbdLift > 0
-                ? { maxHeight: `calc(100% - ${kbdLift}px)` }
-                : undefined
-            }
-          >
-            <div ref={containerRef} className="min-h-0 flex-1" />
-            {showKeybar && (
-              <TermKeybar
-                mods={modsUi}
-                onToggleMod={toggleMod}
-                onPressKey={pressKey}
-              />
-            )}
-          </div>
-        )
-      })()}
+          键盘收起时改让底部安全区（刘海屏 home indicator）——移动端终端走的是
+          Drawer，portal 到 body，拿不到外壳那层 pb-[env(safe-area-inset-bottom)]，
+          不减这一块最后一行按钮就压在 home indicator 上。键盘弹起时 home
+          indicator 本来就被键盘盖住，再减一次只会多出一条空隙。 */}
+      <div
+        className="flex h-full w-full min-h-0 flex-col gap-1"
+        style={
+          showKeybar
+            ? {
+                maxHeight:
+                  kbdLift > 0
+                    ? `calc(100% - ${kbdLift}px)`
+                    : "calc(100% - env(safe-area-inset-bottom))",
+              }
+            : undefined
+        }
+      >
+        <div ref={containerRef} className="min-h-0 flex-1" />
+        {showKeybar && (
+          <TermKeybar
+            mods={modsUi}
+            onToggleMod={toggleMod}
+            onPressKey={pressKey}
+          />
+        )}
+      </div>
       {loading && isActive && (
         <div className="absolute inset-0 flex items-center justify-center bg-background/80">
           <div className="flex items-center gap-2 text-sm text-muted-foreground">

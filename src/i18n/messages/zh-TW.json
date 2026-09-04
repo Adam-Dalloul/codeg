@@ -682,6 +682,13 @@
     "emptyNoAgent": "暫無可用 Agent。",
     "configManagement": "配置管理",
     "envVars": "環境變數",
+    "adapterChannel": {
+      "label": "轉接器版本",
+      "description": "安裝與升級預設使用 codeg 審查並固定的版本。選擇最新版後會改為安裝該套件當時最新的 npm 版本；若最新版安裝失敗，codeg 會回退到固定版本，並在安裝日誌中說明。",
+      "pinned": "固定版本（建議）",
+      "latest": "最新版（未經審查）",
+      "latestWarning": "最新版本未經審查，可能破壞該 Agent 在 codeg 中的使用，偶爾甚至是已知損壞的版本。實際安裝的版本以版本狀態為準。"
+    },
     "hostTools": {
       "label": "由 Agent 自行處理檔案與指令",
       "description": "codeg 不再代為提供檔案存取與終端指令，改由 Agent 在自己的行程中執行——只有這樣它自帶的沙箱與權限規則才會生效。同時會關閉向其他 Agent 委派，否則同樣的操作又會繞回 codeg 執行。codeg 本身不提供沙箱，因此請僅在 Agent 已設定沙箱時開啟。"
@@ -1389,7 +1396,8 @@
       "localUnrecognized": "{versionText}。本地版本無法識別，可嘗試升級覆蓋安裝。",
       "upgradeAvailable": "{versionText}。發現可升級版本。",
       "remoteUnavailable": "{versionText}。遠端版本暫不可用。",
-      "latest": "{versionText}。已是最新版本。"
+      "latest": "{versionText}。已是最新版本。",
+      "latestChannel": "{versionText}。已啟用最新版通道；升級會安裝最新版本。"
     },
     "adapter": {
       "label": "ACP 轉接器",
@@ -1563,7 +1571,7 @@
     "terminalShellNotInstalled": "未安裝",
     "terminalShellNotFoundWarning": "目前主機上不存在此路徑。",
     "terminalCurrentShell": "目前使用：{path}",
-    "renderingDescription": "若應用出現黑屏或渲染異常（常見於 AMD 顯示卡或部分 Intel 內顯），可關閉硬體加速。僅 Windows 桌面端生效。",
+    "renderingDescription": "若應用出現黑屏或渲染異常（Windows 上常見於 AMD 顯示卡或部分 Intel 內顯，Linux 上常見於 NVIDIA 閉源驅動），可關閉硬體加速。僅 Windows 與 Linux 桌面端生效。",
     "disableHardwareAcceleration": "停用硬體加速",
     "renderingSaveFailed": "渲染設定儲存失敗：{message}",
     "restartRequired": "已儲存，需重新啟動應用程式才會生效。",
@@ -2065,7 +2073,7 @@
         "ctrl": "CTRL",
         "alt": "ALT",
         "slash": "/",
-        "dash": "—",
+        "dash": "-",
         "home": "HOME",
         "end": "END",
         "pgup": "PGUP",
@@ -2182,6 +2190,17 @@
       "officeWatchRetry": "重試",
       "officeServerInstallHint": "OfficeCLI 需安裝在伺服器主機上。請在伺服器上執行以下指令後重試：",
       "officeRemoteDesktopUnsupported": "遠端桌面視窗暫不支援即時預覽。請在伺服器的 Web 介面中開啟此工作區以預覽 Office 檔案。"
+    },
+    "fileViewer": {
+      "title": "檔案預覽",
+      "description": "對話中引用的檔案，在旁邊開啟。",
+      "openInWorkspace": "在工作區開啟",
+      "back": "返回",
+      "preview": "預覽",
+      "source": "原始碼",
+      "loading": "載入中...",
+      "cannotResolve": "無法解析該檔案路徑。",
+      "tooLargeToPreview": "檔案太大，無法在此預覽。請在工作區開啟。"
     },
     "branchDropdown": {
       "toasts": {
@@ -2883,7 +2902,6 @@
         "steerIntoTurn": "插入目前回合",
         "steerQueuedInstead": "已轉入佇列——將隨下一回合傳送。",
         "steerFailed": "無法插入目前回合",
-        "steerAttachmentsUnsupported": "僅支援純文字——帶附件的草稿請走佇列。",
         "slashCommands": "斜線命令",
         "slashSearchPlaceholder": "搜尋命令...",
         "slashSearchEmpty": "沒有符合的指令",
@@ -3155,6 +3173,7 @@
         "copyMessage": "複製",
         "forkFromHere": "從此處分叉",
         "forkBusy": "目前有回合正在進行，暫不可分叉",
+        "forkNotReady": "這則回覆暫時還不能作為分叉點，請稍後再試",
         "copied": "已複製",
         "selectionActions": "選取內容操作",
         "selectionCopy": "複製文字",

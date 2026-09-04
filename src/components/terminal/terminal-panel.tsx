@@ -2,24 +2,24 @@
 
 import { useCallback, useEffect, useState } from "react"
 import { useTerminalContext } from "@/contexts/terminal-context"
-import { useMediaQuery } from "@/hooks/use-media-query"
+import { useIsMobile } from "@/hooks/use-mobile"
 import { TerminalTabBar } from "./terminal-tab-bar"
 import { TerminalView } from "./terminal-view"
 
 const KEYBAR_COLLAPSED_STORAGE_KEY = "codeg:term-keybar"
-const MOBILE_BREAKPOINT = "(max-width: 768px)"
 
 /**
  * 终端面板：顶栏（tab + 折叠键栏开关）+ 所有挂载的 xterm。
  *
  * 移动端键栏的可见性在面板层决定：
- *   · `useMediaQuery` 监听窗口宽度；
+ *   · `useIsMobile()` —— 必须与 workspace layout 挑选移动端外壳用的是同一个
+ *     判据，否则会在断点边界上出现「桌面外壳里冒出移动端键栏」；
  *   · 折叠态持久化到 localStorage，避免多个终端 tab 各自记一份导致切 tab
- *     后展开/折叠不一致（与 pios 同样的踩坑修复）。
+ *     后展开/折叠不一致。
  */
 export function TerminalPanel() {
   const { isOpen, tabs, activeTabId, markTerminalExited } = useTerminalContext()
-  const isMobile = useMediaQuery(MOBILE_BREAKPOINT)
+  const isMobile = useIsMobile()
 
   const [keybarCollapsed, setKeybarCollapsed] = useState(() => {
     if (typeof window === "undefined") return false

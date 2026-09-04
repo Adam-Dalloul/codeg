@@ -682,6 +682,13 @@
     "emptyNoAgent": "Keine verfügbaren Agenten.",
     "configManagement": "Konfigurationsverwaltung",
     "envVars": "Umgebungsvariablen",
+    "adapterChannel": {
+      "label": "Adapter-Version",
+      "description": "Installieren und Aktualisieren verwenden die von codeg geprüfte und angepinnte Version. Mit Neueste wird stattdessen die jeweils neueste npm-Version des Pakets installiert; schlägt das fehl, fällt codeg auf die angepinnte Version zurück und vermerkt es im Installationsprotokoll.",
+      "pinned": "Angepinnt (empfohlen)",
+      "latest": "Neueste (ungeprüft)",
+      "latestWarning": "Die neuesten Versionen sind ungeprüft und können diesen Agenten in codeg beschädigen; gelegentlich ist eine Version sogar bekanntermaßen defekt. Der Versionsstatus zeigt, was tatsächlich installiert ist."
+    },
     "hostTools": {
       "label": "Dateien und Befehle vom Agenten selbst ausführen lassen",
       "description": "codeg übernimmt Dateizugriffe und Terminalbefehle nicht mehr, sodass der Agent sie im eigenen Prozess ausführt – nur dort greifen seine eigene Sandbox und seine Berechtigungsregeln. Auch das Delegieren an andere Agenten wird deaktiviert, da dieselbe Arbeit sonst wieder über codeg liefe. codeg fügt selbst keine Sandbox hinzu; aktivieren Sie dies also nur, wenn im Agenten eine konfiguriert ist."
@@ -1389,7 +1396,8 @@
       "localUnrecognized": "{versionText}. Lokale Version ist nicht vergleichbar; zum Überschreiben bitte Upgrade versuchen.",
       "upgradeAvailable": "{versionText}. Upgrade verfügbar.",
       "remoteUnavailable": "{versionText}. Remote-Version ist derzeit nicht verfügbar.",
-      "latest": "{versionText}. Bereits aktuell."
+      "latest": "{versionText}. Bereits aktuell.",
+      "latestChannel": "{versionText}. Neueste-Kanal ist aktiv; Aktualisieren installiert die neueste Version."
     },
     "adapter": {
       "label": "ACP-Adapter",
@@ -1563,7 +1571,7 @@
     "terminalShellNotInstalled": "nicht installiert",
     "terminalShellNotFoundWarning": "Dieser Pfad existiert auf diesem Host nicht.",
     "terminalCurrentShell": "Aktuell verwendet: {path}",
-    "renderingDescription": "Deaktivieren Sie die Hardwarebeschleunigung, wenn die App einen schwarzen Bildschirm oder Render-Fehler zeigt (häufig bei bestimmten AMD-GPUs oder integrierten Intel-GPUs). Wirkt sich nur auf die Windows-Desktop-Version aus.",
+    "renderingDescription": "Deaktivieren Sie die Hardwarebeschleunigung, wenn die App einen schwarzen Bildschirm oder Render-Fehler zeigt (häufig bei bestimmten AMD-GPUs oder integrierten Intel-GPUs unter Windows sowie beim proprietären NVIDIA-Treiber unter Linux). Wirkt sich nur auf die Windows- und Linux-Desktop-Versionen aus.",
     "disableHardwareAcceleration": "Hardwarebeschleunigung deaktivieren",
     "renderingSaveFailed": "Render-Einstellungen konnten nicht gespeichert werden: {message}",
     "restartRequired": "Gespeichert. Starten Sie die App neu, damit die Änderung wirksam wird.",
@@ -2065,7 +2073,7 @@
         "ctrl": "CTRL",
         "alt": "ALT",
         "slash": "/",
-        "dash": "—",
+        "dash": "-",
         "home": "HOME",
         "end": "END",
         "pgup": "PGUP",
@@ -2182,6 +2190,17 @@
       "officeWatchRetry": "Erneut versuchen",
       "officeServerInstallHint": "OfficeCLI muss auf dem Server-Host installiert sein. Führe diesen Befehl dort aus und versuche es erneut:",
       "officeRemoteDesktopUnsupported": "Die Live-Vorschau ist in einem Remote-Desktop-Fenster nicht verfügbar. Öffne diesen Arbeitsbereich in der Web-Oberfläche des Servers, um Office-Dateien anzusehen."
+    },
+    "fileViewer": {
+      "title": "Dateivorschau",
+      "description": "Eine in dieser Unterhaltung referenzierte Datei, daneben geöffnet.",
+      "openInWorkspace": "Im Arbeitsbereich öffnen",
+      "back": "Zurück",
+      "preview": "Vorschau",
+      "source": "Quelltext",
+      "loading": "Wird geladen...",
+      "cannotResolve": "Dieser Dateipfad kann nicht aufgelöst werden.",
+      "tooLargeToPreview": "Diese Datei ist zu groß für eine Vorschau hier. Öffne sie stattdessen im Arbeitsbereich."
     },
     "branchDropdown": {
       "toasts": {
@@ -2883,7 +2902,6 @@
         "steerIntoTurn": "In laufenden Turn einfügen",
         "steerQueuedInstead": "Stattdessen in die Warteschlange gestellt – wird mit dem nächsten Turn gesendet.",
         "steerFailed": "Konnte nicht in den laufenden Turn eingefügt werden",
-        "steerAttachmentsUnsupported": "Nur Text – Entwürfe mit Anhängen laufen über die Warteschlange.",
         "slashCommands": "Slash-Befehle",
         "slashSearchPlaceholder": "Befehle suchen...",
         "slashSearchEmpty": "Keine passenden Befehle",
@@ -3155,6 +3173,7 @@
         "copyMessage": "Kopieren",
         "forkFromHere": "Ab hier verzweigen",
         "forkBusy": "Verzweigen nicht möglich, während ein Zug läuft",
+        "forkNotReady": "Von dieser Antwort kann noch nicht verzweigt werden – bitte gleich erneut versuchen",
         "copied": "Kopiert",
         "selectionActions": "Auswahlaktionen",
         "selectionCopy": "Text kopieren",

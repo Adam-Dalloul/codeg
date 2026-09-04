@@ -209,13 +209,15 @@ interface MessageInputProps {
   isEditingQueueItem?: boolean
   onSaveQueueEdit?: (draft: PromptDraft) => void
   onCancelQueueEdit?: () => void
-  /** Inject the draft's TEXT into the RUNNING turn (native live-feedback
-   *  steering). Present only on sessions whose feedback channel is native —
-   *  when absent, the prompting branch renders its historical Stop-only form.
-   *  Awaited: resolve = injected + recorded (clear the draft); reject =
-   *  failure, where a turn-end `NoActiveTurn` race falls back to the queue
-   *  and anything else keeps the draft. */
-  onSteer?: (text: string) => Promise<void>
+  /** Inject the draft into the RUNNING turn (native live-feedback steering).
+   *  Present only on sessions whose feedback channel is native — when absent,
+   *  the prompting branch renders its historical Stop-only form. `text` is
+   *  the recorded/display form; `blocks` carries the full draft whenever it
+   *  holds more than plain text (image attachments, file badges), encoded
+   *  exactly like a normal send. Awaited: resolve = injected + recorded
+   *  (clear the draft); reject = failure, where a turn-end `NoActiveTurn`
+   *  race falls back to the queue and anything else keeps the draft. */
+  onSteer?: (text: string, blocks?: PromptInputBlock[]) => Promise<void>
   /** Open the live-feedback dialog (from the "+" menu). When omitted the entry
    *  is hidden (feature off). */
   onAddFeedback?: () => void
@@ -1254,17 +1256,22 @@ export function MessageInput({
   ])
 
   // Mid-turn "insert into current turn" (native steering). Awaited, unlike
-  // the synchronous send/enqueue/fork paths: the draft clears ONLY once the
+  // the synchronous send/enqueue paths: the draft clears ONLY once the
   // backend confirms the injection was recorded — a turn-end race falls back
   // to the queue (the note is never lost), any other failure keeps the draft
-  // for retry. Steering is text-only: a draft carrying non-text blocks (file
-  // badges) is queued whole instead of being silently stripped; image
-  // attachments disable the menu entry at render (which also keeps unsettled
-  // uploads out of this path — the enqueue fallback below bypasses
-  // `handleSend`'s uploading gate).
+  // for retry. A draft that holds more than plain text (image attachments,
+  // file badges) steers as its full block list — the same encoding a normal
+  // send uses, which the native wire carries verbatim — with the display text
+  // as the recorded note; nothing is silently stripped. Unsettled uploads are
+  // gated here exactly like `handleSend` (no server-side uri to hydrate from
+  // yet), since the enqueue fallback below bypasses its gate.
   const [steering, setSteering] = useState(false)
   const handleSteerClick = useCallback(async () => {
     if (!onSteer || steering) return
+    if (hasUploadingImage) {
+      toast.error(tAttach("attachUploadInProgress"))
+      return
+    }
     const draft = buildDraft()
     if (!draft) return
     const enqueueInstead = () => {
@@ -1273,18 +1280,19 @@ export function MessageInput({
       resetComposer()
       toast.info(t("steerQueuedInstead"))
     }
-    if (draft.blocks.some((b) => b.type !== "text")) {
-      enqueueInstead()
-      return
-    }
-    const text = draft.blocks
-      .map((b) => (b.type === "text" ? b.text : ""))
-      .join("\n")
-      .trim()
+    const blocks = draft.blocks.some((b) => b.type !== "text")
+      ? draft.blocks
+      : undefined
+    const text = blocks
+      ? draft.displayText
+      : draft.blocks
+          .map((b) => (b.type === "text" ? b.text : ""))
+          .join("\n")
+          .trim()
     if (!text) return
     setSteering(true)
     try {
-      await onSteer(text)
+      await onSteer(text, blocks)
       resetComposer()
     } catch (err) {
       if (isNoActiveTurnRejection(err)) {
@@ -1299,6 +1307,8 @@ export function MessageInput({
   }, [
     onSteer,
     steering,
+    hasUploadingImage,
+    tAttach,
     buildDraft,
     onEnqueue,
     showModeSelector,
@@ -1658,12 +1668,7 @@ export function MessageInput({
             <DropdownMenuContent align="end" side="top">
               <DropdownMenuItem
                 onSelect={() => void handleSteerClick()}
-                disabled={steering || attachments.length > 0}
-                title={
-                  attachments.length > 0
-                    ? t("steerAttachmentsUnsupported")
-                    : undefined
-                }
+                disabled={steering}
               >
                 <Zap className="h-4 w-4" />
                 {t("steerIntoTurn")}

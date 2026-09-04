@@ -682,6 +682,13 @@
     "emptyNoAgent": "No hay agentes disponibles.",
     "configManagement": "Gestión de configuración",
     "envVars": "Variables de entorno",
+    "adapterChannel": {
+      "label": "Versión del adaptador",
+      "description": "Instalar y Actualizar usan la versión que codeg ha revisado y fijado. Con Última pasan a instalar la versión de npm más reciente del paquete en ese momento; si esa instalación falla, codeg vuelve a la versión fijada y lo indica en el registro de instalación.",
+      "pinned": "Fijada (recomendada)",
+      "latest": "Última (sin revisar)",
+      "latestWarning": "Las versiones más recientes no están revisadas y pueden romper este agente en codeg; en ocasiones incluso se sabe que una versión está rota. El estado de versión muestra lo que quedó instalado realmente."
+    },
     "hostTools": {
       "label": "Dejar que el agente gestione archivos y comandos",
       "description": "codeg deja de atender el acceso a archivos y los comandos de terminal, de modo que el agente los ejecuta en su propio proceso, donde sí se aplican su sandbox y sus reglas de permisos. También se desactiva la delegación a otros agentes, ya que devolvería ese mismo trabajo a codeg. codeg no añade ningún sandbox propio, así que actívalo solo si el agente tiene uno configurado."
@@ -1389,7 +1396,8 @@
       "localUnrecognized": "{versionText}. La versión local no es comparable; intenta actualizar para sobrescribir la instalación.",
       "upgradeAvailable": "{versionText}. Hay actualización disponible.",
       "remoteUnavailable": "{versionText}. La versión remota no está disponible por ahora.",
-      "latest": "{versionText}. Ya está en la última versión."
+      "latest": "{versionText}. Ya está en la última versión.",
+      "latestChannel": "{versionText}. Canal de última versión activado; Actualizar instala la versión más reciente."
     },
     "adapter": {
       "label": "Adaptador ACP",
@@ -1563,7 +1571,7 @@
     "terminalShellNotInstalled": "no instalado",
     "terminalShellNotFoundWarning": "Esta ruta no existe en este host.",
     "terminalCurrentShell": "En uso actualmente: {path}",
-    "renderingDescription": "Desactiva la aceleración por hardware si la aplicación muestra pantalla negra o fallos de renderizado (común en algunas GPU AMD o Intel integradas). Solo afecta a la versión de escritorio en Windows.",
+    "renderingDescription": "Desactiva la aceleración por hardware si la aplicación muestra pantalla negra o fallos de renderizado (común en algunas GPU AMD o Intel integradas en Windows, y con el controlador propietario de NVIDIA en Linux). Solo afecta a las versiones de escritorio de Windows y Linux.",
     "disableHardwareAcceleration": "Desactivar aceleración por hardware",
     "renderingSaveFailed": "No se pudo guardar la configuración de renderizado: {message}",
     "restartRequired": "Guardado. Reinicia la aplicación para aplicar el cambio.",
@@ -2065,7 +2073,7 @@
         "ctrl": "CTRL",
         "alt": "ALT",
         "slash": "/",
-        "dash": "—",
+        "dash": "-",
         "home": "HOME",
         "end": "END",
         "pgup": "PGUP",
@@ -2182,6 +2190,17 @@
       "officeWatchRetry": "Reintentar",
       "officeServerInstallHint": "OfficeCLI debe instalarse en el host del servidor. Ejecuta este comando allí y vuelve a intentarlo:",
       "officeRemoteDesktopUnsupported": "La vista previa en vivo no está disponible en una ventana de escritorio remoto. Abre este espacio de trabajo en la interfaz web del servidor para previsualizar archivos de Office."
+    },
+    "fileViewer": {
+      "title": "Vista previa del archivo",
+      "description": "Un archivo referenciado en esta conversación, abierto junto a ella.",
+      "openInWorkspace": "Abrir en el espacio de trabajo",
+      "back": "Atrás",
+      "preview": "Vista previa",
+      "source": "Código",
+      "loading": "Cargando...",
+      "cannotResolve": "No se puede resolver esta ruta de archivo.",
+      "tooLargeToPreview": "Este archivo es demasiado grande para previsualizarlo aquí. Ábrelo en el espacio de trabajo."
     },
     "branchDropdown": {
       "toasts": {
@@ -2883,7 +2902,6 @@
         "steerIntoTurn": "Insertar en el turno actual",
         "steerQueuedInstead": "Se puso en cola: se enviará con el siguiente turno.",
         "steerFailed": "No se pudo insertar en el turno actual",
-        "steerAttachmentsUnsupported": "Solo texto: los borradores con adjuntos pasan por la cola.",
         "slashCommands": "Comandos de barra",
         "slashSearchPlaceholder": "Buscar comandos...",
         "slashSearchEmpty": "Sin comandos coincidentes",
@@ -3155,6 +3173,7 @@
         "copyMessage": "Copiar",
         "forkFromHere": "Bifurcar desde aquí",
         "forkBusy": "No se puede bifurcar mientras hay un turno en curso",
+        "forkNotReady": "Todavía no se puede bifurcar desde esta respuesta; inténtalo en un momento",
         "copied": "Copiado",
         "selectionActions": "Acciones de selección",
         "selectionCopy": "Copiar texto",

@@ -965,16 +965,18 @@ pub enum ConnectionCommand {
         reply:
             tokio::sync::oneshot::Sender<Result<crate::acp::types::ForkProtocolResult, AcpError>>,
     },
-    /// Inject a live-feedback note into the RUNNING turn over the ACP
+    /// Inject a live-feedback message into the RUNNING turn over the ACP
     /// `_session/steering` extension (native push channel — see
-    /// `manager::submit_feedback`). The loop does the protocol round-trip
-    /// only and replies the parsed outcome; recording the note + the
-    /// `FeedbackSubmitted` broadcast happen in the manager's
-    /// cancellation-shielded task, mirroring Fork's protocol/persistence
-    /// split. The idle arm replies `Err(NoActiveTurn)` so the oneshot can
-    /// never hang.
+    /// `manager::submit_feedback`). Carries the same `PromptInputBlock`s a
+    /// normal prompt does (text plus image attachments), mapped onto the wire
+    /// with the same conversion, so a steered draft keeps its attachments.
+    /// The loop does the protocol round-trip only and replies the parsed
+    /// outcome; recording the note + the `FeedbackSubmitted` broadcast happen
+    /// in the manager's cancellation-shielded task, mirroring Fork's
+    /// protocol/persistence split. The idle arm replies `Err(NoActiveTurn)`
+    /// so the oneshot can never hang.
     Steer {
-        text: String,
+        blocks: Vec<PromptInputBlock>,
         reply: tokio::sync::oneshot::Sender<Result<SteerOutcome, AcpError>>,
     },
     /// Stop one AIR async task (`_session/async_task/stop`; claude-agent-acp
@@ -3222,9 +3224,9 @@ fn build_grok_set_model_params(
 async fn send_steer_request(
     cx: &ConnectionTo<Agent>,
     session_id: &SessionId,
-    text: &str,
+    blocks: &[PromptInputBlock],
 ) -> Result<SteerOutcome, AcpError> {
-    let params = build_steer_params(session_id.0.as_ref(), text);
+    let params = build_steer_params(session_id.0.as_ref(), blocks);
     let untyped_req = UntypedMessage::new("_session/steering", params).map_err(|e| {
         AcpError::protocol(format!("Failed to build steering request: {e}"))
     })?;
@@ -3236,15 +3238,19 @@ async fn send_steer_request(
     parse_steer_outcome(&raw)
 }
 
-/// Build the `_session/steering` params. The prompt is a single text block
-/// (codeg steering is text-only), and `_meta.steering.idleBehavior =
-/// "promptRequired"` opts into the turn-end-race contract: a turn that
-/// settled first yields `{outcome:"promptRequired"}` WITHOUT consuming the
-/// content, so the host resubmits it through a normal `session/prompt`.
-fn build_steer_params(session_id: &str, text: &str) -> serde_json::Value {
+/// Build the `_session/steering` params. The prompt carries the caller's
+/// blocks through [`map_prompt_blocks`] — the SAME conversion a
+/// `session/prompt` uses — so a steered draft's image attachments reach the
+/// adapter in the exact encoding its prompt path already accepts (a plain
+/// note is still a single text block, as before). `_meta.steering
+/// .idleBehavior = "promptRequired"` opts into the turn-end-race contract: a
+/// turn that settled first yields `{outcome:"promptRequired"}` WITHOUT
+/// consuming the content, so the host resubmits it through a normal
+/// `session/prompt`.
+fn build_steer_params(session_id: &str, blocks: &[PromptInputBlock]) -> serde_json::Value {
     serde_json::json!({
         "sessionId": session_id,
-        "prompt": [{ "type": "text", "text": text }],
+        "prompt": map_prompt_blocks(blocks.to_vec()),
         "_meta": { "steering": { "idleBehavior": "promptRequired" } },
     })
 }
@@ -9358,7 +9364,7 @@ async fn run_conversation_loop<'a>(
                                         let _ = reply.send(landed);
                                     }
                                 }
-                                Some(ConnectionCommand::Steer { text, reply }) => {
+                                Some(ConnectionCommand::Steer { blocks, reply }) => {
                                     // Protocol round-trip only — the manager's
                                     // cancellation-shielded task records the
                                     // note + broadcasts `FeedbackSubmitted`
@@ -9370,7 +9376,7 @@ async fn run_conversation_loop<'a>(
                                     // commands, not session updates. A dead
                                     // receiver is fine — the reply is then
                                     // moot (teardown), nothing to unwind.
-                                    let outcome = send_steer_request(&cx, &sid, &text).await;
+                                    let outcome = send_steer_request(&cx, &sid, &blocks).await;
                                     // A steered message still lands in the
                                     // agent's OWN transcript as a user record,
                                     // which `group_into_turns` reads as the
@@ -9394,7 +9400,7 @@ async fn run_conversation_loop<'a>(
                                     // — the overlay is the only place its work
                                     // can surface at all.
                                     if matches!(outcome, Ok(SteerOutcome::Injected)) {
-                                        prompt_ledger.record_text(&text);
+                                        prompt_ledger.record_prompt_blocks(&blocks);
                                     }
                                     let _ = reply.send(outcome);
                                 }
@@ -9645,7 +9651,7 @@ async fn run_conversation_loop<'a>(
                     let _ = reply.send(landed);
                 }
             }
-            Some(ConnectionCommand::Steer { text: _, reply }) => {
+            Some(ConnectionCommand::Steer { blocks: _, reply }) => {
                 // Steering only means something for a RUNNING turn. Reply —
                 // never drop — so the manager's shielded task can't hang on
                 // the oneshot; the caller falls back to a normal prompt (the
@@ -14437,12 +14443,51 @@ mod tests {
 
     #[test]
     fn build_steer_params_shape_carries_the_prompt_required_opt_in() {
-        let params = build_steer_params("sess-1", "use the staging db");
+        let params = build_steer_params(
+            "sess-1",
+            &[crate::acp::types::PromptInputBlock::Text {
+                text: "use the staging db".into(),
+            }],
+        );
         assert_eq!(params["sessionId"], "sess-1");
-        assert_eq!(params["prompt"][0]["type"], "text");
-        assert_eq!(params["prompt"][0]["text"], "use the staging db");
+        // EXACT equality, not field probes: routing a text-only note through
+        // `map_prompt_blocks` must stay byte-identical to the hand-built
+        // `[{type,text}]` this used to emit. A future schema bump that starts
+        // serializing `annotations`/`_meta` as null would change the wire for
+        // every existing steer, and a field probe would not notice.
+        assert_eq!(
+            params["prompt"],
+            serde_json::json!([{ "type": "text", "text": "use the staging db" }])
+        );
         // The opt-in is what keeps the idle race host-owned — its absence
         // would regress to detached `startedNewTurn` turns.
+        assert_eq!(params["_meta"]["steering"]["idleBehavior"], "promptRequired");
+    }
+
+    #[test]
+    fn build_steer_params_maps_image_blocks_like_a_prompt() {
+        // A steered draft with an attachment must hit the wire in the SAME
+        // encoding `session/prompt` uses (`map_prompt_blocks`): the adapter's
+        // steering handler feeds the array through its normal prompt
+        // conversion, so ACP camelCase (`mimeType`) is what it reads.
+        let params = build_steer_params(
+            "sess-1",
+            &[
+                crate::acp::types::PromptInputBlock::Text {
+                    text: "match this mock".into(),
+                },
+                crate::acp::types::PromptInputBlock::Image {
+                    data: "aGk=".into(),
+                    mime_type: "image/png".into(),
+                    uri: None,
+                },
+            ],
+        );
+        assert_eq!(params["prompt"][0]["type"], "text");
+        assert_eq!(params["prompt"][0]["text"], "match this mock");
+        assert_eq!(params["prompt"][1]["type"], "image");
+        assert_eq!(params["prompt"][1]["data"], "aGk=");
+        assert_eq!(params["prompt"][1]["mimeType"], "image/png");
         assert_eq!(params["_meta"]["steering"]["idleBehavior"], "promptRequired");
     }
 

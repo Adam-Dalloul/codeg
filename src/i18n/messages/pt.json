@@ -682,6 +682,13 @@
     "emptyNoAgent": "Nenhum agente disponível.",
     "configManagement": "Gerenciamento de configuração",
     "envVars": "Variáveis de ambiente",
+    "adapterChannel": {
+      "label": "Versão do adaptador",
+      "description": "Instalar e Atualizar usam a versão que o codeg revisou e fixou. Com Mais recente, passa a ser instalada a versão de npm mais nova do pacote naquele momento; se essa instalação falhar, o codeg volta para a versão fixada e registra isso no log de instalação.",
+      "pinned": "Fixada (recomendada)",
+      "latest": "Mais recente (não revisada)",
+      "latestWarning": "As versões mais novas não são revisadas e podem quebrar este agente no codeg; às vezes uma versão é até sabidamente defeituosa. O status da versão mostra o que foi realmente instalado."
+    },
     "hostTools": {
       "label": "Deixar o agente cuidar de arquivos e comandos",
       "description": "O codeg deixa de atender o acesso a arquivos e os comandos de terminal, de modo que o agente os executa no próprio processo — onde o sandbox e as regras de permissão dele realmente se aplicam. A delegação a outros agentes também é desativada, pois levaria o mesmo trabalho de volta ao codeg. O codeg não adiciona sandbox algum, então ative isto apenas se o agente tiver um configurado."
@@ -1389,7 +1396,8 @@
       "localUnrecognized": "{versionText}. A versão local não é comparável; tente atualizar para sobrescrever a instalação.",
       "upgradeAvailable": "{versionText}. Atualização disponível.",
       "remoteUnavailable": "{versionText}. A versão remota está indisponível no momento.",
-      "latest": "{versionText}. Já está na versão mais recente."
+      "latest": "{versionText}. Já está na versão mais recente.",
+      "latestChannel": "{versionText}. Canal de versão mais recente ativo; Atualizar instala a versão mais nova."
     },
     "adapter": {
       "label": "Adaptador ACP",
@@ -1563,7 +1571,7 @@
     "terminalShellNotInstalled": "não instalado",
     "terminalShellNotFoundWarning": "Este caminho não existe neste host.",
     "terminalCurrentShell": "Em uso: {path}",
-    "renderingDescription": "Desative a aceleração de hardware se o aplicativo apresentar tela preta ou falhas de renderização (comum em certas GPUs AMD ou GPUs Intel integradas). Aplica-se apenas à versão desktop do Windows.",
+    "renderingDescription": "Desative a aceleração de hardware se o aplicativo apresentar tela preta ou falhas de renderização (comum em certas GPUs AMD ou GPUs Intel integradas no Windows e com o driver proprietário da NVIDIA no Linux). Aplica-se apenas às versões desktop do Windows e do Linux.",
     "disableHardwareAcceleration": "Desativar aceleração de hardware",
     "renderingSaveFailed": "Falha ao salvar as configurações de renderização: {message}",
     "restartRequired": "Salvo. Reinicie o aplicativo para aplicar a alteração.",
@@ -2065,7 +2073,7 @@
         "ctrl": "CTRL",
         "alt": "ALT",
         "slash": "/",
-        "dash": "—",
+        "dash": "-",
         "home": "HOME",
         "end": "END",
         "pgup": "PGUP",
@@ -2182,6 +2190,17 @@
       "officeWatchRetry": "Tentar novamente",
       "officeServerInstallHint": "O OfficeCLI precisa estar instalado no host do servidor. Execute este comando lá e tente novamente:",
       "officeRemoteDesktopUnsupported": "A pré-visualização ao vivo não está disponível em uma janela de área de trabalho remota. Abra este espaço de trabalho na interface web do servidor para visualizar arquivos do Office."
+    },
+    "fileViewer": {
+      "title": "Pré-visualização do ficheiro",
+      "description": "Um ficheiro referenciado nesta conversa, aberto ao lado.",
+      "openInWorkspace": "Abrir na área de trabalho",
+      "back": "Voltar",
+      "preview": "Pré-visualizar",
+      "source": "Código",
+      "loading": "A carregar...",
+      "cannotResolve": "Não é possível resolver este caminho de ficheiro.",
+      "tooLargeToPreview": "Este ficheiro é demasiado grande para pré-visualizar aqui. Abra-o na área de trabalho."
     },
     "branchDropdown": {
       "toasts": {
@@ -2883,7 +2902,6 @@
         "steerIntoTurn": "Inserir no turno atual",
         "steerQueuedInstead": "Adicionado à fila — será enviado no próximo turno.",
         "steerFailed": "Não foi possível inserir no turno atual",
-        "steerAttachmentsUnsupported": "Somente texto — rascunhos com anexos vão pela fila.",
         "slashCommands": "Comandos de barra",
         "slashSearchPlaceholder": "Buscar comandos...",
         "slashSearchEmpty": "Nenhum comando correspondente",
@@ -3155,6 +3173,7 @@
         "copyMessage": "Copiar",
         "forkFromHere": "Bifurcar a partir daqui",
         "forkBusy": "Não é possível bifurcar enquanto há um turno em andamento",
+        "forkNotReady": "Ainda não é possível bifurcar a partir desta resposta; tente novamente em instantes",
         "copied": "Copiado",
         "selectionActions": "Ações de seleção",
         "selectionCopy": "Copiar texto",

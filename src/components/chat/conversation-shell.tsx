@@ -124,10 +124,15 @@ interface ConversationShellProps {
   isEditingQueueItem?: boolean
   onSaveQueueEdit?: (draft: PromptDraft) => void
   onCancelQueueEdit?: () => void
-  /** Inject the draft's text into the RUNNING turn (native live-feedback
-   *  steering). Present only for sessions on the native channel; threaded
-   *  straight through to the composer. */
-  onSteer?: (text: string) => Promise<void>
+  /** Inject the draft into the RUNNING turn (native live-feedback steering).
+   *  Present only for sessions on the native channel; threaded straight
+   *  through to the composer. `blocks` carries the full draft when it holds
+   *  more than plain text (image attachments, file badges); `text` stays the
+   *  recorded/display form. Must stay in sync with `MessageInputProps.onSteer`
+   *  — the optional second parameter makes a stale one-arg declaration here
+   *  assignable, so tsc would NOT catch a wrapper that silently drops the
+   *  blocks. */
+  onSteer?: (text: string, blocks?: PromptInputBlock[]) => Promise<void>
   /** Optional banner pinned to the top of the panel, above the message area
    *  (e.g. the "restart to apply" config-stale banner). Renders nothing when
    *  omitted. */
