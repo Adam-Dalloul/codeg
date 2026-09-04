@@ -1,12 +1,6 @@
 "use client"
 
-import type {
-  ButtonHTMLAttributes,
-  CSSProperties,
-  HTMLAttributes,
-  ReactNode,
-  Ref,
-} from "react"
+import type { CSSProperties, HTMLAttributes, ReactNode, Ref } from "react"
 
 import {
   Collapsible,
@@ -217,13 +211,18 @@ export type FileTreeFolderProps = HTMLAttributes<HTMLDivElement> & {
    */
   actions?: ReactNode
   /**
-   * Props applied to the folder's header row (the trigger button) — e.g.
-   * `draggable` and drag/drop handlers for file-tree DnD. Placed on the header
-   * (not the outer wrapper, which also contains the child rows) so a drop
-   * targets THIS folder rather than its whole subtree. `onClick`/`type` are
-   * owned by the folder and are not overridable here.
+   * Props applied to the folder's header row — e.g. `draggable` and drag/drop
+   * handlers for file-tree DnD. Placed on the header (not the outer wrapper,
+   * which also contains the child rows) so a drop targets THIS folder rather
+   * than its whole subtree. `onClick`/`type` are owned by the folder and are
+   * not overridable here.
+   *
+   * The header row is the `<button>` itself, or — when {@link actions} is
+   * given — the wrapper that holds the button and the action side by side, so
+   * that the drop zone still covers the action. Typed against `HTMLElement`
+   * for that reason.
    */
-  rowProps?: ButtonHTMLAttributes<HTMLButtonElement>
+  rowProps?: HTMLAttributes<HTMLElement>
   /** Render a drop-target highlight on the header row (a valid DnD drop is
    *  hovering this folder). */
   dropActive?: boolean
@@ -263,6 +262,7 @@ export const FileTreeFolder = ({
   const {
     className: rowClassName,
     style: rowStyle,
+    tabIndex: rowTabIndex,
     ...rowRest
   } = rowProps ?? {}
   const {
@@ -295,24 +295,22 @@ export const FileTreeFolder = ({
   const highlightClassName =
     dropActive || isSelected ? "bg-muted-foreground/20" : "hover:bg-muted/50"
 
+  // Without an action the header IS the row: it spans the full width and owns
+  // the highlight, the drop marker, and everything in `rowProps`. With one, all
+  // of that moves to the wrapper below — the action has to be a SIBLING of the
+  // header (HTML forbids a button inside a button), and a sibling is outside
+  // both the header's `:hover` chain and its `data-tree-drop-dir` subtree, so
+  // leaving them on the header would switch the row tint off and swallow drops
+  // whenever the pointer sat on the action.
   const header = (
     <CollapsibleTrigger asChild>
       <button
         className={cn(
-          "flex w-max min-w-full items-center gap-1 rounded py-1 text-left transition-colors",
+          "flex w-max items-center gap-1 rounded py-1 text-left transition-colors",
           depth == null ? "pl-2" : null,
-          // The header keeps spanning the whole row even when an action sits on
-          // top of it — every drag/drop handler and the `data-tree-drop-dir`
-          // hit-test marker live here, so shrinking it would shrink the folder's
-          // drop area. The action is overlaid instead, and the reserved right
-          // padding keeps the longest name from running under it.
-          actions ? "pr-8" : "pr-2",
-          // Without an action the header IS the row and owns the highlight; with
-          // one, the highlight moves to the wrapper below so hovering the action
-          // can't switch the tint off (CSS :hover propagates to ancestors, never
-          // to siblings).
-          actions ? null : highlightClassName,
-          rowClassName
+          actions
+            ? null
+            : cn("min-w-full pr-2", highlightClassName, rowClassName)
         )}
         style={rowPaddingLeftStyle(depth, rowStyle)}
         onClick={handleSelect}
@@ -321,14 +319,14 @@ export const FileTreeFolder = ({
         // outer treeitem, whose box spans the whole expanded subtree and
         // would scroll past the header).
         data-tree-row-path={path}
-        data-tree-drop-dir={dropTargetDir}
-        {...rowRest}
+        data-tree-drop-dir={actions ? undefined : dropTargetDir}
+        {...(actions ? {} : rowRest)}
         // The header is a native <button> (default tab stop). In roving
         // mode force it out of the tab order so the container stays the
         // single focus host and Enter/Space can't fire on a folder whose
         // DOM focus differs from the active row; otherwise keep any
         // caller-provided tabIndex unchanged.
-        tabIndex={keyboardNavigation ? -1 : rowRest.tabIndex}
+        tabIndex={keyboardNavigation ? -1 : rowTabIndex}
       >
         <ChevronRightIcon
           className={cn(
@@ -373,21 +371,17 @@ export const FileTreeFolder = ({
           {...props}
         >
           {actions ? (
-            // The action has to be a SIBLING of the header — HTML forbids a
-            // button inside a button and React reports the nesting as a
-            // hydration error — but it still has to sit inside the row's
-            // highlight, so it is overlaid on the header rather than placed
-            // after it.
             <div
               className={cn(
-                "group/file-tree-row relative flex w-max min-w-full items-center rounded transition-colors",
-                highlightClassName
+                "group/file-tree-row flex w-max min-w-full items-center gap-1 rounded pr-2 transition-colors",
+                highlightClassName,
+                rowClassName
               )}
+              data-tree-drop-dir={dropTargetDir}
+              {...rowRest}
             >
               {header}
-              <FileTreeActions className="absolute inset-y-0 right-2">
-                {actions}
-              </FileTreeActions>
+              <FileTreeActions>{actions}</FileTreeActions>
             </div>
           ) : (
             header

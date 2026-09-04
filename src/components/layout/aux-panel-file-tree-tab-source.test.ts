@@ -79,6 +79,19 @@ describe("aux file tree row context menus stay reachable", () => {
     )
   })
 
+  it("keeps the long-press hook off the tree's nested triggers", () => {
+    // A folder's trigger encloses its expanded descendants' triggers, so ONE
+    // touch pointerdown reaches every ancestor's copy of the hook. Each arms
+    // its own timer and each dispatches its own contextmenu from its OWN
+    // element, so long-pressing a nested file opened its menu AND both
+    // ancestors' — the outermost winning the screen. Radix's built-in
+    // long-press survives nesting because all the triggers share one bubbling
+    // event that the innermost `preventDefault`s; separate dispatches have no
+    // such interlock. The ⋯ button is the touch entry point instead.
+    expect(auxSource).not.toMatch(/useLongPressToOpenMenu/)
+    expect(auxSource).not.toMatch(/longPressHandlers/)
+  })
+
   it("forwards the trigger's props through RootDropFolder onto the row", () => {
     const start = auxSource.indexOf("function RootDropFolder(")
     expect(start).toBeGreaterThan(-1)

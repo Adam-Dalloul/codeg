@@ -1,5 +1,7 @@
-import { render, screen } from "@testing-library/react"
+import { fireEvent, render, screen } from "@testing-library/react"
 import { afterEach, describe, expect, it, vi } from "vitest"
+
+import { resolveFileTreeDropZone } from "@/lib/file-tree-dnd"
 
 import { FileTree, FileTreeFile, FileTreeFolder } from "./file-tree"
 
@@ -65,7 +67,10 @@ describe("FileTree trailing row actions", () => {
     vi.restoreAllMocks()
   })
 
+  const onDragOver = vi.fn()
+
   function renderWithActions() {
+    onDragOver.mockClear()
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => {})
     const view = render(
       <FileTree expanded={new Set(["dir"])}>
@@ -73,6 +78,8 @@ describe("FileTree trailing row actions", () => {
           path="dir"
           name="dir"
           depth={0}
+          dropTargetDir="dir"
+          rowProps={{ draggable: true, onDragOver }}
           actions={
             <button type="button" aria-label="folder action">
               ⋯
@@ -118,6 +125,53 @@ describe("FileTree trailing row actions", () => {
 
     expect(screen.getByLabelText("folder action")).toBeInTheDocument()
     expect(screen.getByLabelText("file action")).toBeInTheDocument()
+  })
+
+  it("keeps the folder's drop zone covering the action", () => {
+    // The action is a sibling of the header, so a drop zone left on the header
+    // alone would stop at the action's edge: `resolveFileTreeDropZone` walks UP
+    // from whatever the pointer hit, and would find nothing above it. Dropping
+    // on the ⋯ strip of a destination folder would then silently do nothing.
+    renderWithActions()
+    const action = screen.getByLabelText("folder action")
+
+    expect(resolveFileTreeDropZone(action)).toEqual({
+      kind: "dir",
+      destDir: "dir",
+    })
+  })
+
+  it("still fires the row's drag handlers from over the action", () => {
+    // Same hole on the web path, which uses the React dragover/drop handlers
+    // rather than the coordinate hit-test.
+    renderWithActions()
+
+    fireEvent.dragOver(screen.getByLabelText("folder action"))
+
+    expect(onDragOver).toHaveBeenCalledTimes(1)
+  })
+
+  it("dims the whole row, action included, from rowProps' className", () => {
+    // `dragging && "opacity-70"` marks the row as the drag source; leaving it
+    // on the header would dim everything but the ⋯.
+    render(
+      <FileTree expanded={new Set()}>
+        <FileTreeFolder
+          path="dir"
+          name="dir"
+          depth={0}
+          rowProps={{ className: "opacity-70" }}
+          actions={
+            <button type="button" aria-label="dimmed action">
+              ⋯
+            </button>
+          }
+        />
+      </FileTree>
+    )
+
+    const action = screen.getByLabelText("dimmed action")
+    expect(action.closest(".opacity-70")).not.toBeNull()
   })
 
   it("publishes the row-hover group both rows' actions can reveal from", () => {

@@ -34,6 +34,15 @@ interface UseLongPressToOpenMenuOptions {
  * to Radix's `onContextMenu`, which opens the same menu the desktop right-
  * click does — single source of truth, no duplication. Mouse pointers are
  * ignored so desktop right-click keeps using Radix's native handler.
+ *
+ * NEVER spread this onto NESTED triggers (a tree row whose trigger encloses its
+ * descendants' triggers, say). One pointerdown bubbles through every ancestor,
+ * so each arms its own timer and each dispatches its own contextmenu from its
+ * OWN element — the ancestors' menus open right after the intended one and the
+ * outermost wins the screen. Radix's built-in long-press is safe there because
+ * all the triggers share ONE bubbling event and the innermost `preventDefault`s
+ * it; separate dispatches carry no such interlock. Use it on flat lists, or on
+ * a single trigger with no trigger ancestors.
  */
 export function useLongPressToOpenMenu({
   enabled = true,

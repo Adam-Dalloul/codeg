@@ -23,7 +23,6 @@ import { useAuxPanelContext } from "@/contexts/aux-panel-context"
 import { useTabStore } from "@/contexts/tab-context"
 import { useTerminalContext } from "@/contexts/terminal-context"
 import { useIsMobile } from "@/hooks/use-mobile"
-import { useLongPressToOpenMenu } from "@/hooks/use-long-press-to-open-menu"
 import {
   useWorkspaceActions,
   useWorkspaceFileTabs,
@@ -699,11 +698,6 @@ function RenderNode({
   const isGitignoreIgnored =
     ancestorGitignoreIgnored || gitignoreIgnoredPaths.has(node.path)
 
-  // Touch / pen long-press opens this row's context menu. Desktop right-click
-  // is handled by Radix's own contextmenu listener on the trigger; this hook
-  // composes alongside it (mouse pointers are ignored).
-  const longPressHandlers = useLongPressToOpenMenu()
-
   const systemExplorerLabel =
     typeof navigator === "undefined"
       ? t("openInFileManager")
@@ -753,14 +747,13 @@ function RenderNode({
       <ContextMenu>
         {/*
           asChild merges the Radix trigger's pointerdown / contextmenu handlers
-          and `WebkitTouchCallout: none` style into the FileTreeFile's own div —
-          without it, the trigger renders a bare span around a div (which the
-          HTML parser splits into siblings) and iOS Safari's native callout
-          eats the long-press gesture before the 700ms Radix timer can open the
-          menu. See aux-panel-file-tree-tab.tsx around the RootDropFolder
-          wrapper for the same pattern.
+          and its `WebkitTouchCallout: none` style onto the row's own div
+          instead of wrapping it in a <span> whose inline box breaks the row's
+          `w-max min-w-full` sizing. Matches every other ContextMenuTrigger in
+          the codebase; see the RootDropFolder wrapper below for the one rule
+          asChild imposes on the child.
         */}
-        <ContextMenuTrigger asChild {...longPressHandlers}>
+        <ContextMenuTrigger asChild>
           <FileTreeFile
             path={node.path}
             name={node.name}
@@ -942,10 +935,10 @@ function RenderNode({
     <ContextMenu>
       {/*
         asChild merges the Radix trigger's pointerdown / contextmenu handlers
-        and `WebkitTouchCallout: none` style into the FileTreeFolder's own div
-        — same reasoning as the FileTreeFile wrapper above.
+        and its `WebkitTouchCallout: none` style onto the FileTreeFolder's own
+        div — same reasoning as the FileTreeFile wrapper above.
       */}
-      <ContextMenuTrigger asChild {...longPressHandlers}>
+      <ContextMenuTrigger asChild>
         <FileTreeFolder
           path={node.path}
           name={node.name}
