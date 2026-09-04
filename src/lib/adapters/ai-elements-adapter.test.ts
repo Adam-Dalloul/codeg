@@ -1548,6 +1548,18 @@ describe("adaptMessageTurn — Codex grep no-match results", () => {
     }
   )
 
+  // A shell that echoes a bare newline still means "no matches":
+  // <SearchResultsOutput> renders any blank body that way, so the card status
+  // has to agree or the same result reads as red-with-"No matches".
+  it("normalizes a whitespace-only exit-1 grep envelope", () => {
+    const raw = JSON.stringify({ exit_code: 1, formatted_output: "\r\n" })
+    const part = adaptSearchResult({ output: raw })
+
+    expect(part.state).toBe("output-available")
+    expect(part.errorText).toBeUndefined()
+    expect(part.output).toBe(raw)
+  })
+
   it.each([
     [
       "an ordinary command",
@@ -1566,11 +1578,6 @@ describe("adaptMessageTurn — Codex grep no-match results", () => {
         exit_code: 1,
         formatted_output: "rg: permission denied",
       }),
-    ],
-    [
-      "whitespace output",
-      "Search for 'definitely absent'",
-      JSON.stringify({ exit_code: 1, formatted_output: "\n" }),
     ],
     [
       "a higher exit code",

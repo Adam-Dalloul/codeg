@@ -14,7 +14,7 @@ import {
   isDelegationStatusToolName,
 } from "@/lib/adapters/tool-kind-classifier"
 import { normalizeToolName } from "@/lib/tool-call-normalization"
-import { parseCodexCommandEnvelope } from "@/lib/codex-command-action"
+import { isCodexGrepNoMatchEnvelope } from "@/lib/codex-command-action"
 import { isBackgroundTaskToolCall } from "@/lib/background-task"
 import { isContextCompactionMeta } from "@/lib/context-compaction"
 import { isUnsettledToolCall } from "@/lib/tool-call-lifecycle"
@@ -1976,16 +1976,21 @@ function buildToolResultMap(
  * exit 1 with an otherwise empty command envelope. Treat only that exact shape
  * as a successful presentation state. The ContentBlock and its raw envelope
  * stay untouched, and every other nonzero result remains an error.
+ *
+ * Shares `isCodexGrepNoMatchEnvelope` with the search body in
+ * `content-parts-renderer`, which recognises the same envelope to render "No
+ * matches" instead of a raw JSON dump. Two predicates for one fact would let
+ * the card's status and its body disagree.
  */
 function isCodexGrepNoMatchResult(
   toolName: string,
   result: ContentBlock & { type: "tool_result" }
 ): boolean {
-  if (!result.is_error || normalizeToolName(toolName) !== "grep") return false
-  if (typeof result.output_preview !== "string") return false
+  if (!result.is_error || typeof result.output_preview !== "string")
+    return false
+  if (normalizeToolName(toolName) !== "grep") return false
 
-  const envelope = parseCodexCommandEnvelope(result.output_preview)
-  return envelope?.exitCode === 1 && envelope.output === ""
+  return isCodexGrepNoMatchEnvelope(result.output_preview)
 }
 
 /**

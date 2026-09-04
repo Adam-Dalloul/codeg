@@ -56,7 +56,10 @@ import {
 } from "./context-compaction-card"
 import { FeedbackCheckResultCard } from "./feedback-check-result-card"
 import { SearchResultsOutput } from "./search-results-output"
-import { parseCodexCommandEnvelope } from "@/lib/codex-command-action"
+import {
+  isCodexGrepNoMatchEnvelope,
+  parseCodexCommandEnvelope,
+} from "@/lib/codex-command-action"
 import {
   CODEX_SCRIPT_TOOL_NAME,
   parseCodexScriptCard,
@@ -2532,18 +2535,17 @@ const ToolCallPart = memo(function ToolCallPart({
 
     // codex appears to derive the tool status from the exit code, so an rg/grep
     // "no matches" (exit 1, no output) can arrive as a FAILED call and land on
-    // the error channel. Recognise exactly that shape as an empty result instead
-    // of a red envelope dump. Scoped to `grep`: exit 1 means "nothing selected"
-    // only for grep-likes — for the list-files commands that classify as `glob`
-    // (ls/find/…) it is a genuine failure, and a successful empty listing
-    // already arrives with exit 0. A real grep failure (exit ≥ 2, or any stderr
-    // text) keeps the error rendering, as does any non-codex error string.
+    // the error channel. `adaptMessageTurn` normally takes that shape off the
+    // error channel entirely (same `isCodexGrepNoMatchEnvelope` predicate, so
+    // the card's status and this body can never disagree); this arm still
+    // catches the adapter-independent callers — an `agent_stats` child call, an
+    // export/replay part built outside the turn adapter — and renders an empty
+    // result instead of a red envelope dump. A real grep failure (exit ≥ 2, or
+    // any stderr text) keeps the error rendering, as does any non-codex error
+    // string.
     if (typeof part.errorText === "string") {
       if (toolNameLower !== "grep") return null
-      const envelope = parseCodexCommandEnvelope(part.errorText)
-      const noMatches =
-        envelope?.exitCode === 1 && envelope.output.trim().length === 0
-      return noMatches ? "" : null
+      return isCodexGrepNoMatchEnvelope(part.errorText) ? "" : null
     }
 
     if (typeof part.output !== "string") return null
