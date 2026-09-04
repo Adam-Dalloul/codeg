@@ -2063,7 +2063,26 @@
       "closeOthers": "关闭其它",
       "closeAll": "关闭所有",
       "hideTerminal": "隐藏终端（{shortcut}）",
-      "openFolderFirst": "请先打开一个文件夹"
+      "openFolderFirst": "请先打开一个文件夹",
+      "keybar": {
+        "label": "终端虚拟键",
+        "show": "显示虚拟键",
+        "hide": "隐藏虚拟键",
+        "esc": "ESC",
+        "tab": "TAB",
+        "ctrl": "CTRL",
+        "alt": "ALT",
+        "slash": "/",
+        "dash": "-",
+        "home": "HOME",
+        "end": "END",
+        "pgup": "PGUP",
+        "pgdn": "PGDN",
+        "up": "↑",
+        "down": "↓",
+        "left": "←",
+        "right": "→"
+      }
     },
     "workspaceDialog": {
       "title": "打开文件夹",

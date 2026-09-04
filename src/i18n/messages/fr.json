@@ -2063,7 +2063,26 @@
       "closeOthers": "Fermer les autres",
       "closeAll": "Tout fermer",
       "hideTerminal": "Masquer le terminal ({shortcut})",
-      "openFolderFirst": "Ouvrez d'abord un dossier"
+      "openFolderFirst": "Ouvrez d'abord un dossier",
+      "keybar": {
+        "label": "Touches virtuelles du terminal",
+        "show": "Afficher les touches virtuelles",
+        "hide": "Masquer les touches virtuelles",
+        "esc": "ESC",
+        "tab": "TAB",
+        "ctrl": "CTRL",
+        "alt": "ALT",
+        "slash": "/",
+        "dash": "-",
+        "home": "HOME",
+        "end": "END",
+        "pgup": "PGUP",
+        "pgdn": "PGDN",
+        "up": "↑",
+        "down": "↓",
+        "left": "←",
+        "right": "→"
+      }
     },
     "workspaceDialog": {
       "title": "Ouvrir un dossier",

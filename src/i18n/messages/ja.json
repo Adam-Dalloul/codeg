@@ -2063,7 +2063,26 @@
       "closeOthers": "他を閉じる",
       "closeAll": "すべて閉じる",
       "hideTerminal": "ターミナルを隠す ({shortcut})",
-      "openFolderFirst": "先にフォルダを開いてください"
+      "openFolderFirst": "先にフォルダを開いてください",
+      "keybar": {
+        "label": "仮想ターミナルキー",
+        "show": "仮想キーを表示",
+        "hide": "仮想キーを隠す",
+        "esc": "ESC",
+        "tab": "TAB",
+        "ctrl": "CTRL",
+        "alt": "ALT",
+        "slash": "/",
+        "dash": "-",
+        "home": "HOME",
+        "end": "END",
+        "pgup": "PGUP",
+        "pgdn": "PGDN",
+        "up": "↑",
+        "down": "↓",
+        "left": "←",
+        "right": "→"
+      }
     },
     "workspaceDialog": {
       "title": "フォルダーを開く",

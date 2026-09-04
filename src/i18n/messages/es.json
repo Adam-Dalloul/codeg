@@ -2063,7 +2063,26 @@
       "closeOthers": "Cerrar otros",
       "closeAll": "Cerrar todo",
       "hideTerminal": "Ocultar terminal ({shortcut})",
-      "openFolderFirst": "Abre primero una carpeta"
+      "openFolderFirst": "Abre primero una carpeta",
+      "keybar": {
+        "label": "Teclas virtuales del terminal",
+        "show": "Mostrar teclas virtuales",
+        "hide": "Ocultar teclas virtuales",
+        "esc": "ESC",
+        "tab": "TAB",
+        "ctrl": "CTRL",
+        "alt": "ALT",
+        "slash": "/",
+        "dash": "-",
+        "home": "HOME",
+        "end": "END",
+        "pgup": "PGUP",
+        "pgdn": "PGDN",
+        "up": "↑",
+        "down": "↓",
+        "left": "←",
+        "right": "→"
+      }
     },
     "workspaceDialog": {
       "title": "Abrir carpeta",

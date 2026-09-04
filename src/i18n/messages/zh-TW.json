@@ -2063,7 +2063,26 @@
       "closeOthers": "關閉其它",
       "closeAll": "關閉所有",
       "hideTerminal": "隱藏終端（{shortcut}）",
-      "openFolderFirst": "請先開啟一個資料夾"
+      "openFolderFirst": "請先開啟一個資料夾",
+      "keybar": {
+        "label": "終端虛擬鍵",
+        "show": "顯示虛擬鍵",
+        "hide": "隱藏虛擬鍵",
+        "esc": "ESC",
+        "tab": "TAB",
+        "ctrl": "CTRL",
+        "alt": "ALT",
+        "slash": "/",
+        "dash": "-",
+        "home": "HOME",
+        "end": "END",
+        "pgup": "PGUP",
+        "pgdn": "PGDN",
+        "up": "↑",
+        "down": "↓",
+        "left": "←",
+        "right": "→"
+      }
     },
     "workspaceDialog": {
       "title": "開啟資料夾",

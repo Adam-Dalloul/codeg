@@ -2063,7 +2063,26 @@
       "closeOthers": "Fechar outros",
       "closeAll": "Fechar tudo",
       "hideTerminal": "Ocultar terminal ({shortcut})",
-      "openFolderFirst": "Abra primeiro uma pasta"
+      "openFolderFirst": "Abra primeiro uma pasta",
+      "keybar": {
+        "label": "Teclas virtuais do terminal",
+        "show": "Mostrar teclas virtuais",
+        "hide": "Ocultar teclas virtuais",
+        "esc": "ESC",
+        "tab": "TAB",
+        "ctrl": "CTRL",
+        "alt": "ALT",
+        "slash": "/",
+        "dash": "-",
+        "home": "HOME",
+        "end": "END",
+        "pgup": "PGUP",
+        "pgdn": "PGDN",
+        "up": "↑",
+        "down": "↓",
+        "left": "←",
+        "right": "→"
+      }
     },
     "workspaceDialog": {
       "title": "Abrir pasta",
