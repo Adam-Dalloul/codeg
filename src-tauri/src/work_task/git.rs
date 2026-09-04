@@ -563,6 +563,22 @@ pub async fn branch_holds_unlanded_work(
     }
 }
 
+/// A Windows path that names a drive without rooting on it — `C:trees`, as
+/// opposed to `C:\trees`. Windows finishes such a path from the current
+/// directory OF THAT DRIVE, which a process keeps per drive and does not pass
+/// to a child the way it passes its working directory, so the same string can
+/// name two directories on one machine. `Path::join` reads it as a fresh base
+/// and drops whatever it was joined onto, which is what makes it dangerous to a
+/// caller that thought it had scoped a path to a repository.
+///
+/// Unix has no such form: it has no prefixes, so this is `false` for every path
+/// there, relative ones included.
+fn is_drive_relative(path: &std::path::Path) -> bool {
+    let mut components = path.components();
+    matches!(components.next(), Some(std::path::Component::Prefix(_)))
+        && !matches!(components.next(), Some(std::path::Component::RootDir))
+}
+
 /// Which of the two refusals to report once git has declined a removal AND the
 /// leftover directory could not be consumed either.
 ///
@@ -644,24 +660,25 @@ pub async fn remove_worktree_and_branch(
     // call and the `std::fs` call below cannot land on different directories,
     // which for the one destructive call here is the whole point. Folder paths
     // are stored exactly as they were given, so neither is hypothetical.
-    let joined = std::path::Path::new(repo_path).join(worktree_path);
-    // `join` drops the base when the right-hand side brings its own prefix. On
-    // Unix that means an absolute path, which is what we want. On Windows it
-    // also means a DRIVE-RELATIVE one (`C:trees`), which names a directory only
-    // a per-drive current directory can finish — and the app's is not the one
-    // git would use from `repo_path`, so the two halves would resolve it apart.
-    // There is no safe guess about which directory that is, and this function
-    // deletes directories, so it stops instead.
-    if joined.is_relative() && !joined.starts_with(repo_path) {
-        return Err(AppCommandError::new(
-            AppErrorCode::InvalidInput,
-            format!(
-                "the worktree path '{worktree_path}' is relative to a drive rather than \
-                 to '{repo_path}', so it does not name one directory"
-            ),
-        ));
+    // A drive-relative path on EITHER side is refused before anything resolves
+    // it. It is the one form whose meaning depends on a per-drive current
+    // directory, which this process and the git child do not share, so the two
+    // halves would resolve it apart — and the half that runs second deletes a
+    // directory. Whichever side carries it, the answer is the same: this does
+    // not name one directory, so nothing here may act on it.
+    for (label, path) in [("project", repo_path), ("worktree", worktree_path)] {
+        if is_drive_relative(std::path::Path::new(path)) {
+            return Err(AppCommandError::new(
+                AppErrorCode::InvalidInput,
+                format!(
+                    "the {label} path '{path}' is relative to a drive rather than rooted on \
+                     one, so it does not name a single directory"
+                ),
+            ));
+        }
     }
-    let target = std::path::absolute(&joined).map_err(AppCommandError::io)?;
+    let target = std::path::absolute(std::path::Path::new(repo_path).join(worktree_path))
+        .map_err(AppCommandError::io)?;
     // Refused rather than made lossy: a `\u{FFFD}` substituted into an absolute
     // path is still an absolute path, and git would go delete THAT one while
     // every removal below still used the bytes in `target`. Handing git a
@@ -1267,6 +1284,37 @@ mod tests {
             msg.contains(worktree_path) && msg.contains("could not be removed"),
             "the refusal names the directory and its reason: {msg}"
         );
+    }
+
+    /// The refusal above guards a Windows-only path form, so what a Unix run
+    /// can still pin is the half that would break everyone: that no shape a
+    /// real folder row holds is mistaken for it. `Path` has no prefixes here,
+    /// so every one of these must read as ordinary — including the strings
+    /// that LOOK drive-relative, which on this platform are just filenames.
+    #[test]
+    fn only_a_drive_relative_path_is_refused() {
+        for ordinary in [
+            "/Users/x/work/repo",
+            "/Users/x/work/repo/",
+            "repo",
+            "rel/proj",
+            "./rel/proj",
+            "../sibling/repo",
+            "/",
+            "",
+            // Windows forms that ARE rooted, and so are not this.
+            r"C:\repo",
+            r"\\server\share\repo",
+            r"\\?\C:\repo",
+            // Drive-relative on Windows; a plain filename on Unix. Either way
+            // this platform must not see a prefix in it.
+            "C:repo",
+        ] {
+            assert!(
+                !is_drive_relative(std::path::Path::new(ordinary)),
+                "unix has no path prefixes, so {ordinary:?} is an ordinary path here"
+            );
+        }
     }
 
     /// Git looks a `<worktree>` argument up by unique path SUFFIX before it
