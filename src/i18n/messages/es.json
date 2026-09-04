@@ -682,6 +682,13 @@
     "emptyNoAgent": "No hay agentes disponibles.",
     "configManagement": "Gestión de configuración",
     "envVars": "Variables de entorno",
+    "adapterChannel": {
+      "label": "Versión del adaptador",
+      "description": "Instalar y Actualizar usan la versión que codeg ha revisado y fijado. Con Última pasan a instalar la versión de npm más reciente del paquete en ese momento; si esa instalación falla, codeg vuelve a la versión fijada y lo indica en el registro de instalación.",
+      "pinned": "Fijada (recomendada)",
+      "latest": "Última (sin revisar)",
+      "latestWarning": "Las versiones más recientes no están revisadas y pueden romper este agente en codeg; en ocasiones incluso se sabe que una versión está rota. El estado de versión muestra lo que quedó instalado realmente."
+    },
     "hostTools": {
       "label": "Dejar que el agente gestione archivos y comandos",
       "description": "codeg deja de atender el acceso a archivos y los comandos de terminal, de modo que el agente los ejecuta en su propio proceso, donde sí se aplican su sandbox y sus reglas de permisos. También se desactiva la delegación a otros agentes, ya que devolvería ese mismo trabajo a codeg. codeg no añade ningún sandbox propio, así que actívalo solo si el agente tiene uno configurado."
@@ -1389,7 +1396,8 @@
       "localUnrecognized": "{versionText}. La versión local no es comparable; intenta actualizar para sobrescribir la instalación.",
       "upgradeAvailable": "{versionText}. Hay actualización disponible.",
       "remoteUnavailable": "{versionText}. La versión remota no está disponible por ahora.",
-      "latest": "{versionText}. Ya está en la última versión."
+      "latest": "{versionText}. Ya está en la última versión.",
+      "latestChannel": "{versionText}. Canal de última versión activado; Actualizar instala la versión más reciente."
     },
     "adapter": {
       "label": "Adaptador ACP",
@@ -2055,7 +2063,26 @@
       "closeOthers": "Cerrar otros",
       "closeAll": "Cerrar todo",
       "hideTerminal": "Ocultar terminal ({shortcut})",
-      "openFolderFirst": "Abre primero una carpeta"
+      "openFolderFirst": "Abre primero una carpeta",
+      "keybar": {
+        "label": "Teclas virtuales del terminal",
+        "show": "Mostrar teclas virtuales",
+        "hide": "Ocultar teclas virtuales",
+        "esc": "ESC",
+        "tab": "TAB",
+        "ctrl": "CTRL",
+        "alt": "ALT",
+        "slash": "/",
+        "dash": "-",
+        "home": "HOME",
+        "end": "END",
+        "pgup": "PGUP",
+        "pgdn": "PGDN",
+        "up": "↑",
+        "down": "↓",
+        "left": "←",
+        "right": "→"
+      }
     },
     "workspaceDialog": {
       "title": "Abrir carpeta",
@@ -2874,7 +2901,6 @@
         "steerIntoTurn": "Insertar en el turno actual",
         "steerQueuedInstead": "Se puso en cola: se enviará con el siguiente turno.",
         "steerFailed": "No se pudo insertar en el turno actual",
-        "steerAttachmentsUnsupported": "Solo texto: los borradores con adjuntos pasan por la cola.",
         "slashCommands": "Comandos de barra",
         "slashSearchPlaceholder": "Buscar comandos...",
         "slashSearchEmpty": "Sin comandos coincidentes",
@@ -3146,6 +3172,7 @@
         "copyMessage": "Copiar",
         "forkFromHere": "Bifurcar desde aquí",
         "forkBusy": "No se puede bifurcar mientras hay un turno en curso",
+        "forkNotReady": "Todavía no se puede bifurcar desde esta respuesta; inténtalo en un momento",
         "copied": "Copiado",
         "selectionActions": "Acciones de selección",
         "selectionCopy": "Copiar texto",

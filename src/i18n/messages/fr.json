@@ -682,6 +682,13 @@
     "emptyNoAgent": "Aucun agent disponible.",
     "configManagement": "Gestion de configuration",
     "envVars": "Variables d'environnement",
+    "adapterChannel": {
+      "label": "Version de l'adaptateur",
+      "description": "Installer et Mettre à niveau utilisent la version examinée et épinglée par codeg. Avec Dernière, c'est la version npm la plus récente du paquet qui est installée ; si cette installation échoue, codeg revient à la version épinglée et l'indique dans le journal d'installation.",
+      "pinned": "Épinglée (recommandée)",
+      "latest": "Dernière (non examinée)",
+      "latestWarning": "Les versions les plus récentes ne sont pas examinées et peuvent casser cet agent dans codeg ; il arrive même qu'une version soit connue pour être défectueuse. Le statut de version affiche ce qui est réellement installé."
+    },
     "hostTools": {
       "label": "Laisser l'agent gérer les fichiers et les commandes",
       "description": "codeg cesse d'assurer l'accès aux fichiers et les commandes de terminal : l'agent les exécute dans son propre processus, là où son bac à sable et ses règles d'autorisation s'appliquent réellement. La délégation à d'autres agents est également désactivée, car elle ferait repasser le même travail par codeg. codeg n'ajoute aucun bac à sable, n'activez donc ceci que si l'agent en a un configuré."
@@ -1389,7 +1396,8 @@
       "localUnrecognized": "{versionText}. La version locale n’est pas comparable ; essayez une mise à niveau pour écraser l’installation.",
       "upgradeAvailable": "{versionText}. Mise à niveau disponible.",
       "remoteUnavailable": "{versionText}. La version distante est actuellement indisponible.",
-      "latest": "{versionText}. Déjà à jour."
+      "latest": "{versionText}. Déjà à jour.",
+      "latestChannel": "{versionText}. Le canal Dernière est actif ; Mettre à niveau installe la version la plus récente."
     },
     "adapter": {
       "label": "Adaptateur ACP",
@@ -2055,7 +2063,26 @@
       "closeOthers": "Fermer les autres",
       "closeAll": "Tout fermer",
       "hideTerminal": "Masquer le terminal ({shortcut})",
-      "openFolderFirst": "Ouvrez d'abord un dossier"
+      "openFolderFirst": "Ouvrez d'abord un dossier",
+      "keybar": {
+        "label": "Touches virtuelles du terminal",
+        "show": "Afficher les touches virtuelles",
+        "hide": "Masquer les touches virtuelles",
+        "esc": "ESC",
+        "tab": "TAB",
+        "ctrl": "CTRL",
+        "alt": "ALT",
+        "slash": "/",
+        "dash": "-",
+        "home": "HOME",
+        "end": "END",
+        "pgup": "PGUP",
+        "pgdn": "PGDN",
+        "up": "↑",
+        "down": "↓",
+        "left": "←",
+        "right": "→"
+      }
     },
     "workspaceDialog": {
       "title": "Ouvrir un dossier",
@@ -2874,7 +2901,6 @@
         "steerIntoTurn": "Insérer dans le tour en cours",
         "steerQueuedInstead": "Mis en file d'attente — il sera envoyé au tour suivant.",
         "steerFailed": "Impossible d'insérer dans le tour en cours",
-        "steerAttachmentsUnsupported": "Texte uniquement — les brouillons avec pièces jointes passent par la file d'attente.",
         "slashCommands": "Commandes slash",
         "slashSearchPlaceholder": "Rechercher des commandes...",
         "slashSearchEmpty": "Aucune commande correspondante",
@@ -3146,6 +3172,7 @@
         "copyMessage": "Copier",
         "forkFromHere": "Bifurquer d'ici",
         "forkBusy": "Impossible de bifurquer pendant qu'un tour est en cours",
+        "forkNotReady": "Impossible de bifurquer depuis cette réponse pour le moment, réessayez dans un instant",
         "copied": "Copié",
         "selectionActions": "Actions de sélection",
         "selectionCopy": "Copier le texte",
