@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{BufRead, BufReader};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 use chrono::{DateTime, Utc};
@@ -26,6 +26,26 @@ pub struct CodexParser {
     base_dir: PathBuf,
 }
 
+/// How many by-reference fork hops to follow when assembling a rollout's
+/// inherited history. Forking a fork is ordinary; an unbounded chain is not,
+/// and each hop costs a directory walk plus a whole file.
+const MAX_FORK_HOPS: usize = 8;
+
+/// How far into a rollout to look for the `session_meta` carrying the fork
+/// pointer. It is line 0 in every file on disk; the slack is for a future
+/// preamble, and the bound is what keeps this off the cost of a full parse for
+/// the overwhelming majority of rollouts, which are not forks.
+const FORK_HEADER_SCAN_LINES: usize = 4;
+
+/// A rollout line's `ordinal`, the position codex assigns within a thread's
+/// stream. `None` for older rollouts, which predate the field.
+fn codex_line_ordinal(line: &str) -> Option<u64> {
+    serde_json::from_str::<serde_json::Value>(line)
+        .ok()?
+        .get("ordinal")?
+        .as_u64()
+}
+
 impl Default for CodexParser {
     fn default() -> Self {
         Self::new()
@@ -43,6 +63,127 @@ impl CodexParser {
     #[cfg(any(test, feature = "test-utils"))]
     pub fn with_base_dir(base_dir: PathBuf) -> Self {
         Self { base_dir }
+    }
+
+    /// Every line of a rollout, with a BY-REFERENCE fork's inherited history
+    /// spliced in ahead of its own.
+    ///
+    /// codex-acp 1.8.0's `session/fork` writes the child a rollout that contains
+    /// no history at all — just `session_meta` naming
+    /// `forked_from_id` + `forked_from_ordinal_exclusive`, then whatever the
+    /// child does next. Read alone it parses to zero turns, which is what put
+    /// "this session has no messages" under every `[Fork] …` row.
+    ///
+    /// Older forks are not like this: they REPLAY the parent inline (that is the
+    /// second `session_meta` header `is_forked_thread_header` keys off) and so
+    /// need no help. `forked_from_ordinal_exclusive` is what tells the two
+    /// apart — on disk, only the by-reference shape carries it. The ordinal
+    /// filter makes that distinction self-enforcing rather than a bet: the
+    /// parent contributes ordinals BELOW the cut and the child only its own
+    /// at-or-above, so a child that did replay inline can't end up with the
+    /// history twice.
+    ///
+    /// The assembled order reproduces codex's own inline shape exactly — the
+    /// child's header, then the parent's stream, then the child's body — because
+    /// the parser latches `parent_id` from the FIRST header it sees and the
+    /// child's is the one that declares the lineage.
+    fn rollout_lines(&self, path: &std::path::Path) -> Result<Vec<String>, ParseError> {
+        self.rollout_lines_inner(path, MAX_FORK_HOPS)
+    }
+
+    fn rollout_lines_inner(
+        &self,
+        path: &std::path::Path,
+        hops_left: usize,
+    ) -> Result<Vec<String>, ParseError> {
+        let own: Vec<String> = BufReader::new(fs::File::open(path)?)
+            .lines()
+            .map_while(Result::ok)
+            .collect();
+
+        // The fork pointer rides the first header; anything past it is content.
+        let Some((header_idx, parent_id, cut)) = own
+            .iter()
+            .enumerate()
+            .take_while(|(idx, _)| *idx < FORK_HEADER_SCAN_LINES)
+            .find_map(|(idx, line)| {
+                let value: serde_json::Value = serde_json::from_str(line).ok()?;
+                let payload = value.get("payload")?;
+                if value.get("type").and_then(serde_json::Value::as_str) != Some("session_meta") {
+                    return None;
+                }
+                let parent = payload
+                    .get("forked_from_id")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::trim)
+                    .filter(|id| !id.is_empty())?;
+                let cut = payload
+                    .get("forked_from_ordinal_exclusive")
+                    .and_then(serde_json::Value::as_u64)?;
+                Some((idx, parent.to_string(), cut))
+            })
+        else {
+            return Ok(own);
+        };
+
+        if hops_left == 0 {
+            tracing::warn!(
+                parent_id = %parent_id,
+                "[codex] fork chain deeper than {MAX_FORK_HOPS}; rendering without inherited history"
+            );
+            return Ok(own);
+        }
+
+        // A parent codeg cannot find is not an error: the rollout may have been
+        // pruned, or live in a codex home this parser isn't pointed at. Degrade
+        // to the child's own lines rather than refusing the conversation.
+        let Some(parent_path) = self.find_rollout_by_session_id(&parent_id) else {
+            tracing::debug!(
+                parent_id = %parent_id,
+                "[codex] forked rollout names a parent with no file here"
+            );
+            return Ok(own);
+        };
+        if parent_path == path {
+            return Ok(own);
+        }
+        let parent = self.rollout_lines_inner(&parent_path, hops_left - 1)?;
+
+        let mut assembled = Vec::with_capacity(parent.len() + own.len());
+        assembled.push(own[header_idx].clone());
+        assembled.extend(
+            parent
+                .into_iter()
+                .filter(|line| codex_line_ordinal(line).is_none_or(|ord| ord < cut)),
+        );
+        assembled.extend(own.into_iter().enumerate().filter_map(|(idx, line)| {
+            if idx == header_idx {
+                return None;
+            }
+            codex_line_ordinal(&line)
+                .is_none_or(|ord| ord >= cut)
+                .then_some(line)
+        }));
+        Ok(assembled)
+    }
+
+    /// The rollout file for a session id. Codex embeds the id in the filename,
+    /// so this never opens a file.
+    fn find_rollout_by_session_id(&self, session_id: &str) -> Option<std::path::PathBuf> {
+        if session_id.is_empty() || session_id.contains(['/', '\\']) || session_id.contains("..") {
+            return None;
+        }
+        WalkDir::new(&self.base_dir)
+            .into_iter()
+            .filter_map(Result::ok)
+            .map(|entry| entry.path().to_path_buf())
+            .find(|path| {
+                if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
+                    return false;
+                }
+                let name = path.file_name().unwrap_or_default().to_string_lossy();
+                name.starts_with("rollout-") && name.contains(session_id)
+            })
     }
 
     /// Load Codex's append-only session title index. The transcript remains the
@@ -84,10 +225,9 @@ impl CodexParser {
 
     fn parse_jsonl_summary(
         &self,
-        path: &PathBuf,
+        path: &Path,
     ) -> Result<Option<ConversationSummary>, ParseError> {
-        let file = fs::File::open(path)?;
-        let reader = BufReader::new(file);
+        let lines = self.rollout_lines(path)?;
 
         let mut conversation_id: Option<String> = None;
         let mut cwd: Option<String> = None;
@@ -140,11 +280,7 @@ impl CodexParser {
         let mut pending_plan_twin: Option<String> = None;
         let mut plan_counted = false;
 
-        for line in reader.lines() {
-            let line = match line {
-                Ok(l) => l,
-                Err(_) => continue,
-            };
+        for line in lines {
             if line.trim().is_empty() {
                 continue;
             }
@@ -170,7 +306,20 @@ impl CodexParser {
 
             match msg_type {
                 "session_meta" => {
-                    if let Some(payload) = value.get("payload") {
+                    // The FIRST header is this thread's own; every later one
+                    // belongs to a parent. Two shapes put a second header in
+                    // this stream: an inline-replay fork writes the parent's
+                    // header into its own file, and a by-reference fork gets
+                    // the parent's lines spliced in by `rollout_lines`. In both
+                    // the parent header carries the PARENT's `id`, `cwd` and
+                    // branch, so a last-one-wins read would file the child's
+                    // whole summary under the parent's session id — two rollouts
+                    // claiming one id, which the conversation-list dedup then
+                    // collapses, losing the fork. Latch every identity field,
+                    // not just `parent_id`. Same rule `parse_codex_subagent_stats`
+                    // uses.
+                    if let Some(payload) = value.get("payload").filter(|_| !session_header_seen) {
+                        session_header_seen = true;
                         conversation_id = payload
                             .get("id")
                             .and_then(|s| s.as_str())
@@ -179,16 +328,7 @@ impl CodexParser {
                             .get("cwd")
                             .and_then(|s| s.as_str())
                             .map(|s| s.to_string());
-                        // Only the FIRST header names this thread's parent. A
-                        // forked child replays the parent's header further down
-                        // the same file and that copy declares no parent, so a
-                        // last-one-wins read would clear the child's `parent_id`
-                        // and hand it back to the importer as a root session.
-                        // Same rule `parse_codex_subagent_stats` uses.
-                        if !session_header_seen {
-                            session_header_seen = true;
-                            parent_id = codex_parent_thread_id(payload);
-                        }
+                        parent_id = codex_parent_thread_id(payload);
                         _cli_version = payload
                             .get("cli_version")
                             .and_then(|s| s.as_str())
@@ -2298,11 +2438,10 @@ fn parse_codex_subagent_stats(
 impl CodexParser {
     fn parse_conversation_detail(
         &self,
-        path: &PathBuf,
+        path: &Path,
         conversation_id: &str,
     ) -> Result<ConversationDetail, ParseError> {
-        let file = fs::File::open(path)?;
-        let reader = BufReader::new(file);
+        let lines = self.rollout_lines(path)?;
 
         let mut messages = Vec::new();
         let mut cwd: Option<String> = None;
@@ -2490,11 +2629,7 @@ impl CodexParser {
         // than an ordinal comparison.
         let mut title_from_thread_name = false;
 
-        for line in reader.lines() {
-            let line = match line {
-                Ok(l) => l,
-                Err(_) => continue,
-            };
+        for line in lines {
             if line.trim().is_empty() {
                 continue;
             }
@@ -2523,18 +2658,17 @@ impl CodexParser {
 
             match msg_type {
                 "session_meta" => {
-                    if let Some(payload) = value.get("payload") {
+                    // First header wins for every identity field — see the same
+                    // latch in `parse_jsonl_summary`: the parent header that
+                    // follows a forked child's own (replayed inline, or spliced
+                    // in by `rollout_lines`) carries the PARENT's cwd and branch.
+                    if let Some(payload) = value.get("payload").filter(|_| !session_header_seen) {
+                        session_header_seen = true;
                         cwd = payload
                             .get("cwd")
                             .and_then(|s| s.as_str())
                             .map(|s| s.to_string());
-                        // First header wins — see the same latch in
-                        // `parse_jsonl_summary`: the replayed parent header that
-                        // follows a forked child's own declares no parent.
-                        if !session_header_seen {
-                            session_header_seen = true;
-                            parent_id = codex_parent_thread_id(payload);
-                        }
+                        parent_id = codex_parent_thread_id(payload);
                         git_branch = payload
                             .get("git")
                             .and_then(|g| g.get("branch"))
@@ -2726,6 +2860,7 @@ impl CodexParser {
                                     duration_ms: None,
                                     model: None,
                                     completed_at: Some(timestamp),
+                                agent_message_id: None,
                                 });
                             }
                             "agent_message" => {
@@ -2755,6 +2890,7 @@ impl CodexParser {
                                     duration_ms: None,
                                     model: None,
                                     completed_at: Some(timestamp),
+                                agent_message_id: None,
                                 });
                             }
                             "thread_goal_updated" => {
@@ -2834,6 +2970,7 @@ impl CodexParser {
                                         duration_ms: None,
                                         model: None,
                                         completed_at: Some(timestamp),
+                                    agent_message_id: None,
                                     });
                                 }
                             }
@@ -2892,6 +3029,7 @@ impl CodexParser {
                                     duration_ms: None,
                                     model: None,
                                     completed_at: Some(timestamp),
+                                    agent_message_id: None,
                                 });
                                 pending_plan_twin = Some((messages.len() - 1, plan.to_string()));
                                 plan_rendered = true;
@@ -2962,6 +3100,7 @@ impl CodexParser {
                                     duration_ms: None,
                                     model: None,
                                     completed_at: Some(timestamp),
+                                agent_message_id: None,
                                 });
                                 if !call_id.is_empty() {
                                     emitted_image_ids.insert(call_id);
@@ -3280,6 +3419,7 @@ impl CodexParser {
                                             duration_ms: None,
                                             model: None,
                                             completed_at: Some(timestamp),
+                                        agent_message_id: None,
                                         });
                                     }
                                     "wait_agent" => {
@@ -3342,6 +3482,7 @@ impl CodexParser {
                                             duration_ms: None,
                                             model: None,
                                             completed_at: Some(timestamp),
+                                        agent_message_id: None,
                                         });
                                     }
                                     _ => {
@@ -3415,6 +3556,7 @@ impl CodexParser {
                                             duration_ms: None,
                                             model: None,
                                             completed_at: Some(timestamp),
+                                        agent_message_id: None,
                                         });
                                     }
                                 }
@@ -3524,6 +3666,7 @@ impl CodexParser {
                                         duration_ms: None,
                                         model: None,
                                         completed_at: Some(timestamp),
+                                    agent_message_id: None,
                                     });
                                 } else if is_spawn {
                                     if let Some(output_obj) = parse_codex_json_output(payload) {
@@ -3550,6 +3693,7 @@ impl CodexParser {
                                         duration_ms: None,
                                         model: None,
                                         completed_at: Some(timestamp),
+                                    agent_message_id: None,
                                     });
                                 } else if is_wait {
                                     // Emit one `collab_agent` capsule per wait,
@@ -3596,6 +3740,7 @@ impl CodexParser {
                                             duration_ms: None,
                                             model: None,
                                             completed_at: Some(timestamp),
+                                        agent_message_id: None,
                                         });
                                         messages.push(UnifiedMessage {
                                             id: format!("tool-result-{}", messages.len()),
@@ -3612,6 +3757,7 @@ impl CodexParser {
                                             duration_ms: None,
                                             model: None,
                                             completed_at: Some(timestamp),
+                                        agent_message_id: None,
                                         });
                                     }
                                 } else if is_close {
@@ -3733,6 +3879,7 @@ impl CodexParser {
                                         duration_ms: None,
                                         model: None,
                                         completed_at: Some(timestamp),
+                                    agent_message_id: None,
                                     });
                                 }
                             }
@@ -3771,6 +3918,7 @@ impl CodexParser {
                                             duration_ms: None,
                                             model: None,
                                             completed_at: Some(timestamp),
+                                        agent_message_id: None,
                                         });
                                         continue;
                                     }
@@ -3839,6 +3987,7 @@ impl CodexParser {
                                                     duration_ms: None,
                                                     model: None,
                                                     completed_at: Some(timestamp),
+                                                    agent_message_id: None,
                                                 });
                                             }
                                         }
@@ -3924,6 +4073,7 @@ impl CodexParser {
                                     duration_ms: None,
                                     model: None,
                                     completed_at: Some(timestamp),
+                                agent_message_id: None,
                                 });
                                 if !id.is_empty() {
                                     emitted_image_ids.insert(id);
@@ -4088,6 +4238,7 @@ impl CodexParser {
                     duration_ms: None,
                     model: None,
                     completed_at: Some(pending.timestamp),
+                agent_message_id: None,
                 })
                 .collect();
             messages.splice(insert_at..insert_at, group);
@@ -4143,6 +4294,7 @@ impl CodexParser {
                         duration_ms: None,
                         model: None,
                         completed_at: first_timestamp,
+                    agent_message_id: None,
                     },
                 );
             }
@@ -4525,6 +4677,7 @@ fn flush_pending_reasoning(
         duration_ms: None,
         model: None,
         completed_at: Some(timestamp),
+    agent_message_id: None,
     });
 }
 
@@ -4709,6 +4862,7 @@ fn push_plan_review_marker(messages: &mut Vec<UnifiedMessage>, timestamp: DateTi
         duration_ms: None,
         model: None,
         completed_at: Some(timestamp),
+        agent_message_id: None,
     });
 }
 
@@ -5359,6 +5513,7 @@ fn group_into_turns(messages: Vec<UnifiedMessage>) -> Vec<MessageTurn> {
                 duration_ms: None,
                 model: None,
                 completed_at: msg.completed_at,
+            agent_message_id: None,
             });
             i += 1;
         } else if matches!(msg.role, MessageRole::System) {
@@ -5371,6 +5526,7 @@ fn group_into_turns(messages: Vec<UnifiedMessage>) -> Vec<MessageTurn> {
                 duration_ms: None,
                 model: None,
                 completed_at: msg.completed_at,
+            agent_message_id: None,
             });
             i += 1;
         } else {
@@ -5411,6 +5567,7 @@ fn group_into_turns(messages: Vec<UnifiedMessage>) -> Vec<MessageTurn> {
                 duration_ms,
                 model: turn_model,
                 completed_at,
+            agent_message_id: None,
             });
         }
     }
@@ -5420,6 +5577,185 @@ fn group_into_turns(messages: Vec<UnifiedMessage>) -> Vec<MessageTurn> {
 
 #[cfg(test)]
 mod tests {
+
+    /// codex-acp 1.8.0 forks BY REFERENCE: the child's rollout carries no
+    /// history, only `forked_from_id` + `forked_from_ordinal_exclusive`. Read
+    /// alone it parses to zero turns, which is what put "this session has no
+    /// messages" under every `[Fork] …` row. The parent's stream below the cut
+    /// has to be spliced in.
+    #[test]
+    fn a_by_reference_fork_inherits_the_parent_history_up_to_the_cut() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let sessions_dir = temp_dir.path().join("sessions");
+        let rollout_dir = sessions_dir.join("2026").join("09").join("02");
+        fs::create_dir_all(&rollout_dir).expect("create rollout dir");
+
+        let parent_id = "01a06222-7b39-7521-8ad1-e3d114374095";
+        let child_id = "01a06227-c220-7302-b0ee-6c296c1cacd1";
+
+        let user = |ord: u64, text: &str| {
+            serde_json::json!({
+                "timestamp": "2026-09-02T12:40:22Z",
+                "ordinal": ord,
+                "type": "event_msg",
+                "payload": {"type": "user_message", "message": text}
+            })
+            .to_string()
+        };
+
+        fs::write(
+            rollout_dir.join(format!("rollout-2026-09-02T20-40-22-{parent_id}.jsonl")),
+            format!(
+                "{}\n",
+                [
+                    serde_json::json!({
+                        "timestamp": "2026-09-02T12:40:22Z",
+                        "ordinal": 0,
+                        "type": "session_meta",
+                        "payload": {"id": parent_id, "cwd": "/tmp/work"}
+                    })
+                    .to_string(),
+                    user(1, "kept: before the cut"),
+                    // Past the cut — the fork point was chosen before this turn,
+                    // so the child must NOT inherit it.
+                    user(2, "dropped: after the cut"),
+                ]
+                .join("\n")
+            ),
+        )
+        .expect("write parent");
+
+        fs::write(
+            rollout_dir.join(format!("rollout-2026-09-02T20-46-07-{child_id}.jsonl")),
+            format!(
+                "{}\n",
+                [
+                    serde_json::json!({
+                        "timestamp": "2026-09-02T12:46:07Z",
+                        "ordinal": 2,
+                        "type": "session_meta",
+                        "payload": {
+                            "id": child_id,
+                            "cwd": "/tmp/work",
+                            "forked_from_id": parent_id,
+                            "forked_from_ordinal_exclusive": 2
+                        }
+                    })
+                    .to_string(),
+                    user(3, "the child's own turn"),
+                ]
+                .join("\n")
+            ),
+        )
+        .expect("write child");
+
+        let parser = CodexParser::with_base_dir(sessions_dir);
+        let detail = parser
+            .get_conversation(child_id)
+            .expect("forked conversation parses");
+        let texts: Vec<String> = detail
+            .turns
+            .iter()
+            .flat_map(|t| t.blocks.iter())
+            .filter_map(|b| match b {
+                ContentBlock::Text { text } => Some(text.clone()),
+                _ => None,
+            })
+            .collect();
+
+        assert_eq!(
+            texts,
+            vec![
+                "kept: before the cut".to_string(),
+                "the child's own turn".to_string(),
+            ],
+            "inherited history stops at the cut and the child's own turn follows"
+        );
+    }
+
+    /// The OLD fork shape replays the parent inline and carries no
+    /// `forked_from_ordinal_exclusive`. Splicing there would show every
+    /// inherited turn twice, so the pointer alone must not trigger it.
+    #[test]
+    fn an_inline_replayed_fork_is_not_spliced_again() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let sessions_dir = temp_dir.path().join("sessions");
+        let rollout_dir = sessions_dir.join("2026").join("04").join("17");
+        fs::create_dir_all(&rollout_dir).expect("create rollout dir");
+
+        let parent_id = "019d995a-347d-7072-a2ec-66646d41b05b";
+        let child_id = "019d995a-89cf-7190-8358-1ab96226c173";
+
+        let user = |text: &str| {
+            serde_json::json!({
+                "timestamp": "2026-04-17T10:52:20Z",
+                "type": "event_msg",
+                "payload": {"type": "user_message", "message": text}
+            })
+            .to_string()
+        };
+
+        fs::write(
+            rollout_dir.join(format!("rollout-2026-04-17T10-52-00-{parent_id}.jsonl")),
+            format!(
+                "{}\n",
+                [
+                    serde_json::json!({
+                        "timestamp": "2026-04-17T10:52:00Z",
+                        "type": "session_meta",
+                        "payload": {"id": parent_id, "cwd": "/tmp/work"}
+                    })
+                    .to_string(),
+                    user("inherited once"),
+                ]
+                .join("\n")
+            ),
+        )
+        .expect("write parent");
+
+        // Child header, then the parent replayed inline, then its own turn —
+        // codex's own on-disk order for this shape.
+        fs::write(
+            rollout_dir.join(format!("rollout-2026-04-17T10-52-20-{child_id}.jsonl")),
+            format!(
+                "{}\n",
+                [
+                    serde_json::json!({
+                        "timestamp": "2026-04-17T10:52:20Z",
+                        "type": "session_meta",
+                        "payload": {
+                            "id": child_id,
+                            "cwd": "/tmp/work",
+                            "forked_from_id": parent_id
+                        }
+                    })
+                    .to_string(),
+                    serde_json::json!({
+                        "timestamp": "2026-04-17T10:52:00Z",
+                        "type": "session_meta",
+                        "payload": {"id": parent_id, "cwd": "/tmp/work"}
+                    })
+                    .to_string(),
+                    user("inherited once"),
+                    user("the child's own turn"),
+                ]
+                .join("\n")
+            ),
+        )
+        .expect("write child");
+
+        let parser = CodexParser::with_base_dir(sessions_dir);
+        let detail = parser
+            .get_conversation(child_id)
+            .expect("forked conversation parses");
+        let inherited = detail
+            .turns
+            .iter()
+            .flat_map(|t| t.blocks.iter())
+            .filter(|b| matches!(b, ContentBlock::Text { text } if text == "inherited once"))
+            .count();
+        assert_eq!(inherited, 1, "the inline replay must not be doubled");
+    }
 
     use std::collections::HashMap;
 
@@ -5541,6 +5877,95 @@ mod tests {
             .get_conversation(child)
             .expect("load conversation detail");
         assert_eq!(detail.summary.parent_id.as_deref(), Some(parent));
+    }
+
+    /// A by-reference fork keeps its history in the parent file, so
+    /// `rollout_lines` splices the parent's lines in — including the parent's
+    /// own `session_meta`. Reading identity last-record-wins then files the
+    /// CHILD's summary under the PARENT's id and cwd: two rollouts claiming one
+    /// id, which the conversation list dedups down to one and the fork
+    /// disappears. Every identity field latches on the first header, not just
+    /// `parent_id`.
+    #[test]
+    fn spliced_parent_header_does_not_steal_the_forked_child_identity() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let parent = "01a0626c-c601-78f1-a13d-2b26dd168501";
+        let child = "01a0626d-1e26-7853-8f86-02e0f57818a3";
+
+        let parent_lines = [
+            rollout_line(
+                "2026-09-02T14:00:00Z",
+                "session_meta",
+                serde_json::json!({
+                    "id": parent,
+                    "cwd": "/tmp/parent",
+                    "git": {"branch": "parent-branch"}
+                }),
+            ),
+            rollout_line(
+                "2026-09-02T14:00:01Z",
+                "event_msg",
+                serde_json::json!({"type": "user_message", "message": "round one"}),
+            ),
+        ];
+        fs::write(
+            temp_dir
+                .path()
+                .join(format!("rollout-2026-09-02T14-00-00-{parent}.jsonl")),
+            format!("{}\n", parent_lines.join("\n")),
+        )
+        .expect("write parent rollout");
+
+        // The child holds ONLY its header — the by-reference shape.
+        let child_lines = [rollout_line(
+            "2026-09-02T14:01:53Z",
+            "session_meta",
+            serde_json::json!({
+                "id": child,
+                "cwd": "/tmp/child",
+                "git": {"branch": "child-branch"},
+                "forked_from_id": parent,
+                "forked_from_ordinal_exclusive": 1
+            }),
+        )];
+        fs::write(
+            temp_dir
+                .path()
+                .join(format!("rollout-2026-09-02T14-01-53-{child}.jsonl")),
+            format!("{}\n", child_lines.join("\n")),
+        )
+        .expect("write child rollout");
+
+        let parser = CodexParser::with_base_dir(temp_dir.path().to_path_buf());
+        let summaries = parser.list_conversations().expect("list conversations");
+        let ids: Vec<&str> = summaries.iter().map(|s| s.id.as_str()).collect();
+        assert!(
+            ids.contains(&child) && ids.contains(&parent),
+            "both the fork and its parent must list under their OWN ids, got {ids:?}"
+        );
+
+        let forked = summaries
+            .iter()
+            .find(|s| s.id == child)
+            .expect("the fork is listed");
+        assert_eq!(
+            forked.folder_path.as_deref(),
+            Some("/tmp/child"),
+            "the spliced parent header must not overwrite the fork's cwd"
+        );
+        assert_eq!(
+            forked.git_branch.as_deref(),
+            Some("child-branch"),
+            "the spliced parent header must not overwrite the fork's branch"
+        );
+
+        let detail = parser.get_conversation(child).expect("load fork detail");
+        assert_eq!(detail.summary.id, child);
+        assert_eq!(
+            detail.summary.folder_path.as_deref(),
+            Some("/tmp/child"),
+            "the spliced parent header must not overwrite the fork's cwd in detail"
+        );
     }
 
     /// Both on-disk sub-agent shapes must surface `parent_id`, because that is
@@ -6103,6 +6528,7 @@ mod tests {
             duration_ms: None,
             model: None,
             completed_at: Some(now),
+        agent_message_id: None,
         }];
 
         assert!(should_skip_duplicate_user_message(

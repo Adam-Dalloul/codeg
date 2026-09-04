@@ -636,6 +636,8 @@
     "local": {
       "filterPlaceholder": "Filtrer les MCP locaux...",
       "loadFailed": "Échec du chargement : {message}",
+      "sourceUnreadable": "Impossible de lire la configuration MCP de {app}, ses serveurs sont donc masqués : {message}",
+      "saveBlockedByUnreadableSource": "Corrigez ou supprimez ce fichier puis actualisez avant d'enregistrer : les affectations sont calculées à partir des agents que cette page a pu lire, donc enregistrer maintenant pourrait retirer ce serveur d'un agent illisible.",
       "empty": "Aucun MCP local détecté.",
       "description": "La configuration MCP locale peut être modifiée et enregistrée directement.",
       "enabledApps": "Applications activées",
@@ -680,6 +682,13 @@
     "emptyNoAgent": "Aucun agent disponible.",
     "configManagement": "Gestion de configuration",
     "envVars": "Variables d'environnement",
+    "adapterChannel": {
+      "label": "Version de l'adaptateur",
+      "description": "Installer et Mettre à niveau utilisent la version examinée et épinglée par codeg. Avec Dernière, c'est la version npm la plus récente du paquet qui est installée ; si cette installation échoue, codeg revient à la version épinglée et l'indique dans le journal d'installation.",
+      "pinned": "Épinglée (recommandée)",
+      "latest": "Dernière (non examinée)",
+      "latestWarning": "Les versions les plus récentes ne sont pas examinées et peuvent casser cet agent dans codeg ; il arrive même qu'une version soit connue pour être défectueuse. Le statut de version affiche ce qui est réellement installé."
+    },
     "hostTools": {
       "label": "Laisser l'agent gérer les fichiers et les commandes",
       "description": "codeg cesse d'assurer l'accès aux fichiers et les commandes de terminal : l'agent les exécute dans son propre processus, là où son bac à sable et ses règles d'autorisation s'appliquent réellement. La délégation à d'autres agents est également désactivée, car elle ferait repasser le même travail par codeg. codeg n'ajoute aucun bac à sable, n'activez donc ceci que si l'agent en a un configuré."
@@ -1387,7 +1396,8 @@
       "localUnrecognized": "{versionText}. La version locale n’est pas comparable ; essayez une mise à niveau pour écraser l’installation.",
       "upgradeAvailable": "{versionText}. Mise à niveau disponible.",
       "remoteUnavailable": "{versionText}. La version distante est actuellement indisponible.",
-      "latest": "{versionText}. Déjà à jour."
+      "latest": "{versionText}. Déjà à jour.",
+      "latestChannel": "{versionText}. Le canal Dernière est actif ; Mettre à niveau installe la version la plus récente."
     },
     "adapter": {
       "label": "Adaptateur ACP",
@@ -1837,6 +1847,7 @@
       "forkSession": "Dupliquer la session",
       "forkSessionSuccess": "Session dupliquée avec succès",
       "forkSessionFailed": "Échec de la duplication de la session : {error}",
+      "forkSessionBusy": "Échec de la bifurcation : un tour est en cours",
       "exportConversation": "Exporter la conversation",
       "exportImage": "Image",
       "exportMarkdown": "Markdown",
@@ -2767,6 +2778,7 @@
           "downloadFailed": "Échec du téléchargement de {agent} : {message}",
           "sessionLoadResourceNotFound": "Échec du chargement de la session de {agent}. Rechargez pour réessayer ou démarrez une nouvelle conversation.",
           "sessionLoadUnavailable": "{agent} n'a pas pu restaurer cette session ; elle a peut-être pris fin ou l'agent s'est arrêté. Rechargez pour réessayer ou démarrez une nouvelle conversation.",
+          "sessionLoadBusy": "Cet historique est occupé par la session qui en a été dérivée. Fermez cette session, puis rechargez pour l'ouvrir.",
           "sessionArchived": "La session précédente a été archivée côté {agent}. Exécutez {command} dans un terminal pour la restaurer et la recharger, ou démarrez une nouvelle conversation.",
           "turnFailedRefusal": "{agent} a refusé de poursuivre ce tour. Cela indique souvent une erreur de backend ou de passerelle. Vérifiez les journaux de l'agent.",
           "turnFailedMaxTokens": "{agent} a atteint la limite maximale de jetons pour ce tour.",
@@ -2855,14 +2867,12 @@
         "noModels": "Aucun modèle trouvé",
         "cancel": "Annuler",
         "send": "Envoyer",
-        "forkAndSend": "Fork & Envoyer",
         "queueMessage": "Mettre en file d'attente",
         "steerIntoTurn": "Insérer dans le tour en cours",
         "steerAsNote": "Envoyer une note pour la prochaine vérification",
         "steerQueuedInstead": "Mis en file d'attente — il sera envoyé au tour suivant.",
         "steerFailed": "Impossible d'insérer dans le tour en cours",
         "steerNoteFailed": "Impossible d'envoyer votre note",
-        "steerAttachmentsUnsupported": "Texte uniquement — les brouillons avec pièces jointes passent par la file d'attente.",
         "slashCommands": "Commandes slash",
         "slashSearchPlaceholder": "Rechercher des commandes...",
         "slashSearchEmpty": "Aucune commande correspondante",
@@ -2916,7 +2926,7 @@
           "pasteDropFiles": "Collez une capture d'écran ou déposez un fichier directement dans la zone de saisie pour le joindre.",
           "queueMessage": "Pendant que l'agent répond, continuez à écrire : votre message suivant est mis en file et envoyé automatiquement à la fin.",
           "draftAutoSave": "Les brouillons non envoyés sont sauvegardés automatiquement par conversation et restaurés à votre retour.",
-          "forkSend": "Le menu déroulant du bouton d'envoi propose Bifurquer et envoyer pour ouvrir une branche dans un nouvel onglet à partir du point actuel.",
+          "forkFromTurn": "Chaque réponse terminée propose Bifurquer d'ici pour ouvrir une branche dans un nouvel onglet à partir de ce message.",
           "exportConversation": "Faites un clic droit dans la conversation pour l'exporter en Markdown, HTML ou image.",
           "chatChannels": "Connectez Telegram / Lark / WeChat dans Paramètres → Canaux de discussion pour continuer depuis votre téléphone.",
           "shortcutsAuxPanel": "<shortcut>{toggleAuxPanel}</shortcut> bascule le panneau droit pour voir les fichiers modifiés et les changements Git de cette session.",
@@ -3132,6 +3142,8 @@
         "emptyConversation": "Aucun message dans cette conversation.",
         "systemMessage": "Message système",
         "copyMessage": "Copier",
+        "forkFromHere": "Bifurquer d'ici",
+        "forkBusy": "Impossible de bifurquer pendant qu'un tour est en cours",
         "copied": "Copié",
         "selectionActions": "Actions de sélection",
         "selectionCopy": "Copier le texte",
@@ -3583,6 +3595,13 @@
         "cardCompleted": "Tâche en arrière-plan terminée",
         "cardFinishedWithStatus": "Tâche en arrière-plan terminée ({status})",
         "cardResultPending": "Résultat pas encore reçu"
+      },
+      "asyncTasks": {
+        "openOutput": "Sortie",
+        "stop": "Arrêter",
+        "tokens": "{count} jetons",
+        "stopDeclined": "Impossible d'arrêter cette tâche : elle est peut-être déjà terminée.",
+        "stopFailed": "Échec de l'arrêt de la tâche : {error}"
       },
       "proposedPlan": {
         "title": "Plan proposé",

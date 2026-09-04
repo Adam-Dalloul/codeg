@@ -12,7 +12,6 @@ import {
   Clock,
   Cog,
   Copy,
-  GitFork,
   MessageSquareText,
   Scissors,
   Send,
@@ -211,17 +210,16 @@ interface MessageInputProps {
   isEditingQueueItem?: boolean
   onSaveQueueEdit?: (draft: PromptDraft) => void
   onCancelQueueEdit?: () => void
-  /** Fork the session and send `draft`. Fire-and-forget: the input consumes the
-   *  draft synchronously (clears on click); the parent re-queues it if the fork
-   *  can't run, so it is never lost. */
-  onForkSend?: (draft: PromptDraft, modeId?: string | null) => void
-  /** Send the draft's TEXT into the RUNNING turn over the session's live-
-   *  feedback channel (see {@link steerChannel}). Present only on sessions
-   *  with a working delivery channel — when absent, the prompting branch
-   *  renders its historical Stop-only form. Awaited: resolve = recorded
-   *  (clear the draft); reject = failure, where a turn-end `NoActiveTurn`
-   *  race falls back to the queue and anything else keeps the draft. */
-  onSteer?: (text: string) => Promise<void>
+  /** Send the draft into the RUNNING turn over the session's live-feedback
+   *  channel (see {@link steerChannel}). Present only on sessions with a
+   *  working delivery channel — when absent, the prompting branch renders its
+   *  historical Stop-only form. `text` is the recorded/display form; `blocks`
+   *  carries the full draft whenever it holds more than plain text (image
+   *  attachments, file badges), encoded exactly like a normal send. Awaited:
+   *  resolve = recorded (clear the draft); reject = failure, where a turn-end
+   *  `NoActiveTurn` race falls back to the queue and anything else keeps the
+   *  draft. */
+  onSteer?: (text: string, blocks?: PromptInputBlock[]) => Promise<void>
   /** Which channel {@link onSteer} rides (`useSessionFeedback().channel`).
    *  Picks the honest copy for the mid-turn action: `native` = inserted into
    *  the turn immediately, `pull` = recorded as a note the agent reads on its
@@ -334,7 +332,6 @@ export function MessageInput({
   isEditingQueueItem = false,
   onSaveQueueEdit,
   onCancelQueueEdit,
-  onForkSend,
   onSteer,
   steerChannel = "pull",
   onAddFeedback,
@@ -1269,51 +1266,28 @@ export function MessageInput({
     resetComposer,
   ])
 
-  const handleForkSendClick = useCallback(() => {
-    if (!onForkSend) return
-    // Same uploading gate as `handleSend`: a fork-send consumes the draft
-    // (and its blocks) immediately, so an unsettled upload would strip to
-    // nothing on the wire.
+  // Mid-turn send over the session's live-feedback channel: a native push
+  // inserts into the running turn; a pull-tool session records a waiting note
+  // the agent reads on its next check (the copy is keyed on `steerChannel` so
+  // neither overpromises). Awaited, unlike the synchronous send/enqueue
+  // paths: the draft clears ONLY once the backend confirms the note was
+  // recorded — a turn-end race falls back to the queue (the note is never
+  // lost), any other failure keeps the draft for retry. A draft that holds
+  // more than plain text (image attachments, file badges) steers as its full
+  // block list — the same encoding a normal send uses, which the native wire
+  // carries verbatim — with the display text as the recorded note; nothing is
+  // silently stripped. Only the native wire takes blocks: the pull path
+  // rejects them as `NoActiveTurn`, which lands on the same enqueue fallback,
+  // so an attachment on a pull session goes to the queue whole. Unsettled
+  // uploads are gated here exactly like `handleSend` (no server-side uri to
+  // hydrate from yet), since the enqueue fallback below bypasses its gate.
+  const [steering, setSteering] = useState(false)
+  const handleSteerClick = useCallback(async () => {
+    if (!onSteer || steering) return
     if (hasUploadingImage) {
       toast.error(tAttach("attachUploadInProgress"))
       return
     }
-    const draft = buildDraft()
-    if (!draft) return
-    // Fork-send consumes the draft synchronously, exactly like a normal send:
-    // fire-and-forget and clear the input immediately, so there is no in-flight
-    // editable window. If the fork can't run (queue non-empty / disconnected /
-    // failure) the parent re-queues the draft, so it is never lost.
-    onForkSend(draft, showModeSelector ? effectiveModeId : null)
-    if (effectiveDraftStorageKey) {
-      clearMessageInputDraftV2(effectiveDraftStorageKey)
-    }
-    resetComposer()
-  }, [
-    onForkSend,
-    hasUploadingImage,
-    tAttach,
-    buildDraft,
-    effectiveModeId,
-    showModeSelector,
-    effectiveDraftStorageKey,
-    resetComposer,
-  ])
-
-  // Mid-turn send over the session's live-feedback channel: a native push
-  // inserts into the running turn; a pull-tool session records a waiting note
-  // the agent reads on its next check (the copy is keyed on `steerChannel` so
-  // neither overpromises). Awaited, unlike the synchronous send/enqueue/fork
-  // paths: the draft clears ONLY once the backend confirms the note was
-  // recorded — a turn-end race falls back to the queue (the note is never
-  // lost), any other failure keeps the draft for retry. Steering is
-  // text-only: a draft carrying non-text blocks (file badges) is queued whole
-  // instead of being silently stripped; image attachments disable the menu
-  // entry at render (which also keeps unsettled uploads out of this path —
-  // the enqueue fallback below bypasses `handleSend`'s uploading gate).
-  const [steering, setSteering] = useState(false)
-  const handleSteerClick = useCallback(async () => {
-    if (!onSteer || steering) return
     const draft = buildDraft()
     if (!draft) return
     const enqueueInstead = () => {
@@ -1322,18 +1296,19 @@ export function MessageInput({
       resetComposer()
       toast.info(t("steerQueuedInstead"))
     }
-    if (draft.blocks.some((b) => b.type !== "text")) {
-      enqueueInstead()
-      return
-    }
-    const text = draft.blocks
-      .map((b) => (b.type === "text" ? b.text : ""))
-      .join("\n")
-      .trim()
+    const blocks = draft.blocks.some((b) => b.type !== "text")
+      ? draft.blocks
+      : undefined
+    const text = blocks
+      ? draft.displayText
+      : draft.blocks
+          .map((b) => (b.type === "text" ? b.text : ""))
+          .join("\n")
+          .trim()
     if (!text) return
     setSteering(true)
     try {
-      await onSteer(text)
+      await onSteer(text, blocks)
       resetComposer()
     } catch (err) {
       if (isNoActiveTurnRejection(err)) {
@@ -1351,6 +1326,8 @@ export function MessageInput({
   }, [
     onSteer,
     steering,
+    hasUploadingImage,
+    tAttach,
     buildDraft,
     onEnqueue,
     showModeSelector,
@@ -1716,12 +1693,7 @@ export function MessageInput({
             <DropdownMenuContent align="end" side="top">
               <DropdownMenuItem
                 onSelect={() => void handleSteerClick()}
-                disabled={steering || attachments.length > 0}
-                title={
-                  attachments.length > 0
-                    ? t("steerAttachmentsUnsupported")
-                    : undefined
-                }
+                disabled={steering}
               >
                 {/* Icon carries the same promise as the label: the bolt is
                     the instant insert, the clock is the note that waits —
@@ -1748,36 +1720,6 @@ export function MessageInput({
         <Square className="size-4" />
       </Button>
     )
-  ) : onForkSend ? (
-    <div className="flex items-center">
-      <Button
-        onClick={handleSend}
-        disabled={disabled || !hasSendableContent}
-        size="icon"
-        className="h-8 w-8 rounded-r-none"
-        title={t("send")}
-      >
-        <Send className="size-4" />
-      </Button>
-      <DropdownMenu>
-        <DropdownMenuTrigger asChild>
-          <Button
-            disabled={disabled || !hasSendableContent}
-            size="icon"
-            className="h-8 w-5 rounded-l-none border-l border-primary-foreground/20"
-            aria-label={t("forkAndSend")}
-          >
-            <ChevronUp className="size-4" />
-          </Button>
-        </DropdownMenuTrigger>
-        <DropdownMenuContent align="end" side="top">
-          <DropdownMenuItem onSelect={handleForkSendClick}>
-            <GitFork className="h-4 w-4" />
-            {t("forkAndSend")}
-          </DropdownMenuItem>
-        </DropdownMenuContent>
-      </DropdownMenu>
-    </div>
   ) : (
     <Button
       onClick={handleSend}

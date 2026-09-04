@@ -636,6 +636,8 @@
     "local": {
       "filterPlaceholder": "Filter local MCP...",
       "loadFailed": "Load failed: {message}",
+      "sourceUnreadable": "Could not read the MCP config for {app}, so its servers are hidden: {message}",
+      "saveBlockedByUnreadableSource": "Fix or remove that file and refresh before saving: assignments are computed from the agents this page could read, so saving now could drop this server from one it could not.",
       "empty": "No local MCP detected.",
       "description": "Local MCP configuration can be edited and saved directly.",
       "enabledApps": "Enabled Apps",
@@ -680,6 +682,13 @@
     "emptyNoAgent": "No available agent.",
     "configManagement": "Config Management",
     "envVars": "Environment Variables",
+    "adapterChannel": {
+      "label": "Adapter version",
+      "description": "Install and Upgrade use the version codeg has reviewed and pinned. Latest switches them to the package's newest npm release at that moment; if installing it fails, codeg falls back to the pinned version and notes it in the install log.",
+      "pinned": "Pinned (recommended)",
+      "latest": "Latest (unreviewed)",
+      "latestWarning": "Newest releases are unreviewed and can break this agent in codeg, and occasionally a release is known broken. Version Status shows what is actually installed."
+    },
     "hostTools": {
       "label": "Let the agent handle files and commands",
       "description": "codeg stops serving file access and terminal commands, so the agent runs them in its own process — where its own sandbox and permission rules apply. Delegating to other agents is also turned off, since that would route the same work back through codeg. codeg adds no sandbox itself, so turn this on only if the agent has one configured."
@@ -1387,7 +1396,8 @@
       "localUnrecognized": "{versionText}. Local version is not comparable; try upgrade to overwrite install.",
       "upgradeAvailable": "{versionText}. Upgrade available.",
       "remoteUnavailable": "{versionText}. Remote version is currently unavailable.",
-      "latest": "{versionText}. Already latest."
+      "latest": "{versionText}. Already latest.",
+      "latestChannel": "{versionText}. Latest channel is on; Upgrade installs the newest release."
     },
     "adapter": {
       "label": "ACP adapter",
@@ -1837,6 +1847,7 @@
       "forkSession": "Fork Session",
       "forkSessionSuccess": "Session forked successfully",
       "forkSessionFailed": "Failed to fork session: {error}",
+      "forkSessionBusy": "Failed to fork session: a turn is running",
       "exportConversation": "Export Conversation",
       "exportImage": "Image",
       "exportMarkdown": "Markdown",
@@ -2767,6 +2778,7 @@
           "downloadFailed": "{agent} download failed: {message}",
           "sessionLoadResourceNotFound": "{agent} session failed to load. Reload to retry, or start a new conversation.",
           "sessionLoadUnavailable": "{agent} couldn't restore this session — it may have ended or the agent stopped. Reload to retry, or start a new conversation.",
+          "sessionLoadBusy": "This history is held open by the session forked from it. Close that session, then reload to open this one.",
           "sessionArchived": "The previous session was archived on the {agent} side. Run {command} in a terminal to restore it and reload, or start a new conversation.",
           "turnFailedRefusal": "{agent} refused to continue this turn. This often indicates a backend or gateway error — check the agent's logs.",
           "turnFailedMaxTokens": "{agent} reached the maximum token limit for this turn.",
@@ -2857,14 +2869,12 @@
         "noModels": "No models found",
         "cancel": "Cancel",
         "send": "Send",
-        "forkAndSend": "Fork & Send",
         "queueMessage": "Queue message",
         "steerIntoTurn": "Insert into current turn",
         "steerAsNote": "Send note for next check",
         "steerQueuedInstead": "Queued instead — it will be sent with the next turn.",
         "steerFailed": "Couldn't insert into the current turn",
         "steerNoteFailed": "Couldn't send your note",
-        "steerAttachmentsUnsupported": "Text only — drafts with attachments go through the queue.",
         "slashCommands": "Slash commands",
         "slashSearchPlaceholder": "Search commands...",
         "slashSearchEmpty": "No matching commands",
@@ -2916,7 +2926,7 @@
           "pasteDropFiles": "Paste a screenshot or drop a file directly onto the input to attach it.",
           "queueMessage": "While the agent is replying, keep typing — your next message gets queued and auto-sent when it finishes.",
           "draftAutoSave": "Unsent drafts are auto-saved per conversation and restored when you come back.",
-          "forkSend": "The send button's dropdown has Fork and Send — branch from the current turn into a new tab.",
+          "forkFromTurn": "Any completed reply has Fork from here — branch the conversation at that message into a new tab.",
           "exportConversation": "Right-click inside the conversation to export it as Markdown, HTML, or an image.",
           "chatChannels": "Connect Telegram / Lark / WeChat under Settings → Chat Channels to continue from your phone.",
           "shortcutsAuxPanel": "<shortcut>{toggleAuxPanel}</shortcut> toggles the right panel to view this session's touched files and Git changes.",
@@ -3132,6 +3142,8 @@
         "emptyConversation": "No messages in this conversation.",
         "systemMessage": "System message",
         "copyMessage": "Copy",
+        "forkFromHere": "Fork from here",
+        "forkBusy": "Can't fork while a turn is running",
         "copied": "Copied",
         "selectionActions": "Selection actions",
         "selectionCopy": "Copy Text",
@@ -3583,6 +3595,13 @@
         "cardCompleted": "Background task completed",
         "cardFinishedWithStatus": "Background task finished ({status})",
         "cardResultPending": "Result not returned yet"
+      },
+      "asyncTasks": {
+        "openOutput": "Output",
+        "stop": "Stop",
+        "tokens": "{count} tokens",
+        "stopDeclined": "That task could not be stopped — it may have already finished.",
+        "stopFailed": "Failed to stop the task: {error}"
       },
       "proposedPlan": {
         "title": "Proposed plan",

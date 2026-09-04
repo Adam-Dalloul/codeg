@@ -361,8 +361,25 @@ describe("useSessionFeedback", () => {
     await act(async () => {
       await result.current.steer("go left")
     })
-    expect(mockSubmit).toHaveBeenCalledWith("c1", "go left")
+    expect(mockSubmit).toHaveBeenCalledWith("c1", "go left", undefined)
     expect(result.current.notes.map((n) => n.id)).toContain("st1")
+
+    // A draft with attachments hands its full block list through untouched —
+    // the API layer owns upload-marker stripping, the backend the channel
+    // gate; the hook adds nothing.
+    const blocks = [
+      { type: "text" as const, text: "match this" },
+      {
+        type: "image" as const,
+        data: "aGk=",
+        mime_type: "image/png",
+      },
+    ]
+    mockSubmit.mockResolvedValueOnce(note("st2", "match this", "delivered"))
+    await act(async () => {
+      await result.current.steer("match this", blocks)
+    })
+    expect(mockSubmit).toHaveBeenCalledWith("c1", "match this", blocks)
 
     const noTurn = new Error("no turn")
     mockSubmit.mockRejectedValueOnce(noTurn)

@@ -636,6 +636,8 @@
     "local": {
       "filterPlaceholder": "ローカルMCPを絞り込み...",
       "loadFailed": "読み込み失敗: {message}",
+      "sourceUnreadable": "{app} の MCP 設定を読み取れませんでした。そのサーバーは表示されません: {message}",
+      "saveBlockedByUnreadableSource": "保存する前にそのファイルを修正または削除して再読み込みしてください。割り当てはこのページが読み取れたエージェントから計算されるため、今保存すると読み取れなかったエージェントからこのサーバーが削除される可能性があります。",
       "empty": "ローカルMCPが見つかりません。",
       "description": "ローカルMCP設定は直接編集して保存できます。",
       "enabledApps": "有効なアプリ",
@@ -680,6 +682,13 @@
     "emptyNoAgent": "利用可能なエージェントがありません。",
     "configManagement": "設定管理",
     "envVars": "環境変数",
+    "adapterChannel": {
+      "label": "アダプターのバージョン",
+      "description": "インストールとアップグレードは、codeg がレビューして固定したバージョンを使用します。「最新版」を選ぶと、その時点で最新の npm リリースをインストールします。最新版のインストールに失敗した場合は固定バージョンにフォールバックし、インストールログにその旨を記録します。",
+      "pinned": "固定バージョン（推奨）",
+      "latest": "最新版（未レビュー）",
+      "latestWarning": "最新リリースは未レビューのため、codeg でこのエージェントが動かなくなることがあります。まれに既知の不具合を含むリリースが最新版になっていることもあります。実際にインストールされたバージョンはバージョン状態に表示されます。"
+    },
     "hostTools": {
       "label": "ファイルとコマンドをエージェント自身に処理させる",
       "description": "codeg がファイルアクセスとターミナルコマンドを代行しなくなり、エージェントが自身のプロセスで実行します。そうすることで初めて、エージェント自身のサンドボックスと権限ルールが適用されます。他のエージェントへの委任も無効になります（同じ処理が codeg 経由に戻ってしまうため）。codeg 自体はサンドボックスを提供しないため、エージェント側でサンドボックスを設定済みの場合にのみ有効にしてください。"
@@ -1387,7 +1396,8 @@
       "localUnrecognized": "{versionText}。ローカルバージョンは比較できません。上書きインストールのためアップグレードを試してください。",
       "upgradeAvailable": "{versionText}。アップグレード可能です。",
       "remoteUnavailable": "{versionText}。現在リモートバージョンは取得できません。",
-      "latest": "{versionText}。すでに最新です。"
+      "latest": "{versionText}。すでに最新です。",
+      "latestChannel": "{versionText}。最新版チャンネルが有効です。アップグレードで最新リリースをインストールします。"
     },
     "adapter": {
       "label": "ACP アダプター",
@@ -1837,6 +1847,7 @@
       "forkSession": "セッションをフォーク",
       "forkSessionSuccess": "セッションのフォークに成功しました",
       "forkSessionFailed": "セッションのフォークに失敗しました：{error}",
+      "forkSessionBusy": "分岐に失敗しました: ターンの実行中です",
       "exportConversation": "会話をエクスポート",
       "exportImage": "画像",
       "exportMarkdown": "Markdown",
@@ -2767,6 +2778,7 @@
           "downloadFailed": "{agent} のダウンロードに失敗しました: {message}",
           "sessionLoadResourceNotFound": "{agent} セッションの読み込みに失敗しました。再読み込みして再試行するか、新しい会話を開始してください。",
           "sessionLoadUnavailable": "{agent} はこのセッションを復元できませんでした。セッションが終了したか、エージェントが停止した可能性があります。再読み込みして再試行するか、新しい会話を開始してください。",
+          "sessionLoadBusy": "この履歴は、そこから分岐したセッションが開いたままにしています。そのセッションを閉じてから再読み込みしてください。",
           "sessionArchived": "以前のセッションは {agent} 側でアーカイブされています。ターミナルで {command} を実行して復元してから再読み込みするか、新しい会話を開始してください。",
           "turnFailedRefusal": "{agent} がこのターンの続行を拒否しました。バックエンドまたはゲートウェイのエラーが原因の可能性があります。エージェントのログを確認してください。",
           "turnFailedMaxTokens": "{agent} がこのターンの最大トークン数に達しました。",
@@ -2855,14 +2867,12 @@
         "noModels": "モデルが見つかりません",
         "cancel": "キャンセル",
         "send": "送信",
-        "forkAndSend": "フォークして送信",
         "queueMessage": "キューに追加",
         "steerIntoTurn": "現在のターンに挿入",
         "steerAsNote": "次の確認用にメモを送信",
         "steerQueuedInstead": "代わりにキューに追加しました。次のターンで送信されます。",
         "steerFailed": "現在のターンに挿入できませんでした",
         "steerNoteFailed": "メモを送信できませんでした",
-        "steerAttachmentsUnsupported": "テキストのみ対応です。添付ファイル付きの下書きはキューをご利用ください。",
         "slashCommands": "スラッシュコマンド",
         "slashSearchPlaceholder": "コマンドを検索...",
         "slashSearchEmpty": "一致するコマンドがありません",
@@ -2916,7 +2926,7 @@
           "pasteDropFiles": "スクリーンショットを貼り付けたり、ファイルを入力欄にドロップするだけで添付できます",
           "queueMessage": "エージェントの応答中も入力を続けられ、次のメッセージはキューに入って完了後に自動送信されます",
           "draftAutoSave": "未送信の下書きは会話ごとに自動保存され、戻ったときに復元されます",
-          "forkSend": "送信ボタンのドロップダウンで「分岐して送信」を選ぶと、現在の地点から新しいタブに分岐できます",
+          "forkFromTurn": "完了した返信には「ここから分岐」があり、そのメッセージから新しいタブに分岐できます",
           "exportConversation": "会話内容を右クリックすると Markdown / HTML / 画像としてエクスポートできます",
           "chatChannels": "「設定 → チャットチャネル」で Telegram / Lark / WeChat を連携すれば、スマホから続けて操作できます",
           "shortcutsAuxPanel": "<shortcut>{toggleAuxPanel}</shortcut> で右側パネルを開き、このセッションで変更したファイルや Git の差分を確認できます",
@@ -3132,6 +3142,8 @@
         "emptyConversation": "この会話にはメッセージがありません。",
         "systemMessage": "システムメッセージ",
         "copyMessage": "コピー",
+        "forkFromHere": "ここから分岐",
+        "forkBusy": "ターンの実行中は分岐できません",
         "copied": "コピー済み",
         "selectionActions": "選択範囲の操作",
         "selectionCopy": "テキストをコピー",
@@ -3583,6 +3595,13 @@
         "cardCompleted": "バックグラウンドタスクが完了しました",
         "cardFinishedWithStatus": "バックグラウンドタスクが終了しました（{status}）",
         "cardResultPending": "結果はまだ返っていません"
+      },
+      "asyncTasks": {
+        "openOutput": "出力",
+        "stop": "停止",
+        "tokens": "{count} トークン",
+        "stopDeclined": "このタスクは停止できませんでした。すでに終了している可能性があります。",
+        "stopFailed": "タスクの停止に失敗しました: {error}"
       },
       "proposedPlan": {
         "title": "提案された計画",

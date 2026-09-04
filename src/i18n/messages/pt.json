@@ -636,6 +636,8 @@
     "local": {
       "filterPlaceholder": "Filtrar MCP local...",
       "loadFailed": "Falha ao carregar: {message}",
+      "sourceUnreadable": "Não foi possível ler a configuração MCP de {app}, portanto os seus servidores estão ocultos: {message}",
+      "saveBlockedByUnreadableSource": "Corrija ou remova esse ficheiro e atualize antes de guardar: as atribuições são calculadas a partir dos agentes que esta página conseguiu ler, pelo que guardar agora poderá remover este servidor de um que não conseguiu ler.",
       "empty": "Nenhum MCP local detectado.",
       "description": "A configuração local de MCP pode ser editada e salva diretamente.",
       "enabledApps": "Apps habilitados",
@@ -680,6 +682,13 @@
     "emptyNoAgent": "Nenhum agente disponível.",
     "configManagement": "Gerenciamento de configuração",
     "envVars": "Variáveis de ambiente",
+    "adapterChannel": {
+      "label": "Versão do adaptador",
+      "description": "Instalar e Atualizar usam a versão que o codeg revisou e fixou. Com Mais recente, passa a ser instalada a versão de npm mais nova do pacote naquele momento; se essa instalação falhar, o codeg volta para a versão fixada e registra isso no log de instalação.",
+      "pinned": "Fixada (recomendada)",
+      "latest": "Mais recente (não revisada)",
+      "latestWarning": "As versões mais novas não são revisadas e podem quebrar este agente no codeg; às vezes uma versão é até sabidamente defeituosa. O status da versão mostra o que foi realmente instalado."
+    },
     "hostTools": {
       "label": "Deixar o agente cuidar de arquivos e comandos",
       "description": "O codeg deixa de atender o acesso a arquivos e os comandos de terminal, de modo que o agente os executa no próprio processo — onde o sandbox e as regras de permissão dele realmente se aplicam. A delegação a outros agentes também é desativada, pois levaria o mesmo trabalho de volta ao codeg. O codeg não adiciona sandbox algum, então ative isto apenas se o agente tiver um configurado."
@@ -1387,7 +1396,8 @@
       "localUnrecognized": "{versionText}. A versão local não é comparável; tente atualizar para sobrescrever a instalação.",
       "upgradeAvailable": "{versionText}. Atualização disponível.",
       "remoteUnavailable": "{versionText}. A versão remota está indisponível no momento.",
-      "latest": "{versionText}. Já está na versão mais recente."
+      "latest": "{versionText}. Já está na versão mais recente.",
+      "latestChannel": "{versionText}. Canal de versão mais recente ativo; Atualizar instala a versão mais nova."
     },
     "adapter": {
       "label": "Adaptador ACP",
@@ -1837,6 +1847,7 @@
       "forkSession": "Bifurcar sessão",
       "forkSessionSuccess": "Sessão bifurcada com sucesso",
       "forkSessionFailed": "Falha ao bifurcar a sessão: {error}",
+      "forkSessionBusy": "Falha ao bifurcar: há um turno em andamento",
       "exportConversation": "Exportar conversa",
       "exportImage": "Imagem",
       "exportMarkdown": "Markdown",
@@ -2767,6 +2778,7 @@
           "downloadFailed": "Falha no download de {agent}: {message}",
           "sessionLoadResourceNotFound": "Falha ao carregar a sessão de {agent}. Recarregue para tentar novamente ou inicie uma nova conversa.",
           "sessionLoadUnavailable": "{agent} não conseguiu restaurar esta sessão; ela pode ter terminado ou o agente parou. Recarregue para tentar novamente ou inicie uma nova conversa.",
+          "sessionLoadBusy": "Este histórico está sendo mantido aberto pela sessão bifurcada a partir dele. Feche essa sessão e recarregue para abri-lo.",
           "sessionArchived": "A sessão anterior foi arquivada pelo {agent}. Execute {command} num terminal para restaurá-la e recarregá-la, ou inicie uma nova conversa.",
           "turnFailedRefusal": "{agent} recusou continuar este turno. Costuma indicar um erro de backend ou gateway. Confira os logs do agente.",
           "turnFailedMaxTokens": "{agent} atingiu o limite máximo de tokens para este turno.",
@@ -2855,14 +2867,12 @@
         "noModels": "Nenhum modelo encontrado",
         "cancel": "Cancelar",
         "send": "Enviar",
-        "forkAndSend": "Fork & Enviar",
         "queueMessage": "Adicionar à fila",
         "steerIntoTurn": "Inserir no turno atual",
         "steerAsNote": "Enviar nota para a próxima verificação",
         "steerQueuedInstead": "Adicionado à fila — será enviado no próximo turno.",
         "steerFailed": "Não foi possível inserir no turno atual",
         "steerNoteFailed": "Não foi possível enviar a sua nota",
-        "steerAttachmentsUnsupported": "Somente texto — rascunhos com anexos vão pela fila.",
         "slashCommands": "Comandos de barra",
         "slashSearchPlaceholder": "Buscar comandos...",
         "slashSearchEmpty": "Nenhum comando correspondente",
@@ -2916,7 +2926,7 @@
           "pasteDropFiles": "Cole uma captura de tela ou arraste um arquivo direto para a entrada para anexá-lo.",
           "queueMessage": "Enquanto o agente responde, continue digitando — sua próxima mensagem entra na fila e é enviada automaticamente ao terminar.",
           "draftAutoSave": "Rascunhos não enviados são salvos automaticamente por conversa e restaurados quando você volta.",
-          "forkSend": "O menu suspenso do botão de enviar tem Bifurcar e enviar — ramifique do ponto atual para uma nova aba.",
+          "forkFromTurn": "Cada resposta concluída tem Bifurcar a partir daqui — ramifique a conversa nessa mensagem para uma nova aba.",
           "exportConversation": "Clique com o botão direito dentro da conversa para exportá-la como Markdown, HTML ou imagem.",
           "chatChannels": "Conecte Telegram / Lark / WeChat em Configurações → Canais de chat para continuar pelo celular.",
           "shortcutsAuxPanel": "<shortcut>{toggleAuxPanel}</shortcut> alterna o painel direito para ver os arquivos tocados e as mudanças do Git desta sessão.",
@@ -3132,6 +3142,8 @@
         "emptyConversation": "Nenhuma mensagem nesta conversa.",
         "systemMessage": "Mensagem do sistema",
         "copyMessage": "Copiar",
+        "forkFromHere": "Bifurcar a partir daqui",
+        "forkBusy": "Não é possível bifurcar enquanto há um turno em andamento",
         "copied": "Copiado",
         "selectionActions": "Ações de seleção",
         "selectionCopy": "Copiar texto",
@@ -3583,6 +3595,13 @@
         "cardCompleted": "Tarefa em segundo plano concluída",
         "cardFinishedWithStatus": "Tarefa em segundo plano encerrada ({status})",
         "cardResultPending": "Resultado ainda não retornou"
+      },
+      "asyncTasks": {
+        "openOutput": "Saída",
+        "stop": "Parar",
+        "tokens": "{count} tokens",
+        "stopDeclined": "Não foi possível parar essa tarefa — ela pode já ter terminado.",
+        "stopFailed": "Falha ao parar a tarefa: {error}"
       },
       "proposedPlan": {
         "title": "Plano proposto",
