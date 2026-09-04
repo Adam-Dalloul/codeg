@@ -151,6 +151,17 @@ describe("FileTree trailing row actions", () => {
     expect(onDragOver).toHaveBeenCalledTimes(1)
   })
 
+  it("keeps the folder header filling the row beside its action", () => {
+    // The header no longer spans the row on its own (the action is a sibling),
+    // so without `grow` it shrinks to its name and clicking the empty right
+    // half of a folder row stops expanding it. jsdom has no layout, so this
+    // pins the class; the width was measured in a browser (493px of a 525px
+    // row — the rest is the action strip).
+    renderWithActions()
+
+    expect(screen.getByRole("button", { name: "dir" })).toHaveClass("grow")
+  })
+
   it("dims the whole row, action included, from rowProps' className", () => {
     // `dragging && "opacity-70"` marks the row as the drag source; leaving it
     // on the header would dim everything but the ⋯.

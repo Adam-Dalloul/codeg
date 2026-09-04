@@ -308,8 +308,13 @@ export const FileTreeFolder = ({
         className={cn(
           "flex w-max items-center gap-1 rounded py-1 text-left transition-colors",
           depth == null ? "pl-2" : null,
+          // `grow` keeps the click target covering the row's empty right side —
+          // without it the header shrinks to its name and clicking beside a
+          // folder stops expanding it. `flex-grow` alone (not `flex-1`, whose
+          // zero basis would drop the name out of the row's intrinsic width) so
+          // the horizontally scrolling tree still sizes to its longest row.
           actions
-            ? null
+            ? "grow"
             : cn("min-w-full pr-2", highlightClassName, rowClassName)
         )}
         style={rowPaddingLeftStyle(depth, rowStyle)}
