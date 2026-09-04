@@ -3161,6 +3161,7 @@
         "copyMessage": "نسخ",
         "forkFromHere": "تفريع من هنا",
         "forkBusy": "لا يمكن التفريع أثناء تنفيذ دور",
+        "forkNotReady": "لا يمكن التفريع من هذا الرد بعد، أعد المحاولة بعد قليل",
         "copied": "تم النسخ",
         "selectionActions": "إجراءات التحديد",
         "selectionCopy": "نسخ النص",

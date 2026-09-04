@@ -606,6 +606,21 @@ interface BuiltStreamingTurns {
   inProgressToolCallIds: Set<string>
 }
 
+/** One turn under construction inside a live message. Assistant groups are the
+ *  reply's rounds; a `user` group is a message the user sent mid-turn. */
+interface StreamingGroup {
+  role: "assistant" | "user"
+  blocks: MessageTurn["blocks"]
+  /**
+   * Overrides the live message's start for this group. Only a `user` group sets
+   * it, to the instant the message was actually sent (the note's `created_at`)
+   * rather than the moment the reply it interrupted began. Display only —
+   * `suppressPersistedSteeredPrompts` reads that instant off the block itself,
+   * so an unreadable stamp falling back here can never widen its bound.
+   */
+  timestamp?: string
+}
+
 // Cache joined chunk output keyed by chunks-array identity. The ACP reducer
 // creates a new chunks array only when streaming output actually changes, so
 // a WeakMap keyed on the array reference lets repeated renders reuse the
@@ -981,6 +996,21 @@ function mainProseContinuations(
   return continues
 }
 
+/** Prefix of every turn id minted from a live message below. */
+const LIVE_TURN_ID_PREFIX = "live-"
+
+/**
+ * True for a turn this client streamed itself, which therefore has no name in
+ * the agent's transcript yet. The backend cannot resolve such an id against its
+ * own parse — `fork_session` degrades an unresolvable fork point to a TAIL fork
+ * rather than refusing the click — so anything that sends a turn id to the
+ * backend must prefer the parser's name (`MessageTurn.source_turn_id`, filled
+ * in by the post-turn reparse) and treat this as "not namable yet".
+ */
+export function isLiveTurnId(id: string): boolean {
+  return id.startsWith(LIVE_TURN_ID_PREFIX)
+}
+
 export function buildStreamingTurnsFromLiveMessage(
   conversationId: number,
   liveMessage: LiveMessage,
@@ -1176,7 +1206,11 @@ export function buildStreamingTurnsFromLiveMessage(
   // pattern: each "round" (text/thinking + tool calls + tool results) is a
   // separate turn. A new turn starts when a text/thinking/plan block appears
   // after completed tool calls in the current group.
-  const groups: MessageTurn["blocks"][] = [[]]
+  // Each group becomes one turn. Assistant groups are the reply, split into
+  // rounds as before; a `user` group is a message the user sent mid-turn
+  // (native steering), which both ends the round before it and keeps the reply
+  // to it in a round of its own.
+  const groups: StreamingGroup[] = [{ role: "assistant", blocks: [] }]
   let currentGroupHasCompletedTool = false
   const inProgressToolCallIds = new Set<string>()
   // Which main-thread prose blocks are a continuation of the previous one
@@ -1199,17 +1233,38 @@ export function buildStreamingTurnsFromLiveMessage(
       continue
     }
 
+    // A mid-turn user message is a hard turn boundary in both directions: it
+    // closes whatever the agent had said so far and opens a fresh assistant
+    // group for the reply to it, so the two replies can never render as one
+    // run-on bubble. Unconditional — unlike a content block, it splits even
+    // when the current group has no completed tool call.
+    if (block.type === "steering") {
+      groups.push({
+        role: "user",
+        blocks: [{ type: "text", text: block.text }],
+        // Display only; an unreadable stamp falls back to the turn's start.
+        // The persisted-copy match reads the stamp itself, not this, so it is
+        // never fooled by that fallback.
+        timestamp: Number.isFinite(Date.parse(block.createdAt))
+          ? new Date(block.createdAt).toISOString()
+          : undefined,
+      })
+      groups.push({ role: "assistant", blocks: [] })
+      currentGroupHasCompletedTool = false
+      continue
+    }
+
     const isContentBlock =
       block.type === "text" ||
       block.type === "thinking" ||
       block.type === "plan"
 
     if (isContentBlock && currentGroupHasCompletedTool) {
-      groups.push([])
+      groups.push({ role: "assistant", blocks: [] })
       currentGroupHasCompletedTool = false
     }
 
-    const currentBlocks = groups[groups.length - 1]
+    const currentBlocks = groups[groups.length - 1].blocks
 
     switch (block.type) {
       case "text":
@@ -1441,15 +1496,15 @@ export function buildStreamingTurnsFromLiveMessage(
 
   const timestamp = new Date(liveMessage.startedAt).toISOString()
   const turns = groups
-    .filter((blocks) => blocks.length > 0)
-    .map((blocks, i) => ({
+    .filter((group) => group.blocks.length > 0)
+    .map((group, i) => ({
       id:
         i === 0
-          ? `live-${conversationId}-${liveMessage.id}`
-          : `live-${conversationId}-${liveMessage.id}-${i}`,
-      role: "assistant" as const,
-      blocks,
-      timestamp,
+          ? `${LIVE_TURN_ID_PREFIX}${conversationId}-${liveMessage.id}`
+          : `${LIVE_TURN_ID_PREFIX}${conversationId}-${liveMessage.id}-${i}`,
+      role: group.role,
+      blocks: group.blocks,
+      timestamp: group.timestamp ?? timestamp,
     }))
 
   return { turns, inProgressToolCallIds }
@@ -1712,6 +1767,17 @@ function userTurnContentKey(turn: MessageTurn): string {
       }
     })
   )
+}
+
+/** The same key for a mid-turn steered message, whose persisted copy is a user
+ *  turn carrying exactly its text (see `suppressPersistedSteeredPrompts`). */
+function steeredContentKey(text: string): string {
+  return userTurnContentKey({
+    id: "",
+    role: "user",
+    blocks: [{ type: "text", text }],
+    timestamp: "",
+  })
 }
 
 /**
@@ -3223,6 +3289,94 @@ function computeTimelinePrefix(
   return entry
 }
 
+/**
+ * Hide the persisted copy of a message the user sent mid-turn, when the live
+ * stream is already showing it.
+ *
+ * The agent writes a steered message into its own transcript, so a detail
+ * fetch that lands DURING the turn brings it back as an ordinary user turn —
+ * under a parser id, which no id-keyed dedup can match to the live copy. Both
+ * would render.
+ *
+ * The live copy is the one to keep: it sits between the two halves of the
+ * reply, where the message was actually sent, while the persisted copy is
+ * appended after the in-flight prompt with the reply's first half suppressed
+ * around it (see `visiblePersistedTurns`), which would put the interruption
+ * before the text it interrupted.
+ *
+ * Matched on CONTENT, the same way `APPEND_VIEWER_USER_TURN` reconciles the two
+ * id namespaces of one prompt — but content ALONE cannot say which message it
+ * matched. Steered text is short and repeatable ("continue", "stop", "not
+ * done"), so a bare content match reaches back and hides the identical prompt
+ * the user sent three rounds ago, for as long as the turn runs. Suppressing a
+ * user turn is the one failure that hides a message rather than duplicating
+ * it, so the match is bounded by WHEN:
+ *
+ *   - each `steering` block carries the note's `created_at`, taken on the
+ *     agent's machine BEFORE the backend handed it the text (an invariant of
+ *     `submit_feedback_native`);
+ *   - the agent's copy is therefore written after it, so a persisted turn
+ *     older than that instant is by construction a different message —
+ *     including this round's own prompt, which the agent wrote before the user
+ *     steered.
+ *
+ * Candidates are further limited to turns the DETAIL projected, so every
+ * timestamp compared comes from the agent's own clock; a promoted `localTurns`
+ * copy (client clock, and kept across a mid-turn refetch by `preserveLive`) is
+ * never a candidate. Anything unreadable — no parseable instant on either side
+ * — suppresses nothing, leaving the two copies to coexist: a visible duplicate,
+ * never a hidden message.
+ *
+ * Deliberately NOT anchored on `detail.in_flight_user_turn_id`: the backend
+ * stamps that by matching the pending prompt against the transcript TAIL (see
+ * `apply_in_flight_message_id`), and once the agent has written the steered
+ * message the tail is that message, not the prompt — so the stamp is gone in
+ * exactly the shape this function exists for.
+ */
+function suppressPersistedSteeredPrompts(
+  prefix: ConversationTimelineTurn[],
+  session: ConversationRuntimeSession
+): ConversationTimelineTurn[] {
+  // Content key → the earliest instant a copy of it could have been written.
+  // Read from the blocks rather than from the built turns: a block with no
+  // readable stamp shows under the turn's start time, and treating THAT as the
+  // bound would put this round's own prompt in range.
+  let steeredAt: Map<string, number> | null = null
+  let earliestSteerAt = Number.POSITIVE_INFINITY
+  for (const block of session.liveMessage?.content ?? []) {
+    if (block.type !== "steering") continue
+    const at = Date.parse(block.createdAt)
+    if (!Number.isFinite(at)) continue
+    const key = steeredContentKey(block.text)
+    steeredAt ??= new Map<string, number>()
+    const known = steeredAt.get(key)
+    if (known === undefined || at < known) steeredAt.set(key, at)
+    if (at < earliestSteerAt) earliestSteerAt = at
+  }
+  if (!steeredAt) return prefix
+  const detailTurns = session.detail?.turns
+  if (!detailTurns) return prefix
+  // Ids are unique across the timeline's phases (a same-id copy in another
+  // phase is the same turn — see `dedupeTimeline`), so membership alone tells
+  // a detail-projected turn from a locally promoted one.
+  const detailUserIds = new Set<string>()
+  for (const turn of detailTurns) {
+    if (turn.role === "user") detailUserIds.add(turn.id)
+  }
+  const filtered = prefix.filter((item) => {
+    if (item.phase !== "persisted" || item.turn.role !== "user") return true
+    if (!detailUserIds.has(item.turn.id)) return true
+    // Cheap gate first: everything written before the earliest steer is out,
+    // so history never reaches the content key (which serializes full text and
+    // full image data, and this runs on every streaming batch).
+    const at = Date.parse(item.turn.timestamp)
+    if (!Number.isFinite(at) || at < earliestSteerAt) return true
+    const steered = steeredAt.get(userTurnContentKey(item.turn))
+    return steered === undefined || at < steered
+  })
+  return filtered.length === prefix.length ? prefix : filtered
+}
+
 function computeTimeline(
   state: ConversationRuntimeState,
   conversationId: number
@@ -3271,9 +3425,8 @@ function computeTimeline(
       }
       seenTailKeys?.add(key)
     }
-    deduped = collides
-      ? dedupeTimeline(prefix.concat(tail))
-      : prefix.concat(tail)
+    const head = suppressPersistedSteeredPrompts(prefix, session)
+    deduped = collides ? dedupeTimeline(head.concat(tail)) : head.concat(tail)
   }
 
   timelineCache.set(session, deduped)

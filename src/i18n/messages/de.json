@@ -3161,6 +3161,7 @@
         "copyMessage": "Kopieren",
         "forkFromHere": "Ab hier verzweigen",
         "forkBusy": "Verzweigen nicht möglich, während ein Zug läuft",
+        "forkNotReady": "Von dieser Antwort kann noch nicht verzweigt werden – bitte gleich erneut versuchen",
         "copied": "Kopiert",
         "selectionActions": "Auswahlaktionen",
         "selectionCopy": "Text kopieren",
