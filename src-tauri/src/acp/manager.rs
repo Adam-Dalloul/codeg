@@ -7713,7 +7713,10 @@ mod tests {
             }
         });
 
-        let item = mgr.submit_feedback("c1", "use the other API".into()).await.unwrap();
+        let item = mgr
+            .submit_feedback("c1", "use the other API".into(), None)
+            .await
+            .unwrap();
         let seen_by_agent = fake_loop.await.unwrap();
         assert!(
             item.created_at <= seen_by_agent,
