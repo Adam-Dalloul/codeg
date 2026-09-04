@@ -297,6 +297,22 @@ type Action =
        * it, and a late-resolving partial could momentarily replace it).
        */
       preserveLive?: boolean
+      /**
+       * Live turns this response supersedes, by id. Set only by a fork: it
+       * re-points the row at a session whose history stops at the chosen turn,
+       * so the turns THIS session streamed on the old session are stale — but
+       * only the ones that existed when the fork was requested. Anything the
+       * user started in the meantime (a queued auto-flush, a send racing the
+       * fork RPC, another client's turn) is not in the list and survives.
+       *
+       * Riding on the detail dispatch rather than clearing separately is what
+       * makes the three failure modes impossible instead of merely unlikely:
+       * one dispatch means no frame renders the new history beside the old
+       * turns, a failed fetch dispatches `FETCH_DETAIL_ERROR` and so drops
+       * nothing, and a response that lands late still only removes what the
+       * fork actually invalidated.
+       */
+      dropLiveTurnIds?: string[]
     }
   | {
       type: "LOAD_OLDER_TURNS_START"
@@ -438,13 +454,7 @@ type Action =
   | {
       type: "PATCH_TURN_METADATA"
       conversationId: number
-      turnPatches: Array<{
-        index: number
-        usage?: TurnUsage | null
-        duration_ms?: number | null
-        model?: string | null
-        completed_at?: string | null
-      }>
+      turnPatches: TurnMetadataPatch[]
       sessionStats?: SessionStats | null
     }
   | {
@@ -1492,6 +1502,12 @@ export interface TurnMetadataPatch {
   duration_ms?: number | null
   model?: string | null
   completed_at?: string | null
+  /** The id the PARSER gave this turn (`turn-3`). A turn produced in this
+   *  session is named `live-<conversationId>-<liveMessageId>` and the backend
+   *  has never heard of that id, so anything asking the backend to act on "this
+   *  turn" — "fork from here" is the one today — has to send the parser's name
+   *  instead. See `MessageTurn.source_turn_id`. */
+  source_turn_id?: string | null
 }
 
 /**
@@ -1531,6 +1547,14 @@ export function computeTurnMetadataPatches(params: {
   localAssistantIndices: number[]
   parsedAssistantTurns: MessageTurn[]
   persistedAssistantCount: number
+  /**
+   * Whether the LAST turn of the parse (any role) is an assistant turn — i.e.
+   * the reply that just completed has reached disk. Agents append the user
+   * prompt before the reply, so a trailing USER turn is the transcript telling
+   * us it is still behind. Only `source_turn_id` consults this; the stats keep
+   * their existing best-effort alignment.
+   */
+  parseEndsWithAssistant: boolean
 }): TurnMetadataPatch[] {
   const { localAssistantIndices, parsedAssistantTurns } = params
   // Drop the persisted history at the front of the parse; only this session's
@@ -1562,6 +1586,44 @@ export function computeTurnMetadataPatches(params: {
     // rolled-in parsed turns precede it in time, so we don't aggregate
     // completion timestamps.
     let completedAtToApply: string | null | undefined
+    // The parser's name for this turn. Deliberately the MATCHED sub-turn and
+    // not the first of a rolled-in group: the stats above are summed across the
+    // group, but a fork point is a position, and "keep everything up to and
+    // including this reply" means the last sub-turn of it.
+    //
+    // Naming a turn is a POSITION claim, and counts alone can never establish
+    // one: `offset` conflates a parser sub-turn split (surplus) with a
+    // transcript that hasn't flushed the newest reply yet (deficit), and the
+    // two can cancel to any value including zero. Get identity from the
+    // transcript's shape instead, in two steps.
+    //
+    // 1. `parseEndsWithAssistant` says the reply that just completed is on
+    //    disk. Agents write the user prompt before the reply, so a trailing
+    //    USER turn means the parse is behind and NOTHING here can be placed —
+    //    locals [A,B] against parsed [A1,A2,A3] (A split three ways, B not
+    //    flushed) would otherwise call B the tail and name it "A3", forking at
+    //    A. The sync retries, so refusing costs a round, not the feature.
+    // 2. `offset === 0` — the parse holds exactly as many assistant turns as
+    //    this session streamed — is then the only shape where each position is
+    //    provably the same reply. A surplus is NOT necessarily a sub-turn
+    //    split the roll-in can attribute to local[0]: it is equally a turn
+    //    this client never streamed (a Claude async sub-agent's out-of-turn
+    //    reply, a co-controlling client's prompt), and nothing here can tell
+    //    the two apart. Allowing the tail through on a surplus looked safe and
+    //    is not — locals [B] against parsed [B,C] names B with C's id.
+    //
+    // Unnamed simply means "fork from here" on that turn degrades to a tail
+    // fork, the feature's documented fallback. Turns are normally named by the
+    // sync that runs right after they complete, when the parse is 1:1; they go
+    // unnamed when that sync was cancelled by the next reply landing inside
+    // its 1.5s delay, or when a split/out-of-turn record leaves a surplus
+    // standing for the rest of the session. That is the accepted price: a fork
+    // one message off is worse than a fork at the tail, because only one of
+    // them is visible to the person who clicked. Stats deliberately keep the
+    // old whole-batch alignment — a summed number in the wrong row is
+    // cosmetic.
+    let sourceTurnIdToApply: string | null | undefined
+    const idIsPlaceable = params.parseEndsWithAssistant && offset === 0
 
     if (parsedIdx >= 0 && parsedIdx < sessionParsedTurns.length) {
       const pt = sessionParsedTurns[parsedIdx]
@@ -1569,6 +1631,7 @@ export function computeTurnMetadataPatches(params: {
       durationToApply = pt.duration_ms
       modelToApply = pt.model
       completedAtToApply = pt.completed_at
+      if (idIsPlaceable) sourceTurnIdToApply = pt.id
     }
 
     // When the parser splits the response into more sub-turns than the live
@@ -1606,11 +1669,16 @@ export function computeTurnMetadataPatches(params: {
       }
     }
 
+    // `source_turn_id` counts as something worth emitting on its own: a turn
+    // the parser recorded with no stats at all (a plain codex reply carries no
+    // per-turn usage) still needs its name, or "fork from here" on it silently
+    // degrades to a tail fork.
     if (
       !usageToApply &&
       !durationToApply &&
       !modelToApply &&
-      !completedAtToApply
+      !completedAtToApply &&
+      !sourceTurnIdToApply
     )
       continue
     patches.push({
@@ -1619,6 +1687,7 @@ export function computeTurnMetadataPatches(params: {
       duration_ms: durationToApply,
       model: modelToApply,
       completed_at: completedAtToApply,
+      source_turn_id: sourceTurnIdToApply,
     })
   }
 
@@ -1788,6 +1857,9 @@ function reducer(
         detailIsInFlight
       const keepAllLiveBuffers =
         action.preserveLive === true || detailIsInFlight
+      const dropIds = action.dropLiveTurnIds?.length
+        ? new Set(action.dropLiveTurnIds)
+        : null
 
       // Retire overlay turns the refetched detail now covers: both sides
       // measure byte offsets of the SAME transcript, so `entry.watermark <=
@@ -1826,6 +1898,17 @@ function reducer(
             ? {}
             : { localTurns: [] }
           : { localTurns: [], optimisticTurns: [], liveMessage: null }),
+        // Applied AFTER the blanket rules above so a fork's targeted removal
+        // survives `preserveLive` (which is what a fork asks for: keep
+        // everything except the turns it just invalidated).
+        ...(dropIds
+          ? {
+              localTurns: current.localTurns.filter((t) => !dropIds.has(t.id)),
+              optimisticTurns: current.optimisticTurns.filter(
+                (t) => !dropIds.has(t.id)
+              ),
+            }
+          : {}),
       }
 
       const nextByConversationId = new Map(state.byConversationId)
@@ -2447,11 +2530,13 @@ function reducer(
         const newDuration = turn.duration_ms ?? patch.duration_ms
         const newModel = turn.model ?? patch.model
         const newCompletedAt = turn.completed_at ?? patch.completed_at
+        const newSourceTurnId = turn.source_turn_id ?? patch.source_turn_id
         if (
           newUsage !== turn.usage ||
           newDuration !== turn.duration_ms ||
           newModel !== turn.model ||
-          newCompletedAt !== turn.completed_at
+          newCompletedAt !== turn.completed_at ||
+          newSourceTurnId !== turn.source_turn_id
         ) {
           patchedTurns[patch.index] = {
             ...turn,
@@ -2459,6 +2544,7 @@ function reducer(
             duration_ms: newDuration,
             model: newModel,
             completed_at: newCompletedAt,
+            source_turn_id: newSourceTurnId,
           }
           changed = true
         }
@@ -2543,7 +2629,7 @@ export interface RuntimeActions {
   fetchDetail: (conversationId: number) => void
   refetchDetail: (
     conversationId: number,
-    options?: { preserveLive?: boolean }
+    options?: { preserveLive?: boolean; dropLiveTurnIds?: string[] }
   ) => void
   /**
    * Load one page of older history above the current window and prepend it
@@ -3409,7 +3495,7 @@ export const useConversationRuntimeStore = create<ConversationRuntimeStore>()((
 
   const refetchDetail = (
     conversationId: number,
-    options?: { preserveLive?: boolean }
+    options?: { preserveLive?: boolean; dropLiveTurnIds?: string[] }
   ): void => {
     // The session key is not always a fetchable DB id: a conversation started
     // as a new-chat draft keeps its virtual (negative) key for the tab's whole
@@ -3431,6 +3517,7 @@ export const useConversationRuntimeStore = create<ConversationRuntimeStore>()((
           conversationId,
           detail,
           preserveLive: options?.preserveLive ?? false,
+          dropLiveTurnIds: options?.dropLiveTurnIds,
         })
       })
       .catch((error: unknown) => {
@@ -3707,6 +3794,9 @@ export const useConversationRuntimeStore = create<ConversationRuntimeStore>()((
                     localAssistantIndices,
                     parsedAssistantTurns,
                     persistedAssistantCount,
+                    parseEndsWithAssistant:
+                      parsed.turns[parsed.turns.length - 1]?.role ===
+                      "assistant",
                   })
 
             if (patches.length > 0 || parsed.session_stats) {
