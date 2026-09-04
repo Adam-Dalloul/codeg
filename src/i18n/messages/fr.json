@@ -3135,6 +3135,7 @@
         "copyMessage": "Copier",
         "forkFromHere": "Bifurquer d'ici",
         "forkBusy": "Impossible de bifurquer pendant qu'un tour est en cours",
+        "forkNotReady": "Impossible de bifurquer depuis cette réponse pour le moment, réessayez dans un instant",
         "copied": "Copié",
         "selectionActions": "Actions de sélection",
         "selectionCopy": "Copier le texte",

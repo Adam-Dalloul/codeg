@@ -2,6 +2,7 @@
 
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
+  isLiveTurnId,
   selectTimelineTurns,
   useConversationRuntimeActions,
   useConversationRuntimeStore,
@@ -757,6 +758,29 @@ const UserMessageTaskButton = memo(function UserMessageTaskButton({
   )
 })
 
+/**
+ * Whether forking at this reply would land somewhere other than where the user
+ * pointed — so the affordance greys out until it wouldn't.
+ *
+ * A turn this session streamed carries a `live-…` id until the post-turn
+ * reparse backfills the parser's name (`source_turn_id`). The backend cannot
+ * resolve such an id and deliberately degrades to a TAIL fork rather than
+ * refusing the click, which is exactly right for the newest reply — the tail IS
+ * that reply — and a silent lie for any earlier one.
+ *
+ * Earlier ones are reachable: a reply the user steered mid-turn promotes as
+ * assistant / user message / assistant, so its first half is a settled,
+ * non-tail group carrying a fork button while the backfill is still a second
+ * and a half away. Exported for tests.
+ */
+export function isForkPointUnnamed(
+  forkPoint: MessageTurn | null,
+  isLastAssistantRun: boolean
+): boolean {
+  if (forkPoint === null || isLastAssistantRun) return false
+  return forkPoint.source_turn_id == null && isLiveTurnId(forkPoint.id)
+}
+
 const HistoricalMessageGroup = memo(function HistoricalMessageGroup({
   group,
   dimmed = false,
@@ -770,6 +794,7 @@ const HistoricalMessageGroup = memo(function HistoricalMessageGroup({
   foldEpoch = 0,
   onForkFromTurn,
   forkDisabled = false,
+  isLastAssistantRun = false,
 }: {
   group: ResolvedMessageGroup
   dimmed?: boolean
@@ -783,10 +808,20 @@ const HistoricalMessageGroup = memo(function HistoricalMessageGroup({
   foldEpoch?: number
   onForkFromTurn?: (turnId: string) => void
   forkDisabled?: boolean
+  /** Whether this is the newest reply in the thread — the one position where a
+   *  turn the backend can't name still forks where the user pointed. */
+  isLastAssistantRun?: boolean
 }) {
   if (group.role === "system") {
     return <CollapsibleSystemMessage parts={group.parts} />
   }
+
+  // The fork point is the group's LAST turn: forking is "up to and including
+  // this reply", and a merged group ends where the reply does.
+  const forkPoint = sourceTurns?.length
+    ? sourceTurns[sourceTurns.length - 1]
+    : null
+  const forkPointUnnamed = isForkPointUnnamed(forkPoint, isLastAssistantRun)
 
   return (
     <div className={dimmed ? "opacity-70" : undefined}>
@@ -835,22 +870,21 @@ const HistoricalMessageGroup = memo(function HistoricalMessageGroup({
           isResponseComplete={isResponseComplete}
           copyText={extractTextFromParts(group.parts)}
           completedAt={group.completed_at}
-          forkDisabled={forkDisabled}
+          forkDisabled={forkDisabled || forkPointUnnamed}
+          forkDisabledReason={forkPointUnnamed ? "unnamed" : "busy"}
           onForkFromHere={
-            // The group's LAST turn: forking is "up to and including this
-            // reply", and a merged group ends where the reply does. Gated on a
-            // settled turn — forking mid-stream would name a message the agent
-            // is still writing.
+            // Gated on a settled turn — forking mid-stream would name a message
+            // the agent is still writing.
             //
             // `source_turn_id` first: a turn produced in THIS session is named
             // `live-…`, which the backend cannot resolve against its own parse
             // — sending it forked at the tail and produced a copy of the parent.
             // The post-turn reparse backfills the parser's name; `id` is the
-            // right answer only for turns that came from the parser already.
-            onForkFromTurn && isResponseComplete && sourceTurns?.length
+            // right answer only for turns that came from the parser already,
+            // and for the newest reply, where the tail IS the fork point.
+            onForkFromTurn && isResponseComplete && forkPoint
               ? () => {
-                  const turn = sourceTurns[sourceTurns.length - 1]
-                  onForkFromTurn(turn.source_turn_id ?? turn.id)
+                  onForkFromTurn(forkPoint.source_turn_id ?? forkPoint.id)
                 }
               : undefined
           }
@@ -1207,6 +1241,7 @@ export function MessageListView({
                 foldEpoch={fold.epoch}
                 onForkFromTurn={onForkFromTurn}
                 forkDisabled={forkBusy}
+                isLastAssistantRun={item.isLastAssistantRun}
               />
             </div>
           )

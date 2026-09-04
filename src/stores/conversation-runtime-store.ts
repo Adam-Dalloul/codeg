@@ -996,6 +996,21 @@ function mainProseContinuations(
   return continues
 }
 
+/** Prefix of every turn id minted from a live message below. */
+const LIVE_TURN_ID_PREFIX = "live-"
+
+/**
+ * True for a turn this client streamed itself, which therefore has no name in
+ * the agent's transcript yet. The backend cannot resolve such an id against its
+ * own parse — `fork_session` degrades an unresolvable fork point to a TAIL fork
+ * rather than refusing the click — so anything that sends a turn id to the
+ * backend must prefer the parser's name (`MessageTurn.source_turn_id`, filled
+ * in by the post-turn reparse) and treat this as "not namable yet".
+ */
+export function isLiveTurnId(id: string): boolean {
+  return id.startsWith(LIVE_TURN_ID_PREFIX)
+}
+
 export function buildStreamingTurnsFromLiveMessage(
   conversationId: number,
   liveMessage: LiveMessage,
@@ -1485,8 +1500,8 @@ export function buildStreamingTurnsFromLiveMessage(
     .map((group, i) => ({
       id:
         i === 0
-          ? `live-${conversationId}-${liveMessage.id}`
-          : `live-${conversationId}-${liveMessage.id}-${i}`,
+          ? `${LIVE_TURN_ID_PREFIX}${conversationId}-${liveMessage.id}`
+          : `${LIVE_TURN_ID_PREFIX}${conversationId}-${liveMessage.id}-${i}`,
       role: group.role,
       blocks: group.blocks,
       timestamp: group.timestamp ?? timestamp,

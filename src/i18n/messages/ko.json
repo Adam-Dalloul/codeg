@@ -3135,6 +3135,7 @@
         "copyMessage": "복사",
         "forkFromHere": "여기서 분기",
         "forkBusy": "턴이 실행 중일 때는 분기할 수 없습니다",
+        "forkNotReady": "아직 이 응답에서 분기할 수 없습니다. 잠시 후 다시 시도하세요",
         "copied": "복사됨",
         "selectionActions": "선택 영역 작업",
         "selectionCopy": "텍스트 복사",

@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest"
 import {
   advanceReplyFold,
   extractDelegationSources,
+  isForkPointUnnamed,
   mergeConsecutiveAssistantTurns,
   singletonSourceTurns,
   type MergedAssistantRunCache,
@@ -605,5 +606,50 @@ describe("extractDelegationSources", () => {
       }),
     }
     expect(extractDelegationSources([refused])).toEqual([])
+  })
+})
+
+/**
+ * The fork affordance sends a turn id to the backend, and the backend cannot
+ * resolve an id this client minted for its own live stream — it tail-forks
+ * instead of refusing. That is the right answer for the newest reply and a
+ * silent wrong one for any earlier reply, which a steered turn creates: it
+ * promotes as assistant / user message / assistant, so its first half sits
+ * settled and non-tail with a fork button while the parser's name is still a
+ * reparse away.
+ */
+describe("isForkPointUnnamed", () => {
+  function forkTurn(id: string, sourceTurnId?: string | null): MessageTurn {
+    return {
+      id,
+      role: "assistant",
+      blocks: [],
+      timestamp: "",
+      ...(sourceTurnId !== undefined ? { source_turn_id: sourceTurnId } : {}),
+    }
+  }
+
+  it("withholds a live-named reply that is not the newest one", () => {
+    expect(isForkPointUnnamed(forkTurn("live-7-lm-1"), false)).toBe(true)
+  })
+
+  it("allows the newest reply — there the tail IS the fork point", () => {
+    expect(isForkPointUnnamed(forkTurn("live-7-lm-1"), true)).toBe(false)
+  })
+
+  it("allows it again once the reparse names it", () => {
+    expect(isForkPointUnnamed(forkTurn("live-7-lm-1", "turn-4"), false)).toBe(
+      false
+    )
+  })
+
+  it("leaves parser-named history alone", () => {
+    // Every historical turn arrives under a parser id and no `source_turn_id`;
+    // treating that as unnamed would grey out the whole thread.
+    expect(isForkPointUnnamed(forkTurn("turn-4"), false)).toBe(false)
+  })
+
+  it("says nothing about a group with no turns", () => {
+    expect(isForkPointUnnamed(null, false)).toBe(false)
   })
 })

@@ -3135,6 +3135,7 @@
         "copyMessage": "复制",
         "forkFromHere": "从此处分叉",
         "forkBusy": "当前有回合正在进行，暂不可分叉",
+        "forkNotReady": "这条回复暂时还不能作为分叉点，请稍后再试",
         "copied": "已复制",
         "selectionActions": "选中内容操作",
         "selectionCopy": "复制文本",
