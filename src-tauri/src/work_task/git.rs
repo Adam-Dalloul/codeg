@@ -572,14 +572,16 @@ pub async fn branch_holds_unlanded_work(
 /// leave "I/O operation failed" there and nothing else, which is the dead end
 /// this whole path exists to get users out of. The code still gets mapped,
 /// because a refusal the OS blamed on permissions is not a generic fault.
-fn shell_error(worktree_path: &str, what: &str, err: &std::io::Error) -> AppCommandError {
+/// Takes the RESOLVED path, so the sentence names the directory the call
+/// actually touched rather than the argument it started from.
+fn shell_error(target: &std::path::Path, what: &str, err: &std::io::Error) -> AppCommandError {
     let code = match err.kind() {
         std::io::ErrorKind::PermissionDenied => AppErrorCode::PermissionDenied,
         _ => AppErrorCode::IoError,
     };
     AppCommandError::new(
         code,
-        format!("the worktree directory '{worktree_path}' {what}: {err}"),
+        format!("the worktree directory '{}' {what}: {err}", target.display()),
     )
 }
 
@@ -618,7 +620,7 @@ pub async fn remove_worktree_and_branch(
     let marker_exists = match std::fs::symlink_metadata(target.join(".git")) {
         Ok(_) => true,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
-        Err(e) => return Err(shell_error(worktree_path, "could not be read", &e)),
+        Err(e) => return Err(shell_error(&target, "could not be read", &e)),
     };
     let shell_already_gone = if marker_exists {
         false
@@ -626,7 +628,7 @@ pub async fn remove_worktree_and_branch(
         match std::fs::remove_dir(&target) {
             Ok(()) => true,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => true,
-            Err(e) => return Err(shell_error(worktree_path, "could not be removed", &e)),
+            Err(e) => return Err(shell_error(&target, "could not be removed", &e)),
         }
     };
 
