@@ -654,12 +654,6 @@ pub async fn remove_worktree_and_branch(
     // (measured; `a_relative_path_cannot_reach_a_worktree_somewhere_else`
     // pins it). An absolute path suffix-matches nothing but itself.
     //
-    // Joining from `repo_path` is what git does with a relative path — that is
-    // `run_git`'s working directory — and `std::path::absolute` then applies
-    // the same process working directory the child would inherit. So the git
-    // call and the `std::fs` call below cannot land on different directories,
-    // which for the one destructive call here is the whole point. Folder paths
-    // are stored exactly as they were given, so neither is hypothetical.
     // A drive-relative path on EITHER side is refused before anything resolves
     // it. It is the one form whose meaning depends on a per-drive current
     // directory, which this process and the git child do not share, so the two
@@ -677,6 +671,12 @@ pub async fn remove_worktree_and_branch(
             ));
         }
     }
+    // Joining from `repo_path` is what git does with a relative path — that is
+    // `run_git`'s working directory — and `std::path::absolute` then applies
+    // the same process working directory the child would inherit. So the git
+    // call and the `std::fs` call below cannot land on different directories,
+    // which for the one destructive call here is the whole point. Folder paths
+    // are stored exactly as they were given, so none of this is hypothetical.
     let target = std::path::absolute(std::path::Path::new(repo_path).join(worktree_path))
         .map_err(AppCommandError::io)?;
     // Refused rather than made lossy: a `\u{FFFD}` substituted into an absolute
