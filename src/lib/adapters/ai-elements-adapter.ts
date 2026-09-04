@@ -14,6 +14,7 @@ import {
   isDelegationStatusToolName,
 } from "@/lib/adapters/tool-kind-classifier"
 import { normalizeToolName } from "@/lib/tool-call-normalization"
+import { isCodexGrepNoMatchEnvelope } from "@/lib/codex-command-action"
 import { isBackgroundTaskToolCall } from "@/lib/background-task"
 import { isContextCompactionMeta } from "@/lib/context-compaction"
 import { isUnsettledToolCall } from "@/lib/tool-call-lifecycle"
@@ -1971,6 +1972,28 @@ function buildToolResultMap(
 }
 
 /**
+ * Codex reports a ripgrep search with no matches as a failed ACP tool result:
+ * exit 1 with an otherwise empty command envelope. Treat only that exact shape
+ * as a successful presentation state. The ContentBlock and its raw envelope
+ * stay untouched, and every other nonzero result remains an error.
+ *
+ * Shares `isCodexGrepNoMatchEnvelope` with the search body in
+ * `content-parts-renderer`, which recognises the same envelope to render "No
+ * matches" instead of a raw JSON dump. Two predicates for one fact would let
+ * the card's status and its body disagree.
+ */
+function isCodexGrepNoMatchResult(
+  toolName: string,
+  result: ContentBlock & { type: "tool_result" }
+): boolean {
+  if (!result.is_error || typeof result.output_preview !== "string")
+    return false
+  if (normalizeToolName(toolName) !== "grep") return false
+
+  return isCodexGrepNoMatchEnvelope(result.output_preview)
+}
+
+/**
  * Transform a MessageTurn (from backend) to AdaptedMessage format.
  * Same correlation logic as adaptUnifiedMessage but operates on turn.blocks.
  *
@@ -2131,6 +2154,10 @@ export function adaptMessageTurn(
           adaptedContent.push(...imageParts)
           continue
         }
+        const isNoMatch = isCodexGrepNoMatchResult(
+          block.tool_name,
+          matchedResult
+        )
         adaptedContent.push({
           type: "tool-call",
           toolCallId,
@@ -2138,13 +2165,14 @@ export function adaptMessageTurn(
           input: block.input_preview,
           state: isToolStillRunning
             ? "input-available"
-            : matchedResult.is_error
+            : matchedResult.is_error && !isNoMatch
               ? "output-error"
               : "output-available",
           output: matchedResult.output_preview,
-          errorText: matchedResult.is_error
-            ? matchedResult.output_preview || undefined
-            : undefined,
+          errorText:
+            matchedResult.is_error && !isNoMatch
+              ? matchedResult.output_preview || undefined
+              : undefined,
           agentStats: matchedResult.agent_stats ?? undefined,
           meta: block.meta ?? null,
           agentTranscript: matchedResult.agent_transcript ?? undefined,
@@ -2171,18 +2199,24 @@ export function adaptMessageTurn(
             adaptedContent.push(...imageParts)
             continue
           }
+          const isNoMatch = isCodexGrepNoMatchResult(
+            block.tool_name,
+            positionalResult
+          )
           adaptedContent.push({
             type: "tool-call",
             toolCallId,
             toolName: block.tool_name,
             input: block.input_preview,
-            state: positionalResult.is_error
-              ? "output-error"
-              : "output-available",
+            state:
+              positionalResult.is_error && !isNoMatch
+                ? "output-error"
+                : "output-available",
             output: positionalResult.output_preview,
-            errorText: positionalResult.is_error
-              ? positionalResult.output_preview || undefined
-              : undefined,
+            errorText:
+              positionalResult.is_error && !isNoMatch
+                ? positionalResult.output_preview || undefined
+                : undefined,
             agentStats: positionalResult.agent_stats ?? undefined,
             meta: block.meta ?? null,
             agentTranscript: positionalResult.agent_transcript ?? undefined,
