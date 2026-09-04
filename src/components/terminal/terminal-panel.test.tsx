@@ -53,19 +53,32 @@ vi.mock("@/contexts/terminal-context", () => ({
 }))
 
 const STORAGE_KEY = "codeg:term-keybar"
+const DESKTOP_WIDTH = 1280
+/** The width the app's mobile shell starts at — `useIsMobile()` is max-width 767px. */
+const MOBILE_WIDTH = 767
 
-/** Drive `useIsMobile()` — it reads `window.matchMedia(query).matches`. */
-function setViewport(mobile: boolean) {
-  window.matchMedia = ((query: string) => ({
-    matches: mobile && query.includes("max-width"),
-    media: query,
-    onchange: null,
-    addEventListener: () => {},
-    removeEventListener: () => {},
-    addListener: () => {},
-    removeListener: () => {},
-    dispatchEvent: () => false,
-  })) as unknown as typeof window.matchMedia
+const realMatchMedia = window.matchMedia
+
+/**
+ * Drive `useIsMobile()` at a real viewport width by evaluating the
+ * `(max-width: Npx)` query against `width`, rather than hard-coding a boolean.
+ * The panel used to ask for 768px while the workspace shell asks for 767px, so
+ * the exact boundary is the thing worth asserting.
+ */
+function setViewportWidth(width: number) {
+  window.matchMedia = ((query: string) => {
+    const max = /\(max-width:\s*(\d+)px\)/.exec(query)
+    return {
+      matches: max ? width <= Number(max[1]) : false,
+      media: query,
+      onchange: null,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      addListener: () => {},
+      removeListener: () => {},
+      dispatchEvent: () => false,
+    }
+  }) as unknown as typeof window.matchMedia
 }
 
 beforeEach(() => {
@@ -74,14 +87,14 @@ beforeEach(() => {
 
 afterEach(() => {
   // Other suites render at the desktop breakpoint by default (test-setup.ts);
-  // don't leak a mobile matchMedia stub into them.
-  setViewport(false)
+  // put the original stub back rather than leaving ours behind.
+  window.matchMedia = realMatchMedia
   window.localStorage.clear()
 })
 
 describe("<TerminalPanel /> 键栏门控", () => {
   it("桌面端不显示折叠开关，也不给 view 传 keybarVisible", () => {
-    setViewport(false)
+    setViewportWidth(DESKTOP_WIDTH)
     render(<TerminalPanel />)
     expect(screen.getByTestId("toggle-shown")).toHaveTextContent("false")
     expect(screen.getByTestId("view-t1")).toHaveAttribute(
@@ -91,14 +104,24 @@ describe("<TerminalPanel /> 键栏门控", () => {
   })
 
   it("移动端默认展开键栏并显示折叠开关", () => {
-    setViewport(true)
+    setViewportWidth(MOBILE_WIDTH)
     render(<TerminalPanel />)
     expect(screen.getByTestId("toggle-shown")).toHaveTextContent("true")
     expect(screen.getByTestId("view-t1")).toHaveAttribute("data-keybar", "true")
   })
 
+  it("断点与工作区外壳一致：768px 仍是桌面态，不冒出键栏", () => {
+    setViewportWidth(768)
+    render(<TerminalPanel />)
+    expect(screen.getByTestId("toggle-shown")).toHaveTextContent("false")
+    expect(screen.getByTestId("view-t1")).toHaveAttribute(
+      "data-keybar",
+      "false"
+    )
+  })
+
   it("折叠状态写入 localStorage，并在重新挂载后恢复", () => {
-    setViewport(true)
+    setViewportWidth(MOBILE_WIDTH)
     const { unmount } = render(<TerminalPanel />)
 
     fireEvent.click(screen.getByTestId("toggle"))
@@ -118,13 +141,13 @@ describe("<TerminalPanel /> 键栏门控", () => {
   })
 
   it("折叠态是面板级的：桌面端折叠后切到移动端仍然折叠", () => {
-    setViewport(false)
+    setViewportWidth(DESKTOP_WIDTH)
     const { unmount } = render(<TerminalPanel />)
     fireEvent.click(screen.getByTestId("toggle"))
     expect(window.localStorage.getItem(STORAGE_KEY)).toBe("1")
     unmount()
 
-    setViewport(true)
+    setViewportWidth(MOBILE_WIDTH)
     render(<TerminalPanel />)
     expect(screen.getByTestId("view-t1")).toHaveAttribute(
       "data-keybar",

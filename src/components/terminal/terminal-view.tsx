@@ -142,10 +142,16 @@ export function TerminalView({
     termRef.current?.focus()
   }
 
-  // 失活时复位闩锁：避免切走再切回后第一下输入被意外包装成 Ctrl/Alt。
+  // 键栏收敛三个条件：移动端命中 + 父级未折叠（都由 keybarVisible 带下来）+
+  // 当前 tab 是活动 tab（否则隐藏 tab 上挂着的死按钮会浪费 DOM 与焦点环）。
+  const showKeybar = keybarVisible && isActive && isVisible
+
+  // 键栏一旦不可见就复位闩锁。armed 状态只由键栏按钮高亮呈现，收起键栏（切走
+  // tab、收起面板、折叠键栏）后闩锁仍然生效的话，下一个软键盘字符会被无声地
+  // 包装成控制码，而屏幕上没有任何东西提示它 armed 过。
   useEffect(() => {
-    if (!isActive) setMods({ ctrl: false, alt: false })
-  }, [isActive])
+    if (!showKeybar) setMods({ ctrl: false, alt: false })
+  }, [showKeybar])
 
   // ---- 软键盘弹起跟随 ----
   // 键盘打开时 visualViewport 被压缩：算出底部被遮住的像素数 kbdLift，
@@ -489,10 +495,6 @@ export function TerminalView({
       disableTerminalLigatures(ligaturesAddonRef)
     }
   }, [terminalLigatures])
-
-  // 键栏收敛三个条件：移动端命中 + 父级未折叠（都由 keybarVisible 带下来）+
-  // 当前 tab 是活动 tab（否则隐藏 tab 上挂着的死按钮会浪费 DOM 与焦点环）。
-  const showKeybar = keybarVisible && isActive && isVisible
 
   return (
     <div
