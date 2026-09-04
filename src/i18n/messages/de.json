@@ -1571,7 +1571,7 @@
     "terminalShellNotInstalled": "nicht installiert",
     "terminalShellNotFoundWarning": "Dieser Pfad existiert auf diesem Host nicht.",
     "terminalCurrentShell": "Aktuell verwendet: {path}",
-    "renderingDescription": "Deaktivieren Sie die Hardwarebeschleunigung, wenn die App einen schwarzen Bildschirm oder Render-Fehler zeigt (häufig bei bestimmten AMD-GPUs oder integrierten Intel-GPUs). Wirkt sich nur auf die Windows-Desktop-Version aus.",
+    "renderingDescription": "Deaktivieren Sie die Hardwarebeschleunigung, wenn die App einen schwarzen Bildschirm oder Render-Fehler zeigt (häufig bei bestimmten AMD-GPUs oder integrierten Intel-GPUs unter Windows sowie beim proprietären NVIDIA-Treiber unter Linux). Wirkt sich nur auf die Windows- und Linux-Desktop-Versionen aus.",
     "disableHardwareAcceleration": "Hardwarebeschleunigung deaktivieren",
     "renderingSaveFailed": "Render-Einstellungen konnten nicht gespeichert werden: {message}",
     "restartRequired": "Gespeichert. Starten Sie die App neu, damit die Änderung wirksam wird.",
@@ -2063,7 +2063,26 @@
       "closeOthers": "Andere schließen",
       "closeAll": "Alle schließen",
       "hideTerminal": "Terminal ausblenden ({shortcut})",
-      "openFolderFirst": "Öffnen Sie zuerst einen Ordner"
+      "openFolderFirst": "Öffnen Sie zuerst einen Ordner",
+      "keybar": {
+        "label": "Virtuelle Terminaltasten",
+        "show": "Virtuelle Tasten anzeigen",
+        "hide": "Virtuelle Tasten ausblenden",
+        "esc": "ESC",
+        "tab": "TAB",
+        "ctrl": "CTRL",
+        "alt": "ALT",
+        "slash": "/",
+        "dash": "-",
+        "home": "HOME",
+        "end": "END",
+        "pgup": "PGUP",
+        "pgdn": "PGDN",
+        "up": "↑",
+        "down": "↓",
+        "left": "←",
+        "right": "→"
+      }
     },
     "workspaceDialog": {
       "title": "Ordner öffnen",
@@ -2171,6 +2190,17 @@
       "officeWatchRetry": "Erneut versuchen",
       "officeServerInstallHint": "OfficeCLI muss auf dem Server-Host installiert sein. Führe diesen Befehl dort aus und versuche es erneut:",
       "officeRemoteDesktopUnsupported": "Die Live-Vorschau ist in einem Remote-Desktop-Fenster nicht verfügbar. Öffne diesen Arbeitsbereich in der Web-Oberfläche des Servers, um Office-Dateien anzusehen."
+    },
+    "fileViewer": {
+      "title": "Dateivorschau",
+      "description": "Eine in dieser Unterhaltung referenzierte Datei, daneben geöffnet.",
+      "openInWorkspace": "Im Arbeitsbereich öffnen",
+      "back": "Zurück",
+      "preview": "Vorschau",
+      "source": "Quelltext",
+      "loading": "Wird geladen...",
+      "cannotResolve": "Dieser Dateipfad kann nicht aufgelöst werden.",
+      "tooLargeToPreview": "Diese Datei ist zu groß für eine Vorschau hier. Öffne sie stattdessen im Arbeitsbereich."
     },
     "branchDropdown": {
       "toasts": {
@@ -3144,6 +3174,7 @@
         "copyMessage": "Kopieren",
         "forkFromHere": "Ab hier verzweigen",
         "forkBusy": "Verzweigen nicht möglich, während ein Zug läuft",
+        "forkNotReady": "Von dieser Antwort kann noch nicht verzweigt werden – bitte gleich erneut versuchen",
         "copied": "Kopiert",
         "selectionActions": "Auswahlaktionen",
         "selectionCopy": "Text kopieren",

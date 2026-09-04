@@ -148,14 +148,29 @@ describe("file-workspace-panel routes active-tab openers by tab folder", () => {
       /openFilePreview\(path, \{ folderId: overviewFolderId \}\)/
     )
   })
+})
+
+// The rendered-markdown pipeline moved OUT of the file column into its own
+// module when a second surface needed it — the transcript's file viewer drawer
+// (`file-viewer-drawer.tsx`), which opens on the full-page routes that cover
+// the column. Both now share these gates; each one is the difference between a
+// broken reference and a read of the WRONG local file, so they follow the code.
+describe("markdown-document-preview resolves local refs safely", () => {
+  const markdownSource = readFileSync(
+    resolve(
+      process.cwd(),
+      "src/components/files/markdown-document-preview.tsx"
+    ),
+    "utf8"
+  )
 
   it("markdown preview links open by absolute path", () => {
     // preprocessMarkdownPaths resolves every local href against the
     // document's ABSOLUTE directory, so the click handler must hand the
     // target to openFilePreview as-is (keeping the leading slash) — never
     // strip it back to a folder-relative path.
-    expect(panelSource).toMatch(/void openFilePreview\(target\)/)
-    expect(panelSource).not.toMatch(
+    expect(markdownSource).toMatch(/void openFilePreview\(target\)/)
+    expect(markdownSource).not.toMatch(
       /target\s*=\s*clean\s*\.replace\(\/\^\\\/\+\//
     )
   })
@@ -163,9 +178,9 @@ describe("file-workspace-panel routes active-tab openers by tab folder", () => {
   it("excludes protocol-relative // hrefs from the local anchor branch", () => {
     // "//host/…" is a web url; collapsing it into a local path would read
     // the wrong file. The isRelative gate must reject the double-slash form.
-    const gateIdx = panelSource.indexOf("const isRelative =")
+    const gateIdx = markdownSource.indexOf("const isRelative =")
     expect(gateIdx).toBeGreaterThan(-1)
-    const gate = panelSource.slice(gateIdx, gateIdx + 200)
+    const gate = markdownSource.slice(gateIdx, gateIdx + 200)
     expect(gate).toMatch(/\^\\\/\\\//)
   })
 
@@ -174,9 +189,9 @@ describe("file-workspace-panel routes active-tab openers by tab folder", () => {
     // but "//host/…" is a protocol-relative URL — routing it into
     // readFileBase64 would attempt local reads of "//Users/…"-style
     // paths. The isLocal gate must exclude the double-slash form.
-    const isLocalIdx = panelSource.indexOf("const isLocal =")
+    const isLocalIdx = markdownSource.indexOf("const isLocal =")
     expect(isLocalIdx).toBeGreaterThan(-1)
-    const gate = panelSource.slice(isLocalIdx, isLocalIdx + 300)
+    const gate = markdownSource.slice(isLocalIdx, isLocalIdx + 300)
     expect(gate).toMatch(/\^\\\/\\\//)
   })
 
@@ -186,13 +201,20 @@ describe("file-workspace-panel routes active-tab openers by tab folder", () => {
     // collapsed single-slash path would read a DIFFERENT local file. So
     // preprocessing, the image loader, and the link opener are all gated on
     // localRefsEnabled = non-UNC fileDir.
-    expect(panelSource).toMatch(
+    expect(markdownSource).toMatch(
       /const localRefsEnabled = !fileDir \|\| !isUncPath\(fileDir\)/
     )
-    expect(panelSource).toMatch(
+    expect(markdownSource).toMatch(
       /fileDir=\{localRefsEnabled \? fileDir : null\}/
     )
-    expect(panelSource).toMatch(/isRelative && href && localRefsEnabled/)
+    expect(markdownSource).toMatch(/isRelative && href && localRefsEnabled/)
+  })
+
+  it("derives that gate itself instead of trusting a caller's flag", () => {
+    // Two callers now; a `localRefsEnabled` PROP would let one of them get the
+    // UNC question wrong on its own. The component owns the decision, so both
+    // surfaces are safe by construction.
+    expect(markdownSource).not.toMatch(/localRefsEnabled:\s*boolean/)
   })
 })
 

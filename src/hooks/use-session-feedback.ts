@@ -50,6 +50,18 @@ export interface UseSessionFeedbackArgs {
   connStatus: ConnectionStatus | null
   /** Whether the live-feedback feature is enabled (global setting). */
   enabled: boolean
+  /**
+   * Note ids the live transcript adopted as mid-turn user turns
+   * (`ConnectionState.steeredMessageIds`). Their strips are dropped: the note
+   * IS the message now, and showing both would print it twice.
+   *
+   * Taken from the connection rather than derived here on purpose. The
+   * transcript can only adopt a note while a turn is actually running, and a
+   * note submitted on the closing edge of one may miss that window; letting
+   * this hook guess would eventually guess the other way from the reducer and
+   * leave a message showing in neither place.
+   */
+  steeredMessageIds?: readonly string[]
   /** Reroute a note as an ordinary prompt when the turn ended before it could be
    *  submitted (turn-end race). */
   onResendAsPrompt?: (text: string) => void
@@ -100,6 +112,7 @@ export function useSessionFeedback({
   connectionId,
   connStatus,
   enabled,
+  steeredMessageIds,
   onResendAsPrompt,
 }: UseSessionFeedbackArgs): UseSessionFeedback {
   const t = useTranslations("LiveFeedback")
@@ -404,11 +417,20 @@ export function useSessionFeedback({
     Boolean(connectionId) && (toolAvailable || nativeSteering)
   const canSubmit = enabled && steerAvailable && isPrompting
   const channel: "native" | "pull" = nativeSteering ? "native" : "pull"
-  const showList = notes.length > 0 && isPrompting
+  // Drop the notes the transcript is already rendering as user turns. Kept as
+  // a derivation rather than a filter on `setNotes` so a note stays recoverable
+  // as a strip if the transcript never took it.
+  const visibleNotes = useMemo(() => {
+    if (!steeredMessageIds || steeredMessageIds.length === 0) return notes
+    const adopted = new Set(steeredMessageIds)
+    const remaining = notes.filter((n) => !adopted.has(n.id))
+    return remaining.length === notes.length ? notes : remaining
+  }, [notes, steeredMessageIds])
+  const showList = visibleNotes.length > 0 && isPrompting
 
   return useMemo(
     () => ({
-      notes,
+      notes: visibleNotes,
       featureEnabled: enabled,
       canSubmit,
       channel,
@@ -422,7 +444,7 @@ export function useSessionFeedback({
       steer,
     }),
     [
-      notes,
+      visibleNotes,
       enabled,
       canSubmit,
       channel,

@@ -1571,7 +1571,7 @@
     "terminalShellNotInstalled": "未安装",
     "terminalShellNotFoundWarning": "当前主机上不存在此路径。",
     "terminalCurrentShell": "当前使用：{path}",
-    "renderingDescription": "如果应用出现黑屏或渲染异常（常见于 AMD 显卡或部分 Intel 集成显卡），可关闭硬件加速。仅 Windows 桌面端生效。",
+    "renderingDescription": "如果应用出现黑屏或渲染异常（Windows 上常见于 AMD 显卡或部分 Intel 集成显卡，Linux 上常见于 NVIDIA 闭源驱动），可关闭硬件加速。仅 Windows 与 Linux 桌面端生效。",
     "disableHardwareAcceleration": "禁用硬件加速",
     "renderingSaveFailed": "渲染设置保存失败：{message}",
     "restartRequired": "已保存，重启应用后生效。",
@@ -2063,7 +2063,26 @@
       "closeOthers": "关闭其它",
       "closeAll": "关闭所有",
       "hideTerminal": "隐藏终端（{shortcut}）",
-      "openFolderFirst": "请先打开一个文件夹"
+      "openFolderFirst": "请先打开一个文件夹",
+      "keybar": {
+        "label": "终端虚拟键",
+        "show": "显示虚拟键",
+        "hide": "隐藏虚拟键",
+        "esc": "ESC",
+        "tab": "TAB",
+        "ctrl": "CTRL",
+        "alt": "ALT",
+        "slash": "/",
+        "dash": "-",
+        "home": "HOME",
+        "end": "END",
+        "pgup": "PGUP",
+        "pgdn": "PGDN",
+        "up": "↑",
+        "down": "↓",
+        "left": "←",
+        "right": "→"
+      }
     },
     "workspaceDialog": {
       "title": "打开文件夹",
@@ -2171,6 +2190,17 @@
       "officeWatchRetry": "重试",
       "officeServerInstallHint": "OfficeCLI 需安装在服务器主机上。请在服务器上运行以下命令后重试：",
       "officeRemoteDesktopUnsupported": "远程桌面窗口暂不支持实时预览。请在服务器的 Web 界面中打开此工作区来预览 Office 文件。"
+    },
+    "fileViewer": {
+      "title": "文件预览",
+      "description": "会话中引用的文件，在旁边打开。",
+      "openInWorkspace": "在工作区打开",
+      "back": "返回",
+      "preview": "预览",
+      "source": "源码",
+      "loading": "加载中...",
+      "cannotResolve": "无法解析该文件路径。",
+      "tooLargeToPreview": "文件太大，无法在此预览。请在工作区打开。"
     },
     "branchDropdown": {
       "toasts": {
@@ -3144,6 +3174,7 @@
         "copyMessage": "复制",
         "forkFromHere": "从此处分叉",
         "forkBusy": "当前有回合正在进行，暂不可分叉",
+        "forkNotReady": "这条回复暂时还不能作为分叉点，请稍后再试",
         "copied": "已复制",
         "selectionActions": "选中内容操作",
         "selectionCopy": "复制文本",

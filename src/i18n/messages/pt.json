@@ -1571,7 +1571,7 @@
     "terminalShellNotInstalled": "não instalado",
     "terminalShellNotFoundWarning": "Este caminho não existe neste host.",
     "terminalCurrentShell": "Em uso: {path}",
-    "renderingDescription": "Desative a aceleração de hardware se o aplicativo apresentar tela preta ou falhas de renderização (comum em certas GPUs AMD ou GPUs Intel integradas). Aplica-se apenas à versão desktop do Windows.",
+    "renderingDescription": "Desative a aceleração de hardware se o aplicativo apresentar tela preta ou falhas de renderização (comum em certas GPUs AMD ou GPUs Intel integradas no Windows e com o driver proprietário da NVIDIA no Linux). Aplica-se apenas às versões desktop do Windows e do Linux.",
     "disableHardwareAcceleration": "Desativar aceleração de hardware",
     "renderingSaveFailed": "Falha ao salvar as configurações de renderização: {message}",
     "restartRequired": "Salvo. Reinicie o aplicativo para aplicar a alteração.",
@@ -2063,7 +2063,26 @@
       "closeOthers": "Fechar outros",
       "closeAll": "Fechar tudo",
       "hideTerminal": "Ocultar terminal ({shortcut})",
-      "openFolderFirst": "Abra primeiro uma pasta"
+      "openFolderFirst": "Abra primeiro uma pasta",
+      "keybar": {
+        "label": "Teclas virtuais do terminal",
+        "show": "Mostrar teclas virtuais",
+        "hide": "Ocultar teclas virtuais",
+        "esc": "ESC",
+        "tab": "TAB",
+        "ctrl": "CTRL",
+        "alt": "ALT",
+        "slash": "/",
+        "dash": "-",
+        "home": "HOME",
+        "end": "END",
+        "pgup": "PGUP",
+        "pgdn": "PGDN",
+        "up": "↑",
+        "down": "↓",
+        "left": "←",
+        "right": "→"
+      }
     },
     "workspaceDialog": {
       "title": "Abrir pasta",
@@ -2171,6 +2190,17 @@
       "officeWatchRetry": "Tentar novamente",
       "officeServerInstallHint": "O OfficeCLI precisa estar instalado no host do servidor. Execute este comando lá e tente novamente:",
       "officeRemoteDesktopUnsupported": "A pré-visualização ao vivo não está disponível em uma janela de área de trabalho remota. Abra este espaço de trabalho na interface web do servidor para visualizar arquivos do Office."
+    },
+    "fileViewer": {
+      "title": "Pré-visualização do ficheiro",
+      "description": "Um ficheiro referenciado nesta conversa, aberto ao lado.",
+      "openInWorkspace": "Abrir na área de trabalho",
+      "back": "Voltar",
+      "preview": "Pré-visualizar",
+      "source": "Código",
+      "loading": "A carregar...",
+      "cannotResolve": "Não é possível resolver este caminho de ficheiro.",
+      "tooLargeToPreview": "Este ficheiro é demasiado grande para pré-visualizar aqui. Abra-o na área de trabalho."
     },
     "branchDropdown": {
       "toasts": {
@@ -3144,6 +3174,7 @@
         "copyMessage": "Copiar",
         "forkFromHere": "Bifurcar a partir daqui",
         "forkBusy": "Não é possível bifurcar enquanto há um turno em andamento",
+        "forkNotReady": "Ainda não é possível bifurcar a partir desta resposta; tente novamente em instantes",
         "copied": "Copiado",
         "selectionActions": "Ações de seleção",
         "selectionCopy": "Copiar texto",

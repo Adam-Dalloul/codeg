@@ -1571,7 +1571,7 @@
     "terminalShellNotInstalled": "未インストール",
     "terminalShellNotFoundWarning": "このパスはホスト上に存在しません。",
     "terminalCurrentShell": "現在使用中: {path}",
-    "renderingDescription": "アプリで黒画面や描画不具合が発生する場合（一部の AMD GPU や Intel 内蔵 GPU で報告あり）、ハードウェアアクセラレーションを無効化してください。Windows デスクトップ版のみ有効です。",
+    "renderingDescription": "アプリで黒画面や描画不具合が発生する場合（Windows では一部の AMD GPU や Intel 内蔵 GPU、Linux では NVIDIA プロプライエタリドライバーで報告あり）、ハードウェアアクセラレーションを無効化してください。Windows と Linux のデスクトップ版のみ有効です。",
     "disableHardwareAcceleration": "ハードウェアアクセラレーションを無効化",
     "renderingSaveFailed": "レンダリング設定の保存に失敗しました: {message}",
     "restartRequired": "保存しました。再起動後に反映されます。",
@@ -2063,7 +2063,26 @@
       "closeOthers": "他を閉じる",
       "closeAll": "すべて閉じる",
       "hideTerminal": "ターミナルを隠す ({shortcut})",
-      "openFolderFirst": "先にフォルダを開いてください"
+      "openFolderFirst": "先にフォルダを開いてください",
+      "keybar": {
+        "label": "仮想ターミナルキー",
+        "show": "仮想キーを表示",
+        "hide": "仮想キーを隠す",
+        "esc": "ESC",
+        "tab": "TAB",
+        "ctrl": "CTRL",
+        "alt": "ALT",
+        "slash": "/",
+        "dash": "-",
+        "home": "HOME",
+        "end": "END",
+        "pgup": "PGUP",
+        "pgdn": "PGDN",
+        "up": "↑",
+        "down": "↓",
+        "left": "←",
+        "right": "→"
+      }
     },
     "workspaceDialog": {
       "title": "フォルダーを開く",
@@ -2171,6 +2190,17 @@
       "officeWatchRetry": "再試行",
       "officeServerInstallHint": "OfficeCLI はサーバーホストにインストールする必要があります。サーバーで次のコマンドを実行してから再試行してください：",
       "officeRemoteDesktopUnsupported": "リモートデスクトップウィンドウではライブプレビューを利用できません。Office ファイルをプレビューするには、サーバーの Web UI でこのワークスペースを開いてください。"
+    },
+    "fileViewer": {
+      "title": "ファイルプレビュー",
+      "description": "この会話で参照されたファイルを横に開きます。",
+      "openInWorkspace": "ワークスペースで開く",
+      "back": "戻る",
+      "preview": "プレビュー",
+      "source": "ソース",
+      "loading": "読み込み中...",
+      "cannotResolve": "このファイルパスを解決できません。",
+      "tooLargeToPreview": "このファイルは大きすぎてここではプレビューできません。ワークスペースで開いてください。"
     },
     "branchDropdown": {
       "toasts": {
@@ -3144,6 +3174,7 @@
         "copyMessage": "コピー",
         "forkFromHere": "ここから分岐",
         "forkBusy": "ターンの実行中は分岐できません",
+        "forkNotReady": "この返信からはまだ分岐できません。少し待ってからお試しください",
         "copied": "コピー済み",
         "selectionActions": "選択範囲の操作",
         "selectionCopy": "テキストをコピー",
