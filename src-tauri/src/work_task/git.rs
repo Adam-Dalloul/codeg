@@ -3,7 +3,7 @@
 //! (mirroring `commands::folders`), composed by the task engine which owns the
 //! per-folder git mutex.
 
-use crate::app_error::AppCommandError;
+use crate::app_error::{AppCommandError, AppErrorCode};
 use crate::commands::folders::{detect_conflicts, git_command_error};
 use crate::models::WorkTaskChangedFile;
 
@@ -564,16 +564,23 @@ pub async fn branch_holds_unlanded_work(
 }
 
 /// The failure of [`remove_worktree_and_branch`]'s filesystem half reports
-/// through the SAME channel its git half does — `cleanup_state`, rendered
-/// verbatim on the task card — and `AppCommandError`'s `Display` is its
-/// `message` alone, detail dropped. So the message has to carry the path and
-/// the OS reason itself: `AppCommandError::io` would leave "I/O operation
-/// failed" on that card and nothing else, which is the dead end this whole
-/// path exists to get users out of.
+/// through the SAME channel its git half does: the caller stringifies it into
+/// the task's `cleanup_failed` timeline event, which the detail sheet renders
+/// verbatim as the reason the cleanup stopped. `AppCommandError`'s `Display`
+/// is its `message` alone — `detail` never reaches that line — so the message
+/// has to carry the path and the OS reason itself. `AppCommandError::io` would
+/// leave "I/O operation failed" there and nothing else, which is the dead end
+/// this whole path exists to get users out of. The code still gets mapped,
+/// because a refusal the OS blamed on permissions is not a generic fault.
 fn shell_error(worktree_path: &str, what: &str, err: &std::io::Error) -> AppCommandError {
-    AppCommandError::io_error(format!(
-        "the worktree directory '{worktree_path}' {what}: {err}"
-    ))
+    let code = match err.kind() {
+        std::io::ErrorKind::PermissionDenied => AppErrorCode::PermissionDenied,
+        _ => AppErrorCode::IoError,
+    };
+    AppCommandError::new(
+        code,
+        format!("the worktree directory '{worktree_path}' {what}: {err}"),
+    )
 }
 
 /// Remove a task worktree directory + its branch. Runs from the project repo.
@@ -595,19 +602,28 @@ pub async fn remove_worktree_and_branch(
     work_branch: Option<&str>,
     expected_tip: Option<&str>,
 ) -> Result<(), AppCommandError> {
+    // The filesystem probes below have to land on the DIRECTORY GIT WOULD ACT
+    // ON, and git resolves `worktree_path` from `repo_path` (that is where
+    // `run_git` runs) while `std::fs` would resolve it from the process's own
+    // working directory. Absolute paths — every path `worktree_path_in` builds
+    // from an absolute project — make this join a no-op; a relative one (a
+    // project sitting at a filesystem root leaves `sibling_path` with nothing
+    // to prefix) would otherwise have the probe answer about a namesake beside
+    // the app, and a `remove_dir` reaching for a directory nobody asked about
+    // is the one mistake this function must not make.
+    let target = std::path::Path::new(repo_path).join(worktree_path);
     // A real checkout keeps the established git removal path. Only a missing
     // marker identifies a detached shell that is safe to consume directly,
     // and even then `remove_dir` must atomically prove the shell is still empty.
-    let marker_exists =
-        match std::fs::symlink_metadata(std::path::Path::new(worktree_path).join(".git")) {
-            Ok(_) => true,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
-            Err(e) => return Err(shell_error(worktree_path, "could not be read", &e)),
-        };
+    let marker_exists = match std::fs::symlink_metadata(target.join(".git")) {
+        Ok(_) => true,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
+        Err(e) => return Err(shell_error(worktree_path, "could not be read", &e)),
+    };
     let shell_already_gone = if marker_exists {
         false
     } else {
-        match std::fs::remove_dir(worktree_path) {
+        match std::fs::remove_dir(&target) {
             Ok(()) => true,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => true,
             Err(e) => return Err(shell_error(worktree_path, "could not be removed", &e)),
@@ -625,7 +641,7 @@ pub async fn remove_worktree_and_branch(
             // non-recursive: an ignored artifact or a file created after the
             // clean probe makes it fail closed, preserving both the file and the
             // branch below.
-            match std::fs::remove_dir(worktree_path) {
+            match std::fs::remove_dir(&target) {
                 Ok(()) => {}
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
                 Err(_) => return Err(git_command_error("worktree remove", &removed.stderr)),

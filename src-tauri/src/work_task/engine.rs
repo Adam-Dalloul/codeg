@@ -10294,10 +10294,17 @@ mod tests {
     /// "dirty" for a shell holding nothing, and #642's retry would still never
     /// converge. Without a `.git` marker the path is not a checkout git speaks
     /// for, and its answer must not be read as this path's.
+    ///
+    /// The project's dirt is an edit to a TRACKED file, not a stray untracked
+    /// one: `has_changes` spawns git through `crate::process`, which inherits
+    /// the real environment, so an untracked fixture is only as visible as the
+    /// developer's global `core.excludesFile` lets it be — and a fixture git
+    /// silently ignores would make this test pass against the very bug it
+    /// exists to pin. No ignore rule can hide a modified tracked file.
     #[tokio::test]
     async fn an_empty_shell_inside_a_dirty_project_reads_as_clean() {
         let (_dir, repo, worktree) = probe_repo("nested");
-        std::fs::write(repo.join("stray.txt"), "the project's own mess\n").expect("stray");
+        std::fs::write(repo.join("a.txt"), "the project's own mess\n").expect("dirty project");
         std::fs::create_dir(&worktree).expect("empty shell");
 
         assert!(
@@ -10308,7 +10315,10 @@ mod tests {
 
     /// And the marker check must not short-circuit the case it is guarding: a
     /// checkout that still HAS its `.git` is exactly what `git status` is for,
-    /// uncommitted work included.
+    /// uncommitted work included. Tracked and modified for the reason above —
+    /// an untracked fixture would read as clean under a global ignore rule that
+    /// happens to match it, and fail this assertion on that developer's machine
+    /// alone.
     #[tokio::test]
     async fn an_intact_worktree_is_still_measured_by_git() {
         let (_dir, repo, worktree) = probe_repo("sibling");
@@ -10322,11 +10332,11 @@ mod tests {
             "a fresh checkout holds nothing"
         );
 
-        std::fs::write(worktree.join("edit.txt"), "unstaged\n").expect("edit");
+        std::fs::write(worktree.join("a.txt"), "unstaged\n").expect("edit");
 
         assert!(
             path_holds_uncommitted(worktree_path).await,
-            "an uncommitted file in a live checkout is work"
+            "an uncommitted edit in a live checkout is work"
         );
     }
 
