@@ -234,12 +234,11 @@ impl PromptLedger {
         false
     }
 
-    /// Fingerprint a bare string. Used for `_session/steering` injections,
-    /// which reach the agent outside `session/prompt` yet still land in the
-    /// transcript as a user record that [`group_into_turns`] reads as the
-    /// start of a turn — one the wire is already rendering, so it must
-    /// classify foreground like any prompt (see the `Steer` arm in
-    /// `connection.rs`).
+    /// Fingerprint a bare string — test convenience over
+    /// [`Self::record_prompt_blocks`]. (The `_session/steering` arm in
+    /// `connection.rs` used to be the production caller; it now records the
+    /// steered blocks directly, since a steered draft can carry attachments.)
+    #[cfg(test)]
     pub(crate) fn record_text(&self, text: &str) {
         self.record_prompt_blocks(&[crate::acp::types::PromptInputBlock::Text {
             text: text.to_string(),

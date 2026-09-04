@@ -2871,7 +2871,6 @@
         "steerIntoTurn": "插入目前回合",
         "steerQueuedInstead": "已轉入佇列——將隨下一回合傳送。",
         "steerFailed": "無法插入目前回合",
-        "steerAttachmentsUnsupported": "僅支援純文字——帶附件的草稿請走佇列。",
         "slashCommands": "斜線命令",
         "slashSearchPlaceholder": "搜尋命令...",
         "slashSearchEmpty": "沒有符合的指令",

@@ -2871,7 +2871,6 @@
         "steerIntoTurn": "Insérer dans le tour en cours",
         "steerQueuedInstead": "Mis en file d'attente — il sera envoyé au tour suivant.",
         "steerFailed": "Impossible d'insérer dans le tour en cours",
-        "steerAttachmentsUnsupported": "Texte uniquement — les brouillons avec pièces jointes passent par la file d'attente.",
         "slashCommands": "Commandes slash",
         "slashSearchPlaceholder": "Rechercher des commandes...",
         "slashSearchEmpty": "Aucune commande correspondante",

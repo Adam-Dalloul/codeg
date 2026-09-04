@@ -2871,7 +2871,6 @@
         "steerIntoTurn": "Insertar en el turno actual",
         "steerQueuedInstead": "Se puso en cola: se enviará con el siguiente turno.",
         "steerFailed": "No se pudo insertar en el turno actual",
-        "steerAttachmentsUnsupported": "Solo texto: los borradores con adjuntos pasan por la cola.",
         "slashCommands": "Comandos de barra",
         "slashSearchPlaceholder": "Buscar comandos...",
         "slashSearchEmpty": "Sin comandos coincidentes",

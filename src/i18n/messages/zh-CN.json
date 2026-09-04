@@ -2873,7 +2873,6 @@
         "steerIntoTurn": "插入当前回合",
         "steerQueuedInstead": "已转入队列——将随下一回合发送。",
         "steerFailed": "无法插入当前回合",
-        "steerAttachmentsUnsupported": "仅支持纯文本——带附件的草稿请走队列。",
         "slashCommands": "斜杠命令",
         "slashSearchPlaceholder": "搜索命令...",
         "slashSearchEmpty": "没有匹配的命令",
