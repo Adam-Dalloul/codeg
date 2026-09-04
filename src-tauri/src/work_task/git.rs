@@ -1286,11 +1286,16 @@ mod tests {
         );
     }
 
-    /// The refusal above guards a Windows-only path form, so what a Unix run
-    /// can still pin is the half that would break everyone: that no shape a
-    /// real folder row holds is mistaken for it. `Path` has no prefixes here,
-    /// so every one of these must read as ordinary — including the strings
-    /// that LOOK drive-relative, which on this platform are just filenames.
+    /// The predicate the refusal is built on, asked of whichever platform is
+    /// running rather than of the one that happened to write the test.
+    ///
+    /// `C:repo` is the whole reason it exists, and it is the case that cannot
+    /// be stated platform-blind: Windows reads a drive prefix there and has to
+    /// refuse it, while a platform without path prefixes reads the same bytes
+    /// as an ordinary filename and must not. Everything else names a single
+    /// directory on BOTH — a rooted drive, a UNC share, a verbatim path, and
+    /// every Unix shape a folder row actually holds — so a refusal there would
+    /// break cleanup for real users.
     #[test]
     fn only_a_drive_relative_path_is_refused() {
         for ordinary in [
@@ -1306,13 +1311,23 @@ mod tests {
             r"C:\repo",
             r"\\server\share\repo",
             r"\\?\C:\repo",
-            // Drive-relative on Windows; a plain filename on Unix. Either way
-            // this platform must not see a prefix in it.
-            "C:repo",
+            // Rooted on the current drive rather than naming one.
+            r"\wt",
         ] {
             assert!(
                 !is_drive_relative(std::path::Path::new(ordinary)),
-                "unix has no path prefixes, so {ordinary:?} is an ordinary path here"
+                "{ordinary:?} names one directory, so nothing may refuse it"
+            );
+        }
+        // A drive with a path that is not rooted on it, a drive with nothing
+        // after it at all, and the shape that walks back out of the directory
+        // it names — each finished by a per-drive current directory on Windows,
+        // each an ordinary filename anywhere without prefixes.
+        for drive_relative in ["C:repo", "C:", r"C:repo\..\victim"] {
+            assert_eq!(
+                is_drive_relative(std::path::Path::new(drive_relative)),
+                cfg!(windows),
+                "{drive_relative:?} is drive-relative on Windows and a plain name off it"
             );
         }
     }
@@ -1362,11 +1377,16 @@ mod tests {
             elsewhere.join("a.txt").exists(),
             "and the rest of its tree"
         );
-        let list = run_git(repo_path, &["worktree", "list"])
-            .await
-            .expect("list worktrees");
+        // Asked OF git rather than matched against `worktree list`: that
+        // listing prints forward slashes on Windows while the fixture path
+        // holds backslashes, and a temp directory can come back short-named,
+        // so comparing the two strings tests the platform rather than the
+        // code. Running git inside the checkout answers the same question
+        // without comparing anything — a swept worktree leaves its `.git`
+        // file pointing at an administrative directory that is gone, and
+        // every git command in it fails.
         assert!(
-            String::from_utf8_lossy(&list.stdout).contains(elsewhere_path),
+            rev_parse(elsewhere_path, "HEAD").await.is_ok(),
             "and its registration: the prune must not have swept it either"
         );
     }
