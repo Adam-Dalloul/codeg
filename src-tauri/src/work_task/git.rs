@@ -628,24 +628,34 @@ pub async fn remove_worktree_and_branch(
     work_branch: Option<&str>,
     expected_tip: Option<&str>,
 ) -> Result<(), AppCommandError> {
-    // The filesystem probes below have to land on the DIRECTORY THE GIT CALL
-    // BELOW WOULD ACT ON. Git resolves `worktree_path` from `repo_path` — that
-    // is where `run_git` runs — while `std::fs` resolves it from the app's own
-    // working directory, and folder paths are stored exactly as they were
-    // given. A no-op for an ordinary absolute path, and for anything else it
-    // keeps the one destructive call in this function from reaching a namesake
-    // beside the app instead of the checkout the caller named. It does not make
-    // a relative folder path COHERENT — the engine's own gates read that same
-    // path from the app's working directory, so they would still be measuring
-    // somewhere else — it only keeps the removal and its own probe together.
-    let target = std::path::Path::new(repo_path).join(worktree_path);
+    // ONE resolved directory, shared by both halves of this function, and it
+    // has to be ABSOLUTE before git sees it. Git resolves a `<worktree>`
+    // argument by unique path SUFFIX first and only then as a path, so a
+    // relative name reaches a registered worktree anywhere on disk and
+    // `--force` deletes it: with a checkout registered at
+    // `/tmp/elsewhere/repo-task-7`, `git worktree remove --force repo-task-7`
+    // run from an unrelated repo deletes THAT one, uncommitted files included
+    // (measured; `a_relative_path_cannot_reach_a_worktree_somewhere_else`
+    // pins it). An absolute path suffix-matches nothing but itself.
+    //
+    // Joining from `repo_path` is what git does with a relative path — that is
+    // `run_git`'s working directory — and `std::path::absolute` then applies
+    // the same process working directory the child would inherit. So the git
+    // call and the `std::fs` call below cannot land on different directories,
+    // which for the one destructive call here is the whole point. Folder paths
+    // are stored exactly as they were given, so neither is hypothetical.
+    let target = std::path::absolute(std::path::Path::new(repo_path).join(worktree_path))
+        .map_err(AppCommandError::io)?;
+    // Lossy only to hand git a `&str`. A mangled path is still absolute, so the
+    // worst it can do is make git refuse; every removal below uses `target`.
+    let target_arg = target.to_string_lossy().into_owned();
     // Git first, always — including for a directory it will refuse. Refusing is
     // ALL it does: `worktree remove` validates the `.git` marker before it
     // deletes anything, so a shell git will not speak for arrives at the
     // recovery below exactly as it was. Asking it first is therefore free of
     // risk, and it leaves ONE removal path here instead of a pre-check that
     // has to re-derive what git is about to say.
-    let removed = run_git(repo_path, &["worktree", "remove", "--force", worktree_path]).await?;
+    let removed = run_git(repo_path, &["worktree", "remove", "--force", &target_arg]).await?;
     let needs_prune = if removed.status.success() {
         false
     } else {
@@ -1232,6 +1242,60 @@ mod tests {
         assert!(
             msg.contains(worktree_path) && msg.contains("could not be removed"),
             "the refusal names the directory and its reason: {msg}"
+        );
+    }
+
+    /// Git looks a `<worktree>` argument up by unique path SUFFIX before it
+    /// resolves it as a path, so a RELATIVE name is not scoped to the
+    /// repository it is handed to — it reaches a registered checkout anywhere
+    /// on disk, and `--force` deletes that one, uncommitted files included.
+    /// Folder paths are stored exactly as they were given, so the argument is
+    /// only as absolute as whoever created the folder made it. This is the one
+    /// call in this file that can destroy a checkout, so it resolves the path
+    /// itself rather than trusting git to scope it.
+    #[tokio::test]
+    async fn a_relative_path_cannot_reach_a_worktree_somewhere_else() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let repo = dir.path().join("repo");
+        std::fs::create_dir(&repo).expect("mkdir");
+        let repo_path = repo.to_str().expect("utf-8 path");
+        git_run(&repo, &["init", "-q", "-b", "main"]);
+        std::fs::write(repo.join("a.txt"), "one\n").expect("write");
+        git_run(&repo, &["add", "-A"]);
+        git_run(&repo, &["commit", "-q", "-m", "base"]);
+
+        // A real, registered checkout that shares only its LAST path component
+        // with the directory the caller names.
+        let elsewhere = dir.path().join("elsewhere").join("repo-task-7");
+        std::fs::create_dir_all(elsewhere.parent().expect("parent")).expect("mkdir");
+        let elsewhere_path = elsewhere.to_str().expect("utf-8 path");
+        git_run(
+            &repo,
+            &["worktree", "add", "-q", "-b", "task/7", elsewhere_path],
+        );
+        std::fs::write(elsewhere.join("precious.txt"), "not yours\n").expect("precious");
+
+        // The caller names `repo-task-7` beside the project — which does not
+        // exist. Nothing here may travel to the checkout that does.
+        remove_worktree_and_branch(repo_path, "repo-task-7", None, None)
+            .await
+            .expect("a path that is not a worktree is nothing to do");
+
+        assert_eq!(
+            std::fs::read_to_string(elsewhere.join("precious.txt")).expect("read precious"),
+            "not yours\n",
+            "the unrelated checkout keeps its uncommitted work"
+        );
+        assert!(
+            elsewhere.join("a.txt").exists(),
+            "and the rest of its tree"
+        );
+        let list = run_git(repo_path, &["worktree", "list"])
+            .await
+            .expect("list worktrees");
+        assert!(
+            String::from_utf8_lossy(&list.stdout).contains(elsewhere_path),
+            "and its registration: the prune must not have swept it either"
         );
     }
 
