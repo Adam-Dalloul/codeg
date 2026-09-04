@@ -563,18 +563,34 @@ pub async fn branch_holds_unlanded_work(
     }
 }
 
-/// The failure of [`remove_worktree_and_branch`]'s filesystem half reports
-/// through the SAME channel its git half does: the caller stringifies it into
+/// Which of the two refusals to report once git has declined a removal AND the
+/// leftover directory could not be consumed either.
+///
+/// A checkout git still speaks for keeps git's established reporting — stderr
+/// in `detail`, exactly as every other git failure in this function does it.
+/// A DETACHED shell has no such thing to keep: git's only word about it is a
+/// stock sentence naming a `.git` the user never heard of, and the removal that
+/// actually failed was OURS. So this path owns its message, and it says the two
+/// things a user can act on — which directory, and what is still in it.
+///
+/// That has to travel in `message`, because the caller stringifies this into
 /// the task's `cleanup_failed` timeline event, which the detail sheet renders
-/// verbatim as the reason the cleanup stopped. `AppCommandError`'s `Display`
-/// is its `message` alone — `detail` never reaches that line — so the message
-/// has to carry the path and the OS reason itself. `AppCommandError::io` would
-/// leave "I/O operation failed" there and nothing else, which is the dead end
-/// this whole path exists to get users out of. The code still gets mapped,
-/// because a refusal the OS blamed on permissions is not a generic fault.
-/// Takes the RESOLVED path, so the sentence names the directory the call
-/// actually touched rather than the argument it started from.
-fn shell_error(target: &std::path::Path, what: &str, err: &std::io::Error) -> AppCommandError {
+/// verbatim, and `AppCommandError`'s `Display` is its `message` alone —
+/// `detail` never reaches that line. `AppCommandError::io` would leave "I/O
+/// operation failed" there and nothing else, the same dead end this path exists
+/// to get users out of. Takes the RESOLVED path, so the sentence names the
+/// directory the call actually touched rather than the argument it started
+/// from.
+fn removal_refused(
+    target: &std::path::Path,
+    git_stderr: &[u8],
+    err: &std::io::Error,
+) -> AppCommandError {
+    // An unreadable marker counts as detached: this only picks a message, and
+    // whatever stopped the read is the more useful of the two either way.
+    if std::fs::symlink_metadata(target.join(".git")).is_ok() {
+        return git_command_error("worktree remove", git_stderr);
+    }
     // The same kinds `AppCommandError::io` distinguishes, so replacing it costs
     // only the message. `AlreadyExists` is in the list because POSIX lets
     // `rmdir` report a non-empty directory as `EEXIST` rather than `ENOTEMPTY`.
@@ -586,7 +602,10 @@ fn shell_error(target: &std::path::Path, what: &str, err: &std::io::Error) -> Ap
     };
     AppCommandError::new(
         code,
-        format!("the worktree directory '{}' {what}: {err}", target.display()),
+        format!(
+            "the worktree directory '{}' could not be removed: {err}",
+            target.display()
+        ),
     )
 }
 
@@ -620,43 +639,32 @@ pub async fn remove_worktree_and_branch(
     // path from the app's working directory, so they would still be measuring
     // somewhere else — it only keeps the removal and its own probe together.
     let target = std::path::Path::new(repo_path).join(worktree_path);
-    // A real checkout keeps the established git removal path. Only a missing
-    // marker identifies a detached shell that is safe to consume directly,
-    // and even then `remove_dir` must atomically prove the shell is still empty.
-    let marker_exists = match std::fs::symlink_metadata(target.join(".git")) {
-        Ok(_) => true,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
-        Err(e) => return Err(shell_error(&target, "could not be read", &e)),
-    };
-    let shell_already_gone = if marker_exists {
+    // Git first, always — including for a directory it will refuse. Refusing is
+    // ALL it does: `worktree remove` validates the `.git` marker before it
+    // deletes anything, so a shell git will not speak for arrives at the
+    // recovery below exactly as it was. Asking it first is therefore free of
+    // risk, and it leaves ONE removal path here instead of a pre-check that
+    // has to re-derive what git is about to say.
+    let removed = run_git(repo_path, &["worktree", "remove", "--force", worktree_path]).await?;
+    let needs_prune = if removed.status.success() {
         false
     } else {
+        // Every shape of leftover recovers the same way, so they share a line:
+        // a directory already gone, the empty shell that outlives a detached
+        // registration (#642), and the one Windows leaves when a process holds
+        // the directory open through git's final rmdir.
+        //
+        // `remove_dir` is what makes that safe to say. It is non-recursive, so
+        // it can only ever succeed on an EMPTY directory: an ignored artifact,
+        // or a file that appeared after the engine's own check, fails closed
+        // and keeps both the file and the branch below.
         match std::fs::remove_dir(&target) {
-            Ok(()) => true,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => true,
-            Err(e) => return Err(shell_error(&target, "could not be removed", &e)),
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(removal_refused(&target, &removed.stderr, &e)),
         }
+        true
     };
-
-    let mut needs_prune = shell_already_gone;
-    if !shell_already_gone {
-        let removed = run_git(repo_path, &["worktree", "remove", "--force", worktree_path]).await?;
-        if !removed.status.success() {
-            // On Windows git can remove the registration and every checkout
-            // file, then fail its final directory removal because a process
-            // briefly holds the directory open. Recover that exact empty shell,
-            // including on a later retry. `remove_dir` is intentionally
-            // non-recursive: an ignored artifact or a file created after the
-            // clean probe makes it fail closed, preserving both the file and the
-            // branch below.
-            match std::fs::remove_dir(&target) {
-                Ok(()) => {}
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                Err(_) => return Err(git_command_error("worktree remove", &removed.stderr)),
-            }
-            needs_prune = true;
-        }
-    }
     if needs_prune {
         // Directory already gone (or its empty shell removed) — drop any stale
         // registration so the branch delete below isn't blocked by a phantom
@@ -1201,7 +1209,7 @@ mod tests {
         std::fs::remove_file(worktree.join("a.txt")).expect("remove tracked contents");
         std::fs::write(worktree.join("sentinel.txt"), "keep me\n").expect("sentinel");
 
-        remove_worktree_and_branch(repo_path, worktree_path, Some("task/sentinel"), None)
+        let err = remove_worktree_and_branch(repo_path, worktree_path, Some("task/sentinel"), None)
             .await
             .expect_err("a non-empty detached shell must fail closed");
 
@@ -1214,6 +1222,65 @@ mod tests {
                 .await
                 .is_ok(),
             "the branch is not deleted after the directory refusal"
+        );
+        // `Display` is `message` alone, and this is the string the cleanup
+        // event shows. Git's own attempt failed first, but with a sentence
+        // about a missing `.git` — the reason cleanup actually stopped is that
+        // OUR removal found something in the directory, so that is what has to
+        // come out the other end.
+        let msg = err.to_string();
+        assert!(
+            msg.contains(worktree_path) && msg.contains("could not be removed"),
+            "the refusal names the directory and its reason: {msg}"
+        );
+    }
+
+    /// The other side of that choice: a worktree git still speaks for is git's
+    /// to refuse, and its refusal must not be overwritten by ours. The
+    /// `remove_dir` recovery still runs here and still fails — a live checkout
+    /// is not empty — so this pins that failing SECOND does not make it the
+    /// story. A lock is the cleanest way to make git decline a healthy
+    /// checkout, and it is exactly the case where git's own text carries
+    /// something no filesystem error could ("use 'remove -f -f' to override").
+    #[tokio::test]
+    async fn a_locked_worktree_keeps_gits_own_refusal() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let repo = dir.path().join("repo");
+        std::fs::create_dir(&repo).expect("mkdir");
+        let repo_path = repo.to_str().expect("utf-8 path");
+        git_run(&repo, &["init", "-q", "-b", "main"]);
+        std::fs::write(repo.join("a.txt"), "one\n").expect("write");
+        git_run(&repo, &["add", "-A"]);
+        git_run(&repo, &["commit", "-q", "-m", "base"]);
+
+        let worktree = dir.path().join("wt-locked");
+        let worktree_path = worktree.to_str().expect("utf-8 worktree");
+        git_run(
+            &repo,
+            &["worktree", "add", "-q", "-b", "task/locked", worktree_path],
+        );
+        git_run(&repo, &["worktree", "lock", worktree_path]);
+
+        let err = remove_worktree_and_branch(repo_path, worktree_path, Some("task/locked"), None)
+            .await
+            .expect_err("a locked worktree is not removed");
+
+        assert_eq!(
+            err.message, "git worktree remove failed",
+            "git's refusal is reported as git's, not as a directory we failed to remove"
+        );
+        assert!(
+            err.detail.as_deref().unwrap_or_default().contains("locked"),
+            "git's reason is kept where this file always puts it: {:?}",
+            err.detail
+        );
+        assert!(
+            worktree.join("a.txt").exists(),
+            "the locked checkout is left standing"
+        );
+        assert!(
+            rev_parse(repo_path, "refs/heads/task/locked").await.is_ok(),
+            "and so is its branch"
         );
     }
 
