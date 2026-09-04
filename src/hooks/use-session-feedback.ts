@@ -77,9 +77,16 @@ export interface UseSessionFeedback {
   /** Which channel a note would ride: `native` = the ACP `_session/steering`
    *  push (injected into the running turn immediately), `pull` = the
    *  `check_user_feedback` MCP tool (read when the agent next checks). Drives
-   *  copy and the composer's "insert into current turn" entry. Backend-
-   *  synthesized — never derived from agent type here. */
+   *  copy and the composer's mid-turn send entry. Backend-synthesized — never
+   *  derived from agent type here. */
   channel: "native" | "pull"
+  /** Whether THIS session has a working mid-turn delivery channel at all:
+   *  native push or the pull tool. Gates the composer's mid-turn send
+   *  affordance (`channel` picks its copy); a session with neither keeps the
+   *  historical Stop-only prompting form. Distinct from `canSubmit`, which
+   *  additionally folds in the prompting scope — the composer enforces that
+   *  where the button renders. */
+  steerAvailable: boolean
   /** Whether to render the read-only notes list above the composer. */
   showList: boolean
   /** Whether a submit is in flight (disables the dialog send button). */
@@ -402,11 +409,9 @@ export function useSessionFeedback({
   const openDialog = useCallback(() => setDialogOpen(true), [])
   const closeDialog = useCallback(() => setDialogOpen(false), [])
 
+  const steerAvailable = toolAvailable || nativeSteering
   const canSubmit =
-    enabled &&
-    Boolean(connectionId) &&
-    (toolAvailable || nativeSteering) &&
-    isPrompting
+    enabled && Boolean(connectionId) && steerAvailable && isPrompting
   const channel: "native" | "pull" = nativeSteering ? "native" : "pull"
   // Drop the notes the transcript is already rendering as user turns. Kept as
   // a derivation rather than a filter on `setNotes` so a note stays recoverable
@@ -425,6 +430,7 @@ export function useSessionFeedback({
       featureEnabled: enabled,
       canSubmit,
       channel,
+      steerAvailable,
       showList,
       submitting,
       dialogOpen,
@@ -438,6 +444,7 @@ export function useSessionFeedback({
       enabled,
       canSubmit,
       channel,
+      steerAvailable,
       showList,
       submitting,
       dialogOpen,

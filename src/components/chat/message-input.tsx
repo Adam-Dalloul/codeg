@@ -209,15 +209,22 @@ interface MessageInputProps {
   isEditingQueueItem?: boolean
   onSaveQueueEdit?: (draft: PromptDraft) => void
   onCancelQueueEdit?: () => void
-  /** Inject the draft into the RUNNING turn (native live-feedback steering).
-   *  Present only on sessions whose feedback channel is native — when absent,
-   *  the prompting branch renders its historical Stop-only form. `text` is
-   *  the recorded/display form; `blocks` carries the full draft whenever it
-   *  holds more than plain text (image attachments, file badges), encoded
-   *  exactly like a normal send. Awaited: resolve = injected + recorded
-   *  (clear the draft); reject = failure, where a turn-end `NoActiveTurn`
-   *  race falls back to the queue and anything else keeps the draft. */
+  /** Send the draft into the RUNNING turn over the session's live-feedback
+   *  channel (see {@link steerChannel}). Present only on sessions with a
+   *  working delivery channel — when absent, the prompting branch renders its
+   *  historical Stop-only form. `text` is the recorded/display form; `blocks`
+   *  carries the full draft whenever it holds more than plain text (image
+   *  attachments, file badges), encoded exactly like a normal send. Awaited:
+   *  resolve = recorded (clear the draft); reject = failure, where a turn-end
+   *  `NoActiveTurn` race falls back to the queue and anything else keeps the
+   *  draft. */
   onSteer?: (text: string, blocks?: PromptInputBlock[]) => Promise<void>
+  /** Which channel {@link onSteer} rides (`useSessionFeedback().channel`).
+   *  Picks the honest copy for the mid-turn action: `native` = inserted into
+   *  the turn immediately, `pull` = recorded as a note the agent reads on its
+   *  next `check_user_feedback` call. Defaults to `native` (the only channel
+   *  that offered the action before this prop existed). */
+  steerChannel?: "native" | "pull"
   /** Open the live-feedback dialog (from the "+" menu). When omitted the entry
    *  is hidden (feature off). */
   onAddFeedback?: () => void
@@ -323,6 +330,7 @@ export function MessageInput({
   onSaveQueueEdit,
   onCancelQueueEdit,
   onSteer,
+  steerChannel = "native",
   onAddFeedback,
   feedbackAddDisabled,
   injectContent,
@@ -1255,16 +1263,19 @@ export function MessageInput({
     resetComposer,
   ])
 
-  // Mid-turn "insert into current turn" (native steering). Awaited, unlike
-  // the synchronous send/enqueue paths: the draft clears ONLY once the
-  // backend confirms the injection was recorded — a turn-end race falls back
-  // to the queue (the note is never lost), any other failure keeps the draft
-  // for retry. A draft that holds more than plain text (image attachments,
-  // file badges) steers as its full block list — the same encoding a normal
-  // send uses, which the native wire carries verbatim — with the display text
-  // as the recorded note; nothing is silently stripped. Unsettled uploads are
-  // gated here exactly like `handleSend` (no server-side uri to hydrate from
-  // yet), since the enqueue fallback below bypasses its gate.
+  // Mid-turn send over the session's live-feedback channel: a native push
+  // inserts into the running turn; a pull-tool session records a waiting note
+  // the agent reads on its next check (the copy is keyed on `steerChannel` so
+  // neither overpromises). Awaited, unlike the synchronous send/enqueue
+  // paths: the draft clears ONLY once the backend confirms the note was
+  // recorded — a turn-end race falls back to the queue (the note is never
+  // lost), any other failure keeps the draft for retry. A draft that holds
+  // more than plain text (image attachments, file badges) steers as its full
+  // block list — the same encoding a normal send uses, carried verbatim on
+  // either channel — with the display text as the recorded note; nothing is
+  // silently stripped. Unsettled uploads are gated here exactly like
+  // `handleSend` (no server-side uri to hydrate from yet), since the enqueue
+  // fallback below bypasses its gate.
   const [steering, setSteering] = useState(false)
   const handleSteerClick = useCallback(async () => {
     if (!onSteer || steering) return
@@ -1299,7 +1310,10 @@ export function MessageInput({
         // The turn ended in the race window — reroute through the queue.
         enqueueInstead()
       } else {
-        toast.error(t("steerFailed"), { description: toErrorMessage(err) })
+        toast.error(
+          t(steerChannel === "pull" ? "steerNoteFailed" : "steerFailed"),
+          { description: toErrorMessage(err) }
+        )
       }
     } finally {
       setSteering(false)
@@ -1314,6 +1328,7 @@ export function MessageInput({
     showModeSelector,
     effectiveModeId,
     resetComposer,
+    steerChannel,
     t,
   ])
 
@@ -1629,11 +1644,14 @@ export function MessageInput({
     </div>
   ) : isPrompting && onCancel ? (
     onSteer && onEnqueue && hasSendableContent ? (
-      // Native-steering sessions surface the mid-turn actions that already
-      // exist but were keyboard-only/invisible: the primary half of the split
-      // queues the draft (what Enter has always done here), the dropdown
-      // injects it into the RUNNING turn. Without `onSteer` this branch stays
-      // pixel-identical to the historical Stop-only form below.
+      // Sessions with a working live-feedback channel surface the mid-turn
+      // actions that already exist but were keyboard-only/invisible: the
+      // primary half of the split queues the draft (what Enter has always
+      // done here), the dropdown sends it over the channel — a native push
+      // inserts into the RUNNING turn, a pull-tool session records a waiting
+      // note for the agent's next check (label keyed on `steerChannel`).
+      // Without `onSteer` this branch stays pixel-identical to the
+      // historical Stop-only form below.
       <div className="flex items-center gap-1">
         <Button
           onClick={onCancel}
@@ -1660,7 +1678,9 @@ export function MessageInput({
                 disabled={steering}
                 size="icon"
                 className="h-8 w-5 rounded-l-none border-l border-primary-foreground/20"
-                aria-label={t("steerIntoTurn")}
+                aria-label={t(
+                  steerChannel === "pull" ? "steerAsNote" : "steerIntoTurn"
+                )}
               >
                 <ChevronUp className="size-4" />
               </Button>
@@ -1671,7 +1691,7 @@ export function MessageInput({
                 disabled={steering}
               >
                 <Zap className="h-4 w-4" />
-                {t("steerIntoTurn")}
+                {t(steerChannel === "pull" ? "steerAsNote" : "steerIntoTurn")}
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
