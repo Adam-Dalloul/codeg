@@ -575,8 +575,13 @@ pub async fn branch_holds_unlanded_work(
 /// Takes the RESOLVED path, so the sentence names the directory the call
 /// actually touched rather than the argument it started from.
 fn shell_error(target: &std::path::Path, what: &str, err: &std::io::Error) -> AppCommandError {
+    // The same kinds `AppCommandError::io` distinguishes, so replacing it costs
+    // only the message. `AlreadyExists` is in the list because POSIX lets
+    // `rmdir` report a non-empty directory as `EEXIST` rather than `ENOTEMPTY`.
     let code = match err.kind() {
+        std::io::ErrorKind::NotFound => AppErrorCode::NotFound,
         std::io::ErrorKind::PermissionDenied => AppErrorCode::PermissionDenied,
+        std::io::ErrorKind::AlreadyExists => AppErrorCode::AlreadyExists,
         _ => AppErrorCode::IoError,
     };
     AppCommandError::new(
@@ -604,15 +609,16 @@ pub async fn remove_worktree_and_branch(
     work_branch: Option<&str>,
     expected_tip: Option<&str>,
 ) -> Result<(), AppCommandError> {
-    // The filesystem probes below have to land on the DIRECTORY GIT WOULD ACT
-    // ON, and git resolves `worktree_path` from `repo_path` (that is where
-    // `run_git` runs) while `std::fs` would resolve it from the process's own
-    // working directory. Absolute paths — every path `worktree_path_in` builds
-    // from an absolute project — make this join a no-op; a relative one (a
-    // project sitting at a filesystem root leaves `sibling_path` with nothing
-    // to prefix) would otherwise have the probe answer about a namesake beside
-    // the app, and a `remove_dir` reaching for a directory nobody asked about
-    // is the one mistake this function must not make.
+    // The filesystem probes below have to land on the DIRECTORY THE GIT CALL
+    // BELOW WOULD ACT ON. Git resolves `worktree_path` from `repo_path` — that
+    // is where `run_git` runs — while `std::fs` resolves it from the app's own
+    // working directory, and folder paths are stored exactly as they were
+    // given. A no-op for an ordinary absolute path, and for anything else it
+    // keeps the one destructive call in this function from reaching a namesake
+    // beside the app instead of the checkout the caller named. It does not make
+    // a relative folder path COHERENT — the engine's own gates read that same
+    // path from the app's working directory, so they would still be measuring
+    // somewhere else — it only keeps the removal and its own probe together.
     let target = std::path::Path::new(repo_path).join(worktree_path);
     // A real checkout keeps the established git removal path. Only a missing
     // marker identifies a detached shell that is safe to consume directly,

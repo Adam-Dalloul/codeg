@@ -10238,8 +10238,13 @@ mod tests {
     /// A repository with `layout` applied to it, for the probe tests below:
     /// returns `(tempdir, repo path, worktree path)`. The two tests that pass
     /// `"sibling"` reproduce the DEFAULT worktree layout — beside the project,
-    /// outside every repository — which is the only layout in which a shell has
-    /// no enclosing repository for `git status` to answer about instead.
+    /// with no repository of the fixture's own above it, which is the layout in
+    /// which a shell has no enclosing repository for `git status` to answer
+    /// about instead. (Nothing here can rule out a repository ABOVE the system
+    /// temp directory; in that environment the sibling pair still asserts the
+    /// right answers, but it is `an_empty_shell_inside_a_dirty_project_reads_as_clean`
+    /// — which builds its own enclosing repository — that pins the regression
+    /// unconditionally.)
     fn probe_repo(layout: &str) -> (tempfile::TempDir, std::path::PathBuf, std::path::PathBuf) {
         let dir = tempfile::tempdir().expect("tempdir");
         let repo = dir.path().join("repo");
