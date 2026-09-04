@@ -2098,7 +2098,15 @@ const ConversationTabView = memo(function ConversationTabView({
       composerBanner={acpLoadErrorBanner}
       feedbackList={
         feedback.showList ? (
-          <FeedbackNotesDisplay notes={feedback.notes} />
+          <FeedbackNotesDisplay
+            notes={feedback.notes}
+            // Past the turn the list is the only place an unread note still
+            // exists on screen, so it carries its own recovery actions rather
+            // than disappearing with the turn that never read it.
+            expired={feedback.notesExpired}
+            onResend={feedback.resendNote}
+            onDismiss={feedback.dismissNote}
+          />
         ) : null
       }
       onAddFeedback={feedback.featureEnabled ? feedback.openDialog : undefined}

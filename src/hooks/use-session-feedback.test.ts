@@ -351,6 +351,121 @@ describe("useSessionFeedback", () => {
     expect(result.current.canSubmit).toBe(false)
   })
 
+  // --- notes that outlive their turn -------------------------------------
+
+  /** Mount mid-turn, land `items` as live notes, then end the turn. */
+  async function endTurnWith(
+    items: FeedbackItem[],
+    props: Partial<UseSessionFeedbackArgs> = {}
+  ) {
+    const hook = renderHook(
+      (p: UseSessionFeedbackArgs) => useSessionFeedback(p),
+      { initialProps: { ...baseProps, ...props } as UseSessionFeedbackArgs }
+    )
+    await waitFor(() => expect(capturedHandler).toBeTruthy())
+    for (const item of items) {
+      act(() =>
+        capturedHandler!({
+          seq: 0,
+          connection_id: "c1",
+          type: "feedback_submitted",
+          item,
+        } as EventEnvelope)
+      )
+    }
+    // The agent stopped without ever calling `check_user_feedback`.
+    hook.rerender({
+      ...baseProps,
+      ...props,
+      connStatus: "connected",
+    } as UseSessionFeedbackArgs)
+    return hook
+  }
+
+  it("keeps an unread note listed once the turn ends, as expired", async () => {
+    const { result } = await endTurnWith([note("n1", "use pnpm")])
+
+    // The whole point: the list used to hide the moment `isPrompting` dropped,
+    // taking the user's unread text with it.
+    expect(result.current.showList).toBe(true)
+    expect(result.current.notesExpired).toBe(true)
+    expect(result.current.notes.map((n) => n.id)).toEqual(["n1"])
+  })
+
+  it("retires the note the agent read and keeps the one it did not", async () => {
+    const { result } = await endTurnWith([
+      note("read", "already seen", "delivered"),
+      note("unread", "use pnpm"),
+    ])
+
+    // A delivered note steered the turn it belonged to — nothing left to
+    // salvage, so it goes with the turn.
+    expect(result.current.notes.map((n) => n.id)).toEqual(["unread"])
+    expect(result.current.notesExpired).toBe(true)
+  })
+
+  it("hides the list when the turn ends with every note read", async () => {
+    const { result } = await endTurnWith([
+      note("read", "already seen", "delivered"),
+    ])
+
+    expect(result.current.showList).toBe(false)
+    expect(result.current.notesExpired).toBe(false)
+  })
+
+  it("resendNote sends the note's text as a message and retires the row", async () => {
+    const onResendAsPrompt = vi.fn()
+    const { result } = await endTurnWith([note("n1", "use pnpm")], {
+      onResendAsPrompt,
+    })
+
+    act(() => result.current.resendNote("n1"))
+
+    expect(onResendAsPrompt).toHaveBeenCalledWith("use pnpm")
+    expect(result.current.showList).toBe(false)
+  })
+
+  it("dismissNote retires the row without sending anything", async () => {
+    const onResendAsPrompt = vi.fn()
+    const { result } = await endTurnWith([note("n1", "use pnpm")], {
+      onResendAsPrompt,
+    })
+
+    act(() => result.current.dismissNote("n1"))
+
+    expect(onResendAsPrompt).not.toHaveBeenCalled()
+    expect(result.current.showList).toBe(false)
+  })
+
+  it("keeps a retired row retired across a re-hydrate", async () => {
+    // The note stays `pending` backend-side until the next turn clears it, so
+    // the snapshot still carries it — only the tombstone keeps a row the user
+    // already dealt with from reappearing.
+    mockSnapshot.mockResolvedValue(
+      snapshot({ feedback: [note("n1", "use pnpm")] })
+    )
+    const { result, rerender } = renderHook(
+      (props: UseSessionFeedbackArgs) => useSessionFeedback(props),
+      { initialProps: baseProps as UseSessionFeedbackArgs }
+    )
+    await waitFor(() => expect(result.current.notes).toHaveLength(1))
+    act(() => result.current.dismissNote("n1"))
+    expect(result.current.notes).toHaveLength(0)
+
+    // Toggling the feature off and back on re-runs the hydrate on the SAME
+    // connection, against a snapshot that still lists the note.
+    const before = mockSnapshot.mock.calls.length
+    rerender({ ...baseProps, enabled: false })
+    rerender(baseProps)
+    await waitFor(() =>
+      expect(mockSnapshot.mock.calls.length).toBeGreaterThan(before)
+    )
+    await act(async () => {
+      await Promise.resolve()
+    })
+    expect(result.current.notes).toHaveLength(0)
+  })
+
   it("steer appends optimistically on success and RETHROWS on failure", async () => {
     // The composer owns its own fallback (enqueue) and draft policy — steer
     // must never swallow errors into toasts the way the dialog's submit does.

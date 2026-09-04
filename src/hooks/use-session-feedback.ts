@@ -13,6 +13,13 @@
  * dialog and sending, the note is rerouted through the message queue
  * (`onResendAsPrompt`) so it is never silently dropped.
  *
+ * A note the agent never got round to reading survives the turn it was written
+ * for: at turn end the list keeps the still-`pending` rows and flips to its
+ * expired form, which says the agent finished without reading them and offers
+ * to resend each one as an ordinary message (`resendNote`) or drop it
+ * (`dismissNote`). Delivered rows retire with the turn — they did their job.
+ * Notes are turn-scoped either way: the next `user_message` clears the lot.
+ *
  * State is hydrated from the session snapshot on mount / connection change (so a
  * refresh or a second mid-turn viewer recovers pending notes) and then kept live
  * via the `feedback_submitted` / `feedback_consumed` event stream. Consumed-id
@@ -87,8 +94,19 @@ export interface UseSessionFeedback {
    *  `canSubmit`, which additionally folds in the feature flag and the
    *  prompting scope — the composer enforces that where the button renders. */
   steerAvailable: boolean
-  /** Whether to render the read-only notes list above the composer. */
+  /** Whether to render the notes list above the composer. */
   showList: boolean
+  /** Whether the listed notes outlived their turn: the agent finished without
+   *  reading them, so the list drops its "waiting" reading and switches to the
+   *  expired form (say so, then offer {@link resendNote} / {@link dismissNote}).
+   *  Only ever true for notes still `pending` — a delivered one has nothing
+   *  left to salvage. */
+  notesExpired: boolean
+  /** Send an expired note's text as an ordinary message (via
+   *  `onResendAsPrompt`) and retire its row. */
+  resendNote: (id: string) => void
+  /** Retire an expired note's row without sending it. */
+  dismissNote: (id: string) => void
   /** Whether a submit is in flight (disables the dialog send button). */
   submitting: boolean
   dialogOpen: boolean
@@ -150,6 +168,17 @@ export function useSessionFeedback({
   // broadcast). Applied so a stale snapshot or a late submit can't resurrect a
   // note as `pending` after the agent already read it.
   const consumedRef = useRef<Map<string, string>>(new Map())
+  // Ids the user retired from the expired list (resent as a message, or
+  // dismissed). Tombstoned rather than merely filtered out of `notes` for the
+  // same reason as `consumedRef`: a reconnect re-hydrates from the snapshot,
+  // which still carries the note until the next turn clears it backend-side,
+  // and a row the user already dealt with must not come back.
+  const dismissedRef = useRef<Set<string>>(new Set())
+  // Latest notes, for the id → text lookup `resendNote` needs. A ref keeps
+  // that callback's identity stable across every note append, which the
+  // returned memo (and the list's props) would otherwise churn on.
+  const notesRef = useRef<FeedbackItem[]>(notes)
+  notesRef.current = notes
   // Bumped on every new turn (`user_message`). A snapshot fetch captures the
   // generation it started in; if a new turn lands before it resolves, its
   // (previous-turn) notes are discarded — feedback is turn-scoped and the new
@@ -170,6 +199,11 @@ export function useSessionFeedback({
     setNativeSteering(false)
     steeringDowngradedRef.current = false
     consumedRef.current = new Map()
+    // `dismissedRef` deliberately survives this reset: note ids are uuids, so a
+    // carried-over tombstone can never suppress another connection's row, and
+    // keeping it is what stops a re-hydrate (same connection, feature flag
+    // toggled off and on) from resurrecting a row the user already retired. It
+    // is bounded by the per-turn clear below.
     if (!enabled || !connectionId) return
     let cancelled = false
     const startGen = turnGenRef.current
@@ -187,7 +221,9 @@ export function useSessionFeedback({
         // A new turn started while the fetch was in flight — the snapshot holds
         // the previous turn's (already-cleared) notes; drop them.
         if (turnGenRef.current !== startGen) return
-        const hydrated = snap.feedback ?? []
+        const hydrated = (snap.feedback ?? []).filter(
+          (n) => !dismissedRef.current.has(n.id)
+        )
         if (hydrated.length === 0) return
         const reconciled = hydrated.map((n) => {
           const at = consumedRef.current.get(n.id)
@@ -236,6 +272,9 @@ export function useSessionFeedback({
         if (envelope.connection_id !== connectionId) return
         switch (envelope.type) {
           case "feedback_submitted": {
+            // A broadcast that lands after the user retired the row (dismissed
+            // or resent) must not re-add it.
+            if (dismissedRef.current.has(envelope.item.id)) break
             // If a consume already arrived for this id (out-of-order broadcast),
             // honor the tombstone so it never shows as pending.
             const at = consumedRef.current.get(envelope.item.id)
@@ -267,6 +306,9 @@ export function useSessionFeedback({
             turnGenRef.current += 1
             setNotes([])
             consumedRef.current = new Map()
+            // The backend cleared these notes too, so their tombstones have
+            // nothing left to guard — dropping them bounds the set.
+            dismissedRef.current = new Set()
             break
           }
         }
@@ -409,6 +451,29 @@ export function useSessionFeedback({
   const openDialog = useCallback(() => setDialogOpen(true), [])
   const closeDialog = useCallback(() => setDialogOpen(false), [])
 
+  // Retire an expired row. Tombstone first, then drop it — the note stays
+  // recorded backend-side (nothing here un-submits it), this only settles what
+  // the user is still being asked about.
+  const dismissNote = useCallback((id: string) => {
+    dismissedRef.current.add(id)
+    setNotes((prev) => prev.filter((n) => n.id !== id))
+  }, [])
+
+  // Salvage an expired row as an ordinary message. `onResendAsPrompt` is the
+  // same queue hand-off the dialog's turn-end race uses, and the queue
+  // auto-flushes against a connected session — so on an already-finished turn
+  // this sends immediately rather than parking.
+  const resendNote = useCallback(
+    (id: string) => {
+      const note = notesRef.current.find((n) => n.id === id)
+      if (!note) return
+      dismissedRef.current.add(id)
+      setNotes((prev) => prev.filter((n) => n.id !== id))
+      onResendAsPrompt?.(note.text)
+    },
+    [onResendAsPrompt]
+  )
+
   // `connectionId` belongs here, not only in `canSubmit`: a note rides
   // `submitSessionFeedback(connectionId, …)`, so without one there is no
   // channel to offer — the composer would surface a mid-turn send whose only
@@ -420,13 +485,24 @@ export function useSessionFeedback({
   // Drop the notes the transcript is already rendering as user turns. Kept as
   // a derivation rather than a filter on `setNotes` so a note stays recoverable
   // as a strip if the transcript never took it.
-  const visibleNotes = useMemo(() => {
+  const unadoptedNotes = useMemo(() => {
     if (!steeredMessageIds || steeredMessageIds.length === 0) return notes
     const adopted = new Set(steeredMessageIds)
     const remaining = notes.filter((n) => !adopted.has(n.id))
     return remaining.length === notes.length ? notes : remaining
   }, [notes, steeredMessageIds])
-  const showList = visibleNotes.length > 0 && isPrompting
+  // Past the turn, only an UNREAD note still has something to offer: a
+  // delivered one was read and retires with the turn it steered. The unread
+  // ones stay up in the expired form — the list used to require `isPrompting`
+  // outright, which is how a note the agent never got to vanished without a
+  // word (and the next turn then cleared it for good).
+  const unreadNotes = useMemo(
+    () => unadoptedNotes.filter((n) => n.status === "pending"),
+    [unadoptedNotes]
+  )
+  const visibleNotes = isPrompting ? unadoptedNotes : unreadNotes
+  const showList = visibleNotes.length > 0
+  const notesExpired = !isPrompting && showList
 
   return useMemo(
     () => ({
@@ -436,6 +512,9 @@ export function useSessionFeedback({
       channel,
       steerAvailable,
       showList,
+      notesExpired,
+      resendNote,
+      dismissNote,
       submitting,
       dialogOpen,
       openDialog,
@@ -450,6 +529,9 @@ export function useSessionFeedback({
       channel,
       steerAvailable,
       showList,
+      notesExpired,
+      resendNote,
+      dismissNote,
       submitting,
       dialogOpen,
       openDialog,
