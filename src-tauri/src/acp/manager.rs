@@ -137,6 +137,27 @@ struct SpawnDedupKey {
 /// genuinely broken.
 pub(crate) const SPAWN_HANDSHAKE_TIMEOUT_SECS: u64 = 60;
 
+/// Whether the turn a steer was admitted against is no longer the turn now in
+/// flight — the guard `submit_feedback_native` applies across attachment
+/// hydration, the one await between admission and the enqueue.
+///
+/// Both halves are needed. `turn_in_flight` alone cannot see "turn N ended and
+/// N+1 started while we hydrated" — it reads true both times.
+/// `SessionState.turns_completed` closes exactly that: it moves only on
+/// `TurnComplete`, so it is stable for a turn's whole life and differs across
+/// turns, whatever the new turn did to the flag. It is also independent of
+/// whether the turn ever published a user message, which
+/// `pending_user_message_started_at` is not (`user_message` is `None` for
+/// delegation children and unbound conversations, so those turns would have
+/// carried no identity at all).
+fn steered_turn_changed(
+    admitted_turns_completed: u64,
+    now_in_flight: bool,
+    now_turns_completed: u64,
+) -> bool {
+    !now_in_flight || now_turns_completed != admitted_turns_completed
+}
+
 /// Read the spawn-handshake timeout from `CODEG_ACP_SPAWN_HANDSHAKE_TIMEOUT_SECS`,
 /// falling back to `SPAWN_HANDSHAKE_TIMEOUT_SECS`. Returns the configured
 /// `Duration`. Tests can construct the manager with a custom value via
@@ -2589,10 +2610,15 @@ impl ConnectionManager {
     ) -> Result<FeedbackItem, AcpError> {
         // Cheap pre-flight, NOT the authoritative check (that's the loop's
         // idle arm replying `NoActiveTurn`): skip the round-trip when no turn
-        // is in flight at all.
-        if !state.read().await.turn_in_flight {
-            return Err(AcpError::NoActiveTurn);
-        }
+        // is in flight at all. The counter read alongside it identifies WHICH
+        // turn this steer was admitted against — see the re-check below.
+        let admitted_turns_completed = {
+            let s = state.read().await;
+            if !s.turn_in_flight {
+                return Err(AcpError::NoActiveTurn);
+            }
+            s.turns_completed
+        };
         // The wire payload: the caller's full draft when it carried blocks
         // (attachments included), else the recorded text as a single block —
         // byte-identical to the historical text-only steer. Uploaded-image
@@ -2607,6 +2633,27 @@ impl ConnectionManager {
                     &crate::paths::codeg_uploads_root(),
                 )
                 .await?;
+                // Hydration is the ONLY await this path puts between admission
+                // and the enqueue, and it runs for as long as reading the
+                // uploads takes. The loop's idle arm already covers "the turn
+                // ended" (it replies `NoActiveTurn`), but it cannot cover "the
+                // NEXT turn started in the meantime": the loop would then be
+                // in its active arm and inject the note into a turn the user
+                // never aimed at, recorded `Delivered` while the composer
+                // clears. Re-check the admitted turn's identity so that case
+                // takes the caller's queue fallback instead — which re-routes
+                // the whole draft, attachment included.
+                let changed = {
+                    let s = state.read().await;
+                    steered_turn_changed(
+                        admitted_turns_completed,
+                        s.turn_in_flight,
+                        s.turns_completed,
+                    )
+                };
+                if changed {
+                    return Err(AcpError::NoActiveTurn);
+                }
                 blocks
             }
             None => vec![PromptInputBlock::Text { text: text.clone() }],
@@ -7597,6 +7644,60 @@ mod tests {
         assert_eq!(item.text, "make it match this mock");
         // The wire carried the caller's blocks verbatim, attachment included.
         assert_eq!(fake_loop.await.unwrap(), draft);
+    }
+
+    #[test]
+    fn a_steer_admitted_against_one_turn_does_not_ride_the_next_one() {
+        // The guard `submit_feedback_native` applies across attachment
+        // hydration — the one await between admission and the enqueue. The
+        // loop's idle arm covers "the turn ended"; only this covers "the next
+        // turn started", which would otherwise have the loop inject the note
+        // into a turn the user never aimed at.
+        //
+        // Same turn throughout — the overwhelmingly common case.
+        assert!(!steered_turn_changed(3, true, 3));
+        // The turn ended and a NEW one started: still in flight, so the flag
+        // alone says nothing. This is the case nothing else catches.
+        assert!(steered_turn_changed(3, true, 4));
+        // The turn simply ended (the loop's idle arm would also catch this).
+        assert!(steered_turn_changed(3, false, 4));
+        // A repeat `TurnComplete` double-counts; only inequality is read, so
+        // the verdict is the same.
+        assert!(steered_turn_changed(3, true, 5));
+        // First turn of a connection: the counter starts at zero and carries
+        // identity from the very first turn, with no "unknown" window.
+        assert!(!steered_turn_changed(0, true, 0));
+        assert!(steered_turn_changed(0, true, 1));
+    }
+
+    #[tokio::test]
+    async fn turn_complete_moves_the_turn_identity_the_steer_guard_reads() {
+        // The guard above is only as good as the counter under it: prove
+        // `TurnComplete` — the single production clear of `turn_in_flight` —
+        // is what moves it, so "the turn I was admitted against is over" is
+        // observable even once a NEXT turn has set the flag again.
+        let mgr = ConnectionManager::new();
+        mgr.insert_test_connection("c1", AgentType::ClaudeCode, None, EventEmitter::Noop)
+            .await;
+        let state = mgr.get_state("c1").await.unwrap();
+        let admitted = {
+            let mut s = state.write().await;
+            s.turn_in_flight = true;
+            s.turns_completed
+        };
+        state.write().await.apply_event(&AcpEvent::TurnComplete {
+            session_id: "ext".into(),
+            stop_reason: "end_turn".into(),
+            agent_type: "claude_code".into(),
+        });
+        // A next turn re-sets the flag, exactly as `send_prompt_inner` does.
+        state.write().await.turn_in_flight = true;
+
+        let s = state.read().await;
+        assert!(
+            steered_turn_changed(admitted, s.turn_in_flight, s.turns_completed),
+            "an in-flight flag that belongs to the NEXT turn must not read as the admitted one"
+        );
     }
 
     #[tokio::test]

@@ -511,6 +511,23 @@ pub struct SessionState {
     /// not part of the client-visible snapshot.
     pub turn_in_flight: bool,
 
+    /// How many `TurnComplete`s this connection has applied — the turn's
+    /// IDENTITY, paired with `turn_in_flight`. `turn_in_flight` alone only says
+    /// "some turn is running"; a caller that admitted itself against turn N and
+    /// then awaited something cannot tell, on waking, whether it is still
+    /// looking at turn N or at an N+1 that started meanwhile. Comparing this
+    /// counter answers that: it moves only when a turn ends, so it is stable
+    /// for a turn's whole life and differs across turns.
+    ///
+    /// Incremented unconditionally next to the `turn_in_flight` clear below —
+    /// `TurnComplete` has three emitters and a repeat can land on an already
+    /// settled turn, so this is a monotonic marker, not an exact turn count.
+    /// Only inequality is ever read. Not serialized: backend-internal, like
+    /// `turn_in_flight`. Sole consumer today is
+    /// `ConnectionManager::submit_feedback_native`, which re-checks it across
+    /// attachment hydration so a steered note cannot ride into the next turn.
+    pub turns_completed: u64,
+
     /// Whether the most recently completed turn ended via a stop reason other
     /// than `"end_turn"` (cancelled, refusal, max_tokens, max_turn_requests,
     /// empty, unknown — the same "abnormal ending" bucket `connection.rs`
@@ -602,6 +619,7 @@ impl SessionState {
             pending_user_message: None,
             pending_user_message_started_at: None,
             turn_in_flight: false,
+            turns_completed: 0,
             last_turn_ended_abnormally: false,
             config_stale: false,
             config_stale_kind: None,
@@ -1009,6 +1027,10 @@ impl SessionState {
                 // cancel, stop-reason — emit TurnComplete; disconnect/error
                 // discard the state entirely, so no stale flag can outlive them.)
                 self.turn_in_flight = false;
+                // Same edge, the identity half: anyone holding "the turn I was
+                // admitted against" can now see that it is gone, even if a new
+                // turn sets `turn_in_flight` again before they look.
+                self.turns_completed = self.turns_completed.saturating_add(1);
                 // NOTE: `active_delegations` is intentionally NOT cleared here.
                 // A running delegation's child runs in the background long after
                 // the parent's `delegate_to_agent` tool call returns and this
