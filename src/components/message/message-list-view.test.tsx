@@ -4,6 +4,7 @@ import {
   advanceReplyFold,
   extractDelegationSources,
   isForkPointUnnamed,
+  markThreadTail,
   mergeConsecutiveAssistantTurns,
   singletonSourceTurns,
   type MergedAssistantRunCache,
@@ -663,5 +664,47 @@ describe("isForkPointUnnamed", () => {
 
   it("says nothing about a group with no turns", () => {
     expect(isForkPointUnnamed(null, false)).toBe(false)
+  })
+})
+
+describe("markThreadTail", () => {
+  const compaction: ThreadItem = {
+    key: "persisted-compact",
+    kind: "compaction",
+    meta: { contextCompaction: true },
+  }
+  const tailFlags = (items: ThreadItem[]) =>
+    items.map((it) => (it.kind === "turn" ? it.isThreadTail : null))
+
+  it("marks the last rendered turn", () => {
+    const items = [assistantItem("a"), assistantItem("b")]
+    markThreadTail(items)
+    expect(tailFlags(items)).toEqual([false, true])
+  })
+
+  it("leaves a reply unmarked when a message follows it", () => {
+    // The shape a steer at the very end of a turn promotes to: the reply is
+    // still the newest one, and the tail is the message after it.
+    const items = [assistantItem("a"), makeUserItem("u", 1)]
+    markThreadTail(items)
+    expect(tailFlags(items)).toEqual([false, true])
+  })
+
+  it("marks nothing when a compaction divider is last", () => {
+    const items = [assistantItem("a"), compaction]
+    markThreadTail(items)
+    expect(tailFlags(items)).toEqual([false, null])
+  })
+
+  it("steps over a trailing turn that renders nothing", () => {
+    const items = [assistantItem("a"), assistantItem("empty", { parts: [] })]
+    markThreadTail(items)
+    expect(tailFlags(items)).toEqual([true, false])
+  })
+
+  it("marks nothing in an empty thread", () => {
+    const items: ThreadItem[] = []
+    markThreadTail(items)
+    expect(items).toEqual([])
   })
 })

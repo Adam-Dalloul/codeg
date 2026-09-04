@@ -765,6 +765,25 @@ const UserMessageTaskButton = memo(function UserMessageTaskButton({
 })
 
 /**
+ * Flag the thread's last rendered element, which is where the backend's tail
+ * fork would land — a user message or a compaction divider after the newest
+ * reply means that reply is NOT it. Blocks that render nothing are stepped
+ * over: they occupy an index without occupying the thread.
+ *
+ * Mutates in place, like the loop that resets these flags just before it (a
+ * cached merged item is reset there every render, so a stale `true` cannot
+ * survive). Exported for tests.
+ */
+export function markThreadTail(items: ThreadRenderItem[]): void {
+  for (let idx = items.length - 1; idx >= 0; idx--) {
+    const item = items[idx]
+    if (item.kind === "turn" && isEmptyTurnItem(item)) continue
+    if (item.kind === "turn") item.isThreadTail = true
+    break
+  }
+}
+
+/**
  * Whether forking at this reply would land somewhere other than where the user
  * pointed — so the affordance greys out until it wouldn't.
  *
@@ -1154,16 +1173,7 @@ export function MessageListView({
       lastAssistantItem.isLastAssistantRun = true
       lastAssistantRunning = !lastAssistantItem.isResponseComplete
     }
-    // The thread's last rendered element, which is what the backend's tail fork
-    // would land on — a user message or a compaction divider after the newest
-    // reply means that reply is NOT it. Blocks that render nothing are stepped
-    // over: they occupy an index without occupying the thread.
-    for (let idx = items.length - 1; idx >= 0; idx--) {
-      const item = items[idx]
-      if (item.kind === "turn" && isEmptyTurnItem(item)) continue
-      if (item.kind === "turn") item.isThreadTail = true
-      break
-    }
+    markThreadTail(items)
 
     const lastPhase = timelineTurns[timelineTurns.length - 1]?.phase ?? null
     if (
