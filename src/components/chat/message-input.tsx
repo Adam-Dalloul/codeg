@@ -1256,7 +1256,7 @@ export function MessageInput({
   ])
 
   // Mid-turn "insert into current turn" (native steering). Awaited, unlike
-  // the synchronous send/enqueue/fork paths: the draft clears ONLY once the
+  // the synchronous send/enqueue paths: the draft clears ONLY once the
   // backend confirms the injection was recorded — a turn-end race falls back
   // to the queue (the note is never lost), any other failure keeps the draft
   // for retry. A draft that holds more than plain text (image attachments,
