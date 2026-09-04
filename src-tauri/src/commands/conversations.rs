@@ -2552,6 +2552,7 @@ mod tests {
             duration_ms: None,
             model: None,
             completed_at: None,
+        agent_message_id: None,
         }
     }
 
@@ -2590,6 +2591,7 @@ mod tests {
             duration_ms: None,
             model: None,
             completed_at: None,
+        agent_message_id: None,
         }
     }
 
@@ -2608,6 +2610,7 @@ mod tests {
             duration_ms: None,
             model: None,
             completed_at: completed.then_some(ts),
+        agent_message_id: None,
         }
     }
 
@@ -2736,6 +2739,7 @@ mod tests {
             duration_ms: None,
             model: None,
             completed_at: None,
+        agent_message_id: None,
         };
         let pending_image = |message_id: &str, data: &str| {
             crate::acp::session_state::PendingUserMessage {
@@ -2865,6 +2869,7 @@ mod tests {
             duration_ms: None,
             model: None,
             completed_at: None,
+        agent_message_id: None,
         }
     }
 
@@ -3123,6 +3128,7 @@ mod tests {
             duration_ms: None,
             model: None,
             completed_at: None,
+        agent_message_id: None,
         }];
         let children = vec![summary_child(42, "tu-1", "completed")];
         inject_delegation_meta(&mut turns, &children);
