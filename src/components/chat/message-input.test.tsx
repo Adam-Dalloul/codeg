@@ -1245,4 +1245,40 @@ describe("MessageInput native steering (insert into current turn)", () => {
     // Draft and attachment stay put for the retry.
     expect(serializeDocToText(editor.state.doc)).toContain("wait for it")
   })
+
+  it("queues the attachment too when the blocks steer is rejected", async () => {
+    // The load-bearing half of "attachments are never silently dropped": the
+    // backend rejects a blocks-bearing note on the pull path (and on the
+    // turn-end race) with NoActiveTurn, and this fallback has to re-route the
+    // WHOLE draft — image included — not just the prose.
+    const user = userEvent.setup()
+    const { isNoActiveTurnRejection } = await import("@/lib/turn-busy")
+    vi.mocked(isNoActiveTurnRejection).mockReturnValue(true)
+    attachmentsOverride.current = {
+      attachments: [stagedImage],
+      imagePromptBlocks: () => [stagedImageBlock],
+    }
+    const onSteer = vi.fn().mockRejectedValue(new Error("no active turn"))
+    const onEnqueue = vi.fn()
+    const editor = await mountPrompting({ onSteer, onEnqueue })
+    typeDraft(editor, "late note")
+    await waitFor(() =>
+      expect(screen.getByLabelText(MI.steerIntoTurn)).toBeInTheDocument()
+    )
+
+    await user.click(screen.getByLabelText(MI.steerIntoTurn))
+    await user.click(
+      await screen.findByRole("menuitem", { name: MI.steerIntoTurn })
+    )
+
+    await waitFor(() => expect(onEnqueue).toHaveBeenCalled())
+    const [draft] = onEnqueue.mock.calls[0]
+    expect(draft.blocks).toEqual([
+      { type: "text", text: "late note" },
+      stagedImageBlock,
+    ])
+    await waitFor(() =>
+      expect(serializeDocToText(editor.state.doc)).not.toContain("late note")
+    )
+  })
 })

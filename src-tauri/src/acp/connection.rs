@@ -13596,8 +13596,15 @@ mod tests {
             }],
         );
         assert_eq!(params["sessionId"], "sess-1");
-        assert_eq!(params["prompt"][0]["type"], "text");
-        assert_eq!(params["prompt"][0]["text"], "use the staging db");
+        // EXACT equality, not field probes: routing a text-only note through
+        // `map_prompt_blocks` must stay byte-identical to the hand-built
+        // `[{type,text}]` this used to emit. A future schema bump that starts
+        // serializing `annotations`/`_meta` as null would change the wire for
+        // every existing steer, and a field probe would not notice.
+        assert_eq!(
+            params["prompt"],
+            serde_json::json!([{ "type": "text", "text": "use the staging db" }])
+        );
         // The opt-in is what keeps the idle race host-owned — its absence
         // would regress to detached `startedNewTurn` turns.
         assert_eq!(params["_meta"]["steering"]["idleBehavior"], "promptRequired");
