@@ -22,6 +22,7 @@ import { useAuxPanelContext } from "@/contexts/aux-panel-context"
 import { useTabStore } from "@/contexts/tab-context"
 import { useTerminalContext } from "@/contexts/terminal-context"
 import { useIsMobile } from "@/hooks/use-mobile"
+import { useLongPressToOpenMenu } from "@/hooks/use-long-press-to-open-menu"
 import {
   useWorkspaceActions,
   useWorkspaceFileTabs,
@@ -33,6 +34,7 @@ import { AuxPanelNoFolderEmpty } from "@/components/layout/aux-panel-no-folder-e
 import { WorkspaceDegradedBanner } from "@/components/layout/workspace-degraded-banner"
 import { WorkspaceUploadDialog } from "@/components/layout/workspace-upload-dialog"
 import { OpenInSubContent } from "@/components/layout/open-in-menu"
+import { RowMoreButton } from "@/components/layout/row-more-button"
 import {
   createFileTreeEntry,
   deleteFileTreeEntry,
@@ -578,6 +580,7 @@ function RootDropFolder({
       path={FILE_TREE_ROOT_PATH}
       name={name}
       className="font-medium"
+      actions={<RowMoreButton />}
       dropActive={dropActive || desktopDropActive}
       dropTargetDir=""
       depth={0}
@@ -689,6 +692,11 @@ function RenderNode({
   const isGitignoreIgnored =
     ancestorGitignoreIgnored || gitignoreIgnoredPaths.has(node.path)
 
+  // Touch / pen long-press opens this row's context menu. Desktop right-click
+  // is handled by Radix's own contextmenu listener on the trigger; this hook
+  // composes alongside it (mouse pointers are ignored).
+  const longPressHandlers = useLongPressToOpenMenu()
+
   const systemExplorerLabel =
     typeof navigator === "undefined"
       ? t("openInFileManager")
@@ -745,7 +753,7 @@ function RenderNode({
           menu. See aux-panel-file-tree-tab.tsx around the RootDropFolder
           wrapper for the same pattern.
         */}
-        <ContextMenuTrigger asChild>
+        <ContextMenuTrigger asChild {...longPressHandlers}>
           <FileTreeFile
             path={node.path}
             name={node.name}
@@ -766,6 +774,7 @@ function RenderNode({
               setDragging(false)
               dnd.onEntryDragEnd()
             }}
+            actions={<RowMoreButton />}
           />
         </ContextMenuTrigger>
         <ContextMenuContent>
@@ -929,10 +938,11 @@ function RenderNode({
         and `WebkitTouchCallout: none` style into the FileTreeFolder's own div
         — same reasoning as the FileTreeFile wrapper above.
       */}
-      <ContextMenuTrigger asChild>
+      <ContextMenuTrigger asChild {...longPressHandlers}>
         <FileTreeFolder
           path={node.path}
           name={node.name}
+          actions={<RowMoreButton />}
           suffix={
             isLinkedDir ? (
               <Link2

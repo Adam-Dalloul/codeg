@@ -2586,6 +2586,7 @@
       "openInTerminal": "Terminal",
       "openInCode": "VS Code",
       "linkedFolder": "Carpeta vinculada",
+      "moreActions": "Más acciones",
       "copyPath": "Copiar ruta",
       "upload": "Subir archivos/carpeta",
       "download": "Descargar archivo",

@@ -2586,6 +2586,7 @@
       "openInTerminal": "ターミナル",
       "openInCode": "VS Code",
       "linkedFolder": "リンク済みフォルダー",
+      "moreActions": "その他のアクション",
       "copyPath": "パスをコピー",
       "upload": "ファイル/フォルダをアップロード",
       "download": "ファイルをダウンロード",

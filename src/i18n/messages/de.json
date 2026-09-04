@@ -2586,6 +2586,7 @@
       "openInTerminal": "Terminal",
       "openInCode": "VS Code",
       "linkedFolder": "Verknüpfter Ordner",
+      "moreActions": "Weitere Aktionen",
       "copyPath": "Pfad kopieren",
       "upload": "Dateien/Ordner hochladen",
       "download": "Datei herunterladen",

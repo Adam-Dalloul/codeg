@@ -191,6 +191,13 @@ export type FileTreeFolderProps = HTMLAttributes<HTMLDivElement> & {
   suffix?: ReactNode
   suffixClassName?: string
   /**
+   * Right-aligned trailing widget (e.g. a "more" menu button). Rendered
+   * inside a `FileTreeActions` wrapper so click/keydown don't bubble up to
+   * the row's own handlers (e.g. the expand/collapse click). Clicks on the
+   * widget are the caller's responsibility.
+   */
+  actions?: ReactNode
+  /**
    * Props applied to the folder's header row (the trigger button) — e.g.
    * `draggable` and drag/drop handlers for file-tree DnD. Placed on the header
    * (not the outer wrapper, which also contains the child rows) so a drop
@@ -225,6 +232,7 @@ export const FileTreeFolder = ({
   iconClassName,
   suffix,
   suffixClassName,
+  actions,
   rowProps,
   dropActive,
   dropTargetDir,
@@ -331,6 +339,7 @@ export const FileTreeFolder = ({
                   {suffix}
                 </span>
               ) : null}
+              {actions ? <FileTreeActions>{actions}</FileTreeActions> : null}
             </button>
           </CollapsibleTrigger>
           <CollapsibleContent>
@@ -365,6 +374,13 @@ export type FileTreeFileProps = HTMLAttributes<HTMLDivElement> & {
   /** Nesting depth (0 = top level). See {@link FileTreeFolderProps.depth}: when
    *  provided the row is full-width and indents its content via padding. */
   depth?: number
+  /**
+   * Right-aligned trailing widget (e.g. a "more" menu button). Rendered
+   * inside a `FileTreeActions` wrapper so click/keydown don't bubble up to
+   * the row's own handlers (e.g. opening a file preview). Clicks on the
+   * widget are the caller's responsibility.
+   */
+  actions?: ReactNode
 }
 
 export const FileTreeFile = ({
@@ -374,6 +390,7 @@ export const FileTreeFile = ({
   depth,
   className,
   style,
+  actions,
   children,
   ...props
 }: FileTreeFileProps) => {
@@ -427,6 +444,7 @@ export const FileTreeFile = ({
             <FileTreeName>{name}</FileTreeName>
           </>
         )}
+        {actions ? <FileTreeActions>{actions}</FileTreeActions> : null}
       </div>
     </FileTreeFileContext.Provider>
   )
