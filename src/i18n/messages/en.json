@@ -2605,6 +2605,7 @@
       "openInTerminal": "Terminal",
       "openInCode": "VS Code",
       "linkedFolder": "Linked folder",
+      "moreActions": "More actions",
       "copyPath": "Copy path",
       "upload": "Upload files/folder",
       "download": "Download file",
