@@ -129,6 +129,22 @@ function syncAppearanceMode(mode: string) {
 
 export type FontSelection = { id: string; custom: string }
 
+/**
+ * What a preset preview replaces. Fonts and code colours are recorded only
+ * when the previewed preset sets them, since applyPreset leaves them alone
+ * otherwise and restoring an untouched setting would write it to storage for
+ * the first time.
+ */
+type AppearanceRestorePoint = {
+  themeColor: ThemeColor
+  customTheme: CustomTheme
+  customThemeEnabled: boolean
+  appliedPreset: AppearancePreset | null
+  uiFont?: FontSelection
+  monoFont?: FontSelection
+  codeTheme?: CodeThemePair
+}
+
 type AppearanceContextValue = {
   themeColor: ThemeColor
   setThemeColor: (color: ThemeColor) => void
@@ -177,6 +193,16 @@ type AppearanceContextValue = {
    * them. The light / dark mode is a window setting applied by the caller.
    */
   applyPreset: (preset: AppearancePreset) => void
+  /**
+   * The preset being previewed from the gallery, or null. A preview applies a
+   * preset exactly as applyPreset does after recording what it replaces;
+   * ending it either keeps the result or restores that record, so the look
+   * from before the preview comes back exactly, fonts and code colours
+   * included. A window that goes away mid-preview restores it too.
+   */
+  presetPreview: AppearancePreset | null
+  startPresetPreview: (preset: AppearancePreset) => void
+  endPresetPreview: (keep: boolean) => void
   /** Write one token to BOTH modes (layout tokens are mode-independent); null clears it. */
   setSharedThemeToken: (token: CustomThemeToken, value: string | null) => void
   /** Workspace 背景图片总开关。关闭时不加载图片、不触发任何表面半透明。 */
@@ -484,6 +510,11 @@ export function AppearanceProvider({
     useState<AppearancePreset | null>(() =>
       parseStoredAppearancePreset(readStored(STORAGE_KEY_APPEARANCE_PRESET))
     )
+  const [presetPreview, setPresetPreviewState] =
+    useState<AppearancePreset | null>(null)
+  // The look a preview replaced. A ref, not state: it is read on the way out
+  // of the window too, where a state update would never be committed.
+  const presetPreviewRestoreRef = useRef<AppearanceRestorePoint | null>(null)
 
   // Workspace 背景图片配置（图片 URL 异步加载，初始 null）。
   const [workspaceBgEnabled, setWorkspaceBgEnabledState] = useState<boolean>(
@@ -751,6 +782,92 @@ export function AppearanceProvider({
     },
     [setThemeColor, setCustomThemeEnabled, setUiFont, setMonoFont, setCodeTheme]
   )
+
+  // The inverse of applyPreset for one recorded point. Every setter here
+  // persists on its own except the custom theme, which is debounced; `flush`
+  // writes it immediately for the pagehide path, where no effect will run.
+  const restoreAppearance = useCallback(
+    (point: AppearanceRestorePoint, flush: boolean) => {
+      setThemeColor(point.themeColor)
+      setCustomThemeState(point.customTheme)
+      if (flush) {
+        persist(STORAGE_KEY_CUSTOM_THEME, JSON.stringify(point.customTheme))
+      }
+      setCustomThemeEnabled(point.customThemeEnabled)
+      if (point.uiFont) setUiFont(point.uiFont.id, point.uiFont.custom)
+      if (point.monoFont) setMonoFont(point.monoFont.id, point.monoFont.custom)
+      if (point.codeTheme) setCodeTheme(point.codeTheme)
+      setAppliedPresetState(point.appliedPreset)
+      if (point.appliedPreset) {
+        persist(
+          STORAGE_KEY_APPEARANCE_PRESET,
+          serializeAppearancePreset(point.appliedPreset)
+        )
+      } else {
+        try {
+          localStorage.removeItem(STORAGE_KEY_APPEARANCE_PRESET)
+        } catch {
+          // localStorage unavailable
+        }
+      }
+    },
+    [setThemeColor, setCustomThemeEnabled, setUiFont, setMonoFont, setCodeTheme]
+  )
+
+  const startPresetPreview = useCallback(
+    (preset: AppearancePreset) => {
+      // A second preview keeps the first record, so what comes back is the
+      // look from before any preview. A setting the first preset left alone
+      // is still the original now, so it can be recorded late.
+      const point = presetPreviewRestoreRef.current ?? {
+        themeColor,
+        customTheme,
+        customThemeEnabled,
+        appliedPreset,
+      }
+      if (!point.uiFont && preset.typography?.ui) point.uiFont = uiFont
+      if (!point.monoFont && preset.typography?.mono) point.monoFont = monoFont
+      if (!point.codeTheme && preset.code) point.codeTheme = codeTheme
+      presetPreviewRestoreRef.current = point
+      setPresetPreviewState(preset)
+      applyPreset(preset)
+    },
+    [
+      themeColor,
+      customTheme,
+      customThemeEnabled,
+      appliedPreset,
+      uiFont,
+      monoFont,
+      codeTheme,
+      applyPreset,
+    ]
+  )
+
+  const endPresetPreview = useCallback(
+    (keep: boolean) => {
+      const point = presetPreviewRestoreRef.current
+      presetPreviewRestoreRef.current = null
+      setPresetPreviewState(null)
+      if (!keep && point) restoreAppearance(point, false)
+    },
+    [restoreAppearance]
+  )
+
+  // A window that goes away mid-preview (closed, reloaded) must not leave the
+  // preview behind as if it had been kept. Registered after the debounced
+  // persisters' own pagehide flush, so this write is the last word.
+  useEffect(() => {
+    if (!presetPreview) return
+    const revert = () => {
+      const point = presetPreviewRestoreRef.current
+      if (!point) return
+      presetPreviewRestoreRef.current = null
+      restoreAppearance(point, true)
+    }
+    window.addEventListener("pagehide", revert)
+    return () => window.removeEventListener("pagehide", revert)
+  }, [presetPreview, restoreAppearance])
 
   // 传进来的必须是 sanitizeCustomCss 处理过的文本：存的即是注入的，预水合脚本
   // 才能原样使用而不必在 inline 脚本里重跑一遍 CSSOM 校验。
@@ -1230,6 +1347,9 @@ export function AppearanceProvider({
         setCodeTheme,
         appliedPreset,
         applyPreset,
+        presetPreview,
+        startPresetPreview,
+        endPresetPreview,
         setSharedThemeToken,
         showWelcomeQuickActions,
         setShowWelcomeQuickActions,

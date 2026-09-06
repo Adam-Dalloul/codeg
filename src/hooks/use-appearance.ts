@@ -133,6 +133,9 @@ export function useAppearancePresets() {
     setCodeTheme,
     appliedPreset,
     applyPreset,
+    presetPreview,
+    startPresetPreview,
+    endPresetPreview,
     setSharedThemeToken,
   } = useAppearance()
   return {
@@ -145,6 +148,9 @@ export function useAppearancePresets() {
     setCodeTheme,
     appliedPreset,
     applyPreset,
+    presetPreview,
+    startPresetPreview,
+    endPresetPreview,
     setSharedThemeToken,
   }
 }

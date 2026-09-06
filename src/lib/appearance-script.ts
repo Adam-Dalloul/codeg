@@ -51,6 +51,18 @@ export const STORAGE_KEY_MONO_FONT_STACK = "codeg-mono-font-stack"
 export const STORAGE_KEY_CODE_THEME = "codeg-code-theme"
 export const STORAGE_KEY_APPEARANCE_PRESET = "codeg-appearance-preset"
 
+// Preset gallery. INSTALLED is the local library, `[{ preset, url, indexUrl,
+// sha256, installedAt }]`: plain preset documents plus where each came from,
+// so "update available" is a digest comparison. INDEX_URL is the gallery
+// source when it differs from the default. CACHE is the last index fetched,
+// `{ indexUrl, fetchedAt, text }`, so the gallery opens offline and can say
+// when it was refreshed. None of this is read before paint.
+export const STORAGE_KEY_PRESET_GALLERY_INSTALLED =
+  "codeg-preset-gallery-installed"
+export const STORAGE_KEY_PRESET_GALLERY_INDEX_URL =
+  "codeg-preset-gallery-index-url"
+export const STORAGE_KEY_PRESET_GALLERY_CACHE = "codeg-preset-gallery-cache"
+
 // Workspace 背景图片。图片本身存磁盘（~/.codeg/backgrounds/），localStorage 只存
 // 展示配置。仅 enabled 与 panel-opacity 需要预水合（它们作用于首帧就存在的结构性
 // 表面）；mask/blur/fill 水合后才有意义（图片异步到达），不进 inline 脚本。

@@ -31,6 +31,7 @@ import { FontSettingsSection } from "./font-settings-section"
 import { WorkspaceBackgroundSection } from "./workspace-background-section"
 import { CustomStyleSection } from "./custom-style-section"
 import { AppearancePresetsSection } from "./appearance-presets-section"
+import { AppearancePresetGallerySection } from "./appearance-preset-gallery-section"
 
 type ThemeMode = "system" | "light" | "dark"
 
@@ -168,6 +169,9 @@ export function AppearanceSettings() {
 
         {/* ===== Presets (whole looks, import / export) ===== */}
         <AppearancePresetsSection />
+
+        {/* ===== Preset gallery (shared looks from a public index) ===== */}
+        <AppearancePresetGallerySection />
 
         {/* ===== Custom style (token overrides + free-form CSS) ===== */}
         <CustomStyleSection />

@@ -477,3 +477,176 @@ describe("window zoom keys", () => {
     expect(currentZoomPx()).toBe("16px")
   })
 })
+
+describe("preset preview", () => {
+  const warmTerminal = BUNDLED_PRESET_BY_ID["warm-terminal"]
+  const ink = BUNDLED_PRESET_BY_ID["ink"]
+  const stock = BUNDLED_PRESET_BY_ID["default"]
+
+  function PreviewProbe() {
+    const {
+      applyPreset,
+      appliedPreset,
+      presetPreview,
+      startPresetPreview,
+      endPresetPreview,
+      codeTheme,
+    } = useAppearancePresets()
+    const { monoFont } = useMonoFont()
+    return (
+      <>
+        <button onClick={() => applyPreset(ink)}>apply-ink</button>
+        <button onClick={() => startPresetPreview(warmTerminal)}>
+          preview-warm
+        </button>
+        <button onClick={() => startPresetPreview(stock)}>preview-stock</button>
+        <button onClick={() => endPresetPreview(false)}>revert</button>
+        <button onClick={() => endPresetPreview(true)}>keep</button>
+        <span data-testid="previewing">{presetPreview?.id ?? "none"}</span>
+        <span data-testid="applied">{appliedPreset?.id ?? "none"}</span>
+        <span data-testid="code">
+          {codeTheme.light}/{codeTheme.dark}
+        </span>
+        <span data-testid="mono">{monoFont.id}</span>
+      </>
+    )
+  }
+
+  function rootVar(name: string) {
+    return document.documentElement.style.getPropertyValue(name)
+  }
+
+  function storageSnapshot() {
+    return {
+      theme: localStorage.getItem(STORAGE_KEY_THEME_COLOR),
+      custom: localStorage.getItem(STORAGE_KEY_CUSTOM_THEME),
+      enabled: localStorage.getItem(STORAGE_KEY_CUSTOM_THEME_ENABLED),
+      code: localStorage.getItem(STORAGE_KEY_CODE_THEME),
+      mono: localStorage.getItem(STORAGE_KEY_MONO_FONT),
+      ui: localStorage.getItem(STORAGE_KEY_UI_FONT),
+      preset: localStorage.getItem(STORAGE_KEY_APPEARANCE_PRESET),
+    }
+  }
+
+  beforeEach(() => {
+    localStorage.clear()
+    document.documentElement.removeAttribute("data-theme")
+  })
+
+  it("restores the look from before the preview exactly, fonts and code colours included", () => {
+    render(
+      <AppearanceProvider>
+        <PreviewProbe />
+      </AppearanceProvider>
+    )
+    fireEvent.click(screen.getByText("apply-ink"))
+    act(() => {
+      vi.advanceTimersByTime(500)
+    })
+    const inkPlan = presetToApplication(ink)
+    const before = storageSnapshot()
+
+    fireEvent.click(screen.getByText("preview-warm"))
+    expect(screen.getByTestId("previewing").textContent).toBe("warm-terminal")
+    expect(screen.getByTestId("applied").textContent).toBe("warm-terminal")
+    expect(document.documentElement.getAttribute("data-theme")).toBe("stone")
+    expect(screen.getByTestId("mono").textContent).toBe("jetbrains-mono")
+    expect(screen.getByTestId("code").textContent).toBe(
+      "vitesse-light/vitesse-dark"
+    )
+    // Let the preview's custom theme reach storage, so the revert has to
+    // undo storage as well as the DOM.
+    act(() => {
+      vi.advanceTimersByTime(500)
+    })
+    expect(JSON.parse(localStorage.getItem(STORAGE_KEY_CUSTOM_THEME)!)).toEqual(
+      presetToApplication(warmTerminal).customTheme
+    )
+
+    fireEvent.click(screen.getByText("revert"))
+    act(() => {
+      vi.advanceTimersByTime(500)
+    })
+
+    expect(screen.getByTestId("previewing").textContent).toBe("none")
+    expect(screen.getByTestId("applied").textContent).toBe("ink")
+    expect(document.documentElement.getAttribute("data-theme")).toBe(
+      inkPlan.themeColor
+    )
+    expect(rootVar("--primary")).toBe(inkPlan.customTheme.light.primary)
+    expect(screen.getByTestId("code").textContent).toBe(
+      `${ink.code!.light}/${ink.code!.dark}`
+    )
+    expect(screen.getByTestId("mono").textContent).toBe(
+      inkPlan.monoFont ?? "jetbrains-mono"
+    )
+    expect(storageSnapshot()).toEqual(before)
+  })
+
+  it("keeps a preview as the applied look", () => {
+    render(
+      <AppearanceProvider>
+        <PreviewProbe />
+      </AppearanceProvider>
+    )
+    fireEvent.click(screen.getByText("preview-warm"))
+    fireEvent.click(screen.getByText("keep"))
+    act(() => {
+      vi.advanceTimersByTime(500)
+    })
+    expect(screen.getByTestId("previewing").textContent).toBe("none")
+    expect(screen.getByTestId("applied").textContent).toBe("warm-terminal")
+    expect(document.documentElement.getAttribute("data-theme")).toBe("stone")
+    expect(
+      JSON.parse(localStorage.getItem(STORAGE_KEY_APPEARANCE_PRESET)!).id
+    ).toBe("warm-terminal")
+    // A revert after keeping has nothing to revert to.
+    fireEvent.click(screen.getByText("revert"))
+    expect(screen.getByTestId("applied").textContent).toBe("warm-terminal")
+  })
+
+  it("does not write fonts back for a preset that never touched them", () => {
+    render(
+      <AppearanceProvider>
+        <PreviewProbe />
+      </AppearanceProvider>
+    )
+    expect(localStorage.getItem(STORAGE_KEY_MONO_FONT)).toBeNull()
+    // The stock preset sets code colours but no fonts.
+    fireEvent.click(screen.getByText("preview-stock"))
+    fireEvent.click(screen.getByText("revert"))
+    expect(localStorage.getItem(STORAGE_KEY_MONO_FONT)).toBeNull()
+    expect(localStorage.getItem(STORAGE_KEY_UI_FONT)).toBeNull()
+    expect(localStorage.getItem(STORAGE_KEY_APPEARANCE_PRESET)).toBeNull()
+    expect(screen.getByTestId("applied").textContent).toBe("none")
+  })
+
+  it("a window that goes away mid-preview restores the look, storage included", () => {
+    render(
+      <AppearanceProvider>
+        <PreviewProbe />
+      </AppearanceProvider>
+    )
+    fireEvent.click(screen.getByText("apply-ink"))
+    act(() => {
+      vi.advanceTimersByTime(500)
+    })
+    const before = storageSnapshot()
+
+    fireEvent.click(screen.getByText("preview-warm"))
+    act(() => {
+      vi.advanceTimersByTime(500)
+    })
+    expect(localStorage.getItem(STORAGE_KEY_THEME_COLOR)).toBe("stone")
+
+    // No timers advance after this: what is in storage is what the next
+    // window will read.
+    act(() => {
+      window.dispatchEvent(new Event("pagehide"))
+    })
+    expect(storageSnapshot()).toEqual(before)
+    expect(document.documentElement.getAttribute("data-theme")).toBe(
+      presetToApplication(ink).themeColor
+    )
+  })
+})

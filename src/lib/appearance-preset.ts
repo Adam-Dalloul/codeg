@@ -218,6 +218,16 @@ export function isPresetColorToken(name: unknown): name is PresetColorToken {
   return typeof name === "string" && PRESET_COLOR_TOKEN_SET.has(name)
 }
 
+/**
+ * Whether `value` is a colour a preset may carry: the token charset guard
+ * (declaration-escape defence) first, then the syntax check that says "this
+ * is a colour". Exported for the gallery index, whose card swatches are
+ * colours that belong to no token.
+ */
+export function isPresetColorValue(value: string): boolean {
+  return isValidTokenValue("primary", value) && COLOR_SYNTAX_RE.test(value)
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
 }
