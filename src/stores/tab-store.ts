@@ -36,7 +36,11 @@ import {
   sweepOrphanDraftKeys,
 } from "@/lib/message-input-draft"
 import { discardAskSelectionPrompts } from "@/lib/ask-selection-handoff"
-import { pushClosedTab, snapshotConversationTab } from "@/lib/closed-tab-stack"
+import {
+  batchCloseSlots,
+  pushClosedTab,
+  snapshotConversationTab,
+} from "@/lib/closed-tab-stack"
 import type {
   AgentType,
   ConversationChange,
@@ -197,7 +201,14 @@ export interface TabStoreState {
     conversationId: number,
     agentType: AgentType,
     pin?: boolean,
-    title?: string
+    title?: string,
+    opts?: {
+      /** rawTabs slot for a tab that needs a NEW slot (clamped); omitted =
+       *  append. Reopening a closed tab passes the slot it was closed from. A
+       *  conversation that is already open is focused where it is, and a
+       *  preview still replaces the group's current preview in place. */
+      index?: number
+    }
   ) => void
   /**
    * `recordForReopen: false` closes without offering the tab to
@@ -254,6 +265,10 @@ export interface TabStoreState {
        *  agent (e.g. "ask about this selection" continues the conversation the
        *  text came from), not merely suggest one. */
       forceAgent?: AgentType
+      /** rawTabs slot for a NEW draft (clamped); omitted = append. Reopening
+       *  a closed draft passes the slot it was closed from. Ignored when the
+       *  target group's existing draft is reused instead. */
+      index?: number
     }
   ) => OpenedDraftTarget
   openChatModeTab: (options?: {
@@ -450,6 +465,19 @@ function findTabIndexForConversation(
       t.conversationId === conversationId &&
       t.agentType === agentType
   )
+}
+
+/** `tabs` with `tab` inserted at `index`, clamped to the array, or appended
+ *  when no index is given. Reopening a closed tab passes the slot it was
+ *  closed from, so it goes back where it was rather than to the end. */
+function insertTab(
+  tabs: TabItemInternal[],
+  tab: TabItemInternal,
+  index: number | undefined
+): TabItemInternal[] {
+  const at =
+    index == null ? tabs.length : Math.max(0, Math.min(index, tabs.length))
+  return [...tabs.slice(0, at), tab, ...tabs.slice(at)]
 }
 
 /** Field-wise equality for derived tab items. Backs the cross-derive reuse in
@@ -1061,7 +1089,7 @@ function initialTabState() {
 export const useTabStore = create<TabStoreState>()((set, get) => ({
   ...initialTabState(),
 
-  openTab: (folderId, conversationId, agentType, pin = false, title) => {
+  openTab: (folderId, conversationId, agentType, pin = false, title, opts) => {
     const prevState = get()
     const existingIndex = findTabIndexForConversation(
       prevState.rawTabs,
@@ -1117,7 +1145,7 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
 
     if (pin) {
       set({
-        rawTabs: [...prevState.rawTabs, newTab],
+        rawTabs: insertTab(prevState.rawTabs, newTab, opts?.index),
         activeTabId: tabId,
         groupOf: { ...prevState.groupOf, [tabId]: targetGroup },
       })
@@ -1127,7 +1155,7 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
     }
 
     // Preview replacement stays within the focused group — a preview parked in
-    // another group is left alone (the new tab appends instead).
+    // another group is left alone (the new tab gets a slot of its own instead).
     const previewIndex = prevState.rawTabs.findIndex(
       (t) =>
         !t.isPinned &&
@@ -1153,7 +1181,7 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
     }
 
     set({
-      rawTabs: [...prevState.rawTabs, newTab],
+      rawTabs: insertTab(prevState.rawTabs, newTab, opts?.index),
       activeTabId: tabId,
       groupOf: { ...prevState.groupOf, [tabId]: targetGroup },
     })
@@ -1169,7 +1197,7 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
     if (index >= 0) {
       const closingTab = prevState.rawTabs[index]
       if (options?.recordForReopen !== false) {
-        pushClosedTab(snapshotConversationTab(closingTab))
+        pushClosedTab(snapshotConversationTab(closingTab, index))
       }
       const next = prevState.rawTabs.filter((t) => t.id !== tabId)
       // A closing draft's composer text is scoped to that tab's key. Drop it —
@@ -1277,10 +1305,12 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
       return
     }
     const keepIds = new Set(keep.map((tab) => tab.id))
-    for (const tab of prevState.rawTabs) {
-      if (!keepIds.has(tab.id)) {
-        pushClosedTab(snapshotConversationTab(tab))
-      }
+    const closing = batchCloseSlots(
+      prevState.rawTabs,
+      (tab) => !keepIds.has(tab.id)
+    )
+    for (const [tab, slot] of closing) {
+      pushClosedTab(snapshotConversationTab(tab, slot))
     }
     set({ rawTabs: keep, activeTabId: tabId })
     recomputeTabs()
@@ -1292,8 +1322,8 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
       if (prevState.rawTabs.length === 0 && prevState.activeTabId == null) {
         return
       }
-      for (const tab of prevState.rawTabs) {
-        pushClosedTab(snapshotConversationTab(tab))
+      for (const [tab, slot] of batchCloseSlots(prevState.rawTabs)) {
+        pushClosedTab(snapshotConversationTab(tab, slot))
       }
       set({ rawTabs: [], activeTabId: null })
       recomputeTabs()
@@ -1306,8 +1336,8 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
       prevState.rawTabs.find((t) => t.id === prevState.activeTabId) ??
       prevState.rawTabs[0]
     const replacementTab = makeReplacementDraftTab(seedTab)
-    for (const tab of prevState.rawTabs) {
-      pushClosedTab(snapshotConversationTab(tab))
+    for (const [tab, slot] of batchCloseSlots(prevState.rawTabs)) {
+      pushClosedTab(snapshotConversationTab(tab, slot))
     }
     set({ rawTabs: [replacementTab], activeTabId: replacementTab.id })
     recomputeTabs()
@@ -1680,7 +1710,7 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
         agentTypeProvisional: provisional,
       }
       set({
-        rawTabs: [...prevState.rawTabs, newTab],
+        rawTabs: insertTab(prevState.rawTabs, newTab, options?.index),
         activeTabId: tabId,
         groupOf: { ...prevState.groupOf, [tabId]: targetGroup },
       })

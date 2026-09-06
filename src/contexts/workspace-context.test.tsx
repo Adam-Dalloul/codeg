@@ -9,6 +9,10 @@ import {
   useWorkspaceView,
 } from "@/contexts/workspace-context"
 import * as api from "@/lib/api"
+import {
+  peekClosedTab,
+  resetClosedTabStackForTests,
+} from "@/lib/closed-tab-stack"
 import { resetHomeDirCacheForTests } from "@/lib/file-open-target"
 import {
   resetAppWorkspaceStore,
@@ -3250,5 +3254,114 @@ describe("unified absolute-path file tabs (outside-workspace opens)", () => {
     expect(mockedApi.readFileForEdit.mock.calls.length).toBe(
       readsAfterFreshness
     )
+  })
+})
+
+describe("reopening a closed file tab", () => {
+  beforeEach(() => {
+    resetClosedTabStackForTests()
+    mockedApi.readFileForEdit.mockReset()
+    mockedApi.gitIsTracked.mockReset()
+    mockedApi.gitIsTracked.mockResolvedValue(false)
+    mockedApi.readFileForEdit.mockImplementation(
+      async (_rootPath: string, ioPath: string) => ({
+        path: ioPath,
+        content: `${ioPath}-v1`,
+        etag: `e-${ioPath}`,
+        mtime_ms: 1,
+        readonly: false,
+        line_ending: "lf",
+      })
+    )
+  })
+
+  function Probe({ onCapture }: { onCapture: (ids: string[]) => void }) {
+    const { openFilePreview, fileTabs, closeFileTab } = useWorkspaceContext()
+    onCapture(fileTabs.map((tab) => tab.id))
+    return (
+      <div>
+        <button onClick={() => void openFilePreview("a.ts")}>open-a</button>
+        <button onClick={() => void openFilePreview("b.ts")}>open-b</button>
+        <button onClick={() => void openFilePreview("c.ts")}>open-c</button>
+        <button onClick={() => closeFileTab(fileTabId("/repo/b.ts"))}>
+          close-b
+        </button>
+        <button onClick={() => void openFilePreview("b.ts", { index: 1 })}>
+          reopen-b
+        </button>
+        <button onClick={() => void openFilePreview("b.ts", { index: 9 })}>
+          reopen-b-far
+        </button>
+        <button onClick={() => void openFilePreview("c.ts", { index: 0 })}>
+          front-c
+        </button>
+      </div>
+    )
+  }
+
+  async function click(label: string) {
+    await act(async () => {
+      screen.getByText(label).click()
+    })
+  }
+
+  function mount() {
+    let ids: string[] = []
+    render(
+      <WorkspaceProvider>
+        <Probe onCapture={(next) => (ids = next)} />
+      </WorkspaceProvider>
+    )
+    return () => ids
+  }
+
+  it("puts the tab back at the slot it was closed from", async () => {
+    const ids = mount()
+    await click("open-a")
+    await click("open-b")
+    await click("open-c")
+    expect(ids()).toEqual([
+      fileTabId("/repo/a.ts"),
+      fileTabId("/repo/b.ts"),
+      fileTabId("/repo/c.ts"),
+    ])
+
+    await click("close-b")
+    expect(ids()).toEqual([fileTabId("/repo/a.ts"), fileTabId("/repo/c.ts")])
+    expect(peekClosedTab()).toMatchObject({
+      kind: "file",
+      path: "/repo/b.ts",
+      index: 1,
+    })
+
+    await click("reopen-b")
+    expect(ids()).toEqual([
+      fileTabId("/repo/a.ts"),
+      fileTabId("/repo/b.ts"),
+      fileTabId("/repo/c.ts"),
+    ])
+
+    // A tab that is already open is activated where it is, never moved.
+    await click("front-c")
+    expect(ids()).toEqual([
+      fileTabId("/repo/a.ts"),
+      fileTabId("/repo/b.ts"),
+      fileTabId("/repo/c.ts"),
+    ])
+  })
+
+  it("clamps the slot to the strip", async () => {
+    const ids = mount()
+    await click("open-a")
+    await click("open-b")
+    await click("open-c")
+    await click("close-b")
+
+    await click("reopen-b-far")
+    expect(ids()).toEqual([
+      fileTabId("/repo/a.ts"),
+      fileTabId("/repo/c.ts"),
+      fileTabId("/repo/b.ts"),
+    ])
   })
 })
