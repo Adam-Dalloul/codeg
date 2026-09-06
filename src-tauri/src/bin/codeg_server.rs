@@ -340,7 +340,7 @@ async fn async_main() -> ExitCode {
     // Keep ACP model terminal fallbacks aligned with the same default-shell
     // preference used by the built-in terminal before accepting connections.
     let terminal_shell_config = state.connection_manager.terminal_shell_config();
-    codeg_lib::commands::system_settings::apply_persisted_terminal_shell_config(
+    codeg_lib::commands::system_settings::apply_persisted_terminal_settings(
         &state.db.conn,
         &terminal_shell_config,
     )
