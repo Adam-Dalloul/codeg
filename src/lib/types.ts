@@ -1654,8 +1654,14 @@ export interface WorkTask {
   source_key?: string | null
   /** Source snapshot (url, title, numbers …); shape mirrors ForgeSourceMeta. */
   source_meta?: ForgeSourceMeta | null
-  /** Latest agent_progress milestone — present on live (running/awaiting/merging) rows only. */
+  /** Latest agent_progress milestone OF THIS GENERATION — present on live
+   *  (preparing/running/awaiting/merging) rows only. Scoped by run_seq, so a
+   *  merge in flight never narrates the work round it is landing. */
   latest_progress?: string | null
+  /** This generation is parked on its pre-prompt context compaction: the agent
+   *  is working, but on shrinking the session rather than on the task. The one
+   *  thing that explains a card sitting in 准备中 / 合并中 for minutes. */
+  compacting?: boolean
   created_at: string
   updated_at: string
   started_at: string | null
