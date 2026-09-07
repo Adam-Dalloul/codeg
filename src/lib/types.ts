@@ -724,12 +724,14 @@ export type CanvasNodeKind =
   | "conversation"
   | "custom"
   | "note"
+  | "file"
+  | "terminal"
 
 /** One element on the conversation canvas. Mirrors the Rust `CanvasNode`:
  *  a binding region (folder / folder group / agent / single conversation), a
- *  hand-curated `custom` region, or a sticky `note`. `folder_id` /
- *  `folder_group_id` / `conversation_id` are soft references — a binding whose
- *  target is gone renders as unresolved. */
+ *  hand-curated `custom` region, a sticky `note`, a read-only `file` card or a
+ *  `terminal`. `folder_id` / `folder_group_id` / `conversation_id` / `path` are
+ *  soft references — a binding whose target is gone renders as unresolved. */
 export interface CanvasNode {
   id: number
   kind: CanvasNodeKind
@@ -742,6 +744,9 @@ export interface CanvasNode {
   member_ids: number[]
   title: string | null
   content: string | null
+  /** kind=file: the document's absolute path. kind=terminal: the working
+   *  directory its shell runs in. `null` for every other kind. */
+  path: string | null
   color: string | null
   collapsed: boolean
   /**
@@ -4284,6 +4289,20 @@ export interface TerminalInfo {
 export interface TerminalEvent {
   terminal_id: string
   data: string
+  /** Cumulative chunk counter, this chunk included. A viewer that subscribes
+   *  before asking for a `TerminalSnapshot` uses it to drop the events the
+   *  snapshot already contains (`seq <= snapshot.seq`). Absent on the exit
+   *  event, which carries no output. */
+  seq?: number
+}
+
+/** Recent output of a live terminal plus the cursor it was read at. `alive`
+ *  false means no such terminal is running — the caller should spawn one
+ *  rather than attach. */
+export interface TerminalSnapshot {
+  alive: boolean
+  data: string
+  seq: number
 }
 
 export interface TokenBreakdown {

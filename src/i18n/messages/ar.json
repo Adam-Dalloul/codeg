@@ -5761,6 +5761,23 @@
     "confirmDeleteCancel": "إلغاء",
     "confirmDeleteConfirm": "حذف",
     "canvasActions": "إجراءات اللوحة",
-    "mergeIntoNewRegion": "منطقة جديدة"
+    "mergeIntoNewRegion": "منطقة جديدة",
+    "addFileCard": "بطاقة ملف",
+    "addTerminalCard": "بطاقة طرفية",
+    "searchFiles": "البحث عن الملفات…",
+    "searchFilesIn": "البحث في {folder}…",
+    "searchingFiles": "جارٍ البحث…",
+    "noFiles": "لم يتم العثور على ملفات",
+    "noOpenFiles": "لا توجد ملفات مفتوحة — اكتب للبحث",
+    "browseForFile": "استعراض…",
+    "filePreview": "معاينة",
+    "fileSource": "المصدر",
+    "reloadFile": "إعادة التحميل",
+    "removeFileCard": "إزالة بطاقة الملف",
+    "restartTerminal": "إعادة تشغيل الطرفية",
+    "removeTerminalCard": "إزالة بطاقة الطرفية",
+    "terminalNoDirectory": "لا يوجد دليل عمل لهذه البطاقة",
+    "confirmDeleteTerminals": "سيتم إغلاق {count} من الطرفيات قيد التشغيل وإنهاء عملياتها.",
+    "confirmDeleteNotesAndTerminals": "سيتم حذف {notes} من الملاحظات التي كتبتها نهائيًا، وإنهاء {terminals} من الطرفيات قيد التشغيل."
   }
 }

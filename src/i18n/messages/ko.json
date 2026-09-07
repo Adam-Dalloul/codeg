@@ -5761,6 +5761,23 @@
     "confirmDeleteCancel": "취소",
     "confirmDeleteConfirm": "삭제",
     "canvasActions": "캔버스 작업",
-    "mergeIntoNewRegion": "새 영역"
+    "mergeIntoNewRegion": "새 영역",
+    "addFileCard": "파일 카드",
+    "addTerminalCard": "터미널 카드",
+    "searchFiles": "파일 검색…",
+    "searchFilesIn": "{folder}에서 검색…",
+    "searchingFiles": "검색 중…",
+    "noFiles": "파일을 찾을 수 없습니다",
+    "noOpenFiles": "열린 파일이 없습니다 — 입력해서 검색하세요",
+    "browseForFile": "찾아보기…",
+    "filePreview": "미리보기",
+    "fileSource": "소스",
+    "reloadFile": "다시 불러오기",
+    "removeFileCard": "파일 카드 제거",
+    "restartTerminal": "터미널 다시 시작",
+    "removeTerminalCard": "터미널 카드 제거",
+    "terminalNoDirectory": "이 카드에는 작업 디렉터리가 없습니다",
+    "confirmDeleteTerminals": "실행 중인 터미널 {count}개가 닫히고 해당 프로세스도 종료됩니다.",
+    "confirmDeleteNotesAndTerminals": "직접 작성한 메모 {notes}개가 영구 삭제되고, 실행 중인 터미널 {terminals}개도 종료됩니다."
   }
 }

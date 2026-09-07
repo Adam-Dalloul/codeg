@@ -5761,6 +5761,23 @@
     "confirmDeleteCancel": "キャンセル",
     "confirmDeleteConfirm": "削除",
     "canvasActions": "キャンバス操作",
-    "mergeIntoNewRegion": "新しい領域"
+    "mergeIntoNewRegion": "新しい領域",
+    "addFileCard": "ファイルカード",
+    "addTerminalCard": "ターミナルカード",
+    "searchFiles": "ファイルを検索…",
+    "searchFilesIn": "{folder} 内を検索…",
+    "searchingFiles": "検索中…",
+    "noFiles": "ファイルが見つかりません",
+    "noOpenFiles": "開いているファイルはありません — 入力して検索",
+    "browseForFile": "参照…",
+    "filePreview": "プレビュー",
+    "fileSource": "ソース",
+    "reloadFile": "再読み込み",
+    "removeFileCard": "ファイルカードを削除",
+    "restartTerminal": "ターミナルを再起動",
+    "removeTerminalCard": "ターミナルカードを削除",
+    "terminalNoDirectory": "このカードには作業ディレクトリがありません",
+    "confirmDeleteTerminals": "実行中のターミナル {count} 個が閉じられ、そのプロセスも終了します。",
+    "confirmDeleteNotesAndTerminals": "書き込んだメモ {notes} 件が完全に削除され、実行中のターミナル {terminals} 個も終了します。"
   }
 }

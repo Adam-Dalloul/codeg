@@ -5761,6 +5761,23 @@
     "confirmDeleteCancel": "取消",
     "confirmDeleteConfirm": "刪除",
     "canvasActions": "畫布操作",
-    "mergeIntoNewRegion": "新增區域"
+    "mergeIntoNewRegion": "新增區域",
+    "addFileCard": "檔案卡片",
+    "addTerminalCard": "終端機卡片",
+    "searchFiles": "搜尋檔案…",
+    "searchFilesIn": "在 {folder} 中搜尋…",
+    "searchingFiles": "搜尋中…",
+    "noFiles": "找不到檔案",
+    "noOpenFiles": "沒有已開啟的檔案——輸入以搜尋",
+    "browseForFile": "瀏覽…",
+    "filePreview": "預覽",
+    "fileSource": "原始碼",
+    "reloadFile": "重新載入",
+    "removeFileCard": "移除檔案卡片",
+    "restartTerminal": "重新啟動終端機",
+    "removeTerminalCard": "移除終端機卡片",
+    "terminalNoDirectory": "這張卡片沒有工作目錄",
+    "confirmDeleteTerminals": "{count} 個執行中的終端機會被關閉，其中的處理程序也會一併結束。",
+    "confirmDeleteNotesAndTerminals": "你寫下的 {notes} 則便條將被永久刪除，另有 {terminals} 個執行中的終端機會被結束。"
   }
 }

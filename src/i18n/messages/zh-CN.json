@@ -5761,6 +5761,23 @@
     "confirmDeleteCancel": "取消",
     "confirmDeleteConfirm": "删除",
     "canvasActions": "画布操作",
-    "mergeIntoNewRegion": "新建区域"
+    "mergeIntoNewRegion": "新建区域",
+    "addFileCard": "文件卡片",
+    "addTerminalCard": "终端卡片",
+    "searchFiles": "搜索文件…",
+    "searchFilesIn": "在 {folder} 中搜索…",
+    "searchingFiles": "搜索中…",
+    "noFiles": "未找到文件",
+    "noOpenFiles": "没有已打开的文件——输入以搜索",
+    "browseForFile": "浏览…",
+    "filePreview": "预览",
+    "fileSource": "源码",
+    "reloadFile": "重新加载",
+    "removeFileCard": "移除文件卡片",
+    "restartTerminal": "重启终端",
+    "removeTerminalCard": "移除终端卡片",
+    "terminalNoDirectory": "这张卡片没有工作目录",
+    "confirmDeleteTerminals": "{count} 个正在运行的终端会被关闭，其中的进程也会一并结束。",
+    "confirmDeleteNotesAndTerminals": "你写下的 {notes} 条便签将被永久删除，另有 {terminals} 个正在运行的终端会被结束。"
   }
 }

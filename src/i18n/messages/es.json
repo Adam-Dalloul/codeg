@@ -5761,6 +5761,23 @@
     "confirmDeleteCancel": "Cancelar",
     "confirmDeleteConfirm": "Eliminar",
     "canvasActions": "Acciones del lienzo",
-    "mergeIntoNewRegion": "Nueva región"
+    "mergeIntoNewRegion": "Nueva región",
+    "addFileCard": "Tarjeta de archivo",
+    "addTerminalCard": "Tarjeta de terminal",
+    "searchFiles": "Buscar archivos…",
+    "searchFilesIn": "Buscar en {folder}…",
+    "searchingFiles": "Buscando…",
+    "noFiles": "No se encontraron archivos",
+    "noOpenFiles": "No hay archivos abiertos: escribe para buscar",
+    "browseForFile": "Examinar…",
+    "filePreview": "Vista previa",
+    "fileSource": "Código",
+    "reloadFile": "Recargar",
+    "removeFileCard": "Quitar tarjeta de archivo",
+    "restartTerminal": "Reiniciar terminal",
+    "removeTerminalCard": "Quitar tarjeta de terminal",
+    "terminalNoDirectory": "Esta tarjeta no tiene directorio de trabajo",
+    "confirmDeleteTerminals": "Se cerrarán {count} terminal(es) en ejecución y se detendrán sus procesos.",
+    "confirmDeleteNotesAndTerminals": "Se eliminarán permanentemente {notes} nota(s) que escribiste y se detendrán {terminals} terminal(es) en ejecución."
   }
 }

@@ -127,6 +127,7 @@ import type {
   PreflightResult,
   FolderCommand,
   TerminalInfo,
+  TerminalSnapshot,
   PromptInputBlock,
   FileTreeNode,
   WorkspaceFileEntry,
@@ -2833,7 +2834,8 @@ export async function removeFolderLink(
 
 /** Input for `canvasCreateNode`. Binding fields are kind-specific (validated
  *  server-side): folder → folderId, group → folderGroupId, agent → agentType,
- *  conversation → conversationId; custom starts empty; note uses content. */
+ *  conversation → conversationId; custom starts empty; note uses content;
+ *  file and terminal use path. */
 export interface CreateCanvasNodeInput {
   kind: CanvasNodeKind
   folderId?: number
@@ -2842,6 +2844,9 @@ export interface CreateCanvasNodeInput {
   conversationId?: number
   title?: string
   content?: string
+  /** file → the document's absolute path; terminal → its working directory.
+   *  Required for those two kinds, rejected for the rest. */
+  path?: string
   color?: string
   /** Pinned grid axes (regions only); omitted / 0 = auto. */
   gridColumns?: number
@@ -4600,6 +4605,22 @@ export async function terminalResize(
   rows: number
 ): Promise<void> {
   return getTransport().call("terminal_resize", { terminalId, cols, rows })
+}
+
+/**
+ * Recent output of an already-running terminal, for a viewer attaching to a
+ * PTY it did not spawn (a canvas terminal card coming back from another
+ * route). `alive: false` is the settled answer "nothing to attach to" — spawn
+ * instead; it is never an error, so callers don't have to parse one.
+ *
+ * Subscribe to `terminal://output/<id>` BEFORE calling this, and drop the
+ * events whose `seq` is at or below the returned `seq` — that overlap is
+ * already in `data`. See `TerminalEvent.seq`.
+ */
+export async function terminalSnapshot(
+  terminalId: string
+): Promise<TerminalSnapshot> {
+  return getTransport().call("terminal_snapshot", { terminalId })
 }
 
 export async function terminalKill(terminalId: string): Promise<void> {

@@ -5761,6 +5761,23 @@
     "confirmDeleteCancel": "Abbrechen",
     "confirmDeleteConfirm": "Löschen",
     "canvasActions": "Leinwand-Aktionen",
-    "mergeIntoNewRegion": "Neuer Bereich"
+    "mergeIntoNewRegion": "Neuer Bereich",
+    "addFileCard": "Dateikarte",
+    "addTerminalCard": "Terminalkarte",
+    "searchFiles": "Dateien suchen…",
+    "searchFilesIn": "In {folder} suchen…",
+    "searchingFiles": "Wird gesucht…",
+    "noFiles": "Keine Dateien gefunden",
+    "noOpenFiles": "Keine Dateien geöffnet – tippen zum Suchen",
+    "browseForFile": "Durchsuchen…",
+    "filePreview": "Vorschau",
+    "fileSource": "Quelltext",
+    "reloadFile": "Neu laden",
+    "removeFileCard": "Dateikarte entfernen",
+    "restartTerminal": "Terminal neu starten",
+    "removeTerminalCard": "Terminalkarte entfernen",
+    "terminalNoDirectory": "Diese Karte hat kein Arbeitsverzeichnis",
+    "confirmDeleteTerminals": "{count} laufende Terminal(s) werden geschlossen und ihre Prozesse beendet.",
+    "confirmDeleteNotesAndTerminals": "{notes} von dir geschriebene Notiz(en) werden endgültig gelöscht und {terminals} laufende Terminal(s) beendet."
   }
 }

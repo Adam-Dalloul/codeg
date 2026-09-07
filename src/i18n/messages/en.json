@@ -5761,6 +5761,23 @@
     "confirmDeleteCancel": "Cancel",
     "confirmDeleteConfirm": "Delete",
     "canvasActions": "Canvas actions",
-    "mergeIntoNewRegion": "New region"
+    "mergeIntoNewRegion": "New region",
+    "addFileCard": "File card",
+    "addTerminalCard": "Terminal card",
+    "searchFiles": "Search files…",
+    "searchFilesIn": "Search in {folder}…",
+    "searchingFiles": "Searching…",
+    "noFiles": "No files found",
+    "noOpenFiles": "No files open — type to search",
+    "browseForFile": "Browse…",
+    "filePreview": "Preview",
+    "fileSource": "Source",
+    "reloadFile": "Reload",
+    "removeFileCard": "Remove file card",
+    "restartTerminal": "Restart terminal",
+    "removeTerminalCard": "Remove terminal card",
+    "terminalNoDirectory": "This card has no working directory",
+    "confirmDeleteTerminals": "{count} running terminal(s) will be closed and their processes stopped.",
+    "confirmDeleteNotesAndTerminals": "{notes} note(s) you wrote will be permanently deleted, and {terminals} running terminal(s) will be stopped."
   }
 }

@@ -1604,6 +1604,7 @@ mod tauri_app {
                 terminal_commands::terminal_spawn,
                 terminal_commands::terminal_write,
                 terminal_commands::terminal_resize,
+                terminal_commands::terminal_snapshot,
                 terminal_commands::terminal_kill,
                 terminal_commands::terminal_list,
                 mcp_commands::mcp_scan_local,

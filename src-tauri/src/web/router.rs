@@ -1659,6 +1659,10 @@ pub fn build_router(
             "/terminal_resize",
             post(handlers::terminal::terminal_resize),
         )
+        .route(
+            "/terminal_snapshot",
+            post(handlers::terminal::terminal_snapshot),
+        )
         .route("/terminal_kill", post(handlers::terminal::terminal_kill))
         .route("/terminal_list", post(handlers::terminal::terminal_list))
         // Catch-all
