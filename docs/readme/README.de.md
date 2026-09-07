@@ -64,7 +64,7 @@ Codeg bündelt die Sitzungen aller unterstützten Agenten-CLIs in einem durchsuc
       <a href="https://console.lqapi.xyz/sign-up?aff=KPy9" target="_blank"><img src="../images/lq-router.png" alt="LQ router" width="160" /></a><br/>
       <strong><a href="https://console.lqapi.xyz/sign-up?aff=KPy9">LQ router</a></strong>
     </td>
-    <td>Vielen Dank an den Relay-Dienst LQ router für die Unterstützung dieses Projekts! LQ router ist ein API-Aggregationsgateway auf Enterprise-Niveau für unabhängige Entwickler und technische Teams. Es bindet führende Modelle wie GPT, Claude, Grok und Gemini an, ist mit bestehenden Clients und dem OpenAI SDK kompatibel und nutzt einen dynamischen Kontenpool für intelligentes Routing – ein einziger Einstiegspunkt für alle Modellaufrufe. <a href="https://console.lqapi.xyz/sign-up?aff=KPy9">Über die offizielle Website der Gruppe beitreten und 1 USD Testguthaben erhalten</a>.</td>
+    <td>Vielen Dank an den Relay-Dienst LQ router für die Unterstützung dieses Projekts! LQ router ist ein professioneller KI-Relay-Dienst auf Enterprise-Niveau, der Unternehmen und einzelnen Entwicklern einen stabilen, effizienten und kostengünstigen Zugang zu KI-Modell-APIs bietet. Die Plattform unterstützt führende Modelle wie GPT, Claude, Grok und Gemini, mit Abrechnungsfaktoren für GPT Pro von nur 0,1×. <a href="https://console.lqapi.xyz/sign-up?aff=KPy9">Über die offizielle Website der Gruppe beitreten und 1 USD Testguthaben erhalten</a>.</td>
   </tr>
   <tr>
     <td align="center" width="220">

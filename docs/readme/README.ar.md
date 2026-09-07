@@ -64,7 +64,7 @@ Codeg (Code Generation) هو مساحة عمل برمجية متعددة الو�
       <a href="https://console.lqapi.xyz/sign-up?aff=KPy9" target="_blank"><img src="../images/lq-router.png" alt="LQ router" width="160" /></a><br/>
       <strong><a href="https://console.lqapi.xyz/sign-up?aff=KPy9">LQ router</a></strong>
     </td>
-    <td>شكراً لخدمة الترحيل LQ router على رعاية هذا المشروع! LQ router هي بوابة مؤسسية لتجميع واجهات API، مصممة للمطورين المستقلين والفرق التقنية. تتيح الوصول إلى النماذج الرائدة مثل GPT وClaude وGrok وGemini، وتتوافق مع العملاء الحاليين وOpenAI SDK، وتستخدم مجموعة حسابات ديناميكية للتوجيه الذكي — نقطة دخول واحدة لجميع استدعاءات النماذج. <a href="https://console.lqapi.xyz/sign-up?aff=KPy9">سجّل عبر الموقع الرسمي واحصل على رصيد تجريبي بقيمة دولار واحد</a>.</td>
+    <td>شكراً لخدمة الترحيل LQ router على رعاية هذا المشروع! LQ router هي خدمة ترحيل احترافية للذكاء الاصطناعي بمستوى المؤسسات، توفّر للشركات والمطورين الأفراد وصولاً مستقراً وفعّالاً ومنخفض التكلفة إلى واجهات API لنماذج الذكاء الاصطناعي. تدعم المنصة النماذج الرائدة مثل GPT وClaude وGrok وGemini، بمعامل تسعير لـ GPT Pro يبدأ من 0.1 فقط. <a href="https://console.lqapi.xyz/sign-up?aff=KPy9">انضم إلى المجموعة عبر الموقع الرسمي واحصل على رصيد تجريبي بقيمة دولار واحد</a>.</td>
   </tr>
   <tr>
     <td align="center" width="220">

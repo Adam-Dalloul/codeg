@@ -64,7 +64,7 @@ Codeg(Code Generation)는 멀티 에이전트 코딩 워크스페이스입니다
       <a href="https://console.lqapi.xyz/sign-up?aff=KPy9" target="_blank"><img src="../images/lq-router.png" alt="LQ router" width="160" /></a><br/>
       <strong><a href="https://console.lqapi.xyz/sign-up?aff=KPy9">LQ router</a></strong>
     </td>
-    <td>본 프로젝트를 후원해 주신 LQ router 중계 서비스에 감사드립니다! LQ router는 개인 개발자와 기술 팀을 위한 엔터프라이즈급 API 통합 게이트웨이입니다. GPT, Claude, Grok, Gemini 등 주요 모델을 연동하고 기존 클라이언트 및 OpenAI SDK와 호환되며, 동적 계정 풀을 이용한 지능형 라우팅으로 하나의 엔드포인트에서 여러 모델을 호출할 수 있습니다. <a href="https://console.lqapi.xyz/sign-up?aff=KPy9">공식 웹사이트에서 그룹에 참여하면 1달러 체험 크레딧을 받을 수 있습니다</a>.</td>
+    <td>본 프로젝트를 후원해 주신 LQ router 중계 서비스에 감사드립니다! LQ router는 전문 엔터프라이즈급 AI 중계 서비스로, 기업과 개인 개발자에게 안정적이고 효율적이며 저렴한 AI 모델 API 연동 서비스를 제공합니다. GPT, Claude, Grok, Gemini 등 주요 모델을 지원하며 GPT Pro 과금 배율은 최저 0.1배입니다. <a href="https://console.lqapi.xyz/sign-up?aff=KPy9">공식 웹사이트에서 그룹에 참여하면 1달러 체험 크레딧을 받을 수 있습니다</a>.</td>
   </tr>
   <tr>
     <td align="center" width="220">

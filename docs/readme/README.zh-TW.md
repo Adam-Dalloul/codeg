@@ -64,7 +64,7 @@ Codeg（Code Generation）是一個多智慧體編碼工作台：把所有 AI �
       <a href="https://console.lqapi.xyz/sign-up?aff=KPy9" target="_blank"><img src="../images/lq-router.png" alt="LQ router" width="160" /></a><br/>
       <strong><a href="https://console.lqapi.xyz/sign-up?aff=KPy9">LQ router</a></strong>
     </td>
-    <td>感謝 LQ router 中轉站對本專案的贊助！LQ router 是面向獨立開發者與技術團隊的企業級 API 聚合閘道。接入 GPT、Claude、Grok、Gemini 等主流模型，相容現有用戶端與 OpenAI SDK，透過動態帳戶池進行智慧路由，一個入口即可完成多模型呼叫。<a href="https://console.lqapi.xyz/sign-up?aff=KPy9">官網進群贈送 1 美元體驗金</a>。</td>
+    <td>感謝 LQ router 中轉站對本專案的贊助！LQ router 是一家專業的企業級 AI 中轉站，為企業與個人開發者提供穩定、高效、低成本的 AI 模型 API 接入服務。平台支援 GPT、Claude、Grok、Gemini 等主流模型，GPT Pro 倍率低至 0.1。<a href="https://console.lqapi.xyz/sign-up?aff=KPy9">官網進群贈送 1 美元體驗金</a>。</td>
   </tr>
   <tr>
     <td align="center" width="220">

@@ -64,7 +64,7 @@ Reúne las sesiones de todas las CLI de agentes compatibles en un único espacio
       <a href="https://console.lqapi.xyz/sign-up?aff=KPy9" target="_blank"><img src="../images/lq-router.png" alt="LQ router" width="160" /></a><br/>
       <strong><a href="https://console.lqapi.xyz/sign-up?aff=KPy9">LQ router</a></strong>
     </td>
-    <td>¡Gracias al servicio de retransmisión LQ router por patrocinar este proyecto! LQ router es una pasarela empresarial de agregación de API para desarrolladores independientes y equipos técnicos. Integra modelos líderes como GPT, Claude, Grok y Gemini, es compatible con clientes existentes y con el SDK de OpenAI, y utiliza un grupo dinámico de cuentas para el enrutamiento inteligente: un único punto de entrada para todas las llamadas a modelos. <a href="https://console.lqapi.xyz/sign-up?aff=KPy9">Regístrate en el sitio web oficial y recibe 1 USD de crédito de prueba</a>.</td>
+    <td>¡Gracias al servicio de retransmisión LQ router por patrocinar este proyecto! LQ router es un servicio profesional de retransmisión de IA de nivel empresarial que ofrece a empresas y desarrolladores individuales un acceso estable, eficiente y de bajo coste a las API de modelos de IA. La plataforma admite modelos líderes como GPT, Claude, Grok y Gemini, con multiplicadores de tarifa de GPT Pro desde tan solo 0,1×. <a href="https://console.lqapi.xyz/sign-up?aff=KPy9">Únete al grupo desde el sitio web oficial y recibe 1 USD de crédito de prueba</a>.</td>
   </tr>
   <tr>
     <td align="center" width="220">
