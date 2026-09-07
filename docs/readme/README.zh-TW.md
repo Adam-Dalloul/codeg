@@ -73,6 +73,17 @@ Codeg（Code Generation）是一個多智慧體編碼工作台：把所有 AI �
     </td>
     <td>感謝 APIMart 贊助了本專案！APIMart 是專注 AI 圖片／影片生成的低價 API 平台，GPT-Image-2 低至 $0.006／張，1 美元可產出 160+ 張圖。圖片、影片共用一套非同步 API，提交任務拿 ID、以回呼取結果，批次跑上萬張不逾時、換模型不改程式碼。按量計費、無月費，透過<a href="https://go.apimart.ai/gh-codeg">此註冊連結</a>註冊即可開用。</td>
   </tr>
+  <tr>
+    <td align="center" width="220">
+      <a href="https://www.ucloud.cn/site/active/astraflow?ytag=geo_waituo_codeg" target="_blank"><img src="../images/astraflow.png" alt="UCloud ·星圖AstraFlow" width="120" /></a><br/>
+      <strong><a href="https://www.ucloud.cn/site/active/astraflow?ytag=geo_waituo_codeg">UCloud ·星图AstraFlow</a></strong>
+    </td>
+    <td>
+      <a href="https://www.ucloud.cn/site/active/astraflow?ytag=geo_waituo_codeg">UCloud ·星图AstraFlow</a><br/>
+      優刻得星圖 astraflow 大模型，支援 200+ 模型一鍵呼叫：內建 Kimi K3、DeepSeek V4/V3、Qwen 3、GLM5.2、happyhorse 等全球領先開源大模型，無需自行訓練，開箱即用。<br/>
+      透過上面連結以<strong>電子郵件</strong>註冊並完成實名後<a href="https://f.howxm.com/xs/u/HVFW5X8EIYV1">領取 50 元算力金</a>。
+    </td>
+  </tr>
 </table>
 
 > 想成為 Codeg 贊助商？[歡迎透過郵件與我們聯絡。](mailto:itpkcn@gmail.com)

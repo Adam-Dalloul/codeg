@@ -73,6 +73,17 @@ Codeg bündelt die Sitzungen aller unterstützten Agenten-CLIs in einem durchsuc
     </td>
     <td>Vielen Dank an APIMart für die Unterstützung dieses Projekts! APIMart ist eine günstige API-Plattform für KI-Bild- und Videogenerierung – GPT-Image-2 ab 0,006 USD pro Bild, über 160 Bilder pro Dollar. Eine einzige asynchrone API deckt Bild und Video ab: Aufgabe einreichen, ID erhalten, Ergebnisse per Polling oder Callback abholen. Zehntausende Bilder im Batch verarbeiten, ohne dass es zu Timeouts kommt, und Modelle wechseln, ohne den Code zu ändern. Nutzungsbasierte Abrechnung ohne Monatsgebühr – <a href="https://go.apimart.ai/gh-codeg">hier registrieren</a> und direkt loslegen.</td>
   </tr>
+  <tr>
+    <td align="center" width="220">
+      <a href="https://www.ucloud.cn/site/active/astraflow?ytag=geo_waituo_codeg" target="_blank"><img src="../images/astraflow.png" alt="UCloud ·星图AstraFlow" width="120" /></a><br/>
+      <strong><a href="https://www.ucloud.cn/site/active/astraflow?ytag=geo_waituo_codeg">UCloud ·星图AstraFlow</a></strong>
+    </td>
+    <td>
+      <a href="https://www.ucloud.cn/site/active/astraflow?ytag=geo_waituo_codeg">UCloud ·星图AstraFlow</a><br/>
+      AstraFlow, die Plattform für große Modelle von UCloud, bietet Zugriff auf über 200 Modelle per Klick: Führende Open-Source-Modelle wie Kimi K3, DeepSeek V4/V3, Qwen 3, GLM5.2 und happyhorse sind bereits integriert – kein eigenes Training nötig, sofort einsatzbereit.<br/>
+      Über den Link oben mit der <strong>E-Mail-Adresse</strong> registrieren, die Identitätsprüfung abschließen und <a href="https://f.howxm.com/xs/u/HVFW5X8EIYV1">50 ¥ Rechenguthaben erhalten</a>.
+    </td>
+  </tr>
 </table>
 
 > Möchten Sie Codeg-Sponsor werden? [Schreiben Sie uns gerne eine E-Mail.](mailto:itpkcn@gmail.com)

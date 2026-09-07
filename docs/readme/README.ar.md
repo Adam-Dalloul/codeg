@@ -73,6 +73,17 @@ Codeg (Code Generation) هو مساحة عمل برمجية متعددة الو�
     </td>
     <td>شكراً لـ APIMart على رعاية هذا المشروع! APIMart منصة API منخفضة التكلفة متخصصة في توليد الصور والفيديو بالذكاء الاصطناعي — GPT-Image-2 ابتداءً من 0.006 دولار للصورة، أي أكثر من 160 صورة بالدولار الواحد. واجهة API واحدة غير متزامنة تغطي الصور والفيديو معاً: أرسل المهمة، واحصل على معرّف، ثم استرجع النتائج عبر الاستطلاع أو عبر رد النداء. عالج عشرات الآلاف من الصور دفعةً واحدة دون انتهاء المهلة، وبدّل النماذج دون تغيير الشيفرة. الدفع حسب الاستخدام دون رسوم شهرية — <a href="https://go.apimart.ai/gh-codeg">سجّل من هنا</a> للبدء.</td>
   </tr>
+  <tr>
+    <td align="center" width="220">
+      <a href="https://www.ucloud.cn/site/active/astraflow?ytag=geo_waituo_codeg" target="_blank"><img src="../images/astraflow.png" alt="UCloud ·星图AstraFlow" width="120" /></a><br/>
+      <strong><a href="https://www.ucloud.cn/site/active/astraflow?ytag=geo_waituo_codeg">UCloud ·星图AstraFlow</a></strong>
+    </td>
+    <td>
+      <a href="https://www.ucloud.cn/site/active/astraflow?ytag=geo_waituo_codeg">UCloud ·星图AstraFlow</a><br/>
+      منصة النماذج الكبيرة AstraFlow من UCloud تتيح استدعاء أكثر من 200 نموذج بنقرة واحدة: تتضمّن نماذج مفتوحة المصدر رائدة عالمياً مثل Kimi K3 وDeepSeek V4/V3 وQwen 3 وGLM5.2 وhappyhorse، دون الحاجة إلى تدريب خاص بك، وجاهزة للاستخدام مباشرة.<br/>
+      سجّل عبر الرابط أعلاه باستخدام <strong>البريد الإلكتروني</strong>، وأكمل التحقق من الهوية، ثم <a href="https://f.howxm.com/xs/u/HVFW5X8EIYV1">احصل على 50 يواناً من رصيد الحوسبة</a>.
+    </td>
+  </tr>
 </table>
 
 > هل ترغب في أن تصبح راعياً لـ Codeg؟ [راسلنا عبر البريد الإلكتروني.](mailto:itpkcn@gmail.com)

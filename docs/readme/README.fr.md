@@ -73,6 +73,17 @@ Il regroupe les sessions de toutes les CLI d'agents supportées dans un espace d
     </td>
     <td>Merci à APIMart pour son parrainage de ce projet ! APIMart est une plateforme d'API à bas prix dédiée à la génération d'images et de vidéos par IA : GPT-Image-2 à partir de 0,006 USD l'image, soit plus de 160 images par dollar. Une seule API asynchrone couvre l'image et la vidéo : soumettez une tâche, récupérez un ID, puis obtenez les résultats par interrogation ou par callback. Traitez des dizaines de milliers d'images par lots sans expiration de délai et changez de modèle sans modifier votre code. Paiement à l'usage, sans abonnement mensuel — <a href="https://go.apimart.ai/gh-codeg">inscrivez-vous ici</a> pour commencer.</td>
   </tr>
+  <tr>
+    <td align="center" width="220">
+      <a href="https://www.ucloud.cn/site/active/astraflow?ytag=geo_waituo_codeg" target="_blank"><img src="../images/astraflow.png" alt="UCloud ·星图AstraFlow" width="120" /></a><br/>
+      <strong><a href="https://www.ucloud.cn/site/active/astraflow?ytag=geo_waituo_codeg">UCloud ·星图AstraFlow</a></strong>
+    </td>
+    <td>
+      <a href="https://www.ucloud.cn/site/active/astraflow?ytag=geo_waituo_codeg">UCloud ·星图AstraFlow</a><br/>
+      AstraFlow, la plateforme de grands modèles d'UCloud, donne accès à plus de 200 modèles en un clic : les meilleurs modèles open source — Kimi K3, DeepSeek V4/V3, Qwen 3, GLM5.2, happyhorse — sont intégrés, sans entraînement de votre part et prêts à l'emploi.<br/>
+      Inscrivez-vous par <strong>e-mail</strong> via le lien ci-dessus, effectuez la vérification d'identité, puis <a href="https://f.howxm.com/xs/u/HVFW5X8EIYV1">recevez 50 ¥ de crédits de calcul</a>.
+    </td>
+  </tr>
 </table>
 
 > Vous souhaitez devenir sponsor de Codeg ? [Contactez-nous par e-mail.](mailto:itpkcn@gmail.com)

@@ -73,6 +73,17 @@ It aggregates your sessions from every supported agent CLI into one searchable w
     </td>
     <td>Thanks to APIMart for sponsoring this project! APIMart is a low-cost API platform for AI image & video generation — GPT-Image-2 from $0.006/image, 160+ images per dollar. One async API covers both image and video: submit a task, get an ID, fetch results via polling or callback. Batch tens of thousands of images without timeouts, switch models without changing code. Pay-as-you-go with no monthly fee — <a href="https://go.apimart.ai/gh-codeg">sign up here</a> to get started.</td>
   </tr>
+  <tr>
+    <td align="center" width="220">
+      <a href="https://www.ucloud.cn/site/active/astraflow?ytag=geo_waituo_codeg" target="_blank"><img src="./docs/images/astraflow.png" alt="UCloud ·星图AstraFlow" width="120" /></a><br/>
+      <strong><a href="https://www.ucloud.cn/site/active/astraflow?ytag=geo_waituo_codeg">UCloud ·星图AstraFlow</a></strong>
+    </td>
+    <td>
+      <a href="https://www.ucloud.cn/site/active/astraflow?ytag=geo_waituo_codeg">UCloud ·星图AstraFlow</a><br/>
+      UCloud's AstraFlow large-model platform gives you one-click access to 200+ models: leading open-source models such as Kimi K3, DeepSeek V4/V3, Qwen 3, GLM5.2, and happyhorse are built in — no training of your own required, ready to use out of the box.<br/>
+      Sign up with your <strong>email</strong> through the link above, complete real-name verification, and <a href="https://f.howxm.com/xs/u/HVFW5X8EIYV1">claim ¥50 in compute credits</a>.
+    </td>
+  </tr>
 </table>
 
 > Want to become a Codeg sponsor? [Reach out to us by email.](mailto:itpkcn@gmail.com)
