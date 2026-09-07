@@ -190,6 +190,21 @@ describe("where reopen-last-closed-tab puts the tab back", () => {
     expect(ids()).toEqual([tabId(1), tabId(2), tabId(3), draft])
   })
 
+  // The replacement draft a close-all spawns IS what a reopened draft entry
+  // resolves to (per-group draft singleton), so it has to take the closed
+  // draft's slot — otherwise the strip comes back with the draft shunted to
+  // the end.
+  it("rebuilds a closed-all strip that held a draft", () => {
+    seedTabs([conversationTab(1), draftTab("new-1"), conversationTab(3)])
+    useTabStore.getState().closeAllTabs()
+    const [draft] = ids()
+
+    reopenLast()
+    reopenLast()
+    reopenLast()
+    expect(ids()).toEqual([tabId(1), draft, tabId(3)])
+  })
+
   it("restores a closed draft at its slot", () => {
     seedTabs([conversationTab(1), draftTab("new-1"), conversationTab(3)])
     useTabStore.getState().closeTab("new-1")

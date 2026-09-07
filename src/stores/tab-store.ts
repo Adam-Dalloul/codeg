@@ -265,9 +265,10 @@ export interface TabStoreState {
        *  agent (e.g. "ask about this selection" continues the conversation the
        *  text came from), not merely suggest one. */
       forceAgent?: AgentType
-      /** rawTabs slot for a NEW draft (clamped); omitted = append. Reopening
-       *  a closed draft passes the slot it was closed from. Ignored when the
-       *  target group's existing draft is reused instead. */
+      /** rawTabs slot for the draft (clamped); omitted = append / leave put.
+       *  Reopening a closed draft passes the slot it was closed from — and
+       *  since the per-group singleton may hand it the group's EXISTING draft
+       *  instead of a new tab, that draft is moved to the slot. */
       index?: number
     }
   ) => OpenedDraftTarget
@@ -467,6 +468,11 @@ function findTabIndexForConversation(
   )
 }
 
+/** A requested slot clamped to a strip of `length`. */
+function clampSlot(index: number, length: number): number {
+  return Math.max(0, Math.min(index, length))
+}
+
 /** `tabs` with `tab` inserted at `index`, clamped to the array, or appended
  *  when no index is given. Reopening a closed tab passes the slot it was
  *  closed from, so it goes back where it was rather than to the end. */
@@ -475,9 +481,25 @@ function insertTab(
   tab: TabItemInternal,
   index: number | undefined
 ): TabItemInternal[] {
-  const at =
-    index == null ? tabs.length : Math.max(0, Math.min(index, tabs.length))
+  const at = index == null ? tabs.length : clampSlot(index, tabs.length)
   return [...tabs.slice(0, at), tab, ...tabs.slice(at)]
+}
+
+/** `tabs` with the tab already at `tabId` moved to `index` (clamped) — the same
+ *  array back when it is absent or already there, so callers can skip the write.
+ *  Reopening a closed DRAFT lands here: the per-group draft singleton hands the
+ *  reopen an existing draft instead of a new tab, and that draft still has to
+ *  take the closed one's slot. */
+function moveTabToSlot(
+  tabs: TabItemInternal[],
+  tabId: string,
+  index: number
+): TabItemInternal[] {
+  const from = tabs.findIndex((t) => t.id === tabId)
+  if (from < 0) return tabs
+  const without = tabs.filter((t) => t.id !== tabId)
+  if (clampSlot(index, without.length) === from) return tabs
+  return insertTab(without, tabs[from], index)
 }
 
 /** Field-wise equality for derived tab items. Backs the cross-derive reuse in
@@ -1725,8 +1747,20 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
     const provisionalChanged =
       (existingTab.agentTypeProvisional ?? false) !== provisional
 
+    // The singleton means a reopened draft resolves to THIS draft rather than a
+    // tab of its own, so the slot it was closed from has to move this one — a
+    // close-all walked back would otherwise leave the draft shunted to the end
+    // of the strip it is meant to rebuild. Only the reopen path passes an
+    // index, and drafts never reach `buildPersistItems`, so no save fires.
+    const nextRawTabs =
+      options?.index == null
+        ? prevState.rawTabs
+        : moveTabToSlot(prevState.rawTabs, existingTab.id, options.index)
+    const moved = nextRawTabs !== prevState.rawTabs
+
     if (folderChanged || agentChanged) {
       set({
+        ...(moved ? { rawTabs: nextRawTabs } : {}),
         draftRetargetRequests: [
           ...prevState.draftRetargetRequests,
           {
@@ -1740,15 +1774,19 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
         ],
       })
       focusTab(existingTab.id)
+      if (moved) recomputeTabs()
     } else if (workingDirChanged || provisionalChanged) {
       set({
-        rawTabs: prevState.rawTabs.map((tab) =>
+        rawTabs: nextRawTabs.map((tab) =>
           tab.id === existingTab.id
             ? { ...tab, workingDir, agentTypeProvisional: provisional }
             : tab
         ),
         activeTabId: existingTab.id,
       })
+      recomputeTabs()
+    } else if (moved) {
+      set({ rawTabs: nextRawTabs, activeTabId: existingTab.id })
       recomputeTabs()
     } else {
       focusTab(existingTab.id)
