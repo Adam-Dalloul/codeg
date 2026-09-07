@@ -639,6 +639,7 @@ fn strip_environment_details(text: &str) -> String {
 
     // Remove <environment_details>...</environment_details>
     while let Some(start) = result.find(ENV_OPEN) {
+        let before = result.len();
         let inner_start = start + ENV_OPEN.len();
         if let Some(close) = result[inner_start..].find(ENV_CLOSE) {
             let end = inner_start + close + ENV_CLOSE.len();
@@ -647,6 +648,16 @@ fn strip_environment_details(text: &str) -> String {
             // Unclosed tag — remove from start to end
             result = result[..start].to_string();
         }
+        // Searching the closing tag from `inner_start` is what keeps every
+        // pass strictly shorter, and a pass that does not shrink is a pass
+        // this loop repeats forever. Asserted rather than left implied
+        // because the regression it guards grew the string exponentially: a
+        // test that trips it again would hang the run and exhaust memory
+        // instead of failing, and this fails it on the first pass.
+        debug_assert!(
+            result.len() < before,
+            "environment strip must shrink the message on every pass"
+        );
     }
 
     // Remove <task>...</task> wrappers, keeping inner content
@@ -765,6 +776,61 @@ mod tests {
         assert_eq!(
             strip_environment_details(text),
             "intro\n\n# Notes\nkeep this\n<read_file>\n<path>src/main.rs</path>\n</read_file>"
+        );
+    }
+
+    /// The block Cline really sends, so the boundary above is pinned against
+    /// the shape it exists for and not only against the synthetic one. Cline
+    /// pushes the focus-chain instructions as their own content part
+    /// (`FocusChainManager.generateFocusChainInstructions` →
+    /// `userContent.push`), and no line inside them opens with `#` or `<`, so
+    /// both searches come back empty and the whole block runs off the end of
+    /// the string. Ending at the first boundary therefore changes nothing for
+    /// a real transcript. Text mirrors cline's
+    /// `src/core/task/focus-chain/prompts.ts`.
+    #[test]
+    fn the_real_task_progress_block_is_removed_whole() {
+        let recommended = "\n\
+             # task_progress RECOMMENDED\n\
+             \n\
+             When starting a new task, it is recommended to include a todo list \
+             using the task_progress parameter.\n\
+             \n\
+             \n\
+             1. Include a todo list using the task_progress parameter in your next tool call\n\
+             2. Create a comprehensive checklist of all steps needed\n\
+             3. Use markdown format: - [ ] for incomplete, - [x] for complete\n\
+             \n\
+             **Benefits of creating a todo/task_progress list now:**\n\
+             \t- Clear roadmap for implementation\n\
+             \t- Progress tracking throughout the task\n\
+             \t- Nothing gets forgotten or missed\n\
+             \t- Users can see, monitor, and edit the plan\n\
+             \n\
+             **Example structure:**```\n\
+             - [ ] Analyze requirements\n\
+             - [ ] Set up necessary files\n\
+             - [ ] Implement main functionality\n\
+             - [ ] Handle edge cases\n\
+             - [ ] Test the implementation\n\
+             - [ ] Verify results```\n\
+             \n\
+             Keeping the task_progress list updated helps track progress and \
+             ensures nothing is missed.\n";
+        assert!(recommended.starts_with("\n# task_progress RECOMMENDED\n"));
+        assert_eq!(strip_environment_details(recommended), "");
+    }
+
+    /// Every index this file splices on comes from `str::find` and is a byte
+    /// offset, so a message in a non-ASCII script has to come through intact:
+    /// an offset that lands inside a multi-byte character panics with `byte
+    /// index is not a char boundary` on the very next slice.
+    #[test]
+    fn multibyte_text_around_the_markers_survives() {
+        let quoted = "环境说明 </environment_details> 是什么？🎉";
+        assert_eq!(
+            strip_environment_details(&cline_user_message(quoted)),
+            quoted
         );
     }
 
