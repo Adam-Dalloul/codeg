@@ -3249,9 +3249,12 @@
         "openInFileManager": "파일 관리자에서 열기",
         "copyRelativePath": "상대 경로 복사",
         "copyAbsolutePath": "절대 경로 복사",
+        "download": "파일 다운로드",
         "pathCopied": "경로가 복사되었습니다",
         "copyPathFailed": "경로 복사에 실패했습니다",
-        "openFailed": "로컬 파일 열기 실패"
+        "openFailed": "로컬 파일 열기 실패",
+        "downloadSaved": "{name} 다운로드 완료",
+        "downloadFailed": "{name} 다운로드 실패"
       },
       "messageList": {
         "attachedResources": "첨부된 리소스",

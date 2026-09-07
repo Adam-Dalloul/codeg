@@ -3249,9 +3249,12 @@
         "openInFileManager": "Abrir en el gestor de archivos",
         "copyRelativePath": "Copiar ruta relativa",
         "copyAbsolutePath": "Copiar ruta absoluta",
+        "download": "Descargar archivo",
         "pathCopied": "Ruta copiada",
         "copyPathFailed": "No se pudo copiar la ruta",
-        "openFailed": "Error al abrir el archivo local"
+        "openFailed": "Error al abrir el archivo local",
+        "downloadSaved": "{name} descargado",
+        "downloadFailed": "No se pudo descargar {name}"
       },
       "messageList": {
         "attachedResources": "Recursos adjuntos",

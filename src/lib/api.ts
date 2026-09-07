@@ -3994,7 +3994,7 @@ export interface UploadWorkspaceFileResult {
  * Tauri window (no remote binding) is rejected, because it has its own
  * native file dialogs and these helpers would just be the wrong tool.
  */
-function isWorkspaceFileApiAvailable(): boolean {
+export function isWorkspaceFileApiAvailable(): boolean {
   return !isDesktop() || isRemoteDesktopMode()
 }
 

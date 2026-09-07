@@ -3249,9 +3249,12 @@
         "openInFileManager": "在檔案管理器開啟",
         "copyRelativePath": "複製相對路徑",
         "copyAbsolutePath": "複製絕對路徑",
+        "download": "下載檔案",
         "pathCopied": "已複製路徑",
         "copyPathFailed": "複製路徑失敗",
-        "openFailed": "開啟本地檔案失敗"
+        "openFailed": "開啟本地檔案失敗",
+        "downloadSaved": "已下載 {name}",
+        "downloadFailed": "下載 {name} 失敗"
       },
       "messageList": {
         "attachedResources": "附加資源",

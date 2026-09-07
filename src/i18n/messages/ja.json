@@ -3249,9 +3249,12 @@
         "openInFileManager": "ファイルマネージャーで開く",
         "copyRelativePath": "相対パスをコピー",
         "copyAbsolutePath": "絶対パスをコピー",
+        "download": "ファイルをダウンロード",
         "pathCopied": "パスをコピーしました",
         "copyPathFailed": "パスのコピーに失敗しました",
-        "openFailed": "ローカルファイルを開けませんでした"
+        "openFailed": "ローカルファイルを開けませんでした",
+        "downloadSaved": "{name} をダウンロードしました",
+        "downloadFailed": "{name} のダウンロードに失敗しました"
       },
       "messageList": {
         "attachedResources": "添付リソース",

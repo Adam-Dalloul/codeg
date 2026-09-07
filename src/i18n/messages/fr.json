@@ -3249,9 +3249,12 @@
         "openInFileManager": "Ouvrir dans le gestionnaire de fichiers",
         "copyRelativePath": "Copier le chemin relatif",
         "copyAbsolutePath": "Copier le chemin absolu",
+        "download": "Télécharger le fichier",
         "pathCopied": "Chemin copié",
         "copyPathFailed": "Échec de la copie du chemin",
-        "openFailed": "Échec de l'ouverture du fichier local"
+        "openFailed": "Échec de l'ouverture du fichier local",
+        "downloadSaved": "{name} téléchargé",
+        "downloadFailed": "Échec du téléchargement de {name}"
       },
       "messageList": {
         "attachedResources": "Ressources jointes",

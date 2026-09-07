@@ -3249,9 +3249,12 @@
         "openInFileManager": "Open in file manager",
         "copyRelativePath": "Copy relative path",
         "copyAbsolutePath": "Copy absolute path",
+        "download": "Download file",
         "pathCopied": "Path copied",
         "copyPathFailed": "Failed to copy path",
-        "openFailed": "Failed to open local file"
+        "openFailed": "Failed to open local file",
+        "downloadSaved": "Downloaded {name}",
+        "downloadFailed": "Failed to download {name}"
       },
       "messageList": {
         "attachedResources": "Attached resources",

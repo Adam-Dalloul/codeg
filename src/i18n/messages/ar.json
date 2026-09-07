@@ -3249,9 +3249,12 @@
         "openInFileManager": "فتح في مدير الملفات",
         "copyRelativePath": "نسخ المسار النسبي",
         "copyAbsolutePath": "نسخ المسار المطلق",
+        "download": "تنزيل ملف",
         "pathCopied": "تم نسخ المسار",
         "copyPathFailed": "فشل نسخ المسار",
-        "openFailed": "فشل فتح الملف المحلي"
+        "openFailed": "فشل فتح الملف المحلي",
+        "downloadSaved": "تم تنزيل {name}",
+        "downloadFailed": "فشل تنزيل {name}"
       },
       "messageList": {
         "attachedResources": "الموارد المرفقة",

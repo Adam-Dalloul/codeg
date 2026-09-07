@@ -3249,9 +3249,12 @@
         "openInFileManager": "Im Dateimanager öffnen",
         "copyRelativePath": "Relativen Pfad kopieren",
         "copyAbsolutePath": "Absoluten Pfad kopieren",
+        "download": "Datei herunterladen",
         "pathCopied": "Pfad kopiert",
         "copyPathFailed": "Pfad konnte nicht kopiert werden",
-        "openFailed": "Lokale Datei konnte nicht geöffnet werden"
+        "openFailed": "Lokale Datei konnte nicht geöffnet werden",
+        "downloadSaved": "{name} heruntergeladen",
+        "downloadFailed": "Herunterladen von {name} fehlgeschlagen"
       },
       "messageList": {
         "attachedResources": "Angehängte Ressourcen",
