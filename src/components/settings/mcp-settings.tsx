@@ -105,11 +105,12 @@ const APP_OPTIONS: { value: McpAppType; label: string }[] = [
   { value: "antigravity", label: "Google Antigravity" },
 ]
 
-// The backend SCANS one more agent than it lets you assign to: OpenClaw is read
-// back so existing entries survive, but is not an assignable target (see the
-// note in APP_OPTIONS). A scan warning can still name it, so it needs a label.
+// These sources are discovered and existing assignments are preserved on save,
+// but are not marketplace targets. pi requires a separately installed MCP
+// extension; discovering its config does not enable native/ACP MCP support.
 const SCAN_ONLY_APP_LABELS: Partial<Record<McpAppType, string>> = {
   open_claw: "OpenClaw",
+  pi: "pi",
 }
 
 function appLabel(app: McpAppType): string {
@@ -287,6 +288,7 @@ function appsToDraft(apps: McpAppType[]): Record<McpAppType, boolean> {
     deepseek: appSet.has("deepseek"),
     qoder: appSet.has("qoder"),
     antigravity: appSet.has("antigravity"),
+    pi: appSet.has("pi"),
   }
 }
 

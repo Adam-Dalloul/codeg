@@ -3833,6 +3833,7 @@ export type McpAppType =
   | "deepseek"
   | "qoder"
   | "antigravity"
+  | "pi"
 
 export interface LocalMcpServer {
   id: string
