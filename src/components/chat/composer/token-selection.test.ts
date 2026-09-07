@@ -112,6 +112,19 @@ describe("selectTokenForContextMenu", () => {
     expect(selectedText(target)).toBe("adam@example.com")
   })
 
+  it("reports no token for a hand-made selection that crosses a line break", () => {
+    // The two halves are one token only once the break between them is dropped;
+    // `https://example.com/private` is nowhere in the document, so the menu must
+    // not offer to open it.
+    const target = makeEditor("https://example.com\n/private")
+    target.commands.setTextSelection({ from: pos(0), to: pos(28) })
+    vi.spyOn(target.view, "posAtCoords").mockReturnValue(hitAt(pos(10)))
+
+    expect(selectTokenForContextMenu(target, 40, 12)).toBeNull()
+    // …and the selection the user made is still theirs.
+    expect(target.state.selection.from).toBe(pos(0))
+  })
+
   it("moves to the new token when the click lands outside the selection", () => {
     const target = makeEditor("alpha beta gamma")
     target.commands.setTextSelection({ from: pos(0), to: pos(5) })

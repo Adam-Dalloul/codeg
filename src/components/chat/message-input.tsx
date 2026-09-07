@@ -1021,7 +1021,10 @@ export function MessageInput({
   // Opening the custom right-click menu: snapshot whether there's a selection
   // (gates Cut/Copy — the token selection above has usually just made one) and
   // refresh the quick-messages list. The editor keeps its selection while the
-  // menu is open, so Paste / a quick message lands back at the same caret.
+  // menu is open (`InactiveSelectionHighlight` keeps it painted too), so an
+  // insert lands back where the right click was. Note the token selection makes
+  // that an insert OVER the token: Paste and a quick message replace the
+  // highlighted run, the way typing over any selection does.
   const handleContextMenuOpenChange = useCallback(
     (open: boolean) => {
       if (!open) {

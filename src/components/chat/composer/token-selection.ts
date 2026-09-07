@@ -47,7 +47,12 @@ export function composerTokenAt(
 /** The whole selection read as one token, or null when it is not one. */
 function selectedToken(editor: Editor): TextToken | null {
   const { from, to } = editor.state.selection
-  const text = editor.state.doc.textBetween(from, to)
+  // Both separators are a newline so anything that is not plain text — a
+  // reference badge, a hard break, a paragraph boundary — reads as whitespace.
+  // A token can never contain whitespace, so a selection spanning one of those
+  // reports no token instead of gluing the two halves into an address or a url
+  // that is nowhere in the document (`https://example.com` ⏎ `/private`).
+  const text = editor.state.doc.textBetween(from, to, "\n", "\n")
   const token = textTokenAt(text, 0)
   if (!token || token.start !== 0 || token.end !== text.length) return null
   return token
