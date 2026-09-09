@@ -1445,6 +1445,83 @@ fn unwrap_code_mode_script(
     )
 }
 
+#[derive(Debug)]
+struct CompletedMcpCall {
+    id: String,
+    server: String,
+    tool: String,
+    input_preview: Option<String>,
+    output_preview: Option<String>,
+    is_error: bool,
+}
+
+fn completed_mcp_call(payload: &serde_json::Value) -> Option<CompletedMcpCall> {
+    let item = payload.get("item")?;
+    if item.get("type").and_then(|v| v.as_str()) != Some("McpToolCall") {
+        return None;
+    }
+    let result = item.get("result");
+    let output_preview = result
+        .and_then(|result| result.get("content"))
+        .and_then(crate::parsers::pi::tool_result_content_text)
+        .or_else(|| {
+            result
+                .and_then(|result| result.get("structuredContent"))
+                .and_then(|value| serde_json::to_string(value).ok())
+        });
+    Some(CompletedMcpCall {
+        id: item.get("id")?.as_str()?.to_string(),
+        server: item.get("server")?.as_str()?.to_string(),
+        tool: item.get("tool")?.as_str()?.to_string(),
+        input_preview: value_to_preview(item.get("arguments")),
+        is_error: result
+            .and_then(|result| result.get("isError"))
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false)
+            || infer_tool_call_output_is_error(item, result, output_preview.as_deref()),
+        output_preview,
+    })
+}
+
+fn unwrap_completed_mcp_calls(
+    script: &CodeModeScript,
+    completed: Vec<CompletedMcpCall>,
+) -> Option<(Vec<ContentBlock>, Vec<ContentBlock>)> {
+    if script.tool_names.len() != completed.len() || script.tool_names.is_empty() {
+        return None;
+    }
+    let names_match = script
+        .tool_names
+        .iter()
+        .zip(&completed)
+        .all(|(tool_name, item)| {
+            let server = item.server.replace('-', "_");
+            tool_name == &format!("mcp__{server}__{}", item.tool)
+        });
+    if !names_match {
+        return None;
+    }
+    let mut uses = Vec::with_capacity(completed.len());
+    let mut results = Vec::with_capacity(completed.len());
+    for (index, item) in completed.into_iter().enumerate() {
+        uses.push(ContentBlock::ToolUse {
+            tool_use_id: Some(item.id.clone()),
+            tool_name: script.tool_names[index].clone(),
+            input_preview: item.input_preview,
+            status: Some("completed".into()),
+            meta: None,
+        });
+        results.push(ContentBlock::ToolResult {
+            tool_use_id: Some(item.id),
+            output_preview: item.output_preview,
+            is_error: item.is_error,
+            agent_stats: None,
+            images: Vec::new(),
+        });
+    }
+    Some((uses, results))
+}
+
 /// What the renderer needs to know about a call recovered from a code-mode
 /// script, as facts rather than prose: the backend states them, the frontend
 /// words them in the reader's language.
@@ -2822,6 +2899,11 @@ impl CodexParser {
         // that message's blocks once it knows how many `text()` chunks came
         // back. See `parsers/codex_code_mode.rs`.
         let mut pending_exec_scripts: HashMap<String, (usize, CodeModeScript)> = HashMap::new();
+        // App-server persists each MCP call executed inside a code-mode script
+        // as a semantic `item_completed.McpToolCall`. Keep those authoritative
+        // ids/results with the sole open script; its output can then replace the
+        // wrapper even when several results were printed as one JSON chunk.
+        let mut completed_mcp_by_exec: HashMap<String, Vec<CompletedMcpCall>> = HashMap::new();
         // `exec_command` call_id → the command it ran, and the background shell
         // sessions that command's output announced (`session id → command`).
         // A later `wait` / `write_stdin` carries only the session id, so this is
@@ -3303,6 +3385,36 @@ impl CodexParser {
                                 }
                             }
                             "item_completed" => {
+                                if let Some(call) = completed_mcp_call(payload) {
+                                    let exec_id = if deferred_scripts.is_empty()
+                                        && pending_exec_scripts.len() == 1
+                                    {
+                                        pending_exec_scripts
+                                            .keys()
+                                            .next()
+                                            .expect("one pending exec")
+                                            .clone()
+                                    } else if pending_exec_scripts.is_empty() {
+                                        let mut deferred_exec_ids = deferred_scripts
+                                            .values()
+                                            .map(|script| script.call_id.as_str());
+                                        let Some(exec_id) = deferred_exec_ids.next() else {
+                                            continue;
+                                        };
+                                        if deferred_exec_ids.all(|id| id == exec_id) {
+                                            exec_id.to_string()
+                                        } else {
+                                            continue;
+                                        }
+                                    } else {
+                                        continue;
+                                    };
+                                    completed_mcp_by_exec
+                                        .entry(exec_id)
+                                        .or_default()
+                                        .push(call);
+                                    continue;
+                                }
                                 // Plan mode's finished plan document. This is the
                                 // ONLY place a plan turn speaks on the canonical
                                 // event channel — codex publishes the plan here
@@ -3948,14 +4060,26 @@ impl CodexParser {
                                             .collect(),
                                         note: collected.note,
                                     };
-                                    let (uses, results) = unwrap_code_mode_script(
-                                        &deferred.call_id,
-                                        &deferred.script,
-                                        &parsed,
-                                        payload,
-                                        &mut shell_sessions,
-                                        &mut poll_origins,
-                                    );
+                                    let semantic = (parsed.status == ScriptStatus::Completed)
+                                        .then(|| {
+                                            completed_mcp_by_exec.remove(&deferred.call_id)
+                                        })
+                                        .flatten();
+                                    let (uses, results) = semantic
+                                        .and_then(|calls| {
+                                            unwrap_completed_mcp_calls(&deferred.script, calls)
+                                        })
+                                        .map(|(uses, results)| (Some(uses), results))
+                                        .unwrap_or_else(|| {
+                                            unwrap_code_mode_script(
+                                                &deferred.call_id,
+                                                &deferred.script,
+                                                &parsed,
+                                                payload,
+                                                &mut shell_sessions,
+                                                &mut poll_origins,
+                                            )
+                                        });
                                     if let Some(uses) = uses {
                                         messages[deferred.use_index].content = uses;
                                     }
@@ -3976,14 +4100,24 @@ impl CodexParser {
                                 } else if let Some((message_index, script)) = pending_script {
                                     let call_id = tool_use_id.unwrap_or_default();
                                     let parsed = split_code_mode_output(payload.get("output"));
-                                    let (uses, results) = unwrap_code_mode_script(
-                                        &call_id,
-                                        &script,
-                                        &parsed,
-                                        payload,
-                                        &mut shell_sessions,
-                                        &mut poll_origins,
-                                    );
+                                    let semantic = (parsed.status == ScriptStatus::Completed)
+                                        .then(|| completed_mcp_by_exec.remove(&call_id))
+                                        .flatten();
+                                    let (uses, results) = semantic
+                                        .and_then(|calls| {
+                                            unwrap_completed_mcp_calls(&script, calls)
+                                        })
+                                        .map(|(uses, results)| (Some(uses), results))
+                                        .unwrap_or_else(|| {
+                                            unwrap_code_mode_script(
+                                                &call_id,
+                                                &script,
+                                                &parsed,
+                                                payload,
+                                                &mut shell_sessions,
+                                                &mut poll_origins,
+                                            )
+                                        });
                                     if let Some(uses) = uses {
                                         messages[message_index].content = uses;
                                     }
@@ -10405,6 +10539,351 @@ mod tests {
     }
 
     #[test]
+    fn completed_mcp_items_split_a_two_call_one_chunk_script() {
+        let script = concat!(
+            "const wd=\"/tmp\";const taskA=\"A\";const taskB=\"B\";",
+            "const [a,b]=await Promise.all([",
+            "tools.mcp__codeg_mcp__delegate_to_agent({agent_type:\"codex\",working_dir:wd,task:taskA}),",
+            "tools.mcp__codeg_mcp__delegate_to_agent({agent_type:\"codex\",working_dir:wd,task:taskB})",
+            "]);text(JSON.stringify({a,b}));"
+        );
+        assert!(
+            crate::parsers::codex_code_mode::parse_code_mode_script(script)
+                .calls
+                .is_none(),
+            "the real variable-argument shape cannot be statically evaluated"
+        );
+        let mut lines = code_mode_rollout(
+            script,
+            serde_json::json!([
+                {"type":"input_text","text":"Script completed\nWall time 0.2 seconds\nOutput:\n"},
+                {"type":"input_text","text":"{\"a\":{},\"b\":{}}"},
+            ]),
+        );
+        for (offset, (id, task_id, task)) in [
+            ("exec-b", "task-b", "B"),
+            ("exec-a", "task-a", "A"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            lines.insert(
+                2 + offset,
+                rollout_line(
+                    "2026-07-20T08:40:01Z",
+                    "event_msg",
+                    serde_json::json!({
+                        "type": "item_completed",
+                        "item": {
+                            "type": "McpToolCall",
+                            "id": id,
+                            "server": "codeg-mcp",
+                            "tool": "delegate_to_agent",
+                            "arguments": {"agent_type":"codex", "task":task},
+                            "status": "completed",
+                            "result": {
+                                "content": [{"type":"text", "text":format!(
+                                    "Delegation successful. task_id={task_id}."
+                                )}],
+                                "structuredContent": {"task_id":task_id, "status":"running"},
+                                "isError": false
+                            }
+                        }
+                    }),
+                ),
+            );
+        }
+
+        let detail = parse_lines(&lines, "code-mode-semantic-mcp");
+        let uses = tool_uses(&detail);
+        assert_eq!(
+            uses.iter()
+                .map(|(id, name, _)| (id.as_str(), name.as_str()))
+                .collect::<Vec<_>>(),
+            vec![
+                ("exec-b", "mcp__codeg_mcp__delegate_to_agent"),
+                ("exec-a", "mcp__codeg_mcp__delegate_to_agent"),
+            ],
+            "semantic items replace the outer script with real MCP cards"
+        );
+        assert_eq!(
+            uses[0].2.as_deref(),
+            Some(r#"{"agent_type":"codex","task":"B"}"#)
+        );
+        assert_eq!(
+            uses[1].2.as_deref(),
+            Some(r#"{"agent_type":"codex","task":"A"}"#)
+        );
+        assert_eq!(
+            tool_results(&detail)
+                .into_iter()
+                .map(|(id, output, _)| (id, output))
+                .collect::<Vec<_>>(),
+            vec![
+                ("exec-b".into(), Some("Delegation successful. task_id=task-b.".into())),
+                ("exec-a".into(), Some("Delegation successful. task_id=task-a.".into())),
+            ]
+        );
+    }
+
+    #[test]
+    fn mixed_native_collaboration_and_semantic_delegation_keep_their_identities() {
+        // Keep the upstream native team wire in the same rollout as both the
+        // initial MCP delegation and its continuation delegation. The records are
+        // deliberately interleaved: each semantic item must stay with its
+        // own code-mode script while the native spawn keeps its child session.
+        let sealed = format!("gAAAAAB{}", "qgWsi0g7nV3UTzqL".repeat(30));
+        let native = native_team_0153_lines("FINAL_ANSWER", &sealed);
+        let initial_script =
+            "const r = await tools.mcp__codeg_mcp__delegate_to_agent({agent_type:\"codex\",working_dir:\"/tmp/mcp-worker\",task:\"semantic initial\"});text(JSON.stringify(r));";
+        let continuation_script =
+            "const r = await tools.mcp__codeg_mcp__delegate_to_agent({agent_type:\"codex\",working_dir:\"/tmp/mcp-worker\",task:\"semantic followup\",continue_from_task_id:\"task-semantic-initial\"});text(JSON.stringify(r));";
+        let initial_status = serde_json::json!({
+            "task_id": "task-semantic-initial",
+            "child_conversation_id": 901,
+            "status": "running",
+        });
+        let continuation_status = serde_json::json!({
+            "task_id": "task-semantic-next",
+            "child_conversation_id": 901,
+            "status": "running",
+        });
+        let lines = vec![
+            native[0].clone(), // session_meta
+            rollout_line(
+                "2026-09-08T06:44:10Z",
+                "response_item",
+                serde_json::json!({
+                    "type": "custom_tool_call",
+                    "name": "exec",
+                    "call_id": "exec-semantic-initial",
+                    "input": initial_script,
+                }),
+            ),
+            rollout_line(
+                "2026-09-08T06:44:11Z",
+                "event_msg",
+                serde_json::json!({
+                    "type": "item_completed",
+                    "item": {
+                        "type": "McpToolCall",
+                        "id": "mcp-semantic-initial",
+                        "server": "codeg-mcp",
+                        "tool": "delegate_to_agent",
+                        "arguments": {
+                            "agent_type": "codex",
+                            "working_dir": "/tmp/mcp-worker",
+                            "task": "semantic initial",
+                        },
+                        "status": "completed",
+                        "result": {
+                            "content": [{
+                                "type": "text",
+                                "text": format!(
+                                    "Delegation successful. task_id={}. child_conversation_id=901.",
+                                    initial_status["task_id"]
+                                        .as_str()
+                                        .expect("initial task id"),
+                                ),
+                            }],
+                            "structuredContent": initial_status,
+                            "isError": false,
+                        },
+                    },
+                }),
+            ),
+            native[1].clone(), // native spawn_agent
+            native[2].clone(), // native SubAgentActivity started
+            native[3].clone(), // native spawn result
+            rollout_line(
+                "2026-09-08T06:44:33Z",
+                "response_item",
+                serde_json::json!({
+                    "type": "custom_tool_call_output",
+                    "call_id": "exec-semantic-initial",
+                    "output": [
+                        {"type": "input_text", "text": "Script completed\nWall time 0.1 seconds\nOutput:\n"},
+                        {"type": "input_text", "text": initial_status.to_string()},
+                    ],
+                }),
+            ),
+            rollout_line(
+                "2026-09-08T06:44:34Z",
+                "response_item",
+                serde_json::json!({
+                    "type": "custom_tool_call",
+                    "name": "exec",
+                    "call_id": "exec-semantic-continuation",
+                    "input": continuation_script,
+                }),
+            ),
+            rollout_line(
+                "2026-09-08T06:44:35Z",
+                "event_msg",
+                serde_json::json!({
+                    "type": "item_completed",
+                    "item": {
+                        "type": "McpToolCall",
+                        "id": "mcp-semantic-continuation",
+                        "server": "codeg-mcp",
+                        "tool": "delegate_to_agent",
+                        "arguments": {
+                            "agent_type": "codex",
+                            "working_dir": "/tmp/mcp-worker",
+                            "task": "semantic followup",
+                            "continue_from_task_id": "task-semantic-initial",
+                        },
+                        "status": "completed",
+                        "result": {
+                            "content": [{
+                                "type": "text",
+                                "text": format!(
+                                    "Delegation successful. task_id={}. child_conversation_id=901.",
+                                    continuation_status["task_id"]
+                                        .as_str()
+                                        .expect("continuation task id"),
+                                ),
+                            }],
+                            "structuredContent": continuation_status,
+                            "isError": false,
+                        },
+                    },
+                }),
+            ),
+            native[4].clone(), // native agent_message result
+            rollout_line(
+                "2026-09-08T06:44:36Z",
+                "response_item",
+                serde_json::json!({
+                    "type": "custom_tool_call_output",
+                    "call_id": "exec-semantic-continuation",
+                    "output": [
+                        {"type": "input_text", "text": "Script completed\nWall time 0.1 seconds\nOutput:\n"},
+                        {"type": "input_text", "text": continuation_status.to_string()},
+                    ],
+                }),
+            ),
+            native[5].clone(), // native SubAgentActivity completed
+        ];
+
+        let detail = parse_lines(&lines, "mixed-native-semantic-delegation");
+        let uses = tool_uses(&detail);
+        let semantic_uses: Vec<_> = uses
+            .iter()
+            .filter(|(id, _, _)| id.starts_with("mcp-semantic-"))
+            .map(|(id, name, input)| (id.as_str(), name.as_str(), input.as_deref()))
+            .collect();
+        assert_eq!(
+            semantic_uses,
+            vec![
+                (
+                    "mcp-semantic-initial",
+                    "mcp__codeg_mcp__delegate_to_agent",
+                    Some(
+                        r#"{"agent_type":"codex","task":"semantic initial","working_dir":"/tmp/mcp-worker"}"#,
+                    ),
+                ),
+                (
+                    "mcp-semantic-continuation",
+                    "mcp__codeg_mcp__delegate_to_agent",
+                    Some(
+                        r#"{"agent_type":"codex","continue_from_task_id":"task-semantic-initial","task":"semantic followup","working_dir":"/tmp/mcp-worker"}"#,
+                    ),
+                ),
+            ],
+            "semantic MCP cards keep their own item ids, tool names, and inputs"
+        );
+        assert!(
+            !uses
+                .iter()
+                .any(|(id, name, _)| id.starts_with("exec-semantic-") || name == "exec"),
+            "completed semantic scripts must not remain as generic exec cards: {uses:?}"
+        );
+
+        let semantic_results: Vec<_> = tool_results(&detail)
+            .into_iter()
+            .filter(|(id, _, _)| id.starts_with("mcp-semantic-"))
+            .collect();
+        assert_eq!(
+            semantic_results,
+            vec![
+                (
+                    "mcp-semantic-initial".to_string(),
+                    Some(
+                        "Delegation successful. task_id=task-semantic-initial. child_conversation_id=901."
+                            .to_string(),
+                    ),
+                    false,
+                ),
+                (
+                    "mcp-semantic-continuation".to_string(),
+                    Some(
+                        "Delegation successful. task_id=task-semantic-next. child_conversation_id=901."
+                            .to_string(),
+                    ),
+                    false,
+                ),
+            ],
+            "each semantic result stays on its matching MCP card"
+        );
+
+        let (native_input, native_result) = spawn_capsule(&detail);
+        assert_eq!(
+            native_input.get("agent_id").and_then(|value| value.as_str()),
+            Some("01a07fc2-db62-78b3-9762-9cb2540216c2"),
+            "native activity must keep its own child session id"
+        );
+        assert_eq!(
+            native_result.as_deref(),
+            Some("历史与运行预算增强已完成。"),
+            "native agent_message must stay attached to the native spawn"
+        );
+    }
+
+    #[test]
+    fn a_deferred_scripts_late_mcp_item_cannot_bind_to_the_next_script() {
+        let script = "const r=await tools.mcp__codeg_mcp__delegate_to_agent({agent_type:\"codex\",task:\"A\"});text(JSON.stringify(r));";
+        let mut lines = code_mode_rollout(
+            script,
+            serde_json::json!("Script running with cell ID 34\nWall time 30.0 seconds\nOutput:\n"),
+        );
+        lines.push(rollout_line(
+            "2026-07-20T08:40:03Z",
+            "response_item",
+            serde_json::json!({
+                "type":"custom_tool_call", "name":"exec", "call_id":"call_b",
+                "input":script.replace("task:\"A\"", "task:\"B\"")
+            }),
+        ));
+        lines.push(rollout_line(
+            "2026-07-20T08:40:04Z",
+            "event_msg",
+            serde_json::json!({
+                "type":"item_completed",
+                "item": {
+                    "type":"McpToolCall", "id":"exec-from-a", "server":"codeg-mcp",
+                    "tool":"delegate_to_agent", "arguments":{"task":"A"},
+                    "status":"completed", "result":{"content":[], "isError":false}
+                }
+            }),
+        ));
+        lines.push(rollout_line(
+            "2026-07-20T08:40:05Z",
+            "response_item",
+            serde_json::json!({
+                "type":"custom_tool_call_output", "call_id":"call_b",
+                "output":"Script completed\nWall time 0.1 seconds\nOutput:\nB"
+            }),
+        ));
+
+        let ids: Vec<String> = tool_uses(&parse_lines(&lines, "deferred-mcp-boundary"))
+            .into_iter()
+            .map(|(id, _, _)| id)
+            .collect();
+        assert_eq!(ids, ["call_1", "call_b"]);
+    }
+
+    #[test]
     fn code_mode_parallel_calls_split_output_per_card() {
         let lines = code_mode_rollout(
             "const rs = await Promise.all([\n  tools.exec_command({cmd:\"one\"}),\n  tools.exec_command({cmd:\"two\"}),\n  tools.exec_command({cmd:\"three\"})\n]);\nrs.forEach(r => text(r.output));\n",
@@ -11408,6 +11887,75 @@ mod tests {
             }),
         ));
         lines
+    }
+
+    #[test]
+    fn a_deferred_script_completed_mcp_item_replaces_its_wrapper_card() {
+        let script = concat!(
+            "const task=\"t1\";",
+            "const r=await tools.mcp__codeg_mcp__get_delegation_status({task_ids:[task],wait_ms:60000});",
+            "text(JSON.stringify(r));"
+        );
+        let mut lines = code_mode_rollout(
+            script,
+            serde_json::json!("Script running with cell ID 34\nWall time 11.0 seconds\nOutput:\n"),
+        );
+        lines.push(rollout_line(
+            "2026-07-20T08:40:03Z",
+            "event_msg",
+            serde_json::json!({
+                "type": "item_completed",
+                "item": {
+                    "type": "McpToolCall",
+                    "id": "mcp-deferred-status",
+                    "server": "codeg-mcp",
+                    "tool": "get_delegation_status",
+                    "arguments": {"task_ids":["t1"], "wait_ms":60000},
+                    "result": {
+                        "content": [{"type":"text", "text":"status: running"}],
+                        "isError": false,
+                    },
+                },
+            }),
+        ));
+        lines.push(rollout_line(
+            "2026-07-20T08:40:04Z",
+            "response_item",
+            serde_json::json!({
+                "type": "function_call",
+                "name": "wait",
+                "call_id": "wait-deferred",
+                "arguments": "{\"cell_id\":\"34\",\"yield_time_ms\":60000}",
+            }),
+        ));
+        lines.push(rollout_line(
+            "2026-07-20T08:41:04Z",
+            "response_item",
+            serde_json::json!({
+                "type": "function_call_output",
+                "call_id": "wait-deferred",
+                "output": "Script completed\nWall time 60.0 seconds\nOutput:\n{}",
+            }),
+        ));
+
+        let detail = parse_lines(&lines, "deferred-semantic-mcp");
+        assert_eq!(
+            tool_uses(&detail),
+            vec![ (
+                "mcp-deferred-status".into(),
+                "mcp__codeg_mcp__get_delegation_status".into(),
+                Some(r#"{"task_ids":["t1"],"wait_ms":60000}"#.into()),
+            ) ],
+            "the completed semantic item replaces the parked script card"
+        );
+        assert_eq!(
+            tool_results(&detail),
+            vec![(
+                "mcp-deferred-status".into(),
+                Some("status: running".into()),
+                false,
+            )]
+        );
     }
 
     #[test]
