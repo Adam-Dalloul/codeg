@@ -64,7 +64,9 @@ export function resolveLocalImage(source: string, rootPath: string) {
   return {
     path: absolute.slice(prefix.length),
     name: absolute.slice(absolute.lastIndexOf("/") + 1),
-    mime: IMAGE_MIMES[absolute.split(".").pop()!.toLowerCase()],
+    // The extension already checked above, not a second derivation from
+    // `absolute` — those agree today, but only one of them was validated.
+    mime: IMAGE_MIMES[extension],
   }
 }
 

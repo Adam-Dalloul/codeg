@@ -156,6 +156,63 @@ describe("inline local images in real chat Markdown", () => {
     }
   )
 
+  // CommonMark eats the `\` before a punctuation-initial Windows segment, so
+  // `…\shots\.preview.png` arrives as `…\shots.preview.png` — a DIFFERENT file
+  // that is still inside the root. Reading it would render the wrong picture
+  // under the right alt text, which `[Image blocked: …]` never did.
+  it.each([
+    "![shot](C:\\repo\\shots\\.preview.png)",
+    "![shot](<C:\\repo\\shots\\.preview.png>)",
+    "![shot](C:\\repo\\shots\\_preview.png)",
+    "![shot][s]\n\n[s]: C:\\repo\\shots\\.preview.png",
+    "![shot](.\\shots\\.preview.png)",
+    "![shot](a\\b\\.preview.png)",
+    // The parsed destination keeps NO backslash in these — the only one was
+    // the eaten separator — so the source, not the url, is what tells.
+    "![shot](C:/repo/shots\\.preview.png)",
+    "![shot](shots\\.preview.png)",
+    "![shot][s]\n\n[s]: C:/repo/shots\\.preview.png",
+  ])("refuses a Windows path the parser may have glued: %s", async (source) => {
+    const { container } = render(preview(source, "C:/repo"))
+    await waitFor(() => expect(container.textContent).toContain("shot"))
+    expect(mocks.read).not.toHaveBeenCalled()
+    expect(container.querySelector("img")).toBeNull()
+  })
+
+  it("still resolves a Windows path with no escape to lose", async () => {
+    // The escape check is scoped to backslash destinations, and to the node
+    // that carries one — an alt-text escape next to a forward-slash path is
+    // not the parser gluing a directory onto a file name.
+    render(
+      preview(
+        "![a \\* b](./preview.png)\n\n![shot](C:\\repo\\a\\b.png)",
+        "C:/repo"
+      )
+    )
+    await waitFor(() => expect(mocks.read).toHaveBeenCalledTimes(2))
+    expect(mocks.read).toHaveBeenCalledWith(
+      "C:/repo",
+      "preview.png",
+      LOCAL_IMAGE_MAX_BYTES
+    )
+    expect(mocks.read).toHaveBeenCalledWith(
+      "C:/repo",
+      "a/b.png",
+      LOCAL_IMAGE_MAX_BYTES
+    )
+  })
+
+  it("leaves an author-written span with no destination as plain text", async () => {
+    const { container } = render(
+      preview("<span data-codeg-local-image>important text</span>")
+    )
+    await waitFor(() =>
+      expect(container.textContent).toContain("important text")
+    )
+    expect(screen.queryByRole("img")).not.toBeInTheDocument()
+    expect(mocks.read).not.toHaveBeenCalled()
+  })
+
   it("never falls back to the active workspace when its own root is unknown", async () => {
     render(preview("![Unavailable](./preview.png)", null))
     expect(
