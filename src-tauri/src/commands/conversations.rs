@@ -988,8 +988,8 @@ pub(crate) async fn import_selected_from_summaries(
                 // off — the sort above put every plain folder ahead of every
                 // worktree precisely so this lands in time. Only plain folders
                 // are recorded: a linked worktree is never anyone's main working
-                // tree. `add_folder` left an existing row's `parent_id` alone, so
-                // the flattening rule is the seed's, applied to the row as read.
+                // tree. The candidate is flattened by the seed's rule, off the
+                // parent this row actually ended up with.
                 if root_key.is_none() {
                     let root = persisted_parent_id.unwrap_or(folder_id);
                     worktree_parents.insert(norm_key, root);
