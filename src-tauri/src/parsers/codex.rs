@@ -1466,7 +1466,7 @@ fn completed_mcp_call(payload: &serde_json::Value) -> Option<CompletedMcpCall> {
         return None;
     }
     let result = item.get("result").filter(|value| !value.is_null());
-    let is_error = item.get("error").filter(|value| is_stated_error(value));
+    let stated_error = item.get("error").filter(|value| is_stated_error(value));
     // Text first, then the structured twin. The last two are for the shapes
     // that carry neither — a transport failure that answered with `error` and
     // no result, or a `content` array holding only blocks this reader cannot
@@ -1482,7 +1482,7 @@ fn completed_mcp_call(payload: &serde_json::Value) -> Option<CompletedMcpCall> {
                 .and_then(|result| result.get("structuredContent"))
                 .and_then(|value| serde_json::to_string(value).ok())
         })
-        .or_else(|| value_to_preview(is_error))
+        .or_else(|| value_to_preview(stated_error))
         .or_else(|| {
             // `content` rather than the whole envelope, and bounded: a blob
             // must not flood the card with base64 and protocol noise. A call
@@ -1509,7 +1509,7 @@ fn completed_mcp_call(payload: &serde_json::Value) -> Option<CompletedMcpCall> {
         .and_then(serde_json::Value::as_bool);
     let claimed_failed =
         stated_is_error == Some(true)
-            || is_error.is_some()
+            || stated_error.is_some()
             || item
                 .get("status")
                 .and_then(serde_json::Value::as_str)
