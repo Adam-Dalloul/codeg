@@ -129,7 +129,7 @@ pub enum ContentBlock {
         /// call already completed — so copying it onto recovered inner calls
         /// would manufacture a permanent spinner. The one codex card that does
         /// carry a status is an MCP call rebuilt from its OWN semantic
-        /// `item_completed` record, which states a per-call terminal outcome
+        /// `item_completed` record, which yields a per-call terminal outcome
         /// (`completed` / `failed`) that the wrapper script's status cannot.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         status: Option<String>,
