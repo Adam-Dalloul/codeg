@@ -3006,6 +3006,11 @@ async fn emit_selectors_ready(state: &Arc<RwLock<SessionState>>, emitter: &Event
 /// id this way, and the frontend's `isModelConfigOption` accepts either.
 const MODEL_CONFIG_OPTION_ID: &str = "model";
 
+/// The conventional id of a mode selector carried as a config option. ACP
+/// reserves none here either, but codex-acp — the agent that ships one — spells
+/// it this way. See [`UNADVERTISED_CONFIG_OPTION_IDS`].
+const MODE_CONFIG_OPTION_ID: &str = "mode";
+
 /// Synthesized config-option id for Grok's model picker (drives the composer's
 /// grouped model selector via the frontend's `isModelConfigOption`).
 const GROK_MODEL_OPTION_ID: &str = MODEL_CONFIG_OPTION_ID;
@@ -7025,6 +7030,50 @@ fn is_model_config_option(option: &SessionConfigOption) -> bool {
         || option.id.to_string() == MODEL_CONFIG_OPTION_ID
 }
 
+/// Config-option ids codeg still sends when the connected agent did not
+/// advertise them.
+///
+/// The replay is otherwise gated on the advertised list (see
+/// [`applies_preferred_config_option`]). `mode` is the one documented
+/// exception: codex-acp's `applySessionConfigOption` switches on `configId`
+/// alone with no advertised-list check (verified in the 1.7.0 bundle), so a
+/// build that omits `mode` from its options may still honour it — and mode is
+/// the pick whose loss changes what the agent is allowed to do.
+const UNADVERTISED_CONFIG_OPTION_IDS: &[&str] = &[MODE_CONFIG_OPTION_ID];
+
+/// Whether a saved config preference should be put on the wire at all.
+///
+/// `advertised` is whether the agent's CURRENT option list carries the id — the
+/// list as it stands at this point of the replay, not the one the session
+/// opened with.
+///
+/// Preferences are stored per agent type and only ever written by a user pick
+/// (`saveConfigPreference` in `src/lib/selector-prefs-storage.ts`). Once an
+/// agent stops advertising an option its selector leaves the UI, so there is no
+/// pick left to make and the entry cannot be rewritten — it is replayed on every
+/// single connect. For an id the agent has never heard of the answer is always
+/// the same rejection, which used to be logged at ERROR each time:
+///
+/// ```text
+/// [ACP] failed to apply preferred config 'fast'='off' on connect:
+///   Internal error: {"details": "Unknown config option: fast"}
+/// ```
+///
+/// Gating on the advertised list costs nothing a user can see, and the
+/// preference is NOT deleted — deleting is what the keying cannot support. The
+/// store is keyed by agent type, but an option's presence is narrower than that:
+/// Cursor hangs `fast` and the thinking parameters off the CURRENT model, so the
+/// same agent advertises the id under one model and not under another. Dropping
+/// the entry on a miss would silently retire a preference the user still has a
+/// use for. Keeping it costs a skipped round-trip and applies again the moment
+/// the agent (or the selected model) offers the option once more — which the
+/// replay reaches in the same pass, because `model` goes first (see
+/// [`order_preferred_config_values`]) and the option set that comes back with it
+/// is what the remaining ids are checked against.
+fn applies_preferred_config_option(advertised: bool, config_id: &str) -> bool {
+    advertised || UNADVERTISED_CONFIG_OPTION_IDS.contains(&config_id)
+}
+
 /// Saved preferences in application order: the model selector first, then every
 /// other id in its natural (sorted) order.
 ///
@@ -7039,7 +7088,9 @@ fn is_model_config_option(option: &SessionConfigOption) -> bool {
 ///
 /// A preferred id the agent never advertised is ordered as a non-model option
 /// unless it is literally `model` — the fallback stays deliberately narrow
-/// because an unadvertised id is still sent (see `apply_preferred_session_options`).
+/// because ordering runs before the advertised-list gate in
+/// `apply_preferred_session_options`, and an id that is missing here may well be
+/// advertised by the time its turn comes (the model switch re-scopes the list).
 fn order_preferred_config_values<'a>(
     options: &[SessionConfigOption],
     preferred: &'a BTreeMap<String, String>,
@@ -7175,13 +7226,9 @@ async fn apply_preferred_session_options(
     let ordered = order_preferred_config_values(&options, preferred_config_values);
     for (config_id, value_id) in ordered {
         // Skip the round-trip when the agent's current value already matches.
-        // Note: codex-acp advertises "mode" as a config option (so the match
-        // check below normally fires), but we still do NOT skip when a
-        // requested config_id is absent from the advertised options — an agent
-        // may accept `set_config_option` for an id it never advertised. codex
-        // does: its `applySessionConfigOption` switches on `configId` alone,
-        // with no advertised-list check (verified in the 1.7.0 bundle). So let
-        // the agent decide.
+        // `options` is the LIVE list — reassigned from every successful set
+        // below — so an id scoped to the model is checked against the option
+        // set the model preference just brought in, not the pre-replay one.
         let advertised = options.iter().find(|o| o.id.to_string() == *config_id);
         let already_matches =
             advertised.is_some_and(|o| config_option_already_holds(o, value_id.as_str()));
@@ -7190,12 +7237,31 @@ async fn apply_preferred_session_options(
         }
         // Encode against what the agent advertised for this id. An id the agent
         // never advertised falls back to the select form — the same value shape
-        // codeg has always sent (see the note above on unadvertised "mode").
+        // codeg has always sent for the allowlisted ids below.
         let is_boolean =
             advertised.is_some_and(|o| matches!(o.kind, SessionConfigKind::Boolean(_)));
+        let is_advertised = advertised.is_some();
+        // An id the agent has never heard of can only be rejected, on this
+        // connect and on every connect after it — see
+        // [`applies_preferred_config_option`] for why the entry cannot clear
+        // itself and why dropping it here would be wrong.
+        if !applies_preferred_config_option(is_advertised, config_id) {
+            tracing::debug!(
+                "[ACP] preferred config '{config_id}'='{value_id}' is not advertised by this \
+                 agent; leaving it saved and not applying it"
+            );
+            continue;
+        }
         let value = encode_config_option_value(is_boolean, value_id);
         match set_session_config_option_inner(cx, &session_id, config_id.clone(), value).await {
             Ok(updated) => options = updated,
+            // A deliberately speculative send (an allowlisted id the agent did
+            // not advertise) losing its gamble is the expected outcome, not an
+            // incident. Only a rejection of something the agent DID offer is.
+            Err(e) if !is_advertised => tracing::debug!(
+                "[ACP] agent declined unadvertised preferred config '{config_id}'='{value_id}' \
+                 on connect: {e}"
+            ),
             Err(e) => tracing::error!(
                 "[ACP] failed to apply preferred config '{config_id}'='{value_id}' \
                  on connect: {e}"
@@ -22029,8 +22095,9 @@ mod tests {
             .collect();
         assert_eq!(ordered, vec!["llm", "effort"]);
 
-        // Nothing model-shaped: the order is untouched, and an id the agent
-        // never advertised is still replayed (it is not codeg's call to drop).
+        // Nothing model-shaped: the order is untouched. Ordering keeps an id
+        // the agent has not advertised — the advertised gate runs later, on the
+        // list as it stands when that id's turn comes.
         let preferred = BTreeMap::from([
             ("a_thing".to_string(), "1".to_string()),
             ("z_thing".to_string(), "2".to_string()),
@@ -22040,6 +22107,102 @@ mod tests {
             .map(|(id, _)| id.as_str())
             .collect();
         assert_eq!(ordered, vec!["a_thing", "z_thing"]);
+    }
+
+    /// The replay must not push an id the connected agent never advertised.
+    /// Preferences are keyed per agent type and rewritten only by a user pick,
+    /// so once the selector leaves the UI there is no pick left to make and the
+    /// entry is replayed on every connect forever — the reporter's log carried
+    /// 29 of these in a week, every one of them the same rejection:
+    ///
+    /// ```text
+    /// [ACP] failed to apply preferred config 'fast'='off' on connect:
+    ///   Internal error: {"details": "Unknown config option: fast"}
+    /// ```
+    #[test]
+    fn preferred_config_replay_skips_ids_the_agent_never_advertised() {
+        // Advertised: applied, exactly as before.
+        for id in ["fast", "effort", "reasoning_effort", MODEL_CONFIG_OPTION_ID] {
+            assert!(applies_preferred_config_option(true, id), "{id}");
+        }
+        // Not advertised: no request, so no ERROR. `fast` is the reported id;
+        // an agent that advertises no effort option rejects `effort` the same
+        // way at EVERY value, which is why clamping the value cannot help.
+        for id in ["fast", "effort", "reasoning_effort", MODEL_CONFIG_OPTION_ID] {
+            assert!(!applies_preferred_config_option(false, id), "{id}");
+        }
+        // `mode` keeps the documented exception: codex-acp's
+        // `applySessionConfigOption` switches on `configId` alone, with no
+        // advertised-list check, so a build that omits it may still honour it.
+        assert!(applies_preferred_config_option(false, MODE_CONFIG_OPTION_ID));
+        assert!(applies_preferred_config_option(true, MODE_CONFIG_OPTION_ID));
+    }
+
+    /// A preference scoped to the current model must still land. Cursor hangs
+    /// `fast` off the model in effect, so the list the session opens with may
+    /// not carry it while the list that comes back from the `model` pick does.
+    /// That is why the gate reads the LIVE list — and why a miss must never
+    /// delete the entry: the store is keyed per agent type, but the option's
+    /// presence is narrower than the agent.
+    #[test]
+    fn a_model_scoped_preference_still_applies_after_the_model_pick() {
+        let advertises =
+            |opts: &[SessionConfigOption], id: &str| opts.iter().any(|o| o.id.to_string() == id);
+        let model_only: Vec<SessionConfigOption> = serde_json::from_value(serde_json::json!([
+            {
+                "type": "select",
+                "id": "model",
+                "name": "Model",
+                "category": "model",
+                "currentValue": "composer-2.5",
+                "options": [
+                    {"value": "composer-2.5", "name": "Composer 2.5"},
+                    {"value": "claude-opus-5", "name": "Claude Opus 5"}
+                ]
+            },
+        ]))
+        .expect("parses");
+        let after_model_pick: Vec<SessionConfigOption> =
+            serde_json::from_value(serde_json::json!([
+                {
+                    "type": "select",
+                    "id": "model",
+                    "name": "Model",
+                    "category": "model",
+                    "currentValue": "claude-opus-5",
+                    "options": [{"value": "claude-opus-5", "name": "Claude Opus 5"}]
+                },
+                {
+                    "type": "select",
+                    "id": "fast",
+                    "name": "Fast",
+                    "category": "model_config",
+                    "currentValue": "on",
+                    "options": [{"value": "on", "name": "On"}, {"value": "off", "name": "Off"}]
+                },
+            ]))
+            .expect("parses");
+
+        let preferred = BTreeMap::from([
+            ("fast".to_string(), "off".to_string()),
+            ("model".to_string(), "claude-opus-5".to_string()),
+        ]);
+        // `model` leads, so the list `fast` is checked against is the one the
+        // model pick returned, not the one the session opened with.
+        let ordered: Vec<&str> = order_preferred_config_values(&model_only, &preferred)
+            .into_iter()
+            .map(|(id, _)| id.as_str())
+            .collect();
+        assert_eq!(ordered, vec!["model", "fast"]);
+
+        assert!(!applies_preferred_config_option(
+            advertises(&model_only, "fast"),
+            "fast"
+        ));
+        assert!(applies_preferred_config_option(
+            advertises(&after_model_pick, "fast"),
+            "fast"
+        ));
     }
 
     /// The claude shape: a model select plus the effort option that hangs off it.
