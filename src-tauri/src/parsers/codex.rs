@@ -1483,16 +1483,23 @@ impl std::io::Write for BudgetedSink {
     }
 }
 
-/// `value` serialized into a `max_chars` preview without ever building the
-/// whole serialization.
+/// `value` serialized into a `max_chars` preview without ever building an
+/// UNBOUNDED serialization. A value that fits is still written out whole —
+/// into a buffer that cannot grow past the budget.
 ///
 /// `serde_json::to_string` materializes all of it first — for an image-only
 /// MCP result that is the entire base64 blob, allocated and then walked twice
 /// more by `truncate_str`, to keep a few thousand characters of it. This
-/// produces exactly the same string while the buffer stays at `4 * max_chars`
-/// bytes: UTF-8 spends at most 4 bytes per character, so that always covers
-/// `max_chars` of them, and the partial character a byte cut can leave behind
-/// always falls outside the truncation.
+/// produces exactly the same string while the buffer stays at
+/// `4 * max_chars + 1` bytes. UTF-8 spends at most 4 bytes per character, so
+/// that many always cover `max_chars` of them — and the `+ 1` is what makes it
+/// STRICTLY more, which is the whole proof: a full buffer therefore always
+/// decodes to more than `max_chars` characters, so it is always truncated, so
+/// the partial character a byte cut leaves behind is always among the ones
+/// dropped. At `4 * max_chars` alone the strictness would rest on JSON always
+/// opening with an ASCII byte and so never letting a full buffer land on
+/// exactly `max_chars` — true, but a fact about the format rather than about
+/// this function. The `+ 1` is what makes it a property of the arithmetic.
 ///
 /// What it bounds is the MEMORY, which is the part that can fail. Time is only
 /// mostly bounded: `serde_json` walks a string looking for escapes before
