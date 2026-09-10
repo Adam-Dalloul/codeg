@@ -1498,8 +1498,9 @@ impl std::io::Write for BudgetedSink {
 /// the partial character a byte cut leaves behind is always among the ones
 /// dropped. At `4 * max_chars` alone the strictness would rest on JSON always
 /// opening with an ASCII byte and so never letting a full buffer land on
-/// exactly `max_chars` — true, but a fact about the format rather than about
-/// this function. The `+ 1` is what makes it a property of the arithmetic.
+/// exactly `max_chars` — which holds for every `max_chars` but zero, and even
+/// then is a fact about the format rather than about this function. The `+ 1`
+/// is what makes it a property of the arithmetic.
 ///
 /// What it bounds is the MEMORY, which is the part that can fail. Time is only
 /// mostly bounded: `serde_json` walks a string looking for escapes before
