@@ -1508,7 +1508,14 @@ fn unwrap_completed_mcp_calls(
             tool_use_id: Some(item.id.clone()),
             tool_name: script.tool_names[index].clone(),
             input_preview: item.input_preview,
-            status: Some("completed".into()),
+            // Read off the item's OWN outcome, never hardcoded: a code-mode
+            // script whose MCP call failed still prints `Script completed`
+            // (measured: a `delegate_to_agent` refused for `depth_limit`
+            // settles the script fine), so claiming `completed` here would
+            // contradict the very result block written next to it. This is a
+            // per-call terminal record — not `ScriptStatus`, which
+            // `ContentBlock::ToolUse::status` documents as unsafe to copy.
+            status: Some(if item.is_error { "failed" } else { "completed" }.into()),
             meta: None,
         });
         results.push(ContentBlock::ToolResult {
@@ -10452,6 +10459,27 @@ mod tests {
             .collect()
     }
 
+    /// `(tool_use_id, status)` per ToolUse block. Separate from `tool_uses`
+    /// because only the semantic MCP cards carry a status at all — codex
+    /// leaves it `None` everywhere else (see `ContentBlock::ToolUse::status`).
+    fn tool_use_statuses(
+        detail: &crate::models::ConversationDetail,
+    ) -> Vec<(String, Option<String>)> {
+        detail
+            .turns
+            .iter()
+            .flat_map(|t| t.blocks.iter())
+            .filter_map(|b| match b {
+                ContentBlock::ToolUse {
+                    tool_use_id,
+                    status,
+                    ..
+                } => Some((tool_use_id.clone().unwrap_or_default(), status.clone())),
+                _ => None,
+            })
+            .collect()
+    }
+
     fn tool_results(
         detail: &crate::models::ConversationDetail,
     ) -> Vec<(String, Option<String>, bool)> {
@@ -10881,6 +10909,125 @@ mod tests {
             .map(|(id, _, _)| id)
             .collect();
         assert_eq!(ids, ["call_1", "call_b"]);
+    }
+
+    /// A refused MCP call still lets the SCRIPT finish, so the wrapper's own
+    /// `Script completed` says nothing about the call inside it. The card has to
+    /// settle on the semantic item's outcome or it contradicts the result block
+    /// written beside it. Shape taken verbatim from a real rollout: codeg-mcp
+    /// refuses a `delegate_to_agent` past the delegation depth limit.
+    #[test]
+    fn a_failed_semantic_mcp_item_settles_its_card_as_failed() {
+        let script = concat!(
+            "const dir=\"/tmp/w\";",
+            "const res=await tools.mcp__codeg_mcp__delegate_to_agent({agent_type:\"codex\",working_dir:dir,task:t});",
+            "text(res.content[0].text);"
+        );
+        let mut lines = code_mode_rollout(
+            script,
+            serde_json::json!([
+                {"type":"input_text","text":"Script completed\nWall time 0.0 seconds\nOutput:\n"},
+                {"type":"input_text","text":"depth limit exceeded (2 >= 2)"},
+            ]),
+        );
+        lines.insert(
+            2,
+            rollout_line(
+                "2026-07-20T08:40:01Z",
+                "event_msg",
+                serde_json::json!({
+                    "type": "item_completed",
+                    "item": {
+                        "type": "McpToolCall",
+                        "id": "exec-depth-limit",
+                        "server": "codeg-mcp",
+                        "tool": "delegate_to_agent",
+                        "arguments": {"agent_type":"codex", "working_dir":"/tmp/w"},
+                        "status": "failed",
+                        "result": {
+                            "content": [{"type":"text", "text":"depth limit exceeded (2 >= 2)"}],
+                            "structuredContent": {"error_code":"depth_limit", "status":"failed"},
+                            "isError": true
+                        }
+                    }
+                }),
+            ),
+        );
+
+        let detail = parse_lines(&lines, "semantic-mcp-failed");
+        assert_eq!(
+            tool_use_statuses(&detail),
+            vec![("exec-depth-limit".to_string(), Some("failed".to_string()))],
+            "the card must report the call's own outcome, not the wrapper's"
+        );
+        assert_eq!(
+            tool_results(&detail),
+            vec![(
+                "exec-depth-limit".to_string(),
+                Some("depth limit exceeded (2 >= 2)".to_string()),
+                true,
+            )]
+        );
+    }
+
+    /// The guard that keeps every correlation honest: a script that mixes an
+    /// MCP call with a shell call publishes only ONE semantic item, so the
+    /// items cannot be zipped onto the call sites. Real shape — a status poll
+    /// racing a `write_stdin` — from a rollout on disk. The script card (or its
+    /// static decomposition) has to keep the turn rather than let the lone item
+    /// claim a site it may not own.
+    #[test]
+    fn a_script_mixing_mcp_and_shell_calls_keeps_its_static_reading() {
+        let lines_with_item = |item: bool| {
+            let mut lines = code_mode_rollout(
+                concat!(
+                    "const rs = await Promise.all([\n",
+                    "  tools.mcp__codeg_mcp__get_delegation_status({task_ids:[\"t1\"],wait_ms:30000}),\n",
+                    "  tools.write_stdin({session_id:480,chars:\"y\\n\"}),\n",
+                    "]);\ntext(JSON.stringify(rs));"
+                ),
+                serde_json::json!([
+                    {"type":"input_text","text":"Script completed\nWall time 30.0 seconds\nOutput:\n"},
+                    {"type":"input_text","text":"[{\"tasks\":[]},{}]"},
+                ]),
+            );
+            if item {
+                lines.insert(
+                    2,
+                    rollout_line(
+                        "2026-07-20T08:40:01Z",
+                        "event_msg",
+                        serde_json::json!({
+                            "type": "item_completed",
+                            "item": {
+                                "type": "McpToolCall",
+                                "id": "exec-poll",
+                                "server": "codeg-mcp",
+                                "tool": "get_delegation_status",
+                                "arguments": {"task_ids":["t1"], "wall_ms":30000},
+                                "status": "completed",
+                                "result": {"content":[{"type":"text","text":"{\"tasks\":[]}"}], "isError":false}
+                            }
+                        }),
+                    ),
+                );
+            }
+            tool_uses(&parse_lines(
+                &lines,
+                if item { "mixed-with-item" } else { "mixed-baseline" },
+            ))
+        };
+
+        let with_item = lines_with_item(true);
+        assert!(
+            !with_item.iter().any(|(id, _, _)| id == "exec-poll"),
+            "one item cannot cover two call sites: {with_item:?}"
+        );
+        assert_eq!(
+            with_item,
+            lines_with_item(false),
+            "an uncorrelatable item must leave the script's own reading untouched"
+        );
     }
 
     #[test]
