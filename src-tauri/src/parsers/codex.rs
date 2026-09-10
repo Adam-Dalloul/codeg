@@ -11186,6 +11186,65 @@ mod tests {
         );
     }
 
+    /// A script that threw keeps its own card even when its one MCP call did
+    /// publish a semantic item. The wrapper's `Script error:` text is the whole
+    /// story of that turn — which line threw, and after which call — and the
+    /// semantic path DISCARDS it. The count gate cannot stand in for this: a
+    /// script can throw after its last call answered, leaving exactly as many
+    /// items as call sites.
+    #[test]
+    fn a_thrown_script_keeps_its_own_card_over_a_matching_semantic_item() {
+        let script = concat!(
+            "const r=await tools.mcp__codeg_mcp__task_progress({message:m});",
+            "text(r.content[0].text.toUpperCase());"
+        );
+        let mut lines = code_mode_rollout(
+            script,
+            serde_json::json!([
+                {"type":"input_text","text":"Script failed\nWall time 0.1 seconds\nOutput:\n"},
+                {"type":"input_text","text":"Script error:\nTypeError: Cannot read properties of undefined"},
+            ]),
+        );
+        lines.insert(
+            2,
+            rollout_line(
+                "2026-07-20T08:40:01Z",
+                "event_msg",
+                serde_json::json!({
+                    "type": "item_completed",
+                    "item": {
+                        "type": "McpToolCall",
+                        "id": "exec-progress",
+                        "server": "codeg-mcp",
+                        "tool": "task_progress",
+                        "arguments": {"message":"halfway"},
+                        "status": "completed",
+                        "result": {"content":[{"type":"text","text":"recorded"}], "isError":false},
+                    },
+                }),
+            ),
+        );
+
+        let detail = parse_lines(&lines, "semantic-mcp-thrown-script");
+        assert!(
+            !tool_uses(&detail)
+                .iter()
+                .any(|(id, _, _)| id == "exec-progress"),
+            "a thrown script must not be replaced by the call that did answer"
+        );
+        let results = tool_results(&detail);
+        assert_eq!(results.len(), 1, "one card: {results:?}");
+        assert!(results[0].2, "a thrown script still renders as an error");
+        assert!(
+            results[0]
+                .1
+                .as_deref()
+                .is_some_and(|text| text.contains("TypeError")),
+            "the thrown script's own error must survive: {:?}",
+            results[0].1
+        );
+    }
+
     /// The outcome precedence, stated once against the fields themselves rather
     /// than through four rollouts: a stated failure outranks a stated success,
     /// a stated success outranks output text that merely reads like a failure,
