@@ -1460,7 +1460,14 @@ fn completed_mcp_call(payload: &serde_json::Value) -> Option<CompletedMcpCall> {
     if item.get("type").and_then(|v| v.as_str()) != Some("McpToolCall") {
         return None;
     }
-    let result = item.get("result");
+    let result = item.get("result").filter(|value| !value.is_null());
+    // Text first, then the structured twin. The last two are for the shapes
+    // that carry neither — an image-only / resource-only `content` array, or a
+    // transport failure that answered with `error` and no result. The semantic
+    // path DISCARDS the wrapper's own printed output, so a `None` here is not a
+    // quiet degradation, it is a card that says nothing at all where the script
+    // card used to show the run's text. Serializing rather than dropping is
+    // what `pi::content_to_text` already does with the same MCP shape.
     let output_preview = result
         .and_then(|result| result.get("content"))
         .and_then(crate::parsers::pi::tool_result_content_text)
@@ -1468,17 +1475,37 @@ fn completed_mcp_call(payload: &serde_json::Value) -> Option<CompletedMcpCall> {
             result
                 .and_then(|result| result.get("structuredContent"))
                 .and_then(|value| serde_json::to_string(value).ok())
-        });
+        })
+        .or_else(|| value_to_preview(item.get("error")))
+        .or_else(|| result.and_then(|result| serde_json::to_string(result).ok()));
+    // The record STATES its outcome — `result.isError`, and the item's own
+    // terminal `status`. Believe it. `infer_tool_call_output_is_error` reads
+    // tea leaves out of the output text because a script card has no such
+    // field; run against an authoritative record it can only invent failures,
+    // and a tool that legitimately PRINTS `exit code: 1` or a line starting
+    // `Error:` returned perfectly well. Kept as the fallback for a record that
+    // states neither.
+    let claimed_failed = result
+        .and_then(|result| result.get("isError"))
+        .and_then(serde_json::Value::as_bool)
+        == Some(true)
+        || item
+            .get("status")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(is_failed_status);
+    let claimed_ok = result
+        .and_then(|result| result.get("isError"))
+        .and_then(serde_json::Value::as_bool)
+        == Some(false)
+        || item.get("status").and_then(serde_json::Value::as_str) == Some("completed");
     Some(CompletedMcpCall {
         id: item.get("id")?.as_str()?.to_string(),
         server: item.get("server")?.as_str()?.to_string(),
         tool: item.get("tool")?.as_str()?.to_string(),
         input_preview: value_to_preview(item.get("arguments")),
-        is_error: result
-            .and_then(|result| result.get("isError"))
-            .and_then(|value| value.as_bool())
-            .unwrap_or(false)
-            || infer_tool_call_output_is_error(item, result, output_preview.as_deref()),
+        is_error: claimed_failed
+            || (!claimed_ok
+                && infer_tool_call_output_is_error(item, result, output_preview.as_deref())),
         output_preview,
     })
 }
@@ -10967,6 +10994,113 @@ mod tests {
                 Some("depth limit exceeded (2 >= 2)".to_string()),
                 true,
             )]
+        );
+    }
+
+    /// A tool whose SUCCESSFUL answer merely reads like a failure — it wraps a
+    /// command and prints its exit code, or opens with `Error:` — must not be
+    /// painted as a failed call. The record says `isError: false` outright, and
+    /// an authoritative field beats the text heuristic that exists only because
+    /// a script card has none.
+    #[test]
+    fn an_explicit_success_survives_output_text_that_reads_like_an_error() {
+        let script = concat!(
+            "const cmd=\"pnpm build\";",
+            "const r=await tools.mcp__shell_srv__run({cmd});",
+            "text(r.content[0].text);"
+        );
+        let mut lines = code_mode_rollout(
+            script,
+            serde_json::json!([
+                {"type":"input_text","text":"Script completed\nWall time 0.2 seconds\nOutput:\n"},
+                {"type":"input_text","text":"Error: 2 problems\nexit code: 1"},
+            ]),
+        );
+        lines.insert(
+            2,
+            rollout_line(
+                "2026-07-20T08:40:01Z",
+                "event_msg",
+                serde_json::json!({
+                    "type": "item_completed",
+                    "item": {
+                        "type": "McpToolCall",
+                        "id": "exec-lint",
+                        "server": "shell-srv",
+                        "tool": "run",
+                        "arguments": {"cmd":"pnpm build"},
+                        "status": "completed",
+                        "result": {
+                            "content": [{"type":"text", "text":"Error: 2 problems\nexit code: 1"}],
+                            "isError": false
+                        }
+                    }
+                }),
+            ),
+        );
+
+        let detail = parse_lines(&lines, "semantic-mcp-noisy-success");
+        assert_eq!(
+            tool_use_statuses(&detail),
+            vec![("exec-lint".to_string(), Some("completed".to_string()))]
+        );
+        assert_eq!(
+            tool_results(&detail),
+            vec![(
+                "exec-lint".to_string(),
+                Some("Error: 2 problems\nexit code: 1".to_string()),
+                false,
+            )],
+            "the record's own isError is the outcome, not what the output reads like"
+        );
+    }
+
+    /// The semantic path throws the wrapper's printed output away, so a result
+    /// that carries no text of its own must still be given something to say —
+    /// otherwise a completed call reloads as a card with an empty body where
+    /// the script card used to show the run.
+    #[test]
+    fn a_textless_semantic_result_still_says_something() {
+        let script = "const shot=await tools.mcp__shot_srv__capture({url:target});text(\"captured\");";
+        let mut lines = code_mode_rollout(
+            script,
+            serde_json::json!([
+                {"type":"input_text","text":"Script completed\nWall time 0.4 seconds\nOutput:\n"},
+                {"type":"input_text","text":"captured"},
+            ]),
+        );
+        lines.insert(
+            2,
+            rollout_line(
+                "2026-07-20T08:40:01Z",
+                "event_msg",
+                serde_json::json!({
+                    "type": "item_completed",
+                    "item": {
+                        "type": "McpToolCall",
+                        "id": "exec-shot",
+                        "server": "shot-srv",
+                        "tool": "capture",
+                        "arguments": {"url":"https://example.test"},
+                        "status": "completed",
+                        "result": {
+                            "content": [{"type":"image", "data":"iVBORw0KGgo=", "mimeType":"image/png"}],
+                            "isError": false
+                        }
+                    }
+                }),
+            ),
+        );
+
+        let detail = parse_lines(&lines, "semantic-mcp-textless");
+        let results = tool_results(&detail);
+        assert_eq!(results.len(), 1, "one card: {results:?}");
+        let (id, output, is_error) = &results[0];
+        assert_eq!(id, "exec-shot");
+        assert!(!is_error, "an image-only answer is not a failure");
+        assert!(
+            output.as_deref().is_some_and(|text| text.contains("image")),
+            "a textless result must still carry its content: {output:?}"
         );
     }
 
