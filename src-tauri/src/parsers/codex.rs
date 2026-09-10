@@ -1460,6 +1460,54 @@ struct CompletedMcpCall {
 /// to show what came back, not enough for a base64 blob to swamp the card.
 const MCP_RESULT_FALLBACK_CAP: usize = 4000;
 
+/// A sink that accepts `budget` bytes and then refuses, so a serializer writing
+/// into it stops instead of running to the end of its input.
+struct BudgetedSink {
+    buf: Vec<u8>,
+    budget: usize,
+}
+
+impl std::io::Write for BudgetedSink {
+    fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+        let room = self.budget.saturating_sub(self.buf.len());
+        if room == 0 {
+            return Err(std::io::Error::other("preview budget reached"));
+        }
+        let take = room.min(data.len());
+        self.buf.extend_from_slice(&data[..take]);
+        Ok(take)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// `value` serialized far enough to fill a `max_chars` preview, and not one
+/// byte further.
+///
+/// `serde_json::to_string` would materialize the WHOLE value first — for an
+/// image-only MCP result that is the entire base64 blob, built and then
+/// scanned twice only to keep its first few thousand characters. This is
+/// exactly what that produces (UTF-8 spends at most 4 bytes per character, so
+/// `4 * max_chars` bytes always cover `max_chars` of them, and the partial
+/// character a byte cut can leave at the end always falls outside the
+/// truncation) while allocating a bounded buffer instead of an unbounded one.
+///
+/// `None` for a value that serializes to nothing at all.
+fn serialize_preview(value: &serde_json::Value, max_chars: usize) -> Option<String> {
+    let mut sink = BudgetedSink {
+        buf: Vec::new(),
+        budget: max_chars.saturating_mul(4).saturating_add(1),
+    };
+    // A value that fits reports `Ok`; one that does not aborts with the sink's
+    // own error. Both leave `buf` holding the prefix, and `serde_json` cannot
+    // fail on a `Value` for any other reason.
+    let _ = serde_json::to_writer(&mut sink, value);
+    let text = String::from_utf8_lossy(&sink.buf);
+    (!text.is_empty()).then(|| truncate_str(&text, max_chars))
+}
+
 fn completed_mcp_call(payload: &serde_json::Value) -> Option<CompletedMcpCall> {
     let item = payload.get("item")?;
     if item.get("type").and_then(|v| v.as_str()) != Some("McpToolCall") {
@@ -1467,33 +1515,34 @@ fn completed_mcp_call(payload: &serde_json::Value) -> Option<CompletedMcpCall> {
     }
     let result = item.get("result").filter(|value| !value.is_null());
     let stated_error = item.get("error").filter(|value| is_stated_error(value));
-    // Text first, then the structured twin. The last two are for the shapes
-    // that carry neither — a transport failure that answered with `error` and
-    // no result, or a `content` array holding only blocks this reader cannot
-    // render (an image, a resource). The semantic path DISCARDS the wrapper's
-    // own printed output, so a `None` here is not a quiet degradation, it is a
-    // card that says nothing at all where the script card used to show the
-    // run's text.
+    // Text first — that is the call's own words, and it is what the script
+    // card printed, so it is passed through whole. The three below are for the
+    // shapes carrying no text: a structured-only answer, a transport failure
+    // that answered with `error` and no result, or a `content` array holding
+    // only blocks this reader cannot render (an image, a resource). The
+    // semantic path DISCARDS the wrapper's own printed output, so a `None` here
+    // is not a quiet degradation, it is a card that says nothing at all where
+    // the script card used to show the run's text. None of the three is the
+    // call's own prose, and a serialized one can be arbitrarily large — an
+    // image block is a base64 blob — so they are read through a budget.
     let output_preview = result
         .and_then(|result| result.get("content"))
         .and_then(crate::parsers::pi::tool_result_content_text)
         .or_else(|| {
             result
                 .and_then(|result| result.get("structuredContent"))
-                .and_then(|value| serde_json::to_string(value).ok())
+                .and_then(|value| serialize_preview(value, MCP_RESULT_FALLBACK_CAP))
         })
         .or_else(|| value_to_preview(stated_error))
         .or_else(|| {
-            // `content` rather than the whole envelope, and bounded: a blob
-            // must not flood the card with base64 and protocol noise. A call
-            // that returned NOTHING still says nothing — `{"content":[]}` is
-            // not worth rendering.
+            // `content` rather than the whole envelope: a blob must not flood
+            // the card with protocol noise. A call that returned NOTHING still
+            // says nothing — `{"content":[]}` is not worth rendering.
             let content = result?.get("content")?;
             let carries_blocks = content.as_array().is_some_and(|blocks| !blocks.is_empty());
             carries_blocks
-                .then(|| serde_json::to_string(content).ok())
+                .then(|| serialize_preview(content, MCP_RESULT_FALLBACK_CAP))
                 .flatten()
-                .map(|text| truncate_str(&text, MCP_RESULT_FALLBACK_CAP))
         });
     // The record STATES its outcome — `result.isError`, the item's own terminal
     // `status`, and an `error` when the call never reached the server. Believe
@@ -6311,6 +6360,10 @@ mod tests {
     use super::extract_turn_usage_from_codex_usage;
     use super::codex_parent_thread_id;
     use super::completed_mcp_call;
+    use super::serialize_preview;
+    use super::truncate_str;
+    use super::BudgetedSink;
+    use super::MCP_RESULT_FALLBACK_CAP;
     use super::is_encrypted_envelope;
     use super::merge_codex_context_window_stats;
     use super::native_team_wait_input;
@@ -11243,6 +11296,52 @@ mod tests {
             "the thrown script's own error must survive: {:?}",
             results[0].1
         );
+    }
+
+    /// The sink is what makes a preview bounded: it has to STOP the writer, not
+    /// grow to fit it. Without the refusal, `serde_json` would keep handing it
+    /// the rest of a base64 blob.
+    #[test]
+    fn a_budgeted_sink_stops_at_its_budget() {
+        use std::io::Write;
+        let mut sink = BudgetedSink {
+            buf: Vec::new(),
+            budget: 8,
+        };
+        assert!(sink.write_all(&[b'x'; 5]).is_ok(), "room for the first write");
+        assert!(
+            sink.write_all(&[b'x'; 100]).is_err(),
+            "a write past the budget must fail so serialization aborts"
+        );
+        assert_eq!(sink.buf.len(), 8, "and never buffer more than the budget");
+    }
+
+    /// Reading a value through a budget must be INDISTINGUISHABLE from
+    /// serializing the whole thing and cutting it — otherwise the bound is a
+    /// behavior change wearing a performance fix's clothes. The cases that can
+    /// tell them apart: a value that fits, one landing exactly on the cap, one
+    /// far past it, and one whose characters are multi-byte, where the byte cut
+    /// lands mid-character and decoding leaves a replacement char behind.
+    #[test]
+    fn a_budgeted_preview_reads_exactly_like_an_unbounded_one() {
+        for (name, value) in [
+            ("a small object", serde_json::json!({"a": 1, "b": [true, null]})),
+            ("empty", serde_json::json!({})),
+            ("exactly the cap", serde_json::json!("x".repeat(3998))),
+            ("one past the cap", serde_json::json!("x".repeat(3999))),
+            (
+                "a base64 blob",
+                serde_json::json!([{"type":"image","mimeType":"image/png","data":"A".repeat(500_000)}]),
+            ),
+            ("multi-byte text", serde_json::json!("汉".repeat(6000))),
+        ] {
+            let whole = serde_json::to_string(&value).expect("serialize");
+            assert_eq!(
+                serialize_preview(&value, MCP_RESULT_FALLBACK_CAP),
+                Some(truncate_str(&whole, MCP_RESULT_FALLBACK_CAP)),
+                "{name}"
+            );
+        }
     }
 
     /// The outcome precedence, stated once against the fields themselves rather
