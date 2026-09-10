@@ -497,8 +497,8 @@ struct ScanFolderRow {
     name: String,
     deleted: bool,
     /// The root folder this row was registered under, when it is a worktree
-    /// child. Only [`worktree_parent_folder_ids`] reads it — to flatten the
-    /// same way `open_worktree_folder_core` does.
+    /// child. Import reconciliation uses it to flatten and validate new parent
+    /// relationships.
     parent_id: Option<i32>,
 }
 
@@ -554,9 +554,10 @@ fn worktree_root_key(path: &str) -> Option<String> {
     (key != normalize_path_for_matching(path)).then_some(key)
 }
 
-/// Normalized path → the folder id a linked worktree of that path should hang
-/// off. Seeded from the folder rows on disk; the importer adds the folders it
-/// creates as it goes.
+/// Normalized path → the candidate root folder id a linked worktree of that
+/// path should hang off. Seeded from the folder rows on disk; the importer adds
+/// the folders it creates as it goes. The write side separately verifies that
+/// the candidate is still a live top-level row.
 ///
 /// The id is FLATTENED the way `open_worktree_folder_core` flattens: a repo
 /// folder that is itself recorded as somebody's worktree child hands down its
@@ -893,6 +894,24 @@ pub(crate) async fn import_selected_from_summaries(
             .then_with(|| a.norm_key.cmp(&b.norm_key))
     });
     let mut worktree_parents = worktree_parent_folder_ids(&folder_index);
+    // Parent ids are not protected by a foreign key. Restrict new writes to
+    // live top-level rows so a stale/dangling id or a pre-existing parent chain
+    // cannot turn this import into a chain or cycle of its own. Plain folders
+    // selected in this batch join the set after `add_folder` revives them.
+    let mut top_level_parent_ids: HashSet<i32> = folder_rows
+        .iter()
+        .filter(|row| !row.deleted && row.parent_id.is_none())
+        .map(|row| row.id)
+        .collect();
+    // Reparenting a folder that already owns children would make those rows
+    // grandchildren. Track counts through this batch so that operation falls
+    // back to Preserve as well.
+    let mut folder_child_counts: HashMap<i32, usize> = HashMap::new();
+    for row in &folder_rows {
+        if let Some(parent_id) = row.parent_id {
+            *folder_child_counts.entry(parent_id).or_default() += 1;
+        }
+    }
 
     for pending in ordered {
         let PendingImport {
@@ -917,9 +936,25 @@ pub(crate) async fn import_selected_from_summaries(
         // `add_folder` when nothing resolves keeps `ParentWrite::Preserve` for
         // every other case, so a reopen can never demote a folder that a
         // worktree open already parented. See issue #552.
+        let target_row = folder_index.get(&norm_key).copied();
+        let target_folder_id = target_row.map(|row| row.id);
+        let existing_parent_id = target_row.and_then(|row| row.parent_id);
+        let target_has_children = target_folder_id.is_some_and(|folder_id| {
+            folder_child_counts.get(&folder_id).copied().unwrap_or(0) > 0
+        });
         let parent_id = root_key
             .as_ref()
-            .and_then(|key| worktree_parents.get(key).copied());
+            .and_then(|key| worktree_parents.get(key).copied())
+            // A historical top-level worktree can have its main-tree row
+            // recorded underneath it. Flattening through that row points back
+            // at the worktree's own folder id even though their PATHS differ,
+            // so the path-level guard in `worktree_root_key` cannot catch it.
+            .filter(|parent_id| Some(*parent_id) != target_folder_id)
+            .filter(|parent_id| top_level_parent_ids.contains(parent_id))
+            // Moving an existing parent under the repo would strand its current
+            // children one level deeper. Rewriting the same established edge is
+            // harmless; any new edge requires a childless target.
+            .filter(|parent_id| existing_parent_id == Some(*parent_id) || !target_has_children);
         let add = match parent_id {
             Some(parent_id) => {
                 folder_service::add_folder_with_parent(conn, &target_path, Some(parent_id)).await
@@ -929,6 +964,26 @@ pub(crate) async fn import_selected_from_summaries(
         match add.map_err(AppCommandError::from) {
             Ok(entry) => {
                 let folder_id = entry.id;
+                // `add_folder_with_parent` sets the resolved parent; the
+                // fallback `add_folder` preserves an existing row's parent and
+                // inserts a new row at the top level. Keep the safety set in
+                // step with that exact persisted state.
+                let persisted_parent_id = parent_id.or(existing_parent_id);
+                if persisted_parent_id != existing_parent_id {
+                    if let Some(old_parent_id) = existing_parent_id {
+                        if let Some(count) = folder_child_counts.get_mut(&old_parent_id) {
+                            *count = count.saturating_sub(1);
+                        }
+                    }
+                    if let Some(new_parent_id) = persisted_parent_id {
+                        *folder_child_counts.entry(new_parent_id).or_default() += 1;
+                    }
+                }
+                if persisted_parent_id.is_none() {
+                    top_level_parent_ids.insert(folder_id);
+                } else {
+                    top_level_parent_ids.remove(&folder_id);
+                }
                 // This folder can now be the repo a LATER group's worktree hangs
                 // off — the sort above put every plain folder ahead of every
                 // worktree precisely so this lands in time. Only plain folders
@@ -936,10 +991,7 @@ pub(crate) async fn import_selected_from_summaries(
                 // tree. `add_folder` left an existing row's `parent_id` alone, so
                 // the flattening rule is the seed's, applied to the row as read.
                 if root_key.is_none() {
-                    let root = folder_index
-                        .get(&norm_key)
-                        .and_then(|row| row.parent_id)
-                        .unwrap_or(folder_id);
+                    let root = persisted_parent_id.unwrap_or(folder_id);
                     worktree_parents.insert(norm_key, root);
                 }
                 // `DeletedPolicy::Restore`: every item here is a session the
@@ -5560,6 +5612,180 @@ mod tests {
             .find(|r| r.id != outer_id && r.id != repo_id)
             .expect("worktree folder row");
         assert_eq!(worktree_row.parent_id, Some(outer_id));
+    }
+
+    // Before imported worktrees were grouped, one could exist as a top-level
+    // folder while its main working tree was still unregistered. Navigating
+    // from that worktree to a branch checked out in the main tree then recorded
+    // the main-tree row under the worktree. Flattening through that row points
+    // straight back at the import target's own id; refuse it or the sidebar
+    // filters the self-parented folder out completely.
+    #[tokio::test]
+    async fn batch_import_refuses_a_parent_that_flattens_to_the_target() {
+        use sea_orm::EntityTrait;
+        let db = fresh_in_memory_db().await;
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = std::fs::canonicalize(temp.path()).expect("canonicalize root");
+        let (repo, worktree) = crate::git_repo::fixture_linked_worktree(&root);
+        let worktree_id = seed_folder(&db, &worktree.to_string_lossy()).await;
+        let repo_id = folder_service::add_folder_with_parent(
+            &db.conn,
+            &repo.to_string_lossy(),
+            Some(worktree_id),
+        )
+        .await
+        .expect("seed inverted main-tree folder")
+        .id;
+
+        let summaries = vec![scan_summary(
+            "s1",
+            AgentType::Codex,
+            Some(&worktree.to_string_lossy()),
+            at(0),
+        )];
+        let result = import_selected_from_summaries(
+            &db.conn,
+            &EventEmitter::Noop,
+            summaries,
+            vec![key_of(AgentType::Codex, "s1")],
+        )
+        .await
+        .expect("batch import");
+
+        assert_eq!(result.imported, 1);
+        let worktree_row = crate::db::entities::folder::Entity::find_by_id(worktree_id)
+            .one(&db.conn)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(worktree_row.parent_id, None);
+        let repo_row = crate::db::entities::folder::Entity::find_by_id(repo_id)
+            .one(&db.conn)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(repo_row.parent_id, Some(worktree_id));
+    }
+
+    // Historical top-level worktrees can also leave a longer inverted chain.
+    // If the main-tree row points at a folder whose own parent is the import
+    // target, using that one-hop "root" would create a two-node cycle. Only an
+    // actual live top-level row is safe to write as a new parent.
+    #[tokio::test]
+    async fn batch_import_refuses_a_flattened_parent_that_is_itself_a_child() {
+        use sea_orm::EntityTrait;
+        let db = fresh_in_memory_db().await;
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = std::fs::canonicalize(temp.path()).expect("canonicalize root");
+        let (repo, worktree) = crate::git_repo::fixture_linked_worktree(&root);
+        let worktree_id = seed_folder(&db, &worktree.to_string_lossy()).await;
+        let middle_id = folder_service::add_folder_with_parent(
+            &db.conn,
+            &root.join("middle").to_string_lossy(),
+            Some(worktree_id),
+        )
+        .await
+        .expect("seed middle folder")
+        .id;
+        let repo_id = folder_service::add_folder_with_parent(
+            &db.conn,
+            &repo.to_string_lossy(),
+            Some(middle_id),
+        )
+        .await
+        .expect("seed chained main-tree folder")
+        .id;
+
+        let summaries = vec![scan_summary(
+            "s1",
+            AgentType::Codex,
+            Some(&worktree.to_string_lossy()),
+            at(0),
+        )];
+        import_selected_from_summaries(
+            &db.conn,
+            &EventEmitter::Noop,
+            summaries,
+            vec![key_of(AgentType::Codex, "s1")],
+        )
+        .await
+        .expect("batch import");
+
+        let worktree_row = crate::db::entities::folder::Entity::find_by_id(worktree_id)
+            .one(&db.conn)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(worktree_row.parent_id, None);
+        let middle_row = crate::db::entities::folder::Entity::find_by_id(middle_id)
+            .one(&db.conn)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(middle_row.parent_id, Some(worktree_id));
+        let repo_row = crate::db::entities::folder::Entity::find_by_id(repo_id)
+            .one(&db.conn)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(repo_row.parent_id, Some(middle_id));
+    }
+
+    // A worktree imported before grouping existed may already be acting as the
+    // root for worktrees created from it. Moving that row under the real repo
+    // without moving its children would create a two-level chain and hide the
+    // children's conversations in the single-level sidebar merge.
+    #[tokio::test]
+    async fn batch_import_does_not_reparent_a_folder_that_already_has_children() {
+        use sea_orm::EntityTrait;
+        let db = fresh_in_memory_db().await;
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = std::fs::canonicalize(temp.path()).expect("canonicalize root");
+        let (repo, worktree) = crate::git_repo::fixture_linked_worktree(&root);
+        let repo_id = seed_folder(&db, &repo.to_string_lossy()).await;
+        let worktree_id = seed_folder(&db, &worktree.to_string_lossy()).await;
+        let child_id = folder_service::add_folder_with_parent(
+            &db.conn,
+            &root.join("child").to_string_lossy(),
+            Some(worktree_id),
+        )
+        .await
+        .expect("seed existing child")
+        .id;
+
+        let summaries = vec![scan_summary(
+            "s1",
+            AgentType::Codex,
+            Some(&worktree.to_string_lossy()),
+            at(0),
+        )];
+        import_selected_from_summaries(
+            &db.conn,
+            &EventEmitter::Noop,
+            summaries,
+            vec![key_of(AgentType::Codex, "s1")],
+        )
+        .await
+        .expect("batch import");
+
+        let worktree_row = crate::db::entities::folder::Entity::find_by_id(worktree_id)
+            .one(&db.conn)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(worktree_row.parent_id, None);
+        let child_row = crate::db::entities::folder::Entity::find_by_id(child_id)
+            .one(&db.conn)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(child_row.parent_id, Some(worktree_id));
+        let repo_row = crate::db::entities::folder::Entity::find_by_id(repo_id)
+            .one(&db.conn)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(repo_row.parent_id, None);
     }
 
     // Grouping under a repo codeg has never opened would invent a workspace row
