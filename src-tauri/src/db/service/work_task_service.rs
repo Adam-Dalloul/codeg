@@ -1213,7 +1213,9 @@ pub async fn claim_due_scheduled(
 }
 
 /// canceled → todo ("requeue"): back to the board, worktree (if any) reused at
-/// the next start.
+/// the next start. The SESSION is not reused: the conversation link is dropped
+/// so the next start runs the task from the top rather than resuming the run
+/// the user canceled.
 /// canceled → todo, optionally carrying the note the user attached to the
 /// requeue. The note is written in the SAME transaction as the CAS: the moment
 /// this commits the task is schedulable, and an `auto_process` folder's pump
@@ -1240,6 +1242,15 @@ pub async fn requeue_canceled(
             Expr::value(None::<chrono::DateTime<Utc>>),
         )
         .col_expr(work_task::Column::FinishedAt, Expr::value(None::<chrono::DateTime<Utc>>))
+        // Drop the link to the run the user just canceled. `launch_mode_for`
+        // reads exactly this column to decide `Retry` vs `Fresh`, so leaving it
+        // meant the next start silently RESUMED the canceled session instead of
+        // starting the task over, and handed the reconcile sweep a conversation
+        // row whose `cancelled` status belongs to the previous generation. The
+        // worktree is still reused; the old conversation still exists in its
+        // folder. Unlike `retry` (failed -> queued), which deliberately
+        // continues the same session, a requeue puts the task back on the board.
+        .col_expr(work_task::Column::ConversationId, Expr::value(None::<i32>))
         .col_expr(work_task::Column::UpdatedAt, Expr::value(now))
         .filter(work_task::Column::Id.eq(id))
         .filter(work_task::Column::Status.eq(WorkTaskStatus::Canceled))
