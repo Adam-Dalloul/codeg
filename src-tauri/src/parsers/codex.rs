@@ -1523,14 +1523,14 @@ fn completed_mcp_call(payload: &serde_json::Value) -> Option<CompletedMcpCall> {
     // card that says nothing at all where the script card used to show the
     // run's text.
     //
-    // Only the LAST one is truncated, and that asymmetry is deliberate. This
-    // preview is read twice: once by the card, and once by the error heuristic
-    // below, which re-parses a preview that opens with `{` or `[` and looks for
-    // a failed `status` inside it (`infer_output_text_is_error`). Truncating
-    // valid JSON makes that parse fail, and a structured answer of
-    // `{…,"status":"failed"}` would then settle GREEN. The last branch already
-    // accepted that trade before it was made cheap — it is the shape that can
-    // be a base64 blob, and a card must not be flooded with one.
+    // Only the LAST one is truncated, and only for what the card SHOWS — it is
+    // the shape that can be a base64 blob, and a card must not be flooded with
+    // one. Nothing may decide an OUTCOME from a cut string: the heuristic below
+    // re-parses a preview that opens with `{` or `[` and looks for a failed
+    // `status` inside it (`infer_output_text_is_error`), and truncating valid
+    // JSON makes that parse fail silently, settling a call that reported
+    // failure GREEN. So the cut branch also hands back the value it cut, and
+    // the outcome is read from that instead.
     let output_preview = result
         .and_then(|result| result.get("content"))
         .and_then(crate::parsers::pi::tool_result_content_text)
@@ -1539,17 +1539,16 @@ fn completed_mcp_call(payload: &serde_json::Value) -> Option<CompletedMcpCall> {
                 .and_then(|result| result.get("structuredContent"))
                 .and_then(|value| serde_json::to_string(value).ok())
         })
-        .or_else(|| value_to_preview(stated_error))
-        .or_else(|| {
-            // `content` rather than the whole envelope. A call that returned
-            // NOTHING still says nothing — `{"content":[]}` is not worth
-            // rendering.
-            let content = result?.get("content")?;
-            let carries_blocks = content.as_array().is_some_and(|blocks| !blocks.is_empty());
-            carries_blocks
-                .then(|| serialize_preview(content, MCP_RESULT_FALLBACK_CAP))
-                .flatten()
-        });
+        .or_else(|| value_to_preview(stated_error));
+    // `content` rather than the whole envelope. A call that returned NOTHING
+    // still says nothing — `{"content":[]}` is not worth rendering.
+    let blocks = output_preview
+        .is_none()
+        .then(|| result?.get("content"))
+        .flatten()
+        .filter(|content| content.as_array().is_some_and(|blocks| !blocks.is_empty()));
+    let output_preview = output_preview
+        .or_else(|| blocks.and_then(|content| serialize_preview(content, MCP_RESULT_FALLBACK_CAP)));
     // The record STATES its outcome — `result.isError`, the item's own terminal
     // `status`, and an `error` when the call never reached the server. Believe
     // them. `infer_tool_call_output_is_error` reads tea leaves out of the
@@ -1578,7 +1577,12 @@ fn completed_mcp_call(payload: &serde_json::Value) -> Option<CompletedMcpCall> {
         input_preview: value_to_preview(item.get("arguments")),
         is_error: claimed_failed
             || (!claimed_ok
-                && infer_tool_call_output_is_error(item, result, output_preview.as_deref())),
+                && (infer_tool_call_output_is_error(item, result, output_preview.as_deref())
+                    // The blocks the preview above was cut out of. Reading them
+                    // directly is exactly what parsing an UNTRUNCATED preview
+                    // would have produced, so the cap costs the card characters
+                    // and never costs the call its outcome.
+                    || blocks.is_some_and(|content| infer_output_value_is_error(content, 0)))),
         output_preview,
     })
 }
@@ -11348,6 +11352,38 @@ mod tests {
                 "{name}"
             );
         }
+    }
+
+    /// The block fallback IS truncated, so its outcome must not be read back
+    /// out of the cut string — the blocks themselves decide. Same failure as
+    /// the structured case: parse a truncated document and you get nothing,
+    /// and nothing reads as success.
+    #[test]
+    fn a_long_block_failure_survives_its_own_truncation() {
+        let call = completed_mcp_call(&serde_json::json!({
+            "item": {
+                "type": "McpToolCall", "id": "i", "server": "s", "tool": "t",
+                "result": {
+                    "content": [{
+                        "type": "resource",
+                        "padding": "p".repeat(MCP_RESULT_FALLBACK_CAP * 2),
+                        "status": "failed",
+                    }],
+                },
+            }
+        }))
+        .expect("well-formed item");
+        assert!(
+            call.output_preview
+                .as_deref()
+                .is_some_and(|text| text.ends_with("...")),
+            "the card's copy is still cut: {:?}",
+            call.output_preview.as_deref().map(str::len)
+        );
+        assert!(
+            call.is_error,
+            "a failure reported inside the blocks survives the cut"
+        );
     }
 
     /// Why the structured answer is the one preview that is NOT truncated: it
