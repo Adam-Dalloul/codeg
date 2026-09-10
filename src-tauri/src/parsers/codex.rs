@@ -1483,16 +1483,22 @@ impl std::io::Write for BudgetedSink {
     }
 }
 
-/// `value` serialized far enough to fill a `max_chars` preview, and not one
-/// byte further.
+/// `value` serialized into a `max_chars` preview without ever building the
+/// whole serialization.
 ///
-/// `serde_json::to_string` would materialize the WHOLE value first — for an
-/// image-only MCP result that is the entire base64 blob, built and then
-/// scanned twice only to keep its first few thousand characters. This is
-/// exactly what that produces (UTF-8 spends at most 4 bytes per character, so
-/// `4 * max_chars` bytes always cover `max_chars` of them, and the partial
-/// character a byte cut can leave at the end always falls outside the
-/// truncation) while allocating a bounded buffer instead of an unbounded one.
+/// `serde_json::to_string` materializes all of it first — for an image-only
+/// MCP result that is the entire base64 blob, allocated and then walked twice
+/// more by `truncate_str`, to keep a few thousand characters of it. This
+/// produces exactly the same string while the buffer stays at `4 * max_chars`
+/// bytes: UTF-8 spends at most 4 bytes per character, so that always covers
+/// `max_chars` of them, and the partial character a byte cut can leave behind
+/// always falls outside the truncation.
+///
+/// What it bounds is the MEMORY, which is the part that can fail. Time is only
+/// mostly bounded: `serde_json` walks a string looking for escapes before
+/// offering any of it to the writer, so one oversized string is still read
+/// through once — a pass over bytes already resident, not a second copy of
+/// them. Stopping even that would mean replacing the serializer.
 ///
 /// `None` for a value that serializes to nothing at all.
 fn serialize_preview(value: &serde_json::Value, max_chars: usize) -> Option<String> {
@@ -1589,13 +1595,21 @@ fn completed_mcp_call(payload: &serde_json::Value) -> Option<CompletedMcpCall> {
 /// no longer re-parses, so the outcome has to be read here or not at all —
 /// truncation may cost a card characters, never a call its verdict.
 ///
-/// Own keys only, deliberately. A full `infer_output_value_is_error` walk
-/// follows `data`, which in a tool-output envelope is a nested result but on
-/// an MCP block is the PAYLOAD — the base64 the cap above exists to avoid
-/// touching, and which `infer_output_text_is_error` would lowercase into a
-/// second copy of itself. A payload that happens to read like an error is
-/// still just bytes. Depth 4 is how that is said to a walker whose own limit
-/// is 4: every own key is read, every descent refuses.
+/// A block's own report, deliberately, and no descent. A full
+/// `infer_output_value_is_error` walk follows `data`, which in a tool-output
+/// envelope is a nested result but on an MCP block is the PAYLOAD — the base64
+/// the cap above refuses to copy, and which `infer_output_text_is_error` would
+/// lowercase into a second copy of itself anyway. A payload that happens to
+/// read like an error is still just bytes. Depth 4 is how that is said to a
+/// walker whose own limit is 4: it reads the outcome fields it recognizes and
+/// then every descent refuses. Only OBJECT blocks are asked, because only they
+/// can carry such a field — MCP `content` holds typed blocks, and a bare
+/// string among them is not a shape this can read a verdict out of.
+///
+/// Still not free in the worst case: a recognized field can itself be huge
+/// (`{"stderr": "<megabytes of spaces>"}` costs a `trim`). That is a pass over
+/// one already-resident string, not a copy of it, and unlike `data` it is a
+/// field a block would have to have gone out of its way to carry.
 fn blocks_report_failure(blocks: Option<&serde_json::Value>) -> bool {
     blocks
         .and_then(serde_json::Value::as_array)
@@ -11374,12 +11388,12 @@ mod tests {
         }
     }
 
-    /// The marker search reads a block's OWN keys and stops there. Walking on
-    /// into `data` would read the PAYLOAD — the base64 the cap exists to avoid
-    /// touching, and which the text heuristic lowercases into a second copy of
-    /// itself. This is the case that arm was added for, a payload too long to
-    /// keep, and it must come back cheap and quiet: a payload that happens to
-    /// read like an error is still just bytes.
+    /// The marker search reads a block's own outcome fields and stops there.
+    /// Walking on into `data` would read the PAYLOAD — the base64 the cap
+    /// refuses to copy, which the text heuristic would then lowercase into a
+    /// second copy of itself. This pins the VERDICT that follows from that (a
+    /// payload reading like an error is still just bytes); what it cannot see
+    /// is the cost, so the reasoning lives on `blocks_report_failure`.
     ///
     /// (Under the cap nothing is cut, so the ordinary preview path parses the
     /// whole thing exactly as it always has — that is not this arm's business.)
