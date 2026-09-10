@@ -1578,13 +1578,33 @@ fn completed_mcp_call(payload: &serde_json::Value) -> Option<CompletedMcpCall> {
         is_error: claimed_failed
             || (!claimed_ok
                 && (infer_tool_call_output_is_error(item, result, output_preview.as_deref())
-                    // The blocks the preview above was cut out of. Reading them
-                    // directly is exactly what parsing an UNTRUNCATED preview
-                    // would have produced, so the cap costs the card characters
-                    // and never costs the call its outcome.
-                    || blocks.is_some_and(|content| infer_output_value_is_error(content, 0)))),
+                    || blocks_report_failure(blocks))),
         output_preview,
     })
+}
+
+/// Whether any block in a result's `content` array REPORTS a failure.
+///
+/// The blocks are what the preview above was cut out of, and the cut string
+/// no longer re-parses, so the outcome has to be read here or not at all —
+/// truncation may cost a card characters, never a call its verdict.
+///
+/// Own keys only, deliberately. A full `infer_output_value_is_error` walk
+/// follows `data`, which in a tool-output envelope is a nested result but on
+/// an MCP block is the PAYLOAD — the base64 the cap above exists to avoid
+/// touching, and which `infer_output_text_is_error` would lowercase into a
+/// second copy of itself. A payload that happens to read like an error is
+/// still just bytes. Depth 4 is how that is said to a walker whose own limit
+/// is 4: every own key is read, every descent refuses.
+fn blocks_report_failure(blocks: Option<&serde_json::Value>) -> bool {
+    blocks
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|blocks| {
+            blocks
+                .iter()
+                .filter(|block| block.is_object())
+                .any(|block| infer_output_value_is_error(block, 4))
+        })
 }
 
 fn unwrap_completed_mcp_calls(
@@ -11352,6 +11372,39 @@ mod tests {
                 "{name}"
             );
         }
+    }
+
+    /// The marker search reads a block's OWN keys and stops there. Walking on
+    /// into `data` would read the PAYLOAD — the base64 the cap exists to avoid
+    /// touching, and which the text heuristic lowercases into a second copy of
+    /// itself. This is the case that arm was added for, a payload too long to
+    /// keep, and it must come back cheap and quiet: a payload that happens to
+    /// read like an error is still just bytes.
+    ///
+    /// (Under the cap nothing is cut, so the ordinary preview path parses the
+    /// whole thing exactly as it always has — that is not this arm's business.)
+    #[test]
+    fn an_oversized_block_payload_is_never_read_as_an_outcome() {
+        let call = completed_mcp_call(&serde_json::json!({
+            "item": {
+                "type": "McpToolCall", "id": "i", "server": "s", "tool": "t",
+                "result": {
+                    "content": [{
+                        "type": "image",
+                        "mimeType": "image/png",
+                        "data": format!("error: {}", "A".repeat(MCP_RESULT_FALLBACK_CAP * 2)),
+                    }],
+                },
+            }
+        }))
+        .expect("well-formed item");
+        assert!(
+            call.output_preview
+                .as_deref()
+                .is_some_and(|text| text.ends_with("...")),
+            "the payload is past the cap, so the preview is cut"
+        );
+        assert!(!call.is_error, "a payload is bytes, not a verdict");
     }
 
     /// The block fallback IS truncated, so its outcome must not be read back
