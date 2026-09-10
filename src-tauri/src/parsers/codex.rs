@@ -1515,29 +1515,35 @@ fn completed_mcp_call(payload: &serde_json::Value) -> Option<CompletedMcpCall> {
     }
     let result = item.get("result").filter(|value| !value.is_null());
     let stated_error = item.get("error").filter(|value| is_stated_error(value));
-    // Text first — that is the call's own words, and it is what the script
-    // card printed, so it is passed through whole. The three below are for the
-    // shapes carrying no text: a structured-only answer, a transport failure
-    // that answered with `error` and no result, or a `content` array holding
-    // only blocks this reader cannot render (an image, a resource). The
-    // semantic path DISCARDS the wrapper's own printed output, so a `None` here
-    // is not a quiet degradation, it is a card that says nothing at all where
-    // the script card used to show the run's text. None of the three is the
-    // call's own prose, and a serialized one can be arbitrarily large — an
-    // image block is a base64 blob — so they are read through a budget.
+    // Text first, then the structured twin. The last two are for the shapes
+    // that carry neither — a transport failure that answered with `error` and
+    // no result, or a `content` array holding only blocks this reader cannot
+    // render (an image, a resource). The semantic path DISCARDS the wrapper's
+    // own printed output, so a `None` here is not a quiet degradation, it is a
+    // card that says nothing at all where the script card used to show the
+    // run's text.
+    //
+    // Only the LAST one is truncated, and that asymmetry is deliberate. This
+    // preview is read twice: once by the card, and once by the error heuristic
+    // below, which re-parses a preview that opens with `{` or `[` and looks for
+    // a failed `status` inside it (`infer_output_text_is_error`). Truncating
+    // valid JSON makes that parse fail, and a structured answer of
+    // `{…,"status":"failed"}` would then settle GREEN. The last branch already
+    // accepted that trade before it was made cheap — it is the shape that can
+    // be a base64 blob, and a card must not be flooded with one.
     let output_preview = result
         .and_then(|result| result.get("content"))
         .and_then(crate::parsers::pi::tool_result_content_text)
         .or_else(|| {
             result
                 .and_then(|result| result.get("structuredContent"))
-                .and_then(|value| serialize_preview(value, MCP_RESULT_FALLBACK_CAP))
+                .and_then(|value| serde_json::to_string(value).ok())
         })
         .or_else(|| value_to_preview(stated_error))
         .or_else(|| {
-            // `content` rather than the whole envelope: a blob must not flood
-            // the card with protocol noise. A call that returned NOTHING still
-            // says nothing — `{"content":[]}` is not worth rendering.
+            // `content` rather than the whole envelope. A call that returned
+            // NOTHING still says nothing — `{"content":[]}` is not worth
+            // rendering.
             let content = result?.get("content")?;
             let carries_blocks = content.as_array().is_some_and(|blocks| !blocks.is_empty());
             carries_blocks
@@ -11342,6 +11348,40 @@ mod tests {
                 "{name}"
             );
         }
+    }
+
+    /// Why the structured answer is the one preview that is NOT truncated: it
+    /// is read twice. The card shows it, and the error heuristic re-parses it
+    /// — a preview opening with `{` is parsed back into JSON and searched for
+    /// a failed `status`. Cut that JSON and the parse fails silently, and a
+    /// call that reported failure settles GREEN. The padding is what makes the
+    /// record longer than any cap worth applying, and it sorts before `status`
+    /// so a cut would take the status with it.
+    #[test]
+    fn a_long_structured_failure_is_not_cut_into_a_success() {
+        let call = completed_mcp_call(&serde_json::json!({
+            "item": {
+                "type": "McpToolCall", "id": "i", "server": "s", "tool": "t",
+                "result": {
+                    "content": [],
+                    "structuredContent": {
+                        "padding": "p".repeat(MCP_RESULT_FALLBACK_CAP * 2),
+                        "status": "failed",
+                    },
+                },
+            }
+        }))
+        .expect("well-formed item");
+        assert!(
+            call.output_preview
+                .as_deref()
+                .is_some_and(|text| serde_json::from_str::<serde_json::Value>(text).is_ok()),
+            "a structured answer must reach the heuristic still parseable"
+        );
+        assert!(
+            call.is_error,
+            "a record that states nothing but reports a failed structured status is a failure"
+        );
     }
 
     /// The outcome precedence, stated once against the fields themselves rather
