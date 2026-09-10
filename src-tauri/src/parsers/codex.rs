@@ -1455,19 +1455,25 @@ struct CompletedMcpCall {
     is_error: bool,
 }
 
+/// How much of a serialized MCP result stands in for a call that answered in
+/// blocks with no text of its own. Matches `pi`'s cap on the same shape: enough
+/// to show what came back, not enough for a base64 blob to swamp the card.
+const MCP_RESULT_FALLBACK_CAP: usize = 4000;
+
 fn completed_mcp_call(payload: &serde_json::Value) -> Option<CompletedMcpCall> {
     let item = payload.get("item")?;
     if item.get("type").and_then(|v| v.as_str()) != Some("McpToolCall") {
         return None;
     }
     let result = item.get("result").filter(|value| !value.is_null());
+    let is_error = item.get("error").filter(|value| is_stated_error(value));
     // Text first, then the structured twin. The last two are for the shapes
-    // that carry neither — an image-only / resource-only `content` array, or a
-    // transport failure that answered with `error` and no result. The semantic
-    // path DISCARDS the wrapper's own printed output, so a `None` here is not a
-    // quiet degradation, it is a card that says nothing at all where the script
-    // card used to show the run's text. Serializing rather than dropping is
-    // what `pi::content_to_text` already does with the same MCP shape.
+    // that carry neither — a transport failure that answered with `error` and
+    // no result, or a `content` array holding only blocks this reader cannot
+    // render (an image, a resource). The semantic path DISCARDS the wrapper's
+    // own printed output, so a `None` here is not a quiet degradation, it is a
+    // card that says nothing at all where the script card used to show the
+    // run's text.
     let output_preview = result
         .and_then(|result| result.get("content"))
         .and_then(crate::parsers::pi::tool_result_content_text)
@@ -1476,27 +1482,39 @@ fn completed_mcp_call(payload: &serde_json::Value) -> Option<CompletedMcpCall> {
                 .and_then(|result| result.get("structuredContent"))
                 .and_then(|value| serde_json::to_string(value).ok())
         })
-        .or_else(|| value_to_preview(item.get("error")))
-        .or_else(|| result.and_then(|result| serde_json::to_string(result).ok()));
-    // The record STATES its outcome — `result.isError`, and the item's own
-    // terminal `status`. Believe it. `infer_tool_call_output_is_error` reads
-    // tea leaves out of the output text because a script card has no such
-    // field; run against an authoritative record it can only invent failures,
-    // and a tool that legitimately PRINTS `exit code: 1` or a line starting
+        .or_else(|| value_to_preview(is_error))
+        .or_else(|| {
+            // `content` rather than the whole envelope, and bounded: a blob
+            // must not flood the card with base64 and protocol noise. A call
+            // that returned NOTHING still says nothing — `{"content":[]}` is
+            // not worth rendering.
+            let content = result?.get("content")?;
+            let carries_blocks = content.as_array().is_some_and(|blocks| !blocks.is_empty());
+            carries_blocks
+                .then(|| serde_json::to_string(content).ok())
+                .flatten()
+                .map(|text| truncate_str(&text, MCP_RESULT_FALLBACK_CAP))
+        });
+    // The record STATES its outcome — `result.isError`, the item's own terminal
+    // `status`, and an `error` when the call never reached the server. Believe
+    // them. `infer_tool_call_output_is_error` reads tea leaves out of the
+    // output text because a script card has no such field; run against an
+    // authoritative record it can only invent failures, and a tool that
+    // legitimately PRINTS `exit code: 1` or answers with a line opening
     // `Error:` returned perfectly well. Kept as the fallback for a record that
-    // states neither.
-    let claimed_failed = result
+    // states nothing. Stated failure outranks stated success, so a record
+    // contradicting itself settles as the error it reported.
+    let stated_is_error = result
         .and_then(|result| result.get("isError"))
-        .and_then(serde_json::Value::as_bool)
-        == Some(true)
-        || item
-            .get("status")
-            .and_then(serde_json::Value::as_str)
-            .is_some_and(is_failed_status);
-    let claimed_ok = result
-        .and_then(|result| result.get("isError"))
-        .and_then(serde_json::Value::as_bool)
-        == Some(false)
+        .and_then(serde_json::Value::as_bool);
+    let claimed_failed =
+        stated_is_error == Some(true)
+            || is_error.is_some()
+            || item
+                .get("status")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(is_failed_status);
+    let claimed_ok = stated_is_error == Some(false)
         || item.get("status").and_then(serde_json::Value::as_str) == Some("completed");
     Some(CompletedMcpCall {
         id: item.get("id")?.as_str()?.to_string(),
@@ -1995,6 +2013,18 @@ fn infer_output_text_is_error(text: &str) -> bool {
         .is_some_and(|prefix| prefix.eq_ignore_ascii_case("error:"))
 }
 
+/// Whether an `error` field STATES an error rather than merely existing.
+/// `null`, `false` and a blank string are how a record says "no error", and a
+/// reader that took their presence for failure would fail every clean call
+/// that carries the key.
+fn is_stated_error(value: &serde_json::Value) -> bool {
+    match value {
+        serde_json::Value::Null | serde_json::Value::Bool(false) => false,
+        serde_json::Value::String(text) => !text.trim().is_empty(),
+        _ => true,
+    }
+}
+
 fn infer_output_value_is_error(value: &serde_json::Value, depth: usize) -> bool {
     if depth > 4 {
         return false;
@@ -2040,13 +2070,8 @@ fn infer_output_value_is_error(value: &serde_json::Value, depth: usize) -> bool 
                 }
             }
 
-            if let Some(error) = map.get("error") {
-                match error {
-                    serde_json::Value::Null => {}
-                    serde_json::Value::Bool(false) => {}
-                    serde_json::Value::String(s) if s.trim().is_empty() => {}
-                    _ => return true,
-                }
+            if map.get("error").is_some_and(is_stated_error) {
+                return true;
             }
 
             for key in ["output", "result", "details", "data"] {
@@ -2081,13 +2106,8 @@ fn infer_tool_call_output_is_error(
         }
     }
 
-    if let Some(error) = payload.get("error") {
-        match error {
-            serde_json::Value::Null => {}
-            serde_json::Value::Bool(false) => {}
-            serde_json::Value::String(s) if s.trim().is_empty() => {}
-            _ => return true,
-        }
+    if payload.get("error").is_some_and(is_stated_error) {
+        return true;
     }
 
     if let Some(output) = output_value {
@@ -6290,6 +6310,7 @@ mod tests {
     use super::extract_response_item_user_image_blocks;
     use super::extract_turn_usage_from_codex_usage;
     use super::codex_parent_thread_id;
+    use super::completed_mcp_call;
     use super::is_encrypted_envelope;
     use super::merge_codex_context_window_stats;
     use super::native_team_wait_input;
@@ -11146,21 +11167,93 @@ mod tests {
                     ),
                 );
             }
-            tool_uses(&parse_lines(
+            let detail = parse_lines(
                 &lines,
                 if item { "mixed-with-item" } else { "mixed-baseline" },
-            ))
+            );
+            (tool_uses(&detail), tool_results(&detail))
         };
 
         let with_item = lines_with_item(true);
         assert!(
-            !with_item.iter().any(|(id, _, _)| id == "exec-poll"),
+            !with_item.0.iter().any(|(id, _, _)| id == "exec-poll"),
             "one item cannot cover two call sites: {with_item:?}"
         );
         assert_eq!(
             with_item,
             lines_with_item(false),
             "an uncorrelatable item must leave the script's own reading untouched"
+        );
+    }
+
+    /// The outcome precedence, stated once against the fields themselves rather
+    /// than through four rollouts: a stated failure outranks a stated success,
+    /// a stated success outranks output text that merely reads like a failure,
+    /// and the text heuristic still decides a record that states nothing.
+    #[test]
+    fn a_semantic_records_stated_outcome_outranks_its_output_text() {
+        let is_error = |status: Option<&str>, result: serde_json::Value| {
+            let mut item = serde_json::json!({
+                "type": "McpToolCall", "id": "i", "server": "s", "tool": "t",
+            });
+            if let Some(status) = status {
+                item["status"] = status.into();
+            }
+            if !result.is_null() {
+                item["result"] = result;
+            }
+            completed_mcp_call(&serde_json::json!({ "item": item }))
+                .expect("well-formed item")
+                .is_error
+        };
+        // Output a successful tool can legitimately return: a wrapped command's
+        // own complaint. `infer_output_text_is_error` reads it as a failure.
+        let noisy = serde_json::json!({
+            "content": [{"type":"text", "text":"Error: 2 problems\nexit code: 1"}]
+        });
+        let flagged = |flag: bool| {
+            let mut result = noisy.clone();
+            result["isError"] = flag.into();
+            result
+        };
+
+        assert!(
+            is_error(None, noisy.clone()),
+            "a record that states nothing leaves the text to decide"
+        );
+        assert!(
+            !is_error(Some("completed"), noisy.clone()),
+            "a stated success outranks output that merely reads like a failure"
+        );
+        assert!(
+            !is_error(None, flagged(false)),
+            "isError alone is enough to state that success"
+        );
+        assert!(
+            is_error(Some("completed"), flagged(true)),
+            "a stated failure outranks a stated success"
+        );
+        assert!(
+            is_error(Some("failed"), flagged(false)),
+            "and does so whichever field states it"
+        );
+        assert!(
+            !is_error(
+                Some("completed"),
+                serde_json::json!({"content":[{"type":"text","text":"fine"}], "isError":false}),
+            ),
+            "quiet output with nothing wrong stays clean"
+        );
+        assert!(
+            completed_mcp_call(&serde_json::json!({
+                "item": {
+                    "type":"McpToolCall", "id":"i", "server":"s", "tool":"t",
+                    "status":"completed", "error":"connection refused", "result": null,
+                }
+            }))
+            .expect("well-formed item")
+            .is_error,
+            "a transport error is stated too, even beside a completed status"
         );
     }
 
