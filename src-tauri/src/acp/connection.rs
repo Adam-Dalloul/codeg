@@ -5515,6 +5515,12 @@ async fn run_connection(
                 // parser, not the ACP wire). On any non-terminal resume failure
                 // we fall through to the session/load block below, so the
                 // effective chain is resume → load → new.
+                //
+                // Set when resume failed with a cause `session/load` cannot
+                // answer differently (see `resume_failure_settles_load`); the
+                // load block then takes this error as its own result instead of
+                // re-asking. `None` keeps the plain resume → load fall-through.
+                let mut settled_by_resume: Option<sacp::Error> = None;
                 if supports_resume {
                     let resume_req = build_resume_session_request(
                         agent_type,
@@ -5614,20 +5620,31 @@ async fn run_connection(
                         Err(e) => {
                             // resume is unstable and NOT guaranteed equivalent to
                             // session/load, so a resume-specific failure must
-                            // never deny a load that might still succeed. EVERY
-                            // resume error — ResourceNotFound, "Authentication
-                            // required", "Method not found", or anything else —
-                            // falls through to the session/load block below,
-                            // which already owns all terminal decisions
-                            // (SessionLoadFailed for not-found, silent stop for
-                            // auth, fallback to session/new otherwise). No
-                            // user-facing event is emitted here: load re-derives
-                            // the same outcome a moment later, so emitting now
-                            // would double up (not-found) or flash a transient
-                            // error that self-heals when load succeeds.
-                            tracing::warn!(
-                                "[ACP] session/resume failed ({e}); falling back to session/load"
-                            );
+                            // never deny a load that might still succeed. Almost
+                            // every resume error — ResourceNotFound,
+                            // "Authentication required", "Method not found", or
+                            // anything else — falls through to the session/load
+                            // block below, which already owns all terminal
+                            // decisions (SessionLoadFailed for not-found, silent
+                            // stop for auth, fallback to session/new otherwise).
+                            // No user-facing event is emitted here: load
+                            // re-derives the same outcome a moment later, so
+                            // emitting now would double up (not-found) or flash a
+                            // transient error that self-heals when load succeeds.
+                            //
+                            // The exception is a cause both methods resolve out
+                            // of the same record, where load cannot re-derive
+                            // anything else. That error is carried into the block
+                            // below as the load result, so the ladder runs
+                            // unchanged on it — minus one guaranteed-to-fail
+                            // request and its duplicate warning.
+                            if resume_failure_settles_load(&e.to_string()) {
+                                settled_by_resume = Some(e);
+                            } else {
+                                tracing::warn!(
+                                    "[ACP] session/resume failed ({e}); falling back to session/load"
+                                );
+                            }
                             // fall through to the session/load block below
                         }
                     }
@@ -5647,8 +5664,15 @@ async fn run_connection(
                 // agents that advertise `loadSession: true` and then answer
                 // "Method not found" are real, so the whole error ladder below
                 // stays exactly as it was.
-                let attempted_load = init_resp.agent_capabilities.load_session;
-                let load_result = if attempted_load {
+                //
+                // A resume that already settled the answer skips the request
+                // too, and hands its own error to the ladder below.
+                let skipped_load = settled_by_resume.is_some();
+                let attempted_load =
+                    !skipped_load && init_resp.agent_capabilities.load_session;
+                let load_result = if let Some(e) = settled_by_resume {
+                    Err(e)
+                } else if attempted_load {
                     let load_req = build_load_session_request(
                         agent_type,
                         SessionId::new(sid.clone()),
@@ -5876,9 +5900,16 @@ async fn run_connection(
                         let forgotten_session = classify_session_load_failure(e.code, &err_str);
                         let recovers_locally =
                             recovers_load_failure_locally(agent_type, forgotten_session);
+                        // Name the method that actually answered: when the load
+                        // was skipped this error came off session/resume.
+                        let answered_by = if skipped_load {
+                            "session/resume"
+                        } else {
+                            "session/load"
+                        };
                         if let Some(code) = forgotten_session.filter(|_| !recovers_locally) {
                             tracing::warn!(
-                                "[ACP] session/load failed ({err_str}); surfacing as session_load_failed={code}"
+                                "[ACP] {answered_by} failed ({err_str}); surfacing as session_load_failed={code}"
                             );
                             emit_with_state(
                                 &state,
@@ -5900,7 +5931,13 @@ async fn run_connection(
                             .await;
                             return Ok(());
                         }
-                        if attempted_load {
+                        if skipped_load {
+                            tracing::warn!(
+                                "[ACP] {answered_by} failed ({err_str}); session/load reads the \
+                                 same record and was skipped. The agent no longer holds this \
+                                 conversation, so a new session is opened for {sid}"
+                            );
+                        } else if attempted_load {
                             tracing::warn!(
                                 "[ACP] session/load failed ({err_str}), falling back to session/new"
                             );
@@ -5925,8 +5962,13 @@ async fn run_connection(
                         // would be pure noise.
                         // A load codeg deliberately never sent is not a failure
                         // to report — the capability gate above is the expected
-                        // path for agents that don't implement it.
-                        if attempted_load && !err_str.contains("Method not found") && !recovers_locally
+                        // path for agents that don't implement it. A load
+                        // skipped because resume already settled it is the
+                        // opposite: there IS a real failure, it just came off
+                        // the other method, so it reports exactly as before.
+                        if (attempted_load || skipped_load)
+                            && !err_str.contains("Method not found")
+                            && !recovers_locally
                         {
                             emit_with_state(
                                 &state,
@@ -8385,6 +8427,38 @@ fn stop_reason_to_str(reason: StopReason) -> &'static str {
     }
 }
 
+/// codex-acp's wording when a thread's rollout record is not on disk. Both
+/// `session/resume` and `session/load` answer with it, because both resolve the
+/// same record. See [`resume_failure_settles_load`].
+const ROLLOUT_NOT_FOUND: &str = "no rollout found for thread id";
+
+/// Whether a `session/resume` failure has already settled what `session/load`
+/// would answer for the same session id, so the second request can be skipped.
+///
+/// Deliberately one cause, not a family. `session/resume` is unstable and NOT
+/// equivalent to `session/load`, so a resume-specific failure must never deny a
+/// load that might still succeed — every other error keeps falling through to
+/// the load block, which owns all terminal decisions. This one cannot disagree:
+/// the two methods read the SAME per-thread rollout record, so "no rollout found
+/// for thread id <id>" is the store saying the record does not exist, and asking
+/// a second time cannot make it appear. Today it buys a round-trip and a
+/// duplicate warning on every reconnect of a conversation whose rollout has been
+/// pruned:
+///
+/// ```text
+/// [ACP] session/resume failed (Internal error: {"details": "no rollout found
+///   for thread id 019a…"}); falling back to session/load
+/// [ACP] session/load failed (Internal error: {"details": "no rollout found
+///   for thread id 019a…"}), falling back to session/new
+/// ```
+///
+/// The failure is not swallowed: the resume error is handed to the same ladder
+/// the load error would have entered, so classification, the `SessionLoadFailed`
+/// banner and the `session/new` fallback all behave exactly as before.
+fn resume_failure_settles_load(message: &str) -> bool {
+    message.contains(ROLLOUT_NOT_FOUND)
+}
+
 /// Classify a `session/load` failure into a stable frontend `code` when the
 /// historical session cannot be restored — either the agent has no record of
 /// it (`ResourceNotFound`, -32002) or the agent process/session died mid-load.
@@ -8401,6 +8475,10 @@ fn stop_reason_to_str(reason: StopReason) -> &'static str {
 /// state, so it earns its own code — the banner can name the fix — but it takes
 /// the same banner rather than the silent `session/new` fallback, which would
 /// orphan a history the user is one command away from restoring.
+///
+/// The input is whichever method actually answered: normally `session/load`,
+/// or `session/resume` when its failure already settled the outcome and the
+/// load was skipped (see [`resume_failure_settles_load`]).
 ///
 /// Returns `None` for failures that must keep the existing behavior:
 /// "Method not found" (agent lacks resume → silent `session/new` fallback),
@@ -8433,6 +8511,15 @@ fn classify_session_load_failure(
     // it exists to preserve. Closing the forked session frees the lock.
     if message.contains("already has an active writer") {
         return Some("session_busy");
+    }
+    // codex-acp when the thread's rollout file is no longer on disk (pruned,
+    // rotated, or deleted): a generic -32603 whose body reads "no rollout found
+    // for thread id <id>". That is -32002 in everything but the code — the
+    // agent is reporting it has no record of the session — so it takes the
+    // same verdict, and the user gets the localized banner instead of the raw
+    // JSON-RPC body.
+    if message.contains(ROLLOUT_NOT_FOUND) {
+        return Some("resource_not_found");
     }
     // Upstream signals for an unrecoverable session (claude-agent-acp 0.58.1):
     //  - "process exited"    → "Claude Code process exited with code 1",
@@ -15452,6 +15539,67 @@ mod tests {
             custom,
             Some("session_archived")
         ));
+    }
+
+    /// A thread whose rollout is gone. codex-acp resolves `session/resume` and
+    /// `session/load` out of that same record, so both answer with the same
+    /// generic -32603 and the reporter's log carried the pair on every
+    /// reconnect:
+    ///
+    /// ```text
+    /// [ACP] session/resume failed (Internal error: {"details": "no rollout
+    ///   found for thread id 019a…"}); falling back to session/load
+    /// [ACP] session/load failed (Internal error: {"details": "no rollout
+    ///   found for thread id 019a…"}), falling back to session/new
+    /// ```
+    #[test]
+    fn classify_load_failure_names_a_pruned_rollout() {
+        let missing = "Internal error: {\n  \"details\": \"no rollout found for thread id \
+             019a1f7e-2c44-70b1-9d33-4f8b1c05e6aa\"\n}";
+        // Resume already settled it: a second lookup of a record that does not
+        // exist cannot answer anything else.
+        assert!(resume_failure_settles_load(missing));
+        // -32002 in everything but the code, so it takes the same verdict and
+        // the user gets the localized banner instead of the raw JSON-RPC body.
+        assert_eq!(
+            classify_session_load_failure(sacp::schema::ErrorCode::InternalError, missing),
+            Some("resource_not_found"),
+        );
+        // Codex reads history back out of that same rollout store, so it stops
+        // with the banner rather than silently opening a fresh session.
+        assert!(!recovers_load_failure_locally(
+            AgentType::Codex,
+            Some("resource_not_found")
+        ));
+        // A custom agent's history is codeg's own transcript, so it keeps the
+        // silent local recovery.
+        let custom = AgentType::custom("glm-acp-agent").expect("valid id");
+        assert!(recovers_load_failure_locally(
+            custom,
+            Some("resource_not_found")
+        ));
+    }
+
+    /// `session/resume` is unstable and NOT equivalent to `session/load`, so
+    /// only a cause the two methods cannot disagree on may cancel the second
+    /// attempt. Everything else keeps the resume → load → new chain intact.
+    #[test]
+    fn other_resume_failures_still_fall_through_to_session_load() {
+        for message in [
+            "Method not found",
+            "Authentication required",
+            "session abc not found",
+            "Internal error: { \"details\": \"Claude Code process exited with code 1\" }",
+            "Internal error: { \"details\": \"session 019bf0c4 is archived. Run \
+             `codex unarchive 019bf0c4` to restore it.\" }",
+            "Internal error: { \"details\": \"thread 01a0626c already has an active writer\" }",
+        ] {
+            assert!(!resume_failure_settles_load(message), "{message}");
+        }
+        // The capability gate's synthetic error is not a resume verdict either.
+        let gate = sacp::Error::method_not_found()
+            .data("agent does not advertise the loadSession capability");
+        assert!(!resume_failure_settles_load(&gate.to_string()));
     }
 
     /// After a codex fork, the sibling row codeg creates to keep the pre-fork
