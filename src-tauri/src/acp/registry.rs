@@ -1132,39 +1132,39 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             name: "OpenCode",
             description: "The open source coding agent",
             distribution: AgentDistribution::Binary {
-                version: "1.18.29",
+                version: "1.18.30",
                 cmd: "opencode",
                 args: &["acp"],
                 env: &[],
                 platforms: &[
                     PlatformBinary {
                         platform: "darwin-aarch64",
-                        url: "https://github.com/anomalyco/opencode/releases/download/v1.18.29/opencode-darwin-arm64.zip",
+                        url: "https://github.com/anomalyco/opencode/releases/download/v1.18.30/opencode-darwin-arm64.zip",
                         sha256: None,
                     },
                     PlatformBinary {
                         platform: "darwin-x86_64",
-                        url: "https://github.com/anomalyco/opencode/releases/download/v1.18.29/opencode-darwin-x64.zip",
+                        url: "https://github.com/anomalyco/opencode/releases/download/v1.18.30/opencode-darwin-x64.zip",
                         sha256: None,
                     },
                     PlatformBinary {
                         platform: "linux-aarch64",
-                        url: "https://github.com/anomalyco/opencode/releases/download/v1.18.29/opencode-linux-arm64.tar.gz",
+                        url: "https://github.com/anomalyco/opencode/releases/download/v1.18.30/opencode-linux-arm64.tar.gz",
                         sha256: None,
                     },
                     PlatformBinary {
                         platform: "linux-x86_64",
-                        url: "https://github.com/anomalyco/opencode/releases/download/v1.18.29/opencode-linux-x64.tar.gz",
+                        url: "https://github.com/anomalyco/opencode/releases/download/v1.18.30/opencode-linux-x64.tar.gz",
                         sha256: None,
                     },
                     PlatformBinary {
                         platform: "windows-aarch64",
-                        url: "https://github.com/anomalyco/opencode/releases/download/v1.18.29/opencode-windows-arm64.zip",
+                        url: "https://github.com/anomalyco/opencode/releases/download/v1.18.30/opencode-windows-arm64.zip",
                         sha256: None,
                     },
                     PlatformBinary {
                         platform: "windows-x86_64",
-                        url: "https://github.com/anomalyco/opencode/releases/download/v1.18.29/opencode-windows-x64.zip",
+                        url: "https://github.com/anomalyco/opencode/releases/download/v1.18.30/opencode-windows-x64.zip",
                         sha256: None,
                     },
                 ],
@@ -1227,8 +1227,8 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             name: "CodeBuddy",
             description: "Tencent Cloud's official AI coding assistant (ACP)",
             distribution: AgentDistribution::Npx {
-                version: "2.147.0",
-                package: "@tencent-ai/codebuddy-code@2.147.0",
+                version: "2.149.0",
+                package: "@tencent-ai/codebuddy-code@2.149.0",
                 cmd: "codebuddy",
                 args: &["--acp"],
                 env: &[],
@@ -1386,23 +1386,23 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             // `models` that the composer's selectors and context ring read, and
             // prompting straight after it works. It also skips `session/load`'s
             // history replay, which codeg only drained to discard. The 1.0.1–
-            // 1.0.24 patches add nothing further here: re-probed live against
-            // the 1.0.24 binary, `initialize` still answers
+            // 1.0.25 patches add nothing further here: re-probed live against
+            // the 1.0.25 binary, `initialize` still answers
             // `sessionCapabilities: {list, resume, close}` plus the same
             // `promptCapabilities.embeddedContext` (and `mcpCapabilities`
             // http+sse, `loadSession: true`), so the resume rung stands. All
             // six `@xai-official/grok-<os>-<arch>` optional deps are published
-            // at 1.0.24 — they are OPTIONAL, so a platform that lags would fail
+            // at 1.0.25 — they are OPTIONAL, so a platform that lags would fail
             // only for that platform's users, at run time, in the trampoline.
             distribution: AgentDistribution::Npx {
-                version: "1.0.24",
-                package: "@xai-official/grok@1.0.24",
+                version: "1.0.25",
+                package: "@xai-official/grok@1.0.25",
                 cmd: "grok",
                 // Only the ACP subcommand lives here. Grok's ROOT-level launch
                 // flags (`--no-auto-update` always, `--permission-mode <value>`
                 // only for a non-default permission mode) MUST precede this
                 // subcommand — `grok agent stdio` itself rejects them (re-verified
-                // against 1.0.24: it still only accepts --debug/--debug-file/
+                // against 1.0.25: it still only accepts --debug/--debug-file/
                 // --leader-socket) — so `build_agent` inserts them ahead of these
                 // args rather than appending after. Since 1.0.3 `grok --help` no
                 // longer LISTS `--no-auto-update`, but it is still accepted:
@@ -1413,7 +1413,7 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
                 // auto/dontAsk/bypassPermissions/plan).
                 args: &["agent", "stdio"],
                 env: &[],
-                // `@xai-official/grok@1.0.24` declares `engines.node: ">=20"`;
+                // `@xai-official/grok@1.0.25` declares `engines.node: ">=20"`;
                 // surface that in preflight so Node 18 isn't silently accepted.
                 node_required: Some("20.0.0"),
             },
@@ -1668,8 +1668,8 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             // own copy AES-GCM-encrypted under the machine key, so it is not
             // the source). `engines.node: ">=20"`.
             distribution: AgentDistribution::Npx {
-                version: "1.1.47",
-                package: "@qoder-ai/qodercli@1.1.47",
+                version: "1.1.49",
+                package: "@qoder-ai/qodercli@1.1.49",
                 cmd: "qoder",
                 args: &["--acp"],
                 env: &[],
@@ -2103,8 +2103,8 @@ mod tests {
         );
         assert_npx_version(
             AgentType::CodeBuddy,
-            "2.147.0",
-            "@tencent-ai/codebuddy-code@2.147.0",
+            "2.149.0",
+            "@tencent-ai/codebuddy-code@2.149.0",
             Some("22.0.0"),
         );
         // Kimi Code must never land on 0.37.0–0.38.0: every session in that
@@ -2124,8 +2124,8 @@ mod tests {
         assert_npx_version(AgentType::Pi, "0.0.33", "pi-acp@0.0.33", Some("22.0.0"));
         assert_npx_version(
             AgentType::Grok,
-            "1.0.24",
-            "@xai-official/grok@1.0.24",
+            "1.0.25",
+            "@xai-official/grok@1.0.25",
             Some("20.0.0"),
         );
         assert_npx_version(
@@ -2136,11 +2136,11 @@ mod tests {
         );
         assert_npx_version(
             AgentType::Qoder,
-            "1.1.47",
-            "@qoder-ai/qodercli@1.1.47",
+            "1.1.49",
+            "@qoder-ai/qodercli@1.1.49",
             Some("20.0.0"),
         );
-        assert_binary_version(AgentType::OpenCode, "1.18.29", "/releases/download/v1.18.29/");
+        assert_binary_version(AgentType::OpenCode, "1.18.30", "/releases/download/v1.18.30/");
         // Hermes rides the community npm bridge (upstream retired its PyPI
         // channel at 0.19.0; see the registry entry). The npm package version
         // tracks the upstream version 1:1, and the pin must stay EXACT — the
