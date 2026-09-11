@@ -2311,25 +2311,39 @@ mod tests {
     /// pi-acp resolves `<agentDir>/settings.json` → `sessionDir` before falling
     /// back to `<agentDir>/sessions`, so a user who sets it kept a pi that
     /// resumed fine and a codeg history list that was permanently empty.
+    /// An absolute path on the platform the test is RUNNING on.
+    ///
+    /// `session_dir_from_settings` only honors an absolute `sessionDir`, and
+    /// `Path::is_absolute` wants a drive or UNC prefix on Windows, so a
+    /// POSIX-rooted literal is not absolute there. Hard-coding one made this
+    /// test assert the fallback it exists to rule out, which is why it failed
+    /// on `Rust server on windows-latest` while passing everywhere else.
+    #[cfg(windows)]
+    const ABS_PREFIX: &str = "C:";
+    #[cfg(not(windows))]
+    const ABS_PREFIX: &str = "";
+
     #[test]
     fn settings_json_session_dir_is_honored() {
         let dir = tempdir().expect("tempdir");
         let agent_dir = dir.path().join("agent");
         std::fs::create_dir_all(&agent_dir).expect("agent dir");
+        let home = format!("{ABS_PREFIX}/home/demo");
 
         // Absolute.
+        let configured = format!("{ABS_PREFIX}/srv/pi-sessions");
         std::fs::write(
             agent_dir.join("settings.json"),
-            r#"{"sessionDir": "/srv/pi-sessions"}"#,
+            format!(r#"{{"sessionDir": "{configured}"}}"#),
         )
         .expect("settings");
         assert_eq!(
             resolve_pi_sessions_dir_from(
                 None,
                 Some(agent_dir.clone().into_os_string()),
-                Some(PathBuf::from("/home/demo")),
+                Some(PathBuf::from(&home)),
             ),
-            PathBuf::from("/srv/pi-sessions"),
+            PathBuf::from(&configured),
         );
 
         // `~`-rooted.
@@ -2342,9 +2356,9 @@ mod tests {
             resolve_pi_sessions_dir_from(
                 None,
                 Some(agent_dir.clone().into_os_string()),
-                Some(PathBuf::from("/home/demo")),
+                Some(PathBuf::from(&home)),
             ),
-            PathBuf::from("/home/demo/pi-sessions"),
+            PathBuf::from(format!("{home}/pi-sessions")),
         );
 
         // The env var still outranks it.
