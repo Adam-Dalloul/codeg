@@ -1604,13 +1604,39 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             //   crate 没有 `deny_unknown_fields`，未知字段被 serde 丢掉。分叉点取
             //   自解析出来的日志而不是 live 转写，所以也没有开它的理由。
             //
+            // 0.9.0 唯一需要 codeg 跟着改的是**模型目录**，而它落在设置面板那条线上
+            // （`commands::deepseek_settings`），不在协议层：
+            //
+            // * 目录的来源换人了。`boot.ts` 现在把自己的 `DEEPSEEK_MODELS` 作为
+            //   **composition base** 传给 `LlmDeepSeek`，而 `dsh-settings` 的分层是
+            //   「schema 默认 → composition base → 用户文档 section」——于是没配
+            //   `llm-deepseek.models` 时继承到的是 agent 这份（`deepseek-flash` 收图
+            //   + `deepseek-v4-pro`），**不是**适配器 schema 默认那份。后者还留着
+            //   `deepseek-v4-flash` 与 `deepseek-v4-flash-vision-exp` 两个已下线 id，
+            //   照抄它等于给用户列出两个不存在的模型。默认启动模型同步改成
+            //   `deepseek-flash`。用户文档仍然压过一切，面板的写入路径不受影响。
+            // * `imageDetail` **被撤销成硬报错**：`resolveModels` 第一行就
+            //   `throw` on `Object.hasOwn(model, "imageDetail")`，而拒绝一条等于
+            //   整份 section 无法 resolve、agent 退回 last-good（= 内置目录）——
+            //   用户的模型列表一条都不生效且不报错。替代品是 `imagePixelBudget`
+            //   现在接受字面量 `"low"`（= 512×512）。
+            // * 新增 `systemPromptUpdate: "in-history"`，agent 自己的默认条目就带着
+            //   它；漏写不报错，只是让那个模型静默换一种系统提示投递方式。
+            // * prompt 现在等 `sessions.flush()` 才结算，落盘失败以 `-32603` 拒绝
+            //   而不是照回 `end_turn`。codeg 把它渲染成一次失败的回合，正是要的
+            //   结局——回成功再把这一轮历史丢掉才是无声的。
+            // * **`assistant/chunk` / `*-chunks` 不再逐条落库**（紧凑流搬进
+            //   `assistant/message` 的 `stream` 字段）。`parsers::deepseek` 里那条
+            //   跳过列表**要留着**：旧日志里还有那些行，而新形状是 `assistant/message`
+            //   自己的一个字段，本来就不会被当成事件行读。
+            //
             // Keep `version` and `package` moving together: `version` is what
             // the agents list shows as the upgrade target beside the installed
             // version, so a drift leaves the Upgrade button installing one
             // version while the row keeps calling it stale.
             distribution: AgentDistribution::Npx {
-                version: "0.8.0",
-                package: "deepseek-acp@0.8.0",
+                version: "0.9.0",
+                package: "deepseek-acp@0.9.0",
                 cmd: "deepseek-acp",
                 args: &[],
                 env: &[],
@@ -2104,8 +2130,8 @@ mod tests {
         );
         assert_npx_version(
             AgentType::DeepSeek,
-            "0.8.0",
-            "deepseek-acp@0.8.0",
+            "0.9.0",
+            "deepseek-acp@0.9.0",
             Some("22.0.0"),
         );
         assert_npx_version(
