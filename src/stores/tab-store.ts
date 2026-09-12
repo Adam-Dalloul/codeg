@@ -205,8 +205,9 @@ export interface TabStoreState {
     opts?: {
       /** rawTabs slot for a tab that needs a NEW slot (clamped); omitted =
        *  append. Reopening a closed tab passes the slot it was closed from. A
-       *  conversation that is already open is focused where it is, and a
-       *  preview still replaces the group's current preview in place. */
+       *  conversation that is already open is focused where it is. A preview
+       *  replaces the group's existing preview in place for untiled groups; in
+       *  tiled groups it takes a slot of its own (so no visible pane is lost). */
       index?: number
     }
   ) => void
