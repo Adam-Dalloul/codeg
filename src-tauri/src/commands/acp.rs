@@ -205,13 +205,15 @@ fn apply_custom_version_to_url(url: &str, registry_version: &str, custom_version
 pub(crate) const ADAPTER_CHANNEL_ENV: &str = "CODEG_ADAPTER_CHANNEL";
 const ADAPTER_CHANNEL_LATEST: &str = "latest";
 
-/// Whether a resolved per-agent env opts into the `latest` adapter channel.
+/// Whether installation resolves latest, for the manual Latest channel or the
+/// initial installation of an Automatic agent.
 /// Takes the MERGED env (`build_runtime_env_from_setting`) rather than raw
 /// `env_json`, so it reads the same layers the launch path and the settings
 /// page display — a value set through the agent's local config file counts too.
 fn adapter_channel_is_latest(env: &BTreeMap<String, String>) -> bool {
-    env.get(ADAPTER_CHANNEL_ENV)
-        .is_some_and(|value| value.trim() == ADAPTER_CHANNEL_LATEST)
+    env.get(ADAPTER_CHANNEL_ENV).is_some_and(|value| {
+        matches!(value.trim(), ADAPTER_CHANNEL_LATEST | crate::acp::managed_updates::AUTOMATIC)
+    })
 }
 
 /// The npm install spec(s) one prepare call will attempt, in order: the spec to
@@ -10629,9 +10631,8 @@ pub async fn acp_connect(
     let runtime_env =
         build_session_runtime_env(&db, agent_type, session_id.as_deref(), &app_data_dir).await?;
 
-    // Guard: the session page must never trigger a download or install.
-    // If the agent isn't ready, return SdkNotInstalled here so the frontend
-    // can prompt the user to install it from Agent Settings.
+    // Initial installation remains explicit. Automatic mode may prepare a newer
+    // release when starting an already-installed agent; see managed_updates.
     verify_agent_installed(agent_type).await?;
 
     let emitter = EventEmitter::Tauri(app_handle);
@@ -11282,7 +11283,8 @@ pub(crate) async fn acp_list_agents_core(db: &AppDatabase) -> Result<Vec<AcpAgen
                 .map(|s| s.as_str().to_string()),
             enabled: setting.map(|m| m.enabled).unwrap_or(true),
             sort_order,
-            installed_version: local_installed_version,
+            installed_version: crate::acp::managed_updates::prepared_version(agent_type, &env)
+                .or(local_installed_version),
             host_tools_agent_mode: !crate::acp::host_tools_policy::HostToolsPolicy::from_env(&env)
                 .hosts_channels(),
             env,
