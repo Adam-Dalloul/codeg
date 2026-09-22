@@ -190,14 +190,12 @@ fn apply_custom_version_to_url(url: &str, registry_version: &str, custom_version
     url.replace(registry_version, custom_version)
 }
 
-/// Per-agent `env_json` key that opts an npx agent into installing the
-/// package's `latest` npm dist-tag instead of the reviewed registry pin.
-/// Owned by the "Adapter version" control in Agent Settings, riding the same
-/// per-agent env store as pi's `PI_ACP_PI_COMMAND` runtime override and the
-/// host-tools knob. Consulted at install/upgrade time ONLY: a launch always
-/// runs whatever is installed, and nothing polls npm in the background.
+/// Per-agent version policy owned by the Updates control in Agent Settings.
+/// `latest` resolves npm at explicit Install/Upgrade time; `automatic` also
+/// prepares current adapters/runtimes when creating a connection, for every
+/// distribution. Existing processes are never changed by either setting.
 ///
-/// Exactly the value `latest` opts in; absence or any other value stays on the
+/// Only `latest` and `automatic` opt in; absence/unknown values stay on the
 /// pin. Unlike `CODEG_ACP_HOST_TOOLS` there is no process-env second layer to
 /// make "absent" ambiguous, so the settings control may delete the key for the
 /// pinned default — both readers (this one and `adapterChannelFromEnvText` in
@@ -11283,8 +11281,10 @@ pub(crate) async fn acp_list_agents_core(db: &AppDatabase) -> Result<Vec<AcpAgen
                 .map(|s| s.as_str().to_string()),
             enabled: setting.map(|m| m.enabled).unwrap_or(true),
             sort_order,
-            installed_version: crate::acp::managed_updates::prepared_version(agent_type, &env)
-                .or(local_installed_version),
+            // An explicit uninstall must not be resurrected by update metadata.
+            installed_version: local_installed_version.and_then(|version| {
+                crate::acp::managed_updates::prepared_version(agent_type, &env).or(Some(version))
+            }),
             host_tools_agent_mode: !crate::acp::host_tools_policy::HostToolsPolicy::from_env(&env)
                 .hosts_channels(),
             env,
@@ -16922,7 +16922,7 @@ wire_api = "chat"
     // Only the exact (trimmed) sentinel opts into the latest channel; absence
     // and every other value stay on the pin, matching the frontend reader.
     #[test]
-    fn adapter_channel_reads_only_the_exact_latest_sentinel() {
+    fn adapter_install_accepts_manual_latest_and_automatic() {
         let env = |value: Option<&str>| {
             let mut map = BTreeMap::new();
             map.insert("XAI_API_KEY".to_string(), "abc".to_string());
@@ -16934,6 +16934,8 @@ wire_api = "chat"
         assert!(!adapter_channel_is_latest(&env(None)));
         assert!(adapter_channel_is_latest(&env(Some("latest"))));
         assert!(adapter_channel_is_latest(&env(Some(" latest "))));
+        assert!(adapter_channel_is_latest(&env(Some("automatic"))));
+        assert!(adapter_channel_is_latest(&env(Some(" automatic "))));
         assert!(!adapter_channel_is_latest(&env(Some("pinned"))));
         assert!(!adapter_channel_is_latest(&env(Some("Latest"))));
         assert!(!adapter_channel_is_latest(&env(Some(""))));

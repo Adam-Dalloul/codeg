@@ -22,7 +22,7 @@ pub const CHANNEL_ENV: &str = "CODEG_ADAPTER_CHANNEL";
 pub const AUTOMATIC: &str = "automatic";
 const CHECK_INTERVAL: u64 = 60 * 60;
 const RETRY_INTERVAL: u64 = 5 * 60;
-const BOOTSTRAP: &str = include_str!("managed-runtime.cjs");
+const BOOTSTRAP: &str = include_str!("managed-runtime.mjs");
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -194,7 +194,7 @@ async fn run(program: &str, args: &[String], cwd: &Path) -> Result<(), String> {
 }
 
 fn bootstrap_path(root: &Path) -> Result<PathBuf, String> {
-    let path = root.join(format!("runtime-{}.cjs", &digest(BOOTSTRAP)[..16]));
+    let path = root.join(format!("runtime-{}.mjs", &digest(BOOTSTRAP)[..16]));
     if !path.is_file() {
         std::fs::write(&path, BOOTSTRAP).map_err(|_| "cannot write runtime launcher")?;
     }
@@ -408,10 +408,9 @@ pub async fn resolve(agent_type: AgentType, env: &BTreeMap<String, String>) -> O
         cache.checked_at = now();
         if let Ok(bytes) = serde_json::to_vec(&cache) {
             let staging = root.join(format!("{key}.{}.tmp", uuid::Uuid::new_v4()));
-            if std::fs::write(&staging, bytes).is_ok() {
-                if std::fs::rename(&staging, &path).is_err() {
-                    let _ = std::fs::remove_file(staging);
-                }
+            if std::fs::write(&staging, bytes).is_ok() && std::fs::rename(&staging, &path).is_err()
+            {
+                let _ = std::fs::remove_file(staging);
             }
         }
     }

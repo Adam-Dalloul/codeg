@@ -1,8 +1,9 @@
 // Executed inside npm's exact-version package cache. No models, credentials,
 // global installations, user settings or account directories are written here.
-const fs = require("node:fs")
-const path = require("node:path")
-const { spawn, spawnSync } = require("node:child_process")
+import fs from "node:fs"
+import path from "node:path"
+import { spawn, spawnSync } from "node:child_process"
+import { pathToFileURL } from "node:url"
 
 function packageEntry(
   packageName,
@@ -70,6 +71,9 @@ function main(argv) {
       runtime = shim
     }
     env[runtimeKey] = runtime
+    // Codeg owns this prepared copy. Keep its own updater from touching a
+    // global/native installation; model discovery remains enabled.
+    if (runtimeKey === "CLAUDE_CODE_EXECUTABLE") env.DISABLE_AUTOUPDATER = "1"
   }
   if (args[0] === "--codeg-check") {
     for (const entry of [adapter, runtime].filter(Boolean)) {
@@ -105,7 +109,10 @@ function main(argv) {
     process.on(signal, () => child.kill(signal))
 }
 
-if (require.main === module) {
+if (
+  process.argv[1] &&
+  import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href
+) {
   try {
     main(process.argv.slice(2))
   } catch {
@@ -113,4 +120,4 @@ if (require.main === module) {
     process.exitCode = 1
   }
 }
-module.exports = { packageBin, commandFor, main }
+export { packageBin, commandFor, main }

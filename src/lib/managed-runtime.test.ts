@@ -1,22 +1,14 @@
 // @vitest-environment node
 import { afterEach, describe, expect, it } from "vitest"
-import { createRequire } from "node:module"
+import {
+  packageBin,
+  commandFor,
+} from "../../src-tauri/src/acp/managed-runtime.mjs"
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs"
 import { delimiter, dirname, join, resolve } from "node:path"
 import { spawnSync } from "node:child_process"
 
-const bootstrap = resolve("src-tauri/src/acp/managed-runtime.cjs")
-const { packageBin, commandFor } = createRequire(import.meta.url)(
-  bootstrap
-) as {
-  packageBin: (
-    name: string,
-    command: string,
-    version: string,
-    searchPath?: string
-  ) => string
-  commandFor: (entry: string, args: string[]) => [string, string[]]
-}
+const bootstrap = resolve("src-tauri/src/acp/managed-runtime.mjs")
 const scratch: string[] = []
 function fixture(
   name: string,

@@ -29,7 +29,7 @@ five minutes. URLs and local/git package sources without a published package
 identity remain under the user's control.
 
 Implementation: `src-tauri/src/acp/managed_updates.rs` owns release checks and
-cache state; `managed-runtime.cjs` selects the exact prepared npm packages and
+cache state; `managed-runtime.mjs` selects the exact prepared npm packages and
 keeps arguments separate from shell commands. The common `build_agent` boundary
 covers desktop, web, delegated agents and settings probes. The cache stores only
 launch/version metadata, never credentials or model/session content.
