@@ -300,32 +300,56 @@ jobs:
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
 
-      # Build the `codeg-mcp` companion binary for the matrix target and
-      # stage it as a Tauri sidecar at
-      # `src-tauri/binaries/codeg-mcp-<triple>{.exe}`. `tauri-action` (below)
-      # then bundles it via the `bundle.externalBin` entry in
-      # `tauri.conf.json` — Tauri installs it next to the main executable
-      # (Contents/MacOS on macOS, install root on Linux/Windows) where the
-      # runtime `locate_codeg_mcp_binary()` finds it via `current_exe`
-      # sibling lookup. The Linux arm64 cross env vars set above also
-      # apply to this cargo invocation.
-      - name: Stage codeg-mcp sidecar for Tauri bundle
+      # Computer use on macOS: codeg and codeg-computer-helper each check the
+      # other's code signature at run time, against a designated requirement
+      # compiled into the binary (never read from the bundle, which the user
+      # can write to). Both requirements name this release's Team ID, so they
+      # are pinned here, before anything is compiled, for every later step:
+      # the helper is built by prepare-sidecars (it checks codeg), codeg by
+      # tauri-action (it checks the helper). A helper built without its
+      # requirement refuses to start once it is Developer-ID signed.
+      - name: Pin computer-use trust anchors (macOS)
+        if: contains(matrix.target, 'apple-darwin')
+        shell: bash
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          if [ -z "${APPLE_TEAM_ID}" ]; then
+            echo "FATAL: APPLE_TEAM_ID is required to pin the computer-use trust anchors"
+            exit 1
+          fi
+          anchor="anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] /* exists */ and certificate leaf[field.1.2.840.113635.100.6.1.13] /* exists */ and certificate leaf[subject.OU] = \"${APPLE_TEAM_ID}\""
+          echo "CODEG_COMPUTER_PEER_REQUIREMENT=identifier \"app.codeg\" and ${anchor}" >> "$GITHUB_ENV"
+          echo "CODEG_COMPUTER_HELPER_REQUIREMENT=identifier \"codeg-computer-helper\" and ${anchor}" >> "$GITHUB_ENV"
+
+      # Build the sidecars — the `codeg-mcp` companion and the
+      # `codeg-computer-helper` computer-use executor — for the matrix target
+      # and stage them at `src-tauri/binaries/<bin>-<triple>{.exe}`.
+      # `tauri-action` (below) then bundles them via the `bundle.externalBin`
+      # entries in `tauri.conf.json` — Tauri installs them next to the main
+      # executable (Contents/MacOS on macOS, install root on Linux/Windows)
+      # where the runtime finds them via `current_exe` sibling lookup. The
+      # Linux arm64 cross env vars set above also apply to this cargo
+      # invocation.
+      - name: Stage sidecars for Tauri bundle
         shell: bash
         run: pnpm tauri:prepare-sidecars --target ${{ matrix.target }}
 
-      - name: Verify codeg-mcp sidecar landed
+      - name: Verify sidecars landed
         shell: bash
         run: |
           ext=""
           case "${{ matrix.target }}" in
             *windows*) ext=".exe" ;;
           esac
-          file="src-tauri/binaries/codeg-mcp-${{ matrix.target }}${ext}"
-          if [ ! -f "$file" ]; then
-            echo "FATAL: sidecar $file missing after prepare-sidecars"
-            exit 1
-          fi
-          ls -la "$file"
+          for bin in codeg-mcp codeg-computer-helper; do
+            file="src-tauri/binaries/${bin}-${{ matrix.target }}${ext}"
+            if [ ! -s "$file" ]; then
+              echo "FATAL: sidecar $file missing or empty after prepare-sidecars"
+              exit 1
+            fi
+            ls -la "$file"
+          done
 
       - name: Import Apple Developer ID certificate
         if: contains(matrix.target, 'apple-darwin')
@@ -530,6 +554,56 @@ jobs:
           args: --target ${{ matrix.target }}
           includeUpdaterJson: true
           retryAttempts: 2
+
+      # The release gate for computer use on macOS. Notarization and a
+      # `runtime` flag prove neither of the things that matter here, so each is
+      # checked on the bundle that was just built and signed:
+      #   * codeg, codeg-mcp and codeg-computer-helper carry NO entitlements —
+      #     in particular none that let another process load code into them
+      #     (library-validation / dyld / get-task-allow exemptions), and codeg
+      #     never Apple Events: every agent's shell runs as codeg for TCC.
+      #   * each has the hardened runtime;
+      #   * codeg satisfies the requirement compiled into the helper, and the
+      #     helper the one compiled into codeg — otherwise the two refuse each
+      #     other and computer use cannot start;
+      #   * codeg and codeg-mcp reference no Accessibility / event-posting /
+      #     screen-capture API: holding or using those is the helper's job
+      #     alone. `AXIsProcessTrusted` is the one allowed read-only query.
+      - name: Verify computer-use signing and symbols (macOS)
+        if: contains(matrix.target, 'apple-darwin')
+        shell: bash
+        run: |
+          set -euo pipefail
+          app="src-tauri/target/${{ matrix.target }}/release/bundle/macos/codeg.app"
+          if [ ! -d "$app" ]; then
+            echo "FATAL: $app not found"
+            exit 1
+          fi
+          codesign --verify --strict --deep "$app"
+          for bin in codeg codeg-mcp codeg-computer-helper; do
+            path="$app/Contents/MacOS/$bin"
+            if ! codesign -dv "$path" 2>&1 | grep -q 'flags=0x[0-9a-f]*(runtime)'; then
+              echo "FATAL: $bin is not signed with the hardened runtime"
+              exit 1
+            fi
+            if codesign -d --entitlements - --xml "$path" 2>/dev/null | grep -q '<key>'; then
+              echo "FATAL: $bin carries entitlements; codeg's executables must carry none"
+              codesign -d --entitlements - "$path" || true
+              exit 1
+            fi
+          done
+          codesign --verify --strict -R="${CODEG_COMPUTER_PEER_REQUIREMENT}" "$app/Contents/MacOS/codeg"
+          codesign --verify --strict -R="${CODEG_COMPUTER_HELPER_REQUIREMENT}" "$app/Contents/MacOS/codeg-computer-helper"
+          deny='^_(CGEventPost|CGEventPostToPid|CGEventPostToPSN|CGEventTapCreate|CGEventTapCreateForPid|CGEventTapCreateForPSN|CGWindowListCreateImage|CGWindowListCreateImageFromArray|CGDisplayCreateImage|CGDisplayCreateImageForRect|CGDisplayStreamCreate|CGDisplayStreamCreateWithDispatchQueue|CGRequestScreenCaptureAccess|CGRequestPostEventAccess|AXIsProcessTrustedWithOptions|AXUIElement[A-Za-z]*|AXObserver[A-Za-z]*)$|^_OBJC_CLASS_\$_SC(ShareableContent|Stream|ScreenshotManager|ContentFilter|ContentSharingPicker)$'
+          for bin in codeg codeg-mcp; do
+            hits="$(nm -u "$app/Contents/MacOS/$bin" | grep -E "$deny" || true)"
+            if [ -n "$hits" ]; then
+              echo "FATAL: $bin references APIs only codeg-computer-helper may use:"
+              echo "$hits"
+              exit 1
+            fi
+          done
+          echo "computer-use signing and symbol checks passed"
 
       - name: Delete Apple signing keychain
         if: always() && contains(matrix.target, 'apple-darwin')

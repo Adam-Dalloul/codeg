@@ -5,11 +5,17 @@
 // What it does:
 //   1. Resolves the target triple — `--target <triple>` arg, or
 //      `TAURI_TARGET_TRIPLE` env, or the host's `rustc -vV` host triple.
-//   2. Runs `cargo build --release --bin codeg-mcp --no-default-features`
-//      for that triple from `src-tauri/`.
-//   3. Copies the produced binary to
-//      `src-tauri/binaries/codeg-mcp-<triple>{.exe}` so Tauri's externalBin
-//      bundler picks it up under the bare name `codeg-mcp` at install time.
+//   2. Runs `cargo build --release --no-default-features` for each sidecar
+//      bin (`codeg-mcp`, `codeg-computer-helper`) for that triple from
+//      `src-tauri/`.
+//   3. Copies each produced binary to
+//      `src-tauri/binaries/<bin>-<triple>{.exe}` so Tauri's externalBin
+//      bundler picks it up under its bare name at install time.
+//
+// `codeg-computer-helper` takes its trust anchors from the environment at
+// compile time (`CODEG_COMPUTER_PEER_REQUIREMENT`): the release workflow sets
+// it for the macOS builds, and a local build without it is a development
+// helper that says so. Nothing here sets or defaults it.
 //
 // Why a separate script (not inline in beforeBuildCommand / GitHub Actions):
 //   - Cross-compile in release.yml passes `--target <triple>` so we honour
@@ -31,7 +37,8 @@ import process from "node:process"
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url))
 const SRC_TAURI = resolve(SCRIPT_DIR, "..")
 const BINARIES_DIR = join(SRC_TAURI, "binaries")
-const BIN_NAME = "codeg-mcp"
+// Every sidecar in `bundle.externalBin`, in the order they are built.
+const BIN_NAMES = ["codeg-mcp", "codeg-computer-helper"]
 
 function log(msg) {
   console.log(`[prepare-sidecars] ${msg}`)
@@ -79,20 +86,20 @@ function main() {
   const ext = isWindows ? ".exe" : ""
 
   log(`target triple: ${target}`)
-  log(`building ${BIN_NAME} (--release --no-default-features)`)
+  log(`building ${BIN_NAMES.join(", ")} (--release --no-default-features)`)
 
   // cargo build needs to run from src-tauri so it resolves the local manifest
   // and shares the swatinem/rust-cache key with other cargo invocations.
-  // `--no-default-features` keeps codeg-mcp free of the Tauri runtime deps —
-  // the bin's required-features is empty, so this just enables cross-compile
+  // `--no-default-features` keeps the sidecars free of the Tauri runtime deps
+  // — their required-features are empty, so this just enables cross-compile
   // without dragging in macOS-private-api / Linux WebKit / Windows WebView2.
+  // One cargo invocation for both, so they share one dependency build.
   execFileSync(
     "cargo",
     [
       "build",
       "--release",
-      "--bin",
-      BIN_NAME,
+      ...BIN_NAMES.flatMap((name) => ["--bin", name]),
       "--no-default-features",
       "--target",
       target,
@@ -100,26 +107,21 @@ function main() {
     { stdio: "inherit", cwd: SRC_TAURI }
   )
 
-  const built = join(
-    SRC_TAURI,
-    "target",
-    target,
-    "release",
-    `${BIN_NAME}${ext}`
-  )
-  if (!existsSync(built)) {
-    die(`expected ${built} after cargo build, but it does not exist`)
-  }
-
   mkdirSync(BINARIES_DIR, { recursive: true })
-  const dest = join(BINARIES_DIR, `${BIN_NAME}-${target}${ext}`)
-  copyFileSync(built, dest)
-  if (!isWindows) {
-    // copyFileSync preserves modes on POSIX, but be explicit for tarball
-    // sources that may strip the +x bit.
-    chmodSync(dest, 0o755)
+  for (const name of BIN_NAMES) {
+    const built = join(SRC_TAURI, "target", target, "release", `${name}${ext}`)
+    if (!existsSync(built)) {
+      die(`expected ${built} after cargo build, but it does not exist`)
+    }
+    const dest = join(BINARIES_DIR, `${name}-${target}${ext}`)
+    copyFileSync(built, dest)
+    if (!isWindows) {
+      // copyFileSync preserves modes on POSIX, but be explicit for tarball
+      // sources that may strip the +x bit.
+      chmodSync(dest, 0o755)
+    }
+    log(`sidecar staged at ${dest}`)
   }
-  log(`sidecar staged at ${dest}`)
 }
 
 main()
