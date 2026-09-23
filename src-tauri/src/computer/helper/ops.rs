@@ -401,6 +401,30 @@ enum Dialect {
 }
 
 impl Dialect {
+    /// Where a node's value starts in this platform's tree: after ` = ` on
+    /// every macOS node and on the other platforms' plain nodes; in
+    /// `[value="…"` (Windows) or ` value="…"` (Linux) on their addressable
+    /// ones. Only this platform's: another's marker in a title is just text.
+    fn value_markers(self) -> &'static [&'static str] {
+        match self {
+            Dialect::Mac => &[" = \""],
+            Dialect::Windows => &[" = \"", " [value=\""],
+            Dialect::Linux => &[" = \"", " value=\""],
+        }
+    }
+
+    /// What can only follow the quote that closes a value in this platform's
+    /// tree — a description or an attribute block (macOS), the next attribute
+    /// in the block the value sits in (Windows), the attribute block (Linux) —
+    /// besides the end of the node.
+    fn after_value(self) -> &'static [&'static str] {
+        match self {
+            Dialect::Mac => &["\" (", "\" ["],
+            Dialect::Windows => &["\" id=", "\" help=", "\" actions=", "\"]"],
+            Dialect::Linux => &["\" [actions="],
+        }
+    }
+
     fn current() -> Self {
         if cfg!(target_os = "macos") {
             Dialect::Mac
@@ -493,26 +517,20 @@ fn redact_tree(tree: &str, dialect: Dialect) -> String {
     let mut node = String::new();
     for line in tree.split_inclusive('\n') {
         if !node.is_empty() && dialect.starts_node(line) {
-            out.push_str(&redact_node(&node));
+            out.push_str(&redact_node(&node, dialect));
             node.clear();
         }
         node.push_str(line);
     }
-    out.push_str(&redact_node(&node));
+    out.push_str(&redact_node(&node, dialect));
     out
 }
 
-/// Where a node's value starts: ` = "` in every tree, and `value="` on the
-/// addressable elements of the Windows (`[value="`) and Linux (` value="`)
-/// ones.
-const VALUE_MARKERS: &[&str] = &[" = \"", " value=\"", "[value=\""];
-
-/// What can only follow the quote that closes a value: a description, an
-/// attribute block, one of the attributes, or the end of the node.
-const AFTER_VALUE: &[&str] = &["\" (", "\" [", "\" id=", "\" help=", "\" actions=", "\"]"];
-
-fn redact_node(node: &str) -> String {
-    let Some((start, marker)) = VALUE_MARKERS
+fn redact_node(node: &str, dialect: Dialect) -> String {
+    // The earliest marker: what is kept of a redacted node ends there, so it
+    // can never hold any of the value.
+    let Some((start, marker)) = dialect
+        .value_markers()
         .iter()
         .filter_map(|m| node.find(m).map(|i| (i, *m)))
         .min_by_key(|(i, _)| *i)
@@ -523,7 +541,8 @@ fn redact_node(node: &str) -> String {
     // its description and attributes after it — never on the value itself: a
     // document that mentions a password is not a password field, and a
     // field's secret is not what says it is one.
-    let label = format!("{}{}", &node[..start], &node[after_value(node, start + marker.len())..]);
+    let after = after_value(node, start + marker.len(), dialect);
+    let label = format!("{}{}", &node[..start], &node[after..]);
     let lower = label.to_lowercase();
     let role_is_secret = lower.contains("securetextfield") || lower.contains("password text");
     let label_is_secret = SECRET_WORDS.iter().any(|w| lower.contains(w));
@@ -544,14 +563,16 @@ fn redact_node(node: &str) -> String {
 /// Where the text after a node's value begins, as near as can be told: the
 /// driver does not escape the quote that closes a value, so this is the
 /// earliest quote on the node's last line (a value ends on the line its node
-/// does) that is followed by what only comes after one. Earlier is the safe
-/// side — more of the node is read as label.
-fn after_value(node: &str, value_from: usize) -> usize {
+/// does) that is followed by what only comes after one in this platform's
+/// tree, or the node's closing quote. Earlier is the safe side — more of the
+/// node is read as label.
+fn after_value(node: &str, value_from: usize, dialect: Dialect) -> usize {
     let body = node.trim_end_matches('\n');
     let last_line = body.rfind('\n').map_or(0, |i| i + 1);
     let from = last_line.max(value_from).min(body.len());
     let tail = &body[from..];
-    AFTER_VALUE
+    dialect
+        .after_value()
         .iter()
         .filter_map(|m| tail.find(m))
         .chain(tail.ends_with('"').then(|| tail.len() - 1))
@@ -825,6 +846,14 @@ mod tests {
         );
         assert!(out.ends_with("- [2] AXTextField = \"[redacted]\"\n"), "{out}");
         assert!(!out.contains("hunter2") && !out.contains("s3cr3t"), "{out}");
+
+        // Another platform's markers are just text here: `value="` in a
+        // macOS title does not start the value, and ` id=` in a document
+        // does not end it.
+        let tree = "- [0] AXTextField \"HTML input value=\"Password\"\" = \"hunter2\"\n- [1] AXTextArea = \"<form>\n<input type=\"text\" id=\"password\">\"\n";
+        let out = redact_tree(tree, Dialect::Mac);
+        assert!(!out.contains("hunter2"), "{out}");
+        assert!(out.contains("<input type=\"text\" id=\"password\">\"\n"), "{out}");
     }
 
     /// Windows and Linux trees put an addressable element's value in
