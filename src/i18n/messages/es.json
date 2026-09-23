@@ -4974,6 +4974,11 @@
       "short": "Ejecuta su propio código en una página que compartiste, sin preguntar.",
       "hint": "Permite que los agentes ejecuten su propio JavaScript en una página que hayas compartido. Desactivado por defecto, y requiere el interruptor de arriba. Activarlo significa que los fragmentos se ejecutan sin preguntar, así que la decisión está en este interruptor; en Ajustes → Navegador integrado puedes hacer que te muestren cada fragmento."
     },
+    "computer": {
+      "label": "Ver las ventanas del escritorio",
+      "short": "Lista apps y ventanas; lee las que compartas.",
+      "hint": "Permite que un agente liste las aplicaciones y ventanas de tu escritorio y lea las ventanas que compartas con él: una captura, su contenido, si muestra lo que se espera. Nada es legible hasta que compartas una ventana desde el panel Uso del ordenador de la barra de estado, y el uso compartido termina cuando la ventana se cierra, tras un rato sin uso o cuando lo detienes. No puede hacer clic ni escribir. Solo en la app de escritorio; en macOS requiere permisos concedidos a codeg-computer-helper. Versión preliminar."
+    },
     "automations": {
       "label": "Crear automatizaciones",
       "short": "Crea y gestiona automatizaciones programadas.",
@@ -5136,6 +5141,87 @@
     "clearConfirmDescriptionProfile": "Se eliminarán las cookies, cachés y almacenamiento de sitios del perfil {name}. Las pestañas abiertas permanecen, pero se cerrará tu sesión en los sitios.",
     "signInUaTitle": "Compatibilidad con el inicio de sesión de Google",
     "signInUaHint": "Google rechaza iniciar sesión desde navegadores integrados. Si está activado, las pestañas se presentan como Firefox solo ante las páginas de inicio de sesión de Google (accounts.google.com); en el resto se presentan como el motor en el que se ejecutan, nunca como Firefox. Solo en pestañas integradas, no en la ventana separada; cuando una página de inicio de sesión te redirige a otro sitio, la primera solicitud allí aún lleva la identidad de inicio de sesión."
+  },
+  "ComputerUse": {
+    "title": "Uso del ordenador",
+    "preview": "Versión preliminar",
+    "refresh": "Actualizar",
+    "tooltipShared": "Uso del ordenador · {count, plural, one {# ventana compartida} other {# ventanas compartidas}}",
+    "codegGranted": "Se ha concedido a codeg Accesibilidad o Grabación de pantalla, así que la shell de cada agente también la tiene. Quita codeg en Ajustes del Sistema → Privacidad y seguridad. El uso del ordenador seguirá desactivado hasta entonces.",
+    "backend": {
+      "idle": "Sin iniciar",
+      "downloading": "Descargando el controlador…",
+      "starting": "Iniciando el ayudante…",
+      "ready": "Listo",
+      "failed": "Error"
+    },
+    "driver": "cua-driver {version}",
+    "devBuild": "Compilación de desarrollo: el ayudante no comprueba qué programa lo llama.",
+    "permissions": {
+      "accessibility": "Accesibilidad",
+      "screenRecording": "Grabación de pantalla",
+      "granted": "Concedido",
+      "request": "Solicitar",
+      "openSettings": "Abrir Ajustes",
+      "why": "Se conceden a codeg-computer-helper, no a codeg: todo lo que se concede a codeg lo hereda la shell de cada agente. La Grabación de pantalla sirve para capturas y títulos de ventana; la Accesibilidad, para leer el contenido de una ventana."
+    },
+    "shared": {
+      "title": "{count, plural, =0 {Ninguna ventana compartida} one {# ventana compartida} other {# ventanas compartidas}}",
+      "empty": "Los agentes pueden listar tus ventanas, pero no leer ninguna hasta que compartas una.",
+      "stop": "Detener",
+      "stopAll": "Detener todas"
+    },
+    "activity": {
+      "title": "Actividad reciente",
+      "capture": "Captura",
+      "snapshot": "Lectura",
+      "verify": "Comprobación",
+      "outcome": {
+        "done": "hecho",
+        "refused": "rechazado",
+        "failed": "fallido"
+      }
+    },
+    "share": "Compartir una ventana…",
+    "openSettings": "Ajustes",
+    "picker": {
+      "title": "Compartir una ventana con los agentes",
+      "description": "Los agentes de cualquier conversación pueden leer una ventana que compartas —su captura y su contenido— hasta que dejes de compartirla, se cierre o pase sin uso el tiempo fijado en los ajustes.",
+      "count": "{count, plural, one {# ventana} other {# ventanas}}",
+      "loading": "Cargando ventanas…",
+      "refresh": "Actualizar",
+      "empty": "No se encontraron ventanas. Si debería haber alguna, revisa los permisos en el panel Uso del ordenador.",
+      "unnamedApp": "App desconocida",
+      "untitled": "Ventana sin título",
+      "minimized": "minimizada",
+      "notGrantable": {
+        "codeg": "Ventana de codeg",
+        "blocklisted": "No se puede compartir"
+      },
+      "share": "Compartir",
+      "stopSharing": "Dejar de compartir"
+    },
+    "settings": {
+      "title": "Uso del ordenador",
+      "description": "Lo que los agentes pueden ver de tu escritorio cuando el uso del ordenador está activado arriba.",
+      "ttl": {
+        "label": "Dejar de compartir ventanas sin uso tras",
+        "hint": "Una ventana compartida deja de estarlo cuando ningún agente la ha leído durante este tiempo.",
+        "minutes": "{minutes} minutos",
+        "never": "Nunca (hasta que lo detenga)"
+      },
+      "blocklist": {
+        "label": "Aplicaciones que nunca se pueden compartir",
+        "hint": "Una por línea: un identificador de paquete (com.example.app), un nombre de ejecutable (app.exe) o una ruta completa. Se añaden a la lista integrada —gestores de contraseñas, las peticiones de contraseña del sistema y Ajustes del Sistema—, que no se puede quitar.",
+        "placeholder": "com.example.app"
+      },
+      "boundary": "En macOS, los permisos de Accesibilidad y Grabación de pantalla se conceden a codeg-computer-helper, que solo atiende a codeg, así que la shell de un agente no puede usarlos. En Windows y Linux cualquier programa que ejecutes ya puede leer la pantalla; allí estos ajustes deciden lo que se entrega a los agentes a través de codeg, no lo que podría hacer un programa de tu equipo.",
+      "save": "Guardar",
+      "saving": "Guardando…",
+      "saved": "Ajustes de uso del ordenador guardados",
+      "saveFailed": "No se pudieron guardar los ajustes de uso del ordenador",
+      "loadFailed": "No se pudo cargar: {detail}"
+    }
   },
   "LogsSettings": {
     "loading": "Cargando…",

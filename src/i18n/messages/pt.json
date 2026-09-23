@@ -4974,6 +4974,11 @@
       "short": "Executa o próprio código numa página compartilhada, sem perguntar.",
       "hint": "Permite que os agentes executem o próprio JavaScript numa página que você compartilhou. Desativado por padrão e depende do interruptor acima. Ligá-lo significa que os trechos são executados sem perguntar, então a decisão é tomada neste interruptor; em Configurações → Navegador integrado dá para pedir que cada trecho seja mostrado a você."
     },
+    "computer": {
+      "label": "Ver as janelas da área de trabalho",
+      "short": "Listar apps e janelas; ler as que você compartilhar.",
+      "hint": "Permite que um agente liste os aplicativos e janelas da sua área de trabalho e leia as janelas que você compartilhar com ele — uma captura, o conteúdo, se mostra o que se espera. Nada fica legível até você compartilhar uma janela no painel Uso do computador da barra de status, e o compartilhamento termina quando a janela fecha, depois de um tempo sem uso ou quando você o interrompe. Ele não pode clicar nem digitar. Apenas no app para desktop; no macOS, exige permissões concedidas ao codeg-computer-helper. Prévia."
+    },
     "automations": {
       "label": "Criar automações",
       "short": "Cria e gere automações agendadas.",
@@ -5136,6 +5141,87 @@
     "clearConfirmDescriptionProfile": "Os cookies, caches e armazenamento de sites do perfil {name} serão removidos. As abas abertas continuam abertas, mas você sairá dos sites.",
     "signInUaTitle": "Compatibilidade com o login do Google",
     "signInUaHint": "O Google recusa login a partir de navegadores incorporados. Quando ativado, as abas se apresentam como Firefox apenas às páginas de login do Google (accounts.google.com); em todo o resto elas se apresentam como o mecanismo em que são executadas, nunca como Firefox. Apenas em abas incorporadas, não na janela separada; quando uma página de login redireciona para outro site, a primeira solicitação a ele ainda leva a identidade de login."
+  },
+  "ComputerUse": {
+    "title": "Uso do computador",
+    "preview": "Prévia",
+    "refresh": "Atualizar",
+    "tooltipShared": "Uso do computador · {count, plural, one {# janela compartilhada} other {# janelas compartilhadas}}",
+    "codegGranted": "O próprio codeg recebeu Acessibilidade ou Gravação de Tela, então o shell de cada agente também a tem. Remova o codeg em Ajustes do Sistema → Privacidade e Segurança. O uso do computador fica desligado até lá.",
+    "backend": {
+      "idle": "Não iniciado",
+      "downloading": "Baixando o driver…",
+      "starting": "Iniciando o auxiliar…",
+      "ready": "Pronto",
+      "failed": "Falhou"
+    },
+    "driver": "cua-driver {version}",
+    "devBuild": "Build de desenvolvimento: o auxiliar não verifica qual programa o chama.",
+    "permissions": {
+      "accessibility": "Acessibilidade",
+      "screenRecording": "Gravação de Tela",
+      "granted": "Concedida",
+      "request": "Solicitar",
+      "openSettings": "Abrir Ajustes",
+      "why": "Estas vão para o codeg-computer-helper, não para o codeg: tudo o que é concedido ao codeg é herdado pelo shell de cada agente. A Gravação de Tela serve para capturas e títulos de janela; a Acessibilidade, para ler o conteúdo de uma janela."
+    },
+    "shared": {
+      "title": "{count, plural, =0 {Nenhuma janela compartilhada} one {# janela compartilhada} other {# janelas compartilhadas}}",
+      "empty": "Os agentes podem listar suas janelas, mas não ler nenhuma até você compartilhar uma.",
+      "stop": "Parar",
+      "stopAll": "Parar todas"
+    },
+    "activity": {
+      "title": "Atividade recente",
+      "capture": "Captura",
+      "snapshot": "Leitura",
+      "verify": "Verificação",
+      "outcome": {
+        "done": "feito",
+        "refused": "recusado",
+        "failed": "falhou"
+      }
+    },
+    "share": "Compartilhar uma janela…",
+    "openSettings": "Ajustes",
+    "picker": {
+      "title": "Compartilhar uma janela com os agentes",
+      "description": "Os agentes de qualquer conversa podem ler uma janela que você compartilhar — a captura e o conteúdo — até você parar de compartilhar, ela fechar ou ficar sem uso pelo tempo definido nos ajustes.",
+      "count": "{count, plural, one {# janela} other {# janelas}}",
+      "loading": "Carregando janelas…",
+      "refresh": "Atualizar",
+      "empty": "Nenhuma janela encontrada. Se deveria haver alguma, verifique as permissões no painel Uso do computador.",
+      "unnamedApp": "App desconhecido",
+      "untitled": "Janela sem título",
+      "minimized": "minimizada",
+      "notGrantable": {
+        "codeg": "Janela do codeg",
+        "blocklisted": "Não pode ser compartilhada"
+      },
+      "share": "Compartilhar",
+      "stopSharing": "Parar de compartilhar"
+    },
+    "settings": {
+      "title": "Uso do computador",
+      "description": "O que os agentes podem ver da sua área de trabalho depois que o uso do computador é ligado acima.",
+      "ttl": {
+        "label": "Parar de compartilhar janelas sem uso após",
+        "hint": "Uma janela compartilhada deixa de ser compartilhada quando nenhum agente a lê por esse tempo.",
+        "minutes": "{minutes} minutos",
+        "never": "Nunca (até eu parar)"
+      },
+      "blocklist": {
+        "label": "Aplicativos que nunca podem ser compartilhados",
+        "hint": "Um por linha: um identificador de pacote (com.example.app), um nome de executável (app.exe) ou um caminho completo. É somado à lista embutida — gerenciadores de senha, os pedidos de senha do sistema e os Ajustes do Sistema —, que não pode ser removida.",
+        "placeholder": "com.example.app"
+      },
+      "boundary": "No macOS, as permissões de Acessibilidade e Gravação de Tela vão para o codeg-computer-helper, que só atende o codeg, então o shell de um agente não pode usá-las. No Windows e no Linux, qualquer programa que você executa já consegue ler a tela; lá, estes ajustes decidem o que é entregue aos agentes pelo codeg, não o que um programa na sua máquina poderia fazer.",
+      "save": "Salvar",
+      "saving": "Salvando…",
+      "saved": "Ajustes de uso do computador salvos",
+      "saveFailed": "Falha ao salvar os ajustes de uso do computador",
+      "loadFailed": "Falha ao carregar: {detail}"
+    }
   },
   "LogsSettings": {
     "loading": "Carregando…",

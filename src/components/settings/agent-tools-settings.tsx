@@ -19,8 +19,9 @@
  * and had drifted into calling three of them by different names.
  *
  * Persistence stays split the way the backend has it — `feedback.enabled`,
- * `question.enabled`, `session_info.enabled`, `browser_tools.*` and
- * `chat_authoring.*` remain five endpoints. Save writes only the groups whose value actually moved, so a
+ * `question.enabled`, `session_info.enabled`, `browser_tools.*`,
+ * `computer_tools.enabled` and `chat_authoring.*` remain six endpoints. Save
+ * writes only the groups whose value actually moved, so a
  * failing endpoint can't roll back its neighbours, and a group whose *load*
  * failed (its switch is showing a default, not what is stored) is left alone
  * unless the user touched it.
@@ -48,6 +49,14 @@ import {
   CHAT_AUTHORING_SETTINGS_CHANGED_EVENT,
 } from "@/lib/types"
 import {
+  getComputerToolsSettings,
+  setComputerToolsEnabled,
+} from "@/lib/computer/computer-api"
+import {
+  COMPUTER_TOOLS_SETTINGS_CHANGED_EVENT,
+  type ComputerToolsSettings,
+} from "@/lib/computer/types"
+import {
   getBrowserToolsSettings,
   getChatAuthoringSettings,
   getFeedbackSettings,
@@ -71,6 +80,7 @@ interface AgentToolValues {
   sessionInfo: boolean
   browserTools: boolean
   browserEval: boolean
+  computer: boolean
   automations: boolean
   workTasks: boolean
 }
@@ -87,6 +97,7 @@ const DEFAULTS: AgentToolValues = {
   sessionInfo: true,
   browserTools: false,
   browserEval: false,
+  computer: false,
   automations: false,
   workTasks: false,
 }
@@ -106,6 +117,7 @@ const TOOL_ROWS = [
   { key: "sessionInfo", slug: "sessions", id: "agent-tools-session-info" },
   { key: "browserTools", slug: "browser", id: "agent-tools-browser" },
   { key: "browserEval", slug: "browser_eval", id: "agent-tools-browser-eval" },
+  { key: "computer", slug: "computer", id: "agent-tools-computer" },
   { key: "automations", slug: "automations", id: "agent-tools-automations" },
   { key: "workTasks", slug: "taskboard", id: "agent-tools-work-tasks" },
 ] as const satisfies ReadonlyArray<{
@@ -147,12 +159,13 @@ export function AgentToolsSettingsSection() {
     let cancelled = false
     void (async () => {
       const gen = remoteGenRef.current
-      const [feedback, question, sessionInfo, browserTools, chat] =
+      const [feedback, question, sessionInfo, browserTools, computer, chat] =
         await Promise.allSettled([
           getFeedbackSettings(),
           getQuestionSettings(),
           getSessionInfoSettings(),
           getBrowserToolsSettings(),
+          getComputerToolsSettings(),
           getChatAuthoringSettings(),
         ])
       if (cancelled) return
@@ -174,6 +187,9 @@ export function AgentToolsSettingsSection() {
         next.browserTools = browserTools.value.enabled
         next.browserEval = browserTools.value.eval
       } else failures.push(toErrorMessage(browserTools.reason))
+      if (computer.status === "fulfilled")
+        next.computer = computer.value.enabled
+      else failures.push(toErrorMessage(computer.reason))
       if (chat.status === "fulfilled") {
         next.automations = chat.value.automations_enabled
         next.workTasks = chat.value.work_tasks_enabled
@@ -192,6 +208,7 @@ export function AgentToolsSettingsSection() {
               workTasks: prev.workTasks,
               browserTools: prev.browserTools,
               browserEval: prev.browserEval,
+              computer: prev.computer,
             }
           : next
       setValues(keepBroadcast)
@@ -297,12 +314,46 @@ export function AgentToolsSettingsSection() {
     }
   }, [])
 
+  /**
+   * And for the computer-use switch, which the popover writes too. Only the
+   * switch is this form's: the grant timeout and the blocklist in the same
+   * record belong to the Computer use section and are never sent from here.
+   */
+  useEffect(() => {
+    let disposed = false
+    let unsubscribe: (() => void) | undefined
+    void subscribe<ComputerToolsSettings>(
+      COMPUTER_TOOLS_SETTINGS_CHANGED_EVENT,
+      (remote) => {
+        remoteGenRef.current += 1
+        const current = valuesRef.current
+        const base = baselineRef.current
+        setValues((prev) =>
+          current.computer === base.computer
+            ? { ...prev, computer: remote.enabled }
+            : prev
+        )
+        setBaseline((prev) => ({ ...prev, computer: remote.enabled }))
+      }
+    )
+      .then((fn) => {
+        if (disposed) fn()
+        else unsubscribe = fn
+      })
+      .catch(() => {})
+    return () => {
+      disposed = true
+      unsubscribe?.()
+    }
+  }, [])
+
   const dirty =
     values.feedback !== baseline.feedback ||
     values.question !== baseline.question ||
     values.sessionInfo !== baseline.sessionInfo ||
     values.browserTools !== baseline.browserTools ||
     values.browserEval !== baseline.browserEval ||
+    values.computer !== baseline.computer ||
     values.automations !== baseline.automations ||
     values.workTasks !== baseline.workTasks
 
@@ -349,6 +400,15 @@ export function AgentToolsSettingsSection() {
           }).then((applied) => ({
             browserTools: applied.enabled,
             browserEval: applied.eval,
+          }))
+        )
+      }
+      if (values.computer !== baseline.computer) {
+        // The switch alone: the same record's timeout and blocklist are the
+        // Computer use section's to write.
+        writes.push(
+          setComputerToolsEnabled(values.computer).then((applied) => ({
+            computer: applied.enabled,
           }))
         )
       }

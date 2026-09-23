@@ -4974,6 +4974,11 @@
       "short": "在你共享的页面上运行它自己写的代码，默认不询问。",
       "hint": "允许智能体在你共享的页面上运行它自己写的 JavaScript。默认关闭，并且需要先打开上面那个开关。打开它就意味着代码不经询问直接运行，所以决定权就在这个开关上；如果想逐段过目，可在「设置 → 内置浏览器」里改成每次都问你。"
     },
+    "computer": {
+      "label": "查看桌面窗口",
+      "short": "列出应用和窗口，读取你共享的窗口。",
+      "hint": "让智能体列出桌面上的应用和窗口，并读取你共享给它的窗口——截图、窗口内容、以及是否已出现预期的状态。在你从状态栏的「电脑操作」面板共享某个窗口之前，任何窗口都不可读；窗口关闭、闲置一段时间或你停止共享时，共享即结束。它不能点击或输入。仅限桌面版；在 macOS 上需要为 codeg-computer-helper 授予权限。预览功能。"
+    },
     "automations": {
       "label": "创建自动化",
       "short": "创建和管理定时自动化。",
@@ -5136,6 +5141,87 @@
     "clearConfirmDescriptionProfile": "将删除配置文件 {name} 的 Cookie、缓存和站点存储。已打开的标签页会保留，但各网站的登录状态会失效。",
     "signInUaTitle": "Google 登录兼容",
     "signInUaHint": "Google 拒绝在内嵌浏览器中登录。开启后，标签页只对 Google 的登录页面（accounts.google.com）呈现 Firefox 身份；其他地方一律以自身所在引擎的身份示人，不会冒充 Firefox。仅对嵌入式标签页生效，独立窗口不适用；登录页把你跳转到别的站点时，到那里的第一个请求仍带着登录身份。"
+  },
+  "ComputerUse": {
+    "title": "电脑操作",
+    "preview": "预览",
+    "refresh": "刷新",
+    "tooltipShared": "电脑操作 · {count, plural, other {已共享 # 个窗口}}",
+    "codegGranted": "codeg 本身已被授予「辅助功能」或「屏幕录制」权限，因此每个智能体的 shell 也都拥有它。请在「系统设置 → 隐私与安全性」中移除 codeg。在此之前，电脑操作保持关闭。",
+    "backend": {
+      "idle": "未启动",
+      "downloading": "正在下载驱动…",
+      "starting": "正在启动 helper…",
+      "ready": "就绪",
+      "failed": "失败"
+    },
+    "driver": "cua-driver {version}",
+    "devBuild": "开发版：helper 不会校验调用它的是哪个程序。",
+    "permissions": {
+      "accessibility": "辅助功能",
+      "screenRecording": "屏幕录制",
+      "granted": "已授权",
+      "request": "请求授权",
+      "openSettings": "打开系统设置",
+      "why": "这些权限授予 codeg-computer-helper，而不是 codeg：授予 codeg 的任何权限都会被每个智能体的 shell 继承。「屏幕录制」用于截图和窗口标题，「辅助功能」用于读取窗口内容。"
+    },
+    "shared": {
+      "title": "{count, plural, =0 {未共享窗口} other {已共享 # 个窗口}}",
+      "empty": "智能体能列出你的窗口，但在你共享之前读不到任何一个。",
+      "stop": "停止",
+      "stopAll": "全部停止"
+    },
+    "activity": {
+      "title": "最近活动",
+      "capture": "截图",
+      "snapshot": "读取",
+      "verify": "检查",
+      "outcome": {
+        "done": "完成",
+        "refused": "被拒",
+        "failed": "失败"
+      }
+    },
+    "share": "共享窗口…",
+    "openSettings": "设置",
+    "picker": {
+      "title": "把窗口共享给智能体",
+      "description": "所有对话中的智能体都能读取你共享的窗口——截图和内容——直到你停止共享、窗口关闭，或闲置超过设置中的时长。",
+      "count": "{count, plural, other {# 个窗口}}",
+      "loading": "正在加载窗口…",
+      "refresh": "刷新",
+      "empty": "没有找到窗口。如果应该有，请检查「电脑操作」面板中的权限。",
+      "unnamedApp": "未知应用",
+      "untitled": "无标题窗口",
+      "minimized": "已最小化",
+      "notGrantable": {
+        "codeg": "codeg 自己的窗口",
+        "blocklisted": "不可共享"
+      },
+      "share": "共享",
+      "stopSharing": "停止共享"
+    },
+    "settings": {
+      "title": "电脑操作",
+      "description": "在上方开启电脑操作后，智能体能看到你桌面上的哪些内容。",
+      "ttl": {
+        "label": "窗口闲置多久后停止共享",
+        "hint": "共享的窗口在这么长时间内没有被任何智能体读取，就会停止共享。",
+        "minutes": "{minutes} 分钟",
+        "never": "永不（直到我停止）"
+      },
+      "blocklist": {
+        "label": "永不可共享的应用",
+        "hint": "每行一个：bundle 标识（com.example.app）、可执行文件名（app.exe）或完整路径。会追加到内置名单——密码管理器、系统的密码弹窗和系统设置——内置名单不可移除。",
+        "placeholder": "com.example.app"
+      },
+      "boundary": "在 macOS 上，「辅助功能」和「屏幕录制」权限授予 codeg-computer-helper，它只为 codeg 服务，因此智能体的 shell 用不了这些权限。在 Windows 和 Linux 上，你运行的任何程序本来就能读取屏幕；在那里，这些设置决定的是智能体通过 codeg 能拿到什么，而不是你电脑上的程序能做什么。",
+      "save": "保存",
+      "saving": "保存中…",
+      "saved": "电脑操作设置已保存",
+      "saveFailed": "保存电脑操作设置失败",
+      "loadFailed": "加载失败：{detail}"
+    }
   },
   "LogsSettings": {
     "loading": "加载中…",

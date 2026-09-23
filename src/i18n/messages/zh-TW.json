@@ -4974,6 +4974,11 @@
       "short": "在你共享的頁面上執行它自己寫的程式碼，預設不詢問。",
       "hint": "允許智慧代理在你分享的頁面上執行它自己寫的 JavaScript。預設關閉，而且需要先開啟上面那個開關。開啟它就意味著程式碼不經詢問直接執行，所以決定權就在這個開關上；如果想逐段過目，可在「設定 → 內建瀏覽器」裡改成每次都問你。"
     },
+    "computer": {
+      "label": "查看桌面視窗",
+      "short": "列出應用程式和視窗，讀取你分享的視窗。",
+      "hint": "讓智慧體列出桌面上的應用程式和視窗，並讀取你分享給它的視窗——截圖、視窗內容，以及是否已出現預期的狀態。在你從狀態列的「電腦操作」面板分享某個視窗之前，任何視窗都不可讀；視窗關閉、閒置一段時間或你停止分享時，分享即結束。它不能點擊或輸入。僅限桌面版；在 macOS 上需要為 codeg-computer-helper 授予權限。預覽功能。"
+    },
     "automations": {
       "label": "建立自動化",
       "short": "建立和管理定時自動化。",
@@ -5136,6 +5141,87 @@
     "clearConfirmDescriptionProfile": "將刪除設定檔 {name} 的 Cookie、快取與網站儲存。已開啟的分頁會保留，但各網站的登入狀態會失效。",
     "signInUaTitle": "Google 登入相容",
     "signInUaHint": "Google 拒絕在內嵌瀏覽器中登入。開啟後，分頁只對 Google 的登入頁面（accounts.google.com）呈現 Firefox 身分；其他地方一律以自身所在引擎的身分示人，不會冒充 Firefox。僅對嵌入式分頁生效，獨立視窗不適用；登入頁把你跳轉到別的網站時，到那裡的第一個請求仍帶著登入身分。"
+  },
+  "ComputerUse": {
+    "title": "電腦操作",
+    "preview": "預覽",
+    "refresh": "重新整理",
+    "tooltipShared": "電腦操作 · {count, plural, other {已分享 # 個視窗}}",
+    "codegGranted": "codeg 本身已被授予「輔助使用」或「螢幕錄製」權限，因此每個智慧體的 shell 也都擁有它。請在「系統設定 → 隱私權與安全性」中移除 codeg。在此之前，電腦操作保持關閉。",
+    "backend": {
+      "idle": "未啟動",
+      "downloading": "正在下載驅動程式…",
+      "starting": "正在啟動 helper…",
+      "ready": "就緒",
+      "failed": "失敗"
+    },
+    "driver": "cua-driver {version}",
+    "devBuild": "開發版：helper 不會驗證呼叫它的是哪個程式。",
+    "permissions": {
+      "accessibility": "輔助使用",
+      "screenRecording": "螢幕錄製",
+      "granted": "已授權",
+      "request": "請求授權",
+      "openSettings": "打開系統設定",
+      "why": "這些權限授予 codeg-computer-helper，而不是 codeg：授予 codeg 的任何權限都會被每個智慧體的 shell 繼承。「螢幕錄製」用於截圖和視窗標題，「輔助使用」用於讀取視窗內容。"
+    },
+    "shared": {
+      "title": "{count, plural, =0 {未分享視窗} other {已分享 # 個視窗}}",
+      "empty": "智慧體能列出你的視窗，但在你分享之前讀不到任何一個。",
+      "stop": "停止",
+      "stopAll": "全部停止"
+    },
+    "activity": {
+      "title": "最近活動",
+      "capture": "截圖",
+      "snapshot": "讀取",
+      "verify": "檢查",
+      "outcome": {
+        "done": "完成",
+        "refused": "被拒",
+        "failed": "失敗"
+      }
+    },
+    "share": "分享視窗…",
+    "openSettings": "設定",
+    "picker": {
+      "title": "把視窗分享給智慧體",
+      "description": "所有對話中的智慧體都能讀取你分享的視窗——截圖和內容——直到你停止分享、視窗關閉，或閒置超過設定中的時長。",
+      "count": "{count, plural, other {# 個視窗}}",
+      "loading": "正在載入視窗…",
+      "refresh": "重新整理",
+      "empty": "沒有找到視窗。如果應該有，請檢查「電腦操作」面板中的權限。",
+      "unnamedApp": "未知應用程式",
+      "untitled": "無標題視窗",
+      "minimized": "已最小化",
+      "notGrantable": {
+        "codeg": "codeg 自己的視窗",
+        "blocklisted": "不可分享"
+      },
+      "share": "分享",
+      "stopSharing": "停止分享"
+    },
+    "settings": {
+      "title": "電腦操作",
+      "description": "在上方開啟電腦操作後，智慧體能看到你桌面上的哪些內容。",
+      "ttl": {
+        "label": "視窗閒置多久後停止分享",
+        "hint": "分享的視窗在這麼長時間內沒有被任何智慧體讀取，就會停止分享。",
+        "minutes": "{minutes} 分鐘",
+        "never": "永不（直到我停止）"
+      },
+      "blocklist": {
+        "label": "永不可分享的應用程式",
+        "hint": "每行一個：bundle 識別碼（com.example.app）、執行檔名稱（app.exe）或完整路徑。會追加到內建名單——密碼管理器、系統的密碼提示和系統設定——內建名單不可移除。",
+        "placeholder": "com.example.app"
+      },
+      "boundary": "在 macOS 上，「輔助使用」和「螢幕錄製」權限授予 codeg-computer-helper，它只為 codeg 服務，因此智慧體的 shell 用不了這些權限。在 Windows 和 Linux 上，你執行的任何程式本來就能讀取螢幕；在那裡，這些設定決定的是智慧體透過 codeg 能拿到什麼，而不是你電腦上的程式能做什麼。",
+      "save": "儲存",
+      "saving": "儲存中…",
+      "saved": "電腦操作設定已儲存",
+      "saveFailed": "儲存電腦操作設定失敗",
+      "loadFailed": "載入失敗：{detail}"
+    }
   },
   "LogsSettings": {
     "loading": "載入中…",

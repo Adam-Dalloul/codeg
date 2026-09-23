@@ -4974,6 +4974,11 @@
       "short": "Führt eigenen Code auf einer freigegebenen Seite aus — ohne Nachfrage.",
       "hint": "Erlaubt Agenten, eigenes JavaScript auf einer von dir geteilten Seite auszuführen. Standardmäßig aus und nur zusammen mit dem Schalter darüber. Einschalten heißt, dass Codeausschnitte ohne Nachfrage laufen – die Entscheidung fällt also an diesem Schalter; unter Einstellungen → Integrierter Browser kannst du dir stattdessen jeden Ausschnitt zeigen lassen."
     },
+    "computer": {
+      "label": "Fenster des Desktops sehen",
+      "short": "Apps und Fenster auflisten; freigegebene Fenster lesen.",
+      "hint": "Lässt einen Agenten die Anwendungen und Fenster auf deinem Desktop auflisten und die Fenster lesen, die du für ihn freigibst – ein Bildschirmfoto, den Inhalt, ob es zeigt, was erwartet wird. Nichts ist lesbar, bis du im Bereich „Computernutzung“ in der Statusleiste ein Fenster freigibst; die Freigabe endet, wenn das Fenster geschlossen wird, nach einer Weile ohne Nutzung oder wenn du sie beendest. Es kann nicht klicken oder tippen. Nur in der Desktop-App; unter macOS sind Berechtigungen für codeg-computer-helper nötig. Vorschau."
+    },
     "automations": {
       "label": "Automatisierungen erstellen",
       "short": "Erstellt und verwaltet geplante Automationen.",
@@ -5136,6 +5141,87 @@
     "clearConfirmDescriptionProfile": "Cookies, Caches und Website-Daten des Profils {name} werden entfernt. Offene Tabs bleiben offen, aber du wirst bei Websites abgemeldet.",
     "signInUaTitle": "Kompatibilität mit der Google-Anmeldung",
     "signInUaHint": "Google verweigert die Anmeldung aus eingebetteten Browsern. Wenn eingeschaltet, geben sich Tabs nur gegenüber Googles Anmeldeseiten (accounts.google.com) als Firefox aus; überall sonst geben sie sich als die Engine aus, in der sie laufen, nie als Firefox. Nur in eingebetteten Tabs, nicht im separaten Fenster; leitet eine Anmeldeseite auf eine andere Website weiter, trägt die erste Anfrage dort noch die Anmeldekennung."
+  },
+  "ComputerUse": {
+    "title": "Computernutzung",
+    "preview": "Vorschau",
+    "refresh": "Aktualisieren",
+    "tooltipShared": "Computernutzung · {count, plural, one {# Fenster freigegeben} other {# Fenster freigegeben}}",
+    "codegGranted": "codeg selbst hat Bedienungshilfen oder Bildschirmaufnahme erhalten – damit hat sie auch die Shell jedes Agenten. Entferne codeg unter Systemeinstellungen → Datenschutz & Sicherheit. Bis dahin bleibt die Computernutzung aus.",
+    "backend": {
+      "idle": "Nicht gestartet",
+      "downloading": "Treiber wird geladen …",
+      "starting": "Helfer wird gestartet …",
+      "ready": "Bereit",
+      "failed": "Fehlgeschlagen"
+    },
+    "driver": "cua-driver {version}",
+    "devBuild": "Entwicklungs-Build: Der Helfer prüft nicht, welches Programm ihn aufruft.",
+    "permissions": {
+      "accessibility": "Bedienungshilfen",
+      "screenRecording": "Bildschirmaufnahme",
+      "granted": "Erteilt",
+      "request": "Anfordern",
+      "openSettings": "Einstellungen öffnen",
+      "why": "Diese gehen an codeg-computer-helper, nicht an codeg: Alles, was codeg erteilt wird, erbt die Shell jedes Agenten. Bildschirmaufnahme wird für Bildschirmfotos und Fenstertitel gebraucht, Bedienungshilfen zum Lesen von Fensterinhalten."
+    },
+    "shared": {
+      "title": "{count, plural, =0 {Keine Fenster freigegeben} one {# Fenster freigegeben} other {# Fenster freigegeben}}",
+      "empty": "Agenten können deine Fenster auflisten, aber keines lesen, bis du eines freigibst.",
+      "stop": "Beenden",
+      "stopAll": "Alle beenden"
+    },
+    "activity": {
+      "title": "Letzte Aktivität",
+      "capture": "Bildschirmfoto",
+      "snapshot": "Lesen",
+      "verify": "Prüfen",
+      "outcome": {
+        "done": "erledigt",
+        "refused": "abgelehnt",
+        "failed": "fehlgeschlagen"
+      }
+    },
+    "share": "Fenster freigeben …",
+    "openSettings": "Einstellungen",
+    "picker": {
+      "title": "Ein Fenster für Agenten freigeben",
+      "description": "Agenten in jeder Unterhaltung können ein freigegebenes Fenster lesen – Bildschirmfoto und Inhalt –, bis du die Freigabe beendest, es geschlossen wird oder es so lange ungenutzt bleibt wie in den Einstellungen festgelegt.",
+      "count": "{count, plural, one {# Fenster} other {# Fenster}}",
+      "loading": "Fenster werden geladen …",
+      "refresh": "Aktualisieren",
+      "empty": "Keine Fenster gefunden. Wenn es welche geben sollte, prüfe die Berechtigungen im Bereich Computernutzung.",
+      "unnamedApp": "Unbekannte App",
+      "untitled": "Fenster ohne Titel",
+      "minimized": "minimiert",
+      "notGrantable": {
+        "codeg": "Fenster von codeg",
+        "blocklisted": "Nicht freigebbar"
+      },
+      "share": "Freigeben",
+      "stopSharing": "Freigabe beenden"
+    },
+    "settings": {
+      "title": "Computernutzung",
+      "description": "Was Agenten von deinem Desktop sehen dürfen, sobald die Computernutzung oben eingeschaltet ist.",
+      "ttl": {
+        "label": "Freigabe ungenutzter Fenster beenden nach",
+        "hint": "Ein freigegebenes Fenster wird nicht mehr geteilt, wenn es so lange kein Agent gelesen hat.",
+        "minutes": "{minutes} Minuten",
+        "never": "Nie (bis ich sie beende)"
+      },
+      "blocklist": {
+        "label": "Anwendungen, die nie freigegeben werden können",
+        "hint": "Eine pro Zeile: eine Bundle-ID (com.example.app), ein Programmname (app.exe) oder ein vollständiger Pfad. Wird zur eingebauten Liste hinzugefügt – Passwortmanager, die Passwortabfragen des Systems und die Systemeinstellungen –, die sich nicht entfernen lässt.",
+        "placeholder": "com.example.app"
+      },
+      "boundary": "Unter macOS gehen die Berechtigungen für Bedienungshilfen und Bildschirmaufnahme an codeg-computer-helper, der nur codeg bedient – die Shell eines Agenten kann sie also nicht nutzen. Unter Windows und Linux kann jedes Programm, das du ausführst, den Bildschirm ohnehin lesen; dort legen diese Einstellungen fest, was Agenten über codeg bekommen, nicht was ein Programm auf deinem Rechner tun könnte.",
+      "save": "Speichern",
+      "saving": "Wird gespeichert …",
+      "saved": "Einstellungen zur Computernutzung gespeichert",
+      "saveFailed": "Einstellungen zur Computernutzung konnten nicht gespeichert werden",
+      "loadFailed": "Laden fehlgeschlagen: {detail}"
+    }
   },
   "LogsSettings": {
     "loading": "Wird geladen…",

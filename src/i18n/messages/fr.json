@@ -4974,6 +4974,11 @@
       "short": "Exécute son propre code sur une page partagée — sans rien demander.",
       "hint": "Autorise les agents à exécuter leur propre JavaScript sur une page que vous avez partagée. Désactivé par défaut, et nécessite l’interrupteur ci-dessus. L’activer signifie que les extraits s’exécutent sans demande : la décision se prend donc ici ; Réglages → Navigateur intégré permet de vous faire montrer chaque extrait à la place."
     },
+    "computer": {
+      "label": "Voir les fenêtres du bureau",
+      "short": "Lister les apps et fenêtres ; lire celles que vous partagez.",
+      "hint": "Permet à un agent de lister les applications et fenêtres de votre bureau et de lire les fenêtres que vous lui partagez : une capture, son contenu, si elle affiche ce qui est attendu. Rien n'est lisible tant que vous ne partagez pas une fenêtre depuis le panneau Utilisation de l'ordinateur de la barre d'état, et le partage prend fin quand la fenêtre se ferme, après un moment sans utilisation ou quand vous l'arrêtez. Il ne peut ni cliquer ni taper. Application de bureau uniquement ; sous macOS, des autorisations doivent être accordées à codeg-computer-helper. Aperçu."
+    },
     "automations": {
       "label": "Créer des automatisations",
       "short": "Crée et gère des automatisations planifiées.",
@@ -5136,6 +5141,87 @@
     "clearConfirmDescriptionProfile": "Les cookies, caches et données de site du profil {name} seront supprimés. Les onglets ouverts restent ouverts, mais vous serez déconnecté des sites.",
     "signInUaTitle": "Compatibilité avec la connexion Google",
     "signInUaHint": "Google refuse la connexion depuis les navigateurs intégrés. Si activé, les onglets se présentent comme Firefox uniquement aux pages de connexion de Google (accounts.google.com) ; partout ailleurs, ils se présentent comme le moteur dans lequel ils s'exécutent, jamais comme Firefox. Onglets intégrés uniquement, pas la fenêtre séparée ; lorsqu'une page de connexion vous redirige vers un autre site, la première requête vers celui-ci porte encore l'identité de connexion."
+  },
+  "ComputerUse": {
+    "title": "Utilisation de l'ordinateur",
+    "preview": "Aperçu",
+    "refresh": "Actualiser",
+    "tooltipShared": "Utilisation de l'ordinateur · {count, plural, one {# fenêtre partagée} other {# fenêtres partagées}}",
+    "codegGranted": "codeg lui-même a reçu Accessibilité ou Enregistrement de l'écran : le shell de chaque agent l'a donc aussi. Retirez codeg dans Réglages Système → Confidentialité et sécurité. L'utilisation de l'ordinateur reste désactivée d'ici là.",
+    "backend": {
+      "idle": "Non démarré",
+      "downloading": "Téléchargement du pilote…",
+      "starting": "Démarrage de l'assistant…",
+      "ready": "Prêt",
+      "failed": "Échec"
+    },
+    "driver": "cua-driver {version}",
+    "devBuild": "Version de développement : l'assistant ne vérifie pas quel programme l'appelle.",
+    "permissions": {
+      "accessibility": "Accessibilité",
+      "screenRecording": "Enregistrement de l'écran",
+      "granted": "Accordé",
+      "request": "Demander",
+      "openSettings": "Ouvrir les Réglages",
+      "why": "Ces autorisations vont à codeg-computer-helper, pas à codeg : tout ce qui est accordé à codeg est hérité par le shell de chaque agent. L'Enregistrement de l'écran sert aux captures et aux titres de fenêtres, l'Accessibilité à lire le contenu d'une fenêtre."
+    },
+    "shared": {
+      "title": "{count, plural, =0 {Aucune fenêtre partagée} one {# fenêtre partagée} other {# fenêtres partagées}}",
+      "empty": "Les agents peuvent lister vos fenêtres, mais n'en lire aucune tant que vous n'en partagez pas une.",
+      "stop": "Arrêter",
+      "stopAll": "Tout arrêter"
+    },
+    "activity": {
+      "title": "Activité récente",
+      "capture": "Capture",
+      "snapshot": "Lecture",
+      "verify": "Vérification",
+      "outcome": {
+        "done": "fait",
+        "refused": "refusé",
+        "failed": "échec"
+      }
+    },
+    "share": "Partager une fenêtre…",
+    "openSettings": "Réglages",
+    "picker": {
+      "title": "Partager une fenêtre avec les agents",
+      "description": "Les agents de toutes les conversations peuvent lire une fenêtre que vous partagez — sa capture et son contenu — jusqu'à ce que vous arrêtiez le partage, qu'elle se ferme ou qu'elle reste inutilisée pendant la durée définie dans les réglages.",
+      "count": "{count, plural, one {# fenêtre} other {# fenêtres}}",
+      "loading": "Chargement des fenêtres…",
+      "refresh": "Actualiser",
+      "empty": "Aucune fenêtre trouvée. S'il devrait y en avoir, vérifiez les autorisations dans le panneau Utilisation de l'ordinateur.",
+      "unnamedApp": "App inconnue",
+      "untitled": "Fenêtre sans titre",
+      "minimized": "réduite",
+      "notGrantable": {
+        "codeg": "Fenêtre de codeg",
+        "blocklisted": "Partage impossible"
+      },
+      "share": "Partager",
+      "stopSharing": "Arrêter le partage"
+    },
+    "settings": {
+      "title": "Utilisation de l'ordinateur",
+      "description": "Ce que les agents peuvent voir de votre bureau une fois l'utilisation de l'ordinateur activée ci-dessus.",
+      "ttl": {
+        "label": "Arrêter le partage des fenêtres inutilisées après",
+        "hint": "Une fenêtre partagée cesse de l'être quand aucun agent ne l'a lue pendant cette durée.",
+        "minutes": "{minutes} minutes",
+        "never": "Jamais (jusqu'à ce que je l'arrête)"
+      },
+      "blocklist": {
+        "label": "Applications jamais partageables",
+        "hint": "Une par ligne : un identifiant de paquet (com.example.app), un nom d'exécutable (app.exe) ou un chemin complet. S'ajoute à la liste intégrée — gestionnaires de mots de passe, invites de mot de passe du système et Réglages Système —, qui ne peut pas être retirée.",
+        "placeholder": "com.example.app"
+      },
+      "boundary": "Sous macOS, les autorisations Accessibilité et Enregistrement de l'écran vont à codeg-computer-helper, qui ne sert que codeg : le shell d'un agent ne peut donc pas les utiliser. Sous Windows et Linux, tout programme que vous lancez peut déjà lire l'écran ; là, ces réglages décident de ce qui est remis aux agents via codeg, pas de ce qu'un programme de votre machine pourrait faire.",
+      "save": "Enregistrer",
+      "saving": "Enregistrement…",
+      "saved": "Réglages d'utilisation de l'ordinateur enregistrés",
+      "saveFailed": "Impossible d'enregistrer les réglages d'utilisation de l'ordinateur",
+      "loadFailed": "Échec du chargement : {detail}"
+    }
   },
   "LogsSettings": {
     "loading": "Chargement…",

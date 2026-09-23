@@ -4974,6 +4974,11 @@
       "short": "Run its own code on a page you shared — without asking, unless you ask it to.",
       "hint": "Let agents run their own JavaScript on a page you’ve shared. Off by default, and needs the switch above. Turning it on means snippets run without asking, so this switch is where the decision is made; Settings → Built-in browser can put each snippet in front of you instead."
     },
+    "computer": {
+      "label": "See your desktop's windows",
+      "short": "List apps and windows; read the ones you share.",
+      "hint": "Lets an agent list the applications and windows on your desktop and read the windows you share with it — a screenshot, its contents, whether it shows what it expects. Nothing is readable until you share a window from the Computer use panel in the status bar, and sharing ends when the window closes, after a while unused, or when you stop it. It cannot click or type. Desktop app only; on macOS it needs permissions granted to codeg-computer-helper. Preview."
+    },
     "automations": {
       "label": "Create automations",
       "short": "Create and manage scheduled automations.",
@@ -5136,6 +5141,87 @@
     "clearConfirmDescriptionProfile": "Cookies, caches and site storage of the profile {name} will be removed. Open tabs stay open, but you will be signed out of sites.",
     "signInUaTitle": "Google sign-in compatibility",
     "signInUaHint": "Google refuses to sign in from embedded browsers. When on, tabs present a Firefox identity to Google's sign-in pages only (accounts.google.com); everywhere else they identify as the engine they run in, never as Firefox. Embedded tabs only, not the separate-window surface; when a sign-in page redirects you to another site, the first request there still carries the sign-in identity."
+  },
+  "ComputerUse": {
+    "title": "Computer use",
+    "preview": "Preview",
+    "refresh": "Refresh",
+    "tooltipShared": "Computer use · {count, plural, one {# window shared} other {# windows shared}}",
+    "codegGranted": "codeg itself has been granted Accessibility or Screen Recording, so every agent's shell has it too. Remove codeg from System Settings → Privacy & Security. Computer use stays off until you do.",
+    "backend": {
+      "idle": "Not started",
+      "downloading": "Downloading the driver…",
+      "starting": "Starting the helper…",
+      "ready": "Ready",
+      "failed": "Failed"
+    },
+    "driver": "cua-driver {version}",
+    "devBuild": "Development build: the helper does not check which program is calling it.",
+    "permissions": {
+      "accessibility": "Accessibility",
+      "screenRecording": "Screen Recording",
+      "granted": "Granted",
+      "request": "Request",
+      "openSettings": "Open Settings",
+      "why": "These go to codeg-computer-helper, not to codeg: anything granted to codeg is inherited by every agent's shell. Screen Recording is for screenshots and window titles, Accessibility for reading a window's contents."
+    },
+    "shared": {
+      "title": "{count, plural, =0 {No windows shared} one {# window shared} other {# windows shared}}",
+      "empty": "Agents can list your windows but read none of them until you share one.",
+      "stop": "Stop",
+      "stopAll": "Stop all"
+    },
+    "activity": {
+      "title": "Recent activity",
+      "capture": "Screenshot",
+      "snapshot": "Read",
+      "verify": "Check",
+      "outcome": {
+        "done": "done",
+        "refused": "refused",
+        "failed": "failed"
+      }
+    },
+    "share": "Share a window…",
+    "openSettings": "Settings",
+    "picker": {
+      "title": "Share a window with agents",
+      "description": "Agents in every conversation can read a window you share — its screenshot and its contents — until you stop sharing it, it closes, or it goes unused for the time set in Settings.",
+      "count": "{count, plural, one {# window} other {# windows}}",
+      "loading": "Loading windows…",
+      "refresh": "Refresh",
+      "empty": "No windows found. If you expected some, check the permissions in the Computer use panel.",
+      "unnamedApp": "Unknown app",
+      "untitled": "Untitled window",
+      "minimized": "minimized",
+      "notGrantable": {
+        "codeg": "codeg's own window",
+        "blocklisted": "Can't be shared"
+      },
+      "share": "Share",
+      "stopSharing": "Stop sharing"
+    },
+    "settings": {
+      "title": "Computer use",
+      "description": "What agents may see of your desktop once computer use is switched on above.",
+      "ttl": {
+        "label": "Stop sharing unused windows after",
+        "hint": "A shared window stops being shared when no agent has read it for this long.",
+        "minutes": "{minutes} minutes",
+        "never": "Never (until I stop it)"
+      },
+      "blocklist": {
+        "label": "Applications that can never be shared",
+        "hint": "One per line: a bundle identifier (com.example.app), an executable name (app.exe) or a full path. Added to the built-in list — password managers, the system's password prompts and System Settings — which cannot be removed.",
+        "placeholder": "com.example.app"
+      },
+      "boundary": "On macOS the Accessibility and Screen Recording permissions go to codeg-computer-helper, which serves only codeg, so an agent's shell cannot use them. On Windows and Linux any program you run can already read the screen; there these settings decide what agents are handed through codeg, not what a program on your machine could do.",
+      "save": "Save",
+      "saving": "Saving…",
+      "saved": "Computer use settings saved",
+      "saveFailed": "Failed to save computer use settings",
+      "loadFailed": "Failed to load: {detail}"
+    }
   },
   "LogsSettings": {
     "loading": "Loading…",
