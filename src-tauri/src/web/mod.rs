@@ -904,6 +904,12 @@ pub(crate) async fn do_start_web_server_tauri(
             .state::<crate::acp::browser_tools::BrowserToolsRuntimeConfig>()
             .inner()
             .clone(),
+        // Same for computer use: a switch flipped over HTTP reaches the
+        // running sessions and the desktop's computer service.
+        computer_tools_config: app
+            .state::<crate::acp::computer_tools::ComputerToolsRuntimeConfig>()
+            .inner()
+            .clone(),
         system_op_lock: crate::app_state::default_system_op_lock(),
         // Reuse the same handle the desktop `app_update` commands write to so
         // HTTP and webview readers see the identical update snapshot.

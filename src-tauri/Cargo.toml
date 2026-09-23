@@ -72,6 +72,14 @@ name = "codeg-mcp"
 path = "src/bin/codeg_mcp.rs"
 required-features = []
 
+# The computer-use executor: holds the OS permissions (macOS TCC) in place of
+# codeg, and runs the pinned cua-driver as its child. No Tauri: it is launched
+# by the desktop app and serves only it.
+[[bin]]
+name = "codeg-computer-helper"
+path = "src/bin/codeg_computer_helper.rs"
+required-features = []
+
 [build-dependencies]
 tauri-build = { version = "2", features = [], optional = true }
 
@@ -213,6 +221,10 @@ block2 = "0.6"
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSData", "NSDictionary", "NSError", "NSObject", "NSArray", "NSValue", "NSURLRequest", "NSURL", "NSEnumerator", "NSObjCRuntime", "NSGeometry", "NSRange", "NSThread", "NSDate", "NSSet", "NSProcessInfo", "NSUUID", "NSURLError"] }
 objc2-web-kit = { version = "0.3", default-features = false, features = ["std", "block2", "objc2-app-kit", "objc2-core-foundation", "WKWebView", "WKWebViewConfiguration", "WKUserContentController", "WKUserScript", "WKContentWorld", "WKScriptMessage", "WKScriptMessageHandler", "WKFrameInfo", "WKSnapshotConfiguration", "WKFindConfiguration", "WKFindResult", "WKNavigation", "WKNavigationAction", "WKNavigationDelegate", "WKNavigationResponse", "WKUIDelegate", "WKWebsiteDataStore", "WKWebsiteDataRecord"] }
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "objc2-core-foundation", "objc2-core-graphics", "NSImage", "NSImageRep", "NSBitmapImageRep", "NSGraphics", "NSGraphicsContext", "NSPasteboard", "NSResponder", "NSView", "NSWindow"] }
+# Computer use: code-signature checks (Security.framework) between codeg, the
+# helper and the driver. Both already in the lock tree via security-framework.
+core-foundation = "0.10"
+core-foundation-sys = "0.8"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows-sys = { version = "0.59", features = ["Win32_Storage_FileSystem", "Win32_Foundation", "Win32_System_Threading", "Win32_NetworkManagement_IpHelper", "Win32_Networking_WinSock", "Win32_System_DataExchange", "Win32_System_Memory", "Win32_System_Ole", "Win32_UI_Shell"] }

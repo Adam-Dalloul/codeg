@@ -1,0 +1,70 @@
+//! Computer use: letting an agent look at the native windows on the user's
+//! desktop — one window at a time, and only the ones a person shared.
+//!
+//! The shape of this module is decided by one fact about macOS: TCC charges
+//! "Accessibility" and "Screen Recording" to a process's *responsible*
+//! process, and every process in an agent's tree (the ACP adapter, the agent
+//! CLI, its shell, the scripts it runs) reports codeg as its responsible
+//! process. A grant given to codeg would therefore be given to every agent's
+//! shell, where `screencapture` and `osascript` walk straight past every gate
+//! in here. So:
+//!
+//! * **codeg never holds either grant, and never calls an API governed by
+//!   them.** Nothing in this crate that links into the main binary touches
+//!   Accessibility, event posting or screen capture. The two read-only
+//!   preflight queries in [`tcc`] are the only exception, and they exist so
+//!   codeg can notice that it *has* been granted one by mistake.
+//! * **The executor is `codeg-computer-helper`**, a separately signed binary
+//!   that codeg launches as its own responsible process and that refuses to
+//!   serve anything but a code-signature-verified codeg ([`helper`]).
+//! * **The driver (cua-driver) runs as the helper's child** without
+//!   disclaiming, so its TCC requests are charged to the helper. It lives in a
+//!   user-writable cache, so the helper checks the *running* image against
+//!   pins compiled into it before letting it start ([`driver`]).
+//!
+//! On Windows and X11 none of this is a boundary against an agent with a
+//! shell — any process of the user's can inject input and capture the screen
+//! there — and the settings copy says so. The helper still owns the driver on
+//! those platforms, because the gates below are about what the *tool surface*
+//! lets a model do, which is the same question everywhere.
+//!
+//! Module map:
+//! - `types`     — wire types shared with the companion and the frontend
+//! - `agent`     — grant rules: what may be shared, what a grant covers, how
+//!   titles are narrowed, when a grant lapses
+//! - `targets`   — codeg's table of windows it has told an agent about, with
+//!   the grant on each entry
+//! - `protocol`  — frames between codeg and the helper
+//! - `driver`    — the pinned cua-driver release and its trust anchors
+//! - `backend`   — the trait the tool surface calls, and its errors
+//! - `codesign`  — macOS code-signature checks (Security.framework)
+//! - `spawn`     — macOS `posix_spawn` with the attributes the design needs
+//! - `tcc`       — macOS read-only TCC preflight queries
+//! - `procinfo`  — process start times, so a reused pid is not the same app
+//! - `helper`    — the helper process's own logic (runs in the helper binary)
+//! - `local`     — codeg's side of the helper: launch, verify, talk
+//! - `events`    — what the frontend is told
+
+pub mod agent;
+pub mod backend;
+pub mod driver;
+pub mod helper;
+pub mod procinfo;
+pub mod protocol;
+pub mod targets;
+pub mod types;
+
+#[cfg(target_os = "macos")]
+pub mod codesign;
+#[cfg(target_os = "macos")]
+pub mod spawn;
+#[cfg(target_os = "macos")]
+pub mod tcc;
+
+// codeg's side of the helper and the events it raises exist only where there
+// is a desktop: server mode has no windows to share, answers every call with
+// `computer_unavailable`, and never launches the helper at all.
+#[cfg(feature = "tauri-runtime")]
+pub mod events;
+#[cfg(feature = "tauri-runtime")]
+pub mod local;

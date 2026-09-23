@@ -1100,6 +1100,8 @@ dependencies = [
  "bzip2",
  "chrono",
  "chrono-tz",
+ "core-foundation 0.10.1",
+ "core-foundation-sys",
  "cron",
  "dirs 6.0.0",
  "fix-path-env",

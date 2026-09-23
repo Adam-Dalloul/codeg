@@ -21,12 +21,17 @@ use crate::acp::browser_tools::{
     BrowserSnapshotOutcome, BrowserTabOutcome, BrowserTabsOutcome, BrowserToolAccess,
     ERROR_NO_SUCH_TAB,
 };
+use crate::acp::computer_tools::{
+    ComputerAppsOutcome, ComputerCaptureOutcome, ComputerSnapshotOutcome, ComputerToolAccess,
+    ComputerVerifyOutcome, ComputerWindowsOutcome, ERROR_NO_SUCH_TARGET,
+};
 use crate::acp::delegation::transport::{
     read_frame, write_frame, BrokerAskRequest, BrokerBrowserActRequest,
     BrokerBrowserCaptureRequest, BrokerBrowserConsoleRequest, BrokerBrowserEvalRequest,
     BrokerBrowserSnapshotRequest, BrokerBrowserTabOpRequest, BrokerBrowserTabsRequest,
-    BrokerCancelRequest, BrokerCancelTaskRequest,
-    BrokerCommitFeedbackRequest, BrokerFeedbackRequest, BrokerMessage, BrokerRequest,
+    BrokerCancelRequest, BrokerCancelTaskRequest, BrokerComputerAppsRequest,
+    BrokerComputerCaptureRequest, BrokerComputerSnapshotRequest, BrokerComputerVerifyRequest,
+    BrokerComputerWindowsRequest, BrokerCommitFeedbackRequest, BrokerFeedbackRequest, BrokerMessage, BrokerRequest,
     BrokerCreateAutomationRequest, BrokerCreateWorkTaskRequest, BrokerResponse,
     BrokerResumeTaskRequest, BrokerSessionRequest, BrokerStatusRequest,
     BrokerTaskCompleteRequest, BrokerTaskProgressRequest,
@@ -161,6 +166,10 @@ pub struct DelegationListener {
     /// exists only in the desktop build, because a browser tab is a native
     /// webview — server mode gets `NoBrowserTabs`.
     pub browser: Arc<dyn BrowserToolAccess>,
+    /// Lists the desktop's applications and windows and reads a shared window
+    /// (`computer_*`). Desktop-only like the browser — server mode gets
+    /// `NoComputerDesktop` — and like it, re-checks its switch at call time.
+    pub computer: Arc<dyn ComputerToolAccess>,
 }
 
 impl DelegationListener {
@@ -175,6 +184,7 @@ impl DelegationListener {
         tasks: Arc<dyn WorkTaskToolAccess>,
         authoring: Arc<dyn ChatAuthoringAccess>,
         browser: Arc<dyn BrowserToolAccess>,
+        computer: Arc<dyn ComputerToolAccess>,
     ) -> Arc<Self> {
         Arc::new(Self {
             broker,
@@ -186,6 +196,7 @@ impl DelegationListener {
             tasks,
             authoring,
             browser,
+            computer,
         })
     }
 
@@ -611,6 +622,27 @@ impl DelegationListener {
                 // (or a page navigated) with nothing on the strip to say so.
                 browser_tab_op_response(self.process_browser_tab_op(req).await)?
             }
+            BrokerMessage::ComputerApps(req) => {
+                // One driver listing behind the helper, bounded by the
+                // helper's own timeout. No peer-close race, as for the
+                // browser listing: nothing here waits on a person.
+                computer_response(&self.process_computer_apps(req).await)?
+            }
+            BrokerMessage::ComputerWindows(req) => {
+                computer_response(&self.process_computer_windows(req).await)?
+            }
+            BrokerMessage::ComputerCapture(req) => {
+                // Like the browser capture: the read runs to its own end, so
+                // the activity line it writes on the codeg side is never
+                // skipped because the caller walked away.
+                computer_capture_response(self.process_computer_capture(req).await)?
+            }
+            BrokerMessage::ComputerSnapshot(req) => {
+                computer_response(&self.process_computer_snapshot(req).await)?
+            }
+            BrokerMessage::ComputerVerify(req) => {
+                computer_response(&self.process_computer_verify(req).await)?
+            }
             BrokerMessage::Cancel(cancel) => {
                 self.process_cancel(cancel).await;
                 // Empty ack — the companion only uses this to detect the
@@ -960,6 +992,74 @@ impl DelegationListener {
         self.browser.tab_op(req.op).await
     }
 
+    /// Validate the token and list the running applications. An invalid token
+    /// hears what a runtime with no desktop hears: nothing is listed, so a
+    /// caller that cannot prove it is a companion learns nothing about what
+    /// is running.
+    async fn process_computer_apps(&self, req: BrokerComputerAppsRequest) -> ComputerAppsOutcome {
+        if self.tokens.lookup(&req.token).await.is_none() {
+            return ComputerAppsOutcome::default();
+        }
+        self.computer.list_apps().await
+    }
+
+    /// Validate the token and list the windows. Same unauthenticated answer as
+    /// the application listing.
+    async fn process_computer_windows(
+        &self,
+        req: BrokerComputerWindowsRequest,
+    ) -> ComputerWindowsOutcome {
+        if self.tokens.lookup(&req.token).await.is_none() {
+            return ComputerWindowsOutcome::default();
+        }
+        self.computer.list_windows(req.pid).await
+    }
+
+    /// An invalid token is told the window does not exist — the answer a
+    /// wrong id gets — so the refusal codes cannot be used from outside to
+    /// probe which windows exist or which are shared.
+    async fn process_computer_capture(
+        &self,
+        req: BrokerComputerCaptureRequest,
+    ) -> ComputerCaptureOutcome {
+        if self.tokens.lookup(&req.token).await.is_none() {
+            return ComputerCaptureOutcome::refused(
+                &req.target_id,
+                ERROR_NO_SUCH_TARGET,
+                crate::acp::computer_tools::no_such_target_note(&req.target_id),
+            );
+        }
+        self.computer.capture(&req.target_id, req.max_dimension).await
+    }
+
+    async fn process_computer_snapshot(
+        &self,
+        req: BrokerComputerSnapshotRequest,
+    ) -> ComputerSnapshotOutcome {
+        if self.tokens.lookup(&req.token).await.is_none() {
+            return ComputerSnapshotOutcome::refused(
+                &req.target_id,
+                ERROR_NO_SUCH_TARGET,
+                crate::acp::computer_tools::no_such_target_note(&req.target_id),
+            );
+        }
+        self.computer.snapshot(&req.target_id, req.request).await
+    }
+
+    async fn process_computer_verify(
+        &self,
+        req: BrokerComputerVerifyRequest,
+    ) -> ComputerVerifyOutcome {
+        if self.tokens.lookup(&req.token).await.is_none() {
+            return ComputerVerifyOutcome::refused(
+                &req.target_id,
+                ERROR_NO_SUCH_TARGET,
+                crate::acp::computer_tools::no_such_target_note(&req.target_id),
+            );
+        }
+        self.computer.verify(&req.target_id, req.request).await
+    }
+
     /// Validate the token and hand the progress report to the task engine,
     /// which resolves the parent connection to its owning task + generation.
     async fn process_task_progress(&self, req: BrokerTaskProgressRequest) -> TaskReportAck {
@@ -1251,6 +1351,46 @@ fn browser_capture_response(outcome: BrowserCaptureOutcome) -> std::io::Result<B
 /// the envelope around it.
 const CAPTURE_RESPONSE_MAX_BYTES: usize = super::transport::MAX_FRAME_BYTES - 64 * 1024;
 
+/// Serialize any computer-use outcome for its arm. Nothing but the capture
+/// can come near the frame cap: a snapshot's tree is cut to `maxChars` on the
+/// codeg side, and the listings and verdicts are small.
+fn computer_response(outcome: &impl serde::Serialize) -> std::io::Result<BrokerResponse> {
+    Ok(BrokerResponse {
+        outcome: serde_json::to_value(outcome).map_err(|e| {
+            std::io::Error::new(std::io::ErrorKind::InvalidData, format!("encode: {e}"))
+        })?,
+    })
+}
+
+/// Serialize a [`ComputerCaptureOutcome`], measured against the frame cap for
+/// the same reason as the browser's: a capture the companion could not read
+/// is answered with a refusal it can.
+fn computer_capture_response(outcome: ComputerCaptureOutcome) -> std::io::Result<BrokerResponse> {
+    let encode = |outcome: &ComputerCaptureOutcome| {
+        serde_json::to_vec(outcome).map_err(|e| {
+            std::io::Error::new(std::io::ErrorKind::InvalidData, format!("encode: {e}"))
+        })
+    };
+    let mut bytes = encode(&outcome)?;
+    if bytes.len() > CAPTURE_RESPONSE_MAX_BYTES {
+        let refused = ComputerCaptureOutcome::refused(
+            &outcome.target_id,
+            crate::acp::computer_tools::ERROR_READ_FAILED,
+            format!(
+                "The screenshot came out too large to deliver ({} bytes). Ask for a smaller \
+                 `maxDimension`.",
+                bytes.len()
+            ),
+        );
+        bytes = encode(&refused)?;
+    }
+    Ok(BrokerResponse {
+        outcome: serde_json::from_slice(&bytes).map_err(|e| {
+            std::io::Error::new(std::io::ErrorKind::InvalidData, format!("encode: {e}"))
+        })?,
+    })
+}
+
 /// Serialize a [`TaskReportAck`] into a [`BrokerResponse`] for the
 /// `TaskProgress` / `TaskComplete` arms — the companion renders it into the
 /// tool result.
@@ -1438,6 +1578,7 @@ mod tests {
         mock::MockSpawner, ConnectionSpawner, ResumedSpawn, SpawnerError,
     };
     use crate::acp::browser_tools::{NoBrowserTabs, ERROR_GRANT_REQUIRED};
+    use crate::acp::computer_tools::NoComputerDesktop;
     use crate::acp::delegation::types::{DelegationError, DelegationOutcome, DelegationSuccess};
     use serde_json::json;
     use std::time::Duration;
@@ -1755,6 +1896,7 @@ mod tests {
             Arc::new(StubTaskTools),
             Arc::new(StubAuthoring::default()),
             Arc::new(NoBrowserTabs),
+            Arc::new(NoComputerDesktop),
         )
     }
 
@@ -1778,6 +1920,7 @@ mod tests {
             Arc::new(StubTaskTools),
             Arc::new(StubAuthoring::default()),
             Arc::new(NoBrowserTabs),
+            Arc::new(NoComputerDesktop),
         )
     }
 
@@ -1802,6 +1945,7 @@ mod tests {
             Arc::new(StubTaskTools),
             Arc::new(StubAuthoring::default()),
             Arc::new(NoBrowserTabs),
+            Arc::new(NoComputerDesktop),
         )
     }
 
@@ -1825,6 +1969,7 @@ mod tests {
             Arc::new(StubTaskTools),
             Arc::new(StubAuthoring::default()),
             Arc::new(NoBrowserTabs),
+            Arc::new(NoComputerDesktop),
         )
     }
 
@@ -1850,6 +1995,7 @@ mod tests {
             Arc::new(StubTaskTools),
             authoring,
             Arc::new(NoBrowserTabs),
+            Arc::new(NoComputerDesktop),
         )
     }
 
@@ -1874,6 +2020,7 @@ mod tests {
             Arc::new(StubTaskTools),
             Arc::new(StubAuthoring::default()),
             browser,
+            Arc::new(NoComputerDesktop),
         )
     }
 
@@ -3549,5 +3696,185 @@ mod tests {
             path.as_os_str().len(),
             dialed.err()
         );
+    }
+
+    // ── computer use ───────────────────────────────────────────────────────
+
+    #[derive(Default)]
+    struct StubComputer {
+        calls: tokio::sync::Mutex<Vec<String>>,
+    }
+
+    #[async_trait]
+    impl ComputerToolAccess for StubComputer {
+        async fn list_apps(&self) -> ComputerAppsOutcome {
+            self.calls.lock().await.push("apps".into());
+            ComputerAppsOutcome::default()
+        }
+        async fn list_windows(&self, pid: Option<u32>) -> ComputerWindowsOutcome {
+            self.calls.lock().await.push(format!("windows {pid:?}"));
+            ComputerWindowsOutcome::default()
+        }
+        async fn capture(&self, target_id: &str, max: Option<u32>) -> ComputerCaptureOutcome {
+            self.calls
+                .lock()
+                .await
+                .push(format!("capture {target_id} {max:?}"));
+            ComputerCaptureOutcome::refused(
+                target_id,
+                crate::acp::computer_tools::ERROR_GRANT_REQUIRED,
+                crate::acp::computer_tools::grant_required_note(target_id),
+            )
+        }
+        async fn snapshot(
+            &self,
+            target_id: &str,
+            request: crate::acp::computer_tools::SnapshotRequest,
+        ) -> ComputerSnapshotOutcome {
+            self.calls
+                .lock()
+                .await
+                .push(format!("snapshot {target_id} {:?}", request.max_chars));
+            ComputerSnapshotOutcome::refused(
+                target_id,
+                crate::acp::computer_tools::ERROR_GRANT_REQUIRED,
+                "stub",
+            )
+        }
+        async fn verify(
+            &self,
+            target_id: &str,
+            request: crate::computer::types::VerifyRequest,
+        ) -> ComputerVerifyOutcome {
+            self.calls
+                .lock()
+                .await
+                .push(format!("verify {target_id} {}", request.expect.len()));
+            ComputerVerifyOutcome::refused(
+                target_id,
+                crate::acp::computer_tools::ERROR_GRANT_REQUIRED,
+                "stub",
+            )
+        }
+    }
+
+    fn make_computer_listener(
+        tokens: Arc<TokenRegistry>,
+        computer: Arc<dyn ComputerToolAccess>,
+    ) -> Arc<DelegationListener> {
+        let broker = Arc::new(DelegationBroker::new(
+            Arc::new(MockSpawner::new()) as Arc<dyn ConnectionSpawner>,
+            Arc::new(AlwaysRootLookup) as Arc<dyn ConversationDepthLookup>,
+        ));
+        DelegationListener::new(
+            broker,
+            tokens,
+            Arc::new(StaticParentLookup(Some(1))),
+            Arc::new(StubFeedback::default()),
+            Arc::new(StubQuestion::default()),
+            Arc::new(StubSessionInfo::default()),
+            Arc::new(StubTaskTools),
+            Arc::new(StubAuthoring::default()),
+            Arc::new(NoBrowserTabs),
+            computer,
+        )
+    }
+
+    /// With a valid token every computer message reaches the access impl with
+    /// its arguments intact, and a refusal comes back as a value.
+    #[tokio::test]
+    async fn computer_messages_reach_the_desktop_with_their_arguments() {
+        let computer = Arc::new(StubComputer::default());
+        let listener = make_computer_listener(browser_tokens().await, computer.clone());
+        let token = || "tok".to_string();
+
+        browser_round_trip(
+            listener.clone(),
+            BrokerMessage::ComputerApps(BrokerComputerAppsRequest { token: token() }),
+        )
+        .await;
+        browser_round_trip(
+            listener.clone(),
+            BrokerMessage::ComputerWindows(BrokerComputerWindowsRequest {
+                token: token(),
+                pid: Some(42),
+            }),
+        )
+        .await;
+        let captured = browser_round_trip(
+            listener.clone(),
+            BrokerMessage::ComputerCapture(BrokerComputerCaptureRequest {
+                token: token(),
+                target_id: "w7".into(),
+                max_dimension: Some(800),
+            }),
+        )
+        .await;
+        assert_eq!(captured.outcome["error"], "computer_grant_required");
+        assert_eq!(captured.outcome["targetId"], "w7");
+        browser_round_trip(
+            listener.clone(),
+            BrokerMessage::ComputerSnapshot(BrokerComputerSnapshotRequest {
+                token: token(),
+                target_id: "w7".into(),
+                request: crate::acp::computer_tools::SnapshotRequest {
+                    max_chars: Some(0),
+                    ..Default::default()
+                },
+            }),
+        )
+        .await;
+        browser_round_trip(
+            listener,
+            BrokerMessage::ComputerVerify(BrokerComputerVerifyRequest {
+                token: token(),
+                target_id: "w7".into(),
+                request: crate::computer::types::VerifyRequest {
+                    expect: vec![Default::default()],
+                    ..Default::default()
+                },
+            }),
+        )
+        .await;
+        assert_eq!(
+            computer.calls.lock().await.as_slice(),
+            &[
+                "apps".to_string(),
+                "windows Some(42)".to_string(),
+                "capture w7 Some(800)".to_string(),
+                "snapshot w7 Some(0)".to_string(),
+                "verify w7 1".to_string(),
+            ]
+        );
+    }
+
+    /// A caller without a valid token learns nothing: the listings are empty,
+    /// every window is "no such window", and the desktop is never asked.
+    #[tokio::test]
+    async fn an_invalid_token_learns_nothing_about_the_desktop() {
+        let computer = Arc::new(StubComputer::default());
+        let listener = make_computer_listener(browser_tokens().await, computer.clone());
+
+        let apps = browser_round_trip(
+            listener.clone(),
+            BrokerMessage::ComputerApps(BrokerComputerAppsRequest {
+                token: "forged".into(),
+            }),
+        )
+        .await;
+        assert_eq!(apps.outcome["apps"], serde_json::json!([]));
+        assert!(apps.outcome.get("error").is_none());
+
+        let read = browser_round_trip(
+            listener,
+            BrokerMessage::ComputerCapture(BrokerComputerCaptureRequest {
+                token: "forged".into(),
+                target_id: "w1".into(),
+                max_dimension: None,
+            }),
+        )
+        .await;
+        assert_eq!(read.outcome["error"], "computer_no_such_target");
+        assert!(computer.calls.lock().await.is_empty());
     }
 }

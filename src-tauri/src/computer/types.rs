@@ -1,0 +1,316 @@
+//! Wire types for computer use: what an agent is told about the desktop, and
+//! what it gets back from a read.
+//!
+//! camelCase on the wire, like everything the browser tools send, so `targetId`
+//! means the same thing in a listing, in a refusal and in the frontend's
+//! mirror of these types (`src/lib/computer/types.ts`).
+//!
+//! Compiled in both runtimes: the codeg-mcp plumbing that carries these is
+//! shared code, and server mode has to be able to say "no desktop here" in the
+//! same shapes.
+
+use serde::{Deserialize, Serialize};
+
+pub use crate::browser::agent::GrantLevel;
+
+/// A rectangle in the platform's desktop coordinate space: points on macOS,
+/// physical pixels on Windows, X11 pixels on Linux — whatever the platform
+/// reports window bounds in. Never mixed with screenshot pixels: a capture
+/// carries its own `width` / `height` and the window bounds it was taken of,
+/// so the two spaces stay separate values rather than one number read two
+/// ways.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+pub struct Rect {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+}
+
+impl Rect {
+    /// Whether this rectangle has an area. A window the platform reports at
+    /// zero size is not one a person could have meant to share, and has
+    /// nothing a capture could show.
+    pub fn is_empty(&self) -> bool {
+        !(self.width > 0.0 && self.height > 0.0)
+    }
+}
+
+/// The application a window belongs to, as an agent may name it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentAppRef {
+    /// The stable name of the application: its bundle identifier on macOS,
+    /// its executable path elsewhere. What a blocklist entry matches.
+    pub key: String,
+    /// What the application calls itself, for a person to recognise.
+    pub name: String,
+    pub pid: u32,
+}
+
+/// One running application, as `computer_list_apps` reports it.
+///
+/// Not behind a grant: which applications are running is what is on the
+/// desktop, not what any of them shows. The group switch is what decides
+/// whether an agent may ask at all.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentAppSummary {
+    #[serde(flatten)]
+    pub app: AgentAppRef,
+    /// Whether it is the frontmost application.
+    pub active: bool,
+    /// Why none of its windows can be shared, when that is so — codeg itself,
+    /// or an application on the blocklist.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}
+
+/// One native window, as `computer_list_windows` reports it.
+///
+/// A listing exists so an agent can *name* a window — to read it, or to ask
+/// the user to share it — which is why it is not itself behind a grant. What
+/// it carries is bounded by that purpose.
+///
+/// The title is the exception, for the same reason the browser withholds a
+/// tab's: it is chosen by the application and is the first line of its
+/// content. A mail client's window called "Re: termination letter" hands over
+/// exactly what the grant exists to withhold. So it appears only once the
+/// window is readable, when the agent could have read the whole window anyway
+/// and is merely saved a round trip.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentWindowSummary {
+    /// codeg's own name for this window. Stable for as long as the window and
+    /// the process that owns it are the same ones; a new process — even the
+    /// same application relaunched — gets a new id.
+    pub target_id: String,
+    pub app: AgentAppRef,
+    pub bounds: Rect,
+    pub on_screen: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub minimized: Option<bool>,
+    pub level: GrantLevel,
+    /// Present only from [`GrantLevel::Read`] upwards.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// Why this window cannot be shared, when that is so.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}
+
+/// A screenshot of one shared window.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WindowCapture {
+    pub target_id: String,
+    /// Names this capture: `<grant epoch>.<read number>`. Coordinates read
+    /// off this image mean something only in this image's pixel space, and
+    /// the actions that arrive later will carry the generation of the image
+    /// their coordinates came from.
+    pub generation: String,
+    /// `image/png`.
+    pub mime: String,
+    /// The image, base64.
+    pub data: String,
+    /// The image's size in pixels — the space coordinates read off it are in.
+    pub width: u32,
+    pub height: u32,
+    /// Where the window was when it was captured, in desktop coordinates.
+    pub window_bounds: Rect,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+}
+
+/// An accessibility snapshot of one shared window.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WindowSnapshot {
+    pub target_id: String,
+    /// See [`WindowCapture::generation`].
+    pub generation: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub window_bounds: Option<Rect>,
+    /// The tree, as indented text, one element per line.
+    pub tree: String,
+    /// How many actionable elements the driver found, before any cut.
+    pub element_count: u64,
+    /// The tree was cut short, by `maxChars` or by the driver's own bounds.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub truncated: bool,
+    /// Why the tree is empty or partial when the window is not (a canvas, a
+    /// window whose accessibility surface the driver could not resolve), in
+    /// the driver's words.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub degraded: Option<String>,
+}
+
+/// One predicate `computer_verify` checks against a shared window. The
+/// driver ANDs them.
+///
+/// A closed set: every field the agent may send is named here, and the
+/// request is rebuilt from these types before it reaches the driver, so
+/// nothing the agent writes is forwarded as-is.
+///
+/// There is deliberately no "value equals" predicate yet. A yes / no answer
+/// about a field's value is a way to read that value one guess at a time, and
+/// the fields worth guessing at are the secure ones the snapshot refuses to
+/// show; the check that makes it safe (refusing selectors that can match a
+/// secure field) comes with the action tools.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct VerifyPredicate {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window: Option<WindowPredicate>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub element: Option<ElementPredicate>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WindowPredicate {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exists: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bounds: Option<BoundsPredicate>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BoundsPredicate {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tolerance_px: Option<f64>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ElementPredicate {
+    pub selector: ElementSelector,
+    /// Only `true`: absence cannot be proven on every platform, and the
+    /// driver refuses `false` rather than answer "unknown" forever.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exists: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selected: Option<bool>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ElementSelector {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label_contains: Option<String>,
+}
+
+/// The largest number of predicates one `computer_verify` may carry — the
+/// driver's own bound, checked here so the agent is told in our words.
+pub const MAX_VERIFY_PREDICATES: usize = 8;
+
+/// What `computer_verify` asks for.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VerifyRequest {
+    pub expect: Vec<VerifyPredicate>,
+    /// How long to keep sampling, in milliseconds. Zero samples once.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_ms: Option<u32>,
+    /// How many consecutive satisfied samples count as success.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stable_samples: Option<u32>,
+}
+
+/// A predicate's answer, or the whole check's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VerifyStatus {
+    Satisfied,
+    Unsatisfied,
+    /// Could not be decided. Never a success: an agent that reads "unknown"
+    /// as "probably fine" is exactly the failure this tool exists to prevent.
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PredicateResult {
+    pub index: u32,
+    pub status: VerifyStatus,
+    /// Why a predicate is `unknown`, in the driver's vocabulary
+    /// (`target_missing`, `stability_unproven`, …).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unknown_reason: Option<String>,
+}
+
+/// What `computer_verify` answers.
+///
+/// Carries no observed values, only verdicts: the point of the tool is to
+/// answer "is it so yet" without handing back what is on the screen.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VerifyOutcome {
+    pub target_id: String,
+    pub status: VerifyStatus,
+    pub stable: bool,
+    pub samples: u64,
+    pub elapsed_ms: u64,
+    pub predicates: Vec<PredicateResult>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The predicate types are the whitelist: a field the agent invents is a
+    /// parse error, not something that rides along to the driver.
+    #[test]
+    fn a_predicate_with_a_field_nobody_named_does_not_parse() {
+        let known: VerifyPredicate = serde_json::from_value(serde_json::json!({
+            "element": { "selector": { "role": "AXButton", "labelContains": "Save" },
+                         "exists": true }
+        }))
+        .expect("a named shape parses");
+        assert_eq!(
+            known.element.unwrap().selector.label_contains.as_deref(),
+            Some("Save")
+        );
+
+        for invented in [
+            serde_json::json!({ "element": { "selector": {}, "valueEquals": "hunter2" } }),
+            serde_json::json!({ "desktop": { "exists": true } }),
+            serde_json::json!({ "element": { "selector": { "xpath": "//*" } } }),
+        ] {
+            assert!(
+                serde_json::from_value::<VerifyPredicate>(invented.clone()).is_err(),
+                "{invented}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_zero_sized_rectangle_is_empty() {
+        assert!(Rect::default().is_empty());
+        assert!(Rect {
+            x: 10.0,
+            y: 10.0,
+            width: 0.0,
+            height: 30.0
+        }
+        .is_empty());
+        assert!(!Rect {
+            x: -5.0,
+            y: 0.0,
+            width: 1.0,
+            height: 1.0
+        }
+        .is_empty());
+    }
+}

@@ -268,6 +268,7 @@ async fn async_main() -> ExitCode {
         session_info_config,
         chat_authoring_config,
         browser_tools_config,
+        computer_tools_config,
     ) = codeg_lib::app_state::build_delegation_stack(
         &connection_manager,
         db.conn.clone(),
@@ -295,6 +296,7 @@ async fn async_main() -> ExitCode {
         session_info_config: session_info_config.clone(),
         chat_authoring_config: chat_authoring_config.clone(),
         browser_tools_config: browser_tools_config.clone(),
+        computer_tools_config: computer_tools_config.clone(),
         system_op_lock: codeg_lib::app_state::default_system_op_lock(),
         update_state: codeg_lib::app_state::default_update_state(),
     });
@@ -349,6 +351,13 @@ async fn async_main() -> ExitCode {
         &state.browser_tools_config,
     )
     .await;
+    // And the computer-use switches, for the same reason: server mode has no
+    // screen and never advertises the group, but the popover reports it.
+    codeg_lib::commands::computer_tools::apply_persisted_computer_tools_config(
+        &state.db.conn,
+        &state.computer_tools_config,
+    )
+    .await;
     // Before accepting connections: keep ACP model terminal fallbacks aligned
     // with the same default-shell preference the built-in terminal uses, and
     // seed the command-color opt-in that every launch env is built from.
@@ -392,6 +401,9 @@ async fn async_main() -> ExitCode {
             // "browser tab" is an iframe their own browser renders, which
             // nothing here can reach.
             Arc::new(codeg_lib::acp::browser_tools::NoBrowserTabs),
+            // No screen either: computer use needs a desktop session this
+            // process does not have.
+            Arc::new(codeg_lib::acp::computer_tools::NoComputerDesktop),
         );
         // Bind through the service handle rather than a bare `listener.run`
         // spawn: it keeps the bind error and the accept-loop handle around, so

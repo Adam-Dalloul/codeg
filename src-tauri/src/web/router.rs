@@ -114,6 +114,22 @@ pub fn build_router(
             post(handlers::browser_tools::set_browser_tools_settings),
         )
         .route(
+            "/get_computer_tools_settings",
+            post(handlers::computer_tools::get_computer_tools_settings),
+        )
+        .route(
+            "/set_computer_tools_settings",
+            post(handlers::computer_tools::set_computer_tools_settings),
+        )
+        .route(
+            "/set_computer_tools_enabled",
+            post(handlers::computer_tools::set_computer_tools_enabled),
+        )
+        .route(
+            "/set_computer_tools_preferences",
+            post(handlers::computer_tools::set_computer_tools_preferences),
+        )
+        .route(
             "/get_chat_authoring_settings",
             post(handlers::chat_authoring::get_chat_authoring_settings),
         )

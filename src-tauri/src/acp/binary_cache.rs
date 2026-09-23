@@ -796,6 +796,44 @@ pub async fn ensure_binary_for_agent_with_progress(
     .await
 }
 
+/// Download (or find in the cache) a pinned binary that is not an agent — the
+/// computer-use driver today. Same cache root, layout and archive check as an
+/// agent's binary, under `tool_id` instead of an agent's registry id.
+///
+/// `tool_id` must not be a registry id: the dir-tree lookup is keyed on the
+/// directory name, so a tool named like an agent would inherit that agent's
+/// install layout.
+pub(crate) async fn ensure_tool_binary_with_progress(
+    tool_id: &str,
+    version: &str,
+    archive_url: &str,
+    cmd_name: &str,
+    expected_sha256: Option<&str>,
+    on_progress: impl Fn(&str),
+) -> Result<PathBuf, AcpError> {
+    debug_assert!(registry::from_registry_id(tool_id).is_none());
+    ensure_binary_with_progress(
+        tool_id,
+        version,
+        archive_url,
+        cmd_name,
+        expected_sha256,
+        on_progress,
+    )
+    .await
+}
+
+/// Remove a tool's cached binaries (every version), from both cache roots —
+/// the tool counterpart of [`clear_agent_cache`].
+pub(crate) fn clear_tool_cache(tool_id: &str) -> Result<(), AcpError> {
+    let legacy = match legacy_cache_dir() {
+        Some(legacy) => clear_agent_dir_in(&legacy, tool_id),
+        None => Ok(()),
+    };
+    let current = clear_agent_dir_in(&cache_dir()?, tool_id);
+    legacy.and(current)
+}
+
 /// Hex SHA-256 of a file, streamed so a large archive never lands in memory.
 fn file_sha256(path: &std::path::Path) -> Result<String, AcpError> {
     use sha2::{Digest, Sha256};
