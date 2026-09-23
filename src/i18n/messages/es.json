@@ -5196,7 +5196,8 @@
       "minimized": "minimizada",
       "notGrantable": {
         "codeg": "Ventana de codeg",
-        "blocklisted": "No se puede compartir"
+        "blocklisted": "No se puede compartir",
+        "unidentified": "No se puede identificar la app"
       },
       "share": "Compartir",
       "stopSharing": "Dejar de compartir"

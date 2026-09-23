@@ -5196,7 +5196,8 @@
       "minimized": "réduite",
       "notGrantable": {
         "codeg": "Fenêtre de codeg",
-        "blocklisted": "Partage impossible"
+        "blocklisted": "Partage impossible",
+        "unidentified": "Application non identifiable"
       },
       "share": "Partager",
       "stopSharing": "Arrêter le partage"

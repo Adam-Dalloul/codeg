@@ -6,9 +6,11 @@ vi.mock("@/lib/platform", () => ({
 vi.mock("./computer-api", () => ({ computerAvailable: () => false }))
 
 import {
+  computerStoreMark,
   recordComputerActivity,
   resetComputerStoreForTest,
   setComputerShared,
+  setComputerSharedSince,
   useComputerStore,
 } from "./computer-store"
 import { renderHook } from "@testing-library/react"
@@ -86,5 +88,26 @@ describe("computer store", () => {
       },
     ])
     expect(state().shared.map((w) => w.targetId)).toEqual(["w1"])
+  })
+
+  /** A fetched list is only as new as the moment the fetch began: an event
+   * that landed since is newer, and wins. */
+  it("drops a fetched list an event has overtaken", () => {
+    const window = (targetId: string) => ({
+      targetId,
+      appName: "TextEdit",
+      appKey: "com.apple.TextEdit",
+      title: "",
+      level: "read" as const,
+      grantedAt: 1,
+      lastUsedAt: 1,
+    })
+    const mark = computerStoreMark()
+    setComputerShared([window("w2")])
+    setComputerSharedSince([], mark)
+    expect(state().shared.map((w) => w.targetId)).toEqual(["w2"])
+
+    setComputerSharedSince([window("w3")], computerStoreMark())
+    expect(state().shared.map((w) => w.targetId)).toEqual(["w3"])
   })
 })

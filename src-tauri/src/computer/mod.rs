@@ -19,8 +19,10 @@
 //!   serve anything but a code-signature-verified codeg ([`helper`]).
 //! * **The driver (cua-driver) runs as the helper's child** without
 //!   disclaiming, so its TCC requests are charged to the helper. It lives in a
-//!   user-writable cache, so the helper checks the *running* image against
-//!   pins compiled into it before letting it start ([`driver`]).
+//!   user-writable cache, so the helper launches it under a launch requirement
+//!   built from pins compiled into it — the kernel will not run any other
+//!   image at that path — and checks the running image again before letting
+//!   it start ([`driver`], [`launch_req`]).
 //!
 //! On Windows and X11 none of this is a boundary against an agent with a
 //! shell — any process of the user's can inject input and capture the screen
@@ -38,6 +40,8 @@
 //! - `driver`    — the pinned cua-driver release and its trust anchors
 //! - `backend`   — the trait the tool surface calls, and its errors
 //! - `codesign`  — macOS code-signature checks (Security.framework)
+//! - `launch_req` — macOS launch requirements: the kernel's check of what a
+//!   spawn may run
 //! - `spawn`     — macOS `posix_spawn` with the attributes the design needs
 //! - `tcc`       — macOS read-only TCC preflight queries
 //! - `procinfo`  — process start times, so a reused pid is not the same app
@@ -56,6 +60,8 @@ pub mod types;
 
 #[cfg(target_os = "macos")]
 pub mod codesign;
+#[cfg(target_os = "macos")]
+pub mod launch_req;
 #[cfg(target_os = "macos")]
 pub mod spawn;
 #[cfg(target_os = "macos")]

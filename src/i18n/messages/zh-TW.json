@@ -5196,7 +5196,8 @@
       "minimized": "已最小化",
       "notGrantable": {
         "codeg": "codeg 自己的視窗",
-        "blocklisted": "不可分享"
+        "blocklisted": "不可分享",
+        "unidentified": "無法識別所屬應用程式"
       },
       "share": "分享",
       "stopSharing": "停止分享"

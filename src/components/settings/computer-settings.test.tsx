@@ -42,17 +42,18 @@ beforeEach(() => {
     grantTtlMinutes: 30,
     blocklist: ["com.example.vault"],
   })
-  mockSet.mockImplementation(async (ttl, blocklist) => ({
+  mockSet.mockImplementation(async (prefs) => ({
     enabled: true,
-    grantTtlMinutes: ttl,
-    blocklist,
+    grantTtlMinutes: prefs.grantTtlMinutes ?? 30,
+    blocklist: prefs.blocklist ?? ["com.example.vault"],
   }))
 })
 
 describe("ComputerSettingsSection", () => {
-  /** Only the timeout and the blocklist are written — never the switch —
-   * and the blocklist goes out as trimmed, non-empty entries. */
-  it("saves the blocklist as entries, through the preferences writer", async () => {
+  /** Only what changed is written — never the switch, and not the timeout
+   * when only the blocklist moved — and the blocklist goes out as trimmed,
+   * non-empty entries. */
+  it("saves only the changed field, through the preferences writer", async () => {
     mount()
     const box = await screen.findByLabelText(
       "Applications that can never be shared"
@@ -62,12 +63,86 @@ describe("ComputerSettingsSection", () => {
       target: { value: "com.example.vault\n\n  keepass.exe  \n" },
     })
     fireEvent.click(screen.getByRole("button", { name: "Save" }))
-    await waitFor(() =>
-      expect(mockSet).toHaveBeenCalledWith(30, [
-        "com.example.vault",
-        "keepass.exe",
-      ])
+    await waitFor(() => expect(mockSet).toHaveBeenCalledTimes(1))
+    expect(mockSet.mock.calls[0][0]).toEqual({
+      grantTtlMinutes: undefined,
+      blocklist: ["com.example.vault", "keepass.exe"],
+    })
+  })
+
+  /** Another window's save moves the fields this form has not touched and
+   * leaves the one it has; saving then writes only that one. */
+  it("merges a save made elsewhere into the fields it did not touch", async () => {
+    mount()
+    const box = await screen.findByLabelText(
+      "Applications that can never be shared"
     )
+    await waitFor(() => expect(box).toHaveValue("com.example.vault"))
+    await waitFor(() =>
+      expect(handlers.get("computer-tools-settings://changed")).toBeDefined()
+    )
+    fireEvent.change(box, { target: { value: "com.example.mine" } })
+    act(() => {
+      handlers.get("computer-tools-settings://changed")!({
+        enabled: true,
+        grantTtlMinutes: 60,
+        blocklist: ["com.example.vault", "org.example.theirs"],
+      })
+    })
+    expect(box).toHaveValue("com.example.mine")
+    fireEvent.click(screen.getByRole("button", { name: "Save" }))
+    await waitFor(() => expect(mockSet).toHaveBeenCalledTimes(1))
+    expect(mockSet.mock.calls[0][0]).toEqual({
+      grantTtlMinutes: undefined,
+      blocklist: ["com.example.mine"],
+    })
+  })
+
+  /** A form that could not read the stored values shows no defaults to save
+   * over them: it stays locked until a read succeeds. */
+  it("stays locked after a failed read until one succeeds", async () => {
+    mockGet.mockRejectedValueOnce(new Error("offline"))
+    mount()
+    const box = await screen.findByLabelText(
+      "Applications that can never be shared"
+    )
+    await screen.findByText(/offline/)
+    expect(box).toBeDisabled()
+    expect(screen.getByRole("button", { name: "Save" })).toBeDisabled()
+    fireEvent.click(screen.getByRole("button", { name: "Refresh" }))
+    await waitFor(() => expect(box).toHaveValue("com.example.vault"))
+    expect(box).not.toBeDisabled()
+  })
+
+  /** Nothing can be edited while a save is on its way: its answer replaces
+   * the fields. */
+  it("locks the fields while saving", async () => {
+    let finish: (
+      v: Awaited<ReturnType<typeof setComputerToolsPreferences>>
+    ) => void = () => {}
+    mockSet.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve
+        })
+    )
+    mount()
+    const box = await screen.findByLabelText(
+      "Applications that can never be shared"
+    )
+    await waitFor(() => expect(box).toHaveValue("com.example.vault"))
+    fireEvent.change(box, { target: { value: "com.example.new" } })
+    fireEvent.click(screen.getByRole("button", { name: "Save" }))
+    await waitFor(() => expect(box).toBeDisabled())
+    await act(async () => {
+      finish({
+        enabled: true,
+        grantTtlMinutes: 30,
+        blocklist: ["com.example.new"],
+      })
+    })
+    await waitFor(() => expect(box).not.toBeDisabled())
+    expect(box).toHaveValue("com.example.new")
   })
 
   it("has nothing to save until something changes", async () => {

@@ -5196,7 +5196,8 @@
       "minimized": "مصغّرة",
       "notGrantable": {
         "codeg": "نافذة codeg نفسه",
-        "blocklisted": "لا يمكن مشاركتها"
+        "blocklisted": "لا يمكن مشاركتها",
+        "unidentified": "تعذّر تحديد التطبيق"
       },
       "share": "مشاركة",
       "stopSharing": "إيقاف المشاركة"

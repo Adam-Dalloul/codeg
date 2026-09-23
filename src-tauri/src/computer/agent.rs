@@ -60,15 +60,29 @@ impl ComputerGrant {
     /// week". The clock runs from the last read, not from the grant, so a
     /// window an agent is actively using stays shared. `None` is the person's
     /// own choice of "until I take it back".
+    ///
+    /// Measured on the wall clock, which is what keeps counting while the
+    /// machine sleeps (a monotonic clock here stops, and a grant would outlive
+    /// a night asleep). A clock that has gone back by more than
+    /// [`MAX_CLOCK_SKEW_MS`] since the last read ends the grant: how long it
+    /// has been idle can no longer be told, and the answer that is safe is
+    /// "too long".
     pub fn lapsed(&self, now: i64, ttl: Option<Duration>) -> bool {
         let Some(ttl) = ttl else {
             return false;
         };
         let idle_since = self.granted_at.max(self.last_used_at);
+        if idle_since.saturating_sub(now) > MAX_CLOCK_SKEW_MS {
+            return true;
+        }
         let ttl_ms = i64::try_from(ttl.as_millis()).unwrap_or(i64::MAX);
         now.saturating_sub(idle_since) >= ttl_ms
     }
 }
+
+/// How far the wall clock may step back under a grant (a time sync, say)
+/// before the grant is ended rather than trusted to still be fresh.
+pub const MAX_CLOCK_SKEW_MS: i64 = 60_000;
 
 /// The level a window is at, reading the absence of a grant as `None`.
 pub fn level_of(grant: Option<&ComputerGrant>) -> GrantLevel {
@@ -102,6 +116,11 @@ pub enum NotGrantable {
     /// settings, or one the user added. The user may add to the list; an agent
     /// cannot take anything off it.
     Blocklisted,
+    /// codeg cannot tell which application this is, or which run of it: the
+    /// platform gave no start time for its process (so a later process under
+    /// the same pid could not be told apart), or nothing a blocklist could
+    /// match (no bundle identifier, no path).
+    Unidentified,
 }
 
 impl NotGrantable {
@@ -116,6 +135,10 @@ impl NotGrantable {
             NotGrantable::Blocklisted => {
                 "on the computer-use blocklist (credential managers, system settings and any \
                  application the user added): it can never be shared with an agent."
+            }
+            NotGrantable::Unidentified => {
+                "codeg cannot tell which application owns this window, so it cannot be shared \
+                 with an agent."
             }
         }
     }
@@ -296,6 +319,12 @@ pub fn grantable(
     if blocklist.matches(app) {
         return Err(NotGrantable::Blocklisted);
     }
+    // A grant is bound to (pid, start time, window): without the start time
+    // it would pass to whatever the system hands that pid next, and without a
+    // key the blocklist above could not have matched it.
+    if app.started_at.is_none() || app.key().is_none() {
+        return Err(NotGrantable::Unidentified);
+    }
     Ok(())
 }
 
@@ -384,7 +413,7 @@ mod tests {
             bundle_id: bundle.map(str::to_string),
             path: path.map(str::to_string),
             active: false,
-            started_at: None,
+            started_at: Some(1),
         }
     }
 
@@ -449,7 +478,30 @@ mod tests {
             Ok(())
         );
         // An empty user entry is not a wildcard.
-        assert_eq!(grantable(&app(1, None, None), &me, &list), Ok(()));
+        assert!(!list.matches(&app(1, None, None)));
+    }
+
+    /// A window whose process has no start time, or whose application has no
+    /// name a blocklist could match, cannot be shared: the grant could not be
+    /// held to it.
+    #[test]
+    fn an_application_codeg_cannot_identify_is_not_grantable() {
+        let me = SelfIdentity::default();
+        let list = Blocklist::new(&[]);
+        let mut no_start = app(1, Some("com.apple.TextEdit"), None);
+        no_start.started_at = None;
+        assert_eq!(
+            grantable(&no_start, &me, &list),
+            Err(NotGrantable::Unidentified)
+        );
+        assert_eq!(
+            grantable(&app(1, None, None), &me, &list),
+            Err(NotGrantable::Unidentified)
+        );
+        assert_eq!(
+            grantable(&app(1, None, Some("/Applications/TextEdit.app")), &me, &list),
+            Ok(())
+        );
     }
 
     /// A title shows from Read up, and never as an empty string.
@@ -478,6 +530,18 @@ mod tests {
         assert!(!grant.lapsed(1_000 + 60_000, ttl));
         assert!(grant.lapsed(50_000 + 60_000, ttl));
         assert!(!grant.lapsed(i64::MAX, None));
+    }
+
+    /// A clock that steps back a little does not end a grant; one that steps
+    /// back far does, rather than stretching the timeout by the jump.
+    #[test]
+    fn a_clock_that_went_back_far_ends_the_grant() {
+        let ttl = Some(Duration::from_secs(30 * 60));
+        let grant = ComputerGrant::new(GrantLevel::Read, 10_000_000);
+        assert!(!grant.lapsed(10_000_000 - 1_000, ttl));
+        assert!(grant.lapsed(10_000_000 - MAX_CLOCK_SKEW_MS - 1, ttl));
+        // "Until I take it back" is not a clock question.
+        assert!(!grant.lapsed(0, None));
     }
 
     #[test]

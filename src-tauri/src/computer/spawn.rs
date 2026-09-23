@@ -8,11 +8,15 @@
 //!   libSystem but absent from the public headers, so it is looked up at run
 //!   time; where it is missing, launching the helper fails rather than
 //!   quietly charging its permissions to codeg.
-//! * **Start suspended** (`POSIX_SPAWN_START_SUSPENDED`) lets the helper check
-//!   the image the kernel has just mapped before a single instruction of it
-//!   runs, and kill it instead of resuming it if it is not the pinned driver.
-//!   Checking the file and then `exec`ing it leaves the gap in which the file
-//!   is swapped.
+//! * **A launch requirement** (see [`super::launch_req`]) has the kernel
+//!   refuse any image that is not the one named, at `exec`, before it runs.
+//!   This is what holds a spawn from a user-writable path to the pinned build:
+//!   the file can be swapped after it was checked, but not past this.
+//! * **Start suspended** (`POSIX_SPAWN_START_SUSPENDED`) lets the helper look
+//!   at the image the kernel has just mapped before resuming it, and kill it
+//!   instead. It is a second look, not a gate: a child started suspended is
+//!   stopped by a signal, and any process of the same user may send the
+//!   `SIGCONT` that starts it.
 //!
 //! Every spawn also sets `POSIX_SPAWN_CLOEXEC_DEFAULT`: the child gets exactly
 //! the three descriptors named here and nothing else this process has open.
@@ -42,6 +46,9 @@ pub struct SpawnSpec<'a> {
     pub stdio: [ChildFd; 3],
     pub disclaim: bool,
     pub suspended: bool,
+    /// An encoded launch requirement the image must satisfy, or the kernel
+    /// kills the child at `exec`.
+    pub launch_requirement: Option<&'a [u8]>,
 }
 
 type DisclaimFn = unsafe extern "C" fn(*mut libc::posix_spawnattr_t, c_int) -> c_int;
@@ -111,6 +118,9 @@ pub fn spawn(spec: &SpawnSpec<'_>) -> std::io::Result<Child> {
                 &mut attr,
                 flags as libc::c_short,
             ))?;
+            if let Some(requirement) = spec.launch_requirement {
+                super::launch_req::apply(&mut attr, requirement)?;
+            }
             if spec.disclaim {
                 let disclaim = disclaim_fn().ok_or_else(|| {
                     std::io::Error::other(
@@ -164,7 +174,7 @@ pub fn spawn(spec: &SpawnSpec<'_>) -> std::io::Result<Child> {
         libc::posix_spawnattr_destroy(&mut attr);
     }
     let pid = result?;
-    Ok(Child::new(pid as u32))
+    Child::new(pid as u32)
 }
 
 /// `posix_spawn` and friends return the error number instead of setting
@@ -179,9 +189,9 @@ fn check(rc: c_int) -> std::io::Result<()> {
 
 #[derive(Debug, Default)]
 struct ChildState {
-    /// Set, under this lock, before the child is reaped. Until the reap, the
-    /// kernel keeps the pid reserved (a zombie), so a signal sent while this
-    /// is `false` can only ever reach this child.
+    /// Set in the same critical section as the reap. Until the reap, the
+    /// kernel keeps the pid reserved (a zombie), so a signal sent under this
+    /// lock while this is `false` can only ever reach this child.
     reaped: bool,
     exit_status: Option<i32>,
 }
@@ -189,13 +199,15 @@ struct ChildState {
 /// A spawned child. Signals are sent only while the child is known to be
 /// unreaped; exit is observed by a waiter thread that first waits for the exit
 /// *without* reaping (a kqueue `NOTE_EXIT`, which fires when the child becomes
-/// a zombie), then marks the child reaped under the lock, and only then
-/// collects it — so there is no moment at which this handle still believes in
-/// a pid the kernel has already handed to someone else.
+/// a zombie), then collects it under the lock with a `waitpid` that does not
+/// block — so there is no moment at which this handle still believes in a pid
+/// the kernel has already handed to someone else, and the lock is never held
+/// while the child runs.
 ///
-/// The lock is never held while waiting. A blocking `waitpid` under it would
-/// wedge every signal behind a child that is not going to exit on its own —
-/// a suspended one, for instance, which is the child this type exists for.
+/// The watch is set up before the handle exists. A child whose exit could not
+/// be watched is killed and collected on the spot rather than handed out: a
+/// handle that cannot see its child exit could neither signal it safely nor
+/// know when to stop.
 #[derive(Debug, Clone)]
 pub struct Child {
     pid: u32,
@@ -203,84 +215,150 @@ pub struct Child {
     exited: tokio::sync::watch::Receiver<bool>,
 }
 
-/// Block until `pid` (our child) has exited, without reaping it.
-fn wait_for_exit(pid: libc::pid_t) {
-    // SAFETY: plain kqueue calls on a descriptor this function owns and
-    // closes; `change` / `event` are valid for the calls that read and write
-    // them.
-    unsafe {
-        let kq = libc::kqueue();
-        if kq < 0 {
+/// A kqueue registered for one child's `NOTE_EXIT`.
+struct ExitWatch {
+    kq: c_int,
+    /// The registration found the child already gone (`ESRCH`): it is a
+    /// zombie, there is nothing to wait for.
+    exited: bool,
+}
+
+impl ExitWatch {
+    fn register(pid: libc::pid_t) -> std::io::Result<Self> {
+        // SAFETY: plain kqueue calls on a descriptor this value owns (closed
+        // on drop); `change` is valid for the call that reads it.
+        unsafe {
+            let kq = libc::kqueue();
+            if kq < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            let watch = Self { kq, exited: false };
+            let change = libc::kevent {
+                ident: pid as libc::uintptr_t,
+                filter: libc::EVFILT_PROC,
+                flags: libc::EV_ADD | libc::EV_ONESHOT,
+                fflags: libc::NOTE_EXIT,
+                data: 0,
+                udata: std::ptr::null_mut(),
+            };
+            if libc::kevent(kq, &change, 1, std::ptr::null_mut(), 0, std::ptr::null()) == 0 {
+                return Ok(watch);
+            }
+            let err = std::io::Error::last_os_error();
+            if err.raw_os_error() == Some(libc::ESRCH) {
+                return Ok(Self {
+                    exited: true,
+                    ..watch
+                });
+            }
+            Err(err)
+        }
+    }
+
+    /// Block until the child has exited, or the queue fails — after which the
+    /// caller polls instead.
+    fn wait(&self) {
+        if self.exited {
             return;
         }
-        let change = libc::kevent {
-            ident: pid as libc::uintptr_t,
-            filter: libc::EVFILT_PROC,
-            flags: libc::EV_ADD | libc::EV_ONESHOT,
-            fflags: libc::NOTE_EXIT,
-            data: 0,
-            udata: std::ptr::null_mut(),
-        };
-        // Registering on a child that has already exited fails with ESRCH;
-        // then it is a zombie already and there is nothing to wait for.
-        if libc::kevent(kq, &change, 1, std::ptr::null_mut(), 0, std::ptr::null()) == 0 {
+        // SAFETY: `event` is a valid out-parameter for the call.
+        unsafe {
             let mut event: libc::kevent = std::mem::zeroed();
             loop {
-                let n = libc::kevent(kq, std::ptr::null(), 0, &mut event, 1, std::ptr::null());
+                let n = libc::kevent(self.kq, std::ptr::null(), 0, &mut event, 1, std::ptr::null());
                 if n > 0 {
-                    break;
+                    return;
                 }
                 if n < 0
                     && std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted
                 {
-                    break;
+                    return;
                 }
             }
         }
-        libc::close(kq);
     }
 }
 
+impl Drop for ExitWatch {
+    fn drop(&mut self) {
+        // SAFETY: closing the descriptor this value owns, once.
+        unsafe { libc::close(self.kq) };
+    }
+}
+
+/// Kill and collect a child no handle will be given for. Blocking is fine: a
+/// `SIGKILL` ends even a stopped child.
+fn discard(pid: libc::pid_t) {
+    let mut status: c_int = 0;
+    // SAFETY: our own unreaped child; nothing else holds its pid.
+    unsafe {
+        libc::kill(pid, libc::SIGKILL);
+        libc::waitpid(pid, &mut status, 0);
+    }
+}
+
+/// How often the waiter looks again when the exit it was told of has not
+/// happened yet (a failed queue, or a spurious wakeup).
+const REAP_POLL: std::time::Duration = std::time::Duration::from_millis(50);
+
 impl Child {
-    fn new(pid: u32) -> Self {
+    fn new(pid: u32) -> std::io::Result<Self> {
+        let raw = pid as libc::pid_t;
+        let watch = match ExitWatch::register(raw) {
+            Ok(watch) => watch,
+            Err(e) => {
+                discard(raw);
+                return Err(e);
+            }
+        };
         let state = Arc::new(Mutex::new(ChildState::default()));
         let (tx, rx) = tokio::sync::watch::channel(false);
         let waiter_state = state.clone();
         let spawned = std::thread::Builder::new()
             .name(format!("computer-child-{pid}"))
             .spawn(move || {
-                let raw = pid as libc::pid_t;
-                wait_for_exit(raw);
-                let mut state = waiter_state.lock().unwrap_or_else(|p| p.into_inner());
-                state.reaped = true;
-                let mut status: c_int = 0;
-                // SAFETY: collecting our own child, exactly once. It has
-                // exited (or `wait_for_exit` could not watch it and this
-                // blocks until it does — the lock held here then only delays
-                // signals to a child that is exiting anyway).
-                let rc = unsafe { libc::waitpid(raw, &mut status, 0) };
-                if rc == raw {
-                    state.exit_status = Some(if libc::WIFEXITED(status) {
-                        libc::WEXITSTATUS(status)
-                    } else {
-                        -libc::WTERMSIG(status)
-                    });
+                watch.wait();
+                loop {
+                    {
+                        let mut state = waiter_state.lock().unwrap_or_else(|p| p.into_inner());
+                        let mut status: c_int = 0;
+                        // SAFETY: collecting our own child. `WNOHANG`: under
+                        // this lock a signal cannot be in flight to the pid
+                        // being collected, and nothing waits here while the
+                        // child still runs.
+                        let rc = unsafe { libc::waitpid(raw, &mut status, libc::WNOHANG) };
+                        if rc == raw {
+                            state.reaped = true;
+                            state.exit_status = Some(if libc::WIFEXITED(status) {
+                                libc::WEXITSTATUS(status)
+                            } else {
+                                -libc::WTERMSIG(status)
+                            });
+                            break;
+                        }
+                        if rc < 0
+                            && std::io::Error::last_os_error().kind()
+                                != std::io::ErrorKind::Interrupted
+                        {
+                            // Not ours to collect any more: the pid must not be
+                            // signalled again.
+                            state.reaped = true;
+                            break;
+                        }
+                    }
+                    std::thread::sleep(REAP_POLL);
                 }
-                drop(state);
                 let _ = tx.send(true);
             });
-        if spawned.is_err() {
-            // No waiter thread: nothing will ever reap this child, so the
-            // handle must not send it signals on the strength of a state
-            // nobody will update. Mark it reaped; the child will be adopted
-            // by launchd when this process exits.
-            state.lock().unwrap_or_else(|p| p.into_inner()).reaped = true;
+        if let Err(e) = spawned {
+            discard(raw);
+            return Err(e);
         }
-        Self {
+        Ok(Self {
             pid,
             state,
             exited: rx,
-        }
+        })
     }
 
     pub fn pid(&self) -> u32 {
@@ -357,6 +435,7 @@ mod tests {
             stdio: [ChildFd::Null, ChildFd::Null, ChildFd::Null],
             disclaim: false,
             suspended: true,
+            launch_requirement: None,
         })
         .unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
@@ -366,6 +445,33 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&marker).unwrap(), "yes");
         // Collected: no further signal can go to that pid.
         assert!(child.resume().is_err());
+    }
+
+    /// An image that does not satisfy the launch requirement is killed at
+    /// `exec`, before it runs a single instruction — even though nothing
+    /// here ever resumes or checks it.
+    #[tokio::test]
+    async fn an_image_outside_its_launch_requirement_never_runs() {
+        if !super::super::launch_req::supported() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("ran");
+        let script = format!("touch '{}'", marker.display());
+        // /bin/sh is Apple's, not a Developer ID build of this team's.
+        let requirement = super::super::launch_req::signed_by("ABCDE12345", "not-sh");
+        let child = spawn(&SpawnSpec {
+            program: Path::new("/bin/sh"),
+            args: &["-c", &script],
+            env: &env(),
+            stdio: [ChildFd::Null, ChildFd::Null, ChildFd::Null],
+            disclaim: false,
+            suspended: false,
+            launch_requirement: Some(&requirement),
+        })
+        .unwrap();
+        assert_eq!(child.wait().await, Some(-libc::SIGKILL));
+        assert!(!marker.exists());
     }
 
     /// A killed suspended child never runs.
@@ -381,6 +487,7 @@ mod tests {
             stdio: [ChildFd::Null, ChildFd::Null, ChildFd::Null],
             disclaim: false,
             suspended: true,
+            launch_requirement: None,
         })
         .unwrap();
         child.kill();
@@ -412,6 +519,7 @@ mod tests {
             ],
             disclaim: false,
             suspended: false,
+            launch_requirement: None,
         })
         .unwrap();
         drop(write_end);

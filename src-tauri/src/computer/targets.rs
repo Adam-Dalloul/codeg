@@ -262,14 +262,25 @@ impl TargetTable {
 
     /// A window is gone. A shared one keeps a grant-less entry (see
     /// [`TargetEntry::gone`]); an unshared one is forgotten.
+    ///
+    /// Idempotent, and it touches only what is this entry's own: a late
+    /// "window gone" for an id that has already been retired — an operation
+    /// that started before a listing retired it — leaves the entry, and the
+    /// identity now named by a newer id, alone.
     fn retire(
         inner: &mut Inner,
         target_id: &str,
         change: GrantChange,
     ) -> Option<ComputerGrantPayload> {
         let entry = inner.entries.get_mut(target_id)?;
+        if entry.gone {
+            return None;
+        }
         let identity = entry.identity;
-        inner.by_identity.remove(&identity);
+        if inner.by_identity.get(&identity).map(String::as_str) == Some(target_id) {
+            inner.by_identity.remove(&identity);
+        }
+        let entry = inner.entries.get_mut(target_id)?;
         if entry.grant.is_some() {
             entry.grant = None;
             entry.gone = true;
@@ -363,14 +374,32 @@ impl TargetTable {
         Self::retire(&mut inner, target_id, GrantChange::TargetChanged)
     }
 
-    /// End the grants that have gone unused for `ttl`.
-    pub fn expire(&self, now: i64, ttl: Option<Duration>) -> Vec<ComputerGrantPayload> {
+    /// End every grant that no longer holds by the rules as they are now: gone
+    /// unused for `ttl`, or on a window that can no longer be shared (its
+    /// application joined the blocklist). Run before anything is listed, when
+    /// the settings change and on a timer, so what an agent sees of a window
+    /// never reflects a grant that has already ended.
+    pub fn sweep(
+        &self,
+        now: i64,
+        ttl: Option<Duration>,
+        me: &SelfIdentity,
+        blocklist: &Blocklist,
+    ) -> Vec<ComputerGrantPayload> {
         let mut inner = self.lock();
         inner
             .entries
             .values_mut()
-            .filter(|e| e.grant.as_ref().is_some_and(|g| g.lapsed(now, ttl)))
-            .filter_map(|entry| Self::revoke_entry(entry, GrantChange::Expired))
+            .filter_map(|entry| {
+                let grant = entry.grant.as_ref()?;
+                if grantable(&entry.app, me, blocklist).is_err() {
+                    Self::revoke_entry(entry, GrantChange::Revoked)
+                } else if grant.lapsed(now, ttl) {
+                    Self::revoke_entry(entry, GrantChange::Expired)
+                } else {
+                    None
+                }
+            })
             .collect()
     }
 
@@ -417,21 +446,33 @@ impl TargetTable {
     }
 
     /// Check a read that has finished may be handed over: the same grant is
-    /// still in force on the same window. The person may have taken it back
-    /// while the capture was in flight, and what the capture holds is exactly
-    /// what they took back.
+    /// still in force on the same window, and the window may still be shared
+    /// by the rules as they are now. The person may have taken the grant back,
+    /// or put the application on the blocklist, while the capture was in
+    /// flight, and what the capture holds is exactly what they took back. A
+    /// grant the blocklist now forbids is ended here, its payload returned for
+    /// the caller to announce.
     ///
     /// Returns the generation that names this read.
-    pub fn finish_read(&self, ticket: &ReadTicket) -> Result<String, ReadRefusal> {
+    pub fn finish_read(
+        &self,
+        ticket: &ReadTicket,
+        me: &SelfIdentity,
+        blocklist: &Blocklist,
+    ) -> Result<String, (ReadRefusal, Option<ComputerGrantPayload>)> {
         let mut inner = self.lock();
         let Some(entry) = inner.entries.get_mut(&ticket.target_id) else {
-            return Err(ReadRefusal::GrantRequired);
+            return Err((ReadRefusal::GrantRequired, None));
         };
         let still = entry.identity == ticket.identity
             && entry.epoch == ticket.epoch
             && level_of(entry.grant.as_ref()).allows(GrantLevel::Read);
         if !still {
-            return Err(ReadRefusal::GrantRequired);
+            return Err((ReadRefusal::GrantRequired, None));
+        }
+        if let Err(why) = grantable(&entry.app, me, blocklist) {
+            let ended = Self::revoke_entry(entry, GrantChange::Revoked);
+            return Err((ReadRefusal::NotGrantable(why), ended));
         }
         entry.reads += 1;
         Ok(generation(entry.epoch, entry.reads))
@@ -517,7 +558,13 @@ mod tests {
         let ticket = table
             .begin_read(id, 2_000, None, &me(), &Blocklist::new(&[]))
             .map_err(|(why, _)| why)?;
-        table.finish_read(&ticket)
+        finish(table, &ticket)
+    }
+
+    fn finish(table: &TargetTable, ticket: &ReadTicket) -> Result<String, ReadRefusal> {
+        table
+            .finish_read(ticket, &me(), &Blocklist::new(&[]))
+            .map_err(|(why, _)| why)
     }
 
     /// The same window keeps its id across listings; the same window id under
@@ -607,7 +654,7 @@ mod tests {
             .begin_read(&id, 2_000, None, &me(), &Blocklist::new(&[]))
             .unwrap();
         share(&table, &id, GrantLevel::None);
-        assert_eq!(table.finish_read(&ticket), Err(ReadRefusal::GrantRequired));
+        assert_eq!(finish(&table, &ticket), Err(ReadRefusal::GrantRequired));
 
         // Even when it was shared straight back: a different grant.
         let refused = table
@@ -620,7 +667,7 @@ mod tests {
             .unwrap();
         share(&table, &id, GrantLevel::None);
         share(&table, &id, GrantLevel::Read);
-        assert_eq!(table.finish_read(&ticket), Err(ReadRefusal::GrantRequired));
+        assert_eq!(finish(&table, &ticket), Err(ReadRefusal::GrantRequired));
     }
 
     /// An idle grant lapses at the next read, and the sweep ends it without
@@ -639,9 +686,68 @@ mod tests {
         assert_eq!(refused.1.map(|p| p.change), Some(GrantChange::Expired));
 
         share(&table, &id, GrantLevel::Read);
-        let swept = table.expire(1_000 + 1_000, ttl);
+        let swept = table.sweep(1_000 + 1_000, ttl, &me(), &Blocklist::new(&[]));
         assert_eq!(swept.len(), 1);
+        assert_eq!(swept[0].change, GrantChange::Expired);
         assert!(table.shared().is_empty());
+    }
+
+    /// A blocklist entry added while a window is shared ends its grant at the
+    /// next sweep — before the next listing could show its title — and at the
+    /// end of a read that was already in flight, which is then not handed
+    /// over.
+    #[test]
+    fn a_grant_the_blocklist_now_forbids_ends() {
+        let table = TargetTable::new();
+        let grown = Blocklist::new(&["com.apple.TextEdit".to_string()]);
+        let (listed, _) = table.observe(&[window(10, 111, 5, "Draft")], None);
+        let id = listed[0].target_id.clone();
+
+        share(&table, &id, GrantLevel::Read);
+        let swept = table.sweep(2_000, None, &me(), &grown);
+        assert_eq!(swept.len(), 1);
+        assert_eq!(swept[0].change, GrantChange::Revoked);
+        let (listed, _) = table.observe(&[window(10, 111, 5, "Draft")], None);
+        assert_eq!(listed[0].agent_summary(&me(), &grown).title, None);
+
+        let (listed, _) = table.observe(&[window(10, 111, 5, "Draft")], None);
+        let id = listed[0].target_id.clone();
+        share(&table, &id, GrantLevel::Read);
+        let ticket = table
+            .begin_read(&id, 2_000, None, &me(), &Blocklist::new(&[]))
+            .unwrap();
+        let (why, ended) = table.finish_read(&ticket, &me(), &grown).unwrap_err();
+        assert_eq!(why, ReadRefusal::NotGrantable(NotGrantable::Blocklisted));
+        assert_eq!(ended.map(|p| p.change), Some(GrantChange::Revoked));
+        assert!(table.shared().is_empty());
+    }
+
+    /// A late "window gone" for an id a listing already retired touches
+    /// neither its tombstone nor the newer id the same window was given when
+    /// it came back — which keeps its id, and its grant, from then on.
+    #[test]
+    fn a_late_retirement_leaves_the_newer_id_alone() {
+        let table = TargetTable::new();
+        let (listed, _) = table.observe(&[window(10, 111, 5, "a")], None);
+        let old = listed[0].target_id.clone();
+        share(&table, &old, GrantLevel::Read);
+        // A listing that misses the window retires it...
+        let (_, ended) = table.observe(&[], None);
+        assert_eq!(ended.len(), 1);
+        // ...it comes back under a new id, which is shared again...
+        let (listed, _) = table.observe(&[window(10, 111, 5, "a")], None);
+        let new = listed[0].target_id.clone();
+        assert_ne!(new, old);
+        share(&table, &new, GrantLevel::Read);
+        // ...and then an operation from before reports the old id gone.
+        assert!(table.target_changed(&old).is_none());
+        assert_eq!(read(&table, &old), Err(ReadRefusal::GrantRequired));
+        for _ in 0..3 {
+            let (listed, ended) = table.observe(&[window(10, 111, 5, "a")], None);
+            assert_eq!(listed[0].target_id, new);
+            assert!(ended.is_empty());
+        }
+        assert!(read(&table, &new).is_ok());
     }
 
     /// codeg's own windows and blocklisted applications are listed, carry a

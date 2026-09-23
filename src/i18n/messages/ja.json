@@ -5196,7 +5196,8 @@
       "minimized": "最小化",
       "notGrantable": {
         "codeg": "codeg 自身のウィンドウ",
-        "blocklisted": "共有できません"
+        "blocklisted": "共有できません",
+        "unidentified": "アプリを特定できません"
       },
       "share": "共有",
       "stopSharing": "共有を停止"

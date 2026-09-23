@@ -46,8 +46,9 @@ import {
   getComputerToolsSettings,
 } from "@/lib/computer/computer-api"
 import {
-  setComputerBackend,
-  setComputerShared,
+  computerStoreMark,
+  setComputerBackendSince,
+  setComputerSharedSince,
   useComputerStore,
   type ComputerActivityLine,
 } from "@/lib/computer/computer-store"
@@ -71,14 +72,20 @@ function useComputerEnabled(): boolean {
     if (!computerAvailable()) return
     let disposed = false
     let unsubscribe: (() => void) | undefined
+    // A broadcast that lands while the first read is in flight is newer than
+    // the read.
+    let broadcasts = 0
     getComputerToolsSettings()
       .then((s) => {
-        if (!disposed) setEnabled(s.enabled)
+        if (!disposed && broadcasts === 0) setEnabled(s.enabled)
       })
       .catch(() => {})
     void subscribe<ComputerToolsSettings>(
       COMPUTER_TOOLS_SETTINGS_CHANGED_EVENT,
-      (s) => setEnabled(s.enabled)
+      (s) => {
+        broadcasts += 1
+        setEnabled(s.enabled)
+      }
     )
       .then((fn) => {
         if (disposed) fn()
@@ -115,6 +122,8 @@ function ComputerPopover() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const aliveRef = useRef(true)
+  /** The latest refresh; an older one that answers late is dropped. */
+  const refreshSeqRef = useRef(0)
   useEffect(() => {
     aliveRef.current = true
     return () => {
@@ -123,18 +132,22 @@ function ComputerPopover() {
   }, [])
 
   const refresh = useCallback(async () => {
+    const seq = ++refreshSeqRef.current
+    const mark = computerStoreMark()
     setLoading(true)
     try {
       const next = await computerStatus()
-      if (!aliveRef.current) return
+      if (!aliveRef.current || seq !== refreshSeqRef.current) return
       setStatus(next)
-      setComputerShared(next.shared)
-      setComputerBackend(next.backend)
+      setComputerSharedSince(next.shared, mark)
+      setComputerBackendSince(next.backend, mark)
       setError(null)
     } catch (e) {
-      if (aliveRef.current) setError(toErrorMessage(e))
+      if (aliveRef.current && seq === refreshSeqRef.current) {
+        setError(toErrorMessage(e))
+      }
     } finally {
-      if (aliveRef.current) setLoading(false)
+      if (aliveRef.current && seq === refreshSeqRef.current) setLoading(false)
     }
   }, [])
 
@@ -153,17 +166,19 @@ function ComputerPopover() {
   }
 
   const stop = async (targetId: string) => {
+    const mark = computerStoreMark()
     try {
-      setComputerShared(await computerShareWindow(targetId, "none"))
+      setComputerSharedSince(await computerShareWindow(targetId, "none"), mark)
     } catch (e) {
       setError(toErrorMessage(e))
     }
   }
 
   const stopAll = async () => {
+    const mark = computerStoreMark()
     try {
       await computerRevokeAll()
-      setComputerShared([])
+      setComputerSharedSince([], mark)
     } catch (e) {
       setError(toErrorMessage(e))
     }

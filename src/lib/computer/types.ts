@@ -72,7 +72,7 @@ export interface Rect {
 }
 
 /** Why a window can never be shared. */
-export type NotGrantable = "codeg" | "blocklisted"
+export type NotGrantable = "codeg" | "blocklisted" | "unidentified"
 
 /** One window as the share picker shows it. */
 export interface PickerWindow {

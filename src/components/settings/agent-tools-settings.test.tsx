@@ -519,4 +519,61 @@ describe("AgentToolsSettingsSection", () => {
     // Converged, not dirty: nothing to save.
     expect(screen.getByRole("button", { name: "Save" })).toBeDisabled()
   })
+
+  /** A broadcast about one record says nothing about another's read: a
+   * computer-use write that lands during the initial load must not throw
+   * away the browser switches that load read. */
+  it("yields only the broadcast record's fields to it during the initial load", async () => {
+    let releaseBrowser: (v: {
+      enabled: boolean
+      eval: boolean
+    }) => void = () => {}
+    primeBackend({ browserTools: true })
+    mockGetBrowser.mockReturnValue(
+      new Promise((resolve) => {
+        releaseBrowser = resolve
+      })
+    )
+
+    renderWithIntl()
+    await waitFor(() => expect(computerToolsHandler()).toBeDefined())
+    act(() =>
+      computerToolsHandler()?.({
+        enabled: true,
+        grantTtlMinutes: 45,
+        blocklist: [],
+      })
+    )
+    await act(async () => {
+      releaseBrowser({ enabled: true, eval: false })
+    })
+
+    await waitFor(() =>
+      expect(screen.getByLabelText(LABELS.browserTools)).toBeChecked()
+    )
+    expect(screen.getByLabelText(LABELS.computer)).toBeChecked()
+  })
+
+  /** A switch cannot move while a save is on its way — the answer would
+   * overwrite the move without a trace. */
+  it("locks the switches while saving", async () => {
+    let finish: () => void = () => {}
+    primeBackend({ computer: false })
+    mockSetComputer.mockImplementationOnce(
+      (enabled) =>
+        new Promise((resolve) => {
+          finish = () =>
+            resolve({ enabled, grantTtlMinutes: 45, blocklist: [] })
+        })
+    )
+
+    renderWithIntl()
+    const row = await screen.findByLabelText(LABELS.computer)
+    fireEvent.click(row)
+    fireEvent.click(screen.getByRole("button", { name: "Save" }))
+    await waitFor(() => expect(row).toBeDisabled())
+    await act(async () => finish())
+    await waitFor(() => expect(row).not.toBeDisabled())
+    expect(row).toBeChecked()
+  })
 })

@@ -30,9 +30,11 @@ pub const DRIVER_VERSION: &str = "0.28.2";
 /// The file name of the executable inside every archive, without `.exe`.
 pub const DRIVER_COMMAND: &str = "cua-driver";
 
-/// The key the driver is cached under in the binary cache (a sibling of the
-/// agents' own directories, never a name an agent id could take).
-pub const DRIVER_CACHE_ID: &str = "cua-driver";
+/// The key the driver is cached under in the binary cache: a sibling of the
+/// agents' own directories, under a name no agent id can take (agent ids are
+/// letters, digits, `-`, `_` and `.`), so clearing the driver's cache can
+/// never clear an agent's.
+pub const DRIVER_CACHE_ID: &str = "@cua-driver";
 
 /// One platform's download, and the digests it must match.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -87,6 +89,12 @@ pub const DRIVER_ARTIFACTS: &[DriverArtifact] = &[
         executable_sha256: "dbbd52d75759900155fbf3d5f0a13c759a12d06ef17338b88b3f2b8b9c1ef8dc",
     },
 ];
+
+/// trycua's Team ID, which signs every macOS driver build.
+pub const DRIVER_TEAM_ID: &str = "YCK386LBJ7";
+
+/// The driver's signing identifier.
+pub const DRIVER_SIGNING_ID: &str = "cua-driver";
 
 /// The designated requirement every macOS driver build satisfies: trycua's
 /// Developer ID, identifier `cua-driver`. Copied from
@@ -220,6 +228,12 @@ mod tests {
         for cdhash in DRIVER_CDHASHES {
             assert_eq!(cdhash.len(), 40);
         }
+        // The launch requirement and the designated requirement name the
+        // same signer.
+        assert!(DRIVER_DESIGNATED_REQUIREMENT
+            .starts_with(&format!("identifier \"{DRIVER_SIGNING_ID}\" and ")));
+        assert!(DRIVER_DESIGNATED_REQUIREMENT.ends_with(&format!("= {DRIVER_TEAM_ID}")));
+        assert!(!crate::models::agent::is_valid_custom_agent_id(DRIVER_CACHE_ID));
     }
 
     /// The entitlement check is an exact match: a denied one, a missing one

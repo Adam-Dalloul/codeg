@@ -8,6 +8,11 @@
 // one line with a count, for the reason the browser's strip does: an agent
 // working through a window reads it dozens of times, and forty identical
 // lines hide the one that says something else.
+//
+// A value fetched by a command is only as new as the moment the command
+// began; an event that lands while it is in flight is newer. So fetched
+// values go through the `…Since` setters with a mark taken before the fetch,
+// and are dropped if an event has moved that part of the store since.
 
 import { useSyncExternalStore } from "react"
 
@@ -46,6 +51,9 @@ const ACTIVITY_LIMIT = 50
 let state: ComputerStoreState = { shared: [], backend: null, activity: [] }
 const listeners = new Set<() => void>()
 let started = false
+/** Moved by every write to `shared` / `backend`. */
+let sharedVersion = 0
+let backendVersion = 0
 
 function emit(next: ComputerStoreState) {
   state = next
@@ -53,11 +61,41 @@ function emit(next: ComputerStoreState) {
 }
 
 export function setComputerShared(shared: readonly SharedWindow[]): void {
+  sharedVersion += 1
   emit({ ...state, shared })
 }
 
 export function setComputerBackend(backend: BackendStatus): void {
+  backendVersion += 1
   emit({ ...state, backend })
+}
+
+/** Where the store stands, to hand back to the `…Since` setters. */
+export interface ComputerStoreMark {
+  shared: number
+  backend: number
+}
+
+export function computerStoreMark(): ComputerStoreMark {
+  return { shared: sharedVersion, backend: backendVersion }
+}
+
+/** A fetched list of shared windows, unless something newer has landed since
+ *  `mark` was taken. */
+export function setComputerSharedSince(
+  shared: readonly SharedWindow[],
+  mark: ComputerStoreMark
+): void {
+  if (sharedVersion === mark.shared) setComputerShared(shared)
+}
+
+/** A fetched backend status, unless something newer has landed since `mark`
+ *  was taken. */
+export function setComputerBackendSince(
+  backend: BackendStatus,
+  mark: ComputerStoreMark
+): void {
+  if (backendVersion === mark.backend) setComputerBackend(backend)
 }
 
 export function recordComputerActivity(payload: ComputerActivityPayload): void {

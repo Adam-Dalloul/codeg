@@ -100,14 +100,22 @@ fn string(value: &Value, key: &str) -> Option<String> {
 /// Running applications, each stamped with its start time.
 pub async fn list_apps(driver: &DriverProc) -> Result<Vec<RawApp>, HelperError> {
     let result = call(driver, "list_apps", json!({}), LIST_TIMEOUT).await?;
-    Ok(parse_apps(structured("list_apps", &result)?))
+    parse_apps(structured("list_apps", &result)?)
 }
 
-fn parse_apps(value: &Value) -> Vec<RawApp> {
+/// The array `key` of a successful answer. Missing is a malformed answer, not
+/// an empty one: an application list read as empty would leave every window
+/// without the application that names it.
+fn required_array<'a>(tool: &str, value: &'a Value, key: &str) -> Result<&'a [Value], HelperError> {
     value
-        .get("apps")
+        .get(key)
         .and_then(Value::as_array)
-        .map(|apps| {
+        .map(Vec::as_slice)
+        .ok_or_else(|| HelperError::failed(format!("{tool} answered without `{key}`")))
+}
+
+fn parse_apps(value: &Value) -> Result<Vec<RawApp>, HelperError> {
+    required_array("list_apps", value, "apps").map(|apps| {
             apps.iter()
                 // The driver also lists installed applications that are not
                 // running (pid 0); only running ones have windows.
@@ -127,7 +135,6 @@ fn parse_apps(value: &Value) -> Vec<RawApp> {
                 })
                 .collect()
         })
-        .unwrap_or_default()
 }
 
 /// Remembers which application each running process is, so listing windows
@@ -162,7 +169,7 @@ pub async fn list_windows(
         args["pid"] = json!(pid);
     }
     let result = call(driver, "list_windows", args, LIST_TIMEOUT).await?;
-    let windows = parse_windows(structured("list_windows", &result)?);
+    let windows = parse_windows(structured("list_windows", &result)?)?;
 
     let mut cache = cache.lock().await;
     let stamps: Vec<Option<u64>> = windows.iter().map(|w| process_start(w.pid)).collect();
@@ -207,12 +214,9 @@ pub async fn list_windows(
 /// application is hidden (⌘H) is off screen and still the same window, and a
 /// listing that dropped it would read as the window closing and end the
 /// grant.
-fn parse_windows(value: &Value) -> Vec<RawWindow> {
+fn parse_windows(value: &Value) -> Result<Vec<RawWindow>, HelperError> {
     let flag = |w: &Value, key: &str| w.get(key).and_then(Value::as_bool);
-    value
-        .get("windows")
-        .and_then(Value::as_array)
-        .map(|windows| {
+    required_array("list_windows", value, "windows").map(|windows| {
             windows
                 .iter()
                 .filter(|w| w.get("layer").and_then(Value::as_i64).unwrap_or(0) == 0)
@@ -243,7 +247,6 @@ fn parse_windows(value: &Value) -> Vec<RawWindow> {
                 })
                 .collect()
         })
-        .unwrap_or_default()
 }
 
 /// A screenshot of one window, and nothing around it: the driver captures the
@@ -330,7 +333,7 @@ pub async fn snapshot(
     let tree = meta
         .get("tree_markdown")
         .and_then(Value::as_str)
-        .unwrap_or_default();
+        .ok_or_else(|| HelperError::failed("get_window_state answered without a tree"))?;
     Ok(RawSnapshot {
         tree: redact_secrets(tree),
         element_count: meta
@@ -368,40 +371,119 @@ const SECRET_WORDS: &[&str] = &[
     "كلمة المرور",
 ];
 
-/// Take the value out of every tree line that describes a secret.
+/// Take the value out of every tree node that describes a secret.
 ///
 /// The platforms already refuse to hand a secure field's text to an
 /// accessibility client — macOS answers bullets for a secure text field,
 /// Windows refuses a password edit's value to other processes — so this is
-/// the second line, not the first: a line whose role names a password
+/// the second line, not the first: a node whose role names a password
 /// control, or whose label says it is one, keeps its role and label and loses
-/// its `= "value"`. The driver's tree does not carry macOS subroles, so a
-/// secure field is recognised here by its words; recognising it by subrole
-/// needs the driver to report one.
+/// its value. The driver's tree does not carry macOS subroles, so a secure
+/// field is recognised here by its words; recognising it by subrole needs the
+/// driver to report one.
+///
+/// The driver writes values unescaped, newlines included, so a node is not a
+/// line: it runs from a line that starts one (see [`Dialect::starts_node`])
+/// to the next, and a secret's value goes with every line of it.
 pub fn redact_secrets(tree: &str) -> String {
-    let mut out = String::with_capacity(tree.len());
-    for line in tree.split_inclusive('\n') {
-        out.push_str(&redact_line(line));
+    redact_tree(tree, Dialect::current())
+}
+
+/// The shape of a node line in the driver's tree on each platform.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Dialect {
+    /// `- [3] AXTextField "Title" = "value" (description) [attrs]`
+    Mac,
+    /// `- [3] Edit "Name" [value="…" id=… actions=[…]]`, and `- Text "Name" = "…"`
+    Windows,
+    /// `- [3] password text "name" value="…" [actions=[…]]`, and `- label = "name"`
+    Linux,
+}
+
+impl Dialect {
+    fn current() -> Self {
+        if cfg!(target_os = "macos") {
+            Dialect::Mac
+        } else if cfg!(windows) {
+            Dialect::Windows
+        } else {
+            Dialect::Linux
+        }
     }
+
+    /// Whether `line` starts a node rather than continuing the value of the
+    /// one above it: indentation in whole steps, `- `, an optional
+    /// `[index] `, then a role as this platform spells them — `AX…` (macOS),
+    /// a UI Automation control type (Windows), an AT-SPI role name (Linux).
+    fn starts_node(self, line: &str) -> bool {
+        let rest = line.trim_start_matches(' ');
+        if !(line.len() - rest.len()).is_multiple_of(2) {
+            return false;
+        }
+        let Some(mut rest) = rest.strip_prefix("- ") else {
+            return false;
+        };
+        if let Some(indexed) = rest.strip_prefix('[') {
+            let Some(close) = indexed.find("] ") else {
+                return false;
+            };
+            if close == 0 || !indexed[..close].bytes().all(|b| b.is_ascii_digit()) {
+                return false;
+            }
+            rest = &indexed[close + 2..];
+        }
+        match self {
+            Dialect::Mac => rest.starts_with("AX"),
+            Dialect::Windows => rest.as_bytes().first().is_some_and(u8::is_ascii_uppercase),
+            Dialect::Linux => rest.as_bytes().first().is_some_and(u8::is_ascii_lowercase),
+        }
+    }
+}
+
+fn redact_tree(tree: &str, dialect: Dialect) -> String {
+    let mut out = String::with_capacity(tree.len());
+    let mut node = String::new();
+    for line in tree.split_inclusive('\n') {
+        if !node.is_empty() && dialect.starts_node(line) {
+            out.push_str(&redact_node(&node));
+            node.clear();
+        }
+        node.push_str(line);
+    }
+    out.push_str(&redact_node(&node));
     out
 }
 
-fn redact_line(line: &str) -> String {
-    let Some(start) = line.find(" = \"") else {
-        return line.to_string();
+/// Where a node's value starts: ` = "` in every tree, and `value="` on the
+/// addressable elements of the Windows (`[value="`) and Linux (` value="`)
+/// ones.
+const VALUE_MARKERS: &[&str] = &[" = \"", " value=\"", "[value=\""];
+
+fn redact_node(node: &str) -> String {
+    let Some(start) = VALUE_MARKERS.iter().filter_map(|m| node.find(m)).min() else {
+        return node.to_string();
     };
-    let lower = line.to_lowercase();
+    // Judged on the node's first and last lines — the role, the label, and
+    // the description and attributes after the value — not on the lines of a
+    // long value between them: a document that mentions a password somewhere
+    // is not a password field.
+    let first = node.split_inclusive('\n').next().unwrap_or(node);
+    let last = node.split_inclusive('\n').next_back().unwrap_or(node);
+    let lower = format!("{first}{last}").to_lowercase();
     let role_is_secret = lower.contains("securetextfield") || lower.contains("password text");
     let label_is_secret = SECRET_WORDS.iter().any(|w| lower.contains(w));
     if !(role_is_secret || label_is_secret) {
-        return line.to_string();
+        return node.to_string();
     }
-    // Everything after the ` = "` goes, not just the value: the driver writes
-    // values unescaped, so a value can contain `" (` or `" [` and there is no
-    // telling where it ends. What stays — the index, the role and the title —
-    // is what names the field.
-    let newline = if line.ends_with('\n') { "\n" } else { "" };
-    format!("{} = \"[redacted]\"{newline}", &line[..start])
+    // Everything from the value on goes, not just the value: the driver writes
+    // values unescaped, so a value can contain `" (` or `" [` or a newline and
+    // there is no telling where it ends. What stays — the index, the role and
+    // the title — is what names the field.
+    let newline = if node.ends_with('\n') { "\n" } else { "" };
+    format!(
+        "{} = \"[redacted]\"{newline}",
+        node[..start].trim_end_matches([' ', '['])
+    )
 }
 
 /// Rebuild the caller's predicates in the driver's vocabulary. Every field is
@@ -575,7 +657,8 @@ mod tests {
             {"pid": 758, "name": "Finder", "bundle_id": "com.apple.finder", "running": true, "active": false},
             {"pid": 0, "name": "Xcode", "bundle_id": "com.apple.dt.Xcode", "running": false, "active": false,
              "launch_path": "/Applications/Xcode.app"},
-        ]}));
+        ]}))
+        .unwrap();
         assert_eq!(apps.len(), 1);
         assert_eq!(apps[0].bundle_id.as_deref(), Some("com.apple.finder"));
         assert_eq!(apps[0].path, None);
@@ -596,7 +679,8 @@ mod tests {
             {"window_id": 4, "pid": 6, "app_name": "B", "title": "",
              "bounds": {"x": 0, "y": 0, "width": 800, "height": 600}, "is_on_screen": false,
              "on_current_space": true, "minimized": false, "layer": 0},
-        ]}));
+        ]}))
+        .unwrap();
         let ids: Vec<u64> = windows.iter().map(|w| w.window_id).collect();
         assert_eq!(ids, vec![1, 4]);
         assert_eq!(windows[0].z_index, Some(2));
@@ -608,8 +692,8 @@ mod tests {
     /// A secret's value goes; its role and label, and every other line, stay.
     #[test]
     fn secret_values_are_redacted_and_nothing_else_is() {
-        let tree = "- [0] AXWindow \"Sign in\"\n  - [1] AXTextField \"Email\" = \"me@example.com\" [actions=[confirm]]\n  - [2] AXTextField \"Password\" = \"hunter2\" [id=pw actions=[confirm]]\n  - [3] AXTextField (密码) = \"秘密\"\n  - [4] password text = \"abc\" (x)\" (Passcode) [id=q]\n  - [5] AXStaticText = \"Forgot your password?\"\n";
-        let out = redact_secrets(tree);
+        let tree = "- [0] AXWindow \"Sign in\"\n  - [1] AXTextField \"Email\" = \"me@example.com\" [actions=[confirm]]\n  - [2] AXTextField \"Password\" = \"hunter2\" [id=pw actions=[confirm]]\n  - [3] AXTextField = \"秘密\" (密码)\n  - [4] AXSecureTextField = \"abc\" (x)\" (Code) [id=q]\n  - [5] AXStaticText = \"Forgot your password?\"\n";
+        let out = redact_tree(tree, Dialect::Mac);
         assert!(
             out.contains("\"Email\" = \"me@example.com\" [actions=[confirm]]"),
             "{out}"
@@ -618,13 +702,11 @@ mod tests {
             out.contains("- [2] AXTextField \"Password\" = \"[redacted]\"\n"),
             "{out}"
         );
-        assert!(
-            out.contains("- [3] AXTextField (密码) = \"[redacted]\"\n"),
-            "{out}"
-        );
+        // A label after the value counts too.
+        assert!(out.contains("- [3] AXTextField = \"[redacted]\"\n"), "{out}");
         // A value with a quote in it is cut at its start, not guessed at.
         assert!(
-            out.contains("- [4] password text = \"[redacted]\"\n"),
+            out.contains("- [4] AXSecureTextField = \"[redacted]\"\n"),
             "{out}"
         );
         assert!(
@@ -636,6 +718,70 @@ mod tests {
         assert!(out.contains("AXStaticText = \"[redacted]\""), "{out}");
         assert_eq!(out.lines().count(), tree.lines().count());
         assert!(out.starts_with("- [0] AXWindow \"Sign in\"\n"));
+    }
+
+    /// Values are written unescaped, so a secret can run over several lines;
+    /// all of them go. A long value that is not a secret — a document that
+    /// mentions a password in passing — keeps every line.
+    #[test]
+    fn a_secret_that_spans_lines_goes_whole() {
+        let tree = "- [0] AXWindow \"Keys\"\n  - [1] AXTextArea \"Secret key\" = \"-----BEGIN KEY-----\nMIIEabc\n- not a node\n-----END KEY-----\" [id=k]\n  - [2] AXTextArea = \"line one\nthe password is elsewhere\nline three\"\n  - [3] AXButton \"Copy\"\n";
+        let out = redact_tree(tree, Dialect::Mac);
+        assert!(
+            out.contains("  - [1] AXTextArea \"Secret key\" = \"[redacted]\"\n  - [2]"),
+            "{out}"
+        );
+        for leaked in ["MIIEabc", "not a node", "END KEY"] {
+            assert!(!out.contains(leaked), "{leaked}: {out}");
+        }
+        assert!(
+            out.contains("\"line one\nthe password is elsewhere\nline three\"\n"),
+            "{out}"
+        );
+        assert!(out.ends_with("  - [3] AXButton \"Copy\"\n"), "{out}");
+    }
+
+    /// Windows and Linux trees put an addressable element's value in
+    /// `value="…"`, not after ` = `; it goes all the same.
+    #[test]
+    fn values_are_found_in_every_platforms_tree() {
+        let windows = "- [0] Window \"Sign in\"\n  - [1] Edit \"Password\" [value=\"hunter2\" id=pw actions=[invoke]]\n  - [2] Edit \"User\" [value=\"me\"]\n  - Text \"PIN code\" = \"1234\"\n";
+        let out = redact_tree(windows, Dialect::Windows);
+        assert!(out.contains("  - [1] Edit \"Password\" = \"[redacted]\"\n"), "{out}");
+        assert!(out.contains("  - [2] Edit \"User\" [value=\"me\"]\n"), "{out}");
+        assert!(out.contains("  - Text \"PIN code\" = \"[redacted]\"\n"), "{out}");
+        assert!(!out.contains("hunter2") && !out.contains("1234"), "{out}");
+
+        let linux = "- [0] frame \"Login\" [actions=[]]\n  - [1] password text \"\" value=\"s3cr3t\nmore\" [actions=[activate]]\n  - [2] push button \"OK\" [actions=[click]]\n";
+        let out = redact_tree(linux, Dialect::Linux);
+        assert!(
+            out.contains("  - [1] password text \"\" = \"[redacted]\"\n  - [2] push button"),
+            "{out}"
+        );
+        assert!(!out.contains("s3cr3t") && !out.contains("more"), "{out}");
+    }
+
+    /// What starts a node, per platform.
+    #[test]
+    fn node_lines_are_told_from_continuations() {
+        assert!(Dialect::Mac.starts_node("  - [12] AXButton \"OK\"\n"));
+        assert!(Dialect::Mac.starts_node("- AXGroup\n"));
+        assert!(!Dialect::Mac.starts_node("- item\n"));
+        assert!(!Dialect::Mac.starts_node("   - [1] AXButton\n"));
+        assert!(!Dialect::Mac.starts_node("  - [x] AXButton\n"));
+        assert!(Dialect::Windows.starts_node("  - [3] Edit \"a\"\n"));
+        assert!(!Dialect::Windows.starts_node("  - edit\n"));
+        assert!(Dialect::Linux.starts_node("  - [3] push button \"a\"\n"));
+        assert!(!Dialect::Linux.starts_node("MIIEabc\n"));
+    }
+
+    /// An answer without the array it exists to carry is an error, not an
+    /// empty list.
+    #[test]
+    fn a_listing_without_its_list_is_malformed() {
+        assert!(parse_apps(&json!({})).is_err());
+        assert!(parse_windows(&json!({"windows": null})).is_err());
+        assert!(parse_windows(&json!({"windows": []})).unwrap().is_empty());
     }
 
     /// Predicates are rebuilt field by field in the driver's spelling, and the

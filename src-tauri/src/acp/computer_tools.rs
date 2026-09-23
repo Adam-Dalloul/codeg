@@ -327,6 +327,12 @@ pub struct ComputerToolsConfig {
     pub grant_ttl: Option<Duration>,
     /// Applications the user added to the built-in blocklist.
     pub blocklist: Vec<String>,
+    /// How many times the group has been switched off since codeg started.
+    /// Kept by [`ComputerToolsRuntimeConfig::set`], never persisted: it is
+    /// what lets a watcher that only sees the latest value — a quick off and
+    /// on again arrives as one change — still see that there was an off, and
+    /// a read in flight see that one happened while it was.
+    pub switched_off: u64,
 }
 
 /// Shared, hot-swappable handle to [`ComputerToolsConfig`]. Cloned into
@@ -361,8 +367,9 @@ impl ComputerToolsRuntimeConfig {
         self.inner.read().await.clone()
     }
 
-    pub async fn set(&self, cfg: ComputerToolsConfig) {
+    pub async fn set(&self, mut cfg: ComputerToolsConfig) {
         let mut inner = self.inner.write().await;
+        cfg.switched_off = inner.switched_off + u64::from(inner.enabled && !cfg.enabled);
         *inner = cfg.clone();
         // Published under the write lock, so watchers see changes in the order
         // they were made.
@@ -484,11 +491,36 @@ mod tests {
             enabled: true,
             grant_ttl: Some(Duration::from_secs(1800)),
             blocklist: vec!["com.example.vault".into()],
+            switched_off: 0,
         };
         cfg.set(on.clone()).await;
         assert!(cfg.is_enabled().await);
         assert_eq!(cfg.snapshot().await, on);
         watcher.changed().await.unwrap();
         assert_eq!(*watcher.borrow_and_update(), on);
+    }
+
+    /// Off and straight back on reaches a watcher as one change — and the off
+    /// in it is still visible, because the count moved.
+    #[tokio::test]
+    async fn a_quick_off_and_on_still_counts_as_an_off() {
+        let cfg = ComputerToolsRuntimeConfig::new();
+        let on = ComputerToolsConfig {
+            enabled: true,
+            ..Default::default()
+        };
+        cfg.set(on.clone()).await;
+        let mut watcher = cfg.subscribe();
+        let before = watcher.borrow_and_update().switched_off;
+        cfg.set(ComputerToolsConfig::default()).await;
+        cfg.set(on.clone()).await;
+        watcher.changed().await.unwrap();
+        let seen = watcher.borrow_and_update().clone();
+        assert!(seen.enabled);
+        assert_eq!(seen.switched_off, before + 1);
+        // Setting it off again while off is not another off.
+        cfg.set(ComputerToolsConfig::default()).await;
+        cfg.set(ComputerToolsConfig::default()).await;
+        assert_eq!(cfg.snapshot().await.switched_off, before + 2);
     }
 }

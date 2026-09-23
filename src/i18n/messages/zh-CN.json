@@ -5196,7 +5196,8 @@
       "minimized": "已最小化",
       "notGrantable": {
         "codeg": "codeg 自己的窗口",
-        "blocklisted": "不可共享"
+        "blocklisted": "不可共享",
+        "unidentified": "无法识别所属应用"
       },
       "share": "共享",
       "stopSharing": "停止共享"

@@ -1,8 +1,11 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react"
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { NextIntlClientProvider } from "next-intl"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
-import type { ComputerStatus } from "@/lib/computer/types"
+import type {
+  ComputerStatus,
+  ComputerToolsSettings,
+} from "@/lib/computer/types"
 
 const api = vi.hoisted(() => ({
   computerAvailable: vi.fn(() => true),
@@ -16,8 +19,12 @@ const api = vi.hoisted(() => ({
   computerWindowThumbnail: vi.fn(),
 }))
 vi.mock("@/lib/computer/computer-api", () => api)
+const handlers = new Map<string, (p: unknown) => void>()
 vi.mock("@/lib/platform", () => ({
-  subscribe: vi.fn(() => Promise.resolve(() => {})),
+  subscribe: vi.fn((event: string, handler: (p: unknown) => void) => {
+    handlers.set(event, handler)
+    return Promise.resolve(() => {})
+  }),
 }))
 vi.mock("@/lib/api", () => ({ openSettingsWindow: vi.fn(async () => {}) }))
 
@@ -56,6 +63,7 @@ function mount() {
 
 beforeEach(() => {
   vi.clearAllMocks()
+  handlers.clear()
   resetComputerStoreForTest()
   api.computerAvailable.mockReturnValue(true)
   api.getComputerToolsSettings.mockResolvedValue({
@@ -137,5 +145,34 @@ describe("StatusBarComputer", () => {
     await waitFor(() =>
       expect(api.computerShareWindow).toHaveBeenCalledWith("w4", "none")
     )
+  })
+
+  /** The switch flipped on elsewhere while the first read was in flight: the
+   * read is older, and must not hide the item again. */
+  it("keeps a broadcast over the older first read", async () => {
+    let finishRead: (v: ComputerToolsSettings) => void = () => {}
+    api.getComputerToolsSettings.mockReturnValue(
+      new Promise((resolve) => {
+        finishRead = resolve
+      })
+    )
+    mount()
+    await waitFor(() =>
+      expect(handlers.get("computer-tools-settings://changed")).toBeDefined()
+    )
+    act(() =>
+      handlers.get("computer-tools-settings://changed")!({
+        enabled: true,
+        grantTtlMinutes: 30,
+        blocklist: [],
+      })
+    )
+    await screen.findByRole("button", { name: "Computer use" })
+    await act(async () =>
+      finishRead({ enabled: false, grantTtlMinutes: 30, blocklist: [] })
+    )
+    expect(
+      screen.getByRole("button", { name: "Computer use" })
+    ).toBeInTheDocument()
   })
 })

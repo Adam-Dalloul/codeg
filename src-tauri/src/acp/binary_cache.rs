@@ -796,13 +796,35 @@ pub async fn ensure_binary_for_agent_with_progress(
     .await
 }
 
+/// Whether `tool_id` names a tool's directory: one no agent can have. Agent
+/// ids — built-in registry ids and custom ones alike — are ASCII letters,
+/// digits, `-`, `_` and `.`, so a tool's name starts with `@`. Checked in
+/// release builds too: the cache directory is the key, and a tool sharing one
+/// with an agent would reuse that agent's binaries, and clear them.
+fn is_tool_cache_id(tool_id: &str) -> bool {
+    tool_id.strip_prefix('@').is_some_and(|rest| {
+        !rest.is_empty()
+            && rest
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
+            && !rest.starts_with('.')
+    })
+}
+
+fn require_tool_cache_id(tool_id: &str) -> Result<(), AcpError> {
+    if is_tool_cache_id(tool_id) {
+        Ok(())
+    } else {
+        Err(AcpError::DownloadFailed(format!(
+            "{tool_id:?} is not a tool cache name (it must start with `@`)"
+        )))
+    }
+}
+
 /// Download (or find in the cache) a pinned binary that is not an agent — the
 /// computer-use driver today. Same cache root, layout and archive check as an
-/// agent's binary, under `tool_id` instead of an agent's registry id.
-///
-/// `tool_id` must not be a registry id: the dir-tree lookup is keyed on the
-/// directory name, so a tool named like an agent would inherit that agent's
-/// install layout.
+/// agent's binary, under `tool_id` (see [`is_tool_cache_id`]) instead of an
+/// agent's registry id.
 pub(crate) async fn ensure_tool_binary_with_progress(
     tool_id: &str,
     version: &str,
@@ -811,7 +833,7 @@ pub(crate) async fn ensure_tool_binary_with_progress(
     expected_sha256: Option<&str>,
     on_progress: impl Fn(&str),
 ) -> Result<PathBuf, AcpError> {
-    debug_assert!(registry::from_registry_id(tool_id).is_none());
+    require_tool_cache_id(tool_id)?;
     ensure_binary_with_progress(
         tool_id,
         version,
@@ -826,6 +848,7 @@ pub(crate) async fn ensure_tool_binary_with_progress(
 /// Remove a tool's cached binaries (every version), from both cache roots —
 /// the tool counterpart of [`clear_agent_cache`].
 pub(crate) fn clear_tool_cache(tool_id: &str) -> Result<(), AcpError> {
+    require_tool_cache_id(tool_id)?;
     let legacy = match legacy_cache_dir() {
         Some(legacy) => clear_agent_dir_in(&legacy, tool_id),
         None => Ok(()),
@@ -1391,6 +1414,18 @@ mod tests {
     /// the current one. Clearing only the current root would let
     /// `installed_binary_path`'s legacy fallback resurrect the agent the user
     /// just removed, while the call still reported success.
+    /// A tool's cache name can never be an agent's: the agents' alphabet has
+    /// no `@`, and a name outside the tools' is refused, release build or not.
+    #[test]
+    fn tool_cache_names_are_out_of_the_agents_reach() {
+        assert!(is_tool_cache_id("@cua-driver"));
+        for agent_like in ["cua-driver", "opencode", "@", "@.hidden", "@a/b", "@..", ""] {
+            assert!(!is_tool_cache_id(agent_like), "{agent_like:?}");
+        }
+        assert!(!crate::models::agent::is_valid_custom_agent_id("@cua-driver"));
+        assert!(clear_tool_cache("cua-driver").is_err());
+    }
+
     #[test]
     fn clear_agent_dir_in_clears_whichever_root_it_is_given() {
         let tmp = tempfile::tempdir().expect("tempdir");

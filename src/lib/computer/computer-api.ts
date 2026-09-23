@@ -29,15 +29,13 @@ export async function setComputerToolsEnabled(
   return getTransport().call("set_computer_tools_enabled", { enabled })
 }
 
-/** Move the grant timeout and the blocklist, leaving the switch alone. */
-export async function setComputerToolsPreferences(
-  grantTtlMinutes: number,
-  blocklist: string[]
-): Promise<ComputerToolsSettings> {
-  return getTransport().call("set_computer_tools_preferences", {
-    grantTtlMinutes,
-    blocklist,
-  })
+/** Move the grant timeout, the blocklist, or both — only what is given; the
+ *  rest of the record (the switch included) stays as it is stored. */
+export async function setComputerToolsPreferences(preferences: {
+  grantTtlMinutes?: number
+  blocklist?: string[]
+}): Promise<ComputerToolsSettings> {
+  return getTransport().call("set_computer_tools_preferences", preferences)
 }
 
 /** Whether this runtime can show the screen at all. */

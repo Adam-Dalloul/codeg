@@ -5196,7 +5196,8 @@
       "minimized": "최소화됨",
       "notGrantable": {
         "codeg": "codeg 자체 창",
-        "blocklisted": "공유할 수 없음"
+        "blocklisted": "공유할 수 없음",
+        "unidentified": "어떤 앱인지 확인할 수 없음"
       },
       "share": "공유",
       "stopSharing": "공유 중지"

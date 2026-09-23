@@ -5196,7 +5196,8 @@
       "minimized": "minimized",
       "notGrantable": {
         "codeg": "codeg's own window",
-        "blocklisted": "Can't be shared"
+        "blocklisted": "Can't be shared",
+        "unidentified": "Can't tell which app this is"
       },
       "share": "Share",
       "stopSharing": "Stop sharing"

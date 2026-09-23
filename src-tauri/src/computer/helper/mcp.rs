@@ -26,6 +26,12 @@ pub const MCP_PROTOCOL_VERSION: &str = "2025-06-18";
 /// wrong cannot make the helper buffer without end.
 const MAX_LINE_BYTES: usize = 64 * 1024 * 1024;
 
+/// How long one message may take to go out. The driver reads its input as it
+/// comes, so a write that cannot finish means a driver that stopped reading:
+/// wedged. Half a message on the pipe cannot be taken back, so the client is
+/// closed and the next call starts another driver.
+const WRITE_TIMEOUT: Duration = Duration::from_secs(10);
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum McpError {
     /// The driver closed its side, or exited.
@@ -108,11 +114,23 @@ impl ToolCallResult {
 
 type Pending = Arc<Mutex<HashMap<u64, oneshot::Sender<Result<Value, McpError>>>>>;
 
+fn fail_pending(pending: &Pending) {
+    let waiting: Vec<_> = pending
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .drain()
+        .map(|(_, tx)| tx)
+        .collect();
+    for tx in waiting {
+        let _ = tx.send(Err(McpError::Closed));
+    }
+}
+
 pub struct McpClient {
     writer: tokio::sync::Mutex<Box<dyn AsyncWrite + Send + Unpin>>,
     pending: Pending,
     next_id: AtomicU64,
-    closed: watch::Receiver<bool>,
+    closed: Arc<watch::Sender<bool>>,
 }
 
 impl McpClient {
@@ -124,12 +142,13 @@ impl McpClient {
         W: AsyncWrite + Send + Unpin + 'static,
     {
         let pending: Pending = Arc::new(Mutex::new(HashMap::new()));
-        let (closed_tx, closed_rx) = watch::channel(false);
+        let closed = Arc::new(watch::Sender::new(false));
+        let closed_tx = closed.clone();
         let client = Arc::new(Self {
             writer: tokio::sync::Mutex::new(Box::new(writer)),
             pending: pending.clone(),
             next_id: AtomicU64::new(1),
-            closed: closed_rx,
+            closed,
         });
         let weak = Arc::downgrade(&client);
         tokio::spawn(async move {
@@ -174,16 +193,8 @@ impl McpClient {
                     _ => {}
                 }
             }
-            let _ = closed_tx.send(true);
-            let waiting: Vec<_> = pending
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .drain()
-                .map(|(_, tx)| tx)
-                .collect();
-            for tx in waiting {
-                let _ = tx.send(Err(McpError::Closed));
-            }
+            closed_tx.send_replace(true);
+            fail_pending(&pending);
         });
         client
     }
@@ -192,16 +203,30 @@ impl McpClient {
         *self.closed.borrow()
     }
 
+    /// Give up on the driver: every call waiting on it is told so, and
+    /// [`is_closed`](Self::is_closed) says so from now on.
+    fn close(&self) {
+        self.closed.send_replace(true);
+        fail_pending(&self.pending);
+    }
+
     async fn write_message(&self, message: &Value) -> Result<(), McpError> {
         let mut line =
             serde_json::to_vec(message).map_err(|e| McpError::Protocol(e.to_string()))?;
         line.push(b'\n');
-        let mut writer = self.writer.lock().await;
-        writer
-            .write_all(&line)
-            .await
-            .map_err(|_| McpError::Closed)?;
-        writer.flush().await.map_err(|_| McpError::Closed)
+        let write = async {
+            let mut writer = self.writer.lock().await;
+            writer.write_all(&line).await?;
+            writer.flush().await
+        };
+        match tokio::time::timeout(WRITE_TIMEOUT, write).await {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(_)) => Err(McpError::Closed),
+            Err(_) => {
+                self.close();
+                Err(McpError::Timeout)
+            }
+        }
     }
 
     async fn request(
@@ -303,6 +328,9 @@ async fn read_line_bounded<R: AsyncRead + Unpin>(
         if let Some(pos) = available.iter().position(|b| *b == b'\n') {
             buf.extend_from_slice(&available[..pos]);
             reader.consume(pos + 1);
+            if buf.len() > MAX_LINE_BYTES {
+                return Err(std::io::Error::other("line too long"));
+            }
             return Ok(true);
         }
         let len = available.len();
@@ -422,5 +450,23 @@ mod tests {
         assert_eq!(result.image(), Some(("iVBOR", "image/png")));
         assert_eq!(result.text(), "window_id=1");
         assert!(result.structured.is_none());
+    }
+
+    /// A driver that stops reading its input is given up on: the call fails
+    /// in bounded time instead of waiting on the pipe for ever, and the
+    /// client reports itself closed, so the next call starts another driver.
+    #[tokio::test(start_paused = true)]
+    async fn a_driver_that_stops_reading_is_given_up_on() {
+        let (client_side, server_side) = duplex(64);
+        let (client_read, client_write) = tokio::io::split(client_side);
+        let client = McpClient::start(client_read, client_write);
+        let big = "x".repeat(4096);
+        let err = client
+            .call_tool("get_window_state", json!({ "query": big }), Duration::from_secs(60))
+            .await
+            .unwrap_err();
+        assert_eq!(err, McpError::Timeout);
+        assert!(client.is_closed());
+        drop(server_side);
     }
 }

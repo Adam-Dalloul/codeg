@@ -8,16 +8,19 @@
 //! are closed on exec, its environment is a fixed few variables. Elsewhere it
 //! is an ordinary child on pipes.
 //!
-//! **Check.** The helper speaks first. On macOS codeg then asks the kernel who
-//! is on the other end of its socket and checks that process against the
-//! helper's designated requirement, compiled into release builds
-//! (`CODEG_COMPUTER_HELPER_REQUIREMENT`). The file at the helper's path is
-//! never what is checked — the bundle is writable by the user — the process
-//! that answered is.
+//! **Check.** A release codeg launches the helper under a launch requirement
+//! (this build's Team ID and the helper's identifier), so the kernel runs
+//! nothing else from that path — the bundle is writable by the user, and a
+//! wrapper started in the helper's place could keep a copy of the socket. The
+//! helper then speaks first; on macOS codeg asks the kernel who is on the
+//! other end of its socket and checks that process against the helper's
+//! designated requirement (`CODEG_COMPUTER_HELPER_REQUIREMENT`), and every
+//! later frame against the process it verified.
 //!
 //! **Life.** One helper per codeg, started on first use, restarted on the next
-//! call after it dies, stopped when computer use is switched off. It exits on
-//! its own when codeg does: its stdin closes.
+//! call after it dies, stopped when computer use is switched off — and not
+//! started again until it is switched back on, whatever call was already on
+//! its way. It exits on its own when codeg does: its stdin closes.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -40,6 +43,24 @@ use super::types::VerifyRequest;
 
 /// The helper's designated requirement, compiled into release builds.
 pub const HELPER_REQUIREMENT: Option<&str> = option_env!("CODEG_COMPUTER_HELPER_REQUIREMENT");
+
+/// This build's Team ID, compiled into release builds with the requirement:
+/// the helper is launched only as a Developer ID build of this team.
+pub const HELPER_TEAM_ID: Option<&str> = option_env!("CODEG_COMPUTER_TEAM_ID");
+
+/// The helper's signing identifier (its designated requirement names it too).
+pub const HELPER_SIGNING_ID: &str = "codeg-computer-helper";
+
+// A release build pins both or neither: a requirement checked after launch
+// without the launch requirement would let a wrapper run first.
+const _: () = assert!(
+    HELPER_REQUIREMENT.is_some() == HELPER_TEAM_ID.is_some(),
+    "CODEG_COMPUTER_HELPER_REQUIREMENT and CODEG_COMPUTER_TEAM_ID are set together"
+);
+
+/// How long one request may take to go out. A helper that stops reading is
+/// wedged, and half a frame on the socket cannot be taken back.
+const WRITE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// How long a freshly launched helper has to say it is ready.
 const READY_TIMEOUT: Duration = Duration::from_secs(15);
@@ -86,6 +107,8 @@ struct Connection {
     pending: Pending,
     next_id: AtomicU64,
     closed: watch::Receiver<bool>,
+    /// A write that did not finish: the socket is no longer framed.
+    broken: AtomicBool,
     peer: PeerCheck,
     child: HelperChild,
 }
@@ -123,7 +146,7 @@ impl HelperChild {
 
 impl Connection {
     fn is_closed(&self) -> bool {
-        *self.closed.borrow()
+        *self.closed.borrow() || self.broken.load(Ordering::Acquire)
     }
 
     async fn stop(&self) {
@@ -140,18 +163,28 @@ impl Connection {
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .insert(id, tx);
-        let sent = {
+        let sent = tokio::time::timeout(WRITE_TIMEOUT, async {
             let mut writer = self.writer.lock().await;
             write_frame(&mut *writer, &HelperRequest { id, op }).await
+        })
+        .await;
+        let failed = match sent {
+            Ok(Ok(())) => None,
+            Ok(Err(e)) => Some(format!("the helper went away: {e}")),
+            Err(_) => {
+                // Stopped reading: stop it, which wakes every caller waiting
+                // on it, and the next call starts a fresh one.
+                self.broken.store(true, Ordering::Release);
+                self.stop().await;
+                Some("the helper stopped reading".to_string())
+            }
         };
-        if let Err(e) = sent {
+        if let Some(why) = failed {
             self.pending
                 .lock()
                 .unwrap_or_else(|p| p.into_inner())
                 .remove(&id);
-            return Err(BackendError::Unavailable(format!(
-                "the helper went away: {e}"
-            )));
+            return Err(BackendError::Unavailable(why));
         }
         match tokio::time::timeout(REQUEST_TIMEOUT, rx).await {
             Ok(Ok(reply)) => Ok(reply),
@@ -167,9 +200,17 @@ impl Connection {
     }
 }
 
+/// The running helper, and whether one may be started.
+struct Slot {
+    connection: Option<Arc<Connection>>,
+    /// Closed while computer use is switched off: no helper is started, so a
+    /// read that was admitted just before the switch cannot bring one back.
+    open: bool,
+}
+
 /// The helper backend. See the module note.
 pub struct LocalBackend {
-    connection: Mutex<Option<Arc<Connection>>>,
+    slot: Mutex<Slot>,
     status: StdMutex<BackendStatus>,
     on_status: Box<dyn Fn(&BackendStatus) + Send + Sync>,
     /// Set after the cached driver was thrown away once for failing its
@@ -182,7 +223,10 @@ impl LocalBackend {
     /// `on_status` is told every status change, for the panel.
     pub fn new(on_status: impl Fn(&BackendStatus) + Send + Sync + 'static) -> Self {
         Self {
-            connection: Mutex::new(None),
+            slot: Mutex::new(Slot {
+                connection: None,
+                open: false,
+            }),
             status: StdMutex::new(BackendStatus {
                 state: BackendState::Idle,
                 detail: None,
@@ -205,9 +249,22 @@ impl LocalBackend {
         (self.on_status)(&snapshot);
     }
 
-    /// Stop the helper, if one is running. The next call starts a new one.
-    pub async fn shutdown(&self) {
-        let connection = self.connection.lock().await.take();
+    /// Allow a helper to be started (computer use is on). Starts none.
+    pub async fn open(&self) {
+        self.slot.lock().await.open = true;
+    }
+
+    /// Stop the helper, if one is running, and start none until [`open`] —
+    /// computer use was switched off. Taken under the same lock a start is
+    /// made under, so once this returns no helper runs and none will.
+    ///
+    /// [`open`]: Self::open
+    pub async fn close(&self) {
+        let connection = {
+            let mut slot = self.slot.lock().await;
+            slot.open = false;
+            slot.connection.take()
+        };
         if let Some(connection) = connection {
             connection.stop().await;
         }
@@ -217,17 +274,22 @@ impl LocalBackend {
     /// The running helper, launching (and first fetching the driver for) one
     /// if there is none.
     async fn connection(&self) -> Result<Arc<Connection>, BackendError> {
-        let mut slot = self.connection.lock().await;
-        if let Some(connection) = slot.as_ref().filter(|c| !c.is_closed()) {
+        let mut slot = self.slot.lock().await;
+        if !slot.open {
+            return Err(BackendError::Unavailable(
+                "computer use is switched off".into(),
+            ));
+        }
+        if let Some(connection) = slot.connection.as_ref().filter(|c| !c.is_closed()) {
             return Ok(connection.clone());
         }
-        if let Some(dead) = slot.take() {
+        if let Some(dead) = slot.connection.take() {
             dead.stop().await;
         }
         match self.connect().await {
             Ok(connection) => {
                 self.set_status(BackendState::Ready, None, Some(connection.peer));
-                *slot = Some(connection.clone());
+                slot.connection = Some(connection.clone());
                 Ok(connection)
             }
             Err(e) => {
@@ -292,7 +354,8 @@ impl LocalBackend {
             e.message
         );
         if !self.redownloaded.swap(true, Ordering::AcqRel) {
-            if let Some(connection) = self.connection.lock().await.take() {
+            let connection = self.slot.lock().await.connection.take();
+            if let Some(connection) = connection {
                 connection.stop().await;
             }
             if let Err(clear) = driver::forget_cached_driver() {
@@ -414,16 +477,30 @@ async fn launch(path: &std::path::Path) -> Result<Arc<Connection>, BackendError>
         )
         .await);
     }
-    if let Err(why) = check_helper(peer_fd, ready.peer) {
-        return Err(abandon(child, &why).await);
-    }
+    let verified = match check_helper(peer_fd, ready.peer) {
+        Ok(verified) => verified,
+        Err(why) => return Err(abandon(child, &why).await),
+    };
 
     let pending: Pending = Arc::new(StdMutex::new(HashMap::new()));
     let (closed_tx, closed_rx) = watch::channel(false);
     let reader_pending = pending.clone();
     tokio::spawn(async move {
         loop {
-            match read_frame::<_, HelperMessage>(&mut reader).await {
+            let frame = read_frame::<_, HelperMessage>(&mut reader).await;
+            // Whoever wrote to the helper's end last must still be the helper
+            // that was checked. Anyone else holding that end — a process the
+            // helper was never meant to share it with — is a forger.
+            if let Some(verified) = &verified {
+                if !verified.still_peer() {
+                    tracing::error!(
+                        "[computer] a process other than the checked helper wrote to its \
+                         socket; dropping the connection"
+                    );
+                    break;
+                }
+            }
+            match frame {
                 Ok(HelperMessage::Reply(reply)) => {
                     let tx = reader_pending
                         .lock()
@@ -449,6 +526,7 @@ async fn launch(path: &std::path::Path) -> Result<Arc<Connection>, BackendError>
         pending,
         next_id: AtomicU64::new(1),
         closed: closed_rx,
+        broken: AtomicBool::new(false),
         peer: ready.peer,
         child,
     }))
@@ -481,6 +559,9 @@ fn spawn_helper(path: &std::path::Path) -> Result<(HelperChild, Io, PeerFd), Bac
         "PATH".to_string(),
         "/usr/bin:/bin:/usr/sbin:/sbin".to_string(),
     )];
+    let requirement = HELPER_TEAM_ID
+        .filter(|team| !team.trim().is_empty())
+        .map(|team| super::launch_req::signed_by(team, HELPER_SIGNING_ID));
     let child = spawn(&SpawnSpec {
         program: path,
         args: &[],
@@ -492,6 +573,7 @@ fn spawn_helper(path: &std::path::Path) -> Result<(HelperChild, Io, PeerFd), Bac
         ],
         disclaim: true,
         suspended: false,
+        launch_requirement: requirement.as_deref(),
     })
     .map_err(|e| unavailable("could not start the helper", e))?;
     drop(theirs);
@@ -504,8 +586,9 @@ fn spawn_helper(path: &std::path::Path) -> Result<(HelperChild, Io, PeerFd), Bac
     };
     let (reader, writer) = to_tokio(ours)?.into_split();
     let (err_reader, _) = to_tokio(err_ours)?.into_split();
-    // `peer_fd` stays valid for as long as the split halves live, which is as
-    // long as the connection does; it is only read before `launch` returns.
+    // `peer_fd` stays valid for as long as the split halves live: the read
+    // half is owned by the reader task, the only place it is read after
+    // `launch` returns.
     Ok((
         HelperChild::Mac(child),
         (Box::new(reader), Box::new(writer), Box::new(err_reader)),
@@ -540,13 +623,40 @@ fn spawn_helper(path: &std::path::Path) -> Result<(HelperChild, Io, PeerFd), Bac
     ))
 }
 
-/// Check the process that sent the first frame is our helper.
+/// The helper as checked: the process on the other end of the socket when
+/// its first frame arrived.
+struct VerifiedPeer {
+    #[cfg(target_os = "macos")]
+    fd: i32,
+    #[cfg(target_os = "macos")]
+    token: super::codesign::AuditToken,
+}
+
+impl VerifiedPeer {
+    /// Whether the last process to use the helper's end of the socket is
+    /// still the one that was checked (same pid, same incarnation of it).
+    fn still_peer(&self) -> bool {
+        #[cfg(target_os = "macos")]
+        {
+            super::codesign::peer_audit_token(self.fd).is_ok_and(|now| {
+                now.pid() == self.token.pid() && now.pid_version() == self.token.pid_version()
+            })
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            true
+        }
+    }
+}
+
+/// Check the process that sent the first frame is our helper. `None` for a
+/// development build, which checks nothing.
 #[cfg(target_os = "macos")]
-fn check_helper(peer_fd: PeerFd, peer: PeerCheck) -> Result<(), String> {
+fn check_helper(peer_fd: PeerFd, peer: PeerCheck) -> Result<Option<VerifiedPeer>, String> {
     use super::codesign::{check_guest, peer_audit_token, Guest};
     let Some(requirement) = HELPER_REQUIREMENT.filter(|r| !r.trim().is_empty()) else {
         tracing::warn!("[computer] development build: not checking the helper's signature");
-        return Ok(());
+        return Ok(None);
     };
     // A release codeg only ever launches a release helper, which checks
     // codeg in turn; one that did not is not the helper that shipped.
@@ -560,12 +670,13 @@ fn check_helper(peer_fd: PeerFd, peer: PeerCheck) -> Result<(), String> {
     let info = check_guest(Guest::Audit(token), requirement)
         .map_err(|e| format!("the helper is not codeg's: {e}"))?;
     info.entitlements_clean()
-        .map_err(|e| format!("the helper is not one codeg trusts: {e}"))
+        .map_err(|e| format!("the helper is not one codeg trusts: {e}"))?;
+    Ok(Some(VerifiedPeer { fd, token }))
 }
 
 #[cfg(not(target_os = "macos"))]
-fn check_helper(_peer_fd: PeerFd, _peer: PeerCheck) -> Result<(), String> {
-    Ok(())
+fn check_helper(_peer_fd: PeerFd, _peer: PeerCheck) -> Result<Option<VerifiedPeer>, String> {
+    Ok(None)
 }
 
 /// The helper's stderr (and, through it, the driver's) into codeg's log.
@@ -615,6 +726,12 @@ mod tests {
         let backend = LocalBackend::new(move |s: &BackendStatus| {
             seen.lock().unwrap().push(s.state);
         });
+        // Closed until computer use is on.
+        assert!(matches!(
+            backend.permissions().await,
+            Err(BackendError::Unavailable(_))
+        ));
+        backend.open().await;
         temp_env::async_with_vars(
             [
                 (
@@ -644,8 +761,13 @@ mod tests {
         .await;
         assert_eq!(backend.status().await.state, BackendState::Ready);
         assert_eq!(backend.status().await.peer, Some(PeerCheck::Development));
-        backend.shutdown().await;
+        backend.close().await;
         assert!(states.lock().unwrap().contains(&BackendState::Starting));
+        // And stays closed: nothing starts a helper again until it is opened.
+        assert!(matches!(
+            backend.list_apps().await,
+            Err(BackendError::Unavailable(_))
+        ));
     }
 
     /// A debug build takes the helper from `CODEG_COMPUTER_HELPER_BIN` when

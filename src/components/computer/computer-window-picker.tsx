@@ -17,7 +17,7 @@
  * and a level that promised one would be a decision about nothing.
  */
 
-import { useCallback, useEffect, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import { useTranslations } from "next-intl"
 import { AppWindow, Eye, Loader2, RotateCw, ShieldOff } from "lucide-react"
 
@@ -36,7 +36,11 @@ import {
   computerShareWindow,
   computerWindowThumbnail,
 } from "@/lib/computer/computer-api"
-import { setComputerShared } from "@/lib/computer/computer-store"
+import {
+  computerStoreMark,
+  setComputerSharedSince,
+  useComputerStore,
+} from "@/lib/computer/computer-store"
 import type { PickerWindow } from "@/lib/computer/types"
 import { cn } from "@/lib/utils"
 
@@ -88,15 +92,25 @@ export function ComputerWindowPicker({
   onOpenChange: (open: boolean) => void
 }) {
   const t = useTranslations("ComputerUse.picker")
+  // Whether a window is shared is read from the live store, not from the list
+  // as it was fetched: a grant can end (it lapses, another window stops it)
+  // while the picker is open.
+  const { shared } = useComputerStore()
+  const sharedIds = new Set(shared.map((w) => w.targetId))
   const [windows, setWindows] = useState<PickerWindow[] | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
+  /** The latest load; an older one that answers late is dropped. */
+  const loadSeqRef = useRef(0)
 
   const load = useCallback(async () => {
+    const seq = ++loadSeqRef.current
     setError(null)
     try {
-      setWindows(await computerListShareableWindows())
+      const listed = await computerListShareableWindows()
+      if (seq === loadSeqRef.current) setWindows(listed)
     } catch (e) {
+      if (seq !== loadSeqRef.current) return
       setError(toErrorMessage(e))
       setWindows([])
     }
@@ -110,18 +124,14 @@ export function ComputerWindowPicker({
   }, [open, load])
 
   const toggle = async (item: PickerWindow) => {
-    const next = item.level === "none" ? "read" : "none"
+    const next = sharedIds.has(item.targetId) ? "none" : "read"
+    const mark = computerStoreMark()
     setBusy(item.targetId)
     setError(null)
     try {
-      const shared = await computerShareWindow(item.targetId, next)
-      setComputerShared(shared)
-      setWindows((prev) =>
-        prev
-          ? prev.map((w) =>
-              w.targetId === item.targetId ? { ...w, level: next } : w
-            )
-          : prev
+      setComputerSharedSince(
+        await computerShareWindow(item.targetId, next),
+        mark
       )
     } catch (e) {
       setError(toErrorMessage(e))
@@ -173,13 +183,13 @@ export function ComputerWindowPicker({
           ) : (
             <div className="grid grid-cols-2 gap-3 pr-3 sm:grid-cols-3">
               {windows.map((w) => {
-                const shared = w.level !== "none"
+                const isShared = sharedIds.has(w.targetId)
                 return (
                   <div
                     key={w.targetId}
                     className={cn(
                       "flex flex-col gap-2 rounded-lg border p-2",
-                      shared && "border-violet-500/60 bg-violet-500/5",
+                      isShared && "border-violet-500/60 bg-violet-500/5",
                       w.notGrantable && "opacity-60"
                     )}
                   >
@@ -205,14 +215,12 @@ export function ComputerWindowPicker({
                     {w.notGrantable ? (
                       <p className="flex items-center gap-1 text-2xs text-muted-foreground">
                         <ShieldOff className="size-3 shrink-0" />
-                        {w.notGrantable === "codeg"
-                          ? t("notGrantable.codeg")
-                          : t("notGrantable.blocklisted")}
+                        {t(`notGrantable.${w.notGrantable}`)}
                       </p>
                     ) : (
                       <Button
                         size="sm"
-                        variant={shared ? "outline" : "default"}
+                        variant={isShared ? "outline" : "default"}
                         disabled={busy === w.targetId}
                         onClick={() => void toggle(w)}
                       >
@@ -221,7 +229,7 @@ export function ComputerWindowPicker({
                         ) : (
                           <Eye className="size-3.5" />
                         )}
-                        {shared ? t("stopSharing") : t("share")}
+                        {isShared ? t("stopSharing") : t("share")}
                       </Button>
                     )}
                   </div>

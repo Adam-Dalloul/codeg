@@ -31,6 +31,7 @@ pub mod ops;
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use tokio::sync::{mpsc, Mutex};
@@ -79,10 +80,14 @@ pub fn run(prompts: impl PermissionPrompts) -> i32 {
 
     // Everything the helper writes lives under its own directory; being there
     // keeps the driver (which inherits the working directory) out of wherever
-    // codeg happened to be started. Done before any thread exists.
+    // codeg happened to be started. Done before any thread exists, and not
+    // optional: a helper that stayed where it was started would hand that
+    // directory to the driver.
     if let Some(dir) = driver_proc::helper_data_dir() {
-        if std::fs::create_dir_all(&dir).is_ok() {
-            let _ = std::env::set_current_dir(&dir);
+        if let Err(e) = std::fs::create_dir_all(&dir).and_then(|_| std::env::set_current_dir(&dir))
+        {
+            tracing::error!("could not move to {}: {e}", dir.display());
+            return EXIT_FAILED;
         }
     }
 
@@ -105,7 +110,7 @@ pub fn run(prompts: impl PermissionPrompts) -> i32 {
                 return EXIT_FAILED;
             }
         };
-        serve(reader, writer, channel.peer, Arc::new(prompts)).await
+        serve(reader, writer, channel.peer, channel.guard, Arc::new(prompts)).await
     })
 }
 
@@ -139,6 +144,33 @@ impl RawChannel {
 struct Channel {
     raw: RawChannel,
     peer: PeerCheck,
+    guard: Option<PeerGuard>,
+}
+
+/// The codeg that was checked, for checking every request against.
+///
+/// The kernel's peer token names the last process to have used the other end
+/// of the socket, not the one that created it — so a single check at start
+/// would vouch for whoever wrote next. Each request is held to the process
+/// that passed the check: same pid, same incarnation of it.
+pub struct PeerGuard {
+    #[cfg(target_os = "macos")]
+    token: super::codesign::AuditToken,
+}
+
+impl PeerGuard {
+    fn still_peer(&self) -> bool {
+        #[cfg(target_os = "macos")]
+        {
+            super::codesign::peer_audit_token(0).is_ok_and(|now| {
+                now.pid() == self.token.pid() && now.pid_version() == self.token.pid_version()
+            })
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            true
+        }
+    }
 }
 
 /// Decide who is on the other end of stdin, before anything is read from it.
@@ -148,15 +180,17 @@ fn open_channel() -> Result<Channel, (i32, String)> {
 
     let requirement = PEER_REQUIREMENT.filter(|r| !r.trim().is_empty());
     if requirement.is_none() {
-        if let Ok(me) = self_info() {
-            if me.team_id.is_some() {
-                return Err((
-                    EXIT_UNANCHORED,
-                    "this helper is signed with a Team ID but was built without codeg's \
-                     designated requirement; it would serve any caller"
-                        .into(),
-                ));
-            }
+        // A helper that cannot tell whether it is a release build is treated
+        // as one.
+        let me = self_info()
+            .map_err(|e| (EXIT_UNANCHORED, format!("cannot read my own signature: {e}")))?;
+        if me.team_id.is_some() {
+            return Err((
+                EXIT_UNANCHORED,
+                "this helper is signed with a Team ID but was built without codeg's \
+                 designated requirement; it would serve any caller"
+                    .into(),
+            ));
         }
     }
 
@@ -168,11 +202,12 @@ fn open_channel() -> Result<Channel, (i32, String)> {
                 Ok(Channel {
                     raw: RawChannel::Stdio,
                     peer: PeerCheck::Development,
+                    guard: None,
                 })
             }
         };
     }
-    let peer = match requirement {
+    let (peer, guard) = match requirement {
         Some(requirement) => {
             // Replies go back down the socket the requests came in on, never
             // to a descriptor someone else wired up as stdout.
@@ -181,6 +216,23 @@ fn open_channel() -> Result<Channel, (i32, String)> {
             }
             let token = peer_audit_token(0)
                 .map_err(|e| (EXIT_PEER_REFUSED, format!("no peer token: {e}")))?;
+            // The codeg this helper serves is the one that launched it: the
+            // peer must be this process's parent. Otherwise a process could
+            // get a genuine codeg to write once into a socket of its own
+            // making and start the helper on the other end — the token would
+            // name that codeg, and the helper would serve whoever started it.
+            // SAFETY: getppid cannot fail.
+            let parent = unsafe { libc::getppid() };
+            if i64::from(token.pid()) != i64::from(parent) {
+                return Err((
+                    EXIT_PEER_REFUSED,
+                    format!(
+                        "the peer (pid {}) is not the process that launched this helper \
+                         (pid {parent})",
+                        token.pid()
+                    ),
+                ));
+            }
             let info = check_guest(Guest::Audit(token), requirement)
                 .map_err(|e| (EXIT_PEER_REFUSED, format!("the peer is not codeg: {e}")))?;
             info.entitlements_clean().map_err(|e| {
@@ -189,11 +241,11 @@ fn open_channel() -> Result<Channel, (i32, String)> {
                     format!("the peer is not a codeg this helper serves: {e}"),
                 )
             })?;
-            PeerCheck::Verified
+            (PeerCheck::Verified, Some(PeerGuard { token }))
         }
         None => {
             tracing::warn!("development build: serving without checking the peer's signature");
-            PeerCheck::Development
+            (PeerCheck::Development, None)
         }
     };
     // SAFETY: fd 0 is a socket (checked above) that this process owns for its
@@ -205,6 +257,7 @@ fn open_channel() -> Result<Channel, (i32, String)> {
     Ok(Channel {
         raw: RawChannel::Socket(socket),
         peer,
+        guard,
     })
 }
 
@@ -213,6 +266,7 @@ fn open_channel() -> Result<Channel, (i32, String)> {
     Ok(Channel {
         raw: RawChannel::Stdio,
         peer: PeerCheck::NotApplicable,
+        guard: None,
     })
 }
 
@@ -413,11 +467,19 @@ fn encode(message: &HelperMessage) -> Vec<u8> {
     .unwrap_or_default()
 }
 
+/// How long, once codeg has gone, the driver gets to stop before the helper
+/// exits anyway (the driver then sees its stdin close and exits on its own).
+const SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
+
 /// Serve requests until codeg closes its end. Returns the exit code.
+///
+/// `guard`, when there is one, is asked before each request is acted on;
+/// a request from anyone but the codeg that was checked ends the session.
 pub async fn serve(
     mut reader: Box<dyn AsyncRead + Send + Unpin>,
     mut writer: Box<dyn AsyncWrite + Send + Unpin>,
     peer: PeerCheck,
+    guard: Option<PeerGuard>,
     prompts: Arc<dyn PermissionPrompts>,
 ) -> i32 {
     let (tx, mut rx) = mpsc::unbounded_channel::<HelperMessage>();
@@ -459,6 +521,11 @@ pub async fn serve(
                 break;
             }
         };
+        if guard.as_ref().is_some_and(|g| !g.still_peer()) {
+            tracing::error!("a request came from a process other than the codeg that was checked");
+            code = EXIT_PEER_REFUSED;
+            break;
+        }
         let state = state.clone();
         let tx = tx.clone();
         tokio::spawn(async move {
@@ -473,9 +540,16 @@ pub async fn serve(
             let _ = tx.send(HelperMessage::Reply(reply));
         });
     }
-    state.shutdown().await;
-    drop(tx);
-    let _ = writer_task.await;
+    // codeg is gone (or refused): stop the driver, and do not wait on the
+    // requests still in flight — one may be parked on a permission prompt
+    // the person never answers, and nobody is left to answer anyway.
+    if tokio::time::timeout(SHUTDOWN_GRACE, state.shutdown())
+        .await
+        .is_err()
+    {
+        tracing::warn!("the driver did not stop in time; leaving it to its closed stdin");
+    }
+    writer_task.abort();
     code
 }
 
@@ -501,6 +575,7 @@ mod tests {
             Box::new(their_read),
             Box::new(their_write),
             PeerCheck::Development,
+            None,
             Arc::new(NoPrompts),
         ));
         (task, our_write, our_read)
@@ -601,5 +676,49 @@ mod tests {
         };
         assert_eq!(reply.id, 9);
         assert!(reply.error.unwrap().message.contains("more than"));
+    }
+
+    struct ParkedPrompts(std::sync::Mutex<std::sync::mpsc::Receiver<()>>);
+    impl PermissionPrompts for ParkedPrompts {
+        fn request(&self, _permission: OsPermission) {
+            let _ = self.0.lock().unwrap().recv();
+        }
+    }
+
+    /// A request that never finishes — a permission prompt nobody answers —
+    /// does not keep the helper alive once codeg has gone.
+    #[tokio::test]
+    async fn the_helper_leaves_with_codeg_even_mid_request() {
+        let (release, parked) = std::sync::mpsc::channel::<()>();
+        let (ours, theirs) = tokio::io::duplex(1 << 20);
+        let (their_read, their_write) = tokio::io::split(theirs);
+        let (mut from_helper, mut to_helper) = tokio::io::split(ours);
+        let task = tokio::spawn(serve(
+            Box::new(their_read),
+            Box::new(their_write),
+            PeerCheck::Development,
+            None,
+            Arc::new(ParkedPrompts(std::sync::Mutex::new(parked))),
+        ));
+        let _ready: HelperMessage = read_frame(&mut from_helper).await.unwrap();
+        write_frame(
+            &mut to_helper,
+            &HelperRequest {
+                id: 1,
+                op: HelperOp::RequestPermission {
+                    permission: OsPermission::Accessibility,
+                },
+            },
+        )
+        .await
+        .unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        to_helper.shutdown().await.unwrap();
+        let code = tokio::time::timeout(Duration::from_secs(10), task)
+            .await
+            .expect("the helper exits")
+            .unwrap();
+        assert_eq!(code, EXIT_OK);
+        drop(release);
     }
 }

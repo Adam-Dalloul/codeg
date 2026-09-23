@@ -5196,7 +5196,8 @@
       "minimized": "minimiert",
       "notGrantable": {
         "codeg": "Fenster von codeg",
-        "blocklisted": "Nicht freigebbar"
+        "blocklisted": "Nicht freigebbar",
+        "unidentified": "App nicht identifizierbar"
       },
       "share": "Freigeben",
       "stopSharing": "Freigabe beenden"

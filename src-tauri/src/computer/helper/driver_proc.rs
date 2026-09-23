@@ -3,11 +3,17 @@
 //! On macOS the driver runs with the helper's TCC grants, which makes three
 //! things about how it is started part of the security boundary:
 //!
-//! * **What runs.** The file is hashed against the pinned digest, then started
-//!   suspended, and the *running image* is checked against the designated
-//!   requirement plus the pinned cdhash, the hardened-runtime flag and the
-//!   exact entitlement list before it is allowed its first instruction.
-//!   Anything else is killed while still suspended.
+//! * **What runs.** The file is hashed against the pinned digest (which
+//!   catches a damaged download early), then spawned under a launch
+//!   requirement naming trycua's Team ID, the driver's identifier and the
+//!   pinned cdhashes — the kernel kills any other image at `exec`, before it
+//!   runs, which is what holds even if the file is swapped after it was
+//!   hashed. The child starts suspended, and the *running image* is checked
+//!   again (designated requirement plus cdhash, hardened runtime, the exact
+//!   entitlement list) before it is resumed. Where the kernel cannot take a
+//!   launch requirement (macOS before 14.4) the driver is not started at
+//!   all: the suspended check alone is not a gate, because any process of
+//!   the user's may resume a suspended child.
 //! * **What it finds on `PATH`.** The driver runs `plutil`, `ps` and
 //!   `osascript` by bare name. codeg's own `PATH` carries directories the user
 //!   (and so any agent) can write — the login shell's, `~/.codeg/npm-global/bin`
@@ -297,6 +303,7 @@ impl DriverProc {
             UnixStream::pair().map_err(|e| unavailable(format!("socketpair: {e}")))?;
         let (err_ours, err_theirs) =
             UnixStream::pair().map_err(|e| unavailable(format!("socketpair: {e}")))?;
+        let requirement = driver_launch_requirement()?;
         let child = spawn(&SpawnSpec {
             program: path,
             args: &["mcp", "--direct", "--no-overlay"],
@@ -310,6 +317,7 @@ impl DriverProc {
             // is the whole reason it runs under the helper.
             disclaim: false,
             suspended: true,
+            launch_requirement: Some(&requirement),
         })
         .map_err(|e| unavailable(format!("could not start the driver: {e}")))?;
         drop(io_theirs);
@@ -450,6 +458,18 @@ impl DriverProc {
     }
 }
 
+/// The kernel-held form of the pins: trycua's Developer ID, the driver's
+/// identifier, one of the pinned builds.
+#[cfg(target_os = "macos")]
+fn driver_launch_requirement() -> Result<Vec<u8>, HelperError> {
+    crate::computer::launch_req::pinned_build(
+        driver::DRIVER_TEAM_ID,
+        driver::DRIVER_SIGNING_ID,
+        driver::DRIVER_CDHASHES,
+    )
+    .ok_or_else(|| rejected("the driver's pinned cdhashes are malformed"))
+}
+
 /// Everything the running image must be. See the module note.
 #[cfg(target_os = "macos")]
 fn verify_running_driver(pid: u32) -> Result<(), String> {
@@ -553,6 +573,7 @@ mod tests {
             stdio: [ChildFd::Null, ChildFd::Null, ChildFd::Null],
             disclaim: false,
             suspended: true,
+            launch_requirement: None,
         })
         .unwrap();
         let verdict = verify_running_driver(child.pid());
@@ -560,6 +581,35 @@ mod tests {
         let _ = child.wait().await;
         let why = verdict.unwrap_err();
         assert!(why.contains("not the pinned build"), "{why}");
+    }
+
+    /// Under the driver's launch requirement no other image runs at all —
+    /// the kernel kills it at `exec`, so resuming it (as any process of the
+    /// user's could) resumes nothing.
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn the_kernel_refuses_any_image_but_the_pinned_driver() {
+        use crate::computer::spawn::{spawn, ChildFd, SpawnSpec};
+        if !crate::computer::launch_req::supported() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("ran");
+        let script = format!("touch '{}'", marker.display());
+        let requirement = driver_launch_requirement().unwrap();
+        let child = spawn(&SpawnSpec {
+            program: Path::new("/bin/sh"),
+            args: &["-c", &script],
+            env: &[],
+            stdio: [ChildFd::Null, ChildFd::Null, ChildFd::Null],
+            disclaim: false,
+            suspended: true,
+            launch_requirement: Some(&requirement),
+        })
+        .unwrap();
+        let _ = child.resume();
+        assert_eq!(child.wait().await, Some(-libc::SIGKILL));
+        assert!(!marker.exists());
     }
 
     /// A file that is not the pinned build is refused before anything is

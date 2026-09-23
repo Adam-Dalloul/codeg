@@ -303,11 +303,14 @@ jobs:
       # Computer use on macOS: codeg and codeg-computer-helper each check the
       # other's code signature at run time, against a designated requirement
       # compiled into the binary (never read from the bundle, which the user
-      # can write to). Both requirements name this release's Team ID, so they
-      # are pinned here, before anything is compiled, for every later step:
-      # the helper is built by prepare-sidecars (it checks codeg), codeg by
-      # tauri-action (it checks the helper). A helper built without its
-      # requirement refuses to start once it is Developer-ID signed.
+      # can write to), and codeg launches the helper under a launch
+      # requirement naming this Team ID, so the kernel runs nothing else from
+      # the helper's path. All of it names this release's Team ID, so it is
+      # pinned here, before anything is compiled, for every later step: the
+      # helper is built by prepare-sidecars (it checks codeg), codeg by
+      # tauri-action (it checks and launches the helper). A helper built
+      # without its requirement refuses to start once it is Developer-ID
+      # signed, and codeg will not build with one pin and not the other.
       - name: Pin computer-use trust anchors (macOS)
         if: contains(matrix.target, 'apple-darwin')
         shell: bash
@@ -321,6 +324,7 @@ jobs:
           anchor="anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] /* exists */ and certificate leaf[field.1.2.840.113635.100.6.1.13] /* exists */ and certificate leaf[subject.OU] = \"${APPLE_TEAM_ID}\""
           echo "CODEG_COMPUTER_PEER_REQUIREMENT=identifier \"app.codeg\" and ${anchor}" >> "$GITHUB_ENV"
           echo "CODEG_COMPUTER_HELPER_REQUIREMENT=identifier \"codeg-computer-helper\" and ${anchor}" >> "$GITHUB_ENV"
+          echo "CODEG_COMPUTER_TEAM_ID=${APPLE_TEAM_ID}" >> "$GITHUB_ENV"
 
       # Build the sidecars — the `codeg-mcp` companion and the
       # `codeg-computer-helper` computer-use executor — for the matrix target

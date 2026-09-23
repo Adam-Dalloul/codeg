@@ -150,15 +150,17 @@ export function AgentToolsSettingsSection() {
     valuesRef.current = values
     baselineRef.current = baseline
   }, [values, baseline])
-  /** Bumped by every broadcast. The initial load samples it before its reads
-   * and, if it moved while they were in flight, yields the create-from-chat
-   * fields to the broadcast — those reads are older than it. */
-  const remoteGenRef = useRef(0)
+  /** Bumped by every broadcast, one count per settings record. The initial
+   * load samples them before its reads and, for a record whose count moved
+   * while they were in flight, yields that record's fields to the broadcast —
+   * that read is older than it. A broadcast about one record says nothing
+   * about another's read. */
+  const remoteGenRef = useRef({ chat: 0, browser: 0, computer: 0 })
 
   useEffect(() => {
     let cancelled = false
     void (async () => {
-      const gen = remoteGenRef.current
+      const gen = { ...remoteGenRef.current }
       const [feedback, question, sessionInfo, browserTools, computer, chat] =
         await Promise.allSettled([
           getFeedbackSettings(),
@@ -195,22 +197,21 @@ export function AgentToolsSettingsSection() {
         next.workTasks = chat.value.work_tasks_enabled
       } else failures.push(toErrorMessage(chat.reason))
 
-      const supersededByBroadcast = remoteGenRef.current !== gen
+      const moved = remoteGenRef.current
       // `prev` already holds the broadcast's value for the fields a broadcast
-      // can carry (or the user's pending edit, in `values`), so keeping it is
+      // carried (or the user's pending edit, in `values`), so keeping it is
       // the merge. These are exactly the switches the status-bar popover can
       // also write — a read that started before that write is older than it.
-      const keepBroadcast = (prev: AgentToolValues): AgentToolValues =>
-        supersededByBroadcast
-          ? {
-              ...next,
-              automations: prev.automations,
-              workTasks: prev.workTasks,
-              browserTools: prev.browserTools,
-              browserEval: prev.browserEval,
-              computer: prev.computer,
-            }
-          : next
+      const keepBroadcast = (prev: AgentToolValues): AgentToolValues => ({
+        ...next,
+        ...(moved.chat !== gen.chat
+          ? { automations: prev.automations, workTasks: prev.workTasks }
+          : {}),
+        ...(moved.browser !== gen.browser
+          ? { browserTools: prev.browserTools, browserEval: prev.browserEval }
+          : {}),
+        ...(moved.computer !== gen.computer ? { computer: prev.computer } : {}),
+      })
       setValues(keepBroadcast)
       setBaseline(keepBroadcast)
       setLoadError(failures.length > 0 ? failures.join("; ") : null)
@@ -239,7 +240,7 @@ export function AgentToolsSettingsSection() {
     void subscribe<ChatAuthoringSettings>(
       CHAT_AUTHORING_SETTINGS_CHANGED_EVENT,
       (remote) => {
-        remoteGenRef.current += 1
+        remoteGenRef.current.chat += 1
         const incoming = {
           automations: remote.automations_enabled,
           workTasks: remote.work_tasks_enabled,
@@ -284,7 +285,7 @@ export function AgentToolsSettingsSection() {
     void subscribe<BrowserToolsSettings>(
       BROWSER_TOOLS_SETTINGS_CHANGED_EVENT,
       (remote) => {
-        remoteGenRef.current += 1
+        remoteGenRef.current.browser += 1
         const incoming = {
           browserTools: remote.enabled,
           browserEval: remote.eval,
@@ -325,7 +326,7 @@ export function AgentToolsSettingsSection() {
     void subscribe<ComputerToolsSettings>(
       COMPUTER_TOOLS_SETTINGS_CHANGED_EVENT,
       (remote) => {
-        remoteGenRef.current += 1
+        remoteGenRef.current.computer += 1
         const current = valuesRef.current
         const base = baselineRef.current
         setValues((prev) =>
@@ -487,7 +488,10 @@ export function AgentToolsSettingsSection() {
                   onCheckedChange={(next) =>
                     setValues((prev) => ({ ...prev, [row.key]: next }))
                   }
-                  disabled={loading || !available}
+                  // Not while a save is on its way: its answer replaces the
+                  // switches it wrote, and a flip made meanwhile would be
+                  // overwritten without a trace.
+                  disabled={loading || saving || !available}
                 />
               }
             />

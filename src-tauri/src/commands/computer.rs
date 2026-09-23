@@ -13,11 +13,15 @@
 //!    not lapsed, and its application is not (or no longer) blocklisted.
 //! 3. **Identity.** The process that owned the window when it was shared is
 //!    still the one running under that pid — a relaunched application is a
-//!    different process whose windows nobody shared.
-//! 4. **Read, then check again.** The helper reads; then the grant is checked
-//!    once more under the same epoch, because the person may have taken it
-//!    back while the read was in flight, and the read holds exactly what they
-//!    took back.
+//!    different process whose windows nobody shared. Asked of the kernel by
+//!    codeg itself (a process's start time is not TCC-governed), not of the
+//!    helper.
+//! 4. **Read, then check again.** The helper reads; then everything above is
+//!    checked once more — the grant under the same epoch, the switch (not
+//!    switched off, not even off and on again, while the read was in flight),
+//!    the blocklist as it is now, and the identity — because the person may
+//!    have taken the window back while the read was in flight, and the read
+//!    holds exactly what they took back.
 //! 5. **Audit.** Every attempt — done, refused or failed — leaves a line on
 //!    the panel's activity list.
 //!
@@ -48,6 +52,7 @@ use crate::computer::backend::{BackendError, BackendStatus, ComputerBackend, Sna
 use crate::computer::events;
 use crate::computer::local::LocalBackend;
 use crate::computer::protocol::{OsPermission, PermissionReport};
+use crate::computer::procinfo::process_start;
 use crate::computer::targets::{ReadRefusal, ReadTicket, ShareError, SharedWindow, TargetTable};
 use crate::computer::types::{
     AgentAppRef, AgentAppSummary, Rect, VerifyOutcome, VerifyRequest, WindowCapture, WindowSnapshot,
@@ -158,6 +163,13 @@ fn permission_name(permission: OsPermission) -> &'static str {
     }
 }
 
+/// A read that passed steps 1–3, and what step 4 checks it against.
+struct Admitted {
+    ticket: ReadTicket,
+    /// The switch-off count when the read was admitted.
+    switched_off: u64,
+}
+
 /// The desktop's computer-use service. One per app, managed as Tauri state.
 pub struct ComputerService {
     app: AppHandle,
@@ -168,9 +180,10 @@ pub struct ComputerService {
 }
 
 impl ComputerService {
-    /// Build the service and start the two background duties it has: ending
-    /// every grant (and stopping the helper) when computer use is switched
-    /// off, and ending grants whose time runs out.
+    /// Build the service and start the two background duties it has:
+    /// following the settings (switching off ends every grant and stops the
+    /// helper; a longer blocklist or a shorter timeout ends what they now
+    /// forbid), and ending grants whose time runs out.
     pub fn start(app: AppHandle, config: ComputerToolsRuntimeConfig) -> Arc<Self> {
         let status_app = app.clone();
         let backend = Arc::new(LocalBackend::new(move |status: &BackendStatus| {
@@ -187,14 +200,22 @@ impl ComputerService {
         let watcher = Arc::downgrade(&service);
         let mut changes = config.subscribe();
         tauri::async_runtime::spawn(async move {
+            // The settings as they stand, then every change to them. A watch
+            // channel keeps only the latest value, so an off-and-on-again is
+            // told apart by the switch-off count, not by `enabled`.
+            let mut seen = changes.borrow_and_update().clone();
+            if let Some(service) = watcher.upgrade() {
+                service.follow(&seen, false).await;
+            }
             while changes.changed().await.is_ok() {
-                let enabled = changes.borrow_and_update().enabled;
+                let next = changes.borrow_and_update().clone();
                 let Some(service) = watcher.upgrade() else {
                     break;
                 };
-                if !enabled {
-                    service.switched_off().await;
-                }
+                service
+                    .follow(&next, next.switched_off != seen.switched_off)
+                    .await;
+                seen = next;
             }
         });
 
@@ -206,20 +227,40 @@ impl ComputerService {
                 let Some(service) = sweeper.upgrade() else {
                     break;
                 };
-                let ttl = service.config.snapshot().await.grant_ttl;
-                let ended = service.targets.expire(now_ms(), ttl);
-                service.announce(&ended);
+                service.sweep().await;
             }
         });
         service
     }
 
-    /// Computer use was switched off: every grant ends, and the helper (and
-    /// the driver under it) stops.
-    async fn switched_off(&self) {
-        let ended = self.targets.revoke_all(GrantChange::Disabled);
+    /// Bring the grants and the helper in line with `config`. `went_off`: the
+    /// switch was off at some point since the last call, even if it is on
+    /// again now.
+    async fn follow(&self, config: &ComputerToolsConfig, went_off: bool) {
+        if went_off || !config.enabled {
+            // Every grant ends, and the helper (and the driver under it)
+            // stops and is not started again while the switch is off.
+            let ended = self.targets.revoke_all(GrantChange::Disabled);
+            self.announce(&ended);
+            self.backend.close().await;
+        }
+        if config.enabled {
+            self.sweep().await;
+            self.backend.open().await;
+        }
+    }
+
+    /// End the grants the settings as they are now no longer allow: lapsed,
+    /// or on an application that has joined the blocklist.
+    async fn sweep(&self) {
+        let config = self.config.snapshot().await;
+        let ended = self.targets.sweep(
+            now_ms(),
+            config.grant_ttl,
+            &self.me,
+            &Blocklist::new(&config.blocklist),
+        );
         self.announce(&ended);
-        self.backend.shutdown().await;
     }
 
     /// Tell the panel about grant changes: each transition, then the state.
@@ -292,7 +333,7 @@ impl ComputerService {
     }
 
     /// Steps 1–3: everything that has to hold before the helper is asked.
-    async fn begin(&self, target_id: &str) -> Result<ReadTicket, Refusal> {
+    async fn begin(&self, target_id: &str) -> Result<Admitted, Refusal> {
         let config = self.usable().await?;
         let blocklist = Blocklist::new(&config.blocklist);
         let ticket = match self.targets.begin_read(
@@ -318,31 +359,63 @@ impl ComputerService {
                 });
             }
         };
-        // Step 3. A pid that no longer answers with the start time it had
-        // when the window was shared is a different process.
-        if let Some(started_at) = ticket.identity.started_at {
-            let now = self
-                .backend
-                .process_start(ticket.identity.pid)
-                .await
-                .map_err(|e| self.backend_refusal(Some(target_id), e))?;
-            if now != Some(started_at) {
-                let ended: Vec<_> = self.targets.target_changed(target_id).into_iter().collect();
-                self.announce(&ended);
-                return Err(Refusal::failed(
-                    ERROR_GRANT_REQUIRED,
-                    grant_required_note(target_id),
-                ));
-            }
-        }
-        Ok(ticket)
+        self.check_identity(&ticket)?;
+        Ok(Admitted {
+            ticket,
+            switched_off: config.switched_off,
+        })
     }
 
-    /// Step 4's second half.
-    fn finish(&self, ticket: &ReadTicket) -> Result<String, Refusal> {
-        self.targets.finish_read(ticket).map_err(|_| {
-            Refusal::refused(ERROR_GRANT_REQUIRED, grant_required_note(&ticket.target_id))
-        })
+    /// Step 3. A pid that no longer answers with the start time it had when
+    /// the window was shared is a different process. A window without a start
+    /// time cannot have been shared at all (`NotGrantable::Unidentified`).
+    fn check_identity(&self, ticket: &ReadTicket) -> Result<(), Refusal> {
+        let target_id = &ticket.target_id;
+        let Some(started_at) = ticket.identity.started_at else {
+            return Err(Refusal::refused(
+                ERROR_BLOCKED,
+                blocked_note(target_id, NotGrantable::Unidentified.note()),
+            ));
+        };
+        if process_start(ticket.identity.pid) != Some(started_at) {
+            let ended: Vec<_> = self.targets.target_changed(target_id).into_iter().collect();
+            self.announce(&ended);
+            return Err(Refusal::failed(
+                ERROR_GRANT_REQUIRED,
+                grant_required_note(target_id),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Step 4's second half: steps 1–3 again, against what the read began
+    /// under.
+    async fn finish(&self, admitted: &Admitted) -> Result<String, Refusal> {
+        let ticket = &admitted.ticket;
+        let refused =
+            || Refusal::refused(ERROR_GRANT_REQUIRED, grant_required_note(&ticket.target_id));
+        let config = self.usable().await?;
+        if config.switched_off != admitted.switched_off {
+            return Err(refused());
+        }
+        // Whatever process holds the pid now is the one the helper just read:
+        // if it is not the one the window was shared from, neither is what
+        // was read.
+        self.check_identity(ticket)?;
+        let blocklist = Blocklist::new(&config.blocklist);
+        match self.targets.finish_read(ticket, &self.me, &blocklist) {
+            Ok(generation) => Ok(generation),
+            Err((why, ended)) => {
+                self.announce(&ended.into_iter().collect::<Vec<_>>());
+                Err(match why {
+                    ReadRefusal::NotGrantable(why) => Refusal::refused(
+                        ERROR_BLOCKED,
+                        blocked_note(&ticket.target_id, why.note()),
+                    ),
+                    ReadRefusal::NoSuchTarget | ReadRefusal::GrantRequired => refused(),
+                })
+            }
+        }
     }
 
     /// The window's title as the agent may see it now.
@@ -393,6 +466,9 @@ impl ComputerService {
         let blocklist = Blocklist::new(&config.blocklist);
         match self.backend.list_windows(pid).await {
             Ok(windows) => {
+                // Grants that have already ended by the rules as they are now
+                // must not show — neither as a level nor as a title.
+                self.sweep().await;
                 let (entries, ended) = self.targets.observe(&windows, pid);
                 self.announce(&ended);
                 ComputerWindowsOutcome {
@@ -417,7 +493,8 @@ impl ComputerService {
         target_id: &str,
         max_dimension: Option<u32>,
     ) -> Result<WindowCapture, Refusal> {
-        let ticket = self.begin(target_id).await?;
+        let admitted = self.begin(target_id).await?;
+        let ticket = &admitted.ticket;
         let max = max_dimension
             .unwrap_or(DEFAULT_MAX_DIMENSION)
             .clamp(1, DEFAULT_MAX_DIMENSION);
@@ -426,7 +503,7 @@ impl ComputerService {
             .capture(ticket.identity.pid, ticket.identity.window_id, Some(max))
             .await
             .map_err(|e| self.backend_refusal(Some(target_id), e))?;
-        let generation = self.finish(&ticket)?;
+        let generation = self.finish(&admitted).await?;
         Ok(WindowCapture {
             target_id: target_id.to_string(),
             generation,
@@ -465,7 +542,8 @@ impl ComputerService {
         target_id: &str,
         request: SnapshotRequest,
     ) -> Result<WindowSnapshot, Refusal> {
-        let ticket = self.begin(target_id).await?;
+        let admitted = self.begin(target_id).await?;
+        let ticket = &admitted.ticket;
         let raw = self
             .backend
             .snapshot(
@@ -479,7 +557,7 @@ impl ComputerService {
             )
             .await
             .map_err(|e| self.backend_refusal(Some(target_id), e))?;
-        let generation = self.finish(&ticket)?;
+        let generation = self.finish(&admitted).await?;
         let (tree, cut) = cut_tree(
             &raw.tree,
             request.max_chars.unwrap_or(DEFAULT_SNAPSHOT_MAX_CHARS),
@@ -518,13 +596,14 @@ impl ComputerService {
         target_id: &str,
         request: VerifyRequest,
     ) -> Result<VerifyOutcome, Refusal> {
-        let ticket = self.begin(target_id).await?;
+        let admitted = self.begin(target_id).await?;
+        let ticket = &admitted.ticket;
         let raw = self
             .backend
             .verify(ticket.identity.pid, ticket.identity.window_id, request)
             .await
             .map_err(|e| self.backend_refusal(Some(target_id), e))?;
-        self.finish(&ticket)?;
+        self.finish(&admitted).await?;
         Ok(VerifyOutcome {
             target_id: target_id.to_string(),
             status: raw.status,
@@ -720,6 +799,7 @@ pub async fn computer_list_shareable_windows(
         .list_windows(None)
         .await
         .map_err(backend_error)?;
+    service.sweep().await;
     let (entries, ended) = service.targets.observe(&windows, None);
     service.announce(&ended);
     Ok(entries

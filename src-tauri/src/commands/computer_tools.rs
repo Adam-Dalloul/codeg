@@ -68,6 +68,8 @@ impl ComputerToolsSettings {
             grant_ttl: (self.grant_ttl_minutes > 0)
                 .then(|| Duration::from_secs(u64::from(self.grant_ttl_minutes) * 60)),
             blocklist: normalize_blocklist(self.blocklist),
+            // Kept by the runtime handle, not by the record.
+            switched_off: 0,
         }
     }
 }
@@ -150,27 +152,36 @@ pub async fn set_computer_tools_enabled_core(
     Ok(settings)
 }
 
-/// Move the grant timeout and the user's blocklist, leaving the group switch
-/// at whatever the database says. For the Computer use settings section, which
-/// edits these two and not the switch (that one lives with the other tool
-/// groups, and in the status popover).
+/// Move the grant timeout, the user's blocklist, or both — only the ones
+/// given — leaving everything else at whatever the database says. For the
+/// Computer use settings section, which edits these two and not the switch
+/// (that one lives with the other tool groups, and in the status popover),
+/// and which sends only what the person changed: a form that loaded before
+/// another window added a blocklist entry must not take it out again by
+/// saving a new timeout.
 pub async fn set_computer_tools_preferences_core(
     conn: &DatabaseConnection,
     config: &ComputerToolsRuntimeConfig,
     emitter: &EventEmitter,
-    grant_ttl_minutes: u32,
-    blocklist: Vec<String>,
+    grant_ttl_minutes: Option<u32>,
+    blocklist: Option<Vec<String>>,
 ) -> Result<ComputerToolsSettings, AppCommandError> {
-    let blocklist = serde_json::to_string(&normalize_blocklist(blocklist))
+    let blocklist = blocklist
+        .map(|list| serde_json::to_string(&normalize_blocklist(list)))
+        .transpose()
         .map_err(|e| AppCommandError::configuration_invalid(e.to_string()))?;
+    let writes: Vec<(&str, String)> = [
+        grant_ttl_minutes.map(|m| (KEY_COMPUTER_TOOLS_GRANT_TTL_MINUTES, m.to_string())),
+        blocklist.map(|list| (KEY_COMPUTER_TOOLS_BLOCKLIST, list)),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
     let _guard = COMPUTER_TOOLS_WRITE_LOCK.lock().await;
-    for (key, value) in [
-        (
-            KEY_COMPUTER_TOOLS_GRANT_TTL_MINUTES,
-            grant_ttl_minutes.to_string(),
-        ),
-        (KEY_COMPUTER_TOOLS_BLOCKLIST, blocklist),
-    ] {
+    if writes.is_empty() {
+        return Ok(load_computer_tools_settings(conn).await);
+    }
+    for (key, value) in writes {
         app_metadata_service::upsert_value(conn, key, &value)
             .await
             .map_err(AppCommandError::from)?;
@@ -272,8 +283,8 @@ pub async fn set_computer_tools_preferences(
     #[cfg(feature = "tauri-runtime")] app: tauri::AppHandle,
     #[cfg(feature = "tauri-runtime")] db: tauri::State<'_, crate::db::AppDatabase>,
     #[cfg(feature = "tauri-runtime")] config: tauri::State<'_, ComputerToolsRuntimeConfig>,
-    grant_ttl_minutes: u32,
-    blocklist: Vec<String>,
+    grant_ttl_minutes: Option<u32>,
+    blocklist: Option<Vec<String>>,
 ) -> Result<ComputerToolsSettings, AppCommandError> {
     #[cfg(feature = "tauri-runtime")]
     {
@@ -327,6 +338,36 @@ mod tests {
 
         let cfg = ComputerToolsSettings::default().into_runtime_config();
         assert_eq!(cfg.grant_ttl, Some(Duration::from_secs(30 * 60)));
+    }
+
+    /// Saving one preference leaves the other as another writer left it — a
+    /// timeout saved from a form that loaded before a blocklist entry was
+    /// added does not take the entry out again.
+    #[tokio::test]
+    async fn a_preference_write_touches_only_what_it_names() {
+        let db = crate::db::test_helpers::fresh_in_memory_db().await;
+        let config = ComputerToolsRuntimeConfig::new();
+        let emitter = EventEmitter::Noop;
+        set_computer_tools_preferences_core(
+            &db.conn,
+            &config,
+            &emitter,
+            None,
+            Some(vec!["com.example.Vault".into()]),
+        )
+        .await
+        .unwrap();
+        let saved =
+            set_computer_tools_preferences_core(&db.conn, &config, &emitter, Some(10), None)
+                .await
+                .unwrap();
+        assert_eq!(saved.grant_ttl_minutes, 10);
+        assert_eq!(saved.blocklist, vec!["com.example.Vault"]);
+        assert_eq!(config.snapshot().await.blocklist, vec!["com.example.Vault"]);
+        let untouched = set_computer_tools_preferences_core(&db.conn, &config, &emitter, None, None)
+            .await
+            .unwrap();
+        assert_eq!(untouched, saved);
     }
 
     /// A record from before the timeout and blocklist existed still loads.
