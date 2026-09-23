@@ -91,6 +91,26 @@ pub fn run(prompts: impl PermissionPrompts) -> i32 {
         }
     }
 
+    serve_on_own_runtime(
+        move || channel.raw.into_tokio(),
+        channel.peer,
+        channel.guard,
+        Arc::new(prompts),
+    )
+}
+
+/// Build the helper's runtime, open the channel on it (tokio's socket wrapper
+/// registers with its reactor) and serve — then leave without waiting on
+/// whatever is still running there. A request may be parked in
+/// `spawn_blocking` on a permission prompt nobody will answer, and dropping a
+/// runtime waits for its blocking tasks; codeg is gone, and the process exits
+/// when this returns.
+fn serve_on_own_runtime(
+    open: impl FnOnce() -> std::io::Result<Halves>,
+    peer: PeerCheck,
+    guard: Option<PeerGuard>,
+    prompts: Arc<dyn PermissionPrompts>,
+) -> i32 {
     let runtime = match tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .enable_all()
@@ -102,16 +122,18 @@ pub fn run(prompts: impl PermissionPrompts) -> i32 {
             return EXIT_FAILED;
         }
     };
-    runtime.block_on(async move {
-        let (reader, writer) = match channel.raw.into_tokio() {
+    let code = runtime.block_on(async move {
+        let (reader, writer) = match open() {
             Ok(halves) => halves,
             Err(e) => {
                 tracing::error!("could not open the channel: {e}");
                 return EXIT_FAILED;
             }
         };
-        serve(reader, writer, channel.peer, channel.guard, Arc::new(prompts)).await
-    })
+        serve(reader, writer, peer, guard, prompts).await
+    });
+    runtime.shutdown_background();
+    code
 }
 
 enum RawChannel {
@@ -719,6 +741,59 @@ mod tests {
             .expect("the helper exits")
             .unwrap();
         assert_eq!(code, EXIT_OK);
+        drop(release);
+    }
+
+    /// The same, for the helper process as it really runs — on a runtime of
+    /// its own, whose drop would otherwise wait for the parked request.
+    #[test]
+    fn the_helper_process_leaves_with_codeg_even_mid_request() {
+        let (release, parked) = std::sync::mpsc::channel::<()>();
+        let (ours, theirs) = tokio::io::duplex(1 << 20);
+        let helper = std::thread::spawn(move || {
+            serve_on_own_runtime(
+                move || {
+                    let (read, write) = tokio::io::split(theirs);
+                    Ok((
+                        Box::new(read) as Box<dyn AsyncRead + Send + Unpin>,
+                        Box::new(write) as Box<dyn AsyncWrite + Send + Unpin>,
+                    ))
+                },
+                PeerCheck::Development,
+                None,
+                Arc::new(ParkedPrompts(std::sync::Mutex::new(parked))),
+            )
+        });
+        let codeg = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        codeg.block_on(async {
+            let (mut from_helper, mut to_helper) = tokio::io::split(ours);
+            let _ready: HelperMessage = read_frame(&mut from_helper).await.unwrap();
+            write_frame(
+                &mut to_helper,
+                &HelperRequest {
+                    id: 1,
+                    op: HelperOp::RequestPermission {
+                        permission: OsPermission::ScreenRecording,
+                    },
+                },
+            )
+            .await
+            .unwrap();
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            to_helper.shutdown().await.unwrap();
+        });
+        let started = std::time::Instant::now();
+        while !helper.is_finished() {
+            assert!(
+                started.elapsed() < Duration::from_secs(10),
+                "the helper is still waiting on the parked request"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(helper.join().unwrap(), EXIT_OK);
         drop(release);
     }
 }

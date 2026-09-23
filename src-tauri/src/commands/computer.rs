@@ -180,10 +180,10 @@ pub struct ComputerService {
 }
 
 impl ComputerService {
-    /// Build the service and start the two background duties it has:
-    /// following the settings (switching off ends every grant and stops the
-    /// helper; a longer blocklist or a shorter timeout ends what they now
-    /// forbid), and ending grants whose time runs out.
+    /// Build the service and start its duties: following the settings
+    /// (switching off ends every grant and stops the helper; a longer
+    /// blocklist or a shorter timeout ends what they now forbid), and ending
+    /// grants whose time runs out.
     pub fn start(app: AppHandle, config: ComputerToolsRuntimeConfig) -> Arc<Self> {
         let status_app = app.clone();
         let backend = Arc::new(LocalBackend::new(move |status: &BackendStatus| {
@@ -195,6 +195,15 @@ impl ComputerService {
             targets: TargetTable::new(),
             config: config.clone(),
             me: SelfIdentity::current(),
+        });
+
+        // What a change takes away is taken before the write that made it
+        // returns (see `ComputerToolsRuntimeConfig::on_change`).
+        let hook = Arc::downgrade(&service);
+        config.on_change(move |before, after| {
+            if let Some(service) = hook.upgrade() {
+                service.policy_changed(before, after);
+            }
         });
 
         let watcher = Arc::downgrade(&service);
@@ -233,19 +242,34 @@ impl ComputerService {
         service
     }
 
-    /// Bring the grants and the helper in line with `config`. `went_off`: the
-    /// switch was off at some point since the last call, even if it is on
-    /// again now.
+    /// The settings just changed, from `before` to `after`: end the grants
+    /// the change takes away. Runs inside the write, once per change, so an
+    /// entry added to the blocklist and taken off again straight after still
+    /// ended the grants it named, and no read admitted after the write can
+    /// use a grant the write ended.
+    fn policy_changed(&self, before: &ComputerToolsConfig, after: &ComputerToolsConfig) {
+        let ended = if before.enabled && !after.enabled {
+            self.targets.revoke_all(GrantChange::Disabled)
+        } else {
+            self.targets.sweep(
+                now_ms(),
+                after.grant_ttl,
+                &self.me,
+                &Blocklist::new(&after.blocklist),
+            )
+        };
+        self.announce(&ended);
+    }
+
+    /// Bring the helper in line with `config`. `went_off`: the switch was off
+    /// at some point since the last call, even if it is on again now — the
+    /// helper (and the driver under it) stops, and is not started again while
+    /// the switch is off.
     async fn follow(&self, config: &ComputerToolsConfig, went_off: bool) {
         if went_off || !config.enabled {
-            // Every grant ends, and the helper (and the driver under it)
-            // stops and is not started again while the switch is off.
-            let ended = self.targets.revoke_all(GrantChange::Disabled);
-            self.announce(&ended);
             self.backend.close().await;
         }
         if config.enabled {
-            self.sweep().await;
             self.backend.open().await;
         }
     }

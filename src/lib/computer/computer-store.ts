@@ -42,13 +42,22 @@ export interface ComputerActivityLine {
 
 export interface ComputerStoreState {
   shared: readonly SharedWindow[]
+  /** Whether `shared` has been told anything yet — by an event or a fetch.
+   *  Until then it is empty for want of news, not because nothing is shared
+   *  (a grant made before this window loaded is not in it). */
+  sharedKnown: boolean
   backend: BackendStatus | null
   activity: readonly ComputerActivityLine[]
 }
 
 const ACTIVITY_LIMIT = 50
 
-let state: ComputerStoreState = { shared: [], backend: null, activity: [] }
+let state: ComputerStoreState = {
+  shared: [],
+  sharedKnown: false,
+  backend: null,
+  activity: [],
+}
 const listeners = new Set<() => void>()
 let started = false
 /** Moved by every write to `shared` / `backend`. */
@@ -62,7 +71,7 @@ function emit(next: ComputerStoreState) {
 
 export function setComputerShared(shared: readonly SharedWindow[]): void {
   sharedVersion += 1
-  emit({ ...state, shared })
+  emit({ ...state, shared, sharedKnown: true })
 }
 
 export function setComputerBackend(backend: BackendStatus): void {
@@ -149,5 +158,5 @@ export function useComputerStore(): ComputerStoreState {
 
 /** Test-only: back to the initial state, listeners kept. */
 export function resetComputerStoreForTest(): void {
-  state = { shared: [], backend: null, activity: [] }
+  state = { shared: [], sharedKnown: false, backend: null, activity: [] }
 }

@@ -343,17 +343,30 @@ pub struct ComputerToolsConfig {
 /// off ends every grant and stops the helper, and whoever owns those — the
 /// desktop's computer service — learns of the switch here, whichever of the
 /// three writers (settings form, status popover, web settings) moved it.
+///
+/// Two ways to learn of it, for two kinds of consequence. What a change takes
+/// away — grants — goes through [`on_change`](Self::on_change): run inside
+/// [`set`](Self::set), once per change, with the settings before and after,
+/// so it is done before the write returns and no change is ever merged into
+/// the next. What can wait for a task to be scheduled — stopping and starting
+/// the helper — goes through [`subscribe`](Self::subscribe), which sees only
+/// the latest value (hence `switched_off`).
 #[derive(Clone)]
 pub struct ComputerToolsRuntimeConfig {
     inner: Arc<RwLock<ComputerToolsConfig>>,
     changes: Arc<tokio::sync::watch::Sender<ComputerToolsConfig>>,
+    hook: Arc<std::sync::RwLock<Option<ChangeHook>>>,
 }
+
+/// See [`ComputerToolsRuntimeConfig::on_change`].
+type ChangeHook = Box<dyn Fn(&ComputerToolsConfig, &ComputerToolsConfig) + Send + Sync>;
 
 impl Default for ComputerToolsRuntimeConfig {
     fn default() -> Self {
         Self {
             inner: Arc::new(RwLock::new(ComputerToolsConfig::default())),
             changes: Arc::new(tokio::sync::watch::channel(ComputerToolsConfig::default()).0),
+            hook: Arc::new(std::sync::RwLock::new(None)),
         }
     }
 }
@@ -370,10 +383,28 @@ impl ComputerToolsRuntimeConfig {
     pub async fn set(&self, mut cfg: ComputerToolsConfig) {
         let mut inner = self.inner.write().await;
         cfg.switched_off = inner.switched_off + u64::from(inner.enabled && !cfg.enabled);
-        *inner = cfg.clone();
+        let before = std::mem::replace(&mut *inner, cfg.clone());
+        // Under the write lock: no reader sees the new settings before the
+        // hook has acted on them.
+        if let Some(hook) = self.hook.read().unwrap_or_else(|p| p.into_inner()).as_ref() {
+            hook(&before, &cfg);
+        }
         // Published under the write lock, so watchers see changes in the order
         // they were made.
         self.changes.send_replace(cfg);
+    }
+
+    /// Run `hook` on every change, inside [`set`](Self::set) and before it
+    /// returns, with the settings before and after. For what a change takes
+    /// away, which must not wait for a watcher to be scheduled — nor be merged
+    /// away when a second change follows before it is. It runs under the
+    /// settings' write lock: it must not read them back through this handle.
+    /// One hook; a second replaces the first.
+    pub fn on_change(
+        &self,
+        hook: impl Fn(&ComputerToolsConfig, &ComputerToolsConfig) + Send + Sync + 'static,
+    ) {
+        *self.hook.write().unwrap_or_else(|p| p.into_inner()) = Some(Box::new(hook));
     }
 
     pub async fn is_enabled(&self) -> bool {
@@ -522,5 +553,34 @@ mod tests {
         cfg.set(ComputerToolsConfig::default()).await;
         cfg.set(ComputerToolsConfig::default()).await;
         assert_eq!(cfg.snapshot().await.switched_off, before + 2);
+    }
+
+    /// The hook sees every change, one at a time and before `set` returns —
+    /// including an add-then-remove that a watcher would only see the end of.
+    #[tokio::test]
+    async fn the_change_hook_sees_every_change_before_set_returns() {
+        let cfg = ComputerToolsRuntimeConfig::new();
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let log = seen.clone();
+        cfg.on_change(move |before, after| {
+            log.lock()
+                .unwrap()
+                .push((before.blocklist.clone(), after.blocklist.clone()));
+        });
+        let with = |blocklist: Vec<String>| ComputerToolsConfig {
+            enabled: true,
+            blocklist,
+            ..Default::default()
+        };
+        cfg.set(with(vec!["com.example.vault".into()])).await;
+        assert_eq!(seen.lock().unwrap().len(), 1);
+        cfg.set(with(vec![])).await;
+        assert_eq!(
+            *seen.lock().unwrap(),
+            vec![
+                (vec![], vec!["com.example.vault".to_string()]),
+                (vec!["com.example.vault".to_string()], vec![]),
+            ]
+        );
     }
 }

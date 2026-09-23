@@ -94,9 +94,12 @@ export function ComputerWindowPicker({
   const t = useTranslations("ComputerUse.picker")
   // Whether a window is shared is read from the live store, not from the list
   // as it was fetched: a grant can end (it lapses, another window stops it)
-  // while the picker is open.
-  const { shared } = useComputerStore()
+  // while the picker is open. Until the store has heard anything, the list's
+  // own word is the only one there is.
+  const { shared, sharedKnown } = useComputerStore()
   const sharedIds = new Set(shared.map((w) => w.targetId))
+  const isShared = (w: PickerWindow) =>
+    sharedKnown ? sharedIds.has(w.targetId) : w.level !== "none"
   const [windows, setWindows] = useState<PickerWindow[] | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
@@ -124,7 +127,7 @@ export function ComputerWindowPicker({
   }, [open, load])
 
   const toggle = async (item: PickerWindow) => {
-    const next = sharedIds.has(item.targetId) ? "none" : "read"
+    const next = isShared(item) ? "none" : "read"
     const mark = computerStoreMark()
     setBusy(item.targetId)
     setError(null)
@@ -183,13 +186,13 @@ export function ComputerWindowPicker({
           ) : (
             <div className="grid grid-cols-2 gap-3 pr-3 sm:grid-cols-3">
               {windows.map((w) => {
-                const isShared = sharedIds.has(w.targetId)
+                const on = isShared(w)
                 return (
                   <div
                     key={w.targetId}
                     className={cn(
                       "flex flex-col gap-2 rounded-lg border p-2",
-                      isShared && "border-violet-500/60 bg-violet-500/5",
+                      on && "border-violet-500/60 bg-violet-500/5",
                       w.notGrantable && "opacity-60"
                     )}
                   >
@@ -220,7 +223,7 @@ export function ComputerWindowPicker({
                     ) : (
                       <Button
                         size="sm"
-                        variant={isShared ? "outline" : "default"}
+                        variant={on ? "outline" : "default"}
                         disabled={busy === w.targetId}
                         onClick={() => void toggle(w)}
                       >
@@ -229,7 +232,7 @@ export function ComputerWindowPicker({
                         ) : (
                           <Eye className="size-3.5" />
                         )}
-                        {isShared ? t("stopSharing") : t("share")}
+                        {on ? t("stopSharing") : t("share")}
                       </Button>
                     )}
                   </div>

@@ -7,6 +7,15 @@
 //! something the helper has no use for and so does not implement. A request
 //! the driver sends *to* the helper gets "method not found" rather than
 //! silence, so the driver is never left waiting on it.
+//!
+//! **One call at a time.** The driver's stdio server reads a request, runs
+//! it, answers, and only then reads the next; a second request sent while one
+//! runs just waits in the pipe — and, past what the pipe holds, stalls the
+//! write. So calls take turns here, which costs nothing the driver would have
+//! given: the one on the wire is the only one it is working on, a write can
+//! only stall on a driver that has stopped reading, and a call that runs past
+//! its time leaves the driver busy with something nobody is waiting for — so
+//! it is given up on, and the next call starts another.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -131,6 +140,8 @@ pub struct McpClient {
     pending: Pending,
     next_id: AtomicU64,
     closed: Arc<watch::Sender<bool>>,
+    /// Held for a whole call, request and reply. See the module note.
+    turn: tokio::sync::Mutex<()>,
 }
 
 impl McpClient {
@@ -149,6 +160,7 @@ impl McpClient {
             pending: pending.clone(),
             next_id: AtomicU64::new(1),
             closed,
+            turn: tokio::sync::Mutex::new(()),
         });
         let weak = Arc::downgrade(&client);
         tokio::spawn(async move {
@@ -229,12 +241,15 @@ impl McpClient {
         }
     }
 
+    /// One call, in turn with every other. `timeout` runs from when this
+    /// call's turn comes.
     async fn request(
         &self,
         method: &str,
         params: Value,
         timeout: Duration,
     ) -> Result<Value, McpError> {
+        let _turn = self.turn.lock().await;
         if self.is_closed() {
             return Err(McpError::Closed);
         }
@@ -256,10 +271,9 @@ impl McpClient {
             Ok(Ok(answer)) => answer,
             Ok(Err(_)) => Err(McpError::Closed),
             Err(_) => {
-                self.pending
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner())
-                    .remove(&id);
+                // Still at work on it, and it answers nothing else until it
+                // is done: give up on this driver rather than queue behind.
+                self.close();
                 Err(McpError::Timeout)
             }
         }
@@ -347,11 +361,12 @@ mod tests {
     use super::*;
     use tokio::io::{duplex, AsyncBufReadExt};
 
-    /// A fake driver on the other end of an in-memory pipe: answers
-    /// `initialize` and `tools/call` out of order, sends a notification and a
-    /// request of its own in between, and the client sorts it all out.
+    /// A fake driver on the other end of an in-memory pipe, serving its input
+    /// the way the real one does. Two calls made at once reach it one at a
+    /// time; a notification and a request of its own in between do not
+    /// confuse the client, and each reply finds its caller.
     #[tokio::test]
-    async fn replies_find_their_callers_whatever_order_they_arrive_in() {
+    async fn calls_take_turns_and_find_their_callers() {
         let (client_side, server_side) = duplex(1 << 20);
         let (client_read, client_write) = tokio::io::split(client_side);
         let (server_read, mut server_write) = tokio::io::split(server_side);
@@ -371,44 +386,69 @@ mod tests {
             let note: Value =
                 serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
             assert_eq!(note["method"], "notifications/initialized");
-            // Two calls; answer the second first.
-            let a: Value =
-                serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
-            let b: Value =
-                serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
-            server_write
-                .write_all(
-                    b"{\"jsonrpc\":\"2.0\",\"method\":\"notifications/progress\",\"params\":{}}\n",
-                )
-                .await
-                .unwrap();
-            server_write
-                .write_all(b"{\"jsonrpc\":\"2.0\",\"id\":\"srv-1\",\"method\":\"roots/list\"}\n")
-                .await
-                .unwrap();
-            for (call, text) in [(&b, "second"), (&a, "first")] {
+            for round in 0..2 {
+                let call: Value =
+                    serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+                // Nothing else arrives while this one is unanswered.
+                assert!(
+                    tokio::time::timeout(Duration::from_millis(100), lines.next_line())
+                        .await
+                        .is_err(),
+                    "a second call arrived before the first was answered"
+                );
+                if round == 0 {
+                    server_write
+                        .write_all(
+                            b"{\"jsonrpc\":\"2.0\",\"method\":\"notifications/progress\",\"params\":{}}\n",
+                        )
+                        .await
+                        .unwrap();
+                    server_write
+                        .write_all(
+                            b"{\"jsonrpc\":\"2.0\",\"id\":\"srv-1\",\"method\":\"roots/list\"}\n",
+                        )
+                        .await
+                        .unwrap();
+                    // The client answers our request with "method not found".
+                    let answer: Value =
+                        serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+                    assert_eq!(answer["id"], "srv-1");
+                    assert_eq!(answer["error"]["code"], -32601);
+                }
+                let name = call["params"]["name"].clone();
                 let reply = json!({"jsonrpc":"2.0","id":call["id"],"result":{
-                    "content":[{"type":"text","text":text}],"structuredContent":{"which":text}}});
+                    "content":[{"type":"text","text":name}],"structuredContent":{"which":name}}});
                 server_write
                     .write_all(format!("{reply}\n").as_bytes())
                     .await
                     .unwrap();
             }
-            // The client answered our request with "method not found".
-            let answer: Value =
-                serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
-            assert_eq!(answer["id"], "srv-1");
-            assert_eq!(answer["error"]["code"], -32601);
         });
 
         client.initialize(Duration::from_secs(5)).await.unwrap();
-        let (first, second) = tokio::join!(
+        let (apps, windows) = tokio::join!(
             client.call_tool("list_apps", json!({}), Duration::from_secs(5)),
             client.call_tool("list_windows", json!({}), Duration::from_secs(5)),
         );
-        assert_eq!(first.unwrap().text(), "first");
-        assert_eq!(second.unwrap().structured.unwrap()["which"], "second");
+        assert_eq!(apps.unwrap().text(), "list_apps");
+        assert_eq!(windows.unwrap().structured.unwrap()["which"], "list_windows");
         server.await.unwrap();
+    }
+
+    /// A call that runs past its time gives up on the driver — which is still
+    /// working on it, and would answer nothing else until done.
+    #[tokio::test(start_paused = true)]
+    async fn a_call_past_its_time_gives_up_on_the_driver() {
+        let (client_side, server_side) = duplex(1 << 20);
+        let (client_read, client_write) = tokio::io::split(client_side);
+        let client = McpClient::start(client_read, client_write);
+        let err = client
+            .call_tool("get_window_state", json!({}), Duration::from_secs(60))
+            .await
+            .unwrap_err();
+        assert_eq!(err, McpError::Timeout);
+        assert!(client.is_closed());
+        drop(server_side);
     }
 
     /// A driver that goes away fails every waiting call at once, and every
