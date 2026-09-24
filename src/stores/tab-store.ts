@@ -623,6 +623,57 @@ export function isReparentUnmount(
   return groupOfTab(state.groupOf, state.groupLayout, tabId) !== renderedGroupId
 }
 
+/** The conversation view each tab has mounted: the group it rendered under and
+ *  the runtime session key it mounted on. Module scope rather than store state
+ *  because it tracks React mounts, which nothing renders from. */
+const mountedConversationViews = new Map<
+  string,
+  { groupId: string; runtimeConversationId: number }
+>()
+
+/** Record the conversation view `tabId` just mounted. The returned release
+ *  drops only its own entry, so it can never unregister a successor. */
+export function trackConversationView(
+  tabId: string,
+  groupId: string,
+  runtimeConversationId: number
+): () => void {
+  const entry = { groupId, runtimeConversationId }
+  mountedConversationViews.set(tabId, entry)
+  return () => {
+    if (mountedConversationViews.get(tabId) === entry) {
+      mountedConversationViews.delete(tabId)
+    }
+  }
+}
+
+/**
+ * Mount-side counterpart of `isReparentUnmount`: the runtime session key a
+ * conversation view arriving for `tabId` must inherit from the view it
+ * replaces, or null when a fresh key is right.
+ *
+ * React renders the arriving view BEFORE the departing one's cleanup runs, so
+ * at this view's first render its predecessor is still registered, and that
+ * cleanup is about to ask `isReparentUnmount` about its own group. This asks the
+ * same question first. Yes means the session is kept, and the arriving view has
+ * to carry on with it rather than key itself by the tab's row id — a tab that
+ * started as a draft keeps its transcript under a virtual key for good. No
+ * means the session is about to be removed (the desktop/mobile layout swap
+ * remounts every view in one commit without moving any), so inheriting it
+ * would strand the view on a key with nothing behind it; a virtual key never
+ * fetches.
+ */
+export function reparentedViewRuntimeConversationId(
+  state: Pick<TabStoreState, "rawTabs" | "groupOf" | "groupLayout">,
+  tabId: string
+): number | null {
+  const predecessor = mountedConversationViews.get(tabId)
+  if (!predecessor) return null
+  return isReparentUnmount(state, tabId, predecessor.groupId)
+    ? predecessor.runtimeConversationId
+    : null
+}
+
 /** Where a new tab should land: the explicit target when it's a live group,
  *  else the focused (active tab's) group. */
 function resolveTargetGroup(
