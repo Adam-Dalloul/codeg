@@ -282,9 +282,11 @@ pub struct ComputerService {
     /// Moved by every Stop: a Resume that was already on its way when a Stop
     /// came does not undo it.
     stops: AtomicU64,
-    /// Held across "is it stopped?" and the share that follows, and across a
-    /// Stop's "stopped" and the revocation that follows — so a share cannot
-    /// slip in between a Stop and its revocation and outlive it.
+    /// Held across "is it stopped?" and the share that follows, across a
+    /// Stop's "stopped" and the revocation that follows, and across a
+    /// Resume's "no Stop since?" and its "not stopped" — so a share cannot
+    /// slip in between a Stop and its revocation and outlive it, and a Stop
+    /// cannot slip in between a Resume's check and its write and be undone.
     grant_gate: std::sync::Mutex<()>,
 }
 
@@ -484,9 +486,14 @@ impl ComputerService {
         if let Err(e) = self.backend.resume().await {
             tracing::warn!("[computer] the helper did not confirm the resume: {e}");
         }
-        // A Stop pressed while this was on its way stands.
-        if self.stops.load(Ordering::Acquire) == stops {
-            self.paused.store(false, Ordering::Release);
+        // A Stop pressed while this was on its way stands — decided under the
+        // lock a Stop takes to set `paused`, so none lands between the check
+        // and the write and is undone by it.
+        {
+            let _gate = self.grant_gate.lock().unwrap_or_else(|p| p.into_inner());
+            if self.stops.load(Ordering::Acquire) == stops {
+                self.paused.store(false, Ordering::Release);
+            }
         }
         self.emit_state();
     }
@@ -730,15 +737,16 @@ impl ComputerService {
         };
         let blocklist = Blocklist::new(&config.blocklist);
         let listed = self.backend.list_windows(pid).await;
-        // A Stop that came while the helper was listing refuses this too.
+        // Grants that have already ended by the rules as they are now must
+        // not show — neither as a level nor as a title.
+        self.sweep().await;
+        // A Stop that came while the helper was listing, or since, refuses
+        // this too; nothing below waits on anything.
         if self.paused.load(Ordering::Acquire) {
             return ComputerWindowsOutcome::refused(ERROR_PAUSED, STOPPED_NOTE);
         }
         match listed {
             Ok(windows) => {
-                // Grants that have already ended by the rules as they are now
-                // must not show — neither as a level nor as a title.
-                self.sweep().await;
                 let (entries, ended) = self.targets.observe(&windows, pid);
                 self.announce(&ended);
                 ComputerWindowsOutcome {
