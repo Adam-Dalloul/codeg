@@ -6583,7 +6583,7 @@ fn parse_pi_model_capabilities(line: &str) -> Option<Vec<PiModelCapability>> {
     if response.get("id")?.as_str()? != "codeg-models"
         || response.get("type")?.as_str()? != "response"
         || response.get("command")?.as_str()? != "get_available_models"
-        || response.get("success")?.as_bool()? != true
+        || !response.get("success")?.as_bool()?
     {
         return None;
     }
