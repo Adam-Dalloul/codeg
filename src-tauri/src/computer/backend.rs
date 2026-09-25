@@ -10,10 +10,30 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 use super::protocol::{
-    HelperError, HelperErrorCode, OsPermission, PeerCheck, PermissionReport, RawApp, RawCapture,
-    RawSnapshot, RawVerify, RawWindow,
+    HelperError, HelperErrorCode, OsPermission, PeerCheck, PermissionReport, RawAct, RawApp,
+    RawCapture, RawSnapshot, RawVerify, RawWindow, WindowAction,
 };
 use super::types::VerifyRequest;
+
+/// Why an action was refused, or did not happen, at the helper or the driver.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ActRefusal {
+    /// The person pressed Stop, or the session is locked.
+    Paused,
+    /// The element or point is from a snapshot or capture the window has
+    /// moved past.
+    StaleRef,
+    /// The element or point is not in the window.
+    OutOfTarget,
+    /// The window cannot take input in the background right now.
+    Occluded,
+    /// The application offers no background route for this action.
+    BackgroundUnavailable,
+    /// A password or other secret field.
+    SecretField,
+    /// Allowed, and it did not happen.
+    Failed,
+}
 
 /// Why a backend call did not produce an answer.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -29,6 +49,9 @@ pub enum BackendError {
     /// The driver file is not the pinned release.
     Rejected(String),
     Failed(String),
+    /// An action did not go out, or did not happen; the words are the
+    /// helper's, written for the agent.
+    Refused(ActRefusal, String),
 }
 
 impl std::fmt::Display for BackendError {
@@ -43,7 +66,7 @@ impl std::fmt::Display for BackendError {
             }
             BackendError::NoSuchWindow => f.write_str("the window is gone"),
             BackendError::Rejected(why) => write!(f, "the driver was rejected: {why}"),
-            BackendError::Failed(why) => f.write_str(why),
+            BackendError::Failed(why) | BackendError::Refused(_, why) => f.write_str(why),
         }
     }
 }
@@ -65,6 +88,19 @@ impl From<HelperError> for BackendError {
             HelperErrorCode::BadRequest | HelperErrorCode::Failed => {
                 BackendError::Failed(e.message)
             }
+            HelperErrorCode::Paused => BackendError::Refused(ActRefusal::Paused, e.message),
+            HelperErrorCode::StaleRef => BackendError::Refused(ActRefusal::StaleRef, e.message),
+            HelperErrorCode::OutOfTarget => {
+                BackendError::Refused(ActRefusal::OutOfTarget, e.message)
+            }
+            HelperErrorCode::Occluded => BackendError::Refused(ActRefusal::Occluded, e.message),
+            HelperErrorCode::BackgroundUnavailable => {
+                BackendError::Refused(ActRefusal::BackgroundUnavailable, e.message)
+            }
+            HelperErrorCode::SecretField => {
+                BackendError::Refused(ActRefusal::SecretField, e.message)
+            }
+            HelperErrorCode::ActionFailed => BackendError::Refused(ActRefusal::Failed, e.message),
         }
     }
 }
@@ -149,6 +185,25 @@ pub trait ComputerBackend: Send + Sync {
         window_id: u64,
         request: VerifyRequest,
     ) -> Result<RawVerify, BackendError>;
+
+    /// Act on one window, in the background. The caller has checked the
+    /// grant; the backend checks, at the moment of delivery, what it can see
+    /// — that `pid` is still the process that started at `started_at`, that
+    /// the session is not locked, that nothing has been stopped.
+    async fn act(
+        &self,
+        pid: u32,
+        window_id: u64,
+        started_at: u64,
+        app_key: Option<String>,
+        action: WindowAction,
+    ) -> Result<RawAct, BackendError>;
+
+    /// Stop everything at once: whatever the executor is doing is abandoned,
+    /// and nothing that needs it runs until [`resume`](Self::resume).
+    async fn halt(&self) -> Result<(), BackendError>;
+
+    async fn resume(&self) -> Result<(), BackendError>;
 }
 
 #[cfg(test)]

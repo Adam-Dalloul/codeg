@@ -25,17 +25,22 @@
 //! On Windows and Linux there is no TCC to guard and no code signature to
 //! check; the helper serves its stdin, which is the pipe codeg gave it.
 
+pub mod act;
 pub mod driver_proc;
 pub mod mcp;
 pub mod ops;
+pub mod session;
+pub mod tree;
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use tokio::sync::{mpsc, Mutex};
 
+use self::act::SnapshotBook;
 use self::driver_proc::DriverProc;
 use self::ops::AppCache;
 use super::driver;
@@ -320,11 +325,32 @@ struct HelperState {
     /// The running driver, started on first use and again after it exits.
     driver: Mutex<Option<Arc<DriverProc>>>,
     apps: Mutex<AppCache>,
+    /// The latest snapshot of each window, as the running driver keeps them.
+    snapshots: std::sync::Mutex<SnapshotBook>,
+    /// The person pressed Stop: no driver runs until codeg says `Resume`.
+    halted: AtomicBool,
 }
 
 impl HelperState {
+    fn snapshots(&self) -> std::sync::MutexGuard<'_, SnapshotBook> {
+        // Every change to the book is a single insert or removal, so a
+        // poisoned lock still guards a consistent book.
+        self.snapshots.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    fn check_not_halted(&self) -> Result<(), HelperError> {
+        if self.halted.load(Ordering::Acquire) {
+            return Err(HelperError::new(
+                HelperErrorCode::Paused,
+                "The user pressed Stop in codeg's Computer use panel.",
+            ));
+        }
+        Ok(())
+    }
+
     /// The running driver, starting it if there is none.
     async fn driver(&self) -> Result<Arc<DriverProc>, HelperError> {
+        self.check_not_halted()?;
         let mut slot = self.driver.lock().await;
         if let Some(driver) = slot.as_ref().filter(|d| d.alive()) {
             return Ok(driver.clone());
@@ -345,13 +371,38 @@ impl HelperState {
             )
         })?;
         let launched = Arc::new(DriverProc::launch(&path, artifact).await?);
+        // A Stop that arrived while this one was starting stops it too.
+        if let Err(halted) = self.check_not_halted() {
+            launched.shutdown().await;
+            return Err(halted);
+        }
+        // A fresh driver has taken no snapshots.
+        self.snapshots().clear();
         *slot = Some(launched.clone());
         Ok(launched)
     }
 
     async fn shutdown(&self) {
-        if let Some(driver) = self.driver.lock().await.take() {
+        let driver = self.driver.lock().await.take();
+        self.snapshots().clear();
+        if let Some(driver) = driver {
             driver.shutdown().await;
+        }
+    }
+
+    /// Kill the driver now, whatever it is doing — unlike [`shutdown`], it
+    /// is given no time to finish what it is in the middle of. Every call
+    /// waiting on it fails at once. A driver still starting cannot be in the
+    /// middle of anything; it stops itself when it finishes starting (see
+    /// [`driver`](Self::driver)).
+    ///
+    /// [`shutdown`]: Self::shutdown
+    async fn halt(&self) {
+        self.halted.store(true, Ordering::Release);
+        let driver = self.driver.lock().await.take();
+        self.snapshots().clear();
+        if let Some(driver) = driver {
+            driver.kill().await;
         }
     }
 }
@@ -450,7 +501,10 @@ async fn handle(state: &HelperState, op: HelperOp) -> Result<serde_json::Value, 
         } => {
             require(OsPermission::Accessibility)?;
             let driver = state.driver().await?;
-            value(ops::snapshot(&driver, pid, window_id, max_depth, max_elements, query).await?)
+            let (raw, facts) =
+                ops::snapshot(&driver, pid, window_id, max_depth, max_elements, query).await?;
+            state.snapshots().record(pid, window_id, facts);
+            value(raw)
         }
         HelperOp::Verify {
             pid,
@@ -462,6 +516,52 @@ async fn handle(state: &HelperState, op: HelperOp) -> Result<serde_json::Value, 
             }
             let driver = state.driver().await?;
             value(ops::verify(&driver, pid, window_id, &request).await?)
+        }
+        HelperOp::Act {
+            pid,
+            window_id,
+            started_at,
+            app_key,
+            action,
+        } => {
+            state.check_not_halted()?;
+            // The process the window was shared from, still — a relaunched
+            // application under a reused pid is another process whose windows
+            // nobody shared.
+            if super::procinfo::process_start(pid) != Some(started_at) {
+                return Err(HelperError::new(
+                    HelperErrorCode::NoSuchWindow,
+                    "the window's process is gone",
+                ));
+            }
+            if session::locked() {
+                return Err(HelperError::new(
+                    HelperErrorCode::Paused,
+                    "The screen is locked, or another user's session is active.",
+                ));
+            }
+            for permission in act::permissions_for(&action) {
+                require(*permission)?;
+            }
+            let driver = state.driver().await?;
+            state
+                .snapshots()
+                .check(pid, window_id, &action, app_key.as_deref())?;
+            if let Some(point) = action.point() {
+                act::check_point(&driver, pid, window_id, point).await?;
+            }
+            // Asked once more, as late as it can be: a Stop that landed while
+            // the window was being measured stops this action too.
+            state.check_not_halted()?;
+            value(act::act(&driver, pid, window_id, &action).await?)
+        }
+        HelperOp::Halt => {
+            state.halt().await;
+            value(())
+        }
+        HelperOp::Resume => {
+            state.halted.store(false, Ordering::Release);
+            value(())
         }
     }
 }
@@ -529,6 +629,8 @@ pub async fn serve(
         driver_path: Mutex::new(None),
         driver: Mutex::new(None),
         apps: Mutex::new(AppCache::default()),
+        snapshots: std::sync::Mutex::new(SnapshotBook::default()),
+        halted: AtomicBool::new(false),
     });
     let mut code = EXIT_OK;
     loop {
@@ -654,6 +756,107 @@ mod tests {
         // A half of a duplex stream closes the direction only when told to;
         // dropping it while the read half lives would leave the helper
         // waiting on a peer that is still, as far as it can tell, there.
+        to_helper.shutdown().await.unwrap();
+        assert_eq!(task.await.unwrap(), EXIT_OK);
+    }
+
+    /// After a Stop, nothing that needs the driver runs — reads and actions
+    /// alike — until codeg resumes; then the next call goes on as before.
+    #[tokio::test]
+    async fn a_stopped_helper_runs_no_driver_until_resumed() {
+        use crate::computer::keys::{Chord, Key, Modifiers};
+        use crate::computer::protocol::WindowAction;
+        async fn ask(
+            to: &mut tokio::io::WriteHalf<tokio::io::DuplexStream>,
+            from: &mut tokio::io::ReadHalf<tokio::io::DuplexStream>,
+            id: u64,
+            op: HelperOp,
+        ) -> HelperReply {
+            write_frame(to, &HelperRequest { id, op }).await.unwrap();
+            let HelperMessage::Reply(reply) = read_frame(from).await.unwrap() else {
+                panic!("expected a reply");
+            };
+            assert_eq!(reply.id, id);
+            reply
+        }
+        let (task, mut to_helper, mut from_helper) = start().await;
+        let _ready: HelperMessage = read_frame(&mut from_helper).await.unwrap();
+        let (to, from) = (&mut to_helper, &mut from_helper);
+        assert!(ask(to, from, 1, HelperOp::Halt).await.error.is_none());
+        assert_eq!(
+            ask(to, from, 2, HelperOp::ListApps)
+                .await
+                .error
+                .unwrap()
+                .code,
+            HelperErrorCode::Paused
+        );
+        let act = HelperOp::Act {
+            pid: std::process::id(),
+            window_id: 1,
+            started_at: crate::computer::procinfo::process_start(std::process::id()).unwrap(),
+            app_key: None,
+            action: WindowAction::Key {
+                element: None,
+                chord: Chord {
+                    key: Key::Return,
+                    modifiers: Modifiers::default(),
+                },
+            },
+        };
+        assert_eq!(
+            ask(to, from, 3, act).await.error.unwrap().code,
+            HelperErrorCode::Paused
+        );
+        assert!(ask(to, from, 4, HelperOp::Resume).await.error.is_none());
+        // Resumed: back to the ordinary answer for a helper with no driver.
+        assert_eq!(
+            ask(to, from, 5, HelperOp::ListApps)
+                .await
+                .error
+                .unwrap()
+                .code,
+            HelperErrorCode::NotConfigured
+        );
+        to_helper.shutdown().await.unwrap();
+        assert_eq!(task.await.unwrap(), EXIT_OK);
+    }
+
+    /// An action for a pid that is not the process the window was shared
+    /// from — a relaunch under a reused pid — is refused before anything
+    /// else is looked at.
+    #[tokio::test]
+    async fn an_action_for_another_process_is_refused() {
+        use crate::computer::keys::{Chord, Key, Modifiers};
+        use crate::computer::protocol::WindowAction;
+        let (task, mut to_helper, mut from_helper) = start().await;
+        let _ready: HelperMessage = read_frame(&mut from_helper).await.unwrap();
+        let started_at = crate::computer::procinfo::process_start(std::process::id()).unwrap();
+        write_frame(
+            &mut to_helper,
+            &HelperRequest {
+                id: 1,
+                op: HelperOp::Act {
+                    pid: std::process::id(),
+                    window_id: 1,
+                    started_at: started_at.wrapping_add(1),
+                    app_key: None,
+                    action: WindowAction::Key {
+                        element: None,
+                        chord: Chord {
+                            key: Key::Escape,
+                            modifiers: Modifiers::default(),
+                        },
+                    },
+                },
+            },
+        )
+        .await
+        .unwrap();
+        let HelperMessage::Reply(reply) = read_frame(&mut from_helper).await.unwrap() else {
+            panic!("expected a reply");
+        };
+        assert_eq!(reply.error.unwrap().code, HelperErrorCode::NoSuchWindow);
         to_helper.shutdown().await.unwrap();
         assert_eq!(task.await.unwrap(), EXIT_OK);
     }

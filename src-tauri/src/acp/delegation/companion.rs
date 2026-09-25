@@ -49,8 +49,9 @@ use crate::acp::delegation::transport::{
     client_browser_console_round_trip, client_browser_eval_round_trip,
     client_browser_snapshot_round_trip, client_browser_tab_op_round_trip,
     client_browser_tabs_round_trip,
-    client_cancel, client_computer_apps_round_trip, client_computer_capture_round_trip,
-    client_computer_snapshot_round_trip, client_computer_verify_round_trip,
+    client_cancel, client_computer_act_round_trip, client_computer_apps_round_trip,
+    client_computer_capture_round_trip, client_computer_snapshot_round_trip,
+    client_computer_verify_round_trip,
     client_computer_windows_round_trip, client_cancel_task_round_trip, client_commit_feedback,
     client_create_automation_round_trip, client_create_work_task_round_trip,
     client_feedback_round_trip, client_resume_task_round_trip, client_round_trip,
@@ -59,7 +60,8 @@ use crate::acp::delegation::transport::{
     BrokerBrowserEvalRequest, BrokerBrowserSnapshotRequest, BrokerBrowserTabOpRequest,
     BrokerBrowserTabsRequest,
     BrokerCancelRequest,
-    BrokerCancelTaskRequest, BrokerCommitFeedbackRequest, BrokerComputerAppsRequest,
+    BrokerCancelTaskRequest, BrokerCommitFeedbackRequest, BrokerComputerActRequest,
+    BrokerComputerAppsRequest,
     BrokerComputerCaptureRequest, BrokerComputerSnapshotRequest, BrokerComputerVerifyRequest,
     BrokerComputerWindowsRequest, BrokerCreateAutomationRequest,
     BrokerCreateWorkTaskRequest, BrokerFeedbackRequest, BrokerRequest, BrokerResponse,
@@ -186,9 +188,11 @@ pub struct CompanionFeatures {
     /// off; the parent will not emit it, and `allows_tool` requires both.
     pub browser_eval: bool,
     /// Computer use: `computer_list_apps` / `computer_list_windows` /
-    /// `computer_screenshot` / `computer_snapshot` / `computer_verify`. Off
-    /// unless the desktop build's setting says otherwise — the listing names
-    /// the applications on the user's screen. Reading a window is then gated
+    /// `computer_screenshot` / `computer_snapshot` / `computer_verify`, and
+    /// the actions `computer_click` / `computer_scroll` / `computer_type` /
+    /// `computer_press_key` / `computer_set_value`. Off unless the desktop
+    /// build's setting says otherwise — the listing names the applications on
+    /// the user's screen. Reading a window, and acting on it, is then gated
     /// per window by the person, behind this switch.
     pub computer: bool,
 }
@@ -263,7 +267,8 @@ impl CompanionFeatures {
             // cannot leave the strongest tool as the only one present.
             "browser_eval" => self.browser && self.browser_eval,
             "computer_list_apps" | "computer_list_windows" | "computer_screenshot"
-            | "computer_snapshot" | "computer_verify" => self.computer,
+            | "computer_snapshot" | "computer_verify" | "computer_click" | "computer_scroll"
+            | "computer_type" | "computer_press_key" | "computer_set_value" => self.computer,
             "delegate_to_agent" | "get_delegation_status" | "cancel_delegation"
             | "resume_delegation" => self.delegation,
             _ => false,
@@ -934,6 +939,24 @@ async fn build_tools_call_spawn(
             let round_trip =
                 Box::pin(async move { client_computer_verify_round_trip(&socket, &req).await });
             register_and_spawn(inflight, id, None, round_trip, render_computer_verify_result).await
+        }
+        "computer_click" | "computer_scroll" | "computer_type" | "computer_press_key"
+        | "computer_set_value" => {
+            let (target_id, request) = match computer_act_request(&name, &arguments) {
+                Ok(parsed) => parsed,
+                Err(msg) => return LineAction::Respond(err(id, -32602, msg)),
+            };
+            let req = BrokerComputerActRequest {
+                token: ctx.token.clone(),
+                target_id,
+                request,
+            };
+            // No broker-side cancel: an action cannot be recalled halfway,
+            // and it finishes on the codeg side, which writes its line on
+            // the panel's activity list.
+            let round_trip =
+                Box::pin(async move { client_computer_act_round_trip(&socket, &req).await });
+            register_and_spawn(inflight, id, None, round_trip, render_computer_act_result).await
         }
         "task_progress" => {
             let message = arguments
@@ -2820,6 +2843,355 @@ pub fn render_computer_verify_result(outcome: &Value) -> Value {
             out.push_str(&format!(" ({reason})"));
         }
     }
+    json!({
+        "content": [{ "type": "text", "text": out }],
+        "isError": false,
+        "structuredContent": outcome.clone(),
+    })
+}
+
+/// A ref, as an agent writes it: a whole number, or its digits as a string
+/// (`12`, `"12"`, `"[12]"` — the tree shows it in brackets).
+fn computer_ref(value: &Value, tool: &str) -> Result<u32, String> {
+    let parsed = match value {
+        Value::Number(n) => n.as_u64().and_then(|n| u32::try_from(n).ok()),
+        Value::String(s) => s
+            .trim()
+            .trim_start_matches('[')
+            .trim_end_matches(']')
+            .parse::<u32>()
+            .ok(),
+        _ => None,
+    };
+    parsed.ok_or_else(|| {
+        format!(
+            "{tool}: `ref` must be an element's number from computer_snapshot (the N in `[N]`), \
+             not {value}"
+        )
+    })
+}
+
+/// `coordinate`: `[x, y]` in the pixels of the window's latest screenshot.
+fn computer_coordinate(value: &Value, tool: &str) -> Result<(f64, f64), String> {
+    let pair = value.as_array().filter(|a| a.len() == 2).and_then(|a| {
+        let x = a[0].as_f64().filter(|v| v.is_finite() && *v >= 0.0)?;
+        let y = a[1].as_f64().filter(|v| v.is_finite() && *v >= 0.0)?;
+        Some((x, y))
+    });
+    pair.ok_or_else(|| {
+        format!(
+            "{tool}: `coordinate` must be [x, y], two non-negative numbers in the pixels of the \
+             window's latest computer_screenshot, not {value}"
+        )
+    })
+}
+
+fn computer_generation(arguments: &Value, tool: &str, what: &str) -> Result<String, String> {
+    arguments
+        .get("generation")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| {
+            format!(
+                "{tool}: a `{what}` needs the `generation` of the {} it came from",
+                if what == "ref" {
+                    "computer_snapshot"
+                } else {
+                    "computer_screenshot"
+                }
+            )
+        })
+}
+
+/// The element or point an action names: `ref` or `coordinate`, never both,
+/// each with its `generation`. `None` when neither is given.
+fn computer_target(
+    arguments: &Value,
+    tool: &str,
+) -> Result<Option<crate::computer::types::AgentTarget>, String> {
+    use crate::computer::types::{AgentTarget, ElementTarget, PointTarget};
+    let present = |k: &str| arguments.get(k).is_some_and(|v| !v.is_null());
+    match (present("ref"), present("coordinate")) {
+        (true, true) => Err(format!("{tool}: give `ref` or `coordinate`, not both")),
+        (true, false) => Ok(Some(AgentTarget::Element(ElementTarget {
+            index: computer_ref(&arguments["ref"], tool)?,
+            generation: computer_generation(arguments, tool, "ref")?,
+        }))),
+        (false, true) => {
+            let (x, y) = computer_coordinate(&arguments["coordinate"], tool)?;
+            Ok(Some(AgentTarget::Point(PointTarget {
+                x,
+                y,
+                generation: computer_generation(arguments, tool, "coordinate")?,
+            })))
+        }
+        (false, false) => Ok(None),
+    }
+}
+
+/// An element an action must name — typing, a value, a key on an element.
+fn computer_element(
+    arguments: &Value,
+    tool: &str,
+) -> Result<crate::computer::types::ElementTarget, String> {
+    use crate::computer::types::AgentTarget;
+    if arguments.get("coordinate").is_some_and(|v| !v.is_null()) {
+        return Err(format!(
+            "{tool} works on an element: give its `ref` from computer_snapshot, not a coordinate"
+        ));
+    }
+    match computer_target(arguments, tool)? {
+        Some(AgentTarget::Element(element)) => Ok(element),
+        _ => Err(format!(
+            "{tool} requires `ref` (an element's number from computer_snapshot) and `generation`"
+        )),
+    }
+}
+
+/// An optional string from a closed list.
+fn computer_choice<'a>(
+    arguments: &Value,
+    tool: &str,
+    key: &str,
+    allowed: &[&'a str],
+) -> Result<Option<&'a str>, String> {
+    match arguments.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(s)) => allowed
+            .iter()
+            .find(|a| **a == s.as_str())
+            .copied()
+            .map(Some)
+            .ok_or_else(|| format!("{tool}: `{key}` must be one of {}", allowed.join(", "))),
+        Some(other) => Err(format!(
+            "{tool}: `{key}` must be one of {}, not {other}",
+            allowed.join(", ")
+        )),
+    }
+}
+
+/// An optional boolean — a boolean, not a string that looks like one.
+fn computer_bool(arguments: &Value, tool: &str, key: &str) -> Result<bool, String> {
+    match arguments.get(key) {
+        None | Some(Value::Null) => Ok(false),
+        Some(Value::Bool(b)) => Ok(*b),
+        Some(other) => Err(format!("{tool}: `{key}` must be true or false, not {other}")),
+    }
+}
+
+/// Text an action carries: a string, not empty, not over the limit.
+fn computer_text(arguments: &Value, tool: &str, key: &str) -> Result<String, String> {
+    use crate::computer::types::MAX_ACTION_TEXT_CHARS;
+    let text = arguments
+        .get(key)
+        .and_then(Value::as_str)
+        .ok_or_else(|| format!("{tool} requires `{key}`, a string"))?;
+    if text.chars().count() > MAX_ACTION_TEXT_CHARS {
+        return Err(format!(
+            "{tool}: `{key}` may be at most {MAX_ACTION_TEXT_CHARS} characters; send it in pieces"
+        ));
+    }
+    Ok(text.to_string())
+}
+
+/// A whole number in `range`, or the default when absent.
+fn computer_count(
+    arguments: &Value,
+    tool: &str,
+    key: &str,
+    range: std::ops::RangeInclusive<u32>,
+    default: u32,
+) -> Result<u32, String> {
+    match computer_optional_u32(arguments, tool, key)? {
+        None => Ok(default),
+        Some(n) if range.contains(&n) => Ok(n),
+        Some(n) => Err(format!(
+            "{tool}: `{key}` must be from {} to {}, not {n}",
+            range.start(),
+            range.end()
+        )),
+    }
+}
+
+/// Build one computer action from a tool call. Every argument is checked
+/// here, strictly — a `button: "middle"` read as the left button, or a
+/// string read as a boolean, is a different action from the one asked for.
+pub fn computer_act_request(
+    tool: &str,
+    arguments: &Value,
+) -> Result<(String, crate::computer::types::ComputerActRequest), String> {
+    use crate::computer::keys::{Chord, Key, Modifiers};
+    use crate::computer::types::{
+        ComputerActRequest, PointerButton, ScrollDirection, ScrollUnit, MAX_KEY_REPEAT,
+        MAX_SCROLL_AMOUNT,
+    };
+    let target_id = computer_target_id(arguments, tool)?;
+    let request = match tool {
+        "computer_click" => {
+            let target = computer_target(arguments, tool)?.ok_or_else(|| {
+                format!(
+                    "{tool} requires `ref` (from computer_snapshot) or `coordinate` (from \
+                     computer_screenshot), with its `generation`"
+                )
+            })?;
+            let button = match computer_choice(arguments, tool, "button", &["left", "right", "middle"])? {
+                Some("right") => PointerButton::Right,
+                Some("middle") => PointerButton::Middle,
+                _ => PointerButton::Left,
+            };
+            let count = computer_count(arguments, tool, "count", 1..=2, 1)?;
+            if count == 2 && button != PointerButton::Left {
+                return Err(format!(
+                    "{tool}: a double click (`count: 2`) is with the left button only"
+                ));
+            }
+            ComputerActRequest::Click {
+                target,
+                button,
+                count: count as u8,
+            }
+        }
+        "computer_scroll" => {
+            let direction = match computer_choice(
+                arguments,
+                tool,
+                "direction",
+                &["up", "down", "left", "right"],
+            )? {
+                Some("up") => ScrollDirection::Up,
+                Some("down") => ScrollDirection::Down,
+                Some("left") => ScrollDirection::Left,
+                Some("right") => ScrollDirection::Right,
+                _ => {
+                    return Err(format!(
+                        "{tool} requires `direction`: up, down, left or right"
+                    ))
+                }
+            };
+            let unit = match computer_choice(arguments, tool, "unit", &["line", "page"])? {
+                Some("page") => ScrollUnit::Page,
+                _ => ScrollUnit::Line,
+            };
+            ComputerActRequest::Scroll {
+                target: computer_target(arguments, tool)?,
+                direction,
+                amount: computer_count(arguments, tool, "amount", 1..=MAX_SCROLL_AMOUNT, 3)?,
+                unit,
+            }
+        }
+        "computer_type" => ComputerActRequest::Type {
+            target: computer_element(arguments, tool)?,
+            text: {
+                let text = computer_text(arguments, tool, "text")?;
+                if text.is_empty() {
+                    return Err(format!("{tool}: `text` is empty"));
+                }
+                text
+            },
+            submit: computer_bool(arguments, tool, "submit")?,
+        },
+        "computer_press_key" => {
+            let key = arguments
+                .get("key")
+                .and_then(Value::as_str)
+                .ok_or_else(|| format!("{tool} requires `key`, a string"))?;
+            let key = Key::parse(key).map_err(|e| format!("{tool}: {e}"))?;
+            let modifiers = match arguments.get("modifiers") {
+                None | Some(Value::Null) => Modifiers::default(),
+                Some(Value::Array(items)) => {
+                    let names = items
+                        .iter()
+                        .map(|v| {
+                            v.as_str().map(str::to_string).ok_or_else(|| {
+                                format!("{tool}: `modifiers` must be an array of names")
+                            })
+                        })
+                        .collect::<Result<Vec<_>, _>>()?;
+                    Modifiers::parse(&names).map_err(|e| format!("{tool}: {e}"))?
+                }
+                Some(other) => {
+                    return Err(format!(
+                        "{tool}: `modifiers` must be an array of names, not {other}"
+                    ))
+                }
+            };
+            let chord = Chord { key, modifiers };
+            let target = match computer_target(arguments, tool)? {
+                Some(crate::computer::types::AgentTarget::Element(e)) => Some(e),
+                Some(crate::computer::types::AgentTarget::Point(_)) => {
+                    return Err(format!(
+                        "{tool} presses a key on an element (`ref`) or on whatever has focus — \
+                         not at a coordinate"
+                    ))
+                }
+                None => None,
+            };
+            if chord.types_text() && target.is_none() {
+                return Err(format!(
+                    "{tool}: a key that types a character goes only into an element you name — \
+                     pass its `ref` and `generation`, or type the text with computer_type"
+                ));
+            }
+            ComputerActRequest::Key {
+                target,
+                chord,
+                repeat: computer_count(arguments, tool, "repeat", 1..=MAX_KEY_REPEAT, 1)?,
+            }
+        }
+        "computer_set_value" => ComputerActRequest::SetValue {
+            target: computer_element(arguments, tool)?,
+            value: computer_text(arguments, tool, "value")?,
+        },
+        other => return Err(format!("unknown tool: {other}")),
+    };
+    Ok((target_id, request))
+}
+
+/// Map a computer action's outcome into a `tools/call` result: what happened,
+/// and how sure codeg can be of it.
+pub fn render_computer_act_result(outcome: &Value) -> Value {
+    let Some(action) = outcome.get("action").filter(|a| a.is_object()) else {
+        return computer_refusal(outcome, "Nothing was done.");
+    };
+    let s = |k: &str| action.get(k).and_then(Value::as_str).unwrap_or("");
+    let effect = match s("effect") {
+        "confirmed" => "done, and confirmed by reading the window back",
+        "partial" => "done only in part",
+        "suspected_noop" => {
+            "delivered, but it appears to have changed nothing — look before trying again"
+        }
+        _ => {
+            "delivered; whether it took effect could not be read back — check with \
+             computer_verify or a new computer_snapshot"
+        }
+    };
+    let mut out = format!(
+        "Window {}: {effect}.",
+        outcome.get("targetId").and_then(Value::as_str).unwrap_or("?")
+    );
+    let route = match s("route") {
+        "accessibility" => Some("through the accessibility interface"),
+        "synthetic_events" => Some("as synthesized input events"),
+        "global_input" | "trusted_input" => Some("as input events"),
+        "dom" => Some("through the page"),
+        _ => None,
+    };
+    if let Some(route) = route {
+        out.push_str(&format!(" Delivered in the background, {route}."));
+    }
+    if let Some(n) = action.get("presses").and_then(Value::as_u64) {
+        out.push_str(&format!(" The key was pressed {n} times."));
+    }
+    match action.get("submitted").and_then(Value::as_bool) {
+        Some(true) => out.push_str(" Return was pressed after the text."),
+        Some(false) => out.push_str(
+            " Return could not be pressed after the text; press it with computer_press_key.",
+        ),
+        None => {}
+    }
+    out.push_str(" Take a new computer_snapshot or computer_screenshot to see the result.");
     json!({
         "content": [{ "type": "text", "text": out }],
         "isError": false,
@@ -5342,7 +5714,9 @@ mod tests {
     };
 
     /// The computer group gates as its own thing: off by default, not riding
-    /// on the browser's switch, and exactly its five tools when on.
+    /// on the browser's switch, and exactly its ten tools when on — the
+    /// actions with the reads, since acting is gated per window by the
+    /// person, not by a switch of its own.
     #[tokio::test]
     async fn tools_list_gates_the_computer_tools_on_their_own_switch() {
         let list = r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#;
@@ -5371,6 +5745,11 @@ mod tests {
                 "computer_screenshot".to_string(),
                 "computer_snapshot".to_string(),
                 "computer_verify".to_string(),
+                "computer_click".to_string(),
+                "computer_scroll".to_string(),
+                "computer_type".to_string(),
+                "computer_press_key".to_string(),
+                "computer_set_value".to_string(),
             ]
         );
         assert!(CompanionFeatures::parse(Some("sessions,computer")).computer);
@@ -5432,6 +5811,179 @@ mod tests {
         }))
         .unwrap_err()
         .contains("expect[0]"));
+    }
+
+    /// Action arguments are checked as strictly: a ref needs its generation,
+    /// a button is one of three, a boolean is a boolean, and a key that would
+    /// type a character is refused without an element to type it into.
+    #[test]
+    fn computer_action_arguments_are_checked_before_any_round_trip() {
+        use crate::computer::keys::{Key, Modifiers};
+        use crate::computer::types::{
+            AgentTarget, ComputerActRequest, ElementTarget, PointTarget, PointerButton,
+            ScrollDirection, ScrollUnit,
+        };
+        let (id, click) = computer_act_request(
+            "computer_click",
+            &json!({ "targetId": "w1", "ref": "[12]", "generation": "2.3" }),
+        )
+        .unwrap();
+        assert_eq!(id, "w1");
+        assert_eq!(
+            click,
+            ComputerActRequest::Click {
+                target: AgentTarget::Element(ElementTarget {
+                    generation: "2.3".into(),
+                    index: 12
+                }),
+                button: PointerButton::Left,
+                count: 1,
+            }
+        );
+        let (_, point) = computer_act_request(
+            "computer_click",
+            &json!({ "targetId": "w1", "coordinate": [10, 20.5], "generation": "2.4",
+                     "button": "right" }),
+        )
+        .unwrap();
+        assert_eq!(
+            point,
+            ComputerActRequest::Click {
+                target: AgentTarget::Point(PointTarget {
+                    generation: "2.4".into(),
+                    x: 10.0,
+                    y: 20.5
+                }),
+                button: PointerButton::Right,
+                count: 1,
+            }
+        );
+        for (tool, bad, says) in [
+            ("computer_click", json!({ "targetId": "w1", "ref": 3 }), "generation"),
+            ("computer_click", json!({ "targetId": "w1" }), "requires `ref`"),
+            (
+                "computer_click",
+                json!({ "targetId": "w1", "ref": 3, "coordinate": [1, 2], "generation": "1.1" }),
+                "not both",
+            ),
+            (
+                "computer_click",
+                json!({ "targetId": "w1", "ref": 3, "generation": "1.1", "button": "back" }),
+                "button",
+            ),
+            (
+                "computer_click",
+                json!({ "targetId": "w1", "ref": 3, "generation": "1.1", "button": "right",
+                        "count": 2 }),
+                "left button only",
+            ),
+            (
+                "computer_click",
+                json!({ "targetId": "w1", "coordinate": [-1, 2], "generation": "1.1" }),
+                "coordinate",
+            ),
+            (
+                "computer_type",
+                json!({ "targetId": "w1", "ref": 3, "generation": "1.1", "text": "hi",
+                        "submit": "yes" }),
+                "true or false",
+            ),
+            (
+                "computer_type",
+                json!({ "targetId": "w1", "coordinate": [1, 2], "generation": "1.1",
+                        "text": "hi" }),
+                "not a coordinate",
+            ),
+            (
+                "computer_press_key",
+                json!({ "targetId": "w1", "key": "a" }),
+                "goes only into an element",
+            ),
+            (
+                "computer_press_key",
+                json!({ "targetId": "w1", "key": "printscreen" }),
+                "not a key",
+            ),
+            (
+                "computer_press_key",
+                json!({ "targetId": "w1", "key": "return", "modifiers": ["hyper"] }),
+                "not a modifier",
+            ),
+            (
+                "computer_press_key",
+                json!({ "targetId": "w1", "key": "return", "repeat": 50 }),
+                "repeat",
+            ),
+            ("computer_scroll", json!({ "targetId": "w1" }), "direction"),
+            (
+                "computer_set_value",
+                json!({ "targetId": "w1", "ref": 3, "generation": "1.1" }),
+                "value",
+            ),
+        ] {
+            let error = computer_act_request(tool, &bad).unwrap_err();
+            assert!(error.contains(says), "{tool} {bad}: {error}");
+        }
+        let (_, key) = computer_act_request(
+            "computer_press_key",
+            &json!({ "targetId": "w1", "key": "Tab", "modifiers": ["Shift"], "repeat": 3 }),
+        )
+        .unwrap();
+        assert_eq!(
+            key,
+            ComputerActRequest::Key {
+                target: None,
+                chord: crate::computer::keys::Chord {
+                    key: Key::Tab,
+                    modifiers: Modifiers {
+                        shift: true,
+                        ..Modifiers::default()
+                    }
+                },
+                repeat: 3,
+            }
+        );
+        let (_, scroll) = computer_act_request(
+            "computer_scroll",
+            &json!({ "targetId": "w1", "direction": "down", "unit": "page" }),
+        )
+        .unwrap();
+        assert_eq!(
+            scroll,
+            ComputerActRequest::Scroll {
+                target: None,
+                direction: ScrollDirection::Down,
+                amount: 3,
+                unit: ScrollUnit::Page,
+            }
+        );
+    }
+
+    /// An action's result says how sure it is; "unverifiable" sends the agent
+    /// to look, rather than claiming success.
+    #[test]
+    fn a_computer_action_renders_what_is_known_of_it() {
+        let done = render_computer_act_result(&json!({
+            "targetId": "w2",
+            "action": { "targetId": "w2", "effect": "confirmed", "route": "accessibility",
+                        "delivery": "background" }
+        }));
+        let text = done["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("confirmed"), "{text}");
+        assert!(text.contains("accessibility"), "{text}");
+        let vague = render_computer_act_result(&json!({
+            "targetId": "w2",
+            "action": { "targetId": "w2", "effect": "unverifiable", "delivery": "background",
+                        "submitted": false }
+        }));
+        let text = vague["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("computer_verify"), "{text}");
+        assert!(text.contains("Return could not be pressed"), "{text}");
+        let refused = render_computer_act_result(&json!({
+            "targetId": "w2", "error": "computer_control_required", "note": "ask for control"
+        }));
+        assert_eq!(refused["isError"], false);
+        assert_eq!(refused["content"][0]["text"], "ask for control");
     }
 
     /// A screenshot comes back as image content plus a line of text that says

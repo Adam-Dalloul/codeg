@@ -22,16 +22,17 @@ use crate::acp::browser_tools::{
     ERROR_NO_SUCH_TAB,
 };
 use crate::acp::computer_tools::{
-    ComputerAppsOutcome, ComputerCaptureOutcome, ComputerSnapshotOutcome, ComputerToolAccess,
-    ComputerVerifyOutcome, ComputerWindowsOutcome, ERROR_NO_SUCH_TARGET,
+    ComputerActOutcome, ComputerAppsOutcome, ComputerCaptureOutcome, ComputerSnapshotOutcome,
+    ComputerToolAccess, ComputerVerifyOutcome, ComputerWindowsOutcome, ERROR_NO_SUCH_TARGET,
 };
 use crate::acp::delegation::transport::{
     read_frame, write_frame, BrokerAskRequest, BrokerBrowserActRequest,
     BrokerBrowserCaptureRequest, BrokerBrowserConsoleRequest, BrokerBrowserEvalRequest,
     BrokerBrowserSnapshotRequest, BrokerBrowserTabOpRequest, BrokerBrowserTabsRequest,
-    BrokerCancelRequest, BrokerCancelTaskRequest, BrokerComputerAppsRequest,
-    BrokerComputerCaptureRequest, BrokerComputerSnapshotRequest, BrokerComputerVerifyRequest,
-    BrokerComputerWindowsRequest, BrokerCommitFeedbackRequest, BrokerFeedbackRequest, BrokerMessage, BrokerRequest,
+    BrokerCancelRequest, BrokerCancelTaskRequest, BrokerComputerActRequest,
+    BrokerComputerAppsRequest, BrokerComputerCaptureRequest, BrokerComputerSnapshotRequest,
+    BrokerComputerVerifyRequest, BrokerComputerWindowsRequest, BrokerCommitFeedbackRequest,
+    BrokerFeedbackRequest, BrokerMessage, BrokerRequest,
     BrokerCreateAutomationRequest, BrokerCreateWorkTaskRequest, BrokerResponse,
     BrokerResumeTaskRequest, BrokerSessionRequest, BrokerStatusRequest,
     BrokerTaskCompleteRequest, BrokerTaskProgressRequest,
@@ -643,6 +644,12 @@ impl DelegationListener {
             BrokerMessage::ComputerVerify(req) => {
                 computer_response(&self.process_computer_verify(req).await)?
             }
+            BrokerMessage::ComputerAct(req) => {
+                // Runs to its end like a read: an action cannot be recalled
+                // halfway, and the line it leaves on the panel's activity
+                // list must not depend on whether the caller is still there.
+                computer_response(&self.process_computer_act(req).await)?
+            }
             BrokerMessage::Cancel(cancel) => {
                 self.process_cancel(cancel).await;
                 // Empty ack — the companion only uses this to detect the
@@ -1058,6 +1065,19 @@ impl DelegationListener {
             );
         }
         self.computer.verify(&req.target_id, req.request).await
+    }
+
+    /// Same unauthenticated answer as a read: an invalid token is told the
+    /// window does not exist, and nothing is done.
+    async fn process_computer_act(&self, req: BrokerComputerActRequest) -> ComputerActOutcome {
+        if self.tokens.lookup(&req.token).await.is_none() {
+            return ComputerActOutcome::refused(
+                &req.target_id,
+                ERROR_NO_SUCH_TARGET,
+                crate::acp::computer_tools::no_such_target_note(&req.target_id),
+            );
+        }
+        self.computer.act(&req.target_id, req.request).await
     }
 
     /// Validate the token and hand the progress report to the task engine,
@@ -3756,6 +3776,22 @@ mod tests {
                 "stub",
             )
         }
+        async fn act(
+            &self,
+            target_id: &str,
+            request: crate::computer::types::ComputerActRequest,
+        ) -> ComputerActOutcome {
+            let kind = serde_json::to_value(&request).unwrap()["kind"].clone();
+            self.calls
+                .lock()
+                .await
+                .push(format!("act {target_id} {}", kind.as_str().unwrap_or("?")));
+            ComputerActOutcome::refused(
+                target_id,
+                crate::acp::computer_tools::ERROR_CONTROL_REQUIRED,
+                "stub",
+            )
+        }
     }
 
     fn make_computer_listener(
@@ -3825,7 +3861,7 @@ mod tests {
         )
         .await;
         browser_round_trip(
-            listener,
+            listener.clone(),
             BrokerMessage::ComputerVerify(BrokerComputerVerifyRequest {
                 token: token(),
                 target_id: "w7".into(),
@@ -3836,6 +3872,22 @@ mod tests {
             }),
         )
         .await;
+        let acted = browser_round_trip(
+            listener,
+            BrokerMessage::ComputerAct(BrokerComputerActRequest {
+                token: token(),
+                target_id: "w7".into(),
+                request: crate::computer::types::ComputerActRequest::SetValue {
+                    target: crate::computer::types::ElementTarget {
+                        generation: "1.2".into(),
+                        index: 4,
+                    },
+                    value: "x".into(),
+                },
+            }),
+        )
+        .await;
+        assert_eq!(acted.outcome["error"], "computer_control_required");
         assert_eq!(
             computer.calls.lock().await.as_slice(),
             &[
@@ -3844,6 +3896,7 @@ mod tests {
                 "capture w7 Some(800)".to_string(),
                 "snapshot w7 Some(0)".to_string(),
                 "verify w7 1".to_string(),
+                "act w7 setValue".to_string(),
             ]
         );
     }
@@ -3866,7 +3919,7 @@ mod tests {
         assert!(apps.outcome.get("error").is_none());
 
         let read = browser_round_trip(
-            listener,
+            listener.clone(),
             BrokerMessage::ComputerCapture(BrokerComputerCaptureRequest {
                 token: "forged".into(),
                 target_id: "w1".into(),
@@ -3875,6 +3928,23 @@ mod tests {
         )
         .await;
         assert_eq!(read.outcome["error"], "computer_no_such_target");
+        let act = browser_round_trip(
+            listener,
+            BrokerMessage::ComputerAct(BrokerComputerActRequest {
+                token: "forged".into(),
+                target_id: "w1".into(),
+                request: crate::computer::types::ComputerActRequest::Key {
+                    target: None,
+                    chord: crate::computer::keys::Chord {
+                        key: crate::computer::keys::Key::Return,
+                        modifiers: Default::default(),
+                    },
+                    repeat: 1,
+                },
+            }),
+        )
+        .await;
+        assert_eq!(act.outcome["error"], "computer_no_such_target");
         assert!(computer.calls.lock().await.is_empty());
     }
 }

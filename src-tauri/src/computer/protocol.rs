@@ -13,11 +13,13 @@
 //! the peer, and a signature check of "the peer" would check codeg. codeg
 //! verifies the helper only after the first frame arrives.
 //!
-//! The ops are a closed list of reads. The driver behind the helper advertises
-//! dozens of tools — launching and killing applications, rewriting its own
+//! The ops are a closed list. The driver behind the helper advertises dozens
+//! of tools — launching and killing applications, rewriting its own
 //! configuration, replaying recorded input — and none of them is reachable
-//! from here: the helper translates each op below into one fixed driver call,
-//! and there is no op that carries a tool name.
+//! from here: the helper translates each op below into fixed driver calls,
+//! and there is no op that carries a tool name. The one op that changes a
+//! window, [`HelperOp::Act`], carries a closed [`WindowAction`] whose every
+//! field the helper rebuilds into the driver's arguments itself.
 
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -25,7 +27,11 @@ use serde_json::Value;
 
 pub use crate::acp::delegation::transport::{read_frame, write_frame, MAX_FRAME_BYTES};
 
-use super::types::{PredicateResult, Rect, VerifyRequest, VerifyStatus};
+use super::keys::Chord;
+use super::types::{
+    ActEffect, ActRoute, PointerButton, PredicateResult, Rect, ScrollDirection, ScrollUnit,
+    VerifyRequest, VerifyStatus,
+};
 
 /// Bumped whenever a frame changes shape. The helper ships in the same bundle
 /// as codeg, so a mismatch means a broken install (a helper left behind by a
@@ -98,6 +104,155 @@ pub enum HelperOp {
         window_id: u64,
         request: VerifyRequest,
     },
+    /// Act on one window. codeg has checked the grant, the addressing and the
+    /// keys; the helper checks again what only it can see at the moment of
+    /// delivery — that the pid is still the process the window was shared
+    /// from, that the session is not locked, that nothing has been stopped —
+    /// and refuses secret fields itself.
+    #[serde(rename_all = "camelCase")]
+    Act {
+        pid: u32,
+        window_id: u64,
+        /// The process start time the grant is held against.
+        started_at: u64,
+        /// The application's key (bundle identifier or path), for the driver
+        /// paths that differ by application.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        app_key: Option<String>,
+        action: WindowAction,
+    },
+    /// The person pressed Stop: kill the driver now — whatever it is in the
+    /// middle of — and refuse everything that needs one until [`Resume`].
+    ///
+    /// [`Resume`]: HelperOp::Resume
+    Halt,
+    /// Undo a [`HelperOp::Halt`]. The next call starts a fresh driver.
+    Resume,
+}
+
+/// An element of a snapshot the helper took, by the driver's snapshot id and
+/// the element's index in it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ElementRef {
+    pub snapshot_id: String,
+    pub index: u32,
+}
+
+/// A point in the window, in its own pixels — the space of a full-size
+/// capture of it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WindowPoint {
+    pub x: f64,
+    pub y: f64,
+    /// The window's size (its bounds, in the platform's units) when the point
+    /// was read off it. The window at another size is laid out otherwise, and
+    /// the helper refuses rather than click where the point used to be.
+    pub window_width: f64,
+    pub window_height: f64,
+}
+
+/// Where a pointer action lands, as the helper is told it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "at", rename_all = "camelCase")]
+pub enum DriverTarget {
+    Element(ElementRef),
+    Point(WindowPoint),
+}
+
+/// One action on one window: the closed list the helper translates into
+/// driver calls. Always delivered in the background.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum WindowAction {
+    #[serde(rename_all = "camelCase")]
+    Click {
+        at: DriverTarget,
+        button: PointerButton,
+        count: u8,
+    },
+    #[serde(rename_all = "camelCase")]
+    Scroll {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        at: Option<DriverTarget>,
+        direction: ScrollDirection,
+        amount: u32,
+        unit: ScrollUnit,
+    },
+    #[serde(rename_all = "camelCase")]
+    Type {
+        element: ElementRef,
+        text: String,
+        submit: bool,
+    },
+    #[serde(rename_all = "camelCase")]
+    Key {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        element: Option<ElementRef>,
+        chord: Chord,
+    },
+    #[serde(rename_all = "camelCase")]
+    SetValue { element: ElementRef, value: String },
+}
+
+impl WindowAction {
+    /// The element the action names, if it names one.
+    pub fn element(&self) -> Option<&ElementRef> {
+        match self {
+            WindowAction::Click {
+                at: DriverTarget::Element(e),
+                ..
+            }
+            | WindowAction::Scroll {
+                at: Some(DriverTarget::Element(e)),
+                ..
+            } => Some(e),
+            WindowAction::Type { element, .. } | WindowAction::SetValue { element, .. } => {
+                Some(element)
+            }
+            WindowAction::Key { element, .. } => element.as_ref(),
+            _ => None,
+        }
+    }
+
+    /// The point the action names, if it names one.
+    pub fn point(&self) -> Option<&WindowPoint> {
+        match self {
+            WindowAction::Click {
+                at: DriverTarget::Point(p),
+                ..
+            }
+            | WindowAction::Scroll {
+                at: Some(DriverTarget::Point(p)),
+                ..
+            } => Some(p),
+            _ => None,
+        }
+    }
+
+    /// Whether the action puts text into its element: typing, setting a
+    /// value, or a character key. Such an action never goes to a secret
+    /// field.
+    pub fn writes_text(&self) -> bool {
+        match self {
+            WindowAction::Type { .. } | WindowAction::SetValue { .. } => true,
+            WindowAction::Key { chord, .. } => chord.types_text(),
+            _ => false,
+        }
+    }
+}
+
+/// What the helper reports of an action that went out.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RawAct {
+    pub effect: ActEffect,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub route: Option<ActRoute>,
+    /// For typing with `submit`: whether return was pressed after the text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub submitted: Option<bool>,
 }
 
 /// helper → codeg.
@@ -294,6 +449,28 @@ pub struct RawSnapshot {
     pub window_bounds: Option<Rect>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
+    /// The driver's id for this snapshot, which its elements are addressed
+    /// by. `None` when the driver kept none (it could not match the window's
+    /// accessibility surface): nothing in this tree can be acted on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snapshot_id: Option<String>,
+    /// Every element that can be acted on, in tree order.
+    #[serde(default)]
+    pub refs: Vec<SnapshotRef>,
+}
+
+/// One element of a snapshot that can be acted on: the `[N]` in its line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SnapshotRef {
+    pub index: u32,
+    /// Where the element's line starts in `tree`, in bytes — so whoever cuts
+    /// the tree short knows which refs the reader was shown.
+    pub offset: u32,
+    /// A password or other secret field: its value was taken out of the
+    /// tree, and nothing is typed into it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub secret: bool,
 }
 
 /// The driver's verdict on a set of predicates.
@@ -337,6 +514,25 @@ pub enum HelperErrorCode {
     BadRequest,
     /// Anything else, in words.
     Failed,
+    /// No input goes anywhere right now: the person pressed Stop, or the
+    /// session is locked.
+    Paused,
+    /// The element or point is from a snapshot or capture the window has
+    /// moved past — a newer snapshot replaced it, the window changed size.
+    StaleRef,
+    /// The element or point is not in the window.
+    OutOfTarget,
+    /// The window cannot take input in the background right now: minimized,
+    /// hidden, on another desktop, or its application has another window the
+    /// keys could reach instead.
+    Occluded,
+    /// The application offers no route for this action in the background.
+    BackgroundUnavailable,
+    /// The element is a password or other secret field.
+    SecretField,
+    /// The action was allowed and did not happen: a disabled control, no such
+    /// option, more text than one call can type.
+    ActionFailed,
 }
 
 impl HelperError {

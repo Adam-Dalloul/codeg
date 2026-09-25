@@ -14,7 +14,7 @@
 //! shared, even when they look the same. A window whose identity no longer
 //! turns up in a listing is gone, and so is its grant.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -24,8 +24,12 @@ use super::agent::{
     generation, grantable, level_of, visible_title, Blocklist, ComputerGrant, ComputerGrantPayload,
     GrantChange, GrantLevel, NotGrantable, SelfIdentity,
 };
-use super::protocol::{RawApp, RawWindow};
-use super::types::{AgentAppRef, AgentWindowSummary, Rect};
+use super::keys::{classify, Chord, ChordClass, Platform};
+use super::protocol::{DriverTarget, ElementRef, RawApp, RawWindow, WindowAction, WindowPoint};
+use super::types::{
+    AgentAppRef, AgentTarget, AgentWindowSummary, ComputerActRequest, ElementTarget, PointTarget,
+    Rect,
+};
 
 /// Which window, exactly. See the module note.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -67,6 +71,12 @@ pub struct TargetEntry {
     pub epoch: u64,
     /// Reads completed under the current epoch.
     pub reads: u64,
+    /// The latest snapshot read under the current grant: what a ref is
+    /// resolved against.
+    pub snapshot_mark: Option<SnapshotMark>,
+    /// The latest screenshot read under the current grant: what a point is
+    /// read in.
+    pub capture_mark: Option<CaptureMark>,
     /// The window stopped turning up while it was shared. Kept, grant-less,
     /// so a later call on its id is told "not shared" — the same answer as a
     /// window nobody shared, as the browser answers for a tab that navigated
@@ -125,6 +135,60 @@ pub struct SharedWindow {
     pub last_used_at: i64,
 }
 
+/// The latest snapshot an agent read of a window: the generation that named
+/// it, and which of its elements the agent may now act on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SnapshotMark {
+    pub generation: String,
+    /// The driver's id for the snapshot; `None` when it kept none, and
+    /// nothing in the tree can be acted on.
+    pub snapshot_id: Option<String>,
+    /// The refs whose lines the agent was given.
+    pub shown: BTreeSet<u32>,
+    /// The refs the tree had and the agent's copy was cut short of
+    /// (`maxChars`): told apart from refs that never were, so the refusal can
+    /// say which.
+    pub cut: BTreeSet<u32>,
+    /// The refs of secret fields.
+    pub secret: BTreeSet<u32>,
+}
+
+/// The latest screenshot an agent read of a window: the generation that
+/// named it, and the geometry a point read off it is mapped back through.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CaptureMark {
+    pub generation: String,
+    /// The image as the agent got it.
+    pub width: u32,
+    pub height: u32,
+    /// The window's own pixels, which the image was shrunk from.
+    pub native_width: u32,
+    pub native_height: u32,
+    /// Whether the native size is known to be the window's full size (see
+    /// `RawCapture::full_size`). Points need it.
+    pub full_size: bool,
+    pub window_bounds: Rect,
+}
+
+/// What a read leaves behind for later actions, before it has a generation.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ReadMark {
+    Snapshot {
+        snapshot_id: Option<String>,
+        shown: BTreeSet<u32>,
+        cut: BTreeSet<u32>,
+        secret: BTreeSet<u32>,
+    },
+    Capture {
+        width: u32,
+        height: u32,
+        native_width: u32,
+        native_height: u32,
+        full_size: bool,
+        window_bounds: Rect,
+    },
+}
+
 /// Why a read may not go ahead.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReadRefusal {
@@ -144,6 +208,66 @@ pub struct ReadTicket {
     pub epoch: u64,
     pub app: RawApp,
     pub bounds: Rect,
+}
+
+/// Why an action may not go ahead, before anything is sent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ActDenied {
+    /// codeg never named a window by this id.
+    NoSuchTarget,
+    /// Not shared — never was, no longer is, or gone.
+    GrantRequired,
+    /// Shared for reading only.
+    ControlRequired,
+    /// The window can never be shared.
+    NotGrantable(NotGrantable),
+    /// A ref or point that is not from the window's latest snapshot or
+    /// screenshot, or not in it.
+    Stale(Staleness),
+    /// A point outside the image it was read off.
+    OutOfImage,
+    /// Text into a secret field.
+    Secret,
+    /// A key a window grant does not reach — it acts on the application or
+    /// the desktop.
+    ChordBeyond,
+    /// A paste: the clipboard is the user's, and its source is not tracked.
+    Paste,
+    /// A character key with no element named to type it into.
+    NeedsElement,
+    /// The screenshot the point came from cannot be mapped back to the
+    /// window's pixels.
+    NoPointing,
+}
+
+/// How a ref or point is out of date.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Staleness {
+    /// No snapshot has been read under the current sharing.
+    NoSnapshot,
+    /// The generation is not the latest snapshot's.
+    OldSnapshot,
+    /// The driver kept no snapshot of the window: nothing in the tree can be
+    /// acted on.
+    NotActionable,
+    /// The ref was in the tree, past where the agent's copy was cut.
+    CutAway(u32),
+    /// The latest snapshot has no such ref.
+    NoSuchRef(u32),
+    /// No screenshot has been read under the current sharing.
+    NoCapture,
+    /// The generation is not the latest screenshot's.
+    OldCapture,
+}
+
+/// Permission for one action, with the action as the helper is to carry it
+/// out: every ref and point resolved against what the agent last read.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ActTicket {
+    pub target_id: String,
+    pub identity: WindowIdentity,
+    pub app: RawApp,
+    pub action: WindowAction,
 }
 
 /// Why a share did not happen.
@@ -217,6 +341,8 @@ impl TargetTable {
                             grant: None,
                             epoch: 0,
                             reads: 0,
+                            snapshot_mark: None,
+                            capture_mark: None,
                             gone: false,
                         },
                     );
@@ -285,6 +411,8 @@ impl TargetTable {
             entry.grant = None;
             entry.gone = true;
             entry.epoch += 1;
+            entry.snapshot_mark = None;
+            entry.capture_mark = None;
             Some(ComputerGrantPayload {
                 target_id: target_id.to_string(),
                 change,
@@ -337,6 +465,8 @@ impl TargetTable {
                 entry.grant = Some(ComputerGrant::new(level, now));
                 entry.epoch += 1;
                 entry.reads = 0;
+                entry.snapshot_mark = None;
+                entry.capture_mark = None;
             }
         }
         Ok(Some(ComputerGrantPayload {
@@ -349,6 +479,8 @@ impl TargetTable {
     fn revoke_entry(entry: &mut TargetEntry, change: GrantChange) -> Option<ComputerGrantPayload> {
         entry.grant.take()?;
         entry.epoch += 1;
+        entry.snapshot_mark = None;
+        entry.capture_mark = None;
         Some(ComputerGrantPayload {
             target_id: entry.target_id.clone(),
             change,
@@ -453,12 +585,15 @@ impl TargetTable {
     /// grant the blocklist now forbids is ended here, its payload returned for
     /// the caller to announce.
     ///
-    /// Returns the generation that names this read.
+    /// Returns the generation that names this read. `mark`, when the read
+    /// leaves one, becomes the window's latest snapshot or screenshot under
+    /// that generation — what later actions resolve refs and points against.
     pub fn finish_read(
         &self,
         ticket: &ReadTicket,
         me: &SelfIdentity,
         blocklist: &Blocklist,
+        mark: Option<ReadMark>,
     ) -> Result<String, (ReadRefusal, Option<ComputerGrantPayload>)> {
         let mut inner = self.lock();
         let Some(entry) = inner.entries.get_mut(&ticket.target_id) else {
@@ -475,7 +610,96 @@ impl TargetTable {
             return Err((ReadRefusal::NotGrantable(why), ended));
         }
         entry.reads += 1;
-        Ok(generation(entry.epoch, entry.reads))
+        let generation = generation(entry.epoch, entry.reads);
+        match mark {
+            Some(ReadMark::Snapshot {
+                snapshot_id,
+                shown,
+                cut,
+                secret,
+            }) => {
+                entry.snapshot_mark = Some(SnapshotMark {
+                    generation: generation.clone(),
+                    snapshot_id,
+                    shown,
+                    cut,
+                    secret,
+                })
+            }
+            Some(ReadMark::Capture {
+                width,
+                height,
+                native_width,
+                native_height,
+                full_size,
+                window_bounds,
+            }) => {
+                entry.capture_mark = Some(CaptureMark {
+                    generation: generation.clone(),
+                    width,
+                    height,
+                    native_width,
+                    native_height,
+                    full_size,
+                    window_bounds,
+                })
+            }
+            None => {}
+        }
+        Ok(generation)
+    }
+
+    /// Check an action may go ahead, and resolve it for the helper.
+    ///
+    /// In this order, each answered before the next is asked: the window is
+    /// one codeg named; it may still be shared at all; it is shared; the grant
+    /// has not lapsed; it is shared for control — and only then anything about
+    /// the action itself: keys a window grant does not reach, then every ref
+    /// against the window's latest snapshot and every point against its
+    /// latest screenshot, as the agent was given them. A refusal therefore
+    /// never says more about a window than the agent was allowed to know.
+    ///
+    /// Counts as use of the grant, like a read.
+    pub fn begin_act(
+        &self,
+        target_id: &str,
+        now: i64,
+        ttl: Option<Duration>,
+        me: &SelfIdentity,
+        blocklist: &Blocklist,
+        request: &ComputerActRequest,
+    ) -> Result<ActTicket, (ActDenied, Option<ComputerGrantPayload>)> {
+        let mut inner = self.lock();
+        let Some(entry) = inner.entries.get_mut(target_id) else {
+            return Err((ActDenied::NoSuchTarget, None));
+        };
+        if let Err(why) = grantable(&entry.app, me, blocklist) {
+            let ended = Self::revoke_entry(entry, GrantChange::Revoked);
+            return Err((ActDenied::NotGrantable(why), ended));
+        }
+        let Some(grant) = entry.grant.as_mut() else {
+            return Err((ActDenied::GrantRequired, None));
+        };
+        if grant.lapsed(now, ttl) {
+            let ended = Self::revoke_entry(entry, GrantChange::Expired);
+            return Err((ActDenied::GrantRequired, ended));
+        }
+        if !grant.level.allows(GrantLevel::Read) {
+            return Err((ActDenied::GrantRequired, None));
+        }
+        if !grant.level.allows(GrantLevel::Control) {
+            return Err((ActDenied::ControlRequired, None));
+        }
+        let action = resolve(entry, request).map_err(|why| (why, None))?;
+        if let Some(grant) = entry.grant.as_mut() {
+            grant.last_used_at = now;
+        }
+        Ok(ActTicket {
+            target_id: entry.target_id.clone(),
+            identity: entry.identity,
+            app: entry.app.clone(),
+            action,
+        })
     }
 
     /// Every window with a grant in force, oldest grant first.
@@ -504,6 +728,143 @@ impl TargetTable {
         });
         out
     }
+}
+
+/// The action as the helper carries it out: keys judged for a window grant,
+/// refs and points resolved against what the agent last read of the window.
+fn resolve(entry: &TargetEntry, request: &ComputerActRequest) -> Result<WindowAction, ActDenied> {
+    Ok(match request {
+        ComputerActRequest::Click {
+            target,
+            button,
+            count,
+        } => WindowAction::Click {
+            at: resolve_target(entry, target)?,
+            button: *button,
+            count: *count,
+        },
+        ComputerActRequest::Scroll {
+            target,
+            direction,
+            amount,
+            unit,
+        } => WindowAction::Scroll {
+            at: target
+                .as_ref()
+                .map(|t| resolve_target(entry, t))
+                .transpose()?,
+            direction: *direction,
+            amount: *amount,
+            unit: *unit,
+        },
+        ComputerActRequest::Type {
+            target,
+            text,
+            submit,
+        } => WindowAction::Type {
+            element: resolve_element(entry, target, true)?,
+            text: text.clone(),
+            submit: *submit,
+        },
+        ComputerActRequest::Key { target, chord, .. } => {
+            check_chord(chord, target.is_some())?;
+            WindowAction::Key {
+                element: target
+                    .as_ref()
+                    .map(|t| resolve_element(entry, t, chord.types_text()))
+                    .transpose()?,
+                chord: *chord,
+            }
+        }
+        ComputerActRequest::SetValue { target, value } => WindowAction::SetValue {
+            element: resolve_element(entry, target, true)?,
+            value: value.clone(),
+        },
+    })
+}
+
+/// Whether a window grant reaches `chord` — and, for a key that types a
+/// character, that it is aimed at a named element.
+fn check_chord(chord: &Chord, names_element: bool) -> Result<(), ActDenied> {
+    match classify(chord, Platform::current()) {
+        ChordClass::Beyond => Err(ActDenied::ChordBeyond),
+        ChordClass::Paste => Err(ActDenied::Paste),
+        ChordClass::Window if chord.types_text() && !names_element => Err(ActDenied::NeedsElement),
+        ChordClass::Window => Ok(()),
+    }
+}
+
+fn resolve_target(entry: &TargetEntry, target: &AgentTarget) -> Result<DriverTarget, ActDenied> {
+    Ok(match target {
+        AgentTarget::Element(e) => DriverTarget::Element(resolve_element(entry, e, false)?),
+        AgentTarget::Point(p) => DriverTarget::Point(resolve_point(entry, p)?),
+    })
+}
+
+/// A ref, against the window's latest snapshot as the agent was given it.
+/// `writes`: the action puts text into the element, which a secret field
+/// never takes.
+fn resolve_element(
+    entry: &TargetEntry,
+    target: &ElementTarget,
+    writes: bool,
+) -> Result<ElementRef, ActDenied> {
+    let mark = entry
+        .snapshot_mark
+        .as_ref()
+        .ok_or(ActDenied::Stale(Staleness::NoSnapshot))?;
+    if mark.generation != target.generation {
+        return Err(ActDenied::Stale(Staleness::OldSnapshot));
+    }
+    let snapshot_id = mark
+        .snapshot_id
+        .clone()
+        .ok_or(ActDenied::Stale(Staleness::NotActionable))?;
+    if !mark.shown.contains(&target.index) {
+        return Err(ActDenied::Stale(if mark.cut.contains(&target.index) {
+            Staleness::CutAway(target.index)
+        } else {
+            Staleness::NoSuchRef(target.index)
+        }));
+    }
+    if writes && mark.secret.contains(&target.index) {
+        return Err(ActDenied::Secret);
+    }
+    Ok(ElementRef {
+        snapshot_id,
+        index: target.index,
+    })
+}
+
+/// A point, in the pixels of the window's latest screenshot, mapped back to
+/// the window's own pixels.
+fn resolve_point(entry: &TargetEntry, target: &PointTarget) -> Result<WindowPoint, ActDenied> {
+    let mark = entry
+        .capture_mark
+        .as_ref()
+        .ok_or(ActDenied::Stale(Staleness::NoCapture))?;
+    if mark.generation != target.generation {
+        return Err(ActDenied::Stale(Staleness::OldCapture));
+    }
+    if !mark.full_size || mark.width == 0 || mark.height == 0 || mark.window_bounds.is_empty() {
+        return Err(ActDenied::NoPointing);
+    }
+    let (x, y) = (target.x, target.y);
+    let inside = x.is_finite()
+        && y.is_finite()
+        && x >= 0.0
+        && y >= 0.0
+        && x < f64::from(mark.width)
+        && y < f64::from(mark.height);
+    if !inside {
+        return Err(ActDenied::OutOfImage);
+    }
+    Ok(WindowPoint {
+        x: x * f64::from(mark.native_width) / f64::from(mark.width),
+        y: y * f64::from(mark.native_height) / f64::from(mark.height),
+        window_width: mark.window_bounds.width,
+        window_height: mark.window_bounds.height,
+    })
 }
 
 #[cfg(test)]
@@ -563,7 +924,7 @@ mod tests {
 
     fn finish(table: &TargetTable, ticket: &ReadTicket) -> Result<String, ReadRefusal> {
         table
-            .finish_read(ticket, &me(), &Blocklist::new(&[]))
+            .finish_read(ticket, &me(), &Blocklist::new(&[]), None)
             .map_err(|(why, _)| why)
     }
 
@@ -716,7 +1077,9 @@ mod tests {
         let ticket = table
             .begin_read(&id, 2_000, None, &me(), &Blocklist::new(&[]))
             .unwrap();
-        let (why, ended) = table.finish_read(&ticket, &me(), &grown).unwrap_err();
+        let (why, ended) = table
+            .finish_read(&ticket, &me(), &grown, None)
+            .unwrap_err();
         assert_eq!(why, ReadRefusal::NotGrantable(NotGrantable::Blocklisted));
         assert_eq!(ended.map(|p| p.change), Some(GrantChange::Revoked));
         assert!(table.shared().is_empty());
@@ -835,5 +1198,343 @@ mod tests {
         assert_eq!(ended.len(), 2);
         assert!(ended.iter().all(|p| p.change == GrantChange::Disabled));
         assert!(table.shared().is_empty());
+    }
+
+    // ── acting ─────────────────────────────────────────────────────────────
+
+    use crate::computer::keys::{Chord, Key, Modifiers};
+    use crate::computer::types::{PointerButton, ScrollDirection, ScrollUnit};
+
+    /// A shared window with one snapshot read (refs 1–4 given, 5 cut, 2
+    /// secret) and one screenshot read (a 1000×500 image of a 2000×1000
+    /// capture of a 1000×500-point window). Returns the id and the two
+    /// generations.
+    fn shared_and_read(table: &TargetTable, level: GrantLevel) -> (String, String, String) {
+        let (listed, _) = table.observe(&[window(10, 111, 5, "Form")], None);
+        let id = listed[0].target_id.clone();
+        share(table, &id, level);
+        let ticket = table
+            .begin_read(&id, 2_000, None, &me(), &Blocklist::new(&[]))
+            .unwrap();
+        let snapshot = table
+            .finish_read(
+                &ticket,
+                &me(),
+                &Blocklist::new(&[]),
+                Some(ReadMark::Snapshot {
+                    snapshot_id: Some("s0000000a".into()),
+                    shown: [1, 2, 3, 4].into_iter().collect(),
+                    cut: [5].into_iter().collect(),
+                    secret: [2].into_iter().collect(),
+                }),
+            )
+            .unwrap();
+        let capture = table
+            .finish_read(
+                &ticket,
+                &me(),
+                &Blocklist::new(&[]),
+                Some(ReadMark::Capture {
+                    width: 1000,
+                    height: 500,
+                    native_width: 2000,
+                    native_height: 1000,
+                    full_size: true,
+                    window_bounds: Rect {
+                        x: 0.0,
+                        y: 0.0,
+                        width: 1000.0,
+                        height: 500.0,
+                    },
+                }),
+            )
+            .unwrap();
+        (id, snapshot, capture)
+    }
+
+    fn act(
+        table: &TargetTable,
+        id: &str,
+        request: &ComputerActRequest,
+    ) -> Result<WindowAction, ActDenied> {
+        table
+            .begin_act(id, 3_000, None, &me(), &Blocklist::new(&[]), request)
+            .map(|t| t.action)
+            .map_err(|(why, _)| why)
+    }
+
+    fn click_ref(generation: &str, index: u32) -> ComputerActRequest {
+        ComputerActRequest::Click {
+            target: AgentTarget::Element(ElementTarget {
+                generation: generation.into(),
+                index,
+            }),
+            button: PointerButton::Left,
+            count: 1,
+        }
+    }
+
+    fn click_at(generation: &str, x: f64, y: f64) -> ComputerActRequest {
+        ComputerActRequest::Click {
+            target: AgentTarget::Point(PointTarget {
+                generation: generation.into(),
+                x,
+                y,
+            }),
+            button: PointerButton::Left,
+            count: 1,
+        }
+    }
+
+    /// Acting needs a grant for control: an unknown id, an unshared window
+    /// and a window shared for reading are each refused as such, before
+    /// anything about the action is looked at.
+    #[test]
+    fn acting_needs_a_grant_for_control() {
+        let table = TargetTable::new();
+        let (id, snapshot, _) = shared_and_read(&table, GrantLevel::Read);
+        assert_eq!(
+            act(&table, "w999", &click_ref(&snapshot, 1)),
+            Err(ActDenied::NoSuchTarget)
+        );
+        assert_eq!(
+            act(&table, &id, &click_ref(&snapshot, 1)),
+            Err(ActDenied::ControlRequired)
+        );
+        // Even a key no grant allows is answered as "read only" first.
+        let quit = ComputerActRequest::Key {
+            target: None,
+            chord: Chord {
+                key: Key::Char('q'),
+                modifiers: Modifiers {
+                    meta: true,
+                    control: true,
+                    ..Modifiers::default()
+                },
+            },
+            repeat: 1,
+        };
+        assert_eq!(act(&table, &id, &quit), Err(ActDenied::ControlRequired));
+        share(&table, &id, GrantLevel::None);
+        assert_eq!(
+            act(&table, &id, &click_ref(&snapshot, 1)),
+            Err(ActDenied::GrantRequired)
+        );
+    }
+
+    /// A ref resolves against the latest snapshot as the agent was given it:
+    /// cut and missing refs are told apart, an older generation is stale, and
+    /// a secret field takes a click but no text.
+    #[test]
+    fn refs_resolve_against_the_latest_snapshot_as_given() {
+        let table = TargetTable::new();
+        let (id, snapshot, capture) = shared_and_read(&table, GrantLevel::Control);
+        assert_eq!(
+            act(&table, &id, &click_ref(&snapshot, 3)),
+            Ok(WindowAction::Click {
+                at: DriverTarget::Element(ElementRef {
+                    snapshot_id: "s0000000a".into(),
+                    index: 3
+                }),
+                button: PointerButton::Left,
+                count: 1,
+            })
+        );
+        assert_eq!(
+            act(&table, &id, &click_ref(&snapshot, 5)),
+            Err(ActDenied::Stale(Staleness::CutAway(5)))
+        );
+        assert_eq!(
+            act(&table, &id, &click_ref(&snapshot, 9)),
+            Err(ActDenied::Stale(Staleness::NoSuchRef(9)))
+        );
+        // The screenshot's generation is not a snapshot's.
+        assert_eq!(
+            act(&table, &id, &click_ref(&capture, 3)),
+            Err(ActDenied::Stale(Staleness::OldSnapshot))
+        );
+        // The secret field: clickable, and nothing typed or set into it.
+        assert!(act(&table, &id, &click_ref(&snapshot, 2)).is_ok());
+        let pw = ElementTarget {
+            generation: snapshot.clone(),
+            index: 2,
+        };
+        for writes in [
+            ComputerActRequest::Type {
+                target: pw.clone(),
+                text: "hunter2".into(),
+                submit: false,
+            },
+            ComputerActRequest::SetValue {
+                target: pw.clone(),
+                value: "hunter2".into(),
+            },
+            ComputerActRequest::Key {
+                target: Some(pw.clone()),
+                chord: Chord {
+                    key: Key::Char('h'),
+                    modifiers: Modifiers::default(),
+                },
+                repeat: 1,
+            },
+        ] {
+            assert_eq!(act(&table, &id, &writes), Err(ActDenied::Secret), "{writes:?}");
+        }
+    }
+
+    /// A point is read in the latest screenshot's pixels and mapped back to
+    /// the window's own; one outside the image, or from another screenshot,
+    /// is refused.
+    #[test]
+    fn points_resolve_against_the_latest_screenshot() {
+        let table = TargetTable::new();
+        let (id, _, capture) = shared_and_read(&table, GrantLevel::Control);
+        assert_eq!(
+            act(&table, &id, &click_at(&capture, 100.0, 50.5)),
+            Ok(WindowAction::Click {
+                at: DriverTarget::Point(WindowPoint {
+                    x: 200.0,
+                    y: 101.0,
+                    window_width: 1000.0,
+                    window_height: 500.0,
+                }),
+                button: PointerButton::Left,
+                count: 1,
+            })
+        );
+        for (x, y) in [(1000.0, 10.0), (10.0, 500.0), (-1.0, 3.0), (f64::NAN, 3.0)] {
+            assert_eq!(
+                act(&table, &id, &click_at(&capture, x, y)),
+                Err(ActDenied::OutOfImage),
+                "{x},{y}"
+            );
+        }
+        assert_eq!(
+            act(&table, &id, &click_at("1.1", 1.0, 1.0)),
+            Err(ActDenied::Stale(Staleness::OldCapture))
+        );
+        // A screenshot codeg cannot map back to the window's pixels cannot
+        // be pointed into.
+        let ticket = table
+            .begin_read(&id, 2_000, None, &me(), &Blocklist::new(&[]))
+            .unwrap();
+        let unmapped = table
+            .finish_read(
+                &ticket,
+                &me(),
+                &Blocklist::new(&[]),
+                Some(ReadMark::Capture {
+                    width: 1000,
+                    height: 500,
+                    native_width: 1000,
+                    native_height: 500,
+                    full_size: false,
+                    window_bounds: Rect::default(),
+                }),
+            )
+            .unwrap();
+        assert_eq!(
+            act(&table, &id, &click_at(&unmapped, 1.0, 1.0)),
+            Err(ActDenied::NoPointing)
+        );
+    }
+
+    /// Taking the window back and sharing it again is a new grant: nothing
+    /// read under the old one can be acted on.
+    #[test]
+    fn a_new_grant_forgets_what_was_read_under_the_old() {
+        let table = TargetTable::new();
+        let (id, snapshot, capture) = shared_and_read(&table, GrantLevel::Control);
+        share(&table, &id, GrantLevel::None);
+        share(&table, &id, GrantLevel::Control);
+        assert_eq!(
+            act(&table, &id, &click_ref(&snapshot, 3)),
+            Err(ActDenied::Stale(Staleness::NoSnapshot))
+        );
+        assert_eq!(
+            act(&table, &id, &click_at(&capture, 1.0, 1.0)),
+            Err(ActDenied::Stale(Staleness::NoCapture))
+        );
+        // A change of level keeps the grant, and what was read under it.
+        let table = TargetTable::new();
+        let (id, snapshot, _) = shared_and_read(&table, GrantLevel::Read);
+        share(&table, &id, GrantLevel::Control);
+        assert!(act(&table, &id, &click_ref(&snapshot, 3)).is_ok());
+    }
+
+    /// Keys: the window's own chords go through; a paste, a chord that
+    /// reaches the application or the desktop, and a character key with no
+    /// element are refused, each as itself.
+    #[test]
+    fn keys_are_judged_for_a_window_grant() {
+        let table = TargetTable::new();
+        let (id, snapshot, _) = shared_and_read(&table, GrantLevel::Control);
+        let primary = if cfg!(target_os = "macos") {
+            Modifiers {
+                meta: true,
+                ..Modifiers::default()
+            }
+        } else {
+            Modifiers {
+                control: true,
+                ..Modifiers::default()
+            }
+        };
+        let key = |key: Key, modifiers: Modifiers, target: Option<ElementTarget>| {
+            ComputerActRequest::Key {
+                target,
+                chord: Chord { key, modifiers },
+                repeat: 1,
+            }
+        };
+        assert!(act(&table, &id, &key(Key::Return, Modifiers::default(), None)).is_ok());
+        assert!(act(&table, &id, &key(Key::Char('a'), primary, None)).is_ok());
+        assert_eq!(
+            act(&table, &id, &key(Key::Char('v'), primary, None)),
+            Err(ActDenied::Paste)
+        );
+        assert_eq!(
+            act(&table, &id, &key(Key::Char('q'), primary, None)),
+            Err(ActDenied::ChordBeyond)
+        );
+        assert_eq!(
+            act(&table, &id, &key(Key::Char('x'), Modifiers::default(), None)),
+            Err(ActDenied::NeedsElement)
+        );
+        let field = ElementTarget {
+            generation: snapshot,
+            index: 3,
+        };
+        assert!(act(
+            &table,
+            &id,
+            &key(Key::Char('x'), Modifiers::default(), Some(field))
+        )
+        .is_ok());
+        let scroll = ComputerActRequest::Scroll {
+            target: None,
+            direction: ScrollDirection::Down,
+            amount: 3,
+            unit: ScrollUnit::Line,
+        };
+        assert!(act(&table, &id, &scroll).is_ok());
+    }
+
+    /// An action keeps the grant in use, like a read; a lapsed grant ends at
+    /// the action, which is refused.
+    #[test]
+    fn an_action_uses_the_grant_and_a_lapsed_one_ends() {
+        let ttl = Some(Duration::from_secs(10));
+        let table = TargetTable::new();
+        let (id, snapshot, _) = shared_and_read(&table, GrantLevel::Control);
+        table
+            .begin_act(&id, 9_000, ttl, &me(), &Blocklist::new(&[]), &click_ref(&snapshot, 1))
+            .unwrap();
+        assert_eq!(table.shared()[0].last_used_at, 9_000);
+        let (why, ended) = table
+            .begin_act(&id, 30_000, ttl, &me(), &Blocklist::new(&[]), &click_ref(&snapshot, 1))
+            .unwrap_err();
+        assert_eq!(why, ActDenied::GrantRequired);
+        assert_eq!(ended.map(|p| p.change), Some(GrantChange::Expired));
     }
 }

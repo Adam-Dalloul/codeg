@@ -1,6 +1,11 @@
 //! Computer use: letting an agent look at the native windows on the user's
 //! desktop — one window at a time, and only the ones a person shared.
 //!
+//! Acting on a shared window follows the same rules, one level up: a window
+//! shared for control, one element or one point of what the agent last read
+//! of it, keys that stay inside the window, delivered in the background, and
+//! a Stop the person can press at any moment.
+//!
 //! The shape of this module is decided by one fact about macOS: TCC charges
 //! "Accessibility" and "Screen Recording" to a process's *responsible*
 //! process, and every process in an agent's tree (the ACP adapter, the agent
@@ -34,6 +39,8 @@
 //! - `types`     — wire types shared with the companion and the frontend
 //! - `agent`     — grant rules: what may be shared, what a grant covers, how
 //!   titles are narrowed, when a grant lapses
+//! - `keys`      — the keys an agent may press, and which a window grant
+//!   allows
 //! - `targets`   — codeg's table of windows it has told an agent about, with
 //!   the grant on each entry
 //! - `protocol`  — frames between codeg and the helper
@@ -53,6 +60,7 @@ pub mod agent;
 pub mod backend;
 pub mod driver;
 pub mod helper;
+pub mod keys;
 pub mod procinfo;
 pub mod protocol;
 pub mod targets;

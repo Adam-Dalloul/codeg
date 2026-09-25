@@ -265,9 +265,234 @@ pub struct VerifyOutcome {
     pub predicates: Vec<PredicateResult>,
 }
 
+// -------- Acting on a window ----------------------------------------------
+
+/// An element of the window's latest snapshot: the `generation` that snapshot
+/// handed out, and the element's ref — the number in `[N]` at the start of
+/// its line.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ElementTarget {
+    pub generation: String,
+    #[serde(rename = "ref")]
+    pub index: u32,
+}
+
+/// A point in the window's latest screenshot, in that image's pixels, with
+/// the `generation` it handed out. Only that image's pixel space is meant:
+/// the same numbers read off another capture are another point.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PointTarget {
+    pub generation: String,
+    pub x: f64,
+    pub y: f64,
+}
+
+/// Where a pointer action lands.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "at", rename_all = "camelCase")]
+pub enum AgentTarget {
+    Element(ElementTarget),
+    Point(PointTarget),
+}
+
+impl AgentTarget {
+    pub fn generation(&self) -> &str {
+        match self {
+            AgentTarget::Element(e) => &e.generation,
+            AgentTarget::Point(p) => &p.generation,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PointerButton {
+    #[default]
+    Left,
+    Right,
+    Middle,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ScrollDirection {
+    Up,
+    Down,
+    Left,
+    Right,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ScrollUnit {
+    #[default]
+    Line,
+    Page,
+}
+
+/// The most text one `computer_type` or `computer_set_value` carries.
+pub const MAX_ACTION_TEXT_CHARS: usize = 10_000;
+
+/// The most times one `computer_press_key` presses its key.
+pub const MAX_KEY_REPEAT: u32 = 20;
+
+/// The most wheel notches (or keystrokes) one `computer_scroll` sends.
+pub const MAX_SCROLL_AMOUNT: u32 = 25;
+
+/// What an agent asks to do to one shared window. A closed set, rebuilt field
+/// by field on its way to the driver, like the verify predicates.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum ComputerActRequest {
+    /// Click an element, or a point. `count` is 1 or 2 (a double click, left
+    /// button only).
+    #[serde(rename_all = "camelCase")]
+    Click {
+        target: AgentTarget,
+        #[serde(default)]
+        button: PointerButton,
+        count: u8,
+    },
+    /// Scroll at an element or a point — or, with no target, whatever has
+    /// focus in the window.
+    #[serde(rename_all = "camelCase")]
+    Scroll {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        target: Option<AgentTarget>,
+        direction: ScrollDirection,
+        amount: u32,
+        #[serde(default)]
+        unit: ScrollUnit,
+    },
+    /// Type text into an element; `submit` presses return after it.
+    #[serde(rename_all = "camelCase")]
+    Type {
+        target: ElementTarget,
+        text: String,
+        #[serde(default)]
+        submit: bool,
+    },
+    /// Press a key, `repeat` times, on an element or on whatever has focus.
+    #[serde(rename_all = "camelCase")]
+    Key {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        target: Option<ElementTarget>,
+        chord: crate::computer::keys::Chord,
+        repeat: u32,
+    },
+    /// Set an element's value outright — a text field's text, a slider's
+    /// position, a pop-up menu's choice.
+    #[serde(rename_all = "camelCase")]
+    SetValue { target: ElementTarget, value: String },
+}
+
+/// How far the driver can vouch for an action it carried out.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ActEffect {
+    /// Read back from the window: the value changed, the selection moved.
+    Confirmed,
+    /// Only part of it happened (some of the text was typed).
+    Partial,
+    /// Delivered, and nothing could be read back to prove it landed. Not a
+    /// failure and not a success: look at the window to know.
+    Unverifiable,
+    /// Delivered, and by every sign it did nothing.
+    SuspectedNoop,
+}
+
+/// How an action reached the application — not the same click by every
+/// route: a semantic accessibility action does not move the pointer or fire
+/// hover, a synthesized event does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ActRoute {
+    Accessibility,
+    SyntheticEvents,
+    GlobalInput,
+    SystemApi,
+    Dom,
+    TrustedInput,
+    /// A route this codeg does not know by name.
+    #[serde(other)]
+    Other,
+}
+
+/// How the input was delivered. Only background in this version: the
+/// application is not brought to the front and the person's own pointer and
+/// keyboard focus stay where they are.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ActDelivery {
+    Background,
+}
+
+/// What one action on a shared window did.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActReport {
+    pub target_id: String,
+    pub effect: ActEffect,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub route: Option<ActRoute>,
+    pub delivery: ActDelivery,
+    /// For a key pressed more than once: how many presses went out.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub presses: Option<u32>,
+    /// For typing with `submit`: whether return was pressed after it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub submitted: Option<bool>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An action request is a closed shape too: a target that is neither an
+    /// element nor a point, or a field nobody named, does not parse.
+    #[test]
+    fn an_action_request_is_a_closed_shape() {
+        let click: ComputerActRequest = serde_json::from_value(serde_json::json!({
+            "kind": "click",
+            "target": { "kind": "point", "at": { "generation": "2.4", "x": 10.5, "y": 20 } },
+            "count": 1
+        }))
+        .unwrap();
+        assert_eq!(
+            click,
+            ComputerActRequest::Click {
+                target: AgentTarget::Point(PointTarget {
+                    generation: "2.4".into(),
+                    x: 10.5,
+                    y: 20.0
+                }),
+                button: PointerButton::Left,
+                count: 1,
+            }
+        );
+        let typed: ComputerActRequest = serde_json::from_value(serde_json::json!({
+            "kind": "type",
+            "target": { "generation": "2.5", "ref": 7 },
+            "text": "hello"
+        }))
+        .unwrap();
+        assert!(matches!(typed, ComputerActRequest::Type { submit: false, .. }));
+        for bad in [
+            serde_json::json!({ "kind": "click", "target": { "kind": "desktop" }, "count": 1 }),
+            serde_json::json!({ "kind": "click", "count": 1, "target": { "kind": "element",
+                                "at": { "generation": "1.1", "ref": 1, "x": 3 } } }),
+            serde_json::json!({ "kind": "type", "target": { "generation": "1.1", "ref": 1,
+                                "selector": "#pw" }, "text": "x" }),
+            serde_json::json!({ "kind": "launch", "app": "Terminal" }),
+        ] {
+            assert!(
+                serde_json::from_value::<ComputerActRequest>(bad.clone()).is_err(),
+                "{bad}"
+            );
+        }
+    }
 
     /// The predicate types are the whitelist: a field the agent invents is a
     /// parse error, not something that rides along to the driver.

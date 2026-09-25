@@ -375,6 +375,17 @@ pub struct BrokerComputerVerifyRequest {
     pub request: crate::computer::types::VerifyRequest,
 }
 
+/// One action on a window shared for control. Backs `computer_click`,
+/// `computer_scroll`, `computer_type`, `computer_press_key` and
+/// `computer_set_value`; every check happens behind it, in
+/// `commands::computer`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BrokerComputerActRequest {
+    pub token: String,
+    pub target_id: String,
+    pub request: crate::computer::types::ComputerActRequest,
+}
+
 /// Tagged top-level message dispatched by the listener. Adding new variants
 /// is the wire-stable way to grow the broker protocol without touching the
 /// frame layer.
@@ -406,6 +417,7 @@ pub enum BrokerMessage {
     ComputerCapture(BrokerComputerCaptureRequest),
     ComputerSnapshot(BrokerComputerSnapshotRequest),
     ComputerVerify(BrokerComputerVerifyRequest),
+    ComputerAct(BrokerComputerActRequest),
     /// Liveness probe. Unlike every other variant this one is NOT sent by a
     /// companion — it comes from codeg's own service-status check
     /// (`acp::delegation::service`), which is why it carries no `token`: a
@@ -713,6 +725,15 @@ pub async fn client_computer_verify_round_trip(
     req: &BrokerComputerVerifyRequest,
 ) -> io::Result<BrokerResponse> {
     message_round_trip(socket_path, &BrokerMessage::ComputerVerify(req.clone())).await
+}
+
+/// Dispatch one computer action and read back the serialized
+/// [`crate::acp::computer_tools::ComputerActOutcome`].
+pub async fn client_computer_act_round_trip(
+    socket_path: &str,
+    req: &BrokerComputerActRequest,
+) -> io::Result<BrokerResponse> {
+    message_round_trip(socket_path, &BrokerMessage::ComputerAct(req.clone())).await
 }
 
 /// Probe the listener: write a [`BrokerMessage::Ping`] and read the

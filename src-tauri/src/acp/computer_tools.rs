@@ -1,6 +1,8 @@
 //! Listener-facing access for computer use (`computer_list_apps`,
 //! `computer_list_windows`, `computer_screenshot`, `computer_snapshot`,
-//! `computer_verify`) carried by codeg-mcp.
+//! `computer_verify`, and the actions `computer_click`, `computer_scroll`,
+//! `computer_type`, `computer_press_key`, `computer_set_value`) carried by
+//! codeg-mcp.
 //!
 //! The same split as the browser tools: nothing here decides whether a window
 //! may be read. That is `crate::computer::agent` and the target table, and it
@@ -10,7 +12,9 @@
 //!
 //! What this module owns is the shape of the answer — a refusal is a value,
 //! not a transport error, so the agent can relay "ask the user to share that
-//! window" instead of losing its turn — and the answer where there is no
+//! window" instead of losing its turn — the words of each refusal, each of
+//! which says whether trying again can help (a model takes that sentence
+//! literally), and the answer where there is no
 //! desktop at all ([`NoComputerDesktop`]): server mode, where the group is not
 //! advertised in the first place.
 
@@ -22,8 +26,8 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 
 use crate::computer::types::{
-    AgentAppSummary, AgentWindowSummary, VerifyOutcome, VerifyRequest, WindowCapture,
-    WindowSnapshot,
+    ActReport, AgentAppSummary, AgentWindowSummary, ComputerActRequest, VerifyOutcome,
+    VerifyRequest, WindowCapture, WindowSnapshot,
 };
 
 /// This build has no desktop to show (server mode), the user has switched
@@ -52,6 +56,38 @@ pub const ERROR_PERMISSION_MISSING: &str = "computer_permission_missing";
 /// The window was shared and the read still did not produce anything — the
 /// driver failed, or the window closed mid-read.
 pub const ERROR_READ_FAILED: &str = "computer_read_failed";
+
+/// The window is shared for reading and the agent asked to act on it — or
+/// asked for a key a window grant does not reach (one that acts on the whole
+/// application or the desktop). Its own slug, like the browser's: the person
+/// has a different thing to do than share the window.
+pub const ERROR_CONTROL_REQUIRED: &str = "computer_control_required";
+
+/// The ref or point is not from the window's latest snapshot or screenshot as
+/// the agent was given it, or the window has changed under it. Not a
+/// permission matter: read the window again and use what the new read says.
+pub const ERROR_STALE_REF: &str = "computer_stale_ref";
+
+/// The point is outside the image it was read off, or the element is not
+/// part of the shared window.
+pub const ERROR_OUT_OF_TARGET: &str = "computer_out_of_target";
+
+/// The window cannot take input in the background right now — minimized,
+/// hidden, on another desktop, or its application has another window the keys
+/// could reach instead.
+pub const ERROR_OCCLUDED: &str = "computer_occluded";
+
+/// The application offers no background route for this action, and codeg
+/// does not bring windows to the front.
+pub const ERROR_BACKGROUND_UNAVAILABLE: &str = "computer_background_unavailable";
+
+/// The action was allowed and did not happen: a disabled control, no such
+/// option, more text than one call can type. The note says which.
+pub const ERROR_ACTION_FAILED: &str = "computer_action_failed";
+
+/// The person pressed Stop, or the screen is locked. Nothing reaches any
+/// window until they resume.
+pub const ERROR_PAUSED: &str = "computer_paused";
 
 /// What a `computer_snapshot` asks for when the caller names no cap — the
 /// same default as `browser_snapshot`, for the same reason: the caller who
@@ -145,6 +181,122 @@ pub fn permission_missing_note(permission: &str) -> String {
          (System Settings → Privacy & Security → {permission}). Only they can, and retrying will \
          not help until they have."
     )
+}
+
+pub fn control_required_note(target_id: &str) -> String {
+    format!(
+        "Window {target_id} is shared with you for reading only. Ask the user to allow control \
+         of it: in codeg's status bar they open Computer use and set that window to \"Read and \
+         control\". Only they can; retrying will not change it. You can still read the window."
+    )
+}
+
+/// A key that reaches past the window — the application's or the desktop's.
+pub fn chord_beyond_note() -> String {
+    format!(
+        "That key acts on the whole application or on the desktop, which a shared window does \
+         not reach, so it was not pressed; retrying will not change it. {} For anything else, \
+         act on an element: computer_click by ref, or computer_set_value.",
+        crate::computer::keys::window_chords_note(crate::computer::keys::Platform::current())
+    )
+}
+
+pub const PASTE_NOTE: &str = "Pasting is not available: the clipboard is the user's own, and \
+     what is on it may not come from any window you may read. Type the text with computer_type \
+     instead.";
+
+pub const NEEDS_ELEMENT_NOTE: &str = "A key that types a character goes only into an element you \
+     name: pass its ref from computer_snapshot, or type the text with computer_type.";
+
+pub const SECRET_FIELD_NOTE: &str = "That is a password or other secret field: typing into it, or \
+     setting it, is left to the user. Ask them to fill it in themselves; retrying will not change \
+     it.";
+
+pub fn stale_snapshot_note(target_id: &str) -> String {
+    format!(
+        "That ref is not from the latest computer_snapshot of window {target_id} — every new \
+         snapshot replaces the refs of the one before. Take a new computer_snapshot and use a ref \
+         from it."
+    )
+}
+
+pub fn not_actionable_note(target_id: &str) -> String {
+    format!(
+        "Nothing in that snapshot of window {target_id} can be acted on: its accessibility tree \
+         could not be matched to the window. Take a new computer_snapshot; if it says the same, \
+         use a point from computer_screenshot instead."
+    )
+}
+
+pub fn cut_away_note(index: u32) -> String {
+    format!(
+        "Ref {index} was past where the snapshot you were given was cut (maxChars). Take a new \
+         computer_snapshot with a larger maxChars, or a query that keeps its line, and use the \
+         ref from that."
+    )
+}
+
+pub fn no_such_ref_note(target_id: &str, index: u32) -> String {
+    format!(
+        "The latest snapshot of window {target_id} has no ref {index}. Use a ref that is in it."
+    )
+}
+
+pub fn stale_capture_note(target_id: &str) -> String {
+    format!(
+        "Those coordinates are not from the latest computer_screenshot of window {target_id}: a \
+         point means something only in the image it was read off. Take a new computer_screenshot \
+         and use a point from it."
+    )
+}
+
+pub const OUT_OF_IMAGE_NOTE: &str = "That point is outside the screenshot it names. Use a point \
+     inside the image, measured in its pixels from its top-left corner.";
+
+pub fn no_pointing_note(target_id: &str) -> String {
+    format!(
+        "Points cannot be used on that screenshot of window {target_id}. Use a ref from \
+         computer_snapshot instead."
+    )
+}
+
+pub const STOPPED_NOTE: &str = "The user pressed Stop in codeg's Computer use panel: nothing \
+     reaches any window, and nothing is read, until they resume it. Do not retry on your own — \
+     tell the user, and wait for them to say go on.";
+
+/// What an action tool answers: what the action did, or why it did not
+/// happen.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ComputerActOutcome {
+    pub target_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub action: Option<ActReport>,
+    /// One of the slugs above. `None` exactly when `action` is `Some`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}
+
+impl ComputerActOutcome {
+    pub fn done(target_id: &str, report: ActReport) -> Self {
+        Self {
+            target_id: target_id.to_string(),
+            action: Some(report),
+            error: None,
+            note: None,
+        }
+    }
+
+    pub fn refused(target_id: &str, error: &str, note: impl Into<String>) -> Self {
+        Self {
+            target_id: target_id.to_string(),
+            action: None,
+            error: Some(error.to_string()),
+            note: Some(note.into()),
+        }
+    }
 }
 
 /// What `computer_screenshot` answers.
@@ -283,6 +435,9 @@ pub trait ComputerToolAccess: Send + Sync {
 
     /// Check predicates against one shared window.
     async fn verify(&self, target_id: &str, request: VerifyRequest) -> ComputerVerifyOutcome;
+
+    /// Act on one window shared for control.
+    async fn act(&self, target_id: &str, request: ComputerActRequest) -> ComputerActOutcome;
 }
 
 /// The answer where there is no desktop: server mode, and the stub in every
@@ -313,6 +468,10 @@ impl ComputerToolAccess for NoComputerDesktop {
 
     async fn verify(&self, target_id: &str, _request: VerifyRequest) -> ComputerVerifyOutcome {
         ComputerVerifyOutcome::refused(target_id, ERROR_UNAVAILABLE, NO_DESKTOP_NOTE)
+    }
+
+    async fn act(&self, target_id: &str, _request: ComputerActRequest) -> ComputerActOutcome {
+        ComputerActOutcome::refused(target_id, ERROR_UNAVAILABLE, NO_DESKTOP_NOTE)
     }
 }
 

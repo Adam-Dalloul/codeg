@@ -349,6 +349,8 @@ pub enum GrantChange {
     Expired,
     /// The user switched computer use off, which ends every grant.
     Disabled,
+    /// The user pressed Stop, which ends every grant at once.
+    Stopped,
 }
 
 /// `computer://agent-grant`: a transition, with its reason. Current state:
@@ -364,6 +366,10 @@ pub struct ComputerGrantPayload {
 pub const AGENT_GRANT_EVENT: &str = "computer://agent-grant";
 
 /// What an agent did to a window, for the person watching.
+///
+/// One variant per kind of touch, as on the browser's strip: the list
+/// collapses runs of the same line, and forty clicks should not swallow the
+/// one keystroke among them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ComputerAction {
@@ -373,6 +379,28 @@ pub enum ComputerAction {
     Snapshot,
     /// Checked predicates against it.
     Verify,
+    Click,
+    Scroll,
+    /// Typed text into an element.
+    Type,
+    /// Pressed a key.
+    Key,
+    /// Set an element's value outright.
+    SetValue,
+}
+
+impl ComputerAction {
+    /// The line an action request leaves.
+    pub fn of(request: &super::types::ComputerActRequest) -> Self {
+        use super::types::ComputerActRequest as R;
+        match request {
+            R::Click { .. } => ComputerAction::Click,
+            R::Scroll { .. } => ComputerAction::Scroll,
+            R::Type { .. } => ComputerAction::Type,
+            R::Key { .. } => ComputerAction::Key,
+            R::SetValue { .. } => ComputerAction::SetValue,
+        }
+    }
 }
 
 /// How an attempt ended.

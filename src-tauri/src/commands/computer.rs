@@ -25,10 +25,28 @@
 //! 5. **Audit.** Every attempt — done, refused or failed — leaves a line on
 //!    the panel's activity list.
 //!
+//! An action goes through the same steps with one difference: it cannot be
+//! withheld once done, so everything is checked before it goes out and
+//! nothing after. The grant must be for control; the keys must stay inside
+//! the window; every ref and point is resolved against what the agent last
+//! read of the window (`targets::TargetTable::begin_act`); the helper checks
+//! again at the moment of delivery what only it can see.
+//!
+//! **One driver call at a time, in codeg.** The driver answers one call at a
+//! time anyway; the queue is kept here so that an action's checks run when its
+//! turn has come, not before it waited behind a twenty-second snapshot —
+//! time in which the person could have taken the window back.
+//!
+//! **Stop.** The person's Stop pauses everything (every call answers
+//! `computer_paused` until they resume), ends every grant, and has the helper
+//! kill the driver mid-action. It does not wait for the queue.
+//!
 //! Sharing and unsharing are Tauri commands only. There is no HTTP face for
 //! them: deciding what of this screen an agent may see is for the person at
 //! this screen.
 
+use std::collections::BTreeSet;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -36,26 +54,37 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
 
 use crate::acp::computer_tools::{
-    blocked_note, grant_required_note, no_such_target_note, permission_missing_note,
+    blocked_note, chord_beyond_note, control_required_note, cut_away_note, grant_required_note,
+    no_pointing_note, no_such_ref_note, no_such_target_note, not_actionable_note,
+    permission_missing_note, stale_capture_note, stale_snapshot_note, ComputerActOutcome,
     ComputerAppsOutcome, ComputerCaptureOutcome, ComputerSnapshotOutcome, ComputerToolAccess,
     ComputerToolsConfig, ComputerToolsRuntimeConfig, ComputerVerifyOutcome, ComputerWindowsOutcome,
-    SnapshotRequest, DEFAULT_MAX_DIMENSION, DEFAULT_SNAPSHOT_MAX_CHARS, ERROR_BLOCKED,
-    ERROR_GRANT_REQUIRED, ERROR_NO_SUCH_TARGET, ERROR_PERMISSION_MISSING, ERROR_READ_FAILED,
-    ERROR_UNAVAILABLE, NO_DESKTOP_NOTE,
+    SnapshotRequest, DEFAULT_MAX_DIMENSION, DEFAULT_SNAPSHOT_MAX_CHARS, ERROR_ACTION_FAILED,
+    ERROR_BACKGROUND_UNAVAILABLE, ERROR_BLOCKED, ERROR_CONTROL_REQUIRED, ERROR_GRANT_REQUIRED,
+    ERROR_NO_SUCH_TARGET, ERROR_OCCLUDED, ERROR_OUT_OF_TARGET, ERROR_PAUSED,
+    ERROR_PERMISSION_MISSING, ERROR_READ_FAILED, ERROR_STALE_REF, ERROR_UNAVAILABLE,
+    NEEDS_ELEMENT_NOTE, NO_DESKTOP_NOTE, OUT_OF_IMAGE_NOTE, PASTE_NOTE, SECRET_FIELD_NOTE,
+    STOPPED_NOTE,
 };
 use crate::app_error::AppCommandError;
 use crate::computer::agent::{
     grantable, visible_title, ActivityOutcome, Blocklist, ComputerAction, ComputerActivityPayload,
     ComputerGrantPayload, GrantChange, GrantLevel, NotGrantable, SelfIdentity,
 };
-use crate::computer::backend::{BackendError, BackendStatus, ComputerBackend, SnapshotOptions};
+use crate::computer::backend::{
+    ActRefusal, BackendError, BackendStatus, ComputerBackend, SnapshotOptions,
+};
 use crate::computer::events;
 use crate::computer::local::LocalBackend;
-use crate::computer::protocol::{OsPermission, PermissionReport};
+use crate::computer::protocol::{OsPermission, PermissionReport, RawAct};
 use crate::computer::procinfo::process_start;
-use crate::computer::targets::{ReadRefusal, ReadTicket, ShareError, SharedWindow, TargetTable};
+use crate::computer::targets::{
+    ActDenied, ReadMark, ReadRefusal, ReadTicket, ShareError, SharedWindow, Staleness, TargetTable,
+    WindowIdentity,
+};
 use crate::computer::types::{
-    AgentAppRef, AgentAppSummary, Rect, VerifyOutcome, VerifyRequest, WindowCapture, WindowSnapshot,
+    ActDelivery, ActReport, AgentAppRef, AgentAppSummary, ComputerActRequest, Rect,
+    VerifyOutcome, VerifyRequest, WindowCapture, WindowSnapshot, MAX_KEY_REPEAT,
 };
 
 /// How often lapsed grants are swept, so the panel shows a window as no
@@ -156,6 +185,59 @@ impl Refusal {
     }
 }
 
+/// An action the helper refused, or that did not happen, in the helper's
+/// words (which say what to do next).
+fn refused_act(kind: ActRefusal, words: String) -> Refusal {
+    match kind {
+        ActRefusal::Paused => Refusal::refused(
+            ERROR_PAUSED,
+            format!("{words} Nothing reaches any window until then; try again later."),
+        ),
+        ActRefusal::StaleRef => Refusal::failed(ERROR_STALE_REF, words),
+        ActRefusal::OutOfTarget => Refusal::failed(ERROR_OUT_OF_TARGET, words),
+        ActRefusal::Occluded => Refusal::failed(ERROR_OCCLUDED, words),
+        ActRefusal::BackgroundUnavailable => Refusal::failed(ERROR_BACKGROUND_UNAVAILABLE, words),
+        ActRefusal::SecretField => Refusal::refused(ERROR_BLOCKED, words),
+        ActRefusal::Failed => Refusal::failed(ERROR_ACTION_FAILED, words),
+    }
+}
+
+/// An action refused before anything was sent, in words.
+fn denied(target_id: &str, why: ActDenied) -> Refusal {
+    match why {
+        ActDenied::NoSuchTarget => {
+            Refusal::refused(ERROR_NO_SUCH_TARGET, no_such_target_note(target_id))
+        }
+        ActDenied::GrantRequired => {
+            Refusal::refused(ERROR_GRANT_REQUIRED, grant_required_note(target_id))
+        }
+        ActDenied::ControlRequired => {
+            Refusal::refused(ERROR_CONTROL_REQUIRED, control_required_note(target_id))
+        }
+        ActDenied::NotGrantable(why) => {
+            Refusal::refused(ERROR_BLOCKED, blocked_note(target_id, why.note()))
+        }
+        ActDenied::Stale(staleness) => Refusal::failed(
+            ERROR_STALE_REF,
+            match staleness {
+                Staleness::NoSnapshot | Staleness::OldSnapshot => stale_snapshot_note(target_id),
+                Staleness::NotActionable => not_actionable_note(target_id),
+                Staleness::CutAway(index) => cut_away_note(index),
+                Staleness::NoSuchRef(index) => no_such_ref_note(target_id, index),
+                Staleness::NoCapture | Staleness::OldCapture => stale_capture_note(target_id),
+            },
+        ),
+        ActDenied::OutOfImage => Refusal::failed(ERROR_OUT_OF_TARGET, OUT_OF_IMAGE_NOTE.into()),
+        ActDenied::Secret => Refusal::refused(ERROR_BLOCKED, SECRET_FIELD_NOTE.into()),
+        ActDenied::ChordBeyond => Refusal::refused(ERROR_CONTROL_REQUIRED, chord_beyond_note()),
+        // The source of what is on the clipboard is what a paste would need
+        // a grant for; codeg does not know it.
+        ActDenied::Paste => Refusal::refused(ERROR_GRANT_REQUIRED, PASTE_NOTE.into()),
+        ActDenied::NeedsElement => Refusal::failed(ERROR_ACTION_FAILED, NEEDS_ELEMENT_NOTE.into()),
+        ActDenied::NoPointing => Refusal::failed(ERROR_ACTION_FAILED, no_pointing_note(target_id)),
+    }
+}
+
 fn permission_name(permission: OsPermission) -> &'static str {
     match permission {
         OsPermission::Accessibility => "Accessibility",
@@ -177,6 +259,18 @@ pub struct ComputerService {
     targets: TargetTable,
     config: ComputerToolsRuntimeConfig,
     me: SelfIdentity,
+    /// Held for every call that reaches the driver. See the module note.
+    turn: tokio::sync::Mutex<()>,
+    /// The person pressed Stop and has not resumed.
+    paused: AtomicBool,
+    /// Held while the helper is told of a Stop or a Resume, so it hears them
+    /// in the order the person pressed them — a Resume overtaking the Stop
+    /// before it would leave the helper stopped under a panel that says it
+    /// is not.
+    pausing: tokio::sync::Mutex<()>,
+    /// Moved by every Stop: a Resume that was already on its way when a Stop
+    /// came does not undo it.
+    stops: AtomicU64,
 }
 
 impl ComputerService {
@@ -195,6 +289,10 @@ impl ComputerService {
             targets: TargetTable::new(),
             config: config.clone(),
             me: SelfIdentity::current(),
+            turn: tokio::sync::Mutex::new(()),
+            paused: AtomicBool::new(false),
+            pausing: tokio::sync::Mutex::new(()),
+            stops: AtomicU64::new(0),
         });
 
         // What a change takes away is taken before the write that made it
@@ -295,7 +393,49 @@ impl ComputerService {
         for change in changes {
             events::emit_grant(&self.app, change);
         }
-        events::emit_state(&self.app, &self.targets.shared());
+        self.emit_state();
+    }
+
+    fn emit_state(&self) {
+        events::emit_state(
+            &self.app,
+            &self.targets.shared(),
+            self.paused.load(Ordering::Acquire),
+        );
+    }
+
+    /// The person pressed Stop: from now on every call is refused, every
+    /// grant ends, and the helper kills the driver — mid-action if it is in
+    /// one. In that order, so that nothing admitted after this call can go
+    /// out, and nothing already out outlives the driver.
+    pub async fn stop(&self) {
+        // Refused and ended at once, before anything is waited on.
+        self.stops.fetch_add(1, Ordering::AcqRel);
+        self.paused.store(true, Ordering::Release);
+        let ended = self.targets.revoke_all(GrantChange::Stopped);
+        for change in &ended {
+            events::emit_grant(&self.app, change);
+        }
+        self.emit_state();
+        let _order = self.pausing.lock().await;
+        if let Err(e) = self.backend.halt().await {
+            tracing::warn!("[computer] the helper did not confirm the stop: {e}");
+        }
+    }
+
+    /// The person resumed. No grant comes back: what they stopped sharing
+    /// they share again, window by window.
+    pub async fn resume(&self) {
+        let stops = self.stops.load(Ordering::Acquire);
+        let _order = self.pausing.lock().await;
+        if let Err(e) = self.backend.resume().await {
+            tracing::warn!("[computer] the helper did not confirm the resume: {e}");
+        }
+        // A Stop pressed while this was on its way stands.
+        if self.stops.load(Ordering::Acquire) == stops {
+            self.paused.store(false, Ordering::Release);
+        }
+        self.emit_state();
     }
 
     fn record(&self, target_id: &str, action: ComputerAction, outcome: ActivityOutcome) {
@@ -310,8 +450,12 @@ impl ComputerService {
         );
     }
 
-    /// Step 1: the switch, re-read now, and codeg's own TCC standing.
+    /// Step 1: the switch, re-read now, codeg's own TCC standing, and the
+    /// person's Stop.
     async fn usable(&self) -> Result<ComputerToolsConfig, Refusal> {
+        if self.paused.load(Ordering::Acquire) {
+            return Err(Refusal::refused(ERROR_PAUSED, STOPPED_NOTE.to_string()));
+        }
         let config = self.config.snapshot().await;
         if !config.enabled {
             return Err(Refusal::refused(
@@ -353,6 +497,32 @@ impl ComputerService {
                 ERROR_READ_FAILED,
                 format!("The window could not be read: {why}. It may be worth trying again."),
             ),
+            BackendError::Refused(kind, words) => refused_act(kind, words),
+        }
+    }
+
+    /// A backend error on an action. What differs from a read: an action
+    /// that failed or lost its helper on the way may have happened anyway,
+    /// and the words say so; and a helper that went away because the person
+    /// pressed Stop is reported as the Stop.
+    fn backend_act_refusal(&self, target_id: &str, e: BackendError) -> Refusal {
+        match e {
+            BackendError::Unavailable(_) if self.paused.load(Ordering::Acquire) => {
+                Refusal::refused(ERROR_PAUSED, STOPPED_NOTE.to_string())
+            }
+            BackendError::Unavailable(why) => Refusal::failed(
+                ERROR_UNAVAILABLE,
+                format!(
+                    "Computer use stopped working during the action ({why}); it may or may not                      have happened. Read the window again before going on."
+                ),
+            ),
+            BackendError::Failed(why) => Refusal::failed(
+                ERROR_ACTION_FAILED,
+                format!(
+                    "The action did not complete ({why}); it may or may not have happened. Read                      the window again before going on."
+                ),
+            ),
+            other => self.backend_refusal(Some(target_id), other),
         }
     }
 
@@ -383,7 +553,7 @@ impl ComputerService {
                 });
             }
         };
-        self.check_identity(&ticket)?;
+        self.check_identity(&ticket.target_id, &ticket.identity)?;
         Ok(Admitted {
             ticket,
             switched_off: config.switched_off,
@@ -393,15 +563,15 @@ impl ComputerService {
     /// Step 3. A pid that no longer answers with the start time it had when
     /// the window was shared is a different process. A window without a start
     /// time cannot have been shared at all (`NotGrantable::Unidentified`).
-    fn check_identity(&self, ticket: &ReadTicket) -> Result<(), Refusal> {
-        let target_id = &ticket.target_id;
-        let Some(started_at) = ticket.identity.started_at else {
+    /// Returns the start time the grant is held against.
+    fn check_identity(&self, target_id: &str, identity: &WindowIdentity) -> Result<u64, Refusal> {
+        let Some(started_at) = identity.started_at else {
             return Err(Refusal::refused(
                 ERROR_BLOCKED,
                 blocked_note(target_id, NotGrantable::Unidentified.note()),
             ));
         };
-        if process_start(ticket.identity.pid) != Some(started_at) {
+        if process_start(identity.pid) != Some(started_at) {
             let ended: Vec<_> = self.targets.target_changed(target_id).into_iter().collect();
             self.announce(&ended);
             return Err(Refusal::failed(
@@ -409,12 +579,12 @@ impl ComputerService {
                 grant_required_note(target_id),
             ));
         }
-        Ok(())
+        Ok(started_at)
     }
 
     /// Step 4's second half: steps 1–3 again, against what the read began
-    /// under.
-    async fn finish(&self, admitted: &Admitted) -> Result<String, Refusal> {
+    /// under. `mark` is what the read leaves for later actions.
+    async fn finish(&self, admitted: &Admitted, mark: Option<ReadMark>) -> Result<String, Refusal> {
         let ticket = &admitted.ticket;
         let refused =
             || Refusal::refused(ERROR_GRANT_REQUIRED, grant_required_note(&ticket.target_id));
@@ -425,9 +595,9 @@ impl ComputerService {
         // Whatever process holds the pid now is the one the helper just read:
         // if it is not the one the window was shared from, neither is what
         // was read.
-        self.check_identity(ticket)?;
+        self.check_identity(&ticket.target_id, &ticket.identity)?;
         let blocklist = Blocklist::new(&config.blocklist);
-        match self.targets.finish_read(ticket, &self.me, &blocklist) {
+        match self.targets.finish_read(ticket, &self.me, &blocklist, mark) {
             Ok(generation) => Ok(generation),
             Err((why, ended)) => {
                 self.announce(&ended.into_iter().collect::<Vec<_>>());
@@ -451,6 +621,7 @@ impl ComputerService {
     }
 
     pub async fn agent_list_apps(&self) -> ComputerAppsOutcome {
+        let _turn = self.turn.lock().await;
         let config = match self.usable().await {
             Ok(config) => config,
             Err(r) => return ComputerAppsOutcome::refused(r.slug, r.note),
@@ -483,6 +654,7 @@ impl ComputerService {
     }
 
     pub async fn agent_list_windows(&self, pid: Option<u32>) -> ComputerWindowsOutcome {
+        let _turn = self.turn.lock().await;
         let config = match self.usable().await {
             Ok(config) => config,
             Err(r) => return ComputerWindowsOutcome::refused(r.slug, r.note),
@@ -517,6 +689,7 @@ impl ComputerService {
         target_id: &str,
         max_dimension: Option<u32>,
     ) -> Result<WindowCapture, Refusal> {
+        let _turn = self.turn.lock().await;
         let admitted = self.begin(target_id).await?;
         let ticket = &admitted.ticket;
         let max = max_dimension
@@ -527,7 +700,23 @@ impl ComputerService {
             .capture(ticket.identity.pid, ticket.identity.window_id, Some(max))
             .await
             .map_err(|e| self.backend_refusal(Some(target_id), e))?;
-        let generation = self.finish(&admitted).await?;
+        let window_bounds = if raw.window_bounds.is_empty() {
+            ticket.bounds
+        } else {
+            raw.window_bounds
+        };
+        let mark = ReadMark::Capture {
+            width: raw.width,
+            height: raw.height,
+            native_width: raw.native_width,
+            native_height: raw.native_height,
+            // Only the helper's own measure of the window says whether the
+            // capture is its full size; bounds codeg fills in from the
+            // listing are not that.
+            full_size: raw.full_size && !raw.window_bounds.is_empty(),
+            window_bounds: raw.window_bounds,
+        };
+        let generation = self.finish(&admitted, Some(mark)).await?;
         Ok(WindowCapture {
             target_id: target_id.to_string(),
             generation,
@@ -535,11 +724,7 @@ impl ComputerService {
             data: raw.png_base64,
             width: raw.width,
             height: raw.height,
-            window_bounds: if raw.window_bounds.is_empty() {
-                ticket.bounds
-            } else {
-                raw.window_bounds
-            },
+            window_bounds,
             title: self.title_for(target_id, raw.title),
         })
     }
@@ -566,6 +751,7 @@ impl ComputerService {
         target_id: &str,
         request: SnapshotRequest,
     ) -> Result<WindowSnapshot, Refusal> {
+        let _turn = self.turn.lock().await;
         let admitted = self.begin(target_id).await?;
         let ticket = &admitted.ticket;
         let raw = self
@@ -581,11 +767,34 @@ impl ComputerService {
             )
             .await
             .map_err(|e| self.backend_refusal(Some(target_id), e))?;
-        let generation = self.finish(&admitted).await?;
         let (tree, cut) = cut_tree(
             &raw.tree,
             request.max_chars.unwrap_or(DEFAULT_SNAPSHOT_MAX_CHARS),
         );
+        // A ref is usable when its line is in what the agent is given: the
+        // tree is cut between lines, so a line that starts before the cut
+        // is there.
+        let kept = tree.len();
+        let mut mark_shown = BTreeSet::new();
+        let mut mark_cut = BTreeSet::new();
+        let mut mark_secret = BTreeSet::new();
+        for r in &raw.refs {
+            if (r.offset as usize) < kept {
+                mark_shown.insert(r.index);
+            } else {
+                mark_cut.insert(r.index);
+            }
+            if r.secret {
+                mark_secret.insert(r.index);
+            }
+        }
+        let mark = ReadMark::Snapshot {
+            snapshot_id: raw.snapshot_id.clone(),
+            shown: mark_shown,
+            cut: mark_cut,
+            secret: mark_secret,
+        };
+        let generation = self.finish(&admitted, Some(mark)).await?;
         Ok(WindowSnapshot {
             target_id: target_id.to_string(),
             generation,
@@ -620,6 +829,7 @@ impl ComputerService {
         target_id: &str,
         request: VerifyRequest,
     ) -> Result<VerifyOutcome, Refusal> {
+        let _turn = self.turn.lock().await;
         let admitted = self.begin(target_id).await?;
         let ticket = &admitted.ticket;
         let raw = self
@@ -627,7 +837,7 @@ impl ComputerService {
             .verify(ticket.identity.pid, ticket.identity.window_id, request)
             .await
             .map_err(|e| self.backend_refusal(Some(target_id), e))?;
-        self.finish(&admitted).await?;
+        self.finish(&admitted, None).await?;
         Ok(VerifyOutcome {
             target_id: target_id.to_string(),
             status: raw.status,
@@ -653,6 +863,97 @@ impl ComputerService {
                 ComputerVerifyOutcome::refused(target_id, r.slug, r.note)
             }
         }
+    }
+
+    /// One action, checked from the top: its turn at the driver first, then
+    /// the switch and Stop, the grant and the action against what the agent
+    /// last read, the process — and then the helper, which checks again what
+    /// only it can see.
+    async fn act_once(
+        &self,
+        target_id: &str,
+        request: &ComputerActRequest,
+    ) -> Result<RawAct, Refusal> {
+        let _turn = self.turn.lock().await;
+        let config = self.usable().await?;
+        let blocklist = Blocklist::new(&config.blocklist);
+        let ticket = match self.targets.begin_act(
+            target_id,
+            now_ms(),
+            config.grant_ttl,
+            &self.me,
+            &blocklist,
+            request,
+        ) {
+            Ok(ticket) => ticket,
+            Err((why, ended)) => {
+                self.announce(&ended.into_iter().collect::<Vec<_>>());
+                return Err(denied(target_id, why));
+            }
+        };
+        let started_at = self.check_identity(target_id, &ticket.identity)?;
+        self.backend
+            .act(
+                ticket.identity.pid,
+                ticket.identity.window_id,
+                started_at,
+                ticket.app.key().map(str::to_string),
+                ticket.action,
+            )
+            .await
+            .map_err(|e| self.backend_act_refusal(target_id, e))
+    }
+
+    /// Act on a window shared for control. A key pressed more than once is
+    /// that many actions, each checked on its own: taking the window back
+    /// between two presses stops the rest.
+    pub async fn agent_act(
+        &self,
+        target_id: &str,
+        request: ComputerActRequest,
+    ) -> ComputerActOutcome {
+        let action = ComputerAction::of(&request);
+        let presses = match &request {
+            ComputerActRequest::Key { repeat, .. } => (*repeat).clamp(1, MAX_KEY_REPEAT),
+            _ => 1,
+        };
+        let mut done: Option<RawAct> = None;
+        for pressed in 0..presses {
+            match self.act_once(target_id, &request).await {
+                Ok(raw) => done = Some(raw),
+                Err(r) => {
+                    self.record(target_id, action, r.outcome);
+                    let note = if pressed == 0 {
+                        r.note
+                    } else {
+                        format!(
+                            "The key was pressed {pressed} of {presses} times, then stopped: {}",
+                            r.note
+                        )
+                    };
+                    return ComputerActOutcome::refused(target_id, r.slug, note);
+                }
+            }
+        }
+        self.record(target_id, action, ActivityOutcome::Done);
+        let Some(raw) = done else {
+            return ComputerActOutcome::refused(
+                target_id,
+                ERROR_ACTION_FAILED,
+                "Nothing was done.",
+            );
+        };
+        ComputerActOutcome::done(
+            target_id,
+            ActReport {
+                target_id: target_id.to_string(),
+                effect: raw.effect,
+                route: raw.route,
+                delivery: ActDelivery::Background,
+                presses: (presses > 1).then_some(presses),
+                submitted: raw.submitted,
+            },
+        )
     }
 }
 
@@ -688,6 +989,10 @@ impl ComputerToolAccess for McpComputerTools {
     async fn verify(&self, target_id: &str, request: VerifyRequest) -> ComputerVerifyOutcome {
         self.service.agent_verify(target_id, request).await
     }
+
+    async fn act(&self, target_id: &str, request: ComputerActRequest) -> ComputerActOutcome {
+        self.service.agent_act(target_id, request).await
+    }
 }
 
 // -------- The person's side: codeg's Computer use panel ----------------------
@@ -710,6 +1015,8 @@ pub struct ComputerStatus {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub codeg: Option<CodegTccStatus>,
     pub shared: Vec<SharedWindow>,
+    /// The person pressed Stop and has not resumed.
+    pub paused: bool,
 }
 
 /// One window, as the share picker shows it to the person — title and all:
@@ -771,6 +1078,7 @@ pub async fn computer_status(app: AppHandle) -> Result<ComputerStatus, AppComman
         permissions,
         codeg: codeg_tcc(),
         shared: service.targets.shared(),
+        paused: service.paused.load(Ordering::Acquire),
     })
 }
 
@@ -818,6 +1126,7 @@ pub async fn computer_list_shareable_windows(
         return Ok(Vec::new());
     }
     let blocklist = Blocklist::new(&config.blocklist);
+    let _turn = service.turn.lock().await;
     let windows = service
         .backend
         .list_windows(None)
@@ -862,6 +1171,7 @@ pub async fn computer_window_thumbnail(
     {
         return Ok(None);
     }
+    let _turn = service.turn.lock().await;
     match service
         .backend
         .capture(entry.identity.pid, entry.identity.window_id, Some(480))
@@ -885,6 +1195,11 @@ pub async fn computer_share_window(
     if !config.enabled && level != GrantLevel::None {
         return Err(AppCommandError::configuration_invalid(
             "computer use is switched off",
+        ));
+    }
+    if service.paused.load(Ordering::Acquire) && level != GrantLevel::None {
+        return Err(AppCommandError::configuration_invalid(
+            "computer use is stopped; resume it first",
         ));
     }
     let blocklist = Blocklist::new(&config.blocklist);
@@ -911,6 +1226,21 @@ pub async fn computer_revoke_all(app: AppHandle) -> Result<(), AppCommandError> 
     let service = service(&app)?;
     let ended = service.targets.revoke_all(GrantChange::Revoked);
     service.announce(&ended);
+    Ok(())
+}
+
+/// Stop: every agent call refused, every grant ended, the driver killed
+/// mid-action. Answers once all three are done.
+#[tauri::command]
+pub async fn computer_stop(app: AppHandle) -> Result<(), AppCommandError> {
+    service(&app)?.stop().await;
+    Ok(())
+}
+
+/// Resume after a Stop. Nothing is shared again by it.
+#[tauri::command]
+pub async fn computer_resume(app: AppHandle) -> Result<(), AppCommandError> {
+    service(&app)?.resume().await;
     Ok(())
 }
 

@@ -525,6 +525,28 @@ impl DriverProc {
         Ok(result)
     }
 
+    /// Kill the driver at once — no time to finish what it is doing — and
+    /// remove its home directory. Every call waiting on it fails now rather
+    /// than when the pipe closes.
+    pub async fn kill(&self) {
+        self.client.close();
+        match &self.child {
+            #[cfg(target_os = "macos")]
+            ChildProc::Mac(child) => {
+                child.kill();
+                let _ = child.wait().await;
+            }
+            #[cfg(not(target_os = "macos"))]
+            ChildProc::Tokio { child, exited } => {
+                let mut child = child.lock().await;
+                let _ = child.start_kill();
+                let _ = child.wait().await;
+                exited.store(true, std::sync::atomic::Ordering::Release);
+            }
+        }
+        let _ = std::fs::remove_dir_all(&self.run_dir);
+    }
+
     /// Stop the driver and remove its home directory.
     pub async fn shutdown(&self) {
         match &self.child {

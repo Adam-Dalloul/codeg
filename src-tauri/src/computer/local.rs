@@ -36,8 +36,8 @@ use super::backend::{BackendError, BackendState, BackendStatus, ComputerBackend,
 use super::driver;
 use super::protocol::{
     read_frame, write_frame, HelperError, HelperErrorCode, HelperMessage, HelperOp, HelperReply,
-    HelperRequest, OsPermission, PeerCheck, PermissionReport, RawApp, RawCapture, RawSnapshot,
-    RawVerify, RawWindow, PROTOCOL_VERSION,
+    HelperRequest, OsPermission, PeerCheck, PermissionReport, RawAct, RawApp, RawCapture,
+    RawSnapshot, RawVerify, RawWindow, WindowAction, PROTOCOL_VERSION,
 };
 use super::types::VerifyRequest;
 
@@ -328,6 +328,10 @@ impl LocalBackend {
 
     /// Send one op and decode its answer, restarting the helper once if it
     /// turns out to have died since the last call.
+    ///
+    /// Never for an action: a helper that died with the request on its way
+    /// may have died after delivering it, and a second send would do it
+    /// twice. Actions go through [`call_once`](Self::call_once).
     async fn call<T: serde::de::DeserializeOwned>(&self, op: HelperOp) -> Result<T, BackendError> {
         let connection = self.connection().await?;
         let reply = match connection.request(op.clone()).await {
@@ -337,6 +341,22 @@ impl LocalBackend {
             }
             other => other?,
         };
+        self.decode(reply).await
+    }
+
+    /// Send one op once, and decode its answer.
+    async fn call_once<T: serde::de::DeserializeOwned>(
+        &self,
+        op: HelperOp,
+    ) -> Result<T, BackendError> {
+        let reply = self.connection().await?.request(op).await?;
+        self.decode(reply).await
+    }
+
+    async fn decode<T: serde::de::DeserializeOwned>(
+        &self,
+        reply: HelperReply,
+    ) -> Result<T, BackendError> {
         match reply.decode::<T>() {
             Err(e) if e.code == HelperErrorCode::DriverRejected => {
                 Err(self.driver_rejected(e).await)
@@ -440,6 +460,50 @@ impl ComputerBackend for LocalBackend {
             request,
         })
         .await
+    }
+
+    async fn act(
+        &self,
+        pid: u32,
+        window_id: u64,
+        started_at: u64,
+        app_key: Option<String>,
+        action: WindowAction,
+    ) -> Result<RawAct, BackendError> {
+        self.call_once(HelperOp::Act {
+            pid,
+            window_id,
+            started_at,
+            app_key,
+            action,
+        })
+        .await
+    }
+
+    /// Tell a running helper to kill its driver. With no helper running there
+    /// is nothing to stop, and none is started for it.
+    async fn halt(&self) -> Result<(), BackendError> {
+        self.to_running(HelperOp::Halt).await
+    }
+
+    async fn resume(&self) -> Result<(), BackendError> {
+        self.to_running(HelperOp::Resume).await
+    }
+}
+
+impl LocalBackend {
+    /// Send `op` to the helper if one is running; with none, there is no one
+    /// to tell (a helper started later starts un-halted).
+    async fn to_running(&self, op: HelperOp) -> Result<(), BackendError> {
+        let connection = self.slot.lock().await.connection.clone();
+        match connection.filter(|c| !c.is_closed()) {
+            Some(connection) => connection
+                .request(op)
+                .await?
+                .decode::<()>()
+                .map_err(BackendError::from),
+            None => Ok(()),
+        }
     }
 }
 

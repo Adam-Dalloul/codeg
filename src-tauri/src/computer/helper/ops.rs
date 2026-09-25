@@ -1,22 +1,25 @@
-//! Each helper op, as exactly one driver call and a translation of its answer.
+//! Each read op, as exactly one driver call and a translation of its answer.
 //!
-//! This is the whitelist. The driver advertises several dozen tools; the five
-//! named here (`list_apps`, `list_windows`, `get_window_state`,
-//! `verify_state`, and nothing that writes) are the only ones the helper
-//! ever calls, with arguments built here from typed fields — never a tool
-//! name or an argument object that came from codeg as-is.
+//! This, with [`super::act`] for the ops that change a window, is the
+//! whitelist. The driver advertises several dozen tools; the ones named here
+//! (`list_apps`, `list_windows`, `get_window_state`, `verify_state`) and
+//! there are the only ones the helper ever calls, with arguments built from
+//! typed fields — never a tool name or an argument object that came from
+//! codeg as-is.
 
 use std::collections::HashMap;
 use std::time::Duration;
 
 use serde_json::{json, Map, Value};
 
+use super::act::{ElementFacts, SnapshotFacts};
 use super::driver_proc::DriverProc;
 use super::mcp::ToolCallResult;
+use super::tree::redact_secrets;
 use crate::computer::procinfo::process_start;
 use crate::computer::protocol::{
     HelperError, HelperErrorCode, OsPermission, RawApp, RawCapture, RawSnapshot, RawVerify,
-    RawWindow,
+    RawWindow, SnapshotRef,
 };
 use crate::computer::types::{
     PredicateResult, Rect, VerifyPredicate, VerifyRequest, VerifyStatus, MAX_VERIFY_PREDICATES,
@@ -385,7 +388,8 @@ fn is_whole_window(width: u32, height: u32, bounds: &Rect, scale: f64) -> bool {
 }
 
 /// A window's accessibility tree, with the values of anything that looks like
-/// a secret taken out.
+/// a secret taken out — and, for the helper to hold on to, what it knows of
+/// each element that can be acted on (see [`SnapshotFacts`]).
 pub async fn snapshot(
     driver: &DriverProc,
     pid: u32,
@@ -393,7 +397,7 @@ pub async fn snapshot(
     max_depth: Option<u32>,
     max_elements: Option<u32>,
     query: Option<String>,
-) -> Result<RawSnapshot, HelperError> {
+) -> Result<(RawSnapshot, Option<SnapshotFacts>), HelperError> {
     let mut args = json!({
         "pid": pid,
         "window_id": window_id,
@@ -415,8 +419,38 @@ pub async fn snapshot(
         .get("tree_markdown")
         .and_then(Value::as_str)
         .ok_or_else(|| HelperError::failed("get_window_state answered without a tree"))?;
-    Ok(RawSnapshot {
-        tree: redact_secrets(tree),
+    let redacted = redact_secrets(tree);
+    // No id when the driver kept no snapshot of the window (it could not
+    // match its accessibility surface): the tree is still worth reading, and
+    // nothing in it can be acted on.
+    let snapshot_id = string(meta, "snapshot_id");
+    let refs = redacted
+        .nodes
+        .iter()
+        .map(|n| SnapshotRef {
+            index: n.index,
+            offset: n.offset,
+            secret: n.secret,
+        })
+        .collect();
+    let facts = snapshot_id.clone().map(|id| SnapshotFacts {
+        snapshot_id: id,
+        elements: redacted
+            .nodes
+            .iter()
+            .map(|n| {
+                (
+                    n.index,
+                    ElementFacts {
+                        role: n.role.clone(),
+                        secret: n.secret,
+                    },
+                )
+            })
+            .collect(),
+    });
+    let raw = RawSnapshot {
+        tree: redacted.tree,
         element_count: meta
             .get("element_count")
             .and_then(Value::as_u64)
@@ -429,236 +463,10 @@ pub async fn snapshot(
         degraded: string(meta, "degraded_reason"),
         window_bounds: meta.get("window_bounds").and_then(rect),
         title: string(meta, "window_title"),
-    })
-}
-
-/// Words that mark a field as a secret, in the languages codeg ships in.
-const SECRET_WORDS: &[&str] = &[
-    "password",
-    "passwd",
-    "passcode",
-    "passphrase",
-    "secret",
-    "pin code",
-    "密码",
-    "密碼",
-    "口令",
-    "パスワード",
-    "비밀번호",
-    "contraseña",
-    "mot de passe",
-    "passwort",
-    "senha",
-    "كلمة المرور",
-];
-
-/// Take the value out of every tree node that describes a secret.
-///
-/// The platforms already refuse to hand a secure field's text to an
-/// accessibility client — macOS answers bullets for a secure text field,
-/// Windows refuses a password edit's value to other processes — so this is
-/// the second line, not the first: a node whose role names a password
-/// control, or whose label says it is one, keeps its role and label and loses
-/// its value. The driver's tree does not carry macOS subroles, so a secure
-/// field is recognised here by its words; recognising it by subrole needs the
-/// driver to report one.
-///
-/// The driver writes values unescaped, newlines included, so a node is not a
-/// line: it runs from a line that starts one (see [`Dialect::starts_node`])
-/// to the next, and a secret's value goes with every line of it.
-pub fn redact_secrets(tree: &str) -> String {
-    redact_tree(tree, Dialect::current())
-}
-
-/// The shape of a node line in the driver's tree on each platform.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Dialect {
-    /// `- [3] AXTextField "Title" = "value" (description) [attrs]`
-    Mac,
-    /// `- [3] Edit "Name" [value="…" id=… actions=[…]]`, and `- Text "Name" = "…"`
-    Windows,
-    /// `- [3] password text "name" value="…" [actions=[…]]`, and `- label = "name"`
-    Linux,
-}
-
-impl Dialect {
-    /// Where a node's value starts in this platform's tree: after ` = ` on
-    /// every macOS node and on the other platforms' plain nodes; in
-    /// `[value="…"` (Windows) or ` value="…"` (Linux) on their addressable
-    /// ones. Only this platform's: another's marker in a title is just text.
-    fn value_markers(self) -> &'static [&'static str] {
-        match self {
-            Dialect::Mac => &[" = \""],
-            Dialect::Windows => &[" = \"", " [value=\""],
-            Dialect::Linux => &[" = \"", " value=\""],
-        }
-    }
-
-    /// What can only follow the quote that closes a value in this platform's
-    /// tree — a description or an attribute block (macOS), the next attribute
-    /// in the block the value sits in (Windows), the attribute block (Linux) —
-    /// besides the end of the node.
-    fn after_value(self) -> &'static [&'static str] {
-        match self {
-            Dialect::Mac => &["\" (", "\" ["],
-            Dialect::Windows => &["\" id=", "\" help=", "\" actions=", "\"]"],
-            Dialect::Linux => &["\" [actions="],
-        }
-    }
-
-    fn current() -> Self {
-        if cfg!(target_os = "macos") {
-            Dialect::Mac
-        } else if cfg!(windows) {
-            Dialect::Windows
-        } else {
-            Dialect::Linux
-        }
-    }
-
-    /// Whether `line` starts a node rather than continuing the value of the
-    /// one above it: indentation in whole steps, `- `, an optional
-    /// `[index] `, then a role as this platform's tree spells one — an `AX`
-    /// role on macOS, one of UI Automation's control types on Windows, an
-    /// AT-SPI role name followed by the quoted name every Linux node carries.
-    /// A value's own lines are the user's text; the stricter this is, the
-    /// less of that text can pass for a node and escape its node's redaction.
-    fn starts_node(self, line: &str) -> bool {
-        let line = line.trim_end_matches('\n');
-        let rest = line.trim_start_matches(' ');
-        if !(line.len() - rest.len()).is_multiple_of(2) {
-            return false;
-        }
-        let Some(mut rest) = rest.strip_prefix("- ") else {
-            return false;
-        };
-        let mut indexed = false;
-        if let Some(inner) = rest.strip_prefix('[') {
-            let Some(close) = inner.find("] ") else {
-                return false;
-            };
-            if close == 0 || !inner[..close].bytes().all(|b| b.is_ascii_digit()) {
-                return false;
-            }
-            rest = &inner[close + 2..];
-            indexed = true;
-        }
-        // What may follow a role in a node line: nothing, a quoted title or
-        // name, a value, a description, an attribute block.
-        let follows = |after: &str, allowed: &[&str]| {
-            after.is_empty() || allowed.iter().any(|a| after.starts_with(a))
-        };
-        match self {
-            Dialect::Mac => {
-                let end = rest
-                    .bytes()
-                    .position(|b| !b.is_ascii_alphanumeric())
-                    .unwrap_or(rest.len());
-                rest.starts_with("AX")
-                    && end > 2
-                    && follows(&rest[end..], &[" \"", " = \"", " (", " ["])
-            }
-            Dialect::Windows => {
-                let end = rest
-                    .bytes()
-                    .position(|b| !b.is_ascii_alphabetic())
-                    .unwrap_or(rest.len());
-                UIA_CONTROL_TYPES.contains(&&rest[..end])
-                    && follows(&rest[end..], &[" \"", " = \"", " ["])
-            }
-            Dialect::Linux => {
-                // `- [3] push button "name" …` and `- label = "name"`: an
-                // AT-SPI node always carries its name, quoted.
-                let end = rest
-                    .bytes()
-                    .position(|b| !(b.is_ascii_lowercase() || b == b' '))
-                    .unwrap_or(rest.len());
-                let role = rest[..end].trim_end();
-                let after = &rest[role.len()..];
-                !role.is_empty()
-                    && after.starts_with(if indexed { " \"" } else { " = \"" })
-            }
-        }
-    }
-}
-
-/// UI Automation's control types, as cua-driver names them in its Windows
-/// tree.
-const UIA_CONTROL_TYPES: &[&str] = &[
-    "AppBar", "Button", "Calendar", "CheckBox", "ComboBox", "Custom", "DataGrid", "DataItem",
-    "Document", "Edit", "Group", "Header", "HeaderItem", "Hyperlink", "Image", "List",
-    "ListItem", "Menu", "MenuBar", "MenuItem", "Pane", "ProgressBar", "RadioButton",
-    "ScrollBar", "SemanticZoom", "Separator", "Slider", "Spinner", "SplitButton", "StatusBar",
-    "Tab", "TabItem", "Table", "Text", "Thumb", "TitleBar", "ToolBar", "ToolTip", "Tree",
-    "TreeItem", "Unknown", "Window",
-];
-
-fn redact_tree(tree: &str, dialect: Dialect) -> String {
-    let mut out = String::with_capacity(tree.len());
-    let mut node = String::new();
-    for line in tree.split_inclusive('\n') {
-        if !node.is_empty() && dialect.starts_node(line) {
-            out.push_str(&redact_node(&node, dialect));
-            node.clear();
-        }
-        node.push_str(line);
-    }
-    out.push_str(&redact_node(&node, dialect));
-    out
-}
-
-fn redact_node(node: &str, dialect: Dialect) -> String {
-    // The earliest marker: what is kept of a redacted node ends there, so it
-    // can never hold any of the value.
-    let Some((start, marker)) = dialect
-        .value_markers()
-        .iter()
-        .filter_map(|m| node.find(m).map(|i| (i, *m)))
-        .min_by_key(|(i, _)| *i)
-    else {
-        return node.to_string();
+        snapshot_id,
+        refs,
     };
-    // Judged on what names the node — its role and title before the value,
-    // its description and attributes after it — never on the value itself: a
-    // document that mentions a password is not a password field, and a
-    // field's secret is not what says it is one.
-    let after = after_value(node, start + marker.len(), dialect);
-    let label = format!("{}{}", &node[..start], &node[after..]);
-    let lower = label.to_lowercase();
-    let role_is_secret = lower.contains("securetextfield") || lower.contains("password text");
-    let label_is_secret = SECRET_WORDS.iter().any(|w| lower.contains(w));
-    if !(role_is_secret || label_is_secret) {
-        return node.to_string();
-    }
-    // Everything from the value on goes, not just the value: the driver writes
-    // values unescaped, so a value can contain `" (` or `" [` or a newline and
-    // there is no telling where it ends. What stays — the index, the role and
-    // the title — is what names the field.
-    let newline = if node.ends_with('\n') { "\n" } else { "" };
-    format!(
-        "{} = \"[redacted]\"{newline}",
-        node[..start].trim_end_matches([' ', '['])
-    )
-}
-
-/// Where the text after a node's value begins, as near as can be told: the
-/// driver does not escape the quote that closes a value, so this is the
-/// earliest quote on the node's last line (a value ends on the line its node
-/// does) that is followed by what only comes after one in this platform's
-/// tree, or the node's closing quote. Earlier is the safe side — more of the
-/// node is read as label.
-fn after_value(node: &str, value_from: usize, dialect: Dialect) -> usize {
-    let body = node.trim_end_matches('\n');
-    let last_line = body.rfind('\n').map_or(0, |i| i + 1);
-    let from = last_line.max(value_from).min(body.len());
-    let tail = &body[from..];
-    dialect
-        .after_value()
-        .iter()
-        .filter_map(|m| tail.find(m))
-        .chain(tail.ends_with('"').then(|| tail.len() - 1))
-        .min()
-        .map_or(body.len(), |i| from + i)
+    Ok((raw, facts))
 }
 
 /// Rebuild the caller's predicates in the driver's vocabulary. Every field is
@@ -909,127 +717,6 @@ mod tests {
         assert_eq!(windows[0].app.name, "A");
         assert_eq!(windows[1].on_current_space, Some(true));
         assert_eq!(windows[1].minimized, Some(false));
-    }
-
-    /// A secret's value goes; its role and label, and every other line, stay.
-    #[test]
-    fn secret_values_are_redacted_and_nothing_else_is() {
-        let tree = "- [0] AXWindow \"Sign in\"\n  - [1] AXTextField \"Email\" = \"me@example.com\" [actions=[confirm]]\n  - [2] AXTextField \"Password\" = \"hunter2\" [id=pw actions=[confirm]]\n  - [3] AXTextField = \"秘密\" (密码)\n  - [4] AXSecureTextField = \"abc\" (x)\" (Code) [id=q]\n  - [5] AXStaticText = \"Forgot your password?\"\n";
-        let out = redact_tree(tree, Dialect::Mac);
-        assert!(
-            out.contains("\"Email\" = \"me@example.com\" [actions=[confirm]]"),
-            "{out}"
-        );
-        assert!(
-            out.contains("- [2] AXTextField \"Password\" = \"[redacted]\"\n"),
-            "{out}"
-        );
-        // A label after the value counts too.
-        assert!(out.contains("- [3] AXTextField = \"[redacted]\"\n"), "{out}");
-        // A value with a quote in it is cut at its start, not guessed at.
-        assert!(
-            out.contains("- [4] AXSecureTextField = \"[redacted]\"\n"),
-            "{out}"
-        );
-        assert!(
-            !out.contains("hunter2") && !out.contains("秘密") && !out.contains("(x)"),
-            "{out}"
-        );
-        // Text that merely mentions the word is not a secret field.
-        assert!(
-            out.contains("AXStaticText = \"Forgot your password?\""),
-            "{out}"
-        );
-        assert_eq!(out.lines().count(), tree.lines().count());
-        assert!(out.starts_with("- [0] AXWindow \"Sign in\"\n"));
-    }
-
-    /// Values are written unescaped, so a secret can run over several lines;
-    /// all of them go. A long value that is not a secret — a document that
-    /// mentions a password in passing, even on its last line — keeps every
-    /// line; a label that names a secret on a line of its own still counts.
-    #[test]
-    fn a_secret_that_spans_lines_goes_whole() {
-        let tree = "- [0] AXWindow \"Keys\"\n  - [1] AXTextArea \"Secret key\" = \"-----BEGIN KEY-----\nMIIEabc\n- not a node\n-----END KEY-----\" [id=k]\n  - [2] AXTextArea = \"line one\nthe password is elsewhere\nline three\"\n  - [3] AXButton \"Copy\"\n";
-        let out = redact_tree(tree, Dialect::Mac);
-        assert!(
-            out.contains("  - [1] AXTextArea \"Secret key\" = \"[redacted]\"\n  - [2]"),
-            "{out}"
-        );
-        for leaked in ["MIIEabc", "not a node", "END KEY"] {
-            assert!(!out.contains(leaked), "{leaked}: {out}");
-        }
-        assert!(
-            out.contains("\"line one\nthe password is elsewhere\nline three\"\n"),
-            "{out}"
-        );
-        assert!(out.ends_with("  - [3] AXButton \"Copy\"\n"), "{out}");
-
-        let tree = "- [0] AXTextArea = \"notes\nremember: the password is in the vault\"\n- [1] AXTextField \"Enter your\npassword\nhere\" = \"hunter2\" [id=pw]\n- [2] AXTextField = \"s3cr3t\" (Account password) [help=\"x\" actions=[confirm]]\n";
-        let out = redact_tree(tree, Dialect::Mac);
-        assert!(out.contains("remember: the password is in the vault\"\n"), "{out}");
-        assert!(
-            out.contains("- [1] AXTextField \"Enter your\npassword\nhere\" = \"[redacted]\"\n"),
-            "{out}"
-        );
-        assert!(out.ends_with("- [2] AXTextField = \"[redacted]\"\n"), "{out}");
-        assert!(!out.contains("hunter2") && !out.contains("s3cr3t"), "{out}");
-
-        // Another platform's markers are just text here: `value="` in a
-        // macOS title does not start the value, and ` id=` in a document
-        // does not end it.
-        let tree = "- [0] AXTextField \"HTML input value=\"Password\"\" = \"hunter2\"\n- [1] AXTextArea = \"<form>\n<input type=\"text\" id=\"password\">\"\n";
-        let out = redact_tree(tree, Dialect::Mac);
-        assert!(!out.contains("hunter2"), "{out}");
-        assert!(out.contains("<input type=\"text\" id=\"password\">\"\n"), "{out}");
-    }
-
-    /// Windows and Linux trees put an addressable element's value in
-    /// `value="…"`, not after ` = `; it goes all the same.
-    #[test]
-    fn values_are_found_in_every_platforms_tree() {
-        let windows = "- [0] Window \"Sign in\"\n  - [1] Edit \"Password\" [value=\"hunter2\" id=pw actions=[invoke]]\n  - [2] Edit \"User\" [value=\"me\"]\n  - Text \"PIN code\" = \"1234\"\n  - [3] Edit [value=\"one\n- Recovery code: 5678\n  - Button two\" help=\"Enter the password\"]\n  - [4] Button \"OK\"\n";
-        let out = redact_tree(windows, Dialect::Windows);
-        assert!(out.contains("  - [1] Edit \"Password\" = \"[redacted]\"\n"), "{out}");
-        assert!(out.contains("  - [2] Edit \"User\" [value=\"me\"]\n"), "{out}");
-        assert!(out.contains("  - Text \"PIN code\" = \"[redacted]\"\n"), "{out}");
-        // A line of the value that looks like a list item is not a node.
-        assert!(out.contains("  - [3] Edit = \"[redacted]\"\n  - [4] Button"), "{out}");
-        for leaked in ["hunter2", "1234", "5678", "Button two"] {
-            assert!(!out.contains(leaked), "{leaked}: {out}");
-        }
-
-        let linux = "- [0] frame \"Login\" [actions=[]]\n  - [1] password text \"\" value=\"s3cr3t\nmore\" [actions=[activate]]\n  - [2] push button \"OK\" [actions=[click]]\n";
-        let out = redact_tree(linux, Dialect::Linux);
-        assert!(
-            out.contains("  - [1] password text \"\" = \"[redacted]\"\n  - [2] push button"),
-            "{out}"
-        );
-        assert!(!out.contains("s3cr3t") && !out.contains("more"), "{out}");
-    }
-
-    /// What starts a node, per platform.
-    #[test]
-    fn node_lines_are_told_from_continuations() {
-        assert!(Dialect::Mac.starts_node("  - [12] AXButton \"OK\"\n"));
-        assert!(Dialect::Mac.starts_node("- AXGroup\n"));
-        assert!(!Dialect::Mac.starts_node("- item\n"));
-        assert!(!Dialect::Mac.starts_node("- AX\n"));
-        assert!(!Dialect::Mac.starts_node("   - [1] AXButton\n"));
-        assert!(!Dialect::Mac.starts_node("  - [x] AXButton\n"));
-        assert!(Dialect::Windows.starts_node("  - [3] Edit \"a\"\n"));
-        assert!(Dialect::Windows.starts_node("- Pane\n"));
-        assert!(!Dialect::Windows.starts_node("  - edit\n"));
-        assert!(!Dialect::Windows.starts_node("- Recovery code: 1234\n"));
-        assert!(!Dialect::Windows.starts_node("- Editor notes\n"));
-        assert!(!Dialect::Windows.starts_node("  - Button two\n"));
-        assert!(Dialect::Windows.starts_node("  - [5] Button [actions=[invoke]]\n"));
-        assert!(!Dialect::Mac.starts_node("- AXE is great\n"));
-        assert!(Dialect::Linux.starts_node("  - [3] push button \"a\" [actions=[click]]\n"));
-        assert!(Dialect::Linux.starts_node("  - label = \"Name\"\n"));
-        assert!(!Dialect::Linux.starts_node("- recovery code: 1234\n"));
-        assert!(!Dialect::Linux.starts_node("  - [3] push button\n"));
-        assert!(!Dialect::Linux.starts_node("MIIEabc\n"));
     }
 
     /// An answer without the array it exists to carry is an error, not an
