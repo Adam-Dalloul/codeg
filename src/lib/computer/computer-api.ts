@@ -17,6 +17,7 @@ import type {
   PickerWindow,
   SharedWindow,
   GrantLevel,
+  StopKeyStatus,
 } from "./types"
 
 export async function getComputerToolsSettings(): Promise<ComputerToolsSettings> {
@@ -30,11 +31,14 @@ export async function setComputerToolsEnabled(
   return getTransport().call("set_computer_tools_enabled", { enabled })
 }
 
-/** Move the grant timeout, the blocklist, or both — only what is given; the
- *  rest of the record (the switch included) stays as it is stored. */
+/** Move the grant timeout, the blocklist, the stop shortcut — only what is
+ *  given; the rest of the record (the switch included) stays as it is
+ *  stored. */
 export async function setComputerToolsPreferences(preferences: {
   grantTtlMinutes?: number
   blocklist?: string[]
+  /** Empty switches the shortcut off. */
+  stopShortcut?: string
 }): Promise<ComputerToolsSettings> {
   return getTransport().call("set_computer_tools_preferences", preferences)
 }
@@ -99,4 +103,18 @@ export async function computerStop(): Promise<void> {
 
 export async function computerResume(): Promise<void> {
   return getTransport().call("computer_resume", {})
+}
+
+/** Whether the stop shortcut is in force; `computer://stop-key` carries the
+ *  changes. */
+export async function computerStopKeyStatus(): Promise<StopKeyStatus> {
+  return getTransport().call("computer_stop_key_status", {})
+}
+
+/** The strip telling codeg how large it drew itself, in CSS pixels. */
+export async function computerIndicatorFit(
+  width: number,
+  height: number
+): Promise<void> {
+  return getTransport().call("computer_indicator_fit", { width, height })
 }

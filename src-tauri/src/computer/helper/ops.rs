@@ -501,11 +501,31 @@ fn element_refs(
             ElementFacts {
                 role: role.to_string(),
                 secret,
+                frame: element_frame(element),
             },
         );
     }
     refs.sort_by_key(|r| r.offset);
     (refs, facts)
+}
+
+/// The driver's `frame` of one element (`{x, y, w, h}`, in desktop units),
+/// when it gave a whole one with an area.
+fn element_frame(element: &Value) -> Option<Rect> {
+    let frame = element.get("frame")?;
+    let number = |key: &str| {
+        frame
+            .get(key)
+            .and_then(Value::as_f64)
+            .filter(|n| n.is_finite())
+    };
+    let rect = Rect {
+        x: number("x")?,
+        y: number("y")?,
+        width: number("w")?,
+        height: number("h")?,
+    };
+    (!rect.is_empty()).then_some(rect)
 }
 
 /// Rebuild the caller's predicates in the driver's vocabulary. Every field is
@@ -783,6 +803,7 @@ mod tests {
         assert!(facts[&1].secret);
         assert!(!facts.contains_key(&9));
         assert!(!facts[&3].secret);
+        assert_eq!(facts[&3].frame, None);
         // A secret the driver's own label names is a secret whatever the
         // tree line said.
         let (_, facts) = element_refs(
@@ -792,6 +813,26 @@ mod tests {
         assert!(facts[&4].secret);
         // No structured list: nothing to offer.
         assert!(element_refs(&redacted.nodes, None).0.is_empty());
+    }
+
+    /// An element's frame is kept when the driver gave all of it, with an
+    /// area; anything less is no frame.
+    #[test]
+    fn frames_are_whole_or_absent() {
+        let frame = |f: Value| element_frame(&json!({ "element_index": 1, "frame": f }));
+        assert_eq!(
+            frame(json!({"x": 10.5, "y": -20.0, "w": 30.0, "h": 4.0})),
+            Some(Rect {
+                x: 10.5,
+                y: -20.0,
+                width: 30.0,
+                height: 4.0
+            })
+        );
+        assert_eq!(frame(json!({"x": 1.0, "y": 2.0, "w": 0.0, "h": 4.0})), None);
+        assert_eq!(frame(json!({"x": 1.0, "y": 2.0, "w": 3.0})), None);
+        assert_eq!(frame(json!({"x": "1", "y": 2.0, "w": 3.0, "h": 4.0})), None);
+        assert_eq!(element_frame(&json!({ "element_index": 1 })), None);
     }
 
     /// An answer without the array it exists to carry is an error, not an

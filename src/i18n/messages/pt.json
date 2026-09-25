@@ -5156,6 +5156,16 @@
     "stopHint": "Para todos os agentes de uma vez: nada é lido nem feito em nenhuma janela, todas as janelas deixam de ser compartilhadas e o que estiver em andamento é interrompido, até você retomar.",
     "stopped": "Parado. Nenhum agente pode ler nem agir em nenhuma janela até você retomar.",
     "resume": "Retomar",
+    "indicator": {
+      "actOne": "Os agentes podem agir em {app}",
+      "actMany": "Os agentes podem agir em {count, plural, one {# janela} other {# janelas}}",
+      "readOne": "Os agentes podem ver {app}",
+      "readMany": "Os agentes podem ver {count, plural, one {# janela} other {# janelas}}",
+      "recent": "{action} em {app}",
+      "stopped": "Parado — retome no painel Uso do computador do codeg",
+      "stop": "Parar",
+      "stopWithKey": "Parar todos os agentes de uma vez ({key})"
+    },
     "codegGranted": "O próprio codeg recebeu Acessibilidade ou Gravação de Tela, então o shell de cada agente também a tem. Remova o codeg em Ajustes do Sistema → Privacidade e Segurança. O uso do computador fica desligado até lá.",
     "backend": {
       "idle": "Não iniciado",
@@ -5240,6 +5250,25 @@
         "label": "Aplicativos que nunca podem ser compartilhados",
         "hint": "Um por linha: um identificador de pacote (com.example.app), um nome de executável (app.exe) ou um caminho completo. É somado à lista embutida — gerenciadores de senha, os pedidos de senha do sistema e os Ajustes do Sistema —, que não pode ser removida.",
         "placeholder": "com.example.app"
+      },
+      "stopKey": {
+        "label": "Atalho para parar",
+        "hint": "Para todos os agentes de uma vez a partir de qualquer app, como o botão Parar. Enquanto o uso do computador estiver ligado, estas teclas pertencem ao codeg em todos os apps, então escolha teclas que você não usa em outro lugar.",
+        "recording": "Pressione as teclas…",
+        "recordHint": "Segure Ctrl e outro modificador (Alt ou Shift) e pressione uma tecla. Esc cancela.",
+        "recordHintMac": "Segure ⌃ ou ⌘ e outro modificador e pressione uma tecla. Esc cancela.",
+        "off": "Desligado",
+        "useDefault": "Padrão",
+        "turnOff": "Desligar",
+        "statusActive": "Ativo: pressione em qualquer lugar para parar todos os agentes.",
+        "statusIdle": "Vale enquanto o uso do computador estiver ligado.",
+        "statusOff": "Desligado: só os botões Parar param os agentes.",
+        "statusFailed": "Inativo: provavelmente outro app usa estas teclas. Escolha outras.",
+        "problem": {
+          "unsupportedKey": "Essa tecla não pode ser usada. Escolha uma letra, um dígito, F1–F12, Esc ou uma tecla de pontuação.",
+          "weakModifiers": "Segure pelo menos dois modificadores, um deles Ctrl (ou ⌘ num Mac).",
+          "metaOffMac": "A tecla Windows não pode fazer parte dele."
+        }
       },
       "boundary": "No macOS, as permissões de Acessibilidade e Gravação de Tela vão para o codeg-computer-helper, que só atende o codeg, então o shell de um agente não pode usá-las. No Windows e no Linux, qualquer programa que você executa já consegue ler a tela; lá, estes ajustes decidem o que é entregue aos agentes pelo codeg, não o que um programa na sua máquina poderia fazer.",
       "save": "Salvar",

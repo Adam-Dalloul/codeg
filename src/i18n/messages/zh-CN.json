@@ -5156,6 +5156,16 @@
     "stopHint": "立即停止所有智能体：在你恢复之前，任何窗口都不会被读取或操作，所有窗口停止共享，正在进行的操作会被中断。",
     "stopped": "已停止。在你恢复之前，任何智能体都不能读取或操作任何窗口。",
     "resume": "恢复",
+    "indicator": {
+      "actOne": "智能体可操作「{app}」",
+      "actMany": "智能体可操作 {count, plural, other {# 个窗口}}",
+      "readOne": "智能体可查看「{app}」",
+      "readMany": "智能体可查看 {count, plural, other {# 个窗口}}",
+      "recent": "{app}：{action}",
+      "stopped": "已停止——请在 codeg 的「电脑操作」面板中恢复",
+      "stop": "停止",
+      "stopWithKey": "立即停止所有智能体（{key}）"
+    },
     "codegGranted": "codeg 本身已被授予「辅助功能」或「屏幕录制」权限，因此每个智能体的 shell 也都拥有它。请在「系统设置 → 隐私与安全性」中移除 codeg。在此之前，电脑操作保持关闭。",
     "backend": {
       "idle": "未启动",
@@ -5240,6 +5250,25 @@
         "label": "永不可共享的应用",
         "hint": "每行一个：bundle 标识（com.example.app）、可执行文件名（app.exe）或完整路径。会追加到内置名单——密码管理器、系统的密码弹窗和系统设置——内置名单不可移除。",
         "placeholder": "com.example.app"
+      },
+      "stopKey": {
+        "label": "停止快捷键",
+        "hint": "在任何应用中按下即可立即停止所有智能体，效果同「停止」按钮。电脑操作开启期间，这组按键在所有应用中都归 codeg 使用，请选择你在别处不用的组合。",
+        "recording": "请按下按键…",
+        "recordHint": "按住 Ctrl 和另一个修饰键（Alt 或 Shift），再按一个键。按 Esc 取消。",
+        "recordHintMac": "按住 ⌃ 或 ⌘ 和另一个修饰键，再按一个键。按 Esc 取消。",
+        "off": "已关闭",
+        "useDefault": "默认",
+        "turnOff": "关闭",
+        "statusActive": "已生效：在任何地方按下即可停止所有智能体。",
+        "statusIdle": "开启电脑操作后生效。",
+        "statusOff": "已关闭：只能用「停止」按钮停止智能体。",
+        "statusFailed": "未生效：这组按键可能已被其他应用占用，请换一组。",
+        "problem": {
+          "unsupportedKey": "不能使用这个键。请选择字母、数字、F1–F12、Esc 或标点键。",
+          "weakModifiers": "至少按住两个修饰键，其中一个是 Ctrl（Mac 上也可以是 ⌘）。",
+          "metaOffMac": "不能包含 Windows 键。"
+        }
       },
       "boundary": "在 macOS 上，「辅助功能」和「屏幕录制」权限授予 codeg-computer-helper，它只为 codeg 服务，因此智能体的 shell 用不了这些权限。在 Windows 和 Linux 上，你运行的任何程序本来就能读取屏幕；在那里，这些设置决定的是智能体通过 codeg 能拿到什么，而不是你电脑上的程序能做什么。",
       "save": "保存",

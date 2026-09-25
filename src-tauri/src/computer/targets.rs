@@ -25,7 +25,9 @@ use super::agent::{
     GrantChange, GrantLevel, NotGrantable, SelfIdentity,
 };
 use super::keys::{classify, Chord, ChordClass, Platform};
-use super::protocol::{DriverTarget, ElementRef, RawApp, RawWindow, WindowAction, WindowPoint};
+use super::protocol::{
+    DriverTarget, ElementRef, RawAct, RawApp, RawWindow, WindowAction, WindowPoint,
+};
 use super::types::{
     AgentAppRef, AgentTarget, AgentWindowSummary, ComputerActRequest, ElementTarget, PointTarget,
     Rect,
@@ -268,6 +270,55 @@ pub struct ActTicket {
     pub identity: WindowIdentity,
     pub app: RawApp,
     pub action: WindowAction,
+    pub aim: Aim,
+}
+
+/// Where on the screen an action lands, as far as codeg can place it once
+/// the helper says where it aimed. For the marker that shows the person
+/// where an agent acted; nothing is decided by it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Aim {
+    /// Wherever the window's focus is: a key with no element, a scroll with
+    /// no target.
+    Focus,
+    /// At the element, where its snapshot found it.
+    Element,
+    /// This far from the window's top-left corner, in desktop units.
+    Offset { x: f64, y: f64 },
+}
+
+impl Aim {
+    /// Where `action` lands, from what the agent last read of the window:
+    /// for a point, the screenshot's pixels scaled to the window's units.
+    fn of(entry: &TargetEntry, action: &WindowAction) -> Aim {
+        if action.element().is_some() {
+            return Aim::Element;
+        }
+        match (action.point(), entry.capture_mark.as_ref()) {
+            (Some(point), Some(mark)) if mark.native_width > 0 && mark.native_height > 0 => {
+                Aim::Offset {
+                    x: point.x * point.window_width / f64::from(mark.native_width),
+                    y: point.y * point.window_height / f64::from(mark.native_height),
+                }
+            }
+            _ => Aim::Focus,
+        }
+    }
+
+    /// The point on the screen, in desktop units, from what the helper
+    /// reported of the action: the middle of the element's frame, or the
+    /// offset from where the window was measured to be.
+    pub fn landing(&self, act: &RawAct) -> Option<(f64, f64)> {
+        let placed = |r: &Rect| !r.is_empty() && r.x.is_finite() && r.y.is_finite();
+        match *self {
+            Aim::Focus => None,
+            Aim::Element => act
+                .element_frame
+                .filter(placed)
+                .map(|f| (f.x + f.width / 2.0, f.y + f.height / 2.0)),
+            Aim::Offset { x, y } => act.window_frame.filter(placed).map(|w| (w.x + x, w.y + y)),
+        }
+    }
 }
 
 /// Why a share did not happen.
@@ -698,6 +749,7 @@ impl TargetTable {
             target_id: entry.target_id.clone(),
             identity: entry.identity,
             app: entry.app.clone(),
+            aim: Aim::of(entry, &action),
             action,
         })
     }
@@ -1437,6 +1489,64 @@ mod tests {
             act(&table, &id, &click_at(&unmapped, 1.0, 1.0)),
             Err(ActDenied::NoPointing)
         );
+    }
+
+    /// An action is placed on the screen from where the helper says it
+    /// aimed: an element at the middle of its frame, a point at its offset in
+    /// the window's units from where the window was measured to be — and an
+    /// action on the focus, or a report without the frame, nowhere.
+    #[test]
+    fn an_action_is_placed_where_it_landed() {
+        use crate::computer::types::ActEffect;
+        let table = TargetTable::new();
+        let (id, snapshot, capture) = shared_and_read(&table, GrantLevel::Control);
+        let aim = |request: &ComputerActRequest| {
+            table
+                .begin_act(&id, 3_000, None, &me(), &Blocklist::new(&[]), request)
+                .unwrap()
+                .aim
+        };
+        let frame = |x, y, width, height| Rect {
+            x,
+            y,
+            width,
+            height,
+        };
+        let report = |element_frame, window_frame| RawAct {
+            effect: ActEffect::Confirmed,
+            route: None,
+            submitted: None,
+            element_frame,
+            window_frame,
+        };
+
+        // The screenshot is 1000×500 of a 1000×500-unit window drawn at
+        // 2000×1000 pixels: (100, 50.5) in it is (100, 50.5) units in.
+        let point = aim(&click_at(&capture, 100.0, 50.5));
+        assert_eq!(point, Aim::Offset { x: 100.0, y: 50.5 });
+        let moved = report(None, Some(frame(300.0, 40.0, 1000.0, 500.0)));
+        assert_eq!(point.landing(&moved), Some((400.0, 90.5)));
+        assert_eq!(point.landing(&report(None, None)), None);
+
+        let element = aim(&click_ref(&snapshot, 3));
+        assert_eq!(element, Aim::Element);
+        let placed = report(Some(frame(10.0, 20.0, 30.0, 40.0)), None);
+        assert_eq!(element.landing(&placed), Some((25.0, 40.0)));
+        assert_eq!(
+            element.landing(&report(Some(frame(10.0, 20.0, 0.0, 40.0)), None)),
+            None
+        );
+
+        let focus = aim(&ComputerActRequest::Key {
+            target: None,
+            chord: Chord {
+                key: Key::Return,
+                modifiers: Default::default(),
+            },
+            repeat: 1,
+        });
+        assert_eq!(focus, Aim::Focus);
+        assert_eq!(focus.landing(&placed), None);
     }
 
     /// Taking the window back and sharing it again is a new grant: nothing

@@ -486,6 +486,9 @@ pub struct ComputerToolsConfig {
     pub grant_ttl: Option<Duration>,
     /// Applications the user added to the built-in blocklist.
     pub blocklist: Vec<String>,
+    /// The shortcut that stops every agent at once, from anywhere; `None`
+    /// when the person switched it off.
+    pub stop_shortcut: Option<crate::computer::stop_shortcut::StopShortcut>,
     /// How many times the group has been switched off since codeg started.
     /// Kept by [`ComputerToolsRuntimeConfig::set`], never persisted: it is
     /// what lets a watcher that only sees the latest value — a quick off and
@@ -681,6 +684,7 @@ mod tests {
             enabled: true,
             grant_ttl: Some(Duration::from_secs(1800)),
             blocklist: vec!["com.example.vault".into()],
+            stop_shortcut: None,
             switched_off: 0,
         };
         cfg.set(on.clone()).await;

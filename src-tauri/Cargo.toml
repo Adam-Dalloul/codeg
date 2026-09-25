@@ -30,6 +30,7 @@ tauri-runtime = [
     "dep:tauri-plugin-single-instance",
     "dep:tauri-plugin-deep-link",
     "dep:tauri-plugin-autostart",
+    "dep:tauri-plugin-global-shortcut",
     "dep:keyring",
     # `src/browser` is compiled under this feature and reaches WebKitGTK
     # directly on Linux. These three exist only on Linux targets; naming them
@@ -210,6 +211,11 @@ tauri-plugin-deep-link = { version = "2", optional = true }
 # "Launch at login" toggle. Desktop-only: registry Run key on Windows, a
 # LaunchAgent plist on macOS, an XDG autostart .desktop entry on Linux.
 tauri-plugin-autostart = { version = "2", optional = true }
+# Computer use's stop shortcut, registered from Rust only (no JS permission is
+# granted). On macOS an ordinary key is a Carbon hotkey, which needs no
+# permission; `computer::stop_shortcut` keeps media keys — an event tap, and
+# Input Monitoring with it — out of reach.
+tauri-plugin-global-shortcut = { version = "2", optional = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 mac-notification-sys = "0.6"

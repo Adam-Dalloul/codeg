@@ -143,11 +143,13 @@ function primeBackend(
     enabled: computer,
     grantTtlMinutes: 45,
     blocklist: ["com.example.vault"],
+    stopShortcut: "Control+Alt+Escape",
   })
   mockSetComputer.mockImplementation(async (enabled) => ({
     enabled,
     grantTtlMinutes: 45,
     blocklist: ["com.example.vault"],
+    stopShortcut: "Control+Alt+Escape",
   }))
 }
 
@@ -563,7 +565,12 @@ describe("AgentToolsSettingsSection", () => {
       (enabled) =>
         new Promise((resolve) => {
           finish = () =>
-            resolve({ enabled, grantTtlMinutes: 45, blocklist: [] })
+            resolve({
+              enabled,
+              grantTtlMinutes: 45,
+              blocklist: [],
+              stopShortcut: "",
+            })
         })
     )
 

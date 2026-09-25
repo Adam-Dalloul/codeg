@@ -46,7 +46,8 @@ use self::ops::AppCache;
 use super::driver;
 use super::protocol::{
     read_frame, HelperError, HelperErrorCode, HelperMessage, HelperOp, HelperReady, HelperReply,
-    HelperRequest, OsPermission, PeerCheck, PermissionReport, MAX_FRAME_BYTES, PROTOCOL_VERSION,
+    HelperRequest, OsPermission, PeerCheck, PermissionReport, RawAct, MAX_FRAME_BYTES,
+    PROTOCOL_VERSION,
 };
 
 /// Exit codes, for codeg's log: they are all the helper says to a peer it has
@@ -560,14 +561,24 @@ async fn handle(state: &HelperState, op: HelperOp) -> Result<serde_json::Value, 
                 require(*permission)?;
             }
             let driver = state.driver().await?;
-            state
-                .snapshots()
-                .check(pid, window_id, &action, app_key.as_deref())?;
-            if let Some(point) = action.point() {
-                act::check_point(&driver, pid, window_id, point).await?;
-            }
+            let element_frame = {
+                let book = state.snapshots();
+                book.check(pid, window_id, &action, app_key.as_deref())?;
+                action
+                    .element()
+                    .and_then(|element| book.frame(pid, window_id, element))
+            };
+            let window_frame = match action.point() {
+                Some(point) => Some(act::check_point(&driver, pid, window_id, point).await?),
+                None => None,
+            };
             let deliverable = || state.deliverable(pid, started_at);
-            value(act::act(&driver, pid, window_id, &action, &deliverable).await?)
+            let done = act::act(&driver, pid, window_id, &action, &deliverable).await?;
+            value(RawAct {
+                element_frame,
+                window_frame,
+                ..done
+            })
         }
         HelperOp::Halt => {
             state.halt().await;

@@ -63,7 +63,7 @@ pub async fn set_computer_tools_enabled(
     Ok(Json(saved))
 }
 
-/// Either or both; an absent one is left as it is.
+/// Any of them; an absent one is left as it is.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SetComputerToolsPreferencesParams {
@@ -71,6 +71,8 @@ pub struct SetComputerToolsPreferencesParams {
     pub grant_ttl_minutes: Option<u32>,
     #[serde(default)]
     pub blocklist: Option<Vec<String>>,
+    #[serde(default)]
+    pub stop_shortcut: Option<String>,
 }
 
 pub async fn set_computer_tools_preferences(
@@ -83,6 +85,7 @@ pub async fn set_computer_tools_preferences(
         &state.emitter,
         params.grant_ttl_minutes,
         params.blocklist,
+        params.stop_shortcut,
     )
     .await?;
     Ok(Json(saved))

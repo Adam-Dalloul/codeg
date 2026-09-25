@@ -5156,6 +5156,16 @@
     "stopHint": "Hält alle Agenten sofort an: In keinem Fenster wird etwas gelesen oder getan, alle Freigaben enden und was gerade läuft, wird abgebrochen – bis du fortsetzt.",
     "stopped": "Angehalten. Kein Agent kann ein Fenster lesen oder darin handeln, bis du fortsetzt.",
     "resume": "Fortsetzen",
+    "indicator": {
+      "actOne": "Agenten können in {app} handeln",
+      "actMany": "Agenten können in {count, plural, one {# Fenster} other {# Fenstern}} handeln",
+      "readOne": "Agenten können {app} sehen",
+      "readMany": "Agenten können {count, plural, one {# Fenster} other {# Fenster}} sehen",
+      "recent": "{action} in {app}",
+      "stopped": "Angehalten – fortsetzen im Computernutzung-Bereich von codeg",
+      "stop": "Anhalten",
+      "stopWithKey": "Alle Agenten sofort anhalten ({key})"
+    },
     "codegGranted": "codeg selbst hat Bedienungshilfen oder Bildschirmaufnahme erhalten – damit hat sie auch die Shell jedes Agenten. Entferne codeg unter Systemeinstellungen → Datenschutz & Sicherheit. Bis dahin bleibt die Computernutzung aus.",
     "backend": {
       "idle": "Nicht gestartet",
@@ -5240,6 +5250,25 @@
         "label": "Anwendungen, die nie freigegeben werden können",
         "hint": "Eine pro Zeile: eine Bundle-ID (com.example.app), ein Programmname (app.exe) oder ein vollständiger Pfad. Wird zur eingebauten Liste hinzugefügt – Passwortmanager, die Passwortabfragen des Systems und die Systemeinstellungen –, die sich nicht entfernen lässt.",
         "placeholder": "com.example.app"
+      },
+      "stopKey": {
+        "label": "Tastenkürzel zum Anhalten",
+        "hint": "Hält alle Agenten aus jeder App heraus sofort an, wie die Schaltfläche „Anhalten“. Solange die Computernutzung eingeschaltet ist, gehören diese Tasten in jeder App codeg – wähle also welche, die du sonst nicht verwendest.",
+        "recording": "Tasten drücken …",
+        "recordHint": "Strg und eine weitere Sondertaste (Alt oder Umschalt) halten, dann eine Taste drücken. Esc bricht ab.",
+        "recordHintMac": "⌃ oder ⌘ und eine weitere Sondertaste halten, dann eine Taste drücken. Esc bricht ab.",
+        "off": "Aus",
+        "useDefault": "Standard",
+        "turnOff": "Ausschalten",
+        "statusActive": "Aktiv: Überall drücken, um alle Agenten anzuhalten.",
+        "statusIdle": "Wirkt, solange die Computernutzung eingeschaltet ist.",
+        "statusOff": "Aus: Nur die Schaltflächen „Anhalten“ halten Agenten an.",
+        "statusFailed": "Nicht aktiv: Vermutlich verwendet eine andere App diese Tasten. Wähle andere.",
+        "problem": {
+          "unsupportedKey": "Diese Taste geht nicht. Wähle einen Buchstaben, eine Ziffer, F1–F12, Esc oder eine Satzzeichentaste.",
+          "weakModifiers": "Halte mindestens zwei Sondertasten, eine davon Strg (oder ⌘ auf einem Mac).",
+          "metaOffMac": "Die Windows-Taste darf nicht dazugehören."
+        }
       },
       "boundary": "Unter macOS gehen die Berechtigungen für Bedienungshilfen und Bildschirmaufnahme an codeg-computer-helper, der nur codeg bedient – die Shell eines Agenten kann sie also nicht nutzen. Unter Windows und Linux kann jedes Programm, das du ausführst, den Bildschirm ohnehin lesen; dort legen diese Einstellungen fest, was Agenten über codeg bekommen, nicht was ein Programm auf deinem Rechner tun könnte.",
       "save": "Speichern",

@@ -5156,6 +5156,16 @@
     "stopHint": "Stop every agent at once: nothing is read or done on any window, every window stops being shared, and whatever is in progress is cut off — until you resume.",
     "stopped": "Stopped. No agent can read or act on any window until you resume.",
     "resume": "Resume",
+    "indicator": {
+      "actOne": "Agents can act on {app}",
+      "actMany": "Agents can act on {count, plural, one {# window} other {# windows}}",
+      "readOne": "Agents can see {app}",
+      "readMany": "Agents can see {count, plural, one {# window} other {# windows}}",
+      "recent": "{action} in {app}",
+      "stopped": "Stopped — resume from codeg's Computer use panel",
+      "stop": "Stop",
+      "stopWithKey": "Stop every agent at once ({key})"
+    },
     "codegGranted": "codeg itself has been granted Accessibility or Screen Recording, so every agent's shell has it too. Remove codeg from System Settings → Privacy & Security. Computer use stays off until you do.",
     "backend": {
       "idle": "Not started",
@@ -5240,6 +5250,25 @@
         "label": "Applications that can never be shared",
         "hint": "One per line: a bundle identifier (com.example.app), an executable name (app.exe) or a full path. Added to the built-in list — password managers, the system's password prompts and System Settings — which cannot be removed.",
         "placeholder": "com.example.app"
+      },
+      "stopKey": {
+        "label": "Stop shortcut",
+        "hint": "Stops every agent at once from any app, like the Stop button. While computer use is on, these keys belong to codeg in every app, so choose ones you don't use elsewhere.",
+        "recording": "Press keys…",
+        "recordHint": "Hold Ctrl and one more modifier (Alt or Shift), then press a key. Esc cancels.",
+        "recordHintMac": "Hold ⌃ or ⌘ and one more modifier, then press a key. Esc cancels.",
+        "off": "Off",
+        "useDefault": "Default",
+        "turnOff": "Turn off",
+        "statusActive": "Active: press it anywhere to stop every agent.",
+        "statusIdle": "Takes effect while computer use is switched on.",
+        "statusOff": "Off: only the Stop buttons stop agents.",
+        "statusFailed": "Not active: another app is probably using these keys. Choose others.",
+        "problem": {
+          "unsupportedKey": "That key can't be used. Choose a letter, a digit, F1–F12, Esc or a punctuation key.",
+          "weakModifiers": "Hold at least two modifiers, one of them Ctrl (or ⌘ on a Mac).",
+          "metaOffMac": "The Windows key can't be part of it."
+        }
       },
       "boundary": "On macOS the Accessibility and Screen Recording permissions go to codeg-computer-helper, which serves only codeg, so an agent's shell cannot use them. On Windows and Linux any program you run can already read the screen; there these settings decide what agents are handed through codeg, not what a program on your machine could do.",
       "save": "Save",

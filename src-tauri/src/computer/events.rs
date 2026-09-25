@@ -14,6 +14,7 @@ use super::agent::{
     ComputerActivityPayload, ComputerGrantPayload, AGENT_ACTIVITY_EVENT, AGENT_GRANT_EVENT,
 };
 use super::backend::BackendStatus;
+use super::stop_key::StopKeyStatus;
 use super::targets::SharedWindow;
 
 /// Every window with a grant in force, and whether the person has pressed
@@ -22,6 +23,9 @@ pub const STATE_EVENT: &str = "computer://state";
 
 /// The helper's state, for the panel's status line.
 pub const BACKEND_STATUS_EVENT: &str = "computer://backend-status";
+
+/// Whether the stop shortcut is in force, for every place that offers Stop.
+pub const STOP_KEY_EVENT: &str = "computer://stop-key";
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -44,4 +48,8 @@ pub fn emit_activity(app: &AppHandle, payload: &ComputerActivityPayload) {
 
 pub fn emit_backend_status(app: &AppHandle, status: &BackendStatus) {
     let _ = app.emit(BACKEND_STATUS_EVENT, status);
+}
+
+pub fn emit_stop_key(app: &AppHandle, status: &StopKeyStatus) {
+    let _ = app.emit(STOP_KEY_EVENT, status);
 }

@@ -75,12 +75,15 @@ use crate::computer::backend::{
     ActRefusal, BackendError, BackendStatus, ComputerBackend, SnapshotOptions,
 };
 use crate::computer::events;
+use crate::computer::indicator::{Indicator, Strip};
 use crate::computer::local::LocalBackend;
-use crate::computer::protocol::{OsPermission, PermissionReport, RawAct};
+use crate::computer::marker::Marker;
 use crate::computer::procinfo::process_start;
+use crate::computer::protocol::{OsPermission, PermissionReport, RawAct};
+use crate::computer::stop_key::{StopKey, StopKeyStatus};
 use crate::computer::targets::{
-    ActDenied, ReadMark, ReadRefusal, ReadTicket, ShareError, SharedWindow, Staleness, TargetTable,
-    WindowIdentity,
+    ActDenied, Aim, ReadMark, ReadRefusal, ReadTicket, ShareError, SharedWindow, Staleness,
+    TargetTable, WindowIdentity,
 };
 use crate::computer::types::{
     ActDelivery, ActReport, AgentAppRef, AgentAppSummary, ComputerActRequest, Rect,
@@ -288,6 +291,12 @@ pub struct ComputerService {
     /// slip in between a Stop and its revocation and outlive it, and a Stop
     /// cannot slip in between a Resume's check and its write and be undone.
     grant_gate: std::sync::Mutex<()>,
+    /// The stop shortcut, held with the OS while computer use is on.
+    stop_key: StopKey,
+    /// The strip above every window while anything is shared.
+    indicator: Indicator,
+    /// The mark an action leaves where it landed.
+    marker: Marker,
 }
 
 impl ComputerService {
@@ -300,6 +309,8 @@ impl ComputerService {
         let backend = Arc::new(LocalBackend::new(move |status: &BackendStatus| {
             events::emit_backend_status(&status_app, status);
         }));
+        let indicator = Indicator::start(app.clone());
+        let marker = Marker::start(app.clone());
         let service = Arc::new(Self {
             app,
             backend,
@@ -311,6 +322,9 @@ impl ComputerService {
             pausing: tokio::sync::Mutex::new(()),
             stops: AtomicU64::new(0),
             grant_gate: std::sync::Mutex::new(()),
+            stop_key: StopKey::new(),
+            indicator,
+            marker,
         });
 
         // What a change takes away is taken before the write that made it
@@ -377,17 +391,41 @@ impl ComputerService {
         self.announce(&ended);
     }
 
-    /// Bring the helper in line with `config`. `went_off`: the switch was off
-    /// at some point since the last call, even if it is on again now — the
-    /// helper (and the driver under it) stops, and is not started again while
-    /// the switch is off.
-    async fn follow(&self, config: &ComputerToolsConfig, went_off: bool) {
+    /// Bring the helper and the stop shortcut in line with `config`.
+    /// `went_off`: the switch was off at some point since the last call, even
+    /// if it is on again now — the helper (and the driver under it) stops,
+    /// and is not started again while the switch is off.
+    async fn follow(self: &Arc<Self>, config: &ComputerToolsConfig, went_off: bool) {
+        self.follow_stop_key(config);
         if went_off || !config.enabled {
             self.backend.close().await;
         }
         if config.enabled {
             self.backend.open().await;
         }
+    }
+
+    /// Hold the chosen stop shortcut with the OS while computer use is on —
+    /// off, there is nothing for it to stop, and it would only take the keys
+    /// from every other application.
+    fn follow_stop_key(self: &Arc<Self>, config: &ComputerToolsConfig) {
+        let wanted = config
+            .enabled
+            .then_some(config.stop_shortcut.as_ref())
+            .flatten();
+        let service = Arc::downgrade(self);
+        let on_press = move || {
+            if let Some(service) = service.upgrade() {
+                tauri::async_runtime::spawn(async move { service.stop().await });
+            }
+        };
+        if let Some(status) = self.stop_key.sync(&self.app, wanted, on_press) {
+            events::emit_stop_key(&self.app, &status);
+        }
+    }
+
+    pub fn stop_key_status(&self) -> StopKeyStatus {
+        self.stop_key.status()
     }
 
     /// End the grants the settings as they are now no longer allow: lapsed,
@@ -414,12 +452,16 @@ impl ComputerService {
         self.emit_state();
     }
 
+    /// Tell the panels, and bring the strip and the marker in line: the
+    /// strip is up while anything is shared (and a moment after a Stop), the
+    /// marker ready while anything is shared for control.
     fn emit_state(&self) {
-        events::emit_state(
-            &self.app,
-            &self.targets.shared(),
-            self.paused.load(Ordering::Acquire),
-        );
+        let shared = self.targets.shared();
+        let paused = self.paused.load(Ordering::Acquire);
+        events::emit_state(&self.app, &shared, paused);
+        self.indicator.set(Strip::of(!shared.is_empty(), paused));
+        self.marker
+            .arm(shared.iter().any(|w| w.level == GrantLevel::Control));
     }
 
     /// The person pressed Stop: from now on every call is refused, every
@@ -955,7 +997,7 @@ impl ComputerService {
         &self,
         target_id: &str,
         request: &ComputerActRequest,
-    ) -> Result<RawAct, Refusal> {
+    ) -> Result<(RawAct, Aim), Refusal> {
         let _turn = self.turn.lock().await;
         let config = self.usable().await?;
         let blocklist = Blocklist::new(&config.blocklist);
@@ -974,6 +1016,7 @@ impl ComputerService {
             }
         };
         let started_at = self.check_identity(target_id, &ticket.identity)?;
+        let aim = ticket.aim;
         self.backend
             .act(
                 ticket.identity.pid,
@@ -983,6 +1026,7 @@ impl ComputerService {
                 ticket.action,
             )
             .await
+            .map(|raw| (raw, aim))
             .map_err(|e| self.backend_act_refusal(target_id, e))
     }
 
@@ -1002,7 +1046,12 @@ impl ComputerService {
         let mut done: Option<RawAct> = None;
         for pressed in 0..presses {
             match self.act_once(target_id, &request).await {
-                Ok(raw) => done = Some(raw),
+                Ok((raw, aim)) => {
+                    if let Some(at) = aim.landing(&raw) {
+                        self.marker.mark(at, action);
+                    }
+                    done = Some(raw);
+                }
                 Err(r) => {
                     self.record(target_id, action, r.outcome);
                     let note = match (pressed, r.maybe_done) {
@@ -1331,6 +1380,19 @@ pub async fn computer_stop(app: AppHandle) -> Result<(), AppCommandError> {
 pub async fn computer_resume(app: AppHandle) -> Result<(), AppCommandError> {
     service(&app)?.resume().await;
     Ok(())
+}
+
+/// Whether the stop shortcut is in force — the same status
+/// `computer://stop-key` carries when it changes.
+#[tauri::command]
+pub async fn computer_stop_key_status(app: AppHandle) -> Result<StopKeyStatus, AppCommandError> {
+    Ok(service(&app)?.stop_key_status())
+}
+
+/// The strip's page, telling how large it drew itself (logical pixels).
+#[tauri::command]
+pub async fn computer_indicator_fit(app: AppHandle, width: f64, height: f64) {
+    crate::computer::indicator::fit(&app, width, height);
 }
 
 #[cfg(test)]

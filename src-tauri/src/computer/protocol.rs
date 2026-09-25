@@ -36,7 +36,7 @@ use super::types::{
 /// Bumped whenever a frame changes shape. The helper ships in the same bundle
 /// as codeg, so a mismatch means a broken install (a helper left behind by a
 /// partial update), and codeg refuses to talk to it rather than guess.
-pub const PROTOCOL_VERSION: u32 = 2;
+pub const PROTOCOL_VERSION: u32 = 3;
 
 /// codeg → helper.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -244,7 +244,7 @@ impl WindowAction {
 }
 
 /// What the helper reports of an action that went out.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RawAct {
     pub effect: ActEffect,
@@ -253,6 +253,15 @@ pub struct RawAct {
     /// For typing with `submit`: whether return was pressed after the text.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub submitted: Option<bool>,
+    /// Where the action was aimed, as the helper knew it when it went out:
+    /// the element's frame in the snapshot it was addressed by, and — for a
+    /// point — the window's frame, measured just before. In the platform's
+    /// desktop units. For showing the person where an agent acted; nothing
+    /// is decided by them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub element_frame: Option<Rect>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window_frame: Option<Rect>,
 }
 
 /// helper → codeg.

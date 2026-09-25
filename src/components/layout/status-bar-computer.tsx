@@ -16,7 +16,8 @@
  * on a window is doing it in the background, where the person may not be
  * looking, and the way to end it should not be behind a popover. Stop
  * refuses every agent call, ends every sharing and cuts off what is in
- * progress, until the person resumes.
+ * progress, until the person resumes. Where the stop shortcut is in force,
+ * both Stop buttons name it, so it is learnt where it is needed.
  *
  * The permission rows name the helper, never codeg: on macOS the grants belong
  * to `codeg-computer-helper`, and one given to codeg would be given to every
@@ -40,6 +41,7 @@ import {
 } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
+import { useIsMac } from "@/hooks/use-is-mac"
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -73,6 +75,7 @@ import {
   useComputerStore,
   type ComputerActivityLine,
 } from "@/lib/computer/computer-store"
+import { stopShortcutLabel } from "@/lib/computer/stop-shortcut"
 import {
   COMPUTER_TOOLS_SETTINGS_CHANGED_EVENT,
   type ComputerStatus,
@@ -80,6 +83,7 @@ import {
   type GrantLevel,
   type OsPermission,
 } from "@/lib/computer/types"
+import { useComputerStopKey } from "@/lib/computer/use-stop-key"
 import { subscribe } from "@/lib/platform"
 import { cn } from "@/lib/utils"
 
@@ -138,6 +142,8 @@ export function StatusBarComputer() {
 function ComputerPopover() {
   const t = useTranslations("ComputerUse")
   const { shared, paused, backend, activity } = useComputerStore()
+  const isMac = useIsMac()
+  const stopKey = useComputerStopKey()
   const [open, setOpen] = useState(false)
   const [pickerOpen, setPickerOpen] = useState(false)
   const [status, setStatus] = useState<ComputerStatus | null>(null)
@@ -245,6 +251,9 @@ function ComputerPopover() {
     (status.codeg.accessibility || status.codeg.screenRecording)
   const permissions = status?.permissions
   const controlled = shared.filter((w) => w.level === "control").length
+  const shortcut = stopKey?.active
+    ? stopShortcutLabel(stopKey.active, isMac)
+    : null
   const appNameOf = (line: ComputerActivityLine) =>
     shared.find((w) => w.targetId === line.targetId)?.appName ?? line.targetId
 
@@ -256,7 +265,11 @@ function ComputerPopover() {
           onClick={() => void stopAgents()}
           disabled={stopping}
           aria-label={t("stop")}
-          title={t("stopTooltip", { count: controlled })}
+          title={
+            shortcut
+              ? `${t("stopTooltip", { count: controlled })} · ${shortcut}`
+              : t("stopTooltip", { count: controlled })
+          }
           className="flex items-center text-red-500 transition-colors hover:text-red-600"
         >
           <Square className="size-3 fill-current" />
@@ -326,6 +339,11 @@ function ComputerPopover() {
               >
                 <Square className="size-3 fill-current" />
                 {t("stop")}
+                {shortcut && (
+                  <kbd className="font-sans text-2xs opacity-80">
+                    {shortcut}
+                  </kbd>
+                )}
               </Button>
             )
           )}

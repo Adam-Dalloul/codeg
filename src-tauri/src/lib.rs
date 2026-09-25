@@ -486,12 +486,20 @@ mod tauri_app {
             // by an older build would call `set_decorations(true)` after the
             // window is built and re-add the native title bar on top of the
             // app's own toolbar — the Linux "double title bar".
+            //
+            // Computer use's strip and action marker are placed by codeg each
+            // time they are made and must never come back where (or as
+            // visible as) a previous run left them.
             .plugin(
                 tauri_plugin_window_state::Builder::new()
                     .with_state_flags(
                         tauri_plugin_window_state::StateFlags::all()
                             & !tauri_plugin_window_state::StateFlags::DECORATIONS,
                     )
+                    .with_denylist(&[
+                        crate::computer::indicator::INDICATOR_LABEL,
+                        crate::computer::marker::MARKER_LABEL,
+                    ])
                     .build(),
             )
             .plugin(tauri_plugin_deep_link::init())
@@ -500,6 +508,9 @@ mod tauri_app {
             .plugin(tauri_plugin_updater::Builder::new().build())
             .plugin(tauri_plugin_process::init())
             .plugin(tauri_plugin_notification::init())
+            // Computer use's stop shortcut. Registered from Rust alone; no
+            // webview is granted the plugin's commands.
+            .plugin(tauri_plugin_global_shortcut::Builder::new().build())
             // "Launch at login". LaunchAgent rather than AppleScript on macOS:
             // writing `~/Library/LaunchAgents/codeg.plist` needs no Automation
             // consent prompt, where scripting System Events does. No extra
@@ -1787,6 +1798,8 @@ mod tauri_app {
                 crate::commands::computer::computer_stop,
                 crate::commands::computer::computer_shared_state,
                 crate::commands::computer::computer_resume,
+                crate::commands::computer::computer_stop_key_status,
+                crate::commands::computer::computer_indicator_fit,
                 version_control::detect_git,
                 version_control::test_git_path,
                 version_control::get_git_settings,

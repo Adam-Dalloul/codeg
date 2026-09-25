@@ -41,6 +41,7 @@
 //!   titles are narrowed, when a grant lapses
 //! - `keys`      — the keys an agent may press, and which a window grant
 //!   allows
+//! - `stop_shortcut` — the global shortcut that stops every agent at once
 //! - `targets`   — codeg's table of windows it has told an agent about, with
 //!   the grant on each entry
 //! - `protocol`  — frames between codeg and the helper
@@ -55,6 +56,9 @@
 //! - `helper`    — the helper process's own logic (runs in the helper binary)
 //! - `local`     — codeg's side of the helper: launch, verify, talk
 //! - `events`    — what the frontend is told
+//! - `stop_key`  — the stop shortcut as the OS holds it
+//! - `indicator` — the strip above every window while anything is shared
+//! - `marker`    — the mark an action leaves where it landed
 
 pub mod agent;
 pub mod backend;
@@ -63,6 +67,7 @@ pub mod helper;
 pub mod keys;
 pub mod procinfo;
 pub mod protocol;
+pub mod stop_shortcut;
 pub mod targets;
 pub mod types;
 
@@ -81,4 +86,10 @@ pub mod tcc;
 #[cfg(feature = "tauri-runtime")]
 pub mod events;
 #[cfg(feature = "tauri-runtime")]
+pub mod indicator;
+#[cfg(feature = "tauri-runtime")]
 pub mod local;
+#[cfg(feature = "tauri-runtime")]
+pub mod marker;
+#[cfg(feature = "tauri-runtime")]
+pub mod stop_key;

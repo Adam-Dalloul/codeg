@@ -1,6 +1,6 @@
 //! The computer-use settings: whether an agent may see the desktop at all,
-//! how long a shared window stays shared unused, and which applications can
-//! never be shared.
+//! how long a shared window stays shared unused, which applications can
+//! never be shared, and the shortcut that stops every agent at once.
 //!
 //! Separate from `commands::computer`, which is the desktop feature itself and
 //! exists only in the desktop build: these switches are read by the shared
@@ -21,6 +21,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::acp::computer_tools::{ComputerToolsConfig, ComputerToolsRuntimeConfig};
 use crate::app_error::AppCommandError;
+use crate::computer::keys::Platform;
+use crate::computer::stop_shortcut::StopShortcut;
 use crate::db::service::app_metadata_service;
 use crate::web::event_bridge::{emit_event, EventEmitter, COMPUTER_TOOLS_SETTINGS_CHANGED_EVENT};
 
@@ -34,6 +36,11 @@ pub const KEY_COMPUTER_TOOLS_GRANT_TTL_MINUTES: &str = "computer_tools.grant_ttl
 /// bundle identifiers, paths or executable names.
 pub const KEY_COMPUTER_TOOLS_BLOCKLIST: &str = "computer_tools.blocklist";
 
+/// The shortcut that stops every agent at once, spelled as
+/// `computer::stop_shortcut` spells it; empty is "none". Absent is the
+/// platform's default.
+pub const KEY_COMPUTER_TOOLS_STOP_SHORTCUT: &str = "computer_tools.stop_shortcut";
+
 /// The grant timeout when the user has chosen none.
 pub const DEFAULT_GRANT_TTL_MINUTES: u32 = 30;
 
@@ -45,10 +52,17 @@ pub struct ComputerToolsSettings {
     pub grant_ttl_minutes: u32,
     #[serde(default)]
     pub blocklist: Vec<String>,
+    /// The stop shortcut's spelling; empty when the person switched it off.
+    #[serde(default = "default_stop_shortcut")]
+    pub stop_shortcut: String,
 }
 
 fn default_ttl() -> u32 {
     DEFAULT_GRANT_TTL_MINUTES
+}
+
+fn default_stop_shortcut() -> String {
+    StopShortcut::default_for(Platform::current()).to_string()
 }
 
 impl Default for ComputerToolsSettings {
@@ -57,6 +71,7 @@ impl Default for ComputerToolsSettings {
             enabled: false,
             grant_ttl_minutes: DEFAULT_GRANT_TTL_MINUTES,
             blocklist: Vec::new(),
+            stop_shortcut: default_stop_shortcut(),
         }
     }
 }
@@ -68,10 +83,31 @@ impl ComputerToolsSettings {
             grant_ttl: (self.grant_ttl_minutes > 0)
                 .then(|| Duration::from_secs(u64::from(self.grant_ttl_minutes) * 60)),
             blocklist: normalize_blocklist(self.blocklist),
+            stop_shortcut: StopShortcut::from_setting(&self.stop_shortcut, Platform::current()),
             // Kept by the runtime handle, not by the record.
             switched_off: 0,
         }
     }
+}
+
+/// A stop shortcut as the record keeps it: off (empty), or a shortcut this
+/// platform accepts, written in the one order. Anything else is refused on
+/// the way in; on the way out of the database it reads as whatever
+/// [`StopShortcut::from_setting`] makes of it, so the record shows the
+/// shortcut in force.
+fn checked_stop_shortcut(spelling: &str) -> Result<String, AppCommandError> {
+    if spelling.is_empty() {
+        return Ok(String::new());
+    }
+    StopShortcut::parse(spelling, Platform::current())
+        .map(|shortcut| shortcut.to_string())
+        .map_err(|e| AppCommandError::configuration_invalid(format!("stop shortcut: {e}")))
+}
+
+fn stored_stop_shortcut(spelling: &str) -> String {
+    StopShortcut::from_setting(spelling, Platform::current())
+        .map(|shortcut| shortcut.to_string())
+        .unwrap_or_default()
 }
 
 /// Trimmed, non-empty, de-duplicated entries in the order they were given.
@@ -114,6 +150,9 @@ pub async fn load_computer_tools_settings(conn: &DatabaseConnection) -> Computer
     {
         settings.blocklist = normalize_blocklist(v);
     }
+    if let Some(v) = get(KEY_COMPUTER_TOOLS_STOP_SHORTCUT).await {
+        settings.stop_shortcut = stored_stop_shortcut(&v);
+    }
     settings
 }
 
@@ -152,27 +191,33 @@ pub async fn set_computer_tools_enabled_core(
     Ok(settings)
 }
 
-/// Move the grant timeout, the user's blocklist, or both — only the ones
-/// given — leaving everything else at whatever the database says. For the
-/// Computer use settings section, which edits these two and not the switch
-/// (that one lives with the other tool groups, and in the status popover),
-/// and which sends only what the person changed: a form that loaded before
-/// another window added a blocklist entry must not take it out again by
-/// saving a new timeout.
+/// Move the grant timeout, the user's blocklist, the stop shortcut — only
+/// the ones given — leaving everything else at whatever the database says.
+/// For the Computer use settings section, which edits these and not the
+/// switch (that one lives with the other tool groups, and in the status
+/// popover), and which sends only what the person changed: a form that
+/// loaded before another window added a blocklist entry must not take it out
+/// again by saving a new timeout.
 pub async fn set_computer_tools_preferences_core(
     conn: &DatabaseConnection,
     config: &ComputerToolsRuntimeConfig,
     emitter: &EventEmitter,
     grant_ttl_minutes: Option<u32>,
     blocklist: Option<Vec<String>>,
+    stop_shortcut: Option<String>,
 ) -> Result<ComputerToolsSettings, AppCommandError> {
     let blocklist = blocklist
         .map(|list| serde_json::to_string(&normalize_blocklist(list)))
         .transpose()
         .map_err(|e| AppCommandError::configuration_invalid(e.to_string()))?;
+    let stop_shortcut = stop_shortcut
+        .as_deref()
+        .map(checked_stop_shortcut)
+        .transpose()?;
     let writes: Vec<(&str, String)> = [
         grant_ttl_minutes.map(|m| (KEY_COMPUTER_TOOLS_GRANT_TTL_MINUTES, m.to_string())),
         blocklist.map(|list| (KEY_COMPUTER_TOOLS_BLOCKLIST, list)),
+        stop_shortcut.map(|s| (KEY_COMPUTER_TOOLS_STOP_SHORTCUT, s)),
     ]
     .into_iter()
     .flatten()
@@ -202,6 +247,7 @@ pub async fn set_computer_tools_settings_core(
 ) -> Result<ComputerToolsSettings, AppCommandError> {
     let desired = ComputerToolsSettings {
         blocklist: normalize_blocklist(desired.blocklist),
+        stop_shortcut: checked_stop_shortcut(&desired.stop_shortcut)?,
         ..desired
     };
     let _guard = COMPUTER_TOOLS_WRITE_LOCK.lock().await;
@@ -214,6 +260,10 @@ pub async fn set_computer_tools_settings_core(
             desired.grant_ttl_minutes.to_string(),
         ),
         (KEY_COMPUTER_TOOLS_BLOCKLIST, blocklist),
+        (
+            KEY_COMPUTER_TOOLS_STOP_SHORTCUT,
+            desired.stop_shortcut.clone(),
+        ),
     ] {
         app_metadata_service::upsert_value(conn, key, &value)
             .await
@@ -285,6 +335,7 @@ pub async fn set_computer_tools_preferences(
     #[cfg(feature = "tauri-runtime")] config: tauri::State<'_, ComputerToolsRuntimeConfig>,
     grant_ttl_minutes: Option<u32>,
     blocklist: Option<Vec<String>>,
+    stop_shortcut: Option<String>,
 ) -> Result<ComputerToolsSettings, AppCommandError> {
     #[cfg(feature = "tauri-runtime")]
     {
@@ -295,12 +346,13 @@ pub async fn set_computer_tools_preferences(
             &emitter,
             grant_ttl_minutes,
             blocklist,
+            stop_shortcut,
         )
         .await
     }
     #[cfg(not(feature = "tauri-runtime"))]
     {
-        let _ = (grant_ttl_minutes, blocklist);
+        let _ = (grant_ttl_minutes, blocklist, stop_shortcut);
         Err(AppCommandError::configuration_invalid("tauri-only command"))
     }
 }
@@ -316,6 +368,11 @@ mod tests {
         assert!(!defaults.enabled);
         assert_eq!(defaults.grant_ttl_minutes, DEFAULT_GRANT_TTL_MINUTES);
         assert!(defaults.blocklist.is_empty());
+        // Stop, though, is there from the start.
+        assert_eq!(
+            defaults.into_runtime_config().stop_shortcut,
+            Some(StopShortcut::default_for(Platform::current()))
+        );
     }
 
     /// Zero minutes is "no timeout", and blocklist entries are tidied without
@@ -331,10 +388,12 @@ mod tests {
                 "COM.EXAMPLE.VAULT".into(),
                 "keepass.exe".into(),
             ],
+            stop_shortcut: String::new(),
         }
         .into_runtime_config();
         assert_eq!(cfg.grant_ttl, None);
         assert_eq!(cfg.blocklist, vec!["com.example.Vault", "keepass.exe"]);
+        assert_eq!(cfg.stop_shortcut, None);
 
         let cfg = ComputerToolsSettings::default().into_runtime_config();
         assert_eq!(cfg.grant_ttl, Some(Duration::from_secs(30 * 60)));
@@ -354,20 +413,81 @@ mod tests {
             &emitter,
             None,
             Some(vec!["com.example.Vault".into()]),
+            None,
         )
         .await
         .unwrap();
         let saved =
-            set_computer_tools_preferences_core(&db.conn, &config, &emitter, Some(10), None)
+            set_computer_tools_preferences_core(&db.conn, &config, &emitter, Some(10), None, None)
                 .await
                 .unwrap();
         assert_eq!(saved.grant_ttl_minutes, 10);
         assert_eq!(saved.blocklist, vec!["com.example.Vault"]);
         assert_eq!(config.snapshot().await.blocklist, vec!["com.example.Vault"]);
-        let untouched = set_computer_tools_preferences_core(&db.conn, &config, &emitter, None, None)
-            .await
-            .unwrap();
+        let untouched =
+            set_computer_tools_preferences_core(&db.conn, &config, &emitter, None, None, None)
+                .await
+                .unwrap();
         assert_eq!(untouched, saved);
+    }
+
+    /// The stop shortcut is saved as the one spelling, switched off as empty,
+    /// and a spelling that is no shortcut here is refused without touching
+    /// what is stored.
+    #[tokio::test]
+    async fn the_stop_shortcut_is_checked_on_the_way_in() {
+        let db = crate::db::test_helpers::fresh_in_memory_db().await;
+        let config = ComputerToolsRuntimeConfig::new();
+        let emitter = EventEmitter::Noop;
+        let set = |spelling: &str| {
+            set_computer_tools_preferences_core(
+                &db.conn,
+                &config,
+                &emitter,
+                None,
+                None,
+                Some(spelling.to_string()),
+            )
+        };
+        let saved = set("Shift+Control+KeyK").await.unwrap();
+        assert_eq!(saved.stop_shortcut, "Control+Shift+KeyK");
+        assert_eq!(
+            config.snapshot().await.stop_shortcut.map(|s| s.to_string()),
+            Some("Control+Shift+KeyK".to_string())
+        );
+        for bad in [
+            "Control+KeyK",
+            "Control+Alt+MediaPlayPause",
+            "Ctrl+Alt+KeyK",
+        ] {
+            assert!(set(bad).await.is_err(), "{bad} saved");
+        }
+        assert_eq!(
+            load_computer_tools_settings(&db.conn).await.stop_shortcut,
+            "Control+Shift+KeyK"
+        );
+        let off = set("").await.unwrap();
+        assert_eq!(off.stop_shortcut, "");
+        assert_eq!(config.snapshot().await.stop_shortcut, None);
+    }
+
+    /// A stored spelling this platform cannot register — a database carried
+    /// over from another platform's codeg — reads as the default: the record
+    /// shows the shortcut in force.
+    #[tokio::test]
+    async fn a_foreign_stored_shortcut_reads_as_the_default() {
+        let db = crate::db::test_helpers::fresh_in_memory_db().await;
+        app_metadata_service::upsert_value(
+            &db.conn,
+            KEY_COMPUTER_TOOLS_STOP_SHORTCUT,
+            "Control+Alt+MediaPlayPause",
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            load_computer_tools_settings(&db.conn).await.stop_shortcut,
+            StopShortcut::default_for(Platform::current()).to_string()
+        );
     }
 
     /// A record from before the timeout and blocklist existed still loads.
@@ -377,5 +497,6 @@ mod tests {
             serde_json::from_value(serde_json::json!({ "enabled": true })).unwrap();
         assert!(parsed.enabled);
         assert_eq!(parsed.grant_ttl_minutes, DEFAULT_GRANT_TTL_MINUTES);
+        assert_eq!(parsed.stop_shortcut, default_stop_shortcut());
     }
 }

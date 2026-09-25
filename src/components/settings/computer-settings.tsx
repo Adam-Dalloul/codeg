@@ -2,10 +2,15 @@
 
 /**
  * Computer use: how long a shared window stays shared while nobody reads it,
- * and which applications can never be shared. The on/off switch itself sits
+ * which applications can never be shared, and — on the desktop — the
+ * shortcut that stops every agent at once. The on/off switch itself sits
  * with the other tool groups in the panel above (and in the status-bar
- * popover); this section edits only the two settings under it, through a
- * writer that leaves the switch alone.
+ * popover); this section edits only the settings under it, through a writer
+ * that leaves the switch alone.
+ *
+ * The stop shortcut is held with the OS only while computer use is on, and
+ * another application may hold the same keys; the row says which, so nobody
+ * counts on a shortcut that does nothing.
  *
  * The blocklist here only ever adds: the built-in entries — credential
  * managers, the system's password prompts, System Settings — are not shown as
@@ -21,8 +26,10 @@
 
 import { useCallback, useEffect, useRef, useState } from "react"
 import { useTranslations } from "next-intl"
-import { Monitor, RotateCw } from "lucide-react"
+import { Keyboard, Monitor, RotateCw } from "lucide-react"
 import { toast } from "sonner"
+
+import { useIsMac } from "@/hooks/use-is-mac"
 
 import { Button } from "@/components/ui/button"
 import {
@@ -45,13 +52,24 @@ import {
 import { Textarea } from "@/components/ui/textarea"
 import { toErrorMessage } from "@/lib/app-error"
 import {
+  computerAvailable,
   getComputerToolsSettings,
   setComputerToolsPreferences,
 } from "@/lib/computer/computer-api"
 import {
+  defaultStopShortcut,
+  spellStopShortcut,
+  stopShortcutFromEvent,
+  stopShortcutLabel,
+  stopShortcutProblem,
+  type StopShortcutProblem,
+} from "@/lib/computer/stop-shortcut"
+import {
   COMPUTER_TOOLS_SETTINGS_CHANGED_EVENT,
   type ComputerToolsSettings,
 } from "@/lib/computer/types"
+import { useComputerStopKey } from "@/lib/computer/use-stop-key"
+import { setShortcutRecorderArmed } from "@/lib/keyboard-shortcuts"
 import { subscribe } from "@/lib/platform"
 
 /** The choices offered, in minutes; 0 is "until I take it back". */
@@ -61,12 +79,17 @@ interface Values {
   ttl: number
   /** One entry per line, as typed. */
   blocklist: string
+  /** Spelled as `stop-shortcut.ts` spells it; empty is off. */
+  stopShortcut: string
 }
+
+const EMPTY: Values = { ttl: 30, blocklist: "", stopShortcut: "" }
 
 function fromSettings(settings: ComputerToolsSettings): Values {
   return {
     ttl: settings.grantTtlMinutes,
     blocklist: settings.blocklist.join("\n"),
+    stopShortcut: settings.stopShortcut,
   }
 }
 
@@ -88,6 +111,10 @@ function blocklistDirty(values: Values, baseline: Values): boolean {
   )
 }
 
+function stopShortcutDirty(values: Values, baseline: Values): boolean {
+  return values.stopShortcut !== baseline.stopShortcut
+}
+
 export function ComputerSettingsSection() {
   const t = useTranslations("ComputerUse.settings")
   const tComputer = useTranslations("ComputerUse")
@@ -95,8 +122,10 @@ export function ComputerSettingsSection() {
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [loadError, setLoadError] = useState<string | null>(null)
-  const [values, setValues] = useState<Values>({ ttl: 30, blocklist: "" })
-  const [baseline, setBaseline] = useState<Values>({ ttl: 30, blocklist: "" })
+  const [values, setValues] = useState<Values>(EMPTY)
+  const [baseline, setBaseline] = useState<Values>(EMPTY)
+  /** Whether computer use is on: the stop shortcut is held only then. */
+  const [enabled, setEnabled] = useState(false)
   // Read by the subscription below, which is set up once.
   const valuesRef = useRef(values)
   const baselineRef = useRef(baseline)
@@ -118,6 +147,7 @@ export function ComputerSettingsSection() {
       if (remoteGenRef.current === gen) {
         setValues(fromSettings(settings))
         setBaseline(fromSettings(settings))
+        setEnabled(settings.enabled)
       }
       setLoaded(true)
       setLoadError(null)
@@ -174,8 +204,12 @@ export function ComputerSettingsSection() {
           blocklist: blocklistDirty(current, base)
             ? prev.blocklist
             : next.blocklist,
+          stopShortcut: stopShortcutDirty(current, base)
+            ? prev.stopShortcut
+            : next.stopShortcut,
         }))
         setBaseline(next)
+        setEnabled(remote.enabled)
         setLoaded(true)
         setLoadError(null)
       }
@@ -193,7 +227,8 @@ export function ComputerSettingsSection() {
 
   const dirtyTtl = ttlDirty(values, baseline)
   const dirtyBlocklist = blocklistDirty(values, baseline)
-  const dirty = dirtyTtl || dirtyBlocklist
+  const dirtyStopShortcut = stopShortcutDirty(values, baseline)
+  const dirty = dirtyTtl || dirtyBlocklist || dirtyStopShortcut
   const editable = loaded && !saving
 
   const save = useCallback(async () => {
@@ -203,6 +238,7 @@ export function ComputerSettingsSection() {
       const applied = await setComputerToolsPreferences({
         grantTtlMinutes: dirtyTtl ? values.ttl : undefined,
         blocklist: dirtyBlocklist ? entries(values.blocklist) : undefined,
+        stopShortcut: dirtyStopShortcut ? values.stopShortcut : undefined,
       })
       // The save's own broadcast, or another window's after it, may have
       // landed first; the last broadcast is then the newest record there is.
@@ -218,7 +254,7 @@ export function ComputerSettingsSection() {
     } finally {
       setSaving(false)
     }
-  }, [values, dirtyTtl, dirtyBlocklist, t])
+  }, [values, dirtyTtl, dirtyBlocklist, dirtyStopShortcut, t])
 
   return (
     <SettingsSection
@@ -290,6 +326,17 @@ export function ComputerSettingsSection() {
             className="font-mono text-xs"
           />
         </SettingRow>
+        {computerAvailable() && (
+          <StopShortcutRow
+            value={values.stopShortcut}
+            saved={dirtyStopShortcut ? null : baseline.stopShortcut}
+            enabled={enabled}
+            disabled={!editable}
+            onChange={(stopShortcut) =>
+              setValues((prev) => ({ ...prev, stopShortcut }))
+            }
+          />
+        )}
       </SettingCard>
 
       <SettingNote icon={Monitor}>{t("boundary")}</SettingNote>
@@ -302,5 +349,140 @@ export function ComputerSettingsSection() {
         savingLabel={t("saving")}
       />
     </SettingsSection>
+  )
+}
+
+/**
+ * The stop shortcut: the keys as they stand, a button to record new ones
+ * (Escape alone cancels), the default back, or none — and, once saved,
+ * whether the OS actually holds them.
+ */
+function StopShortcutRow({
+  value,
+  saved,
+  enabled,
+  disabled,
+  onChange,
+}: {
+  value: string
+  /** The shortcut as stored, or null while the row holds an unsaved one. */
+  saved: string | null
+  enabled: boolean
+  disabled: boolean
+  onChange: (value: string) => void
+}) {
+  const t = useTranslations("ComputerUse.settings.stopKey")
+  const isMac = useIsMac()
+  const status = useComputerStopKey()
+  const [recording, setRecording] = useState(false)
+  const [problem, setProblem] = useState<StopShortcutProblem | null>(null)
+  const fallback = defaultStopShortcut(isMac)
+
+  useEffect(() => {
+    if (!recording) return
+    setShortcutRecorderArmed(true)
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.repeat) return
+      event.preventDefault()
+      event.stopPropagation()
+      event.stopImmediatePropagation()
+      const parts = stopShortcutFromEvent(event)
+      if (!parts) return
+      const bare = !(parts.control || parts.alt || parts.shift || parts.command)
+      if (bare && parts.code === "Escape") {
+        setRecording(false)
+        setProblem(null)
+        return
+      }
+      const why = stopShortcutProblem(parts, isMac)
+      if (why) {
+        setProblem(why)
+        return
+      }
+      setProblem(null)
+      setRecording(false)
+      onChange(spellStopShortcut(parts))
+    }
+    window.addEventListener("keydown", onKeyDown, true)
+    return () => {
+      window.removeEventListener("keydown", onKeyDown, true)
+      setShortcutRecorderArmed(false)
+    }
+  }, [recording, isMac, onChange])
+
+  let note: React.ReactNode = null
+  if (recording) {
+    note = problem
+      ? t(`problem.${problem}`)
+      : t(isMac ? "recordHintMac" : "recordHint")
+  } else if (saved !== null) {
+    if (saved === "") note = t("statusOff")
+    else if (!enabled) note = t("statusIdle")
+    else if (status?.active === saved) note = t("statusActive")
+    else if (status?.failed === saved) note = t("statusFailed")
+  }
+
+  return (
+    <SettingRow
+      icon={Keyboard}
+      title={t("label")}
+      description={t("hint")}
+      control={
+        <div className="flex items-center gap-1">
+          {!recording && value !== fallback && (
+            <Button
+              size="xs"
+              variant="ghost"
+              onClick={() => onChange(fallback)}
+              disabled={disabled}
+            >
+              {t("useDefault")}
+            </Button>
+          )}
+          {!recording && value !== "" && (
+            <Button
+              size="xs"
+              variant="ghost"
+              onClick={() => onChange("")}
+              disabled={disabled}
+            >
+              {t("turnOff")}
+            </Button>
+          )}
+          <Button
+            size="sm"
+            variant={recording ? "secondary" : "outline"}
+            className="min-w-28 font-mono"
+            aria-pressed={recording}
+            onClick={() => {
+              setProblem(null)
+              setRecording((r) => !r)
+            }}
+            disabled={disabled}
+          >
+            {recording
+              ? t("recording")
+              : value
+                ? stopShortcutLabel(value, isMac)
+                : t("off")}
+          </Button>
+        </div>
+      }
+    >
+      {note && (
+        <p
+          className={
+            problem || (!recording && status?.failed === saved && saved)
+              ? "text-xs text-destructive"
+              : "text-xs text-muted-foreground"
+          }
+          title={
+            !recording && status?.failed === saved ? status?.detail : undefined
+          }
+        >
+          {note}
+        </p>
+      )}
+    </SettingRow>
   )
 }

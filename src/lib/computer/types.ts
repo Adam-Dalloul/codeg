@@ -132,6 +132,26 @@ export interface ComputerToolsSettings {
   grantTtlMinutes: number
   /** Applications added to the built-in blocklist. */
   blocklist: string[]
+  /** The shortcut that stops every agent at once, spelled as
+   *  `stop-shortcut.ts` spells it; empty when switched off. */
+  stopShortcut: string
+}
+
+/** `computer://stop-key`: whether the stop shortcut is in force. */
+export interface StopKeyStatus {
+  /** The shortcut in force, spelled as the settings spell it. */
+  active?: string
+  /** The shortcut the settings name that the OS would not take — most
+   *  likely another application holds it — and what the OS said. */
+  failed?: string
+  detail?: string
+}
+
+/** `computer://marker`, told to the marker window alone: play the mark for
+ *  this action. */
+export interface ComputerMarkerPayload {
+  id: number
+  action: ComputerAction
 }
 
 /** `computer://state`: every shared window, and whether the person has
@@ -146,6 +166,8 @@ export const COMPUTER_STATE_EVENT = "computer://state"
 export const COMPUTER_GRANT_EVENT = "computer://agent-grant"
 export const COMPUTER_ACTIVITY_EVENT = "computer://agent-activity"
 export const COMPUTER_BACKEND_STATUS_EVENT = "computer://backend-status"
+export const COMPUTER_STOP_KEY_EVENT = "computer://stop-key"
+export const COMPUTER_MARKER_EVENT = "computer://marker"
 /** The settings record, after any of its writers saved it. */
 export const COMPUTER_TOOLS_SETTINGS_CHANGED_EVENT =
   "computer-tools-settings://changed"

@@ -5156,6 +5156,16 @@
     "stopHint": "立即停止所有智慧體：在你恢復之前，任何視窗都不會被讀取或操作，所有視窗停止分享，進行中的操作會被中斷。",
     "stopped": "已停止。在你恢復之前，任何智慧體都不能讀取或操作任何視窗。",
     "resume": "恢復",
+    "indicator": {
+      "actOne": "智慧體可操作「{app}」",
+      "actMany": "智慧體可操作 {count, plural, other {# 個視窗}}",
+      "readOne": "智慧體可查看「{app}」",
+      "readMany": "智慧體可查看 {count, plural, other {# 個視窗}}",
+      "recent": "{app}：{action}",
+      "stopped": "已停止——請在 codeg 的「電腦操作」面板中恢復",
+      "stop": "停止",
+      "stopWithKey": "立即停止所有智慧體（{key}）"
+    },
     "codegGranted": "codeg 本身已被授予「輔助使用」或「螢幕錄製」權限，因此每個智慧體的 shell 也都擁有它。請在「系統設定 → 隱私權與安全性」中移除 codeg。在此之前，電腦操作保持關閉。",
     "backend": {
       "idle": "未啟動",
@@ -5240,6 +5250,25 @@
         "label": "永不可分享的應用程式",
         "hint": "每行一個：bundle 識別碼（com.example.app）、執行檔名稱（app.exe）或完整路徑。會追加到內建名單——密碼管理器、系統的密碼提示和系統設定——內建名單不可移除。",
         "placeholder": "com.example.app"
+      },
+      "stopKey": {
+        "label": "停止快速鍵",
+        "hint": "在任何應用程式中按下即可立即停止所有智慧體，效果同「停止」按鈕。電腦操作開啟期間，這組按鍵在所有應用程式中都歸 codeg 使用，請選擇你在別處不用的組合。",
+        "recording": "請按下按鍵…",
+        "recordHint": "按住 Ctrl 和另一個修飾鍵（Alt 或 Shift），再按一個鍵。按 Esc 取消。",
+        "recordHintMac": "按住 ⌃ 或 ⌘ 和另一個修飾鍵，再按一個鍵。按 Esc 取消。",
+        "off": "已關閉",
+        "useDefault": "預設",
+        "turnOff": "關閉",
+        "statusActive": "已生效：在任何地方按下即可停止所有智慧體。",
+        "statusIdle": "開啟電腦操作後生效。",
+        "statusOff": "已關閉：只能用「停止」按鈕停止智慧體。",
+        "statusFailed": "未生效：這組按鍵可能已被其他應用程式佔用，請換一組。",
+        "problem": {
+          "unsupportedKey": "不能使用這個鍵。請選擇字母、數字、F1–F12、Esc 或標點鍵。",
+          "weakModifiers": "至少按住兩個修飾鍵，其中一個是 Ctrl（Mac 上也可以是 ⌘）。",
+          "metaOffMac": "不能包含 Windows 鍵。"
+        }
       },
       "boundary": "在 macOS 上，「輔助使用」和「螢幕錄製」權限授予 codeg-computer-helper，它只為 codeg 服務，因此智慧體的 shell 用不了這些權限。在 Windows 和 Linux 上，你執行的任何程式本來就能讀取螢幕；在那裡，這些設定決定的是智慧體透過 codeg 能拿到什麼，而不是你電腦上的程式能做什麼。",
       "save": "儲存",

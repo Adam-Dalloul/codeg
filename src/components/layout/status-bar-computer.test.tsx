@@ -6,6 +6,7 @@ import type {
   ComputerStatePayload,
   ComputerStatus,
   ComputerToolsSettings,
+  StopKeyStatus,
 } from "@/lib/computer/types"
 
 const api = vi.hoisted(() => ({
@@ -23,8 +24,10 @@ const api = vi.hoisted(() => ({
   computerResume: vi.fn(async () => {}),
   computerListShareableWindows: vi.fn(),
   computerWindowThumbnail: vi.fn(),
+  computerStopKeyStatus: vi.fn(async (): Promise<StopKeyStatus> => ({})),
 }))
 vi.mock("@/lib/computer/computer-api", () => api)
+vi.mock("@/hooks/use-is-mac", () => ({ useIsMac: () => true }))
 const handlers = new Map<string, (p: unknown) => void>()
 vi.mock("@/lib/platform", () => ({
   subscribe: vi.fn((event: string, handler: (p: unknown) => void) => {
@@ -80,8 +83,10 @@ beforeEach(() => {
     enabled: true,
     grantTtlMinutes: 30,
     blocklist: [],
+    stopShortcut: "Control+Command+Escape",
   })
   api.computerStatus.mockResolvedValue(status())
+  api.computerStopKeyStatus.mockResolvedValue({})
   api.computerSharedState.mockResolvedValue({ shared: [], paused: false })
 })
 
@@ -91,6 +96,7 @@ describe("StatusBarComputer", () => {
       enabled: false,
       grantTtlMinutes: 30,
       blocklist: [],
+      stopShortcut: "",
     })
     const { container } = mount()
     await waitFor(() => expect(api.getComputerToolsSettings).toHaveBeenCalled())
@@ -205,6 +211,38 @@ describe("StatusBarComputer", () => {
     expect(api.computerStatus).not.toHaveBeenCalled()
   })
 
+  /** Where the stop shortcut is in force, both Stop buttons name it — and
+   * only then: a shortcut the OS would not take is not offered. */
+  it("names the stop shortcut where it is in force", async () => {
+    const controlled = {
+      targetId: "w4",
+      appName: "TextEdit",
+      appKey: "com.apple.TextEdit",
+      title: "notes.txt",
+      level: "control" as const,
+      grantedAt: 1,
+      lastUsedAt: 1,
+    }
+    api.computerSharedState.mockResolvedValue({
+      shared: [controlled],
+      paused: false,
+    })
+    api.computerStopKeyStatus.mockResolvedValue({
+      failed: "Control+Command+Escape",
+      detail: "taken",
+    })
+    mount()
+    const stop = await screen.findByRole("button", { name: "Stop agents" })
+    expect(stop.title).not.toContain("⌃⌘Esc")
+    await waitFor(() =>
+      expect(handlers.get("computer://stop-key")).toBeDefined()
+    )
+    act(() =>
+      handlers.get("computer://stop-key")!({ active: "Control+Command+Escape" })
+    )
+    await waitFor(() => expect(stop.title).toContain("⌃⌘Esc"))
+  })
+
   /** Stopped, the panel says so and offers only Resume — sharing waits. */
   it("offers Resume while stopped, and nothing to share", async () => {
     api.computerStatus.mockResolvedValue(status({ paused: true }))
@@ -236,11 +274,17 @@ describe("StatusBarComputer", () => {
         enabled: true,
         grantTtlMinutes: 30,
         blocklist: [],
+        stopShortcut: "",
       })
     )
     await screen.findByRole("button", { name: "Computer use" })
     await act(async () =>
-      finishRead({ enabled: false, grantTtlMinutes: 30, blocklist: [] })
+      finishRead({
+        enabled: false,
+        grantTtlMinutes: 30,
+        blocklist: [],
+        stopShortcut: "",
+      })
     )
     expect(
       screen.getByRole("button", { name: "Computer use" })

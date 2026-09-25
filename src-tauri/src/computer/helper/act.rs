@@ -38,7 +38,9 @@ use crate::computer::protocol::{
     DriverTarget, ElementRef, HelperError, HelperErrorCode, OsPermission, RawAct, WindowAction,
     WindowPoint,
 };
-use crate::computer::types::{ActEffect, ActRoute, PointerButton, ScrollDirection, ScrollUnit};
+use crate::computer::types::{
+    ActEffect, ActRoute, PointerButton, Rect, ScrollDirection, ScrollUnit,
+};
 
 /// Everything but typing: one click, one key, one value.
 const ACT_TIMEOUT: Duration = Duration::from_secs(30);
@@ -53,15 +55,19 @@ const MEASURE_TIMEOUT: Duration = Duration::from_secs(15);
 const BOOK_WINDOWS: usize = 64;
 
 /// What the tree said of one element that can be acted on.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ElementFacts {
     pub role: String,
     pub secret: bool,
+    /// Where the element was on the screen when the snapshot was taken, in
+    /// the platform's desktop units — for the marker, not for aiming (the
+    /// driver aims by the element itself).
+    pub frame: Option<Rect>,
 }
 
 /// The latest snapshot of one window: the driver's id for it, and its
 /// elements.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct SnapshotFacts {
     pub snapshot_id: String,
     pub elements: HashMap<u32, ElementFacts>,
@@ -114,6 +120,17 @@ impl SnapshotBook {
     pub fn clear(&mut self) {
         self.windows.clear();
         self.order.clear();
+    }
+
+    /// Where `element` was on the screen when its snapshot was taken, if that
+    /// is still the window's latest snapshot and it said.
+    pub fn frame(&self, pid: u32, window_id: u64, element: &ElementRef) -> Option<Rect> {
+        self.windows
+            .get(&(pid, window_id))
+            .filter(|f| f.snapshot_id == element.snapshot_id)?
+            .elements
+            .get(&element.index)?
+            .frame
     }
 
     /// Check `action`'s element against the latest snapshot of the window:
@@ -184,7 +201,7 @@ pub async fn check_point(
     pid: u32,
     window_id: u64,
     point: &WindowPoint,
-) -> Result<(), HelperError> {
+) -> Result<Rect, HelperError> {
     if !driver.full_size_captures() {
         return Err(HelperError::new(
             HelperErrorCode::ActionFailed,
@@ -214,13 +231,17 @@ pub async fn check_point(
         })
         .and_then(|w| w.get("bounds"))
         .map(|b| {
-            (
-                b.get("width").and_then(Value::as_f64).unwrap_or(0.0),
-                b.get("height").and_then(Value::as_f64).unwrap_or(0.0),
-            )
+            let number = |key: &str| b.get(key).and_then(Value::as_f64).unwrap_or(0.0);
+            Rect {
+                x: number("x"),
+                y: number("y"),
+                width: number("width"),
+                height: number("height"),
+            }
         })
         .ok_or_else(|| HelperError::new(HelperErrorCode::NoSuchWindow, "the window is gone"))?;
-    if (bounds.0 - point.window_width).abs() > 1.0 || (bounds.1 - point.window_height).abs() > 1.0
+    if (bounds.width - point.window_width).abs() > 1.0
+        || (bounds.height - point.window_height).abs() > 1.0
     {
         return Err(HelperError::new(
             HelperErrorCode::StaleRef,
@@ -228,7 +249,7 @@ pub async fn check_point(
              they were. Take a new computer_screenshot and use a point from it.",
         ));
     }
-    Ok(())
+    Ok(bounds)
 }
 
 /// The permissions an action needs of the OS: every action reaches the
@@ -326,8 +347,8 @@ pub async fn act(
                 // Both went out: the whole is as sure as its less sure half.
                 Ok(pressed) => RawAct {
                     effect: weaker(typed.effect, pressed.effect),
-                    route: typed.route,
                     submitted: Some(true),
+                    ..typed
                 },
                 // The text went in; return did not. Said as such.
                 Err(_) => RawAct {
@@ -430,6 +451,8 @@ fn action_result(tool: &str, result: &ToolCallResult) -> Result<RawAct, HelperEr
         effect,
         route,
         submitted: None,
+        element_frame: None,
+        window_frame: None,
     })
 }
 
@@ -558,6 +581,7 @@ mod tests {
                         ElementFacts {
                             role: role.to_string(),
                             secret: *secret,
+                            frame: None,
                         },
                     )
                 })
@@ -570,6 +594,28 @@ mod tests {
             snapshot_id: id.into(),
             index,
         }
+    }
+
+    /// An element's frame is told only from the snapshot the ref names, and
+    /// only while that is still the window's latest.
+    #[test]
+    fn an_element_is_placed_by_its_own_snapshot() {
+        let mut book = SnapshotBook::default();
+        let mut first = facts("s00000001", &[(3, "AXButton", false)]);
+        let frame = Rect {
+            x: 10.0,
+            y: 20.0,
+            width: 30.0,
+            height: 40.0,
+        };
+        first.elements.get_mut(&3).unwrap().frame = Some(frame);
+        book.record(1, 10, Some(first));
+        assert_eq!(book.frame(1, 10, &element("s00000001", 3)), Some(frame));
+        assert_eq!(book.frame(1, 10, &element("s00000001", 4)), None);
+        assert_eq!(book.frame(1, 11, &element("s00000001", 3)), None);
+        book.record(1, 10, Some(facts("s00000002", &[(3, "AXButton", false)])));
+        assert_eq!(book.frame(1, 10, &element("s00000001", 3)), None);
+        assert_eq!(book.frame(1, 10, &element("s00000002", 3)), None);
     }
 
     /// A ref is good only against the window's latest snapshot, and only for

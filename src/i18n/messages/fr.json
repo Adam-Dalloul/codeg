@@ -5156,6 +5156,16 @@
     "stopHint": "Arrête tous les agents d'un coup : rien n'est lu ni fait sur aucune fenêtre, toutes les fenêtres cessent d'être partagées et ce qui est en cours est interrompu, jusqu'à ce que vous repreniez.",
     "stopped": "Arrêté. Aucun agent ne peut lire ni agir sur une fenêtre tant que vous ne reprenez pas.",
     "resume": "Reprendre",
+    "indicator": {
+      "actOne": "Les agents peuvent agir sur {app}",
+      "actMany": "Les agents peuvent agir sur {count, plural, one {# fenêtre} other {# fenêtres}}",
+      "readOne": "Les agents peuvent voir {app}",
+      "readMany": "Les agents peuvent voir {count, plural, one {# fenêtre} other {# fenêtres}}",
+      "recent": "{action} dans {app}",
+      "stopped": "Arrêté — reprenez depuis le panneau Utilisation de l'ordinateur de codeg",
+      "stop": "Arrêter",
+      "stopWithKey": "Arrêter tous les agents d'un coup ({key})"
+    },
     "codegGranted": "codeg lui-même a reçu Accessibilité ou Enregistrement de l'écran : le shell de chaque agent l'a donc aussi. Retirez codeg dans Réglages Système → Confidentialité et sécurité. L'utilisation de l'ordinateur reste désactivée d'ici là.",
     "backend": {
       "idle": "Non démarré",
@@ -5240,6 +5250,25 @@
         "label": "Applications jamais partageables",
         "hint": "Une par ligne : un identifiant de paquet (com.example.app), un nom d'exécutable (app.exe) ou un chemin complet. S'ajoute à la liste intégrée — gestionnaires de mots de passe, invites de mot de passe du système et Réglages Système —, qui ne peut pas être retirée.",
         "placeholder": "com.example.app"
+      },
+      "stopKey": {
+        "label": "Raccourci d'arrêt",
+        "hint": "Arrête tous les agents d'un coup depuis n'importe quelle application, comme le bouton Arrêter. Tant que l'utilisation de l'ordinateur est activée, ces touches appartiennent à codeg dans toutes les applications : choisissez-en que vous n'utilisez pas ailleurs.",
+        "recording": "Appuyez sur les touches…",
+        "recordHint": "Maintenez Ctrl et un autre modificateur (Alt ou Maj), puis appuyez sur une touche. Échap annule.",
+        "recordHintMac": "Maintenez ⌃ ou ⌘ et un autre modificateur, puis appuyez sur une touche. Échap annule.",
+        "off": "Désactivé",
+        "useDefault": "Par défaut",
+        "turnOff": "Désactiver",
+        "statusActive": "Actif : appuyez n'importe où pour arrêter tous les agents.",
+        "statusIdle": "Prend effet quand l'utilisation de l'ordinateur est activée.",
+        "statusOff": "Désactivé : seuls les boutons Arrêter arrêtent les agents.",
+        "statusFailed": "Inactif : une autre application utilise sans doute ces touches. Choisissez-en d'autres.",
+        "problem": {
+          "unsupportedKey": "Cette touche ne peut pas servir. Choisissez une lettre, un chiffre, F1–F12, Échap ou une touche de ponctuation.",
+          "weakModifiers": "Maintenez au moins deux modificateurs, dont Ctrl (ou ⌘ sur un Mac).",
+          "metaOffMac": "La touche Windows ne peut pas en faire partie."
+        }
       },
       "boundary": "Sous macOS, les autorisations Accessibilité et Enregistrement de l'écran vont à codeg-computer-helper, qui ne sert que codeg : le shell d'un agent ne peut donc pas les utiliser. Sous Windows et Linux, tout programme que vous lancez peut déjà lire l'écran ; là, ces réglages décident de ce qui est remis aux agents via codeg, pas de ce qu'un programme de votre machine pourrait faire.",
       "save": "Enregistrer",
