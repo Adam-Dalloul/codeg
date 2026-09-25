@@ -30,6 +30,18 @@
 //! On Windows and Linux the same environment rules apply for the same
 //! reasons, and the file is hashed before every launch; there is no running
 //! image to check, and no TCC grant for a replacement to borrow.
+//!
+//! Two settings in that home decide how the driver behaves over a long life:
+//!
+//! * **Its session never idles out.** The driver ends a caller's session
+//!   after five idle minutes and refuses every call after that — and the
+//!   helper's driver lives for as long as computer use is on.
+//! * **It captures windows at their own size.** The driver converts a click's
+//!   pixel coordinates by the scale of the *last* capture it made of that
+//!   window, whoever asked for it and at whatever size — a picker thumbnail
+//!   in between would move every later click. At full size there is no scale
+//!   to remember: the helper shrinks images itself, and a point is always the
+//!   window's own pixel.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -44,6 +56,17 @@ use crate::computer::protocol::{HelperError, HelperErrorCode};
 
 /// How long the driver has to finish the MCP handshake.
 const INITIALIZE_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// How long the driver has to report its configuration after the handshake.
+const CONFIG_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// The driver's idle-session timeout, in seconds: ten years, which is to say
+/// never. The driver treats `0` as "use the default" (five minutes).
+const SESSION_IDLE_TTL_SECS: &str = "315360000";
+
+/// The driver's configuration file, relative to its home: captures at the
+/// window's own size (`0` is "no limit"). See the module note.
+const DRIVER_CONFIG: &[u8] = br#"{"max_image_dimension":0}"#;
 
 /// Where the helper keeps the driver's per-launch home directories.
 ///
@@ -111,6 +134,10 @@ fn driver_environment_with(
         ("CUA_TELEMETRY_ENABLED".into(), "false".into()),
         ("CUA_DRIVER_RS_UPDATE_CHECK".into(), "false".into()),
         ("CUA_DRIVER_EMBEDDED".into(), "1".into()),
+        (
+            "CUA_DRIVER_RS_SESSION_IDLE_TTL_SECS".into(),
+            SESSION_IDLE_TTL_SECS.into(),
+        ),
     ];
     if cfg!(windows) {
         let system_root = lookup("SystemRoot").unwrap_or_else(|| r"C:\Windows".into());
@@ -154,6 +181,15 @@ fn driver_environment_with(
         }
     }
     env
+}
+
+/// Write the driver's configuration file into its home — `$HOME` on macOS and
+/// Linux, `%USERPROFILE%` on Windows, both the run directory. See the module
+/// note for what it sets.
+fn write_driver_config(run_dir: &Path) -> std::io::Result<()> {
+    let dir = run_dir.join(".cua-driver");
+    std::fs::create_dir_all(&dir)?;
+    std::fs::write(dir.join("config.json"), DRIVER_CONFIG)
 }
 
 /// Hex SHA-256 of a file.
@@ -211,6 +247,10 @@ pub struct DriverProc {
     client: Arc<McpClient>,
     child: ChildProc,
     run_dir: PathBuf,
+    /// The driver said it captures windows at their own size (see the module
+    /// note). Without it a capture's pixels cannot be mapped back to the
+    /// window's, and nothing may be pointed at by coordinates.
+    full_size_captures: bool,
 }
 
 impl DriverProc {
@@ -252,6 +292,12 @@ impl DriverProc {
             use std::os::unix::fs::PermissionsExt;
             let _ = std::fs::set_permissions(&run_dir, std::fs::Permissions::from_mode(0o700));
         }
+        if let Err(e) = write_driver_config(&run_dir) {
+            let _ = std::fs::remove_dir_all(&run_dir);
+            return Err(unavailable(format!(
+                "could not write the driver's configuration: {e}"
+            )));
+        }
         let env = driver_environment(&run_dir);
 
         let launched = Self::spawn(path, &env, &run_dir).await;
@@ -264,16 +310,51 @@ impl DriverProc {
         };
         tokio::spawn(forward_stderr(stderr));
         let client = McpClient::start(reader, writer);
-        let proc = Self {
+        let mut proc = Self {
             client,
             child,
             run_dir,
+            full_size_captures: false,
         };
         if let Err(e) = proc.client.initialize(INITIALIZE_TIMEOUT).await {
             proc.shutdown().await;
             return Err(unavailable(format!("the driver did not start: {e}")));
         }
+        proc.full_size_captures = proc.captures_at_full_size().await;
+        if !proc.full_size_captures {
+            tracing::warn!(
+                "the driver did not take its full-size capture setting; pointing by \
+                 coordinates is off for this driver"
+            );
+        }
         Ok(proc)
+    }
+
+    /// Whether the driver runs with the configuration written for it: no
+    /// ceiling on a capture's size. Asked, not assumed — a driver that read
+    /// its configuration from somewhere else would scale every capture and
+    /// every click with it.
+    async fn captures_at_full_size(&self) -> bool {
+        match self
+            .client
+            .call_tool("get_config", serde_json::json!({}), CONFIG_TIMEOUT)
+            .await
+        {
+            Ok(result) if !result.is_error => {
+                result
+                    .structured
+                    .as_ref()
+                    .and_then(|s| s.get("max_image_dimension"))
+                    .and_then(Value::as_u64)
+                    == Some(0)
+            }
+            _ => false,
+        }
+    }
+
+    /// See [`DriverProc::full_size_captures`].
+    pub fn full_size_captures(&self) -> bool {
+        self.full_size_captures
     }
 
     #[cfg(target_os = "macos")]
@@ -420,7 +501,8 @@ impl DriverProc {
         arguments: Value,
         timeout: Duration,
     ) -> Result<ToolCallResult, HelperError> {
-        self.client
+        let result = self
+            .client
             .call_tool(tool, arguments, timeout)
             .await
             .map_err(|e| match e {
@@ -429,7 +511,18 @@ impl DriverProc {
                     HelperError::failed(format!("the driver did not answer {tool} in time"))
                 }
                 other => HelperError::failed(other.to_string()),
-            })
+            })?;
+        if result.is_error && result.code() == Some("session_ended") {
+            // A driver whose session has ended refuses everything from then
+            // on. It should not happen (the session is set never to idle
+            // out); if it does, this driver is done and the next call starts
+            // another.
+            self.client.close();
+            return Err(unavailable(
+                "the driver ended its session; it is started again on the next call",
+            ));
+        }
+        Ok(result)
     }
 
     /// Stop the driver and remove its home directory.
@@ -548,6 +641,29 @@ mod tests {
         assert_eq!(get("CUA_DRIVER_RS_TELEMETRY_ENABLED"), Some("false"));
         assert_eq!(get("CUA_DRIVER_RS_UPDATE_CHECK"), Some("false"));
         assert_eq!(get("CUA_DRIVER_EMBEDDED"), Some("1"));
+        // A session that idled out would refuse every later call.
+        let ttl: u64 = get("CUA_DRIVER_RS_SESSION_IDLE_TTL_SECS")
+            .and_then(|v| v.parse().ok())
+            .expect("an idle timeout");
+        assert!(ttl >= 365 * 24 * 60 * 60, "{ttl}");
+    }
+
+    /// The configuration lands where the driver reads it — its home, which is
+    /// the run directory on every platform — and asks for full-size captures.
+    #[test]
+    fn the_driver_is_configured_for_full_size_captures() {
+        let run = tempfile::tempdir().unwrap();
+        write_driver_config(run.path()).unwrap();
+        let written: Value = serde_json::from_slice(
+            &std::fs::read(run.path().join(".cua-driver").join("config.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(written["max_image_dimension"], 0);
+        let env = driver_environment(run.path());
+        let home_key = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
+        assert!(env
+            .iter()
+            .any(|(k, v)| k == home_key && Path::new(v) == run.path()));
     }
 
     #[test]

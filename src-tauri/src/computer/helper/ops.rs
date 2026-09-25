@@ -35,11 +35,7 @@ const MAX_STABLE_SAMPLES: u32 = 5;
 /// Turn a refused driver call into the helper's error, by the driver's own
 /// refusal code where it gave one.
 pub fn tool_error(tool: &str, result: &ToolCallResult) -> HelperError {
-    let structured = result.structured.as_ref();
-    let code = structured
-        .and_then(|s| s.get("code").and_then(Value::as_str))
-        .or_else(|| structured.and_then(|s| s.pointer("/refusal/code").and_then(Value::as_str)))
-        .unwrap_or("");
+    let code = result.code().unwrap_or("");
     let text = result.text();
     let words = if text.is_empty() {
         format!("{tool} failed")
@@ -252,21 +248,24 @@ fn parse_windows(value: &Value) -> Result<Vec<RawWindow>, HelperError> {
 /// A screenshot of one window, and nothing around it: the driver captures the
 /// window's own pixels, so nothing of the windows beside or under it can end
 /// up in the image.
+///
+/// Always captured at the window's own size — the driver is configured with
+/// no ceiling, and no `max_dimension` is ever passed to it (see
+/// `driver_proc`'s module note: a capture at any other size would change how
+/// the driver maps every later click's coordinates) — and shrunk here to
+/// `max_dimension`.
 pub async fn capture(
     driver: &DriverProc,
     pid: u32,
     window_id: u64,
     max_dimension: Option<u32>,
 ) -> Result<RawCapture, HelperError> {
-    let mut args = json!({
+    let args = json!({
         "pid": pid,
         "window_id": window_id,
         "include_screenshot": true,
         "include_accessibility_tree": false,
     });
-    if let Some(max) = max_dimension.filter(|m| *m > 0) {
-        args["max_dimension"] = json!(max);
-    }
     let result = call(driver, "get_window_state", args, WINDOW_STATE_TIMEOUT).await?;
     let meta = structured("get_window_state", &result)?;
     let Some((data, mime)) = result.image() else {
@@ -286,21 +285,103 @@ pub async fn capture(
             "the capture came back as {mime}"
         )));
     }
+    let window_bounds = meta.get("window_bounds").and_then(rect).unwrap_or_default();
+    // The backing scale on macOS (points to pixels); the other platforms
+    // report bounds in the pixels they capture.
+    let scale = meta
+        .get("screenshot_scale")
+        .and_then(Value::as_f64)
+        .filter(|s| s.is_finite() && *s > 0.0)
+        .unwrap_or(1.0);
+    let data = data.to_string();
+    let shrunk = tokio::task::spawn_blocking(move || shrink_png(&data, max_dimension))
+        .await
+        .map_err(|e| HelperError::failed(format!("the capture could not be scaled: {e}")))?
+        .map_err(|e| HelperError::failed(format!("the capture could not be scaled: {e}")))?;
+    let full_size = driver.full_size_captures()
+        && is_whole_window(
+            shrunk.native_width,
+            shrunk.native_height,
+            &window_bounds,
+            scale,
+        );
     Ok(RawCapture {
-        png_base64: data.to_string(),
-        width: meta
-            .get("screenshot_width")
-            .and_then(Value::as_u64)
-            .and_then(|v| u32::try_from(v).ok())
-            .unwrap_or(0),
-        height: meta
-            .get("screenshot_height")
-            .and_then(Value::as_u64)
-            .and_then(|v| u32::try_from(v).ok())
-            .unwrap_or(0),
-        window_bounds: meta.get("window_bounds").and_then(rect).unwrap_or_default(),
+        png_base64: shrunk.png_base64,
+        width: shrunk.width,
+        height: shrunk.height,
+        native_width: shrunk.native_width,
+        native_height: shrunk.native_height,
+        full_size,
+        window_bounds,
         title: string(meta, "window_title"),
     })
+}
+
+/// A capture, shrunk to the size asked for.
+#[derive(Debug)]
+struct Shrunk {
+    png_base64: String,
+    width: u32,
+    height: u32,
+    native_width: u32,
+    native_height: u32,
+}
+
+/// Decode `png_base64`, and if its long edge is over `max_dimension`, scale it
+/// down to that (aspect kept, never up) and encode it again. An image already
+/// within bounds goes back byte for byte.
+fn shrink_png(png_base64: &str, max_dimension: Option<u32>) -> Result<Shrunk, String> {
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
+    use image::{imageops::FilterType, ImageFormat};
+
+    let bytes = STANDARD
+        .decode(png_base64)
+        .map_err(|e| format!("not base64: {e}"))?;
+    let image = image::load_from_memory_with_format(&bytes, ImageFormat::Png)
+        .map_err(|e| format!("not a PNG: {e}"))?;
+    let (native_width, native_height) = (image.width(), image.height());
+    let long_edge = native_width.max(native_height);
+    let max = max_dimension.filter(|m| *m > 0).unwrap_or(u32::MAX);
+    if long_edge <= max {
+        return Ok(Shrunk {
+            png_base64: png_base64.to_string(),
+            width: native_width,
+            height: native_height,
+            native_width,
+            native_height,
+        });
+    }
+    let factor = f64::from(max) / f64::from(long_edge);
+    let width = ((f64::from(native_width) * factor).round() as u32).max(1);
+    let height = ((f64::from(native_height) * factor).round() as u32).max(1);
+    let resized = image.resize_exact(width, height, FilterType::Triangle);
+    let mut out = std::io::Cursor::new(Vec::new());
+    resized
+        .write_to(&mut out, ImageFormat::Png)
+        .map_err(|e| format!("png encoding failed: {e}"))?;
+    Ok(Shrunk {
+        png_base64: STANDARD.encode(out.into_inner()),
+        width,
+        height,
+        native_width,
+        native_height,
+    })
+}
+
+/// Whether a capture of `width` × `height` pixels is the whole window at its
+/// own resolution: the window's bounds times the backing scale, give or take
+/// the frame the platforms crop differently (a few pixels, or a few percent).
+/// A capture the driver had shrunk would be far smaller.
+fn is_whole_window(width: u32, height: u32, bounds: &Rect, scale: f64) -> bool {
+    if bounds.is_empty() {
+        return false;
+    }
+    let near = |got: u32, expected: f64| {
+        let got = f64::from(got);
+        let slack = (expected * 0.05).max(16.0);
+        (got - expected).abs() <= slack
+    };
+    near(width, bounds.width * scale) && near(height, bounds.height * scale)
 }
 
 /// A window's accessibility tree, with the values of anything that looks like
@@ -742,6 +823,53 @@ mod tests {
         );
         assert_eq!(e.code, HelperErrorCode::Failed);
         assert_eq!(e.message, "boom");
+    }
+
+    fn png_of(width: u32, height: u32) -> String {
+        use base64::{engine::general_purpose::STANDARD, Engine as _};
+        let mut out = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgba8(image::RgbaImage::new(width, height))
+            .write_to(&mut out, image::ImageFormat::Png)
+            .unwrap();
+        STANDARD.encode(out.into_inner())
+    }
+
+    /// A capture is shrunk to the long edge asked for, aspect kept, and says
+    /// what size it was before; one already small enough goes back as it
+    /// came.
+    #[test]
+    fn captures_are_shrunk_here_and_remember_their_own_size() {
+        let big = png_of(2400, 1600);
+        let shrunk = shrink_png(&big, Some(1200)).unwrap();
+        assert_eq!((shrunk.width, shrunk.height), (1200, 800));
+        assert_eq!((shrunk.native_width, shrunk.native_height), (2400, 1600));
+        assert_ne!(shrunk.png_base64, big);
+
+        let small = png_of(300, 200);
+        let kept = shrink_png(&small, Some(1200)).unwrap();
+        assert_eq!((kept.width, kept.height), (300, 200));
+        assert_eq!(kept.png_base64, small);
+        // No limit keeps the full size.
+        assert_eq!(shrink_png(&big, None).unwrap().width, 2400);
+        assert!(shrink_png("not base64!", Some(10)).is_err());
+    }
+
+    /// A capture at the window's own resolution passes; one the driver had
+    /// shrunk, or one of a window whose bounds are unknown, does not.
+    #[test]
+    fn a_full_size_capture_is_told_from_a_shrunk_one() {
+        let bounds = Rect {
+            x: 10.0,
+            y: 20.0,
+            width: 1440.0,
+            height: 900.0,
+        };
+        assert!(is_whole_window(2880, 1800, &bounds, 2.0));
+        // A few pixels of frame either way is still the window.
+        assert!(is_whole_window(2866, 1790, &bounds, 2.0));
+        assert!(!is_whole_window(1568, 980, &bounds, 2.0));
+        assert!(is_whole_window(1440, 900, &bounds, 1.0));
+        assert!(!is_whole_window(1440, 900, &Rect::default(), 1.0));
     }
 
     /// Only running, pid-bearing applications are kept.

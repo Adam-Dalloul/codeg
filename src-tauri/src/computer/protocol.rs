@@ -30,7 +30,7 @@ use super::types::{PredicateResult, Rect, VerifyRequest, VerifyStatus};
 /// Bumped whenever a frame changes shape. The helper ships in the same bundle
 /// as codeg, so a mismatch means a broken install (a helper left behind by a
 /// partial update), and codeg refuses to talk to it rather than guess.
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
 
 /// codeg → helper.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -262,8 +262,19 @@ pub struct RawWindow {
 pub struct RawCapture {
     /// PNG, base64.
     pub png_base64: String,
+    /// The image's size, after the helper shrank it to the size asked for.
     pub width: u32,
     pub height: u32,
+    /// The capture's size before it was shrunk: the window's own pixels. A
+    /// point read off the image is scaled by `native / delivered` to reach
+    /// the pixel the driver will act on.
+    pub native_width: u32,
+    pub native_height: u32,
+    /// Whether `native_*` are known to be the window's pixels at full size —
+    /// the driver runs with no ceiling on a capture, and the capture is the
+    /// size of the window. Pointing by coordinates needs it.
+    #[serde(default)]
+    pub full_size: bool,
     pub window_bounds: Rect,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,

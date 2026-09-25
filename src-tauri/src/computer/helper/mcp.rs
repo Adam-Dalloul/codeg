@@ -107,6 +107,17 @@ impl ToolCallResult {
             .join("\n")
     }
 
+    /// The driver's machine-readable code for a refused call, from either of
+    /// the shapes it writes one in: `{code, …}` or
+    /// `{status: "refused", refusal: {code, …}}`.
+    pub fn code(&self) -> Option<&str> {
+        let structured = self.structured.as_ref()?;
+        structured
+            .get("code")
+            .and_then(Value::as_str)
+            .or_else(|| structured.pointer("/refusal/code").and_then(Value::as_str))
+    }
+
     /// The first image block, as `(base64, mime)`.
     pub fn image(&self) -> Option<(&str, &str)> {
         self.content.iter().find_map(|c| {
@@ -217,7 +228,7 @@ impl McpClient {
 
     /// Give up on the driver: every call waiting on it is told so, and
     /// [`is_closed`](Self::is_closed) says so from now on.
-    fn close(&self) {
+    pub fn close(&self) {
         self.closed.send_replace(true);
         fail_pending(&self.pending);
     }
@@ -475,6 +486,26 @@ mod tests {
                 .await,
             Err(McpError::Closed)
         );
+    }
+
+    /// A refusal's code is read from either shape the driver writes it in.
+    #[test]
+    fn a_refusal_code_is_found_in_either_shape() {
+        let refused = |structured: Value| ToolCallResult {
+            is_error: true,
+            content: Vec::new(),
+            structured: Some(structured),
+        };
+        assert_eq!(
+            refused(json!({"code": "owner_pid_mismatch", "effect": "refused"})).code(),
+            Some("owner_pid_mismatch")
+        );
+        assert_eq!(
+            refused(json!({"status": "refused", "refusal": {"code": "session_ended"}})).code(),
+            Some("session_ended")
+        );
+        assert_eq!(refused(json!({"effect": "confirmed"})).code(), None);
+        assert_eq!(ToolCallResult::default().code(), None);
     }
 
     #[test]
