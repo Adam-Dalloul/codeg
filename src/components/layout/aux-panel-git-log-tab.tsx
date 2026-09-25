@@ -137,6 +137,12 @@ import { ScrollArea } from "@/components/ui/scroll-area"
 // end (VSCode/IDEA-style incremental history loading).
 const PAGE_SIZE = 100
 const LOAD_MORE_PX = 800
+const EMPTY_BRANCH_LIST: GitBranchList = {
+  local: [],
+  remote: [],
+  worktree_branches: [],
+  main_worktree_branch: null,
+}
 
 // Recently-filtered authors, persisted per folder (IDEA-style "recent users").
 // We deliberately do NOT scan the whole repo for authors (slow); the dropdown is
@@ -1316,14 +1322,21 @@ export function GitLogTab() {
   >({})
   const [branchesError, setBranchesError] = useState<Record<string, string>>({})
 
-  // Branch filter state
-  const [branchList, setBranchList] = useState<GitBranchList>({
-    local: [],
-    remote: [],
-    worktree_branches: [],
-    main_worktree_branch: null,
-  })
-  const [currentBranch, setCurrentBranch] = useState<string | null>(null)
+  // Branch metadata belongs to the path that produced it. Hide it immediately
+  // when the active folder changes, including while useDeferredValue still
+  // points at the previous folder and the new branch request is in flight.
+  const [branchMetadata, setBranchMetadata] = useState<{
+    path: string
+    list: GitBranchList
+    current: string | null
+  } | null>(null)
+  const visibleBranchMetadata =
+    !folderStale && branchMetadata?.path === folder?.path
+      ? branchMetadata
+      : null
+  const branchList = visibleBranchMetadata?.list ?? EMPTY_BRANCH_LIST
+  const currentBranch = visibleBranchMetadata?.current ?? null
+  const branchRefreshSeqRef = useRef(0)
   // null = an explicit "all branches" choice (git log --all); HEAD follows
   // the currently checked-out worktree branch.
   const [selectedBranch, setSelectedBranch] = useState<string | null>(null)
@@ -1417,6 +1430,8 @@ export function GitLogTab() {
   // refreshCurrentUser).
   const folderPathRef = useRef(folder?.path ?? null)
   folderPathRef.current = folder?.path ?? null
+  const activeFolderPathRef = useRef(activeFolder?.path ?? null)
+  activeFolderPathRef.current = activeFolder?.path ?? null
   // Bumped ONLY when the per-commit file maps are cleared (a non-inline full
   // reload / folder switch). fetchCommitFiles captures it so a request from a
   // superseded view discards its loading/error/data writes — preventing a stale
@@ -1518,15 +1533,23 @@ export function GitLogTab() {
   const refreshBranches = useCallback(async () => {
     const path = folder?.path
     if (!path) return
+    const seq = ++branchRefreshSeqRef.current
     try {
       const [allBranches, current] = await Promise.all([
         gitListAllBranches(path),
         getGitBranch(path),
       ])
-      // Ignore a response that resolved after a folder switch.
-      if (folderPathRef.current !== path) return
-      setBranchList(allBranches)
-      setCurrentBranch(current)
+      // A later refresh for this path, or a folder switch, supersedes this
+      // response. In particular, an old branch list must not invalidate a
+      // selection made against a newer list.
+      if (
+        seq !== branchRefreshSeqRef.current ||
+        folderPathRef.current !== path ||
+        activeFolderPathRef.current !== path
+      ) {
+        return
+      }
+      setBranchMetadata({ path, list: allBranches, current })
       // A restored/selected branch may have been deleted. Fall back to the
       // live HEAD filter, which remains valid after branch switches and in a
       // detached checkout. Keep a deliberate All branches choice unchanged.
@@ -1543,7 +1566,8 @@ export function GitLogTab() {
         })
       }
     } catch {
-      // Silently ignore — branches dropdown won't appear
+      // Keep the last successful metadata for this path. The sequence above
+      // still invalidates older in-flight requests when the latest one fails.
     }
   }, [folder?.path])
 
