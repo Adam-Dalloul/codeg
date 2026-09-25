@@ -943,7 +943,10 @@ pub async fn acp_update_pi_config(
 pub async fn acp_load_pi_config(
     Extension(state): Extension<Arc<AppState>>,
 ) -> Result<Json<acp_commands::PiConfigProjection>, AppCommandError> {
-    Ok(Json(acp_commands::load_pi_config_for_db(&state.db).await))
+    let config = acp_commands::load_pi_config_for_db(&state.db)
+        .await
+        .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+    Ok(Json(config))
 }
 
 pub async fn acp_list_pi_model_capabilities(

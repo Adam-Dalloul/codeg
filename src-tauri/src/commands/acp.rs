@@ -5944,6 +5944,23 @@ async fn pi_agent_dir_from_db(db: &AppDatabase) -> PathBuf {
     pi_agent_dir_for_env(&runtime_env)
 }
 
+/// Native Pi settings must use one stable directory across the settings API,
+/// read-only RPC, and ACP sessions. Existing relative overrides remain available
+/// to old sessions, but settings must not read/write them from CodeG's cwd.
+fn pi_settings_dir_checked(pi_dir: PathBuf) -> Result<PathBuf, AcpError> {
+    if pi_dir.is_absolute() {
+        Ok(pi_dir)
+    } else {
+        Err(AcpError::protocol(
+            "Pi agent directory must be absolute or start with ~/ before editing native settings",
+        ))
+    }
+}
+
+async fn pi_settings_dir_from_db(db: &AppDatabase) -> Result<PathBuf, AcpError> {
+    pi_settings_dir_checked(pi_agent_dir_from_db(db).await)
+}
+
 /// Project-trust state for `cwd` against explicit files. Split from the DB-backed
 /// command so it is directly unit-testable against a tempdir.
 fn pi_project_trust_state_at(
@@ -6219,7 +6236,7 @@ pub(crate) async fn acp_pi_set_project_trust_core(
     workspace: String,
     trusted: Option<bool>,
 ) -> Result<(), AcpError> {
-    let path = pi_agent_dir_from_db(db).await.join("trust.json");
+    let path = pi_settings_dir_from_db(db).await?.join("trust.json");
     // The write takes pi's file lock and can sleep on contention, so keep it off
     // the async worker. NOTE: `workspace` is NOT trimmed — leading/trailing
     // spaces are legal in a directory name, and silently trimming them would key
@@ -6377,7 +6394,7 @@ fn pi_write_trust_decision_at(
 pub(crate) async fn acp_pi_list_trust_entries_core(
     db: &AppDatabase,
 ) -> Result<Vec<PiTrustEntry>, AcpError> {
-    let path = pi_agent_dir_from_db(db).await.join("trust.json");
+    let path = pi_settings_dir_from_db(db).await?.join("trust.json");
     Ok(pi_trust_entries_at(&path))
 }
 
@@ -6570,9 +6587,29 @@ fn parse_pi_model_capabilities(line: &str) -> Option<Vec<PiModelCapability>> {
     serde_json::from_value(response.get("data")?.get("models")?.clone()).ok()
 }
 
-/// Query Pi itself, without an ACP session or a prompt. The RPC child uses the
-/// configured PI_ACP_PI_COMMAND and runtime env from the normal ACP launch path.
-/// An unavailable/old Pi yields no capabilities, so the UI never guesses max.
+/// A relative override can resolve differently in the CodeG process, the RPC
+/// temp directory, and an ACP workspace. Fail closed until it is corrected.
+fn pi_runtime_paths_are_stable(runtime_env: &BTreeMap<String, String>) -> bool {
+    let command = runtime_env
+        .get("PI_ACP_PI_COMMAND")
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+        .unwrap_or("pi");
+    let has_path = command.contains('/')
+        || command.contains('\\')
+        || command.as_bytes().get(1) == Some(&b':');
+    if has_path && !Path::new(command).is_absolute() {
+        return false;
+    }
+    runtime_env
+        .get("PI_CODING_AGENT_DIR")
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+        .is_none_or(|value| pi_agent_dir_from_value(value).is_absolute())
+}
+
+/// Query Pi itself, without an ACP session or a prompt. The RPC child uses
+/// the effective launch command and env. Unavailable Pi yields no capabilities.
 async fn query_pi_model_capabilities(
     runtime_env: &BTreeMap<String, String>,
     deadline: Duration,
@@ -6581,12 +6618,15 @@ async fn query_pi_model_capabilities(
     use tokio::process::Command;
     use std::process::Stdio;
 
+    if !pi_runtime_paths_are_stable(runtime_env) {
+        return Vec::new();
+    }
     let pi_command = runtime_env
         .get("PI_ACP_PI_COMMAND")
         .map(String::as_str)
         .filter(|value| !value.trim().is_empty())
         .unwrap_or("pi");
-    let Some(program) = resolve_pi_command_path(pi_command) else {
+    let Some(program) = resolve_pi_command_path_with_env(pi_command, runtime_env) else {
         return Vec::new();
     };
     let mut command: Command = crate::process::tokio_command(program);
@@ -6642,7 +6682,7 @@ pub async fn list_pi_model_capabilities_core(
     data_dir: &Path,
 ) -> Vec<PiModelCapability> {
     let Ok(runtime_env) =
-        build_session_runtime_env(db, AgentType::Pi, None, data_dir).await
+        build_runtime_env_for_agent(db, AgentType::Pi, None, data_dir, true).await
     else {
         return Vec::new();
     };
@@ -6698,7 +6738,7 @@ pub(crate) async fn acp_update_pi_config_core(
         .await
         .map_err(|e| AcpError::protocol(e.to_string()))?;
 
-    let pi_dir = pi_agent_dir_from_db(db).await;
+    let pi_dir = pi_settings_dir_from_db(db).await?;
 
     // ---- settings.json: merge-write provider/model/thinking level ----
     let settings_path = pi_dir.join("settings.json");
@@ -6922,8 +6962,8 @@ pub(crate) fn load_pi_config_core() -> PiConfigProjection {
     load_pi_config_at(&pi_agent_dir())
 }
 
-pub(crate) async fn load_pi_config_for_db(db: &AppDatabase) -> PiConfigProjection {
-    load_pi_config_at(&pi_agent_dir_from_db(db).await)
+pub(crate) async fn load_pi_config_for_db(db: &AppDatabase) -> Result<PiConfigProjection, AcpError> {
+    Ok(load_pi_config_at(&pi_settings_dir_from_db(db).await?))
 }
 
 /// Result of validating a user-supplied custom pi binary (BYO-pi). `found=false`
@@ -6984,6 +7024,27 @@ pub(crate) fn resolve_pi_command_path(command: &str) -> Option<PathBuf> {
         }
     } else {
         which::which(trimmed).ok()
+    }
+}
+
+/// Resolve the launch/query command against the PATH that pi-acp inherits,
+/// including a per-agent PATH override. Pathful BYO commands retain the shared
+/// path validation above.
+pub(crate) fn resolve_pi_command_path_with_env(
+    command: &str,
+    runtime_env: &BTreeMap<String, String>,
+) -> Option<PathBuf> {
+    let trimmed = command.trim();
+    if trimmed.contains('/') || trimmed.contains('\\') || Path::new(trimmed).is_absolute() {
+        return resolve_pi_command_path(trimmed);
+    }
+    let path = runtime_env
+        .iter()
+        .find(|(key, _)| key.eq_ignore_ascii_case("PATH"))
+        .map(|(_, value)| value.as_str());
+    match path {
+        Some(path) => which::which_in(trimmed, Some(path), std::env::current_dir().ok()?).ok(),
+        None => resolve_pi_command_path(trimmed),
     }
 }
 
@@ -10514,6 +10575,19 @@ pub(crate) async fn build_session_runtime_env(
     session_id: Option<&str>,
     data_dir: &Path,
 ) -> Result<BTreeMap<String, String>, AcpError> {
+    build_runtime_env_for_agent(db, agent_type, session_id, data_dir, false).await
+}
+
+/// Settings may inspect Pi's local model catalog while the agent is disabled.
+/// Reuse the exact launch environment, bypassing only the connection permission
+/// gate; this path starts no ACP session and sends no prompt.
+async fn build_runtime_env_for_agent(
+    db: &AppDatabase,
+    agent_type: AgentType,
+    session_id: Option<&str>,
+    data_dir: &Path,
+    allow_disabled: bool,
+) -> Result<BTreeMap<String, String>, AcpError> {
     let setting = agent_setting_service::get_by_agent_type(&db.conn, agent_type)
         .await
         .map_err(|e| AcpError::protocol(e.to_string()))?;
@@ -10521,7 +10595,7 @@ pub(crate) async fn build_session_runtime_env(
         .as_ref()
         .map(|model| !model.enabled)
         .unwrap_or(false);
-    if disabled {
+    if disabled && !allow_disabled {
         return Err(AcpError::protocol(format!(
             "{agent_type} is disabled in settings"
         )));
@@ -12275,7 +12349,7 @@ pub async fn acp_update_pi_config(
 #[cfg(feature = "tauri-runtime")]
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
 pub async fn acp_load_pi_config(db: State<'_, AppDatabase>) -> Result<PiConfigProjection, AcpError> {
-    Ok(load_pi_config_for_db(&db).await)
+    load_pi_config_for_db(&db).await
 }
 
 /// List Pi built-in model capabilities using the exact configured runtime.
@@ -15449,6 +15523,20 @@ base_url = \"https://example.test/v1\"
         assert!(!projected.contains("secret"));
         assert!(parse_pi_model_capabilities(&line.replace("codeg-models", "other")).is_none());
         assert!(parse_pi_model_capabilities(&line.replace(r#""success":true"#, r#""success":false"#)).is_none());
+    }
+
+    #[test]
+    fn pi_settings_rejects_relative_agent_directory_and_rpc_paths() {
+        assert!(pi_settings_dir_checked(PathBuf::from("./agent")).is_err());
+        assert!(pi_settings_dir_checked(home_dir_or_default().join("agent")).is_ok());
+        let mut env = BTreeMap::new();
+        env.insert("PI_ACP_PI_COMMAND".into(), "./pi-test.sh".into());
+        assert!(!pi_runtime_paths_are_stable(&env));
+        env.insert("PI_ACP_PI_COMMAND".into(), "pi".into());
+        env.insert("PI_CODING_AGENT_DIR".into(), "./agent".into());
+        assert!(!pi_runtime_paths_are_stable(&env));
+        env.insert("PI_CODING_AGENT_DIR".into(), "~/agent".into());
+        assert!(pi_runtime_paths_are_stable(&env));
     }
 
     #[test]

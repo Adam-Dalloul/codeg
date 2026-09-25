@@ -13,6 +13,7 @@ const api = vi.hoisted(() => ({
   acpUpdatePiConfig: vi.fn(),
   acpValidatePiCommand: vi.fn(),
   acpPiListTrustEntries: vi.fn(),
+  onSaveEnv: vi.fn(),
 }))
 
 vi.mock("@/lib/api", () => ({
@@ -51,25 +52,31 @@ function config(model = "gpt-5.6-sol", thinking = "max") {
   }
 }
 
-async function renderPanel(env: Record<string, string> = {}) {
+async function renderPanel(
+  env: Record<string, string> = {},
+  expectModel = true,
+  enabled = true
+) {
   let view!: ReturnType<typeof render>
   await act(async () => {
     view = render(
       <NextIntlClientProvider locale="en" messages={enMessages}>
         <PiConfigPanel
-          agent={{ env, enabled: true } as unknown as AcpAgentInfo}
+          agent={{ env, enabled } as unknown as AcpAgentInfo}
           saving={false}
-          onSaveEnv={async () => {}}
+          onSaveEnv={api.onSaveEnv}
           onSaved={async () => {}}
         />
       </NextIntlClientProvider>
     )
   })
-  await waitFor(() =>
-    expect(screen.getByPlaceholderText("claude-sonnet-5")).toHaveValue(
-      "gpt-5.6-sol"
+  if (expectModel) {
+    await waitFor(() =>
+      expect(screen.getByPlaceholderText("claude-sonnet-5")).toHaveValue(
+        "gpt-5.6-sol"
+      )
     )
-  )
+  }
   return view
 }
 
@@ -88,6 +95,7 @@ beforeEach(() => {
     version: null,
   })
   api.acpPiListTrustEntries.mockResolvedValue([])
+  api.onSaveEnv.mockResolvedValue(undefined)
 })
 
 describe("Pi built-in model thinking capability", () => {
@@ -210,7 +218,7 @@ describe("Pi built-in model thinking capability", () => {
             } as unknown as AcpAgentInfo
           }
           saving={false}
-          onSaveEnv={async () => {}}
+          onSaveEnv={api.onSaveEnv}
           onSaved={async () => {}}
         />
       </NextIntlClientProvider>
@@ -243,7 +251,7 @@ describe("Pi built-in model thinking capability", () => {
             } as unknown as AcpAgentInfo
           }
           saving={false}
-          onSaveEnv={async () => {}}
+          onSaveEnv={api.onSaveEnv}
           onSaved={async () => {}}
         />
       </NextIntlClientProvider>
@@ -260,6 +268,31 @@ describe("Pi built-in model thinking capability", () => {
 })
 
 describe("Pi adapter runtime minimum", () => {
+  it("refreshes Pi model capability after the agent is re-enabled", async () => {
+    api.listPiModelCapabilities
+      .mockResolvedValueOnce([])
+      .mockResolvedValue(CAPABILITIES)
+    const view = await renderPanel({}, true, false)
+    await waitFor(() =>
+      expect(api.listPiModelCapabilities).toHaveBeenCalledTimes(1)
+    )
+    view.rerender(
+      <NextIntlClientProvider locale="en" messages={enMessages}>
+        <PiConfigPanel
+          agent={{ env: {}, enabled: true } as unknown as AcpAgentInfo}
+          saving={false}
+          onSaveEnv={api.onSaveEnv}
+          onSaved={async () => {}}
+        />
+      </NextIntlClientProvider>
+    )
+    await waitFor(() =>
+      expect(api.listPiModelCapabilities).toHaveBeenCalledTimes(2)
+    )
+    await openThinkingPicker()
+    expect(screen.getByRole("option", { name: "Max" })).toBeInTheDocument()
+  })
+
   it("warns immediately when a saved custom runtime predates pi-acp 0.0.34", async () => {
     api.acpValidatePiCommand.mockImplementation(async (command: string) =>
       command === "/tmp/old-pi"
@@ -278,5 +311,64 @@ describe("Pi adapter runtime minimum", () => {
     expect(piRuntimeIsTooOld("pi 0.81.0")).toBe(false)
     expect(piRuntimeIsTooOld("0.87.1")).toBe(false)
     expect(piRuntimeIsTooOld(null)).toBe(false)
+  })
+})
+
+describe("Pi runtime path identity", () => {
+  it("blocks a newly entered relative Pi agent directory", async () => {
+    await renderPanel({ PI_ACP_PI_COMMAND: "/tmp/pi" })
+    fireEvent.change(screen.getByPlaceholderText("~/.pi/agent"), {
+      target: { value: "./agent" },
+    })
+    expect(
+      await screen.findByText(/absolute Pi agent directory/)
+    ).toBeInTheDocument()
+    await userEvent.click(screen.getByRole("button", { name: "Save Runtime" }))
+    expect(api.onSaveEnv).not.toHaveBeenCalled()
+  })
+
+  it("does not read or write native config under a saved relative agent directory", async () => {
+    await renderPanel(
+      {
+        PI_ACP_PI_COMMAND: "/tmp/pi",
+        PI_CODING_AGENT_DIR: "./agent",
+      },
+      false
+    )
+    expect(
+      await screen.findAllByText(/absolute Pi agent directory/)
+    ).toHaveLength(2)
+    expect(api.loadPiConfig).not.toHaveBeenCalled()
+    expect(api.listPiModelCapabilities).not.toHaveBeenCalled()
+    expect(api.acpPiListTrustEntries).not.toHaveBeenCalled()
+    await userEvent.click(
+      screen.getByRole("button", { name: "Save Pi Config" })
+    )
+    expect(api.acpUpdatePiConfig).not.toHaveBeenCalled()
+  })
+
+  it("keeps bare PATH commands and home-relative agent directories valid", async () => {
+    await renderPanel({ PI_ACP_PI_COMMAND: "pi" })
+    fireEvent.change(screen.getByPlaceholderText("~/.pi/agent"), {
+      target: { value: "~/pi-agent" },
+    })
+    await userEvent.click(screen.getByRole("button", { name: "Save Runtime" }))
+    expect(api.onSaveEnv).toHaveBeenCalledWith(
+      expect.objectContaining({
+        PI_ACP_PI_COMMAND: "pi",
+        PI_CODING_AGENT_DIR: "~/pi-agent",
+      }),
+      true
+    )
+  })
+
+  it("does not query a saved relative Pi command or save a new one", async () => {
+    await renderPanel({ PI_ACP_PI_COMMAND: "./pi-test.sh" })
+    expect(
+      await screen.findByText(/absolute Pi command path/)
+    ).toBeInTheDocument()
+    expect(api.listPiModelCapabilities).not.toHaveBeenCalled()
+    await userEvent.click(screen.getByRole("button", { name: "Save Runtime" }))
+    expect(api.onSaveEnv).not.toHaveBeenCalled()
   })
 })

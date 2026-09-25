@@ -151,6 +151,34 @@ const PI_CUSTOM_API_PROTOCOLS = [
   "google-generative-ai",
 ]
 
+function isAbsolutePiPath(path: string): boolean {
+  return (
+    path.startsWith("/") ||
+    path.startsWith("\\\\") ||
+    /^[A-Za-z]:[\\/]/.test(path)
+  )
+}
+
+function hasRelativePiCommandPath(command: string): boolean {
+  const value = command.trim()
+  return (
+    value !== "" &&
+    (value.includes("/") || value.includes("\\") || /^[A-Za-z]:/.test(value)) &&
+    !isAbsolutePiPath(value)
+  )
+}
+
+function hasRelativePiAgentDir(dir: string): boolean {
+  const value = dir.trim()
+  return (
+    value !== "" &&
+    value !== "~" &&
+    !value.startsWith("~/") &&
+    !value.startsWith("~\\") &&
+    !isAbsolutePiPath(value)
+  )
+}
+
 export function piRuntimeIsTooOld(version: string | null): boolean {
   const match = version?.match(/(\d+)\.(\d+)\.(\d+)/)
   if (!match) return false
@@ -240,6 +268,12 @@ export function PiConfigPanel({
     PiModelCapability[]
   >([])
   const [catalogRevision, setCatalogRevision] = useState(0)
+  const invalidSavedAgentDir = hasRelativePiAgentDir(
+    agent.env?.[PI_CONFIG_DIR_ENV] ?? ""
+  )
+  const invalidSavedCommand = hasRelativePiCommandPath(
+    agent.env?.[PI_COMMAND_ENV] ?? ""
+  )
 
   const isCustom = selectedProvider === PI_CUSTOM_SENTINEL
   const effectiveProvider = (isCustom ? customId : selectedProvider).trim()
@@ -268,6 +302,15 @@ export function PiConfigPanel({
   useEffect(() => {
     let cancelled = false
     setLoadingCreds(true)
+    if (invalidSavedAgentDir) {
+      setSelectedProvider("")
+      setModel("")
+      setThinkingLevel("")
+      setAuthProviders([])
+      setCustomProviders([])
+      setLoadingCreds(false)
+      return
+    }
     loadPiConfig()
       .then((cfg) => {
         if (cancelled) return
@@ -302,6 +345,7 @@ export function PiConfigPanel({
     agent.env?.[PI_CONFIG_DIR_ENV],
     agent.env?.[PI_SESSION_DIR_ENV],
     catalogRevision,
+    invalidSavedAgentDir,
   ])
 
   // Pi's own model catalog is the authority for built-ins. Derive from the
@@ -310,6 +354,7 @@ export function PiConfigPanel({
   useEffect(() => {
     let cancelled = false
     setModelCapabilities([])
+    if (invalidSavedAgentDir || invalidSavedCommand) return
     listPiModelCapabilities()
       .then((catalog) => {
         if (!cancelled) setModelCapabilities(catalog)
@@ -324,7 +369,10 @@ export function PiConfigPanel({
     agent.env?.[PI_COMMAND_ENV],
     agent.env?.[PI_CONFIG_DIR_ENV],
     agent.env?.[PI_SESSION_DIR_ENV],
+    agent.enabled,
     catalogRevision,
+    invalidSavedAgentDir,
+    invalidSavedCommand,
   ])
 
   const builtInModel = modelCapabilities.find(
@@ -349,6 +397,10 @@ export function PiConfigPanel({
     isCustom && !reasoning.enabled ? "off" : thinkingLevel
 
   const handleSaveCreds = useCallback(async () => {
+    if (invalidSavedAgentDir) {
+      toast.error(t("pi.relativeAgentDir"))
+      return
+    }
     const trimmedModel = model.trim()
     if (!effectiveProvider || !trimmedModel) {
       toast.error(t("pi.providerModelRequired"))
@@ -436,6 +488,7 @@ export function PiConfigPanel({
       setSavingCreds(false)
     }
   }, [
+    invalidSavedAgentDir,
     effectiveProvider,
     isCustom,
     customBaseUrl,
@@ -604,13 +657,17 @@ export function PiConfigPanel({
   const [revoking, setRevoking] = useState<string | null>(null)
 
   const loadTrustEntries = useCallback(async () => {
+    if (invalidSavedAgentDir) {
+      setTrustEntries([])
+      return
+    }
     try {
       setTrustEntries(await acpPiListTrustEntries())
     } catch (error) {
       console.error("[Pi] list project trust failed", error)
       setTrustEntries([])
     }
-  }, [])
+  }, [invalidSavedAgentDir])
 
   useEffect(() => {
     void loadTrustEntries()
@@ -648,8 +705,13 @@ export function PiConfigPanel({
   }, [command])
 
   const customIncomplete = mode === "custom" && !command.trim()
+  const invalidEnteredCommand =
+    mode === "custom" && hasRelativePiCommandPath(command)
+  const invalidEnteredAgentDir =
+    mode === "custom" && hasRelativePiAgentDir(configDir)
 
   const handleSaveRuntime = useCallback(async () => {
+    if (invalidEnteredCommand || invalidEnteredAgentDir) return
     const env = buildPiRuntimeEnv(
       agent.env,
       mode,
@@ -670,6 +732,8 @@ export function PiConfigPanel({
   }, [
     agent.env,
     agent.enabled,
+    invalidEnteredCommand,
+    invalidEnteredAgentDir,
     mode,
     command,
     configDir,
@@ -875,7 +939,7 @@ export function PiConfigPanel({
                     setCommand(event.target.value)
                     setValidation(null)
                   }}
-                  placeholder="/path/to/pi · pi · ./pi-test.sh"
+                  placeholder="/path/to/pi · pi"
                   spellCheck={false}
                 />
                 <Button
@@ -917,6 +981,11 @@ export function PiConfigPanel({
                   )}
                 </p>
               )}
+              {invalidEnteredCommand && (
+                <p className="text-2xs text-destructive">
+                  {t("pi.relativeCommandPath")}
+                </p>
+              )}
               {piRuntimeIsTooOld(validation?.version ?? null) && (
                 <p className="text-2xs text-amber-600 dark:text-amber-400">
                   {t("pi.runtimeTooOld")}
@@ -942,6 +1011,11 @@ export function PiConfigPanel({
                     placeholder="~/.pi/agent"
                     spellCheck={false}
                   />
+                  {invalidEnteredAgentDir && (
+                    <p className="text-2xs text-destructive">
+                      {t("pi.relativeAgentDir")}
+                    </p>
+                  )}
                   {configDir.trim() !== "" && (
                     <p className="text-2xs text-amber-600 dark:text-amber-400">
                       {t("pi.configDirSkillsNote")}
@@ -988,7 +1062,12 @@ export function PiConfigPanel({
             type="button"
             size="sm"
             onClick={handleSaveRuntime}
-            disabled={saving || customIncomplete}
+            disabled={
+              saving ||
+              customIncomplete ||
+              invalidEnteredCommand ||
+              invalidEnteredAgentDir
+            }
             className="gap-1.5"
           >
             {saving ? (
@@ -1016,6 +1095,11 @@ export function PiConfigPanel({
           <p className="mt-1 text-2xs text-muted-foreground">
             {t("pi.configDescription")}
           </p>
+          {invalidSavedAgentDir && (
+            <p className="mt-1 text-2xs text-destructive">
+              {t("pi.relativeAgentDir")}
+            </p>
+          )}
         </div>
 
         <div className="space-y-1.5">
@@ -1313,7 +1397,12 @@ export function PiConfigPanel({
             type="button"
             size="sm"
             onClick={handleSaveCreds}
-            disabled={savingCreds || loadingCreds || credsIncomplete}
+            disabled={
+              savingCreds ||
+              loadingCreds ||
+              credsIncomplete ||
+              invalidSavedAgentDir
+            }
             className="gap-1.5"
           >
             {savingCreds ? (
