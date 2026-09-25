@@ -9,6 +9,7 @@
 import { getTransport, isDesktop } from "@/lib/transport"
 
 import type {
+  ComputerStatePayload,
   ComputerStatus,
   ComputerToolsSettings,
   OsPermission,
@@ -45,6 +46,12 @@ export function computerAvailable(): boolean {
 
 export async function computerStatus(): Promise<ComputerStatus> {
   return getTransport().call("computer_status", {})
+}
+
+/** The shared windows and whether Stop is in force: codeg's own state, with
+ *  no helper to start — cheap enough to ask for when a window loads. */
+export async function computerSharedState(): Promise<ComputerStatePayload> {
+  return getTransport().call("computer_shared_state", {})
 }
 
 export async function computerRequestPermission(

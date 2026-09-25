@@ -165,6 +165,8 @@ struct Refusal {
     note: String,
     /// What the activity line records.
     outcome: ActivityOutcome,
+    /// An action that failed after it was sent: it may have happened.
+    maybe_done: bool,
 }
 
 impl Refusal {
@@ -173,6 +175,7 @@ impl Refusal {
             slug,
             note,
             outcome: ActivityOutcome::Refused,
+            maybe_done: false,
         }
     }
 
@@ -181,6 +184,14 @@ impl Refusal {
             slug,
             note,
             outcome: ActivityOutcome::Failed,
+            maybe_done: false,
+        }
+    }
+
+    fn maybe_done(self) -> Self {
+        Self {
+            maybe_done: true,
+            ..self
         }
     }
 }
@@ -271,6 +282,10 @@ pub struct ComputerService {
     /// Moved by every Stop: a Resume that was already on its way when a Stop
     /// came does not undo it.
     stops: AtomicU64,
+    /// Held across "is it stopped?" and the share that follows, and across a
+    /// Stop's "stopped" and the revocation that follows — so a share cannot
+    /// slip in between a Stop and its revocation and outlive it.
+    grant_gate: std::sync::Mutex<()>,
 }
 
 impl ComputerService {
@@ -293,6 +308,7 @@ impl ComputerService {
             paused: AtomicBool::new(false),
             pausing: tokio::sync::Mutex::new(()),
             stops: AtomicU64::new(0),
+            grant_gate: std::sync::Mutex::new(()),
         });
 
         // What a change takes away is taken before the write that made it
@@ -410,16 +426,53 @@ impl ComputerService {
     /// out, and nothing already out outlives the driver.
     pub async fn stop(&self) {
         // Refused and ended at once, before anything is waited on.
-        self.stops.fetch_add(1, Ordering::AcqRel);
-        self.paused.store(true, Ordering::Release);
-        let ended = self.targets.revoke_all(GrantChange::Stopped);
+        let ended = {
+            let _gate = self.grant_gate.lock().unwrap_or_else(|p| p.into_inner());
+            self.stops.fetch_add(1, Ordering::AcqRel);
+            self.paused.store(true, Ordering::Release);
+            self.targets.revoke_all(GrantChange::Stopped)
+        };
         for change in &ended {
             events::emit_grant(&self.app, change);
         }
         self.emit_state();
         let _order = self.pausing.lock().await;
+        // A Resume pressed after this Stop, and heard first, has already put
+        // things back; stopping the helper now would leave it stopped under
+        // a panel that says it is not.
+        if !self.paused.load(Ordering::Acquire) {
+            return;
+        }
         if let Err(e) = self.backend.halt().await {
             tracing::warn!("[computer] the helper did not confirm the stop: {e}");
+        }
+    }
+
+    /// Share a window, unless a Stop is in force — decided under the same
+    /// lock a Stop takes to revoke, so no share lands between the two.
+    fn share_unless_stopped(
+        &self,
+        target_id: &str,
+        level: GrantLevel,
+        blocklist: &Blocklist,
+    ) -> Result<Option<ComputerGrantPayload>, AppCommandError> {
+        let _gate = self.grant_gate.lock().unwrap_or_else(|p| p.into_inner());
+        if self.paused.load(Ordering::Acquire) && level != GrantLevel::None {
+            return Err(AppCommandError::configuration_invalid(
+                "computer use is stopped; resume it first",
+            ));
+        }
+        match self
+            .targets
+            .share(target_id, level, now_ms(), &self.me, blocklist)
+        {
+            Ok(change) => Ok(change),
+            Err(ShareError::NoSuchTarget) | Err(ShareError::Gone) => Err(
+                AppCommandError::configuration_invalid("that window is gone; open the list again"),
+            ),
+            Err(ShareError::NotGrantable(why)) => {
+                Err(AppCommandError::configuration_invalid(why.note()))
+            }
         }
     }
 
@@ -508,20 +561,31 @@ impl ComputerService {
     fn backend_act_refusal(&self, target_id: &str, e: BackendError) -> Refusal {
         match e {
             BackendError::Unavailable(_) if self.paused.load(Ordering::Acquire) => {
-                Refusal::refused(ERROR_PAUSED, STOPPED_NOTE.to_string())
+                Refusal::refused(
+                    ERROR_PAUSED,
+                    format!(
+                        "The user pressed Stop while this action was on its way: it may or may \
+                         not have happened. {STOPPED_NOTE}"
+                    ),
+                )
+                .maybe_done()
             }
             BackendError::Unavailable(why) => Refusal::failed(
                 ERROR_UNAVAILABLE,
                 format!(
-                    "Computer use stopped working during the action ({why}); it may or may not                      have happened. Read the window again before going on."
+                    "Computer use stopped working during the action ({why}); it may or may not \
+                     have happened. Read the window again before going on."
                 ),
-            ),
+            )
+            .maybe_done(),
             BackendError::Failed(why) => Refusal::failed(
                 ERROR_ACTION_FAILED,
                 format!(
-                    "The action did not complete ({why}); it may or may not have happened. Read                      the window again before going on."
+                    "The action did not complete ({why}); it may or may not have happened. Read \
+                     the window again before going on."
                 ),
-            ),
+            )
+            .maybe_done(),
             other => self.backend_refusal(Some(target_id), other),
         }
     }
@@ -627,7 +691,12 @@ impl ComputerService {
             Err(r) => return ComputerAppsOutcome::refused(r.slug, r.note),
         };
         let blocklist = Blocklist::new(&config.blocklist);
-        match self.backend.list_apps().await {
+        let listed = self.backend.list_apps().await;
+        // A Stop that came while the helper was listing refuses this too.
+        if self.paused.load(Ordering::Acquire) {
+            return ComputerAppsOutcome::refused(ERROR_PAUSED, STOPPED_NOTE);
+        }
+        match listed {
             Ok(apps) => ComputerAppsOutcome {
                 apps: apps
                     .into_iter()
@@ -660,7 +729,12 @@ impl ComputerService {
             Err(r) => return ComputerWindowsOutcome::refused(r.slug, r.note),
         };
         let blocklist = Blocklist::new(&config.blocklist);
-        match self.backend.list_windows(pid).await {
+        let listed = self.backend.list_windows(pid).await;
+        // A Stop that came while the helper was listing refuses this too.
+        if self.paused.load(Ordering::Acquire) {
+            return ComputerWindowsOutcome::refused(ERROR_PAUSED, STOPPED_NOTE);
+        }
+        match listed {
             Ok(windows) => {
                 // Grants that have already ended by the rules as they are now
                 // must not show — neither as a level nor as a title.
@@ -923,13 +997,17 @@ impl ComputerService {
                 Ok(raw) => done = Some(raw),
                 Err(r) => {
                     self.record(target_id, action, r.outcome);
-                    let note = if pressed == 0 {
-                        r.note
-                    } else {
-                        format!(
+                    let note = match (pressed, r.maybe_done) {
+                        (0, _) => r.note,
+                        (_, false) => format!(
                             "The key was pressed {pressed} of {presses} times, then stopped: {}",
                             r.note
-                        )
+                        ),
+                        (_, true) => format!(
+                            "The key was pressed {pressed} of {presses} times; the press after \
+                             that may or may not have gone out: {}",
+                            r.note
+                        ),
                     };
                     return ComputerActOutcome::refused(target_id, r.slug, note);
                 }
@@ -1197,27 +1275,30 @@ pub async fn computer_share_window(
             "computer use is switched off",
         ));
     }
-    if service.paused.load(Ordering::Acquire) && level != GrantLevel::None {
-        return Err(AppCommandError::configuration_invalid(
-            "computer use is stopped; resume it first",
-        ));
-    }
     let blocklist = Blocklist::new(&config.blocklist);
-    match service
-        .targets
-        .share(&target_id, level, now_ms(), &service.me, &blocklist)
-    {
-        Ok(change) => {
-            service.announce(&change.into_iter().collect::<Vec<_>>());
-            Ok(service.targets.shared())
-        }
-        Err(ShareError::NoSuchTarget) | Err(ShareError::Gone) => Err(
-            AppCommandError::configuration_invalid("that window is gone; open the list again"),
-        ),
-        Err(ShareError::NotGrantable(why)) => {
-            Err(AppCommandError::configuration_invalid(why.note()))
-        }
-    }
+    let change = service.share_unless_stopped(&target_id, level, &blocklist)?;
+    service.announce(&change.into_iter().collect::<Vec<_>>());
+    Ok(service.targets.shared())
+}
+
+/// The shared windows and whether Stop is in force — codeg's own state, with
+/// no helper to start, for a window that has just loaded.
+#[tauri::command]
+pub async fn computer_shared_state(app: AppHandle) -> Result<SharedState, AppCommandError> {
+    let service = service(&app)?;
+    Ok(SharedState {
+        shared: service.targets.shared(),
+        paused: service.paused.load(Ordering::Acquire),
+    })
+}
+
+/// What `computer_shared_state` answers: the same pair `computer://state`
+/// carries.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SharedState {
+    pub shared: Vec<SharedWindow>,
+    pub paused: bool,
 }
 
 /// Stop sharing every window.

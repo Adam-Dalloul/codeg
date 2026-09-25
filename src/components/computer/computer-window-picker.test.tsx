@@ -72,6 +72,23 @@ describe("ComputerWindowPicker", () => {
     ).toBeInTheDocument()
   })
 
+  /** Stopped — even from another codeg window — the picker says so and
+   * offers nothing to share; taking a window back stays possible. */
+  it("offers no sharing while stopped", async () => {
+    api.computerListShareableWindows.mockResolvedValue([window("read")])
+    mount()
+    await screen.findByRole("button", { name: "Can read" })
+    act(() => setComputerShared([], true))
+    await openMenu(await screen.findByRole("button", { name: "Share" }))
+    expect(
+      screen.getByRole("menuitem", { name: "Let agents read it" })
+    ).toHaveAttribute("data-disabled")
+    expect(
+      screen.getByRole("menuitem", { name: "Let agents read and act on it" })
+    ).toHaveAttribute("data-disabled")
+    expect(screen.getByText(/No agent can read or act/)).toBeInTheDocument()
+  })
+
   /** Acting is the second decision, made from the same menu as reading. */
   it("offers acting on a window from the same menu", async () => {
     api.computerListShareableWindows.mockResolvedValue([window("none")])

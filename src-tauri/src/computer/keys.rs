@@ -281,9 +281,11 @@ pub fn classify(chord: &Chord, platform: Platform) -> ChordClass {
     }
     match (primary, m.alt) {
         // Nothing held but perhaps shift: every key but the function keys,
-        // which applications (and some desktops) bind to their own commands.
+        // which applications (and some desktops) bind to their own commands,
+        // and shift+delete, which deletes a selected file for good in the
+        // Windows File Explorer.
         (false, false) => {
-            if matches!(key, Key::F(_)) {
+            if matches!(key, Key::F(_)) || (m.shift && key == Key::Delete) {
                 ChordClass::Beyond
             } else {
                 ChordClass::Window
@@ -292,7 +294,9 @@ pub fn classify(chord: &Chord, platform: Platform) -> ChordClass {
         // The shortcut modifier: the editing chords, and moving through text.
         // Shift only where it is the same command backwards (redo, find
         // previous) or extends a selection — ⇧⌘A opens a folder in the
-        // Finder, and ⇧⌘⌫ empties the Trash.
+        // Finder, and ⇧⌘⌫ empties the Trash. ⌘ with backspace or delete is a
+        // menu command on a Mac (the Finder's Move to Trash), so only Ctrl
+        // deletes by word elsewhere.
         (true, false) => {
             let editing = match key {
                 Key::Char('a' | 'c' | 'x' | 'f') => !m.shift,
@@ -301,8 +305,9 @@ pub fn classify(chord: &Chord, platform: Platform) -> ChordClass {
                 _ => false,
             };
             let moving = key.is_arrow()
-                || (matches!(key, Key::Backspace | Key::Delete) && !m.shift)
-                || (platform != Platform::Mac && matches!(key, Key::Home | Key::End));
+                || (platform != Platform::Mac
+                    && (matches!(key, Key::Home | Key::End)
+                        || (matches!(key, Key::Backspace | Key::Delete) && !m.shift)));
             if editing || moving {
                 ChordClass::Window
             } else {
@@ -329,16 +334,16 @@ pub fn window_chords_note(platform: Platform) -> &'static str {
     match platform {
         Platform::Mac => {
             "On a shared window you may press the editing and navigation keys (return, tab, \
-             escape, backspace, delete, the arrows, home, end, page up/down, with or without \
-             shift) and ⌘A, ⌘C, ⌘X, ⌘Z, ⇧⌘Z, ⌘F, ⌘G, ⇧⌘G, ⌘ or ⌥ with an arrow (with or \
-             without shift), ⌘ or ⌥ with backspace or delete."
+             escape, backspace, delete, the arrows, home, end, page up/down — with or without \
+             shift, except shift+delete) and ⌘A, ⌘C, ⌘X, ⌘Z, ⇧⌘Z, ⌘F, ⌘G, ⇧⌘G, ⌘ or ⌥ with \
+             an arrow (with or without shift), ⌥ with backspace or delete."
         }
         Platform::Windows | Platform::Linux => {
             "On a shared window you may press the editing and navigation keys (enter, tab, \
-             escape, backspace, delete, the arrows, home, end, page up/down, with or without \
-             shift) and Ctrl+A, Ctrl+C, Ctrl+X, Ctrl+Z, Ctrl+Shift+Z, Ctrl+Y, Ctrl+F, Ctrl+G, \
-             Ctrl with an arrow, home or end (with or without shift), Ctrl with backspace or \
-             delete."
+             escape, backspace, delete, the arrows, home, end, page up/down — with or without \
+             shift, except shift+delete) and Ctrl+A, Ctrl+C, Ctrl+X, Ctrl+Z, Ctrl+Shift+Z, \
+             Ctrl+Y, Ctrl+F, Ctrl+G, Ctrl with an arrow, home or end (with or without shift), \
+             Ctrl with backspace or delete."
         }
     }
 }
@@ -425,6 +430,7 @@ mod tests {
             chord("left", &["cmd", "shift"]),
             chord("backspace", &["option"]),
             chord("right", &["option", "shift"]),
+            chord("delete", &[]),
         ] {
             assert_eq!(classify(&ok, mac), ChordClass::Window, "{ok:?}");
         }
@@ -448,16 +454,28 @@ mod tests {
             chord("e", &["option"]),
             chord("f11", &[]),
             chord("y", &["cmd"]),
-            // ⇧⌘A opens a Finder folder; ⇧⌘⌫ empties the Trash.
+            // ⇧⌘A opens a Finder folder; ⇧⌘⌫ empties the Trash; ⌘⌫ moves a
+            // file to it.
             chord("a", &["cmd", "shift"]),
             chord("backspace", &["cmd", "shift"]),
             chord("backspace", &["option", "shift"]),
+            chord("backspace", &["cmd"]),
+            chord("delete", &["cmd"]),
         ] {
             assert_eq!(classify(&beyond, mac), ChordClass::Beyond, "{beyond:?}");
         }
 
         let win = Platform::Windows;
         assert_eq!(classify(&chord("c", &["ctrl"]), win), ChordClass::Window);
+        assert_eq!(
+            classify(&chord("backspace", &["ctrl"]), win),
+            ChordClass::Window
+        );
+        // Deletes a selected file for good in the File Explorer.
+        assert_eq!(
+            classify(&chord("delete", &["shift"]), win),
+            ChordClass::Beyond
+        );
         assert_eq!(classify(&chord("y", &["ctrl"]), win), ChordClass::Window);
         assert_eq!(
             classify(&chord("home", &["ctrl", "shift"]), win),

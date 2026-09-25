@@ -348,6 +348,33 @@ impl HelperState {
         Ok(())
     }
 
+    /// What must hold at the moment an action's driver call goes out:
+    /// nothing has been stopped, `pid` is still the process the window was
+    /// shared from (a relaunch under a reused pid is another process, whose
+    /// windows nobody shared), and the session is affirmatively unlocked and
+    /// on this console.
+    fn deliverable(&self, pid: u32, started_at: u64) -> Result<(), HelperError> {
+        self.check_not_halted()?;
+        if super::procinfo::process_start(pid) != Some(started_at) {
+            return Err(HelperError::new(
+                HelperErrorCode::NoSuchWindow,
+                "the window's process is gone",
+            ));
+        }
+        match session::state() {
+            session::SessionState::Unlocked => Ok(()),
+            session::SessionState::Locked => Err(HelperError::new(
+                HelperErrorCode::Paused,
+                "The screen is locked, or another user's session is active.",
+            )),
+            session::SessionState::Unknown => Err(HelperError::new(
+                HelperErrorCode::ActionFailed,
+                "codeg cannot tell whether this desktop's session is locked, so it does not act \
+                 on windows here; retrying will not change that. Reading windows still works.",
+            )),
+        }
+    }
+
     /// The running driver, starting it if there is none.
     async fn driver(&self) -> Result<Arc<DriverProc>, HelperError> {
         self.check_not_halted()?;
@@ -524,22 +551,11 @@ async fn handle(state: &HelperState, op: HelperOp) -> Result<serde_json::Value, 
             app_key,
             action,
         } => {
-            state.check_not_halted()?;
-            // The process the window was shared from, still — a relaunched
-            // application under a reused pid is another process whose windows
-            // nobody shared.
-            if super::procinfo::process_start(pid) != Some(started_at) {
-                return Err(HelperError::new(
-                    HelperErrorCode::NoSuchWindow,
-                    "the window's process is gone",
-                ));
-            }
-            if session::locked() {
-                return Err(HelperError::new(
-                    HelperErrorCode::Paused,
-                    "The screen is locked, or another user's session is active.",
-                ));
-            }
+            // Asked first so a doomed action does not start a driver, and
+            // again (inside `act`) just before each driver call goes out —
+            // starting the driver and measuring the window take time in which
+            // the screen can lock or the application quit.
+            state.deliverable(pid, started_at)?;
             for permission in act::permissions_for(&action) {
                 require(*permission)?;
             }
@@ -550,10 +566,8 @@ async fn handle(state: &HelperState, op: HelperOp) -> Result<serde_json::Value, 
             if let Some(point) = action.point() {
                 act::check_point(&driver, pid, window_id, point).await?;
             }
-            // Asked once more, as late as it can be: a Stop that landed while
-            // the window was being measured stops this action too.
-            state.check_not_halted()?;
-            value(act::act(&driver, pid, window_id, &action).await?)
+            let deliverable = || state.deliverable(pid, started_at);
+            value(act::act(&driver, pid, window_id, &action, &deliverable).await?)
         }
         HelperOp::Halt => {
             state.halt().await;
@@ -649,6 +663,12 @@ pub async fn serve(
             tracing::error!("a request came from a process other than the codeg that was checked");
             code = EXIT_PEER_REFUSED;
             break;
+        }
+        // A Stop takes hold the moment its frame is read, not when its task
+        // is scheduled: an action already on its way meets it at the next
+        // check it makes before a driver call.
+        if matches!(request.op, HelperOp::Halt) {
+            state.halted.store(true, Ordering::Release);
         }
         let state = state.clone();
         let tx = tx.clone();

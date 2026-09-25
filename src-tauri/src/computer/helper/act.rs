@@ -152,9 +152,10 @@ impl SnapshotBook {
         // Safari's pop-up menus with no accessible options are set by the
         // driver through AppleScript against Safari's *front* document — any
         // window of it, not necessarily this one — and in the helper's name.
+        // With no key to tell the application by, it could be Safari.
         if matches!(action, WindowAction::SetValue { .. })
             && found.role == "AXPopUpButton"
-            && app_key.is_some_and(is_safari)
+            && app_key.is_none_or(is_safari)
         {
             return Err(HelperError::new(
                 HelperErrorCode::ActionFailed,
@@ -242,12 +243,15 @@ pub fn permissions_for(action: &WindowAction) -> &'static [OsPermission] {
 }
 
 /// Carry out `action` on the window: one driver call, or two for typing that
-/// ends with return.
+/// ends with return. `deliverable` is asked just before each call goes out —
+/// whatever must still hold at the moment of delivery (nothing stopped, the
+/// same process, an unlocked session) — and a call it refuses is not made.
 pub async fn act(
     driver: &DriverProc,
     pid: u32,
     window_id: u64,
     action: &WindowAction,
+    deliverable: &(dyn Fn() -> Result<(), HelperError> + Sync),
 ) -> Result<RawAct, HelperError> {
     let platform = Platform::current();
     let mut args = json!({
@@ -272,6 +276,7 @@ pub async fn act(
                 args["button"] = json!("middle");
             }
             put_target(&mut args, at);
+            deliverable()?;
             one(driver, tool, args, ACT_TIMEOUT).await
         }
         WindowAction::Scroll {
@@ -294,6 +299,7 @@ pub async fn act(
             if let Some(at) = at {
                 put_target(&mut args, at);
             }
+            deliverable()?;
             one(driver, "scroll", args, ACT_TIMEOUT).await
         }
         WindowAction::Type {
@@ -304,15 +310,30 @@ pub async fn act(
             put_element(&mut args, element);
             let mut key = args.clone();
             args["text"] = json!(text);
+            deliverable()?;
             let typed = one(driver, "type_text", args, TYPE_TIMEOUT).await?;
             if !*submit {
                 return Ok(typed);
             }
             key["key"] = json!("return");
-            let submitted = one(driver, "press_key", key, ACT_TIMEOUT).await.is_ok();
-            Ok(RawAct {
-                submitted: Some(submitted),
-                ..typed
+            // Typing can take a while: the second call is held to the same
+            // conditions as the first, at its own moment.
+            let pressed = match deliverable() {
+                Ok(()) => one(driver, "press_key", key, ACT_TIMEOUT).await,
+                Err(e) => Err(e),
+            };
+            Ok(match pressed {
+                // Both went out: the whole is as sure as its less sure half.
+                Ok(pressed) => RawAct {
+                    effect: weaker(typed.effect, pressed.effect),
+                    route: typed.route,
+                    submitted: Some(true),
+                },
+                // The text went in; return did not. Said as such.
+                Err(_) => RawAct {
+                    submitted: Some(false),
+                    ..typed
+                },
             })
         }
         WindowAction::Key { element, chord } => {
@@ -324,13 +345,31 @@ pub async fn act(
             if let Some(element) = element {
                 put_element(&mut args, element);
             }
+            deliverable()?;
             one(driver, "press_key", args, ACT_TIMEOUT).await
         }
         WindowAction::SetValue { element, value } => {
             put_element(&mut args, element);
             args["value"] = json!(value);
+            deliverable()?;
             one(driver, "set_value", args, ACT_TIMEOUT).await
         }
+    }
+}
+
+/// The less certain of two effects: confirmed, then unverifiable, then
+/// partial, then suspected no-op.
+fn weaker(a: ActEffect, b: ActEffect) -> ActEffect {
+    let rank = |e: ActEffect| match e {
+        ActEffect::Confirmed => 3,
+        ActEffect::Unverifiable => 2,
+        ActEffect::Partial => 1,
+        ActEffect::SuspectedNoop => 0,
+    };
+    if rank(a) <= rank(b) {
+        a
+    } else {
+        b
     }
 }
 
@@ -635,6 +674,21 @@ mod tests {
             HelperErrorCode::ActionFailed
         );
         assert!(book.check(1, 10, &set, Some("com.apple.TextEdit")).is_ok());
+        // An application codeg cannot name could be Safari.
+        assert_eq!(
+            book.check(1, 10, &set, None).unwrap_err().code,
+            HelperErrorCode::ActionFailed
+        );
+    }
+
+    /// Two halves of one action are only as certain as the less certain.
+    #[test]
+    fn a_pair_of_calls_is_as_sure_as_its_weaker_half() {
+        use ActEffect::*;
+        assert_eq!(weaker(Confirmed, Unverifiable), Unverifiable);
+        assert_eq!(weaker(Confirmed, Confirmed), Confirmed);
+        assert_eq!(weaker(Partial, Confirmed), Partial);
+        assert_eq!(weaker(Unverifiable, SuspectedNoop), SuspectedNoop);
     }
 
     /// The book lets go of the oldest windows past its bound.

@@ -1785,6 +1785,7 @@ mod tauri_app {
                 crate::commands::computer::computer_share_window,
                 crate::commands::computer::computer_revoke_all,
                 crate::commands::computer::computer_stop,
+                crate::commands::computer::computer_shared_state,
                 crate::commands::computer::computer_resume,
                 version_control::detect_git,
                 version_control::test_git_path,

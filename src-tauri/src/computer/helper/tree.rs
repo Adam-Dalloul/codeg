@@ -265,11 +265,8 @@ fn redact_node(node: &str, dialect: Dialect) -> (String, bool) {
         }
         None => (node.to_string(), None),
     };
-    let lower = label.to_lowercase();
-    let role_is_secret = lower.contains("securetextfield") || lower.contains("password text");
-    let label_is_secret = SECRET_WORDS.iter().any(|w| lower.contains(w));
     let masked = value.is_some_and(is_masked);
-    let secret = role_is_secret || label_is_secret || masked;
+    let secret = names_a_secret(&label) || masked;
     let Some((start, _)) = marker.filter(|_| secret) else {
         return (node.to_string(), secret);
     };
@@ -287,9 +284,18 @@ fn redact_node(node: &str, dialect: Dialect) -> (String, bool) {
     )
 }
 
+/// Whether `text` — a node's role and label, never its value — says it is a
+/// password or other secret field.
+pub fn names_a_secret(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    lower.contains("securetextfield")
+        || lower.contains("password text")
+        || SECRET_WORDS.iter().any(|w| lower.contains(w))
+}
+
 /// A value that is nothing but the bullets a secure field shows in place of
 /// its text.
-fn is_masked(value: &str) -> bool {
+pub fn is_masked(value: &str) -> bool {
     let value = value.trim();
     !value.is_empty() && value.chars().all(|c| matches!(c, '•' | '●' | '∙' | '⦁'))
 }

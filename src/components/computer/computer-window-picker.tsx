@@ -109,11 +109,14 @@ export function ComputerWindowPicker({
   onOpenChange: (open: boolean) => void
 }) {
   const t = useTranslations("ComputerUse.picker")
+  const tComputer = useTranslations("ComputerUse")
   // Whether a window is shared is read from the live store, not from the list
   // as it was fetched: a grant can end (it lapses, another window stops it)
   // while the picker is open. Until the store has heard anything, the list's
   // own word is the only one there is.
-  const { shared, sharedKnown } = useComputerStore()
+  // Stopped — here or in another codeg window — nothing is shared until the
+  // person resumes; only taking a window back stays on offer.
+  const { shared, sharedKnown, paused } = useComputerStore()
   const levelOf = (w: PickerWindow): GrantLevel =>
     sharedKnown
       ? (shared.find((s) => s.targetId === w.targetId)?.level ?? "none")
@@ -184,6 +187,12 @@ export function ComputerWindowPicker({
             {t("refresh")}
           </Button>
         </div>
+
+        {paused && (
+          <div className="rounded-md border border-amber-500/30 bg-amber-500/5 px-2 py-1.5 text-xs text-amber-600 dark:text-amber-400">
+            {tComputer("stopped")}
+          </div>
+        )}
 
         {error && (
           <div className="rounded-md border border-red-500/30 bg-red-500/5 px-2 py-1.5 text-xs break-words text-red-500">
@@ -269,14 +278,14 @@ export function ComputerWindowPicker({
                         </DropdownMenuTrigger>
                         <DropdownMenuContent align="start" className="min-w-56">
                           <DropdownMenuItem
-                            disabled={level === "read"}
+                            disabled={paused || level === "read"}
                             onSelect={() => void setLevel(w, "read")}
                           >
                             <Eye className="size-3.5" />
                             {t("shareRead")}
                           </DropdownMenuItem>
                           <DropdownMenuItem
-                            disabled={level === "control"}
+                            disabled={paused || level === "control"}
                             onSelect={() => void setLevel(w, "control")}
                           >
                             <MousePointerClick className="size-3.5" />

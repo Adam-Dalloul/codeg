@@ -61,6 +61,7 @@ import {
   computerResume,
   computerRevokeAll,
   computerShareWindow,
+  computerSharedState,
   computerStatus,
   computerStop,
   getComputerToolsSettings,
@@ -171,6 +172,16 @@ function ComputerPopover() {
     } finally {
       if (aliveRef.current && seq === refreshSeqRef.current) setLoading(false)
     }
+  }, [])
+
+  // A codeg window opened after something was shared, or stopped, has heard
+  // nothing of it yet: ask once when it loads, so the stop beside the glyph
+  // is there without anyone opening the popover.
+  useEffect(() => {
+    const mark = computerStoreMark()
+    computerSharedState()
+      .then((s) => setComputerSharedSince(s.shared, mark, s.paused))
+      .catch(() => {})
   }, [])
 
   const handleOpenChange = (next: boolean) => {

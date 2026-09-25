@@ -2937,11 +2937,6 @@ fn computer_element(
     tool: &str,
 ) -> Result<crate::computer::types::ElementTarget, String> {
     use crate::computer::types::AgentTarget;
-    if arguments.get("coordinate").is_some_and(|v| !v.is_null()) {
-        return Err(format!(
-            "{tool} works on an element: give its `ref` from computer_snapshot, not a coordinate"
-        ));
-    }
     match computer_target(arguments, tool)? {
         Some(AgentTarget::Element(element)) => Ok(element),
         _ => Err(format!(
@@ -3015,9 +3010,51 @@ fn computer_count(
     }
 }
 
+/// The arguments each action tool takes. Anything else is refused rather than
+/// ignored: a misspelt `buton: "right"` dropped on the floor is a left click
+/// nobody asked for.
+fn computer_act_arguments(tool: &str) -> &'static [&'static str] {
+    match tool {
+        "computer_click" => &[
+            "targetId",
+            "target_id",
+            "ref",
+            "coordinate",
+            "generation",
+            "button",
+            "count",
+        ],
+        "computer_scroll" => &[
+            "targetId",
+            "target_id",
+            "direction",
+            "amount",
+            "unit",
+            "ref",
+            "coordinate",
+            "generation",
+        ],
+        "computer_type" => &["targetId", "target_id", "ref", "generation", "text", "submit"],
+        "computer_press_key" => &[
+            "targetId",
+            "target_id",
+            "key",
+            "modifiers",
+            "repeat",
+            "ref",
+            "generation",
+        ],
+        "computer_set_value" => &["targetId", "target_id", "ref", "generation", "value"],
+        _ => &[],
+    }
+}
+
 /// Build one computer action from a tool call. Every argument is checked
-/// here, strictly — a `button: "middle"` read as the left button, or a
-/// string read as a boolean, is a different action from the one asked for.
+/// here, strictly — a `button: "middle"` read as the left button, a string
+/// read as a boolean, or an argument the tool does not take read as absent,
+/// is a different action from the one asked for. `null` is read as absent,
+/// as for every other computer tool: clients that fill in every optional
+/// field send it for the ones they mean to leave out.
 pub fn computer_act_request(
     tool: &str,
     arguments: &Value,
@@ -3027,6 +3064,21 @@ pub fn computer_act_request(
         ComputerActRequest, PointerButton, ScrollDirection, ScrollUnit, MAX_KEY_REPEAT,
         MAX_SCROLL_AMOUNT,
     };
+    let allowed = computer_act_arguments(tool);
+    if let Some(unknown) = arguments
+        .as_object()
+        .and_then(|args| args.keys().find(|k| !allowed.contains(&k.as_str())))
+    {
+        return Err(format!(
+            "{tool} takes no argument `{unknown}`; it takes {}",
+            allowed
+                .iter()
+                .filter(|a| **a != "target_id")
+                .map(|a| format!("`{a}`"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
     let target_id = computer_target_id(arguments, tool)?;
     let request = match tool {
         "computer_click" => {
@@ -5892,7 +5944,7 @@ mod tests {
                 "computer_type",
                 json!({ "targetId": "w1", "coordinate": [1, 2], "generation": "1.1",
                         "text": "hi" }),
-                "not a coordinate",
+                "no argument `coordinate`",
             ),
             (
                 "computer_press_key",
@@ -5920,6 +5972,18 @@ mod tests {
                 json!({ "targetId": "w1", "ref": 3, "generation": "1.1" }),
                 "value",
             ),
+            // A misspelt argument is refused, not ignored into a default.
+            (
+                "computer_click",
+                json!({ "targetId": "w1", "ref": 3, "generation": "1.1", "buton": "right" }),
+                "no argument `buton`",
+            ),
+            (
+                "computer_type",
+                json!({ "targetId": "w1", "ref": 3, "generation": "1.1", "text": "x",
+                        "delivery": "foreground" }),
+                "no argument `delivery`",
+            ),
         ] {
             let error = computer_act_request(tool, &bad).unwrap_err();
             assert!(error.contains(says), "{tool} {bad}: {error}");
@@ -5943,6 +6007,22 @@ mod tests {
                 repeat: 3,
             }
         );
+        // `null` is an option left out — what clients that fill in every
+        // optional field send — and gets the documented default.
+        let (_, nulls) = computer_act_request(
+            "computer_click",
+            &json!({ "targetId": "w1", "ref": 3, "generation": "1.1", "button": null,
+                     "count": null, "coordinate": null }),
+        )
+        .unwrap();
+        assert!(matches!(
+            nulls,
+            ComputerActRequest::Click {
+                button: PointerButton::Left,
+                count: 1,
+                ..
+            }
+        ));
         let (_, scroll) = computer_act_request(
             "computer_scroll",
             &json!({ "targetId": "w1", "direction": "down", "unit": "page" }),

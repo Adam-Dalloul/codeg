@@ -32,7 +32,9 @@ use async_trait::async_trait;
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, BufReader};
 use tokio::sync::{oneshot, watch, Mutex};
 
-use super::backend::{BackendError, BackendState, BackendStatus, ComputerBackend, SnapshotOptions};
+use super::backend::{
+    ActRefusal, BackendError, BackendState, BackendStatus, ComputerBackend, SnapshotOptions,
+};
 use super::driver;
 use super::protocol::{
     read_frame, write_frame, HelperError, HelperErrorCode, HelperMessage, HelperOp, HelperReply,
@@ -217,6 +219,11 @@ pub struct LocalBackend {
     /// checks, so a download that keeps failing them is reported rather than
     /// fetched again on every call.
     redownloaded: AtomicBool,
+    /// The person pressed Stop. Kept here as well as in the helper, because
+    /// the helper that heard it may not be the one an action reaches: with no
+    /// helper running, the Stop reached nobody, and an action already past
+    /// codeg's checks would start a fresh one.
+    halted: AtomicBool,
 }
 
 impl LocalBackend {
@@ -235,6 +242,7 @@ impl LocalBackend {
             }),
             on_status: Box::new(on_status),
             redownloaded: AtomicBool::new(false),
+            halted: AtomicBool::new(false),
         }
     }
 
@@ -331,7 +339,7 @@ impl LocalBackend {
     ///
     /// Never for an action: a helper that died with the request on its way
     /// may have died after delivering it, and a second send would do it
-    /// twice. Actions go through [`call_once`](Self::call_once).
+    /// twice. Actions are sent once (see `act`).
     async fn call<T: serde::de::DeserializeOwned>(&self, op: HelperOp) -> Result<T, BackendError> {
         let connection = self.connection().await?;
         let reply = match connection.request(op.clone()).await {
@@ -341,15 +349,6 @@ impl LocalBackend {
             }
             other => other?,
         };
-        self.decode(reply).await
-    }
-
-    /// Send one op once, and decode its answer.
-    async fn call_once<T: serde::de::DeserializeOwned>(
-        &self,
-        op: HelperOp,
-    ) -> Result<T, BackendError> {
-        let reply = self.connection().await?.request(op).await?;
         self.decode(reply).await
     }
 
@@ -470,24 +469,46 @@ impl ComputerBackend for LocalBackend {
         app_key: Option<String>,
         action: WindowAction,
     ) -> Result<RawAct, BackendError> {
-        self.call_once(HelperOp::Act {
-            pid,
-            window_id,
-            started_at,
-            app_key,
-            action,
-        })
-        .await
+        let stopped = || {
+            BackendError::Refused(
+                ActRefusal::Paused,
+                "The user pressed Stop in codeg's Computer use panel.".into(),
+            )
+        };
+        // Before a helper is started for it, and again with the helper in
+        // hand, as late as codeg can: a Stop that came while one was being
+        // started stops this action too.
+        if self.halted.load(Ordering::Acquire) {
+            return Err(stopped());
+        }
+        let connection = self.connection().await?;
+        if self.halted.load(Ordering::Acquire) {
+            return Err(stopped());
+        }
+        let reply = connection
+            .request(HelperOp::Act {
+                pid,
+                window_id,
+                started_at,
+                app_key,
+                action,
+            })
+            .await?;
+        self.decode(reply).await
     }
 
-    /// Tell a running helper to kill its driver. With no helper running there
-    /// is nothing to stop, and none is started for it.
+    /// Stop: no action goes out through this backend from now on, and a
+    /// running helper kills its driver. With no helper running there is
+    /// nothing to kill, and none is started for it.
     async fn halt(&self) -> Result<(), BackendError> {
+        self.halted.store(true, Ordering::Release);
         self.to_running(HelperOp::Halt).await
     }
 
     async fn resume(&self) -> Result<(), BackendError> {
-        self.to_running(HelperOp::Resume).await
+        let told = self.to_running(HelperOp::Resume).await;
+        self.halted.store(false, Ordering::Release);
+        told
     }
 }
 
@@ -832,6 +853,34 @@ mod tests {
             backend.list_apps().await,
             Err(BackendError::Unavailable(_))
         ));
+    }
+
+    /// A Stop holds in the backend itself, with no helper running to hear it:
+    /// no action goes out — and no helper is started for one — until Resume.
+    #[tokio::test]
+    async fn a_stop_holds_with_no_helper_to_hear_it() {
+        use crate::computer::keys::{Chord, Key, Modifiers};
+        let backend = LocalBackend::new(|_: &BackendStatus| {});
+        backend.open().await;
+        backend.halt().await.unwrap();
+        let act = || WindowAction::Key {
+            element: None,
+            chord: Chord {
+                key: Key::Return,
+                modifiers: Modifiers::default(),
+            },
+        };
+        assert_eq!(
+            backend.act(1, 1, 1, None, act()).await.unwrap_err(),
+            BackendError::Refused(
+                ActRefusal::Paused,
+                "The user pressed Stop in codeg's Computer use panel.".into()
+            )
+        );
+        // Nothing was started for the refused action.
+        assert_eq!(backend.status().await.state, BackendState::Idle);
+        backend.resume().await.unwrap();
+        assert!(!backend.halted.load(Ordering::Acquire));
     }
 
     /// A debug build takes the helper from `CODEG_COMPUTER_HELPER_BIN` when
