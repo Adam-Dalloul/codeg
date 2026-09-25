@@ -4978,9 +4978,9 @@
       "hint": "Permite que os agentes executem o próprio JavaScript numa página que você compartilhou. Desativado por padrão e depende do interruptor acima. Ligá-lo significa que os trechos são executados sem perguntar, então a decisão é tomada neste interruptor; em Configurações → Navegador integrado dá para pedir que cada trecho seja mostrado a você."
     },
     "computer": {
-      "label": "Ver as janelas da área de trabalho",
-      "short": "Listar apps e janelas; ler as que você compartilhar.",
-      "hint": "Permite que um agente liste os aplicativos e janelas da sua área de trabalho e leia as janelas que você compartilhar com ele — uma captura, o conteúdo, se mostra o que se espera. Nada fica legível até você compartilhar uma janela no painel Uso do computador da barra de status, e o compartilhamento termina quando a janela fecha, depois de um tempo sem uso ou quando você o interrompe. Ele não pode clicar nem digitar. Apenas no app para desktop; no macOS, exige permissões concedidas ao codeg-computer-helper. Prévia."
+      "label": "Ver e usar as janelas da área de trabalho",
+      "short": "Listar apps e janelas; ler as que você compartilhar e agir nas que permitir.",
+      "hint": "Permite que um agente liste os aplicativos e janelas da sua área de trabalho, leia as janelas que você compartilhar com ele — uma captura, o conteúdo, se mostra o que se espera — e clique, digite e pressione teclas nas que você compartilhar para agir. Nada fica legível até você compartilhar uma janela no painel Uso do computador da barra de status, e em nenhuma é possível agir sem que você também permita; o compartilhamento termina quando a janela fecha, depois de um tempo sem uso ou quando você o interrompe, e Parar agentes nesse painel para todos de uma vez. A entrada chega à janela em segundo plano, sem trazê-la para a frente. Apenas no app para desktop; no macOS, exige permissões concedidas ao codeg-computer-helper. Prévia."
     },
     "automations": {
       "label": "Criar automações",
@@ -5150,6 +5150,12 @@
     "preview": "Prévia",
     "refresh": "Atualizar",
     "tooltipShared": "Uso do computador · {count, plural, one {# janela compartilhada} other {# janelas compartilhadas}}",
+    "tooltipStopped": "Uso do computador · parado",
+    "stop": "Parar agentes",
+    "stopTooltip": "{count, plural, one {Os agentes podem agir em # janela} other {Os agentes podem agir em # janelas}} · clique para parar todos",
+    "stopHint": "Para todos os agentes de uma vez: nada é lido nem feito em nenhuma janela, todas as janelas deixam de ser compartilhadas e o que estiver em andamento é interrompido, até você retomar.",
+    "stopped": "Parado. Nenhum agente pode ler nem agir em nenhuma janela até você retomar.",
+    "resume": "Retomar",
     "codegGranted": "O próprio codeg recebeu Acessibilidade ou Gravação de Tela, então o shell de cada agente também a tem. Remova o codeg em Ajustes do Sistema → Privacidade e Segurança. O uso do computador fica desligado até lá.",
     "backend": {
       "idle": "Não iniciado",
@@ -5166,7 +5172,7 @@
       "granted": "Concedida",
       "request": "Solicitar",
       "openSettings": "Abrir Ajustes",
-      "why": "Estas vão para o codeg-computer-helper, não para o codeg: tudo o que é concedido ao codeg é herdado pelo shell de cada agente. A Gravação de Tela serve para capturas e títulos de janela; a Acessibilidade, para ler o conteúdo de uma janela."
+      "why": "Estas vão para o codeg-computer-helper, não para o codeg: tudo o que é concedido ao codeg é herdado pelo shell de cada agente. A Gravação de Tela serve para capturas e títulos de janela; a Acessibilidade, para ler o conteúdo de uma janela e agir nela."
     },
     "shared": {
       "title": "{count, plural, =0 {Nenhuma janela compartilhada} one {# janela compartilhada} other {# janelas compartilhadas}}",
@@ -5174,11 +5180,23 @@
       "stop": "Parar",
       "stopAll": "Parar todas"
     },
+    "level": {
+      "read": "Pode ler",
+      "control": "Pode agir",
+      "readLong": "Somente leitura",
+      "controlLong": "Ler e agir",
+      "change": "Mudar o que os agentes podem fazer"
+    },
     "activity": {
       "title": "Atividade recente",
       "capture": "Captura",
       "snapshot": "Leitura",
       "verify": "Verificação",
+      "click": "Clique",
+      "scroll": "Rolagem",
+      "type": "Digitação",
+      "key": "Tecla",
+      "set-value": "Valor",
       "outcome": {
         "done": "feito",
         "refused": "recusado",
@@ -5189,7 +5207,7 @@
     "openSettings": "Ajustes",
     "picker": {
       "title": "Compartilhar uma janela com os agentes",
-      "description": "Os agentes de qualquer conversa podem ler uma janela que você compartilhar — a captura e o conteúdo — até você parar de compartilhar, ela fechar ou ficar sem uso pelo tempo definido nos ajustes.",
+      "description": "Os agentes de qualquer conversa podem ler uma janela que você compartilhar — a captura e o conteúdo — e, se você deixar que ajam nela, clicar e digitar, até você parar de compartilhar, ela fechar ou ficar sem uso pelo tempo definido nos ajustes.",
       "count": "{count, plural, one {# janela} other {# janelas}}",
       "loading": "Carregando janelas…",
       "refresh": "Atualizar",
@@ -5203,6 +5221,10 @@
         "unidentified": "Não é possível identificar o app"
       },
       "share": "Compartilhar",
+      "sharedRead": "Pode ler",
+      "sharedControl": "Pode agir",
+      "shareRead": "Deixar os agentes lerem",
+      "shareControl": "Deixar os agentes lerem e agirem nela",
       "stopSharing": "Parar de compartilhar"
     },
     "settings": {

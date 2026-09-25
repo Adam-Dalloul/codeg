@@ -27,6 +27,7 @@ import {
   type BackendStatus,
   type ComputerAction,
   type ComputerActivityPayload,
+  type ComputerStatePayload,
   type SharedWindow,
 } from "./types"
 
@@ -46,6 +47,9 @@ export interface ComputerStoreState {
    *  Until then it is empty for want of news, not because nothing is shared
    *  (a grant made before this window loaded is not in it). */
   sharedKnown: boolean
+  /** The person pressed Stop and has not resumed. Travels with `shared`:
+   *  both come from `computer://state` and from the status fetch. */
+  paused: boolean
   backend: BackendStatus | null
   activity: readonly ComputerActivityLine[]
 }
@@ -55,6 +59,7 @@ const ACTIVITY_LIMIT = 50
 let state: ComputerStoreState = {
   shared: [],
   sharedKnown: false,
+  paused: false,
   backend: null,
   activity: [],
 }
@@ -69,9 +74,15 @@ function emit(next: ComputerStoreState) {
   for (const listener of listeners) listener()
 }
 
-export function setComputerShared(shared: readonly SharedWindow[]): void {
+/** The shared windows — and, when the source says, whether Stop is in
+ *  force. A share or unshare answers with the list alone; Stop does not move
+ *  with it. */
+export function setComputerShared(
+  shared: readonly SharedWindow[],
+  paused?: boolean
+): void {
   sharedVersion += 1
-  emit({ ...state, shared, sharedKnown: true })
+  emit({ ...state, shared, sharedKnown: true, paused: paused ?? state.paused })
 }
 
 export function setComputerBackend(backend: BackendStatus): void {
@@ -93,9 +104,10 @@ export function computerStoreMark(): ComputerStoreMark {
  *  `mark` was taken. */
 export function setComputerSharedSince(
   shared: readonly SharedWindow[],
-  mark: ComputerStoreMark
+  mark: ComputerStoreMark,
+  paused?: boolean
 ): void {
-  if (sharedVersion === mark.shared) setComputerShared(shared)
+  if (sharedVersion === mark.shared) setComputerShared(shared, paused)
 }
 
 /** A fetched backend status, unless something newer has landed since `mark`
@@ -129,8 +141,8 @@ export function recordComputerActivity(payload: ComputerActivityPayload): void {
 function ensureStarted() {
   if (started || !computerAvailable()) return
   started = true
-  void subscribe<{ shared: SharedWindow[] }>(COMPUTER_STATE_EVENT, (p) =>
-    setComputerShared(p.shared)
+  void subscribe<ComputerStatePayload>(COMPUTER_STATE_EVENT, (p) =>
+    setComputerShared(p.shared, p.paused)
   ).catch(() => {})
   void subscribe<ComputerActivityPayload>(
     COMPUTER_ACTIVITY_EVENT,
@@ -158,5 +170,11 @@ export function useComputerStore(): ComputerStoreState {
 
 /** Test-only: back to the initial state, listeners kept. */
 export function resetComputerStoreForTest(): void {
-  state = { shared: [], sharedKnown: false, backend: null, activity: [] }
+  state = {
+    shared: [],
+    sharedKnown: false,
+    paused: false,
+    backend: null,
+    activity: [],
+  }
 }

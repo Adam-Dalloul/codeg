@@ -4978,9 +4978,9 @@
       "hint": "Permite que los agentes ejecuten su propio JavaScript en una página que hayas compartido. Desactivado por defecto, y requiere el interruptor de arriba. Activarlo significa que los fragmentos se ejecutan sin preguntar, así que la decisión está en este interruptor; en Ajustes → Navegador integrado puedes hacer que te muestren cada fragmento."
     },
     "computer": {
-      "label": "Ver las ventanas del escritorio",
-      "short": "Lista apps y ventanas; lee las que compartas.",
-      "hint": "Permite que un agente liste las aplicaciones y ventanas de tu escritorio y lea las ventanas que compartas con él: una captura, su contenido, si muestra lo que se espera. Nada es legible hasta que compartas una ventana desde el panel Uso del ordenador de la barra de estado, y el uso compartido termina cuando la ventana se cierra, tras un rato sin uso o cuando lo detienes. No puede hacer clic ni escribir. Solo en la app de escritorio; en macOS requiere permisos concedidos a codeg-computer-helper. Versión preliminar."
+      "label": "Ver y usar las ventanas del escritorio",
+      "short": "Lista apps y ventanas; lee las que compartas y actúa en las que permitas.",
+      "hint": "Permite que un agente liste las aplicaciones y ventanas de tu escritorio, lea las ventanas que compartas con él —una captura, su contenido, si muestra lo que se espera— y haga clic, escriba y pulse teclas en las que compartas para actuar. Nada es legible hasta que compartas una ventana desde el panel Uso del ordenador de la barra de estado, y en ninguna se puede actuar salvo que también lo permitas; el uso compartido termina cuando la ventana se cierra, tras un rato sin uso o cuando lo detienes, y Detener agentes en ese panel los para a todos a la vez. La entrada llega a la ventana en segundo plano, sin traerla al frente. Solo en la app de escritorio; en macOS requiere permisos concedidos a codeg-computer-helper. Versión preliminar."
     },
     "automations": {
       "label": "Crear automatizaciones",
@@ -5150,6 +5150,12 @@
     "preview": "Versión preliminar",
     "refresh": "Actualizar",
     "tooltipShared": "Uso del ordenador · {count, plural, one {# ventana compartida} other {# ventanas compartidas}}",
+    "tooltipStopped": "Uso del ordenador · detenido",
+    "stop": "Detener agentes",
+    "stopTooltip": "{count, plural, one {Los agentes pueden actuar en # ventana} other {Los agentes pueden actuar en # ventanas}} · haz clic para detenerlos a todos",
+    "stopHint": "Detén a todos los agentes a la vez: no se lee ni se hace nada en ninguna ventana, todas las ventanas dejan de compartirse y se interrumpe lo que esté en curso, hasta que reanudes.",
+    "stopped": "Detenido. Ningún agente puede leer ni actuar en ninguna ventana hasta que reanudes.",
+    "resume": "Reanudar",
     "codegGranted": "Se ha concedido a codeg Accesibilidad o Grabación de pantalla, así que la shell de cada agente también la tiene. Quita codeg en Ajustes del Sistema → Privacidad y seguridad. El uso del ordenador seguirá desactivado hasta entonces.",
     "backend": {
       "idle": "Sin iniciar",
@@ -5166,7 +5172,7 @@
       "granted": "Concedido",
       "request": "Solicitar",
       "openSettings": "Abrir Ajustes",
-      "why": "Se conceden a codeg-computer-helper, no a codeg: todo lo que se concede a codeg lo hereda la shell de cada agente. La Grabación de pantalla sirve para capturas y títulos de ventana; la Accesibilidad, para leer el contenido de una ventana."
+      "why": "Se conceden a codeg-computer-helper, no a codeg: todo lo que se concede a codeg lo hereda la shell de cada agente. La Grabación de pantalla sirve para capturas y títulos de ventana; la Accesibilidad, para leer el contenido de una ventana y actuar en ella."
     },
     "shared": {
       "title": "{count, plural, =0 {Ninguna ventana compartida} one {# ventana compartida} other {# ventanas compartidas}}",
@@ -5174,11 +5180,23 @@
       "stop": "Detener",
       "stopAll": "Detener todas"
     },
+    "level": {
+      "read": "Puede leer",
+      "control": "Puede actuar",
+      "readLong": "Solo lectura",
+      "controlLong": "Leer y actuar",
+      "change": "Cambiar lo que pueden hacer los agentes"
+    },
     "activity": {
       "title": "Actividad reciente",
       "capture": "Captura",
       "snapshot": "Lectura",
       "verify": "Comprobación",
+      "click": "Clic",
+      "scroll": "Desplazamiento",
+      "type": "Escritura",
+      "key": "Tecla",
+      "set-value": "Valor",
       "outcome": {
         "done": "hecho",
         "refused": "rechazado",
@@ -5189,7 +5207,7 @@
     "openSettings": "Ajustes",
     "picker": {
       "title": "Compartir una ventana con los agentes",
-      "description": "Los agentes de cualquier conversación pueden leer una ventana que compartas —su captura y su contenido— hasta que dejes de compartirla, se cierre o pase sin uso el tiempo fijado en los ajustes.",
+      "description": "Los agentes de cualquier conversación pueden leer una ventana que compartas —su captura y su contenido— y, si les permites actuar en ella, hacer clic y escribir, hasta que dejes de compartirla, se cierre o pase sin uso el tiempo fijado en los ajustes.",
       "count": "{count, plural, one {# ventana} other {# ventanas}}",
       "loading": "Cargando ventanas…",
       "refresh": "Actualizar",
@@ -5203,6 +5221,10 @@
         "unidentified": "No se puede identificar la app"
       },
       "share": "Compartir",
+      "sharedRead": "Puede leer",
+      "sharedControl": "Puede actuar",
+      "shareRead": "Permitir que los agentes la lean",
+      "shareControl": "Permitir que los agentes la lean y actúen en ella",
       "stopSharing": "Dejar de compartir"
     },
     "settings": {

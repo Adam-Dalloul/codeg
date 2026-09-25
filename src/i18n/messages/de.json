@@ -4978,9 +4978,9 @@
       "hint": "Erlaubt Agenten, eigenes JavaScript auf einer von dir geteilten Seite auszuführen. Standardmäßig aus und nur zusammen mit dem Schalter darüber. Einschalten heißt, dass Codeausschnitte ohne Nachfrage laufen – die Entscheidung fällt also an diesem Schalter; unter Einstellungen → Integrierter Browser kannst du dir stattdessen jeden Ausschnitt zeigen lassen."
     },
     "computer": {
-      "label": "Fenster des Desktops sehen",
-      "short": "Apps und Fenster auflisten; freigegebene Fenster lesen.",
-      "hint": "Lässt einen Agenten die Anwendungen und Fenster auf deinem Desktop auflisten und die Fenster lesen, die du für ihn freigibst – ein Bildschirmfoto, den Inhalt, ob es zeigt, was erwartet wird. Nichts ist lesbar, bis du im Bereich „Computernutzung“ in der Statusleiste ein Fenster freigibst; die Freigabe endet, wenn das Fenster geschlossen wird, nach einer Weile ohne Nutzung oder wenn du sie beendest. Es kann nicht klicken oder tippen. Nur in der Desktop-App; unter macOS sind Berechtigungen für codeg-computer-helper nötig. Vorschau."
+      "label": "Fenster des Desktops sehen und bedienen",
+      "short": "Apps und Fenster auflisten; freigegebene lesen, erlaubte bedienen.",
+      "hint": "Lässt einen Agenten die Anwendungen und Fenster auf deinem Desktop auflisten, die Fenster lesen, die du für ihn freigibst – ein Bildschirmfoto, den Inhalt, ob es zeigt, was erwartet wird –, und in denen klicken, tippen und Tasten drücken, die du zum Handeln freigibst. Nichts ist lesbar, bis du im Bereich „Computernutzung“ in der Statusleiste ein Fenster freigibst, und in keinem Fenster wird gehandelt, wenn du das nicht auch erlaubst; die Freigabe endet, wenn das Fenster geschlossen wird, nach einer Weile ohne Nutzung oder wenn du sie beendest, und „Agenten anhalten“ in diesem Bereich hält alle auf einmal an. Eingaben erreichen das Fenster im Hintergrund, ohne es nach vorn zu holen. Nur in der Desktop-App; unter macOS sind Berechtigungen für codeg-computer-helper nötig. Vorschau."
     },
     "automations": {
       "label": "Automatisierungen erstellen",
@@ -5150,6 +5150,12 @@
     "preview": "Vorschau",
     "refresh": "Aktualisieren",
     "tooltipShared": "Computernutzung · {count, plural, one {# Fenster freigegeben} other {# Fenster freigegeben}}",
+    "tooltipStopped": "Computernutzung · angehalten",
+    "stop": "Agenten anhalten",
+    "stopTooltip": "{count, plural, one {Agenten können in # Fenster handeln} other {Agenten können in # Fenstern handeln}} · klicken, um alle anzuhalten",
+    "stopHint": "Hält alle Agenten sofort an: In keinem Fenster wird etwas gelesen oder getan, alle Freigaben enden und was gerade läuft, wird abgebrochen – bis du fortsetzt.",
+    "stopped": "Angehalten. Kein Agent kann ein Fenster lesen oder darin handeln, bis du fortsetzt.",
+    "resume": "Fortsetzen",
     "codegGranted": "codeg selbst hat Bedienungshilfen oder Bildschirmaufnahme erhalten – damit hat sie auch die Shell jedes Agenten. Entferne codeg unter Systemeinstellungen → Datenschutz & Sicherheit. Bis dahin bleibt die Computernutzung aus.",
     "backend": {
       "idle": "Nicht gestartet",
@@ -5166,7 +5172,7 @@
       "granted": "Erteilt",
       "request": "Anfordern",
       "openSettings": "Einstellungen öffnen",
-      "why": "Diese gehen an codeg-computer-helper, nicht an codeg: Alles, was codeg erteilt wird, erbt die Shell jedes Agenten. Bildschirmaufnahme wird für Bildschirmfotos und Fenstertitel gebraucht, Bedienungshilfen zum Lesen von Fensterinhalten."
+      "why": "Diese gehen an codeg-computer-helper, nicht an codeg: Alles, was codeg erteilt wird, erbt die Shell jedes Agenten. Bildschirmaufnahme wird für Bildschirmfotos und Fenstertitel gebraucht, Bedienungshilfen zum Lesen von Fensterinhalten und zum Handeln darin."
     },
     "shared": {
       "title": "{count, plural, =0 {Keine Fenster freigegeben} one {# Fenster freigegeben} other {# Fenster freigegeben}}",
@@ -5174,11 +5180,23 @@
       "stop": "Beenden",
       "stopAll": "Alle beenden"
     },
+    "level": {
+      "read": "Darf lesen",
+      "control": "Darf handeln",
+      "readLong": "Nur lesen",
+      "controlLong": "Lesen und handeln",
+      "change": "Ändern, was Agenten dürfen"
+    },
     "activity": {
       "title": "Letzte Aktivität",
       "capture": "Bildschirmfoto",
       "snapshot": "Lesen",
       "verify": "Prüfen",
+      "click": "Klick",
+      "scroll": "Scrollen",
+      "type": "Eingabe",
+      "key": "Taste",
+      "set-value": "Wert setzen",
       "outcome": {
         "done": "erledigt",
         "refused": "abgelehnt",
@@ -5189,7 +5207,7 @@
     "openSettings": "Einstellungen",
     "picker": {
       "title": "Ein Fenster für Agenten freigeben",
-      "description": "Agenten in jeder Unterhaltung können ein freigegebenes Fenster lesen – Bildschirmfoto und Inhalt –, bis du die Freigabe beendest, es geschlossen wird oder es so lange ungenutzt bleibt wie in den Einstellungen festgelegt.",
+      "description": "Agenten in jeder Unterhaltung können ein freigegebenes Fenster lesen – Bildschirmfoto und Inhalt – und, wenn du sie handeln lässt, darin klicken und tippen, bis du die Freigabe beendest, es geschlossen wird oder es so lange ungenutzt bleibt wie in den Einstellungen festgelegt.",
       "count": "{count, plural, one {# Fenster} other {# Fenster}}",
       "loading": "Fenster werden geladen …",
       "refresh": "Aktualisieren",
@@ -5203,6 +5221,10 @@
         "unidentified": "App nicht identifizierbar"
       },
       "share": "Freigeben",
+      "sharedRead": "Darf lesen",
+      "sharedControl": "Darf handeln",
+      "shareRead": "Agenten lesen lassen",
+      "shareControl": "Agenten lesen und handeln lassen",
       "stopSharing": "Freigabe beenden"
     },
     "settings": {

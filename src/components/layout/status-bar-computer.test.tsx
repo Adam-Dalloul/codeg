@@ -15,6 +15,8 @@ const api = vi.hoisted(() => ({
   computerOpenPermissionSettings: vi.fn(),
   computerShareWindow: vi.fn(),
   computerRevokeAll: vi.fn(),
+  computerStop: vi.fn(async () => {}),
+  computerResume: vi.fn(async () => {}),
   computerListShareableWindows: vi.fn(),
   computerWindowThumbnail: vi.fn(),
 }))
@@ -30,7 +32,10 @@ vi.mock("@/lib/api", () => ({ openSettingsWindow: vi.fn(async () => {}) }))
 
 import { StatusBarComputer } from "./status-bar-computer"
 import enMessages from "@/i18n/messages/en.json"
-import { resetComputerStoreForTest } from "@/lib/computer/computer-store"
+import {
+  resetComputerStoreForTest,
+  setComputerShared,
+} from "@/lib/computer/computer-store"
 
 function status(overrides: Partial<ComputerStatus> = {}): ComputerStatus {
   return {
@@ -49,6 +54,7 @@ function status(overrides: Partial<ComputerStatus> = {}): ComputerStatus {
       selfResponsible: true,
     },
     shared: [],
+    paused: false,
     ...overrides,
   }
 }
@@ -145,6 +151,42 @@ describe("StatusBarComputer", () => {
     await waitFor(() =>
       expect(api.computerShareWindow).toHaveBeenCalledWith("w4", "none")
     )
+  })
+
+  /** While a window is shared for control, Stop is beside the glyph, one
+   * click away, without opening anything. */
+  it("puts Stop beside the glyph while agents can act", async () => {
+    mount()
+    await screen.findByRole("button", { name: "Computer use" })
+    expect(screen.queryByRole("button", { name: "Stop agents" })).toBeNull()
+    act(() =>
+      setComputerShared([
+        {
+          targetId: "w4",
+          appName: "TextEdit",
+          appKey: "com.apple.TextEdit",
+          title: "notes.txt",
+          level: "control",
+          grantedAt: 1,
+          lastUsedAt: 1,
+        },
+      ])
+    )
+    fireEvent.click(await screen.findByRole("button", { name: "Stop agents" }))
+    await waitFor(() => expect(api.computerStop).toHaveBeenCalled())
+  })
+
+  /** Stopped, the panel says so and offers only Resume — sharing waits. */
+  it("offers Resume while stopped, and nothing to share", async () => {
+    api.computerStatus.mockResolvedValue(status({ paused: true }))
+    mount()
+    fireEvent.click(await screen.findByRole("button", { name: "Computer use" }))
+    await screen.findByText(/No agent can read or act/)
+    expect(
+      screen.getByRole("button", { name: "Share a window…" })
+    ).toBeDisabled()
+    fireEvent.click(screen.getByRole("button", { name: "Resume" }))
+    await waitFor(() => expect(api.computerResume).toHaveBeenCalled())
   })
 
   /** The switch flipped on elsewhere while the first read was in flight: the

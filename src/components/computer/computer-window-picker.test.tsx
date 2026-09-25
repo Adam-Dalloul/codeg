@@ -1,4 +1,4 @@
-import { act, render, screen } from "@testing-library/react"
+import { act, fireEvent, render, screen } from "@testing-library/react"
 import { NextIntlClientProvider } from "next-intl"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
@@ -56,7 +56,7 @@ describe("ComputerWindowPicker", () => {
     api.computerListShareableWindows.mockResolvedValue([window("read")])
     mount()
     expect(
-      await screen.findByRole("button", { name: "Stop sharing" })
+      await screen.findByRole("button", { name: "Can read" })
     ).toBeInTheDocument()
   })
 
@@ -65,10 +65,42 @@ describe("ComputerWindowPicker", () => {
   it("follows the store once it knows", async () => {
     api.computerListShareableWindows.mockResolvedValue([window("read")])
     mount()
-    await screen.findByRole("button", { name: "Stop sharing" })
+    await screen.findByRole("button", { name: "Can read" })
     act(() => setComputerShared([]))
     expect(
       await screen.findByRole("button", { name: "Share" })
     ).toBeInTheDocument()
   })
+
+  /** Acting is the second decision, made from the same menu as reading. */
+  it("offers acting on a window from the same menu", async () => {
+    api.computerListShareableWindows.mockResolvedValue([window("none")])
+    api.computerShareWindow.mockResolvedValue([])
+    mount()
+    await openMenu(await screen.findByRole("button", { name: "Share" }))
+    await act(async () => {
+      fireEvent.click(
+        screen.getByRole("menuitem", { name: "Let agents read and act on it" })
+      )
+      await Promise.resolve()
+    })
+    expect(api.computerShareWindow).toHaveBeenCalledWith("w1", "control")
+  })
 })
+
+// jsdom has no `PointerEvent`; Radix reads `button` off the event.
+function fireMouse(target: Element, type: string) {
+  fireEvent(
+    target,
+    new MouseEvent(type, { bubbles: true, cancelable: true, button: 0 })
+  )
+}
+
+async function openMenu(trigger: Element) {
+  await act(async () => {
+    fireMouse(trigger, "pointerdown")
+    fireMouse(trigger, "pointerup")
+    fireMouse(trigger, "click")
+    await new Promise((resolve) => setTimeout(resolve, 0))
+  })
+}

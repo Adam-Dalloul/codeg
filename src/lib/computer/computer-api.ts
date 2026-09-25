@@ -82,3 +82,14 @@ export async function computerShareWindow(
 export async function computerRevokeAll(): Promise<void> {
   return getTransport().call("computer_revoke_all", {})
 }
+
+/** Stop every agent at once: nothing is read or done on any window, every
+ *  window stops being shared, and whatever is in progress is cut off — until
+ *  {@link computerResume}. */
+export async function computerStop(): Promise<void> {
+  return getTransport().call("computer_stop", {})
+}
+
+export async function computerResume(): Promise<void> {
+  return getTransport().call("computer_resume", {})
+}

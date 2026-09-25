@@ -85,7 +85,7 @@ const LABELS = {
   sessionInfo: "Get session info",
   browserTools: "Read and drive the built-in browser",
   browserEval: "Run code in the built-in browser",
-  computer: "See your desktop's windows",
+  computer: "See and use your desktop's windows",
   automations: "Create automations",
   workTasks: "Create to-do tasks",
 } as const

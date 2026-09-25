@@ -62,6 +62,8 @@ export interface ComputerStatus {
   permissions?: PermissionReport
   codeg?: CodegTccStatus
   shared: SharedWindow[]
+  /** The person pressed Stop and has not resumed. */
+  paused: boolean
 }
 
 export interface Rect {
@@ -94,6 +96,7 @@ export type GrantChange =
   | "target-changed"
   | "expired"
   | "disabled"
+  | "stopped"
 
 /** `computer://agent-grant` */
 export interface ComputerGrantPayload {
@@ -102,7 +105,15 @@ export interface ComputerGrantPayload {
   level: GrantLevel
 }
 
-export type ComputerAction = "capture" | "snapshot" | "verify"
+export type ComputerAction =
+  | "capture"
+  | "snapshot"
+  | "verify"
+  | "click"
+  | "scroll"
+  | "type"
+  | "key"
+  | "set-value"
 export type ActivityOutcome = "done" | "refused" | "failed"
 
 /** `computer://agent-activity` */
@@ -121,6 +132,13 @@ export interface ComputerToolsSettings {
   grantTtlMinutes: number
   /** Applications added to the built-in blocklist. */
   blocklist: string[]
+}
+
+/** `computer://state`: every shared window, and whether the person has
+ *  pressed Stop. */
+export interface ComputerStatePayload {
+  shared: SharedWindow[]
+  paused: boolean
 }
 
 /** Every shared window, whenever any grant changes. Desktop only. */

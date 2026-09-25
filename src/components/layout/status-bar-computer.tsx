@@ -2,13 +2,21 @@
 
 /**
  * Computer use, bottom-right of the workspace: which windows agents may see
- * right now, what they have done with them, and whatever stands in the way.
+ * or act on right now, what they have done with them, and whatever stands in
+ * the way.
  *
  * Present only in the desktop runtime and only while computer use is switched
  * on — off, there is nothing to show and nothing to decide. The glyph carries
  * the violet mark the browser uses for "an agent can read this" whenever at
  * least one window is shared, because a shared window is the one fact here a
  * person should be able to see without opening anything.
+ *
+ * **Stop is one click away, without opening anything.** While any window is
+ * shared for control a red stop button sits beside the glyph: an agent acting
+ * on a window is doing it in the background, where the person may not be
+ * looking, and the way to end it should not be behind a popover. Stop
+ * refuses every agent call, ends every sharing and cuts off what is in
+ * progress, until the person resumes.
  *
  * The permission rows name the helper, never codeg: on macOS the grants belong
  * to `codeg-computer-helper`, and one given to codeg would be given to every
@@ -19,15 +27,25 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 import { useTranslations } from "next-intl"
 import {
+  ChevronDown,
   CircleAlert,
   CircleCheck,
   Monitor,
+  OctagonPause,
+  Play,
   RotateCw,
   Settings2,
   ShieldAlert,
+  Square,
 } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
 import {
   Popover,
   PopoverContent,
@@ -40,9 +58,11 @@ import {
   computerAvailable,
   computerOpenPermissionSettings,
   computerRequestPermission,
+  computerResume,
   computerRevokeAll,
   computerShareWindow,
   computerStatus,
+  computerStop,
   getComputerToolsSettings,
 } from "@/lib/computer/computer-api"
 import {
@@ -56,6 +76,7 @@ import {
   COMPUTER_TOOLS_SETTINGS_CHANGED_EVENT,
   type ComputerStatus,
   type ComputerToolsSettings,
+  type GrantLevel,
   type OsPermission,
 } from "@/lib/computer/types"
 import { subscribe } from "@/lib/platform"
@@ -115,11 +136,12 @@ export function StatusBarComputer() {
 
 function ComputerPopover() {
   const t = useTranslations("ComputerUse")
-  const { shared, backend, activity } = useComputerStore()
+  const { shared, paused, backend, activity } = useComputerStore()
   const [open, setOpen] = useState(false)
   const [pickerOpen, setPickerOpen] = useState(false)
   const [status, setStatus] = useState<ComputerStatus | null>(null)
   const [loading, setLoading] = useState(false)
+  const [stopping, setStopping] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const aliveRef = useRef(true)
   /** The latest refresh; an older one that answers late is dropped. */
@@ -139,7 +161,7 @@ function ComputerPopover() {
       const next = await computerStatus()
       if (!aliveRef.current || seq !== refreshSeqRef.current) return
       setStatus(next)
-      setComputerSharedSince(next.shared, mark)
+      setComputerSharedSince(next.shared, mark, next.paused)
       setComputerBackendSince(next.backend, mark)
       setError(null)
     } catch (e) {
@@ -165,10 +187,10 @@ function ComputerPopover() {
     }
   }
 
-  const stop = async (targetId: string) => {
+  const setLevel = async (targetId: string, level: GrantLevel) => {
     const mark = computerStoreMark()
     try {
-      setComputerSharedSince(await computerShareWindow(targetId, "none"), mark)
+      setComputerSharedSince(await computerShareWindow(targetId, level), mark)
     } catch (e) {
       setError(toErrorMessage(e))
     }
@@ -184,30 +206,71 @@ function ComputerPopover() {
     }
   }
 
+  // Stop and resume answer once the backend has done them; the store follows
+  // from the state event they send, which is the one source of truth.
+  const stopAgents = async () => {
+    setStopping(true)
+    try {
+      await computerStop()
+    } catch (e) {
+      setError(toErrorMessage(e))
+    } finally {
+      if (aliveRef.current) setStopping(false)
+    }
+  }
+
+  const resume = async () => {
+    try {
+      await computerResume()
+      await refresh()
+    } catch (e) {
+      setError(toErrorMessage(e))
+    }
+  }
+
   const liveBackend = backend ?? status?.backend ?? null
   const codegLeaks =
     !!status?.codeg?.selfResponsible &&
     (status.codeg.accessibility || status.codeg.screenRecording)
   const permissions = status?.permissions
+  const controlled = shared.filter((w) => w.level === "control").length
   const appNameOf = (line: ComputerActivityLine) =>
     shared.find((w) => w.targetId === line.targetId)?.appName ?? line.targetId
 
   return (
     <>
+      {controlled > 0 && !paused && (
+        <button
+          type="button"
+          onClick={() => void stopAgents()}
+          disabled={stopping}
+          aria-label={t("stop")}
+          title={t("stopTooltip", { count: controlled })}
+          className="flex items-center text-red-500 transition-colors hover:text-red-600"
+        >
+          <Square className="size-3 fill-current" />
+        </button>
+      )}
       <Popover open={open} onOpenChange={handleOpenChange}>
         <PopoverTrigger asChild>
           <button
             aria-label={t("title")}
             title={
-              shared.length > 0
-                ? t("tooltipShared", { count: shared.length })
-                : t("title")
+              paused
+                ? t("tooltipStopped")
+                : shared.length > 0
+                  ? t("tooltipShared", { count: shared.length })
+                  : t("title")
             }
             className="relative flex items-center transition-colors hover:text-foreground"
           >
-            <Monitor
-              className={cn("size-3.5", shared.length > 0 && AGENT_MARK)}
-            />
+            {paused ? (
+              <OctagonPause className="size-3.5 text-amber-500" />
+            ) : (
+              <Monitor
+                className={cn("size-3.5", shared.length > 0 && AGENT_MARK)}
+              />
+            )}
           </button>
         </PopoverTrigger>
         <PopoverContent side="top" align="end" className="w-88 gap-2 p-2.5">
@@ -230,6 +293,31 @@ function ComputerPopover() {
               <RotateCw className={cn("h-3 w-3", loading && "animate-spin")} />
             </button>
           </div>
+
+          {paused ? (
+            <div className="flex items-center gap-2 rounded-md border border-amber-500/30 bg-amber-500/5 px-2 py-1.5 text-2xs text-amber-600 dark:text-amber-400">
+              <OctagonPause className="size-3.5 shrink-0" />
+              <span className="min-w-0 flex-1">{t("stopped")}</span>
+              <Button size="xs" variant="outline" onClick={() => void resume()}>
+                <Play className="size-3" />
+                {t("resume")}
+              </Button>
+            </div>
+          ) : (
+            shared.length > 0 && (
+              <Button
+                size="sm"
+                variant="destructive"
+                className="w-full"
+                onClick={() => void stopAgents()}
+                disabled={stopping}
+                title={t("stopHint")}
+              >
+                <Square className="size-3 fill-current" />
+                {t("stop")}
+              </Button>
+            )
+          )}
 
           {codegLeaks && (
             <div className="flex gap-1.5 rounded-md border border-red-500/30 bg-red-500/5 px-2 py-1.5 text-2xs text-red-500">
@@ -345,10 +433,39 @@ function ComputerPopover() {
                         </span>
                       )}
                     </span>
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <Button
+                          size="xs"
+                          variant="ghost"
+                          aria-label={t("level.change")}
+                          className={cn(
+                            w.level === "control" &&
+                              "text-red-600 dark:text-red-400"
+                          )}
+                        >
+                          {t(
+                            `level.${w.level === "control" ? "control" : "read"}`
+                          )}
+                          <ChevronDown className="size-3" />
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end" className="min-w-48">
+                        {(["read", "control"] as const).map((level) => (
+                          <DropdownMenuItem
+                            key={level}
+                            disabled={w.level === level}
+                            onSelect={() => void setLevel(w.targetId, level)}
+                          >
+                            {t(`level.${level}Long`)}
+                          </DropdownMenuItem>
+                        ))}
+                      </DropdownMenuContent>
+                    </DropdownMenu>
                     <Button
                       size="xs"
                       variant="ghost"
-                      onClick={() => void stop(w.targetId)}
+                      onClick={() => void setLevel(w.targetId, "none")}
                     >
                       {t("shared.stop")}
                     </Button>
@@ -402,7 +519,7 @@ function ComputerPopover() {
               setOpen(false)
               setPickerOpen(true)
             }}
-            disabled={codegLeaks}
+            disabled={codegLeaks || paused}
           >
             <Monitor className="h-3.5 w-3.5" />
             {t("share")}

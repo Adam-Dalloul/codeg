@@ -4978,9 +4978,9 @@
       "hint": "Let agents run their own JavaScript on a page you’ve shared. Off by default, and needs the switch above. Turning it on means snippets run without asking, so this switch is where the decision is made; Settings → Built-in browser can put each snippet in front of you instead."
     },
     "computer": {
-      "label": "See your desktop's windows",
-      "short": "List apps and windows; read the ones you share.",
-      "hint": "Lets an agent list the applications and windows on your desktop and read the windows you share with it — a screenshot, its contents, whether it shows what it expects. Nothing is readable until you share a window from the Computer use panel in the status bar, and sharing ends when the window closes, after a while unused, or when you stop it. It cannot click or type. Desktop app only; on macOS it needs permissions granted to codeg-computer-helper. Preview."
+      "label": "See and use your desktop's windows",
+      "short": "List apps and windows; read the ones you share, act on the ones you allow.",
+      "hint": "Lets an agent list the applications and windows on your desktop, read the windows you share with it — a screenshot, its contents, whether it shows what it expects — and click, type and press keys in the ones you share for acting. Nothing is readable until you share a window from the Computer use panel in the status bar, and nothing can be acted on unless you also let agents act on it; sharing ends when the window closes, after a while unused, or when you stop it, and Stop agents in that panel halts every agent at once. Input goes to the window in the background, without bringing it to the front. Desktop app only; on macOS it needs permissions granted to codeg-computer-helper. Preview."
     },
     "automations": {
       "label": "Create automations",
@@ -5150,6 +5150,12 @@
     "preview": "Preview",
     "refresh": "Refresh",
     "tooltipShared": "Computer use · {count, plural, one {# window shared} other {# windows shared}}",
+    "tooltipStopped": "Computer use · stopped",
+    "stop": "Stop agents",
+    "stopTooltip": "{count, plural, one {Agents can act on # window} other {Agents can act on # windows}} · click to stop them all",
+    "stopHint": "Stop every agent at once: nothing is read or done on any window, every window stops being shared, and whatever is in progress is cut off — until you resume.",
+    "stopped": "Stopped. No agent can read or act on any window until you resume.",
+    "resume": "Resume",
     "codegGranted": "codeg itself has been granted Accessibility or Screen Recording, so every agent's shell has it too. Remove codeg from System Settings → Privacy & Security. Computer use stays off until you do.",
     "backend": {
       "idle": "Not started",
@@ -5166,7 +5172,7 @@
       "granted": "Granted",
       "request": "Request",
       "openSettings": "Open Settings",
-      "why": "These go to codeg-computer-helper, not to codeg: anything granted to codeg is inherited by every agent's shell. Screen Recording is for screenshots and window titles, Accessibility for reading a window's contents."
+      "why": "These go to codeg-computer-helper, not to codeg: anything granted to codeg is inherited by every agent's shell. Screen Recording is for screenshots and window titles, Accessibility for reading a window's contents and acting on it."
     },
     "shared": {
       "title": "{count, plural, =0 {No windows shared} one {# window shared} other {# windows shared}}",
@@ -5174,11 +5180,23 @@
       "stop": "Stop",
       "stopAll": "Stop all"
     },
+    "level": {
+      "read": "Can read",
+      "control": "Can act",
+      "readLong": "Read only",
+      "controlLong": "Read and act",
+      "change": "Change what agents may do"
+    },
     "activity": {
       "title": "Recent activity",
       "capture": "Screenshot",
       "snapshot": "Read",
       "verify": "Check",
+      "click": "Click",
+      "scroll": "Scroll",
+      "type": "Type",
+      "key": "Key",
+      "set-value": "Set value",
       "outcome": {
         "done": "done",
         "refused": "refused",
@@ -5189,7 +5207,7 @@
     "openSettings": "Settings",
     "picker": {
       "title": "Share a window with agents",
-      "description": "Agents in every conversation can read a window you share — its screenshot and its contents — until you stop sharing it, it closes, or it goes unused for the time set in Settings.",
+      "description": "Agents in every conversation can read a window you share — its screenshot and its contents — and, if you let them act on it, click and type in it, until you stop sharing it, it closes, or it goes unused for the time set in Settings.",
       "count": "{count, plural, one {# window} other {# windows}}",
       "loading": "Loading windows…",
       "refresh": "Refresh",
@@ -5203,6 +5221,10 @@
         "unidentified": "Can't tell which app this is"
       },
       "share": "Share",
+      "sharedRead": "Can read",
+      "sharedControl": "Can act",
+      "shareRead": "Let agents read it",
+      "shareControl": "Let agents read and act on it",
       "stopSharing": "Stop sharing"
     },
     "settings": {

@@ -13,15 +13,32 @@
  * shared (codeg's own, a credential manager) gets no picture and no button,
  * only the reason.
  *
- * Only "read" is offered: this build gives agents no way to act on a window,
- * and a level that promised one would be a decision about nothing.
+ * Two levels are offered, as two entries of one menu — the browser's pair:
+ * reading a window cannot change it, acting on it can, and they are
+ * different decisions. A shared window moves between them without being
+ * taken back first.
  */
 
 import { useCallback, useEffect, useRef, useState } from "react"
 import { useTranslations } from "next-intl"
-import { AppWindow, Eye, Loader2, RotateCw, ShieldOff } from "lucide-react"
+import {
+  AppWindow,
+  ChevronDown,
+  Eye,
+  Loader2,
+  MousePointerClick,
+  RotateCw,
+  ShieldOff,
+} from "lucide-react"
 
 import { Button } from "@/components/ui/button"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
 import {
   Dialog,
   DialogContent,
@@ -41,7 +58,7 @@ import {
   setComputerSharedSince,
   useComputerStore,
 } from "@/lib/computer/computer-store"
-import type { PickerWindow } from "@/lib/computer/types"
+import type { GrantLevel, PickerWindow } from "@/lib/computer/types"
 import { cn } from "@/lib/utils"
 
 function ThumbnailFrame({ children }: { children: React.ReactNode }) {
@@ -97,9 +114,10 @@ export function ComputerWindowPicker({
   // while the picker is open. Until the store has heard anything, the list's
   // own word is the only one there is.
   const { shared, sharedKnown } = useComputerStore()
-  const sharedIds = new Set(shared.map((w) => w.targetId))
-  const isShared = (w: PickerWindow) =>
-    sharedKnown ? sharedIds.has(w.targetId) : w.level !== "none"
+  const levelOf = (w: PickerWindow): GrantLevel =>
+    sharedKnown
+      ? (shared.find((s) => s.targetId === w.targetId)?.level ?? "none")
+      : w.level
   const [windows, setWindows] = useState<PickerWindow[] | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
@@ -126,8 +144,7 @@ export function ComputerWindowPicker({
     }
   }, [open, load])
 
-  const toggle = async (item: PickerWindow) => {
-    const next = isShared(item) ? "none" : "read"
+  const setLevel = async (item: PickerWindow, next: GrantLevel) => {
     const mark = computerStoreMark()
     setBusy(item.targetId)
     setError(null)
@@ -186,7 +203,8 @@ export function ComputerWindowPicker({
           ) : (
             <div className="grid grid-cols-2 gap-3 pr-3 sm:grid-cols-3">
               {windows.map((w) => {
-                const on = isShared(w)
+                const level = levelOf(w)
+                const on = level !== "none"
                 return (
                   <div
                     key={w.targetId}
@@ -221,19 +239,61 @@ export function ComputerWindowPicker({
                         {t(`notGrantable.${w.notGrantable}`)}
                       </p>
                     ) : (
-                      <Button
-                        size="sm"
-                        variant={on ? "outline" : "default"}
-                        disabled={busy === w.targetId}
-                        onClick={() => void toggle(w)}
-                      >
-                        {busy === w.targetId ? (
-                          <Loader2 className="size-3.5 animate-spin" />
-                        ) : (
-                          <Eye className="size-3.5" />
-                        )}
-                        {on ? t("stopSharing") : t("share")}
-                      </Button>
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <Button
+                            size="sm"
+                            variant={on ? "outline" : "default"}
+                            disabled={busy === w.targetId}
+                            className={cn(
+                              level === "control" &&
+                                "text-red-600 dark:text-red-400"
+                            )}
+                          >
+                            {busy === w.targetId ? (
+                              <Loader2 className="size-3.5 animate-spin" />
+                            ) : level === "control" ? (
+                              <MousePointerClick className="size-3.5" />
+                            ) : (
+                              <Eye className="size-3.5" />
+                            )}
+                            {level === "none"
+                              ? t("share")
+                              : t(
+                                  level === "control"
+                                    ? "sharedControl"
+                                    : "sharedRead"
+                                )}
+                            <ChevronDown className="size-3" />
+                          </Button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="start" className="min-w-56">
+                          <DropdownMenuItem
+                            disabled={level === "read"}
+                            onSelect={() => void setLevel(w, "read")}
+                          >
+                            <Eye className="size-3.5" />
+                            {t("shareRead")}
+                          </DropdownMenuItem>
+                          <DropdownMenuItem
+                            disabled={level === "control"}
+                            onSelect={() => void setLevel(w, "control")}
+                          >
+                            <MousePointerClick className="size-3.5" />
+                            {t("shareControl")}
+                          </DropdownMenuItem>
+                          {on && (
+                            <>
+                              <DropdownMenuSeparator />
+                              <DropdownMenuItem
+                                onSelect={() => void setLevel(w, "none")}
+                              >
+                                {t("stopSharing")}
+                              </DropdownMenuItem>
+                            </>
+                          )}
+                        </DropdownMenuContent>
+                      </DropdownMenu>
                     )}
                   </div>
                 )
