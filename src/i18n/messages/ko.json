@@ -1552,7 +1552,8 @@
         "medium": "중간",
         "high": "높음",
         "minimal": "최소",
-        "xhigh": "매우 높음"
+        "xhigh": "매우 높음",
+        "max": "최대"
       },
       "apiKeyLabel": "API 키",
       "apiKeyHint": "선택한 제공자의 ~/.pi/agent/auth.json에 저장됩니다.",
@@ -1607,7 +1608,9 @@
       "levelsEmptyError": "단계를 하나 이상 선택하세요. 하나도 없으면 pi는 Off로 되돌아갑니다.",
       "wireValuesTitle": "고급: 공급자에게 보내는 값",
       "wireValuesHint": "비워 두면 단계 이름을 그대로 보냅니다. 엔드포인트가 다른 표기를 요구할 때만 설정하세요 — Google 계열은 LOW / HIGH가 필요합니다.",
-      "defaultLevelUnlisted": "이 단계는 위 선택 목록에 없습니다 — pi가 낮춰 버립니다."
+      "defaultLevelUnlisted": "이 단계는 위 선택 목록에 없습니다 — pi가 낮춰 버립니다.",
+      "capabilitiesUnverified": "Pi가 아직 이 모델을 표시하지 않았습니다. API 키를 저장한 뒤 사용 가능한 추론 수준을 확인하세요.",
+      "runtimeTooOld": "pi-acp 0.0.34에는 Pi 0.81.0 이상이 필요합니다. 세션을 시작하기 전에 Pi를 업데이트하세요."
     },
     "addCustomAgent": "사용자 지정 에이전트 추가",
     "addCustomAgentHint": "ACP를 지원하는 모든 에이전트를 등록할 수 있습니다. 공개 ACP 레지스트리에서 선택하거나 레지스트리 정보를 붙여넣으세요.",

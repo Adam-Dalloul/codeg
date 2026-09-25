@@ -1552,7 +1552,8 @@
         "medium": "Moyen",
         "high": "Élevé",
         "minimal": "Minimal",
-        "xhigh": "Très élevé"
+        "xhigh": "Très élevé",
+        "max": "Maximum"
       },
       "apiKeyLabel": "Clé API",
       "apiKeyHint": "Enregistrée dans ~/.pi/agent/auth.json pour le fournisseur sélectionné.",
@@ -1607,7 +1608,9 @@
       "levelsEmptyError": "Choisissez au moins un niveau — sans aucun, pi retombe sur Off.",
       "wireValuesTitle": "Avancé : valeurs envoyées au fournisseur",
       "wireValuesHint": "Laissez vide pour envoyer le nom du niveau tel quel. Renseignez-le si votre endpoint attend autre chose — les backends façon Google veulent LOW / HIGH.",
-      "defaultLevelUnlisted": "Ce niveau n'est pas dans la liste ci-dessus — pi le ramènerait plus bas."
+      "defaultLevelUnlisted": "Ce niveau n'est pas dans la liste ci-dessus — pi le ramènerait plus bas.",
+      "capabilitiesUnverified": "Pi ne répertorie pas encore ce modèle. Enregistrez sa clé API, puis vérifiez les niveaux de réflexion disponibles.",
+      "runtimeTooOld": "pi-acp 0.0.34 nécessite Pi 0.81.0 ou une version ultérieure. Mettez Pi à jour avant de démarrer une session."
     },
     "addCustomAgent": "Ajouter un agent personnalisé",
     "addCustomAgentHint": "Enregistrez n'importe quel agent compatible ACP. Choisissez-en un dans le registre ACP public ou collez ses informations de registre.",

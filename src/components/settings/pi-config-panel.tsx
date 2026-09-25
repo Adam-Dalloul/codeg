@@ -39,6 +39,8 @@ import {
   acpUpdatePiConfig,
   acpValidatePiCommand,
   loadPiConfig,
+  listPiModelCapabilities,
+  type PiModelCapability,
   type PiTrustEntry,
 } from "@/lib/api"
 import { useAgentInstallStream } from "@/hooks/use-agent-install-stream"
@@ -46,6 +48,7 @@ import { PI_CONFIG_DIR_ENV } from "@/lib/pi-config"
 import {
   PI_THINKING_LEVELS,
   implicitWireValue,
+  levelsFromMap,
   reasoningFromModel,
   reasoningToMap,
   toggleLevel,
@@ -148,6 +151,14 @@ const PI_CUSTOM_API_PROTOCOLS = [
   "google-generative-ai",
 ]
 
+export function piRuntimeIsTooOld(version: string | null): boolean {
+  const match = version?.match(/(\d+)\.(\d+)\.(\d+)/)
+  if (!match) return false
+  const major = Number(match[1])
+  const minor = Number(match[2])
+  return major === 0 && minor < 81
+}
+
 type PiValidation = {
   found: boolean
   resolvedPath: string | null
@@ -225,6 +236,10 @@ export function PiConfigPanel({
   const [loadingCreds, setLoadingCreds] = useState(true)
   const [reasoning, setReasoning] = useState<PiModelReasoning>(NO_REASONING)
   const [showWireValues, setShowWireValues] = useState(false)
+  const [modelCapabilities, setModelCapabilities] = useState<
+    PiModelCapability[]
+  >([])
+  const [catalogRevision, setCatalogRevision] = useState(0)
 
   const isCustom = selectedProvider === PI_CUSTOM_SENTINEL
   const effectiveProvider = (isCustom ? customId : selectedProvider).trim()
@@ -282,19 +297,54 @@ export function PiConfigPanel({
     return () => {
       cancelled = true
     }
-  }, [])
+  }, [
+    agent.env?.[PI_COMMAND_ENV],
+    agent.env?.[PI_CONFIG_DIR_ENV],
+    agent.env?.[PI_SESSION_DIR_ENV],
+    catalogRevision,
+  ])
 
-  // Levels the picker may offer. A built-in provider keeps pi's full vocabulary —
-  // pi carries its own, more accurate declaration for those models.
-  const availableLevels: readonly PiThinkingLevel[] =
-    isCustom && reasoning.enabled ? reasoning.levels : PI_THINKING_LEVELS
-  // pi's `defaultThinkingLevel` is global, not per-model, so a level that suits one
-  // model can be unreachable on another. Say so instead of letting pi clamp it.
+  // Pi's own model catalog is the authority for built-ins. Derive from the
+  // currently selected provider/model at render time so a late response cannot
+  // attach the previous model's levels to the new selection.
+  useEffect(() => {
+    let cancelled = false
+    setModelCapabilities([])
+    listPiModelCapabilities()
+      .then((catalog) => {
+        if (!cancelled) setModelCapabilities(catalog)
+      })
+      .catch(() => {
+        if (!cancelled) setModelCapabilities([])
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [
+    agent.env?.[PI_COMMAND_ENV],
+    agent.env?.[PI_CONFIG_DIR_ENV],
+    agent.env?.[PI_SESSION_DIR_ENV],
+    catalogRevision,
+  ])
+
+  const builtInModel = modelCapabilities.find(
+    (entry) => entry.provider === effectiveProvider && entry.id === model.trim()
+  )
+  const availableLevels: readonly PiThinkingLevel[] = isCustom
+    ? reasoning.enabled
+      ? reasoning.levels
+      : ["off"]
+    : builtInModel
+      ? builtInModel.reasoning
+        ? levelsFromMap(builtInModel.thinkingLevelMap)
+        : ["off"]
+      : PI_THINKING_LEVELS.filter((level) => level !== "max")
+  // defaultThinkingLevel is global, but the selected model may not support it.
+  // Refuse a save rather than persist a level Pi would silently clamp.
   const defaultLevelUnlisted =
-    isCustom &&
-    reasoning.enabled &&
     thinkingLevel !== "" &&
-    !reasoning.levels.includes(thinkingLevel as PiThinkingLevel)
+    (isCustom ? reasoning.enabled : true) &&
+    !availableLevels.includes(thinkingLevel as PiThinkingLevel)
   const effectiveThinkingLevel =
     isCustom && !reasoning.enabled ? "off" : thinkingLevel
 
@@ -375,6 +425,9 @@ export function PiConfigPanel({
         })
       }
       await onSaved()
+      // Pi only lists providers with usable credentials. Requery after the
+      // saved key is available to its own model registry.
+      setCatalogRevision((previous) => previous + 1)
       toast.success(t("toasts.piSaved"))
     } catch (error) {
       console.error("[Pi] save config failed", error)
@@ -522,6 +575,30 @@ export function PiConfigPanel({
   const [validating, setValidating] = useState(false)
   const [validation, setValidation] = useState<PiValidation>(null)
 
+  const savedPiCommand = agent.env?.[PI_COMMAND_ENV]?.trim()
+  useEffect(() => {
+    if (
+      !savedPiCommand ||
+      mode !== "custom" ||
+      command.trim() !== savedPiCommand
+    ) {
+      return
+    }
+    let cancelled = false
+    setValidation(null)
+    acpValidatePiCommand(savedPiCommand)
+      .then((result) => {
+        if (!cancelled) setValidation(result)
+      })
+      .catch(() => {
+        if (!cancelled)
+          setValidation({ found: false, resolvedPath: null, version: null })
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [savedPiCommand, mode, command])
+
   // Project-trust decisions recorded in pi's `trust.json`, listed for review.
   const [trustEntries, setTrustEntries] = useState<PiTrustEntry[] | null>(null)
   const [revoking, setRevoking] = useState<string | null>(null)
@@ -582,6 +659,9 @@ export function PiConfigPanel({
     )
     try {
       await onSaveEnv(env, agent.enabled)
+      // A changed command or agent directory changes both native config and
+      // available models, even before the parent refreshes the agent prop.
+      setCatalogRevision((previous) => previous + 1)
       toast.success(t("toasts.piRuntimeSaved"))
     } catch (error) {
       console.error("[Pi] save runtime failed", error)
@@ -758,6 +838,11 @@ export function PiConfigPanel({
               </div>
             </div>
 
+            {piRuntimeIsTooOld(piStatus?.version ?? null) && (
+              <p className="text-2xs text-amber-600 dark:text-amber-400">
+                {t("pi.runtimeTooOld")}
+              </p>
+            )}
             {piInstallStatus !== "idle" && (
               <div className="max-h-[12.5rem] overflow-y-auto rounded-md border bg-muted/50 p-3 font-mono text-2xs leading-relaxed text-muted-foreground">
                 {piInstallLogs.map((line, i) => (
@@ -830,6 +915,11 @@ export function PiConfigPanel({
                       {t("pi.commandNotFound")}
                     </>
                   )}
+                </p>
+              )}
+              {piRuntimeIsTooOld(validation?.version ?? null) && (
+                <p className="text-2xs text-amber-600 dark:text-amber-400">
+                  {t("pi.runtimeTooOld")}
                 </p>
               )}
               <p className="text-2xs text-muted-foreground">
@@ -1046,7 +1136,7 @@ export function PiConfigPanel({
                       levels:
                         checked && prev.levels.length === 0
                           ? PI_THINKING_LEVELS.filter(
-                              (level) => level !== "xhigh"
+                              (level) => level !== "xhigh" && level !== "max"
                             )
                           : prev.levels,
                     }))
@@ -1173,6 +1263,11 @@ export function PiConfigPanel({
               ))}
             </SelectContent>
           </Select>
+          {!isCustom && effectiveProvider && model.trim() && !builtInModel && (
+            <p className="text-2xs text-muted-foreground">
+              {t("pi.capabilitiesUnverified")}
+            </p>
+          )}
           {defaultLevelUnlisted && (
             <p className="text-2xs text-destructive">
               {t("pi.defaultLevelUnlisted")}

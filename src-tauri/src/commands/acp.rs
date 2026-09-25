@@ -5683,6 +5683,19 @@ pub(crate) async fn acp_fetch_kimi_models_core(
 // agent dir honors `PI_CODING_AGENT_DIR` so a custom pi install can be targeted.
 // ---------------------------------------------------------------------------
 
+/// Match Pi's normalizePath() handling for PI_CODING_AGENT_DIR: the runtime
+/// expands a leading tilde before opening settings/auth/models.json.
+fn pi_agent_dir_from_value(value: &str) -> PathBuf {
+    let home = home_dir_or_default();
+    if value == "~" {
+        return home;
+    }
+    if let Some(rest) = value.strip_prefix("~/").or_else(|| value.strip_prefix("~\\")) {
+        return home.join(rest);
+    }
+    PathBuf::from(value)
+}
+
 /// Resolve pi's coding-agent dir: `PI_CODING_AGENT_DIR` if set (trimmed,
 /// non-empty), else `~/.pi/agent` (mirrors `codex_home_dir`/`resolve_kimi_*`).
 pub(crate) fn pi_agent_dir() -> PathBuf {
@@ -5691,21 +5704,9 @@ pub(crate) fn pi_agent_dir() -> PathBuf {
         .map(|raw| raw.trim().to_string())
         .filter(|s| !s.is_empty())
     {
-        Some(value) => PathBuf::from(value),
+        Some(value) => pi_agent_dir_from_value(&value),
         None => home_dir_or_default().join(".pi").join("agent"),
     }
-}
-
-fn pi_settings_json_path() -> PathBuf {
-    pi_agent_dir().join("settings.json")
-}
-
-fn pi_auth_json_path() -> PathBuf {
-    pi_agent_dir().join("auth.json")
-}
-
-fn pi_models_json_path() -> PathBuf {
-    pi_agent_dir().join("models.json")
 }
 
 /// Like [`pi_agent_dir`], but resolves `PI_CODING_AGENT_DIR` from a per-agent
@@ -5719,7 +5720,7 @@ fn pi_agent_dir_for_env(runtime_env: &BTreeMap<String, String>) -> PathBuf {
         .map(|raw| raw.trim().to_string())
         .filter(|s| !s.is_empty())
     {
-        Some(value) => PathBuf::from(value),
+        Some(value) => pi_agent_dir_from_value(&value),
         None => pi_agent_dir(),
     }
 }
@@ -6440,7 +6441,7 @@ pub struct PiModelReasoningSpec {
 /// pi's fixed thinking-level vocabulary (`EXTENDED_THINKING_LEVELS` in pi-ai). A name
 /// outside this list is rejected by pi-acp with `invalidParams`, so it must never reach
 /// `models.json`.
-const PI_THINKING_LEVELS: [&str; 6] = ["off", "minimal", "low", "medium", "high", "xhigh"];
+const PI_THINKING_LEVELS: [&str; 7] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 
 /// Read a JSON file into an owned object map, returning an empty map when the
 /// file is absent, unreadable, or does not parse to a JSON object. Pi's native
@@ -6544,6 +6545,110 @@ fn apply_pi_custom_model(
     entry.insert("models".to_string(), serde_json::Value::Array(models));
 }
 
+/// The same Pi executable and environment used by pi-acp supplies the built-in
+/// model catalog. Only these capability fields cross the settings API boundary.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PiModelCapability {
+    pub provider: String,
+    pub id: String,
+    #[serde(default)]
+    pub reasoning: bool,
+    #[serde(default)]
+    pub thinking_level_map: BTreeMap<String, Option<String>>,
+}
+
+fn parse_pi_model_capabilities(line: &str) -> Option<Vec<PiModelCapability>> {
+    let response: serde_json::Value = serde_json::from_str(line).ok()?;
+    if response.get("id")?.as_str()? != "codeg-models"
+        || response.get("type")?.as_str()? != "response"
+        || response.get("command")?.as_str()? != "get_available_models"
+        || response.get("success")?.as_bool()? != true
+    {
+        return None;
+    }
+    serde_json::from_value(response.get("data")?.get("models")?.clone()).ok()
+}
+
+/// Query Pi itself, without an ACP session or a prompt. The RPC child uses the
+/// configured PI_ACP_PI_COMMAND and runtime env from the normal ACP launch path.
+/// An unavailable/old Pi yields no capabilities, so the UI never guesses max.
+async fn query_pi_model_capabilities(
+    runtime_env: &BTreeMap<String, String>,
+    deadline: Duration,
+) -> Vec<PiModelCapability> {
+    use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+    use tokio::process::Command;
+    use std::process::Stdio;
+
+    let pi_command = runtime_env
+        .get("PI_ACP_PI_COMMAND")
+        .map(String::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or("pi");
+    let Some(program) = resolve_pi_command_path(pi_command) else {
+        return Vec::new();
+    };
+    let mut command: Command = crate::process::tokio_command(program);
+    command
+        .args([
+            "--mode",
+            "rpc",
+            "--no-session",
+            "--no-extensions",
+            "--no-skills",
+            "--no-prompt-templates",
+            "--no-context-files",
+            "--no-approve",
+        ])
+        .envs(runtime_env)
+        .current_dir(std::env::temp_dir())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .kill_on_drop(true);
+    let Ok(mut child) = command.spawn() else {
+        return Vec::new();
+    };
+    let query = async {
+        let mut stdin = child.stdin.take()?;
+        stdin
+            .write_all(b"{\"id\":\"codeg-models\",\"type\":\"get_available_models\"}\n")
+            .await
+            .ok()?;
+        stdin.flush().await.ok()?;
+        let stdout = child.stdout.take()?;
+        let mut lines = BufReader::new(stdout.take(8 * 1024 * 1024)).lines();
+        while let Ok(Some(line)) = lines.next_line().await {
+            if let Some(models) = parse_pi_model_capabilities(&line) {
+                return Some(models);
+            }
+        }
+        None
+    };
+    let result = tokio::time::timeout(deadline, query).await;
+    if tokio::time::timeout(Duration::from_secs(1), child.wait())
+        .await
+        .is_err()
+    {
+        let _ = child.start_kill();
+        let _ = child.wait().await;
+    }
+    result.ok().flatten().unwrap_or_default()
+}
+
+pub async fn list_pi_model_capabilities_core(
+    db: &AppDatabase,
+    data_dir: &Path,
+) -> Vec<PiModelCapability> {
+    let Ok(runtime_env) =
+        build_session_runtime_env(db, AgentType::Pi, None, data_dir).await
+    else {
+        return Vec::new();
+    };
+    query_pi_model_capabilities(&runtime_env, Duration::from_secs(12)).await
+}
+
 /// Apply a structured Pi config update to pi's native files. Validates the whole
 /// request before any write: provider/model must be non-empty after trim and the
 /// API key must not contain newlines (it lands verbatim in a JSON string). Writes
@@ -6593,8 +6698,10 @@ pub(crate) async fn acp_update_pi_config_core(
         .await
         .map_err(|e| AcpError::protocol(e.to_string()))?;
 
+    let pi_dir = pi_agent_dir_from_db(db).await;
+
     // ---- settings.json: merge-write provider/model/thinking level ----
-    let settings_path = pi_settings_json_path();
+    let settings_path = pi_dir.join("settings.json");
     let mut settings = read_json_object_or_empty(&settings_path);
     settings.insert(
         "defaultProvider".to_string(),
@@ -6614,7 +6721,7 @@ pub(crate) async fn acp_update_pi_config_core(
 
     // ---- auth.json: merge-write the provider credential (only when given) ----
     if let Some(key) = api_key {
-        let auth_path = pi_auth_json_path();
+        let auth_path = pi_dir.join("auth.json");
         let mut auth = read_json_object_or_empty(&auth_path);
         let mut entry = serde_json::Map::new();
         entry.insert(
@@ -6647,7 +6754,7 @@ pub(crate) async fn acp_update_pi_config_core(
             .map(str::trim)
             .filter(|s| !s.is_empty())
             .unwrap_or("openai-completions");
-        let models_path = pi_models_json_path();
+        let models_path = pi_dir.join("models.json");
         let mut models_doc = read_json_object_or_empty(&models_path);
         let mut providers = match models_doc.remove("providers") {
             Some(serde_json::Value::Object(map)) => map,
@@ -6763,21 +6870,21 @@ pub struct PiConfigProjection {
 /// Read pi's native files into a `PiConfigProjection`. Never errors: absent or
 /// malformed files yield `None` / an empty provider list (the panel treats that
 /// as "not configured yet").
-pub(crate) fn load_pi_config_core() -> PiConfigProjection {
-    let settings = read_json_object_or_empty(&pi_settings_json_path());
+pub(crate) fn load_pi_config_at(pi_dir: &Path) -> PiConfigProjection {
+    let settings = read_json_object_or_empty(&pi_dir.join("settings.json"));
     let string_key = |key: &str| {
         settings
             .get(key)
             .and_then(serde_json::Value::as_str)
             .map(str::to_string)
     };
-    let mut auth_providers: Vec<String> = read_json_object_or_empty(&pi_auth_json_path())
+    let mut auth_providers: Vec<String> = read_json_object_or_empty(&pi_dir.join("auth.json"))
         .keys()
         .cloned()
         .collect();
     auth_providers.sort();
     let mut custom_providers: Vec<PiCustomProvider> =
-        read_json_object_or_empty(&pi_models_json_path())
+        read_json_object_or_empty(&pi_dir.join("models.json"))
             .get("providers")
             .and_then(serde_json::Value::as_object)
             .map(|providers| {
@@ -6808,6 +6915,15 @@ pub(crate) fn load_pi_config_core() -> PiConfigProjection {
         auth_providers,
         custom_providers,
     }
+}
+
+#[cfg(test)]
+pub(crate) fn load_pi_config_core() -> PiConfigProjection {
+    load_pi_config_at(&pi_agent_dir())
+}
+
+pub(crate) async fn load_pi_config_for_db(db: &AppDatabase) -> PiConfigProjection {
+    load_pi_config_at(&pi_agent_dir_from_db(db).await)
 }
 
 /// Result of validating a user-supplied custom pi binary (BYO-pi). `found=false`
@@ -12153,13 +12269,28 @@ pub async fn acp_update_pi_config(
     .await
 }
 
-/// Read pi's current native config (model selection + configured auth providers)
-/// for the settings panel. Desktop command; the web handler calls
-/// `load_pi_config_core` directly. Reads the filesystem only — no DB/state needed.
+/// Read pi's current native config from the same per-agent directory that
+/// the ACP launch path passes to Pi. Desktop and web use the same DB-backed
+/// directory resolution.
 #[cfg(feature = "tauri-runtime")]
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
-pub async fn acp_load_pi_config() -> Result<PiConfigProjection, AcpError> {
-    Ok(load_pi_config_core())
+pub async fn acp_load_pi_config(db: State<'_, AppDatabase>) -> Result<PiConfigProjection, AcpError> {
+    Ok(load_pi_config_for_db(&db).await)
+}
+
+/// List Pi built-in model capabilities using the exact configured runtime.
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn acp_list_pi_model_capabilities(
+    db: State<'_, AppDatabase>,
+    app: tauri::AppHandle,
+) -> Result<Vec<PiModelCapability>, AcpError> {
+    let data_dir = app
+        .path()
+        .app_data_dir()
+        .map(|p| crate::paths::resolve_effective_data_dir(&p))
+        .unwrap_or_else(|_| PathBuf::from("."));
+    Ok(list_pi_model_capabilities_core(&db, &data_dir).await)
 }
 
 /// Validate a user-supplied custom pi binary (BYO-pi): resolve it (path or
@@ -15287,6 +15418,117 @@ base_url = \"https://example.test/v1\"
         assert_eq!(models[0]["thinkingLevelMap"]["xhigh"], "xhigh");
     }
 
+    /// A model that advertises max must retain its map through the Rust write path;
+    /// unsupported names must still be discarded before pi reads models.json.
+    #[test]
+    fn pi_custom_model_persists_max_without_unknown_levels() {
+        let mut entry = serde_json::Map::new();
+        apply_pi_custom_model(
+            &mut entry,
+            "reasoning-model",
+            Some(&pi_reasoning_spec(
+                true,
+                &[("minimal", Some("minimal")), ("max", Some("max")), ("ultra", Some("ultra"))],
+            )),
+        );
+
+        let models = pi_models_of(&entry);
+        let map = models[0]["thinkingLevelMap"].as_object().unwrap();
+        assert_eq!(map["minimal"], "minimal");
+        assert_eq!(map["max"], "max");
+        assert!(!map.contains_key("ultra"));
+    }
+
+    #[test]
+    fn pi_rpc_projection_keeps_only_capabilities_and_rejects_wrong_responses() {
+        let line = r#"{"id":"codeg-models","type":"response","command":"get_available_models","success":true,"data":{"models":[{"provider":"openai","id":"gpt-5.6-sol","reasoning":true,"thinkingLevelMap":{"max":"max"},"baseUrl":"https://secret.example","apiKey":"secret"}]}}"#;
+        let models = parse_pi_model_capabilities(line).unwrap();
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].thinking_level_map["max"], Some("max".into()));
+        let projected = serde_json::to_string(&models).unwrap();
+        assert!(!projected.contains("secret"));
+        assert!(parse_pi_model_capabilities(&line.replace("codeg-models", "other")).is_none());
+        assert!(parse_pi_model_capabilities(&line.replace(r#""success":true"#, r#""success":false"#)).is_none());
+    }
+
+    #[test]
+    fn pi_agent_dir_expands_tilde_override_like_the_pi_runtime() {
+        let mut env = BTreeMap::new();
+        env.insert("PI_CODING_AGENT_DIR".to_string(), "~/custom-pi".to_string());
+        assert_eq!(
+            pi_agent_dir_for_env(&env),
+            home_dir_or_default().join("custom-pi")
+        );
+    }
+
+    #[test]
+    fn pi_config_projection_reads_selected_agent_directory() {
+        let default = tempfile::tempdir().unwrap();
+        let custom = tempfile::tempdir().unwrap();
+        fs::write(default.path().join("settings.json"), r#"{"defaultModel":"wrong"}"#).unwrap();
+        fs::write(custom.path().join("settings.json"), r#"{"defaultModel":"right","defaultThinkingLevel":"max"}"#).unwrap();
+        let loaded = load_pi_config_at(custom.path());
+        assert_eq!(loaded.default_model.as_deref(), Some("right"));
+        assert_eq!(loaded.default_thinking_level.as_deref(), Some("max"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn pi_rpc_uses_configured_executable_and_agent_dir_without_extensions() {
+        use std::os::unix::fs::PermissionsExt;
+        let temp = tempfile::tempdir().unwrap();
+        let command_dir = temp.path().join("Pi runtime with spaces");
+        fs::create_dir(&command_dir).unwrap();
+        let script = command_dir.join("pi");
+        fs::write(
+            &script,
+            r#"#!/bin/sh
+read request
+case "$request $*" in
+  *codeg-models*--no-session*--no-extensions*)
+    if [ -n "$PI_CODING_AGENT_DIR" ]; then
+      printf '%s\n' '{"id":"codeg-models","type":"response","command":"get_available_models","success":true,"data":{"models":[{"provider":"openai","id":"via-override","reasoning":true,"thinkingLevelMap":{"max":"max"}}]}}'
+    fi
+    ;;
+esac
+"#,
+        ).unwrap();
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+        let mut env = BTreeMap::new();
+        env.insert("PI_ACP_PI_COMMAND".into(), script.to_string_lossy().into_owned());
+        env.insert("PI_CODING_AGENT_DIR".into(), temp.path().to_string_lossy().into_owned());
+        let models = query_pi_model_capabilities(&env, Duration::from_secs(2)).await;
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].id, "via-override");
+
+        let slow = command_dir.join("slow-pi");
+        fs::write(&slow, "#!/bin/sh\nsleep 30\n").unwrap();
+        fs::set_permissions(&slow, fs::Permissions::from_mode(0o755)).unwrap();
+        env.insert("PI_ACP_PI_COMMAND".into(), slow.to_string_lossy().into_owned());
+        assert!(query_pi_model_capabilities(&env, Duration::from_millis(50)).await.is_empty());
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn pi_rpc_launches_npm_cmd_from_path_with_spaces() {
+        let temp = tempfile::tempdir().unwrap();
+        let command_dir = temp.path().join("Pi runtime with spaces");
+        fs::create_dir(&command_dir).unwrap();
+        let script = command_dir.join("pi.cmd");
+        fs::write(
+            &script,
+            r#"@echo off
+set /p request=
+echo {"id":"codeg-models","type":"response","command":"get_available_models","success":true,"data":{"models":[{"provider":"openai","id":"windows","reasoning":true,"thinkingLevelMap":{"max":"max"}}]}}
+"#.replace('\n', "\r\n"),
+        ).unwrap();
+        let mut env = BTreeMap::new();
+        env.insert("PI_ACP_PI_COMMAND".into(), script.to_string_lossy().into_owned());
+        let models = query_pi_model_capabilities(&env, Duration::from_secs(3)).await;
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].id, "windows");
+    }
+
     /// The older writer skipped an already-listed model entirely, so a declaration
     /// could never reach one. Upserting must still leave every field the form has
     /// no opinion about — including a renamed `name` — exactly as the user left it.
@@ -15366,7 +15608,7 @@ base_url = \"https://example.test/v1\"
         assert!(models[0].get("thinkingLevelMap").is_none());
     }
 
-    /// pi-acp rejects a level name outside pi's fixed six with `invalidParams`, so
+    /// pi-acp rejects a level name outside pi's fixed seven with `invalidParams`, so
     /// one must never reach disk.
     #[test]
     fn pi_custom_model_filters_levels_pi_does_not_know() {
