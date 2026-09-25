@@ -67,7 +67,12 @@ impl StopKey {
     ) -> Option<StopKeyStatus> {
         let plugin = app.try_state::<GlobalShortcut<Wry>>()?;
         let mut inner = self.lock();
-        if inner.registered.as_ref().map(|(held, _)| held) == wanted {
+        // Held as wanted and nothing failed: nothing to do. (A shortcut the
+        // OS refused is tried again, and a refusal is cleared when the
+        // shortcut is no longer wanted.)
+        if inner.status.failed.is_none()
+            && inner.registered.as_ref().map(|(held, _)| held) == wanted
+        {
             return None;
         }
         if let Some((held, hotkey)) = inner.registered.take() {

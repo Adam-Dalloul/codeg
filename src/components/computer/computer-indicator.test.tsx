@@ -160,6 +160,28 @@ describe("ComputerIndicator", () => {
       })
     )
     expect(screen.getByText("Click in TextEdit")).toBeInTheDocument()
+    // The read an agent takes right after does not take the click down.
+    act(() =>
+      activity({
+        targetId: "w1",
+        action: "snapshot",
+        outcome: "done",
+        at: Date.now(),
+      })
+    )
+    expect(screen.getByText("Click in TextEdit")).toBeInTheDocument()
+  })
+
+  /** The strip is as wide as its words, whatever the window's width: the
+   * window is fitted to it, never the other way round. */
+  it("does not shrink to the window it is in", async () => {
+    api.computerSharedState.mockResolvedValue({
+      shared: [window_("w1", "TextEdit", "control")],
+      paused: false,
+    })
+    mount()
+    const summary = await screen.findByText("Agents can act on TextEdit")
+    expect(summary.parentElement).toHaveClass("w-max", "shrink-0")
   })
 
   /** The window is sized to what was drawn, with room for the shadow. */

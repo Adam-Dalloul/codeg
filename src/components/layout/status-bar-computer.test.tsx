@@ -227,12 +227,16 @@ describe("StatusBarComputer", () => {
       shared: [controlled],
       paused: false,
     })
-    api.computerStopKeyStatus.mockResolvedValue({
-      failed: "Control+Command+Escape",
-      detail: "taken",
+    // Asked only once the listener is in place, so no change can fall
+    // between the answer and the first broadcast.
+    let listening: boolean | undefined
+    api.computerStopKeyStatus.mockImplementation(async () => {
+      listening = handlers.has("computer://stop-key")
+      return { failed: "Control+Command+Escape", detail: "taken" }
     })
     mount()
     const stop = await screen.findByRole("button", { name: "Stop agents" })
+    await waitFor(() => expect(listening).toBe(true))
     expect(stop.title).not.toContain("⌃⌘Esc")
     await waitFor(() =>
       expect(handlers.get("computer://stop-key")).toBeDefined()

@@ -72,7 +72,9 @@ export function ComputerIndicator() {
       .catch(() => {})
   }, [])
 
-  // Tell the window how large the strip came out, whenever that changes.
+  // Tell the window how large the strip came out, whenever that changes. The
+  // strip is as wide as its words (`w-max`), not as the window: a window
+  // sized to an earlier, shorter strip must not clip the next one to fit.
   useLayoutEffect(() => {
     const strip = stripRef.current
     if (!strip) return
@@ -92,14 +94,12 @@ export function ComputerIndicator() {
     return () => observer.disconnect()
   }, [])
 
-  const latest = activity[0]
-  const recent =
-    latest &&
-    latest.outcome === "done" &&
-    ACTIONS.has(latest.action) &&
-    now - latest.at < RECENT_MS
-      ? latest
-      : null
+  // The latest action that went through — a read that followed it is not
+  // news here and must not take it down early.
+  const latest = activity.find(
+    (line) => line.outcome === "done" && ACTIONS.has(line.action)
+  )
+  const recent = latest && now - latest.at < RECENT_MS ? latest : null
 
   // Take the "just now" line down when its time is up. (Until then `now` may
   // be older than the line, which still reads as recent.)
@@ -154,7 +154,7 @@ export function ComputerIndicator() {
         data-tauri-drag-region
         style={{ margin: MARGIN }}
         className={cn(
-          "flex max-w-[680px] cursor-default select-none items-center gap-2 rounded-full border py-1 pl-3 text-xs shadow-lg",
+          "flex w-max max-w-[680px] shrink-0 cursor-default select-none items-center gap-2 rounded-full border py-1 pl-3 text-xs shadow-lg",
           stopped
             ? "border-amber-500/40 bg-amber-50 py-1.5 pr-3 text-amber-800 dark:bg-amber-950 dark:text-amber-200"
             : "border-border bg-background pr-1 text-foreground"

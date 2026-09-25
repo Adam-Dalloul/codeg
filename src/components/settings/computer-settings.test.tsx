@@ -268,6 +268,55 @@ describe("ComputerSettingsSection", () => {
     await screen.findByText("Active: press it anywhere to stop every agent.")
   })
 
+  /** Until the stored shortcut has been read, the row claims nothing — not
+   * even "off". */
+  it("says nothing of the shortcut it has not read", async () => {
+    mockGet.mockRejectedValueOnce(new Error("offline"))
+    mount()
+    await screen.findByText(/offline/)
+    expect(screen.getByRole("button", { name: "…" })).toBeDisabled()
+    expect(screen.queryByRole("button", { name: "Off" })).toBeNull()
+    expect(screen.queryByText(/^Off:/)).toBeNull()
+  })
+
+  /** A save locks the row and ends recording: keys pressed while it is on
+   * its way are not caught, only to be overwritten by its answer. */
+  it("stops recording when a save locks the row", async () => {
+    let finish: (
+      v: Awaited<ReturnType<typeof setComputerToolsPreferences>>
+    ) => void = () => {}
+    mockSet.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve
+        })
+    )
+    mount()
+    const box = await screen.findByLabelText(
+      "Applications that can never be shared"
+    )
+    await waitFor(() => expect(box).toHaveValue("com.example.vault"))
+    fireEvent.change(box, { target: { value: "com.example.new" } })
+    fireEvent.click(await shortcutButton())
+    await screen.findByRole("button", { name: "Press keys…" })
+    fireEvent.click(screen.getByRole("button", { name: "Save" }))
+    await waitFor(() => expect(box).toBeDisabled())
+    press("KeyK", { ctrlKey: true, shiftKey: true })
+    expect(screen.queryByRole("button", { name: "Press keys…" })).toBeNull()
+    await act(async () => {
+      finish({
+        enabled: true,
+        grantTtlMinutes: 30,
+        blocklist: ["com.example.new"],
+        stopShortcut: DEFAULT_KEY,
+      })
+    })
+    await shortcutButton()
+    expect(mockSet.mock.calls[0][0]).toEqual({
+      blocklist: ["com.example.new"],
+    })
+  })
+
   it("says the shortcut waits for computer use to be switched on", async () => {
     mockGet.mockResolvedValue({
       enabled: false,

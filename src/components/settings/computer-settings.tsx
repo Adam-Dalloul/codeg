@@ -328,8 +328,8 @@ export function ComputerSettingsSection() {
         </SettingRow>
         {computerAvailable() && (
           <StopShortcutRow
-            value={values.stopShortcut}
-            saved={dirtyStopShortcut ? null : baseline.stopShortcut}
+            value={loaded ? values.stopShortcut : null}
+            saved={loaded && !dirtyStopShortcut ? baseline.stopShortcut : null}
             enabled={enabled}
             disabled={!editable}
             onChange={(stopShortcut) =>
@@ -355,7 +355,9 @@ export function ComputerSettingsSection() {
 /**
  * The stop shortcut: the keys as they stand, a button to record new ones
  * (Escape alone cancels), the default back, or none — and, once saved,
- * whether the OS actually holds them.
+ * whether the OS actually holds them. Recording ends when the row is locked
+ * (a save on its way would overwrite what it caught), and nothing is said of
+ * a shortcut the form has not read yet.
  */
 function StopShortcutRow({
   value,
@@ -364,8 +366,9 @@ function StopShortcutRow({
   disabled,
   onChange,
 }: {
-  value: string
-  /** The shortcut as stored, or null while the row holds an unsaved one. */
+  /** The shortcut in the form, or null until the stored one has been read. */
+  value: string | null
+  /** The shortcut as stored, or null while unread or edited. */
   saved: string | null
   enabled: boolean
   disabled: boolean
@@ -376,16 +379,27 @@ function StopShortcutRow({
   const status = useComputerStopKey()
   const [recording, setRecording] = useState(false)
   const [problem, setProblem] = useState<StopShortcutProblem | null>(null)
+  const [wasDisabled, setWasDisabled] = useState(disabled)
   const fallback = defaultStopShortcut(isMac)
+
+  // Locked — a save is on its way, or nothing is read yet: stop listening.
+  if (disabled !== wasDisabled) {
+    setWasDisabled(disabled)
+    if (disabled) {
+      setRecording(false)
+      setProblem(null)
+    }
+  }
 
   useEffect(() => {
     if (!recording) return
     setShortcutRecorderArmed(true)
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.repeat) return
+      // Held keys too: a repeat must not reach the focused button.
       event.preventDefault()
       event.stopPropagation()
       event.stopImmediatePropagation()
+      if (event.repeat) return
       const parts = stopShortcutFromEvent(event)
       if (!parts) return
       const bare = !(parts.control || parts.alt || parts.shift || parts.command)
@@ -429,7 +443,7 @@ function StopShortcutRow({
       description={t("hint")}
       control={
         <div className="flex items-center gap-1">
-          {!recording && value !== fallback && (
+          {!recording && value !== null && value !== fallback && (
             <Button
               size="xs"
               variant="ghost"
@@ -439,7 +453,7 @@ function StopShortcutRow({
               {t("useDefault")}
             </Button>
           )}
-          {!recording && value !== "" && (
+          {!recording && value !== null && value !== "" && (
             <Button
               size="xs"
               variant="ghost"
@@ -462,9 +476,11 @@ function StopShortcutRow({
           >
             {recording
               ? t("recording")
-              : value
-                ? stopShortcutLabel(value, isMac)
-                : t("off")}
+              : value === null
+                ? "…"
+                : value
+                  ? stopShortcutLabel(value, isMac)
+                  : t("off")}
           </Button>
         </div>
       }

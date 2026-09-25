@@ -10,9 +10,11 @@
 //! and its target — on Windows a background click aimed by coordinates is
 //! refused if another window is on top at that point.
 //!
-//! The window exists while some window is shared for control, hidden between
-//! marks, so the first mark does not wait for a webview to load; it is
-//! closed when nothing is left to act on.
+//! The window is made the first time some window is shared for control, so
+//! the first mark does not wait for a webview to load, and is then only ever
+//! hidden — between marks, and while nothing is shared for control — never
+//! closed: a window on its way to being closed could be taken for a ready
+//! one by a share that came straight after.
 //!
 //! Where a mark goes comes from the driver's own numbers (the element's frame
 //! in its snapshot, or the window's frame measured before a point in it was
@@ -47,7 +49,7 @@ struct Mark {
 
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 struct Wanted {
-    /// Some window is shared for control.
+    /// Some window is shared for control; marks are taken only then.
     armed: bool,
     mark: Option<Mark>,
     /// Marks asked for so far: each has its own id, so a mark at the same
@@ -77,8 +79,8 @@ impl Marker {
         Marker { wanted }
     }
 
-    /// Whether some window is shared for control: the window is kept ready
-    /// while one is, and closed when none is.
+    /// Whether some window is shared for control: the window is made ready
+    /// when one is, and hidden — any mark with it — when none is.
     pub fn arm(&self, armed: bool) {
         self.wanted.send_if_modified(|w| {
             let changed = w.armed != armed;
@@ -90,18 +92,24 @@ impl Marker {
         });
     }
 
-    /// Mark where an action just landed, in desktop units.
+    /// Mark where an action just landed, in desktop units — unless nothing
+    /// is shared for control any more (the answer came back after a Stop):
+    /// such a mark would otherwise wait and play at the next share.
     pub fn mark(&self, at: (f64, f64), action: ComputerAction) {
         if !(at.0.is_finite() && at.1.is_finite()) {
             return;
         }
-        self.wanted.send_modify(|w| {
+        self.wanted.send_if_modified(|w| {
+            if !w.armed {
+                return false;
+            }
             w.marks += 1;
             w.mark = Some(Mark {
                 id: w.marks,
                 at,
                 action,
             });
+            true
         });
     }
 
@@ -117,9 +125,8 @@ async fn follow(app: AppHandle, mut rx: watch::Receiver<Wanted>) {
         let wanted = *rx.borrow_and_update();
         if !wanted.armed {
             if let Some(window) = app.get_webview_window(MARKER_LABEL) {
-                let _ = window.close();
+                let _ = window.hide();
             }
-            shown = None;
         } else if let Some(window) = window(&app) {
             match wanted.mark {
                 Some(mark) if shown != Some(mark.id) => {

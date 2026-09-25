@@ -569,7 +569,7 @@ async fn handle(state: &HelperState, op: HelperOp) -> Result<serde_json::Value, 
                     .and_then(|element| book.frame(pid, window_id, element))
             };
             let window_frame = match action.point() {
-                Some(point) => Some(act::check_point(&driver, pid, window_id, point).await?),
+                Some(point) => act::check_point(&driver, pid, window_id, point).await?,
                 None => None,
             };
             let deliverable = || state.deliverable(pid, started_at);

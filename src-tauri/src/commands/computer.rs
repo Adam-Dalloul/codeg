@@ -297,6 +297,10 @@ pub struct ComputerService {
     indicator: Indicator,
     /// The mark an action leaves where it landed.
     marker: Marker,
+    /// Held across reading the state and telling everyone of it, so two
+    /// changes told at once are told in the order they were read — the
+    /// older never lands last.
+    state_gate: std::sync::Mutex<()>,
 }
 
 impl ComputerService {
@@ -325,6 +329,7 @@ impl ComputerService {
             stop_key: StopKey::new(),
             indicator,
             marker,
+            state_gate: std::sync::Mutex::new(()),
         });
 
         // What a change takes away is taken before the write that made it
@@ -456,6 +461,7 @@ impl ComputerService {
     /// strip is up while anything is shared (and a moment after a Stop), the
     /// marker ready while anything is shared for control.
     fn emit_state(&self) {
+        let _told = self.state_gate.lock().unwrap_or_else(|p| p.into_inner());
         let shared = self.targets.shared();
         let paused = self.paused.load(Ordering::Acquire);
         events::emit_state(&self.app, &shared, paused);

@@ -195,13 +195,14 @@ fn is_safari(app_key: &str) -> bool {
 }
 
 /// Check that a point is still where it was read: the window is the size it
-/// was when the capture the point came from was taken.
+/// was when the capture the point came from was taken. Returns where the
+/// window is now, when the driver said — for the marker, not for aiming.
 pub async fn check_point(
     driver: &DriverProc,
     pid: u32,
     window_id: u64,
     point: &WindowPoint,
-) -> Result<Rect, HelperError> {
+) -> Result<Option<Rect>, HelperError> {
     if !driver.full_size_captures() {
         return Err(HelperError::new(
             HelperErrorCode::ActionFailed,
@@ -230,26 +231,29 @@ pub async fn check_point(
                 .find(|w| w.get("window_id").and_then(Value::as_u64) == Some(window_id))
         })
         .and_then(|w| w.get("bounds"))
-        .map(|b| {
-            let number = |key: &str| b.get(key).and_then(Value::as_f64).unwrap_or(0.0);
-            Rect {
-                x: number("x"),
-                y: number("y"),
-                width: number("width"),
-                height: number("height"),
-            }
-        })
         .ok_or_else(|| HelperError::new(HelperErrorCode::NoSuchWindow, "the window is gone"))?;
-    if (bounds.width - point.window_width).abs() > 1.0
-        || (bounds.height - point.window_height).abs() > 1.0
-    {
+    let number = |key: &str| bounds.get(key).and_then(Value::as_f64);
+    let (width, height) = (
+        number("width").unwrap_or(0.0),
+        number("height").unwrap_or(0.0),
+    );
+    if (width - point.window_width).abs() > 1.0 || (height - point.window_height).abs() > 1.0 {
         return Err(HelperError::new(
             HelperErrorCode::StaleRef,
             "The window has changed size since that screenshot, so its contents are not where \
              they were. Take a new computer_screenshot and use a point from it.",
         ));
     }
-    Ok(bounds)
+    // Where the window is, for the marker: only when the driver said.
+    Ok(match (number("x"), number("y")) {
+        (Some(x), Some(y)) => Some(Rect {
+            x,
+            y,
+            width,
+            height,
+        }),
+        _ => None,
+    })
 }
 
 /// The permissions an action needs of the OS: every action reaches the
