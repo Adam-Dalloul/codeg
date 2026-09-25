@@ -5930,18 +5930,21 @@ pub struct PiTrustEntry {
 /// The override only ever lands in the per-agent env, never codeg's own process
 /// env, so reading `std::env` here would silently target the wrong agent dir for
 /// BYO-pi users — the same trap the old launch-time seeding documented.
-async fn pi_agent_dir_from_db(db: &AppDatabase) -> PathBuf {
+async fn pi_agent_dir_from_db(db: &AppDatabase) -> Result<PathBuf, AcpError> {
     let setting = agent_setting_service::get_by_agent_type(&db.conn, AgentType::Pi)
         .await
-        .ok()
-        .flatten();
+        .map_err(|error| {
+            AcpError::protocol(format!(
+                "Cannot read Pi agent settings from the CodeG database: {error}. Check database access and retry; Pi profile files were not changed."
+            ))
+        })?;
     let local_config_json = load_agent_local_config_json(AgentType::Pi);
     let runtime_env = build_runtime_env_from_setting(
         AgentType::Pi,
         setting.as_ref(),
         local_config_json.as_deref(),
     );
-    pi_agent_dir_for_env(&runtime_env)
+    Ok(pi_agent_dir_for_env(&runtime_env))
 }
 
 /// Native Pi settings must use one stable directory across the settings API,
@@ -5958,7 +5961,7 @@ fn pi_settings_dir_checked(pi_dir: PathBuf) -> Result<PathBuf, AcpError> {
 }
 
 async fn pi_settings_dir_from_db(db: &AppDatabase) -> Result<PathBuf, AcpError> {
-    pi_settings_dir_checked(pi_agent_dir_from_db(db).await)
+    pi_settings_dir_checked(pi_agent_dir_from_db(db).await?)
 }
 
 /// Project-trust state for `cwd` against explicit files. Split from the DB-backed
@@ -6194,7 +6197,7 @@ pub(crate) async fn acp_pi_project_trust_state_core(
     db: &AppDatabase,
     workspace: String,
 ) -> Result<PiProjectTrustState, AcpError> {
-    let trust_file = pi_agent_dir_from_db(db).await.join("trust.json");
+    let trust_file = pi_agent_dir_from_db(db).await?.join("trust.json");
     // Not trimmed, for the same reason as the write path: a directory name may
     // legitimately start or end with a space, and the state must describe the
     // exact folder the caller named.
@@ -15523,6 +15526,38 @@ base_url = \"https://example.test/v1\"
         assert!(!projected.contains("secret"));
         assert!(parse_pi_model_capabilities(&line.replace("codeg-models", "other")).is_none());
         assert!(parse_pi_model_capabilities(&line.replace(r#""success":true"#, r#""success":false"#)).is_none());
+    }
+
+    #[tokio::test]
+    async fn pi_db_read_error_does_not_select_native_profile() {
+        // No migrations: the Pi settings SELECT fails instead of returning None.
+        // A failed lookup must not select the process-global Pi profile, where
+        // native settings and API keys would otherwise be written.
+        let db = AppDatabase {
+            conn: sea_orm::Database::connect("sqlite::memory:").await.unwrap(),
+        };
+        let error = pi_settings_dir_from_db(&db).await.unwrap_err();
+        assert!(error.to_string().contains("database"), "{error}");
+        assert!(load_pi_config_for_db(&db).await.is_err());
+        let update = PiConfigUpdate {
+            provider: "test-provider".into(),
+            model: "test-model".into(),
+            thinking_level: None,
+            api_key: Some("must-not-reach-native-auth".into()),
+            custom_base_url: None,
+            custom_api: None,
+            model_reasoning: None,
+        };
+        assert!(acp_update_pi_config_core(update, &db, &EventEmitter::Noop)
+            .await
+            .is_err());
+        assert!(acp_pi_list_trust_entries_core(&db).await.is_err());
+        assert!(acp_pi_set_project_trust_core(&db, "/tmp/pi-db-error".into(), Some(true))
+            .await
+            .is_err());
+        assert!(acp_pi_project_trust_state_core(&db, "/tmp/pi-db-error".into())
+            .await
+            .is_err());
     }
 
     #[test]
