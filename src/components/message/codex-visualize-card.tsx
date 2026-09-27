@@ -274,7 +274,12 @@ function readThemeOverrides(): string {
     const value = style.getPropertyValue(`--${token}`).trim()
     if (value) decls.push(`--${token}:${value}`)
   }
-  return decls.length > 0 ? `:root{${decls.join(";")}}` : ""
+  // The skill aliases its first chart series to `--primary`. codeg's primary
+  // is near-black on the neutral presets, which turned every series-1 bar
+  // and line black; keep the skill's own blue for charts while controls
+  // still follow codeg's primary.
+  decls.push("--viz-series-1:var(--blue)")
+  return `:root{${decls.join(";")}}`
 }
 
 function escapeClosingScript(source: string): string {
