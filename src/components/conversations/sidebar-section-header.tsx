@@ -4,13 +4,19 @@ import { memo } from "react"
 import {
   ChevronRight,
   Download,
+  Folder,
   FolderGit2,
   FolderOpenDot,
   LayersPlus,
+  ListFilter,
+  MessageSquare,
   SquarePen,
 } from "lucide-react"
 import { useTranslations } from "next-intl"
-import type { SidebarSectionKey } from "@/lib/sidebar-view-mode-storage"
+import type {
+  SidebarRecentFilter,
+  SidebarSectionKey,
+} from "@/lib/sidebar-view-mode-storage"
 import { cn } from "@/lib/utils"
 
 /**
@@ -36,6 +42,8 @@ export const SidebarSectionHeader = memo(function SidebarSectionHeader({
   onCloneRepository,
   onImportSessions,
   onNewFolderGroup,
+  recentFilter,
+  onCycleRecentFilter,
   topGap = false,
 }: {
   section: SidebarSectionKey
@@ -75,6 +83,16 @@ export const SidebarSectionHeader = memo(function SidebarSectionHeader({
    */
   onNewFolderGroup?: () => void
   /**
+   * When both are provided on the "recent" section, renders a filter button
+   * LEFT of the New-conversation action that cycles All → Chat → Folders. The
+   * icon names the current filter; unlike the other actions it stays visible
+   * (not hover-revealed) whenever a filter other than "all" is active, so a
+   * narrowed list never looks like a mysteriously short one. `onCycleRecentFilter`
+   * must be referentially stable to preserve the memo.
+   */
+  recentFilter?: SidebarRecentFilter
+  onCycleRecentFilter?: () => void
+  /**
    * Adds breathing room above the header so the "Folders" section reads as
    * visually separated from the "Pinned" section above it. Implemented as
    * padding (not margin) on a wrapper so the row's measured border-box grows —
@@ -103,6 +121,23 @@ export const SidebarSectionHeader = memo(function SidebarSectionHeader({
   // conversation in the active folder — but the geometry is shared.
   const showNewChat =
     (section === "chats" || section === "recent") && onNewChat != null
+  const showRecentFilter =
+    section === "recent" && recentFilter != null && onCycleRecentFilter != null
+  const recentFilterValueLabel =
+    recentFilter === "chats"
+      ? t("sectionChats")
+      : recentFilter === "folders"
+        ? t("sectionFolders")
+        : t("recentFilterAll")
+  const recentFilterLabel = t("recentFilterTitle", {
+    filter: recentFilterValueLabel,
+  })
+  const RecentFilterIcon =
+    recentFilter === "chats"
+      ? MessageSquare
+      : recentFilter === "folders"
+        ? Folder
+        : ListFilter
   const newChatLabel =
     section === "recent" ? t("newConversation") : t("newChatAction")
   // The folders section mirrors the chats section's right-edge affordance, but
@@ -176,27 +211,50 @@ export const SidebarSectionHeader = memo(function SidebarSectionHeader({
             )}
           />
         </button>
-        {showNewChat && (
-          <button
-            type="button"
-            // Stop the click from reaching the row (defensive — the button is a
-            // sibling, not nested, so it never triggers the toggle anyway).
-            onClick={(e) => {
-              e.stopPropagation()
-              onNewChat?.()
-            }}
-            title={newChatLabel}
-            aria-label={newChatLabel}
-            // Sized to match the folder rows' right-edge ⋯ action icon
-            // (`h-[0.875rem]`, 14px) so the two affordances read as one family —
-            // a hair smaller than the default `h-4` glyph.
-            className={cn(
-              "absolute top-1/2 right-[0.375rem] -translate-y-1/2",
-              actionButtonClassName
+        {(showNewChat || showRecentFilter) && (
+          <div className="absolute top-1/2 right-[0.375rem] flex -translate-y-1/2 items-center gap-px">
+            {showRecentFilter && (
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  onCycleRecentFilter()
+                }}
+                title={recentFilterLabel}
+                aria-label={recentFilterLabel}
+                data-recent-filter={recentFilter}
+                className={cn(
+                  actionButtonClassName,
+                  // An active filter is state the user must be able to see
+                  // without hovering; only the neutral "all" hides with the rest.
+                  recentFilter !== "all" &&
+                    "opacity-100 text-sidebar-foreground/80"
+                )}
+              >
+                <RecentFilterIcon className="h-[0.875rem] w-[0.875rem]" />
+              </button>
             )}
-          >
-            <SquarePen className="h-[0.875rem] w-[0.875rem]" />
-          </button>
+            {showNewChat && (
+              <button
+                type="button"
+                // Stop the click from reaching the row (defensive — the button
+                // is a sibling, not nested, so it never triggers the toggle
+                // anyway).
+                onClick={(e) => {
+                  e.stopPropagation()
+                  onNewChat?.()
+                }}
+                title={newChatLabel}
+                aria-label={newChatLabel}
+                // Sized to match the folder rows' right-edge ⋯ action icon
+                // (`h-[0.875rem]`, 14px) so the two affordances read as one
+                // family — a hair smaller than the default `h-4` glyph.
+                className={actionButtonClassName}
+              >
+                <SquarePen className="h-[0.875rem] w-[0.875rem]" />
+              </button>
+            )}
+          </div>
         )}
         {showFolderActions && (
           <div className="absolute top-1/2 right-[0.375rem] flex -translate-y-1/2 items-center gap-px">

@@ -2007,7 +2007,11 @@
         "removeFromGroup": "Sem grupo",
         "newGroupAndMove": "Novo grupo…",
         "dropToUngroup": "Solte aqui para remover do grupo"
-      }
+      },
+      "recentFilterAll": "Tudo",
+      "recentFilterTitle": "Mostrar em Recentes: {filter}",
+      "noRecentChats": "Nenhum chat recente",
+      "noRecentFolders": "Nenhuma conversa de pasta recente"
     },
     "conversation": {
       "reloadFailed": "Falha ao recarregar conversa: {message}",

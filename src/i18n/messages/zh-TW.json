@@ -2007,7 +2007,11 @@
         "removeFromGroup": "不分組",
         "newGroupAndMove": "新增分組…",
         "dropToUngroup": "拖到這裡可移出分組"
-      }
+      },
+      "recentFilterAll": "全部",
+      "recentFilterTitle": "最近顯示：{filter}",
+      "noRecentChats": "沒有最近的聊天",
+      "noRecentFolders": "沒有最近的資料夾對話"
     },
     "conversation": {
       "reloadFailed": "會話重新載入失敗：{message}",

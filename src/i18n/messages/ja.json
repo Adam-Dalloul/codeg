@@ -2007,7 +2007,11 @@
         "removeFromGroup": "グループなし",
         "newGroupAndMove": "新しいグループ…",
         "dropToUngroup": "ここにドロップしてグループから外す"
-      }
+      },
+      "recentFilterAll": "すべて",
+      "recentFilterTitle": "最近の表示: {filter}",
+      "noRecentChats": "最近のチャットはありません",
+      "noRecentFolders": "最近のフォルダー会話はありません"
     },
     "conversation": {
       "reloadFailed": "会話の再読み込みに失敗しました: {message}",

@@ -2007,7 +2007,11 @@
         "removeFromGroup": "그룹 없음",
         "newGroupAndMove": "새 그룹…",
         "dropToUngroup": "여기에 놓으면 그룹에서 제외됩니다"
-      }
+      },
+      "recentFilterAll": "전체",
+      "recentFilterTitle": "최근 항목 표시: {filter}",
+      "noRecentChats": "최근 채팅이 없습니다",
+      "noRecentFolders": "최근 폴더 대화가 없습니다"
     },
     "conversation": {
       "reloadFailed": "대화 다시 불러오기 실패: {message}",

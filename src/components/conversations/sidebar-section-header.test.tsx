@@ -166,3 +166,68 @@ describe("SidebarSectionHeader action gating by section", () => {
     expect(queryByLabelText("Clone Repository")).toBeNull()
   })
 })
+
+describe("SidebarSectionHeader recent-section filter", () => {
+  const onCycleRecentFilter = vi.fn()
+
+  it("renders the filter button naming the current filter and cycles on click", () => {
+    const { getByLabelText } = renderWithIntl(
+      <SidebarSectionHeader
+        section="recent"
+        expanded
+        onToggle={onToggle}
+        onNewChat={onNewChat}
+        recentFilter="all"
+        onCycleRecentFilter={onCycleRecentFilter}
+      />
+    )
+    fireEvent.click(getByLabelText("Show in Recent: All"))
+    expect(onCycleRecentFilter).toHaveBeenCalledTimes(1)
+    expect(onToggle).not.toHaveBeenCalled()
+    expect(onNewChat).not.toHaveBeenCalled()
+  })
+
+  it("labels the chats and folders filters with the section names", () => {
+    const { getByLabelText, rerender } = renderWithIntl(
+      <SidebarSectionHeader
+        section="recent"
+        expanded
+        onToggle={onToggle}
+        recentFilter="chats"
+        onCycleRecentFilter={onCycleRecentFilter}
+      />
+    )
+    expect(getByLabelText("Show in Recent: Chat")).toHaveAttribute(
+      "data-recent-filter",
+      "chats"
+    )
+    rerender(
+      <NextIntlClientProvider locale="en" messages={enMessages}>
+        <SidebarSectionHeader
+          section="recent"
+          expanded
+          onToggle={onToggle}
+          recentFilter="folders"
+          onCycleRecentFilter={onCycleRecentFilter}
+        />
+      </NextIntlClientProvider>
+    )
+    expect(getByLabelText("Show in Recent: Folders")).toHaveAttribute(
+      "data-recent-filter",
+      "folders"
+    )
+  })
+
+  it("renders no filter button on other sections", () => {
+    const { queryByLabelText } = renderWithIntl(
+      <SidebarSectionHeader
+        section="chats"
+        expanded
+        onToggle={onToggle}
+        recentFilter="all"
+        onCycleRecentFilter={onCycleRecentFilter}
+      />
+    )
+    expect(queryByLabelText(/Show in Recent/)).toBeNull()
+  })
+})
