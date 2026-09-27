@@ -79,7 +79,6 @@ import {
   saveFolderGroupExpanded,
   loadRecentFilter,
   loadSectionCollapsed,
-  nextRecentFilter,
   saveRecentFilter,
   saveSectionCollapsed,
   type SidebarRecentFilter,
@@ -1023,12 +1022,9 @@ export function SidebarConversationList({
   // Persisted: it is a view preference, not a reading gesture. Hydrated from
   // localStorage after mount like the section collapse state.
   const [recentFilter, setRecentFilter] = useState<SidebarRecentFilter>("all")
-  const cycleRecentFilter = useCallback(() => {
-    setRecentFilter((prev) => {
-      const next = nextRecentFilter(prev)
-      saveRecentFilter(next)
-      return next
-    })
+  const changeRecentFilter = useCallback((next: SidebarRecentFilter) => {
+    saveRecentFilter(next)
+    setRecentFilter(next)
   }, [])
   // How many Recent rows are currently revealed. Session-only (not persisted):
   // "show me more of this list right now" is a reading gesture, not a setting —
@@ -2787,10 +2783,10 @@ export function SidebarConversationList({
             row.section === "folders" ? openNewGroupDialog : undefined
           }
           // Recent's kind filter (All / Chat / Folders). Stable callback, so
-          // the memo holds; the value only changes when the user cycles it.
+          // the memo holds; the value only changes when the user picks another one.
           recentFilter={row.section === "recent" ? recentFilter : undefined}
-          onCycleRecentFilter={
-            row.section === "recent" ? cycleRecentFilter : undefined
+          onRecentFilterChange={
+            row.section === "recent" ? changeRecentFilter : undefined
           }
           // Every section header carries a top gap: it separates "Folders" from
           // the "Pinned" section above it, and — now that a fixed New chat /

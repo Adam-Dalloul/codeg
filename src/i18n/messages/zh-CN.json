@@ -2011,7 +2011,8 @@
       "recentFilterAll": "全部",
       "recentFilterTitle": "最近显示：{filter}",
       "noRecentChats": "没有最近的聊天",
-      "noRecentFolders": "没有最近的文件夹会话"
+      "noRecentFolders": "没有最近的文件夹会话",
+      "recentFilterMenuLabel": "最近显示"
     },
     "conversation": {
       "reloadFailed": "会话重新加载失败：{message}",

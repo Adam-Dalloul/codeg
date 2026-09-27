@@ -22,14 +22,6 @@ export type SidebarRecentFilter = (typeof SIDEBAR_RECENT_FILTERS)[number]
 
 export const DEFAULT_RECENT_FILTER: SidebarRecentFilter = "all"
 
-/** The next filter in the header button's cycle: All → Chat → Folders → All. */
-export function nextRecentFilter(
-  current: SidebarRecentFilter
-): SidebarRecentFilter {
-  const i = SIDEBAR_RECENT_FILTERS.indexOf(current)
-  return SIDEBAR_RECENT_FILTERS[(i + 1) % SIDEBAR_RECENT_FILTERS.length]
-}
-
 /** The reorderable top-level sidebar sections. "Pinned" is deliberately absent:
  *  it is a transient override bucket and always stays on top. */
 export const SIDEBAR_SECTION_IDS = ["folders", "chats", "recent"] as const

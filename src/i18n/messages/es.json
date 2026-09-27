@@ -2011,7 +2011,8 @@
       "recentFilterAll": "Todo",
       "recentFilterTitle": "Mostrar en Recientes: {filter}",
       "noRecentChats": "No hay chats recientes",
-      "noRecentFolders": "No hay conversaciones de carpeta recientes"
+      "noRecentFolders": "No hay conversaciones de carpeta recientes",
+      "recentFilterMenuLabel": "Mostrar en Recientes"
     },
     "conversation": {
       "reloadFailed": "No se pudo recargar la conversación: {message}",

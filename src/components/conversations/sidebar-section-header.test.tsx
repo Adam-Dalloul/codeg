@@ -1,5 +1,5 @@
 import { type ReactElement } from "react"
-import { fireEvent, render } from "@testing-library/react"
+import { act, fireEvent, render, screen } from "@testing-library/react"
 import { NextIntlClientProvider } from "next-intl"
 import { describe, expect, it, vi, beforeEach } from "vitest"
 
@@ -167,34 +167,69 @@ describe("SidebarSectionHeader action gating by section", () => {
   })
 })
 
-describe("SidebarSectionHeader recent-section filter", () => {
-  const onCycleRecentFilter = vi.fn()
+// Radix arms its document-level pointer-down listener in a `setTimeout(0)`, and
+// jsdom has no `PointerEvent`, so open the menu with real `MouseEvent`s under
+// the pointer-event names (same recipe as nested-layer-dismiss.test.tsx).
+async function settle() {
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 0))
+  })
+}
+function fireMouse(target: Element, type: string) {
+  fireEvent(
+    target,
+    new MouseEvent(type, { bubbles: true, cancelable: true, button: 0 })
+  )
+}
+function click(target: Element) {
+  fireMouse(target, "pointerdown")
+  fireMouse(target, "pointerup")
+  fireMouse(target, "click")
+}
 
-  it("renders the filter button naming the current filter and cycles on click", () => {
-    const { getByLabelText } = renderWithIntl(
+describe("SidebarSectionHeader recent-section filter", () => {
+  const onRecentFilterChange = vi.fn()
+
+  beforeEach(() => {
+    onRecentFilterChange.mockClear()
+  })
+
+  it("opens a labelled All / Chat / Folders menu and reports the pick", async () => {
+    renderWithIntl(
       <SidebarSectionHeader
         section="recent"
         expanded
         onToggle={onToggle}
         onNewChat={onNewChat}
         recentFilter="all"
-        onCycleRecentFilter={onCycleRecentFilter}
+        onRecentFilterChange={onRecentFilterChange}
       />
     )
-    fireEvent.click(getByLabelText("Show in Recent: All"))
-    expect(onCycleRecentFilter).toHaveBeenCalledTimes(1)
+    await settle()
+    click(screen.getByLabelText("Show in Recent: All"))
+    await settle()
+    expect(screen.getByText("Show in Recent")).toBeInTheDocument()
+    const options = screen.getAllByRole("menuitemradio")
+    expect(options.map((o) => o.textContent)).toEqual([
+      "All",
+      "Chat",
+      "Folders",
+    ])
+    expect(options[0]).toHaveAttribute("aria-checked", "true")
+    click(screen.getByRole("menuitemradio", { name: "Chat" }))
+    expect(onRecentFilterChange).toHaveBeenCalledWith("chats")
     expect(onToggle).not.toHaveBeenCalled()
     expect(onNewChat).not.toHaveBeenCalled()
   })
 
-  it("labels the chats and folders filters with the section names", () => {
+  it("names the active filter on the trigger and keeps it visible", () => {
     const { getByLabelText, rerender } = renderWithIntl(
       <SidebarSectionHeader
         section="recent"
         expanded
         onToggle={onToggle}
         recentFilter="chats"
-        onCycleRecentFilter={onCycleRecentFilter}
+        onRecentFilterChange={onRecentFilterChange}
       />
     )
     expect(getByLabelText("Show in Recent: Chat")).toHaveAttribute(
@@ -208,7 +243,7 @@ describe("SidebarSectionHeader recent-section filter", () => {
           expanded
           onToggle={onToggle}
           recentFilter="folders"
-          onCycleRecentFilter={onCycleRecentFilter}
+          onRecentFilterChange={onRecentFilterChange}
         />
       </NextIntlClientProvider>
     )
@@ -218,14 +253,14 @@ describe("SidebarSectionHeader recent-section filter", () => {
     )
   })
 
-  it("renders no filter button on other sections", () => {
+  it("renders no filter menu on other sections", () => {
     const { queryByLabelText } = renderWithIntl(
       <SidebarSectionHeader
         section="chats"
         expanded
         onToggle={onToggle}
         recentFilter="all"
-        onCycleRecentFilter={onCycleRecentFilter}
+        onRecentFilterChange={onRecentFilterChange}
       />
     )
     expect(queryByLabelText(/Show in Recent/)).toBeNull()

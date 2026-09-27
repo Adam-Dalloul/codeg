@@ -2011,7 +2011,8 @@
       "recentFilterAll": "全部",
       "recentFilterTitle": "最近顯示：{filter}",
       "noRecentChats": "沒有最近的聊天",
-      "noRecentFolders": "沒有最近的資料夾對話"
+      "noRecentFolders": "沒有最近的資料夾對話",
+      "recentFilterMenuLabel": "最近顯示"
     },
     "conversation": {
       "reloadFailed": "會話重新載入失敗：{message}",

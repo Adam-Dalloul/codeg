@@ -2011,7 +2011,8 @@
       "recentFilterAll": "전체",
       "recentFilterTitle": "최근 항목 표시: {filter}",
       "noRecentChats": "최근 채팅이 없습니다",
-      "noRecentFolders": "최근 폴더 대화가 없습니다"
+      "noRecentFolders": "최근 폴더 대화가 없습니다",
+      "recentFilterMenuLabel": "최근 항목 표시"
     },
     "conversation": {
       "reloadFailed": "대화 다시 불러오기 실패: {message}",

@@ -2011,7 +2011,8 @@
       "recentFilterAll": "Tout",
       "recentFilterTitle": "Afficher dans Récents : {filter}",
       "noRecentChats": "Aucune discussion récente",
-      "noRecentFolders": "Aucune conversation de dossier récente"
+      "noRecentFolders": "Aucune conversation de dossier récente",
+      "recentFilterMenuLabel": "Afficher dans Récents"
     },
     "conversation": {
       "reloadFailed": "Échec du rechargement de la conversation : {message}",

@@ -4,18 +4,25 @@ import { memo } from "react"
 import {
   ChevronRight,
   Download,
-  Folder,
+  Ellipsis,
   FolderGit2,
   FolderOpenDot,
   LayersPlus,
-  ListFilter,
-  MessageSquare,
   SquarePen,
 } from "lucide-react"
 import { useTranslations } from "next-intl"
-import type {
-  SidebarRecentFilter,
-  SidebarSectionKey,
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuLabel,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
+import {
+  SIDEBAR_RECENT_FILTERS,
+  type SidebarRecentFilter,
+  type SidebarSectionKey,
 } from "@/lib/sidebar-view-mode-storage"
 import { cn } from "@/lib/utils"
 
@@ -43,7 +50,7 @@ export const SidebarSectionHeader = memo(function SidebarSectionHeader({
   onImportSessions,
   onNewFolderGroup,
   recentFilter,
-  onCycleRecentFilter,
+  onRecentFilterChange,
   topGap = false,
 }: {
   section: SidebarSectionKey
@@ -83,15 +90,16 @@ export const SidebarSectionHeader = memo(function SidebarSectionHeader({
    */
   onNewFolderGroup?: () => void
   /**
-   * When both are provided on the "recent" section, renders a filter button
-   * LEFT of the New-conversation action that cycles All → Chat → Folders. The
-   * icon names the current filter; unlike the other actions it stays visible
-   * (not hover-revealed) whenever a filter other than "all" is active, so a
-   * narrowed list never looks like a mysteriously short one. `onCycleRecentFilter`
-   * must be referentially stable to preserve the memo.
+   * When both are provided on the "recent" section, renders a "⋯" menu LEFT
+   * of the New-conversation action that opens a labelled radio list — All /
+   * Chat / Folders — so the narrowing is spelled out rather than guessed from
+   * an icon. Unlike the other actions the trigger stays visible (not
+   * hover-revealed) whenever a filter other than "all" is active, so a
+   * narrowed list never looks like a mysteriously short one.
+   * `onRecentFilterChange` must be referentially stable to preserve the memo.
    */
   recentFilter?: SidebarRecentFilter
-  onCycleRecentFilter?: () => void
+  onRecentFilterChange?: (filter: SidebarRecentFilter) => void
   /**
    * Adds breathing room above the header so the "Folders" section reads as
    * visually separated from the "Pinned" section above it. Implemented as
@@ -121,25 +129,19 @@ export const SidebarSectionHeader = memo(function SidebarSectionHeader({
   // conversation in the active folder — but the geometry is shared.
   const showNewChat =
     (section === "chats" || section === "recent") && onNewChat != null
+  const newChatLabel =
+    section === "recent" ? t("newConversation") : t("newChatAction")
   const showRecentFilter =
-    section === "recent" && recentFilter != null && onCycleRecentFilter != null
-  const recentFilterValueLabel =
-    recentFilter === "chats"
+    section === "recent" && recentFilter != null && onRecentFilterChange != null
+  const recentFilterOptionLabel = (filter: SidebarRecentFilter) =>
+    filter === "chats"
       ? t("sectionChats")
-      : recentFilter === "folders"
+      : filter === "folders"
         ? t("sectionFolders")
         : t("recentFilterAll")
   const recentFilterLabel = t("recentFilterTitle", {
-    filter: recentFilterValueLabel,
+    filter: recentFilterOptionLabel(recentFilter ?? "all"),
   })
-  const RecentFilterIcon =
-    recentFilter === "chats"
-      ? MessageSquare
-      : recentFilter === "folders"
-        ? Folder
-        : ListFilter
-  const newChatLabel =
-    section === "recent" ? t("newConversation") : t("newChatAction")
   // The folders section mirrors the chats section's right-edge affordance, but
   // with two buttons (Open Folder / Clone Repository) — the same "add a folder"
   // actions the top-of-page NewFolderDropdown offers.
@@ -214,25 +216,46 @@ export const SidebarSectionHeader = memo(function SidebarSectionHeader({
         {(showNewChat || showRecentFilter) && (
           <div className="absolute top-1/2 right-[0.375rem] flex -translate-y-1/2 items-center gap-px">
             {showRecentFilter && (
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.stopPropagation()
-                  onCycleRecentFilter()
-                }}
-                title={recentFilterLabel}
-                aria-label={recentFilterLabel}
-                data-recent-filter={recentFilter}
-                className={cn(
-                  actionButtonClassName,
-                  // An active filter is state the user must be able to see
-                  // without hovering; only the neutral "all" hides with the rest.
-                  recentFilter !== "all" &&
-                    "opacity-100 text-sidebar-foreground/80"
-                )}
-              >
-                <RecentFilterIcon className="h-[0.875rem] w-[0.875rem]" />
-              </button>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <button
+                    type="button"
+                    // Sibling of the toggle button, so it never toggles the
+                    // section; stop propagation defensively anyway.
+                    onClick={(e) => e.stopPropagation()}
+                    title={recentFilterLabel}
+                    aria-label={recentFilterLabel}
+                    data-recent-filter={recentFilter}
+                    className={cn(
+                      actionButtonClassName,
+                      // An active filter is state the user must be able to see
+                      // without hovering; only the neutral "all" hides with the
+                      // rest.
+                      recentFilter !== "all" &&
+                        "opacity-100 text-sidebar-foreground/80"
+                    )}
+                  >
+                    <Ellipsis className="h-[0.875rem] w-[0.875rem]" />
+                  </button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="min-w-40">
+                  <DropdownMenuLabel>
+                    {t("recentFilterMenuLabel")}
+                  </DropdownMenuLabel>
+                  <DropdownMenuRadioGroup
+                    value={recentFilter}
+                    onValueChange={(value) =>
+                      onRecentFilterChange(value as SidebarRecentFilter)
+                    }
+                  >
+                    {SIDEBAR_RECENT_FILTERS.map((filter) => (
+                      <DropdownMenuRadioItem key={filter} value={filter}>
+                        {recentFilterOptionLabel(filter)}
+                      </DropdownMenuRadioItem>
+                    ))}
+                  </DropdownMenuRadioGroup>
+                </DropdownMenuContent>
+              </DropdownMenu>
             )}
             {showNewChat && (
               <button
