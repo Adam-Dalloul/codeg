@@ -138,6 +138,10 @@ describe("buildVisualizeDocument", () => {
     expect(doc).toContain(":root{--background:red}")
     expect(doc).toContain("<p>hi</p>")
     expect(doc).toMatch(/Content-Security-Policy.*default-src 'none'/)
+    // The frame paints no page background of its own, so the card's surface
+    // (and the workspace background behind it) shows through.
+    expect(doc).toContain("html,body{background:transparent !important")
+    expect(doc).toContain("html>body{padding:1rem 1.25rem}")
   })
 
   it("puts the fragment into the plugin kit's slot when one is available", () => {

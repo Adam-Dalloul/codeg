@@ -159,6 +159,25 @@ a{color:var(--primary)}
 svg text{fill:var(--foreground)}
 `
 
+/**
+ * The skill's stylesheet paints `:root` with `--background` (`!important`), which
+ * is right for a standalone page but wrong inside a transcript: the card sits on
+ * whatever the window shows — a plain surface, or the user's workspace background
+ * image — and an opaque cream slab in the middle of it reads as a foreign object.
+ * Painting nothing lets the card's own (translucent-when-backgrounded) surface
+ * show through; the fragment's cards/buttons keep their `--card` / `--muted` fills.
+ */
+/**
+ * Breathing room between the fragment and the card edge. In the Codex app the
+ * outer shell supplies this (`body{padding:1rem}` around the inner frame); this
+ * card has no shell, so the inner document carries it instead of the skill's
+ * flush `padding:0`.
+ */
+const FRAME_PADDING = "1rem 1.25rem"
+
+const TRANSPARENT_CANVAS_CSS =
+  "html,body{background:transparent !important;background-color:transparent !important}"
+
 /** Reports the document's height to the parent whenever it changes. */
 const SIZE_REPORTER = `<script>(()=>{const post=()=>{const d=document.documentElement,b=document.body;const h=Math.ceil(Math.max(d.scrollHeight,b?b.scrollHeight:0));parent.postMessage({type:${JSON.stringify(SIZE_MESSAGE_TYPE)},height:h},"*")};const ro=new ResizeObserver(post);ro.observe(document.documentElement);if(document.body)ro.observe(document.body);new MutationObserver(post).observe(document.documentElement,{subtree:true,childList:true,attributes:true});addEventListener("load",post);post();})();</script>`
 
@@ -288,8 +307,9 @@ export function buildVisualizeDocument({
 <meta http-equiv="Content-Security-Policy" content="${FRAME_CSP}">
 <title>${escapedTitle}</title>
 <style>${assets.css}
-html>body{padding:0}</style>
+html>body{padding:${FRAME_PADDING}}</style>
 <style>${themeOverrides}</style>
+<style>${TRANSPARENT_CANVAS_CSS}</style>
 </head>
 <body>
 ${body}
@@ -412,7 +432,9 @@ export const CodexVisualizeCard = memo(function CodexVisualizeCard({
       data-testid="codex-visualize-card"
       data-mode={mode}
       className={cn(
-        "not-prose my-2 flex w-full min-w-0 flex-col overflow-hidden rounded-lg border border-border bg-card text-card-foreground",
+        // `ws-msg-card`: with a workspace background image on, the card goes
+        // translucent like every other message-stream card (see globals.css).
+        "not-prose ws-msg-card my-2 flex w-full min-w-0 flex-col overflow-hidden rounded-lg border border-border bg-card text-card-foreground",
         className
       )}
     >
@@ -494,6 +516,7 @@ export const CodexVisualizeCard = memo(function CodexVisualizeCard({
             referrerPolicy="no-referrer"
             srcDoc={srcDoc}
             style={{ height: frameHeight }}
+            allowTransparency
             className="block w-full border-0 bg-transparent transition-[height] duration-150"
           />
         )}
