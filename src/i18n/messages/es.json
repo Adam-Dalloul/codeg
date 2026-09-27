@@ -3713,7 +3713,10 @@
         "visualizeScriptsOn": "Scripts activados",
         "visualizeScriptsOff": "Activar scripts",
         "visualizeScriptsHint": "Ejecuta los scripts de la visualización para que sea interactiva. Se ejecuta en un entorno aislado y no puede acceder a la red ni a tus archivos.",
-        "visualizeFrameTitle": "Visualización de Codex"
+        "visualizeFrameTitle": "Visualización de Codex",
+        "htmlPreviewOpen": "Vista previa",
+        "htmlPreviewOpenAria": "Vista previa de {name}",
+        "htmlPreviewHide": "Ocultar vista previa"
       },
       "messageNav": {
         "title": "Navegación de mensajes",

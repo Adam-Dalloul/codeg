@@ -3713,7 +3713,10 @@
         "visualizeScriptsOn": "Scripts activés",
         "visualizeScriptsOff": "Activer les scripts",
         "visualizeScriptsHint": "Exécute les scripts de la visualisation pour la rendre interactive. Elle s'exécute dans un bac à sable, sans accès au réseau ni à vos fichiers.",
-        "visualizeFrameTitle": "Visualisation Codex"
+        "visualizeFrameTitle": "Visualisation Codex",
+        "htmlPreviewOpen": "Aperçu",
+        "htmlPreviewOpenAria": "Aperçu de {name}",
+        "htmlPreviewHide": "Masquer l’aperçu"
       },
       "messageNav": {
         "title": "Navigation des messages",

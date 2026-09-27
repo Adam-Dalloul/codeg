@@ -3713,7 +3713,10 @@
         "visualizeScriptsOn": "Skripte aktiv",
         "visualizeScriptsOff": "Skripte aktivieren",
         "visualizeScriptsHint": "Führt die Skripte der Visualisierung aus, damit sie interaktiv ist. Sie läuft in einer Sandbox und hat keinen Zugriff auf das Netzwerk oder deine Dateien.",
-        "visualizeFrameTitle": "Codex-Visualisierung"
+        "visualizeFrameTitle": "Codex-Visualisierung",
+        "htmlPreviewOpen": "Vorschau",
+        "htmlPreviewOpenAria": "Vorschau von {name}",
+        "htmlPreviewHide": "Vorschau ausblenden"
       },
       "messageNav": {
         "title": "Nachrichtennavigation",

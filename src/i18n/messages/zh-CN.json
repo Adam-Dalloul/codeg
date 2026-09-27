@@ -3713,7 +3713,10 @@
         "visualizeScriptsOn": "脚本已开启",
         "visualizeScriptsOff": "启用脚本",
         "visualizeScriptsHint": "运行可视化中的脚本以支持交互。脚本在沙箱中运行，无法访问网络或你的文件。",
-        "visualizeFrameTitle": "Codex 可视化"
+        "visualizeFrameTitle": "Codex 可视化",
+        "htmlPreviewOpen": "预览",
+        "htmlPreviewOpenAria": "预览 {name}",
+        "htmlPreviewHide": "收起预览"
       },
       "messageNav": {
         "title": "消息导航",

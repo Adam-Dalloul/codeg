@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest"
 import {
+  findHtmlFileMentions,
   hasCodexVisualizeRef,
   isCompleteHtmlDocument,
   parseCodexVisualizeArgs,
@@ -95,5 +96,84 @@ describe("isCompleteHtmlDocument", () => {
     expect(isCompleteHtmlDocument('<div class="card">hi</div>')).toBe(false)
     expect(isCompleteHtmlDocument("<!doctype html><html></html>")).toBe(true)
     expect(isCompleteHtmlDocument("<body>x</body>")).toBe(true)
+  })
+})
+
+describe("Hermes ::preview directives", () => {
+  it("renders a directive line in place like a visualize marker", () => {
+    const segments = splitCodexVisualizeRefs(
+      'Done.\n::preview{file="/h/out/report.html"}\nMore.'
+    )
+    expect(segments.map((s) => s.kind)).toEqual([
+      "markdown",
+      "visualize",
+      "markdown",
+    ])
+    expect(segments[1]).toMatchObject({
+      ref: { path: "/h/out/report.html", mode: "normal" },
+    })
+  })
+
+  it("ignores a directive inside a fenced code block or mid-sentence", () => {
+    const fenced = '```\n::preview{file="/h/a.html"}\n```'
+    expect(splitCodexVisualizeRefs(fenced)).toEqual([
+      { kind: "markdown", text: fenced },
+    ])
+    const inline = 'use ::preview{file="/h/a.html"} to show it'
+    expect(splitCodexVisualizeRefs(inline)).toEqual([
+      { kind: "markdown", text: inline },
+    ])
+  })
+})
+
+describe("findHtmlFileMentions", () => {
+  it("collects local HTML files from every common mention style", () => {
+    const text = [
+      "**MEDIA:/Users/a/out/half-year.html**",
+      "入口：`site/index.html`，见 [preview](preview.html#top)",
+      "Saved to ~/reports/fitness.html.",
+      "Open file:///tmp/My%20Report.html",
+    ].join("\n")
+    expect(findHtmlFileMentions(text, { limit: 10 })).toEqual([
+      "/Users/a/out/half-year.html",
+      "site/index.html",
+      "preview.html",
+      "~/reports/fitness.html",
+      "/tmp/My Report.html",
+    ])
+  })
+
+  it("never treats a web URL as a local file", () => {
+    expect(
+      findHtmlFileMentions(
+        "See https://example.com/docs/a.html and [b](https://x.io/b.htm) or `http://y/c.html`"
+      )
+    ).toEqual([])
+  })
+
+  it("keeps relative paths only when named on purpose", () => {
+    expect(findHtmlFileMentions("the index.html file")).toEqual([])
+    expect(findHtmlFileMentions("the `index.html` file")).toEqual([
+      "index.html",
+    ])
+  })
+
+  it("skips fenced code, explicit references, exclusions and duplicates", () => {
+    const text = [
+      "```sh\nopen /tmp/in-code.html\n```",
+      '::preview{file="/h/shown.html"}',
+      "Also /h/shown.html and /h/other.html and `/h/other.html`",
+    ].join("\n")
+    expect(findHtmlFileMentions(text, { exclude: ["/h/shown.html"] })).toEqual([
+      "/h/other.html",
+    ])
+  })
+
+  it("caps the number of previews", () => {
+    const text = ["/a/1.html", "/a/2.html", "/a/3.html"].join(" ")
+    expect(findHtmlFileMentions(text, { limit: 2 })).toEqual([
+      "/a/1.html",
+      "/a/2.html",
+    ])
   })
 })

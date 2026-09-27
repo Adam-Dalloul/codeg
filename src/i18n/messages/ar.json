@@ -3713,7 +3713,10 @@
         "visualizeScriptsOn": "البرامج النصية مفعّلة",
         "visualizeScriptsOff": "تفعيل البرامج النصية",
         "visualizeScriptsHint": "تشغيل البرامج النصية للتصوّر البياني ليصبح تفاعليًا. يعمل داخل بيئة معزولة ولا يمكنه الوصول إلى الشبكة أو ملفاتك.",
-        "visualizeFrameTitle": "تصوّر بياني من Codex"
+        "visualizeFrameTitle": "تصوّر بياني من Codex",
+        "htmlPreviewOpen": "معاينة",
+        "htmlPreviewOpenAria": "معاينة {name}",
+        "htmlPreviewHide": "إخفاء المعاينة"
       },
       "messageNav": {
         "title": "تنقل الرسائل",

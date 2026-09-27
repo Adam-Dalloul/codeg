@@ -3713,7 +3713,10 @@
         "visualizeScriptsOn": "Scripts ativados",
         "visualizeScriptsOff": "Ativar scripts",
         "visualizeScriptsHint": "Executa os scripts da visualização para torná-la interativa. Ela roda em um sandbox e não pode acessar a rede nem seus arquivos.",
-        "visualizeFrameTitle": "Visualização do Codex"
+        "visualizeFrameTitle": "Visualização do Codex",
+        "htmlPreviewOpen": "Pré-visualizar",
+        "htmlPreviewOpenAria": "Pré-visualizar {name}",
+        "htmlPreviewHide": "Ocultar pré-visualização"
       },
       "messageNav": {
         "title": "Navegação de mensagens",

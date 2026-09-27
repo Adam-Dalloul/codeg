@@ -3713,7 +3713,10 @@
         "visualizeScriptsOn": "腳本已開啟",
         "visualizeScriptsOff": "啟用腳本",
         "visualizeScriptsHint": "執行視覺化中的腳本以支援互動。腳本在沙箱中執行，無法存取網路或你的檔案。",
-        "visualizeFrameTitle": "Codex 視覺化"
+        "visualizeFrameTitle": "Codex 視覺化",
+        "htmlPreviewOpen": "預覽",
+        "htmlPreviewOpenAria": "預覽 {name}",
+        "htmlPreviewHide": "收起預覽"
       },
       "messageNav": {
         "title": "訊息導覽",

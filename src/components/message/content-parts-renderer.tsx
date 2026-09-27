@@ -82,7 +82,9 @@ import { fsSeparator } from "@/lib/path-utils"
 import { DelegatedSubThread } from "./delegated-sub-thread"
 import { DelegationStatusCard } from "./delegation-status-card"
 import { CodexVisualizeCard } from "./codex-visualize-card"
+import { HtmlFilePreviews } from "./html-file-previews"
 import {
+  findHtmlFileMentions,
   hasCodexVisualizeRef,
   splitCodexVisualizeRefs,
 } from "@/lib/codex-visualize"
@@ -2262,35 +2264,65 @@ const TextPart = memo(function TextPart({
       </div>
     )
   }
-  // Codex's `visualize` skill drops an inline-visualization reference into the
-  // reply as a fenced `visualize{"path":…}` line. Rendered as Markdown it is a
-  // line of tofu; split it out and show the referenced HTML in its place.
-  if (hasCodexVisualizeRef(text)) {
-    const segments = splitCodexVisualizeRefs(text)
-    if (segments.some((s) => s.kind === "visualize")) {
-      return (
-        <div className="space-y-2">
-          {segments.map((segment, index) =>
-            segment.kind === "visualize" ? (
-              <CodexVisualizeCard
-                key={`viz-${index}-${segment.ref.path}`}
-                path={segment.ref.path}
-                mode={segment.ref.mode}
-              />
-            ) : (
-              <MarkdownText
-                key={`md-${index}`}
-                text={segment.text}
-                isStreaming={isStreaming}
-              />
-            )
-          )}
-        </div>
-      )
-    }
-  }
-  return <MarkdownText text={text} isStreaming={isStreaming} />
+  return <AssistantText text={text} isStreaming={isStreaming} />
 })
+
+/**
+ * Assistant text, with its inline HTML previews:
+ * - explicit references — Codex's `visualize{…}` marker, Hermes'
+ *   `::preview{file=…}` — are cut out of the Markdown and rendered in place,
+ *   expanded;
+ * - any other local HTML file the reply mentions gets an on-demand "Preview"
+ *   row under it (not while streaming, so rows do not flicker in and out).
+ */
+function AssistantText({
+  text,
+  isStreaming,
+}: {
+  text: string
+  isStreaming: boolean
+}) {
+  const segments = useMemo(
+    () => (hasCodexVisualizeRef(text) ? splitCodexVisualizeRefs(text) : null),
+    [text]
+  )
+  const mentions = useMemo(() => {
+    if (isStreaming) return []
+    const shown =
+      segments?.flatMap((s) => (s.kind === "visualize" ? [s.ref.path] : [])) ??
+      []
+    return findHtmlFileMentions(text, { exclude: shown })
+  }, [text, segments, isStreaming])
+
+  const hasInline = segments?.some((s) => s.kind === "visualize") ?? false
+  if (!hasInline && mentions.length === 0) {
+    return <MarkdownText text={text} isStreaming={isStreaming} />
+  }
+  return (
+    <div className="space-y-2">
+      {hasInline && segments ? (
+        segments.map((segment, index) =>
+          segment.kind === "visualize" ? (
+            <CodexVisualizeCard
+              key={`viz-${index}-${segment.ref.path}`}
+              path={segment.ref.path}
+              mode={segment.ref.mode}
+            />
+          ) : (
+            <MarkdownText
+              key={`md-${index}`}
+              text={segment.text}
+              isStreaming={isStreaming}
+            />
+          )
+        )
+      ) : (
+        <MarkdownText text={text} isStreaming={isStreaming} />
+      )}
+      {mentions.length > 0 ? <HtmlFilePreviews paths={mentions} /> : null}
+    </div>
+  )
+}
 
 function MarkdownText({
   text,

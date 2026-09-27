@@ -3713,7 +3713,10 @@
         "visualizeScriptsOn": "スクリプト有効",
         "visualizeScriptsOff": "スクリプトを有効化",
         "visualizeScriptsHint": "ビジュアライゼーションのスクリプトを実行して操作できるようにします。サンドボックス内で実行され、ネットワークやファイルにはアクセスできません。",
-        "visualizeFrameTitle": "Codex ビジュアライゼーション"
+        "visualizeFrameTitle": "Codex ビジュアライゼーション",
+        "htmlPreviewOpen": "プレビュー",
+        "htmlPreviewOpenAria": "{name} をプレビュー",
+        "htmlPreviewHide": "プレビューを閉じる"
       },
       "messageNav": {
         "title": "メッセージナビ",

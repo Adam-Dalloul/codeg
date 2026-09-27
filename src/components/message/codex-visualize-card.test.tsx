@@ -1,10 +1,12 @@
 import { type ReactNode } from "react"
-import { render, screen, waitFor } from "@testing-library/react"
+import { fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { NextIntlClientProvider } from "next-intl"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
 const mocks = vi.hoisted(() => ({
   readFileBase64: vi.fn(),
+  readWorkspaceFileBase64: vi.fn(),
+  activeFolderPath: null as string | null,
   getHomeDirectory: vi.fn(),
   listDirectoryEntries: vi.fn(),
 }))
@@ -14,10 +16,20 @@ vi.mock("@/lib/api", async (importOriginal) => {
   return {
     ...actual,
     readFileBase64: mocks.readFileBase64,
+    readWorkspaceFileBase64: mocks.readWorkspaceFileBase64,
     getHomeDirectory: mocks.getHomeDirectory,
     listDirectoryEntries: mocks.listDirectoryEntries,
   }
 })
+
+vi.mock("@/contexts/active-folder-context", () => ({
+  useActiveFolder: () => ({
+    activeFolderId: mocks.activeFolderPath ? 1 : null,
+    activeFolder: mocks.activeFolderPath
+      ? { id: 1, path: mocks.activeFolderPath }
+      : null,
+  }),
+}))
 
 vi.mock("next-themes", () => ({
   useTheme: () => ({ resolvedTheme: "light" }),
@@ -63,6 +75,8 @@ function renderText(text: string) {
 beforeEach(() => {
   resetCodexVisualizeAssetsForTests()
   mocks.readFileBase64.mockReset()
+  mocks.readWorkspaceFileBase64.mockReset()
+  mocks.activeFolderPath = null
   mocks.getHomeDirectory.mockReset().mockResolvedValue("/home/u")
   mocks.listDirectoryEntries.mockReset().mockRejectedValue(new Error("nope"))
 })
@@ -118,6 +132,92 @@ describe("CodexVisualizeCard via ContentPartsRenderer", () => {
     const card = await screen.findByTestId("codex-visualize-card")
     expect(card).toHaveAttribute("data-mode", "wide")
     expect(screen.getByText("Wide")).toBeInTheDocument()
+  })
+})
+
+describe("HTML files a reply mentions", () => {
+  const frameOf = async (card: HTMLElement) =>
+    waitFor(() => {
+      const el = card.querySelector("iframe")
+      if (!el) throw new Error("no iframe yet")
+      return el
+    })
+
+  it("offers a collapsed Preview row and expands it on demand", async () => {
+    mocks.readFileBase64.mockResolvedValue(
+      toBase64(
+        "<!doctype html><html><head><title>Fitness Report</title></head><body><h1>Week 38</h1></body></html>"
+      )
+    )
+    renderText("I wrote the report to `/Users/u/fit/fitness-report.html`.")
+
+    const row = await screen.findByTestId("html-file-preview")
+    expect(row).toHaveTextContent("fitness-report.html")
+    expect(mocks.readFileBase64).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByRole("button", { name: /Preview/ }))
+    const card = await screen.findByTestId("codex-visualize-card")
+    const frame = await frameOf(card)
+    const doc = frame.getAttribute("srcdoc") ?? ""
+    // A complete document keeps its own markup, gains the sandbox CSP and
+    // the size reporter, and titles the card with its <title>.
+    expect(doc).toContain("<h1>Week 38</h1>")
+    expect(doc).toContain("Content-Security-Policy")
+    expect(doc).toContain("codeg-visualize:size")
+    await screen.findByText("Fitness Report")
+
+    fireEvent.click(screen.getByRole("button", { name: "Hide preview" }))
+    expect(await screen.findByTestId("html-file-preview")).toBeInTheDocument()
+  })
+
+  it("resolves relative mentions against the active folder", async () => {
+    mocks.activeFolderPath = "/repo"
+    mocks.readFileBase64.mockResolvedValue(toBase64("<p>ok</p>"))
+    renderText("Open [the page](site/index.html) to check.")
+    fireEvent.click(await screen.findByRole("button", { name: /Preview/ }))
+    await screen.findByTestId("codex-visualize-card")
+    await waitFor(() =>
+      expect(mocks.readFileBase64).toHaveBeenCalledWith(
+        "/repo/site/index.html",
+        expect.any(Number)
+      )
+    )
+  })
+
+  it("drops relative mentions when there is no folder to resolve them", () => {
+    renderText("See `index.html`.")
+    expect(screen.queryByTestId("html-file-preview")).toBeNull()
+  })
+
+  it("expands ~/ paths against the home directory", async () => {
+    mocks.readFileBase64.mockResolvedValue(toBase64("<p>ok</p>"))
+    renderText("Saved to ~/reports/fitness.html")
+    fireEvent.click(await screen.findByRole("button", { name: /Preview/ }))
+    await waitFor(() =>
+      expect(mocks.readFileBase64).toHaveBeenCalledWith(
+        "/home/u/reports/fitness.html",
+        expect.any(Number)
+      )
+    )
+  })
+
+  it("renders a Hermes ::preview directive expanded in place", async () => {
+    mocks.readFileBase64.mockResolvedValue(toBase64("<p>hermes</p>"))
+    renderText(
+      'Here:\n::preview{file="/h/out/report.html"}\nMEDIA:/h/out/report.html'
+    )
+    const card = await screen.findByTestId("codex-visualize-card")
+    expect((await frameOf(card)).getAttribute("srcdoc")).toContain(
+      "<p>hermes</p>"
+    )
+    // The MEDIA: line names the same file, so no second preview row.
+    expect(screen.queryByTestId("html-file-preview")).toBeNull()
+    expect(
+      screen
+        .getAllByTestId("markdown")
+        .map((n) => n.textContent)
+        .join("")
+    ).not.toContain("preview{")
   })
 })
 

@@ -3,6 +3,7 @@
 import { memo, useCallback, useEffect, useRef, useState } from "react"
 import {
   AlertCircle,
+  ChevronUp,
   ChevronsDownUp,
   ChevronsUpDown,
   ExternalLink,
@@ -17,7 +18,13 @@ import {
   getHomeDirectory,
   listDirectoryEntries,
   readFileBase64,
+  readWorkspaceFileBase64,
 } from "@/lib/api"
+import {
+  extractHtmlTitle,
+  inlineHtmlResources,
+  withSandboxCsp,
+} from "@/lib/html-preview-inline"
 import {
   isCompleteHtmlDocument,
   type CodexVisualizeMode,
@@ -274,6 +281,44 @@ function escapeClosingScript(source: string): string {
   return source.replace(/<\/script/gi, "<\\/script")
 }
 
+/** `~/…` → absolute, against the (remote-aware) home directory. */
+async function expandHomePath(path: string): Promise<string> {
+  if (path !== "~" && !path.startsWith("~/")) return path
+  const home = (await getHomeDirectory()).replace(/[\\/]+$/, "")
+  return home + path.slice(1)
+}
+
+/**
+ * A complete HTML document an agent wrote to disk (a report, a dashboard, a
+ * mockup): shown as-is, the way codeg's own file preview shows it — sibling
+ * local resources (css / js / images next to it) inlined, the file preview's
+ * sandbox CSP applied (strict with scripts off, open-web with scripts on) —
+ * plus the size reporter so the card can fit its height.
+ */
+export async function buildCompleteDocument(
+  html: string,
+  absPath: string,
+  scripts: boolean
+): Promise<string> {
+  const fileDir = absPath.replace(/[\\/][^\\/]*$/, "") || "/"
+  const inlined = await inlineHtmlResources(html, {
+    fileDir,
+    folderPath: fileDir,
+    readFileBase64: (resource) => {
+      const root = fileDir.replace(/\/+$/, "")
+      const rel = resource.startsWith(root + "/")
+        ? resource.slice(root.length + 1)
+        : resource
+      return readWorkspaceFileBase64(fileDir, rel)
+    },
+  })
+  const withCsp = withSandboxCsp(inlined, { trusted: scripts })
+  const bodyEnd = withCsp.toLowerCase().lastIndexOf("</body>")
+  return bodyEnd === -1
+    ? withCsp + SIZE_REPORTER
+    : withCsp.slice(0, bodyEnd) + SIZE_REPORTER + withCsp.slice(bodyEnd)
+}
+
 export function buildVisualizeDocument({
   fragment,
   assets,
@@ -335,18 +380,25 @@ interface LoadResult {
   key: string
   srcDoc: string | null
   error: string | null
+  /** The document's own `<title>`, when it is a complete document. */
+  title: string | null
 }
 
 interface CodexVisualizeCardProps {
+  /** Absolute path, or `~/…`, of the HTML fragment or document. */
   path: string
   mode: CodexVisualizeMode
   className?: string
+  /** When set, the header offers a "Hide" button that calls it — used by the
+   *  on-demand previews of files a reply merely mentions. */
+  onCollapse?: () => void
 }
 
 export const CodexVisualizeCard = memo(function CodexVisualizeCard({
   path,
   mode,
   className,
+  onCollapse,
 }: CodexVisualizeCardProps) {
   const t = useTranslations("Folder.chat.contentParts")
   const { resolvedTheme } = useTheme()
@@ -364,26 +416,37 @@ export const CodexVisualizeCard = memo(function CodexVisualizeCard({
   } | null>(null)
   const frameRef = useRef<HTMLIFrameElement | null>(null)
 
-  const title = titleFromPath(path)
-  const loadKey = `${path}\u0000${dark ? "dark" : "light"}\u0000${reloadKey}`
+  const pathTitle = titleFromPath(path)
+  // `scripts` is part of the key: a complete document's CSP follows it.
+  const loadKey = `${path}\u0000${dark ? "dark" : "light"}\u0000${scripts ? 1 : 0}\u0000${reloadKey}`
 
   useEffect(() => {
     let cancelled = false
     ;(async () => {
-      const b64 = await readFileBase64(path, MAX_FRAGMENT_BYTES)
+      const absPath = await expandHomePath(path)
+      const b64 = await readFileBase64(absPath, MAX_FRAGMENT_BYTES)
       const html = decodeBase64Utf8(b64)
-      if (isCompleteHtmlDocument(html)) return html
+      if (isCompleteHtmlDocument(html)) {
+        return {
+          doc: await buildCompleteDocument(html, absPath, scripts),
+          title: extractHtmlTitle(html) || null,
+        }
+      }
       const assets = await getVisualizeAssets()
-      return buildVisualizeDocument({
-        fragment: html,
-        assets,
-        title,
-        dark,
-        themeOverrides: readThemeOverrides(),
-      })
+      return {
+        doc: buildVisualizeDocument({
+          fragment: html,
+          assets,
+          title: pathTitle,
+          dark,
+          themeOverrides: readThemeOverrides(),
+        }),
+        title: null,
+      }
     })()
-      .then((doc) => {
-        if (!cancelled) setLoaded({ key: loadKey, srcDoc: doc, error: null })
+      .then(({ doc, title }) => {
+        if (!cancelled)
+          setLoaded({ key: loadKey, srcDoc: doc, error: null, title })
       })
       .catch((err: unknown) => {
         if (!cancelled)
@@ -391,12 +454,13 @@ export const CodexVisualizeCard = memo(function CodexVisualizeCard({
             key: loadKey,
             srcDoc: null,
             error: err instanceof Error ? err.message : String(err),
+            title: null,
           })
       })
     return () => {
       cancelled = true
     }
-  }, [path, dark, title, loadKey])
+  }, [path, dark, pathTitle, scripts, loadKey])
 
   useEffect(() => {
     const onMessage = (event: MessageEvent) => {
@@ -418,6 +482,7 @@ export const CodexVisualizeCard = memo(function CodexVisualizeCard({
   const toggleExpanded = useCallback(() => setExpanded((v) => !v), [])
 
   const current = loaded?.key === loadKey ? loaded : null
+  const title = current?.title || pathTitle
   const srcDoc = current?.srcDoc ?? null
   const error = current?.error ?? null
   const loading = current === null
@@ -489,6 +554,17 @@ export const CodexVisualizeCard = memo(function CodexVisualizeCard({
             <ExternalLink className="h-3.5 w-3.5" />
             <span className="sr-only">{t("visualizeOpenFile")}</span>
           </FilePathLink>
+          {onCollapse ? (
+            <button
+              type="button"
+              onClick={onCollapse}
+              title={t("htmlPreviewHide")}
+              aria-label={t("htmlPreviewHide")}
+              className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-muted-foreground hover:bg-primary/8"
+            >
+              <ChevronUp className="h-3.5 w-3.5" />
+            </button>
+          ) : null}
         </div>
       </header>
 
