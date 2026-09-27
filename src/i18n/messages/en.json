@@ -3701,7 +3701,19 @@
           "outputMissing": "Codex truncated the script output and dropped this command's separator, so none of the output could be attributed to it.",
           "sharedWith": "Also contains the output of {commands} — codex truncated their separators away.",
           "truncated": "truncated"
-        }
+        },
+        "visualizeTitle": "Visualization",
+        "visualizeWide": "Wide",
+        "visualizeLoading": "Loading visualization…",
+        "visualizeError": "Could not load the visualization",
+        "visualizeReload": "Reload",
+        "visualizeOpenFile": "Open file",
+        "visualizeExpand": "Show all",
+        "visualizeCollapse": "Show less",
+        "visualizeScriptsOn": "Scripts on",
+        "visualizeScriptsOff": "Enable scripts",
+        "visualizeScriptsHint": "Run the visualization's scripts so it is interactive. It runs in a sandbox and cannot reach the network or your files.",
+        "visualizeFrameTitle": "Codex visualization"
       },
       "messageNav": {
         "title": "Message navigation",

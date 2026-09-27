@@ -3701,7 +3701,19 @@
           "outputMissing": "codex がスクリプト出力を切り詰めた際にこのコマンドの区切り行が失われたため、出力を割り当てられませんでした。",
           "sharedWith": "この範囲には {commands} の出力も含まれます — 区切り行が codex により切り捨てられました。",
           "truncated": "切り詰め済み"
-        }
+        },
+        "visualizeTitle": "ビジュアライゼーション",
+        "visualizeWide": "ワイド",
+        "visualizeLoading": "ビジュアライゼーションを読み込み中…",
+        "visualizeError": "ビジュアライゼーションを読み込めませんでした",
+        "visualizeReload": "再読み込み",
+        "visualizeOpenFile": "ファイルを開く",
+        "visualizeExpand": "すべて表示",
+        "visualizeCollapse": "折りたたむ",
+        "visualizeScriptsOn": "スクリプト有効",
+        "visualizeScriptsOff": "スクリプトを有効化",
+        "visualizeScriptsHint": "ビジュアライゼーションのスクリプトを実行して操作できるようにします。サンドボックス内で実行され、ネットワークやファイルにはアクセスできません。",
+        "visualizeFrameTitle": "Codex ビジュアライゼーション"
       },
       "messageNav": {
         "title": "メッセージナビ",

@@ -3701,7 +3701,19 @@
           "outputMissing": "Codex truncó la salida del script y eliminó el separador de este comando, por lo que no se le pudo atribuir ninguna salida.",
           "sharedWith": "También contiene la salida de {commands}: codex truncó sus separadores.",
           "truncated": "truncado"
-        }
+        },
+        "visualizeTitle": "Visualización",
+        "visualizeWide": "Ancho",
+        "visualizeLoading": "Cargando visualización…",
+        "visualizeError": "No se pudo cargar la visualización",
+        "visualizeReload": "Recargar",
+        "visualizeOpenFile": "Abrir archivo",
+        "visualizeExpand": "Mostrar todo",
+        "visualizeCollapse": "Mostrar menos",
+        "visualizeScriptsOn": "Scripts activados",
+        "visualizeScriptsOff": "Activar scripts",
+        "visualizeScriptsHint": "Ejecuta los scripts de la visualización para que sea interactiva. Se ejecuta en un entorno aislado y no puede acceder a la red ni a tus archivos.",
+        "visualizeFrameTitle": "Visualización de Codex"
       },
       "messageNav": {
         "title": "Navegación de mensajes",

@@ -3701,7 +3701,19 @@
           "outputMissing": "اقتطع codex مُخرَج النص البرمجي وأزال الفاصل الخاص بهذا الأمر، لذا تعذّر نسب أي مُخرَج إليه.",
           "sharedWith": "يحتوي هذا المقطع أيضًا على مُخرَج {commands} — إذ اقتطع codex الفواصل الخاصة بها.",
           "truncated": "مقتطع"
-        }
+        },
+        "visualizeTitle": "تصوّر بياني",
+        "visualizeWide": "عريض",
+        "visualizeLoading": "جارٍ تحميل التصوّر البياني…",
+        "visualizeError": "تعذّر تحميل التصوّر البياني",
+        "visualizeReload": "إعادة التحميل",
+        "visualizeOpenFile": "فتح الملف",
+        "visualizeExpand": "عرض الكل",
+        "visualizeCollapse": "عرض أقل",
+        "visualizeScriptsOn": "البرامج النصية مفعّلة",
+        "visualizeScriptsOff": "تفعيل البرامج النصية",
+        "visualizeScriptsHint": "تشغيل البرامج النصية للتصوّر البياني ليصبح تفاعليًا. يعمل داخل بيئة معزولة ولا يمكنه الوصول إلى الشبكة أو ملفاتك.",
+        "visualizeFrameTitle": "تصوّر بياني من Codex"
       },
       "messageNav": {
         "title": "تنقل الرسائل",

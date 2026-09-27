@@ -3701,7 +3701,19 @@
           "outputMissing": "codex 截斷指令碼輸出時捨棄了這個命令的分隔行，因此沒有輸出可歸屬給它。",
           "sharedWith": "本段還包含 {commands} 的輸出——它們的分隔行已被 codex 截斷捨棄。",
           "truncated": "已截斷"
-        }
+        },
+        "visualizeTitle": "視覺化",
+        "visualizeWide": "寬版",
+        "visualizeLoading": "正在載入視覺化…",
+        "visualizeError": "無法載入視覺化內容",
+        "visualizeReload": "重新載入",
+        "visualizeOpenFile": "開啟檔案",
+        "visualizeExpand": "展開全部",
+        "visualizeCollapse": "收合",
+        "visualizeScriptsOn": "腳本已開啟",
+        "visualizeScriptsOff": "啟用腳本",
+        "visualizeScriptsHint": "執行視覺化中的腳本以支援互動。腳本在沙箱中執行，無法存取網路或你的檔案。",
+        "visualizeFrameTitle": "Codex 視覺化"
       },
       "messageNav": {
         "title": "訊息導覽",

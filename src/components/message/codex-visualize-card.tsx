@@ -1,0 +1,518 @@
+"use client"
+
+import { memo, useCallback, useEffect, useRef, useState } from "react"
+import {
+  AlertCircle,
+  ChevronsDownUp,
+  ChevronsUpDown,
+  ExternalLink,
+  RotateCw,
+  ShieldCheck,
+  ShieldOff,
+} from "lucide-react"
+import { useTranslations } from "next-intl"
+import { useTheme } from "next-themes"
+import { FilePathLink } from "@/components/ai-elements/link-safety"
+import {
+  getHomeDirectory,
+  listDirectoryEntries,
+  readFileBase64,
+} from "@/lib/api"
+import {
+  isCompleteHtmlDocument,
+  type CodexVisualizeMode,
+} from "@/lib/codex-visualize"
+import { cn } from "@/lib/utils"
+
+/**
+ * One inline visualization from Codex's `visualize` skill: the referenced
+ * HTML *fragment*, wrapped in the same kind of document the Codex app builds
+ * around it, in a sandboxed `srcdoc` iframe that sizes itself to its content.
+ *
+ * The wrapper mirrors the skill's own `render.py`:
+ *   - the skill's `visualize.css` (theme-variable contract + `.card`, `.btn`,
+ *     `.nav-pills`… utilities) and `visualize.html` (the fragment slot plus the
+ *     tooltip runtime) are read from the locally installed Codex plugin, so the
+ *     fragment renders exactly as Codex intended. When the plugin is not
+ *     installed a small built-in stylesheet supplies the variable contract so
+ *     the fragment still has sensible colours.
+ *   - the frame CSP is the skill's: inline scripts may run (interactivity is
+ *     the point of these visuals) but the frame cannot reach the network
+ *     except for the handful of CDNs the skill itself allows, cannot open
+ *     sub-frames, submit forms or navigate.
+ *
+ * The theme-variable contract (`--background`, `--foreground`, `--card`…) uses
+ * the same names codeg's own shadcn tokens use, so the current codeg theme is
+ * copied into the frame and the visual matches the transcript around it.
+ */
+
+const CODEX_PLUGIN_VISUALIZE_DIR =
+  ".codex/plugins/cache/openai-bundled/visualize"
+const FRAGMENT_PLACEHOLDER = "<!--__INLINE_VISUALIZATION_FRAGMENT__-->"
+/** The skill refuses fragments over 1 MB; leave headroom for exports. */
+const MAX_FRAGMENT_BYTES = 4 * 1024 * 1024
+const MIN_FRAME_HEIGHT = 96
+const DEFAULT_FRAME_HEIGHT = 320
+const COLLAPSED_MAX_HEIGHT = 640
+const SIZE_MESSAGE_TYPE = "codeg-visualize:size"
+
+const RESOURCE_SOURCES = [
+  "blob:",
+  "data:",
+  "https://cdnjs.cloudflare.com",
+  "https://cdn.jsdelivr.net",
+  "https://esm.sh",
+  "https://fonts.bunny.net",
+  "https://fonts.googleapis.com",
+  "https://fonts.gstatic.com",
+  "https://unpkg.com",
+].join(" ")
+
+const FRAME_CSP = [
+  "default-src 'none'",
+  `script-src 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval' ${RESOURCE_SOURCES}`,
+  `style-src 'unsafe-inline' ${RESOURCE_SOURCES}`,
+  `img-src ${RESOURCE_SOURCES}`,
+  `font-src ${RESOURCE_SOURCES}`,
+  `media-src ${RESOURCE_SOURCES}`,
+  "worker-src blob:",
+  "connect-src blob: data:",
+  "frame-src 'none'",
+  "object-src 'none'",
+  "base-uri 'none'",
+  "form-action 'none'",
+].join("; ")
+
+/** Names shared by the skill's contract and codeg's theme tokens. */
+const THEME_TOKENS = [
+  "background",
+  "foreground",
+  "card",
+  "card-foreground",
+  "popover",
+  "popover-foreground",
+  "primary",
+  "primary-foreground",
+  "secondary",
+  "secondary-foreground",
+  "muted",
+  "muted-foreground",
+  "accent",
+  "accent-foreground",
+  "destructive",
+  "border",
+  "input",
+  "ring",
+] as const
+
+/**
+ * Used only when the Codex plugin's own stylesheet cannot be found. Supplies
+ * the variable contract and the few utilities fragments lean on most; it does
+ * not try to reproduce the skill's full design system.
+ */
+const FALLBACK_VISUALIZE_CSS = `
+:root{color-scheme:light dark;
+--background:light-dark(rgb(255 255 255),rgb(24 24 24));
+--foreground:light-dark(rgb(26 28 31),rgb(255 255 255));
+--card:color-mix(in oklab,var(--foreground) 5%,var(--background));
+--card-foreground:var(--foreground);
+--popover:light-dark(rgb(255 255 255),rgb(45 45 45));
+--popover-foreground:var(--foreground);
+--primary:light-dark(rgb(51 156 255),rgb(131 195 255));
+--primary-foreground:light-dark(rgb(255 255 255),rgb(13 13 13));
+--secondary:light-dark(rgb(255 255 255 / 96%),rgb(54 54 54 / 96%));
+--secondary-foreground:var(--foreground);
+--muted:color-mix(in srgb,var(--foreground) 10%,transparent);
+--muted-foreground:light-dark(rgb(26 28 31 / 49.4%),rgb(255 255 255 / 49.8%));
+--accent:color-mix(in srgb,var(--primary) 12%,transparent);
+--accent-foreground:var(--foreground);
+--destructive:light-dark(rgb(220 38 38),rgb(248 113 113));
+--border:color-mix(in srgb,var(--foreground) 15%,transparent);
+--input:var(--border);--ring:var(--primary);
+--blue:light-dark(rgb(51 156 255),rgb(131 195 255));
+--orange:light-dark(rgb(255 140 0),rgb(255 170 70));
+--green:light-dark(rgb(34 160 90),rgb(90 210 140));
+--red:light-dark(rgb(220 60 60),rgb(255 120 120));
+--purple:light-dark(rgb(140 90 230),rgb(180 150 255));
+--yellow:light-dark(rgb(220 170 0),rgb(255 210 80));
+--viz-series-1:var(--blue);--viz-series-2:var(--orange);--viz-series-3:var(--green);
+--viz-series-4:var(--red);--viz-series-5:var(--purple);--viz-series-6:var(--yellow);
+--font-size-base:14px}
+html,body{margin:0;background:var(--background);color:var(--foreground);
+font:var(--font-size-base)/1.5 system-ui,-apple-system,"Segoe UI",sans-serif}
+body{padding:1rem;box-sizing:border-box}
+*,*::before,*::after{box-sizing:border-box}
+.card{background:var(--card);color:var(--card-foreground);border:1px solid var(--border);border-radius:12px;padding:12px}
+.btn{display:inline-flex;align-items:center;gap:.4em;padding:.4em .8em;border:1px solid var(--border);border-radius:8px;background:var(--secondary);color:var(--foreground);font:inherit;cursor:pointer}
+.btn:hover{background:var(--accent)}
+.btn[aria-pressed="true"],.btn[aria-selected="true"],.btn.is-selected,.btn-primary{background:var(--primary);color:var(--primary-foreground);border-color:transparent}
+.btn-ghost{background:transparent;border-color:transparent}
+.btn-block{width:100%;justify-content:center}
+.nav.nav-pills{display:flex;gap:4px;flex-wrap:wrap}
+.nav-link{padding:.35em .8em;border-radius:999px;border:0;background:transparent;color:var(--muted-foreground);font:inherit;cursor:pointer}
+.nav-link.active{background:var(--muted);color:var(--foreground)}
+.progress{height:8px;border-radius:999px;background:var(--muted);overflow:hidden}
+.progress-bar{height:100%;background:var(--primary)}
+.tooltip{position:absolute;pointer-events:none;background:var(--popover);color:var(--popover-foreground);border:1px solid var(--border);border-radius:8px;padding:6px 8px;font-size:12px}
+.form-check{display:flex;align-items:center;gap:.5em}
+a{color:var(--primary)}
+svg text{fill:var(--foreground)}
+`
+
+/** Reports the document's height to the parent whenever it changes. */
+const SIZE_REPORTER = `<script>(()=>{const post=()=>{const d=document.documentElement,b=document.body;const h=Math.ceil(Math.max(d.scrollHeight,b?b.scrollHeight:0));parent.postMessage({type:${JSON.stringify(SIZE_MESSAGE_TYPE)},height:h},"*")};const ro=new ResizeObserver(post);ro.observe(document.documentElement);if(document.body)ro.observe(document.body);new MutationObserver(post).observe(document.documentElement,{subtree:true,childList:true,attributes:true});addEventListener("load",post);post();})();</script>`
+
+interface VisualizeAssets {
+  css: string
+  /** `visualize.html`: the fragment slot plus the tooltip runtime. */
+  kit: string | null
+  calendar: string | null
+}
+
+const FALLBACK_ASSETS: VisualizeAssets = {
+  css: FALLBACK_VISUALIZE_CSS,
+  kit: null,
+  calendar: null,
+}
+
+let assetsPromise: Promise<VisualizeAssets> | null = null
+
+function decodeBase64Utf8(b64: string): string {
+  const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0))
+  return new TextDecoder("utf-8").decode(bytes)
+}
+
+function compareVersionsDesc(a: string, b: string): number {
+  const pa = a.split(".").map((n) => Number.parseInt(n, 10) || 0)
+  const pb = b.split(".").map((n) => Number.parseInt(n, 10) || 0)
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const d = (pb[i] ?? 0) - (pa[i] ?? 0)
+    if (d !== 0) return d
+  }
+  return 0
+}
+
+async function readOptionalText(path: string): Promise<string | null> {
+  try {
+    return decodeBase64Utf8(await readFileBase64(path, MAX_FRAGMENT_BYTES))
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Locate the newest installed version of the Codex `visualize` plugin and read
+ * its stylesheet and inner kit. Resolved once per page; a miss falls back to
+ * the built-in stylesheet rather than failing the card.
+ */
+async function loadVisualizeAssets(): Promise<VisualizeAssets> {
+  try {
+    const home = (await getHomeDirectory()).replace(/[\\/]+$/, "")
+    const pluginDir = `${home}/${CODEX_PLUGIN_VISUALIZE_DIR}`
+    const versions = (await listDirectoryEntries(pluginDir))
+      .map((e) => e.name)
+      .filter((name) => /^\d+(\.\d+)*$/.test(name))
+      .sort(compareVersionsDesc)
+    for (const version of versions) {
+      const assets = `${pluginDir}/${version}/skills/visualize/assets`
+      const css = await readOptionalText(`${assets}/visualize.css`)
+      if (css === null) continue
+      const [kit, calendar] = await Promise.all([
+        readOptionalText(`${assets}/visualize.html`),
+        readOptionalText(`${assets}/calendar.js`),
+      ])
+      return { css, kit, calendar }
+    }
+  } catch {
+    // Not installed, remote host without the plugin, or unreadable: fall back.
+  }
+  return FALLBACK_ASSETS
+}
+
+function getVisualizeAssets(): Promise<VisualizeAssets> {
+  if (assetsPromise === null) assetsPromise = loadVisualizeAssets()
+  return assetsPromise
+}
+
+/** Tests only. */
+export function resetCodexVisualizeAssetsForTests(): void {
+  assetsPromise = null
+}
+
+/** Copy codeg's current theme tokens into the frame's variable contract. */
+function readThemeOverrides(): string {
+  if (typeof document === "undefined") return ""
+  const style = getComputedStyle(document.documentElement)
+  const decls: string[] = []
+  for (const token of THEME_TOKENS) {
+    const value = style.getPropertyValue(`--${token}`).trim()
+    if (value) decls.push(`--${token}:${value}`)
+  }
+  return decls.length > 0 ? `:root{${decls.join(";")}}` : ""
+}
+
+function escapeClosingScript(source: string): string {
+  return source.replace(/<\/script/gi, "<\\/script")
+}
+
+export function buildVisualizeDocument({
+  fragment,
+  assets,
+  title,
+  dark,
+  themeOverrides,
+}: {
+  fragment: string
+  assets: VisualizeAssets
+  title: string
+  dark: boolean
+  themeOverrides: string
+}): string {
+  const calendar =
+    assets.calendar && /\bviz-calendar\b/i.test(fragment)
+      ? `<script>${escapeClosingScript(assets.calendar)}</script>`
+      : ""
+  const body = assets.kit
+    ? assets.kit.replace(FRAGMENT_PLACEHOLDER, calendar + fragment)
+    : calendar + fragment
+  const escapedTitle = title
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+  return `<!doctype html>
+<html lang="en" style="color-scheme:${dark ? "dark" : "light"}">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<meta http-equiv="Content-Security-Policy" content="${FRAME_CSP}">
+<title>${escapedTitle}</title>
+<style>${assets.css}
+html>body{padding:0}</style>
+<style>${themeOverrides}</style>
+</head>
+<body>
+${body}
+${SIZE_REPORTER}
+</body>
+</html>`
+}
+
+function fileName(path: string): string {
+  return path.split(/[\\/]/).pop() || path
+}
+
+function titleFromPath(path: string): string {
+  const stem = fileName(path).replace(/\.html?$/i, "")
+  return stem
+    .split(/[-_\s]+/)
+    .filter(Boolean)
+    .map((w) => w[0].toUpperCase() + w.slice(1))
+    .join(" ")
+}
+
+interface LoadResult {
+  key: string
+  srcDoc: string | null
+  error: string | null
+}
+
+interface CodexVisualizeCardProps {
+  path: string
+  mode: CodexVisualizeMode
+  className?: string
+}
+
+export const CodexVisualizeCard = memo(function CodexVisualizeCard({
+  path,
+  mode,
+  className,
+}: CodexVisualizeCardProps) {
+  const t = useTranslations("Folder.chat.contentParts")
+  const { resolvedTheme } = useTheme()
+  const dark = resolvedTheme === "dark"
+
+  const [scripts, setScripts] = useState(true)
+  const [expanded, setExpanded] = useState(false)
+  const [reloadKey, setReloadKey] = useState(0)
+  // Both results are tagged with the load they belong to, so switching path /
+  // theme / reload shows the loading state without a synchronous reset.
+  const [loaded, setLoaded] = useState<LoadResult | null>(null)
+  const [measured, setMeasured] = useState<{
+    key: string
+    height: number
+  } | null>(null)
+  const frameRef = useRef<HTMLIFrameElement | null>(null)
+
+  const title = titleFromPath(path)
+  const loadKey = `${path}\u0000${dark ? "dark" : "light"}\u0000${reloadKey}`
+
+  useEffect(() => {
+    let cancelled = false
+    ;(async () => {
+      const b64 = await readFileBase64(path, MAX_FRAGMENT_BYTES)
+      const html = decodeBase64Utf8(b64)
+      if (isCompleteHtmlDocument(html)) return html
+      const assets = await getVisualizeAssets()
+      return buildVisualizeDocument({
+        fragment: html,
+        assets,
+        title,
+        dark,
+        themeOverrides: readThemeOverrides(),
+      })
+    })()
+      .then((doc) => {
+        if (!cancelled) setLoaded({ key: loadKey, srcDoc: doc, error: null })
+      })
+      .catch((err: unknown) => {
+        if (!cancelled)
+          setLoaded({
+            key: loadKey,
+            srcDoc: null,
+            error: err instanceof Error ? err.message : String(err),
+          })
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [path, dark, title, loadKey])
+
+  useEffect(() => {
+    const onMessage = (event: MessageEvent) => {
+      const frame = frameRef.current
+      if (!frame || event.source !== frame.contentWindow) return
+      const data = event.data as { type?: unknown; height?: unknown } | null
+      if (!data || data.type !== SIZE_MESSAGE_TYPE) return
+      if (typeof data.height !== "number" || !Number.isFinite(data.height))
+        return
+      const height = Math.max(MIN_FRAME_HEIGHT, Math.ceil(data.height))
+      setMeasured({ key: loadKey, height })
+    }
+    window.addEventListener("message", onMessage)
+    return () => window.removeEventListener("message", onMessage)
+  }, [loadKey])
+
+  const reload = useCallback(() => setReloadKey((k) => k + 1), [])
+  const toggleScripts = useCallback(() => setScripts((v) => !v), [])
+  const toggleExpanded = useCallback(() => setExpanded((v) => !v), [])
+
+  const current = loaded?.key === loadKey ? loaded : null
+  const srcDoc = current?.srcDoc ?? null
+  const error = current?.error ?? null
+  const loading = current === null
+  const contentHeight =
+    measured?.key === loadKey ? measured.height : DEFAULT_FRAME_HEIGHT
+  const overflows = contentHeight > COLLAPSED_MAX_HEIGHT
+  const frameHeight =
+    expanded || !overflows ? contentHeight : COLLAPSED_MAX_HEIGHT
+
+  return (
+    <section
+      data-testid="codex-visualize-card"
+      data-mode={mode}
+      className={cn(
+        "not-prose my-2 flex w-full min-w-0 flex-col overflow-hidden rounded-lg border border-border bg-card text-card-foreground",
+        className
+      )}
+    >
+      <header className="flex h-9 shrink-0 items-center justify-between gap-3 border-b border-border bg-muted/20 px-3">
+        <div className="flex min-w-0 items-center gap-2">
+          <span
+            className="min-w-0 truncate text-xs font-medium text-foreground/80"
+            title={path}
+          >
+            {title || t("visualizeTitle")}
+          </span>
+          {mode === "wide" && (
+            <span className="shrink-0 rounded-full bg-muted px-1.5 py-0.5 text-2xs uppercase tracking-wide text-muted-foreground">
+              {t("visualizeWide")}
+            </span>
+          )}
+        </div>
+        <div className="flex shrink-0 items-center gap-0.5">
+          <button
+            type="button"
+            onClick={toggleScripts}
+            aria-pressed={scripts}
+            title={t("visualizeScriptsHint")}
+            className={cn(
+              "inline-flex h-7 shrink-0 items-center gap-1.5 rounded-full px-2 text-xs transition-colors",
+              scripts
+                ? "text-amber-600 hover:bg-amber-500/10 dark:text-amber-500"
+                : "text-muted-foreground hover:bg-primary/8"
+            )}
+          >
+            {scripts ? (
+              <ShieldOff className="h-3.5 w-3.5" />
+            ) : (
+              <ShieldCheck className="h-3.5 w-3.5" />
+            )}
+            {scripts ? t("visualizeScriptsOn") : t("visualizeScriptsOff")}
+          </button>
+          <button
+            type="button"
+            onClick={reload}
+            title={t("visualizeReload")}
+            aria-label={t("visualizeReload")}
+            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-muted-foreground hover:bg-primary/8"
+          >
+            <RotateCw className="h-3.5 w-3.5" />
+          </button>
+          <FilePathLink
+            filePath={path}
+            title={t("visualizeOpenFile")}
+            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-muted-foreground hover:bg-primary/8"
+          >
+            <ExternalLink className="h-3.5 w-3.5" />
+            <span className="sr-only">{t("visualizeOpenFile")}</span>
+          </FilePathLink>
+        </div>
+      </header>
+
+      <div className="relative min-h-0 w-full">
+        {loading && (
+          <div className="flex h-24 items-center justify-center text-xs text-muted-foreground">
+            {t("visualizeLoading")}
+          </div>
+        )}
+        {error && (
+          <div className="flex items-start gap-2 px-3 py-3 text-xs text-muted-foreground">
+            <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-destructive" />
+            <div className="min-w-0">
+              <div className="text-foreground/80">{t("visualizeError")}</div>
+              <div className="break-all font-mono text-2xs">{error}</div>
+            </div>
+          </div>
+        )}
+        {srcDoc !== null && (
+          <iframe
+            key={`${reloadKey}-${scripts ? "scripts" : "static"}`}
+            ref={frameRef}
+            title={t("visualizeFrameTitle")}
+            sandbox={scripts ? "allow-scripts" : ""}
+            referrerPolicy="no-referrer"
+            srcDoc={srcDoc}
+            style={{ height: frameHeight }}
+            className="block w-full border-0 bg-transparent transition-[height] duration-150"
+          />
+        )}
+      </div>
+
+      {srcDoc !== null && overflows && (
+        <button
+          type="button"
+          onClick={toggleExpanded}
+          className="flex h-8 w-full items-center justify-center gap-1.5 border-t border-border text-xs text-muted-foreground hover:bg-primary/8"
+        >
+          {expanded ? (
+            <ChevronsDownUp className="h-3.5 w-3.5" />
+          ) : (
+            <ChevronsUpDown className="h-3.5 w-3.5" />
+          )}
+          {expanded ? t("visualizeCollapse") : t("visualizeExpand")}
+        </button>
+      )}
+    </section>
+  )
+})

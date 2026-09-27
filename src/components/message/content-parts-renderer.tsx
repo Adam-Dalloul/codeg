@@ -81,6 +81,11 @@ import { isCodegMcpWorkbenchTool } from "@/lib/codeg-mcp-tool"
 import { fsSeparator } from "@/lib/path-utils"
 import { DelegatedSubThread } from "./delegated-sub-thread"
 import { DelegationStatusCard } from "./delegation-status-card"
+import { CodexVisualizeCard } from "./codex-visualize-card"
+import {
+  hasCodexVisualizeRef,
+  splitCodexVisualizeRefs,
+} from "@/lib/codex-visualize"
 import { DelegationStatusGroupCard } from "./delegation-status-group-card"
 import { BackgroundTaskCard } from "./background-task-card"
 import { GeneratedImagesBlock } from "./generated-images-block"
@@ -2257,6 +2262,43 @@ const TextPart = memo(function TextPart({
       </div>
     )
   }
+  // Codex's `visualize` skill drops an inline-visualization reference into the
+  // reply as a fenced `visualize{"path":…}` line. Rendered as Markdown it is a
+  // line of tofu; split it out and show the referenced HTML in its place.
+  if (hasCodexVisualizeRef(text)) {
+    const segments = splitCodexVisualizeRefs(text)
+    if (segments.some((s) => s.kind === "visualize")) {
+      return (
+        <div className="space-y-2">
+          {segments.map((segment, index) =>
+            segment.kind === "visualize" ? (
+              <CodexVisualizeCard
+                key={`viz-${index}-${segment.ref.path}`}
+                path={segment.ref.path}
+                mode={segment.ref.mode}
+              />
+            ) : (
+              <MarkdownText
+                key={`md-${index}`}
+                text={segment.text}
+                isStreaming={isStreaming}
+              />
+            )
+          )}
+        </div>
+      )
+    }
+  }
+  return <MarkdownText text={text} isStreaming={isStreaming} />
+})
+
+function MarkdownText({
+  text,
+  isStreaming,
+}: {
+  text: string
+  isStreaming: boolean
+}) {
   return (
     <div className='break-words text-sm prose prose-sm dark:prose-invert max-w-none [&_ul]:list-inside [&_ol]:list-inside [&_[data-streamdown="code-block-body"]]:max-h-96 [&_[data-streamdown="code-block-body"]]:overflow-auto'>
       <MessageResponse
@@ -2267,7 +2309,7 @@ const TextPart = memo(function TextPart({
       </MessageResponse>
     </div>
   )
-})
+}
 
 const ToolCallPart = memo(function ToolCallPart({
   part,
