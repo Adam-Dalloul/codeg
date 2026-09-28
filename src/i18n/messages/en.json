@@ -2007,7 +2007,12 @@
         "removeFromGroup": "No group",
         "newGroupAndMove": "New group…",
         "dropToUngroup": "Drop here to remove from group"
-      }
+      },
+      "recentFilterAll": "All",
+      "recentFilterTitle": "Show in Recent: {filter}",
+      "noRecentChats": "No recent chats",
+      "noRecentFolders": "No recent folder conversations",
+      "recentFilterMenuLabel": "Show in Recent"
     },
     "conversation": {
       "reloadFailed": "Failed to reload conversation: {message}",
