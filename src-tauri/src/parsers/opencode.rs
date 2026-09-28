@@ -74,6 +74,24 @@ impl OpenCodeParser {
         Ok(conn)
     }
 
+    async fn detect_schema(&self, conn: &DatabaseConnection) -> Result<(bool, bool), ParseError> {
+        let has_v1 = conn
+            .query_one(Statement::from_string(
+                DbBackend::Sqlite,
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='session'".to_string(),
+            ))
+            .await?
+            .is_some();
+        let has_v2 = conn
+            .query_one(Statement::from_string(
+                DbBackend::Sqlite,
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='session_v2'".to_string(),
+            ))
+            .await?
+            .is_some();
+        Ok((has_v1, has_v2))
+    }
+
     fn parse_sqlite_summary_row(row: &QueryResult) -> Result<ConversationSummary, ParseError> {
         let id: String = row.try_get("", "id")?;
         let directory: Option<String> = row.try_get("", "directory")?;
@@ -105,10 +123,6 @@ impl OpenCodeParser {
             message_count,
             model: normalize_optional_string(model),
             git_branch: None,
-            // A `task` tool call runs its sub-agent in its own session row,
-            // linked by `parent_id`. Dropping it listed every delegated
-            // sub-agent alongside the real conversations instead of nesting it
-            // under the one that spawned it.
             parent_id: normalize_optional_string(parent_id),
             parent_tool_use_id: None,
             delegation_call_id: None,
@@ -117,12 +131,17 @@ impl OpenCodeParser {
 
     async fn list_conversations_from_sqlite(&self) -> Result<Vec<ConversationSummary>, ParseError> {
         let conn = self.open_sqlite_connection().await?;
+        let (has_v1, has_v2) = self.detect_schema(&conn).await?;
 
-        let rows = conn
-            .query_all(Statement::from_string(
-                DbBackend::Sqlite,
-                format!(
-                    r#"
+        if !has_v1 && !has_v2 {
+            return Ok(Vec::new());
+        }
+
+        let mut queries = Vec::new();
+
+        if has_v1 {
+            queries.push(format!(
+                r#"
                 SELECT
                     s.id AS id,
                     s.directory AS directory,
@@ -143,23 +162,71 @@ impl OpenCodeParser {
                           AND json_extract(m2.data, '$.role') = 'assistant'
                         ORDER BY m2.time_created DESC
                         LIMIT 1
-                    ) AS model
+                    ) AS model,
+                    1 AS schema_version
                 FROM session s
-                ORDER BY s.time_created DESC
                 "#
-                ),
-            ))
+            ));
+        }
+
+        if has_v2 {
+            queries.push(format!(
+                r#"
+                SELECT
+                    s.id AS id,
+                    s.directory AS directory,
+                    s.parent_id AS parent_id,
+                    s.title AS title,
+                    {FIRST_USER_TEXT_SQL_V2},
+                    s.time_created AS created_ms,
+                    s.time_updated AS updated_ms,
+                    COALESCE((
+                        SELECT COUNT(*)
+                        FROM session_message m
+                        WHERE m.session_id = s.id
+                    ), 0) AS message_count,
+                    (
+                        SELECT json_extract(m2.data, '$.model.id')
+                        FROM session_message m2
+                        WHERE m2.session_id = s.id
+                          AND m2.type = 'assistant'
+                        ORDER BY m2.time_created DESC
+                        LIMIT 1
+                    ) AS model,
+                    2 AS schema_version
+                FROM session_v2 s
+                "#
+            ));
+        }
+
+        let sql = queries.join(" UNION ALL ");
+        let final_sql = format!(
+            r#"
+            SELECT * FROM ({})
+            ORDER BY schema_version DESC, created_ms DESC
+            "#,
+            sql
+        );
+
+        let rows = conn
+            .query_all(Statement::from_string(DbBackend::Sqlite, final_sql))
             .await?;
 
+        let mut seen = std::collections::HashSet::new();
         let mut conversations = Vec::with_capacity(rows.len());
+
         for row in rows {
             let summary = Self::parse_sqlite_summary_row(&row)?;
+            if !seen.insert(summary.id.clone()) {
+                continue; // Skip duplicate ID from older schema
+            }
             if summary.message_count == 0 {
                 continue;
             }
             conversations.push(summary);
         }
 
+        conversations.sort_by_key(|c| std::cmp::Reverse(c.started_at));
         Ok(conversations)
     }
 
@@ -167,43 +234,90 @@ impl OpenCodeParser {
         &self,
         conn: &DatabaseConnection,
         conversation_id: &str,
-    ) -> Result<Option<ConversationSummary>, ParseError> {
-        let row = conn
-            .query_one(Statement::from_sql_and_values(
-                DbBackend::Sqlite,
-                format!(
-                    r#"
-                SELECT
-                    s.id AS id,
-                    s.directory AS directory,
-                    s.parent_id AS parent_id,
-                    s.title AS title,
-                    {FIRST_USER_TEXT_SQL},
-                    s.time_created AS created_ms,
-                    s.time_updated AS updated_ms,
-                    COALESCE((
-                        SELECT COUNT(*)
-                        FROM message m
-                        WHERE m.session_id = s.id
-                    ), 0) AS message_count,
-                    (
-                        SELECT json_extract(m2.data, '$.modelID')
-                        FROM message m2
-                        WHERE m2.session_id = s.id
-                          AND json_extract(m2.data, '$.role') = 'assistant'
-                        ORDER BY m2.time_created DESC
-                        LIMIT 1
-                    ) AS model
-                FROM session s
-                WHERE s.id = ?
-                LIMIT 1
-                "#
-                ),
-                [conversation_id.into()],
-            ))
-            .await?;
+    ) -> Result<Option<(ConversationSummary, u8)>, ParseError> {
+        let (has_v1, has_v2) = self.detect_schema(conn).await?;
 
-        row.map(|r| Self::parse_sqlite_summary_row(&r)).transpose()
+        if has_v2 {
+            let row = conn
+                .query_one(Statement::from_sql_and_values(
+                    DbBackend::Sqlite,
+                    format!(
+                        r#"
+                    SELECT
+                        s.id AS id,
+                        s.directory AS directory,
+                        s.parent_id AS parent_id,
+                        s.title AS title,
+                        {FIRST_USER_TEXT_SQL_V2},
+                        s.time_created AS created_ms,
+                        s.time_updated AS updated_ms,
+                        COALESCE((
+                            SELECT COUNT(*)
+                            FROM session_message m
+                            WHERE m.session_id = s.id
+                        ), 0) AS message_count,
+                        (
+                            SELECT json_extract(m2.data, '$.model.id')
+                            FROM session_message m2
+                            WHERE m2.session_id = s.id
+                              AND m2.type = 'assistant'
+                            ORDER BY m2.time_created DESC
+                            LIMIT 1
+                        ) AS model
+                    FROM session_v2 s
+                    WHERE s.id = ?
+                    LIMIT 1
+                    "#
+                    ),
+                    [conversation_id.into()],
+                ))
+                .await?;
+            if let Some(r) = row {
+                return Ok(Some((Self::parse_sqlite_summary_row(&r)?, 2)));
+            }
+        }
+
+        if has_v1 {
+            let row = conn
+                .query_one(Statement::from_sql_and_values(
+                    DbBackend::Sqlite,
+                    format!(
+                        r#"
+                    SELECT
+                        s.id AS id,
+                        s.directory AS directory,
+                        s.parent_id AS parent_id,
+                        s.title AS title,
+                        {FIRST_USER_TEXT_SQL},
+                        s.time_created AS created_ms,
+                        s.time_updated AS updated_ms,
+                        COALESCE((
+                            SELECT COUNT(*)
+                            FROM message m
+                            WHERE m.session_id = s.id
+                        ), 0) AS message_count,
+                        (
+                            SELECT json_extract(m2.data, '$.modelID')
+                            FROM message m2
+                            WHERE m2.session_id = s.id
+                              AND json_extract(m2.data, '$.role') = 'assistant'
+                            ORDER BY m2.time_created DESC
+                            LIMIT 1
+                        ) AS model
+                    FROM session s
+                    WHERE s.id = ?
+                    LIMIT 1
+                    "#
+                    ),
+                    [conversation_id.into()],
+                ))
+                .await?;
+            if let Some(r) = row {
+                return Ok(Some((Self::parse_sqlite_summary_row(&r)?, 1)));
+            }
+        }
+
+        Ok(None)
     }
 
     async fn get_conversation_from_sqlite(
@@ -211,18 +325,21 @@ impl OpenCodeParser {
         conversation_id: &str,
     ) -> Result<ConversationDetail, ParseError> {
         let conn = self.open_sqlite_connection().await?;
-        let summary = self
+        let (summary, schema_version) = self
             .sqlite_summary_by_id(&conn, conversation_id)
             .await?
             .ok_or_else(|| ParseError::ConversationNotFound(conversation_id.to_string()))?;
 
-        let messages = self.load_sqlite_messages(&conn, conversation_id).await?;
+        let messages = if schema_version == 2 {
+            self.load_sqlite_messages_v2(&conn, conversation_id).await?
+        } else {
+            self.load_sqlite_messages_v1(&conn, conversation_id).await?
+        };
+
         let mut turns = group_into_turns(messages);
         super::relocate_orphaned_tool_results(&mut turns);
         super::structurize_read_tool_output(&mut turns);
         super::resolve_patch_line_numbers(&mut turns, summary.folder_path.as_deref());
-        // OpenCode stamps `time.created` / `time.completed` on assistant
-        // messages itself; this only covers ones written with no completion.
         super::backfill_turn_durations(&mut turns, &[]);
         let context_window_used_tokens = super::latest_turn_total_usage_tokens(&turns);
         let context_window_max_tokens =
@@ -241,7 +358,393 @@ impl OpenCodeParser {
         })
     }
 
-    async fn load_sqlite_messages(
+    async fn load_sqlite_messages_v2(
+        &self,
+        conn: &DatabaseConnection,
+        conversation_id: &str,
+    ) -> Result<Vec<UnifiedMessage>, ParseError> {
+        let rows = conn
+            .query_all(Statement::from_sql_and_values(
+                DbBackend::Sqlite,
+                r#"
+                SELECT id, type, time_created, data
+                FROM session_message
+                WHERE session_id = ?
+                ORDER BY time_created ASC, id ASC
+                "#,
+                [conversation_id.into()],
+            ))
+            .await?;
+
+        // In v2, task tool calls might still exist, let's scan for them.
+        let subagent_session_ids = self
+            .scan_subagent_session_ids_v2(conn, conversation_id)
+            .await;
+        let subagent_tools = batch_load_subagent_tool_calls_v2(conn, &subagent_session_ids).await;
+
+        let mut messages = Vec::with_capacity(rows.len());
+        println!("ROWS FETCHED: {}", rows.len());
+
+        for row in rows {
+            let msg_id: String = row.try_get("", "id")?;
+            let msg_type: String = row.try_get("", "type")?;
+            let row_time_created: i64 = row.try_get("", "time_created")?;
+            let data_raw: String = row.try_get("", "data")?;
+
+            println!("DEBUG: msg_id={} msg_type={}", msg_id, msg_type);
+
+            let value: serde_json::Value = match serde_json::from_str(&data_raw) {
+                Ok(v) => v,
+                Err(e) => {
+                    println!("DEBUG: JSON ERR msg_id={}: {}", msg_id, e);
+                    continue;
+                }
+            };
+
+            let role = match msg_type.as_str() {
+                "user" => MessageRole::User,
+                "assistant" => MessageRole::Assistant,
+                "system" => MessageRole::System,
+                _ => continue,
+            };
+
+            let created_ms = value
+                .get("time")
+                .and_then(|t| t.get("created"))
+                .and_then(|c| c.as_i64())
+                .unwrap_or(row_time_created);
+            let timestamp = millis_to_datetime(created_ms);
+
+            let is_assistant = matches!(role, MessageRole::Assistant);
+            let msg_model = if is_assistant {
+                value
+                    .get("model")
+                    .and_then(|m| m.get("id"))
+                    .and_then(|m| m.as_str())
+                    .map(|s| s.to_string())
+            } else {
+                None
+            };
+
+            let mut blocks = Vec::new();
+            let mut usage = None;
+
+            if msg_type == "user" {
+                if let Some(text) = value.get("text").and_then(|t| t.as_str()) {
+                    if !text.trim().is_empty() {
+                        blocks.push(ContentBlock::Text {
+                            text: text.to_string(),
+                        });
+                    }
+                }
+                if let Some(files) = value.get("files").and_then(|f| f.as_array()) {
+                    for file in files {
+                        if let Some(image_block) = extract_opencode_file_image(file) {
+                            blocks.push(image_block);
+                        } else if let Some(file_ref) = extract_file_reference(file) {
+                            blocks.push(ContentBlock::Text {
+                                text: format!("@{}", file_ref),
+                            });
+                        }
+                    }
+                }
+            } else if is_assistant {
+                if let Some(content) = value.get("content").and_then(|c| c.as_array()) {
+                    for part in content {
+                        let part_type = part.get("type").and_then(|t| t.as_str()).unwrap_or("");
+                        match part_type {
+                            "text" => {
+                                if let Some(text) = part.get("text").and_then(|t| t.as_str()) {
+                                    if !text.trim().is_empty() {
+                                        blocks.push(ContentBlock::Text {
+                                            text: text.to_string(),
+                                        });
+                                    }
+                                }
+                            }
+                            "reasoning" => {
+                                if let Some(text) = part.get("text").and_then(|t| t.as_str()) {
+                                    if !text.trim().is_empty() {
+                                        blocks.push(ContentBlock::Thinking {
+                                            text: text.to_string(),
+                                        });
+                                    }
+                                }
+                            }
+                            "tool" => {
+                                let raw_tool_name = part
+                                    .get("name")
+                                    .or_else(|| part.get("tool"))
+                                    .and_then(|t| t.as_str())
+                                    .unwrap_or("unknown");
+                                let call_id = part
+                                    .get("id")
+                                    .or_else(|| part.get("callID"))
+                                    .and_then(|c| c.as_str())
+                                    .map(|s| s.to_string());
+                                let state = part.get("state");
+
+                                let status = state
+                                    .and_then(|s| s.get("status"))
+                                    .and_then(|s| s.as_str())
+                                    .unwrap_or("");
+                                let state_input = state.and_then(|s| s.get("input"));
+                                let is_agent_task = raw_tool_name == "task"
+                                    && state_input.and_then(|i| i.get("subagent_type")).is_some();
+
+                                if is_agent_task {
+                                    let subagent_type = state_input
+                                        .and_then(|i| i.get("subagent_type"))
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("agent");
+                                    let prompt = state_input
+                                        .and_then(|i| i.get("prompt"))
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("");
+                                    let description = state
+                                        .and_then(|s| s.get("title"))
+                                        .and_then(|v| v.as_str())
+                                        .or_else(|| {
+                                            state_input
+                                                .and_then(|i| i.get("description"))
+                                                .and_then(|v| v.as_str())
+                                        })
+                                        .unwrap_or("");
+
+                                    let metadata = state.and_then(|s| s.get("metadata"));
+                                    let model_id = metadata
+                                        .and_then(|m| m.get("model"))
+                                        .and_then(|m| m.get("id"))
+                                        .and_then(|v| v.as_str());
+                                    let session_id = metadata
+                                        .and_then(|m| m.get("sessionId"))
+                                        .and_then(|v| v.as_str());
+
+                                    let mut agent_input = serde_json::json!({
+                                        "subagent_type": subagent_type,
+                                        "description": description,
+                                        "prompt": prompt,
+                                    });
+                                    if let Some(model) = model_id {
+                                        agent_input["model"] =
+                                            serde_json::Value::String(model.to_string());
+                                    }
+
+                                    blocks.push(ContentBlock::ToolUse {
+                                        tool_use_id: call_id.clone(),
+                                        tool_name: "Agent".to_string(),
+                                        input_preview: Some(agent_input.to_string()),
+                                        status: None,
+                                        meta: None,
+                                    });
+
+                                    let mut output_preview = None;
+                                    if let Some(content_arr) = state
+                                        .and_then(|s| s.get("content"))
+                                        .and_then(|c| c.as_array())
+                                    {
+                                        let mut out_text = String::new();
+                                        for c in content_arr {
+                                            if let Some(t) = c.get("text").and_then(|t| t.as_str())
+                                            {
+                                                out_text.push_str(t);
+                                            }
+                                        }
+                                        if !out_text.is_empty() {
+                                            output_preview =
+                                                Some(extract_task_result_content(&out_text));
+                                        }
+                                    }
+                                    let error_obj = state.and_then(|s| s.get("error"));
+                                    if output_preview.is_none() {
+                                        output_preview = pick_str(state, &["error"])
+                                            .map(str::to_string)
+                                            .or_else(|| {
+                                                error_obj
+                                                    .and_then(|e| e.get("message"))
+                                                    .and_then(|m| m.as_str())
+                                                    .map(str::to_string)
+                                            });
+                                    }
+
+                                    let time = part.get("time");
+                                    let start_ms =
+                                        time.and_then(|t| t.get("ran")).and_then(|v| v.as_i64());
+                                    let end_ms = time
+                                        .and_then(|t| t.get("completed"))
+                                        .and_then(|v| v.as_i64());
+                                    let duration_ms = match (start_ms, end_ms) {
+                                        (Some(s), Some(e)) if e > s => Some((e - s) as u64),
+                                        _ => None,
+                                    };
+
+                                    let tool_calls = session_id
+                                        .and_then(|sid| subagent_tools.get(sid))
+                                        .cloned()
+                                        .unwrap_or_default();
+
+                                    let tool_count = tool_calls.len() as u32;
+                                    let agent_stats = Some(AgentExecutionStats {
+                                        agent_type: Some(subagent_type.to_string()),
+                                        status: Some(status.to_string()),
+                                        total_duration_ms: duration_ms,
+                                        total_tokens: None,
+                                        total_tool_use_count: if tool_count > 0 {
+                                            Some(tool_count)
+                                        } else {
+                                            None
+                                        },
+                                        read_count: None,
+                                        search_count: None,
+                                        bash_count: None,
+                                        edit_file_count: None,
+                                        lines_added: None,
+                                        lines_removed: None,
+                                        other_tool_count: None,
+                                        tool_calls,
+                                        child_session_id: None,
+                                    });
+
+                                    let has_error = is_error_status(status) || error_obj.is_some();
+                                    blocks.push(ContentBlock::ToolResult {
+                                        tool_use_id: call_id,
+                                        output_preview,
+                                        is_error: has_error,
+                                        agent_stats,
+                                        images: Vec::new(),
+                                    });
+                                } else {
+                                    let normalized = normalize_tool_call_v2(raw_tool_name, state);
+
+                                    blocks.push(ContentBlock::ToolUse {
+                                        tool_use_id: call_id.clone(),
+                                        tool_name: normalized.tool_name,
+                                        input_preview: normalized.input_preview,
+                                        status: None,
+                                        meta: None,
+                                    });
+
+                                    blocks.push(ContentBlock::ToolResult {
+                                        tool_use_id: call_id,
+                                        output_preview: normalized.output_preview,
+                                        is_error: normalized.is_error,
+                                        agent_stats: None,
+                                        images: Vec::new(),
+                                    });
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+
+                usage = extract_opencode_usage(&value);
+
+                if let Some(error) = assistant_error_text(&value) {
+                    blocks.push(ContentBlock::Text { text: error });
+                }
+            }
+
+            if matches!(role, MessageRole::User) && blocks.is_empty() {
+                continue;
+            }
+
+            let role = if matches!(role, MessageRole::User) && is_compaction_only(&blocks) {
+                MessageRole::Assistant
+            } else {
+                role
+            };
+
+            let completed_ms = if is_assistant {
+                value
+                    .get("time")
+                    .and_then(|t| t.get("completed"))
+                    .and_then(|c| c.as_i64())
+            } else {
+                None
+            };
+            let duration_ms = match completed_ms {
+                Some(done) if done > created_ms => Some((done - created_ms) as u64),
+                _ => None,
+            };
+            let completed_at = match completed_ms {
+                Some(done) if done > created_ms => Some(millis_to_datetime(done)),
+                _ => Some(timestamp),
+            };
+
+            messages.push(UnifiedMessage {
+                id: msg_id,
+                role,
+                content: blocks,
+                timestamp,
+                usage,
+                duration_ms,
+                model: msg_model,
+                completed_at,
+                agent_message_id: None,
+            });
+        }
+
+        {
+            println!("LOADED {} MESSAGES", messages.len());
+            Ok(messages)
+        }
+    }
+
+    async fn scan_subagent_session_ids_v2(
+        &self,
+        conn: &DatabaseConnection,
+        conversation_id: &str,
+    ) -> Vec<String> {
+        let rows = match conn
+            .query_all(Statement::from_sql_and_values(
+                DbBackend::Sqlite,
+                r#"
+                SELECT data
+                FROM session_message
+                WHERE session_id = ?
+                  AND type = 'assistant'
+                  AND data LIKE '%"tool":"task"%'
+                "#,
+                [conversation_id.into()],
+            ))
+            .await
+        {
+            Ok(r) => r,
+            Err(_) => return Vec::new(),
+        };
+
+        let mut sids = Vec::new();
+        for row in rows {
+            if let Ok(data_raw) = row.try_get::<String>("", "data") {
+                if let Ok(val) = serde_json::from_str::<serde_json::Value>(&data_raw) {
+                    if let Some(arr) = val.get("content").and_then(|c| c.as_array()) {
+                        for part in arr {
+                            if part.get("type").and_then(|t| t.as_str()) == Some("tool")
+                                && part
+                                    .get("name")
+                                    .or_else(|| part.get("tool"))
+                                    .and_then(|t| t.as_str())
+                                    == Some("task")
+                                {
+                                    if let Some(sid) = part
+                                        .get("state")
+                                        .and_then(|s| s.get("metadata"))
+                                        .and_then(|m| m.get("sessionId"))
+                                        .and_then(|v| v.as_str())
+                                    {
+                                        sids.push(sid.to_string());
+                                    }
+                                }
+                        }
+                    }
+                }
+            }
+        }
+        sids
+    }
+
+    async fn load_sqlite_messages_v1(
         &self,
         conn: &DatabaseConnection,
         conversation_id: &str,
@@ -259,12 +762,11 @@ impl OpenCodeParser {
             ))
             .await?;
 
-        // Pre-scan: collect all subagent session IDs from task tool parts so we
-        // can batch-load their tool calls in a single query instead of N queries.
         let subagent_session_ids = self.scan_subagent_session_ids(conn, conversation_id).await;
         let subagent_tools = batch_load_subagent_tool_calls(conn, &subagent_session_ids).await;
 
         let mut messages = Vec::with_capacity(rows.len());
+        println!("ROWS FETCHED: {}", rows.len());
 
         for row in rows {
             let msg_id: String = row.try_get("", "id")?;
@@ -305,36 +807,16 @@ impl OpenCodeParser {
                 .load_sqlite_parts(conn, &msg_id, &subagent_tools)
                 .await?;
 
-            // A turn the provider rejected (or the user cancelled) leaves its
-            // only record in the message's `error` — the parts are empty or cut
-            // off mid-write — so without this the assistant bubble was blank
-            // with no hint that anything went wrong. 83 of the 2 849 messages in
-            // a real 430-session library carry one (48 aborts, 25 API errors).
             if is_assistant {
                 if let Some(error) = assistant_error_text(&value) {
                     content_blocks.push(ContentBlock::Text { text: error });
                 }
             }
 
-            // A user message whose every part was synthetic (a plan/build switch
-            // reminder, the post-compaction continuation) is not a turn the user
-            // took — OpenCode's own prompt builder makes the same exclusion
-            // (`!m.parts.every(p => p.synthetic)`). Dropping it here keeps the
-            // now-empty bubble out of the transcript. Assistant messages are
-            // left alone: an empty one is still a turn that happened, and the
-            // error text above usually fills it.
             if matches!(role, MessageRole::User) && content_blocks.is_empty() {
                 continue;
             }
 
-            // OpenCode files the compaction boundary under a synthetic USER
-            // message (its continuation prompt is what resumes the turn), but a
-            // compaction is the system's act, not the user's — and the shared
-            // divider only hoists out of an assistant group
-            // (`compactionOnlyMeta` in `message-list-view.tsx`). Left as a user
-            // turn it renders as a tool card inside a user bubble instead of the
-            // subtle "context compacted" row every other agent gets. Scoped to a
-            // message that carries NOTHING else, which is how OpenCode writes it.
             let role = if matches!(role, MessageRole::User) && is_compaction_only(&content_blocks) {
                 MessageRole::Assistant
             } else {
@@ -359,12 +841,6 @@ impl OpenCodeParser {
                 Some(done) if done > created_ms => Some((done - created_ms) as u64),
                 _ => None,
             };
-            // OpenCode is the only parser whose `timestamp` is the message
-            // creation time; for assistants the real completion is the
-            // explicit `time.completed` millisecond. Reject values that
-            // aren't strictly after `created_ms` (zero, partial writes,
-            // clock skew) — those would render as 1970 or before the start.
-            // Fall back to the creation timestamp in that case.
             let completed_at = match completed_ms {
                 Some(done) if done > created_ms => Some(millis_to_datetime(done)),
                 _ => Some(timestamp),
@@ -379,14 +855,16 @@ impl OpenCodeParser {
                 duration_ms,
                 model: msg_model,
                 completed_at,
-            agent_message_id: None,
+                agent_message_id: None,
             });
         }
 
-        Ok(messages)
+        {
+            println!("LOADED {} MESSAGES", messages.len());
+            Ok(messages)
+        }
     }
 
-    /// Scan all tool parts in this conversation to extract subagent session IDs.
     async fn scan_subagent_session_ids(
         &self,
         conn: &DatabaseConnection,
@@ -451,15 +929,6 @@ impl OpenCodeParser {
             let part_type = value.get("type").and_then(|t| t.as_str()).unwrap_or("");
 
             match part_type {
-                // `synthetic` marks text OpenCode injected for the model, not
-                // words anyone typed: plan/build switch reminders, the
-                // post-compaction "continue" prompt, sub-agent recap requests,
-                // "The following tool was executed by the user". Its ACP adapter
-                // labels them `annotations.audience: ["assistant"]` and its own
-                // CLI filters them out of the transcript (`!part.synthetic` in
-                // `cli/cmd/run/session.shared.ts`); rendering them as the user's
-                // prose put whole system prompts in the user's bubble. The
-                // caller drops a user message that has nothing left.
                 "text" if value.get("synthetic").and_then(|v| v.as_bool()) == Some(true) => {}
                 "text" => {
                     if let Some(text) = value
@@ -473,18 +942,6 @@ impl OpenCodeParser {
                         });
                     }
                 }
-                // A context compaction, as the provider-neutral tool pair every
-                // agent's compaction renders through (`_meta.contextCompaction`
-                // on a ToolUse plus its settled ToolResult — see
-                // `parsers::pi::parse_compaction`). OpenCode writes it as the
-                // ONLY part of a synthetic user message, so without this the
-                // compaction showed up as an empty user bubble and the
-                // conversation appeared to lose its middle for no reason.
-                //
-                // `auto` is OpenCode's own flag for "the context filled up"
-                // versus a `/compact` the user ran; `overflow` (optional) marks
-                // the compaction that ran because the provider rejected the
-                // request outright.
                 "compaction" => {
                     let mut marker = serde_json::Map::new();
                     marker.insert("version".to_string(), serde_json::Value::from(1));
@@ -502,13 +959,14 @@ impl OpenCodeParser {
                         input_preview: None,
                         status: None,
                         meta: Some(serde_json::Value::Object(
-                            [("contextCompaction".to_string(), serde_json::Value::Object(marker))]
-                                .into_iter()
-                                .collect(),
+                            [(
+                                "contextCompaction".to_string(),
+                                serde_json::Value::Object(marker),
+                            )]
+                            .into_iter()
+                            .collect(),
                         )),
                     });
-                    // The pair is required: a ToolUse with no result reads as a
-                    // call still running.
                     blocks.push(ContentBlock::ToolResult {
                         tool_use_id: Some(part_id),
                         output_preview: None,
@@ -517,17 +975,6 @@ impl OpenCodeParser {
                         images: Vec::new(),
                     });
                 }
-                // A slash command that targets a sub-agent is recorded as a
-                // `subtask` part INSTEAD of the expanded prompt text the
-                // non-sub-agent branch writes (`session/prompt.ts`'s command
-                // handler), so the user's turn rendered completely blank.
-                //
-                // Rendered as prose rather than an Agent card on purpose: the
-                // sub-agent's own run is a separate session and its work shows
-                // up through the assistant side, so a card here would either sit
-                // unsettled forever or duplicate one. This is the user's half —
-                // which command they ran, which agent it went to, and the prompt
-                // it expanded into.
                 "subtask" => {
                     if let Some(line) = subtask_summary(&value) {
                         blocks.push(ContentBlock::Text { text: line });
@@ -570,7 +1017,6 @@ impl OpenCodeParser {
                             .is_some();
 
                     if is_agent_task {
-                        // Transform task tool into Agent card
                         let subagent_type = state_input
                             .and_then(|i| i.get("subagent_type"))
                             .and_then(|v| v.as_str())
@@ -615,16 +1061,12 @@ impl OpenCodeParser {
                             meta: None,
                         });
 
-                        // A sub-agent that failed carries `state.error` and no
-                        // `state.output`; without the fallback the Agent card
-                        // showed nothing at all for the failure.
                         let output_preview = state
                             .and_then(|s| s.get("output"))
                             .and_then(|v| value_to_preview(Some(v)))
                             .map(|s| extract_task_result_content(&s))
                             .or_else(|| pick_str(state, &["error"]).map(str::to_string));
 
-                        // Compute duration from time fields
                         let time = state.and_then(|s| s.get("time"));
                         let start_ms = time.and_then(|t| t.get("start")).and_then(|v| v.as_i64());
                         let end_ms = time.and_then(|t| t.get("end")).and_then(|v| v.as_i64());
@@ -633,7 +1075,6 @@ impl OpenCodeParser {
                             _ => None,
                         };
 
-                        // Look up pre-fetched sub-agent tool calls
                         let tool_calls = session_id
                             .and_then(|sid| subagent_tools.get(sid))
                             .cloned()
@@ -658,9 +1099,6 @@ impl OpenCodeParser {
                             lines_removed: None,
                             other_tool_count: None,
                             tool_calls,
-                            // OpenCode's sub-agent transcript is already folded
-                            // into this stats block; there is no separate
-                            // session for the card to open.
                             child_session_id: None,
                         });
 
@@ -686,12 +1124,6 @@ impl OpenCodeParser {
                         blocks.push(ContentBlock::ToolResult {
                             tool_use_id: call_id,
                             output_preview: normalized.output_preview,
-                            // Authoritative: `normalize_tool_call` folds the
-                            // state's own status in, and a couple of tools
-                            // override it in both directions (`invalid`
-                            // completes "successfully" but IS a failure; a
-                            // dismissed `question` unwinds through the error
-                            // channel but is an outcome, not a failure).
                             is_error: normalized.is_error,
                             agent_stats: None,
                             images: Vec::new(),
@@ -707,17 +1139,8 @@ impl OpenCodeParser {
                         });
                     }
                 }
-                // `patch` records the snapshot diff OpenCode took across a
-                // step; it always restates files the `edit`/`write` calls in
-                // the same turn already show, with absolute paths. OpenCode's
-                // own UI filters it out of the transcript alongside
-                // `step-start`/`step-finish`, so rendering it as assistant
-                // prose ("Applied patch: /abs/path") was pure noise.
                 "patch" => {}
                 "step-finish" => {
-                    // Keep the LAST step-finish: a message can contain several
-                    // steps, and OpenCode restates the message's running total
-                    // on each one, so the first is the least complete.
                     if let Some(usage) = value
                         .get("tokens")
                         .and_then(extract_opencode_usage_from_tokens)
@@ -803,6 +1226,20 @@ const FIRST_USER_TEXT_SQL: &str = r#"CASE
                               AND TRIM(COALESCE(json_extract(p.data, '$.text'), '')) <> ''
                             ORDER BY um.time_created ASC, um.id ASC,
                                      p.time_created ASC, p.id ASC
+                            LIMIT 1
+                        )
+                    END AS first_user_text"#;
+
+const FIRST_USER_TEXT_SQL_V2: &str = r#"CASE
+                        WHEN s.title LIKE 'New session - %'
+                          OR s.title LIKE 'Child session - %' THEN (
+                            SELECT json_extract(um.data, '$.text')
+                            FROM session_message um
+                            WHERE um.session_id = s.id
+                              AND um.type = 'user'
+                              AND json_extract(um.data, '$.synthetic') IS NULL
+                              AND TRIM(COALESCE(json_extract(um.data, '$.text'), '')) <> ''
+                            ORDER BY um.time_created ASC, um.id ASC
                             LIMIT 1
                         )
                     END AS first_user_text"#;
@@ -1019,7 +1456,8 @@ fn pick_str<'a>(value: Option<&'a serde_json::Value>, keys: &[&str]) -> Option<&
 /// as-is (an empty `oldString` is OpenCode's create-file form of `edit`).
 fn pick_str_verbatim<'a>(value: Option<&'a serde_json::Value>, keys: &[&str]) -> Option<&'a str> {
     let obj = value?;
-    keys.iter().find_map(|key| obj.get(*key).and_then(|v| v.as_str()))
+    keys.iter()
+        .find_map(|key| obj.get(*key).and_then(|v| v.as_str()))
 }
 
 /// Copy `value[from]` into `out[to]` verbatim when present and not null.
@@ -1037,7 +1475,10 @@ fn copy_field(
 }
 
 fn insert_str(out: &mut serde_json::Map<String, serde_json::Value>, key: &str, value: &str) {
-    out.insert(key.to_string(), serde_json::Value::String(value.to_string()));
+    out.insert(
+        key.to_string(),
+        serde_json::Value::String(value.to_string()),
+    );
 }
 
 /// Start line of the first hunk in a unified diff (`@@ -12,7 +12,8 @@` → 12).
@@ -1309,10 +1750,7 @@ pub(crate) fn structure_read_output(metadata: Option<&serde_json::Value>) -> Opt
                 .and_then(|v| v.as_u64())
                 .filter(|n| *n > 0)
                 .unwrap_or(1);
-            Some(
-                serde_json::json!({ "start_line": start_line, "content": text })
-                    .to_string(),
-            )
+            Some(serde_json::json!({ "start_line": start_line, "content": text }).to_string())
         }
         "directory" => {
             let entries: Vec<&str> = display
@@ -1572,7 +2010,7 @@ fn group_into_turns(messages: Vec<UnifiedMessage>) -> Vec<MessageTurn> {
                 duration_ms: None,
                 model: None,
                 completed_at: msg.completed_at,
-            agent_message_id: None,
+                agent_message_id: None,
             });
             i += 1;
         } else if matches!(msg.role, MessageRole::System) {
@@ -1585,7 +2023,7 @@ fn group_into_turns(messages: Vec<UnifiedMessage>) -> Vec<MessageTurn> {
                 duration_ms: None,
                 model: None,
                 completed_at: msg.completed_at,
-            agent_message_id: None,
+                agent_message_id: None,
             });
             i += 1;
         } else {
@@ -1625,7 +2063,7 @@ fn group_into_turns(messages: Vec<UnifiedMessage>) -> Vec<MessageTurn> {
                 duration_ms,
                 model: turn_model,
                 completed_at,
-            agent_message_id: None,
+                agent_message_id: None,
             });
         }
     }
@@ -1739,6 +2177,272 @@ async fn batch_load_subagent_tool_calls(
             output_preview: normalized.output_preview.map(|s| truncate_str(&s, 500)),
             is_error: is_error_status(status) || normalized.is_error,
         });
+    }
+
+    result
+}
+
+fn normalize_tool_call_v2(raw_tool: &str, state: Option<&serde_json::Value>) -> NormalizedToolCall {
+    let input = state.and_then(|s| s.get("input"));
+    let metadata = state.and_then(|s| s.get("metadata"));
+    let name = raw_tool.trim().to_ascii_lowercase();
+
+    let error_obj = state.and_then(|s| s.get("error"));
+    let error_text = pick_str(state, &["error"]).map(str::to_string).or_else(|| {
+        error_obj
+            .and_then(|e| e.get("message"))
+            .and_then(|m| m.as_str())
+            .map(str::to_string)
+    });
+
+    let mut raw_output = None;
+    if let Some(content_arr) = state
+        .and_then(|s| s.get("content"))
+        .and_then(|c| c.as_array())
+    {
+        let mut out_text = String::new();
+        for c in content_arr {
+            if let Some(t) = c.get("text").and_then(|t| t.as_str()) {
+                out_text.push_str(t);
+            }
+        }
+        if !out_text.is_empty() {
+            raw_output = Some(out_text);
+        }
+    }
+    if raw_output.is_none() {
+        raw_output = state
+            .and_then(|s| s.get("output"))
+            .and_then(|v| value_to_preview(Some(v)));
+    }
+
+    let mut is_error =
+        error_text.is_some() || is_error_status(pick_str(state, &["status"]).unwrap_or(""));
+    let mut output_preview = raw_output.clone().or_else(|| error_text.clone());
+
+    let mut obj = serde_json::Map::new();
+    let mut tool_name = raw_tool.to_string();
+    let mut input_preview: Option<String> = None;
+
+    match name.as_str() {
+        "edit" => {
+            if let Some(path) = pick_str(input, &["filePath", "path", "file_path"]).or_else(|| {
+                pick_str(
+                    metadata.and_then(|m| m.get("filediff")),
+                    &["file", "filePath"],
+                )
+            }) {
+                insert_str(&mut obj, "file_path", path);
+            }
+            if let Some(old) = pick_str_verbatim(input, &["oldString", "old_string"]) {
+                insert_str(&mut obj, "old_string", old);
+            }
+            if let Some(new) = pick_str_verbatim(input, &["newString", "new_string"]) {
+                insert_str(&mut obj, "new_string", new);
+            }
+            copy_field(&mut obj, input, "replaceAll", "replace_all");
+            copy_field(&mut obj, input, "replace_all", "replace_all");
+
+            if let Some(start_line) = pick_str(metadata, &["diff"])
+                .or_else(|| pick_str(metadata.and_then(|m| m.get("filediff")), &["patch"]))
+                .and_then(first_hunk_start_line)
+            {
+                obj.insert("_start_line".to_string(), serde_json::json!(start_line));
+            }
+        }
+        "write" => {
+            tool_name = "write".to_string();
+            if let Some(path) = pick_str(input, &["filePath", "path", "file_path"])
+                .or_else(|| pick_str(metadata, &["filepath", "filePath"]))
+            {
+                insert_str(&mut obj, "file_path", path);
+            }
+            copy_field(&mut obj, input, "content", "content");
+        }
+        "read" => {
+            tool_name = "read".to_string();
+            if let Some(path) = pick_str(input, &["filePath", "path", "file_path"]) {
+                insert_str(&mut obj, "file_path", path);
+            }
+            copy_field(&mut obj, input, "offset", "offset");
+            copy_field(&mut obj, input, "limit", "limit");
+            if let Some(structured) = structure_read_output(metadata) {
+                output_preview = Some(structured);
+            }
+        }
+        "bash" => {
+            tool_name = "bash".to_string();
+            copy_field(&mut obj, input, "command", "command");
+            copy_field(&mut obj, input, "description", "description");
+            if output_preview.is_none() {
+                output_preview = pick_str(metadata, &["output"]).map(str::to_string);
+            }
+        }
+        "grep" => {
+            tool_name = "grep".to_string();
+            copy_field(&mut obj, input, "pattern", "pattern");
+            copy_field(&mut obj, input, "path", "path");
+            copy_field(&mut obj, input, "include", "glob");
+            copy_field(&mut obj, input, "limit", "limit");
+        }
+        "glob" => {
+            tool_name = "glob".to_string();
+            copy_field(&mut obj, input, "pattern", "pattern");
+            copy_field(&mut obj, input, "path", "path");
+            copy_field(&mut obj, input, "limit", "limit");
+        }
+        "patch" | "apply_patch" => {
+            tool_name = "apply_patch".to_string();
+            input_preview = pick_str_verbatim(input, &["patchText", "patch_text", "patch"])
+                .filter(|s| !s.trim().is_empty())
+                .map(str::to_string)
+                .or_else(|| input.and_then(|v| value_to_preview(Some(v))));
+        }
+        "skill" => {
+            tool_name = "skill".to_string();
+            if let Some(skill) = pick_str(input, &["name", "skill"])
+                .or_else(|| pick_str(metadata, &["name", "skill"]))
+            {
+                insert_str(&mut obj, "skill", skill);
+                insert_str(&mut obj, "name", skill);
+            }
+            if let Some(raw) = raw_output.as_deref() {
+                output_preview = Some(unwrap_skill_content(raw));
+            }
+        }
+        "invalid" => {
+            tool_name = "invalid".to_string();
+            copy_field(&mut obj, input, "tool", "tool");
+            copy_field(&mut obj, input, "error", "error");
+            is_error = true;
+        }
+        "webfetch" => {
+            tool_name = "webfetch".to_string();
+            copy_field(&mut obj, input, "url", "url");
+            copy_field(&mut obj, input, "format", "format");
+        }
+        "websearch" => {
+            tool_name = "websearch".to_string();
+            copy_field(&mut obj, input, "query", "query");
+        }
+        "question" => {
+            tool_name = "question".to_string();
+            input_preview = normalize_question_input(input);
+            if let Some(structured) =
+                structure_question_output(input, metadata, error_text.as_deref())
+            {
+                output_preview = Some(structured);
+                is_error = false;
+            }
+        }
+        _ => {
+            input_preview = input.and_then(|v| value_to_preview(Some(v)));
+        }
+    }
+
+    if input_preview.is_none() {
+        input_preview = if obj.is_empty() {
+            input.and_then(|v| value_to_preview(Some(v)))
+        } else {
+            Some(serde_json::Value::Object(obj).to_string())
+        };
+    }
+
+    NormalizedToolCall {
+        tool_name,
+        input_preview,
+        output_preview,
+        is_error,
+    }
+}
+
+async fn batch_load_subagent_tool_calls_v2(
+    conn: &DatabaseConnection,
+    session_ids: &[String],
+) -> HashMap<String, Vec<AgentToolCall>> {
+    if session_ids.is_empty() {
+        return HashMap::new();
+    }
+
+    let placeholders: Vec<&str> = session_ids.iter().map(|_| "?").collect();
+    let sql = format!(
+        r#"
+        SELECT m.session_id, m.data
+        FROM session_message m
+        WHERE m.session_id IN ({})
+          AND m.type = 'assistant'
+          AND m.data LIKE '%"type":"tool"%'
+        ORDER BY m.session_id, m.time_created ASC, m.id ASC
+        "#,
+        placeholders.join(", ")
+    );
+    let values: Vec<sea_orm::Value> = session_ids.iter().map(|s| s.as_str().into()).collect();
+
+    let rows = match conn
+        .query_all(Statement::from_sql_and_values(
+            DbBackend::Sqlite,
+            &sql,
+            values,
+        ))
+        .await
+    {
+        Ok(r) => r,
+        Err(_) => return HashMap::new(),
+    };
+
+    let mut result: HashMap<String, Vec<AgentToolCall>> = HashMap::new();
+    for row in rows {
+        let sid: String = match row.try_get("", "session_id") {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
+        let data_raw: String = match row.try_get("", "data") {
+            Ok(d) => d,
+            Err(_) => continue,
+        };
+        let value: serde_json::Value = match serde_json::from_str(&data_raw) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+
+        if let Some(content_arr) = value.get("content").and_then(|c| c.as_array()) {
+            for part in content_arr {
+                if part.get("type").and_then(|t| t.as_str()) == Some("tool") {
+                    let tool_name = part
+                        .get("name")
+                        .or_else(|| part.get("tool"))
+                        .and_then(|t| t.as_str())
+                        .unwrap_or("unknown")
+                        .to_string();
+
+                    let state = part.get("state");
+                    let is_nested_task = tool_name == "task"
+                        && state
+                            .and_then(|s| s.get("input"))
+                            .and_then(|i| i.get("subagent_type"))
+                            .is_some();
+                    if is_nested_task {
+                        continue;
+                    }
+
+                    let normalized = normalize_tool_call_v2(&tool_name, state);
+                    let status = state
+                        .and_then(|s| s.get("status"))
+                        .and_then(|s| s.as_str())
+                        .unwrap_or("");
+                    let error_obj = state.and_then(|s| s.get("error"));
+
+                    result.entry(sid.clone()).or_default().push(AgentToolCall {
+                        tool_name: normalized.tool_name,
+                        input_preview: normalized.input_preview.map(|s| truncate_str(&s, 500)),
+                        output_preview: normalized.output_preview.map(|s| truncate_str(&s, 500)),
+                        is_error: is_error_status(status)
+                            || error_obj.is_some()
+                            || normalized.is_error,
+                    });
+                }
+            }
+        }
     }
 
     result
@@ -2184,7 +2888,10 @@ mod tests {
         // rendered as single-select.
         let call = normalized("question", question_state());
         let input = input_of(&call);
-        assert_eq!(input["questions"][1]["multiSelect"], serde_json::json!(true));
+        assert_eq!(
+            input["questions"][1]["multiSelect"],
+            serde_json::json!(true)
+        );
         // Untouched where the source said nothing, and the rest is verbatim.
         assert!(input["questions"][0].get("multiSelect").is_none());
         assert_eq!(
@@ -2302,7 +3009,9 @@ mod tests {
         assert!(super::is_compaction_only(&[compaction(), result()]));
         // Anything the user actually said keeps the message theirs.
         assert!(!super::is_compaction_only(&[
-            ContentBlock::Text { text: "carry on".into() },
+            ContentBlock::Text {
+                text: "carry on".into()
+            },
             compaction(),
         ]));
         // A different tool's pair is not a compaction, and neither is nothing.
@@ -2352,7 +3061,9 @@ mod tests {
     /// renaming one to that must not send it back to the fallback.
     #[test]
     fn only_opencodes_own_generated_name_counts_as_untitled() {
-        assert!(super::is_default_title("New session - 2026-09-16T03:09:14.543Z"));
+        assert!(super::is_default_title(
+            "New session - 2026-09-16T03:09:14.543Z"
+        ));
         assert!(super::is_default_title(
             "Child session - 2026-09-16T03:09:14.543Z"
         ));
@@ -2386,7 +3097,7 @@ mod tests {
             "Fix login",
             "Fix login (fork #)",
             "Fix login (fork #2) ",
-            "Fix login (fork #two)",
+            "Fix login (fork #[tokio::test]wo)",
             "(fork #2)",
         ] {
             assert_eq!(
@@ -2442,7 +3153,10 @@ mod tests {
             ),
             None
         );
-        assert_eq!(super::resolve_title(None, Some("hi".into())).as_deref(), Some("hi"));
+        assert_eq!(
+            super::resolve_title(None, Some("hi".into())).as_deref(),
+            Some("hi")
+        );
     }
 
     /// The fallback runs the same folding and capping every other agent's
@@ -2466,5 +3180,223 @@ mod tests {
             .as_deref(),
             Some("look at notes.md")
         );
+    }
+
+    #[tokio::test]
+    async fn test_opencode_parser_v2_schema() {
+        use crate::parsers::AgentParser;
+        use sea_orm::{ConnectionTrait, Database, DbBackend, Statement};
+        use tempfile::tempdir;
+
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("opencode.db");
+        let db_url = format!("sqlite:{}?mode=rwc", db_path.to_string_lossy());
+
+        let conn = Database::connect(&db_url).await.unwrap();
+
+        conn.execute(Statement::from_string(
+            DbBackend::Sqlite,
+            r#"
+            CREATE TABLE session_v2 (
+                id text PRIMARY KEY,
+                project_id text NOT NULL,
+                parent_id text,
+                slug text NOT NULL,
+                directory text NOT NULL,
+                title text,
+                version text NOT NULL,
+                cost real DEFAULT 0 NOT NULL,
+                tokens_input integer DEFAULT 0 NOT NULL,
+                tokens_output integer DEFAULT 0 NOT NULL,
+                tokens_reasoning integer DEFAULT 0 NOT NULL,
+                tokens_cache_read integer DEFAULT 0 NOT NULL,
+                tokens_cache_write integer DEFAULT 0 NOT NULL,
+                time_created integer NOT NULL,
+                time_updated integer NOT NULL,
+                resume_attempts integer DEFAULT 0 NOT NULL
+            );
+            CREATE TABLE session_message (
+                id text PRIMARY KEY,
+                session_id text NOT NULL,
+                type text NOT NULL,
+                seq integer NOT NULL,
+                time_created integer NOT NULL,
+                time_updated integer NOT NULL,
+                data text NOT NULL
+            );
+            
+            INSERT INTO session_v2 (id, project_id, slug, directory, version, time_created, time_updated) 
+            VALUES ('s_1', 'p_1', 'slug', '/path/to/project', '2.0.16', 1700000000000, 1700000001000);
+            
+            INSERT INTO session_message (id, session_id, type, seq, time_created, time_updated, data)
+            VALUES ('m_1', 's_1', 'user', 1, 1700000000000, 1700000000000, '{"time":{"created":1700000000000},"text":"make a tool call","files":[]}');
+            
+            INSERT INTO session_message (id, session_id, type, seq, time_created, time_updated, data)
+            VALUES ('m_2', 's_1', 'assistant', 2, 1700000000500, 1700000001000, '{
+                "time":{"created":1700000000500,"completed":1700000001000},
+                "model":{"id":"gemini-test"},
+                "tokens":{"input":100,"output":50,"reasoning":0,"cache":{"read":0,"write":0}},
+                "content":[
+                    {"type":"text", "text":"Calling tool."},
+                    {"type":"tool", "id":"call_1", "name":"bash", "state":{"status":"completed", "input":{"command":"echo hi"}, "content":[{"type":"text","text":"hi"}]}}
+                ]
+            }');
+            "#.to_string(),
+        )).await.unwrap();
+
+        drop(conn);
+
+        let parser = super::OpenCodeParser::with_base_dir(dir.path().to_path_buf());
+        tokio::task::spawn_blocking(move || {
+            let summaries = parser.list_conversations().unwrap();
+            assert_eq!(summaries.len(), 1);
+            assert_eq!(summaries[0].id, "s_1");
+            assert_eq!(summaries[0].model.as_deref(), Some("gemini-test"));
+
+            let detail = parser.get_conversation("s_1").unwrap();
+
+            assert!(matches!(
+                detail.turns[0].role,
+                crate::models::TurnRole::User
+            ));
+            assert_eq!(detail.turns[0].blocks.len(), 1);
+            match &detail.turns[0].blocks[0] {
+                crate::models::ContentBlock::Text { text } => assert_eq!(text, "make a tool call"),
+                _ => panic!("Expected text block"),
+            }
+
+            assert!(matches!(
+                detail.turns[1].role,
+                crate::models::TurnRole::Assistant
+            ));
+            assert_eq!(detail.turns[1].model.as_deref(), Some("gemini-test"));
+            assert_eq!(detail.turns[1].usage.as_ref().unwrap().input_tokens, 100);
+            assert_eq!(detail.turns[1].usage.as_ref().unwrap().output_tokens, 50);
+            assert_eq!(detail.turns[1].blocks.len(), 3);
+
+            match &detail.turns[1].blocks[0] {
+                crate::models::ContentBlock::Text { text } => assert_eq!(text, "Calling tool."),
+                _ => panic!("Expected text block"),
+            }
+
+            match &detail.turns[1].blocks[1] {
+                crate::models::ContentBlock::ToolUse { tool_name, .. } => {
+                    assert_eq!(tool_name, "bash")
+                }
+                _ => panic!("Expected tool use block"),
+            }
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_opencode_parser_both_schemas() {
+        use crate::parsers::AgentParser;
+        use sea_orm::{ConnectionTrait, Database, DbBackend, Statement};
+        use tempfile::tempdir;
+
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("opencode.db");
+        let db_url = format!("sqlite:{}?mode=rwc", db_path.to_string_lossy());
+
+        let conn = Database::connect(&db_url).await.unwrap();
+
+        conn.execute(Statement::from_string(
+            DbBackend::Sqlite,
+            r#"
+            CREATE TABLE session (
+                id text PRIMARY KEY,
+                project_id text NOT NULL,
+                parent_id text,
+                slug text NOT NULL,
+                directory text NOT NULL,
+                title text,
+                time_created integer NOT NULL,
+                time_updated integer NOT NULL
+            );
+            CREATE TABLE message (
+                id text PRIMARY KEY,
+                session_id text NOT NULL,
+                time_created integer NOT NULL,
+                time_updated integer NOT NULL,
+                data text NOT NULL
+            );
+            CREATE TABLE part (
+                id text PRIMARY KEY,
+                message_id text NOT NULL,
+                time_created integer NOT NULL,
+                time_updated integer NOT NULL,
+                data text NOT NULL
+            );
+            
+            INSERT INTO session (id, project_id, slug, directory, time_created, time_updated) 
+            VALUES ('s_old', 'p_1', 'slug1', '/path', 1600000000000, 1600000001000);
+            INSERT INTO message (id, session_id, time_created, time_updated, data)
+            VALUES ('m_old', 's_old', 1600000000000, 1600000000000, '{"role":"user"}');
+            INSERT INTO part (id, message_id, time_created, time_updated, data)
+            VALUES ('p_old', 'm_old', 1600000000000, 1600000000000, '{"type":"text", "text":"old msg"}');
+            
+            CREATE TABLE session_v2 (
+                id text PRIMARY KEY,
+                project_id text NOT NULL,
+                parent_id text,
+                slug text NOT NULL,
+                directory text NOT NULL,
+                title text,
+                version text NOT NULL,
+                cost real DEFAULT 0 NOT NULL,
+                tokens_input integer DEFAULT 0 NOT NULL,
+                tokens_output integer DEFAULT 0 NOT NULL,
+                tokens_reasoning integer DEFAULT 0 NOT NULL,
+                tokens_cache_read integer DEFAULT 0 NOT NULL,
+                tokens_cache_write integer DEFAULT 0 NOT NULL,
+                time_created integer NOT NULL,
+                time_updated integer NOT NULL,
+                resume_attempts integer DEFAULT 0 NOT NULL
+            );
+            CREATE TABLE session_message (
+                id text PRIMARY KEY,
+                session_id text NOT NULL,
+                type text NOT NULL,
+                seq integer NOT NULL,
+                time_created integer NOT NULL,
+                time_updated integer NOT NULL,
+                data text NOT NULL
+            );
+            
+            INSERT INTO session_v2 (id, project_id, slug, directory, version, time_created, time_updated) 
+            VALUES ('s_new', 'p_1', 'slug2', '/path', '2.0.16', 1700000000000, 1700000001000);
+            INSERT INTO session_message (id, session_id, type, seq, time_created, time_updated, data)
+            VALUES ('m_new', 's_new', 'user', 1, 1700000000000, 1700000000000, '{"text":"new msg"}');
+            
+            INSERT INTO session_v2 (id, project_id, slug, directory, version, time_created, time_updated) 
+            VALUES ('s_old', 'p_1', 'slug1', '/path', '2.0.16', 1600000000000, 1600000001000);
+            INSERT INTO session_message (id, session_id, type, seq, time_created, time_updated, data)
+            VALUES ('m_old_v2', 's_old', 'user', 1, 1600000000000, 1600000000000, '{"text":"old msg v2 migrated"}');
+            "#.to_string(),
+        )).await.unwrap();
+
+        drop(conn);
+
+        let parser = super::OpenCodeParser::with_base_dir(dir.path().to_path_buf());
+        tokio::task::spawn_blocking(move || {
+            let summaries = parser.list_conversations().unwrap();
+            assert_eq!(summaries.len(), 2);
+
+            assert_eq!(summaries[0].id, "s_new");
+            assert_eq!(summaries[1].id, "s_old");
+
+            let detail = parser.get_conversation("s_old").unwrap();
+            assert_eq!(detail.turns.len(), 1);
+            match &detail.turns[0].blocks[0] {
+                crate::models::ContentBlock::Text { text } => {
+                    assert_eq!(text, "old msg v2 migrated")
+                }
+                _ => panic!("Expected text block"),
+            }
+        })
+        .await
+        .unwrap();
     }
 }
