@@ -2098,10 +2098,10 @@ describe("codex ACP preset disclosures", () => {
     expect(codexSandboxSeedsAcpPreset(true)).toBe(false)
   })
 
-  it("only warns about the lost read-only sandbox when codeg really seeds read-only", () => {
+  it("only notes the 1.7–1.13 read-only gap when codeg really seeds read-only", () => {
     // Unshadowed read-only: codeg injects the `read-only` preset, which on
-    // codex-acp >=1.7.0 is workspace-write with `approvalsReviewer: "user"`.
-    // Both halves of the warning hold.
+    // codex-acp 1.7.0–1.13.x is workspace-write with `approvalsReviewer:
+    // "user"` (2.0.0 made it read-only again). Both halves of the note hold.
     expect(showsCodexReadOnlyAcpWarning("read-only", false)).toBe(true)
     // Shadowed: no preset is injected, so the warning's promise that every
     // escalation reaches the user would be false — and it would sit directly

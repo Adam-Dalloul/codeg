@@ -1702,6 +1702,204 @@ describe("AcpConnectionsProvider permission request details", () => {
     expect(parsePermissionToolCall(permission?.tool_call).cwd).toBe("/tmp/x")
   })
 
+  it("puts an edit's text back into a slimmed permission request", async () => {
+    // claude-agent-acp 0.82.0 (AIR), recorded: the approval's `toolCall` is a
+    // bare update whose Edit `rawInput` is `{file_path}` alone. The live call
+    // carries the rebuilt input (the backend restores it from the diff).
+    await mountProvider()
+
+    await act(async () => {
+      await h.actions!.connect(TAB, "claude_code", "/tmp/x", "sess-1")
+    })
+
+    const handlers = latestAttachHandlers()
+    emitAcpEvent(handlers, {
+      seq: 1,
+      connection_id: "spawned-conn",
+      type: "tool_call",
+      tool_call_id: "toolu_edit",
+      title: "Edit src/app.ts",
+      kind: "edit",
+      status: "pending",
+      content: null,
+      raw_input: JSON.stringify({
+        file_path: "/tmp/x/src/app.ts",
+        old_string: "const value = 1;",
+        new_string: "const value = 2;",
+      }),
+      raw_output: null,
+    })
+    emitAcpEvent(handlers, {
+      seq: 2,
+      connection_id: "spawned-conn",
+      type: "permission_request",
+      request_id: "req-edit",
+      tool_call: {
+        toolCallId: "toolu_edit",
+        title: "Edit src/app.ts",
+        rawInput: { file_path: "/tmp/x/src/app.ts" },
+      },
+      options: [],
+    })
+
+    const parsed = parsePermissionToolCall(
+      h.store!.getConnection(TAB)!.pendingPermission?.tool_call
+    )
+    expect(parsed.fileChanges).toHaveLength(1)
+    expect(parsed.fileChanges[0]).toMatchObject({
+      path: "/tmp/x/src/app.ts",
+      oldText: "const value = 1;",
+      newText: "const value = 2;",
+    })
+  })
+
+  it("never lends a permission request another file's edit text", async () => {
+    await mountProvider()
+
+    await act(async () => {
+      await h.actions!.connect(TAB, "claude_code", "/tmp/x", "sess-1")
+    })
+
+    const handlers = latestAttachHandlers()
+    emitAcpEvent(handlers, {
+      seq: 1,
+      connection_id: "spawned-conn",
+      type: "tool_call",
+      tool_call_id: "toolu_edit",
+      title: "Edit a.ts",
+      kind: "edit",
+      status: "pending",
+      content: null,
+      raw_input: JSON.stringify({
+        file_path: "/tmp/x/a.ts",
+        old_string: "a0",
+        new_string: "a1",
+      }),
+      raw_output: null,
+    })
+    emitAcpEvent(handlers, {
+      seq: 2,
+      connection_id: "spawned-conn",
+      type: "permission_request",
+      request_id: "req-edit",
+      tool_call: {
+        toolCallId: "toolu_edit",
+        title: "Edit b.ts",
+        // camelCase spellings, another file.
+        rawInput: { filePath: "/tmp/x/b.ts", oldString: "b0", newString: "b1" },
+      },
+      options: [],
+    })
+
+    const parsed = parsePermissionToolCall(
+      h.store!.getConnection(TAB)!.pendingPermission?.tool_call
+    )
+    expect(parsed.fileChanges).toHaveLength(1)
+    expect(parsed.fileChanges[0]).toMatchObject({
+      path: "/tmp/x/b.ts",
+      oldText: "b0",
+      newText: "b1",
+    })
+  })
+
+  it("does not fill a text-less request from a live input about another file", async () => {
+    // The path guard on its own: the request carries no edit text at all, so
+    // only the file comparison stands between it and the live input's text.
+    await mountProvider()
+
+    await act(async () => {
+      await h.actions!.connect(TAB, "claude_code", "/tmp/x", "sess-1")
+    })
+
+    const handlers = latestAttachHandlers()
+    emitAcpEvent(handlers, {
+      seq: 1,
+      connection_id: "spawned-conn",
+      type: "tool_call",
+      tool_call_id: "toolu_edit",
+      title: "Edit a.ts",
+      kind: "edit",
+      status: "pending",
+      content: null,
+      raw_input: JSON.stringify({
+        file_path: "/tmp/x/a.ts",
+        old_string: "a0",
+        new_string: "a1",
+      }),
+      raw_output: null,
+    })
+    emitAcpEvent(handlers, {
+      seq: 2,
+      connection_id: "spawned-conn",
+      type: "permission_request",
+      request_id: "req-edit",
+      tool_call: {
+        toolCallId: "toolu_edit",
+        title: "Edit b.ts",
+        rawInput: { file_path: "/tmp/x/b.ts" },
+      },
+      options: [],
+    })
+
+    const parsed = parsePermissionToolCall(
+      h.store!.getConnection(TAB)!.pendingPermission?.tool_call
+    )
+    expect(parsed.fileChanges).toHaveLength(1)
+    expect(parsed.fileChanges[0]).toMatchObject({
+      path: "/tmp/x/b.ts",
+      oldText: "",
+      newText: "",
+    })
+  })
+
+  it("leaves a permission request's own edit text alone", async () => {
+    await mountProvider()
+
+    await act(async () => {
+      await h.actions!.connect(TAB, "claude_code", "/tmp/x", "sess-1")
+    })
+
+    const handlers = latestAttachHandlers()
+    emitAcpEvent(handlers, {
+      seq: 1,
+      connection_id: "spawned-conn",
+      type: "tool_call",
+      tool_call_id: "toolu_edit",
+      title: "Edit a.ts",
+      kind: "edit",
+      status: "pending",
+      content: null,
+      raw_input: JSON.stringify({
+        file_path: "/tmp/x/a.ts",
+        old_string: "stale",
+        new_string: "stale",
+      }),
+      raw_output: null,
+    })
+    emitAcpEvent(handlers, {
+      seq: 2,
+      connection_id: "spawned-conn",
+      type: "permission_request",
+      request_id: "req-edit",
+      tool_call: {
+        toolCallId: "toolu_edit",
+        title: "Edit a.ts",
+        // An older adapter sends the whole input: it is authoritative.
+        rawInput: {
+          file_path: "/tmp/x/a.ts",
+          old_string: "a",
+          new_string: "b",
+        },
+      },
+      options: [],
+    })
+
+    const parsed = parsePermissionToolCall(
+      h.store!.getConnection(TAB)!.pendingPermission?.tool_call
+    )
+    expect(parsed.fileChanges[0]).toMatchObject({ oldText: "a", newText: "b" })
+  })
+
   it("backfills an already-open permission request when tool input arrives later", async () => {
     const originalRaf = globalThis.requestAnimationFrame
     const originalCancelRaf = globalThis.cancelAnimationFrame
@@ -6121,6 +6319,47 @@ describe("AIR session failures are told as notifications", () => {
 
   beforeEach(() => {
     seq = 0
+  })
+
+  it("gives a lone authRequired verdict its own Sign in button", async () => {
+    // claude-agent-acp 0.82.0 / codex-acp 2.0.0 refuse a signed-out prompt with
+    // ACP's `authRequired` ALONE — no AIR `access` record, whose button was
+    // the only way to reach the agent's settings from the notification.
+    const handlers = await connectOwner()
+    startTurn(handlers)
+    emit(handlers, {
+      type: "error",
+      message: "raw",
+      agent_type: "claude_code",
+      code: "turn_failed_auth_required",
+      details: null,
+    })
+
+    expect(h.toastError).toHaveBeenCalledTimes(1)
+    const options = toastOptions(h.toastError.mock.calls[0])
+    expect(options.action?.label).toBe("action.login")
+    act(() => options.action!.onClick())
+    expect(h.openSettingsWindow).toHaveBeenCalledWith("agents", {
+      agentType: "claude_code",
+    })
+    // Kept in the alert list too: it opens settings, which works from anywhere.
+    const alert = h.recordAlert.mock.calls[0][0]
+    expect(
+      alert.actions.map((action: { label: string }) => action.label)
+    ).toEqual(["action.login"])
+  })
+
+  it("gives no Sign in button to a verdict that is not about credentials", async () => {
+    const handlers = await connectOwner()
+    startTurn(handlers)
+    emit(handlers, {
+      type: "error",
+      message: "raw",
+      agent_type: "claude_code",
+      code: "turn_failed_empty",
+      details: null,
+    })
+    expect(toastOptions(h.toastError.mock.calls[0]).action).toBeUndefined()
   })
 
   it("tells an advisory once — a re-publish of the same words is not news", async () => {

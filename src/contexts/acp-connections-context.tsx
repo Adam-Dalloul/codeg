@@ -1069,6 +1069,88 @@ function findLiveToolCallInfo(
   return block?.type === "tool_call" ? block.info : null
 }
 
+/**
+ * The keys that carry an edit's text in a file tool's input, in every spelling
+ * the permission card reads (`parsePermissionToolCall`).
+ */
+const EDIT_TEXT_INPUT_KEYS = [
+  "old_string",
+  "oldString",
+  "old_text",
+  "oldText",
+  "new_string",
+  "newString",
+  "new_text",
+  "newText",
+  "content",
+  "text",
+  "new_source",
+  "changes",
+  "diff",
+  "patch",
+  "unified_diff",
+  "unifiedDiff",
+] as const
+
+/** The file a file tool's input names, in any spelling the card reads. */
+const EDIT_PATH_INPUT_KEYS = [
+  "file_path",
+  "filePath",
+  "path",
+  "notebook_path",
+  "target_file",
+  "targetFile",
+] as const
+
+function inputFilePath(input: Record<string, unknown>): string | null {
+  for (const key of EDIT_PATH_INPUT_KEYS) {
+    const value = input[key]
+    if (typeof value === "string" && value.trim().length > 0) return value
+  }
+  return null
+}
+
+function parseInputRecord(value: unknown): Record<string, unknown> | null {
+  if (typeof value === "string") {
+    try {
+      return asRecord(JSON.parse(value))
+    } catch {
+      return null
+    }
+  }
+  return asRecord(value)
+}
+
+/**
+ * A permission request's file-tool input with the edit text put back from the
+ * live call, or `null` when nothing is missing.
+ *
+ * claude-agent-acp 0.82.0 sends an AIR client (codeg) an approval whose
+ * `toolCall` is a bare update — `{toolCallId, title, rawInput}`, and for an
+ * Edit/Write `rawInput` is `{file_path}` alone: the text lives only in the
+ * diff the live call already carries, which the backend rebuilds into the live
+ * call's input. Without this the card would name the file and show no diff.
+ * Only a request input that has NONE of the text keys (in any spelling) is
+ * filled, and only from a live input naming the same file; the request's own
+ * keys win.
+ */
+function fillStrippedEditInput(
+  requestInput: unknown,
+  liveRawInput: string | null | undefined
+): Record<string, unknown> | null {
+  const request = parseInputRecord(requestInput)
+  const live = parseInputRecord(liveRawInput)
+  if (!request || !live) return null
+  if (EDIT_TEXT_INPUT_KEYS.some((key) => key in request)) return null
+  if (!EDIT_TEXT_INPUT_KEYS.some((key) => key in live)) return null
+  // Both must name the same file: the request is the authority on WHAT is
+  // being approved, and a live input about another file must never lend it
+  // text.
+  const requestPath = inputFilePath(request)
+  if (requestPath === null || requestPath !== inputFilePath(live)) return null
+  return { ...live, ...request }
+}
+
 function mergePermissionToolCallWithLiveInfo(
   toolCall: unknown,
   liveInfo: ToolCallInfo | null
@@ -1089,10 +1171,20 @@ function mergePermissionToolCallWithLiveInfo(
 
   const next = { ...record }
   let changed = false
-  const existingInput = serializePermissionInput(pickPermissionToolInput(next))
+  const requestInput = pickPermissionToolInput(next)
+  const existingInput = serializePermissionInput(requestInput)
   if (!existingInput && rawInput) {
     next.rawInput = rawInput
     changed = true
+  } else if (existingInput) {
+    const filled = fillStrippedEditInput(requestInput, liveInfo.raw_input)
+    if (filled) {
+      const inputKey =
+        PERMISSION_TOOL_INPUT_KEYS.find((key) => next[key] === requestInput) ??
+        "rawInput"
+      next[inputKey] = filled
+      changed = true
+    }
   }
   if (typeof next.title !== "string" || next.title.trim().length === 0) {
     next.title = liveInfo.title
@@ -3265,7 +3357,13 @@ type TurnFailurePart =
       description?: string
       actions: NotifyAction[]
     }
-  | { kind: "verdict"; title: string; evidence?: string }
+  | {
+      kind: "verdict"
+      title: string
+      evidence?: string
+      /** Buttons of the verdict's own, for a failure no typed record explains. */
+      actions?: NotifyAction[]
+    }
 
 /** A connect failure's notification key: one per surface. */
 function connectErrorNotificationKey(contextKey: string): string {
@@ -4142,6 +4240,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
           key,
           title: part.title,
           evidence: part.evidence,
+          actions: part.actions,
         })
         return
       }
@@ -4426,9 +4525,10 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
           })
         // The agent refused the prompt with ACP's `authRequired` instead
         // of running it. The connection is deliberately kept alive, so
-        // this reads as "sign in and send it again", not as a crash. An
-        // AIR-capable agent additionally publishes an `access` failure
-        // record whose Login button opens agent settings.
+        // this reads as "sign in and send it again", not as a crash. Its
+        // notification carries a Sign in button that opens agent settings
+        // (older claude/codex adapters also publish an `access` failure
+        // record with the same button; the two are told as one).
         case "turn_failed_auth_required":
           return t("backendErrors.turnFailedAuthRequired", {
             agent: agentLabel,
@@ -5349,10 +5449,36 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
           if (isTurnFailureCode(e.code)) {
             // The same failed turn the adapter may also report as a typed
             // record — told once, together (see `notifyTurnFailure`).
+            //
+            // A refusal for credentials gets a Sign in button of its own:
+            // claude-agent-acp 0.82.0 and codex-acp 2.0.0 stopped publishing
+            // the AIR `access` record that used to carry it, and answer with
+            // ACP's `authRequired` alone — which is all any non-AIR agent
+            // ever sent. If an older adapter still sends the record, its
+            // typed account (same button) takes this notification over.
+            const signInAgentType = nc?.agentType
             notifyTurnFailure(connKey, {
               kind: "verdict",
               title: text,
               evidence,
+              actions:
+                e.code === "turn_failed_auth_required" && signInAgentType
+                  ? [
+                      {
+                        label: tFailure("action.login"),
+                        onClick: () => {
+                          openSettingsWindow("agents", {
+                            agentType: signInAgentType,
+                          }).catch((err) => {
+                            console.error(
+                              "[AcpConnections] open agent settings:",
+                              err
+                            )
+                          })
+                        },
+                      },
+                    ]
+                  : undefined,
             })
             break
           }

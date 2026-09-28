@@ -1403,9 +1403,94 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             // #1104 touches only `providers/set`, which codeg never sends.
             // #1146: an unreadable managed-policy tier no longer kills the
             // adapter before it answers `initialize`.
+            //
+            // 0.81.2 + 0.82.0 are four upstream changes (#1170, #1173, #1153,
+            // #1179) and move no dependency that reaches codeg:
+            // `@anthropic-ai/claude-agent-sdk` stays 0.3.280 (CLI 2.1.280), the
+            // ACP SDK 1.5.0, `engines.node` ">=22"; the one new runtime
+            // dependency is `diff` (the adapter now builds Git patches). The
+            // effect on codeg was MEASURED rather than read: both versions' own
+            // scenario harness (`src/tests/acp-scenarios`, a mocked SDK, 40
+            // scenarios) re-run with codeg's exact `clientCapabilities`, and the
+            // two recordings diffed frame by frame.
+            //
+            // (ii) **The AIR tool-call contract** (#1153) — BREAKING for codeg,
+            // because codeg is an AIR client: the adapter switches the whole
+            // contract on the mere presence of
+            // `clientCapabilities._meta.jetbrains.air` (`isAirClient`), which
+            // codeg sends for `sessionFailure` / `asyncTasks` /
+            // `recommendedValue`. Plain and Zed clients keep the old fields.
+            // For an AIR client, and where codeg absorbs it
+            // (`crate::acp::air_contract` unless named otherwise):
+            //   * a `tool_call_update`'s `_meta` carries only the keys that
+            //     changed, per key inside `claudeCode` and `jetbrains.air`, so
+            //     `toolName` / `parentToolUseId` ride the OPENING frame only.
+            //     Merged per call by `ToolCallMetaLedger`; codeg replaces a
+            //     call's `_meta` whole, so the first partial update used to
+            //     un-nest a subagent's child from its capsule.
+            //   * `claudeCode.title` / `subagent` / `skill` / `skillPath` go to
+            //     NO client; AIR reads `jetbrains.air.commandTitle` /
+            //     `subagent` / `skill {name, path}`. Re-derived under the old
+            //     names (`translate_air_meta`).
+            //   * `rawInput` loses the file text — Edit keeps `{file_path,
+            //     replace_all}`, Write `{file_path}` — which then lives only in
+            //     the diff block of the same frame. Every edit card reads the
+            //     input, so `claude_complete_file_edit_input` (connection.rs)
+            //     rebuilds it from that block.
+            //   * the permission request's `toolCall` shrinks to `{toolCallId,
+            //     title, rawInput}` — an update to merge into the call the
+            //     client already holds — and the request-level record moves to
+            //     `_meta.jetbrains.air.permission`. Read from both homes
+            //     (`permission_record`); the edit text is filled from the live
+            //     call on the frontend (`fillStrippedEditInput`).
+            //   * a Read, and a Grep/Glob that names a path, completes with NO
+            //     result text ("AIR shows … the list of viewed files"). codeg
+            //     already subscribes to the raw SDK stream
+            //     (`emitRawSDKMessages`), where the `tool_result` arrives just
+            //     before the completion: `claude_viewed_results` fills a BARE
+            //     completion from it, with the transcript parser's own text
+            //     extraction, so live and reloaded cards read the same.
+            //   * `rawOutput` goes out only when no other field carries the
+            //     result, and the first `tool_call` no longer sends `rawInput:
+            //     {}`. Nothing to do: the cards read `content` either way.
+            //   * `_meta.contextCompaction` → `_meta.jetbrains.air.
+            //     contextCompaction`, on `compaction_update` too, and a completed
+            //     update no longer repeats the summary its chunks carried.
+            //     Hoisted in `session_compaction_event`; an absent summary keeps
+            //     the streamed one.
+            //   * the goal extension (`initialize._meta.goal`,
+            //     `session_info_update._meta.goal`) → `_meta.jetbrains.air.goal`.
+            //     `init_advertises_goal` / `session_info_goal_value` read both.
+            //   * mode `_meta.kind`, the `_askUserQuestionCustomAnswer` marker
+            //     (→ `customAnswer`) and `diffStats` move or go. codeg maps no
+            //     mode meta, never reaches claude's elicitation, and never read
+            //     `diffStats`; `question.rs` reads both marker spellings anyway.
+            //   Free with it: a subagent's streamed text is no longer re-sent in
+            //   full after its chunks (codeg's capsule transcript showed that
+            //   paragraph twice), and a plan that repeats the previous one is
+            //   not re-sent.
+            //
+            // The new opt-in AIR capabilities stay OUT for claude:
+            // `diffPatch` puts the approval preview patch in the PERMISSION
+            // REQUEST, whose `oldText: null` placeholders the permission card
+            // would read as an emptied file, and shows a live Write no diff at
+            // all until approval; `rawInputRendering` and `planFile` remove the
+            // description / prompt / plan copies codeg's cards render.
+            //
+            // (jj) #1179: a sign-in failure is ONLY the ACP `authRequired`
+            // rejection now — no AIR `access` record with a `login` action,
+            // which is where the Sign in button on codeg's notification came
+            // from. The `turn_failed_auth_required` verdict carries that button
+            // itself now (frontend `notifyTurnFailure`), for every agent.
+            //
+            // (kk) 0.81.2, both free: #1170 continues a clear-context plan
+            // approved in a background followup instead of settling the held
+            // turn (the plan was dropped with the mode still `plan`); #1173
+            // announces a resumed native subagent generation on time — native
+            // subagent sessions stay unadopted, so inert here.
             distribution: AgentDistribution::Npx {
-                version: "0.81.1",
-                package: "@agentclientprotocol/claude-agent-acp@0.81.1",
+                version: "0.82.0",
+                package: "@agentclientprotocol/claude-agent-acp@0.82.0",
                 cmd: "claude-agent-acp",
                 args: &[],
                 env: &[],
@@ -2049,9 +2134,91 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             // `disabledPluginIds`, `availableAccessPrograms`, MCP
             // `serverCapabilities`) are additive, and the parser reads rollouts
             // as untyped JSON.
+            //
+            // 2.0.0 is the codex half of the AIR contract claude-agent-acp
+            // 0.82.0 shipped the same day (#530, the reason for the major),
+            // plus #480, #517, #536, #550 and three `@openai/codex` bumps
+            // (^0.156.1 → **^0.158.0**). `engines` is still absent, so the
+            // 20.0.0 floor stays. Measured like the claude side: both versions'
+            // own scenario harness (33 scenarios, a mocked app-server) re-run
+            // with codeg's exact `clientCapabilities` and diffed.
+            //
+            // (m) The AIR tool-call contract (#530), codex side
+            // (`crate::acp::air_contract` unless named otherwise):
+            //   * `_meta` merge: codex leaves an unchanged TOP-LEVEL `_meta` key
+            //     off an update (`ToolCallReports`); same ledger as claude, with
+            //     codex's whole-key rule.
+            //   * `_meta.codex.subagent` and `_meta.codex.collaboration` go to NO
+            //     client. A `subAgentActivity` is recognised by its `rawInput`
+            //     (`{agentThreadId, agentPath, activityKind}`, on every version)
+            //     and its bare-status follow-up by id (`codex_activity_calls`).
+            //     The collab card never read the meta — it keys on the input's
+            //     three thread keys, still there — and `rawInput.status` is gone,
+            //     but the capsule's state comes from the ACP status.
+            //   * plan review: `_meta.codex.{kind, planItemId}` gone. Recognised
+            //     by its `plan-review:` id (`codex_plan_review_meta`), which also
+            //     writes the legacy marker onto the seeded card the frontend
+            //     names by it.
+            //   * `_meta.permission` (request and option level) → `_meta.
+            //     jetbrains.air.permission`; `_meta.commandAction` →
+            //     `jetbrains.air.commandAction` (`is_config_option_state_command`);
+            //     the goal → `jetbrains.air.goal`; `_meta.codex.phase` →
+            //     `jetbrains.air.phase` (codeg reads no chunk `_meta` live).
+            //   * fileChange: ONE diff block PER HUNK — context and changed lines,
+            //     no line numbers — for EVERY client; 1.13.x read the file and
+            //     sent its whole old and new text in one block. Keyed by path,
+            //     `synthesize_edit_input_from_diffs` kept only the last hunk; it
+            //     joins them now. And codex TAKES `diffPatch`
+            //     (`build_client_capabilities`): one exact Git patch per file,
+            //     headers rewritten to absolute paths (`diff_block_payload`), so
+            //     the edit card gets its real hunk positions back.
+            //   * a read/search/list command action has no terminal: search and
+            //     list output arrives as a `rawOutput` STRING at completion, and
+            //     a read-file action's not at all (a viewed file). codex has no
+            //     raw stream to recover it from; the live card shows the path,
+            //     the reloaded rollout the text.
+            //   * stdin is `_meta.terminal_input` instead of a `\n<stdin>\n`
+            //     output delta — bridged as that delta
+            //     (`hosted_terminal_output_delta`).
+            //   * a web search's `rawInput` is `{query, action}`, no `type:
+            //     "webSearch"` — `is_codex_web_search_input` reads both shapes,
+            //     or the context ring would read a search's usage as occupancy.
+            //   * a dynamic tool's result now lands in `content`, image
+            //     generation drops its `rawOutput`, a Guardian review regroups
+            //     its content — generic cards absorb all three.
+            //   `rawInputRendering` stays OUT: it removes the question text a
+            //   message-only MCP elicitation's permission card shows.
+            //
+            // (n) #480 restores the read-only sandbox under `read-only` and adds
+            // a `workspace-write` preset ("Workspace access": writable, every
+            // escalation to the user); `agent` is now "Auto review". See
+            // `codex_initial_agent_mode`, which maps a workspace-write config to
+            // the new preset (an older adapter falls back to `agent`, the old
+            // answer), and the Codex panel copy. A composer preference saved as
+            // `read-only` under 1.7–1.13 now means a real read-only sandbox —
+            // stricter, never looser, so it is left alone.
+            //
+            // (o) #550: an auth failure is ONLY `authRequired` now — no session
+            // failure, no chat text — handled as claude's (jj).
+            //
+            // (p) #517 `_meta.mcpStartupAwaitTimeoutMs` (opt-in wait on new /
+            // resume / fork for the REQUESTED MCP servers to settle) is not
+            // sent. It would close codex's first-turn race against a slow
+            // server, but it waits for every forwarded server, the user's slow
+            // npx ones included, on the session-creation path — worth taking
+            // only with evidence that the race bites.
+            //
+            // (q) #536 (acp-tck conformance), all free: resume / load / delete
+            // of a never-prompted session no longer fail with "no rollout
+            // found", `session/load` waits out a running title generation, and a
+            // cancel that lands before the turn is interruptible now cancels.
+            //
+            // (r) `@openai/codex` 0.158.0 deletes the hidden `gpt-5.4` stub (11 →
+            // 10 slugs) and adds no `ModelInfo` field; the offline snapshot is
+            // regenerated and the strictness re-probed (`codex_model_catalog.rs`).
             distribution: AgentDistribution::Npx {
-                version: "1.13.1",
-                package: "@agentclientprotocol/codex-acp@1.13.1",
+                version: "2.0.0",
+                package: "@agentclientprotocol/codex-acp@2.0.0",
                 cmd: "codex-acp",
                 args: &[],
                 env: &[],
@@ -3313,8 +3480,8 @@ mod tests {
     fn registry_pins_current_acp_agent_versions() {
         assert_npx_version(
             AgentType::ClaudeCode,
-            "0.81.1",
-            "@agentclientprotocol/claude-agent-acp@0.81.1",
+            "0.82.0",
+            "@agentclientprotocol/claude-agent-acp@0.82.0",
             Some("22.0.0"),
         );
         assert_npx_version(
@@ -3355,8 +3522,8 @@ mod tests {
         );
         assert_npx_version(
             AgentType::Codex,
-            "1.13.1",
-            "@agentclientprotocol/codex-acp@1.13.1",
+            "2.0.0",
+            "@agentclientprotocol/codex-acp@2.0.0",
             Some("20.0.0"),
         );
         assert_npx_version(AgentType::Pi, "0.0.34", "pi-acp@0.0.34", Some("22.0.0"));

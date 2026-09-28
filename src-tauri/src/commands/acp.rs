@@ -4329,7 +4329,8 @@ pub(crate) fn grok_launch_permission_mode() -> Option<String> {
 }
 
 /// Map a `~/.codex/config.toml` sandbox/approval pair onto the `INITIAL_AGENT_MODE`
-/// preset id codex-acp accepts (`read-only` / `agent` / `agent-full-access`).
+/// preset id codex-acp accepts (`read-only` / `workspace-write` / `agent` /
+/// `agent-full-access`).
 ///
 /// ## Why this mapping has to exist at all
 ///
@@ -4342,13 +4343,25 @@ pub(crate) fn grok_launch_permission_mode() -> Option<String> {
 /// launch-time channel that makes the user's own config mean anything, exactly
 /// like [`grok_launch_permission_mode`] above.
 ///
-/// ## What the three presets mean (codex-acp ≥1.7.0)
+/// ## What the presets mean, per adapter generation
 ///
-/// | preset | sandbox | approvals reviewer |
-/// |---|---|---|
-/// | `read-only` ("Ask for approval") | workspace-write | `user` |
-/// | `agent` ("Approve for me", DEFAULT) | workspace-write | `auto_review` |
-/// | `agent-full-access` ("Full access") | danger-full-access | policy `never` |
+/// | preset | ≤1.6.2 | 1.7.0–1.13.x | ≥2.0.0 |
+/// |---|---|---|---|
+/// | `read-only` | read-only | workspace-write, reviewer `user` | read-only, reviewer `user` |
+/// | `workspace-write` | — | — | workspace-write, reviewer `user` |
+/// | `agent` (DEFAULT) | workspace-write | workspace-write, reviewer `auto_review` | same |
+/// | `agent-full-access` | danger-full-access, `never` | same | same |
+///
+/// codex-acp 2.0.0 (#480, "restore read-only mode") puts the read-only sandbox
+/// back under `read-only` ("Read-only") and moves the 1.7.0 meaning of that id —
+/// a writable workspace whose every escalation goes to the user — to a NEW id,
+/// `workspace-write` ("Workspace access"). That new preset is the exact image
+/// of the codex CLI default (`sandbox_mode = "workspace-write"` with an
+/// on-request approval policy the user adjudicates), which none of 1.7.0's
+/// three presets was. An id an adapter does not know is not an error:
+/// `AgentMode.getInitialAgentMode` falls back to the DEFAULT (`agent`) on every
+/// version, so injecting `workspace-write` into a ≤1.13.x adapter yields exactly
+/// what this mapping chose before 2.0.0 existed.
 ///
 /// 1.7.0 redefined these. `read-only` used to carry a genuinely read-only
 /// sandbox; it now carries `workspaceWrite` like `agent`, and the two are
@@ -4394,8 +4407,15 @@ pub(crate) fn grok_launch_permission_mode() -> Option<String> {
 ///
 /// So the reviewer change is treated as what it is: an upstream default that
 /// every ACP client now inherits. codeg DISCLOSES it in the Codex panel, and the
-/// composer's approval-preset selector ("Ask for approval") remains the
-/// first-class, per-session control for a user who wants to adjudicate directly.
+/// composer's approval-preset selector remains the first-class, per-session
+/// control for a user who wants to adjudicate directly.
+///
+/// 2.0.0 dissolves that dilemma for the WRITABLE case, which is why a
+/// `workspace-write` config now maps to the new `workspace-write` preset: that id
+/// means "writable workspace, user-reviewed" on the one generation that has it,
+/// and nothing at all — hence the `agent` default, the old answer — on every
+/// other. Unlike `read-only`, there is no version on which it narrows the
+/// sandbox, so the first objection above does not apply to it.
 ///
 /// ## What is deliberately NOT preserved
 ///
@@ -4409,12 +4429,13 @@ pub(crate) fn grok_launch_permission_mode() -> Option<String> {
 /// the sandbox axis and neutral on the approval axis; the panel discloses the
 /// approval loss to the user rather than pretending it away.
 ///
-/// **The read-only sandbox, on codex-acp ≥1.7.0.** No preset carries one any
-/// more, and the adapter re-sends the selected preset's `sandboxPolicy` on every
-/// `runTurn`, so neither `config.toml` nor the `CODEX_CONFIG` session-config
-/// channel can put it back. `read-only` is still the right target for a
-/// read-only config — it is the tightest preset on both adapter generations —
-/// but on ≥1.7.0 the session really is workspace-writable, which the panel says
+/// **The read-only sandbox, on codex-acp 1.7.0–1.13.x.** No preset carries one
+/// there, and the adapter re-sends the selected preset's `sandboxPolicy` on
+/// every `runTurn`, so neither `config.toml` nor the `CODEX_CONFIG`
+/// session-config channel can put it back. `read-only` is still the right
+/// target for a read-only config — it is the tightest preset on every adapter
+/// generation, and 2.0.0 made it a real read-only sandbox again — but on
+/// 1.7.0–1.13.x the session really is workspace-writable, which the panel says
 /// out loud rather than papering over.
 fn codex_initial_agent_mode(settings: &CodexSandboxSettings) -> Option<&'static str> {
     // `default_permissions` makes codex resolve everything through that named
@@ -4441,17 +4462,27 @@ fn codex_initial_agent_mode(settings: &CodexSandboxSettings) -> Option<&'static 
     // `on-request` and dropped anything outside `CODEX_APPROVAL_POLICIES`.
     let never = settings.approval_policy.as_deref() == Some("never");
     match settings.sandbox_mode.as_deref() {
-        // The tightest preset on BOTH adapter generations: a real read-only
-        // sandbox on ≤1.6.2, and workspace-write with user-adjudicated
-        // approvals on ≥1.7.0 (see the note above on what 1.7.0 removed).
+        // The tightest preset on EVERY adapter generation: a real read-only
+        // sandbox on ≤1.6.2 and again from 2.0.0, and workspace-write with
+        // user-adjudicated approvals on 1.7.0–1.13.x (see the table above).
         Some("read-only") => Some("read-only"),
-        Some("workspace-write") => Some("agent"),
+        // A writable workspace. With an approval policy that wants the user,
+        // 2.0.0's `workspace-write` is the exact image (user-reviewed
+        // escalations); an older adapter does not know the id and starts in
+        // `agent`, which is what this arm used to pick for everyone. A config
+        // that asks for NO approvals has no exact preset on any version:
+        // `agent` (a model screens escalations) is the nearest one that does
+        // not widen the sandbox.
+        Some("workspace-write") if never => Some("agent"),
+        Some("workspace-write") => Some("workspace-write"),
         // Full access is the one preset that removes approvals entirely, so it
         // requires the config to say BOTH halves. A danger-full-access sandbox
-        // paired with any approval-requiring policy tightens to `agent` instead
-        // — narrower sandbox, and approvals still happen.
+        // paired with any approval-requiring policy tightens to a writable
+        // workspace instead — narrower sandbox, and approvals still happen,
+        // routed to the user where the adapter can (`workspace-write`, falling
+        // back to `agent` before 2.0.0).
         Some("danger-full-access") if never => Some("agent-full-access"),
-        Some("danger-full-access") => Some("agent"),
+        Some("danger-full-access") => Some("workspace-write"),
         // No sandbox expressed → nothing to preserve, so stay out of the way and
         // let codex-acp's own default stand. (codex-acp always sends an explicit
         // sandboxPolicy anyway, so config.toml's sandbox DEFAULT never applies.)
@@ -14372,7 +14403,7 @@ mod tests {
         }
         for policy in ["", "approval_policy = \"untrusted\"\n"] {
             let toml = format!("{policy}sandbox_mode = \"workspace-write\"\n");
-            assert_eq!(initial_mode_for(&toml), Some("agent"));
+            assert_eq!(initial_mode_for(&toml), Some("workspace-write"));
         }
     }
 
@@ -14388,6 +14419,13 @@ mod tests {
         // the running adapter's version is not knowable here; the mapping must
         // therefore stay keyed on the sandbox, which is the axis whose meaning
         // did not move. See the "Why the reviewer axis is NOT used" note above.
+        //
+        // codex-acp 2.0.0 adds the preset that config actually describes —
+        // `workspace-write`, a writable workspace whose escalations go to the
+        // user — and an adapter that predates the id starts in its `agent`
+        // default instead (`getInitialAgentMode`: an unknown id falls back),
+        // which is exactly the old mapping. Writable on every version either
+        // way; never `read-only`.
         for policy in [
             "",
             "approval_policy = \"on-request\"\n",
@@ -14397,10 +14435,18 @@ mod tests {
             let toml = format!("{policy}sandbox_mode = \"workspace-write\"\n");
             assert_eq!(
                 initial_mode_for(&toml),
-                Some("agent"),
+                Some("workspace-write"),
                 "a writable config must never be handed the read-only preset ({policy:?})"
             );
         }
+        // No approvals wanted: no preset says exactly that without widening the
+        // sandbox, and the model-screened default is the nearest.
+        assert_eq!(
+            initial_mode_for(
+                "approval_policy = \"never\"\nsandbox_mode = \"workspace-write\"\n"
+            ),
+            Some("agent")
+        );
     }
 
     #[test]
@@ -14423,7 +14469,7 @@ mod tests {
             let toml = format!("{policy}sandbox_mode = \"danger-full-access\"\n");
             assert_eq!(
                 initial_mode_for(&toml),
-                Some("agent"),
+                Some("workspace-write"),
                 "must not remove approvals for {policy:?}"
             );
         }

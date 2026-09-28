@@ -2024,14 +2024,15 @@ export function codexSandboxSeedsAcpPreset(shadowed: boolean): boolean {
 }
 
 /**
- * Whether to warn that the ACP adapter cannot honor a read-only sandbox.
+ * Whether to say that codex-acp 1.7.0–1.13.x cannot honor a read-only sandbox
+ * (2.0.0 restored it; an adapter resolved off PATH may still be older).
  *
  * Fires exactly when codeg will inject the `read-only` preset, because the
- * warning's second half promises that every escalation reaches the user — true
- * of that preset on codex-acp ≥1.7.0 (`approvalsReviewer: "user"`), and false
- * of the `agent` default a shadowed config falls back to (`auto_review`, where
- * a model forwards only what it judges unsafe). Showing it for a shadowed
- * config would pair "your sandbox key is ignored" with "you will be asked about
+ * note promises that every escalation reaches the user — true of that preset
+ * on every codex-acp since 1.7.0 (`approvalsReviewer: "user"`), and false of
+ * the `agent` default a shadowed config falls back to (`auto_review`, where a
+ * model forwards only what it judges unsafe). Showing it for a shadowed config
+ * would pair "your sandbox key is ignored" with "you will be asked about
  * everything" — the second being a guarantee codeg is not making.
  */
 export function showsCodexReadOnlyAcpWarning(
@@ -8653,18 +8654,18 @@ export function AcpAgentSettings() {
                             {t("codex.sandboxModeSeedsPresetHint")}
                           </p>
                         ) : null}
-                        {/* codex-acp 1.7.0 redefined its `read-only` preset to
-                            carry a workspace-write sandbox, and it re-sends
-                            that policy every turn — so an ACP session cannot
-                            honor a read-only sandbox at all any more. This
-                            control keeps working for codex CLI/IDE sessions,
-                            which is exactly why the divergence has to be said
-                            out loud rather than left to look effective. */}
+                        {/* codex-acp 1.7.0–1.13.x gave their `read-only`
+                            preset a workspace-write sandbox and re-send that
+                            policy every turn, so an ACP session on one of them
+                            cannot honor a read-only sandbox. 2.0.0 restored it,
+                            but launch prefers an adapter on PATH, which may be
+                            older — so the caveat stays, stated as a version
+                            note rather than a warning about the pinned one. */}
                         {showsCodexReadOnlyAcpWarning(
                           selectedDraft.codexSandboxMode,
                           selectedDraft.codexSandboxShadowed
                         ) ? (
-                          <p className="text-3xs text-yellow-500">
+                          <p className="text-3xs text-muted-foreground">
                             {t("codex.sandboxModeReadOnlyAcpWarning")}
                           </p>
                         ) : null}

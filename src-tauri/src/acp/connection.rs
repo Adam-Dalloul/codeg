@@ -4700,8 +4700,33 @@ fn build_client_capabilities(
     // shapes, the effort trade that drop accepts, and why the stale-`"default"`
     // preference is healed on the frontend rather than here; and the codex
     // entry (a) for the 1.11.0 wire trace.
+    //
+    // ⚠️ From claude-agent-acp 0.82.0 / codex-acp 2.0.0 this object does more
+    // than name capabilities: its mere PRESENCE makes codeg an "AIR client",
+    // and both adapters then send AIR's own tool-call contract (each `_meta`
+    // key once, keys moved under `_meta.jetbrains.air`, edit text only in the
+    // diff, read/search results withheld). Everything that makes that wire
+    // read like the old one lives in `crate::acp::air_contract`; staying out
+    // of AIR instead would cost every capability above plus the goal, the
+    // permission presentation and the compaction record, which those releases
+    // send to AIR clients only.
+    //
+    // codex alone also gets "diffPatch" (2.0.0): each changed file as ONE
+    // exact Git patch. Without it 2.0.0 sends a file change as one ACP diff
+    // per hunk — context and changed lines only, no line numbers — where
+    // every earlier codex-acp sent the whole old and new file; the patch
+    // gives the edit card its real hunk positions back. Taken for codex only:
+    // claude sends an Edit/Write patch in the PERMISSION REQUEST, whose
+    // `oldText: null` placeholders the permission card would read as a new
+    // empty file, and in patch mode it shows a live Write no diff at all until
+    // approval. codex's approval request carries no diff (the started tool
+    // call already does). Patch blocks are read by `diff_block_payload`.
     if matches!(agent_type, AgentType::ClaudeCode | AgentType::Codex) {
-        let capabilities = ["sessionFailure", "asyncTasks", "recommendedValue"];
+        let capabilities: &[&str] = if agent_type == AgentType::Codex {
+            &["sessionFailure", "asyncTasks", "recommendedValue", "diffPatch"]
+        } else {
+            &["sessionFailure", "asyncTasks", "recommendedValue"]
+        };
         meta.insert(
             "jetbrains".to_string(),
             serde_json::json!({
@@ -7099,10 +7124,7 @@ async fn handle_grok_ask_user_question(
 /// outlives this turn and this connection, so it stays theirs to make. With no
 /// such option (an agent that offers only "always"), `None` keeps today's card.
 fn codeg_ask_auto_allow_option(req: &RequestPermissionRequest) -> Option<String> {
-    let permission_title = req
-        .meta
-        .as_ref()
-        .and_then(|m| m.get("permission"))
+    let permission_title = crate::acp::air_contract::permission_record(req.meta.as_ref())
         .and_then(|p| p.get("title"))
         .and_then(serde_json::Value::as_str);
     let is_ask = [req.tool_call.fields.title.as_deref(), permission_title]
@@ -7842,11 +7864,16 @@ async fn handle_permission_request(
     // Codex Plan-mode review gate: seed the tool call codex never announced, so
     // its follow-up `tool_call_update` (status + rawOutput only) merges into a
     // card that has an identity instead of creating an untitled orphan. See
-    // `is_codex_plan_review`. `raw_input` is deliberately omitted: the plan text
+    // `codex_plan_review_meta`. `raw_input` is deliberately omitted: the plan text
     // is already in the transcript (codex emits the plan as an
     // `agent_message_chunk` before this) and the permission card renders it from
     // the request's own `rawInput.plan` — a third copy would be noise.
-    if is_codex_plan_review(agent_type, req.meta.as_ref()) {
+    if let Some(review_meta) = codex_plan_review_meta(
+        agent_type,
+        &req.tool_call.tool_call_id.to_string(),
+        matches!(req.tool_call.fields.kind, Some(ToolKind::SwitchMode)),
+        req.meta.as_ref(),
+    ) {
         emit_with_state(
             state,
             emitter,
@@ -7859,10 +7886,7 @@ async fn handle_permission_request(
                 raw_input: None,
                 raw_output: None,
                 locations: None,
-                meta: req
-                    .meta
-                    .as_ref()
-                    .map(|m| serde_json::Value::Object(m.clone())),
+                meta: Some(serde_json::Value::Object(review_meta)),
                 images: None,
             },
         )
@@ -7883,11 +7907,10 @@ async fn handle_permission_request(
                 _ => "unknown".into(),
             },
             // Opaque passthrough — the frontend reads codex-acp ≥1.1.8's
-            // `_meta.permission.changes[].description` off this.
-            meta: opt
-                .meta
-                .as_ref()
-                .map(|m| serde_json::Value::Object(m.clone())),
+            // `_meta.permission.changes[].description` off this. codex-acp
+            // 2.0.0 moved an option's record under `_meta.jetbrains.air`; it is
+            // copied back to the key the card reads.
+            meta: crate::acp::air_contract::normalize_permission_option_meta(opt.meta.as_ref()),
         })
         .collect();
 
@@ -10453,6 +10476,10 @@ async fn run_conversation_loop(
                 // out-of-turn pump and its calls settle on the update that
                 // immediately follows, before any turn starts.
                 cb_state.hosted_terminal_calls.clear();
+                // A stashed claude result is consumed by the completion that
+                // follows it on the wire; one still waiting here belongs to a
+                // call the canceled turn never completed.
+                cb_state.claude_viewed_results.clear();
                 // A codex web search whose request never reported (canceled
                 // mid-request) must not set aside this turn's first report.
                 // `/goal` continuation turns run on the idle loop and announce
@@ -11409,7 +11436,14 @@ pub(crate) fn serialize_tool_call_content(
                     parts.push(text.text.clone());
                 }
             }
-            ToolCallContent::Diff(diff) if include_diffs => {
+            // A codex AIR patch block's text fields are placeholders, never
+            // file text (see `diff_block_payload`); its change reaches the
+            // card through the synthesized input or not at all.
+            ToolCallContent::Diff(diff)
+                if include_diffs
+                    && crate::acp::air_contract::air_meta_value(diff.meta.as_ref(), "diffPatch")
+                        .is_none() =>
+            {
                 let path = diff.path.display();
                 let mut diff_text = format!("--- {path}\n+++ {path}\n");
                 if let Some(old) = &diff.old_text {
@@ -11449,14 +11483,29 @@ pub(crate) fn serialize_tool_call_content(
 /// Reconstructing from the already-serialized `--- /+++` string would be lossy
 /// (content lines beginning with `-`/`+`/`---`/`+++`, the old/new boundary,
 /// CRLF). Here the structured `Diff` is still intact, so map it losslessly:
-/// - exactly one Diff  -> `{"file_path","old_string","new_string"}`
-/// - multiple Diffs    -> `{"changes":{"<path>":{"old_text","new_text"},…}}`
+/// - one path, one block  -> `{"file_path","old_string","new_string"}`
+/// - several paths        -> `{"changes":{"<path>":{"old_text","new_text"},…}}`
+/// - a Git patch (codex's AIR `diffPatch`, see [`diff_block_payload`]) ->
+///   `{"changes":{"<path>":{"diff":"<patch>"}}}`, plus `file_path` when it is
+///   the only path so the card keeps its "Edit <file>" title.
 ///
-/// Both shapes classify as `"edit"` (`inferFromInput`) and render through the
-/// existing `EditToolInput` / `EditChangesToolInput` → `generateUnifiedDiff`
-/// pipeline (a real hunk diff, minimal even for full-file old/new). Returns
-/// `None` when `content` carries no `Diff`, so callers only fall back to it when
-/// the agent supplied no `raw_input` of its own.
+/// All shapes classify as `"edit"` (`inferFromInput`) and render through the
+/// existing `EditToolInput` / `EditChangesToolInput` pipeline — a ready-made
+/// `diff` verbatim, old/new text through `generateUnifiedDiff` (a real hunk
+/// diff, minimal even for full-file old/new). Returns `None` when `content`
+/// carries no usable `Diff`, so callers only fall back to it when the agent
+/// supplied no `raw_input` of its own.
+///
+/// **Several blocks for ONE path** are one edit, and are combined rather than
+/// keyed over each other. Through codex-acp 1.13.x each file came as a single
+/// block holding the whole old and new file; 2.0.0 sends one block per hunk
+/// (`FileChangeReporter`: "`oldText` and `newText` hold the changed lines and
+/// the context lines of the hunk, not the whole file") whenever it sends no
+/// patch, and claude has always sent one per `structuredPatch` hunk after a
+/// multi-site Edit. Keyed by path, every hunk but the last used to vanish. The
+/// hunks' texts are joined with a [`HUNK_SEPARATOR`] line common to both sides,
+/// so the frontend's line diff shows each hunk with the elision marked between
+/// them. A hunk carries no line numbers, so none are invented.
 pub(crate) fn synthesize_edit_input_from_diffs(content: &[ToolCallContent]) -> Option<String> {
     // Keep `old_text` as `Option`: ACP reports `None` for a newly created file
     // (`Diff.old_text` semantics). That distinction is the whole point of this
@@ -11464,58 +11513,378 @@ pub(crate) fn synthesize_edit_input_from_diffs(content: &[ToolCallContent]) -> O
     // makes the frontend build a `--- a/<path>` diff, which `isAddedFileDiff`
     // does NOT match, so a freshly created file mis-renders as a modification
     // (the historical apply_patch `*** Add File:` path classifies it correctly).
-    let diffs: Vec<(String, Option<String>, String)> = content
-        .iter()
-        .filter_map(|item| match item {
-            ToolCallContent::Diff(diff) => Some((
-                diff.path.display().to_string(),
-                diff.old_text.clone(),
-                diff.new_text.clone(),
-            )),
-            _ => None,
-        })
-        .collect();
+    let mut order: Vec<String> = Vec::new();
+    let mut per_path: HashMap<String, Vec<DiffBlockPayload>> = HashMap::new();
+    for item in content {
+        let ToolCallContent::Diff(diff) = item else {
+            continue;
+        };
+        // A patch block that does not validate has no usable text either (its
+        // `oldText`/`newText` are placeholders), so it is shown as nothing
+        // rather than as an empty file.
+        let Some(payload) = diff_block_payload(diff) else {
+            continue;
+        };
+        let path = diff.path.display().to_string();
+        if !per_path.contains_key(&path) {
+            order.push(path.clone());
+        }
+        per_path.entry(path).or_default().push(payload);
+    }
 
-    match diffs.as_slice() {
+    match order.as_slice() {
         [] => None,
-        // New file (old_text absent) → write shape. `inferFromInput` classifies
-        // `{file_path, content}` as `write`, whose diff builder emits the
-        // `--- /dev/null` header `isAddedFileDiff` keys on → renders as a new
-        // file, matching the reloaded-from-DB path.
-        [(path, None, new)] => Some(
-            serde_json::json!({
-                "file_path": path,
-                "content": new,
-            })
-            .to_string(),
-        ),
-        // Edit → canonical `{old_string,new_string}` for the frontend's
-        // `generateUnifiedDiff` (a real hunk diff, minimal even for full-file
-        // old/new).
-        [(path, Some(old), new)] => Some(
-            serde_json::json!({
-                "file_path": path,
-                "old_string": old,
-                "new_string": new,
-            })
-            .to_string(),
-        ),
+        [path] => {
+            let blocks = per_path.remove(path)?;
+            if let Some(patch) = joined_patches(&blocks) {
+                return Some(
+                    serde_json::json!({
+                        "file_path": path,
+                        "changes": { path: { "diff": patch } },
+                    })
+                    .to_string(),
+                );
+            }
+            match combined_text_blocks(&blocks)? {
+                // New file (old_text absent) → write shape. `inferFromInput`
+                // classifies `{file_path, content}` as `write`, whose diff
+                // builder emits the `--- /dev/null` header `isAddedFileDiff`
+                // keys on → renders as a new file, matching the
+                // reloaded-from-DB path.
+                (None, new) => Some(
+                    serde_json::json!({
+                        "file_path": path,
+                        "content": new,
+                    })
+                    .to_string(),
+                ),
+                // Edit → canonical `{old_string,new_string}` for the frontend's
+                // `generateUnifiedDiff` (a real hunk diff, minimal even for
+                // full-file old/new).
+                (Some(old), new) => Some(
+                    serde_json::json!({
+                        "file_path": path,
+                        "old_string": old,
+                        "new_string": new,
+                    })
+                    .to_string(),
+                ),
+            }
+        }
         many => {
             let mut changes = serde_json::Map::new();
-            for (path, old, new) in many {
-                // Per-entry, mirror the single-diff split: a new file gets a
-                // ready-made creation diff (`buildChunkFromEditChange` returns
-                // it verbatim → `--- /dev/null` → new file); an edit hands
-                // old/new text to the frontend to diff.
-                let entry = match old {
-                    None => serde_json::json!({ "diff": build_new_file_diff(path, new) }),
-                    Some(old) => serde_json::json!({ "old_text": old, "new_text": new }),
+            for path in many {
+                let Some(blocks) = per_path.remove(path) else {
+                    continue;
+                };
+                // Per entry, mirror the single-path split: a patch verbatim, a
+                // new file as a ready-made creation diff
+                // (`buildChunkFromEditChange` returns it verbatim →
+                // `--- /dev/null` → new file), an edit as old/new text for the
+                // frontend to diff.
+                let entry = if let Some(patch) = joined_patches(&blocks) {
+                    serde_json::json!({ "diff": patch })
+                } else {
+                    match combined_text_blocks(&blocks) {
+                        Some((None, new)) => {
+                            serde_json::json!({ "diff": build_new_file_diff(path, &new) })
+                        }
+                        Some((Some(old), new)) => {
+                            serde_json::json!({ "old_text": old, "new_text": new })
+                        }
+                        None => continue,
+                    }
                 };
                 changes.insert(path.clone(), entry);
             }
-            Some(serde_json::json!({ "changes": changes }).to_string())
+            (!changes.is_empty())
+                .then(|| serde_json::json!({ "changes": changes }).to_string())
         }
     }
+}
+
+/// The line placed between two hunks of the same file when their texts are
+/// combined (see [`synthesize_edit_input_from_diffs`]). It is on both sides, so
+/// the line diff treats it as context — an elision mark, not a change.
+const HUNK_SEPARATOR: &str = "⋯";
+
+/// What one ACP `Diff` block says, once codex's AIR `diffPatch` is accounted
+/// for.
+enum DiffBlockPayload {
+    /// The standard `oldText` / `newText` pair.
+    Text { old: Option<String>, new: String },
+    /// A validated Git patch for the block's file, headers rewritten to the
+    /// absolute path (see [`normalize_git_patch`]).
+    Patch(String),
+}
+
+/// Read one `Diff` block. `None` for a block that declares a patch codeg cannot
+/// use: codex-acp 2.0.0's contract is that such a block's `oldText: null` /
+/// `newText: ""` are "compatibility placeholders … not file snapshots", and a
+/// receiver that rejects the patch "must show the change as unavailable" — not
+/// render the placeholders as an emptied file.
+///
+/// codeg declares `diffPatch` to codex only (`build_client_capabilities`), and
+/// validates it the way the contract asks: `{version: 1, format: "git_patch",
+/// text}` with at least one `@@` hunk.
+fn diff_block_payload(diff: &agent_client_protocol::schema::v1::Diff) -> Option<DiffBlockPayload> {
+    let Some(patch) =
+        crate::acp::air_contract::air_meta_value(diff.meta.as_ref(), "diffPatch")
+    else {
+        return Some(DiffBlockPayload::Text {
+            old: diff.old_text.clone(),
+            new: diff.new_text.clone(),
+        });
+    };
+    let valid = patch.get("version").and_then(serde_json::Value::as_i64) == Some(1)
+        && patch.get("format").and_then(serde_json::Value::as_str) == Some("git_patch");
+    let text = patch
+        .get("text")
+        .and_then(serde_json::Value::as_str)
+        .filter(|_| valid)?;
+    normalize_git_patch(text, &diff.path.display().to_string()).map(DiffBlockPayload::Patch)
+}
+
+/// Every patch among `blocks`, joined, or `None` when there is none.
+fn joined_patches(blocks: &[DiffBlockPayload]) -> Option<String> {
+    let patches: Vec<&str> = blocks
+        .iter()
+        .filter_map(|block| match block {
+            DiffBlockPayload::Patch(patch) => Some(patch.as_str()),
+            DiffBlockPayload::Text { .. } => None,
+        })
+        .collect();
+    (!patches.is_empty()).then(|| patches.join("\n"))
+}
+
+/// The text blocks of one path combined into a single `(old, new)` pair —
+/// `None` when there are none. One block passes through unchanged (a `None`
+/// old text keeps meaning "new file"); several are hunks of one edit, joined
+/// with [`HUNK_SEPARATOR`] (a missing old text reads as empty there).
+fn combined_text_blocks(blocks: &[DiffBlockPayload]) -> Option<(Option<String>, String)> {
+    let texts: Vec<(&Option<String>, &String)> = blocks
+        .iter()
+        .filter_map(|block| match block {
+            DiffBlockPayload::Text { old, new } => Some((old, new)),
+            DiffBlockPayload::Patch(_) => None,
+        })
+        .collect();
+    match texts.as_slice() {
+        [] => None,
+        [(old, new)] => Some(((*old).clone(), (*new).clone())),
+        many => {
+            let join = |parts: Vec<&str>| {
+                let mut out = String::new();
+                for (i, part) in parts.iter().enumerate() {
+                    if i > 0 {
+                        if !out.ends_with('\n') {
+                            out.push('\n');
+                        }
+                        out.push_str(HUNK_SEPARATOR);
+                        out.push('\n');
+                    }
+                    out.push_str(part);
+                }
+                out
+            };
+            let old = join(
+                many.iter()
+                    .map(|(old, _)| old.as_deref().unwrap_or(""))
+                    .collect(),
+            );
+            let new = join(many.iter().map(|(_, new)| new.as_str()).collect());
+            Some((Some(old), new))
+        }
+    }
+}
+
+/// Rewrite a codex Git patch's file headers onto the absolute path, or `None`
+/// when the text has no hunk (the contract: "at least one `@@` hunk").
+///
+/// codex names both sides as the absolute path WITHOUT its leading slash under
+/// `a/` / `b/` (`a/workspace/src/app.ts`, Windows `a/C:/work/App.ts`), which the
+/// diff preview's `normalizePath` would turn into a relative path — and the
+/// preview's file link would then point nowhere. codeg's own diffs name the
+/// absolute path (`generateUnifiedDiff`: `--- a/${path}`), so the headers are
+/// rewritten to that: `+++` from the block's own `path` (the new side, a
+/// rename's target), `---` from the `rename from` line on a rename and from the
+/// block path otherwise; `/dev/null` sides stay. The `diff --git` line is
+/// dropped — its paths are ambiguous with spaces, and the `---`/`+++` lines
+/// that follow carry everything the preview reads from it. Only lines before
+/// the first `@@` are headers; after it, a line starting `--- ` is content.
+fn normalize_git_patch(patch: &str, block_path: &str) -> Option<String> {
+    // Split on `\n` only: the contract keeps the provider's bytes, a `\r`
+    // included ("The patch keeps the provider bytes, including a carriage
+    // return"), and `str::lines` would strip it off every CRLF hunk line.
+    let lines: Vec<&str> = patch.split('\n').collect();
+    let first_hunk = lines.iter().position(|line| line.starts_with("@@"))?;
+    let (headers, body) = lines.split_at(first_hunk);
+    let header = |line: &&str| line.trim_end_matches('\r').to_string();
+    let headers: Vec<String> = headers.iter().map(header).collect();
+    let renamed_from = headers
+        .iter()
+        .find_map(|line| line.strip_prefix("rename from "))
+        .map(patch_header_path);
+    let mut out: Vec<String> = Vec::with_capacity(lines.len());
+    for line in &headers {
+        if line.starts_with("diff --git ") || line.starts_with("index ") {
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("--- ") {
+            if rest.trim_end() == "/dev/null" {
+                out.push("--- /dev/null".to_string());
+            } else {
+                let old = renamed_from.clone().unwrap_or_else(|| block_path.to_string());
+                out.push(format!("--- a/{old}"));
+            }
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("+++ ") {
+            if rest.trim_end() == "/dev/null" {
+                out.push("+++ /dev/null".to_string());
+            } else {
+                out.push(format!("+++ b/{block_path}"));
+            }
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("rename from ") {
+            out.push(format!("rename from {}", patch_header_path(rest)));
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("rename to ") {
+            out.push(format!("rename to {}", patch_header_path(rest)));
+            continue;
+        }
+        out.push(line.clone());
+    }
+    // The body verbatim — including the empty segment after a final `\n`, so
+    // the join below restores it.
+    out.extend(body.iter().map(|line| (*line).to_string()));
+    Some(out.join("\n"))
+}
+
+/// A path as a codex patch header writes it (`a/`/`b/`-prefixed or bare,
+/// possibly C-quoted, possibly tab-terminated), back as the absolute path it
+/// was made from: the leading slash restored, a Windows drive path as is.
+fn patch_header_path(raw: &str) -> String {
+    let raw = raw.trim_end_matches(['\t', '\r']);
+    let unquoted = match raw.strip_prefix('"').and_then(|r| r.strip_suffix('"')) {
+        Some(inner) => c_unquote(inner),
+        None => raw.to_string(),
+    };
+    let bare = unquoted
+        .strip_prefix("a/")
+        .or_else(|| unquoted.strip_prefix("b/"))
+        .unwrap_or(&unquoted);
+    let is_drive = bare.len() >= 3
+        && bare.as_bytes()[0].is_ascii_alphabetic()
+        && bare.as_bytes()[1] == b':'
+        && bare.as_bytes()[2] == b'/';
+    if is_drive || bare.starts_with('/') {
+        bare.to_string()
+    } else {
+        format!("/{bare}")
+    }
+}
+
+/// Undo Git's C-style path quoting (what codex applies to a path holding a
+/// double quote, a backslash or a control character): `\"`, `\\`, the named
+/// control escapes, and `\NNN` octal bytes. An escape it does not know is kept
+/// as written rather than guessed at.
+fn c_unquote(inner: &str) -> String {
+    let bytes = inner.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] != b'\\' || i + 1 >= bytes.len() {
+            out.push(bytes[i]);
+            i += 1;
+            continue;
+        }
+        let next = bytes[i + 1];
+        let named = match next {
+            b'"' => Some(b'"'),
+            b'\\' => Some(b'\\'),
+            b'a' => Some(0x07),
+            b'b' => Some(0x08),
+            b'f' => Some(0x0c),
+            b'n' => Some(b'\n'),
+            b'r' => Some(b'\r'),
+            b't' => Some(b'\t'),
+            b'v' => Some(0x0b),
+            _ => None,
+        };
+        if let Some(byte) = named {
+            out.push(byte);
+            i += 2;
+            continue;
+        }
+        let octal = bytes.get(i + 1..i + 4).filter(|digits| {
+            digits.iter().all(|d| (b'0'..=b'7').contains(d))
+        });
+        if let Some(digits) = octal {
+            let value = digits
+                .iter()
+                .fold(0u32, |acc, d| acc * 8 + u32::from(d - b'0'));
+            if let Ok(byte) = u8::try_from(value) {
+                out.push(byte);
+                i += 4;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// A claude `Edit` / `Write` input with the file text put back from the diff
+/// block that carries it — or `None` when the input needs nothing.
+///
+/// claude-agent-acp 0.82.0 puts each fact of an AIR client's tool call in one
+/// field only, and the file text of an edit lives in the `diff` content block:
+/// `rawInput` arrives as `{file_path}` alone (Edit loses `old_string` /
+/// `new_string`, Write its `content`), on the same frame as the diff. Every
+/// codeg edit card, the live line stats and the permission preview read the
+/// INPUT, never the content blocks, so a live Edit would render as a bare path.
+/// The diff block holds exactly the model's strings (0.81.x sent the same
+/// `oldText`/`newText` beside the full input), so the input is rebuilt from it —
+/// the same move the codex path has always made, merged here with the keys the
+/// input still has (`file_path` as spelled, `replace_all`). An input that still
+/// carries its text (any older adapter) is left alone: it is authoritative.
+fn claude_complete_file_edit_input(
+    agent_type: AgentType,
+    meta: Option<&serde_json::Map<String, serde_json::Value>>,
+    own_raw_input: Option<&str>,
+    content: &[ToolCallContent],
+) -> Option<String> {
+    if agent_type != AgentType::ClaudeCode {
+        return None;
+    }
+    let tool_name = meta
+        .and_then(|m| m.get("claudeCode"))
+        .and_then(|c| c.get("toolName"))
+        .and_then(serde_json::Value::as_str)?;
+    if !matches!(tool_name, "Edit" | "Write") {
+        return None;
+    }
+    let own = serde_json::from_str::<serde_json::Value>(own_raw_input?).ok()?;
+    let own = own.as_object()?;
+    if ["old_string", "new_string", "content"]
+        .iter()
+        .any(|key| own.contains_key(*key))
+    {
+        return None;
+    }
+    let synthesized = synthesize_edit_input_from_diffs(content)?;
+    let mut merged = serde_json::from_str::<serde_json::Value>(&synthesized)
+        .ok()?
+        .as_object()?
+        .clone();
+    for (key, value) in own {
+        merged.insert(key.clone(), value.clone());
+    }
+    Some(serde_json::Value::Object(merged).to_string())
 }
 
 /// Drop every `Terminal` block from a tool call's `content`, keeping the rest
@@ -12622,17 +12991,34 @@ fn hosted_terminal_output_key(agent_type: AgentType) -> Option<&'static str> {
 /// the correct reading of the wire contract; the duplication is an upstream
 /// residual. codex has no such degenerate case: its deltas come straight from
 /// the exec stream (`item/commandExecution/outputDelta`).
+///
+/// Text codex wrote to a running command's stdin rides the same stream. Through
+/// 1.13.x codex-acp sent it as an output delta of its own, `\n<stdin>\n`;
+/// 2.0.0 sends an AIR client a separate `_meta.terminal_input = {terminal_id,
+/// data}` instead ("It is not output"). Rendered the way the older adapter —
+/// and 2.0.0 for every other client — renders it, so a card that answered a
+/// prompt still shows the answer where it was typed.
 fn hosted_terminal_output_delta(
     agent_type: AgentType,
     meta: Option<&serde_json::Map<String, serde_json::Value>>,
 ) -> Option<String> {
     let key = hosted_terminal_output_key(agent_type)?;
-    meta?
-        .get(key)?
-        .get("data")?
-        .as_str()
-        .filter(|data| !data.is_empty())
-        .map(str::to_string)
+    let meta = meta?;
+    let data = |key: &str| {
+        meta.get(key)?
+            .get("data")?
+            .as_str()
+            .filter(|data| !data.is_empty())
+    };
+    let output = data(key).map(str::to_string);
+    let stdin = (agent_type == AgentType::Codex)
+        .then(|| data("terminal_input"))
+        .flatten()
+        .map(|input| format!("\n{input}\n"));
+    match (output, stdin) {
+        (Some(output), Some(stdin)) => Some(output + &stdin),
+        (output, stdin) => output.or(stdin),
+    }
 }
 
 /// The `[terminal exited: …]` line for `_meta.terminal_exit`, if present.
@@ -12876,6 +13262,64 @@ enum CodexSubagentActivity {
     Other,
 }
 
+/// The `_meta` to classify a codex tool call's sub-agent activity from, when the
+/// frame's own does not say: codex-acp 2.0.0 sends `_meta.codex.subagent` to no
+/// client, and an activity item is then recognised by its `rawInput`
+/// (`air_contract::codex_activity_meta_from_raw_input`). `None` means "the
+/// frame's own `_meta` is the one to read" — it already carries the legacy
+/// marker, or this is not codex, or the input is not an activity.
+fn codex_activity_classification_meta(
+    agent_type: AgentType,
+    meta: Option<&serde_json::Map<String, serde_json::Value>>,
+    raw_input: Option<&serde_json::Value>,
+) -> Option<serde_json::Map<String, serde_json::Value>> {
+    if agent_type != AgentType::Codex {
+        return None;
+    }
+    if meta
+        .and_then(|m| m.get("codex"))
+        .and_then(|codex| codex.get("subagent"))
+        .is_some()
+    {
+        return None;
+    }
+    let derived = crate::acp::air_contract::codex_activity_meta_from_raw_input(raw_input)?;
+    let mut merged = meta.cloned().unwrap_or_default();
+    if let Some(derived) = derived.as_object() {
+        for (key, value) in derived {
+            merged.insert(key.clone(), value.clone());
+        }
+    }
+    Some(merged)
+}
+
+/// The stashed viewed-file result a claude completion should carry, if any
+/// (see `CodeBuddyLiveState::claude_viewed_results`).
+///
+/// The stash entry is spent at the call's terminal status either way; it is
+/// only RETURNED for a completion that carried no result of its own — the
+/// case claude-agent-acp 0.82.0 produces for an AIR client's read or search.
+/// A failed call is not filled: the adapter sends a failure's text itself.
+fn claude_viewed_result_for_completion(
+    agent_type: AgentType,
+    stash: &mut HashMap<String, String>,
+    tool_call_id: &str,
+    status: Option<&agent_client_protocol::schema::v1::ToolCallStatus>,
+    carries_result: bool,
+) -> Option<String> {
+    if agent_type != AgentType::ClaudeCode {
+        return None;
+    }
+    let status = status?;
+    let completed = matches!(status, agent_client_protocol::schema::v1::ToolCallStatus::Completed);
+    let failed = matches!(status, agent_client_protocol::schema::v1::ToolCallStatus::Failed);
+    if !completed && !failed {
+        return None;
+    }
+    let stashed = stash.remove(tool_call_id)?;
+    (completed && !carries_result).then_some(stashed)
+}
+
 /// Classify a live tool call's `_meta`, building the Agent-card input for a
 /// launch. The three fields are the ones `parsers/codex.rs` writes on reload, so
 /// live and history render the same capsule: the sub-agent's name is the last
@@ -13016,9 +13460,8 @@ async fn settle_codex_subagent_launch(
     .await;
 }
 
-/// True when a `session/request_permission` is codex's Plan-mode review gate
-/// (codex-acp #351, v1.1.8+): `_meta.codex = {kind: "plan_review", planItemId}`
-/// on the REQUEST (sibling of `options`), not on the tool call.
+/// The `_meta` to seed codex's Plan-mode review card with, when a
+/// `session/request_permission` is that gate — `None` for every other request.
 ///
 /// codex-acp raises this once a plan item settles while `collaboration_mode` is
 /// `plan`, asking whether to implement the plan (`implement_plan`) or stay in
@@ -13028,17 +13471,42 @@ async fn settle_codex_subagent_launch(
 /// tool call from this request that update lands on an unknown id and renders as
 /// an untitled generic tool card, so `handle_permission_request` emits one.
 /// Gated on Codex, mirroring [`classify_codex_subagent_activity`].
-fn is_codex_plan_review(
+///
+/// Two ways it is recognised, one per adapter generation. 1.1.8–1.13.x mark the
+/// REQUEST (sibling of `options`) `_meta.codex = {kind: "plan_review",
+/// planItemId}`, and that meta is what the frontend names the card by
+/// (`codexMarksPlanReview`). 2.0.0 sends that marker to no client; the gate is
+/// then recognised by its id, which every version shares, and the legacy
+/// marker is written onto the seeded card so the frontend's reading holds.
+fn codex_plan_review_meta(
     agent_type: AgentType,
+    tool_call_id: &str,
+    switch_mode: bool,
     meta: Option<&serde_json::Map<String, serde_json::Value>>,
-) -> bool {
+) -> Option<serde_json::Map<String, serde_json::Value>> {
     if agent_type != AgentType::Codex {
-        return false;
+        return None;
     }
-    meta.and_then(|m| m.get("codex"))
+    let marked = meta
+        .and_then(|m| m.get("codex"))
         .and_then(|codex| codex.get("kind"))
         .and_then(serde_json::Value::as_str)
-        == Some("plan_review")
+        == Some("plan_review");
+    if marked {
+        return meta.cloned();
+    }
+    // The id alone is a naming convention; the review request is also the one
+    // codex sends as `kind: switch_mode` (`PlanReviewReporter`, every client).
+    if !switch_mode {
+        return None;
+    }
+    let plan_item_id = crate::acp::air_contract::codex_plan_review_item_id(tool_call_id)?;
+    let mut seeded = meta.cloned().unwrap_or_default();
+    seeded.insert(
+        "codex".to_string(),
+        serde_json::json!({ "kind": "plan_review", "planItemId": plan_item_id }),
+    );
+    Some(seeded)
 }
 
 /// Copy a permission request's REQUEST-level `_meta.permission` onto the card's
@@ -13068,6 +13536,11 @@ fn is_codex_plan_review(
 /// `_meta.claudeCode.title` is absent on 0.73.0 cards and falls through to what
 /// this hoists.
 ///
+/// claude-agent-acp 0.82.0 and codex-acp 2.0.0 moved the record to
+/// `_meta.jetbrains.air.permission` and send the old key to no client
+/// ([`crate::acp::air_contract::permission_record`] reads both). The card keeps
+/// reading `_meta.permission`: this is where the new spelling becomes it.
+///
 /// Hoisting rather than adding an event field is deliberate: the tool call is
 /// already the card's payload end-to-end (`PendingPermissionState.tool_call`,
 /// the snapshot, the WebSocket envelope, `parsePermissionToolCall`), so the
@@ -13081,7 +13554,7 @@ fn hoist_request_permission_meta(
     tool_call: &mut serde_json::Value,
     request_meta: Option<&serde_json::Map<String, serde_json::Value>>,
 ) {
-    let Some(permission) = request_meta.and_then(|m| m.get("permission")) else {
+    let Some(permission) = crate::acp::air_contract::permission_record(request_meta) else {
         return;
     };
     let Some(obj) = tool_call.as_object_mut() else {
@@ -13115,8 +13588,11 @@ fn init_advertises_steering(meta: Option<&serde_json::Map<String, serde_json::Va
 
 /// Whether the `initialize` response advertises the provider-neutral goal
 /// extension: top-level `_meta.goal = {version: <integer >= 1>, controlMethod,
-/// actions}`. Advertised ⇒ goal state arrives as
-/// `session_info_update._meta.goal` snapshots and the legacy
+/// actions}` — or, from claude-agent-acp 0.82.0 / codex-acp 2.0.0, the same
+/// object at `_meta.jetbrains.air.goal` (the AIR-only home those releases moved
+/// it to; the top-level key then goes to no client). Advertised ⇒ goal state
+/// arrives as `session_info_update._meta.goal` (or
+/// `_meta.jetbrains.air.goal`) snapshots and the legacy
 /// `_meta.codex.goal` key is ignored for the WHOLE connection — codex-acp
 /// switched to the neutral key silently in 1.2.0 (legacy key gone), and
 /// claude-agent-acp speaks only the neutral form (0.66.0+). Pinning the
@@ -13125,7 +13601,7 @@ fn init_advertises_steering(meta: Option<&serde_json::Map<String, serde_json::Va
 /// transition through both namespaces can never produce two goal cards.
 /// Non-integer or sub-1 versions fail closed onto the legacy channel.
 fn init_advertises_goal(meta: Option<&serde_json::Map<String, serde_json::Value>>) -> bool {
-    meta.and_then(|m| m.get("goal"))
+    crate::acp::air_contract::legacy_or_air(meta, "goal")
         .and_then(|g| g.get("version"))
         .and_then(serde_json::Value::as_i64)
         .is_some_and(|version| version >= 1)
@@ -13147,7 +13623,7 @@ fn goal_advertised_control(
     if !init_advertises_goal(meta) {
         return None;
     }
-    let goal = meta?.get("goal")?;
+    let goal = crate::acp::air_contract::legacy_or_air(meta, "goal")?;
     let method = goal
         .get("controlMethod")
         .and_then(serde_json::Value::as_str)
@@ -13196,18 +13672,18 @@ fn resolve_goal_control(
 
 /// Pick the goal payload out of a `session_info_update`'s `_meta` according to
 /// the channel pinned at initialize (see [`init_advertises_goal`]): the
-/// neutral `_meta.goal` for advertising connections, the legacy
-/// `_meta.codex.goal` otherwise — never both. Pure so the either/or contract
+/// neutral `_meta.goal` (or its AIR home `_meta.jetbrains.air.goal`) for
+/// advertising connections, the legacy `_meta.codex.goal` otherwise — never
+/// both. Pure so the either/or contract
 /// is unit-tested without the connection machinery.
 fn session_info_goal_value(
     neutral_goal_channel: bool,
     meta: Option<&serde_json::Map<String, serde_json::Value>>,
 ) -> Option<&serde_json::Value> {
-    let meta = meta?;
     if neutral_goal_channel {
-        meta.get("goal")
+        crate::acp::air_contract::legacy_or_air(meta, "goal")
     } else {
-        meta.get("codex").and_then(|codex| codex.get("goal"))
+        meta?.get("codex").and_then(|codex| codex.get("goal"))
     }
 }
 
@@ -13440,7 +13916,9 @@ fn is_config_option_state_command(
     if agent_type != AgentType::Codex {
         return false;
     }
-    meta.and_then(|m| m.get("commandAction"))
+    // codex-acp 2.0.0 moved the action to `_meta.jetbrains.air.commandAction`
+    // (an AIR-only key; the top-level one then goes to no client).
+    crate::acp::air_contract::legacy_or_air(meta, "commandAction")
         .and_then(|action| action.get("kind"))
         .and_then(|kind| kind.as_str())
         == Some("setConfigOption")
@@ -13553,12 +14031,14 @@ fn claude_chunk_parent_tool_use_id(
 /// applies to the same calls (`parsers::claude::canonical_file_tool_input`),
 /// so a live card and its history twin read the same arguments.
 ///
-/// The tool is named by `_meta.claudeCode.toolName`, which rides every claude
-/// tool frame that carries input — the opening `tool_call`, the refining
-/// `tool_call_update` and the streamed-input refinements alike (the top-level
-/// ACP `name` is only on the first). A permission request needs nothing: the
-/// CLI coerces the input before it asks, so it already carries the canonical
-/// names.
+/// The tool is named by `_meta.claudeCode.toolName`, which rode every claude
+/// tool frame that carries input through 0.81.x — the opening `tool_call`, the
+/// refining `tool_call_update` and the streamed-input refinements alike (the
+/// top-level ACP `name` is only on the first). From 0.82.0 an AIR client gets it
+/// on the opening frame only, and the `_meta` ledger
+/// (`crate::acp::air_contract::ToolCallMetaLedger`) hands it to every later one.
+/// A permission request needs nothing: the CLI coerces the input before it
+/// asks, so it already carries the canonical names.
 fn tool_call_raw_input_text(
     agent_type: AgentType,
     meta: Option<&serde_json::Map<String, serde_json::Value>>,
@@ -13817,6 +14297,34 @@ struct CodeBuddyLiveState {
     /// turn start — a shell call whose turn was canceled never sees a final
     /// status, and its lifecycle cannot span turns anyway.
     hosted_terminal_calls: HashMap<String, bool>,
+    /// The merged `_meta` of every claude / codex tool call on this connection
+    /// — the AIR contract (claude-agent-acp 0.82.0, codex-acp 2.0.0) sends each
+    /// `_meta` key once and expects the client to merge. See
+    /// [`crate::acp::air_contract`].
+    air_tool_call_meta: crate::acp::air_contract::ToolCallMetaLedger,
+    /// codex `subAgentActivity` tool calls classified on their opening frame:
+    /// `Some(input)` for a launch capsule (the Agent-card input it was announced
+    /// with), `None` for an activity that is dropped. codex-acp 2.0.0 sends the
+    /// follow-up of such a call as a bare status — no `rawInput`, no marker — so
+    /// the id is the only thing left to classify it by (1.4.0–1.13.x repeated
+    /// `_meta.codex.subagent` on every frame). Kept for the connection, like
+    /// `codex_subagent_launches`: a child outlives its turn.
+    codex_activity_calls: HashMap<String, Option<String>>,
+    /// claude `Read` / `Grep` / `Glob` results taken off the raw SDK stream
+    /// (`_claude/sdkMessage`, a `user` message's `tool_result`), keyed by the
+    /// tool-use id, waiting for the call's completion frame.
+    ///
+    /// claude-agent-acp 0.82.0 withholds the text of those results from an AIR
+    /// client ("AIR shows a read or a search that names a path as the list of
+    /// viewed files … the text of the result stays out"), so the completion
+    /// arrives as a bare status and the card would show the path and nothing
+    /// else — while the same call reloaded from the transcript shows the text.
+    /// codeg already subscribes to the raw SDK stream (`emitRawSDKMessages`),
+    /// and the adapter forwards each raw message BEFORE it reports it, so the
+    /// result is here first. It only ever fills a completion that carries no
+    /// result of its own (see the `ToolCallUpdate` arm), and the map is cleared
+    /// at turn start like `hosted_terminal_calls`.
+    claude_viewed_results: HashMap<String, String>,
 }
 
 /// One announced-but-unpaired Grok `spawn_subagent` call. `description` /
@@ -14753,6 +15261,39 @@ fn is_known_ext_method(method: &str) -> bool {
     method == CLAUDE_SDK_EXT_METHOD || GROK_EXT_UPDATE_METHODS.contains(&method)
 }
 
+/// Keep the text of a claude `Read` / `Grep` / `Glob` result off the raw SDK
+/// stream, for the completion frame that follows it (see
+/// `CodeBuddyLiveState::claude_viewed_results`).
+///
+/// The tool is named by the call's own opening frame (`claudeCode.toolName`,
+/// kept in the `_meta` ledger), never guessed from the result: a result for a
+/// call codeg has not seen announced is not stashed. The text is taken the way
+/// the transcript parser takes it (`parsers::claude::extract_tool_result_text`),
+/// which is also the string claude-agent-acp 0.81.x put in `rawOutput`, so the
+/// live card and its reloaded twin read the same thing.
+fn stash_claude_viewed_results(params: &serde_json::Value, cb_state: &mut CodeBuddyLiveState) {
+    let Some(message) = params.get("message") else {
+        return;
+    };
+    for result in crate::acp::air_contract::claude_sdk_tool_results(message) {
+        if result.is_error {
+            continue;
+        }
+        let viewed = cb_state
+            .air_tool_call_meta
+            .claude_tool_name(result.tool_use_id)
+            .is_some_and(crate::acp::air_contract::claude_viewed_file_tool);
+        if !viewed {
+            continue;
+        }
+        if let Some(text) = crate::parsers::claude::extract_tool_result_text(result.block) {
+            cb_state
+                .claude_viewed_results
+                .insert(result.tool_use_id.to_string(), text);
+        }
+    }
+}
+
 /// Last stop for a dispatch the typed `session/update` pipeline didn't claim.
 ///
 /// A notification no mapper claims is dropped, but not invisibly; a request is
@@ -14801,6 +15342,9 @@ async fn maybe_emit_ext_notification(
     // so a stray notification the active-turn loop drains AFTER the status
     // already flipped back is still classified as out-of-turn.
     let turn_active = state.read().await.status == ConnectionStatus::Prompting;
+    if agent_type == AgentType::ClaudeCode && notification.method() == CLAUDE_SDK_EXT_METHOD {
+        stash_claude_viewed_results(notification.params(), cb_state);
+    }
     // A grok `subagent_spawned` can yield TWO events (the card's session stamp
     // and the background-activity report), so this mapper hands back a list; an
     // empty one means "not mine", and the chain continues as before.
@@ -15033,7 +15577,17 @@ fn session_compaction_event(dispatch: &Dispatch) -> Option<AcpEvent> {
             // The card keys off `contextCompaction` specifically; the adapters
             // nest their reserved fields under it on the legacy call, and
             // claude repeats that exact block here. Anything else the frame
-            // carried rides along untouched.
+            // carried rides along untouched. claude-agent-acp 0.82.0 moved the
+            // block to `_meta.jetbrains.air.contextCompaction` (and sends the
+            // top-level key to no client); without taking it from there, the
+            // default below would stand in for it and the card would lose
+            // every token count and the duration.
+            if let Some(air) = crate::acp::air_contract::air_meta_value(Some(&meta), "contextCompaction")
+                .filter(|block| block.is_object())
+                .cloned()
+            {
+                meta.entry("contextCompaction").or_insert(air);
+            }
             meta.entry("contextCompaction")
                 .or_insert_with(|| serde_json::json!({"version": 1}));
             meta.insert(
@@ -15245,7 +15799,14 @@ async fn emit_conversation_update(
         SessionUpdate::AgentThoughtChunk(_) => {
             // Non-text thought chunks are currently ignored.
         }
-        SessionUpdate::ToolCall(tc) => {
+        SessionUpdate::ToolCall(mut tc) => {
+            let tool_call_id = tc.tool_call_id.to_string();
+            // The AIR contract sends each `_meta` key once: open the call's
+            // record, and read the moved keys under their legacy names from here
+            // on (see `crate::acp::air_contract`).
+            tc.meta = cb_state
+                .air_tool_call_meta
+                .open(agent_type, &tool_call_id, tc.meta.take());
             if agent_type == AgentType::Codex
                 && crate::acp::codex_context::is_web_search_input(tc.raw_input.as_ref())
             {
@@ -15256,21 +15817,36 @@ async fn emit_conversation_update(
             // is orchestration bookkeeping, so it is replaced wholesale); a
             // terminal marker is folded back onto that capsule; the rest stay
             // dropped. See `classify_codex_subagent_activity`.
+            let activity_meta =
+                codex_activity_classification_meta(agent_type, tc.meta.as_ref(), tc.raw_input.as_ref());
             let mut codex_subagent_thread = None;
-            let codex_subagent = match classify_codex_subagent_activity(agent_type, tc.meta.as_ref())
-            {
-                CodexSubagentActivity::None => None,
+            let codex_subagent = match classify_codex_subagent_activity(
+                agent_type,
+                activity_meta.as_ref().or(tc.meta.as_ref()),
+            ) {
+                CodexSubagentActivity::None => {
+                    // The id now names something else: its follow-ups are its
+                    // own, not an earlier activity's.
+                    cb_state.codex_activity_calls.remove(&tool_call_id);
+                    None
+                }
                 CodexSubagentActivity::Started { thread_id, input } => {
                     codex_subagent_thread = thread_id;
+                    cb_state
+                        .codex_activity_calls
+                        .insert(tool_call_id.clone(), Some(input.clone()));
                     Some(input)
                 }
                 CodexSubagentActivity::Terminal { thread_id, kind } => {
+                    cb_state.codex_activity_calls.insert(tool_call_id, None);
                     settle_codex_subagent_launch(state, emitter, cb_state, &thread_id, &kind).await;
                     return;
                 }
-                CodexSubagentActivity::Other => return,
+                CodexSubagentActivity::Other => {
+                    cb_state.codex_activity_calls.insert(tool_call_id, None);
+                    return;
+                }
             };
-            let tool_call_id = tc.tool_call_id.to_string();
             // Remember which capsule owns this child, so its eventual
             // `completed` / `interrupted` (announced under a synthetic id of its
             // own) can be routed back here.
@@ -15333,7 +15909,12 @@ async fn emit_conversation_update(
             let synthesized_edit = if own_raw_input.is_none() {
                 synthesize_edit_input_from_diffs(content_blocks)
             } else {
-                None
+                claude_complete_file_edit_input(
+                    agent_type,
+                    tc.meta.as_ref(),
+                    own_raw_input.as_deref(),
+                    content_blocks,
+                )
             };
             // pi sends no `rawInput` for bash at all — its command lives in the
             // title. Synthesize the canonical `{"command"}` shape so the call
@@ -15428,8 +16009,16 @@ async fn emit_conversation_update(
                 &tc.title,
                 tc.meta,
             );
-            let meta = stamp_codex_search_action(agent_type, &tc.kind, hosted_shell, meta)
-                .map(serde_json::Value::Object);
+            let meta = stamp_codex_search_action(agent_type, &tc.kind, hosted_shell, meta);
+            // Later frames hand the frontend the MERGED `_meta`, which it takes
+            // whole — so codeg's own stamps must be part of the record, or the
+            // first update carrying any `_meta` would wipe them.
+            if let Some(meta) = meta.as_ref() {
+                cb_state
+                    .air_tool_call_meta
+                    .remember_stamps(&tool_call_id, meta);
+            }
+            let meta = meta.map(serde_json::Value::Object);
             raw_output_cache.remove_if_final(&tool_call_id, Some(status.as_str()));
             // Track Grok's spawn_subagent lifecycle for the subagent-notification
             // pairing (progress meta + finished settle). No-op for other agents.
@@ -15504,7 +16093,17 @@ async fn emit_conversation_update(
             )
             .await;
         }
-        SessionUpdate::ToolCallUpdate(tcu) => {
+        SessionUpdate::ToolCallUpdate(mut tcu) => {
+            let tool_call_id = tcu.tool_call_id.to_string();
+            // The AIR contract leaves every unchanged `_meta` key off an update;
+            // read the call's merged `_meta` instead of the frame's, and hand the
+            // frontend (which REPLACES a call's `_meta` with whatever arrives)
+            // the whole of it — but only on frames that said something, exactly
+            // as before. See `crate::acp::air_contract`.
+            let frame_had_meta = tcu.meta.is_some();
+            tcu.meta = cb_state
+                .air_tool_call_meta
+                .update(agent_type, &tool_call_id, tcu.meta.take());
             // codex-acp repeats a search's `rawInput` on its completion frame, so
             // either frame marks the request — one whose opening frame never
             // came still counts (a repeat mark is a no-op).
@@ -15518,22 +16117,35 @@ async fn emit_conversation_update(
             // completion is forwarded (settling its capsule), any other
             // lifecycle marker's is dropped like its opening frame was. A
             // terminal marker can arrive on either frame, so both route it.
+            // codex-acp 2.0.0 sends that follow-up as a bare status, so a frame
+            // that classifies as nothing falls back to what its opening frame
+            // was classified as (`codex_activity_calls`).
+            let activity_meta = codex_activity_classification_meta(
+                agent_type,
+                tcu.meta.as_ref(),
+                tcu.fields.raw_input.as_ref(),
+            );
             let mut codex_subagent_thread = None;
-            let codex_subagent =
-                match classify_codex_subagent_activity(agent_type, tcu.meta.as_ref()) {
-                    CodexSubagentActivity::None => None,
-                    CodexSubagentActivity::Started { thread_id, input } => {
-                        codex_subagent_thread = thread_id;
-                        Some(input)
-                    }
-                    CodexSubagentActivity::Terminal { thread_id, kind } => {
-                        settle_codex_subagent_launch(state, emitter, cb_state, &thread_id, &kind)
-                            .await;
-                        return;
-                    }
-                    CodexSubagentActivity::Other => return,
-                };
-            let tool_call_id = tcu.tool_call_id.to_string();
+            let codex_subagent = match classify_codex_subagent_activity(
+                agent_type,
+                activity_meta.as_ref().or(tcu.meta.as_ref()),
+            ) {
+                CodexSubagentActivity::None => match cb_state.codex_activity_calls.get(&tool_call_id) {
+                    Some(Some(launch_input)) => Some(launch_input.clone()),
+                    Some(None) => return,
+                    None => None,
+                },
+                CodexSubagentActivity::Started { thread_id, input } => {
+                    codex_subagent_thread = thread_id;
+                    Some(input)
+                }
+                CodexSubagentActivity::Terminal { thread_id, kind } => {
+                    settle_codex_subagent_launch(state, emitter, cb_state, &thread_id, &kind)
+                        .await;
+                    return;
+                }
+                CodexSubagentActivity::Other => return,
+            };
             if let (Some(thread_id), Some(input)) = (codex_subagent_thread, codex_subagent.as_ref())
             {
                 cb_state
@@ -15592,7 +16204,14 @@ async fn emit_conversation_update(
             let synthesized_edit = if own_raw_input.is_none() {
                 content_blocks.and_then(synthesize_edit_input_from_diffs)
             } else {
-                None
+                content_blocks.and_then(|blocks| {
+                    claude_complete_file_edit_input(
+                        agent_type,
+                        tcu.meta.as_ref(),
+                        own_raw_input.as_deref(),
+                        blocks,
+                    )
+                })
             };
             // pi's real command usually arrives on an update, not the opening
             // frame (its first frame's arguments are still partial JSON, so the
@@ -15655,6 +16274,16 @@ async fn emit_conversation_update(
             // with `raw_output_append=true`, collapsing the O(N²) transfer
             // problem to O(N) while capping any single emitted chunk to
             // MAX_SINGLE_EMIT_BYTES.
+            // A claude viewed-file result the AIR contract withheld, recovered
+            // off the raw SDK stream — only for a completion that carries no
+            // result of its own (see `claude_viewed_results`).
+            let viewed_result = claude_viewed_result_for_completion(
+                agent_type,
+                &mut cb_state.claude_viewed_results,
+                &tool_call_id,
+                tcu.fields.status.as_ref(),
+                content.is_some() || tcu.fields.raw_output.is_some(),
+            );
             let raw_output_text = if hosted_shell {
                 // The `_meta` bridge below owns this call's output channel
                 // entirely. A codex that does not honour the advertised
@@ -15684,6 +16313,7 @@ async fn emit_conversation_update(
                 opencode_live_tool_output(&content, &tcu.fields.raw_output)
             } else {
                 json_value_to_text(&tcu.fields.raw_output)
+                    .or(viewed_result)
                     .map(|text| unwrap_codebuddy_deferred_output(agent_type, &text).unwrap_or(text))
                     .map(|text| structurize_live_output(&text))
             };
@@ -15724,7 +16354,10 @@ async fn emit_conversation_update(
                 || codex_subagent_launch;
             let meta_marks_background = codebuddy_meta_marks_background(agent_type, tcu.meta.as_ref());
             let grok_spawn = grok_meta_marks_spawn_subagent(agent_type, tcu.meta.as_ref());
-            let meta = tcu.meta.clone().map(serde_json::Value::Object);
+            let meta = frame_had_meta
+                .then(|| tcu.meta.clone())
+                .flatten()
+                .map(serde_json::Value::Object);
             let status = tcu.fields.status.map(|s| format!("{:?}", s).to_lowercase());
             raw_output_cache.remove_if_final(&tool_call_id, status.as_deref());
             // Same lifetime as the output cache — and deliberately NOT mirrored in
@@ -17067,19 +17700,49 @@ mod tests {
         let review = meta_map(serde_json::json!({
             "codex": { "kind": "plan_review", "planItemId": "item-7" }
         }));
-        assert!(is_codex_plan_review(AgentType::Codex, Some(&review)));
+        let is_review = |agent, id: &str, meta: Option<&serde_json::Map<String, serde_json::Value>>| {
+            codex_plan_review_meta(agent, id, true, meta).is_some()
+        };
+        assert!(is_review(AgentType::Codex, "plan-review:item-7", Some(&review)));
+        // The legacy marker alone is enough — it is the 1.x identity.
+        assert!(is_review(AgentType::Codex, "anything", Some(&review)));
         // Gated on Codex: an identical meta from another agent seeds nothing.
-        assert!(!is_codex_plan_review(AgentType::ClaudeCode, Some(&review)));
+        assert!(!is_review(AgentType::ClaudeCode, "plan-review:item-7", Some(&review)));
         // Ordinary permission requests carry no meta at all.
-        assert!(!is_codex_plan_review(AgentType::Codex, None));
+        assert!(!is_review(AgentType::Codex, "cmd-1", None));
         // Sibling `codex` keys and other `kind` values must not seed a card.
         let other_kind = meta_map(serde_json::json!({ "codex": { "kind": "mcp_tool_call" } }));
-        assert!(!is_codex_plan_review(AgentType::Codex, Some(&other_kind)));
+        assert!(!is_review(AgentType::Codex, "cmd-1", Some(&other_kind)));
         let sub = meta_map(serde_json::json!({ "codex": { "subagent": { "threadId": "t1" } } }));
-        assert!(!is_codex_plan_review(AgentType::Codex, Some(&sub)));
+        assert!(!is_review(AgentType::Codex, "cmd-1", Some(&sub)));
         // A non-string `kind` must not be coerced into a match.
         let numeric = meta_map(serde_json::json!({ "codex": { "kind": 1 } }));
-        assert!(!is_codex_plan_review(AgentType::Codex, Some(&numeric)));
+        assert!(!is_review(AgentType::Codex, "cmd-1", Some(&numeric)));
+    }
+
+    #[test]
+    fn codex_plan_review_is_recognised_by_id_once_the_marker_is_gone() {
+        // codex-acp 2.0.0, recorded: the request carries NO `_meta` at all;
+        // only `toolCallId: "plan-review:<planItemId>"` identifies the gate.
+        let seeded = codex_plan_review_meta(AgentType::Codex, "plan-review:plan-2", true, None)
+            .expect("the id identifies the gate");
+        // The legacy marker is written onto the seeded card, which is what
+        // the frontend names it by (`codexMarksPlanReview`).
+        assert_eq!(
+            serde_json::Value::Object(seeded),
+            serde_json::json!({"codex": {"kind": "plan_review", "planItemId": "plan-2"}})
+        );
+        // A request `_meta` that says something else is kept beside it.
+        let other = meta_map(serde_json::json!({ "jetbrains": { "air": { "version": 1 } } }));
+        let seeded =
+            codex_plan_review_meta(AgentType::Codex, "plan-review:p", true, Some(&other)).unwrap();
+        assert_eq!(seeded["jetbrains"]["air"]["version"], 1);
+        assert_eq!(seeded["codex"]["planItemId"], "p");
+        assert!(codex_plan_review_meta(AgentType::Codex, "plan-review:", true, None).is_none());
+        assert!(codex_plan_review_meta(AgentType::ClaudeCode, "plan-review:p", true, None).is_none());
+        // The id shape alone, on a request that is not the mode switch, is not
+        // the review gate.
+        assert!(codex_plan_review_meta(AgentType::Codex, "plan-review:p", false, None).is_none());
     }
 
     #[test]
@@ -17107,6 +17770,24 @@ mod tests {
             "commandAction": { "kind": "prefixPrompt", "presentation": "state" }
         }));
         assert!(!is_config_option_state_command(AgentType::Codex, Some(&goal)));
+        // codex-acp 2.0.0 sends the action under `_meta.jetbrains.air` only
+        // (recorded) — the same toggle, suppressed the same way.
+        let air_plan = meta_map(serde_json::json!({"jetbrains": {"air": {
+            "version": 1,
+            "commandAction": {
+                "kind": "setConfigOption",
+                "configId": "collaboration_mode",
+                "value": "plan",
+                "resetValue": "default",
+                "presentation": "state"
+            }
+        }}}));
+        assert!(is_config_option_state_command(AgentType::Codex, Some(&air_plan)));
+        let air_goal = meta_map(serde_json::json!({"jetbrains": {"air": {
+            "version": 1,
+            "commandAction": { "kind": "prefixPrompt", "presentation": "state" }
+        }}}));
+        assert!(!is_config_option_state_command(AgentType::Codex, Some(&air_goal)));
         // Ordinary commands (no `commandAction`) and absent meta are kept.
         assert!(!is_config_option_state_command(AgentType::Codex, None));
         let plain = meta_map(serde_json::json!({ "somethingElse": true }));
@@ -17174,6 +17855,18 @@ mod tests {
         // Future versions must keep selecting the neutral channel.
         let v2 = meta_map(serde_json::json!({"goal": {"version": 2}}));
         assert!(init_advertises_goal(Some(&v2)));
+        // claude-agent-acp 0.82.0 / codex-acp 2.0.0 advertise it under AIR
+        // only (recorded `initialize` responses).
+        let air = meta_map(serde_json::json!({"jetbrains": {"air": {
+            "version": 1,
+            "capabilities": ["sessionFailure"],
+            "goal": {"version": 1, "controlMethod": "_session/goal", "actions": ["set", "clear"]},
+        }}}));
+        assert!(init_advertises_goal(Some(&air)));
+        assert_eq!(
+            goal_advertised_control(Some(&air)),
+            Some(("_session/goal".to_string(), vec!["set".to_string(), "clear".to_string()]))
+        );
 
         // Fail closed onto the legacy channel: sub-1, non-integer, stringly,
         // absent, or wrongly-shaped advertisements.
@@ -17224,6 +17917,30 @@ mod tests {
         ));
         assert!(session_info_goal_value(false, Some(&cleared)).is_none());
         assert!(session_info_goal_value(true, None).is_none());
+
+        // claude-agent-acp 0.82.0 / codex-acp 2.0.0 publish the snapshot —
+        // and its clear — under `_meta.jetbrains.air.goal` (recorded).
+        let air = meta_map(serde_json::json!({"jetbrains": {"air": {
+            "version": 1,
+            "goal": {"objective": "Ship it", "status": "active"},
+        }}}));
+        assert_eq!(
+            session_info_goal_value(true, Some(&air))
+                .and_then(|g| g.get("objective"))
+                .and_then(|v| v.as_str()),
+            Some("Ship it")
+        );
+        assert!(session_info_goal_value(false, Some(&air)).is_none());
+        let air_cleared = meta_map(serde_json::json!({"jetbrains": {"air": {"version": 1, "goal": null}}}));
+        assert!(matches!(
+            session_info_goal_value(true, Some(&air_cleared)),
+            Some(v) if v.is_null()
+        ));
+        // An AIR envelope that carries something else is no goal update.
+        let failure = meta_map(serde_json::json!({"jetbrains": {"air": {
+            "version": 1, "sessionFailure": {"id": "x", "revision": 1}
+        }}}));
+        assert!(session_info_goal_value(true, Some(&failure)).is_none());
     }
 
     // --- live ACP session title (`session_info_update.title`) --------------
@@ -17651,11 +18368,22 @@ mod tests {
             // rendering around, replacing it with an announcement that carries
             // no parent tool-use id to rebuild it from. See the reasoning at
             // the advertisement site before relaxing this.
-            let expected: Vec<serde_json::Value> = vec![
+            //
+            // "diffPatch" (codex-acp 2.0.0) is codex's alone: it trades 2.0.0's
+            // per-hunk text fragments for one exact Git patch per file. claude
+            // would send its patch in the permission request, whose placeholder
+            // text the permission card cannot tell from an emptied file. Also
+            // left out: "rawInputRendering" (it removes the question text a
+            // message-only MCP elicitation's permission card shows) and
+            // "planFile" (the plan card renders the plan TEXT).
+            let mut expected: Vec<serde_json::Value> = vec![
                 "sessionFailure".into(),
                 "asyncTasks".into(),
                 "recommendedValue".into(),
             ];
+            if agent == AgentType::Codex {
+                expected.push("diffPatch".into());
+            }
             assert_eq!(
                 capabilities, &expected,
                 "{agent:?} advertises an unexpected AIR capability set"
@@ -18112,6 +18840,35 @@ mod tests {
             hoist_request_permission_meta(&mut tool_call, request_meta.as_ref());
             assert_eq!(tool_call, serde_json::json!({ "toolCallId": "t1" }));
         }
+    }
+
+    #[test]
+    fn hoist_request_permission_meta_reads_the_air_record() {
+        // claude-agent-acp 0.82.0 / codex-acp 2.0.0 (recorded): the record
+        // moved to `_meta.jetbrains.air.permission` and the old key goes to no
+        // client. The card keeps reading `_meta.permission`.
+        let mut tool_call = serde_json::json!({
+            "toolCallId": "command-7",
+            "title": "npm install",
+            "rawInput": { "command": "npm install", "cwd": "/workspace" }
+        });
+        let request_meta = meta_map(serde_json::json!({"jetbrains": {"air": {
+            "version": 1,
+            "permission": {
+                "version": 1,
+                "title": "Run command?",
+                "description": "Install the dependencies."
+            }
+        }}}));
+        hoist_request_permission_meta(&mut tool_call, Some(&request_meta));
+        assert_eq!(
+            tool_call["_meta"]["permission"],
+            serde_json::json!({
+                "version": 1,
+                "title": "Run command?",
+                "description": "Install the dependencies."
+            })
+        );
     }
 
     /// claude-agent-acp 0.78.0's permission request for an MCP tool, verified
@@ -19334,6 +20091,360 @@ mod tests {
     fn synthesize_edit_returns_none_without_diff() {
         // No Diff block -> None, so callers keep the agent's own raw_input.
         assert!(synthesize_edit_input_from_diffs(&[]).is_none());
+    }
+
+    #[test]
+    fn synthesize_edit_combines_the_hunks_of_one_file() {
+        // codex-acp 2.0.0 without a patch sends ONE block per hunk; claude
+        // sends one per `structuredPatch` hunk after a multi-site Edit. Keyed
+        // by path, every hunk but the last used to vanish.
+        let content = vec![
+            diff_content("/a.rs", Some("fn a() {\n    1\n}\n"), "fn a() {\n    2\n}\n"),
+            diff_content("/a.rs", Some("fn z() {\n    1\n}"), "fn z() {\n    3\n}"),
+        ];
+        let v: serde_json::Value =
+            serde_json::from_str(&synthesize_edit_input_from_diffs(&content).unwrap()).unwrap();
+        assert_eq!(v["file_path"], "/a.rs");
+        assert_eq!(
+            v["old_string"],
+            format!("fn a() {{\n    1\n}}\n{HUNK_SEPARATOR}\nfn z() {{\n    1\n}}")
+        );
+        assert_eq!(
+            v["new_string"],
+            format!("fn a() {{\n    2\n}}\n{HUNK_SEPARATOR}\nfn z() {{\n    3\n}}")
+        );
+
+        // Across several files, each file's hunks combine in its own entry.
+        let content = vec![
+            diff_content("/a.rs", Some("a1"), "A1"),
+            diff_content("/b.rs", Some("b1"), "B1"),
+            diff_content("/a.rs", Some("a2"), "A2"),
+        ];
+        let v: serde_json::Value =
+            serde_json::from_str(&synthesize_edit_input_from_diffs(&content).unwrap()).unwrap();
+        assert_eq!(v["changes"]["/a.rs"]["old_text"], format!("a1\n{HUNK_SEPARATOR}\na2"));
+        assert_eq!(v["changes"]["/a.rs"]["new_text"], format!("A1\n{HUNK_SEPARATOR}\nA2"));
+        assert_eq!(v["changes"]["/b.rs"]["old_text"], "b1");
+    }
+
+    /// A codex-acp 2.0.0 `diffPatch` block, as recorded off its scenario
+    /// harness with the capability declared.
+    fn patch_block(path: &str, patch: serde_json::Value) -> ToolCallContent {
+        let mut d = Diff::new(path, "");
+        d.meta = Some(meta_map(serde_json::json!({
+            "kind": "update",
+            "jetbrains": {"air": {"version": 1, "diffPatch": patch}}
+        })));
+        ToolCallContent::Diff(d)
+    }
+
+    #[test]
+    fn synthesize_edit_takes_a_codex_git_patch_with_absolute_headers() {
+        let content = vec![patch_block(
+            "/workspace/src/app.ts",
+            serde_json::json!({
+                "version": 1,
+                "format": "git_patch",
+                "text": "diff --git a/workspace/src/app.ts b/workspace/src/app.ts\n--- a/workspace/src/app.ts\n+++ b/workspace/src/app.ts\n@@ -1,2 +1,2 @@\n-const a = 1;\n+const a = 2;\n export {a};\n"
+            }),
+        )];
+        let v: serde_json::Value =
+            serde_json::from_str(&synthesize_edit_input_from_diffs(&content).unwrap()).unwrap();
+        // The only file: its path titles the card, the patch renders verbatim.
+        assert_eq!(v["file_path"], "/workspace/src/app.ts");
+        assert_eq!(
+            v["changes"]["/workspace/src/app.ts"]["diff"],
+            "--- a//workspace/src/app.ts\n+++ b//workspace/src/app.ts\n@@ -1,2 +1,2 @@\n-const a = 1;\n+const a = 2;\n export {a};\n"
+        );
+        // The placeholders never reach the content text.
+        assert!(serialize_tool_call_content(&content, true).is_none());
+    }
+
+    #[test]
+    fn a_git_patch_keeps_added_deleted_and_renamed_headers() {
+        let added = normalize_git_patch(
+            "diff --git a/workspace/new.txt b/workspace/new.txt\nnew file mode 100644\n--- /dev/null\n+++ b/workspace/new.txt\n@@ -0,0 +1,2 @@\n+hello\n+world\n",
+            "/workspace/new.txt",
+        )
+        .unwrap();
+        assert_eq!(
+            added,
+            "new file mode 100644\n--- /dev/null\n+++ b//workspace/new.txt\n@@ -0,0 +1,2 @@\n+hello\n+world\n"
+        );
+        let deleted = normalize_git_patch(
+            "diff --git a/workspace/old.txt b/workspace/old.txt\ndeleted file mode 100644\n--- a/workspace/old.txt\n+++ /dev/null\n@@ -1 +0,0 @@\n-bye\n",
+            "/workspace/old.txt",
+        )
+        .unwrap();
+        assert!(deleted.starts_with("deleted file mode 100644\n--- a//workspace/old.txt\n+++ /dev/null\n"));
+        let renamed = normalize_git_patch(
+            "diff --git a/workspace/before.ts b/workspace/after.ts\nrename from workspace/before.ts\nrename to workspace/after.ts\n--- a/workspace/before.ts\n+++ b/workspace/after.ts\n@@ -1 +1 @@\n-x\n+y\n",
+            "/workspace/after.ts",
+        )
+        .unwrap();
+        assert_eq!(
+            renamed,
+            "rename from /workspace/before.ts\nrename to /workspace/after.ts\n--- a//workspace/before.ts\n+++ b//workspace/after.ts\n@@ -1 +1 @@\n-x\n+y\n"
+        );
+        // A removed line that happens to start with `-- ` is content, not a
+        // header, once the first hunk has begun.
+        let tricky = normalize_git_patch(
+            "--- a/w/f\n+++ b/w/f\n@@ -1 +1 @@\n--- not a header\n+++ nor this\n",
+            "/w/f",
+        )
+        .unwrap();
+        assert!(tricky.ends_with("@@ -1 +1 @@\n--- not a header\n+++ nor this\n"));
+        // Windows: codex writes the drive path without a leading slash.
+        assert_eq!(patch_header_path("a/C:/work/App.ts"), "C:/work/App.ts");
+        assert_eq!(patch_header_path("\"a/w/with \\\"q\\\".ts\""), "/w/with \"q\".ts");
+        assert_eq!(patch_header_path("b/w/has space.ts\t"), "/w/has space.ts");
+        // Git's C quoting of a control character, and of a raw byte in octal.
+        // A backslash is `\\`, a tab `\t`, a raw byte `\NNN` octal.
+        assert_eq!(patch_header_path("\"a/w/back\\\\slash.ts\""), "/w/back\\slash.ts");
+        assert_eq!(patch_header_path("\"a/w/tab\\there.ts\""), "/w/tab\there.ts");
+        assert_eq!(patch_header_path("\"a/w/bell\\007.ts\""), "/w/bell\u{7}.ts");
+        // No hunk, no patch.
+        assert!(normalize_git_patch("--- a/w/f\n+++ b/w/f\n", "/w/f").is_none());
+    }
+
+    #[test]
+    fn a_git_patch_keeps_the_carriage_returns_of_its_hunks() {
+        // "The patch keeps the provider bytes, including a carriage return."
+        let normalized = normalize_git_patch(
+            "diff --git a/w/f.txt b/w/f.txt\r\n--- a/w/f.txt\r\n+++ b/w/f.txt\r\n@@ -1 +1 @@\r\n-old\r\n+new\r\n",
+            "/w/f.txt",
+        )
+        .unwrap();
+        assert_eq!(
+            normalized,
+            "--- a//w/f.txt\n+++ b//w/f.txt\n@@ -1 +1 @@\r\n-old\r\n+new\r\n"
+        );
+        // Without a final newline, none is invented.
+        assert_eq!(
+            normalize_git_patch("--- a/w/f\n+++ b/w/f\n@@ -1 +1 @@\n-a\n+b", "/w/f").unwrap(),
+            "--- a//w/f\n+++ b//w/f\n@@ -1 +1 @@\n-a\n+b"
+        );
+    }
+
+    #[test]
+    fn an_unusable_patch_block_is_shown_as_nothing_not_as_an_empty_file() {
+        // The contract: a receiver that rejects the patch "must show the
+        // change as unavailable" — the `oldText: null` / `newText: ""`
+        // placeholders must never read as a freshly created empty file.
+        for bad in [
+            serde_json::json!({"version": 2, "format": "git_patch", "text": "@@ -1 +1 @@\n-a\n+b\n"}),
+            serde_json::json!({"version": 1, "format": "unified", "text": "@@ -1 +1 @@\n-a\n+b\n"}),
+            serde_json::json!({"version": 1, "format": "git_patch", "text": "no hunk"}),
+            serde_json::json!({"version": 1, "format": "git_patch"}),
+        ] {
+            let content = vec![patch_block("/w/f", bad.clone())];
+            assert!(
+                synthesize_edit_input_from_diffs(&content).is_none(),
+                "{bad} must not synthesize an edit"
+            );
+            assert!(serialize_tool_call_content(&content, true).is_none());
+        }
+    }
+
+    fn claude_meta(tool: &str) -> serde_json::Map<String, serde_json::Value> {
+        meta_map(serde_json::json!({"claudeCode": {"toolName": tool}}))
+    }
+
+    #[test]
+    fn claude_edit_input_gets_its_text_back_from_the_diff() {
+        // claude-agent-acp 0.82.0 (AIR), recorded: `rawInput` is `{file_path}`
+        // alone and the model's strings ride only in the diff block.
+        let content = vec![diff_content("/w/app.ts", Some("const value = 1;"), "const value = 2;")];
+        let merged = claude_complete_file_edit_input(
+            AgentType::ClaudeCode,
+            Some(&claude_meta("Edit")),
+            Some(r#"{"file_path":"/w/app.ts","replace_all":false}"#),
+            &content,
+        )
+        .expect("a stripped Edit input is completed");
+        let v: serde_json::Value = serde_json::from_str(&merged).unwrap();
+        assert_eq!(v["file_path"], "/w/app.ts");
+        assert_eq!(v["old_string"], "const value = 1;");
+        assert_eq!(v["new_string"], "const value = 2;");
+        assert_eq!(v["replace_all"], false, "the input's own keys survive");
+
+        // A Write: the new text is the file.
+        let content = vec![diff_content("/w/new.ts", None, "export const x = 1;\n")];
+        let merged = claude_complete_file_edit_input(
+            AgentType::ClaudeCode,
+            Some(&claude_meta("Write")),
+            Some(r#"{"file_path":"/w/new.ts"}"#),
+            &content,
+        )
+        .unwrap();
+        let v: serde_json::Value = serde_json::from_str(&merged).unwrap();
+        assert_eq!(v["content"], "export const x = 1;\n");
+
+        // An input that still carries its text (≤0.81) is authoritative.
+        assert!(claude_complete_file_edit_input(
+            AgentType::ClaudeCode,
+            Some(&claude_meta("Edit")),
+            Some(r#"{"file_path":"/w/app.ts","old_string":"a","new_string":"b"}"#),
+            &[diff_content("/w/app.ts", Some("x"), "y")],
+        )
+        .is_none());
+        // Other tools, other agents, and frames without a diff: nothing to do.
+        assert!(claude_complete_file_edit_input(
+            AgentType::ClaudeCode,
+            Some(&claude_meta("Bash")),
+            Some(r#"{"command":"ls"}"#),
+            &[diff_content("/w/app.ts", Some("x"), "y")],
+        )
+        .is_none());
+        assert!(claude_complete_file_edit_input(
+            AgentType::Codex,
+            Some(&claude_meta("Edit")),
+            Some(r#"{"file_path":"/w/app.ts"}"#),
+            &[diff_content("/w/app.ts", Some("x"), "y")],
+        )
+        .is_none());
+        assert!(claude_complete_file_edit_input(
+            AgentType::ClaudeCode,
+            Some(&claude_meta("Edit")),
+            Some(r#"{"file_path":"/w/app.ts"}"#),
+            &[],
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn codex_stdin_is_bridged_the_way_older_adapters_sent_it() {
+        // 1.13.x: an output delta of `\ny\n`. 2.0.0 (AIR): `_meta.terminal_input`.
+        let stdin = meta_map(serde_json::json!({
+            "terminal_input": {"data": "y", "terminal_id": "cmd-1"}
+        }));
+        assert_eq!(
+            hosted_terminal_output_delta(AgentType::Codex, Some(&stdin)),
+            Some("\ny\n".to_string())
+        );
+        let both = meta_map(serde_json::json!({
+            "terminal_output_delta": {"data": "Continue? ", "terminal_id": "cmd-1"},
+            "terminal_input": {"data": "y", "terminal_id": "cmd-1"}
+        }));
+        assert_eq!(
+            hosted_terminal_output_delta(AgentType::Codex, Some(&both)),
+            Some("Continue? \ny\n".to_string())
+        );
+        // pi has no stdin channel; its unnamespaced key is not read.
+        assert_eq!(hosted_terminal_output_delta(AgentType::Pi, Some(&stdin)), None);
+    }
+
+    #[test]
+    fn a_viewed_claude_result_fills_only_a_bare_completion() {
+        use agent_client_protocol::schema::v1::ToolCallStatus;
+        let mut stash: HashMap<String, String> =
+            HashMap::from([("toolu_read".to_string(), "1\tconst a = 1;".to_string())]);
+        // Not terminal yet: keep waiting.
+        assert!(claude_viewed_result_for_completion(
+            AgentType::ClaudeCode,
+            &mut stash,
+            "toolu_read",
+            Some(&ToolCallStatus::InProgress),
+            false,
+        )
+        .is_none());
+        assert!(stash.contains_key("toolu_read"));
+        // The AIR completion: a bare status. The stashed text fills it.
+        assert_eq!(
+            claude_viewed_result_for_completion(
+                AgentType::ClaudeCode,
+                &mut stash,
+                "toolu_read",
+                Some(&ToolCallStatus::Completed),
+                false,
+            )
+            .as_deref(),
+            Some("1\tconst a = 1;")
+        );
+        assert!(stash.is_empty(), "spent");
+
+        // A completion that carries its own result (any pre-AIR adapter) is
+        // never overridden — but the entry is still spent.
+        stash.insert("toolu_grep".into(), "stale".into());
+        assert!(claude_viewed_result_for_completion(
+            AgentType::ClaudeCode,
+            &mut stash,
+            "toolu_grep",
+            Some(&ToolCallStatus::Completed),
+            true,
+        )
+        .is_none());
+        assert!(stash.is_empty());
+        // A failure carries its own text.
+        stash.insert("toolu_x".into(), "stale".into());
+        assert!(claude_viewed_result_for_completion(
+            AgentType::ClaudeCode,
+            &mut stash,
+            "toolu_x",
+            Some(&ToolCallStatus::Failed),
+            false,
+        )
+        .is_none());
+        assert!(stash.is_empty());
+    }
+
+    #[test]
+    fn claude_viewed_results_are_stashed_only_for_announced_viewed_file_tools() {
+        let mut cb = CodeBuddyLiveState::default();
+        cb.air_tool_call_meta.open(
+            AgentType::ClaudeCode,
+            "toolu_read",
+            Some(claude_meta("Read")),
+        );
+        cb.air_tool_call_meta.open(
+            AgentType::ClaudeCode,
+            "toolu_bash",
+            Some(claude_meta("Bash")),
+        );
+        let params = serde_json::json!({
+            "sessionId": "s",
+            "message": {"type": "user", "message": {"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "toolu_read", "content": "1\tconst a = 1;"},
+                {"type": "tool_result", "tool_use_id": "toolu_bash", "content": "a.ts"},
+                {"type": "tool_result", "tool_use_id": "toolu_unseen", "content": "?"}
+            ]}}
+        });
+        stash_claude_viewed_results(&params, &mut cb);
+        assert_eq!(
+            cb.claude_viewed_results.get("toolu_read").map(String::as_str),
+            Some("1\tconst a = 1;")
+        );
+        assert!(!cb.claude_viewed_results.contains_key("toolu_bash"));
+        assert!(!cb.claude_viewed_results.contains_key("toolu_unseen"));
+    }
+
+    #[test]
+    fn codex_activity_is_classified_off_the_raw_input_once_the_marker_is_gone() {
+        // codex-acp 2.0.0, recorded: no `_meta.codex.subagent`; the activity's
+        // three facts ride `rawInput`, and the AIR flag says only "subagent".
+        let meta = meta_map(serde_json::json!({"jetbrains": {"air": {"subagent": true, "version": 1}}}));
+        let raw = serde_json::json!({
+            "activityKind": "started", "agentPath": "/root/weather", "agentThreadId": "child-thread"
+        });
+        let derived = codex_activity_classification_meta(AgentType::Codex, Some(&meta), Some(&raw))
+            .expect("an activity input classifies");
+        match classify_codex_subagent_activity(AgentType::Codex, Some(&derived)) {
+            CodexSubagentActivity::Started { thread_id, .. } => {
+                assert_eq!(thread_id.as_deref(), Some("child-thread"));
+            }
+            other => panic!("expected a launch, got {other:?}"),
+        }
+        // A legacy marker is read as it is.
+        let legacy = meta_map(serde_json::json!({
+            "codex": {"subagent": {"threadId": "t", "path": "/root/x", "activity": "started"}}
+        }));
+        assert!(codex_activity_classification_meta(AgentType::Codex, Some(&legacy), Some(&raw)).is_none());
+        // A collaboration call (same AIR flag, different input) is no activity.
+        let collab = serde_json::json!({
+            "senderThreadId": "s", "receiverThreadIds": ["c"], "agentsStates": {}, "prompt": "p"
+        });
+        assert!(codex_activity_classification_meta(AgentType::Codex, Some(&meta), Some(&collab)).is_none());
+        assert!(codex_activity_classification_meta(AgentType::ClaudeCode, None, Some(&raw)).is_none());
     }
 
     #[test]
@@ -20836,6 +21947,55 @@ mod tests {
             }
             other => panic!("expected a ToolCallUpdate, got {other:?}"),
         }
+    }
+
+    /// claude-agent-acp 0.82.0 (recorded): the same block, moved under AIR —
+    /// and on a failure the error stays a sibling of `status`, no longer
+    /// repeated in the block.
+    #[test]
+    fn a_claude_compaction_update_takes_its_meta_from_the_air_namespace() {
+        let event = session_compaction_event(&async_task_notif(serde_json::json!({
+            "sessionUpdate": "compaction_update",
+            "compactionId": "cmp_1",
+            "status": "completed",
+            "_meta": {"jetbrains": {"air": {"version": 1, "contextCompaction": {
+                "version": 1, "trigger": "automatic",
+                "preTokens": 1000, "postTokens": 100, "durationMs": 7,
+            }}}},
+        })))
+        .expect("compaction event");
+        let AcpEvent::ToolCallUpdate { meta, raw_output, .. } = event else {
+            panic!("expected a ToolCallUpdate");
+        };
+        let payload = meta
+            .as_ref()
+            .and_then(|m| m.get("contextCompaction"))
+            .expect("card payload");
+        assert_eq!(payload.get("preTokens").and_then(|v| v.as_u64()), Some(1000));
+        assert_eq!(payload.get("postTokens").and_then(|v| v.as_u64()), Some(100));
+        assert_eq!(payload.get("trigger").and_then(|v| v.as_str()), Some("automatic"));
+        // 0.82.0 no longer repeats the streamed summary on the completion, and
+        // an absent summary must not blank what the chunks already delivered.
+        assert!(raw_output.is_none());
+
+        let failed = session_compaction_event(&async_task_notif(serde_json::json!({
+            "sessionUpdate": "compaction_update",
+            "compactionId": "cmp_2",
+            "status": "failed",
+            "error": "Context too small",
+            "_meta": {"jetbrains": {"air": {"version": 1, "contextCompaction": {"version": 1}}}},
+        })))
+        .expect("compaction event");
+        let AcpEvent::ToolCallUpdate { meta, .. } = failed else {
+            panic!("expected a ToolCallUpdate");
+        };
+        assert_eq!(
+            meta.as_ref()
+                .and_then(|m| m.get("contextCompaction"))
+                .and_then(|p| p.get("error"))
+                .and_then(|v| v.as_str()),
+            Some("Context too small")
+        );
     }
 
     /// codex sends no `_meta` at all (its legacy call carried none either), so
@@ -23671,6 +24831,273 @@ mod tests {
             content.as_deref().is_some_and(|c| c.contains("build ok")),
             "the clean content channel carries the executed command's output: {content:?}"
         );
+    }
+
+    // ---- the AIR tool-call contract (claude 0.82.0 / codex 2.0.0) --------
+    //
+    // Every frame below is copied from the adapters' own scenario harnesses,
+    // re-run with codeg's exact `clientCapabilities` against the new pins.
+
+    /// Drive `frames` (raw `session/update` payloads) through
+    /// `emit_conversation_update` on one connection and return every emitted
+    /// tool-call event, in order.
+    async fn drive_tool_frames(
+        agent: AgentType,
+        cb: &mut CodeBuddyLiveState,
+        frames: Vec<serde_json::Value>,
+    ) -> (Arc<RwLock<SessionState>>, Vec<AcpEvent>) {
+        let state = Arc::new(RwLock::new(SessionState::new(
+            "conn-air".to_string(),
+            agent,
+            None,
+            "win".to_string(),
+            None,
+        )));
+        let mut cache = ToolCallOutputCache::default();
+        for frame in frames {
+            let update: SessionUpdate =
+                serde_json::from_value(frame).expect("recorded wire shape parses");
+            emit_conversation_update(
+                &state,
+                &EventEmitter::Noop,
+                agent,
+                update,
+                None,
+                &mut cache,
+                cb,
+            )
+            .await;
+        }
+        let events = state
+            .read()
+            .await
+            .recent_events_after(0)
+            .expect("events recorded")
+            .into_iter()
+            .map(|e| e.payload.clone())
+            .filter(|e| matches!(e, AcpEvent::ToolCall { .. } | AcpEvent::ToolCallUpdate { .. }))
+            .collect();
+        (state, events)
+    }
+
+    #[tokio::test]
+    async fn a_claude_subagent_child_keeps_its_parent_across_partial_meta() {
+        // claude 0.82.0 `subagent-task-legacy`: the child names its parent on
+        // the opening frame only; the next `_meta` it sends is the AIR
+        // command title alone. Taken whole, that update would un-nest the
+        // child from the capsule mid-flight.
+        let mut cb = CodeBuddyLiveState::default();
+        let (state, events) = drive_tool_frames(
+            AgentType::ClaudeCode,
+            &mut cb,
+            vec![
+                serde_json::json!({"sessionUpdate": "tool_call", "toolCallId": "toolu_sub_bash",
+                    "_meta": {"claudeCode": {"parentToolUseId": "toolu_task", "toolName": "Bash"}},
+                    "content": [], "kind": "execute", "name": "Bash", "status": "pending", "title": "Terminal"}),
+                serde_json::json!({"sessionUpdate": "tool_call_update", "toolCallId": "toolu_sub_bash", "title": "rg parser"}),
+                serde_json::json!({"sessionUpdate": "tool_call_update", "toolCallId": "toolu_sub_bash",
+                    "_meta": {"jetbrains": {"air": {"commandTitle": "Search", "version": 1}}},
+                    "content": [{"type": "content", "content": {"type": "text", "text": "Search"}}],
+                    "rawInput": {"command": "rg parser", "description": "Search"}}),
+                serde_json::json!({"sessionUpdate": "tool_call_update", "toolCallId": "toolu_sub_bash",
+                    "content": [{"type": "content", "content": {"type": "text", "text": "```console\nx.ts\n```"}}],
+                    "status": "completed"}),
+            ],
+        )
+        .await;
+        let metas: Vec<Option<serde_json::Value>> = events
+            .iter()
+            .map(|e| match e {
+                AcpEvent::ToolCall { meta, .. } | AcpEvent::ToolCallUpdate { meta, .. } => meta.clone(),
+                _ => unreachable!(),
+            })
+            .collect();
+        assert_eq!(metas.len(), 4);
+        // A frame without `_meta` still says nothing about it…
+        assert!(metas[1].is_none());
+        assert!(metas[3].is_none());
+        // …and the one that carries a partial `_meta` is handed over whole,
+        // with the AIR title under its legacy name.
+        let merged = metas[2].as_ref().expect("the frame carried _meta");
+        assert_eq!(merged["claudeCode"]["parentToolUseId"], "toolu_task");
+        assert_eq!(merged["claudeCode"]["toolName"], "Bash");
+        assert_eq!(merged["claudeCode"]["title"], "Search");
+        // The snapshot (reconnect / refresh) holds the same.
+        let guard = state.read().await;
+        let call = guard.active_tool_calls.get("toolu_sub_bash").expect("tracked");
+        assert_eq!(
+            call.meta.as_ref().and_then(|m| m.pointer("/claudeCode/parentToolUseId")),
+            Some(&serde_json::json!("toolu_task"))
+        );
+    }
+
+    #[tokio::test]
+    async fn a_claude_edit_renders_from_the_diff_when_its_input_lost_the_text() {
+        // claude 0.82.0 `edit-with-permission`: `rawInput` is `{file_path}`
+        // alone; the strings ride in the diff block of the same frame.
+        let mut cb = CodeBuddyLiveState::default();
+        let (_, events) = drive_tool_frames(
+            AgentType::ClaudeCode,
+            &mut cb,
+            vec![
+                serde_json::json!({"sessionUpdate": "tool_call", "toolCallId": "toolu_edit",
+                    "_meta": {"claudeCode": {"toolName": "Edit"}}, "content": [], "kind": "edit",
+                    "locations": [], "name": "Edit", "status": "pending", "title": "Edit"}),
+                serde_json::json!({"sessionUpdate": "tool_call_update", "toolCallId": "toolu_edit",
+                    "locations": [{"path": "/w/src/app.ts"}], "title": "Edit src/app.ts"}),
+                serde_json::json!({"sessionUpdate": "tool_call_update", "toolCallId": "toolu_edit",
+                    "content": [{"type": "diff", "path": "/w/src/app.ts",
+                        "oldText": "const value = 1;", "newText": "const value = 2;"}],
+                    "rawInput": {"file_path": "/w/src/app.ts"}}),
+            ],
+        )
+        .await;
+        let AcpEvent::ToolCallUpdate { raw_input, content, .. } = &events[2] else {
+            panic!("expected the diff-bearing update");
+        };
+        let input: serde_json::Value =
+            serde_json::from_str(raw_input.as_deref().expect("input rebuilt")).unwrap();
+        assert_eq!(input["file_path"], "/w/src/app.ts");
+        assert_eq!(input["old_string"], "const value = 1;");
+        assert_eq!(input["new_string"], "const value = 2;");
+        // The diff now lives in the input; it is not shipped a second time.
+        assert!(content.is_none());
+    }
+
+    #[tokio::test]
+    async fn a_claude_read_gets_its_withheld_result_from_the_raw_sdk_stream() {
+        // claude 0.82.0 `read`: the completion is a bare status. The raw SDK
+        // `user` message carrying the tool_result arrives just before it.
+        let mut cb = CodeBuddyLiveState::default();
+        let (_, _) = drive_tool_frames(
+            AgentType::ClaudeCode,
+            &mut cb,
+            vec![serde_json::json!({"sessionUpdate": "tool_call", "toolCallId": "toolu_read",
+                "_meta": {"claudeCode": {"toolName": "Read"}}, "content": [], "kind": "read",
+                "locations": [], "name": "Read", "status": "pending", "title": "Read File"})],
+        )
+        .await;
+        stash_claude_viewed_results(
+            &serde_json::json!({"sessionId": "s", "message": {"type": "user", "message": {
+                "role": "user",
+                "content": [{"type": "tool_result", "tool_use_id": "toolu_read",
+                    "content": "1\tconst a = 1;\n"}]
+            }}}),
+            &mut cb,
+        );
+        let (_, events) = drive_tool_frames(
+            AgentType::ClaudeCode,
+            &mut cb,
+            vec![serde_json::json!({"sessionUpdate": "tool_call_update", "toolCallId": "toolu_read",
+                "status": "completed"})],
+        )
+        .await;
+        let AcpEvent::ToolCallUpdate { raw_output, .. } = &events[0] else {
+            panic!("expected the completion");
+        };
+        let raw = raw_output.as_deref().expect("the withheld result is filled in");
+        assert!(raw.contains("const a = 1;"), "{raw}");
+        assert!(cb.claude_viewed_results.is_empty(), "spent");
+    }
+
+    #[tokio::test]
+    async fn a_codex_activity_follow_up_is_classified_by_its_id() {
+        // codex 2.0.0 `subagent-activity`: no `_meta.codex.subagent`; the
+        // follow-ups are bare statuses.
+        let mut cb = CodeBuddyLiveState::default();
+        let (_, events) = drive_tool_frames(
+            AgentType::Codex,
+            &mut cb,
+            vec![
+                serde_json::json!({"sessionUpdate": "tool_call", "toolCallId": "act-1",
+                    "_meta": {"jetbrains": {"air": {"subagent": true, "version": 1}}}, "kind": "other",
+                    "rawInput": {"activityKind": "started", "agentPath": "/root/weather", "agentThreadId": "child-thread"},
+                    "status": "in_progress", "title": "Start subagent weather"}),
+                serde_json::json!({"sessionUpdate": "tool_call_update", "toolCallId": "act-1", "status": "completed"}),
+                serde_json::json!({"sessionUpdate": "tool_call", "toolCallId": "act-2",
+                    "_meta": {"jetbrains": {"air": {"subagent": true, "version": 1}}}, "kind": "other",
+                    "rawInput": {"activityKind": "completed", "agentPath": "/root/weather", "agentThreadId": "child-thread"},
+                    "status": "in_progress", "title": "Complete subagent weather"}),
+                serde_json::json!({"sessionUpdate": "tool_call_update", "toolCallId": "act-2", "status": "completed"}),
+            ],
+        )
+        .await;
+        let ids: Vec<&str> = events
+            .iter()
+            .map(|e| match e {
+                AcpEvent::ToolCall { tool_call_id, .. }
+                | AcpEvent::ToolCallUpdate { tool_call_id, .. } => tool_call_id.as_str(),
+                _ => unreachable!(),
+            })
+            .collect();
+        // The launch opens a capsule and its bare follow-up settles it; the
+        // child's `completed` activity is folded onto the launch (another
+        // `act-1` update) and neither of its own frames renders.
+        assert_eq!(ids, vec!["act-1", "act-1", "act-1"], "{events:?}");
+        let AcpEvent::ToolCallUpdate { raw_input, .. } = &events[1] else {
+            panic!("expected the launch's follow-up");
+        };
+        let input: serde_json::Value =
+            serde_json::from_str(raw_input.as_deref().expect("launch input re-asserted")).unwrap();
+        assert_eq!(input["subagent_type"], "weather");
+        assert_eq!(input["agent_id"], "child-thread");
+        let AcpEvent::ToolCallUpdate { raw_input, .. } = &events[2] else {
+            panic!("expected the settle");
+        };
+        let settled: serde_json::Value = serde_json::from_str(raw_input.as_deref().unwrap()).unwrap();
+        assert_eq!(settled[crate::parsers::codex::CODEX_SUBAGENT_STATE_KEY], "completed");
+    }
+
+    #[tokio::test]
+    async fn a_reannounced_id_forgets_its_earlier_activity_classification() {
+        let mut cb = CodeBuddyLiveState::default();
+        let (_, events) = drive_tool_frames(
+            AgentType::Codex,
+            &mut cb,
+            vec![
+                // A dropped activity (a `completed` for a launch never seen)…
+                serde_json::json!({"sessionUpdate": "tool_call", "toolCallId": "x",
+                    "kind": "other", "status": "in_progress", "title": "Complete subagent w",
+                    "rawInput": {"activityKind": "completed", "agentPath": "/root/w", "agentThreadId": "t"}}),
+                // …then the id is announced again as an ordinary command.
+                serde_json::json!({"sessionUpdate": "tool_call", "toolCallId": "x",
+                    "kind": "execute", "status": "in_progress", "title": "ls",
+                    "rawInput": {"command": "ls", "cwd": "/w"}}),
+                serde_json::json!({"sessionUpdate": "tool_call_update", "toolCallId": "x", "status": "completed"}),
+            ],
+        )
+        .await;
+        let statuses: Vec<Option<String>> = events
+            .iter()
+            .filter_map(|e| match e {
+                AcpEvent::ToolCallUpdate { status, .. } => Some(status.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(statuses, vec![Some("completed".to_string())], "{events:?}");
+    }
+
+    #[tokio::test]
+    async fn codex_per_hunk_blocks_and_patches_render_as_one_edit() {
+        // codex 2.0.0 without a patch: one block per hunk of ONE file.
+        let mut cb = CodeBuddyLiveState::default();
+        let (_, events) = drive_tool_frames(
+            AgentType::Codex,
+            &mut cb,
+            vec![serde_json::json!({"sessionUpdate": "tool_call", "toolCallId": "fc-1",
+                "content": [
+                    {"type": "diff", "path": "/w/a.ts", "oldText": "a\nb\n", "newText": "a\nB\n", "_meta": {"kind": "update"}},
+                    {"type": "diff", "path": "/w/a.ts", "oldText": "y\nz\n", "newText": "Y\nz\n", "_meta": {"kind": "update"}}
+                ],
+                "kind": "edit", "status": "in_progress", "title": "Editing files"})],
+        )
+        .await;
+        let AcpEvent::ToolCall { raw_input, .. } = &events[0] else {
+            panic!("expected the opening frame");
+        };
+        let input: serde_json::Value = serde_json::from_str(raw_input.as_deref().unwrap()).unwrap();
+        assert_eq!(input["old_string"], format!("a\nb\n{HUNK_SEPARATOR}\ny\nz\n"));
+        assert_eq!(input["new_string"], format!("a\nB\n{HUNK_SEPARATOR}\nY\nz\n"));
     }
 
     /// Contrast guard: the Grok-only extraction must not change other agents.

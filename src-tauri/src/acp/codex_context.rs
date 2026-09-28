@@ -65,10 +65,13 @@ impl ContextReadings {
     }
 }
 
-/// Whether a codex-acp tool call's `rawInput` is a hosted web search: codex-acp
-/// passes the app-server item's own `type` through (`createWebSearchRawInput`).
+/// Whether a codex-acp tool call's `rawInput` is a hosted web search. Through
+/// 1.13.x codex-acp passed the app-server item's own `type` through
+/// (`createWebSearchRawInput`); 2.0.0 sends codeg (an AIR client) only
+/// `{query, action}` — see `air_contract::is_codex_web_search_input`, which
+/// reads both.
 pub(crate) fn is_web_search_input(raw_input: Option<&Value>) -> bool {
-    raw_input.and_then(|input| input.get("type")).and_then(Value::as_str) == Some("webSearch")
+    crate::acp::air_contract::is_codex_web_search_input(raw_input)
 }
 
 #[cfg(test)]

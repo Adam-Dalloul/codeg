@@ -121,6 +121,11 @@ fn enum_spec_for(key: &str) -> Option<EnumSpec> {
 /// (`"priority"` on GPT-6 Sol and Luna), is an optional string rather than an
 /// enum — an unknown tier name parses and only a non-string is refused — so
 /// it needs no entry in either list.
+///
+/// 0.158.0 (codex-acp 2.0.0 moves `@openai/codex` ^0.156.1 → ^0.158.0) adds no
+/// `ModelInfo` field at all; it deletes the hidden `gpt-5.4` stub outright
+/// (10 slugs). Re-probed against the 0.158.0 binary: `"yes"` and `null` in a
+/// boolean still take the catalog down, and so does an unknown `shell_type`.
 const BOOL_FIELDS: &[&str] = &[
     "use_responses_lite",
     "supported_in_api",
@@ -651,9 +656,12 @@ mod tests {
         let models = snap();
         assert_eq!(
             models.len(),
-            11,
-            "snapshot should carry codex 0.156.1's catalog"
+            10,
+            "snapshot should carry codex 0.158.0's catalog"
         );
+        // 0.158.0 deleted gpt-5.4 outright (it had shipped hidden, as a
+        // retirement stub) rather than hiding it any further.
+        assert!(models.iter().all(|m| slug_of(m) != Some("gpt-5.4")));
         assert!(models.iter().any(|m| slug_of(m) == Some("gpt-6-astra")));
         // 0.156.1 adds GPT-6 Sol and Luna, both listed.
         for added in ["gpt-6-sol", "gpt-6-luna"] {
@@ -720,8 +728,8 @@ mod tests {
             default: None,
         };
         let cat = expand_to_catalog(&config, &snap());
-        // All 11 officials auto-included + 1 custom = 12.
-        assert_eq!(slugs(&cat).len(), 12);
+        // All 10 officials auto-included + 1 custom = 11.
+        assert_eq!(slugs(&cat).len(), 11);
         // Custom is first (top of picker) and forced list + api.
         let c = find(&cat, "gw/opus").expect("custom present");
         assert_eq!(c.get("visibility").unwrap(), "list");
@@ -770,18 +778,24 @@ mod tests {
     #[test]
     fn expand_keeps_hidden_officials_even_when_excluded() {
         let s = snap();
-        // gpt-5.4 and the two daybreak builds ship hidden; codex-auto-review
-        // always is.
-        for slug in ["gpt-5.4", "gpt-daybreak-blue-latest", "codex-auto-review"] {
+        // The two daybreak builds ship hidden; codex-auto-review always is.
+        for slug in [
+            "gpt-daybreak-blue-latest",
+            "gpt-daybreak-red-latest",
+            "codex-auto-review",
+        ] {
             let hidden = s
                 .iter()
                 .find(|m| slug_of(m) == Some(slug))
                 .expect("in snapshot");
             assert_eq!(hidden.get("visibility").unwrap(), "hide", "{slug}");
         }
-        let cat = expand_to_catalog(&excluding(&["gpt-5.4", "gpt-daybreak-blue-latest"]), &s);
+        let cat = expand_to_catalog(
+            &excluding(&["gpt-daybreak-red-latest", "gpt-daybreak-blue-latest"]),
+            &s,
+        );
         let out = slugs(&cat);
-        assert!(out.iter().any(|x| x == "gpt-5.4"));
+        assert!(out.iter().any(|x| x == "gpt-daybreak-red-latest"));
         assert!(out.iter().any(|x| x == "gpt-daybreak-blue-latest"));
         assert_eq!(out.len(), s.len(), "nothing dropped");
     }
@@ -1105,7 +1119,7 @@ mod tests {
         assert!(find(&cat, "gpt-5.2").is_none());
         // …while hidden ones survive: they were never inferred-excluded, and
         // expansion would keep them regardless (they back codex internals).
-        assert!(find(&cat, "gpt-5.4").is_some());
+        assert!(find(&cat, "gpt-daybreak-blue-latest").is_some());
         assert!(find(&cat, "codex-auto-review").is_some());
     }
 

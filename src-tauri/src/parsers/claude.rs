@@ -3163,7 +3163,7 @@ fn dedent_handback(text: &str) -> String {
         .join("\n")
 }
 
-fn extract_tool_result_text(item: &serde_json::Value) -> Option<String> {
+pub(crate) fn extract_tool_result_text(item: &serde_json::Value) -> Option<String> {
     let content = item.get("content")?;
     if let Some(text) = content.as_str() {
         return Some(unwrap_handback_frame(text).unwrap_or_else(|| text.to_string()));
