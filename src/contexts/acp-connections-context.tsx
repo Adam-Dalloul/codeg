@@ -116,6 +116,7 @@ import {
   notifyDesktop,
   withDesktopNotificationsSuppressed,
 } from "@/lib/desktop-notification"
+import { sessionNotificationPayload } from "@/lib/notification-session"
 import {
   playEventSound,
   primeNotificationSoundOutput,
@@ -3493,6 +3494,28 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
     [rememberResolvedIdentity]
   )
 
+  /**
+   * An OS notification payload naming the session `contextKey` serves (see
+   * `sessionNotificationPayload`).
+   *
+   * Its conversation is the one `connect()` was given or a first send linked
+   * (`conversation_linked`) — both remembered past the surface itself, which
+   * is when this matters: a tab closed while its agent is still busy keeps
+   * its connection, and the turn finishes under a tab id that no longer
+   * exists. Not the agent's session id: a Claude `/clear` re-points the row's
+   * `external_id` while the ACP session keeps its own.
+   */
+  const sessionNotification = useCallback(
+    (contextKey: string, content: { body: string; redactedBody?: string }) =>
+      sessionNotificationPayload(
+        contextKey,
+        lastConnectParamsRef.current.get(contextKey)?.conversationId,
+        folderNameRef.current,
+        content
+      ),
+    []
+  )
+
   type ConnectBlockState =
     | { kind: "none"; reason: "" }
     | {
@@ -4662,13 +4685,14 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
               ? null
               : storeRef.current.connections.get(contextKey)
             if (nc) {
-              const fn = folderNameRef.current
-              void notifyDesktop("question_request", {
-                title: fn ? `${fn} - Codeg` : "Codeg",
-                body: t("notificationQuestion", {
-                  agent: getAgentLabel(nc.agentType),
-                }),
-              })
+              void notifyDesktop(
+                "question_request",
+                sessionNotification(contextKey, {
+                  body: t("notificationQuestion", {
+                    agent: getAgentLabel(nc.agentType),
+                  }),
+                })
+              )
             }
           }
           break
@@ -4770,34 +4794,34 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
             if (!quiet) {
               const nc = storeRef.current.connections.get(contextKey)
               const agentLabel = nc ? getAgentLabel(nc.agentType) : "Agent"
-              const fn = folderNameRef.current
-              const title = fn ? `${fn} - Codeg` : "Codeg"
               const count = e.settled.length
               const many = tChat("backgroundTasks.notifySettledMany", {
                 agent: agentLabel,
                 count,
               })
               const single = e.settled[0]
-              void notifyDesktop("background_task", {
-                body:
-                  count === 1
-                    ? `${agentLabel}: ${
-                        single.summary ??
-                        tChat("backgroundTasks.settledFallback", {
-                          status: single.status,
+              void notifyDesktop(
+                "background_task",
+                sessionNotification(contextKey, {
+                  body:
+                    count === 1
+                      ? `${agentLabel}: ${
+                          single.summary ??
+                          tChat("backgroundTasks.settledFallback", {
+                            status: single.status,
+                          })
+                        }`
+                      : many,
+                  // A summary is the sub-agent's own prose; the count form
+                  // names nothing and is safe to reuse as the redacted body.
+                  redactedBody:
+                    count === 1
+                      ? tChat("backgroundTasks.notifySettledOne", {
+                          agent: agentLabel,
                         })
-                      }`
-                    : many,
-                // A summary is the sub-agent's own prose; the count form names
-                // nothing and is safe to reuse as the redacted body.
-                redactedBody:
-                  count === 1
-                    ? tChat("backgroundTasks.notifySettledOne", {
-                        agent: agentLabel,
-                      })
-                    : many,
-                title,
-              })
+                      : many,
+                })
+              )
             }
             // 4. flip each async sub-agent's launch card to its terminal
             //    (completed + result) state IN-MEMORY, by rewriting the
@@ -4850,14 +4874,15 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
               : storeRef.current.connections.get(contextKey)
             if (nc) {
               const agentLabel = getAgentLabel(nc.agentType)
-              const fn = folderNameRef.current
-              const title = fn ? `${fn} - Codeg` : "Codeg"
               // No redacted variant: the body is a fixed localized string
-              // plus the agent's name, and names nothing of the user's.
-              void notifyDesktop("permission_request", {
-                title,
-                body: `${agentLabel}: ${tChat("permissionDialog.subtitle")}`,
-              })
+              // plus the agent's name, and names nothing of the user's. (The
+              // session title does; `sessionNotificationPayload` redacts it.)
+              void notifyDesktop(
+                "permission_request",
+                sessionNotification(contextKey, {
+                  body: `${agentLabel}: ${tChat("permissionDialog.subtitle")}`,
+                })
+              )
             }
           }
           break
@@ -5240,27 +5265,29 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
                 : storeRef.current.connections.get(contextKey)
             if (nc) {
               const agentLabel = getAgentLabel(nc.agentType)
-              const fn = folderNameRef.current
-              const title = fn ? `${fn} - Codeg` : "Codeg"
               const failure = latestActiveTerminalFailure(nc.sessionFailures)
               if (failure) {
-                void notifyDesktop("error", {
-                  title,
-                  body: t("notificationError", {
-                    agent: agentLabel,
-                    message:
-                      failure.title.trim() ||
-                      tChat("sessionFailure.category.unknown"),
-                  }),
-                  redactedBody: t("notificationErrorRedacted", {
-                    agent: agentLabel,
-                  }),
-                })
+                void notifyDesktop(
+                  "error",
+                  sessionNotification(contextKey, {
+                    body: t("notificationError", {
+                      agent: agentLabel,
+                      message:
+                        failure.title.trim() ||
+                        tChat("sessionFailure.category.unknown"),
+                    }),
+                    redactedBody: t("notificationErrorRedacted", {
+                      agent: agentLabel,
+                    }),
+                  })
+                )
               } else {
-                void notifyDesktop("turn_complete", {
-                  title,
-                  body: t("notificationTurnComplete", { agent: agentLabel }),
-                })
+                void notifyDesktop(
+                  "turn_complete",
+                  sessionNotification(contextKey, {
+                    body: t("notificationTurnComplete", { agent: agentLabel }),
+                  })
+                )
               }
             }
           }
@@ -5300,18 +5327,18 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
           // quote agent stderr for codes we don't recognize, which is what the
           // redacted variant drops.
           if (nc && !quiet && acpErrorNotifiesDesktop(route)) {
-            const fn = folderNameRef.current
-            const title = fn ? `${fn} - Codeg` : "Codeg"
-            void notifyDesktop("error", {
-              title,
-              body: t("notificationError", {
-                agent: agentLabel,
-                message: text,
-              }),
-              redactedBody: t("notificationErrorRedacted", {
-                agent: agentLabel,
-              }),
-            })
+            void notifyDesktop(
+              "error",
+              sessionNotification(contextKey, {
+                body: t("notificationError", {
+                  agent: agentLabel,
+                  message: text,
+                }),
+                redactedBody: t("notificationErrorRedacted", {
+                  agent: agentLabel,
+                }),
+              })
+            )
           }
           if (quiet) break
           const connKey = nc?.connectionId ?? contextKey
@@ -5443,6 +5470,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
       presentBackendError,
       retireTurnFailures,
       sessionFailureNotifyActions,
+      sessionNotification,
       settleRetryIncidentsOnProgress,
       t,
       tChat,

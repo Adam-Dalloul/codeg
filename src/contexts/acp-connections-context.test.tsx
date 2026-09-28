@@ -17,8 +17,14 @@ import { parsePermissionToolCall } from "@/lib/permission-request"
 import { subscribe } from "@/lib/platform"
 import { saveConfigPreference } from "@/lib/selector-prefs-storage"
 import type { AttachHandlers } from "@/lib/transport/types"
+import {
+  resetAppWorkspaceStore,
+  useAppWorkspaceStore,
+} from "@/stores/app-workspace-store"
 import type {
+  DbConversationSummary,
   EventEnvelope,
+  FolderDetail,
   LiveSessionSnapshot,
   SessionConfigOptionInfo,
   UserMessageBlock,
@@ -523,6 +529,110 @@ describe("AcpConnectionsProvider preview-tab release (disconnectIfIdle)", () => 
     // Left in the store, still streaming: the idle sweep reclaims it once the
     // turn settles (the tab is gone, so nothing else keeps it alive).
     expect(h.store!.getConnection(TAB)?.status).toBe("prompting")
+  })
+
+  describe("a turn that finishes after its tab went away", () => {
+    // No tab owns TAB any more — the notification is the only way the user
+    // learns this turn finished, so it must still say which session it was,
+    // not name the window's active folder ("x").
+    function seedConversation(id: number, externalId: string) {
+      useAppWorkspaceStore.setState({
+        allFolders: [
+          { id: 7, name: "api", alias: null, kind: "regular" },
+        ] as unknown as FolderDetail[],
+        conversations: [
+          {
+            id,
+            folder_id: 7,
+            title: "Fix the flaky upload test",
+            agent_type: "claude_code",
+            external_id: externalId,
+          },
+        ] as unknown as DbConversationSummary[],
+      })
+    }
+
+    async function finishTurnAfterRelease(
+      handlers: AttachHandlers,
+      seq: number
+    ) {
+      emitAcpEvent(handlers, {
+        seq,
+        connection_id: "spawned-conn",
+        type: "status_changed",
+        status: "prompting",
+      })
+      await act(async () => {
+        await h.actions!.disconnectIfIdle(TAB)
+      })
+      h.notifyDesktop.mockClear()
+      emitAcpEvent(handlers, {
+        seq: seq + 1,
+        connection_id: "spawned-conn",
+        type: "turn_complete",
+        session_id: "sess-1",
+        stop_reason: "end_turn",
+      })
+    }
+
+    const namesTheSession = () =>
+      expect(h.notifyDesktop).toHaveBeenCalledWith(
+        "turn_complete",
+        expect.objectContaining({
+          title: "Fix the flaky upload test",
+          redactedTitle: "api - Codeg",
+          body: "api · notificationTurnComplete",
+        })
+      )
+
+    afterEach(() => {
+      resetAppWorkspaceStore()
+    })
+
+    it("names the conversation it connected to, even after a /clear", async () => {
+      // Claude `/clear` re-points the row at its new transcript while the ACP
+      // session keeps its id: the two no longer match, the row id still does.
+      seedConversation(42, "transcript-after-clear")
+      const handlers = await connectOwner()
+      emitAcpEvent(handlers, {
+        seq: 1,
+        connection_id: "spawned-conn",
+        type: "session_started",
+        session_id: "sess-1",
+      })
+      emitAcpEvent(handlers, {
+        seq: 2,
+        connection_id: "spawned-conn",
+        type: "transcript_rolled_over",
+        transcript_id: "transcript-after-clear",
+      })
+
+      await finishTurnAfterRelease(handlers, 3)
+
+      namesTheSession()
+    })
+
+    it("names a new conversation by the row its first send linked", async () => {
+      seedConversation(43, "sess-1")
+      h.acpFindConnectionForConversation.mockResolvedValue(null)
+      await mountProvider()
+      await act(async () => {
+        // A draft connects before it has a row.
+        await h.actions!.connect(TAB, "claude_code", "/tmp/x")
+      })
+      const handlers = latestAttachHandlers()
+      emitAcpEvent(handlers, {
+        seq: 1,
+        connection_id: "spawned-conn",
+        type: "conversation_linked",
+        conversation_id: 43,
+        folder_id: 7,
+      })
+
+      await finishTurnAfterRelease(handlers, 2)
+
+      namesTheSession()
+    })
   })
 
   it("keeps an owner with outstanding background work alive", async () => {
