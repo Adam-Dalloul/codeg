@@ -147,7 +147,9 @@ pub struct AsyncTaskUsage {
 /// from the three `session/update` variants that describe it (claude-agent-acp
 /// 0.73+: background shells, workflows, monitors; codex-acp 1.10+: background
 /// terminals). Published only because `build_client_capabilities` advertises the
-/// `asyncTasks` AIR capability.
+/// `asyncTasks` AIR capability. Grok's background workflows land here too,
+/// translated from its own `workflow_updated` (Grok speaks no AIR — see
+/// `connection::grok_workflow_task_delta`).
 ///
 /// This is the MERGED projection, not a wire frame: the adapter announces a
 /// task once with its full identity (`async_task_spawned`) and then revises it
@@ -201,6 +203,14 @@ pub struct AsyncTaskRecord {
     /// the card already in the transcript.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
+    /// The phase a multi-step task is in (a Grok workflow's current phase).
+    /// Empty = none right now (see [`AsyncTaskDelta::phase`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase: Option<String>,
+    /// The child agent the task is running right now (a Grok workflow's
+    /// current agent). Empty = none right now.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_agent: Option<String>,
 }
 
 /// One async-task delta as it arrived on the wire.
@@ -213,11 +223,13 @@ pub struct AsyncTaskRecord {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AsyncTaskDelta {
     pub task_id: String,
-    /// True only for `async_task_spawned`. A progress/state delta naming an
-    /// unknown task is DROPPED rather than creating a placeholder row: the
-    /// adapter publishes progress only for tasks it already announced, so an
-    /// unknown id means a frame we failed to read, and a row with a default
-    /// name and no type is worse than no row (see `SessionState::apply_event`).
+    /// True only for a frame that carries the task's identity: AIR's
+    /// `async_task_spawned`, and every Grok `workflow_updated` (each one
+    /// restates the whole run). A progress/state delta naming an unknown task
+    /// is DROPPED rather than creating a placeholder row: the adapter publishes
+    /// progress only for tasks it already announced, so an unknown id means a
+    /// frame we failed to read, and a row with a default name and no type is
+    /// worse than no row (see `SessionState::apply_event`).
     pub spawned: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
@@ -241,6 +253,14 @@ pub struct AsyncTaskDelta {
     pub output_file_path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
+    /// Grok restates its whole run on every frame, so from Grok an EMPTY string
+    /// in these two (and in `summary`) means "none any more" — the agent
+    /// finished, the pause was resumed. Absent still means unchanged, which
+    /// keeps one merge rule for everyone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_agent: Option<String>,
 }
 
 impl AsyncTaskDelta {
@@ -261,6 +281,8 @@ impl AsyncTaskDelta {
             usage: self.usage.clone(),
             output_file_path: self.output_file_path.clone(),
             tool_call_id: self.tool_call_id.clone(),
+            phase: self.phase.clone(),
+            current_agent: self.current_agent.clone(),
         }
     }
 
@@ -298,6 +320,12 @@ impl AsyncTaskDelta {
         }
         if let Some(v) = &self.tool_call_id {
             record.tool_call_id = Some(v.clone());
+        }
+        if let Some(v) = &self.phase {
+            record.phase = Some(v.clone());
+        }
+        if let Some(v) = &self.current_agent {
+            record.current_agent = Some(v.clone());
         }
     }
 }
@@ -613,7 +641,8 @@ pub enum AcpEvent {
     ///
     /// Reaches codeg from the two adapters `build_client_capabilities`
     /// advertises `asyncTasks` to: claude-agent-acp (0.73+) and codex-acp
-    /// (1.10+).
+    /// (1.10+) — and from Grok, whose background workflows codeg translates
+    /// into the same deltas without advertising anything to it.
     AsyncTask { delta: AsyncTaskDelta },
     /// `session/load` failed in a way codeg cannot paper over — the agent has
     /// no record of this `session_id`, the session/process died, or it is

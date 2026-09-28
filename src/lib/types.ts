@@ -2662,7 +2662,8 @@ export type AcpEvent =
       notice: SessionNotice
     }
   /**
-   * A JetBrains AIR async-task delta (claude + codex — see `AsyncTaskDelta`).
+   * A JetBrains AIR async-task delta (claude + codex, and Grok workflows
+   * translated to the same shape — see `AsyncTaskDelta`).
    * PARTIAL by design: the reducer merges it into the connection's task table
    * by the same rule the backend snapshot applies, and only a `spawned` delta
    * may create a row.
@@ -3075,15 +3076,16 @@ export interface AsyncTaskUsage {
 /**
  * One JetBrains AIR async task (mirror of Rust `AsyncTaskRecord`;
  * claude-agent-acp 0.73+ and codex-acp 1.10+, published only because codeg
- * advertises the `asyncTasks` AIR capability).
+ * advertises the `asyncTasks` AIR capability — plus Grok's background
+ * workflows, which the backend translates from Grok's own `workflow_updated`).
  *
  * The agent's NON-AGENT background work: Claude's background shells, workflows
- * and monitors; codex's background terminals. Sub-agents are excluded by the
- * adapters themselves. This is the MERGED row, not a wire frame — the adapter
- * announces a task once and then revises it with partial deltas
- * (`AsyncTaskDelta`), and the reducer applies the same merge as the backend's
- * `SessionState::apply_event` so a client hydrating from the snapshot and one
- * that saw every delta agree.
+ * and monitors; codex's background terminals; Grok's workflows. Sub-agents are
+ * excluded by the adapters themselves. This is the MERGED row, not a wire
+ * frame — the adapter announces a task once and then revises it with partial
+ * deltas (`AsyncTaskDelta`), and the reducer applies the same merge as the
+ * backend's `SessionState::apply_event` so a client hydrating from the snapshot
+ * and one that saw every delta agree.
  *
  * codex fills in far less than claude: no `description`, `usage` or
  * `output_file_path`, and `task_id` simply EQUALS `tool_call_id` for a
@@ -3093,7 +3095,8 @@ export interface AsyncTaskUsage {
 export interface AsyncTaskRecord {
   task_id: string
   /** Adapter-authored label — claude: the workflow name, else the description;
-   *  codex: the launching tool call's title, else the raw command. */
+   *  codex: the launching tool call's title, else the raw command; Grok: the
+   *  workflow name. */
   name: string
   /** Already friendly: `shell` | `workflow` | `monitor` | `task`, or an
    *  unmapped future value rendered as itself. NOT the SDK's raw type.
@@ -3104,7 +3107,8 @@ export interface AsyncTaskRecord {
    *  either way and does not read this today; `false` marks work already drawn
    *  as an ordinary tool call (a background `Bash` is). */
   show_in_transcript: boolean
-  /** Whether `_session/async_task/stop` is offered for this task. */
+  /** Whether `_session/async_task/stop` is offered for this task. Always
+   *  `false` for Grok, which has no such request. */
   can_stop: boolean
   /** `running` | `paused` | `completed` | `failed` | `stopped`. Anything
    *  outside the terminal three is treated as still live. */
@@ -3116,6 +3120,12 @@ export interface AsyncTaskRecord {
   output_file_path?: string | null
   /** The tool call this task belongs to, when it has one. */
   tool_call_id?: string | null
+  /** The phase a multi-step task is in (a Grok workflow's current phase).
+   *  Empty = none right now. */
+  phase?: string | null
+  /** The child agent the task is running right now (a Grok workflow's current
+   *  agent). Empty = none right now. */
+  current_agent?: string | null
 }
 
 /**
@@ -3126,9 +3136,10 @@ export interface AsyncTaskRecord {
  */
 export interface AsyncTaskDelta {
   task_id: string
-  /** True only for `async_task_spawned`, the only frame carrying a task's
-   *  identity. A delta naming an unknown task is dropped rather than creating a
-   *  nameless placeholder row. */
+  /** True only for a frame carrying a task's identity: AIR's
+   *  `async_task_spawned`, and every Grok workflow frame (each restates the
+   *  whole run). A delta naming an unknown task is dropped rather than
+   *  creating a nameless placeholder row. */
   spawned: boolean
   name?: string | null
   task_type?: string | null
@@ -3141,6 +3152,10 @@ export interface AsyncTaskDelta {
   usage?: AsyncTaskUsage | null
   output_file_path?: string | null
   tool_call_id?: string | null
+  /** Grok restates its whole workflow on every frame, so an EMPTY string here
+   *  means "none any more" — absent still means unchanged. */
+  phase?: string | null
+  current_agent?: string | null
 }
 
 export interface LiveSessionSnapshot {

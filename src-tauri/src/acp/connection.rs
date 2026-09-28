@@ -6507,8 +6507,11 @@ async fn run_connection(
                             // edge may never have been recorded. Drop rather
                             // than seed the live strip with zombie rows —
                             // but drop HERE, so it isn't counted as an
-                            // update codeg failed to read.
-                            if air_async_task_delta(&dispatch).is_some() {
+                            // update codeg failed to read. Grok persists its
+                            // workflow frames too, so they replay the same way.
+                            if air_async_task_delta(&dispatch).is_some()
+                                || grok_workflow_task_delta(&dispatch, agent_type).is_some()
+                            {
                                 continue;
                             }
                             // A notice is a live event with no history
@@ -10226,6 +10229,10 @@ async fn run_conversation_loop(
     // drained immediately after the select, still inside the idle loop (the
     // OUTER loop only advances on a command, which may never come).
     let mut config_drift_to_reassert: Vec<(String, String)> = Vec::new();
+    // For the `TurnComplete` of a turn Grok starts on its own, which the idle
+    // loop ends while `read_update` holds `session`. A fork restarts this loop
+    // with the new session, so it cannot go stale in here.
+    let agent_turn_session_id = session.session_id().0.to_string();
     loop {
         // Wait for either a user command or a session update (e.g. available_commands_update)
         let cmd = loop {
@@ -10246,7 +10253,9 @@ async fn run_conversation_loop(
                     // Background work outlives the turn that started it, so
                     // these frames arrive on the IDLE loop as often as inside
                     // one.
-                    if let Some(delta) = air_async_task_delta(&dispatch) {
+                    if let Some(delta) = air_async_task_delta(&dispatch)
+                        .or_else(|| grok_workflow_task_delta(&dispatch, agent_type))
+                    {
                         emit_with_state(&st, &h, AcpEvent::AsyncTask { delta }).await;
                     } else if let Some(notice) = session_notice(&dispatch) {
                         // Advisories land outside a turn as readily as inside
@@ -10255,7 +10264,28 @@ async fn run_conversation_loop(
                         emit_with_state(&st, &h, AcpEvent::SessionNotice { notice }).await;
                     } else if let Some(event) = session_compaction_event(&dispatch) {
                         emit_with_state(&st, &h, event).await;
+                    } else if let Some(completed) = grok_turn_completed(&dispatch, agent_type) {
+                        // Grok's own end of a turn. Only the turn opened below
+                        // ends here; one codeg started ended on its response.
+                        if grok_turn_completed_ends(cb_state.grok_agent_turn.as_deref(), &completed) {
+                            close_grok_agent_turn(
+                                &st,
+                                &h,
+                                perms,
+                                agent_type,
+                                &agent_turn_session_id,
+                                completed.stop_reason,
+                                &mut cb_state,
+                            )
+                            .await;
+                        }
                     } else {
+                        // A turn Grok runs on its own (a background workflow's
+                        // follow-up) gets a turn here, opened before its first
+                        // chunk is emitted.
+                        if let Some(prompt_id) = grok_agent_turn_opener(&dispatch, agent_type, &cb_state) {
+                            open_grok_agent_turn(&st, &h, prompt_id, &mut cb_state).await;
+                        }
                         let drift = &mut config_drift_to_reassert;
                         if let Err(e) = MatchDispatch::new(dispatch)
                             .if_notification(
@@ -10369,6 +10399,31 @@ async fn run_conversation_loop(
                     )
                     .await;
                     continue;
+                }
+
+                // A prompt the gate admitted while Grok ran a turn of its own
+                // (the frontend queues behind that turn; a chat channel or an
+                // automation does not). Grok queues this prompt behind its
+                // turn, so end the one on screen first — kept as a turn of its
+                // own rather than folded into this one's opening. Its stop
+                // reason is `cancelled` because it is the one reason no
+                // consumer acts on: `end_turn` would have the lifecycle mark
+                // the conversation for review while this prompt runs. Whatever
+                // that turn is still asking the user goes with it — otherwise
+                // Grok stays parked on a card no one can see, and this prompt
+                // waits behind it for good.
+                if close_grok_agent_turn(
+                    state,
+                    emitter,
+                    perms,
+                    agent_type,
+                    &agent_turn_session_id,
+                    "cancelled",
+                    &mut cb_state,
+                )
+                .await
+                {
+                    cancel_grok_agent_turn_asks(delegation_injection, conn_id).await;
                 }
 
                 emit_with_state(
@@ -10553,6 +10608,15 @@ async fn run_conversation_loop(
                                 )
                                 .await;
                             }
+                            // Which prompt this turn is, so the frames it
+                            // leaves for the idle loop can't open a turn
+                            // there (see `grok_agent_turn_opener`).
+                            if agent_type == AgentType::Grok {
+                                note_grok_turn_prompt_id(
+                                    &dispatch,
+                                    &mut cb_state.grok_ended_prompt_ids,
+                                );
+                            }
                             // Consumed before the typed pipeline (see
                             // `air_async_task_delta`). Only a SPAWN
                             // counts as this turn's output: a turn whose
@@ -10567,6 +10631,19 @@ async fn run_conversation_loop(
                             // agent really did answer with nothing.
                             if let Some(delta) = air_async_task_delta(&dispatch) {
                                 probe.saw_agent_output |= delta.spawned;
+                                emit_with_state(
+                                    &st,
+                                    &h,
+                                    AcpEvent::AsyncTask { delta },
+                                )
+                                .await;
+                            } else if let Some(delta) =
+                                grok_workflow_task_delta(&dispatch, agent_type)
+                            {
+                                // Never this turn's output: every Grok frame
+                                // restates the run, so a spawn proves
+                                // nothing here — the launch's own chunk or
+                                // tool call is what counts.
                                 emit_with_state(
                                     &st,
                                     &h,
@@ -10785,6 +10862,20 @@ async fn run_conversation_loop(
                                 }
                                 Err(e) => return Err(e),
                             };
+                            // Grok names the prompt on its response as well:
+                            // the id this turn's late frames will carry.
+                            if agent_type == AgentType::Grok {
+                                if let Some(prompt_id) = response
+                                    .meta
+                                    .as_ref()
+                                    .and_then(|meta| air_task_str(meta.get("promptId")))
+                                {
+                                    remember_grok_ended_prompt(
+                                        &mut cb_state.grok_ended_prompt_ids,
+                                        &prompt_id,
+                                    );
+                                }
+                            }
                             // A turn's terminal AIR failure rides on the
                             // response `_meta` (see `response_session_failure`
                             // — the update channel only carries the retry
@@ -11342,8 +11433,22 @@ async fn run_conversation_loop(
                 terminal_runtime
                     .release_all_for_session(sid.0.as_ref())
                     .await;
-                // Unlike the mid-turn Cancel branch, this one does NOT emit
-                // `TurnComplete` (there is no turn), so nothing else would ever
+                // The Stop button on a turn Grok is running on its own ends it
+                // now, like the mid-turn Cancel does — without waiting on the
+                // agent's own `turn_completed`, which the closed turn then
+                // ignores. That is the one idle turn with a `TurnComplete`.
+                let closed_agent_turn = close_grok_agent_turn(
+                    state,
+                    emitter,
+                    perms,
+                    agent_type,
+                    &agent_turn_session_id,
+                    "cancelled",
+                    &mut cb_state,
+                )
+                .await;
+                // Otherwise, unlike the mid-turn Cancel branch, this one does NOT
+                // emit `TurnComplete` (there is no turn), so nothing else would ever
                 // clear the on-screen permission card — before the compensating
                 // `PermissionResolved` inside `drain_permissions`, an idle Cancel
                 // left a card up on every client with its responder already
@@ -11367,12 +11472,22 @@ async fn run_conversation_loop(
                 if let Some(inj) = delegation_injection {
                     inj.broker.cancel_by_parent_turn(conn_id).await;
                 }
+                if closed_agent_turn {
+                    cancel_grok_agent_turn_asks(delegation_injection, conn_id).await;
+                }
             }
             Some(ConnectionCommand::Fork { fork_point, reply }) => {
                 if !supports_fork {
                     let _ = reply.send(Err(AcpError::protocol(
                         "This agent does not support session/fork".to_string(),
                     )));
+                    continue;
+                }
+                // The manager's between-turns check reads `turn_in_flight`,
+                // which a turn Grok started on its own never sets. Forking now
+                // would leave that turn open on the session we are leaving.
+                if cb_state.grok_agent_turn.is_some() {
+                    let _ = reply.send(Err(AcpError::TurnInProgress));
                     continue;
                 }
                 let cx = session.connection();
@@ -14278,6 +14393,19 @@ struct CodeBuddyLiveState {
     /// even when the token count hasn't moved yet — otherwise the ring would
     /// keep dividing by the previous model's window.
     grok_last_usage: Option<(u64, u64)>,
+    /// The prompt id of the turn Grok is running on its own that the idle loop
+    /// is rendering (see [`grok_agent_turn_opener`]); `None` when none is open.
+    /// Paired with `SessionState::agent_initiated_turn`, which keeps that
+    /// turn's end off the prompt gate.
+    grok_agent_turn: Option<String>,
+    /// The prompt id of every Grok turn this session has seen END — ones codeg
+    /// started (read off their frames and responses), and agent-initiated ones
+    /// it closed. Frames Grok still delivers for them afterwards must neither
+    /// open a turn nor end one. Every one, not the latest: a prompt that
+    /// answers at once (a slash command) can end while an earlier turn's
+    /// frames are still queued, and nothing marks when those have drained. One
+    /// short id per turn is nothing to keep for a session's life.
+    grok_ended_prompt_ids: HashSet<String>,
     /// Which of codex's `usage_update`s read the context window: the one for a
     /// request that ran a hosted web search covers the provider's whole search
     /// loop, not the context (see `crate::acp::codex_context`).
@@ -14581,7 +14709,8 @@ fn grok_ext_event_id(params: &serde_json::Value) -> String {
 /// it failed. Only grok emits these, so gate on the agent. Turn-level failures
 /// are intentionally NOT handled here — the `session/prompt` response path
 /// (`turn_failure_error_event`) already surfaces those, and duplicating them
-/// would double-report.
+/// would double-report. (The one turn with no response, a turn Grok starts on
+/// its own, is ended by the idle loop — see [`close_grok_agent_turn`].)
 fn map_grok_ext_notification(
     notification: &UntypedMessage,
     agent_type: AgentType,
@@ -15451,6 +15580,8 @@ fn air_async_task_delta(dispatch: &Dispatch) -> Option<AsyncTaskDelta> {
         usage: air_task_usage(update.get("usage")),
         output_file_path: field("outputFilePath"),
         tool_call_id: field("toolCallId"),
+        phase: None,
+        current_agent: None,
     })
 }
 
@@ -15471,6 +15602,312 @@ fn air_task_usage(value: Option<&serde_json::Value>) -> Option<AsyncTaskUsage> {
         tool_uses: n("toolUses")?,
         duration_ms: n("durationMs")?,
     })
+}
+
+/// Read one Grok background-workflow frame as an async-task delta.
+///
+/// Grok speaks no AIR, and is not advertised `asyncTasks`: a run launched by
+/// `/workflow`, `/deep-research` or its `workflow` tool (whose call returns at
+/// once) reports on its own private channel instead — `workflow_updated` on
+/// `_x.ai/session_notification`, persisted as `_x.ai/session/update`. Captured
+/// from grok 1.0.41:
+///
+///   {"sessionUpdate":"workflow_updated","run_id":"wf_01a0e8a2…","revision":5,
+///    "name":"codeg-probe","objective":"…","status":"active",
+///    "phases":[{"title":"Alpha","state":"active"},…],"current_phase":"Alpha",
+///    "active_agents":1,"current_agent_label":"probe-agent","agents":[…],…}
+///
+/// Every frame restates the whole run, so each one is a `spawned` delta (a
+/// client that joins mid-run still gets its row), and the fields a frame can
+/// DROP — the agent once it finishes, the reason once a paused run resumes —
+/// are restated as an empty string rather than left absent, which the shared
+/// merge would read as "unchanged". Consumed before the typed pipeline like
+/// [`air_async_task_delta`], at the same three seams.
+fn grok_workflow_task_delta(dispatch: &Dispatch, agent_type: AgentType) -> Option<AsyncTaskDelta> {
+    if agent_type != AgentType::Grok {
+        return None;
+    }
+    let Dispatch::Notification(msg) = dispatch else {
+        return None;
+    };
+    if !GROK_EXT_UPDATE_METHODS.contains(&msg.method()) {
+        return None;
+    }
+    let update = msg.params.get("update")?;
+    if update.get("sessionUpdate").and_then(|v| v.as_str())? != "workflow_updated" {
+        return None;
+    }
+    let field = |key: &str| air_task_str(update.get(key));
+    let task_id = field("run_id")?;
+    // Without a status the frame says nothing about the run, and since every
+    // frame may create its row, reading it would leave one with no state.
+    let status = field("status")?;
+    Some(AsyncTaskDelta {
+        task_id,
+        spawned: true,
+        name: field("name"),
+        task_type: Some("workflow".to_string()),
+        description: field("objective"),
+        // The run gets no transcript card of its own; a model-launched run's
+        // `workflow` tool call is the launch, not the run.
+        show_in_transcript: Some(false),
+        // Grok has no `_session/async_task/stop`.
+        can_stop: Some(false),
+        state: Some(grok_workflow_state(&status)),
+        // The result on completion; on a pause or failure, the reason (Grok
+        // carries a failure's error in `pause_message` too).
+        summary: Some(
+            field("result_summary")
+                .or_else(|| field("pause_message"))
+                .unwrap_or_default(),
+        ),
+        last_tool_name: None,
+        usage: None,
+        output_file_path: None,
+        tool_call_id: None,
+        phase: Some(field("current_phase").unwrap_or_default()),
+        current_agent: Some(field("current_agent_label").unwrap_or_default()),
+    })
+}
+
+/// A Grok workflow `status` in the async-task vocabulary. Grok 1.0.41 has
+/// `active`, five pauses (`user_paused`, `back_off_paused`,
+/// `no_progress_paused`, `infra_paused`, and `blocked` — the verification
+/// gate), `budget_limited`, and the terminal `complete`, `failed`,
+/// `cancelled` and `interrupted` (the session ended mid-run; not resumable).
+/// An unrecognised status passes through as itself and so reads as live,
+/// matching how the record treats any state outside the terminal three.
+fn grok_workflow_state(status: &str) -> String {
+    match status {
+        "active" => "running",
+        "paused" | "user_paused" | "back_off_paused" | "no_progress_paused" | "infra_paused"
+        | "blocked" | "budget_limited" => "paused",
+        "complete" | "completed" => "completed",
+        "failed" | "interrupted" => "failed",
+        "cancelled" | "canceled" => "stopped",
+        other => other,
+    }
+    .to_string()
+}
+
+/// A Grok `turn_completed` — the end of a turn as Grok itself reports it, on
+/// its private channel: `{prompt_id, stop_reason, usage?, elapsed_ms}`.
+#[derive(Debug, PartialEq, Eq)]
+struct GrokTurnCompleted {
+    prompt_id: Option<String>,
+    /// Already in codeg's stop-reason vocabulary (see [`grok_stop_reason`]).
+    stop_reason: &'static str,
+}
+
+fn grok_turn_completed(dispatch: &Dispatch, agent_type: AgentType) -> Option<GrokTurnCompleted> {
+    if agent_type != AgentType::Grok {
+        return None;
+    }
+    let Dispatch::Notification(msg) = dispatch else {
+        return None;
+    };
+    if !GROK_EXT_UPDATE_METHODS.contains(&msg.method()) {
+        return None;
+    }
+    let update = msg.params.get("update")?;
+    if update.get("sessionUpdate").and_then(|v| v.as_str())? != "turn_completed" {
+        return None;
+    }
+    Some(GrokTurnCompleted {
+        prompt_id: air_task_str(update.get("prompt_id")),
+        stop_reason: grok_stop_reason(
+            update.get("stop_reason").and_then(|v| v.as_str()).unwrap_or(""),
+        ),
+    })
+}
+
+/// Grok's `stop_reason` mapped the way [`stop_reason_to_str`] maps a typed
+/// one: ACP's five as themselves, anything else — Grok's own `error`
+/// included — as `unknown`.
+fn grok_stop_reason(raw: &str) -> &'static str {
+    match raw {
+        "end_turn" => "end_turn",
+        "cancelled" => "cancelled",
+        "refusal" => "refusal",
+        "max_tokens" => "max_tokens",
+        "max_turn_requests" => "max_turn_requests",
+        _ => "unknown",
+    }
+}
+
+/// The prompt id Grok stamps on a `session/update`'s OUTER `_meta` — the
+/// prompt whose turn produced the frame, whether a client sent it or Grok
+/// queued it itself (`workflow-completed-<run>-<revision>`).
+fn grok_frame_prompt_id(dispatch: &Dispatch) -> Option<&str> {
+    let Dispatch::Notification(msg) = dispatch else {
+        return None;
+    };
+    if msg.method() != "session/update" {
+        return None;
+    }
+    msg.params
+        .get("_meta")?
+        .get("promptId")?
+        .as_str()
+        .filter(|id| !id.is_empty())
+}
+
+/// If this idle-loop frame starts a turn Grok is running on its own, the
+/// prompt id to track it by.
+///
+/// When a background workflow stops, Grok runs a follow-up turn for it in the
+/// same process — a prompt it queues itself, never a client `session/prompt`,
+/// so no response will ever end it. Only a main-thread chunk opens one
+/// (message or thought — that is the first thing a follow-up streams), and
+/// only one stamped with a prompt id codeg has not already seen END:
+///
+/// * a turn codeg started leaves stragglers on the idle loop whenever the loop
+///   picks its response before its last queued frames — those carry the id
+///   of that turn (see [`note_grok_turn_prompt_id`]);
+/// * a turn Grok cancels flushes a chunk AFTER its own `turn_completed`, with
+///   no prompt id at all (captured from 1.0.41). Opening on that would start a
+///   turn nothing ever ends.
+fn grok_agent_turn_opener(
+    dispatch: &Dispatch,
+    agent_type: AgentType,
+    cb_state: &CodeBuddyLiveState,
+) -> Option<String> {
+    if agent_type != AgentType::Grok || cb_state.grok_agent_turn.is_some() {
+        return None;
+    }
+    let Dispatch::Notification(msg) = dispatch else {
+        return None;
+    };
+    let kind = msg.params.get("update")?.get("sessionUpdate")?.as_str()?;
+    if !matches!(kind, "agent_message_chunk" | "agent_thought_chunk") {
+        return None;
+    }
+    let prompt_id = grok_frame_prompt_id(dispatch)?;
+    (!cb_state.grok_ended_prompt_ids.contains(prompt_id)).then(|| prompt_id.to_string())
+}
+
+/// Whether a Grok `turn_completed` ends the agent-initiated turn the idle loop
+/// has open. A turn codeg started already ended on its prompt response, so its
+/// own `turn_completed` — which can reach the idle loop after that response —
+/// must end nothing a second time.
+fn grok_turn_completed_ends(open: Option<&str>, completed: &GrokTurnCompleted) -> bool {
+    match (open, completed.prompt_id.as_deref()) {
+        (None, _) => false,
+        (Some(_), None) => true,
+        (Some(open), Some(done)) => open == done,
+    }
+}
+
+/// Remember the prompt id of the turn codeg is running, off any of its frames
+/// that carries one, so the stragglers it leaves on the idle loop can't open a
+/// turn of their own (see [`grok_agent_turn_opener`]).
+fn note_grok_turn_prompt_id(dispatch: &Dispatch, ended: &mut HashSet<String>) {
+    if let Some(prompt_id) = grok_frame_prompt_id(dispatch) {
+        remember_grok_ended_prompt(ended, prompt_id);
+    }
+}
+
+/// Record that the Grok turn `prompt_id` has ended.
+fn remember_grok_ended_prompt(ended: &mut HashSet<String>, prompt_id: &str) {
+    if !ended.contains(prompt_id) {
+        ended.insert(prompt_id.to_string());
+    }
+}
+
+/// Open a turn for one Grok started on its own, BEFORE its first chunk is
+/// emitted: out of `Prompting` the frontend drops streamed content, and the
+/// transcript promotion that keeps a turn only runs on the way out of it.
+///
+/// Skipped when a prompt codeg admitted is about to start — Grok queues that
+/// prompt behind its own turn, so what it streams now lands in the admitted
+/// one instead (see `SessionState::begin_agent_initiated_turn`).
+async fn open_grok_agent_turn(
+    state: &Arc<RwLock<SessionState>>,
+    emitter: &EventEmitter,
+    prompt_id: String,
+    cb_state: &mut CodeBuddyLiveState,
+) {
+    if !state.write().await.begin_agent_initiated_turn() {
+        return;
+    }
+    // The same one-turn scope a prompt's turn start resets (see there): a
+    // prior turn's background sub-agent must not tick into this one.
+    cb_state.grok_progress_eligible.clear();
+    cb_state.grok_pending_spawn_ids.clear();
+    cb_state.grok_agent_turn = Some(prompt_id);
+    emit_with_state(
+        state,
+        emitter,
+        AcpEvent::StatusChanged {
+            status: ConnectionStatus::Prompting,
+        },
+    )
+    .await;
+}
+
+/// End the agent-initiated turn the idle loop has open, if any, the way a
+/// prompt's turn ends: the failure `Error` first when the stop reason is one,
+/// then `TurnComplete` (drained together with any permission card still up —
+/// see the turn loop's exit), then `Connected`. Returns whether a turn was
+/// open.
+///
+/// Its prompt id is remembered as ended, so a chunk Grok flushes after the end
+/// can't reopen it.
+#[allow(clippy::too_many_arguments)]
+async fn close_grok_agent_turn(
+    state: &Arc<RwLock<SessionState>>,
+    emitter: &EventEmitter,
+    perms: &PendingPermissions,
+    agent_type: AgentType,
+    session_id: &str,
+    stop_reason: &str,
+    cb_state: &mut CodeBuddyLiveState,
+) -> bool {
+    let Some(prompt_id) = cb_state.grok_agent_turn.take() else {
+        return false;
+    };
+    remember_grok_ended_prompt(&mut cb_state.grok_ended_prompt_ids, &prompt_id);
+    if let Some(error) = turn_failure_error_event(stop_reason, agent_type, None) {
+        emit_with_state(state, emitter, error).await;
+    }
+    drain_permissions_then_emit(
+        perms,
+        state,
+        emitter,
+        AcpEvent::TurnComplete {
+            session_id: session_id.to_string(),
+            stop_reason: stop_reason.to_string(),
+            agent_type: agent_type.to_string(),
+        },
+    )
+    .await;
+    emit_with_state(
+        state,
+        emitter,
+        AcpEvent::StatusChanged {
+            status: ConnectionStatus::Connected,
+        },
+    )
+    .await;
+    true
+}
+
+/// Answer, declined, a question or plan approval an agent-initiated turn is
+/// parked on, once codeg has ended that turn early (Stop, or a prompt that has
+/// to run next). Both cards close with the turn, so nothing could ever answer
+/// them, and Grok would stay blocked — holding the one-per-connection slot
+/// every later ask needs, and, when a prompt is queued behind the turn, that
+/// prompt too. The same reclaim the mid-turn Cancel does.
+async fn cancel_grok_agent_turn_asks(
+    delegation_injection: Option<&DelegationInjection>,
+    conn_id: &str,
+) {
+    if let Some(inj) = delegation_injection {
+        inj.questions.cancel_questions_by_parent(conn_id).await;
+        inj.plan_approvals
+            .cancel_plan_approvals_by_parent(conn_id)
+            .await;
+    }
 }
 
 /// Read one ACP Session Notice out of a raw `session/update` dispatch.
@@ -28931,5 +29368,1039 @@ mod tests {
         let on: SessionConfigOption = serde_json::from_value(on_json).expect("parses");
         assert!(config_option_already_holds(&on, "true"));
         assert!(!config_option_already_holds(&on, "false"));
+    }
+
+    // ── Grok background workflows and the turns Grok starts itself (#859) ───
+    //
+    // Driven through `run_conversation_loop` over the real runtime and an
+    // in-memory pipe. The scripted agent replays frames captured from grok
+    // 1.0.41 running `/workflow <name>` against a two-phase, one-agent script.
+
+    /// One scripted Grok frame: JSON-RPC method + params.
+    type GrokFrame = (&'static str, serde_json::Value);
+
+    const GROK_RUN_ID: &str = "wf_01a0e8a2c2ef74e3bf300ffd5204f1dd";
+    const GROK_FOLLOW_UP_ID: &str = "workflow-completed-wf_01a0e8a2c2ef74e3bf300ffd5204f1dd-9";
+
+    /// What the scripted Grok sends, and when.
+    #[derive(Default)]
+    struct GrokScript {
+        /// While the prompt is open, before its response.
+        in_turn: Vec<GrokFrame>,
+        /// Hold the prompt response until the test releases it.
+        hold_response: bool,
+        /// `_meta.promptId` on the prompt response.
+        prompt_id: &'static str,
+        /// After the response, once the test has seen the turn end — frames of
+        /// the prompt's turn that the IDLE loop reads. Grok sends them just
+        /// before the response, but the turn loop picks a ready response over
+        /// queued updates at random, so this is where they can end up.
+        after_response: Vec<GrokFrame>,
+        /// On the test's go-ahead: work Grok does on its own between turns.
+        later: Vec<GrokFrame>,
+        /// When the client sends `session/cancel`.
+        on_cancel: Vec<GrokFrame>,
+        /// Whether the session supports `session/fork`.
+        forks: bool,
+    }
+
+    fn grok_frame(
+        method: &'static str,
+        update: serde_json::Value,
+        meta: serde_json::Value,
+    ) -> GrokFrame {
+        (
+            method,
+            serde_json::json!({"sessionId": "s1", "update": update, "_meta": meta}),
+        )
+    }
+
+    /// A `workflow_updated` snapshot as grok 1.0.41 sends it (trimmed to the
+    /// fields codeg reads plus a few it ignores).
+    fn grok_workflow_update(
+        revision: u64,
+        status: &str,
+        phase: Option<&str>,
+        agent: Option<&str>,
+    ) -> GrokFrame {
+        let mut update = serde_json::json!({
+            "sessionUpdate": "workflow_updated",
+            "run_id": GROK_RUN_ID,
+            "revision": revision,
+            "name": "codeg-probe",
+            "objective": "codeg wire probe: two phases, one tiny agent",
+            "status": status,
+            "foreground": false,
+            "phases": [{"title": "Alpha", "state": "active"}, {"title": "Beta", "state": "pending"}],
+            "agent_budget": 128,
+            "agents_used": 1,
+            "active_agents": u64::from(agent.is_some()),
+            "last_event": "log",
+        });
+        if let Some(phase) = phase {
+            update["current_phase"] = phase.into();
+        }
+        if let Some(agent) = agent {
+            update["current_agent_label"] = agent.into();
+        }
+        grok_frame(
+            "_x.ai/session_notification",
+            update,
+            serde_json::json!({"eventId": format!("s1-{revision}")}),
+        )
+    }
+
+    /// A streamed chunk. Grok stamps the running prompt's id on every chunk's
+    /// OUTER `_meta` — except a straggler it flushes after cancelling a turn.
+    fn grok_chunk(kind: &str, text: &str, prompt_id: Option<&str>) -> GrokFrame {
+        let mut meta = serde_json::json!({"eventId": "s1-chunk", "totalTokens": 2597});
+        if let Some(prompt_id) = prompt_id {
+            meta["promptId"] = prompt_id.into();
+        }
+        grok_frame(
+            "session/update",
+            serde_json::json!({"sessionUpdate": kind, "content": {"type": "text", "text": text}}),
+            meta,
+        )
+    }
+
+    fn grok_turn_completed_frame(prompt_id: &str, stop_reason: &str) -> GrokFrame {
+        grok_frame(
+            "_x.ai/session_notification",
+            serde_json::json!({
+                "sessionUpdate": "turn_completed",
+                "prompt_id": prompt_id,
+                "stop_reason": stop_reason,
+                "elapsed_ms": 5798,
+            }),
+            serde_json::json!({"eventId": "s1-done"}),
+        )
+    }
+
+    /// The last frame of a script: its `AvailableCommands` event tells the
+    /// test that everything before it has been through the loop.
+    fn grok_barrier() -> GrokFrame {
+        grok_frame(
+            "session/update",
+            serde_json::json!({"sessionUpdate": "available_commands_update", "availableCommands": []}),
+            serde_json::json!({}),
+        )
+    }
+
+    fn send_grok_frames(
+        cx: &ConnectionTo<Client>,
+        frames: &[GrokFrame],
+    ) -> Result<(), agent_client_protocol::Error> {
+        for (method, params) in frames {
+            cx.send_notification(UntypedMessage::new(method, params.clone())?)?;
+        }
+        Ok(())
+    }
+
+    /// Records the connections whose parked questions / plan approvals were
+    /// reclaimed — what a loop test can see of `DelegationInjection`'s ask
+    /// registries.
+    #[derive(Default)]
+    struct RecordingAsks {
+        questions: std::sync::Mutex<Vec<String>>,
+        plan_approvals: std::sync::Mutex<Vec<String>>,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::acp::question::SessionQuestionAccess for RecordingAsks {
+        async fn register_question(
+            &self,
+            _parent_connection_id: &str,
+            _questions: Vec<crate::acp::question::QuestionSpec>,
+        ) -> Option<crate::acp::question::RegisteredQuestion> {
+            None
+        }
+
+        async fn cancel_question(&self, _parent_connection_id: &str, _question_id: &str) {}
+
+        async fn cancel_questions_by_parent(&self, parent_connection_id: &str) {
+            self.questions
+                .lock()
+                .unwrap()
+                .push(parent_connection_id.to_string());
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl crate::acp::plan_approval::SessionPlanApprovalAccess for RecordingAsks {
+        async fn register_plan_approval(
+            &self,
+            _parent_connection_id: &str,
+            _tool_call_id: String,
+            _plan_markdown: String,
+        ) -> Option<crate::acp::plan_approval::RegisteredPlanApproval> {
+            None
+        }
+
+        async fn cancel_plan_approvals_by_parent(&self, parent_connection_id: &str) {
+            self.plan_approvals
+                .lock()
+                .unwrap()
+                .push(parent_connection_id.to_string());
+        }
+    }
+
+    /// `run_conversation_loop` for a Grok session, attached to a scripted agent.
+    struct GrokLoop {
+        state: Arc<RwLock<SessionState>>,
+        asks: Arc<RecordingAsks>,
+        cmd_tx: mpsc::Sender<ConnectionCommand>,
+        events: tokio::sync::broadcast::Receiver<Arc<crate::acp::types::EventEnvelope>>,
+        /// Every event the loop emitted so far, in order.
+        seen: Vec<AcpEvent>,
+        go: Arc<tokio::sync::Notify>,
+        respond: Arc<tokio::sync::Notify>,
+        after: Arc<tokio::sync::Notify>,
+        client: tokio::task::JoinHandle<()>,
+        agent: tokio::task::JoinHandle<()>,
+    }
+
+    impl GrokLoop {
+        async fn start(script: GrokScript) -> Self {
+            use agent_client_protocol::schema::v1::PromptResponse;
+
+            let supports_fork = script.forks;
+            let script = Arc::new(script);
+            let go = Arc::new(tokio::sync::Notify::new());
+            let respond = Arc::new(tokio::sync::Notify::new());
+            let after = Arc::new(tokio::sync::Notify::new());
+            let (client_end, agent_end) = agent_client_protocol::Channel::duplex();
+
+            let prompt_script = Arc::clone(&script);
+            let cancel_script = Arc::clone(&script);
+            let agent_go = Arc::clone(&go);
+            let agent_respond = Arc::clone(&respond);
+            let agent_after = Arc::clone(&after);
+            let agent = tokio::spawn(async move {
+                let _ = Agent
+                    .builder()
+                    .on_receive_request(
+                        async |_req: NewSessionRequest,
+                               responder: Responder<NewSessionResponse>,
+                               _cx: ConnectionTo<Client>| {
+                            responder.respond(NewSessionResponse::new(SessionId::new("s1")))
+                        },
+                        on_receive_request!(),
+                    )
+                    .on_receive_request(
+                        async move |_req: PromptRequest,
+                                    responder: Responder<PromptResponse>,
+                                    cx: ConnectionTo<Client>| {
+                            send_grok_frames(&cx, &prompt_script.in_turn)?;
+                            let script = Arc::clone(&prompt_script);
+                            let respond = Arc::clone(&agent_respond);
+                            let after = Arc::clone(&agent_after);
+                            // Off the handler, so a held response doesn't hold
+                            // up the agent's other incoming messages.
+                            tokio::spawn(async move {
+                                if script.hold_response {
+                                    respond.notified().await;
+                                }
+                                let mut meta = serde_json::Map::new();
+                                meta.insert("promptId".into(), script.prompt_id.into());
+                                responder.respond(PromptResponse::new(StopReason::EndTurn).meta(meta))?;
+                                if script.after_response.is_empty() {
+                                    return Ok(());
+                                }
+                                after.notified().await;
+                                send_grok_frames(&cx, &script.after_response)
+                            });
+                            Ok(())
+                        },
+                        on_receive_request!(),
+                    )
+                    .on_receive_notification(
+                        async move |_cancel: CancelNotification, cx: ConnectionTo<Client>| {
+                            send_grok_frames(&cx, &cancel_script.on_cancel)
+                        },
+                        on_receive_notification!(),
+                    )
+                    .connect_with(agent_end, async move |cx: ConnectionTo<Client>| {
+                        agent_go.notified().await;
+                        send_grok_frames(&cx, &script.later)?;
+                        std::future::pending::<Result<(), agent_client_protocol::Error>>().await
+                    })
+                    .await;
+            });
+
+            let state = Arc::new(RwLock::new(SessionState::new(
+                "conn-grok".to_string(),
+                AgentType::Grok,
+                None,
+                "win".to_string(),
+                None,
+            )));
+            let events = state.read().await.event_stream().subscribe();
+            let (cmd_tx, mut cmd_rx) = mpsc::channel(16);
+            let loop_state = Arc::clone(&state);
+            let asks = Arc::new(RecordingAsks::default());
+            let injection = DelegationInjection {
+                questions: Arc::clone(&asks) as Arc<dyn crate::acp::question::SessionQuestionAccess>,
+                plan_approvals: Arc::clone(&asks)
+                    as Arc<dyn crate::acp::plan_approval::SessionPlanApprovalAccess>,
+                ..test_delegation_injection(
+                    Arc::new(TestAllAgentsAvailable) as Arc<dyn AgentAvailabilityLookup>
+                )
+            };
+            let client = tokio::spawn(async move {
+                let _ = Client
+                    .builder()
+                    .connect_with(client_end, async move |cx: ConnectionTo<Agent>| {
+                        let raw = cx
+                            .send_request_to(
+                                Agent,
+                                UntypedMessage::new("session/new", NewSessionRequest::new("/tmp"))?,
+                            )
+                            .block_task()
+                            .await?;
+                        let response: NewSessionResponse = serde_json::from_value(raw)
+                            .map_err(agent_client_protocol::Error::into_internal_error)?;
+                        let mut session = AgentSession::attach(&cx, response)?;
+                        let perms = PendingPermissions::default();
+                        let ledger = background_watch::PromptLedger::shared();
+                        let stderr_tail = Arc::new(StderrTail::new());
+                        run_conversation_loop(
+                            &mut session,
+                            "conn-grok",
+                            &EventEmitter::Noop,
+                            &loop_state,
+                            AgentType::Grok,
+                            &perms,
+                            &mut cmd_rx,
+                            Arc::new(TerminalRuntime::with_base_env(BTreeMap::new())),
+                            "/tmp",
+                            supports_fork,
+                            &ledger,
+                            Some(&injection),
+                            &stderr_tail,
+                        )
+                        .await?;
+                        Ok(())
+                    })
+                    .await;
+            });
+
+            Self {
+                state,
+                asks,
+                cmd_tx,
+                events,
+                seen: Vec::new(),
+                go,
+                respond,
+                after,
+                client,
+                agent,
+            }
+        }
+
+        /// Admit a prompt the way `send_prompt_inner` does, then hand it over.
+        async fn prompt(&self, text: &str) {
+            self.state.write().await.turn_in_flight = true;
+            self.cmd_tx
+                .send(ConnectionCommand::Prompt {
+                    blocks: vec![PromptInputBlock::Text { text: text.into() }],
+                    user_message: None,
+                })
+                .await
+                .expect("the loop is running");
+        }
+
+        async fn send(&self, cmd: ConnectionCommand) {
+            self.cmd_tx.send(cmd).await.expect("the loop is running");
+        }
+
+        /// Let the scripted agent send its between-turns frames.
+        fn release_later(&self) {
+            self.go.notify_one();
+        }
+
+        /// Let a held prompt response go out.
+        fn release_response(&self) {
+            self.respond.notify_one();
+        }
+
+        /// How many times this connection's parked questions and plan
+        /// approvals were reclaimed.
+        fn reclaimed_asks(&self) -> (usize, usize) {
+            let count = |log: &std::sync::Mutex<Vec<String>>| {
+                log.lock().unwrap().iter().filter(|c| *c == "conn-grok").count()
+            };
+            (count(&self.asks.questions), count(&self.asks.plan_approvals))
+        }
+
+        /// Wait for the prompt's turn to end, then let the frames the idle
+        /// loop is to read after it go out; returns the turn end's index.
+        async fn after_turn_end(&mut self) -> usize {
+            let end = self
+                .until("the prompt's turn end", |e| {
+                    matches!(e, AcpEvent::TurnComplete { .. })
+                })
+                .await;
+            self.after.notify_one();
+            end
+        }
+
+        /// Record events until one matches, and return its index in `seen`.
+        async fn until(&mut self, what: &str, matches: impl Fn(&AcpEvent) -> bool) -> usize {
+            let deadline = std::time::Duration::from_secs(10);
+            loop {
+                let envelope = tokio::time::timeout(deadline, self.events.recv())
+                    .await
+                    .unwrap_or_else(|_| panic!("timed out waiting for {what}; saw {:#?}", self.seen))
+                    .expect("event stream");
+                self.seen.push(envelope.payload.clone());
+                if matches(&envelope.payload) {
+                    return self.seen.len() - 1;
+                }
+            }
+        }
+
+        async fn until_barrier(&mut self) -> usize {
+            self.until("the script's barrier", |e| {
+                matches!(e, AcpEvent::AvailableCommands { .. })
+            })
+            .await
+        }
+
+        async fn shutdown(self) {
+            let _ = self.cmd_tx.send(ConnectionCommand::Disconnect).await;
+            let _ = tokio::time::timeout(std::time::Duration::from_secs(5), self.client).await;
+            self.agent.abort();
+        }
+    }
+
+    fn turn_completes(seen: &[AcpEvent]) -> Vec<(usize, String)> {
+        seen.iter()
+            .enumerate()
+            .filter_map(|(i, e)| match e {
+                AcpEvent::TurnComplete { stop_reason, .. } => Some((i, stop_reason.clone())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn prompting_edges(seen: &[AcpEvent]) -> Vec<usize> {
+        seen.iter()
+            .enumerate()
+            .filter(|(_, e)| {
+                matches!(
+                    e,
+                    AcpEvent::StatusChanged {
+                        status: ConnectionStatus::Prompting
+                    }
+                )
+            })
+            .map(|(i, _)| i)
+            .collect()
+    }
+
+    /// The captured `/workflow codeg-probe` run: the launch turn, the run
+    /// ticking between turns, and the follow-up turn Grok starts on its own
+    /// once the run stops.
+    fn grok_workflow_script() -> GrokScript {
+        GrokScript {
+            in_turn: vec![
+                grok_workflow_update(1, "active", None, None),
+                grok_workflow_update(2, "active", Some("Alpha"), None),
+                grok_chunk(
+                    "agent_message_chunk",
+                    "Workflow 'codeg-probe' started in the background.",
+                    Some("p1"),
+                ),
+            ],
+            prompt_id: "p1",
+            // Grok sends its `turn_completed` just BEFORE the response. The
+            // turn loop picks between a ready response and a queued update at
+            // random, so this ordering is what the idle loop reads whenever
+            // the response wins.
+            after_response: vec![
+                grok_chunk("agent_message_chunk", " Watch it in /workflow runs.", Some("p1")),
+                grok_turn_completed_frame("p1", "end_turn"),
+                grok_workflow_update(5, "active", Some("Alpha"), Some("probe-agent")),
+                grok_barrier(),
+            ],
+            later: vec![
+                grok_workflow_update(7, "active", Some("Beta"), None),
+                grok_workflow_update(9, "complete", Some("Beta"), None),
+                grok_chunk(
+                    "agent_thought_chunk",
+                    "Report the result.",
+                    Some(GROK_FOLLOW_UP_ID),
+                ),
+                grok_chunk(
+                    "agent_message_chunk",
+                    "**codeg-probe** finished",
+                    Some(GROK_FOLLOW_UP_ID),
+                ),
+                grok_chunk("agent_message_chunk", " successfully.", Some(GROK_FOLLOW_UP_ID)),
+                grok_turn_completed_frame(GROK_FOLLOW_UP_ID, "end_turn"),
+                grok_barrier(),
+            ],
+            on_cancel: Vec::new(),
+            // Released once the test has seen the launch turn's own frames, so
+            // they are read in-turn rather than racing the response.
+            hold_response: true,
+            forks: false,
+        }
+    }
+
+    /// Send the `/workflow codeg-probe` launch and see its turn through: its
+    /// frames read in-turn, then the response, then the frames the idle loop
+    /// reads after it. Returns the launch turn's `TurnComplete` index.
+    async fn launch_grok_workflow(grok: &mut GrokLoop) -> usize {
+        grok.prompt("/workflow codeg-probe").await;
+        grok.until("the launch turn's reply", |e| {
+            matches!(e, AcpEvent::ContentDelta { text, .. } if text.starts_with("Workflow 'codeg-probe'"))
+        })
+        .await;
+        grok.release_response();
+        let launch_end = grok.after_turn_end().await;
+        grok.until_barrier().await;
+        launch_end
+    }
+
+    /// A workflow the `/workflow` prompt launched is one row on the async-task
+    /// strip for its whole life — including the ticks that arrive after the
+    /// launch turn ended — with its phase and running agent, and no stop.
+    #[tokio::test]
+    async fn a_grok_workflow_run_lands_on_the_async_task_strip() {
+        let mut grok = GrokLoop::start(grok_workflow_script()).await;
+
+        let launch_end = launch_grok_workflow(&mut grok).await;
+        assert!(
+            grok.seen[..launch_end]
+                .iter()
+                .any(|e| matches!(e, AcpEvent::AsyncTask { delta } if delta.task_id == GROK_RUN_ID)),
+            "the run is on the strip while its launch turn is still open"
+        );
+        let running = grok.state.read().await.async_tasks.get(GROK_RUN_ID).cloned();
+        let running = running.expect("the launched workflow has a strip row");
+        assert_eq!(running.state, "running");
+        assert_eq!(running.name, "codeg-probe");
+        assert_eq!(running.task_type, "workflow");
+        assert_eq!(running.description, "codeg wire probe: two phases, one tiny agent");
+        assert!(!running.can_stop, "Grok has no stop request");
+        assert_eq!(running.phase.as_deref(), Some("Alpha"));
+        assert_eq!(running.current_agent.as_deref(), Some("probe-agent"));
+
+        grok.release_later();
+        grok.until_barrier().await;
+        let s = grok.state.read().await;
+        assert_eq!(s.async_tasks.len(), 1, "one row per run");
+        let done = &s.async_tasks[GROK_RUN_ID];
+        assert_eq!(done.state, "completed");
+        assert_eq!(done.phase.as_deref(), Some("Beta"));
+        assert_eq!(
+            done.current_agent.as_deref(),
+            Some(""),
+            "the finished agent is cleared, not left on the row"
+        );
+        drop(s);
+        grok.shutdown().await;
+    }
+
+    /// The follow-up turn Grok starts once the workflow stops streams into a
+    /// turn of its own instead of being dropped between turns, and ends on its
+    /// `turn_completed` — while the launch prompt's own late `turn_completed`
+    /// ends nothing a second time.
+    #[tokio::test]
+    async fn a_grok_follow_up_turn_opens_before_its_first_chunk_and_closes_once() {
+        let mut grok = GrokLoop::start(grok_workflow_script()).await;
+
+        launch_grok_workflow(&mut grok).await;
+        grok.release_later();
+        let end = grok.until_barrier().await;
+        let seen = grok.seen.clone();
+
+        let completes = turn_completes(&seen);
+        assert_eq!(
+            completes.len(),
+            2,
+            "the prompt's own turn, then the follow-up — nothing twice: {completes:?}"
+        );
+        let (parent_end, follow_up_end) = (completes[0].0, completes[1].0);
+        assert_eq!(completes[0].1, "end_turn", "the launch turn was not misread");
+        assert_eq!(completes[1].1, "end_turn");
+        assert_eq!(
+            prompting_edges(&seen).len(),
+            2,
+            "the launch prompt's turn and the follow-up, nothing else: {seen:#?}"
+        );
+        let follow_up_start = seen
+            .iter()
+            .position(|e| matches!(e, AcpEvent::Thinking { text, .. } if text == "Report the result."))
+            .expect("the follow-up's first chunk is emitted");
+        let opened: Vec<usize> = prompting_edges(&seen)
+            .into_iter()
+            .filter(|&i| i > parent_end)
+            .collect();
+        assert_eq!(
+            opened.len(),
+            1,
+            "only the follow-up opens a turn — not the launch turn's straggler: {seen:#?}"
+        );
+        assert!(
+            parent_end < opened[0] && opened[0] < follow_up_start,
+            "the follow-up turn opens BEFORE its first chunk: {seen:#?}"
+        );
+        assert!(follow_up_start < follow_up_end && follow_up_end < end);
+        assert!(
+            matches!(
+                seen[follow_up_end + 1],
+                AcpEvent::StatusChanged {
+                    status: ConnectionStatus::Connected
+                }
+            ),
+            "it ends the way a prompt's turn does"
+        );
+
+        let s = grok.state.read().await;
+        assert_eq!(s.status, ConnectionStatus::Connected);
+        assert!(s.live_message.is_none(), "the follow-up turn was closed");
+        assert!(!s.turn_in_flight);
+        assert_eq!(
+            s.last_assistant_text.as_deref(),
+            Some("**codeg-probe** finished successfully.")
+        );
+        drop(s);
+        assert_eq!(
+            grok.reclaimed_asks(),
+            (0, 0),
+            "a turn Grok ended itself is waiting on nothing"
+        );
+        grok.shutdown().await;
+    }
+
+    /// A follow-up that fails reports it the way a prompt's failed turn does:
+    /// the coded `Error` first, then `TurnComplete` with the same reason. Grok's
+    /// own `error` reason has no ACP counterpart, so it reads as `unknown`.
+    #[tokio::test]
+    async fn a_failed_grok_follow_up_turn_reports_the_error_before_ending() {
+        for (grok_reason, reason, code) in [
+            ("max_tokens", "max_tokens", "turn_failed_max_tokens"),
+            ("error", "unknown", "turn_failed_unknown"),
+        ] {
+            let mut grok = GrokLoop::start(GrokScript {
+                later: vec![
+                    grok_chunk("agent_message_chunk", "Partial report", Some(GROK_FOLLOW_UP_ID)),
+                    grok_turn_completed_frame(GROK_FOLLOW_UP_ID, grok_reason),
+                    grok_barrier(),
+                ],
+                ..GrokScript::default()
+            })
+            .await;
+            grok.release_later();
+            grok.until_barrier().await;
+
+            let completes = turn_completes(&grok.seen);
+            assert_eq!(completes.len(), 1, "{grok_reason}: {completes:?}");
+            let (end, stop_reason) = &completes[0];
+            assert_eq!(stop_reason, reason);
+            assert!(
+                matches!(
+                    &grok.seen[end - 1],
+                    AcpEvent::Error { code: Some(c), terminal: false, .. } if c == code
+                ),
+                "{grok_reason}: the failure Error lands right before TurnComplete: {:#?}",
+                grok.seen
+            );
+            grok.shutdown().await;
+        }
+    }
+
+    /// Stop on a turn Grok is running on its own ends it at once, like Stop on a
+    /// prompt's turn. What Grok sends after the cancel — its own `cancelled`
+    /// `turn_completed`, then a chunk it flushes with NO prompt id (captured
+    /// from 1.0.41) — must neither end a second turn nor open a new one that
+    /// nothing would ever end.
+    #[tokio::test]
+    async fn stopping_a_grok_follow_up_turn_ends_it_once_and_ignores_the_stragglers() {
+        let mut grok = GrokLoop::start(GrokScript {
+            later: vec![
+                grok_chunk("agent_thought_chunk", "The user wants", Some(GROK_FOLLOW_UP_ID)),
+                grok_barrier(),
+            ],
+            on_cancel: vec![
+                grok_chunk("agent_thought_chunk", " me", Some(GROK_FOLLOW_UP_ID)),
+                grok_turn_completed_frame(GROK_FOLLOW_UP_ID, "cancelled"),
+                grok_chunk("agent_thought_chunk", " to", None),
+                grok_barrier(),
+            ],
+            ..GrokScript::default()
+        })
+        .await;
+        grok.release_later();
+        grok.until_barrier().await;
+        assert_eq!(prompting_edges(&grok.seen).len(), 1, "the follow-up opened");
+
+        grok.send(ConnectionCommand::Cancel).await;
+        grok.until_barrier().await;
+        let completes = turn_completes(&grok.seen);
+        assert_eq!(completes.len(), 1, "ended once: {completes:?}");
+        assert_eq!(completes[0].1, "cancelled");
+        let first_reaction = grok
+            .seen
+            .iter()
+            .position(|e| matches!(e, AcpEvent::Thinking { text, .. } if text == " me"))
+            .expect("Grok's post-cancel frames were read");
+        assert!(
+            completes[0].0 < first_reaction,
+            "Stop ends the turn at once, not whenever Grok gets round to it"
+        );
+        assert_eq!(
+            prompting_edges(&grok.seen).len(),
+            1,
+            "no straggler reopened a turn: {:#?}",
+            grok.seen
+        );
+        assert_eq!(
+            grok.reclaimed_asks(),
+            (1, 1),
+            "a question or plan approval the stopped turn was parked on is answered"
+        );
+        let s = grok.state.read().await;
+        assert_eq!(s.status, ConnectionStatus::Connected);
+        assert!(!s.turn_in_flight);
+        drop(s);
+        grok.shutdown().await;
+    }
+
+    /// A prompt the gate admits while Grok runs a turn of its own (a chat
+    /// channel doesn't queue behind it the way the composer does) first ends
+    /// that turn — so it stays a turn of its own — and KEEPS the gate it was
+    /// admitted with: the agent's turn never held it, so its end releases
+    /// nothing a prompt still owns.
+    #[tokio::test]
+    async fn a_prompt_admitted_during_a_grok_follow_up_turn_ends_it_first() {
+        let mut grok = GrokLoop::start(GrokScript {
+            in_turn: vec![grok_chunk("agent_message_chunk", "Hi.", Some("p2"))],
+            hold_response: true,
+            prompt_id: "p2",
+            after_response: vec![grok_barrier()],
+            later: vec![
+                grok_chunk("agent_thought_chunk", "Report the result.", Some(GROK_FOLLOW_UP_ID)),
+                grok_barrier(),
+            ],
+            ..GrokScript::default()
+        })
+        .await;
+        grok.release_later();
+        grok.until_barrier().await;
+
+        grok.prompt("hello").await;
+        let agent_turn_end = grok
+            .until("the follow-up's end", |e| {
+                matches!(e, AcpEvent::TurnComplete { .. })
+            })
+            .await;
+        grok.until("the prompt's reply", |e| {
+            matches!(e, AcpEvent::ContentDelta { text, .. } if text == "Hi.")
+        })
+        .await;
+        // The prompt's turn is still open (its response is held), and the
+        // follow-up's end did not release the gate out from under it.
+        assert!(
+            grok.state.read().await.turn_in_flight,
+            "the admitted prompt still owns the gate"
+        );
+        assert_eq!(
+            grok.reclaimed_asks(),
+            (1, 1),
+            "nothing the closed turn asked can keep Grok, and so this prompt, waiting"
+        );
+        grok.release_response();
+        grok.after_turn_end().await;
+        grok.until_barrier().await;
+
+        let seen = grok.seen.clone();
+        let completes = turn_completes(&seen);
+        assert_eq!(
+            completes,
+            vec![
+                (agent_turn_end, "cancelled".to_string()),
+                (completes[1].0, "end_turn".to_string())
+            ]
+        );
+        let prompt_opened = prompting_edges(&seen)
+            .into_iter()
+            .find(|&i| i > agent_turn_end)
+            .expect("the prompt's own turn opens");
+        let reply = seen
+            .iter()
+            .position(|e| matches!(e, AcpEvent::ContentDelta { text, .. } if text == "Hi."))
+            .expect("the prompt's reply streams");
+        assert!(agent_turn_end < prompt_opened && prompt_opened < reply);
+        assert!(!grok.state.read().await.turn_in_flight);
+        grok.shutdown().await;
+    }
+
+    /// A fork between turns is refused while Grok runs one of its own: the
+    /// manager's between-turns check cannot see such a turn, and forking would
+    /// leave it open on the session being left.
+    #[tokio::test]
+    async fn a_fork_is_refused_while_a_grok_follow_up_turn_runs() {
+        let mut grok = GrokLoop::start(GrokScript {
+            later: vec![
+                grok_chunk("agent_thought_chunk", "Report the result.", Some(GROK_FOLLOW_UP_ID)),
+                grok_barrier(),
+            ],
+            forks: true,
+            ..GrokScript::default()
+        })
+        .await;
+        grok.release_later();
+        grok.until_barrier().await;
+
+        let (reply, answer) = oneshot::channel();
+        grok.send(ConnectionCommand::Fork {
+            fork_point: None,
+            reply,
+        })
+        .await;
+        let refused = answer.await.expect("the loop answers");
+        assert!(
+            matches!(refused, Err(AcpError::TurnInProgress)),
+            "refused as busy, not attempted"
+        );
+        grok.shutdown().await;
+    }
+
+    #[test]
+    fn grok_workflow_update_maps_to_one_restating_async_task_delta() {
+        let (method, params) = grok_workflow_update(5, "active", Some("Alpha"), Some("probe-agent"));
+        let dispatch = Dispatch::Notification(UntypedMessage::new(method, params).unwrap());
+        let delta = grok_workflow_task_delta(&dispatch, AgentType::Grok).expect("maps");
+        assert_eq!(delta.task_id, GROK_RUN_ID);
+        assert!(delta.spawned, "every frame restates the run");
+        assert_eq!(delta.name.as_deref(), Some("codeg-probe"));
+        assert_eq!(delta.task_type.as_deref(), Some("workflow"));
+        assert_eq!(delta.can_stop, Some(false));
+        assert_eq!(delta.state.as_deref(), Some("running"));
+        assert_eq!(delta.phase.as_deref(), Some("Alpha"));
+        assert_eq!(delta.current_agent.as_deref(), Some("probe-agent"));
+        assert_eq!(delta.summary.as_deref(), Some(""));
+
+        // Grok's own gated agent and other agents' frames are left alone.
+        assert!(grok_workflow_task_delta(&dispatch, AgentType::Codex).is_none());
+        // Grok persists these frames on the other private method, and a
+        // `session/load` replay must be able to recognize them to drop them.
+        let (_, params) = grok_workflow_update(9, "complete", Some("Beta"), None);
+        let persisted = Dispatch::Notification(
+            UntypedMessage::new("_x.ai/session/update", params.clone()).unwrap(),
+        );
+        assert!(grok_workflow_task_delta(&persisted, AgentType::Grok).is_some());
+        // Never on the standard channel, and never without a run id.
+        let standard = Dispatch::Notification(UntypedMessage::new("session/update", params).unwrap());
+        assert!(grok_workflow_task_delta(&standard, AgentType::Grok).is_none());
+        let mut anonymous = grok_workflow_update(1, "active", None, None).1;
+        anonymous["update"].as_object_mut().unwrap().remove("run_id");
+        let anonymous = Dispatch::Notification(
+            UntypedMessage::new("_x.ai/session_notification", anonymous).unwrap(),
+        );
+        assert!(grok_workflow_task_delta(&anonymous, AgentType::Grok).is_none());
+    }
+
+    /// The pause and failure frames as grok 1.0.41 sends them: the reason
+    /// rides `pause_message` for both.
+    #[test]
+    fn grok_workflow_pause_and_failure_carry_their_reason() {
+        let frame = |status: &str, extra: serde_json::Value| {
+            let (method, mut params) = grok_workflow_update(4, status, Some("Wait"), None);
+            for (k, v) in extra.as_object().unwrap() {
+                params["update"][k] = v.clone();
+            }
+            grok_workflow_task_delta(
+                &Dispatch::Notification(UntypedMessage::new(method, params).unwrap()),
+                AgentType::Grok,
+            )
+            .unwrap()
+        };
+        let paused = frame(
+            "user_paused",
+            serde_json::json!({"pause_message": "codeg probe gate: resume me"}),
+        );
+        assert_eq!(paused.state.as_deref(), Some("paused"));
+        assert_eq!(paused.summary.as_deref(), Some("codeg probe gate: resume me"));
+        let failed = frame(
+            "failed",
+            serde_json::json!({"pause_message": "Runtime error: codeg probe failure (line 8, position 1)"}),
+        );
+        assert_eq!(failed.state.as_deref(), Some("failed"));
+        assert_eq!(
+            failed.summary.as_deref(),
+            Some("Runtime error: codeg probe failure (line 8, position 1)")
+        );
+        let complete = frame(
+            "complete",
+            serde_json::json!({"result_summary": "{\"summary\":\"gate passed\"}"}),
+        );
+        assert_eq!(complete.state.as_deref(), Some("completed"));
+        assert_eq!(complete.summary.as_deref(), Some("{\"summary\":\"gate passed\"}"));
+    }
+
+    #[test]
+    fn grok_workflow_statuses_map_onto_the_async_task_states() {
+        for (status, state) in [
+            ("active", "running"),
+            ("user_paused", "paused"),
+            ("back_off_paused", "paused"),
+            ("no_progress_paused", "paused"),
+            ("infra_paused", "paused"),
+            ("blocked", "paused"),
+            ("budget_limited", "paused"),
+            ("complete", "completed"),
+            ("failed", "failed"),
+            ("interrupted", "failed"),
+            ("cancelled", "stopped"),
+            ("paused", "paused"),
+            // Unknown: passed through, so it reads as still live.
+            ("warming_up", "warming_up"),
+            ("unpaused", "unpaused"),
+        ] {
+            assert_eq!(grok_workflow_state(status), state, "{status}");
+        }
+        for state in ["completed", "failed", "stopped"] {
+            assert!(crate::acp::types::async_task_state_is_terminal(state));
+        }
+    }
+
+    #[test]
+    fn grok_turn_completed_reads_the_prompt_and_maps_the_reason() {
+        let read = |frame: GrokFrame, agent_type| {
+            grok_turn_completed(
+                &Dispatch::Notification(UntypedMessage::new(frame.0, frame.1).unwrap()),
+                agent_type,
+            )
+        };
+        assert_eq!(
+            read(grok_turn_completed_frame(GROK_FOLLOW_UP_ID, "end_turn"), AgentType::Grok),
+            Some(GrokTurnCompleted {
+                prompt_id: Some(GROK_FOLLOW_UP_ID.to_string()),
+                stop_reason: "end_turn",
+            })
+        );
+        assert_eq!(
+            read(grok_turn_completed_frame("p1", "error"), AgentType::Grok)
+                .unwrap()
+                .stop_reason,
+            "unknown"
+        );
+        assert!(read(grok_turn_completed_frame("p1", "end_turn"), AgentType::Codex).is_none());
+        assert!(read(grok_workflow_update(1, "active", None, None), AgentType::Grok).is_none());
+    }
+
+    #[test]
+    fn only_a_stamped_new_chunk_opens_a_grok_turn() {
+        let opener = |frame: GrokFrame, cb: &CodeBuddyLiveState| {
+            grok_agent_turn_opener(
+                &Dispatch::Notification(UntypedMessage::new(frame.0, frame.1).unwrap()),
+                AgentType::Grok,
+                cb,
+            )
+        };
+        let mut cb = CodeBuddyLiveState::default();
+        remember_grok_ended_prompt(&mut cb.grok_ended_prompt_ids, "p1");
+        assert_eq!(
+            opener(grok_chunk("agent_thought_chunk", "x", Some(GROK_FOLLOW_UP_ID)), &cb).as_deref(),
+            Some(GROK_FOLLOW_UP_ID)
+        );
+        assert!(opener(grok_chunk("agent_message_chunk", "x", Some("p2")), &cb).is_some());
+        // A straggler of a turn that already ended, and one with no id at all.
+        assert!(opener(grok_chunk("agent_message_chunk", "x", Some("p1")), &cb).is_none());
+        assert!(opener(grok_chunk("agent_message_chunk", "x", None), &cb).is_none());
+        // Not a chunk.
+        assert!(opener(grok_barrier(), &cb).is_none());
+        // Already open.
+        cb.grok_agent_turn = Some(GROK_FOLLOW_UP_ID.to_string());
+        assert!(opener(grok_chunk("agent_message_chunk", "x", Some("p2")), &cb).is_none());
+        // Never another agent.
+        cb.grok_agent_turn = None;
+        let frame = grok_chunk("agent_message_chunk", "x", Some("p2"));
+        assert!(grok_agent_turn_opener(
+            &Dispatch::Notification(UntypedMessage::new(frame.0, frame.1).unwrap()),
+            AgentType::ClaudeCode,
+            &cb,
+        )
+        .is_none());
+    }
+
+    /// Prompt A's response can win the turn loop's select while A's last
+    /// frames are still queued; if prompt B then answers at once (a slash
+    /// command) its response can win the same way. B ending must not make A's
+    /// stragglers look new — they would open a turn A's own `turn_completed`
+    /// then ends a second time.
+    #[test]
+    fn a_turn_ending_right_after_another_does_not_forget_it() {
+        let straggler = |prompt_id: &str| {
+            let frame = grok_chunk("agent_message_chunk", "x", Some(prompt_id));
+            Dispatch::Notification(UntypedMessage::new(frame.0, frame.1).unwrap())
+        };
+        let mut cb = CodeBuddyLiveState::default();
+        note_grok_turn_prompt_id(&straggler("a"), &mut cb.grok_ended_prompt_ids);
+        remember_grok_ended_prompt(&mut cb.grok_ended_prompt_ids, "b");
+        assert!(grok_agent_turn_opener(&straggler("a"), AgentType::Grok, &cb).is_none());
+        assert!(grok_agent_turn_opener(&straggler("b"), AgentType::Grok, &cb).is_none());
+
+        // However many instant turns end before A's frames drain.
+        for i in 0..64 {
+            remember_grok_ended_prompt(&mut cb.grok_ended_prompt_ids, &format!("later-{i}"));
+        }
+        assert!(grok_agent_turn_opener(&straggler("a"), AgentType::Grok, &cb).is_none());
+        // A turn nobody has seen end still opens.
+        assert!(grok_agent_turn_opener(&straggler("c"), AgentType::Grok, &cb).is_some());
+    }
+
+    /// One strip row per run: every frame of a run revises its row, and a
+    /// second run gets its own.
+    #[test]
+    fn each_grok_workflow_run_is_one_row() {
+        let mut s = SessionState::new(
+            "conn-grok".to_string(),
+            AgentType::Grok,
+            None,
+            "win".to_string(),
+            None,
+        );
+        let apply = |s: &mut SessionState, frame: GrokFrame| {
+            let dispatch = Dispatch::Notification(UntypedMessage::new(frame.0, frame.1).unwrap());
+            let delta = grok_workflow_task_delta(&dispatch, AgentType::Grok).expect("maps");
+            s.apply_event(&AcpEvent::AsyncTask { delta });
+        };
+        apply(&mut s, grok_workflow_update(1, "active", None, None));
+        apply(&mut s, grok_workflow_update(5, "active", Some("Alpha"), Some("probe-agent")));
+        let (method, mut second) = grok_workflow_update(1, "active", None, None);
+        second["update"]["run_id"] = "wf_second".into();
+        apply(&mut s, (method, second));
+        assert_eq!(s.async_tasks.len(), 2);
+        assert_eq!(s.async_tasks[GROK_RUN_ID].phase.as_deref(), Some("Alpha"));
+        assert_eq!(s.async_tasks["wf_second"].phase.as_deref(), Some(""));
+
+        // A frame with no status says nothing about its run: no row from it.
+        let (method, mut blank) = grok_workflow_update(1, "active", None, None);
+        blank["update"]["run_id"] = "wf_blank".into();
+        blank["update"].as_object_mut().unwrap().remove("status");
+        let dispatch = Dispatch::Notification(UntypedMessage::new(method, blank).unwrap());
+        assert!(grok_workflow_task_delta(&dispatch, AgentType::Grok).is_none());
+    }
+
+    #[test]
+    fn a_grok_turn_completed_ends_only_the_open_agent_turn() {
+        let done = |id: Option<&str>| GrokTurnCompleted {
+            prompt_id: id.map(str::to_string),
+            stop_reason: "end_turn",
+        };
+        assert!(!grok_turn_completed_ends(None, &done(Some("p1"))));
+        assert!(grok_turn_completed_ends(Some("f"), &done(Some("f"))));
+        assert!(
+            !grok_turn_completed_ends(Some("f"), &done(Some("p1"))),
+            "a prompt's late turn_completed ends nothing"
+        );
+        assert!(grok_turn_completed_ends(Some("f"), &done(None)));
     }
 }
