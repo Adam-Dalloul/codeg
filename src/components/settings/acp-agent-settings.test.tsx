@@ -23,6 +23,7 @@ import {
   patchCodexConfigTomlText,
   patchEnvByImportantKey,
   patchImportantConfigText,
+  providerToRebindTo,
   codexSandboxSeedsAcpPreset,
   rebaseDeepSeekDraft,
   setAdapterChannel,
@@ -35,6 +36,7 @@ import type {
   AcpAgentInfo,
   AdapterInfo,
   AgentType,
+  ModelProviderInfo,
   PreflightResult,
 } from "@/lib/types"
 
@@ -147,6 +149,56 @@ function codexSandboxDraft(
     codexSandboxBaseline: codexSandboxBaselineOf(seeded),
   }
 }
+
+// Providers arrive ordered by row id, so falling straight to the head of the
+// list rebound the agent to its OLDEST provider whenever the auth-mode dropdown
+// round-tripped through another mode, and the rebind copies that provider's
+// model names over the one the user was on. The rendered round trip is pinned
+// in acp-agent-settings.provider-rebind.test.tsx.
+describe("providerToRebindTo", () => {
+  function provider(id: number): ModelProviderInfo {
+    return {
+      id,
+      name: `provider-${id}`,
+      api_url: "",
+      api_key: "",
+      api_key_masked: "",
+      agent_type: "claude_code",
+      model: null,
+      created_at: "",
+      updated_at: "",
+    }
+  }
+  const available = [provider(1), provider(2), provider(3)]
+
+  it("returns to the user's last pick, not the head", () => {
+    expect(providerToRebindTo(available, 2, null)?.id).toBe(2)
+  })
+
+  it("prefers the last pick over the binding saved on the agent", () => {
+    expect(providerToRebindTo(available, 3, 2)?.id).toBe(3)
+  })
+
+  it("returns to the saved binding when nothing was picked in the panel", () => {
+    expect(providerToRebindTo(available, undefined, 2)?.id).toBe(2)
+  })
+
+  it("skips a last pick that is gone and returns to the saved binding", () => {
+    expect(providerToRebindTo(available, 9, 2)?.id).toBe(2)
+  })
+
+  it("falls back to the head for a first-time pick", () => {
+    expect(providerToRebindTo(available, undefined, null)?.id).toBe(1)
+  })
+
+  it("falls back to the head when every candidate is gone", () => {
+    expect(providerToRebindTo([provider(3), provider(4)], 2, 1)?.id).toBe(3)
+  })
+
+  it("has nothing to bind to when no provider exists", () => {
+    expect(providerToRebindTo([], 2, 2)).toBeNull()
+  })
+})
 
 describe("buildCodexSandboxConfig — Codex sandbox/approval save patch", () => {
   // The core contract. The panel also sends the raw config.toml text and the
