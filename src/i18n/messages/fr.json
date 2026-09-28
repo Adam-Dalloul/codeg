@@ -3717,7 +3717,22 @@
           "outputMissing": "Codex a tronqué la sortie du script et supprimé le séparateur de cette commande ; aucune sortie n'a donc pu lui être attribuée.",
           "sharedWith": "Contient aussi la sortie de {commands} — codex en a tronqué les séparateurs.",
           "truncated": "tronqué"
-        }
+        },
+        "visualizeTitle": "Visualisation",
+        "visualizeWide": "Large",
+        "visualizeLoading": "Chargement de la visualisation…",
+        "visualizeError": "Impossible de charger la visualisation",
+        "visualizeReload": "Recharger",
+        "visualizeOpenFile": "Ouvrir le fichier",
+        "visualizeExpand": "Tout afficher",
+        "visualizeCollapse": "Réduire",
+        "visualizeScriptsOn": "Scripts activés",
+        "visualizeScriptsOff": "Activer les scripts",
+        "visualizeScriptsHint": "Exécute les scripts de la visualisation pour la rendre interactive. Elle s'exécute dans un bac à sable, sans accès au réseau ni à vos fichiers.",
+        "visualizeFrameTitle": "Visualisation Codex",
+        "htmlPreviewOpen": "Aperçu",
+        "htmlPreviewOpenAria": "Aperçu de {name}",
+        "htmlPreviewHide": "Masquer l’aperçu"
       },
       "messageNav": {
         "title": "Navigation des messages",
