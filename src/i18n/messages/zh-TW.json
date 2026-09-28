@@ -6117,7 +6117,7 @@
     "scenarioPlanFirst": "先出方案",
     "scenarioPlanFirstHint": "先確認問題真實存在，再產出實作方案就停——你確認後退回任務，於同一工作樹實作。",
     "scenarioReviewFix": "審查並修復",
-    "scenarioReviewFixHint": "審查改動並順手修掉問題，驗收後提交推回原分支。",
+    "scenarioReviewFixHint": "智慧體先判斷方案本身是否合理，合理才在其上修復問題；不合理就不提交任何程式碼，帶著審查回來等你處理。驗收後修復提交推回原分支。",
     "scenarioReviewOnly": "僅審查",
     "scenarioReviewOnlyHint": "只出審查報告（問題、位置、建議），不改程式碼——需要修時退回任務即可。",
     "settingsTitle": "面板設定",
