@@ -151,7 +151,7 @@ impl OpenCodeParser {
             .collect();
         // Each store arrives newest-first; a stable sort merges the two
         // without reordering a legacy-only database.
-        conversations.sort_by(|a, b| b.started_at.cmp(&a.started_at));
+        conversations.sort_by_key(|c| std::cmp::Reverse(c.started_at));
 
         Ok(conversations)
     }
