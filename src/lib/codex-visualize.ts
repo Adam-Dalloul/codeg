@@ -43,13 +43,26 @@ export type CodexVisualizeSegment =
   | { kind: "markdown"; text: string }
   | { kind: "visualize"; ref: CodexVisualizeRef; raw: string }
 
+/**
+ * The Codex marker written WITHOUT its Private Use Area fences — what other
+ * agents (e.g. Claude Code running the Codex visualize skill) tend to emit:
+ * `visualize{"path":"…"}` alone on its line. Only a whole line with valid JSON
+ * carrying a `path` counts, so prose that merely mentions the syntax is left
+ * alone.
+ */
+const BARE_VISUALIZE_LINE = /^\s*visualize(\{.*\})\s*$/
+
 /** `::preview{file="…"}` (Hermes), alone on its line. */
 const HERMES_PREVIEW_LINE =
   /^\s*:{1,2}preview\{\s*file\s*=\s*"([^"]+)"\s*\}\s*$/
 
 /** Cheap pre-check so the common (marker-free) reply never pays for a split. */
 export function hasCodexVisualizeRef(text: string): boolean {
-  return text.includes(MARKER_START) || text.includes("preview{")
+  return (
+    text.includes(MARKER_START) ||
+    text.includes("preview{") ||
+    text.includes("visualize{")
+  )
 }
 
 /**
@@ -108,6 +121,14 @@ export function splitCodexVisualizeRefs(text: string): CodexVisualizeSegment[] {
     }
     if (fence !== null) {
       markdown += line + eol
+      continue
+    }
+
+    const bare = BARE_VISUALIZE_LINE.exec(line)
+    const bareRef = bare ? parseCodexVisualizeArgs(bare[1]) : null
+    if (bareRef) {
+      flushMarkdown()
+      segments.push({ kind: "visualize", ref: bareRef, raw: line.trim() })
       continue
     }
 
@@ -241,7 +262,12 @@ export function findHtmlFileMentions(
       continue
     }
     if (fence !== null) continue
-    if (line.includes(MARKER_START) || HERMES_PREVIEW_LINE.test(line)) continue
+    if (
+      line.includes(MARKER_START) ||
+      HERMES_PREVIEW_LINE.test(line) ||
+      BARE_VISUALIZE_LINE.test(line)
+    )
+      continue
 
     const collect = (re: RegExp, allowRelative: boolean) => {
       re.lastIndex = 0

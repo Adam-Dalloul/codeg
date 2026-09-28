@@ -35,7 +35,6 @@ describe("parseCodexVisualizeArgs", () => {
 describe("splitCodexVisualizeRefs", () => {
   it("returns plain text untouched", () => {
     const text = "Just prose, nothing to visualize{here}."
-    expect(hasCodexVisualizeRef(text)).toBe(false)
     expect(splitCodexVisualizeRefs(text)).toEqual([{ kind: "markdown", text }])
   })
 
@@ -175,5 +174,34 @@ describe("findHtmlFileMentions", () => {
       "/a/1.html",
       "/a/2.html",
     ])
+  })
+})
+
+describe("unfenced visualize lines", () => {
+  it("renders a bare visualize{…} line (e.g. from Claude Code) in place", () => {
+    const text =
+      '春节放 9 天。\n\nvisualize{"path":"/Users/u/viz/holiday.html"}\n\n说明文字'
+    const segments = splitCodexVisualizeRefs(text)
+    expect(segments.map((s) => s.kind)).toEqual([
+      "markdown",
+      "visualize",
+      "markdown",
+    ])
+    expect(segments[1]).toMatchObject({
+      ref: { path: "/Users/u/viz/holiday.html", mode: "normal" },
+    })
+    expect(findHtmlFileMentions(text)).toEqual([])
+  })
+
+  it("leaves prose and invalid payloads that mention the syntax alone", () => {
+    for (const text of [
+      'Write visualize{"path":"/a.html"} on its own line.',
+      "visualize{not json}",
+      'visualize{"mode":"wide"}',
+    ]) {
+      expect(
+        splitCodexVisualizeRefs(text).every((s) => s.kind === "markdown")
+      ).toBe(true)
+    }
   })
 })
