@@ -138,7 +138,26 @@ describe("commits branch selection per worktree", () => {
     expect(coerceLiveBranchSelection("feature/x", branchList)).toBe("feature/x")
   })
 
-  it("migrates an author-only saved filter to the HEAD view", () => {
+  it("opens an author filter saved before the HEAD default on HEAD", () => {
+    // Exactly what the old writer stored for an author picked on the then
+    // default all-branches view: an unversioned null that was never a choice.
+    window.localStorage.setItem(
+      "codeg:gitlog:selection:/worktrees/a",
+      JSON.stringify({ branch: null, author: "Alice" })
+    )
+    expect(loadSelection("/worktrees/a")).toEqual({
+      branch: "HEAD",
+      author: "Alice",
+    })
+    // A branch that was picked back then is still honoured.
+    window.localStorage.setItem(
+      "codeg:gitlog:selection:/worktrees/b",
+      JSON.stringify({ branch: "feature/x", author: null })
+    )
+    expect(loadSelection("/worktrees/b").branch).toBe("feature/x")
+  })
+
+  it("treats a saved filter without a branch as the HEAD view", () => {
     window.localStorage.setItem(
       "codeg:gitlog:selection:/worktrees/a",
       JSON.stringify({ author: "Alice" })

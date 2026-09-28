@@ -243,6 +243,11 @@ export function canResetFromSelection(
 // the same view. No entry defaults to the live HEAD view; a saved null branch
 // means the user explicitly chose All branches.
 const SELECTION_KEY_PREFIX = "codeg:gitlog:selection:"
+// Entries without this version predate the HEAD default. Their null branch was
+// the old default view (git log --all), not a choice — and it was only ever
+// saved next to an author filter, since a null/null entry was deleted — so it
+// opens on HEAD, the same as a folder with no entry.
+const SELECTION_STORAGE_VERSION = 2
 
 type GitLogSelection = { branch: string | null; author: string | null }
 
@@ -258,10 +263,11 @@ export function loadSelection(folderPath: string): GitLogSelection {
     }
     return {
       branch:
-        parsed.branch === null
-          ? null
-          : typeof parsed.branch === "string" && parsed.branch.trim()
-            ? parsed.branch
+        typeof parsed.branch === "string" && parsed.branch.trim()
+          ? parsed.branch
+          : parsed.branch === null &&
+              parsed.version === SELECTION_STORAGE_VERSION
+            ? null
             : HEAD_BRANCH_FILTER,
       author: typeof parsed.author === "string" ? parsed.author : null,
     }
@@ -278,7 +284,7 @@ export function saveSelection(
   try {
     window.localStorage.setItem(
       SELECTION_KEY_PREFIX + folderPath,
-      JSON.stringify(selection)
+      JSON.stringify({ version: SELECTION_STORAGE_VERSION, ...selection })
     )
   } catch {
     // Best-effort — a failed persist just means the view won't be restored.
