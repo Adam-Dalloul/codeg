@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest"
 import {
   findHtmlFileMentions,
-  hasCodexVisualizeRef,
   isCompleteHtmlDocument,
   parseCodexVisualizeArgs,
   splitCodexVisualizeRefs,

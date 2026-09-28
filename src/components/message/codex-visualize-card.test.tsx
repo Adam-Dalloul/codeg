@@ -1,5 +1,5 @@
 import { type ReactNode } from "react"
-import { fireEvent, render, screen, waitFor } from "@testing-library/react"
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { NextIntlClientProvider } from "next-intl"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
@@ -159,12 +159,36 @@ describe("HTML files a reply mentions", () => {
     const card = await screen.findByTestId("codex-visualize-card")
     const frame = await frameOf(card)
     const doc = frame.getAttribute("srcdoc") ?? ""
-    // A complete document keeps its own markup, gains the sandbox CSP and
-    // the size reporter, and titles the card with its <title>.
+    // A complete document keeps its own markup and titles the card with its
+    // <title> — and, like codeg's file preview, runs no script (and gets no
+    // network) until the user enables scripts for it.
     expect(doc).toContain("<h1>Week 38</h1>")
-    expect(doc).toContain("Content-Security-Policy")
-    expect(doc).toContain("codeg-visualize:size")
+    expect(doc).toContain("script-src 'none'")
+    expect(doc).not.toContain("codeg-visualize:size")
+    expect(frame).toHaveAttribute("sandbox", "")
+    expect(frame.style.height).toBe("480px")
     await screen.findByText("Fitness Report")
+    const scriptsToggle = screen.getByRole("button", { name: /Enable scripts/ })
+    expect(scriptsToggle).toHaveAttribute("aria-pressed", "false")
+    expect(scriptsToggle).toHaveAttribute(
+      "title",
+      enMessages.Folder.fileWorkspacePanel.htmlPreviewTrustHint
+    )
+
+    fireEvent.click(scriptsToggle)
+    const trusted = await waitFor(() => {
+      const el = card.querySelector("iframe")
+      if (el?.getAttribute("sandbox") !== "allow-scripts")
+        throw new Error("still static")
+      return el
+    })
+    const trustedDoc = trusted.getAttribute("srcdoc") ?? ""
+    expect(trustedDoc).toContain("connect-src https: http:")
+    expect(trustedDoc).toContain("codeg-visualize:size")
+    expect(screen.getByRole("button", { name: /Scripts on/ })).toHaveAttribute(
+      "aria-pressed",
+      "true"
+    )
 
     fireEvent.click(screen.getByRole("button", { name: "Hide preview" }))
     expect(await screen.findByTestId("html-file-preview")).toBeInTheDocument()
@@ -219,6 +243,76 @@ describe("HTML files a reply mentions", () => {
         .join("")
     ).not.toContain("preview{")
   })
+
+  it("resolves a relative Hermes directive against the active folder", async () => {
+    // Hermes' own prompt teaches `::preview{file="path.html"}`, relative to
+    // the session's working directory.
+    mocks.activeFolderPath = "/repo"
+    mocks.readFileBase64.mockResolvedValue(toBase64("<p>widget</p>"))
+    renderText('Here:\n::preview{file="out/chart.html"}')
+    await screen.findByTestId("codex-visualize-card")
+    await waitFor(() =>
+      expect(mocks.readFileBase64).toHaveBeenCalledWith(
+        "/repo/out/chart.html",
+        expect.any(Number)
+      )
+    )
+  })
+
+  it("does not read a relative directive when there is no folder", async () => {
+    renderText('::preview{file="chart.html"}')
+    await screen.findByText("Could not load the visualization")
+    expect(
+      screen.getByText(enMessages.Folder.chat.linkSafety.errorNoWorkspace)
+    ).toBeInTheDocument()
+    expect(mocks.readFileBase64).not.toHaveBeenCalled()
+  })
+})
+
+describe("frame sizing", () => {
+  const sizeMessage = (frame: HTMLIFrameElement, height: number) =>
+    window.dispatchEvent(
+      new MessageEvent("message", {
+        data: { type: "codeg-visualize:size", height },
+        source: frame.contentWindow,
+      })
+    )
+
+  it("follows the reported height, down as well as up", async () => {
+    mocks.readFileBase64.mockResolvedValue(toBase64("<p>chart</p>"))
+    renderText(MARKER)
+    const card = await screen.findByTestId("codex-visualize-card")
+    const frame = await waitFor(() => {
+      const el = card.querySelector("iframe")
+      if (!el) throw new Error("no iframe yet")
+      return el
+    })
+    expect(frame.style.height).toBe("320px")
+
+    act(() => sizeMessage(frame, 150))
+    expect(frame.style.height).toBe("150px")
+
+    // Taller than the collapsed cap: capped until "Show all".
+    act(() => sizeMessage(frame, 5000))
+    expect(frame.style.height).toBe("640px")
+    fireEvent.click(screen.getByRole("button", { name: "Show all" }))
+    expect(frame.style.height).toBe("5000px")
+
+    // A runaway report stops at the backstop.
+    act(() => sizeMessage(frame, 1e7))
+    expect(frame.style.height).toBe("12000px")
+
+    // Reports from anything but this card's frame are ignored.
+    act(() =>
+      window.dispatchEvent(
+        new MessageEvent("message", {
+          data: { type: "codeg-visualize:size", height: 200 },
+          source: window,
+        })
+      )
+    )
+    expect(frame.style.height).toBe("12000px")
+  })
 })
 
 describe("buildVisualizeDocument", () => {
@@ -239,9 +333,28 @@ describe("buildVisualizeDocument", () => {
     expect(doc).toContain("<p>hi</p>")
     expect(doc).toMatch(/Content-Security-Policy.*default-src 'none'/)
     // The frame paints no page background of its own, so the card's surface
-    // (and the workspace background behind it) shows through.
-    expect(doc).toContain("html,body{background:transparent !important")
+    // (and the workspace background behind it) shows through — on `:root`,
+    // which the skill's own `:root{…!important}` background would otherwise
+    // outrank.
+    expect(doc).toContain(":root,body{background:transparent !important")
     expect(doc).toContain("html>body{padding:1rem 1.25rem}")
+    // In-page links stay in the frame instead of loading codeg into it.
+    expect(doc).toContain('<base href="about:srcdoc">')
+    expect(doc).toContain("base-uri about:")
+  })
+
+  it("gives fragments the window.openai state API before they run", () => {
+    const doc = buildVisualizeDocument({
+      fragment: "<script>draw(window.openai.widgetState)</script>",
+      assets,
+      title: "t",
+      dark: false,
+      themeOverrides: "",
+    })
+    const stub = doc.indexOf("window.openai=openai")
+    expect(stub).toBeGreaterThan(-1)
+    expect(stub).toBeLessThan(doc.indexOf("draw(window.openai.widgetState)"))
+    expect(doc).toContain('theme:"light"')
   })
 
   it("puts the fragment into the plugin kit's slot when one is available", () => {

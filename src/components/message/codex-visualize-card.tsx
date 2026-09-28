@@ -14,12 +14,19 @@ import {
 import { useTranslations } from "next-intl"
 import { useTheme } from "next-themes"
 import { FilePathLink } from "@/components/ai-elements/link-safety"
+import { useActiveFolder } from "@/contexts/active-folder-context"
 import {
   getHomeDirectory,
   listDirectoryEntries,
   readFileBase64,
   readWorkspaceFileBase64,
 } from "@/lib/api"
+import {
+  expandHomePath,
+  isHomeRelativePath,
+  joinRootRel,
+} from "@/lib/file-open-target"
+import { isAbsoluteFilePath } from "@/lib/file-path-display"
 import {
   extractHtmlTitle,
   inlineHtmlResources,
@@ -45,8 +52,14 @@ import { cn } from "@/lib/utils"
  *     the fragment still has sensible colours.
  *   - the frame CSP is the skill's: inline scripts may run (interactivity is
  *     the point of these visuals) but the frame cannot reach the network
- *     except for the handful of CDNs the skill itself allows, cannot open
- *     sub-frames, submit forms or navigate.
+ *     except for the handful of CDNs the skill itself allows, and cannot open
+ *     sub-frames or submit forms.
+ *   - `window.openai` is stubbed the way the skill's standalone bridge does
+ *     it, since fragments are told to read and save their state through it.
+ *
+ * A *complete* document (anything an agent wrote as a page) is not a Codex
+ * fragment and gets codeg's file-preview treatment instead — including its
+ * rule that no script runs until the user enables scripts for it.
  *
  * The theme-variable contract (`--background`, `--foreground`, `--card`…) uses
  * the same names codeg's own shadcn tokens use, so the current codeg theme is
@@ -60,7 +73,12 @@ const FRAGMENT_PLACEHOLDER = "<!--__INLINE_VISUALIZATION_FRAGMENT__-->"
 const MAX_FRAGMENT_BYTES = 4 * 1024 * 1024
 const MIN_FRAME_HEIGHT = 96
 const DEFAULT_FRAME_HEIGHT = 320
+/** A document shown without scripts cannot report its height; give it a
+ *  reading-sized window that scrolls. */
+const STATIC_DOCUMENT_HEIGHT = 480
 const COLLAPSED_MAX_HEIGHT = 640
+/** Backstop for "Show all": past this the frame scrolls instead of growing. */
+const MAX_FRAME_HEIGHT = 12000
 const SIZE_MESSAGE_TYPE = "codeg-visualize:size"
 
 const RESOURCE_SOURCES = [
@@ -86,9 +104,18 @@ const FRAME_CSP = [
   "connect-src blob: data:",
   "frame-src 'none'",
   "object-src 'none'",
-  "base-uri 'none'",
+  // The skill's own policy says `'none'`; codeg pins the base to the frame's
+  // `about:srcdoc` instead (see FRAME_BASE), which no external origin can use.
+  "base-uri about:",
   "form-action 'none'",
 ].join("; ")
+
+/**
+ * A `srcdoc` document without a `<base>` resolves URLs against the PARENT's
+ * base URL, so an in-page `#anchor` link would navigate the frame to codeg
+ * itself. Same pin as the file preview's (`html-preview-inline.ts`).
+ */
+const FRAME_BASE = `<base href="about:srcdoc">`
 
 /** Names shared by the skill's contract and codeg's theme tokens. */
 const THEME_TOKENS = [
@@ -167,14 +194,6 @@ svg text{fill:var(--foreground)}
 `
 
 /**
- * The skill's stylesheet paints `:root` with `--background` (`!important`), which
- * is right for a standalone page but wrong inside a transcript: the card sits on
- * whatever the window shows — a plain surface, or the user's workspace background
- * image — and an opaque cream slab in the middle of it reads as a foreign object.
- * Painting nothing lets the card's own (translucent-when-backgrounded) surface
- * show through; the fragment's cards/buttons keep their `--card` / `--muted` fills.
- */
-/**
  * Breathing room between the fragment and the card edge. In the Codex app the
  * outer shell supplies this (`body{padding:1rem}` around the inner frame); this
  * card has no shell, so the inner document carries it instead of the skill's
@@ -182,11 +201,63 @@ svg text{fill:var(--foreground)}
  */
 const FRAME_PADDING = "1rem 1.25rem"
 
+/**
+ * The skill's stylesheet paints `:root` with `--background` (`!important`), which
+ * is right for a standalone page but wrong inside a transcript: the card sits on
+ * whatever the window shows — a plain surface, or the user's workspace background
+ * image — and an opaque cream slab in the middle of it reads as a foreign object.
+ * Painting nothing lets the card's own (translucent-when-backgrounded) surface
+ * show through; the fragment's cards/buttons keep their `--card` / `--muted` fills.
+ * The selector has to be `:root` too: the skill's rule is `:root{…!important}`,
+ * which an `html{…!important}` rule loses to on specificity.
+ */
 const TRANSPARENT_CANVAS_CSS =
-  "html,body{background:transparent !important;background-color:transparent !important}"
+  ":root,body{background:transparent !important;background-color:transparent !important}"
 
-/** Reports the document's height to the parent whenever it changes. */
-const SIZE_REPORTER = `<script>(()=>{const post=()=>{const d=document.documentElement,b=document.body;const h=Math.ceil(Math.max(d.scrollHeight,b?b.scrollHeight:0));parent.postMessage({type:${JSON.stringify(SIZE_MESSAGE_TYPE)},height:h},"*")};const ro=new ResizeObserver(post);ro.observe(document.documentElement);if(document.body)ro.observe(document.body);new MutationObserver(post).observe(document.documentElement,{subtree:true,childList:true,attributes:true});addEventListener("load",post);post();})();</script>`
+/**
+ * Reports the content's height to the parent whenever it changes.
+ *
+ * Measured off the content boxes — the root's box (which holds `<body>`'s
+ * margins, collapsed ones included) and `<body>`'s own overflow — never off
+ * the root's `scrollHeight`, which does not drop below the frame's current
+ * height and so could only ever grow the card. Nothing is reported before
+ * there is a layout to measure. Content whose height follows the viewport
+ * (`100vh` layouts) grows by exactly as much as the frame does; once a resize
+ * shows that, the reporter falls silent and the frame keeps the height it last
+ * asked for (the content scrolls), or every step of "Show all" would ask for
+ * another — and chasing a mid-transition viewport would never settle either.
+ */
+const SIZE_REPORTER = `<script>(()=>{
+const type=${JSON.stringify(SIZE_MESSAGE_TYPE)};
+let lastHeight=0,lastViewport=innerHeight,sent=0,coupled=false,queued=false;
+const measure=()=>{const d=document.documentElement,b=document.body;if(!b)return 0;const root=d.getBoundingClientRect().height,box=b.getBoundingClientRect().height;if(root===0&&box===0)return 0;const s=getComputedStyle(b);return Math.ceil(Math.max(root,Math.max(b.scrollHeight,box)+(parseFloat(s.marginTop)||0)+(parseFloat(s.marginBottom)||0)))};
+const send=(h)=>{if(!coupled&&h>0&&h!==sent){sent=h;parent.postMessage({type,height:h},"*")}};
+const update=()=>{queued=false;lastHeight=measure();lastViewport=innerHeight;send(lastHeight)};
+const schedule=()=>{if(!queued){queued=true;requestAnimationFrame(update)}};
+addEventListener("resize",()=>{const h=measure(),v=innerHeight;if(lastHeight>0&&lastViewport>0&&v>lastViewport&&h>v&&Math.abs(h-lastHeight-(v-lastViewport))<=1)coupled=true;lastHeight=h;lastViewport=v;send(h)});
+const ro=new ResizeObserver(schedule);ro.observe(document.documentElement);if(document.body)ro.observe(document.body);
+new MutationObserver(schedule).observe(document.documentElement,{subtree:true,childList:true,attributes:true,characterData:true});
+addEventListener("load",update);
+})();</script>`
+
+/**
+ * The skill tells fragments to keep their state through `window.openai`
+ * (`widgetState` / `setWidgetState`, `sendFollowUpMessage`…), so a fragment
+ * that reads `window.openai.widgetState` while it renders throws — and draws
+ * nothing — in a frame without it. Stubbed the way the skill's standalone
+ * bridge (what `render.py` exports) does, minus the host channel: state lives
+ * as long as the frame, and nothing is persisted or sent anywhere.
+ */
+function openaiStub(theme: "light" | "dark"): string {
+  return `<script>(()=>{
+let state=null;
+const openai={theme:${JSON.stringify(theme)},visualizationTheme:${JSON.stringify(theme)},visualizationStyleVariables:{},statePersistence:"none",stateModelContext:"none",widgetState:null,
+setWidgetState:async(next)=>{const value=typeof next==="function"?next(state):next;if(value===null||typeof value!=="object"||Array.isArray(value))throw new TypeError("Widget state must be a JSON object");state=value;openai.widgetState=value;dispatchEvent(new CustomEvent("openai:set_globals",{detail:{globals:{widgetState:value}}}))},
+sendFollowUpMessage:async()=>{},
+openExternal:()=>{}};
+window.openai=openai;
+})();</script>`
+}
 
 interface VisualizeAssets {
   css: string
@@ -286,11 +357,19 @@ function escapeClosingScript(source: string): string {
   return source.replace(/<\/script/gi, "<\\/script")
 }
 
-/** `~/…` → absolute, against the (remote-aware) home directory. */
-async function expandHomePath(path: string): Promise<string> {
-  if (path !== "~" && !path.startsWith("~/")) return path
-  const home = (await getHomeDirectory()).replace(/[\\/]+$/, "")
-  return home + path.slice(1)
+/**
+ * The file a reference names, as an absolute path: `~/…` against the
+ * (remote-aware) home directory, and a relative path — Hermes writes
+ * `::preview{file="chart.html"}` against the session's working directory —
+ * against the active folder. `null` when it is relative and there is no folder.
+ */
+async function resolvePreviewPath(
+  path: string,
+  folderPath: string | null
+): Promise<string | null> {
+  if (isHomeRelativePath(path)) return expandHomePath(path)
+  if (isAbsoluteFilePath(path)) return path
+  return folderPath ? joinRootRel(folderPath, path) : null
 }
 
 /**
@@ -298,7 +377,7 @@ async function expandHomePath(path: string): Promise<string> {
  * mockup): shown as-is, the way codeg's own file preview shows it — sibling
  * local resources (css / js / images next to it) inlined, the file preview's
  * sandbox CSP applied (strict with scripts off, open-web with scripts on) —
- * plus the size reporter so the card can fit its height.
+ * plus, when scripts run, the size reporter so the card can fit its height.
  */
 export async function buildCompleteDocument(
   html: string,
@@ -309,15 +388,18 @@ export async function buildCompleteDocument(
   const inlined = await inlineHtmlResources(html, {
     fileDir,
     folderPath: fileDir,
+    // The inliner hands over absolute, slash-normalized paths inside
+    // `fileDir`; the confined backend read wants them relative to it.
     readFileBase64: (resource) => {
-      const root = fileDir.replace(/\/+$/, "")
-      const rel = resource.startsWith(root + "/")
-        ? resource.slice(root.length + 1)
-        : resource
+      const root = fileDir.replace(/\\/g, "/").replace(/\/+$/, "")
+      const abs = resource.replace(/\\/g, "/")
+      const rel = abs.startsWith(root + "/") ? abs.slice(root.length + 1) : abs
       return readWorkspaceFileBase64(fileDir, rel)
     },
   })
   const withCsp = withSandboxCsp(inlined, { trusted: scripts })
+  // Without scripts the reporter could not run anyway.
+  if (!scripts) return withCsp
   const bodyEnd = withCsp.toLowerCase().lastIndexOf("</body>")
   return bodyEnd === -1
     ? withCsp + SIZE_REPORTER
@@ -355,11 +437,13 @@ export function buildVisualizeDocument({
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="referrer" content="no-referrer">
 <meta http-equiv="Content-Security-Policy" content="${FRAME_CSP}">
+${FRAME_BASE}
 <title>${escapedTitle}</title>
 <style>${assets.css}
 html>body{padding:${FRAME_PADDING}}</style>
 <style>${themeOverrides}</style>
 <style>${TRANSPARENT_CANVAS_CSS}</style>
+${openaiStub(dark ? "dark" : "light")}
 </head>
 <body>
 ${body}
@@ -387,10 +471,15 @@ interface LoadResult {
   error: string | null
   /** The document's own `<title>`, when it is a complete document. */
   title: string | null
+  /** A complete document rather than a Codex fragment. */
+  complete: boolean
+  /** Whether `srcDoc` was built for, and must be framed with, scripts on. */
+  scripts: boolean
 }
 
 interface CodexVisualizeCardProps {
-  /** Absolute path, or `~/…`, of the HTML fragment or document. */
+  /** The HTML fragment or document: absolute, `~/…`, or relative to the
+   *  active folder. */
   path: string
   mode: CodexVisualizeMode
   className?: string
@@ -406,10 +495,20 @@ export const CodexVisualizeCard = memo(function CodexVisualizeCard({
   onCollapse,
 }: CodexVisualizeCardProps) {
   const t = useTranslations("Folder.chat.contentParts")
+  const tFiles = useTranslations("Folder.fileWorkspacePanel")
+  const tLinks = useTranslations("Folder.chat.linkSafety")
   const { resolvedTheme } = useTheme()
   const dark = resolvedTheme === "dark"
+  const { activeFolder } = useActiveFolder()
+  // Only a relative path depends on the folder (and reloads when it changes).
+  const folderPath =
+    isHomeRelativePath(path) || isAbsoluteFilePath(path)
+      ? null
+      : (activeFolder?.path ?? null)
 
-  const [scripts, setScripts] = useState(true)
+  // The user's scripts choice for this card; `null` until they make one,
+  // which means the default for what the file turns out to be (see the load).
+  const [scriptsChoice, setScriptsChoice] = useState<boolean | null>(null)
   const [expanded, setExpanded] = useState(false)
   const [reloadKey, setReloadKey] = useState(0)
   // Both results are tagged with the load they belong to, so switching path /
@@ -422,24 +521,32 @@ export const CodexVisualizeCard = memo(function CodexVisualizeCard({
   const frameRef = useRef<HTMLIFrameElement | null>(null)
 
   const pathTitle = titleFromPath(path)
-  // `scripts` is part of the key: a complete document's CSP follows it.
-  const loadKey = `${path}\u0000${dark ? "dark" : "light"}\u0000${scripts ? 1 : 0}\u0000${reloadKey}`
+  const noFolderMessage = tLinks("errorNoWorkspace")
+  // The scripts choice is part of the key: a complete document's CSP follows it.
+  const loadKey = `${path}\u0000${folderPath ?? ""}\u0000${dark ? "dark" : "light"}\u0000${scriptsChoice ?? "default"}\u0000${reloadKey}`
 
   useEffect(() => {
     let cancelled = false
-    ;(async () => {
-      const absPath = await expandHomePath(path)
+    ;(async (): Promise<Omit<LoadResult, "key" | "error">> => {
+      const absPath = await resolvePreviewPath(path, folderPath)
+      if (absPath === null) throw new Error(noFolderMessage)
       const b64 = await readFileBase64(absPath, MAX_FRAGMENT_BYTES)
       const html = decodeBase64Utf8(b64)
       if (isCompleteHtmlDocument(html)) {
+        // An arbitrary page, not a Codex fragment: as in codeg's file preview,
+        // none of its scripts run — and it gets no network — until the user
+        // enables them for it.
+        const scripts = scriptsChoice ?? false
         return {
-          doc: await buildCompleteDocument(html, absPath, scripts),
+          srcDoc: await buildCompleteDocument(html, absPath, scripts),
           title: extractHtmlTitle(html) || null,
+          complete: true,
+          scripts,
         }
       }
       const assets = await getVisualizeAssets()
       return {
-        doc: buildVisualizeDocument({
+        srcDoc: buildVisualizeDocument({
           fragment: html,
           assets,
           title: pathTitle,
@@ -447,11 +554,14 @@ export const CodexVisualizeCard = memo(function CodexVisualizeCard({
           themeOverrides: readThemeOverrides(),
         }),
         title: null,
+        complete: false,
+        // Interactivity is the point of a fragment, and its CSP keeps it off
+        // the network (bar the skill's CDNs) with no local files inlined.
+        scripts: scriptsChoice ?? true,
       }
     })()
-      .then(({ doc, title }) => {
-        if (!cancelled)
-          setLoaded({ key: loadKey, srcDoc: doc, error: null, title })
+      .then((result) => {
+        if (!cancelled) setLoaded({ key: loadKey, error: null, ...result })
       })
       .catch((err: unknown) => {
         if (!cancelled)
@@ -460,12 +570,22 @@ export const CodexVisualizeCard = memo(function CodexVisualizeCard({
             srcDoc: null,
             error: err instanceof Error ? err.message : String(err),
             title: null,
+            complete: false,
+            scripts: false,
           })
       })
     return () => {
       cancelled = true
     }
-  }, [path, dark, pathTitle, scripts, loadKey])
+  }, [
+    path,
+    folderPath,
+    dark,
+    pathTitle,
+    scriptsChoice,
+    noFolderMessage,
+    loadKey,
+  ])
 
   useEffect(() => {
     const onMessage = (event: MessageEvent) => {
@@ -475,24 +595,38 @@ export const CodexVisualizeCard = memo(function CodexVisualizeCard({
       if (!data || data.type !== SIZE_MESSAGE_TYPE) return
       if (typeof data.height !== "number" || !Number.isFinite(data.height))
         return
-      const height = Math.max(MIN_FRAME_HEIGHT, Math.ceil(data.height))
-      setMeasured({ key: loadKey, height })
+      const height = Math.min(
+        MAX_FRAME_HEIGHT,
+        Math.max(MIN_FRAME_HEIGHT, Math.ceil(data.height))
+      )
+      setMeasured((prev) =>
+        prev?.key === loadKey && prev.height === height
+          ? prev
+          : { key: loadKey, height }
+      )
     }
     window.addEventListener("message", onMessage)
     return () => window.removeEventListener("message", onMessage)
   }, [loadKey])
 
+  const current = loaded?.key === loadKey ? loaded : null
+  // Before the file is read its kind is unknown, so show the safe state.
+  const scripts = current ? current.scripts : (scriptsChoice ?? false)
+
   const reload = useCallback(() => setReloadKey((k) => k + 1), [])
-  const toggleScripts = useCallback(() => setScripts((v) => !v), [])
+  const toggleScripts = useCallback(() => setScriptsChoice(!scripts), [scripts])
   const toggleExpanded = useCallback(() => setExpanded((v) => !v), [])
 
-  const current = loaded?.key === loadKey ? loaded : null
   const title = current?.title || pathTitle
   const srcDoc = current?.srcDoc ?? null
   const error = current?.error ?? null
   const loading = current === null
   const contentHeight =
-    measured?.key === loadKey ? measured.height : DEFAULT_FRAME_HEIGHT
+    measured?.key === loadKey
+      ? measured.height
+      : current?.complete && !current.scripts
+        ? STATIC_DOCUMENT_HEIGHT
+        : DEFAULT_FRAME_HEIGHT
   const overflows = contentHeight > COLLAPSED_MAX_HEIGHT
   const frameHeight =
     expanded || !overflows ? contentHeight : COLLAPSED_MAX_HEIGHT
@@ -527,7 +661,11 @@ export const CodexVisualizeCard = memo(function CodexVisualizeCard({
             type="button"
             onClick={toggleScripts}
             aria-pressed={scripts}
-            title={t("visualizeScriptsHint")}
+            title={
+              current?.complete
+                ? tFiles("htmlPreviewTrustHint")
+                : t("visualizeScriptsHint")
+            }
             className={cn(
               "inline-flex h-7 shrink-0 items-center gap-1.5 rounded-full px-2 text-xs transition-colors",
               scripts
@@ -597,7 +735,6 @@ export const CodexVisualizeCard = memo(function CodexVisualizeCard({
             referrerPolicy="no-referrer"
             srcDoc={srcDoc}
             style={{ height: frameHeight }}
-            allowTransparency
             className="block w-full border-0 bg-transparent transition-[height] duration-150"
           />
         )}
