@@ -228,6 +228,11 @@ export const SidebarSectionHeader = memo(function SidebarSectionHeader({
                     data-recent-filter={recentFilter}
                     className={cn(
                       actionButtonClassName,
+                      // The modal menu sets `pointer-events: none` on <body>
+                      // while open, which drops the row's hover — without this
+                      // the hover-revealed trigger fades out from under its
+                      // own open menu.
+                      "data-[state=open]:opacity-100",
                       // An active filter is state the user must be able to see
                       // without hovering; only the neutral "all" hides with the
                       // rest.

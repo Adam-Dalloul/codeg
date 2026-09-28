@@ -206,9 +206,14 @@ describe("SidebarSectionHeader recent-section filter", () => {
       />
     )
     await settle()
-    click(screen.getByLabelText("Show in Recent: All"))
+    const trigger = screen.getByLabelText("Show in Recent: All")
+    click(trigger)
     await settle()
     expect(screen.getByText("Show in Recent")).toBeInTheDocument()
+    // The open menu disables pointer events outside it, so the row loses its
+    // hover; the trigger has to hold itself visible off its own open state.
+    expect(trigger).toHaveAttribute("data-state", "open")
+    expect(trigger).toHaveClass("data-[state=open]:opacity-100")
     const options = screen.getAllByRole("menuitemradio")
     expect(options.map((o) => o.textContent)).toEqual([
       "All",
@@ -223,34 +228,35 @@ describe("SidebarSectionHeader recent-section filter", () => {
   })
 
   it("names the active filter on the trigger and keeps it visible", () => {
-    const { getByLabelText, rerender } = renderWithIntl(
-      <SidebarSectionHeader
-        section="recent"
-        expanded
-        onToggle={onToggle}
-        recentFilter="chats"
-        onRecentFilterChange={onRecentFilterChange}
-      />
-    )
-    expect(getByLabelText("Show in Recent: Chat")).toHaveAttribute(
-      "data-recent-filter",
-      "chats"
-    )
-    rerender(
+    const header = (recentFilter: "all" | "chats" | "folders") => (
       <NextIntlClientProvider locale="en" messages={enMessages}>
         <SidebarSectionHeader
           section="recent"
           expanded
           onToggle={onToggle}
-          recentFilter="folders"
+          recentFilter={recentFilter}
           onRecentFilterChange={onRecentFilterChange}
         />
       </NextIntlClientProvider>
     )
-    expect(getByLabelText("Show in Recent: Folders")).toHaveAttribute(
-      "data-recent-filter",
-      "folders"
-    )
+    const { getByLabelText, rerender } = render(header("chats"))
+    const chats = getByLabelText("Show in Recent: Chat")
+    expect(chats).toHaveAttribute("data-recent-filter", "chats")
+    // jsdom applies no stylesheet, so the classes are the visibility contract:
+    // a narrowing filter pins the trigger on, instead of hover-revealing it.
+    expect(chats).toHaveClass("opacity-100")
+    expect(chats).not.toHaveClass("opacity-0")
+
+    rerender(header("folders"))
+    const folders = getByLabelText("Show in Recent: Folders")
+    expect(folders).toHaveAttribute("data-recent-filter", "folders")
+    expect(folders).toHaveClass("opacity-100")
+
+    // Back on "all" nothing is narrowed, so it hides with the other actions.
+    rerender(header("all"))
+    const all = getByLabelText("Show in Recent: All")
+    expect(all).toHaveClass("opacity-0")
+    expect(all).not.toHaveClass("opacity-100")
   })
 
   it("renders no filter menu on other sections", () => {
