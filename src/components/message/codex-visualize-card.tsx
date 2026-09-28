@@ -481,8 +481,6 @@ interface LoadResult {
   complete: boolean
   /** Whether `srcDoc` was built for, and must be framed with, scripts on. */
   scripts: boolean
-  /** The file that was read, once resolved. */
-  absPath: string | null
 }
 
 interface CodexVisualizeCardProps {
@@ -554,7 +552,6 @@ export const CodexVisualizeCard = memo(function CodexVisualizeCard({
           title: extractHtmlTitle(html) || null,
           complete: true,
           scripts,
-          absPath,
         }
       }
       const assets = await getVisualizeAssets()
@@ -571,7 +568,6 @@ export const CodexVisualizeCard = memo(function CodexVisualizeCard({
         // Interactivity is the point of a fragment, and its CSP keeps it off
         // the network (bar the skill's CDNs) with no local files inlined.
         scripts: choice ?? true,
-        absPath,
       }
     })()
       .then((result) => {
@@ -586,7 +582,6 @@ export const CodexVisualizeCard = memo(function CodexVisualizeCard({
             title: null,
             complete: false,
             scripts: false,
-            absPath: null,
           })
       })
     return () => {
@@ -626,6 +621,16 @@ export const CodexVisualizeCard = memo(function CodexVisualizeCard({
     [target, scripts]
   )
   const toggleExpanded = useCallback(() => setExpanded((v) => !v), [])
+
+  // What "Open file" opens, resolved the way the load resolves it — before the
+  // read finishes and after it fails too — and never handed to the opener as
+  // a relative name, which it would resolve against the active folder. (A
+  // `~/` path is self-locating for the opener.)
+  const openPath = isRelativePath(path)
+    ? baseDir
+      ? joinRootRel(baseDir, path)
+      : null
+    : path
 
   const title = current?.title || pathTitle
   const srcDoc = current?.srcDoc ?? null
@@ -699,16 +704,16 @@ export const CodexVisualizeCard = memo(function CodexVisualizeCard({
           >
             <RotateCw className="h-3.5 w-3.5" />
           </button>
-          <FilePathLink
-            // The resolved file, so a relative name opens what the card shows
-            // rather than being re-resolved against the active folder.
-            filePath={current?.absPath ?? path}
-            title={t("visualizeOpenFile")}
-            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-muted-foreground hover:bg-primary/8"
-          >
-            <ExternalLink className="h-3.5 w-3.5" />
-            <span className="sr-only">{t("visualizeOpenFile")}</span>
-          </FilePathLink>
+          {openPath !== null ? (
+            <FilePathLink
+              filePath={openPath}
+              title={t("visualizeOpenFile")}
+              className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-muted-foreground hover:bg-primary/8"
+            >
+              <ExternalLink className="h-3.5 w-3.5" />
+              <span className="sr-only">{t("visualizeOpenFile")}</span>
+            </FilePathLink>
+          ) : null}
           {onCollapse ? (
             <button
               type="button"

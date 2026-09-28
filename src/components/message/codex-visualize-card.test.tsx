@@ -26,8 +26,16 @@ vi.mock("next-themes", () => ({
 }))
 
 vi.mock("@/components/ai-elements/link-safety", () => ({
-  FilePathLink: ({ children }: { children: ReactNode }) => (
-    <span>{children}</span>
+  FilePathLink: ({
+    children,
+    filePath,
+  }: {
+    children: ReactNode
+    filePath: string
+  }) => (
+    <span data-testid="open-file" data-file-path={filePath}>
+      {children}
+    </span>
   ),
   useStreamdownLinkSafety: () => ({ enabled: false }),
 }))
@@ -264,6 +272,23 @@ describe("HTML files a reply mentions", () => {
       screen.getByText(enMessages.Folder.chat.linkSafety.errorNoWorkspace)
     ).toBeInTheDocument()
     expect(mocks.readFileBase64).not.toHaveBeenCalled()
+    // Nor offer to open it: the opener would resolve the bare name against
+    // whatever folder happens to be active.
+    expect(screen.queryByTestId("open-file")).toBeNull()
+  })
+
+  it("opens the transcript's file, even when it cannot be previewed", async () => {
+    mocks.readFileBase64.mockRejectedValue(new Error("File does not exist"))
+    renderText('::preview{file="out/report.html"}', "/repo")
+    expect(screen.getByTestId("open-file")).toHaveAttribute(
+      "data-file-path",
+      "/repo/out/report.html"
+    )
+    await screen.findByText("File does not exist")
+    expect(screen.getByTestId("open-file")).toHaveAttribute(
+      "data-file-path",
+      "/repo/out/report.html"
+    )
   })
 
   it("does not carry a scripts choice over to another folder's file", async () => {
