@@ -1611,8 +1611,13 @@
       "wireValuesTitle": "詳細: プロバイダーに送る値",
       "wireValuesHint": "空欄ならレベル名をそのまま送信します。エンドポイントが別の表記を求める場合のみ設定してください（Google 系は LOW / HIGH）。",
       "defaultLevelUnlisted": "このレベルは上の選択リストにありません。pi が丸めてしまいます。",
-      "capabilitiesUnverified": "Pi はまだこのモデルを一覧に表示していません。API キーを保存してから、利用可能な思考レベルを確認してください。",
-      "runtimeTooOld": "pi-acp 0.0.34 には Pi 0.81.0 以降が必要です。セッションを開始する前に Pi を更新してください。"
+      "modelLevels": "{model} の思考レベル：{levels}。",
+      "modelNoThinking": "{model} には思考レベルがありません。Pi は常に思考オフで実行します。",
+      "levelClamped": "{model} には「{level}」がないため、Pi は「{effective}」で実行します。「{level}」があるモデルは引き続き「{level}」で実行されます。",
+      "modelNotListed": "Pi はこのプロバイダーでこのモデルを一覧に表示していません。モデル ID を確認してください。Pi は API キーまたはログインがあるプロバイダーのみを表示します。",
+      "catalogUnavailable": "このモデルの思考レベルを Pi に問い合わせできませんでした。",
+      "configLoadFailed": "Pi の設定を読み込めませんでした：{message}",
+      "runtimeTooOld": "この Pi は古すぎます。Codeg でセッションを開くには Pi {min} 以降が必要です。先に Pi を更新してください。"
     },
     "addCustomAgent": "カスタムエージェントを追加",
     "addCustomAgentHint": "ACP 対応のエージェントを追加できます。公開 ACP レジストリから選ぶか、レジストリ情報を貼り付けてください。",
@@ -3038,6 +3043,7 @@
           "turnFailedUnknown": "{agent} が不明な停止理由でターンを終了しました。",
           "turnFailedAuthRequired": "{agent} はこのターンを実行する前に再度のサインインを必要としています。設定からサインインしてから、メッセージを送り直してください。",
           "agentAuthRequired": "{agent} はセッションを開始できませんでした。使用可能な認証情報がありません。設定 → エージェント → {agent} で再度サインインしてから、この会話を開き直してください。",
+          "agentRuntimeOutdated": "{agent} はこのバージョンの Codeg には古すぎます。更新してから、この会話を開き直してください。",
           "grokModelSwitchIncompatibleAgent": "{agent} は既存の会話ではこのモデルに切り替えられません。新しいセッションを開始して使用してください。",
           "setModeFailed": "{agent} はモードを切り替えられませんでした。",
           "setConfigOptionFailed": "{agent} はその設定を適用できませんでした。",

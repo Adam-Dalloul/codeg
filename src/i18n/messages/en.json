@@ -1611,8 +1611,13 @@
       "wireValuesTitle": "Advanced: values sent to the provider",
       "wireValuesHint": "Leave blank to send the level name as-is. Set one when your endpoint expects something else — Google-style backends want LOW / HIGH.",
       "defaultLevelUnlisted": "This level isn't in the available list above — pi would clamp it.",
-      "capabilitiesUnverified": "Pi has not listed this model yet. Save its API key, then verify available thinking levels.",
-      "runtimeTooOld": "pi-acp 0.0.34 requires Pi 0.81.0 or newer. Update this Pi runtime before starting a session."
+      "modelLevels": "{model} offers: {levels}.",
+      "modelNoThinking": "{model} has no thinking levels — Pi always runs it with thinking off.",
+      "levelClamped": "{model} doesn't offer {level}, so Pi runs it at {effective}. Models that offer {level} still get it.",
+      "modelNotListed": "Pi doesn't list this model for this provider. Check the model ID — Pi only lists providers it has an API key or login for.",
+      "catalogUnavailable": "Couldn't ask Pi which thinking levels this model offers.",
+      "configLoadFailed": "Couldn't read Pi's settings: {message}",
+      "runtimeTooOld": "This Pi is too old: Codeg needs Pi {min} or newer to open a session. Update it first."
     },
     "addCustomAgent": "Add custom agent",
     "addCustomAgentHint": "Register any ACP-compatible agent. Pick one from the public ACP registry, or paste its registry information.",
@@ -3038,6 +3043,7 @@
           "turnFailedUnknown": "{agent} ended the turn with an unrecognized stop reason.",
           "turnFailedAuthRequired": "{agent} needs you to sign in again before it can run this turn. Sign in from Settings, then send the message again.",
           "agentAuthRequired": "{agent} could not start a session: it has no usable credential. Sign in again from Settings → Agents → {agent}, then reopen this conversation.",
+          "agentRuntimeOutdated": "{agent} is too old for this version of Codeg. Update it, then reopen this conversation.",
           "grokModelSwitchIncompatibleAgent": "{agent} can't switch to that model in an existing conversation. Start a new session to use it.",
           "setModeFailed": "{agent} couldn't switch modes.",
           "setConfigOptionFailed": "{agent} couldn't apply that setting.",

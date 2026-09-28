@@ -380,6 +380,14 @@ pub fn binary_system_dirs(agent_type: AgentType) -> &'static [&'static str] {
 /// the same explicit `{#acp-adapters}` anchor.
 const ACP_ADAPTER_DOCS_URL: &str = "https://docs.codeg.app/guide/supported-agents#acp-adapters";
 
+/// The oldest pi the pinned pi-acp can open a session with. pi-acp 0.0.34 asks
+/// pi for the current model's thinking levels (`get_available_thinking_levels`,
+/// new in pi 0.81.0) on every `session/new` and `session/load`, and fails the
+/// open without it. Move it with the pin (see `AgentType::Pi` below); the
+/// settings panel warns with the same value (`PI_MIN_RUNTIME_VERSION` in
+/// `src/lib/pi-config.ts`, held equal by a test).
+pub const PI_MIN_RUNTIME_VERSION: &str = "0.81.0";
+
 /// Minimum adapter version whose `_session/steering` honors the
 /// `_meta.steering.idleBehavior = "promptRequired"` opt-in — one of the three
 /// gates for codeg's NATIVE live-feedback push channel (synthesized into
@@ -2513,9 +2521,10 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             name: "Pi",
             description: "Self-extensible coding agent (ACP via pi-acp)",
             // pi-acp 0.0.34 spawns `pi --mode rpc` as a child, so `pi` (npm
-            // `@earendil-works/pi-coding-agent`) must be resolvable on PATH —
-            // or pointed at a custom build via the `PI_ACP_PI_COMMAND` env
-            // (see BYO-pi). Args are empty: the ACP server is the default mode
+            // `@earendil-works/pi-coding-agent`, at least
+            // `PI_MIN_RUNTIME_VERSION`) must be resolvable on PATH — or
+            // pointed at a custom build via the `PI_ACP_PI_COMMAND` env (see
+            // BYO-pi). Args are empty: the ACP server is the default mode
             // (`npx -y pi-acp`, no subcommand). `node_required` follows pi's
             // 22+ requirement (pi-acp's own engines say >=20). The embedded
             // context env lets pi-acp advertise `promptCapabilities.embeddedContext`.
@@ -3379,6 +3388,18 @@ mod tests {
             "0.21.4",
             "hermes-agent@0.21.4",
             Some("20.0.0"),
+        );
+    }
+
+    /// The settings panel's "this pi is too old" warning and the backend's
+    /// upgrade message must name the same floor.
+    #[test]
+    fn pi_min_runtime_version_matches_the_settings_panel() {
+        let panel = include_str!("../../../src/lib/pi-config.ts");
+        let declaration = format!("PI_MIN_RUNTIME_VERSION = \"{PI_MIN_RUNTIME_VERSION}\"");
+        assert!(
+            panel.contains(&declaration),
+            "src/lib/pi-config.ts must declare {declaration}"
         );
     }
 

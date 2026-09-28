@@ -951,9 +951,9 @@ pub async fn acp_load_pi_config(
 
 pub async fn acp_list_pi_model_capabilities(
     Extension(state): Extension<Arc<AppState>>,
-) -> Result<Json<Vec<acp_commands::PiModelCapability>>, AppCommandError> {
+) -> Result<Json<acp_commands::PiModelCatalog>, AppCommandError> {
     Ok(Json(
-        acp_commands::list_pi_model_capabilities_core(&state.db, &state.data_dir).await,
+        acp_commands::list_pi_model_catalog_core(&state.db, &state.data_dir).await,
     ))
 }
 

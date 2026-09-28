@@ -2989,6 +2989,49 @@ describe("AcpConnectionsProvider Grok cross-agent-type model switch", () => {
     expect(saveConfigPreference).toHaveBeenCalledTimes(1)
   })
 
+  it("points an outdated agent runtime at its settings, with the backend's instructions", async () => {
+    h.acpGetAgentStatus.mockResolvedValue({
+      agent_type: "pi",
+      enabled: true,
+      available: true,
+      installed_version: "0.0.34",
+      host_tools_agent_mode: false,
+      is_acp_adapter: true,
+    })
+    await mountProvider()
+    await act(async () => {
+      await h.actions!.connect(TAB, "pi", "/tmp/x", "sess-1")
+    })
+    const handlers = latestAttachHandlers()
+    h.toastError.mockClear()
+    const instructions =
+      "Pi is too old for this version of Codeg: opening a session needs Pi 0.81.0 or newer."
+    emitAcpEvent(handlers, {
+      seq: 1,
+      connection_id: "spawned-conn",
+      type: "error",
+      message: instructions,
+      agent_type: "pi",
+      code: "agent_runtime_outdated",
+    })
+
+    expect(h.toastError).toHaveBeenCalledTimes(1)
+    const [title, options] = h.toastError.mock.calls[0] as [
+      string,
+      {
+        description?: string
+        action?: { label: string; onClick: () => void }
+      },
+    ]
+    expect(title).toBe("backendErrors.agentRuntimeOutdated")
+    expect(options.description).toBe(instructions)
+    expect(options.action?.label).toBe("actions.openAgentsSettings")
+    act(() => options.action!.onClick())
+    expect(h.openSettingsWindow).toHaveBeenCalledWith("agents", {
+      agentType: "pi",
+    })
+  })
+
   it("reports a rejected pick, and only when the backend says so", async () => {
     // The backend owns the request↔answer correlation (`ConfigOptionRejected`):
     // `acpSetConfigOption` resolves once the command is merely QUEUED, and the

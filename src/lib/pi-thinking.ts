@@ -11,8 +11,8 @@
  * pick from in the first place.
  *
  * The vocabulary is pi's fixed seven (`EXTENDED_THINKING_LEVELS` in pi-ai `dist/models.js`) —
- * unlike Kimi's free-form `support_efforts`, a level name outside this list is rejected by
- * pi-acp's `isThinkingLevel` with `invalidParams`.
+ * unlike Kimi's free-form `support_efforts`, pi only ever offers these seven, whatever else a
+ * `thinkingLevelMap` names.
  */
 
 export const PI_THINKING_LEVELS = [
@@ -61,7 +61,8 @@ export function implicitWireValue(level: PiThinkingLevel): string {
 
 /**
  * Which levels pi would offer for this map. Mirrors `getSupportedThinkingLevels`
- * exactly: a `null` entry drops the level, and `xhigh` requires an explicit entry.
+ * exactly: a `null` entry drops the level, and `xhigh` and `max` require an explicit
+ * entry.
  */
 export function levelsFromMap(
   map: PiThinkingLevelMap | null | undefined
@@ -72,6 +73,45 @@ export function levelsFromMap(
     if (level === "xhigh" || level === "max") return mapped !== undefined
     return true
   })
+}
+
+/**
+ * The levels pi offers for one model — `getSupportedThinkingLevels` whole: a model
+ * that does not declare `reasoning` has `off` and nothing else.
+ */
+export function supportedLevels(model: {
+  reasoning: boolean
+  thinkingLevelMap: PiThinkingLevelMap | null | undefined
+}): PiThinkingLevel[] {
+  return model.reasoning ? levelsFromMap(model.thinkingLevelMap) : ["off"]
+}
+
+/**
+ * The level pi actually runs a model at when asked for `level` — pi-ai's
+ * `clampThinkingLevel`: the level itself when the model has it, else the nearest
+ * HIGHER level it has, else the nearest lower one.
+ *
+ * pi applies it to the one global `defaultThinkingLevel` whenever it selects a
+ * model, without rewriting the saved value — so a level one model lacks is still
+ * what every model that has it runs at.
+ */
+export function clampThinkingLevel(
+  level: PiThinkingLevel,
+  available: readonly PiThinkingLevel[]
+): PiThinkingLevel {
+  if (available.includes(level)) return level
+  const requested = PI_THINKING_LEVELS.indexOf(level)
+  for (let index = requested; index < PI_THINKING_LEVELS.length; index++) {
+    if (available.includes(PI_THINKING_LEVELS[index])) {
+      return PI_THINKING_LEVELS[index]
+    }
+  }
+  for (let index = requested - 1; index >= 0; index--) {
+    if (available.includes(PI_THINKING_LEVELS[index])) {
+      return PI_THINKING_LEVELS[index]
+    }
+  }
+  return available[0] ?? "off"
 }
 
 /**

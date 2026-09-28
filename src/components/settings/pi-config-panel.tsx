@@ -40,17 +40,24 @@ import {
   acpValidatePiCommand,
   loadPiConfig,
   listPiModelCapabilities,
-  type PiModelCapability,
+  type PiModelCatalog,
   type PiTrustEntry,
 } from "@/lib/api"
+import { toErrorMessage } from "@/lib/app-error"
 import { useAgentInstallStream } from "@/hooks/use-agent-install-stream"
-import { PI_CONFIG_DIR_ENV } from "@/lib/pi-config"
+import {
+  PI_CONFIG_DIR_ENV,
+  PI_MIN_RUNTIME_VERSION,
+  piRuntimeIsTooOld,
+} from "@/lib/pi-config"
 import {
   PI_THINKING_LEVELS,
+  clampThinkingLevel,
   implicitWireValue,
-  levelsFromMap,
+  isPiThinkingLevel,
   reasoningFromModel,
   reasoningToMap,
+  supportedLevels,
   toggleLevel,
   type PiModelReasoning,
   type PiThinkingLevel,
@@ -179,14 +186,6 @@ function hasRelativePiAgentDir(dir: string): boolean {
   )
 }
 
-export function piRuntimeIsTooOld(version: string | null): boolean {
-  const match = version?.match(/(\d+)\.(\d+)\.(\d+)/)
-  if (!match) return false
-  const major = Number(match[1])
-  const minor = Number(match[2])
-  return major === 0 && minor < 81
-}
-
 type PiValidation = {
   found: boolean
   resolvedPath: string | null
@@ -222,6 +221,64 @@ export function buildPiRuntimeEnv(
     delete env[PI_SESSION_DIR_ENV]
   }
   return env
+}
+
+/**
+ * What pi itself says about the selected built-in model's thinking levels.
+ * Advisory only, and worded from the catalog's status: "pi does not list this
+ * model" is only said when pi actually answered.
+ */
+function PiModelLevelsHint({
+  model,
+  catalog,
+  levels,
+  requested,
+  clamped,
+}: {
+  model: string
+  catalog: PiModelCatalog | null
+  levels: readonly PiThinkingLevel[] | null
+  requested: PiThinkingLevel | null
+  clamped: PiThinkingLevel | null
+}) {
+  const t = useTranslations("AcpAgentSettings")
+  const label = (level: PiThinkingLevel) => t(`pi.thinking.${level}`)
+  // Still asking — or a relative runtime path, whose own error is shown above.
+  if (!catalog || catalog.status === "relative_path") return null
+  if (catalog.status !== "ok") {
+    return (
+      <p className="text-2xs text-muted-foreground">
+        {t("pi.catalogUnavailable")}
+      </p>
+    )
+  }
+  if (!levels) {
+    return (
+      <p className="text-2xs text-muted-foreground">{t("pi.modelNotListed")}</p>
+    )
+  }
+  if (requested && clamped && clamped !== requested) {
+    return (
+      <p className="text-2xs text-amber-600 dark:text-amber-400">
+        {t("pi.levelClamped", {
+          model,
+          level: label(requested),
+          effective: label(clamped),
+        })}
+      </p>
+    )
+  }
+  const thinks = levels.some((level) => level !== "off")
+  return (
+    <p className="text-2xs text-muted-foreground">
+      {thinks
+        ? t("pi.modelLevels", {
+            model,
+            levels: levels.map(label).join(" · "),
+          })
+        : t("pi.modelNoThinking", { model })}
+    </p>
+  )
 }
 
 /**
@@ -264,16 +321,24 @@ export function PiConfigPanel({
   const [loadingCreds, setLoadingCreds] = useState(true)
   const [reasoning, setReasoning] = useState<PiModelReasoning>(NO_REASONING)
   const [showWireValues, setShowWireValues] = useState(false)
-  const [modelCapabilities, setModelCapabilities] = useState<
-    PiModelCapability[]
-  >([])
+  const [configLoadError, setConfigLoadError] = useState<string | null>(null)
+  // pi's own model catalog, tagged with the runtime it came from (see
+  // `catalogSource` below). Only ever a hint source — nothing is refused on it.
+  const [catalog, setCatalog] = useState<{
+    source: string
+    value: PiModelCatalog
+  } | null>(null)
+  // Bumped whenever the runtime's answer may have changed although the saved
+  // runtime did not: a new API key (pi lists only providers it can
+  // authenticate), a (re)installed or rechecked binary, a re-saved runtime.
   const [catalogRevision, setCatalogRevision] = useState(0)
-  const invalidSavedAgentDir = hasRelativePiAgentDir(
-    agent.env?.[PI_CONFIG_DIR_ENV] ?? ""
-  )
-  const invalidSavedCommand = hasRelativePiCommandPath(
-    agent.env?.[PI_COMMAND_ENV] ?? ""
-  )
+  const savedAgentDir = agent.env?.[PI_CONFIG_DIR_ENV] ?? ""
+  const savedCommand = agent.env?.[PI_COMMAND_ENV] ?? ""
+  const invalidSavedAgentDir = hasRelativePiAgentDir(savedAgentDir)
+  const invalidSavedCommand = hasRelativePiCommandPath(savedCommand)
+  // Which runtime a catalog describes. A catalog from another runtime is not
+  // shown at all; one from this runtime stays up while a newer answer loads.
+  const catalogSource = `${savedCommand}\n${savedAgentDir}`
 
   const isCustom = selectedProvider === PI_CUSTOM_SENTINEL
   const effectiveProvider = (isCustom ? customId : selectedProvider).trim()
@@ -299,9 +364,14 @@ export function PiConfigPanel({
     )
   }
 
+  // The form mirrors pi's native files in the agent dir, so it reloads when —
+  // and only when — that dir changes. Anything else (the command, the sessions
+  // dir, a save) leaves the files where they are, and reloading then would
+  // throw away edits the user has not saved yet.
   useEffect(() => {
     let cancelled = false
     setLoadingCreds(true)
+    setConfigLoadError(null)
     if (invalidSavedAgentDir) {
       setSelectedProvider("")
       setModel("")
@@ -333,6 +403,7 @@ export function PiConfigPanel({
       })
       .catch((error) => {
         console.error("[Pi] load config failed", error)
+        if (!cancelled) setConfigLoadError(toErrorMessage(error))
       })
       .finally(() => {
         if (!cancelled) setLoadingCreds(false)
@@ -340,59 +411,73 @@ export function PiConfigPanel({
     return () => {
       cancelled = true
     }
-  }, [
-    agent.env?.[PI_COMMAND_ENV],
-    agent.env?.[PI_CONFIG_DIR_ENV],
-    agent.env?.[PI_SESSION_DIR_ENV],
-    catalogRevision,
-    invalidSavedAgentDir,
-  ])
+  }, [savedAgentDir, invalidSavedAgentDir])
 
-  // Pi's own model catalog is the authority for built-ins. Derive from the
-  // currently selected provider/model at render time so a late response cannot
-  // attach the previous model's levels to the new selection.
   useEffect(() => {
     let cancelled = false
-    setModelCapabilities([])
-    if (invalidSavedAgentDir || invalidSavedCommand) return
-    listPiModelCapabilities()
-      .then((catalog) => {
-        if (!cancelled) setModelCapabilities(catalog)
+    if (invalidSavedAgentDir || invalidSavedCommand) {
+      setCatalog({
+        source: catalogSource,
+        value: { status: "relative_path", models: [] },
       })
-      .catch(() => {
-        if (!cancelled) setModelCapabilities([])
+      return
+    }
+    listPiModelCapabilities()
+      .then((value) => {
+        if (!cancelled) setCatalog({ source: catalogSource, value })
+      })
+      .catch((error) => {
+        console.error("[Pi] list model catalog failed", error)
+        if (!cancelled) {
+          setCatalog({
+            source: catalogSource,
+            value: { status: "failed", models: [] },
+          })
+        }
       })
     return () => {
       cancelled = true
     }
   }, [
-    agent.env?.[PI_COMMAND_ENV],
-    agent.env?.[PI_CONFIG_DIR_ENV],
-    agent.env?.[PI_SESSION_DIR_ENV],
-    agent.enabled,
+    catalogSource,
     catalogRevision,
     invalidSavedAgentDir,
     invalidSavedCommand,
   ])
 
-  const builtInModel = modelCapabilities.find(
-    (entry) => entry.provider === effectiveProvider && entry.id === model.trim()
-  )
+  const currentCatalog =
+    catalog?.source === catalogSource ? catalog.value : null
+  const trimmedModel = model.trim()
+  // What pi says about the selected built-in model, derived at render time so a
+  // late answer can never attach one model's levels to another.
+  const catalogModel =
+    !isCustom && currentCatalog?.status === "ok"
+      ? currentCatalog.models.find(
+          (entry) =>
+            entry.provider === effectiveProvider && entry.id === trimmedModel
+        )
+      : undefined
+  const catalogLevels = catalogModel ? supportedLevels(catalogModel) : null
+  // `defaultThinkingLevel` is ONE global preference: pi re-applies it, clamped,
+  // each time it selects a model. So a built-in model lacking the level is
+  // told, not refused — refusing would force the user to lower the level every
+  // other model gets too. A custom provider declares its levels in this very
+  // form, where a level outside them is a contradiction to fix before saving.
   const availableLevels: readonly PiThinkingLevel[] = isCustom
     ? reasoning.enabled
       ? reasoning.levels
       : ["off"]
-    : builtInModel
-      ? builtInModel.reasoning
-        ? levelsFromMap(builtInModel.thinkingLevelMap)
-        : ["off"]
-      : PI_THINKING_LEVELS.filter((level) => level !== "max")
-  // defaultThinkingLevel is global, but the selected model may not support it.
-  // Refuse a save rather than persist a level Pi would silently clamp.
+    : PI_THINKING_LEVELS
   const defaultLevelUnlisted =
+    isCustom &&
+    reasoning.enabled &&
     thinkingLevel !== "" &&
-    (isCustom ? reasoning.enabled : true) &&
-    !availableLevels.includes(thinkingLevel as PiThinkingLevel)
+    !reasoning.levels.includes(thinkingLevel as PiThinkingLevel)
+  const requestedLevel = isPiThinkingLevel(thinkingLevel) ? thinkingLevel : null
+  const clampedLevel =
+    requestedLevel && catalogLevels
+      ? clampThinkingLevel(requestedLevel, catalogLevels)
+      : null
   const effectiveThinkingLevel =
     isCustom && !reasoning.enabled ? "off" : thinkingLevel
 
@@ -477,8 +562,8 @@ export function PiConfigPanel({
         })
       }
       await onSaved()
-      // Pi only lists providers with usable credentials. Requery after the
-      // saved key is available to its own model registry.
+      // pi lists only providers it has credentials for, so a new key can add
+      // the model this form is about.
       setCatalogRevision((previous) => previous + 1)
       toast.success(t("toasts.piSaved"))
     } catch (error) {
@@ -590,6 +675,7 @@ export function PiConfigPanel({
       await acpInstallPiBinary(taskId)
       toast.success(t("toasts.piBinaryInstalled"))
       await detectPiBinary()
+      setCatalogRevision((previous) => previous + 1)
     } catch (error) {
       console.error("[Pi] install binary failed", error)
       toast.error(t("toasts.piBinaryInstallFailed"))
@@ -606,6 +692,7 @@ export function PiConfigPanel({
       await acpUninstallPiBinary(taskId)
       toast.success(t("toasts.piBinaryUninstalled"))
       await detectPiBinary()
+      setCatalogRevision((previous) => previous + 1)
     } catch (error) {
       console.error("[Pi] uninstall binary failed", error)
       toast.error(t("toasts.piBinaryUninstallFailed"))
@@ -628,10 +715,11 @@ export function PiConfigPanel({
   const [validating, setValidating] = useState(false)
   const [validation, setValidation] = useState<PiValidation>(null)
 
-  const savedPiCommand = agent.env?.[PI_COMMAND_ENV]?.trim()
+  const savedPiCommand = savedCommand.trim()
   useEffect(() => {
     if (
       !savedPiCommand ||
+      invalidSavedCommand ||
       mode !== "custom" ||
       command.trim() !== savedPiCommand
     ) {
@@ -650,7 +738,7 @@ export function PiConfigPanel({
     return () => {
       cancelled = true
     }
-  }, [savedPiCommand, mode, command])
+  }, [savedPiCommand, invalidSavedCommand, mode, command])
 
   // Project-trust decisions recorded in pi's `trust.json`, listed for review.
   const [trustEntries, setTrustEntries] = useState<PiTrustEntry[] | null>(null)
@@ -721,9 +809,14 @@ export function PiConfigPanel({
     )
     try {
       await onSaveEnv(env, agent.enabled)
-      // A changed command or agent directory changes both native config and
-      // available models, even before the parent refreshes the agent prop.
-      setCatalogRevision((previous) => previous + 1)
+      // A changed runtime re-asks pi by itself (the catalog follows the saved
+      // env); an unchanged one may still point at a replaced binary.
+      if (
+        env[PI_COMMAND_ENV] === agent.env[PI_COMMAND_ENV] &&
+        env[PI_CONFIG_DIR_ENV] === agent.env[PI_CONFIG_DIR_ENV]
+      ) {
+        setCatalogRevision((previous) => previous + 1)
+      }
       toast.success(t("toasts.piRuntimeSaved"))
     } catch (error) {
       console.error("[Pi] save runtime failed", error)
@@ -847,7 +940,10 @@ export function PiConfigPanel({
                   type="button"
                   variant="ghost"
                   size="sm"
-                  onClick={detectPiBinary}
+                  onClick={() => {
+                    void detectPiBinary()
+                    setCatalogRevision((previous) => previous + 1)
+                  }}
                   disabled={checkingPi || piOp !== null}
                   title={t("pi.recheck")}
                   className="h-7 px-2"
@@ -902,9 +998,9 @@ export function PiConfigPanel({
               </div>
             </div>
 
-            {piRuntimeIsTooOld(piStatus?.version ?? null) && (
+            {piRuntimeIsTooOld(piStatus?.version) && (
               <p className="text-2xs text-amber-600 dark:text-amber-400">
-                {t("pi.runtimeTooOld")}
+                {t("pi.runtimeTooOld", { min: PI_MIN_RUNTIME_VERSION })}
               </p>
             )}
             {piInstallStatus !== "idle" && (
@@ -986,9 +1082,9 @@ export function PiConfigPanel({
                   {t("pi.relativeCommandPath")}
                 </p>
               )}
-              {piRuntimeIsTooOld(validation?.version ?? null) && (
+              {piRuntimeIsTooOld(validation?.version) && (
                 <p className="text-2xs text-amber-600 dark:text-amber-400">
-                  {t("pi.runtimeTooOld")}
+                  {t("pi.runtimeTooOld", { min: PI_MIN_RUNTIME_VERSION })}
                 </p>
               )}
               <p className="text-2xs text-muted-foreground">
@@ -1098,6 +1194,11 @@ export function PiConfigPanel({
           {invalidSavedAgentDir && (
             <p className="mt-1 text-2xs text-destructive">
               {t("pi.relativeAgentDir")}
+            </p>
+          )}
+          {configLoadError && (
+            <p className="mt-1 text-2xs text-destructive">
+              {t("pi.configLoadFailed", { message: configLoadError })}
             </p>
           )}
         </div>
@@ -1347,10 +1448,14 @@ export function PiConfigPanel({
               ))}
             </SelectContent>
           </Select>
-          {!isCustom && effectiveProvider && model.trim() && !builtInModel && (
-            <p className="text-2xs text-muted-foreground">
-              {t("pi.capabilitiesUnverified")}
-            </p>
+          {!isCustom && effectiveProvider && trimmedModel && (
+            <PiModelLevelsHint
+              model={trimmedModel}
+              catalog={currentCatalog}
+              levels={catalogLevels}
+              requested={requestedLevel}
+              clamped={clampedLevel}
+            />
           )}
           {defaultLevelUnlisted && (
             <p className="text-2xs text-destructive">

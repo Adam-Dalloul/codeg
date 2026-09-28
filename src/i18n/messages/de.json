@@ -1611,8 +1611,13 @@
       "wireValuesTitle": "Erweitert: an den Anbieter gesendete Werte",
       "wireValuesHint": "Leer lassen, um den Stufennamen unverändert zu senden. Setze einen Wert, wenn dein Endpunkt etwas anderes erwartet — Google-artige Backends erwarten LOW / HIGH.",
       "defaultLevelUnlisted": "Diese Stufe steht nicht in der Liste oben — pi würde sie begrenzen.",
-      "capabilitiesUnverified": "Pi hat dieses Modell noch nicht aufgelistet. Speichere den API-Schlüssel und prüfe dann die verfügbaren Denkstufen.",
-      "runtimeTooOld": "pi-acp 0.0.34 benötigt Pi 0.81.0 oder neuer. Aktualisiere Pi, bevor du eine Sitzung startest."
+      "modelLevels": "{model} bietet: {levels}.",
+      "modelNoThinking": "{model} hat keine Denkstufen — Pi führt es immer ohne Denken aus.",
+      "levelClamped": "{model} bietet {level} nicht an, daher führt Pi es mit {effective} aus. Modelle, die {level} anbieten, nutzen es weiterhin.",
+      "modelNotListed": "Pi listet dieses Modell für diesen Anbieter nicht auf. Prüfe die Modell-ID — Pi listet nur Anbieter, für die ein API-Schlüssel oder eine Anmeldung vorliegt.",
+      "catalogUnavailable": "Pi konnte nicht gefragt werden, welche Denkstufen dieses Modell anbietet.",
+      "configLoadFailed": "Die Pi-Einstellungen konnten nicht gelesen werden: {message}",
+      "runtimeTooOld": "Dieses Pi ist zu alt: Codeg benötigt Pi {min} oder neuer, um eine Sitzung zu öffnen. Aktualisiere es zuerst."
     },
     "addCustomAgent": "Eigenen Agenten hinzufügen",
     "addCustomAgentHint": "Registriere jeden ACP-kompatiblen Agenten. Wähle einen aus der öffentlichen ACP-Registry oder füge seine Registry-Informationen ein.",
@@ -3038,6 +3043,7 @@
           "turnFailedUnknown": "{agent} hat die Runde mit einem unbekannten Stoppgrund beendet.",
           "turnFailedAuthRequired": "{agent} benötigt eine erneute Anmeldung, bevor diese Runde ausgeführt werden kann. Melde dich in den Einstellungen an und sende die Nachricht erneut.",
           "agentAuthRequired": "{agent} konnte keine Sitzung starten: Es sind keine verwendbaren Anmeldedaten vorhanden. Melde dich unter Einstellungen → Agenten → {agent} erneut an und öffne diese Unterhaltung neu.",
+          "agentRuntimeOutdated": "{agent} ist für diese Version von Codeg zu alt. Aktualisiere es und öffne diese Unterhaltung dann erneut.",
           "grokModelSwitchIncompatibleAgent": "{agent} kann in einer bestehenden Unterhaltung nicht zu diesem Modell wechseln. Starte eine neue Sitzung, um es zu verwenden.",
           "setModeFailed": "{agent} konnte den Modus nicht wechseln.",
           "setConfigOptionFailed": "{agent} konnte diese Einstellung nicht übernehmen.",

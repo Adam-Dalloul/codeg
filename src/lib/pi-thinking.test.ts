@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest"
 
 import {
+  clampThinkingLevel,
   levelsFromMap,
   reasoningFromModel,
   reasoningToMap,
+  supportedLevels,
   toggleLevel,
   type PiModelReasoning,
 } from "./pi-thinking"
@@ -210,5 +212,45 @@ describe("Pi max thinking capability", () => {
       wireValues: { max: "ultra" },
     })
     expect(toggleLevel(["low"], "max")).toEqual(["low", "max"])
+  })
+})
+
+/**
+ * pi-ai's `getSupportedThinkingLevels` + `clampThinkingLevel`, which decide what
+ * the one global `defaultThinkingLevel` becomes on each model.
+ */
+describe("clampThinkingLevel", () => {
+  it("gives a model without reasoning off, and nothing else", () => {
+    const levels = supportedLevels({ reasoning: false, thinkingLevelMap: {} })
+    expect(levels).toEqual(["off"])
+    expect(clampThinkingLevel("max", levels)).toBe("off")
+  })
+
+  it("keeps a level the model offers", () => {
+    const levels = supportedLevels({
+      reasoning: true,
+      thinkingLevelMap: { xhigh: "xhigh", max: "max" },
+    })
+    expect(clampThinkingLevel("max", levels)).toBe("max")
+  })
+
+  it("moves UP first, as pi does", () => {
+    // pi's built-in shape for models that cannot switch thinking off.
+    const levels = supportedLevels({
+      reasoning: true,
+      thinkingLevelMap: { off: null, minimal: null },
+    })
+    expect(clampThinkingLevel("off", levels)).toBe("low")
+  })
+
+  it("moves down only when nothing higher exists", () => {
+    const levels = supportedLevels({ reasoning: true, thinkingLevelMap: {} })
+    expect(levels).not.toContain("xhigh")
+    expect(clampThinkingLevel("max", levels)).toBe("high")
+    expect(clampThinkingLevel("xhigh", levels)).toBe("high")
+  })
+
+  it("falls back to off when a reasoning model offers no level at all", () => {
+    expect(clampThinkingLevel("medium", [])).toBe("off")
   })
 })

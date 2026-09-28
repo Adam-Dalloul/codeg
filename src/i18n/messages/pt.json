@@ -1611,8 +1611,13 @@
       "wireValuesTitle": "Avançado: valores enviados ao fornecedor",
       "wireValuesHint": "Deixe em branco para enviar o nome do nível tal como está. Defina quando o seu endpoint esperar outra coisa — backends ao estilo Google querem LOW / HIGH.",
       "defaultLevelUnlisted": "Este nível não está na lista acima — o pi iria reduzi-lo.",
-      "capabilitiesUnverified": "O Pi ainda não listou este modelo. Salve a chave de API e verifique os níveis de raciocínio disponíveis.",
-      "runtimeTooOld": "O pi-acp 0.0.34 requer Pi 0.81.0 ou mais recente. Atualize o Pi antes de iniciar uma sessão."
+      "modelLevels": "{model} oferece: {levels}.",
+      "modelNoThinking": "{model} não tem níveis de raciocínio — o Pi sempre o executa com o raciocínio desligado.",
+      "levelClamped": "{model} não oferece {level}, então o Pi o executa em {effective}. Os modelos que oferecem {level} continuam a usá-lo.",
+      "modelNotListed": "O Pi não lista este modelo para este provedor. Verifique o ID do modelo — o Pi só lista provedores para os quais tem uma chave de API ou um login.",
+      "catalogUnavailable": "Não foi possível perguntar ao Pi quais níveis de raciocínio este modelo oferece.",
+      "configLoadFailed": "Não foi possível ler as configurações do Pi: {message}",
+      "runtimeTooOld": "Este Pi é antigo demais: o Codeg precisa do Pi {min} ou mais recente para abrir uma sessão. Atualize-o primeiro."
     },
     "addCustomAgent": "Adicionar agente personalizado",
     "addCustomAgentHint": "Registre qualquer agente compatível com ACP. Escolha um no registro público do ACP ou cole as informações de registro dele.",
@@ -3038,6 +3043,7 @@
           "turnFailedUnknown": "{agent} encerrou o turno com um motivo de parada desconhecido.",
           "turnFailedAuthRequired": "O {agent} precisa que você entre novamente antes de executar este turno. Faça login nas Configurações e envie a mensagem de novo.",
           "agentAuthRequired": "O {agent} não conseguiu iniciar uma sessão: não tem credenciais utilizáveis. Inicia sessão de novo em Definições → Agentes → {agent} e reabre esta conversa.",
+          "agentRuntimeOutdated": "O {agent} é antigo demais para esta versão do Codeg. Atualiza-o e reabre esta conversa.",
           "grokModelSwitchIncompatibleAgent": "{agent} não pode mudar para esse modelo em uma conversa existente. Inicie uma nova sessão para usá-lo.",
           "setModeFailed": "{agent} não conseguiu mudar de modo.",
           "setConfigOptionFailed": "{agent} não conseguiu aplicar essa configuração.",

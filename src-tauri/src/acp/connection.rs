@@ -1266,17 +1266,40 @@ const MCP_SUSPECT_SENTINEL: &str = "__codeg_mcp_suspect__";
 /// cursor-agent names a command that does not exist.
 const AUTH_REQUIRED_SENTINEL: &str = "__codeg_auth_required__";
 
+/// Sentinel appended to a `session/new` or `session/load` failure that is pi-acp
+/// reporting a pi too old for it ([`pi_runtime_is_outdated`]), so the outer
+/// `.map_err(...)` can raise `AcpError::AgentRuntimeOutdated`. Same trick as
+/// [`INIT_TIMEOUT_SENTINEL`].
+const PI_RUNTIME_OUTDATED_SENTINEL: &str = "__codeg_pi_runtime_outdated__";
+
+/// [`pi_runtime_is_outdated`]'s verdict, carried out of the typed inner future
+/// on [`PI_RUNTIME_OUTDATED_SENTINEL`].
+fn tag_pi_runtime_outdated(
+    err: &agent_client_protocol::Error,
+    agent_type: AgentType,
+) -> Option<agent_client_protocol::Error> {
+    if !pi_runtime_is_outdated(err, agent_type) {
+        return None;
+    }
+    tracing::warn!("[ACP][{agent_type}] pi is too old for pi-acp: {err}");
+    Some(agent_client_protocol::util::internal_error(format!(
+        "{err}{PI_RUNTIME_OUTDATED_SENTINEL}"
+    )))
+}
+
 /// Classify a `session/new` failure while its typed code is still readable.
 ///
-/// `authRequired` is checked first and returns on its own: it is a diagnosis
-/// (the agent says, in so many words, that it has no usable credential), where
-/// the MCP tag below is only a hint, and running both would leave a message
-/// carrying two markers and the weaker reading.
+/// `authRequired` and an outdated pi are checked first and return on their own:
+/// each is a diagnosis, where the MCP tag below is only a hint, and running both
+/// would leave a message carrying two markers and the weaker reading.
 fn tag_new_session_failure(
     err: agent_client_protocol::Error,
     agent_type: AgentType,
     mcp_servers: &[McpServer],
 ) -> agent_client_protocol::Error {
+    if let Some(tagged) = tag_pi_runtime_outdated(&err, agent_type) {
+        return tagged;
+    }
     if matches!(err.code, agent_client_protocol::schema::v1::ErrorCode::AuthRequired) {
         tracing::warn!("[ACP][{agent_type}] session/new refused with authRequired: {err}");
         return agent_client_protocol::util::internal_error(format!("{err}{AUTH_REQUIRED_SENTINEL}"));
@@ -1428,70 +1451,72 @@ fn codex_app_server_log_dir() -> Option<String> {
     Some(dir.to_string_lossy().into_owned())
 }
 
-/// pi-acp 0.0.34 requires Pi >=0.81.0. Resolve the same default/BYO command
-/// used by the adapter and ask that runtime for its version before connection.
-/// Unknown versions are allowed for compatibility; the adapter remains the
-/// authority when a custom build does not report a parseable semver.
+/// Pi runs through pi-acp, which spawns the actual `pi` binary at runtime. If
+/// `pi` (or the BYO-pi `PI_ACP_PI_COMMAND` override) isn't resolvable, pi-acp
+/// dies mid-connection with a raw ENOENT. This preflight resolves the command
+/// the way that spawn will — a bare name on the launch env's `PATH` (which may
+/// carry the OfficeCLI prepend), a path against `cwd`, the session workspace pi
+/// is started in — and returns a clear message when it can't be found; `None`
+/// means launch may proceed.
 ///
-/// The message contains "is not installed" so the frontend displays the
-/// existing actionable SDK/install prompt instead of a protocol error.
-async fn pi_launch_preflight(runtime_env: &BTreeMap<String, String>) -> Option<String> {
-    use std::process::Stdio;
-
-    let custom = runtime_env
-        .get("PI_ACP_PI_COMMAND")
-        .map(|s| s.trim())
-        .filter(|s| !s.is_empty());
-    let command = custom.unwrap_or("pi");
-    let Some(program) =
-        crate::commands::acp::resolve_pi_command_path_with_env(command, runtime_env)
-    else {
-        return Some(match custom {
-            Some(cmd) => format!(
-                "Pi is not installed: the custom pi command \"{cmd}\" was not found. \
-                 Update it in Agent Settings → Pi → Runtime."
-            ),
-            None => "Pi is not installed. Install it with: \
-                     npm install -g @earendil-works/pi-coding-agent \
-                     (or set a custom pi command in Agent Settings → Pi → Runtime)."
-                .to_string(),
-        });
-    };
-
-    let mut probe = crate::process::tokio_command(program);
-    probe
-        .arg("--version")
-        .envs(runtime_env)
-        .current_dir(std::env::temp_dir())
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .kill_on_drop(true);
-    let probe_result =
-        tokio::time::timeout(std::time::Duration::from_secs(4), probe.output()).await;
-    let version = match probe_result {
-        Ok(Ok(output)) if output.status.success() => {
-            let first = String::from_utf8_lossy(&output.stdout);
-            first
-                .lines()
-                .next()
-                .and_then(|line| semver::Version::parse(line.trim()).ok())
-        }
-        _ => None,
-    };
-    if version
-        .as_ref()
-        .is_some_and(|version| version < &semver::Version::new(0, 81, 0))
-    {
-        let found = version.unwrap();
-        return Some(format!(
-            "Pi is not installed at a compatible version (found {found}). \
-             pi-acp 0.0.34 requires Pi 0.81.0 or newer. Update Pi with \
-             npm install -g @earendil-works/pi-coding-agent, or choose a newer \
-             custom command in Agent Settings → Pi → Runtime."
-        ));
+/// Deliberately NOT a version check. The pinned pi-acp needs pi
+/// [`registry::PI_MIN_RUNTIME_VERSION`], but asking `pi --version` would cost a
+/// process spawn on every connect, and a version string only guesses at the
+/// capability (a custom build may report anything, `0.0.0` included). Opening
+/// the session reports the real incompatibility instead — see
+/// [`pi_runtime_is_outdated`].
+///
+/// The message contains the literal substring "is not installed", which the
+/// frontend matches to show the localized SDK-missing prompt with an "Open Agent
+/// Settings" action (see `src/contexts/acp-connections-context.tsx`). Do not
+/// change that substring.
+fn pi_launch_preflight(launch_env: &BTreeMap<String, String>, cwd: &Path) -> Option<String> {
+    let command = crate::commands::acp::pi_command_for_env(launch_env);
+    if crate::commands::acp::resolve_pi_command_in(&command, launch_env, cwd).is_some() {
+        return None;
     }
-    None
+    Some(if command == "pi" {
+        "Pi is not installed. Install it with: \
+         npm install -g @earendil-works/pi-coding-agent \
+         (or set a custom pi command in Agent Settings → Pi → Runtime)."
+            .to_string()
+    } else {
+        format!(
+            "Pi is not installed: the custom pi command \"{command}\" was not found. \
+             Update it in Agent Settings → Pi → Runtime."
+        )
+    })
+}
+
+/// Whether a failed session open is pi-acp finding a pi too old for it.
+///
+/// pi-acp 0.0.34 asks pi for the current model's thinking levels
+/// (`get_available_thinking_levels`, added in pi 0.81.0) while opening every
+/// session, and fails the open when that fails. An older pi answers with
+/// `Unknown command: get_available_thinking_levels` (its wording for any unknown
+/// RPC), which pi-acp relays as `pi get_available_thinking_levels failed: …` —
+/// in the error message on `session/new`, and in `data.details` on
+/// `session/load`, where the ACP SDK wraps the plain `Error` it throws. The
+/// error's `Display` covers both.
+///
+/// Matching the answer rather than predicting it from `pi --version` is what
+/// keeps this exact: it is the one failure that proves the capability is
+/// missing, whatever version a custom build reports.
+fn pi_runtime_is_outdated(err: &agent_client_protocol::Error, agent_type: AgentType) -> bool {
+    agent_type == AgentType::Pi
+        && err
+            .to_string()
+            .contains("Unknown command: get_available_thinking_levels")
+}
+
+/// The explanation [`AcpError::AgentRuntimeOutdated`] carries for pi.
+fn pi_runtime_outdated_message() -> String {
+    format!(
+        "Pi is too old for this version of Codeg: opening a session needs Pi {} or newer. \
+         Update it with npm install -g @earendil-works/pi-coding-agent, or choose a newer \
+         custom command in Agent Settings → Pi → Runtime.",
+        registry::PI_MIN_RUNTIME_VERSION
+    )
 }
 
 /// Transcript directory for an agent that codeg must record itself, or `None`
@@ -1835,12 +1860,14 @@ async fn build_agent(
 
     let agent = match meta.distribution {
         AgentDistribution::Npx { cmd, args, env, .. } => {
+            let mut merged_env = merge_agent_env(env, runtime_env, scratch);
             // pi-acp spawns the real `pi` binary; fail fast with a clear,
             // install-prompt-routable error if it (or a BYO-pi override) isn't
             // resolvable, rather than letting pi-acp die mid-connection on a raw
             // ENOENT that surfaces as an opaque protocol error.
             if agent_type == AgentType::Pi {
-                if let Some(message) = pi_launch_preflight(runtime_env).await {
+                let launch_env: BTreeMap<String, String> = merged_env.iter().cloned().collect();
+                if let Some(message) = pi_launch_preflight(&launch_env, cwd) {
                     return Err(AcpError::SdkNotInstalled(message));
                 }
                 // NOTE: codeg deliberately does NOT touch pi's `trust.json` here.
@@ -1867,7 +1894,6 @@ async fn build_agent(
                     return Err(AcpError::PiProjectTrustRequired(message));
                 }
             }
-            let mut merged_env = merge_agent_env(env, runtime_env, scratch);
             // Resolve the config-derived preset HERE (like Grok's
             // `grok_launch_permission_mode` below) so the policy helper stays a
             // pure function over the env list.
@@ -6624,6 +6650,13 @@ async fn run_connection(
                         // through to session/new instead, and the new
                         // transcript links back to the old one so the history
                         // reads as one conversation.
+                        // A pi too old for pi-acp fails every open the same way,
+                        // so neither the banner (the session is fine) nor the
+                        // session/new fallback (it would fail identically, after
+                        // announcing a fresh start) is the right answer.
+                        if let Some(tagged) = tag_pi_runtime_outdated(&e, agent_type) {
+                            return Err(tagged);
+                        }
                         let err_str = e.to_string();
                         let forgotten_session = classify_session_load_failure(e.code, &err_str);
                         let recovers_locally =
@@ -6881,6 +6914,8 @@ async fn run_connection(
             let raw = e.to_string();
             if raw.contains(INIT_TIMEOUT_SENTINEL) {
                 AcpError::InitializeTimeout
+            } else if raw.contains(PI_RUNTIME_OUTDATED_SENTINEL) {
+                AcpError::AgentRuntimeOutdated(pi_runtime_outdated_message())
             } else if raw.contains(AUTH_REQUIRED_SENTINEL) {
                 AcpError::agent_auth_required(raw.replace(AUTH_REQUIRED_SENTINEL, ""))
             } else if raw.contains(MCP_SUSPECT_SENTINEL) {
@@ -19255,113 +19290,22 @@ mod tests {
         assert!(serialize_tool_call_content(&content, false).is_none());
     }
 
-    #[tokio::test]
-    async fn pi_preflight_flags_missing_custom_command() {
+    #[test]
+    fn pi_preflight_flags_missing_custom_command() {
         let mut env = BTreeMap::new();
         env.insert(
             "PI_ACP_PI_COMMAND".to_string(),
             "/nonexistent/definitely-not-pi-xyz".to_string(),
         );
-        let msg = pi_launch_preflight(&env)
-            .await
+        let msg = pi_launch_preflight(&env, &std::env::temp_dir())
             .expect("an unresolvable custom pi command must be flagged");
         // Frontend invariant: routes to the localized SDK-missing install prompt.
         assert!(msg.contains("is not installed"), "got: {msg}");
         assert!(msg.contains("definitely-not-pi-xyz"), "got: {msg}");
     }
 
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn pi_preflight_rejects_a_resolvable_old_custom_runtime() {
-        use std::os::unix::fs::PermissionsExt;
-        let temp = tempfile::tempdir().unwrap();
-        let script = temp.path().join("old pi");
-        std::fs::write(&script, "#!/bin/sh\necho 0.80.9\n").unwrap();
-        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let mut env = BTreeMap::new();
-        env.insert(
-            "PI_ACP_PI_COMMAND".into(),
-            script.to_string_lossy().into_owned(),
-        );
-        let message = pi_launch_preflight(&env)
-            .await
-            .expect("pi-acp 0.0.34 cannot launch old Pi");
-        assert!(message.contains("is not installed"));
-        assert!(message.contains("0.81.0"));
-        assert!(message.contains("Agent Settings"));
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn pi_preflight_probes_the_default_command_on_the_launch_path() {
-        use std::os::unix::fs::PermissionsExt;
-        let temp = tempfile::tempdir().unwrap();
-        let script = temp.path().join("pi");
-        std::fs::write(&script, "#!/bin/sh\necho 0.80.9\n").unwrap();
-        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let mut env = BTreeMap::new();
-        env.insert("PATH".into(), temp.path().to_string_lossy().into_owned());
-        let message = pi_launch_preflight(&env).await.expect("default Pi is too old");
-        assert!(message.contains("0.81.0"), "{message}");
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn pi_preflight_accepts_minimum_and_unknown_custom_versions() {
-        use std::os::unix::fs::PermissionsExt;
-        let temp = tempfile::tempdir().unwrap();
-        let script = temp.path().join("custom pi");
-        let mut env = BTreeMap::new();
-        env.insert(
-            "PI_ACP_PI_COMMAND".into(),
-            script.to_string_lossy().into_owned(),
-        );
-        for version in ["0.81.0", "custom-build"] {
-            std::fs::write(&script, format!("#!/bin/sh\necho {version}\n")).unwrap();
-            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
-            assert!(pi_launch_preflight(&env).await.is_none(), "version {version}");
-        }
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn pi_preflight_bounds_a_hung_version_probe() {
-        use std::os::unix::fs::PermissionsExt;
-        let temp = tempfile::tempdir().unwrap();
-        let script = temp.path().join("hung pi");
-        std::fs::write(&script, "#!/bin/sh\nwhile :; do :; done\n").unwrap();
-        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let mut env = BTreeMap::new();
-        env.insert(
-            "PI_ACP_PI_COMMAND".into(),
-            script.to_string_lossy().into_owned(),
-        );
-        let start = std::time::Instant::now();
-        assert!(pi_launch_preflight(&env).await.is_none());
-        assert!(start.elapsed() < std::time::Duration::from_secs(8));
-    }
-
-    #[cfg(windows)]
-    #[tokio::test]
-    async fn pi_preflight_reads_a_cmd_runtime_under_a_path_with_spaces() {
-        let temp = tempfile::tempdir().unwrap();
-        let command_dir = temp.path().join("Pi runtime with spaces");
-        std::fs::create_dir(&command_dir).unwrap();
-        let script = command_dir.join("pi.cmd");
-        std::fs::write(&script, "@echo off\r\necho 0.80.9\r\n").unwrap();
-        let mut env = BTreeMap::new();
-        env.insert(
-            "PI_ACP_PI_COMMAND".into(),
-            script.to_string_lossy().into_owned(),
-        );
-        let message = pi_launch_preflight(&env)
-            .await
-            .expect("old Windows Pi must be rejected");
-        assert!(message.contains("0.81.0"), "{message}");
-    }
-
-    #[tokio::test]
-    async fn pi_preflight_accepts_resolvable_custom_command() {
+    #[test]
+    fn pi_preflight_accepts_resolvable_custom_command() {
         // A binary we know exists and is executable on this platform — proves the
         // preflight clears (returns None) for a resolvable PI_ACP_PI_COMMAND.
         let existing = if cfg!(windows) {
@@ -19371,7 +19315,114 @@ mod tests {
         };
         let mut env = BTreeMap::new();
         env.insert("PI_ACP_PI_COMMAND".to_string(), existing.to_string());
-        assert!(pi_launch_preflight(&env).await.is_none());
+        assert!(pi_launch_preflight(&env, &std::env::temp_dir()).is_none());
+    }
+
+    /// A bare `pi` is looked up on the PATH the launch hands the child, which
+    /// can differ from codeg's own (a per-agent override, the OfficeCLI prepend).
+    #[cfg(unix)]
+    #[test]
+    fn pi_preflight_searches_the_launch_path() {
+        use std::os::unix::fs::PermissionsExt;
+        let bin = tempfile::tempdir().unwrap();
+        let pi = bin.path().join("pi");
+        std::fs::write(&pi, "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&pi, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let cwd = tempfile::tempdir().unwrap();
+        let mut env = BTreeMap::new();
+        env.insert(
+            "PATH".to_string(),
+            bin.path().to_string_lossy().into_owned(),
+        );
+        assert!(pi_launch_preflight(&env, cwd.path()).is_none());
+
+        let empty = tempfile::tempdir().unwrap();
+        env.insert(
+            "PATH".to_string(),
+            empty.path().to_string_lossy().into_owned(),
+        );
+        let msg = pi_launch_preflight(&env, cwd.path()).expect("no pi on the launch PATH");
+        assert!(msg.contains("is not installed"), "got: {msg}");
+    }
+
+    /// pi-acp spawns a relative command with the session's workspace as cwd, so
+    /// that is where it must exist — not in codeg's own cwd.
+    #[cfg(unix)]
+    #[test]
+    fn pi_preflight_resolves_a_relative_command_in_the_workspace() {
+        use std::os::unix::fs::PermissionsExt;
+        let workspace = tempfile::tempdir().unwrap();
+        let script = workspace.path().join("pi-test.sh");
+        std::fs::write(&script, "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut env = BTreeMap::new();
+        env.insert("PI_ACP_PI_COMMAND".to_string(), "./pi-test.sh".to_string());
+        assert!(pi_launch_preflight(&env, workspace.path()).is_none());
+
+        let elsewhere = tempfile::tempdir().unwrap();
+        assert!(pi_launch_preflight(&env, elsewhere.path()).is_some());
+    }
+
+    /// The two answers pi-acp 0.0.34 gives when pi predates
+    /// `get_available_thinking_levels`, as captured from a live pi-acp 0.0.34
+    /// driving pi 0.80.10: `RequestError.internalError({}, msg)` from
+    /// `session/new`, and a plain `Error` from `session/load`, which its ACP SDK
+    /// files under `data.details`.
+    fn pi_outdated_open_failures() -> [agent_client_protocol::Error; 2] {
+        let pi_said = "pi get_available_thinking_levels failed: \
+                       Unknown command: get_available_thinking_levels";
+        [
+            agent_client_protocol::Error::new(-32603, format!("Internal error: {pi_said}"))
+                .data(serde_json::json!({})),
+            agent_client_protocol::Error::new(-32603, "Internal error")
+                .data(serde_json::json!({ "details": pi_said })),
+        ]
+    }
+
+    #[test]
+    fn an_outdated_pi_is_recognised_on_both_session_opens() {
+        for failure in pi_outdated_open_failures() {
+            let tagged = tag_pi_runtime_outdated(&failure, AgentType::Pi)
+                .unwrap_or_else(|| panic!("not recognised: {failure}"));
+            assert!(tagged.to_string().contains(PI_RUNTIME_OUTDATED_SENTINEL));
+            // Only pi-acp speaks for pi; another agent's identical text is not
+            // evidence about pi.
+            assert!(tag_pi_runtime_outdated(&failure, AgentType::Codex).is_none());
+        }
+    }
+
+    /// Other failures of the same RPC — pi answered, the answer was wrong — are
+    /// not an old pi and must keep their own reading.
+    #[test]
+    fn other_pi_open_failures_are_not_called_outdated() {
+        for message in [
+            "Internal error: pi returned a thinking level absent from available levels",
+            "Internal error: pi get_available_thinking_levels returned invalid levels",
+            "Internal error: pi get_available_models failed: Unknown command: get_available_models",
+        ] {
+            let failure = agent_client_protocol::Error::new(-32603, message);
+            assert!(
+                tag_pi_runtime_outdated(&failure, AgentType::Pi).is_none(),
+                "{message}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_outdated_pi_outranks_the_other_session_new_readings() {
+        let [new_failure, _] = pi_outdated_open_failures();
+        let tagged = tag_new_session_failure(new_failure, AgentType::Pi, &[]).to_string();
+        assert!(tagged.contains(PI_RUNTIME_OUTDATED_SENTINEL), "{tagged}");
+        assert!(!tagged.contains(MCP_SUSPECT_SENTINEL), "{tagged}");
+        assert!(!tagged.contains(AUTH_REQUIRED_SENTINEL), "{tagged}");
+
+        // Mirrors the `.map_err` in `run_connection`, which a unit test cannot
+        // call directly: codeg's own instructions replace the wire text.
+        let err = AcpError::AgentRuntimeOutdated(pi_runtime_outdated_message());
+        assert_eq!(err.code(), Some("agent_runtime_outdated"));
+        let shown = err.to_string();
+        assert!(shown.contains(registry::PI_MIN_RUNTIME_VERSION), "{shown}");
+        assert!(!shown.contains(PI_RUNTIME_OUTDATED_SENTINEL), "{shown}");
     }
 
     #[test]

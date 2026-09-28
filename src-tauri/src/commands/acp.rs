@@ -5683,45 +5683,53 @@ pub(crate) async fn acp_fetch_kimi_models_core(
 // agent dir honors `PI_CODING_AGENT_DIR` so a custom pi install can be targeted.
 // ---------------------------------------------------------------------------
 
-/// Match Pi's normalizePath() handling for PI_CODING_AGENT_DIR: the runtime
-/// expands a leading tilde before opening settings/auth/models.json.
-fn pi_agent_dir_from_value(value: &str) -> PathBuf {
-    let home = home_dir_or_default();
-    if value == "~" {
-        return home;
-    }
-    if let Some(rest) = value.strip_prefix("~/").or_else(|| value.strip_prefix("~\\")) {
-        return home.join(rest);
-    }
-    PathBuf::from(value)
-}
-
-/// Resolve pi's coding-agent dir: `PI_CODING_AGENT_DIR` if set (trimmed,
-/// non-empty), else `~/.pi/agent` (mirrors `codex_home_dir`/`resolve_kimi_*`).
+/// Resolve pi's coding-agent dir from codeg's own environment:
+/// `PI_CODING_AGENT_DIR` through pi's tilde rule, else `~/.pi/agent`. The same
+/// resolver the history parser uses, so the two cannot drift.
 pub(crate) fn pi_agent_dir() -> PathBuf {
-    match std::env::var("PI_CODING_AGENT_DIR")
-        .ok()
-        .map(|raw| raw.trim().to_string())
-        .filter(|s| !s.is_empty())
-    {
-        Some(value) => pi_agent_dir_from_value(&value),
-        None => home_dir_or_default().join(".pi").join("agent"),
-    }
+    crate::parsers::pi::resolve_pi_agent_dir()
 }
 
-/// Like [`pi_agent_dir`], but resolves `PI_CODING_AGENT_DIR` from a per-agent
-/// `runtime_env` map first (the BYO-pi override path) before falling back to the
-/// process env / `~/.pi/agent`. Launch-time trust seeding only has the per-agent
-/// env (the override never lands in codeg's own process env), so it must consult
-/// `runtime_env` to target the same agent dir pi-acp will spawn pi against.
+/// Pi's agent dir as the pi CHILD of a launch with `runtime_env` resolves it —
+/// before a relative value is anchored (see [`pi_agent_dir_in_workspace`]).
+///
+/// Follows the spawn chain rather than one map: a non-empty `runtime_env` value
+/// replaces codeg's, an exactly-empty one is `env_remove`d (pi then falls back
+/// to its default instead of inheriting codeg's value), and an absent key
+/// inherits codeg's own. `~` expands against the child's home, since
+/// `merge_agent_env` hands a relocated `HOME` to the child as well. Never
+/// trimmed: pi reads the raw value (`normalizePath` expands `~` and nothing else).
 fn pi_agent_dir_for_env(runtime_env: &BTreeMap<String, String>) -> PathBuf {
-    match runtime_env
-        .get("PI_CODING_AGENT_DIR")
-        .map(|raw| raw.trim().to_string())
-        .filter(|s| !s.is_empty())
-    {
-        Some(value) => pi_agent_dir_from_value(&value),
-        None => pi_agent_dir(),
+    pi_agent_dir_for_child(runtime_env, std::env::var_os("PI_CODING_AGENT_DIR"))
+}
+
+/// [`pi_agent_dir_for_env`] with codeg's own `PI_CODING_AGENT_DIR` (what the
+/// child inherits when the launch leaves the key alone) handed in.
+fn pi_agent_dir_for_child(
+    runtime_env: &BTreeMap<String, String>,
+    inherited: Option<std::ffi::OsString>,
+) -> PathBuf {
+    let value = match runtime_env.get("PI_CODING_AGENT_DIR") {
+        Some(value) if value.is_empty() => None,
+        Some(value) => Some(std::ffi::OsString::from(value)),
+        None => inherited,
+    };
+    let home = crate::acp::file_system_runtime::child_home_dir(runtime_env)
+        .unwrap_or_else(home_dir_or_default);
+    crate::parsers::pi::resolve_pi_agent_dir_from(value, Some(&home))
+}
+
+/// [`pi_agent_dir_for_env`] anchored where pi anchors it: pi-acp starts pi with
+/// the session's workspace as its cwd, so a relative `PI_CODING_AGENT_DIR` names
+/// a directory inside THAT workspace — and the `trust.json` pi consults there
+/// is one the repository itself can ship. Reading it relative to codeg's own cwd
+/// instead would let such a grant slip past the launch gate unseen.
+fn pi_agent_dir_in_workspace(runtime_env: &BTreeMap<String, String>, workspace: &Path) -> PathBuf {
+    let dir = pi_agent_dir_for_env(runtime_env);
+    if dir.is_relative() {
+        workspace.join(dir)
+    } else {
+        dir
     }
 }
 
@@ -5924,32 +5932,34 @@ pub struct PiTrustEntry {
     pub trusted: bool,
 }
 
-/// Resolve the pi agent dir the launch path will use: the per-agent `env_json`
-/// (BYO `PI_CODING_AGENT_DIR`) first, then the process env / `~/.pi/agent`.
+/// The per-agent env the launch path hands pi — where a BYO
+/// `PI_CODING_AGENT_DIR` lives. The override only ever lands in the per-agent
+/// env, never codeg's own process env, so reading `std::env` alone would
+/// silently target the wrong agent dir for BYO-pi users.
 ///
-/// The override only ever lands in the per-agent env, never codeg's own process
-/// env, so reading `std::env` here would silently target the wrong agent dir for
-/// BYO-pi users — the same trap the old launch-time seeding documented.
-async fn pi_agent_dir_from_db(db: &AppDatabase) -> Result<PathBuf, AcpError> {
+/// Fails closed: when the setting cannot be read, guessing "no override" would
+/// point every read AND write at the default profile — writing API keys into a
+/// profile the sessions never open.
+async fn pi_runtime_env_from_db(db: &AppDatabase) -> Result<BTreeMap<String, String>, AcpError> {
     let setting = agent_setting_service::get_by_agent_type(&db.conn, AgentType::Pi)
         .await
         .map_err(|error| {
             AcpError::protocol(format!(
-                "Cannot read Pi agent settings from the CodeG database: {error}. Check database access and retry; Pi profile files were not changed."
+                "Cannot read Pi agent settings from the Codeg database: {error}. Check database access and retry; Pi profile files were not changed."
             ))
         })?;
     let local_config_json = load_agent_local_config_json(AgentType::Pi);
-    let runtime_env = build_runtime_env_from_setting(
+    Ok(build_runtime_env_from_setting(
         AgentType::Pi,
         setting.as_ref(),
         local_config_json.as_deref(),
-    );
-    Ok(pi_agent_dir_for_env(&runtime_env))
+    ))
 }
 
-/// Native Pi settings must use one stable directory across the settings API,
-/// read-only RPC, and ACP sessions. Existing relative overrides remain available
-/// to old sessions, but settings must not read/write them from CodeG's cwd.
+/// Settings have no workspace, and a relative agent dir names a different
+/// directory in every workspace pi runs in (see [`pi_agent_dir_in_workspace`]),
+/// so there is no single profile they could read or write. Refuse rather than
+/// resolve it against codeg's own cwd, which no pi process ever uses.
 fn pi_settings_dir_checked(pi_dir: PathBuf) -> Result<PathBuf, AcpError> {
     if pi_dir.is_absolute() {
         Ok(pi_dir)
@@ -5961,7 +5971,7 @@ fn pi_settings_dir_checked(pi_dir: PathBuf) -> Result<PathBuf, AcpError> {
 }
 
 async fn pi_settings_dir_from_db(db: &AppDatabase) -> Result<PathBuf, AcpError> {
-    pi_settings_dir_checked(pi_agent_dir_from_db(db).await?)
+    pi_settings_dir_checked(pi_agent_dir_for_env(&pi_runtime_env_from_db(db).await?))
 }
 
 /// Project-trust state for `cwd` against explicit files. Split from the DB-backed
@@ -6001,7 +6011,7 @@ pub(crate) fn pi_project_trust_launch_block(
     cwd: &Path,
     runtime_env: &BTreeMap<String, String>,
 ) -> Option<String> {
-    let trust_file = pi_agent_dir_for_env(runtime_env).join("trust.json");
+    let trust_file = pi_agent_dir_in_workspace(runtime_env, cwd).join("trust.json");
     let state = pi_project_trust_state_at(&trust_file, &pi_trust_ack_path(), cwd);
     if state.resources.is_empty() || state.decision != Some(true) || state.acknowledged {
         return None;
@@ -6197,14 +6207,16 @@ pub(crate) async fn acp_pi_project_trust_state_core(
     db: &AppDatabase,
     workspace: String,
 ) -> Result<PiProjectTrustState, AcpError> {
-    let trust_file = pi_agent_dir_from_db(db).await?.join("trust.json");
     // Not trimmed, for the same reason as the write path: a directory name may
     // legitimately start or end with a space, and the state must describe the
     // exact folder the caller named.
+    let cwd = Path::new(&workspace);
+    let trust_file =
+        pi_agent_dir_in_workspace(&pi_runtime_env_from_db(db).await?, cwd).join("trust.json");
     Ok(pi_project_trust_state_at(
         &trust_file,
         &pi_trust_ack_path(),
-        Path::new(&workspace),
+        cwd,
     ))
 }
 
@@ -6239,7 +6251,10 @@ pub(crate) async fn acp_pi_set_project_trust_core(
     workspace: String,
     trusted: Option<bool>,
 ) -> Result<(), AcpError> {
-    let path = pi_settings_dir_from_db(db).await?.join("trust.json");
+    // The same file the launch gate reads for this workspace — anchored in it
+    // when the agent dir is relative (see `pi_agent_dir_in_workspace`).
+    let path = pi_agent_dir_in_workspace(&pi_runtime_env_from_db(db).await?, Path::new(&workspace))
+        .join("trust.json");
     // The write takes pi's file lock and can sleep on contention, so keep it off
     // the async worker. NOTE: `workspace` is NOT trimmed — leading/trailing
     // spaces are legal in a directory name, and silently trimming them would key
@@ -6458,9 +6473,10 @@ pub struct PiModelReasoningSpec {
     pub thinking_level_map: BTreeMap<String, Option<String>>,
 }
 
-/// pi's fixed thinking-level vocabulary (`EXTENDED_THINKING_LEVELS` in pi-ai). A name
-/// outside this list is rejected by pi-acp with `invalidParams`, so it must never reach
-/// `models.json`.
+/// pi's fixed thinking-level vocabulary (`EXTENDED_THINKING_LEVELS` in pi-ai).
+/// `getSupportedThinkingLevels` only ever walks these seven, so a
+/// `thinkingLevelMap` key outside the list is dead weight in `models.json` that
+/// no picker will ever offer.
 const PI_THINKING_LEVELS: [&str; 7] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 
 /// Read a JSON file into an owned object map, returning an empty map when the
@@ -6565,8 +6581,9 @@ fn apply_pi_custom_model(
     entry.insert("models".to_string(), serde_json::Value::Array(models));
 }
 
-/// The same Pi executable and environment used by pi-acp supplies the built-in
-/// model catalog. Only these capability fields cross the settings API boundary.
+/// One built-in model's thinking capability, as pi's own model registry reports
+/// it (`get_available_models`). Only these fields cross the settings API
+/// boundary — a registry entry also carries base URLs and headers.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct PiModelCapability {
@@ -6578,65 +6595,154 @@ pub struct PiModelCapability {
     pub thinking_level_map: BTreeMap<String, Option<String>>,
 }
 
-fn parse_pi_model_capabilities(line: &str) -> Option<Vec<PiModelCapability>> {
+/// Whether pi answered the catalog query, and if not, why. The settings panel
+/// words its hint from this: "pi does not list this model" is only true when pi
+/// actually answered.
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PiCatalogStatus {
+    /// pi answered. Its list covers only providers it has credentials for.
+    Ok,
+    /// The configured pi command does not resolve to an executable.
+    NotFound,
+    /// A relative command or agent dir names a different file in every workspace
+    /// pi runs in, and this query has no workspace.
+    RelativePath,
+    /// pi started but gave no usable answer (exited, refused, or unparseable).
+    Failed,
+    /// pi did not answer before the deadline.
+    TimedOut,
+}
+
+/// pi's model catalog for the settings panel: `models` is empty unless `status`
+/// is [`PiCatalogStatus::Ok`].
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PiModelCatalog {
+    pub status: PiCatalogStatus,
+    pub models: Vec<PiModelCapability>,
+}
+
+impl PiModelCatalog {
+    fn unavailable(status: PiCatalogStatus) -> Self {
+        Self {
+            status,
+            models: Vec::new(),
+        }
+    }
+}
+
+/// Read one line of pi's RPC output: `None` for anything that is not the answer
+/// to the catalog request (pi may emit other lines first), `Some(Err(()))` for
+/// an answer that refuses or cannot be read, `Some(Ok(models))` otherwise.
+fn parse_pi_model_capabilities(line: &str) -> Option<Result<Vec<PiModelCapability>, ()>> {
     let response: serde_json::Value = serde_json::from_str(line).ok()?;
     if response.get("id")?.as_str()? != "codeg-models"
         || response.get("type")?.as_str()? != "response"
         || response.get("command")?.as_str()? != "get_available_models"
-        || !response.get("success")?.as_bool()?
     {
         return None;
     }
-    serde_json::from_value(response.get("data")?.get("models")?.clone()).ok()
-}
-
-/// A relative override can resolve differently in the CodeG process, the RPC
-/// temp directory, and an ACP workspace. Fail closed until it is corrected.
-fn pi_runtime_paths_are_stable(runtime_env: &BTreeMap<String, String>) -> bool {
-    let command = runtime_env
-        .get("PI_ACP_PI_COMMAND")
-        .map(|value| value.trim())
-        .filter(|value| !value.is_empty())
-        .unwrap_or("pi");
-    let has_path = command.contains('/')
-        || command.contains('\\')
-        || command.as_bytes().get(1) == Some(&b':');
-    if has_path && !Path::new(command).is_absolute() {
-        return false;
+    if response.get("success").and_then(serde_json::Value::as_bool) != Some(true) {
+        return Some(Err(()));
     }
-    runtime_env
-        .get("PI_CODING_AGENT_DIR")
-        .map(|value| value.trim())
-        .filter(|value| !value.is_empty())
-        .is_none_or(|value| pi_agent_dir_from_value(value).is_absolute())
+    Some(
+        response
+            .get("data")
+            .and_then(|data| data.get("models"))
+            .and_then(|models| serde_json::from_value(models.clone()).ok())
+            .ok_or(()),
+    )
 }
 
-/// Query Pi itself, without an ACP session or a prompt. The RPC child uses
-/// the effective launch command and env. Unavailable Pi yields no capabilities.
-async fn query_pi_model_capabilities(
+/// The command pi-acp spawns for a launch with `runtime_env`: its
+/// `PI_ACP_PI_COMMAND` as the child sees it (the same removed / inherited rules
+/// as [`pi_agent_dir_for_env`]), else `pi`. pi-acp uses the value verbatim, so it
+/// is not trimmed here either.
+pub(crate) fn pi_command_for_env(runtime_env: &BTreeMap<String, String>) -> String {
+    match runtime_env.get("PI_ACP_PI_COMMAND") {
+        Some(value) if value.is_empty() => None,
+        Some(value) => Some(value.clone()),
+        None => std::env::var("PI_ACP_PI_COMMAND")
+            .ok()
+            .filter(|value| !value.is_empty()),
+    }
+    .unwrap_or_else(|| "pi".to_string())
+}
+
+/// Whether a pi command is a path (spawned as-is) rather than a name looked up
+/// on `PATH`. `C:pi` is a drive-relative path on Windows, not a name.
+fn pi_command_looks_like_path(command: &str) -> bool {
+    command.contains('/')
+        || command.contains('\\')
+        || command.as_bytes().get(1) == Some(&b':')
+        || Path::new(command).is_absolute()
+}
+
+/// Resolve the command pi-acp will spawn the way that spawn resolves it: a path
+/// against `cwd` (the child's working directory), a bare name on the child's
+/// `PATH` — `env`'s when the launch sets one, else codeg's own, which the child
+/// inherits.
+pub(crate) fn resolve_pi_command_in(
+    command: &str,
+    env: &BTreeMap<String, String>,
+    cwd: &Path,
+) -> Option<PathBuf> {
+    if command.is_empty() {
+        return None;
+    }
+    if pi_command_looks_like_path(command) {
+        let candidate = cwd.join(command);
+        return pi_path_is_executable(&candidate)
+            .then(|| fs::canonicalize(&candidate).unwrap_or(candidate));
+    }
+    let path = env
+        .iter()
+        .find(|(key, _)| key.eq_ignore_ascii_case("PATH"))
+        .map(|(_, value)| std::ffi::OsString::from(value))
+        .or_else(|| std::env::var_os("PATH"));
+    which::which_in(command, path, cwd).ok()
+}
+
+/// The catalog query has no workspace, and a relative command or agent dir
+/// names a different file in every workspace pi runs in. Decline rather than
+/// resolve it against the query's own scratch cwd.
+fn pi_runtime_paths_are_stable(runtime_env: &BTreeMap<String, String>) -> bool {
+    let command = pi_command_for_env(runtime_env);
+    let relative_command =
+        pi_command_looks_like_path(&command) && !Path::new(&command).is_absolute();
+    !relative_command && pi_agent_dir_for_env(runtime_env).is_absolute()
+}
+
+/// Ask pi itself for its model catalog — the same executable and agent dir a
+/// session would use — without an ACP session, a prompt, or the network.
+async fn query_pi_model_catalog(
     runtime_env: &BTreeMap<String, String>,
     deadline: Duration,
-) -> Vec<PiModelCapability> {
-    use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
-    use tokio::process::Command;
+) -> PiModelCatalog {
     use std::process::Stdio;
+    use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 
     if !pi_runtime_paths_are_stable(runtime_env) {
-        return Vec::new();
+        return PiModelCatalog::unavailable(PiCatalogStatus::RelativePath);
     }
-    let pi_command = runtime_env
-        .get("PI_ACP_PI_COMMAND")
-        .map(String::as_str)
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or("pi");
-    let Some(program) = resolve_pi_command_path_with_env(pi_command, runtime_env) else {
-        return Vec::new();
+    let query_dir = std::env::temp_dir();
+    let Some(program) =
+        resolve_pi_command_in(&pi_command_for_env(runtime_env), runtime_env, &query_dir)
+    else {
+        return PiModelCatalog::unavailable(PiCatalogStatus::NotFound);
     };
-    let mut command: Command = crate::process::tokio_command(program);
+    let mut command = crate::process::tokio_command(program);
     command
         .args([
             "--mode",
             "rpc",
+            // Without it, pi's RPC mode starts a background model refresh that
+            // renews EXPIRED OAuth logins (rotating the refresh token), and it
+            // exits on stdin EOF without waiting for that — so a query this short
+            // could cut a token rotation off mid-flight. Offline, pi still lists
+            // the same models from its registry and auth store.
+            "--offline",
             "--no-session",
             "--no-extensions",
             "--no-skills",
@@ -6644,14 +6750,21 @@ async fn query_pi_model_capabilities(
             "--no-context-files",
             "--no-approve",
         ])
-        .envs(runtime_env)
-        .current_dir(std::env::temp_dir())
+        .current_dir(&query_dir)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .kill_on_drop(true);
+    // The launch convention: an exactly-empty value removes the variable.
+    for (key, value) in runtime_env {
+        if value.is_empty() {
+            command.env_remove(key);
+        } else {
+            command.env(key, value);
+        }
+    }
     let Ok(mut child) = command.spawn() else {
-        return Vec::new();
+        return PiModelCatalog::unavailable(PiCatalogStatus::Failed);
     };
     let query = async {
         let mut stdin = child.stdin.take()?;
@@ -6663,8 +6776,8 @@ async fn query_pi_model_capabilities(
         let stdout = child.stdout.take()?;
         let mut lines = BufReader::new(stdout.take(8 * 1024 * 1024)).lines();
         while let Ok(Some(line)) = lines.next_line().await {
-            if let Some(models) = parse_pi_model_capabilities(&line) {
-                return Some(models);
+            if let Some(answer) = parse_pi_model_capabilities(&line) {
+                return Some(answer);
             }
         }
         None
@@ -6677,19 +6790,23 @@ async fn query_pi_model_capabilities(
         let _ = child.start_kill();
         let _ = child.wait().await;
     }
-    result.ok().flatten().unwrap_or_default()
+    match result {
+        Err(_) => PiModelCatalog::unavailable(PiCatalogStatus::TimedOut),
+        Ok(Some(Ok(models))) => PiModelCatalog {
+            status: PiCatalogStatus::Ok,
+            models,
+        },
+        Ok(_) => PiModelCatalog::unavailable(PiCatalogStatus::Failed),
+    }
 }
 
-pub async fn list_pi_model_capabilities_core(
-    db: &AppDatabase,
-    data_dir: &Path,
-) -> Vec<PiModelCapability> {
+pub async fn list_pi_model_catalog_core(db: &AppDatabase, data_dir: &Path) -> PiModelCatalog {
     let Ok(runtime_env) =
         build_runtime_env_for_agent(db, AgentType::Pi, None, data_dir, true).await
     else {
-        return Vec::new();
+        return PiModelCatalog::unavailable(PiCatalogStatus::Failed);
     };
-    query_pi_model_capabilities(&runtime_env, Duration::from_secs(12)).await
+    query_pi_model_catalog(&runtime_env, Duration::from_secs(12)).await
 }
 
 /// Apply a structured Pi config update to pi's native files. Validates the whole
@@ -6730,6 +6847,10 @@ pub(crate) async fn acp_update_pi_config_core(
         }
     }
 
+    // The profile sessions will read: resolved (and refused if unknowable) before
+    // anything is written anywhere.
+    let pi_dir = pi_settings_dir_from_db(db).await?;
+
     // Ensure the settings row exists (mirrors the kimi flow) so the agent shows
     // up as configured/enabled in the DB-backed settings list.
     let default = agent_setting_service::AgentDefaultInput {
@@ -6740,8 +6861,6 @@ pub(crate) async fn acp_update_pi_config_core(
     agent_setting_service::ensure_defaults(&db.conn, &[default])
         .await
         .map_err(|e| AcpError::protocol(e.to_string()))?;
-
-    let pi_dir = pi_settings_dir_from_db(db).await?;
 
     // ---- settings.json: merge-write provider/model/thinking level ----
     let settings_path = pi_dir.join("settings.json");
@@ -7027,27 +7146,6 @@ pub(crate) fn resolve_pi_command_path(command: &str) -> Option<PathBuf> {
         }
     } else {
         which::which(trimmed).ok()
-    }
-}
-
-/// Resolve the launch/query command against the PATH that pi-acp inherits,
-/// including a per-agent PATH override. Pathful BYO commands retain the shared
-/// path validation above.
-pub(crate) fn resolve_pi_command_path_with_env(
-    command: &str,
-    runtime_env: &BTreeMap<String, String>,
-) -> Option<PathBuf> {
-    let trimmed = command.trim();
-    if trimmed.contains('/') || trimmed.contains('\\') || Path::new(trimmed).is_absolute() {
-        return resolve_pi_command_path(trimmed);
-    }
-    let path = runtime_env
-        .iter()
-        .find(|(key, _)| key.eq_ignore_ascii_case("PATH"))
-        .map(|(_, value)| value.as_str());
-    match path {
-        Some(path) => which::which_in(trimmed, Some(path), std::env::current_dir().ok()?).ok(),
-        None => resolve_pi_command_path(trimmed),
     }
 }
 
@@ -12355,19 +12453,20 @@ pub async fn acp_load_pi_config(db: State<'_, AppDatabase>) -> Result<PiConfigPr
     load_pi_config_for_db(&db).await
 }
 
-/// List Pi built-in model capabilities using the exact configured runtime.
+/// pi's built-in model catalog, asked of the configured runtime (see
+/// [`list_pi_model_catalog_core`]).
 #[cfg(feature = "tauri-runtime")]
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
 pub async fn acp_list_pi_model_capabilities(
     db: State<'_, AppDatabase>,
     app: tauri::AppHandle,
-) -> Result<Vec<PiModelCapability>, AcpError> {
+) -> Result<PiModelCatalog, AcpError> {
     let data_dir = app
         .path()
         .app_data_dir()
         .map(|p| crate::paths::resolve_effective_data_dir(&p))
         .unwrap_or_else(|_| PathBuf::from("."));
-    Ok(list_pi_model_capabilities_core(&db, &data_dir).await)
+    Ok(list_pi_model_catalog_core(&db, &data_dir).await)
 }
 
 /// Validate a user-supplied custom pi binary (BYO-pi): resolve it (path or
@@ -15519,13 +15618,22 @@ base_url = \"https://example.test/v1\"
     #[test]
     fn pi_rpc_projection_keeps_only_capabilities_and_rejects_wrong_responses() {
         let line = r#"{"id":"codeg-models","type":"response","command":"get_available_models","success":true,"data":{"models":[{"provider":"openai","id":"gpt-5.6-sol","reasoning":true,"thinkingLevelMap":{"max":"max"},"baseUrl":"https://secret.example","apiKey":"secret"}]}}"#;
-        let models = parse_pi_model_capabilities(line).unwrap();
+        let models = parse_pi_model_capabilities(line).unwrap().unwrap();
         assert_eq!(models.len(), 1);
         assert_eq!(models[0].thinking_level_map["max"], Some("max".into()));
         let projected = serde_json::to_string(&models).unwrap();
         assert!(!projected.contains("secret"));
+        // Someone else's line: keep reading.
         assert!(parse_pi_model_capabilities(&line.replace("codeg-models", "other")).is_none());
-        assert!(parse_pi_model_capabilities(&line.replace(r#""success":true"#, r#""success":false"#)).is_none());
+        // Our answer, refusing or unreadable: stop, and say it failed.
+        assert_eq!(
+            parse_pi_model_capabilities(&line.replace(r#""success":true"#, r#""success":false"#)),
+            Some(Err(()))
+        );
+        assert_eq!(
+            parse_pi_model_capabilities(&line.replace(r#""models":["#, r#""other":["#)),
+            Some(Err(()))
+        );
     }
 
     #[tokio::test]
@@ -15536,9 +15644,15 @@ base_url = \"https://example.test/v1\"
         let db = AppDatabase {
             conn: sea_orm::Database::connect("sqlite::memory:").await.unwrap(),
         };
-        let error = pi_settings_dir_from_db(&db).await.unwrap_err();
-        assert!(error.to_string().contains("database"), "{error}");
-        assert!(load_pi_config_for_db(&db).await.is_err());
+        let lookup_failed = |error: AcpError| {
+            let message = error.to_string();
+            assert!(
+                message.contains("Cannot read Pi agent settings"),
+                "failed for another reason: {message}"
+            );
+        };
+        lookup_failed(pi_settings_dir_from_db(&db).await.unwrap_err());
+        lookup_failed(load_pi_config_for_db(&db).await.unwrap_err());
         let update = PiConfigUpdate {
             provider: "test-provider".into(),
             model: "test-model".into(),
@@ -15548,16 +15662,22 @@ base_url = \"https://example.test/v1\"
             custom_api: None,
             model_reasoning: None,
         };
-        assert!(acp_update_pi_config_core(update, &db, &EventEmitter::Noop)
-            .await
-            .is_err());
-        assert!(acp_pi_list_trust_entries_core(&db).await.is_err());
-        assert!(acp_pi_set_project_trust_core(&db, "/tmp/pi-db-error".into(), Some(true))
-            .await
-            .is_err());
-        assert!(acp_pi_project_trust_state_core(&db, "/tmp/pi-db-error".into())
-            .await
-            .is_err());
+        lookup_failed(
+            acp_update_pi_config_core(update, &db, &EventEmitter::Noop)
+                .await
+                .unwrap_err(),
+        );
+        lookup_failed(acp_pi_list_trust_entries_core(&db).await.unwrap_err());
+        lookup_failed(
+            acp_pi_set_project_trust_core(&db, "/tmp/pi-db-error".into(), Some(true))
+                .await
+                .unwrap_err(),
+        );
+        lookup_failed(
+            acp_pi_project_trust_state_core(&db, "/tmp/pi-db-error".into())
+                .await
+                .unwrap_err(),
+        );
     }
 
     #[test]
@@ -15582,6 +15702,71 @@ base_url = \"https://example.test/v1\"
             pi_agent_dir_for_env(&env),
             home_dir_or_default().join("custom-pi")
         );
+        // pi's `normalizePath` takes the value verbatim: a padded value is a
+        // different (here: relative) directory, not the trimmed one.
+        env.insert(
+            "PI_CODING_AGENT_DIR".to_string(),
+            " ~/custom-pi".to_string(),
+        );
+        assert_eq!(pi_agent_dir_for_env(&env), PathBuf::from(" ~/custom-pi"));
+    }
+
+    /// `~` is the CHILD's home — a launch that relocates `HOME` relocates pi's
+    /// profile with it. A key the launch leaves alone is inherited from codeg,
+    /// while a blank one is removed from the child, so pi falls back to its
+    /// default instead of inheriting anything.
+    #[cfg(unix)]
+    #[test]
+    fn pi_agent_dir_follows_the_child_env() {
+        let home = tempfile::tempdir().unwrap();
+        let inherited = || Some(std::ffi::OsString::from("/codeg/own/pi-agent"));
+        let mut env = BTreeMap::new();
+        env.insert(
+            "HOME".to_string(),
+            home.path().to_string_lossy().into_owned(),
+        );
+        assert_eq!(
+            pi_agent_dir_for_child(&env, inherited()),
+            PathBuf::from("/codeg/own/pi-agent")
+        );
+
+        env.insert("PI_CODING_AGENT_DIR".to_string(), "~/isolated".to_string());
+        assert_eq!(
+            pi_agent_dir_for_child(&env, inherited()),
+            home.path().join("isolated")
+        );
+
+        env.insert("PI_CODING_AGENT_DIR".to_string(), String::new());
+        assert_eq!(
+            pi_agent_dir_for_child(&env, inherited()),
+            home.path().join(".pi").join("agent")
+        );
+    }
+
+    /// A relative agent dir lives inside the workspace pi runs in, so the
+    /// repository itself can ship the `trust.json` pi reads there. The gate must
+    /// read that same file; one under codeg's own cwd would miss the grant.
+    #[test]
+    fn pi_launch_gate_reads_a_relative_agent_dir_inside_the_workspace() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ws = tmp.path().join("ws");
+        fs::create_dir_all(ws.join(".pi").join("extensions")).unwrap();
+        let shipped = ws.join(".pi-agent");
+        fs::create_dir_all(&shipped).unwrap();
+        let mut grant = serde_json::Map::new();
+        grant.insert(canonical_key(&ws), serde_json::Value::Bool(true));
+        write_json_object_pretty(&shipped.join("trust.json"), &grant).unwrap();
+
+        let env = BTreeMap::from([("PI_CODING_AGENT_DIR".to_string(), ".pi-agent".to_string())]);
+        let blocked = temp_env::with_var(
+            "CODEG_HOME",
+            Some(tmp.path().join("codeg-home").to_string_lossy().to_string()),
+            || pi_project_trust_launch_block(&ws, &env),
+        );
+        assert!(
+            blocked.is_some(),
+            "a grant shipped inside the workspace must stop the launch"
+        );
     }
 
     #[test]
@@ -15596,39 +15781,92 @@ base_url = \"https://example.test/v1\"
     }
 
     #[cfg(unix)]
-    #[tokio::test]
-    async fn pi_rpc_uses_configured_executable_and_agent_dir_without_extensions() {
+    fn fake_pi(dir: &Path, name: &str, body: &str) -> PathBuf {
         use std::os::unix::fs::PermissionsExt;
+        let script = dir.join(name);
+        fs::write(&script, format!("#!/bin/sh\n{body}")).unwrap();
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+        script
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn pi_rpc_uses_configured_executable_and_agent_dir_offline() {
         let temp = tempfile::tempdir().unwrap();
         let command_dir = temp.path().join("Pi runtime with spaces");
         fs::create_dir(&command_dir).unwrap();
-        let script = command_dir.join("pi");
-        fs::write(
-            &script,
-            r#"#!/bin/sh
-read request
+        let script = fake_pi(
+            &command_dir,
+            "pi",
+            r#"read request
 case "$request $*" in
-  *codeg-models*--no-session*--no-extensions*)
+  *codeg-models*--offline*--no-session*--no-extensions*)
     if [ -n "$PI_CODING_AGENT_DIR" ]; then
       printf '%s\n' '{"id":"codeg-models","type":"response","command":"get_available_models","success":true,"data":{"models":[{"provider":"openai","id":"via-override","reasoning":true,"thinkingLevelMap":{"max":"max"}}]}}'
     fi
     ;;
 esac
 "#,
-        ).unwrap();
-        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+        );
         let mut env = BTreeMap::new();
         env.insert("PI_ACP_PI_COMMAND".into(), script.to_string_lossy().into_owned());
         env.insert("PI_CODING_AGENT_DIR".into(), temp.path().to_string_lossy().into_owned());
-        let models = query_pi_model_capabilities(&env, Duration::from_secs(2)).await;
-        assert_eq!(models.len(), 1);
-        assert_eq!(models[0].id, "via-override");
+        let catalog = query_pi_model_catalog(&env, Duration::from_secs(2)).await;
+        assert_eq!(catalog.status, PiCatalogStatus::Ok);
+        assert_eq!(catalog.models.len(), 1);
+        assert_eq!(catalog.models[0].id, "via-override");
+    }
 
-        let slow = command_dir.join("slow-pi");
-        fs::write(&slow, "#!/bin/sh\nsleep 30\n").unwrap();
-        fs::set_permissions(&slow, fs::Permissions::from_mode(0o755)).unwrap();
-        env.insert("PI_ACP_PI_COMMAND".into(), slow.to_string_lossy().into_owned());
-        assert!(query_pi_model_capabilities(&env, Duration::from_millis(50)).await.is_empty());
+    /// The panel words its hint from the status, so each way of not getting an
+    /// answer has to be told apart from "pi answered and does not list it".
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn pi_catalog_says_why_pi_gave_no_answer() {
+        let temp = tempfile::tempdir().unwrap();
+        let status_for = |command: String| {
+            let env = BTreeMap::from([
+                ("PI_ACP_PI_COMMAND".to_string(), command),
+                (
+                    "PI_CODING_AGENT_DIR".to_string(),
+                    temp.path().to_string_lossy().into_owned(),
+                ),
+            ]);
+            async move {
+                query_pi_model_catalog(&env, Duration::from_millis(500))
+                    .await
+                    .status
+            }
+        };
+
+        assert_eq!(
+            status_for("./pi-test.sh".into()).await,
+            PiCatalogStatus::RelativePath
+        );
+        assert_eq!(
+            status_for("/nonexistent/definitely-not-pi-xyz".into()).await,
+            PiCatalogStatus::NotFound
+        );
+        let refusing = fake_pi(
+            temp.path(),
+            "refusing-pi",
+            r#"read request
+printf '%s\n' '{"id":"codeg-models","type":"response","command":"get_available_models","success":false,"error":"boom"}'
+"#,
+        );
+        assert_eq!(
+            status_for(refusing.to_string_lossy().into_owned()).await,
+            PiCatalogStatus::Failed
+        );
+        let silent = fake_pi(temp.path(), "silent-pi", "read request\n");
+        assert_eq!(
+            status_for(silent.to_string_lossy().into_owned()).await,
+            PiCatalogStatus::Failed
+        );
+        let slow = fake_pi(temp.path(), "slow-pi", "sleep 30\n");
+        assert_eq!(
+            status_for(slow.to_string_lossy().into_owned()).await,
+            PiCatalogStatus::TimedOut
+        );
     }
 
     #[cfg(windows)]
@@ -15647,9 +15885,10 @@ echo {"id":"codeg-models","type":"response","command":"get_available_models","su
         ).unwrap();
         let mut env = BTreeMap::new();
         env.insert("PI_ACP_PI_COMMAND".into(), script.to_string_lossy().into_owned());
-        let models = query_pi_model_capabilities(&env, Duration::from_secs(3)).await;
-        assert_eq!(models.len(), 1);
-        assert_eq!(models[0].id, "windows");
+        let catalog = query_pi_model_catalog(&env, Duration::from_secs(3)).await;
+        assert_eq!(catalog.status, PiCatalogStatus::Ok);
+        assert_eq!(catalog.models.len(), 1);
+        assert_eq!(catalog.models[0].id, "windows");
     }
 
     /// The older writer skipped an already-listed model entirely, so a declaration
