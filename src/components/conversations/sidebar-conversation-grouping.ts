@@ -952,9 +952,11 @@ export interface FoldersEmptyRow {
 
 /**
  * The single empty-state hint shown under an expanded but empty "Recent"
- * section ("No recent conversations"). Folderless like {@link ChatsEmptyRow},
- * and reached only in a workspace with literally nothing in it — Recent spans
- * every section, so any conversation at all fills it.
+ * section ("No recent conversations"). Folderless like {@link ChatsEmptyRow}.
+ * Under the default "all" filter it is reached only in a workspace with
+ * literally nothing in it — Recent spans every section, so any conversation at
+ * all fills it; a "chats" / "folders" filter can also narrow the section to
+ * nothing, and the renderer names that filter in the hint.
  */
 export interface RecentEmptyRow {
   kind: "recent-empty"
@@ -1214,8 +1216,9 @@ export function buildRows(args: {
   chatConversations: readonly DbConversationSummary[]
   chatsExpanded: boolean
   /** The flat "Recent" bucket — every reachable conversation, folder-bound and
-   *  chat alike, newest first (see {@link selectRecentConversationsWithReuse}).
-   *  Only read when `showRecent`. Optional — defaults to empty. */
+   *  chat alike (or just one kind, under the user's filter), newest first (see
+   *  {@link selectRecentConversationsWithReuse}). Only read when `showRecent`.
+   *  Optional — defaults to empty. */
   recentConversations?: readonly DbConversationSummary[]
   /** Whether the Recent section's rows are shown (its own collapse toggle).
    *  Optional — defaults to expanded. */
