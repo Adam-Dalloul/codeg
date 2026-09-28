@@ -3104,6 +3104,9 @@ impl CodexParser {
         let mut task_start_markers: Vec<DateTime<Utc>> = Vec::new();
         let mut turn_context_markers: Vec<DateTime<Utc>> = Vec::new();
         let mut context_window_used_tokens: Option<u64> = None;
+        // Not every `token_count` reads the context: see
+        // `crate::acp::codex_context`, which the live ring shares.
+        let mut context_readings = crate::acp::codex_context::ContextReadings::default();
         let mut context_window_max_tokens: Option<u64> = None;
         let mut latest_total_usage: Option<TurnUsage> = None;
         let mut latest_total_tokens: Option<u64> = None;
@@ -3428,6 +3431,7 @@ impl CodexParser {
                                 if let Some(ts) = parse_codex_timestamp(&value) {
                                     push_turn_start(&mut task_start_markers, ts);
                                 }
+                                context_readings.turn_started();
                             }
                             "user_message" => {
                                 active_agent_count = 0;
@@ -3821,12 +3825,14 @@ impl CodexParser {
                                         }
                                     }
 
-                                    let total_tokens =
+                                    if let Some(used) =
                                         extract_context_window_used_tokens_from_token_count_info(
                                             info,
-                                        );
-                                    if total_tokens.is_some() {
-                                        context_window_used_tokens = total_tokens;
+                                        )
+                                    {
+                                        if context_readings.admit(used) {
+                                            context_window_used_tokens = Some(used);
+                                        }
                                     }
 
                                     let context_window =
@@ -4850,6 +4856,10 @@ impl CodexParser {
                                     emitted_image_ids.insert(id);
                                 }
                             }
+                            // Not rendered; it only marks the request whose
+                            // `token_count` will cover the provider's search
+                            // loop rather than the context.
+                            "web_search_call" => context_readings.web_search_ran(),
                             _ => {}
                         }
                     }
@@ -8389,6 +8399,209 @@ mod tests {
         assert!((pct - ((170.0 / 258400.0) * 100.0)).abs() < 0.0001);
 
         let _ = fs::remove_file(path);
+    }
+
+    /// A `token_count` whose `last_token_usage` is `[input, cached, output]`,
+    /// with the session total in the same shape.
+    fn usage_count_line(ts: &str, last: [u64; 3], total: [u64; 3], window: u64) -> String {
+        let usage = |[input, cached, output]: [u64; 3]| {
+            serde_json::json!({
+                "input_tokens": input,
+                "cached_input_tokens": cached,
+                "output_tokens": output,
+                "total_tokens": input + output,
+            })
+        };
+        rollout_line(
+            ts,
+            "event_msg",
+            serde_json::json!({
+                "type": "token_count",
+                "info": {
+                    "total_token_usage": usage(total),
+                    "last_token_usage": usage(last),
+                    "model_context_window": window,
+                },
+            }),
+        )
+    }
+
+    /// Issue #846, with the reporter's own counters (glm-5.3 over a Responses
+    /// API, 996 147-token window). The request that ran the web searches
+    /// reported 530 278 tokens — 53 % — yet the very next request sent the whole
+    /// conversation in 74 215: that report sums the provider's server-side
+    /// search loop, not what the conversation holds.
+    #[test]
+    fn a_request_that_ran_a_hosted_web_search_is_not_a_context_reading() {
+        const WINDOW: u64 = 996_147;
+        let search = |ts: &str, query: &str| {
+            rollout_line(
+                ts,
+                "response_item",
+                serde_json::json!({
+                    "type": "web_search_call",
+                    "status": "completed",
+                    "action": {"type": "search", "query": query},
+                }),
+            )
+        };
+        let turn_start = |ts: &str| {
+            rollout_line(
+                ts,
+                "event_msg",
+                serde_json::json!({"type": "task_started", "model_context_window": WINDOW}),
+            )
+        };
+        let searched_report = |ts: &str| {
+            usage_count_line(ts, [522_480, 450_432, 7_798], [579_422, 501_952, 8_158], WINDOW)
+        };
+        let first_turn = vec![
+            rollout_line(
+                "2026-09-26T14:17:00Z",
+                "session_meta",
+                serde_json::json!({"id": "ws-846", "cwd": "/tmp/demo"}),
+            ),
+            turn_start("2026-09-26T14:17:01Z"),
+            rollout_line(
+                "2026-09-26T14:17:01Z",
+                "event_msg",
+                serde_json::json!({"type": "user_message", "message": "research it"}),
+            ),
+            usage_count_line(
+                "2026-09-26T14:17:30Z",
+                [56_942, 51_520, 360],
+                [56_942, 51_520, 360],
+                WINDOW,
+            ),
+            search("2026-09-26T14:18:00Z", "one"),
+            search("2026-09-26T14:18:30Z", "two"),
+            search("2026-09-26T14:19:00Z", "three"),
+            rollout_line(
+                "2026-09-26T14:19:10Z",
+                "event_msg",
+                serde_json::json!({"type": "agent_message", "message": "report"}),
+            ),
+            searched_report("2026-09-26T14:19:11Z"),
+            rollout_line(
+                "2026-09-26T14:19:12Z",
+                "event_msg",
+                serde_json::json!({"type": "task_complete"}),
+            ),
+        ];
+        let reading = |lines: &[String], tag: &str| {
+            let stats = parse_lines(lines, tag).session_stats.expect("session stats");
+            (stats.context_window_used_tokens, stats.context_window_usage_percent)
+        };
+
+        let (used, percent) = reading(&first_turn, "ws-846-searched");
+        assert_eq!(used, Some(57_302), "the reading before the search stands");
+        let percent = percent.expect("percent");
+        assert!((percent - 57_302.0 / WINDOW as f64 * 100.0).abs() < 1e-9, "{percent}");
+
+        // Older codex restates the latest report as the next request opens; a
+        // restatement of the report set aside is set aside with it.
+        let mut restated = first_turn.clone();
+        restated.push(turn_start("2026-09-26T14:30:00Z"));
+        restated.push(searched_report("2026-09-26T14:30:01Z"));
+        assert_eq!(reading(&restated, "ws-846-restated").0, Some(57_302));
+
+        // A search whose request never reported (the turn was interrupted)
+        // leaves the next turn's report alone.
+        let interrupted = vec![
+            first_turn[0].clone(),
+            turn_start("2026-09-26T14:17:01Z"),
+            search("2026-09-26T14:18:00Z", "one"),
+            rollout_line(
+                "2026-09-26T14:18:05Z",
+                "event_msg",
+                serde_json::json!({"type": "turn_aborted", "reason": "interrupted"}),
+            ),
+            turn_start("2026-09-26T14:30:00Z"),
+            usage_count_line(
+                "2026-09-26T14:30:27Z",
+                [74_215, 63_232, 5_119],
+                [74_215, 63_232, 5_119],
+                WINDOW,
+            ),
+        ];
+        assert_eq!(reading(&interrupted, "ws-846-interrupted").0, Some(79_334));
+
+        // The next request sends the conversation again, so it reads again.
+        let mut next_turn = first_turn;
+        next_turn.push(turn_start("2026-09-26T14:30:00Z"));
+        next_turn.push(rollout_line(
+            "2026-09-26T14:30:00Z",
+            "event_msg",
+            serde_json::json!({"type": "user_message", "message": "next"}),
+        ));
+        next_turn.push(rollout_line(
+            "2026-09-26T14:30:26Z",
+            "event_msg",
+            serde_json::json!({"type": "agent_message", "message": "ok"}),
+        ));
+        next_turn.push(usage_count_line(
+            "2026-09-26T14:30:27Z",
+            [74_215, 63_232, 5_119],
+            [653_637, 565_184, 13_277],
+            WINDOW,
+        ));
+        assert_eq!(reading(&next_turn, "ws-846-next").0, Some(79_334));
+    }
+
+    /// After compacting, codex reports its estimate of the compacted context in
+    /// `last_token_usage` while restating the session total unchanged. That is
+    /// a new reading, not a restatement of the one before it.
+    #[test]
+    fn the_estimate_codex_reports_after_compacting_is_a_context_reading() {
+        let lines = vec![
+            rollout_line(
+                "2026-06-05T15:43:48Z",
+                "session_meta",
+                serde_json::json!({"id": "compact-est", "cwd": "/tmp/demo"}),
+            ),
+            rollout_line(
+                "2026-06-05T15:43:49Z",
+                "event_msg",
+                serde_json::json!({"type": "user_message", "message": "go on"}),
+            ),
+            usage_count_line(
+                "2026-06-05T15:50:00Z",
+                [243_996, 4_352, 2_599],
+                [3_490_000, 3_000_000, 23_815],
+                258_400,
+            ),
+            rollout_line(
+                "2026-06-05T15:50:30Z",
+                "compacted",
+                serde_json::json!({"message": "summary"}),
+            ),
+            rollout_line(
+                "2026-06-05T15:50:30Z",
+                "event_msg",
+                serde_json::json!({
+                    "type": "token_count",
+                    "info": {
+                        "total_token_usage": {
+                            "input_tokens": 3_490_000,
+                            "cached_input_tokens": 3_000_000,
+                            "output_tokens": 23_815,
+                            "total_tokens": 3_513_815,
+                        },
+                        "last_token_usage": {
+                            "input_tokens": 0,
+                            "cached_input_tokens": 0,
+                            "output_tokens": 0,
+                            "total_tokens": 13_620,
+                        },
+                        "model_context_window": 258_400,
+                    },
+                }),
+            ),
+        ];
+        let stats = parse_lines(&lines, "compact-est")
+            .session_stats
+            .expect("session stats");
+        assert_eq!(stats.context_window_used_tokens, Some(13_620));
     }
 
     /// Sum the per-turn usage a parse produced — what the usage dashboard

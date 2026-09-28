@@ -10378,6 +10378,14 @@ async fn run_conversation_loop(
                 // out-of-turn pump and its calls settle on the update that
                 // immediately follows, before any turn starts.
                 cb_state.hosted_terminal_calls.clear();
+                // A codex web search whose request never reported (canceled
+                // mid-request) must not set aside this turn's first report.
+                // `/goal` continuation turns run on the idle loop and announce
+                // no boundary (codex-acp turns `turn/started`/`turn/completed`
+                // into nothing), so there such a search holds the next report
+                // once — an under-read, where resetting on Cancel instead would
+                // admit a searched report landing after the cancel.
+                cb_state.codex_context_readings.turn_started();
                 // Grok's context ring needs the active model's window paired
                 // with the cumulative token count riding each update. Resolve it
                 // once here (the model can't change mid-turn) so the per-update
@@ -13715,6 +13723,10 @@ struct CodeBuddyLiveState {
     /// even when the token count hasn't moved yet — otherwise the ring would
     /// keep dividing by the previous model's window.
     grok_last_usage: Option<(u64, u64)>,
+    /// Which of codex's `usage_update`s read the context window: the one for a
+    /// request that ran a hosted web search covers the provider's whole search
+    /// loop, not the context (see `crate::acp::codex_context`).
+    codex_context_readings: crate::acp::codex_context::ContextReadings,
     /// Shell tool calls whose terminal the AGENT hosts itself (pi bash,
     /// codex command execution) → whether any output has already been emitted
     /// for that call.
@@ -15159,6 +15171,11 @@ async fn emit_conversation_update(
             // Non-text thought chunks are currently ignored.
         }
         SessionUpdate::ToolCall(tc) => {
+            if agent_type == AgentType::Codex
+                && crate::acp::codex_context::is_web_search_input(tc.raw_input.as_ref())
+            {
+                cb_state.codex_context_readings.web_search_ran();
+            }
             // codex-acp #304 surfaces codex `subAgentActivity` as a live
             // `tool_call`. A launch becomes an Agent capsule (its own rawInput
             // is orchestration bookkeeping, so it is replaced wholesale); a
@@ -15413,6 +15430,14 @@ async fn emit_conversation_update(
             .await;
         }
         SessionUpdate::ToolCallUpdate(tcu) => {
+            // codex-acp repeats a search's `rawInput` on its completion frame, so
+            // either frame marks the request — one whose opening frame never
+            // came still counts (a repeat mark is a no-op).
+            if agent_type == AgentType::Codex
+                && crate::acp::codex_context::is_web_search_input(tcu.fields.raw_input.as_ref())
+            {
+                cb_state.codex_context_readings.web_search_ran();
+            }
             // Symmetric with the `ToolCall` arm: the follow-up carries the same
             // `_meta.codex.subagent`, so it classifies identically — a launch's
             // completion is forwarded (settling its capsule), any other
@@ -15814,6 +15839,34 @@ async fn emit_conversation_update(
             emit_with_state(state, emitter, AcpEvent::AvailableCommands { commands }).await;
         }
         SessionUpdate::UsageUpdate(update) => {
+            // A codex request that ran a hosted web search reports its
+            // provider's whole search loop: the ring keeps the reading before
+            // it (see `crate::acp::codex_context`) — on the window this report
+            // states, since a model switch moves the denominator even while the
+            // figure is held (the parser tracks the window apart the same way).
+            if agent_type == AgentType::Codex
+                && !cb_state.codex_context_readings.admit(update.used)
+            {
+                let rekeyed = state
+                    .read()
+                    .await
+                    .usage
+                    .as_ref()
+                    .filter(|held| held.size != update.size)
+                    .map(|held| held.used);
+                if let Some(used) = rekeyed {
+                    emit_with_state(
+                        state,
+                        emitter,
+                        AcpEvent::UsageUpdate {
+                            used,
+                            size: update.size,
+                        },
+                    )
+                    .await;
+                }
+                return;
+            }
             emit_with_state(
                 state,
                 emitter,
@@ -21146,6 +21199,124 @@ mod tests {
             grok_window_change_usage(Some(500_000), Some((4200, 0))),
             Some((4200, 500_000))
         );
+    }
+
+    /// A codex-acp 1.13.1 frame (`createUsageUpdate`).
+    fn codex_usage_frame(used: u64, size: u64) -> serde_json::Value {
+        serde_json::json!({"sessionUpdate": "usage_update", "used": used, "size": size})
+    }
+
+    /// A codex-acp 1.13.1 web search frame: its opening `tool_call`
+    /// (`createWebSearchStartUpdate`) or its completion `tool_call_update`
+    /// (`createWebSearchCompleteUpdate`) — both carry the same `rawInput`.
+    fn codex_web_search_frame(session_update: &str) -> serde_json::Value {
+        let mut frame = serde_json::json!({
+            "sessionUpdate": session_update,
+            "toolCallId": "ws_1",
+            "title": "Web search: codex context window",
+            "status": "completed",
+            "rawInput": {
+                "type": "webSearch",
+                "id": "ws_1",
+                "query": "codex context window",
+                "action": {"type": "search", "query": "codex context window"},
+            },
+        });
+        if session_update == "tool_call" {
+            frame["kind"] = serde_json::json!("search");
+            frame["status"] = serde_json::json!("in_progress");
+        }
+        frame
+    }
+
+    /// Run codex frames through the live dispatcher on a fresh connection:
+    /// the ring reading it ends on, and every `(used, size)` clients were sent.
+    async fn codex_usage_after(
+        frames: Vec<serde_json::Value>,
+    ) -> (Option<(u64, u64)>, Vec<(u64, u64)>) {
+        let state = Arc::new(RwLock::new(SessionState::new(
+            "conn-codex".to_string(),
+            AgentType::Codex,
+            None,
+            "win".to_string(),
+            None,
+        )));
+        let mut cache = ToolCallOutputCache::default();
+        let mut cb = CodeBuddyLiveState::default();
+        for frame in frames {
+            let update: SessionUpdate = serde_json::from_value(frame).expect("wire shape");
+            emit_conversation_update(
+                &state,
+                &EventEmitter::Noop,
+                AgentType::Codex,
+                update,
+                None,
+                &mut cache,
+                &mut cb,
+            )
+            .await;
+        }
+        let guard = state.read().await;
+        let held = guard.usage.as_ref().map(|u| (u.used, u.size));
+        let emitted = guard
+            .recent_events_after(0)
+            .expect("events recorded")
+            .iter()
+            .filter_map(|e| match &e.payload {
+                AcpEvent::UsageUpdate { used, size } => Some((*used, *size)),
+                _ => None,
+            })
+            .collect();
+        (held, emitted)
+    }
+
+    /// Issue #846, live. codex-acp forwards each request's
+    /// `last_token_usage.total_tokens` as `usage_update.used`; the request that
+    /// ran a web search reports the provider's whole server-side search loop,
+    /// so it must not move the ring — the next request's report does.
+    #[tokio::test]
+    async fn codex_usage_of_a_request_that_ran_a_web_search_leaves_the_ring_alone() {
+        // Either frame of the search marks its request on its own.
+        for search in ["tool_call", "tool_call_update"] {
+            let (held, emitted) = codex_usage_after(vec![
+                codex_usage_frame(57_302, 996_147),
+                codex_web_search_frame(search),
+                codex_usage_frame(530_278, 996_147),
+                // Restated as the next request opens.
+                codex_usage_frame(530_278, 996_147),
+            ])
+            .await;
+            assert_eq!(held, Some((57_302, 996_147)), "{search}");
+            assert_eq!(
+                emitted,
+                vec![(57_302, 996_147)],
+                "{search}: no client is ever sent the searched report"
+            );
+        }
+
+        let (held, _) = codex_usage_after(vec![
+            codex_usage_frame(57_302, 996_147),
+            codex_web_search_frame("tool_call"),
+            codex_usage_frame(530_278, 996_147),
+            codex_usage_frame(79_334, 996_147),
+        ])
+        .await;
+        assert_eq!(held, Some((79_334, 996_147)));
+    }
+
+    /// A model switch moves the denominator even while the figure is held: the
+    /// set-aside report still carries the new model's window.
+    #[tokio::test]
+    async fn a_set_aside_codex_report_still_moves_the_ring_to_its_window() {
+        let (held, emitted) = codex_usage_after(vec![
+            codex_usage_frame(90_000, 100_000),
+            codex_web_search_frame("tool_call"),
+            codex_usage_frame(530_278, 996_147),
+            codex_usage_frame(530_278, 996_147),
+        ])
+        .await;
+        assert_eq!(held, Some((90_000, 996_147)));
+        assert_eq!(emitted, vec![(90_000, 100_000), (90_000, 996_147)]);
     }
 
     /// The offline half of the live resolver: Grok's own on-disk catalog, then
