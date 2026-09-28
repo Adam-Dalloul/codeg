@@ -66,7 +66,8 @@ export function SearchCommandDialog({
 
   const [activeTab, setActiveTab] = useState<SearchTab>("conversations")
   // The search box owns the keyboard: the dialog opens with the cursor in it,
-  // and switching tabs leaves it there, so typing always searches.
+  // and switching tabs or agent filters leaves it there, so typing always
+  // searches.
   const inputRef = useRef<HTMLInputElement>(null)
   const switchTab = useCallback((tab: SearchTab) => {
     setActiveTab(tab)
@@ -191,6 +192,15 @@ export function SearchCommandDialog({
       open={open}
       onOpenChange={onOpenChange}
       shouldFilter={activeTab === "conversations"}
+      // Not `autoFocus`: an input focused while mounting takes focus before
+      // the focus trap starts listening, so the trap never records it and has
+      // nothing to pull focus back to when the chat composer behind the dialog
+      // refocuses itself at the end of a turn — the rest of the query would be
+      // typed into the composer.
+      onOpenAutoFocus={(event) => {
+        event.preventDefault()
+        inputRef.current?.focus()
+      }}
     >
       {/* Folder context header */}
       {folder && (
@@ -238,7 +248,6 @@ export function SearchCommandDialog({
 
       <CommandInput
         ref={inputRef}
-        autoFocus
         placeholder={placeholder}
         value={query}
         onValueChange={setQuery}
@@ -253,6 +262,7 @@ export function SearchCommandDialog({
       {activeTab === "conversations" && availableAgents.length > 1 && (
         <div className="flex flex-wrap items-center gap-1 px-3 py-2 border-b">
           <button
+            onMouseDown={(e) => e.preventDefault()}
             onClick={() => setAgentFilter(null)}
             className={cn(
               "h-6 shrink-0 text-xs px-2 rounded-md transition-colors",
@@ -266,6 +276,7 @@ export function SearchCommandDialog({
           {availableAgents.map((at) => (
             <button
               key={at}
+              onMouseDown={(e) => e.preventDefault()}
               onClick={() => setAgentFilter(at)}
               className={cn(
                 "flex shrink-0 items-center gap-1.5 h-6 text-xs px-2 rounded-md transition-colors",
