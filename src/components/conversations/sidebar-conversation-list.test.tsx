@@ -1297,6 +1297,80 @@ describe("SidebarConversationList — Recent section", () => {
       )
     })
   })
+
+  describe("kind filter", () => {
+    const FILTER_KEY = "workspace:sidebar-recent-filter"
+    const { noRecent, noRecentFolders } = enMessages.Folder.sidebar
+
+    // Cards rendered for one conversation: its canonical row (Folders or
+    // Chat), plus a second one while Recent lists it too.
+    const cardsFor = (id: number) =>
+      document.querySelectorAll(`[data-conversation-id="${id}"]`).length
+
+    // Radix arms its outside-pointer listener in a `setTimeout(0)` and jsdom has
+    // no `PointerEvent`, so drive the header menu with real `MouseEvent`s under
+    // the pointer-event names (same recipe as sidebar-section-header.test.tsx).
+    async function settle() {
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 0))
+      })
+    }
+    function press(target: Element) {
+      for (const type of ["pointerdown", "pointerup", "click"]) {
+        fireEvent(
+          target,
+          new MouseEvent(type, { bubbles: true, cancelable: true, button: 0 })
+        )
+      }
+    }
+
+    beforeEach(() => {
+      // The collapse test above persists `{recent: true}`; left in place the
+      // section renders collapsed, with no rows for a filter to narrow.
+      localStorage.clear()
+    })
+
+    it("restores the persisted filter on mount", () => {
+      localStorage.setItem(FILTER_KEY, "chats")
+      render(recentTree(true))
+      // conv-12 (chat) stays in Recent; conv-11 (folder) keeps only its
+      // Folders row.
+      expect(cardsFor(12)).toBe(2)
+      expect(cardsFor(11)).toBe(1)
+    })
+
+    it("names the filter when it narrows Recent to nothing", () => {
+      localStorage.setItem(FILTER_KEY, "folders")
+      useAppWorkspaceStore.setState({
+        conversations: [conv(12, 99, { kind: "chat" })],
+      })
+      render(recentTree(true))
+      expect(document.body.textContent).toContain(noRecentFolders)
+      expect(document.body.textContent).not.toContain(noRecent)
+    })
+
+    it("applies and persists a pick from the header menu", async () => {
+      render(recentTree(true))
+      expect(cardsFor(11)).toBe(2)
+      expect(cardsFor(12)).toBe(2)
+
+      await settle()
+      press(document.querySelector('[aria-label="Show in Recent: All"]')!)
+      await settle()
+      const folders = Array.from(
+        document.querySelectorAll('[role="menuitemradio"]')
+      ).find((item) => item.textContent === "Folders")
+      expect(folders).toBeDefined()
+      press(folders!)
+
+      expect(localStorage.getItem(FILTER_KEY)).toBe("folders")
+      expect(cardsFor(11)).toBe(2)
+      expect(cardsFor(12)).toBe(1)
+      expect(
+        document.querySelector('[aria-label="Show in Recent: Folders"]')
+      ).not.toBeNull()
+    })
+  })
 })
 
 describe("SidebarConversationList — expand / collapse all", () => {
