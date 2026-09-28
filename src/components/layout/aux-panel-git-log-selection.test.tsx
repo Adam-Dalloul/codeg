@@ -19,13 +19,30 @@ type PendingBranchList = {
   reject: (error: Error) => void
 }
 
+type TestFolder = { id: number; path: string }
+
 const state = vi.hoisted(() => ({
-  folder: { id: 1, path: "/worktrees/a" },
+  folder: { id: 1, path: "/worktrees/a" } as TestFolder,
+  // What useDeferredValue hands back while set (see the "react" mock below);
+  // null passes the live active folder straight through.
+  heldDeferredFolder: null as TestFolder | null,
   gitLog: vi.fn(async () => ({ entries: [] })),
   deferBranches: false,
   pendingBranches: [] as PendingBranchList[],
   listeners: new Map<string, (payload: { folder_id: number }) => void>(),
 }))
+
+// The tab reads the folder through useDeferredValue, which lags a switch until
+// React commits its background render. A test can hold that lag open to land a
+// response inside it.
+vi.mock("react", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("react")>()
+  return {
+    ...actual,
+    useDeferredValue: <T,>(value: T): T =>
+      (state.heldDeferredFolder ?? value) as T,
+  }
+})
 
 vi.mock("@/lib/api", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/api")>()),
@@ -112,6 +129,7 @@ describe("Commits tab branch query", () => {
   beforeEach(() => {
     window.localStorage.clear()
     state.folder = { id: 1, path: "/worktrees/a" }
+    state.heldDeferredFolder = null
     state.gitLog.mockClear()
     state.deferBranches = false
     state.pendingBranches = []
@@ -276,5 +294,34 @@ describe("Commits tab branch query", () => {
         false
       )
     )
+  })
+
+  it("keeps the branches that land while a switch away is still pending", async () => {
+    state.deferBranches = true
+    const view = renderTab()
+    await waitFor(() => expect(state.pendingBranches).toHaveLength(1))
+
+    // Switch to B with the deferred folder still on A, and let A's refresh
+    // land inside that lag.
+    const folderA = state.folder
+    state.heldDeferredFolder = folderA
+    state.folder = { id: 2, path: "/worktrees/b" }
+    view.rerender(tabTree())
+    await act(async () => {
+      state.pendingBranches[0].resolve({
+        local: ["mainA"],
+        remote: [],
+        worktree_branches: [],
+        main_worktree_branch: null,
+      })
+    })
+
+    // Back on A before B ever rendered: the deferred folder never moved, so
+    // nothing asks for A's branches again and that response is all A gets.
+    state.folder = folderA
+    state.heldDeferredFolder = null
+    view.rerender(tabTree())
+    expect(await screen.findByText("mainA")).toBeInTheDocument()
+    expect(state.pendingBranches).toHaveLength(1)
   })
 })

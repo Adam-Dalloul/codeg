@@ -1436,8 +1436,6 @@ export function GitLogTab() {
   // refreshCurrentUser).
   const folderPathRef = useRef(folder?.path ?? null)
   folderPathRef.current = folder?.path ?? null
-  const activeFolderPathRef = useRef(activeFolder?.path ?? null)
-  activeFolderPathRef.current = activeFolder?.path ?? null
   // Bumped ONLY when the per-commit file maps are cleared (a non-inline full
   // reload / folder switch). fetchCommitFiles captures it so a request from a
   // superseded view discards its loading/error/data writes — preventing a stale
@@ -1547,11 +1545,15 @@ export function GitLogTab() {
       ])
       // A later refresh for this path, or a folder switch, supersedes this
       // response. In particular, an old branch list must not invalidate a
-      // selection made against a newer list.
+      // selection made against a newer list. Deliberately keyed on the
+      // deferred folder, not the live active one: the metadata is tagged with
+      // its path and stays hidden until the view catches up, while a quick
+      // A→B→A switch that never commits B leaves this callback — and so the
+      // effect that runs it — unchanged, so dropping A's response there would
+      // leave A without branches until the next git event.
       if (
         seq !== branchRefreshSeqRef.current ||
-        folderPathRef.current !== path ||
-        activeFolderPathRef.current !== path
+        folderPathRef.current !== path
       ) {
         return
       }
