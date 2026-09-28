@@ -3874,22 +3874,25 @@ export function buildAcpAdapterCheck(
  * Which provider an agent should land on when it returns to "model_provider"
  * auth mode with no binding in the draft.
  *
- * `remembered` is the user's own last pick for this agent (or the binding
- * already saved on it). Going straight to `available[0]` is #628: the list
- * arrives ordered by row id, so an auth-mode round trip silently rebound the
- * agent to its OLDEST provider, and the rebind copies that provider's model
- * names into the draft, the env text and the config text. A remembered
- * provider that is no longer in the list (deleted, or the agent changed) falls
- * back to the head, which is the pre-existing behaviour for a first-time pick.
+ * In order: `lastPick`, the user's own last pick for this agent in this panel;
+ * `savedBinding`, the provider the agent is bound to on disk; then the head of
+ * the list. Each candidate counts only while it is still listed (not deleted,
+ * not moved to another agent), so a stale pick falls through to a saved
+ * binding that is still good rather than straight to the head. Going straight
+ * to `available[0]` rebound the agent to its OLDEST provider (the list arrives
+ * ordered by row id) whenever the auth-mode dropdown round-tripped through
+ * another mode, and the rebind copies that provider's model names into the
+ * draft, the env text and the config text. The head stays the fallback for a
+ * first-time pick.
  */
 export function providerToRebindTo(
   available: readonly ModelProviderInfo[],
-  remembered: number | null | undefined
+  lastPick: number | null | undefined,
+  savedBinding: number | null | undefined
 ): ModelProviderInfo | null {
-  if (available.length === 0) return null
-  return (
-    available.find((provider) => provider.id === remembered) ?? available[0]
-  )
+  const listed = (id: number | null | undefined) =>
+    id == null ? undefined : available.find((provider) => provider.id === id)
+  return listed(lastPick) ?? listed(savedBinding) ?? available[0] ?? null
 }
 
 // `uvReady` reports whether the uv runtime (uvx) is installed — only meaningful
@@ -6149,18 +6152,19 @@ export function AcpAgentSettings() {
   // Auto-select a provider when the user switches an agent to
   // "model_provider" auth mode and the draft holds no binding. If the list is
   // empty, the existing "noModelProviderAvailable" hint handles the empty
-  // state. The user's own last pick wins over the head of the list, because an
-  // auth-mode round trip lands here too and rebinding to whichever provider
-  // happens to be first copies ITS model names over the one the user was
-  // actually on (#628).
+  // state. The user's own last pick (then the saved binding) wins over the head
+  // of the list, because an auth-mode round trip lands here too and rebinding
+  // to whichever provider happens to be first copies ITS model names over the
+  // one the user was actually on.
   useEffect(() => {
     if (!selectedNeedsModelProvider) return
     if (selectedDraft?.modelProviderId != null) return
     if (!selectedAgent) return
-    const remembered =
-      lastBoundProviderRef.current[selectedAgent.agent_type] ??
+    const target = providerToRebindTo(
+      selectedModelProviders,
+      lastBoundProviderRef.current[selectedAgent.agent_type],
       selectedAgent.model_provider_id
-    const target = providerToRebindTo(selectedModelProviders, remembered)
+    )
     if (!target) return
     handleModelProviderSelect(String(target.id))
   }, [
