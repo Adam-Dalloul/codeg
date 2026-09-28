@@ -3494,6 +3494,28 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
     [rememberResolvedIdentity]
   )
 
+  /**
+   * An OS notification payload naming the session `contextKey` serves (see
+   * `sessionNotificationPayload`).
+   *
+   * Its conversation is the one `connect()` was given or a first send linked
+   * (`conversation_linked`) — both remembered past the surface itself, which
+   * is when this matters: a tab closed while its agent is still busy keeps
+   * its connection, and the turn finishes under a tab id that no longer
+   * exists. Not the agent's session id: a Claude `/clear` re-points the row's
+   * `external_id` while the ACP session keeps its own.
+   */
+  const sessionNotification = useCallback(
+    (contextKey: string, content: { body: string; redactedBody?: string }) =>
+      sessionNotificationPayload(
+        contextKey,
+        lastConnectParamsRef.current.get(contextKey)?.conversationId,
+        folderNameRef.current,
+        content
+      ),
+    []
+  )
+
   type ConnectBlockState =
     | { kind: "none"; reason: "" }
     | {
@@ -4663,10 +4685,9 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
               ? null
               : storeRef.current.connections.get(contextKey)
             if (nc) {
-              const fn = folderNameRef.current
               void notifyDesktop(
                 "question_request",
-                sessionNotificationPayload(contextKey, fn, {
+                sessionNotification(contextKey, {
                   body: t("notificationQuestion", {
                     agent: getAgentLabel(nc.agentType),
                   }),
@@ -4773,7 +4794,6 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
             if (!quiet) {
               const nc = storeRef.current.connections.get(contextKey)
               const agentLabel = nc ? getAgentLabel(nc.agentType) : "Agent"
-              const fn = folderNameRef.current
               const count = e.settled.length
               const many = tChat("backgroundTasks.notifySettledMany", {
                 agent: agentLabel,
@@ -4782,7 +4802,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
               const single = e.settled[0]
               void notifyDesktop(
                 "background_task",
-                sessionNotificationPayload(contextKey, fn, {
+                sessionNotification(contextKey, {
                   body:
                     count === 1
                       ? `${agentLabel}: ${
@@ -4854,13 +4874,12 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
               : storeRef.current.connections.get(contextKey)
             if (nc) {
               const agentLabel = getAgentLabel(nc.agentType)
-              const fn = folderNameRef.current
               // No redacted variant: the body is a fixed localized string
               // plus the agent's name, and names nothing of the user's. (The
               // session title does; `sessionNotificationPayload` redacts it.)
               void notifyDesktop(
                 "permission_request",
-                sessionNotificationPayload(contextKey, fn, {
+                sessionNotification(contextKey, {
                   body: `${agentLabel}: ${tChat("permissionDialog.subtitle")}`,
                 })
               )
@@ -5246,12 +5265,11 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
                 : storeRef.current.connections.get(contextKey)
             if (nc) {
               const agentLabel = getAgentLabel(nc.agentType)
-              const fn = folderNameRef.current
               const failure = latestActiveTerminalFailure(nc.sessionFailures)
               if (failure) {
                 void notifyDesktop(
                   "error",
-                  sessionNotificationPayload(contextKey, fn, {
+                  sessionNotification(contextKey, {
                     body: t("notificationError", {
                       agent: agentLabel,
                       message:
@@ -5266,7 +5284,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
               } else {
                 void notifyDesktop(
                   "turn_complete",
-                  sessionNotificationPayload(contextKey, fn, {
+                  sessionNotification(contextKey, {
                     body: t("notificationTurnComplete", { agent: agentLabel }),
                   })
                 )
@@ -5309,10 +5327,9 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
           // quote agent stderr for codes we don't recognize, which is what the
           // redacted variant drops.
           if (nc && !quiet && acpErrorNotifiesDesktop(route)) {
-            const fn = folderNameRef.current
             void notifyDesktop(
               "error",
-              sessionNotificationPayload(contextKey, fn, {
+              sessionNotification(contextKey, {
                 body: t("notificationError", {
                   agent: agentLabel,
                   message: text,
@@ -5453,6 +5470,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
       presentBackendError,
       retireTurnFailures,
       sessionFailureNotifyActions,
+      sessionNotification,
       settleRetryIncidentsOnProgress,
       t,
       tChat,
