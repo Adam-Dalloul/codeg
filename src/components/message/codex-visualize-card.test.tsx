@@ -6,7 +6,6 @@ import { beforeEach, describe, expect, it, vi } from "vitest"
 const mocks = vi.hoisted(() => ({
   readFileBase64: vi.fn(),
   readWorkspaceFileBase64: vi.fn(),
-  activeFolderPath: null as string | null,
   getHomeDirectory: vi.fn(),
   listDirectoryEntries: vi.fn(),
 }))
@@ -21,15 +20,6 @@ vi.mock("@/lib/api", async (importOriginal) => {
     listDirectoryEntries: mocks.listDirectoryEntries,
   }
 })
-
-vi.mock("@/contexts/active-folder-context", () => ({
-  useActiveFolder: () => ({
-    activeFolderId: mocks.activeFolderPath ? 1 : null,
-    activeFolder: mocks.activeFolderPath
-      ? { id: 1, path: mocks.activeFolderPath }
-      : null,
-  }),
-}))
 
 vi.mock("next-themes", () => ({
   useTheme: () => ({ resolvedTheme: "light" }),
@@ -52,6 +42,7 @@ vi.mock("@/components/ai-elements/message", () => ({
   ),
 }))
 
+import { MarkdownImageProvider } from "@/components/ai-elements/markdown-local-image"
 import { ContentPartsRenderer } from "./content-parts-renderer"
 import {
   buildVisualizeDocument,
@@ -64,19 +55,28 @@ const toBase64 = (s: string) =>
 
 const MARKER = '\uE200visualize\uE202{"path":"/v/chart.html"}\uE201'
 
-function renderText(text: string) {
-  return render(
+/** A reply inside a transcript whose working directory is `root`. */
+function Transcript({ text, root }: { text: string; root: string | null }) {
+  return (
     <NextIntlClientProvider locale="en" messages={enMessages}>
-      <ContentPartsRenderer parts={[{ type: "text", text }]} role="assistant" />
+      <MarkdownImageProvider rootPath={root}>
+        <ContentPartsRenderer
+          parts={[{ type: "text", text }]}
+          role="assistant"
+        />
+      </MarkdownImageProvider>
     </NextIntlClientProvider>
   )
+}
+
+function renderText(text: string, root: string | null = null) {
+  return render(<Transcript text={text} root={root} />)
 }
 
 beforeEach(() => {
   resetCodexVisualizeAssetsForTests()
   mocks.readFileBase64.mockReset()
   mocks.readWorkspaceFileBase64.mockReset()
-  mocks.activeFolderPath = null
   mocks.getHomeDirectory.mockReset().mockResolvedValue("/home/u")
   mocks.listDirectoryEntries.mockReset().mockRejectedValue(new Error("nope"))
 })
@@ -194,10 +194,9 @@ describe("HTML files a reply mentions", () => {
     expect(await screen.findByTestId("html-file-preview")).toBeInTheDocument()
   })
 
-  it("resolves relative mentions against the active folder", async () => {
-    mocks.activeFolderPath = "/repo"
+  it("resolves relative mentions against the transcript's folder", async () => {
     mocks.readFileBase64.mockResolvedValue(toBase64("<p>ok</p>"))
-    renderText("Open [the page](site/index.html) to check.")
+    renderText("Open [the page](site/index.html) to check.", "/repo")
     fireEvent.click(await screen.findByRole("button", { name: /Preview/ }))
     await screen.findByTestId("codex-visualize-card")
     await waitFor(() =>
@@ -244,12 +243,11 @@ describe("HTML files a reply mentions", () => {
     ).not.toContain("preview{")
   })
 
-  it("resolves a relative Hermes directive against the active folder", async () => {
+  it("resolves a relative Hermes directive against the transcript's folder", async () => {
     // Hermes' own prompt teaches `::preview{file="path.html"}`, relative to
     // the session's working directory.
-    mocks.activeFolderPath = "/repo"
     mocks.readFileBase64.mockResolvedValue(toBase64("<p>widget</p>"))
-    renderText('Here:\n::preview{file="out/chart.html"}')
+    renderText('Here:\n::preview{file="out/chart.html"}', "/repo")
     await screen.findByTestId("codex-visualize-card")
     await waitFor(() =>
       expect(mocks.readFileBase64).toHaveBeenCalledWith(
@@ -266,6 +264,37 @@ describe("HTML files a reply mentions", () => {
       screen.getByText(enMessages.Folder.chat.linkSafety.errorNoWorkspace)
     ).toBeInTheDocument()
     expect(mocks.readFileBase64).not.toHaveBeenCalled()
+  })
+
+  it("does not carry a scripts choice over to another folder's file", async () => {
+    mocks.readFileBase64.mockResolvedValue(
+      toBase64("<!doctype html><html><body><p>page</p></body></html>")
+    )
+    const text = '::preview{file="report.html"}'
+    const { rerender } = renderText(text, "/trusted")
+    const card = await screen.findByTestId("codex-visualize-card")
+    const sandboxOf = () =>
+      card.querySelector("iframe")?.getAttribute("sandbox")
+    await waitFor(() => expect(sandboxOf()).toBe(""))
+    fireEvent.click(screen.getByRole("button", { name: /Enable scripts/ }))
+    await waitFor(() => expect(sandboxOf()).toBe("allow-scripts"))
+
+    // Same name, same card, another transcript root: another file, which
+    // starts without scripts again.
+    rerender(<Transcript text={text} root="/untrusted" />)
+    await waitFor(() =>
+      expect(mocks.readFileBase64).toHaveBeenLastCalledWith(
+        "/untrusted/report.html",
+        expect.any(Number)
+      )
+    )
+    await waitFor(() => expect(sandboxOf()).toBe(""))
+    expect(card.querySelector("iframe")?.getAttribute("srcdoc")).toContain(
+      "script-src 'none'"
+    )
+    expect(
+      screen.getByRole("button", { name: /Enable scripts/ })
+    ).toHaveAttribute("aria-pressed", "false")
   })
 })
 

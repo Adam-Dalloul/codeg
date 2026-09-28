@@ -14,7 +14,7 @@ import {
 import { useTranslations } from "next-intl"
 import { useTheme } from "next-themes"
 import { FilePathLink } from "@/components/ai-elements/link-safety"
-import { useActiveFolder } from "@/contexts/active-folder-context"
+import { useTranscriptRoot } from "@/components/ai-elements/markdown-local-image"
 import {
   getHomeDirectory,
   listDirectoryEntries,
@@ -357,19 +357,25 @@ function escapeClosingScript(source: string): string {
   return source.replace(/<\/script/gi, "<\\/script")
 }
 
+function isRelativePath(path: string): boolean {
+  return !isHomeRelativePath(path) && !isAbsoluteFilePath(path)
+}
+
 /**
  * The file a reference names, as an absolute path: `~/…` against the
  * (remote-aware) home directory, and a relative path — Hermes writes
  * `::preview{file="chart.html"}` against the session's working directory —
- * against the active folder. `null` when it is relative and there is no folder.
+ * against the transcript's working directory. `null` when it is relative and
+ * the transcript has none.
  */
 async function resolvePreviewPath(
   path: string,
-  folderPath: string | null
+  baseDir: string | null
 ): Promise<string | null> {
-  if (isHomeRelativePath(path)) return expandHomePath(path)
-  if (isAbsoluteFilePath(path)) return path
-  return folderPath ? joinRootRel(folderPath, path) : null
+  if (!isRelativePath(path)) {
+    return isHomeRelativePath(path) ? expandHomePath(path) : path
+  }
+  return baseDir ? joinRootRel(baseDir, path) : null
 }
 
 /**
@@ -475,11 +481,13 @@ interface LoadResult {
   complete: boolean
   /** Whether `srcDoc` was built for, and must be framed with, scripts on. */
   scripts: boolean
+  /** The file that was read, once resolved. */
+  absPath: string | null
 }
 
 interface CodexVisualizeCardProps {
   /** The HTML fragment or document: absolute, `~/…`, or relative to the
-   *  active folder. */
+   *  transcript's working directory. */
   path: string
   mode: CodexVisualizeMode
   className?: string
@@ -499,16 +507,20 @@ export const CodexVisualizeCard = memo(function CodexVisualizeCard({
   const tLinks = useTranslations("Folder.chat.linkSafety")
   const { resolvedTheme } = useTheme()
   const dark = resolvedTheme === "dark"
-  const { activeFolder } = useActiveFolder()
-  // Only a relative path depends on the folder (and reloads when it changes).
-  const folderPath =
-    isHomeRelativePath(path) || isAbsoluteFilePath(path)
-      ? null
-      : (activeFolder?.path ?? null)
+  const transcriptRoot = useTranscriptRoot()
+  // Only a relative path depends on the root (and reloads when it changes).
+  const baseDir = isRelativePath(path) ? transcriptRoot : null
+  // Which file a scripts choice was made for: the same name under another
+  // root is another file, and starts in the default (safe) state again.
+  const target = `${path}\u0000${baseDir ?? ""}`
 
-  // The user's scripts choice for this card; `null` until they make one,
-  // which means the default for what the file turns out to be (see the load).
-  const [scriptsChoice, setScriptsChoice] = useState<boolean | null>(null)
+  // The user's scripts choice; until they make one for this target, the
+  // default for what the file turns out to be (see the load).
+  const [scriptsChoice, setScriptsChoice] = useState<{
+    target: string
+    on: boolean
+  } | null>(null)
+  const choice = scriptsChoice?.target === target ? scriptsChoice.on : null
   const [expanded, setExpanded] = useState(false)
   const [reloadKey, setReloadKey] = useState(0)
   // Both results are tagged with the load they belong to, so switching path /
@@ -523,12 +535,12 @@ export const CodexVisualizeCard = memo(function CodexVisualizeCard({
   const pathTitle = titleFromPath(path)
   const noFolderMessage = tLinks("errorNoWorkspace")
   // The scripts choice is part of the key: a complete document's CSP follows it.
-  const loadKey = `${path}\u0000${folderPath ?? ""}\u0000${dark ? "dark" : "light"}\u0000${scriptsChoice ?? "default"}\u0000${reloadKey}`
+  const loadKey = `${target}\u0000${dark ? "dark" : "light"}\u0000${choice ?? "default"}\u0000${reloadKey}`
 
   useEffect(() => {
     let cancelled = false
     ;(async (): Promise<Omit<LoadResult, "key" | "error">> => {
-      const absPath = await resolvePreviewPath(path, folderPath)
+      const absPath = await resolvePreviewPath(path, baseDir)
       if (absPath === null) throw new Error(noFolderMessage)
       const b64 = await readFileBase64(absPath, MAX_FRAGMENT_BYTES)
       const html = decodeBase64Utf8(b64)
@@ -536,12 +548,13 @@ export const CodexVisualizeCard = memo(function CodexVisualizeCard({
         // An arbitrary page, not a Codex fragment: as in codeg's file preview,
         // none of its scripts run — and it gets no network — until the user
         // enables them for it.
-        const scripts = scriptsChoice ?? false
+        const scripts = choice ?? false
         return {
           srcDoc: await buildCompleteDocument(html, absPath, scripts),
           title: extractHtmlTitle(html) || null,
           complete: true,
           scripts,
+          absPath,
         }
       }
       const assets = await getVisualizeAssets()
@@ -557,7 +570,8 @@ export const CodexVisualizeCard = memo(function CodexVisualizeCard({
         complete: false,
         // Interactivity is the point of a fragment, and its CSP keeps it off
         // the network (bar the skill's CDNs) with no local files inlined.
-        scripts: scriptsChoice ?? true,
+        scripts: choice ?? true,
+        absPath,
       }
     })()
       .then((result) => {
@@ -572,20 +586,13 @@ export const CodexVisualizeCard = memo(function CodexVisualizeCard({
             title: null,
             complete: false,
             scripts: false,
+            absPath: null,
           })
       })
     return () => {
       cancelled = true
     }
-  }, [
-    path,
-    folderPath,
-    dark,
-    pathTitle,
-    scriptsChoice,
-    noFolderMessage,
-    loadKey,
-  ])
+  }, [path, baseDir, dark, pathTitle, choice, noFolderMessage, loadKey])
 
   useEffect(() => {
     const onMessage = (event: MessageEvent) => {
@@ -611,10 +618,13 @@ export const CodexVisualizeCard = memo(function CodexVisualizeCard({
 
   const current = loaded?.key === loadKey ? loaded : null
   // Before the file is read its kind is unknown, so show the safe state.
-  const scripts = current ? current.scripts : (scriptsChoice ?? false)
+  const scripts = current ? current.scripts : (choice ?? false)
 
   const reload = useCallback(() => setReloadKey((k) => k + 1), [])
-  const toggleScripts = useCallback(() => setScriptsChoice(!scripts), [scripts])
+  const toggleScripts = useCallback(
+    () => setScriptsChoice({ target, on: !scripts }),
+    [target, scripts]
+  )
   const toggleExpanded = useCallback(() => setExpanded((v) => !v), [])
 
   const title = current?.title || pathTitle
@@ -690,7 +700,9 @@ export const CodexVisualizeCard = memo(function CodexVisualizeCard({
             <RotateCw className="h-3.5 w-3.5" />
           </button>
           <FilePathLink
-            filePath={path}
+            // The resolved file, so a relative name opens what the card shows
+            // rather than being re-resolved against the active folder.
+            filePath={current?.absPath ?? path}
             title={t("visualizeOpenFile")}
             className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-muted-foreground hover:bg-primary/8"
           >

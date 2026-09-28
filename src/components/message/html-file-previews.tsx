@@ -3,7 +3,7 @@
 import { memo, useCallback, useMemo, useState } from "react"
 import { Eye, FileCode2 } from "lucide-react"
 import { useTranslations } from "next-intl"
-import { useActiveFolder } from "@/contexts/active-folder-context"
+import { useTranscriptRoot } from "@/components/ai-elements/markdown-local-image"
 import { resolveAbsPath } from "@/lib/html-preview-inline"
 import { CodexVisualizeCard } from "./codex-visualize-card"
 
@@ -15,16 +15,15 @@ import { CodexVisualizeCard } from "./codex-visualize-card"
  * the explicit visualize references use. Collapsed by default so a transcript
  * that names many files does not turn into a wall of iframes.
  *
- * Relative mentions resolve against the active folder; without one they are
- * dropped rather than guessed.
+ * Relative mentions resolve against the transcript's working directory;
+ * without one they are dropped rather than guessed.
  */
 export const HtmlFilePreviews = memo(function HtmlFilePreviews({
   paths,
 }: {
   paths: string[]
 }) {
-  const { activeFolder } = useActiveFolder()
-  const folderPath = activeFolder?.path ?? null
+  const folderPath = useTranscriptRoot()
   const resolved = useMemo(() => {
     const out: string[] = []
     for (const p of paths) {
