@@ -4388,6 +4388,10 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
           return t("backendErrors.agentAuthRequired", {
             agent: agentLabel,
           })
+        case "agent_runtime_outdated":
+          return t("backendErrors.agentRuntimeOutdated", {
+            agent: agentLabel,
+          })
         case "sdk_not_installed":
           return t("blocked.sdkMissing", { agent: agentLabel })
         case "platform_not_supported":
@@ -5352,6 +5356,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
             })
             break
           }
+          const errorAgentType = nc?.agentType
           notify({
             level: route.level,
             // One per connection and code: the same refusal twice in a row, or
@@ -5360,6 +5365,24 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
             title: text,
             description: reason,
             evidence,
+            actions:
+              route.opensAgentSettings && errorAgentType
+                ? [
+                    {
+                      label: t("actions.openAgentsSettings"),
+                      onClick: () => {
+                        openSettingsWindow("agents", {
+                          agentType: errorAgentType,
+                        }).catch((err) => {
+                          console.error(
+                            "[AcpConnections] open agent settings:",
+                            err
+                          )
+                        })
+                      },
+                    },
+                  ]
+                : undefined,
           })
           break
         }
