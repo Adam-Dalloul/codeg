@@ -1864,9 +1864,17 @@ export function GitLogTab() {
       await gitNewBranch(folder.path, name, newBranchTarget.fullHash)
       setNewBranchTarget(null)
       setNewBranchName("")
-      // Keep the selected filter; refresh branch metadata (currentBranch
-      // drives reset gating) after creating the branch.
+      // `checkout -b` also switched to the new branch: refresh branch metadata
+      // (currentBranch drives reset gating), and reload the HEAD view, which
+      // now starts at that commit. A branch at an existing commit leaves every
+      // other view's commits unchanged. The reload starts at once: the modal
+      // dialog has kept the filter as it was until now, so it can't overwrite
+      // a filter picked while the branch refresh is still pending.
+      const headViewReload = isHeadFilter(selectedBranch)
+        ? fetchLog({ inline: true })
+        : undefined
       await refreshBranches()
+      await headViewReload
       toast.success(t("toasts.createdAndSwitchedNewBranch"), {
         description: t("toasts.newBranchFromCommit", {
           name,
@@ -1882,10 +1890,12 @@ export function GitLogTab() {
     }
   }, [
     creatingBranch,
+    fetchLog,
     folder?.path,
     newBranchName,
     newBranchTarget,
     refreshBranches,
+    selectedBranch,
     t,
   ])
 

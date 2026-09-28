@@ -7,11 +7,12 @@ import {
   waitFor,
 } from "@testing-library/react"
 import { NextIntlClientProvider } from "next-intl"
+import { useEffect, type ReactNode } from "react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import { GitLogTab } from "./aux-panel-git-log-tab"
 import enMessages from "@/i18n/messages/en.json"
-import type { GitBranchList } from "@/lib/types"
+import type { GitBranchList, GitLogEntry } from "@/lib/types"
 
 type PendingBranchList = {
   path: string
@@ -26,7 +27,8 @@ const state = vi.hoisted(() => ({
   // What useDeferredValue hands back while set (see the "react" mock below);
   // null passes the live active folder straight through.
   heldDeferredFolder: null as TestFolder | null,
-  gitLog: vi.fn(async () => ({ entries: [] })),
+  gitLog: vi.fn(async () => ({ entries: [] as GitLogEntry[] })),
+  gitNewBranch: vi.fn(async () => {}),
   deferBranches: false,
   pendingBranches: [] as PendingBranchList[],
   listeners: new Map<string, (payload: { folder_id: number }) => void>(),
@@ -44,9 +46,38 @@ vi.mock("react", async (importOriginal) => {
   }
 })
 
+// virtua renders no rows under jsdom (no layout): render every commit.
+vi.mock("virtua", () => ({
+  Virtualizer: ({
+    data,
+    children,
+  }: {
+    data: unknown[]
+    children: (item: unknown, index: number) => ReactNode
+  }) => <>{data.map((item, index) => children(item, index))}</>,
+}))
+
+// The commit list mounts virtua only once the OverlayScrollbars viewport exists,
+// which jsdom never initializes; hand over a plain element instead.
+vi.mock("@/components/ui/scroll-area", () => ({
+  ScrollArea: ({
+    children,
+    onViewportRef,
+  }: {
+    children?: ReactNode
+    onViewportRef?: (el: HTMLElement | null) => void
+  }) => {
+    useEffect(() => {
+      onViewportRef?.(document.createElement("div"))
+    }, [onViewportRef])
+    return <>{children}</>
+  },
+}))
+
 vi.mock("@/lib/api", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/api")>()),
   gitLog: state.gitLog,
+  gitNewBranch: state.gitNewBranch,
   getGitBranch: async (path: string) =>
     path === "/worktrees/a" ? "mainA" : "mainB",
   gitListAllBranches: (path: string) =>
@@ -125,12 +156,24 @@ function renderTab() {
   return render(tabTree())
 }
 
+const COMMIT: GitLogEntry = {
+  hash: "c3c3c3c",
+  full_hash: "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+  author: "Alice",
+  date: "2026-09-01T00:00:00Z",
+  message: "Add the parser",
+  files: [],
+  pushed: true,
+}
+
 describe("Commits tab branch query", () => {
   beforeEach(() => {
     window.localStorage.clear()
     state.folder = { id: 1, path: "/worktrees/a" }
     state.heldDeferredFolder = null
-    state.gitLog.mockClear()
+    state.gitLog.mockReset()
+    state.gitLog.mockResolvedValue({ entries: [] })
+    state.gitNewBranch.mockClear()
     state.deferBranches = false
     state.pendingBranches = []
     state.listeners.clear()
@@ -324,4 +367,78 @@ describe("Commits tab branch query", () => {
     expect(await screen.findByText("mainA")).toBeInTheDocument()
     expect(state.pendingBranches).toHaveLength(1)
   })
+
+  it("reloads the HEAD view after switching to a branch made from a commit", async () => {
+    state.gitLog.mockResolvedValue({ entries: [COMMIT] })
+    renderTab()
+    const row = await screen.findByText(COMMIT.message)
+    await screen.findByText("mainA")
+    const logCalls = state.gitLog.mock.calls.length
+
+    await createBranchFrom(row, "fix")
+
+    // `checkout -b` moved HEAD onto the commit, so the HEAD view reloads
+    // instead of listing the previous branch's history under the new name.
+    await waitFor(() =>
+      expect(state.gitLog).toHaveBeenCalledTimes(logCalls + 1)
+    )
+    expect(state.gitNewBranch).toHaveBeenCalledWith(
+      "/worktrees/a",
+      "fix",
+      COMMIT.full_hash
+    )
+    expect(state.gitLog).toHaveBeenLastCalledWith(
+      "/worktrees/a",
+      100,
+      "HEAD",
+      undefined,
+      0,
+      undefined,
+      false,
+      false
+    )
+  })
+
+  it("lets a filter picked during the post-create branch refresh win", async () => {
+    state.gitLog.mockResolvedValue({ entries: [COMMIT] })
+    renderTab()
+    const row = await screen.findByText(COMMIT.message)
+    await screen.findByText("mainA")
+    state.deferBranches = true
+
+    await createBranchFrom(row, "fix")
+    await waitFor(() => expect(state.pendingBranches).toHaveLength(1))
+    fireEvent.click(screen.getByRole("button", { name: "Clear branch filter" }))
+    await act(async () => {
+      state.pendingBranches[0].resolve({
+        local: ["mainA", "fix"],
+        remote: [],
+        worktree_branches: [],
+        main_worktree_branch: null,
+      })
+    })
+
+    // The HEAD reload must not land after the All branches query it would
+    // then overwrite.
+    expect(state.gitLog).toHaveBeenLastCalledWith(
+      "/worktrees/a",
+      100,
+      undefined,
+      undefined,
+      0,
+      undefined,
+      true,
+      false
+    )
+  })
 })
+
+async function createBranchFrom(row: HTMLElement, name: string) {
+  fireEvent.contextMenu(row)
+  fireEvent.click(await screen.findByText("New branch..."))
+  fireEvent.change(await screen.findByPlaceholderText("Branch name"), {
+    target: { value: name },
+  })
+  fireEvent.click(screen.getByRole("button", { name: "Create and Switch" }))
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull())
+}
