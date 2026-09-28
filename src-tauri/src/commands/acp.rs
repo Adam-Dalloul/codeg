@@ -5706,22 +5706,32 @@ fn launch_env_value<'a>(runtime_env: &'a BTreeMap<String, String>, key: &str) ->
     }
 }
 
+#[cfg(windows)]
+const CHILD_HOME_KEY: &str = "USERPROFILE";
+#[cfg(not(windows))]
+const CHILD_HOME_KEY: &str = "HOME";
+
 /// What `os.homedir()` answers in the pi child of a launch with `runtime_env` —
 /// the home pi expands `~` against and puts its default `.pi/agent` under.
-///
-/// Node takes `HOME` (`USERPROFILE` on Windows) verbatim when the child has one,
-/// a relative value included, which pi then resolves against its cwd — the
-/// workspace. A blank launch value removes the variable and an absent one passes
-/// codeg's own on; with none at all, Node asks the OS for the account's home.
 fn pi_child_home(runtime_env: &BTreeMap<String, String>) -> PathBuf {
-    #[cfg(windows)]
-    const HOME_KEY: &str = "USERPROFILE";
-    #[cfg(not(windows))]
-    const HOME_KEY: &str = "HOME";
-    let variable = match launch_env_value(runtime_env, HOME_KEY) {
+    pi_child_home_from(runtime_env, std::env::var_os(CHILD_HOME_KEY))
+}
+
+/// [`pi_child_home`] with codeg's own home variable (what the child inherits
+/// when the launch leaves it alone) handed in.
+///
+/// Node takes `HOME` (`USERPROFILE` on Windows) verbatim whenever the child HAS
+/// the variable — relative or even empty, which pi then resolves against its
+/// cwd, the workspace — and asks the OS for the account's home only when it has
+/// none: the launch removed it (a blank launch value) or codeg never had one.
+fn pi_child_home_from(
+    runtime_env: &BTreeMap<String, String>,
+    inherited: Option<std::ffi::OsString>,
+) -> PathBuf {
+    let variable = match launch_env_value(runtime_env, CHILD_HOME_KEY) {
         Some("") => None,
         Some(value) => Some(std::ffi::OsString::from(value)),
-        None => std::env::var_os(HOME_KEY).filter(|value| !value.is_empty()),
+        None => inherited,
     };
     variable
         .map(PathBuf::from)
@@ -6788,15 +6798,30 @@ pub(crate) fn resolve_pi_command_in(
     // `join_paths` cannot fail on what `split_paths` produced (no entry holds
     // the separator, and Windows quotes the ones that do); should it anyway,
     // searching the list as given still beats reporting pi missing.
-    let anchored = std::env::join_paths(std::env::split_paths(&path).map(|entry| {
-        if entry.is_absolute() {
-            entry
-        } else {
-            cwd.join(entry)
-        }
-    }))
+    let anchored = std::env::join_paths(
+        std::env::split_paths(&path).filter_map(|entry| anchor_path_entry(&entry, cwd)),
+    )
     .unwrap_or(path);
     which::which_in(command, Some(anchored), cwd).ok()
+}
+
+/// One `PATH` entry as the child searches it with `cwd` as its working
+/// directory. `which` alone would test a relative entry against codeg's OWN
+/// cwd. A Windows drive-relative entry (`C:tools`) is dropped instead: it
+/// follows that drive's current directory in the child, which nothing here can
+/// name, so no guess at it is safe. A rooted one (`\tools`) keeps `cwd`'s drive,
+/// as it does for the child.
+fn anchor_path_entry(entry: &Path, cwd: &Path) -> Option<PathBuf> {
+    if entry.is_absolute() {
+        return Some(entry.to_path_buf());
+    }
+    if matches!(
+        entry.components().next(),
+        Some(std::path::Component::Prefix(_))
+    ) {
+        return None;
+    }
+    Some(cwd.join(entry))
 }
 
 /// The catalog query has no workspace, and a relative command or agent dir
@@ -15861,6 +15886,61 @@ base_url = \"https://example.test/v1\"
             workspace.join("home-in-repo").join(".pi").join("agent")
         );
         assert!(pi_settings_dir_checked(pi_agent_dir_for_env(&env)).is_err());
+    }
+
+    /// Node keeps whatever home variable the child has — inherited empty
+    /// included, from which pi derives a `.pi/agent` relative to its cwd — and
+    /// asks the OS only when the launch removed it or there never was one.
+    #[test]
+    fn pi_child_home_is_whatever_home_the_child_has() {
+        use std::ffi::OsString;
+        let untouched = BTreeMap::new();
+        assert_eq!(
+            pi_child_home_from(&untouched, Some(OsString::new())),
+            PathBuf::new()
+        );
+        assert_eq!(
+            pi_child_home_from(&untouched, Some(OsString::from("inherited-home"))),
+            PathBuf::from("inherited-home")
+        );
+        let account = account_home_dir().unwrap_or_else(home_dir_or_default);
+        assert_eq!(pi_child_home_from(&untouched, None), account);
+        let removed = BTreeMap::from([(CHILD_HOME_KEY.to_string(), String::new())]);
+        assert_eq!(
+            pi_child_home_from(&removed, Some(OsString::from("codeg-home"))),
+            account
+        );
+    }
+
+    /// A relative `PATH` entry lands under the child's cwd; a Windows
+    /// drive-relative one follows a per-drive directory nothing here can name,
+    /// so it is dropped rather than guessed.
+    #[test]
+    fn path_entries_are_anchored_where_the_child_looks() {
+        let cwd = if cfg!(windows) {
+            PathBuf::from("C:\\ws")
+        } else {
+            PathBuf::from("/ws")
+        };
+        let absolute = if cfg!(windows) {
+            PathBuf::from("D:\\tools")
+        } else {
+            PathBuf::from("/usr/bin")
+        };
+        assert_eq!(anchor_path_entry(&absolute, &cwd), Some(absolute.clone()));
+        assert_eq!(
+            anchor_path_entry(Path::new("bin"), &cwd),
+            Some(cwd.join("bin"))
+        );
+        assert_eq!(anchor_path_entry(Path::new(""), &cwd), Some(cwd.join("")));
+        #[cfg(windows)]
+        {
+            assert_eq!(anchor_path_entry(Path::new("C:tools"), &cwd), None);
+            assert_eq!(
+                anchor_path_entry(Path::new("\\tools"), &cwd),
+                Some(PathBuf::from("C:\\tools"))
+            );
+        }
     }
 
     /// Env names are case-insensitive on Windows only: there a lowercase key is
