@@ -953,10 +953,11 @@ export interface FoldersEmptyRow {
 /**
  * The single empty-state hint shown under an expanded but empty "Recent"
  * section ("No recent conversations"). Folderless like {@link ChatsEmptyRow}.
- * Under the default "all" filter it is reached only in a workspace with
- * literally nothing in it — Recent spans every section, so any conversation at
- * all fills it; a "chats" / "folders" filter can also narrow the section to
- * nothing, and the renderer names that filter in the hint.
+ * Under the default "all" filter it is reached only when nothing passes
+ * Recent's own gates (see {@link selectRecentConversationsWithReuse}) — Recent
+ * spans every section, so any other conversation fills it. A "chats" /
+ * "folders" filter can also narrow the section to nothing, and the renderer
+ * names that filter in the hint.
  */
 export interface RecentEmptyRow {
   kind: "recent-empty"

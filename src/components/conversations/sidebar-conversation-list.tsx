@@ -2905,9 +2905,10 @@ export function SidebarConversationList({
     }
     if (row.kind === "recent-empty") {
       // Empty "Recent" section hint — same folderless, rail-less treatment as
-      // the other two. Reachable in a workspace with no conversations at all,
-      // or when the kind filter narrows the list to nothing — the hint names
-      // the filter so the user knows what to undo.
+      // the other two. Reachable when no conversation passes Recent's gates
+      // (pinned, hidden-completed and closed-folder ones stay out), or when
+      // the kind filter narrows the list to nothing — the hint names the
+      // filter so the user knows what to undo.
       return (
         <div className="px-[0.5rem] py-[0.375rem] text-[0.75rem] text-muted-foreground/70">
           {recentFilter === "chats"
