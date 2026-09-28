@@ -6910,22 +6910,27 @@ async fn run_connection(
             }
         })
         .await
-        .map_err(|e| {
-            let raw = e.to_string();
-            if raw.contains(INIT_TIMEOUT_SENTINEL) {
-                AcpError::InitializeTimeout
-            } else if raw.contains(PI_RUNTIME_OUTDATED_SENTINEL) {
-                AcpError::AgentRuntimeOutdated(pi_runtime_outdated_message())
-            } else if raw.contains(AUTH_REQUIRED_SENTINEL) {
-                AcpError::agent_auth_required(raw.replace(AUTH_REQUIRED_SENTINEL, ""))
-            } else if raw.contains(MCP_SUSPECT_SENTINEL) {
-                // Strip the marker so the user sees the agent's own words, then
-                // let the frontend append the `supports_mcp` suggestion.
-                AcpError::mcp_rejected(raw.replace(MCP_SUSPECT_SENTINEL, ""))
-            } else {
-                AcpError::protocol(raw)
-            }
-        })
+        .map_err(connection_failure)
+}
+
+/// The codeg error a failed connection ends with: the sentinel an inner step
+/// tagged the ACP error with picks the kind (and never reaches the user);
+/// anything untagged is a protocol error.
+fn connection_failure(err: agent_client_protocol::Error) -> AcpError {
+    let raw = err.to_string();
+    if raw.contains(INIT_TIMEOUT_SENTINEL) {
+        AcpError::InitializeTimeout
+    } else if raw.contains(PI_RUNTIME_OUTDATED_SENTINEL) {
+        AcpError::AgentRuntimeOutdated(pi_runtime_outdated_message())
+    } else if raw.contains(AUTH_REQUIRED_SENTINEL) {
+        AcpError::agent_auth_required(raw.replace(AUTH_REQUIRED_SENTINEL, ""))
+    } else if raw.contains(MCP_SUSPECT_SENTINEL) {
+        // Strip the marker so the user sees the agent's own words, then
+        // let the frontend append the `supports_mcp` suggestion.
+        AcpError::mcp_rejected(raw.replace(MCP_SUSPECT_SENTINEL, ""))
+    } else {
+        AcpError::protocol(raw)
+    }
 }
 
 /// Grok's native `ask_user_question` tool issues this ACP ext request
@@ -19345,6 +19350,21 @@ mod tests {
         assert!(msg.contains("is not installed"), "got: {msg}");
     }
 
+    /// A relative `PATH` entry is searched inside the workspace, where pi-acp's
+    /// spawn runs — never in codeg's own cwd.
+    #[cfg(unix)]
+    #[test]
+    fn pi_preflight_anchors_a_relative_path_entry_in_the_workspace() {
+        use std::os::unix::fs::PermissionsExt;
+        let workspace = tempfile::tempdir().unwrap();
+        std::fs::create_dir(workspace.path().join("tools")).unwrap();
+        let pi = workspace.path().join("tools").join("pi");
+        std::fs::write(&pi, "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&pi, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let env = BTreeMap::from([("PATH".to_string(), "tools".to_string())]);
+        assert!(pi_launch_preflight(&env, workspace.path()).is_none());
+    }
+
     /// pi-acp spawns a relative command with the session's workspace as cwd, so
     /// that is where it must exist — not in codeg's own cwd.
     #[cfg(unix)]
@@ -19410,19 +19430,22 @@ mod tests {
 
     #[test]
     fn an_outdated_pi_outranks_the_other_session_new_readings() {
-        let [new_failure, _] = pi_outdated_open_failures();
-        let tagged = tag_new_session_failure(new_failure, AgentType::Pi, &[]).to_string();
-        assert!(tagged.contains(PI_RUNTIME_OUTDATED_SENTINEL), "{tagged}");
-        assert!(!tagged.contains(MCP_SUSPECT_SENTINEL), "{tagged}");
-        assert!(!tagged.contains(AUTH_REQUIRED_SENTINEL), "{tagged}");
+        let [new_failure, load_failure] = pi_outdated_open_failures();
+        let tagged = tag_new_session_failure(new_failure, AgentType::Pi, &[]);
+        let raw = tagged.to_string();
+        assert!(raw.contains(PI_RUNTIME_OUTDATED_SENTINEL), "{raw}");
+        assert!(!raw.contains(MCP_SUSPECT_SENTINEL), "{raw}");
+        assert!(!raw.contains(AUTH_REQUIRED_SENTINEL), "{raw}");
 
-        // Mirrors the `.map_err` in `run_connection`, which a unit test cannot
-        // call directly: codeg's own instructions replace the wire text.
-        let err = AcpError::AgentRuntimeOutdated(pi_runtime_outdated_message());
-        assert_eq!(err.code(), Some("agent_runtime_outdated"));
-        let shown = err.to_string();
-        assert!(shown.contains(registry::PI_MIN_RUNTIME_VERSION), "{shown}");
-        assert!(!shown.contains(PI_RUNTIME_OUTDATED_SENTINEL), "{shown}");
+        // Both opens end as the same coded error, with codeg's own
+        // instructions in place of the wire text.
+        let load_tagged = tag_pi_runtime_outdated(&load_failure, AgentType::Pi).unwrap();
+        for err in [connection_failure(tagged), connection_failure(load_tagged)] {
+            assert_eq!(err.code(), Some("agent_runtime_outdated"));
+            let shown = err.to_string();
+            assert!(shown.contains(registry::PI_MIN_RUNTIME_VERSION), "{shown}");
+            assert!(!shown.contains(PI_RUNTIME_OUTDATED_SENTINEL), "{shown}");
+        }
     }
 
     #[test]

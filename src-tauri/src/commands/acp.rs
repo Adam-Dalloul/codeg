@@ -5690,15 +5690,95 @@ pub(crate) fn pi_agent_dir() -> PathBuf {
     crate::parsers::pi::resolve_pi_agent_dir()
 }
 
+/// A variable as a launch with `runtime_env` sets it for its child. On Windows
+/// names are case-insensitive — `pi_coding_agent_dir` in the per-agent env IS
+/// the `PI_CODING_AGENT_DIR` pi reads — and when several spellings are present
+/// the spawn applies them in the map's order, so the last one wins.
+fn launch_env_value<'a>(runtime_env: &'a BTreeMap<String, String>, key: &str) -> Option<&'a str> {
+    if cfg!(windows) {
+        runtime_env
+            .iter()
+            .rev()
+            .find(|(name, _)| name.eq_ignore_ascii_case(key))
+            .map(|(_, value)| value.as_str())
+    } else {
+        runtime_env.get(key).map(String::as_str)
+    }
+}
+
+/// What `os.homedir()` answers in the pi child of a launch with `runtime_env` —
+/// the home pi expands `~` against and puts its default `.pi/agent` under.
+///
+/// Node takes `HOME` (`USERPROFILE` on Windows) verbatim when the child has one,
+/// a relative value included, which pi then resolves against its cwd — the
+/// workspace. A blank launch value removes the variable and an absent one passes
+/// codeg's own on; with none at all, Node asks the OS for the account's home.
+fn pi_child_home(runtime_env: &BTreeMap<String, String>) -> PathBuf {
+    #[cfg(windows)]
+    const HOME_KEY: &str = "USERPROFILE";
+    #[cfg(not(windows))]
+    const HOME_KEY: &str = "HOME";
+    let variable = match launch_env_value(runtime_env, HOME_KEY) {
+        Some("") => None,
+        Some(value) => Some(std::ffi::OsString::from(value)),
+        None => std::env::var_os(HOME_KEY).filter(|value| !value.is_empty()),
+    };
+    variable
+        .map(PathBuf::from)
+        .or_else(account_home_dir)
+        // The OS has no home for this account either: pi cannot start then,
+        // so no answer here can be wrong about a pi that runs.
+        .unwrap_or_else(home_dir_or_default)
+}
+
+/// The account's home as the OS records it — Node's fallback without a home
+/// variable: the passwd entry on unix.
+#[cfg(unix)]
+fn account_home_dir() -> Option<PathBuf> {
+    use std::os::unix::ffi::OsStrExt;
+    let mut buf = vec![0 as libc::c_char; 4096];
+    loop {
+        // SAFETY: `entry`, `buf` and `found` are live locals of the stated
+        // sizes for the whole call, and `pw_dir` (which points into `buf`) is
+        // copied out before `buf` is touched again.
+        let mut entry: libc::passwd = unsafe { std::mem::zeroed() };
+        let mut found: *mut libc::passwd = std::ptr::null_mut();
+        let rc = unsafe {
+            libc::getpwuid_r(
+                libc::getuid(),
+                &mut entry,
+                buf.as_mut_ptr(),
+                buf.len(),
+                &mut found,
+            )
+        };
+        if rc == libc::ERANGE && buf.len() < 1 << 20 {
+            buf.resize(buf.len() * 2, 0);
+            continue;
+        }
+        if rc != 0 || found.is_null() || entry.pw_dir.is_null() {
+            return None;
+        }
+        let dir = unsafe { std::ffi::CStr::from_ptr(entry.pw_dir) };
+        return Some(PathBuf::from(std::ffi::OsStr::from_bytes(dir.to_bytes())));
+    }
+}
+
+/// The account's profile folder, which libuv falls back to on Windows.
+#[cfg(not(unix))]
+fn account_home_dir() -> Option<PathBuf> {
+    dirs::home_dir()
+}
+
 /// Pi's agent dir as the pi CHILD of a launch with `runtime_env` resolves it —
 /// before a relative value is anchored (see [`pi_agent_dir_in_workspace`]).
 ///
 /// Follows the spawn chain rather than one map: a non-empty `runtime_env` value
 /// replaces codeg's, an exactly-empty one is `env_remove`d (pi then falls back
 /// to its default instead of inheriting codeg's value), and an absent key
-/// inherits codeg's own. `~` expands against the child's home, since
-/// `merge_agent_env` hands a relocated `HOME` to the child as well. Never
-/// trimmed: pi reads the raw value (`normalizePath` expands `~` and nothing else).
+/// inherits codeg's own. `~` and the default expand against the child's home
+/// ([`pi_child_home`]). Never trimmed: pi reads the raw value (`normalizePath`
+/// expands `~` and nothing else).
 fn pi_agent_dir_for_env(runtime_env: &BTreeMap<String, String>) -> PathBuf {
     pi_agent_dir_for_child(runtime_env, std::env::var_os("PI_CODING_AGENT_DIR"))
 }
@@ -5709,14 +5789,12 @@ fn pi_agent_dir_for_child(
     runtime_env: &BTreeMap<String, String>,
     inherited: Option<std::ffi::OsString>,
 ) -> PathBuf {
-    let value = match runtime_env.get("PI_CODING_AGENT_DIR") {
-        Some(value) if value.is_empty() => None,
+    let value = match launch_env_value(runtime_env, "PI_CODING_AGENT_DIR") {
+        Some("") => None,
         Some(value) => Some(std::ffi::OsString::from(value)),
         None => inherited,
     };
-    let home = crate::acp::file_system_runtime::child_home_dir(runtime_env)
-        .unwrap_or_else(home_dir_or_default);
-    crate::parsers::pi::resolve_pi_agent_dir_from(value, Some(&home))
+    crate::parsers::pi::resolve_pi_agent_dir_from(value, Some(&pi_child_home(runtime_env)))
 }
 
 /// [`pi_agent_dir_for_env`] anchored where pi anchors it: pi-acp starts pi with
@@ -5964,9 +6042,12 @@ fn pi_settings_dir_checked(pi_dir: PathBuf) -> Result<PathBuf, AcpError> {
     if pi_dir.is_absolute() {
         Ok(pi_dir)
     } else {
-        Err(AcpError::protocol(
-            "Pi agent directory must be absolute or start with ~/ before editing native settings",
-        ))
+        Err(AcpError::protocol(format!(
+            "Pi agent directory must be absolute or start with ~/ before editing native settings \
+             (this agent's pi uses \"{}\", relative to each workspace; check \
+             PI_CODING_AGENT_DIR and HOME in its environment)",
+            pi_dir.display()
+        )))
     }
 }
 
@@ -6660,9 +6741,9 @@ fn parse_pi_model_capabilities(line: &str) -> Option<Result<Vec<PiModelCapabilit
 /// as [`pi_agent_dir_for_env`]), else `pi`. pi-acp uses the value verbatim, so it
 /// is not trimmed here either.
 pub(crate) fn pi_command_for_env(runtime_env: &BTreeMap<String, String>) -> String {
-    match runtime_env.get("PI_ACP_PI_COMMAND") {
-        Some(value) if value.is_empty() => None,
-        Some(value) => Some(value.clone()),
+    match launch_env_value(runtime_env, "PI_ACP_PI_COMMAND") {
+        Some("") => None,
+        Some(value) => Some(value.to_string()),
         None => std::env::var("PI_ACP_PI_COMMAND")
             .ok()
             .filter(|value| !value.is_empty()),
@@ -6683,6 +6764,11 @@ fn pi_command_looks_like_path(command: &str) -> bool {
 /// against `cwd` (the child's working directory), a bare name on the child's
 /// `PATH` — `env`'s when the launch sets one, else codeg's own, which the child
 /// inherits.
+///
+/// A relative `PATH` entry (an empty one means "the cwd") is anchored in `cwd`
+/// here, because that is where the child looks. `which` alone would test it
+/// against codeg's OWN cwd — a directory the child never searches, and on a
+/// server possibly one other users can write to.
 pub(crate) fn resolve_pi_command_in(
     command: &str,
     env: &BTreeMap<String, String>,
@@ -6696,12 +6782,21 @@ pub(crate) fn resolve_pi_command_in(
         return pi_path_is_executable(&candidate)
             .then(|| fs::canonicalize(&candidate).unwrap_or(candidate));
     }
-    let path = env
-        .iter()
-        .find(|(key, _)| key.eq_ignore_ascii_case("PATH"))
-        .map(|(_, value)| std::ffi::OsString::from(value))
-        .or_else(|| std::env::var_os("PATH"));
-    which::which_in(command, path, cwd).ok()
+    let path = launch_env_value(env, "PATH")
+        .map(std::ffi::OsString::from)
+        .or_else(|| std::env::var_os("PATH"))?;
+    // `join_paths` cannot fail on what `split_paths` produced (no entry holds
+    // the separator, and Windows quotes the ones that do); should it anyway,
+    // searching the list as given still beats reporting pi missing.
+    let anchored = std::env::join_paths(std::env::split_paths(&path).map(|entry| {
+        if entry.is_absolute() {
+            entry
+        } else {
+            cwd.join(entry)
+        }
+    }))
+    .unwrap_or(path);
+    which::which_in(command, Some(anchored), cwd).ok()
 }
 
 /// The catalog query has no workspace, and a relative command or agent dir
@@ -6726,10 +6821,21 @@ async fn query_pi_model_catalog(
     if !pi_runtime_paths_are_stable(runtime_env) {
         return PiModelCatalog::unavailable(PiCatalogStatus::RelativePath);
     }
-    let query_dir = std::env::temp_dir();
-    let Some(program) =
-        resolve_pi_command_in(&pi_command_for_env(runtime_env), runtime_env, &query_dir)
+    // A private, empty working directory: pi runs where no repository or other
+    // user put anything, and a relative `PATH` entry (an empty one means the
+    // cwd) cannot reach a `pi` someone planted in the shared temp dir. Kept
+    // alive until the child is reaped below.
+    let Ok(query_dir) = tempfile::Builder::new()
+        .prefix("codeg-pi-catalog-")
+        .tempdir()
     else {
+        return PiModelCatalog::unavailable(PiCatalogStatus::Failed);
+    };
+    let Some(program) = resolve_pi_command_in(
+        &pi_command_for_env(runtime_env),
+        runtime_env,
+        query_dir.path(),
+    ) else {
         return PiModelCatalog::unavailable(PiCatalogStatus::NotFound);
     };
     let mut command = crate::process::tokio_command(program);
@@ -6750,7 +6856,7 @@ async fn query_pi_model_catalog(
             "--no-context-files",
             "--no-approve",
         ])
-        .current_dir(&query_dir)
+        .current_dir(query_dir.path())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -15700,7 +15806,7 @@ base_url = \"https://example.test/v1\"
         env.insert("PI_CODING_AGENT_DIR".to_string(), "~/custom-pi".to_string());
         assert_eq!(
             pi_agent_dir_for_env(&env),
-            home_dir_or_default().join("custom-pi")
+            pi_child_home(&env).join("custom-pi")
         );
         // pi's `normalizePath` takes the value verbatim: a padded value is a
         // different (here: relative) directory, not the trimmed one.
@@ -15741,6 +15847,33 @@ base_url = \"https://example.test/v1\"
             pi_agent_dir_for_child(&env, inherited()),
             home.path().join(".pi").join("agent")
         );
+
+        // A relative HOME is taken verbatim too, so pi's default profile is
+        // relative to its cwd — the workspace — and the gate must look there.
+        env.insert("HOME".to_string(), "home-in-repo".to_string());
+        assert_eq!(
+            pi_agent_dir_for_child(&env, inherited()),
+            PathBuf::from("home-in-repo").join(".pi").join("agent")
+        );
+        let workspace = home.path().join("ws");
+        assert_eq!(
+            pi_agent_dir_in_workspace(&env, &workspace),
+            workspace.join("home-in-repo").join(".pi").join("agent")
+        );
+        assert!(pi_settings_dir_checked(pi_agent_dir_for_env(&env)).is_err());
+    }
+
+    /// Env names are case-insensitive on Windows only: there a lowercase key is
+    /// the variable pi reads; elsewhere it is a different variable.
+    #[test]
+    fn launch_env_names_follow_the_platform_case_rules() {
+        let env = BTreeMap::from([("pi_coding_agent_dir".to_string(), "somewhere".to_string())]);
+        let found = launch_env_value(&env, "PI_CODING_AGENT_DIR");
+        if cfg!(windows) {
+            assert_eq!(found, Some("somewhere"));
+        } else {
+            assert_eq!(found, None);
+        }
     }
 
     /// A relative agent dir lives inside the workspace pi runs in, so the
@@ -15867,6 +16000,36 @@ printf '%s\n' '{"id":"codeg-models","type":"response","command":"get_available_m
             status_for(slow.to_string_lossy().into_owned()).await,
             PiCatalogStatus::TimedOut
         );
+    }
+
+    /// A relative `PATH` entry must not resolve inside the shared temp dir,
+    /// where anyone can put a `pi` — the query runs in a private, empty one.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn pi_catalog_never_runs_a_pi_planted_in_the_shared_temp_dir() {
+        let entry = format!("codeg-planted-{}", uuid::Uuid::new_v4());
+        let planted_dir = std::env::temp_dir().join(&entry);
+        fs::create_dir(&planted_dir).unwrap();
+        fake_pi(
+            &planted_dir,
+            "pi",
+            r#"read request
+printf '%s\n' '{"id":"codeg-models","type":"response","command":"get_available_models","success":true,"data":{"models":[]}}'
+"#,
+        );
+        let agent_dir = tempfile::tempdir().unwrap();
+        let env = BTreeMap::from([
+            ("PATH".to_string(), entry),
+            (
+                "PI_CODING_AGENT_DIR".to_string(),
+                agent_dir.path().to_string_lossy().into_owned(),
+            ),
+        ]);
+        let status = query_pi_model_catalog(&env, Duration::from_secs(2))
+            .await
+            .status;
+        fs::remove_dir_all(&planted_dir).unwrap();
+        assert_eq!(status, PiCatalogStatus::NotFound);
     }
 
     #[cfg(windows)]

@@ -403,7 +403,15 @@ export function PiConfigPanel({
       })
       .catch((error) => {
         console.error("[Pi] load config failed", error)
-        if (!cancelled) setConfigLoadError(toErrorMessage(error))
+        if (cancelled) return
+        // Nothing the form still shows belongs to this agent dir; a save from
+        // it would write another profile's provider and model here.
+        setSelectedProvider("")
+        setModel("")
+        setThinkingLevel("")
+        setAuthProviders([])
+        setCustomProviders([])
+        setConfigLoadError(toErrorMessage(error))
       })
       .finally(() => {
         if (!cancelled) setLoadingCreds(false)

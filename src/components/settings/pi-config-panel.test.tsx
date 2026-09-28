@@ -389,6 +389,20 @@ describe("Pi native config source", () => {
     )
   })
 
+  it("drops the previous directory's values when the new one cannot be read", async () => {
+    api.loadPiConfig
+      .mockResolvedValueOnce(config("gpt-5.6-sol", "max"))
+      .mockRejectedValueOnce(new Error("database is locked"))
+    const view = await renderPanel()
+    view.rerender(panel({ PI_CODING_AGENT_DIR: "/tmp/another-agent" }))
+    expect(
+      await screen.findByText("Couldn't read Pi's settings: database is locked")
+    ).toBeInTheDocument()
+    expect(screen.getByPlaceholderText("claude-sonnet-5")).toHaveValue("")
+    await saveConfig()
+    expect(api.acpUpdatePiConfig).not.toHaveBeenCalled()
+  })
+
   it("shows why Pi's settings could not be read", async () => {
     api.loadPiConfig.mockRejectedValue(
       new Error("Cannot read Pi agent settings from the Codeg database: boom")
