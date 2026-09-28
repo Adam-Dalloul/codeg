@@ -1300,7 +1300,8 @@ describe("SidebarConversationList — Recent section", () => {
 
   describe("kind filter", () => {
     const FILTER_KEY = "workspace:sidebar-recent-filter"
-    const { noRecent, noRecentFolders } = enMessages.Folder.sidebar
+    const { noRecent, noRecentChats, noRecentFolders } =
+      enMessages.Folder.sidebar
 
     // Cards rendered for one conversation: its canonical row (Folders or
     // Chat), plus a second one while Recent lists it too.
@@ -1323,11 +1324,29 @@ describe("SidebarConversationList — Recent section", () => {
         )
       }
     }
+    // Open the header menu from the trigger carrying `triggerLabel` and pick
+    // the option whose text is `option`.
+    async function pick(triggerLabel: string, option: string) {
+      await settle()
+      press(document.querySelector(`[aria-label="${triggerLabel}"]`)!)
+      await settle()
+      const item = Array.from(
+        document.querySelectorAll('[role="menuitemradio"]')
+      ).find((el) => el.textContent === option)
+      expect(item).toBeDefined()
+      press(item!)
+    }
 
     beforeEach(() => {
       // The collapse test above persists `{recent: true}`; left in place the
       // section renders collapsed, with no rows for a filter to narrow.
       localStorage.clear()
+    })
+
+    afterEach(() => {
+      // The describes after this one reset only the storage keys they use, so
+      // a filter left behind would quietly narrow Recent in all of them.
+      localStorage.removeItem(FILTER_KEY)
     })
 
     it("restores the persisted filter on mount", () => {
@@ -1339,36 +1358,45 @@ describe("SidebarConversationList — Recent section", () => {
       expect(cardsFor(11)).toBe(1)
     })
 
-    it("names the filter when it narrows Recent to nothing", () => {
-      localStorage.setItem(FILTER_KEY, "folders")
-      useAppWorkspaceStore.setState({
-        conversations: [conv(12, 99, { kind: "chat" })],
-      })
-      render(recentTree(true))
-      expect(document.body.textContent).toContain(noRecentFolders)
-      expect(document.body.textContent).not.toContain(noRecent)
-    })
+    it.each([
+      // Only a folder conversation left, so "chats" empties Recent…
+      { filter: "chats", only: conv(11, 1), hint: noRecentChats },
+      // …and only a chat, so "folders" does.
+      {
+        filter: "folders",
+        only: conv(12, 99, { kind: "chat" }),
+        hint: noRecentFolders,
+      },
+    ])(
+      "names the $filter filter when it narrows Recent to nothing",
+      ({ filter, only, hint }) => {
+        localStorage.setItem(FILTER_KEY, filter)
+        useAppWorkspaceStore.setState({ conversations: [only] })
+        render(recentTree(true))
+        const text = document.body.textContent
+        expect(text).toContain(hint)
+        // Exactly one hint: neither the other filter's nor the unfiltered one.
+        for (const other of [noRecent, noRecentChats, noRecentFolders]) {
+          if (other !== hint) expect(text).not.toContain(other)
+        }
+      }
+    )
 
-    it("applies and persists a pick from the header menu", async () => {
+    it("applies, persists and undoes a pick from the header menu", async () => {
       render(recentTree(true))
       expect(cardsFor(11)).toBe(2)
       expect(cardsFor(12)).toBe(2)
 
-      await settle()
-      press(document.querySelector('[aria-label="Show in Recent: All"]')!)
-      await settle()
-      const folders = Array.from(
-        document.querySelectorAll('[role="menuitemradio"]')
-      ).find((item) => item.textContent === "Folders")
-      expect(folders).toBeDefined()
-      press(folders!)
-
+      await pick("Show in Recent: All", "Folders")
       expect(localStorage.getItem(FILTER_KEY)).toBe("folders")
       expect(cardsFor(11)).toBe(2)
       expect(cardsFor(12)).toBe(1)
-      expect(
-        document.querySelector('[aria-label="Show in Recent: Folders"]')
-      ).not.toBeNull()
+
+      // Back to All from the (now relabelled) trigger: both kinds return.
+      await pick("Show in Recent: Folders", "All")
+      expect(localStorage.getItem(FILTER_KEY)).toBe("all")
+      expect(cardsFor(11)).toBe(2)
+      expect(cardsFor(12)).toBe(2)
     })
   })
 })

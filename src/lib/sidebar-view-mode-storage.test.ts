@@ -12,6 +12,7 @@ import {
   saveRecentFilter,
   saveSectionOrder,
   saveShowRecent,
+  type SidebarRecentFilter,
 } from "./sidebar-view-mode-storage"
 
 const SECTION_ORDER_KEY = "workspace:sidebar-section-order"
@@ -144,7 +145,11 @@ describe("loadRecentFilter", () => {
   })
 
   it("round-trips every filter", () => {
-    for (const filter of SIDEBAR_RECENT_FILTERS) {
+    // Spelled out rather than read from SIDEBAR_RECENT_FILTERS, so dropping a
+    // filter from that list fails here instead of quietly testing fewer.
+    const filters: SidebarRecentFilter[] = ["all", "chats", "folders"]
+    expect([...SIDEBAR_RECENT_FILTERS]).toEqual(filters)
+    for (const filter of filters) {
       saveRecentFilter(filter)
       expect(localStorage.getItem(RECENT_FILTER_KEY)).toBe(filter)
       expect(loadRecentFilter()).toBe(filter)
