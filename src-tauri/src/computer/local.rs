@@ -71,6 +71,17 @@ const WRITE_TIMEOUT: Duration = Duration::from_secs(10);
 /// How long a freshly launched helper has to say it is ready.
 const READY_TIMEOUT: Duration = Duration::from_secs(15);
 
+/// Why a helper that never said it was ready failed. On macOS a helper
+/// macOS has not seen before can be held at launch by a question of the
+/// system's own — whether it may read from a removable volume, for one, when
+/// codeg lives on another disk — until the person answers it.
+const NOT_STARTED: &str = if cfg!(target_os = "macos") {
+    "the helper did not start in time — if macOS is asking about \
+     codeg-computer-helper, answer it and try again"
+} else {
+    "the helper did not start in time"
+};
+
 /// How long a helper that has been told codeg is done gets to exit on its
 /// own: it stops its driver first — one still starting once it has started —
 /// within its own bound (`helper::SHUTDOWN_GRACE`, 60 s). Past this it is
@@ -653,7 +664,7 @@ async fn launch(path: &std::path::Path) -> Result<Arc<Connection>, BackendError>
             // does without a word on the socket; its stderr says why.
             return Err(abandon(child, &format!("the helper closed the channel: {e}")).await);
         }
-        Err(_) => return Err(abandon(child, "the helper did not start in time").await),
+        Err(_) => return Err(abandon(child, NOT_STARTED).await),
     };
     if ready.protocol != PROTOCOL_VERSION {
         return Err(abandon(
