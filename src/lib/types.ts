@@ -3555,6 +3555,13 @@ export interface QoderAuthStatus {
   binary_path?: string | null
 }
 
+// The newest upstream release of an agent, newer than codeg's pinned version,
+// returned by acp_fetch_agent_latest_release. Unreviewed by codeg; `version` is
+// already in the form Custom install accepts.
+export interface AgentLatestRelease {
+  version: string
+}
+
 // Lightweight agent status returned by acp_get_agent_status
 export interface AcpAgentStatus {
   agent_type: AgentType

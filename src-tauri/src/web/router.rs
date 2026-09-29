@@ -992,6 +992,10 @@ pub fn build_router(
             post(handlers::acp::acp_detect_agent_local_version),
         )
         .route(
+            "/acp_fetch_agent_latest_release",
+            post(handlers::acp::acp_fetch_agent_latest_release),
+        )
+        .route(
             "/acp_prepare_npx_agent",
             post(handlers::acp::acp_prepare_npx_agent),
         )

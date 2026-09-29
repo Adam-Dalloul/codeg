@@ -24,6 +24,7 @@ pub mod fork;
 pub mod host_tools_policy;
 pub mod idle_sweep;
 pub mod internal_bus;
+pub mod latest_release;
 pub mod lifecycle;
 pub mod manager;
 pub mod opencode_catalog;

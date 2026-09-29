@@ -722,13 +722,6 @@
     "emptyNoAgent": "لا يوجد وكيل متاح.",
     "configManagement": "إدارة الإعدادات",
     "envVars": "متغيرات البيئة",
-    "adapterChannel": {
-      "label": "إصدار المحوّل",
-      "description": "يستخدم التثبيت والترقية الإصدار الذي راجعه codeg واعتمده. عند اختيار الأحدث يُثبَّت أحدث إصدار npm للحزمة في حينه؛ وإذا فشل ذلك، يعود codeg إلى الإصدار المعتمد ويوضح ذلك في سجل التثبيت.",
-      "pinned": "الإصدار المعتمد (موصى به)",
-      "latest": "الأحدث (غير مُراجَع)",
-      "latestWarning": "أحدث الإصدارات غير مُراجَعة وقد تعطّل هذا الوكيل في codeg، بل قد يكون الإصدار الأحدث معروفًا بأنه معطوب أحيانًا. تعرض حالة الإصدار ما تم تثبيته فعليًا."
-    },
     "hostTools": {
       "label": "دع الوكيل يتولى الملفات والأوامر بنفسه",
       "description": "يتوقف codeg عن تنفيذ الوصول إلى الملفات وأوامر الطرفية، فينفّذها الوكيل داخل عمليته الخاصة — وعندها فقط تُطبَّق البيئة المعزولة وقواعد الأذونات الخاصة به. كما يُعطَّل التفويض إلى وكلاء آخرين، لأنه سيعيد العمل نفسه عبر codeg. لا يضيف codeg بيئة معزولة من عنده، لذا فعّل هذا الخيار فقط إذا كان الوكيل قد أُعِدّت له واحدة."
@@ -799,6 +792,7 @@
       "saveCodeBuddyConfig": "حفظ إعدادات CodeBuddy",
       "saveKimiCodeConfig": "حفظ إعدادات Kimi Code",
       "customInstall": "تثبيت مخصص",
+      "upgradeToLatest": "الترقية إلى أحدث إصدار غير مُراجَع {version}",
       "saveKimiCodeRawConfig": "Save config.toml",
       "saveDeepSeekConfig": "حفظ إعدادات DeepSeek",
       "diagnose": "تشخيص"
@@ -1404,7 +1398,9 @@
       "customInstallDescription": "أدخل الإصدار المراد تثبيته. سيؤدي ذلك إلى إعادة التثبيت واستبدال الإصدار المثبت حاليًا.",
       "customInstallVersionLabel": "رقم الإصدار",
       "customInstallInvalid": "أدخل رقم إصدار صالحًا، مثل 1.2.3.",
-      "customInstallSubmit": "تثبيت"
+      "customInstallSubmit": "تثبيت",
+      "confirmUpgradeToLatest": "ترقية {name} إلى الإصدار غير المُراجَع {version}؟",
+      "confirmUpgradeToLatestDescription": "لم يراجع codeg هذا الإصدار، وقد يعطّل {name} في codeg، بل قد يكون الإصدار معروفًا بأنه معطوب أحيانًا. للرجوع، استخدم التثبيت المخصص لإعادة تثبيت الإصدار الموصى به {recommendedVersion}."
     },
     "errors": {
       "windowsFileLocked": "ملفات {name} قيد الاستخدام بواسطة جلسة قيد التشغيل، لذا لا يمكن لـ Windows استبدالها. أغلق جميع جلسات {name} ثم حاول مرة أخرى.",
@@ -1493,7 +1489,7 @@
     "version": {
       "statusLabel": "حالة الإصدار",
       "notInstalled": "غير مثبت",
-      "remoteLocal": "البعيد: {remoteVersion} · المحلي: {localVersion}",
+      "recommendedLocal": "الموصى به: {recommendedVersion} · المحلي: {localVersion}",
       "localOnly": "المحلي: {localVersion}",
       "localInstalled": "{versionText}. مثبت.",
       "platformUnsupported": "{versionText}. المنصة الحالية لا تدعم هذا الوكيل.",
@@ -1501,9 +1497,9 @@
       "clickInstall": "{versionText}. انقر تثبيت في الجهة اليمنى.",
       "localUnrecognized": "{versionText}. الإصدار المحلي غير قابل للمقارنة؛ جرّب الترقية للكتابة فوق التثبيت.",
       "upgradeAvailable": "{versionText}. تتوفر ترقية.",
-      "remoteUnavailable": "{versionText}. الإصدار البعيد غير متاح حاليًا.",
+      "recommendedUnavailable": "{versionText}. لا يتوفر إصدار موصى به.",
       "latest": "{versionText}. أنت على أحدث إصدار.",
-      "latestChannel": "{versionText}. قناة الأحدث مفعّلة؛ الترقية تثبّت أحدث إصدار."
+      "unreviewedAvailable": "{versionText}. يتوفر إصدار أحدث غير مُراجَع."
     },
     "adapter": {
       "label": "محوّل ACP",

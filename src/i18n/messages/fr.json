@@ -722,13 +722,6 @@
     "emptyNoAgent": "Aucun agent disponible.",
     "configManagement": "Gestion de configuration",
     "envVars": "Variables d'environnement",
-    "adapterChannel": {
-      "label": "Version de l'adaptateur",
-      "description": "Installer et Mettre à niveau utilisent la version examinée et épinglée par codeg. Avec Dernière, c'est la version npm la plus récente du paquet qui est installée ; si cette installation échoue, codeg revient à la version épinglée et l'indique dans le journal d'installation.",
-      "pinned": "Épinglée (recommandée)",
-      "latest": "Dernière (non examinée)",
-      "latestWarning": "Les versions les plus récentes ne sont pas examinées et peuvent casser cet agent dans codeg ; il arrive même qu'une version soit connue pour être défectueuse. Le statut de version affiche ce qui est réellement installé."
-    },
     "hostTools": {
       "label": "Laisser l'agent gérer les fichiers et les commandes",
       "description": "codeg cesse d'assurer l'accès aux fichiers et les commandes de terminal : l'agent les exécute dans son propre processus, là où son bac à sable et ses règles d'autorisation s'appliquent réellement. La délégation à d'autres agents est également désactivée, car elle ferait repasser le même travail par codeg. codeg n'ajoute aucun bac à sable, n'activez donc ceci que si l'agent en a un configuré."
@@ -799,6 +792,7 @@
       "saveCodeBuddyConfig": "Enregistrer la configuration CodeBuddy",
       "saveKimiCodeConfig": "Enregistrer la configuration de Kimi Code",
       "customInstall": "Installation personnalisée",
+      "upgradeToLatest": "Mettre à niveau vers la dernière non examinée {version}",
       "saveKimiCodeRawConfig": "Enregistrer config.toml",
       "saveDeepSeekConfig": "Enregistrer la configuration DeepSeek",
       "diagnose": "Diagnostiquer"
@@ -1404,7 +1398,9 @@
       "customInstallDescription": "Saisissez la version à installer. Cela réinstalle et remplace la version actuellement installée.",
       "customInstallVersionLabel": "Numéro de version",
       "customInstallInvalid": "Saisissez un numéro de version valide, par ex. 1.2.3.",
-      "customInstallSubmit": "Installer"
+      "customInstallSubmit": "Installer",
+      "confirmUpgradeToLatest": "Mettre à niveau {name} vers la version non examinée {version} ?",
+      "confirmUpgradeToLatestDescription": "Cette version n’a pas été examinée par codeg. Elle peut casser {name} dans codeg, et il arrive qu’une version soit connue pour être défectueuse. Pour revenir en arrière, utilisez Installation personnalisée pour réinstaller la version recommandée {recommendedVersion}."
     },
     "errors": {
       "windowsFileLocked": "Les fichiers de {name} sont utilisés par une session en cours, Windows ne peut donc pas les remplacer. Fermez toutes les sessions {name}, puis réessayez.",
@@ -1493,7 +1489,7 @@
     "version": {
       "statusLabel": "Statut de version",
       "notInstalled": "Non installé",
-      "remoteLocal": "Distant : {remoteVersion} · Local : {localVersion}",
+      "recommendedLocal": "Recommandée : {recommendedVersion} · Local : {localVersion}",
       "localOnly": "Local : {localVersion}",
       "localInstalled": "{versionText}. Installé.",
       "platformUnsupported": "{versionText}. La plateforme actuelle ne prend pas en charge cet agent.",
@@ -1501,9 +1497,9 @@
       "clickInstall": "{versionText}. Cliquez sur Installer à droite.",
       "localUnrecognized": "{versionText}. La version locale n’est pas comparable ; essayez une mise à niveau pour écraser l’installation.",
       "upgradeAvailable": "{versionText}. Mise à niveau disponible.",
-      "remoteUnavailable": "{versionText}. La version distante est actuellement indisponible.",
+      "recommendedUnavailable": "{versionText}. Aucune version recommandée n'est disponible.",
       "latest": "{versionText}. Déjà à jour.",
-      "latestChannel": "{versionText}. Le canal Dernière est actif ; Mettre à niveau installe la version la plus récente."
+      "unreviewedAvailable": "{versionText}. Une version plus récente, non examinée, est disponible."
     },
     "adapter": {
       "label": "Adaptateur ACP",

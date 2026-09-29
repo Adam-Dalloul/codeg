@@ -722,13 +722,6 @@
     "emptyNoAgent": "利用可能なエージェントがありません。",
     "configManagement": "設定管理",
     "envVars": "環境変数",
-    "adapterChannel": {
-      "label": "アダプターのバージョン",
-      "description": "インストールとアップグレードは、codeg がレビューして固定したバージョンを使用します。「最新版」を選ぶと、その時点で最新の npm リリースをインストールします。最新版のインストールに失敗した場合は固定バージョンにフォールバックし、インストールログにその旨を記録します。",
-      "pinned": "固定バージョン（推奨）",
-      "latest": "最新版（未レビュー）",
-      "latestWarning": "最新リリースは未レビューのため、codeg でこのエージェントが動かなくなることがあります。まれに既知の不具合を含むリリースが最新版になっていることもあります。実際にインストールされたバージョンはバージョン状態に表示されます。"
-    },
     "hostTools": {
       "label": "ファイルとコマンドをエージェント自身に処理させる",
       "description": "codeg がファイルアクセスとターミナルコマンドを代行しなくなり、エージェントが自身のプロセスで実行します。そうすることで初めて、エージェント自身のサンドボックスと権限ルールが適用されます。他のエージェントへの委任も無効になります（同じ処理が codeg 経由に戻ってしまうため）。codeg 自体はサンドボックスを提供しないため、エージェント側でサンドボックスを設定済みの場合にのみ有効にしてください。"
@@ -799,6 +792,7 @@
       "saveCodeBuddyConfig": "CodeBuddy 設定を保存",
       "saveKimiCodeConfig": "Kimi Code の設定を保存",
       "customInstall": "カスタムインストール",
+      "upgradeToLatest": "未レビューの最新版 {version} にアップグレード",
       "saveKimiCodeRawConfig": "Save config.toml",
       "saveDeepSeekConfig": "DeepSeek 設定を保存",
       "diagnose": "診断"
@@ -1404,7 +1398,9 @@
       "customInstallDescription": "インストールするバージョンを入力します。再インストールされ、現在インストールされているバージョンを置き換えます。",
       "customInstallVersionLabel": "バージョン番号",
       "customInstallInvalid": "有効なバージョン番号を入力してください（例: 1.2.3）。",
-      "customInstallSubmit": "インストール"
+      "customInstallSubmit": "インストール",
+      "confirmUpgradeToLatest": "{name} を未レビューの {version} にアップグレードしますか？",
+      "confirmUpgradeToLatestDescription": "このリリースは codeg で未レビューのため、codeg で {name} が動かなくなることがあります。まれに既知の不具合を含むリリースであることもあります。元に戻すには、「カスタムインストール」で推奨バージョン {recommendedVersion} を再インストールしてください。"
     },
     "errors": {
       "windowsFileLocked": "{name} のファイルは実行中のセッションが使用中のため、Windows では置き換えられません。{name} のセッションをすべて終了してから再試行してください。",
@@ -1493,7 +1489,7 @@
     "version": {
       "statusLabel": "バージョン状態",
       "notInstalled": "未インストール",
-      "remoteLocal": "リモート: {remoteVersion} · ローカル: {localVersion}",
+      "recommendedLocal": "推奨: {recommendedVersion} · ローカル: {localVersion}",
       "localOnly": "ローカル：{localVersion}",
       "localInstalled": "{versionText}。インストール済みです。",
       "platformUnsupported": "{versionText}。現在のプラットフォームではこのエージェントをサポートしていません。",
@@ -1501,9 +1497,9 @@
       "clickInstall": "{versionText}。右側の「インストール」をクリックしてください。",
       "localUnrecognized": "{versionText}。ローカルバージョンは比較できません。上書きインストールのためアップグレードを試してください。",
       "upgradeAvailable": "{versionText}。アップグレード可能です。",
-      "remoteUnavailable": "{versionText}。現在リモートバージョンは取得できません。",
+      "recommendedUnavailable": "{versionText}。推奨バージョンはありません。",
       "latest": "{versionText}。すでに最新です。",
-      "latestChannel": "{versionText}。最新版チャンネルが有効です。アップグレードで最新リリースをインストールします。"
+      "unreviewedAvailable": "{versionText}。未レビューの新しいリリースがあります。"
     },
     "adapter": {
       "label": "ACP アダプター",

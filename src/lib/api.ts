@@ -69,6 +69,7 @@ import type {
   PlanApprovalAnswer,
   AcpAgentInfo,
   AcpAgentStatus,
+  AgentLatestRelease,
   AgentDiagnosticsReport,
   GrokStructuredConfig,
   CodexSandboxStructuredConfig,
@@ -550,6 +551,17 @@ export async function acpDetectAgentLocalVersion(
   agentType: AgentType
 ): Promise<string | null> {
   return getTransport().call("acp_detect_agent_local_version", { agentType })
+}
+
+/**
+ * The newest upstream release of an agent that is newer than codeg's pinned
+ * version and that Custom install can fetch; `null` when there is none. Hits
+ * npm or the ACP registry, so callers ask once per visit, not per render.
+ */
+export async function acpFetchAgentLatestRelease(
+  agentType: AgentType
+): Promise<AgentLatestRelease | null> {
+  return getTransport().call("acp_fetch_agent_latest_release", { agentType })
 }
 
 export async function acpPrepareNpxAgent(

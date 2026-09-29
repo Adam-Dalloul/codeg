@@ -722,13 +722,6 @@
     "emptyNoAgent": "No available agent.",
     "configManagement": "Config Management",
     "envVars": "Environment Variables",
-    "adapterChannel": {
-      "label": "Adapter version",
-      "description": "Install and Upgrade use the version codeg has reviewed and pinned. Latest switches them to the package's newest npm release at that moment; if installing it fails, codeg falls back to the pinned version and notes it in the install log.",
-      "pinned": "Pinned (recommended)",
-      "latest": "Latest (unreviewed)",
-      "latestWarning": "Newest releases are unreviewed and can break this agent in codeg, and occasionally a release is known broken. Version Status shows what is actually installed."
-    },
     "hostTools": {
       "label": "Let the agent handle files and commands",
       "description": "codeg stops serving file access and terminal commands, so the agent runs them in its own process — where its own sandbox and permission rules apply. Delegating to other agents is also turned off, since that would route the same work back through codeg. codeg adds no sandbox itself, so turn this on only if the agent has one configured."
@@ -799,6 +792,7 @@
       "saveCodeBuddyConfig": "Save CodeBuddy Config",
       "saveKimiCodeConfig": "Save Kimi Code Config",
       "customInstall": "Custom install",
+      "upgradeToLatest": "Upgrade to unreviewed latest {version}",
       "saveKimiCodeRawConfig": "Save config.toml",
       "saveDeepSeekConfig": "Save DeepSeek Config",
       "diagnose": "Diagnose"
@@ -1404,7 +1398,9 @@
       "customInstallDescription": "Enter the version to install. This reinstalls and replaces the currently installed version.",
       "customInstallVersionLabel": "Version number",
       "customInstallInvalid": "Enter a valid version number, e.g. 1.2.3.",
-      "customInstallSubmit": "Install"
+      "customInstallSubmit": "Install",
+      "confirmUpgradeToLatest": "Upgrade {name} to unreviewed {version}?",
+      "confirmUpgradeToLatestDescription": "This release hasn't been reviewed by codeg. It can break {name} in codeg, and occasionally a release is known broken. To go back, use Custom install to reinstall the recommended version {recommendedVersion}."
     },
     "errors": {
       "windowsFileLocked": "{name}'s files are in use by a running session, so Windows can't replace them. Close all {name} sessions and try again.",
@@ -1493,7 +1489,7 @@
     "version": {
       "statusLabel": "Version Status",
       "notInstalled": "Not installed",
-      "remoteLocal": "Remote: {remoteVersion} · Local: {localVersion}",
+      "recommendedLocal": "Recommended: {recommendedVersion} · Local: {localVersion}",
       "localOnly": "Local: {localVersion}",
       "localInstalled": "{versionText}. Installed.",
       "platformUnsupported": "{versionText}. Current platform does not support this agent.",
@@ -1501,9 +1497,9 @@
       "clickInstall": "{versionText}. Click Install on the right.",
       "localUnrecognized": "{versionText}. Local version is not comparable; try upgrade to overwrite install.",
       "upgradeAvailable": "{versionText}. Upgrade available.",
-      "remoteUnavailable": "{versionText}. Remote version is currently unavailable.",
+      "recommendedUnavailable": "{versionText}. No recommended version is available.",
       "latest": "{versionText}. Already latest.",
-      "latestChannel": "{versionText}. Latest channel is on; Upgrade installs the newest release."
+      "unreviewedAvailable": "{versionText}. A newer, unreviewed release is available."
     },
     "adapter": {
       "label": "ACP adapter",

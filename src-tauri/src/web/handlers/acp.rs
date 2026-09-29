@@ -1177,6 +1177,15 @@ pub async fn acp_detect_agent_local_version(
     Ok(Json(result))
 }
 
+pub async fn acp_fetch_agent_latest_release(
+    Json(params): Json<AgentTypeParams>,
+) -> Result<Json<Option<crate::acp::latest_release::AgentLatestRelease>>, AppCommandError> {
+    let result = acp_commands::acp_fetch_agent_latest_release_core(params.agent_type)
+        .await
+        .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+    Ok(Json(result))
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AcpPrepareNpxAgentParams {

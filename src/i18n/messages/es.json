@@ -722,13 +722,6 @@
     "emptyNoAgent": "No hay agentes disponibles.",
     "configManagement": "Gestión de configuración",
     "envVars": "Variables de entorno",
-    "adapterChannel": {
-      "label": "Versión del adaptador",
-      "description": "Instalar y Actualizar usan la versión que codeg ha revisado y fijado. Con Última pasan a instalar la versión de npm más reciente del paquete en ese momento; si esa instalación falla, codeg vuelve a la versión fijada y lo indica en el registro de instalación.",
-      "pinned": "Fijada (recomendada)",
-      "latest": "Última (sin revisar)",
-      "latestWarning": "Las versiones más recientes no están revisadas y pueden romper este agente en codeg; en ocasiones incluso se sabe que una versión está rota. El estado de versión muestra lo que quedó instalado realmente."
-    },
     "hostTools": {
       "label": "Dejar que el agente gestione archivos y comandos",
       "description": "codeg deja de atender el acceso a archivos y los comandos de terminal, de modo que el agente los ejecuta en su propio proceso, donde sí se aplican su sandbox y sus reglas de permisos. También se desactiva la delegación a otros agentes, ya que devolvería ese mismo trabajo a codeg. codeg no añade ningún sandbox propio, así que actívalo solo si el agente tiene uno configurado."
@@ -799,6 +792,7 @@
       "saveCodeBuddyConfig": "Guardar configuración de CodeBuddy",
       "saveKimiCodeConfig": "Guardar configuración de Kimi Code",
       "customInstall": "Instalación personalizada",
+      "upgradeToLatest": "Actualizar a la última sin revisar {version}",
       "saveKimiCodeRawConfig": "Save config.toml",
       "saveDeepSeekConfig": "Guardar configuración de DeepSeek",
       "diagnose": "Diagnosticar"
@@ -1404,7 +1398,9 @@
       "customInstallDescription": "Introduce la versión que quieres instalar. Se reinstalará y reemplazará la versión instalada actualmente.",
       "customInstallVersionLabel": "Número de versión",
       "customInstallInvalid": "Introduce un número de versión válido, p. ej. 1.2.3.",
-      "customInstallSubmit": "Instalar"
+      "customInstallSubmit": "Instalar",
+      "confirmUpgradeToLatest": "¿Actualizar {name} a la versión sin revisar {version}?",
+      "confirmUpgradeToLatestDescription": "codeg no ha revisado esta versión. Puede romper {name} en codeg y, en ocasiones, se sabe que una versión está rota. Para volver atrás, usa Instalación personalizada y reinstala la versión recomendada {recommendedVersion}."
     },
     "errors": {
       "windowsFileLocked": "Los archivos de {name} están en uso por una sesión activa, por lo que Windows no puede reemplazarlos. Cierra todas las sesiones de {name} e inténtalo de nuevo.",
@@ -1493,7 +1489,7 @@
     "version": {
       "statusLabel": "Estado de versión",
       "notInstalled": "No instalado",
-      "remoteLocal": "Remota: {remoteVersion} · Local: {localVersion}",
+      "recommendedLocal": "Recomendada: {recommendedVersion} · Local: {localVersion}",
       "localOnly": "Local: {localVersion}",
       "localInstalled": "{versionText}. Instalado.",
       "platformUnsupported": "{versionText}. La plataforma actual no soporta este agente.",
@@ -1501,9 +1497,9 @@
       "clickInstall": "{versionText}. Haz clic en Instalar a la derecha.",
       "localUnrecognized": "{versionText}. La versión local no es comparable; intenta actualizar para sobrescribir la instalación.",
       "upgradeAvailable": "{versionText}. Hay actualización disponible.",
-      "remoteUnavailable": "{versionText}. La versión remota no está disponible por ahora.",
+      "recommendedUnavailable": "{versionText}. No hay una versión recomendada disponible.",
       "latest": "{versionText}. Ya está en la última versión.",
-      "latestChannel": "{versionText}. Canal de última versión activado; Actualizar instala la versión más reciente."
+      "unreviewedAvailable": "{versionText}. Hay una versión más reciente sin revisar."
     },
     "adapter": {
       "label": "Adaptador ACP",

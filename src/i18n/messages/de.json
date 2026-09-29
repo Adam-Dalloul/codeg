@@ -722,13 +722,6 @@
     "emptyNoAgent": "Keine verfügbaren Agenten.",
     "configManagement": "Konfigurationsverwaltung",
     "envVars": "Umgebungsvariablen",
-    "adapterChannel": {
-      "label": "Adapter-Version",
-      "description": "Installieren und Aktualisieren verwenden die von codeg geprüfte und angepinnte Version. Mit Neueste wird stattdessen die jeweils neueste npm-Version des Pakets installiert; schlägt das fehl, fällt codeg auf die angepinnte Version zurück und vermerkt es im Installationsprotokoll.",
-      "pinned": "Angepinnt (empfohlen)",
-      "latest": "Neueste (ungeprüft)",
-      "latestWarning": "Die neuesten Versionen sind ungeprüft und können diesen Agenten in codeg beschädigen; gelegentlich ist eine Version sogar bekanntermaßen defekt. Der Versionsstatus zeigt, was tatsächlich installiert ist."
-    },
     "hostTools": {
       "label": "Dateien und Befehle vom Agenten selbst ausführen lassen",
       "description": "codeg übernimmt Dateizugriffe und Terminalbefehle nicht mehr, sodass der Agent sie im eigenen Prozess ausführt – nur dort greifen seine eigene Sandbox und seine Berechtigungsregeln. Auch das Delegieren an andere Agenten wird deaktiviert, da dieselbe Arbeit sonst wieder über codeg liefe. codeg fügt selbst keine Sandbox hinzu; aktivieren Sie dies also nur, wenn im Agenten eine konfiguriert ist."
@@ -799,6 +792,7 @@
       "saveCodeBuddyConfig": "CodeBuddy-Konfiguration speichern",
       "saveKimiCodeConfig": "Kimi-Code-Konfiguration speichern",
       "customInstall": "Benutzerdefinierte Installation",
+      "upgradeToLatest": "Auf ungeprüfte neueste Version {version} aktualisieren",
       "saveKimiCodeRawConfig": "Save config.toml",
       "saveDeepSeekConfig": "DeepSeek-Konfiguration speichern",
       "diagnose": "Diagnose"
@@ -1404,7 +1398,9 @@
       "customInstallDescription": "Geben Sie die zu installierende Version ein. Dies installiert neu und ersetzt die aktuell installierte Version.",
       "customInstallVersionLabel": "Versionsnummer",
       "customInstallInvalid": "Geben Sie eine gültige Versionsnummer ein, z. B. 1.2.3.",
-      "customInstallSubmit": "Installieren"
+      "customInstallSubmit": "Installieren",
+      "confirmUpgradeToLatest": "{name} auf die ungeprüfte Version {version} aktualisieren?",
+      "confirmUpgradeToLatestDescription": "Diese Version wurde von codeg nicht geprüft. Sie kann {name} in codeg beschädigen; gelegentlich ist eine Version sogar bekanntermaßen defekt. Um zurückzukehren, installiere über „Benutzerdefinierte Installation“ die empfohlene Version {recommendedVersion} neu."
     },
     "errors": {
       "windowsFileLocked": "Die Dateien von {name} werden von einer laufenden Sitzung verwendet, daher kann Windows sie nicht ersetzen. Schließe alle {name}-Sitzungen und versuche es erneut.",
@@ -1493,7 +1489,7 @@
     "version": {
       "statusLabel": "Versionsstatus",
       "notInstalled": "Nicht installiert",
-      "remoteLocal": "Remote: {remoteVersion} · Lokal: {localVersion}",
+      "recommendedLocal": "Empfohlen: {recommendedVersion} · Lokal: {localVersion}",
       "localOnly": "Lokal: {localVersion}",
       "localInstalled": "{versionText}. Installiert.",
       "platformUnsupported": "{versionText}. Aktuelle Plattform unterstützt diesen Agenten nicht.",
@@ -1501,9 +1497,9 @@
       "clickInstall": "{versionText}. Rechts auf Installieren klicken.",
       "localUnrecognized": "{versionText}. Lokale Version ist nicht vergleichbar; zum Überschreiben bitte Upgrade versuchen.",
       "upgradeAvailable": "{versionText}. Upgrade verfügbar.",
-      "remoteUnavailable": "{versionText}. Remote-Version ist derzeit nicht verfügbar.",
+      "recommendedUnavailable": "{versionText}. Keine empfohlene Version verfügbar.",
       "latest": "{versionText}. Bereits aktuell.",
-      "latestChannel": "{versionText}. Neueste-Kanal ist aktiv; Aktualisieren installiert die neueste Version."
+      "unreviewedAvailable": "{versionText}. Eine neuere, ungeprüfte Version ist verfügbar."
     },
     "adapter": {
       "label": "ACP-Adapter",
