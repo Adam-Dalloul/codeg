@@ -511,6 +511,9 @@ impl ComputerService {
         let (ended, stop) = {
             let _gate = self.grant_gate.lock().unwrap_or_else(|p| p.into_inner());
             let stop = self.stops.fetch_add(1, Ordering::AcqRel) + 1;
+            // The backend holds actions to it from this moment, not from
+            // when its `Halt` goes out below.
+            self.backend.note_stop(stop);
             (self.targets.revoke_all(GrantChange::Stopped), stop)
         };
         for change in &ended {

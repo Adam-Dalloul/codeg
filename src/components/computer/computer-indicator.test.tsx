@@ -32,6 +32,7 @@ import enMessages from "@/i18n/messages/en.json"
 import {
   recordComputerActivity,
   resetComputerStoreForTest,
+  setComputerShared,
 } from "@/lib/computer/computer-store"
 
 function window_(
@@ -121,6 +122,18 @@ describe("ComputerIndicator", () => {
     await waitFor(() =>
       expect(stop.title).toBe("Stop sharing every window (⌃⌘Esc)")
     )
+  })
+
+  /** Once a Stop has ended every sharing there is nothing left on the strip
+   * to press while it goes. */
+  it("offers no Stop once nothing is shared", async () => {
+    api.computerSharedState.mockResolvedValue({
+      shared: [window_("w1", "TextEdit", "read")],
+    })
+    mount()
+    await screen.findByRole("button", { name: /^Stop sharing/ })
+    act(() => setComputerShared([]))
+    expect(screen.queryByRole("button")).toBeNull()
   })
 
   /** An action that just went through is named for a moment; reads, and

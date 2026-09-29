@@ -372,9 +372,9 @@ const SYSTEM_ENTRY_NAMES = {
 } as const
 
 /**
- * The never-share list: the default entries not taken off (locked ones with
- * a lock, the rest with a remove button), then the person's own, then a field
- * to add one. Typing a default that was taken off puts it back.
+ * The never-share list: the default entries not taken off, each with a
+ * remove button, then the person's own, then a field to add one. Typing a
+ * default that was taken off puts it back.
  */
 function BlocklistRow({
   defaults,

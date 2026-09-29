@@ -155,7 +155,7 @@ export interface ComputerToolsSettings {
   blocklistRemoved: string[]
   /** The default list, for showing; never sent back. */
   blocklistDefaults: DefaultBlock[]
-  /** The shortcut that stops every agent at once, spelled as
+  /** The shortcut that stops all sharing at once, spelled as
    *  `stop-shortcut.ts` spells it; empty when switched off. */
   stopShortcut: string
 }

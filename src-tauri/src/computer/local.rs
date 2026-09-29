@@ -44,7 +44,7 @@ use super::protocol::{
     read_frame, write_frame, HelperError, HelperErrorCode, HelperMessage, HelperOp, HelperReply,
     HelperRequest, OsPermission, PeerCheck, PermissionAsked, PermissionReport, RawAct, RawApp,
     RawCapture, RawSnapshot, RawVerify, RawWindow, WindowAction, PROTOCOL_VERSION,
-    SOURCE_FINGERPRINT,
+    SOURCE_FINGERPRINT, STOP_ALL,
 };
 use super::types::VerifyRequest;
 
@@ -218,7 +218,8 @@ impl Connection {
         }
     }
 
-    async fn request(&self, op: HelperOp) -> Result<HelperReply, BackendError> {
+    /// Send `op`, let through at Stop count `stop`, and wait for its answer.
+    async fn request(&self, op: HelperOp, stop: u64) -> Result<HelperReply, BackendError> {
         if self.is_closed() {
             return Err(BackendError::Unavailable("the helper exited".into()));
         }
@@ -230,7 +231,7 @@ impl Connection {
             .insert(id, tx);
         let sent = tokio::time::timeout(WRITE_TIMEOUT, async {
             let mut writer = self.writer.lock().await;
-            write_frame(&mut *writer, &HelperRequest { id, op }).await
+            write_frame(&mut *writer, &HelperRequest { id, op, stop }).await
         })
         .await;
         let failed = match sent {
@@ -386,12 +387,13 @@ impl LocalBackend {
         let _closing = self.closing.lock().await;
         let connection = self.slot.lock().await.connection.clone();
         if let Some(connection) = connection.filter(|c| !c.is_closed()) {
-            // No new Stop: the helper goes with its driver, and every action
-            // let through so far is refused on its way there anyway.
-            let halt = HelperOp::Halt {
-                stop: self.stopped.load(Ordering::Acquire),
-            };
-            let halted = tokio::time::timeout(HALT_ANSWER_TIMEOUT, connection.request(halt)).await;
+            // Everything: the helper goes, and nothing it was asked before
+            // is served.
+            let halted = tokio::time::timeout(
+                HALT_ANSWER_TIMEOUT,
+                connection.request(HelperOp::Halt { stop: STOP_ALL }, STOP_ALL),
+            )
+            .await;
             if !matches!(halted, Ok(Ok(_))) {
                 tracing::warn!("[computer] the helper did not confirm killing the driver");
             }
@@ -449,10 +451,13 @@ impl LocalBackend {
         })?;
         let connection = launch(&helper).await?;
         let configured = connection
-            .request(HelperOp::Configure {
-                driver_path: driver_path.to_string_lossy().to_string(),
-                driver_version: driver::DRIVER_VERSION.to_string(),
-            })
+            .request(
+                HelperOp::Configure {
+                    driver_path: driver_path.to_string_lossy().to_string(),
+                    driver_version: driver::DRIVER_VERSION.to_string(),
+                },
+                self.stopped.load(Ordering::Acquire),
+            )
             .await?
             .decode::<()>();
         if let Err(e) = configured {
@@ -469,11 +474,14 @@ impl LocalBackend {
     /// may have died after delivering it, and a second send would do it
     /// twice. Actions are sent once (see `act`).
     async fn call<T: serde::de::DeserializeOwned>(&self, op: HelperOp) -> Result<T, BackendError> {
+        // A read is held to the Stops counted as it goes out; codeg withholds
+        // one that a later Stop overtakes anyway.
+        let stop = self.stopped.load(Ordering::Acquire);
         let connection = self.connection().await?;
-        let reply = match connection.request(op.clone()).await {
+        let reply = match connection.request(op.clone(), stop).await {
             Err(BackendError::Unavailable(_)) if connection.is_closed() => {
                 // Died between calls. One fresh start, then whatever it says.
-                self.connection().await?.request(op).await?
+                self.connection().await?.request(op, stop).await?
             }
             other => other?,
         };
@@ -537,6 +545,13 @@ impl ComputerBackend for LocalBackend {
     ) -> Result<PermissionAsked, BackendError> {
         #[cfg(target_os = "macos")]
         {
+            // Only while computer use is on, as for anything else the helper
+            // does: the person pressed the button in a panel that says so.
+            if !self.switched_on().await {
+                return Err(BackendError::Unavailable(
+                    "computer use is switched off".into(),
+                ));
+            }
             let helper = locate_helper_binary().ok_or_else(|| {
                 BackendError::Unavailable(format!(
                     "{} is missing from this installation",
@@ -636,14 +651,16 @@ impl ComputerBackend for LocalBackend {
             return Err(stopped());
         }
         let reply = connection
-            .request(HelperOp::Act {
-                pid,
-                window_id,
-                started_at,
-                app_key,
-                action,
+            .request(
+                HelperOp::Act {
+                    pid,
+                    window_id,
+                    started_at,
+                    app_key,
+                    action,
+                },
                 stop,
-            })
+            )
             .await?;
         self.decode(reply).await
     }
@@ -653,20 +670,39 @@ impl ComputerBackend for LocalBackend {
     /// helper running there is nothing to kill, and none is started for it.
     /// Nothing is held after it: what comes next goes out as usual.
     async fn halt(&self, stop: u64) -> Result<(), BackendError> {
-        self.stopped.fetch_max(stop, Ordering::AcqRel);
-        self.to_running(HelperOp::Halt { stop }).await
+        self.note_stop(stop);
+        self.to_running(HelperOp::Halt { stop }, stop).await
     }
 }
 
 impl LocalBackend {
+    /// Count the person's `stop`-th Stop here at once — before its `Halt`
+    /// has gone anywhere — so no action let through before it leaves this
+    /// backend from now on. Told again by [`halt`](ComputerBackend::halt),
+    /// which changes nothing then: an older count never replaces a newer.
+    pub fn note_stop(&self, stop: u64) {
+        self.stopped.fetch_max(stop, Ordering::AcqRel);
+    }
+
+    /// Whether a helper may run now: computer use is open here and switched
+    /// on in the settings.
+    #[cfg(target_os = "macos")]
+    async fn switched_on(&self) -> bool {
+        let open = self.slot.lock().await.open;
+        open && match &self.switch {
+            Some(config) => config.is_enabled().await,
+            None => true,
+        }
+    }
+
     /// Send `op` to the helper if one is running; with none, there is no one
     /// to tell (what a helper started later is sent is held to the Stops
     /// counted here).
-    async fn to_running(&self, op: HelperOp) -> Result<(), BackendError> {
+    async fn to_running(&self, op: HelperOp, stop: u64) -> Result<(), BackendError> {
         let connection = self.slot.lock().await.connection.clone();
         match connection.filter(|c| !c.is_closed()) {
             Some(connection) => connection
-                .request(op)
+                .request(op, stop)
                 .await?
                 .decode::<()>()
                 .map_err(BackendError::from),

@@ -185,24 +185,28 @@ export function ComputerIndicator() {
             )}
           </>
         )}
-        <Button
-          size="xs"
-          variant="destructive"
-          className="shrink-0 rounded-full"
-          onClick={() => void stop()}
-          disabled={stopping || !sharedKnown}
-          title={
-            shortcut
-              ? t("indicator.stopWithKey", { key: shortcut })
-              : t("stopHint")
-          }
-        >
-          <Square className="size-2.5 fill-current" />
-          {t("indicator.stop")}
-          {shortcut && (
-            <kbd className="font-sans text-3xs opacity-80">{shortcut}</kbd>
-          )}
-        </Button>
+        {/* Nothing left to stop once a Stop has ended every sharing: the
+            strip is on its way down then, and says nothing more. */}
+        {(!sharedKnown || shared.length > 0) && (
+          <Button
+            size="xs"
+            variant="destructive"
+            className="shrink-0 rounded-full"
+            onClick={() => void stop()}
+            disabled={stopping || !sharedKnown}
+            title={
+              shortcut
+                ? t("indicator.stopWithKey", { key: shortcut })
+                : t("stopHint")
+            }
+          >
+            <Square className="size-2.5 fill-current" />
+            {t("indicator.stop")}
+            {shortcut && (
+              <kbd className="font-sans text-3xs opacity-80">{shortcut}</kbd>
+            )}
+          </Button>
+        )}
       </div>
     </div>
   )

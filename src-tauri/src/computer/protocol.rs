@@ -49,7 +49,16 @@ pub const SOURCE_FINGERPRINT: &str = env!("CODEG_COMPUTER_SOURCE");
 pub struct HelperRequest {
     pub id: u64,
     pub op: HelperOp,
+    /// How many of the person's Stops codeg had counted when it let this
+    /// request through. The helper serves nothing of a request from before
+    /// a Stop it has heard of ([`HelperOp::Halt`]) — whichever of the two
+    /// frames reached it first — and holds nothing against one from after.
+    pub stop: u64,
 }
+
+/// The `stop` of a [`HelperOp::Halt`] that ends everything: codeg is closing
+/// the helper, and nothing it was asked before is served.
+pub const STOP_ALL: u64 = u64::MAX;
 
 /// What codeg may ask the helper for.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -107,8 +116,8 @@ pub enum HelperOp {
     /// Act on one window. codeg has checked the grant, the addressing and the
     /// keys; the helper checks again what only it can see at the moment of
     /// delivery — that the pid is still the process the window was shared
-    /// from, that the session is not locked, that no Stop has come since —
-    /// and refuses secret fields itself.
+    /// from, that the session is not locked, that no Stop has come since the
+    /// action was let through — and refuses secret fields itself.
     #[serde(rename_all = "camelCase")]
     Act {
         pid: u32,
@@ -120,16 +129,13 @@ pub enum HelperOp {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         app_key: Option<String>,
         action: WindowAction,
-        /// How many Stops codeg had counted when it let the action through.
-        /// Refused once the helper has heard of a later one, whichever frame
-        /// reached it first.
-        stop: u64,
     },
-    /// The person pressed Stop (codeg's `stop`-th): kill the driver now —
-    /// whatever it is in the middle of — and deliver nothing that arrived
-    /// before this frame, nor any action let through before this Stop.
-    /// What arrives after it runs as usual, on a fresh driver: a Stop ends
-    /// what is under way, not computer use.
+    /// The person pressed Stop — codeg's `stop`-th — or codeg is closing the
+    /// helper ([`STOP_ALL`]): kill the driver started for a request from
+    /// before it, now, whatever it is in the middle of, and serve nothing
+    /// more of any request from before it. A `Halt` older than one already
+    /// heard changes nothing, and what comes after it runs as usual, on a
+    /// fresh driver: a Stop ends what is under way, not computer use.
     #[serde(rename_all = "camelCase")]
     Halt {
         stop: u64,
@@ -686,32 +692,26 @@ mod tests {
         assert_eq!(err.permission, Some(OsPermission::ScreenRecording));
     }
 
-    /// A Stop and an action each carry codeg's count of Stops, which is what
-    /// the helper holds one against the other by.
+    /// Every request carries codeg's count of Stops, and so does a Stop: they
+    /// are held one against the other by it, not by the order they arrive in.
     #[test]
-    fn a_stop_and_an_action_carry_the_stop_count() {
+    fn requests_and_stops_carry_the_stop_count() {
         let halt = serde_json::to_value(HelperOp::Halt { stop: 3 }).unwrap();
         assert_eq!(halt, serde_json::json!({"kind": "halt", "stop": 3}));
-        let act = HelperOp::Act {
-            pid: 1,
-            window_id: 2,
-            started_at: 3,
-            app_key: None,
-            action: WindowAction::Scroll {
-                at: None,
-                direction: ScrollDirection::Down,
-                amount: 1,
-                unit: ScrollUnit::Line,
-            },
+        let request = HelperRequest {
+            id: 7,
+            op: HelperOp::ListApps,
             stop: 5,
         };
-        let wire = serde_json::to_value(&act).unwrap();
+        let wire = serde_json::to_value(&request).unwrap();
         assert_eq!(wire["stop"], 5);
-        assert_eq!(serde_json::from_value::<HelperOp>(wire).unwrap(), act);
-        // An action without one is not an action from this codeg.
-        assert!(serde_json::from_value::<HelperOp>(serde_json::json!({
-            "kind": "act", "pid": 1, "windowId": 2, "startedAt": 3,
-            "action": {"kind": "scroll", "direction": "down", "amount": 1, "unit": "line"}
+        assert_eq!(
+            serde_json::from_value::<HelperRequest>(wire).unwrap(),
+            request
+        );
+        // A request without one is not a request from this codeg.
+        assert!(serde_json::from_value::<HelperRequest>(serde_json::json!({
+            "id": 1, "op": {"kind": "listApps"}
         }))
         .is_err());
     }

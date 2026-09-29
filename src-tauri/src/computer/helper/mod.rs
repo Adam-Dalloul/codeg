@@ -47,7 +47,7 @@ use super::driver;
 use super::protocol::{
     read_frame, HelperError, HelperErrorCode, HelperMessage, HelperOp, HelperReady, HelperReply,
     HelperRequest, OsPermission, PeerCheck, PermissionReport, RawAct, MAX_FRAME_BYTES,
-    PROTOCOL_VERSION, SOURCE_FINGERPRINT,
+    PROTOCOL_VERSION, SOURCE_FINGERPRINT, STOP_ALL,
 };
 
 /// Exit codes, for codeg's log: they are all the helper says to a peer it has
@@ -318,12 +318,11 @@ fn same_file(a: i32, b: i32) -> bool {
 #[cfg(any(test, target_os = "macos"))]
 const RECHECK_MISSING: Duration = Duration::from_secs(2);
 
-/// The running driver, and how many `Halt` frames had been read when the
-/// request that started it was — so a `Halt` read after that request is
-/// told from one read before it.
+/// The running driver, and the Stop count of the request that started it —
+/// so a Stop from after that request ends it and one from before does not.
 struct RunningDriver {
     proc: Arc<DriverProc>,
-    seen: u64,
+    stop: u64,
 }
 
 /// What the running helper holds between requests.
@@ -335,14 +334,11 @@ struct HelperState {
     apps: Mutex<AppCache>,
     /// The latest snapshot of each window, as the running driver keeps them.
     snapshots: std::sync::Mutex<SnapshotBook>,
-    /// How many `Halt` frames have been read — moved the moment one is, and
-    /// once more when codeg goes. A request carries the count as it stood
-    /// when it was read, and nothing of it reaches a driver once the count
-    /// has moved on: a Stop cuts off what arrived before it, and only that.
-    halts: AtomicU64,
-    /// The latest of the person's Stops codeg has told of (`Halt::stop`). An
-    /// action let through before it is refused, even one whose frame
-    /// overtook the Stop's on the way.
+    /// The latest of the person's Stops codeg has told of (`Halt::stop`),
+    /// moved the moment its frame is read — and to [`STOP_ALL`] when codeg
+    /// goes. Nothing of a request from before it (`HelperRequest::stop`)
+    /// reaches a driver after that, whichever frame arrived first; what is
+    /// from after it runs as usual.
     stopped: AtomicU64,
     /// The helper's permissions as the system last answered, and when. Never
     /// asked in this process on macOS: a process keeps the first "not
@@ -367,31 +363,22 @@ impl HelperState {
         self.snapshots.lock().unwrap_or_else(|p| p.into_inner())
     }
 
-    /// Whether a request read when `seen` `Halt` frames had been still may
-    /// reach a driver: none has been read since.
-    fn check_current(&self, seen: u64) -> Result<(), HelperError> {
-        if self.halts.load(Ordering::Acquire) != seen {
+    /// Whether a request codeg let through at Stop count `stop` may still
+    /// reach a driver: no later Stop has been heard of.
+    fn check_not_stopped(&self, stop: u64) -> Result<(), HelperError> {
+        if self.stopped.load(Ordering::Acquire) > stop {
             return Err(stopped());
         }
         Ok(())
     }
 
     /// What must hold at the moment an action's driver call goes out: no
-    /// Stop has come since it was read (`seen`) or since codeg let it through
-    /// (`stop`), `pid` is still the process the window was shared from (a
-    /// relaunch under a reused pid is another process, whose windows nobody
-    /// shared), and the session is affirmatively unlocked and on this console.
-    fn deliverable(
-        &self,
-        pid: u32,
-        started_at: u64,
-        seen: u64,
-        stop: u64,
-    ) -> Result<(), HelperError> {
-        self.check_current(seen)?;
-        if self.stopped.load(Ordering::Acquire) > stop {
-            return Err(stopped());
-        }
+    /// Stop has come since codeg let it through (`stop`), `pid` is still the
+    /// process the window was shared from (a relaunch under a reused pid is
+    /// another process, whose windows nobody shared), and the session is
+    /// affirmatively unlocked and on this console.
+    fn deliverable(&self, pid: u32, started_at: u64, stop: u64) -> Result<(), HelperError> {
+        self.check_not_stopped(stop)?;
         if super::procinfo::process_start(pid) != Some(started_at) {
             return Err(HelperError::new(
                 HelperErrorCode::NoSuchWindow,
@@ -412,25 +399,29 @@ impl HelperState {
         }
     }
 
-    /// The running driver, for a request read when `seen` `Halt` frames had
-    /// been — starting one if there is none, if the one running started
-    /// before a permission it now has (`driver_stale`), or if it started
-    /// before a Stop (the `Halt` that ends it may still be on its way to the
-    /// slot).
-    async fn driver(&self, seen: u64) -> Result<Arc<DriverProc>, HelperError> {
-        self.check_current(seen)?;
+    /// The running driver, for a request codeg let through at Stop count
+    /// `stop` — starting one if there is none, if the one running started
+    /// before a permission it now has (`driver_stale`), or if it started for
+    /// a request from before a Stop since heard of (the `Halt` that ends it
+    /// may still be on its way to the slot).
+    async fn driver(&self, stop: u64) -> Result<Arc<DriverProc>, HelperError> {
+        self.check_not_stopped(stop)?;
         let mut slot = self.driver.lock().await;
-        // A Stop read while this one waited for the slot.
-        self.check_current(seen)?;
+        // A Stop heard of while this one waited for the slot.
+        self.check_not_stopped(stop)?;
+        let stopped = self.stopped.load(Ordering::Acquire);
         let stale = self.driver_stale.swap(false, Ordering::AcqRel);
         if !stale {
-            if let Some(running) = slot.as_ref().filter(|d| d.seen == seen && d.proc.alive()) {
+            if let Some(running) = slot
+                .as_ref()
+                .filter(|d| d.stop >= stopped && d.proc.alive())
+            {
                 return Ok(running.proc.clone());
             }
         }
         if let Some(old) = slot.take() {
             self.forget_driver_saw();
-            if old.seen == seen {
+            if old.stop >= stopped {
                 old.proc.shutdown().await;
             } else {
                 self.snapshots().clear();
@@ -453,9 +444,9 @@ impl HelperState {
         // told apart from one it had all along.
         let had = self.permissions(false).await;
         let launched =
-            Arc::new(DriverProc::launch(&path, artifact, || self.check_current(seen)).await?);
+            Arc::new(DriverProc::launch(&path, artifact, || self.check_not_stopped(stop)).await?);
         // A Stop that arrived while this one was starting stops it too.
-        if let Err(halted) = self.check_current(seen) {
+        if let Err(halted) = self.check_not_stopped(stop) {
             launched.shutdown().await;
             return Err(halted);
         }
@@ -475,7 +466,7 @@ impl HelperState {
         }
         *slot = Some(RunningDriver {
             proc: launched.clone(),
-            seen,
+            stop,
         });
         Ok(launched)
     }
@@ -572,18 +563,18 @@ impl HelperState {
         }
     }
 
-    /// The `Halt` that was the `seen`-th: kill the driver started before it
-    /// now, whatever that driver is doing — unlike [`shutdown`], it is given
-    /// no time to finish what it is in the middle of, and every call waiting
-    /// on it fails at once. A driver started for a request read after this
-    /// `Halt` is left be. A driver still starting cannot be in the middle of
-    /// anything; one started for a request from before the `Halt` stops
-    /// itself when it has (see [`driver`](Self::driver)).
+    /// The person's `stop`-th Stop: kill the driver started for a request
+    /// from before it now, whatever that driver is doing — unlike
+    /// [`shutdown`], it is given no time to finish what it is in the middle
+    /// of, and every call waiting on it fails at once. A driver started for
+    /// a request from after this Stop is left be. A driver still starting
+    /// cannot be in the middle of anything; one started for a request from
+    /// before the Stop stops itself when it has (see [`driver`](Self::driver)).
     ///
     /// [`shutdown`]: Self::shutdown
-    async fn halt(&self, seen: u64) {
+    async fn halt(&self, stop: u64) {
         let mut slot = self.driver.lock().await;
-        if !slot.as_ref().is_some_and(|d| d.seen < seen) {
+        if !slot.as_ref().is_some_and(|d| d.stop < stop) {
             return;
         }
         let driver = slot.take();
@@ -618,17 +609,17 @@ fn gained(before: &PermissionReport, now: &PermissionReport) -> bool {
         || (now.screen_recording && !before.screen_recording)
 }
 
-/// Serve one op, read when `seen` `Halt` frames had been. A driver call that
-/// turns out to lack a permission the remembered answer says is granted
+/// Serve one op, which codeg let through at Stop count `stop`. A driver call
+/// that turns out to lack a permission the remembered answer says is granted
 /// clears that answer, so the next call asks the system again rather than
 /// going on believing it. (A refusal that came from the remembered answer
 /// itself leaves it be: it is asked again on its own schedule.)
 async fn handle(
     state: &HelperState,
     op: HelperOp,
-    seen: u64,
+    stop: u64,
 ) -> Result<serde_json::Value, HelperError> {
-    let result = handle_op(state, op, seen).await;
+    let result = handle_op(state, op, stop).await;
     if let Err(HelperError {
         code: HelperErrorCode::PermissionMissing,
         permission: Some(permission),
@@ -649,7 +640,7 @@ async fn handle(
 async fn handle_op(
     state: &HelperState,
     op: HelperOp,
-    seen: u64,
+    stop: u64,
 ) -> Result<serde_json::Value, HelperError> {
     fn value(v: impl serde::Serialize) -> Result<serde_json::Value, HelperError> {
         serde_json::to_value(v).map_err(|e| HelperError::failed(format!("encode: {e}")))
@@ -681,11 +672,11 @@ async fn handle_op(
         }
         HelperOp::Permissions => value(state.permissions(true).await),
         HelperOp::ListApps => {
-            let driver = state.driver(seen).await?;
+            let driver = state.driver(stop).await?;
             value(ops::list_apps(&driver, &state.apps).await?)
         }
         HelperOp::ListWindows { pid } => {
-            let driver = state.driver(seen).await?;
+            let driver = state.driver(stop).await?;
             value(ops::list_windows(&driver, &state.apps, pid).await?)
         }
         HelperOp::ProcessStart { pid } => value(super::procinfo::process_start(pid)),
@@ -695,7 +686,7 @@ async fn handle_op(
             max_dimension,
         } => {
             state.require(OsPermission::ScreenRecording).await?;
-            let driver = state.driver(seen).await?;
+            let driver = state.driver(stop).await?;
             value(ops::capture(&driver, pid, window_id, max_dimension).await?)
         }
         HelperOp::Snapshot {
@@ -706,7 +697,7 @@ async fn handle_op(
             query,
         } => {
             state.require(OsPermission::Accessibility).await?;
-            let driver = state.driver(seen).await?;
+            let driver = state.driver(stop).await?;
             let (raw, facts) =
                 ops::snapshot(&driver, pid, window_id, max_depth, max_elements, query).await?;
             state.snapshots().record(pid, window_id, facts);
@@ -720,7 +711,7 @@ async fn handle_op(
             if request.expect.iter().any(|p| p.element.is_some()) {
                 state.require(OsPermission::Accessibility).await?;
             }
-            let driver = state.driver(seen).await?;
+            let driver = state.driver(stop).await?;
             value(ops::verify(&driver, pid, window_id, &request).await?)
         }
         HelperOp::Act {
@@ -729,18 +720,17 @@ async fn handle_op(
             started_at,
             app_key,
             action,
-            stop,
         } => {
             // Asked first so a doomed action does not start a driver, and
             // again (inside `act`) just before each driver call goes out —
             // starting the driver and measuring the window take time in which
             // the screen can lock, the application quit or the person press
             // Stop.
-            state.deliverable(pid, started_at, seen, stop)?;
+            state.deliverable(pid, started_at, stop)?;
             for permission in act::permissions_for(&action) {
                 state.require(*permission).await?;
             }
-            let driver = state.driver(seen).await?;
+            let driver = state.driver(stop).await?;
             let element_frame = {
                 let book = state.snapshots();
                 book.check(pid, window_id, &action, app_key.as_deref())?;
@@ -752,7 +742,7 @@ async fn handle_op(
                 Some(point) => act::check_point(&driver, pid, window_id, point).await?,
                 None => None,
             };
-            let deliverable = || state.deliverable(pid, started_at, seen, stop);
+            let deliverable = || state.deliverable(pid, started_at, stop);
             let done = act::act(&driver, pid, window_id, &action, &deliverable).await?;
             value(RawAct {
                 element_frame,
@@ -760,10 +750,10 @@ async fn handle_op(
                 ..done
             })
         }
-        // The count moved, and codeg's Stop was noted, when the frame was
-        // read (see `serve`); what is left is the driver.
-        HelperOp::Halt { .. } => {
-            state.halt(seen).await;
+        // The Stop was noted when its frame was read (see `serve`); what is
+        // left is the driver.
+        HelperOp::Halt { stop } => {
+            state.halt(stop).await;
             value(())
         }
     }
@@ -837,7 +827,6 @@ pub async fn serve(
         driver: Mutex::new(None),
         apps: Mutex::new(AppCache::default()),
         snapshots: std::sync::Mutex::new(SnapshotBook::default()),
-        halts: AtomicU64::new(0),
         stopped: AtomicU64::new(0),
         permissions: Mutex::new(None),
         driver_saw: std::sync::Mutex::new(None),
@@ -862,18 +851,16 @@ pub async fn serve(
             break;
         }
         // A Stop takes hold the moment its frame is read, not when its task
-        // is scheduled: whatever was read before it meets it at the next
-        // check it makes before a driver call, and whatever is read after it
-        // does not.
+        // is scheduled: whatever codeg let through before it meets it at the
+        // next check it makes before a driver call — even one whose frame
+        // is read later — and whatever codeg let through after it does not.
         if let HelperOp::Halt { stop } = request.op {
             state.stopped.fetch_max(stop, Ordering::AcqRel);
-            state.halts.fetch_add(1, Ordering::AcqRel);
         }
-        let seen = state.halts.load(Ordering::Acquire);
         let state = state.clone();
         let tx = tx.clone();
         tokio::spawn(async move {
-            let reply = match handle(&state, request.op, seen).await {
+            let reply = match handle(&state, request.op, request.stop).await {
                 Ok(value) => HelperReply {
                     id: request.id,
                     ok: Some(value),
@@ -888,7 +875,7 @@ pub async fn serve(
     // requests still in flight — nobody is left to answer. As for a Stop,
     // nothing still in flight reaches a driver, and a driver still starting
     // stops itself once it has started.
-    state.halts.fetch_add(1, Ordering::AcqRel);
+    state.stopped.store(STOP_ALL, Ordering::Release);
     if tokio::time::timeout(SHUTDOWN_GRACE, state.shutdown())
         .await
         .is_err()
@@ -943,6 +930,7 @@ mod tests {
             &HelperRequest {
                 id: 7,
                 op: HelperOp::ListApps,
+                stop: 0,
             },
         )
         .await
@@ -957,6 +945,7 @@ mod tests {
             &mut to_helper,
             &HelperRequest {
                 id: 8,
+                stop: 0,
                 op: HelperOp::ProcessStart {
                     pid: std::process::id(),
                 },
@@ -977,10 +966,11 @@ mod tests {
         assert_eq!(task.await.unwrap(), EXIT_OK);
     }
 
-    /// A Stop cuts off what was sent before it and holds nothing after it:
-    /// an action codeg let through before the Stop is refused whenever it
-    /// arrives — even after the `Halt` — while what codeg sends after it
-    /// gets the answer it would have got had there been no Stop.
+    /// A Stop cuts off what codeg let through before it and holds nothing
+    /// after it — by codeg's count, not by the order frames arrive in: an
+    /// action from before the Stop is refused even when it arrives after the
+    /// `Halt`, what comes from after it gets the answer it would have got
+    /// with no Stop at all, and an older Stop arriving late changes nothing.
     #[tokio::test]
     async fn a_stop_cuts_off_what_came_before_it_and_nothing_after() {
         use crate::computer::keys::{Chord, Key, Modifiers};
@@ -990,15 +980,18 @@ mod tests {
             from: &mut tokio::io::ReadHalf<tokio::io::DuplexStream>,
             id: u64,
             op: HelperOp,
+            stop: u64,
         ) -> HelperReply {
-            write_frame(to, &HelperRequest { id, op }).await.unwrap();
+            write_frame(to, &HelperRequest { id, op, stop })
+                .await
+                .unwrap();
             let HelperMessage::Reply(reply) = read_frame(from).await.unwrap() else {
                 panic!("expected a reply");
             };
             assert_eq!(reply.id, id);
             reply
         }
-        let act = |stop| HelperOp::Act {
+        let act = || HelperOp::Act {
             pid: std::process::id(),
             window_id: 1,
             started_at: crate::computer::procinfo::process_start(std::process::id()).unwrap(),
@@ -1010,23 +1003,28 @@ mod tests {
                     modifiers: Modifiers::default(),
                 },
             },
-            stop,
         };
         let (task, mut to_helper, mut from_helper) = start().await;
         let _ready: HelperMessage = read_frame(&mut from_helper).await.unwrap();
         let (to, from) = (&mut to_helper, &mut from_helper);
-        assert!(ask(to, from, 1, HelperOp::Halt { stop: 1 })
-            .await
-            .error
-            .is_none());
+        let halt = |stop| HelperOp::Halt { stop };
+        assert!(ask(to, from, 1, halt(2), 2).await.error.is_none());
         // Let through before the Stop, arriving after it.
         assert_eq!(
-            ask(to, from, 2, act(0)).await.error.unwrap().code,
+            ask(to, from, 2, act(), 1).await.error.unwrap().code,
             HelperErrorCode::Stopped
         );
-        // Sent after it: the ordinary answers for a helper with no driver.
         assert_eq!(
-            ask(to, from, 3, HelperOp::ListApps)
+            ask(to, from, 3, HelperOp::ListApps, 1)
+                .await
+                .error
+                .unwrap()
+                .code,
+            HelperErrorCode::Stopped
+        );
+        // From after it: the ordinary answers for a helper with no driver.
+        assert_eq!(
+            ask(to, from, 4, HelperOp::ListApps, 2)
                 .await
                 .error
                 .unwrap()
@@ -1034,16 +1032,30 @@ mod tests {
             HelperErrorCode::NotConfigured
         );
         assert_ne!(
-            ask(to, from, 4, act(1)).await.error.unwrap().code,
+            ask(to, from, 5, act(), 2).await.error.unwrap().code,
             HelperErrorCode::Stopped
         );
-        // A Stop told late — an older one — moves nothing back.
-        assert!(ask(to, from, 5, HelperOp::Halt { stop: 0 })
+        // An older Stop arriving late cuts off nothing from after the newer.
+        assert!(ask(to, from, 6, halt(1), 1).await.error.is_none());
+        assert_eq!(
+            ask(to, from, 7, HelperOp::ListApps, 2)
+                .await
+                .error
+                .unwrap()
+                .code,
+            HelperErrorCode::NotConfigured
+        );
+        // codeg closing the helper ends everything.
+        assert!(ask(to, from, 8, halt(STOP_ALL), STOP_ALL)
             .await
             .error
             .is_none());
         assert_eq!(
-            ask(to, from, 6, act(0)).await.error.unwrap().code,
+            ask(to, from, 9, HelperOp::ListApps, 2)
+                .await
+                .error
+                .unwrap()
+                .code,
             HelperErrorCode::Stopped
         );
         to_helper.shutdown().await.unwrap();
@@ -1099,8 +1111,8 @@ mod tests {
                             modifiers: Modifiers::default(),
                         },
                     },
-                    stop: 0,
                 },
+                stop: 0,
             },
         )
         .await
@@ -1122,6 +1134,7 @@ mod tests {
             &mut to_helper,
             &HelperRequest {
                 id: 1,
+                stop: 0,
                 op: HelperOp::Configure {
                     driver_path: "/tmp/cua-driver".into(),
                     driver_version: "0.0.1".into(),

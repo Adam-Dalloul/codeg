@@ -52,7 +52,7 @@ fn request_permission(name: Option<&str>) -> i32 {
 
 #[cfg(target_os = "macos")]
 mod macos {
-    use std::collections::HashSet;
+    use std::collections::{HashMap, HashSet};
     use std::ffi::c_void;
     use std::time::{Duration, Instant};
 
@@ -76,7 +76,7 @@ mod macos {
 
     #[link(name = "CoreGraphics", kind = "framework")]
     extern "C" {
-        static kCGWindowOwnerName: CFStringRef;
+        static kCGWindowOwnerPID: CFStringRef;
         static kCGWindowNumber: CFStringRef;
         fn CGWindowListCopyWindowInfo(option: u32, relative_to_window: u32) -> CFArrayRef;
     }
@@ -84,8 +84,10 @@ mod macos {
     /// `kCGWindowListOptionOnScreenOnly`.
     const ON_SCREEN_ONLY: u32 = 1;
 
-    /// The system agent that puts up both dialogs — "Device Control and
-    /// Data Access" for Accessibility, "Screen Recording" for the other.
+    /// The executable of the system agent that puts up both dialogs —
+    /// "Device Control and Data Access" for Accessibility, "Screen
+    /// Recording" for the other. Matched by its executable, not by the name
+    /// the window list gives its owner, which may be localized.
     const DIALOG_OWNER: &str = "universalAccessAuthWarn";
 
     /// How long to watch for its dialog once the request has gone out.
@@ -153,10 +155,11 @@ mod macos {
     }
 
     /// The system's permission dialogs on screen now, by window number. The
-    /// window list names each window's owner whatever this process may
-    /// record; it is the titles it keeps back.
+    /// window list gives each window's number and owner whatever this
+    /// process may record; it is the titles it keeps back.
     fn dialogs() -> HashSet<i64> {
         let mut found = HashSet::new();
+        let mut owners: HashMap<i64, bool> = HashMap::new();
         // SAFETY: the list is ours to release (a Copy function); each entry
         // is a dictionary it owns, read while it lives, and the values taken
         // from it are the documented types for their keys.
@@ -167,32 +170,51 @@ mod macos {
             }
             for i in 0..CFArrayGetCount(list) {
                 let window = CFArrayGetValueAtIndex(list, i) as CFDictionaryRef;
-                let mut owner: *const c_void = std::ptr::null();
-                if CFDictionaryGetValueIfPresent(window, kCGWindowOwnerName.cast(), &mut owner) == 0
-                    || owner.is_null()
-                {
+                let (Some(pid), Some(number)) = (
+                    number_for(window, kCGWindowOwnerPID),
+                    number_for(window, kCGWindowNumber),
+                ) else {
                     continue;
-                }
-                if CFString::wrap_under_get_rule(owner as CFStringRef) != DIALOG_OWNER {
-                    continue;
-                }
-                let mut number: *const c_void = std::ptr::null();
-                if CFDictionaryGetValueIfPresent(window, kCGWindowNumber.cast(), &mut number) == 0
-                    || number.is_null()
-                {
-                    continue;
-                }
-                let mut n: i64 = 0;
-                if CFNumberGetValue(
-                    number as CFNumberRef,
-                    kCFNumberSInt64Type,
-                    (&mut n as *mut i64).cast(),
-                ) {
-                    found.insert(n);
+                };
+                if *owners.entry(pid).or_insert_with(|| runs_dialog_owner(pid)) {
+                    found.insert(number);
                 }
             }
             CFRelease(list as CFTypeRef);
         }
         found
+    }
+
+    /// The number `window` holds under `key`, if it holds one.
+    ///
+    /// # Safety
+    /// `window` is a live dictionary from the window list.
+    unsafe fn number_for(window: CFDictionaryRef, key: CFStringRef) -> Option<i64> {
+        let mut value: *const c_void = std::ptr::null();
+        if CFDictionaryGetValueIfPresent(window, key.cast(), &mut value) == 0 || value.is_null() {
+            return None;
+        }
+        let mut n: i64 = 0;
+        CFNumberGetValue(
+            value as CFNumberRef,
+            kCFNumberSInt64Type,
+            (&mut n as *mut i64).cast(),
+        )
+        .then_some(n)
+    }
+
+    /// Whether process `pid` runs the dialog agent's executable.
+    fn runs_dialog_owner(pid: i64) -> bool {
+        let Ok(pid) = libc::c_int::try_from(pid) else {
+            return false;
+        };
+        let mut path = vec![0u8; libc::PROC_PIDPATHINFO_MAXSIZE as usize];
+        // SAFETY: the buffer is as long as the size passed.
+        let len = unsafe { libc::proc_pidpath(pid, path.as_mut_ptr().cast(), path.len() as u32) };
+        if len <= 0 {
+            return false;
+        }
+        path.truncate(len as usize);
+        path.rsplit(|b| *b == b'/').next() == Some(DIALOG_OWNER.as_bytes())
     }
 }
