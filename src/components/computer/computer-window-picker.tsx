@@ -159,9 +159,12 @@ export function ComputerWindowPicker({
   const [pictures, setPictures] = useState(0)
   /** The latest load; an older one that answers late is dropped. */
   const loadSeqRef = useRef(0)
-  const { status, request, openPermissionSettings } = useComputerStatus(
-    open && computerAvailable()
-  )
+  const {
+    status,
+    error: permissionError,
+    request,
+    openPermissionSettings,
+  } = useComputerStatus(open && computerAvailable())
   const permissions = status?.permissions
   const screenRecording = permissions?.required
     ? permissions.screenRecording
@@ -352,6 +355,11 @@ export function ComputerWindowPicker({
                 development ? "permissions.whyDev" : "permissions.why"
               )}
             </p>
+            {permissionError && (
+              <p className="text-2xs break-words text-red-500">
+                {permissionError}
+              </p>
+            )}
             <div className="flex gap-1">
               <Button
                 size="xs"

@@ -240,6 +240,22 @@ describe("ComputerWindowPicker", () => {
     )
   })
 
+  /** A request that fails says why, where it was made. */
+  it("says why a permission request failed", async () => {
+    api.computerAvailable.mockReturnValue(true)
+    api.computerStatus.mockResolvedValue(status(false))
+    api.computerRequestPermission.mockRejectedValueOnce(
+      new Error("the helper is not running")
+    )
+    api.computerListShareableWindows.mockResolvedValue([window("none")])
+    mount()
+    await screen.findByText(/doesn't have Screen Recording yet/)
+    fireEvent.click(screen.getByRole("button", { name: "Request" }))
+    expect(
+      await screen.findByText("the helper is not running")
+    ).toBeInTheDocument()
+  })
+
   /** Back from System Settings with Screen Recording granted, the windows
    *  are listed again and their pictures fetched again — and the notice is
    *  gone. */
