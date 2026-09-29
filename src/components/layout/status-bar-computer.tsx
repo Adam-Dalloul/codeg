@@ -108,8 +108,16 @@ function ComputerPopover() {
   const [open, setOpen] = useState(false)
   const [pickerOpen, setPickerOpen] = useState(false)
   const [stopping, setStopping] = useState(false)
-  const { status, loading, error, setError, refresh, request, revealHelper } =
-    useComputerStatus(open)
+  const {
+    status,
+    loading,
+    error,
+    setError,
+    refresh,
+    request,
+    requesting,
+    revealHelper,
+  } = useComputerStatus(open)
   const aliveRef = useRef(true)
   useEffect(() => {
     aliveRef.current = true
@@ -328,6 +336,7 @@ function ComputerPopover() {
                     <Button
                       size="xs"
                       variant="outline"
+                      disabled={requesting !== null}
                       onClick={() => void request(permission)}
                     >
                       {t("permissions.request")}

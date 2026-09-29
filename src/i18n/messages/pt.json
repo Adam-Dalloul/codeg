@@ -5184,7 +5184,7 @@
       "granted": "Concedida",
       "request": "Conceder…",
       "why": "Ative o codeg-computer-helper nos Ajustes do Sistema, não o codeg. A Gravação de Tela permite que ele veja as janelas; a Acessibilidade, que as leia e aja nelas.",
-      "devRebuild": "Num build de desenvolvimento, cada recompilação anula a permissão anterior: remova primeiro o codeg-computer-helper antigo da lista e conceda de novo.",
+      "devRebuild": "Cada recompilação do auxiliar anula a permissão anterior: remova primeiro o codeg-computer-helper antigo da lista e conceda de novo.",
       "notListed": "Se o codeg-computer-helper não estiver na lista, arraste-o do Finder:",
       "reveal": "Mostrar no Finder"
     },

@@ -410,8 +410,12 @@ function BlocklistRow({
     const entry = draft.trim()
     if (!entry) return
     const lower = entry.toLowerCase()
-    const known = defaults.find((d) =>
-      d.names.some((name) => name.toLowerCase() === lower)
+    // By any name it goes by: its identifiers, or the name the list shows.
+    const known = defaults.find(
+      (d) =>
+        d.names.some((name) => name.toLowerCase() === lower) ||
+        d.name.toLowerCase() === lower ||
+        nameOf(d).toLowerCase() === lower
     )
     if (known && removed.includes(known.key) && !known.locked) {
       onChange(

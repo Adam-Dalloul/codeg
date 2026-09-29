@@ -5184,7 +5184,7 @@
       "granted": "Granted",
       "request": "Grant…",
       "why": "Turn on codeg-computer-helper in System Settings — not codeg. Screen Recording lets it see windows; Accessibility lets it read and act on them.",
-      "devRebuild": "In a development build every rebuild voids the old grant: remove the old codeg-computer-helper from the list first, then grant again.",
+      "devRebuild": "Each rebuild of the helper voids its old grant: remove the old codeg-computer-helper from the list first, then grant again.",
       "notListed": "If codeg-computer-helper isn't in the list, drag it in from the Finder:",
       "reveal": "Show in Finder"
     },

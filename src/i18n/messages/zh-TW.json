@@ -5184,7 +5184,7 @@
       "granted": "已授權",
       "request": "前往授權",
       "why": "請在系統設定中開啟 codeg-computer-helper 的開關（不是 codeg）。「螢幕錄製」用於檢視視窗畫面，「輔助使用」用於讀取和操作視窗。",
-      "devRebuild": "開發版每次重新編譯都會讓舊授權失效：請先從清單中刪除舊的 codeg-computer-helper，再重新授權。",
+      "devRebuild": "每次重新編譯 helper，舊授權都會失效：請先從清單中刪除舊的 codeg-computer-helper，再重新授權。",
       "notListed": "如果清單中沒有 codeg-computer-helper，可以從 Finder 把它拖進去：",
       "reveal": "在 Finder 中顯示"
     },

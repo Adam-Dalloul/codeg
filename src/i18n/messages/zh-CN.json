@@ -5184,7 +5184,7 @@
       "granted": "已授权",
       "request": "去授权",
       "why": "请在系统设置中打开 codeg-computer-helper 的开关（不是 codeg）。「屏幕录制」用于查看窗口画面，「辅助功能」用于读取和操作窗口。",
-      "devRebuild": "开发版每次重新编译都会让旧授权失效：请先从列表中删掉旧的 codeg-computer-helper，再重新授权。",
+      "devRebuild": "每次重新编译 helper，旧授权都会失效：请先从列表中删掉旧的 codeg-computer-helper，再重新授权。",
       "notListed": "如果列表里没有 codeg-computer-helper，可以从访达把它拖进去：",
       "reveal": "在访达中显示"
     },

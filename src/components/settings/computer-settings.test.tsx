@@ -178,6 +178,22 @@ describe("ComputerSettingsSection", () => {
     expect(mockSet.mock.calls[0][0]).toEqual({ blocklistRemoved: [] })
   })
 
+  /** A default goes by the name the list shows too: typed that way it is
+   * put back, or found to be on the list already. */
+  it("knows a default by the name it is shown under", async () => {
+    mockGet.mockResolvedValue(record({ blocklistRemoved: ["1password"] }))
+    mount()
+    const box = await screen.findByLabelText(LABEL)
+    await waitFor(() => expect(box).not.toBeDisabled())
+    addEntry(box, "system settings")
+    expect(screen.getByText("Already on the list.")).toBeInTheDocument()
+    addEntry(box, "1Password")
+    expect(screen.getByText("1Password")).toBeInTheDocument()
+    fireEvent.click(screen.getByRole("button", { name: "Save" }))
+    await waitFor(() => expect(mockSet).toHaveBeenCalledTimes(1))
+    expect(mockSet.mock.calls[0][0]).toEqual({ blocklistRemoved: [] })
+  })
+
   /** Another window's save moves the fields this form has not touched and
    * leaves the one it has; saving then writes only that one. */
   it("merges a save made elsewhere into the fields it did not touch", async () => {

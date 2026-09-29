@@ -5184,7 +5184,7 @@
       "granted": "허용됨",
       "request": "권한 부여…",
       "why": "시스템 설정에서 codeg-computer-helper를 켜세요(codeg가 아닙니다). 화면 기록은 창 화면을 보는 데, 손쉬운 사용은 창을 읽고 조작하는 데 쓰입니다.",
-      "devRebuild": "개발 빌드는 다시 빌드할 때마다 이전 권한이 무효가 됩니다. 목록에서 이전 codeg-computer-helper를 먼저 제거한 뒤 다시 권한을 부여하세요.",
+      "devRebuild": "helper를 다시 빌드할 때마다 이전 권한이 무효가 됩니다. 목록에서 이전 codeg-computer-helper를 먼저 제거한 뒤 다시 권한을 부여하세요.",
       "notListed": "목록에 codeg-computer-helper가 없으면 Finder에서 목록으로 끌어다 놓으세요:",
       "reveal": "Finder에서 보기"
     },

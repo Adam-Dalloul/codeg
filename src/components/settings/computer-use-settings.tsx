@@ -293,7 +293,7 @@ function PermissionsSection({ enabled }: { enabled: boolean }) {
 function MacPermissions({ enabled }: { enabled: boolean }) {
   const t = useTranslations("ComputerUse")
   const tp = useTranslations("ComputerUse.settings.permissions")
-  const { status, loading, error, refresh, request, revealHelper } =
+  const { status, loading, error, refresh, request, requesting, revealHelper } =
     useComputerStatus(enabled)
   const permissions = enabled ? status?.permissions : undefined
   const development = status?.backend.peer === "development"
@@ -352,6 +352,7 @@ function MacPermissions({ enabled }: { enabled: boolean }) {
                     <Button
                       size="sm"
                       variant="outline"
+                      disabled={requesting !== null}
                       onClick={() => void request(permission)}
                     >
                       {t("permissions.request")}

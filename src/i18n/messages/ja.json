@@ -5184,7 +5184,7 @@
       "granted": "許可済み",
       "request": "許可する…",
       "why": "システム設定で codeg-computer-helper をオンにしてください（codeg ではありません）。画面収録はウィンドウの表示内容を見るため、アクセシビリティはウィンドウの読み取りと操作のために使います。",
-      "devRebuild": "開発ビルドでは再ビルドのたびに以前の許可が無効になります。先にリストから古い codeg-computer-helper を削除してから、もう一度許可してください。",
+      "devRebuild": "helper を再ビルドするたびに以前の許可は無効になります。先にリストから古い codeg-computer-helper を削除してから、もう一度許可してください。",
       "notListed": "リストに codeg-computer-helper がない場合は、Finder からドラッグして追加してください：",
       "reveal": "Finder で表示"
     },

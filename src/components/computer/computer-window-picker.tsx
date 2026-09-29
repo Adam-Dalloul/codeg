@@ -163,6 +163,7 @@ export function ComputerWindowPicker({
     status,
     error: permissionError,
     request,
+    requesting,
   } = useComputerStatus(open && computerAvailable())
   const permissions = status?.permissions
   const screenRecording = permissions?.required
@@ -359,6 +360,7 @@ export function ComputerWindowPicker({
               size="xs"
               variant="outline"
               className="shrink-0"
+              disabled={requesting !== null}
               onClick={() => void request("screenRecording")}
             >
               {tComputer("permissions.request")}

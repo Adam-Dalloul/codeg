@@ -39,6 +39,10 @@ export function useComputerStatus(live: boolean) {
   const [status, setStatus] = useState<ComputerStatus | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  /** The permission a request is on its way for: one at a time, so a double
+   *  click neither asks twice nor opens System Settings twice. */
+  const [requesting, setRequesting] = useState<OsPermission | null>(null)
+  const requestingRef = useRef(false)
   const aliveRef = useRef(true)
   const liveRef = useRef(live)
   useEffect(() => {
@@ -90,6 +94,9 @@ export function useComputerStatus(live: boolean) {
 
   const request = useCallback(
     async (permission: OsPermission) => {
+      if (requestingRef.current) return
+      requestingRef.current = true
+      setRequesting(permission)
       setError(null)
       try {
         const report = await computerRequestPermission(permission)
@@ -105,6 +112,9 @@ export function useComputerStatus(live: boolean) {
         if (liveRef.current) await refresh()
       } catch (e) {
         setError(toErrorMessage(e))
+      } finally {
+        requestingRef.current = false
+        if (aliveRef.current) setRequesting(null)
       }
     },
     [refresh]
@@ -127,6 +137,7 @@ export function useComputerStatus(live: boolean) {
     setError,
     refresh,
     request,
+    requesting,
     openPermissionSettings,
     revealHelper,
   }

@@ -138,6 +138,30 @@ describe("StatusBarComputer", () => {
     await waitFor(() => expect(api.computerRevealHelper).toHaveBeenCalled())
   })
 
+  /** One request at a time: a double click neither asks twice nor opens
+   * System Settings twice. */
+  it("asks once however often the button is clicked", async () => {
+    let answer: (report: unknown) => void = () => {}
+    api.computerRequestPermission.mockReturnValue(
+      new Promise((resolve) => {
+        answer = resolve
+      })
+    )
+    mount()
+    fireEvent.click(await screen.findByRole("button", { name: "Computer use" }))
+    const grant = await screen.findByRole("button", { name: "Grant…" })
+    fireEvent.click(grant)
+    fireEvent.click(grant)
+    await waitFor(() => expect(grant).toBeDisabled())
+    await act(async () =>
+      answer({ required: true, accessibility: true, screenRecording: false })
+    )
+    expect(api.computerRequestPermission).toHaveBeenCalledTimes(1)
+    await waitFor(() =>
+      expect(api.computerOpenPermissionSettings).toHaveBeenCalledTimes(1)
+    )
+  })
+
   /** Granted by the request itself — nothing more to open. */
   it("opens nothing once the request has done it", async () => {
     api.computerRequestPermission.mockResolvedValue({

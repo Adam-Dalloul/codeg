@@ -5184,7 +5184,7 @@
       "granted": "Concedido",
       "request": "Conceder…",
       "why": "Activa codeg-computer-helper en Ajustes del Sistema, no codeg. La Grabación de pantalla le permite ver las ventanas; la Accesibilidad, leerlas y actuar en ellas.",
-      "devRebuild": "En una compilación de desarrollo cada recompilación anula el permiso anterior: quita primero el codeg-computer-helper antiguo de la lista y vuelve a concederlo.",
+      "devRebuild": "Cada recompilación del ayudante anula su permiso anterior: quita primero el codeg-computer-helper antiguo de la lista y vuelve a concederlo.",
       "notListed": "Si codeg-computer-helper no aparece en la lista, arrástralo desde el Finder:",
       "reveal": "Mostrar en el Finder"
     },

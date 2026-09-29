@@ -5184,7 +5184,7 @@
       "granted": "Accordé",
       "request": "Autoriser…",
       "why": "Activez codeg-computer-helper dans Réglages Système, et non codeg. L'Enregistrement de l'écran lui permet de voir les fenêtres ; l'Accessibilité, de les lire et d'agir dessus.",
-      "devRebuild": "Dans une version de développement, chaque recompilation annule l'autorisation précédente : retirez d'abord l'ancien codeg-computer-helper de la liste, puis autorisez-le à nouveau.",
+      "devRebuild": "Chaque recompilation de l'assistant annule son autorisation précédente : retirez d'abord l'ancien codeg-computer-helper de la liste, puis autorisez-le à nouveau.",
       "notListed": "Si codeg-computer-helper n'apparaît pas dans la liste, faites-le glisser depuis le Finder :",
       "reveal": "Afficher dans le Finder"
     },
