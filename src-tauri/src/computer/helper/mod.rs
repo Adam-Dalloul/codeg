@@ -426,7 +426,8 @@ impl HelperState {
         // What the new driver starts with, so a permission granted later is
         // told apart from one it had all along.
         let seen = self.permissions(false).await;
-        let launched = Arc::new(DriverProc::launch(&path, artifact).await?);
+        let launched =
+            Arc::new(DriverProc::launch(&path, artifact, || self.check_not_halted()).await?);
         // A Stop that arrived while this one was starting stops it too.
         if let Err(halted) = self.check_not_halted() {
             launched.shutdown().await;
@@ -747,9 +748,11 @@ fn encode(message: &HelperMessage) -> Vec<u8> {
 
 /// How long, once codeg has gone, the helper waits for its driver to stop
 /// before it exits anyway (the driver then sees its stdin close and exits on
-/// its own). Long enough for a driver still starting — the launch holds the
-/// driver slot through its permission check, handshake and configuration —
-/// to finish starting and be stopped; one already running stops in seconds.
+/// its own). Long enough for a driver still starting to finish starting and
+/// be stopped: past the file hash (after which a launch that meets a Stop
+/// spawns nothing — see `DriverProc::launch`), a start is bounded by the
+/// driver's handshake and configuration; one already running stops in
+/// seconds.
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(60);
 
 /// Serve requests until codeg closes its end. Returns the exit code.

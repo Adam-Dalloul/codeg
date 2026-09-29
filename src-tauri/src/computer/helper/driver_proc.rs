@@ -278,7 +278,17 @@ impl DriverProc {
     /// [`HelperErrorCode::DriverRejected`] for any file or image that is not
     /// the pinned build, and [`HelperErrorCode::DriverUnavailable`] for one
     /// that is and would not start.
-    pub async fn launch(path: &Path, artifact: &DriverArtifact) -> Result<Self, HelperError> {
+    ///
+    /// `stopped` is asked once more just before the driver is spawned, after
+    /// the file has been hashed — which takes as long as the disk makes it —
+    /// so a Stop, or codeg leaving, while that runs spawns nothing, and what
+    /// is left of a start once a driver exists is bounded (see `SHUTDOWN_GRACE`
+    /// in the helper).
+    pub async fn launch(
+        path: &Path,
+        artifact: &DriverArtifact,
+        stopped: impl Fn() -> Result<(), HelperError>,
+    ) -> Result<Self, HelperError> {
         if !path.is_absolute() {
             return Err(rejected("the driver path is not absolute"));
         }
@@ -320,6 +330,10 @@ impl DriverProc {
         }
         let env = driver_environment(&run_dir);
 
+        if let Err(halted) = stopped() {
+            let _ = std::fs::remove_dir_all(&run_dir);
+            return Err(halted);
+        }
         let launched = Self::spawn(path, &env, &run_dir).await;
         let (child, reader, writer, stderr) = match launched {
             Ok(parts) => parts,
@@ -876,7 +890,10 @@ mod tests {
         let fake = dir.path().join("cua-driver");
         std::fs::write(&fake, b"#!/bin/sh\ntouch ran\n").unwrap();
         let artifact = driver::artifact_for_current_platform().unwrap();
-        let err = DriverProc::launch(&fake, artifact).await.err().unwrap();
+        let err = DriverProc::launch(&fake, artifact, || Ok(()))
+            .await
+            .err()
+            .unwrap();
         assert_eq!(err.code, HelperErrorCode::DriverRejected);
         assert!(!dir.path().join("ran").exists());
     }
