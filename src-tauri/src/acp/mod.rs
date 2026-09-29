@@ -27,6 +27,7 @@ pub mod internal_bus;
 pub mod lifecycle;
 pub mod manager;
 pub mod opencode_catalog;
+pub mod opencode_launch;
 pub mod opencode_plugins;
 pub mod plan_approval;
 pub mod preflight;

@@ -2027,7 +2027,7 @@ async fn build_agent(
             // localized install prompt. Do not change the wording.
             let cached =
                 crate::acp::binary_cache::find_best_cached_binary_for_agent(agent_type, cmd)?;
-            let binary_path = match cached {
+            let (binary_path, cached_version) = match cached {
                 Some((path, cached_version)) => {
                     if cached_version == registry_version {
                         tracing::info!(
@@ -2040,7 +2040,7 @@ async fn build_agent(
                             meta.name
                         );
                     }
-                    path
+                    (path, Some(cached_version))
                 }
                 None => {
                     let system =
@@ -2056,7 +2056,7 @@ async fn build_agent(
                         meta.name,
                         system.display()
                     );
-                    system
+                    (system, None)
                 }
             };
 
@@ -2091,6 +2091,20 @@ async fn build_agent(
                 if cursor_force_enabled(runtime_env.get("CURSOR_FORCE").map(String::as_str)) {
                     cmd_args.insert(0, "--force".to_string());
                 }
+            }
+            // `opencode acp` embeds an HTTP server that otherwise takes its
+            // port and host from opencode's GLOBAL config (`server.*`, meant
+            // for `opencode serve`); a fixed port there fails every concurrent
+            // session with `ServeError` (#860). The subcommand's own defaults,
+            // passed explicitly, outrank that config — for builds that know
+            // the flags (see `opencode_launch`).
+            if agent_type == AgentType::OpenCode {
+                let listen = crate::acp::opencode_launch::listen_args(
+                    &binary_path,
+                    cached_version.as_deref(),
+                )
+                .await;
+                cmd_args.extend(listen.iter().map(|a| (*a).to_string()));
             }
             let cmd_args_for_log = cmd_args.clone();
             if !cmd_args.is_empty() {
