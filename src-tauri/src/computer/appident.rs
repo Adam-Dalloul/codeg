@@ -26,7 +26,11 @@
 //!
 //! A helper application inside another (`Foo.app/…/Foo Helper.app`) is the
 //! application it sits in: its windows are that application's, and so is its
-//! place on a blocklist — the Passwords menu-bar helper is Passwords. And an
+//! place on a blocklist — the Passwords menu-bar helper is Passwords. Only one
+//! named `.app`, though: a bundle that is an application by its own word
+//! alone is one only standing by itself, since inside another it would pass
+//! for that one — a clone of a blocklisted application put inside an
+//! application nobody listed would take that one's name. And an
 //! application is known by its bundle identifier: one whose `Info.plist`
 //! cannot be read is not told apart by its path instead, since the blocklist
 //! names password managers by identifier.
@@ -169,7 +173,7 @@ pub fn identify(pid: u32) -> Option<AppIdentity> {
 }
 
 /// The application `executable` is the main executable of — or sits inside,
-/// when it is the main executable of an application within another.
+/// when it is the main executable of a helper application within another.
 #[cfg(target_os = "macos")]
 fn identify_executable(executable: &str) -> Option<AppIdentity> {
     let own = executable_bundle(executable)?;
@@ -178,13 +182,12 @@ fn identify_executable(executable: &str) -> Option<AppIdentity> {
         return None;
     }
     let info = bundle_info(app)?;
+    // Standing by itself, an application by its name or its own word; inside
+    // another, by its name only (see the module note).
     let own_is_application = if own == app {
         is_application(own, info.package_type.as_deref())
     } else {
-        // `app` is named `.app`; the helper inside must be an application of
-        // its own too.
         has_app_extension(own)
-            || bundle_info(own).is_some_and(|i| is_application(own, i.package_type.as_deref()))
     };
     if !own_is_application {
         return None;
@@ -459,7 +462,8 @@ mod tests {
     }
 
     /// A bundle on disk: an application by name or by its own word, a
-    /// service by neither, and a helper application inside one.
+    /// service by neither; inside another application, a helper named `.app`
+    /// is that application, and a bundle that only says it is one is nothing.
     #[cfg(target_os = "macos")]
     #[test]
     fn bundles_on_disk_are_told_apart() {
@@ -487,10 +491,11 @@ mod tests {
         let service = bundle("s/Service.xpc", Some("XPC!"), "com.example.service");
         let unmarked = bundle("u/Tool.bundle", None, "com.example.tool");
         let app = bundle("Suite.app", Some("APPL"), "com.example.suite");
-        let helper = bundle(
-            "Suite.app/Contents/Library/Helper.bundle",
+        let helper = bundle("Suite.app/Contents/Library/Helper.app", None, "h");
+        let inner_clone = bundle(
+            "Suite.app/Contents/Library/Vault.app.bundle",
             Some("APPL"),
-            "h",
+            "com.example.vault",
         );
         let inner_service = bundle(
             "Suite.app/Contents/XPCServices/Inner.xpc",
@@ -511,6 +516,9 @@ mod tests {
         let helper = identify_executable(&helper).expect("a helper application inside");
         assert_eq!(helper.bundle_id, "com.example.suite");
         assert!(helper.nested);
+        // Taken for the suite, it would lose its own identifier — and its
+        // place on a blocklist.
+        assert_eq!(identify_executable(&inner_clone), None);
         assert_eq!(identify_executable(&inner_service), None);
     }
 }
