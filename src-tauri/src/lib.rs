@@ -6,6 +6,10 @@
 // so the giant future's layout resolves. See the big-stack thread in
 // `acp/connection.rs` for the sibling *runtime* mitigation of the same frame.
 #![recursion_limit = "256"]
+// The unoptimized lib test binary trips the same harmless macOS
+// "__eh_frame section too large" linker warning as the `codeg` binary; see the
+// note at the top of `main.rs`.
+#![cfg_attr(debug_assertions, allow(linker_messages))]
 
 pub mod acp;
 pub mod acp_transcript;
