@@ -5177,14 +5177,16 @@
     },
     "driver": "cua-driver {version}",
     "devBuild": "개발 빌드: 헬퍼가 호출하는 프로그램을 확인하지 않습니다.",
+    "devTag": "개발 빌드",
     "permissions": {
       "accessibility": "손쉬운 사용",
       "screenRecording": "화면 기록",
       "granted": "허용됨",
-      "request": "요청",
-      "openSettings": "설정 열기",
-      "why": "codeg가 아니라 codeg-computer-helper에 권한을 부여하세요. 화면 기록은 스크린샷에, 손쉬운 사용은 창을 읽고 조작하는 데 쓰입니다.",
-      "whyDev": "codeg-computer-helper에 권한을 부여하세요. 개발 빌드는 다시 빌드할 때마다 macOS가 새 프로그램으로 봅니다. 시스템 설정에서 이전 codeg-computer-helper 항목을 제거한 뒤 다시 부여하세요."
+      "request": "권한 부여…",
+      "why": "시스템 설정에서 codeg-computer-helper를 켜세요(codeg가 아닙니다). 화면 기록은 창 화면을 보는 데, 손쉬운 사용은 창을 읽고 조작하는 데 쓰입니다.",
+      "devRebuild": "개발 빌드는 다시 빌드할 때마다 이전 권한이 무효가 됩니다. 목록에서 이전 codeg-computer-helper를 먼저 제거한 뒤 다시 권한을 부여하세요.",
+      "notListed": "목록에 codeg-computer-helper가 없으면 Finder에서 목록으로 끌어다 놓으세요:",
+      "reveal": "Finder에서 보기"
     },
     "shared": {
       "title": "{count, plural, =0 {공유 중인 창 없음} other {창 #개 공유 중}}",
@@ -5246,7 +5248,7 @@
       "skipped": "{count, plural, other {창 #개를 공유하지 못했습니다. 닫혔을 수 있습니다.}}",
       "unshareable": "{count, plural, other {공유할 수 없는 창 #개}}",
       "noneShareable": "공유할 수 있는 창이 없습니다.",
-      "codegWhy": "codeg의 창은 절대 공유되지 않습니다. codeg를 조작할 수 있는 에이전트는 자신의 요청을 스스로 승인하거나, 자신에게 창을 더 공유하거나, 중지한 뒤 「다시 시작」을 누를 수 있기 때문입니다. 개발 빌드 같은 다른 codeg도 같은 이유로 제외됩니다. 그쪽에서 이 codeg의 창을 다시 공유할 수 있기 때문입니다."
+      "codegWhy": "codeg의 창은 절대 공유되지 않습니다. codeg를 조작할 수 있는 에이전트는 자신의 요청을 스스로 승인하거나, 자신에게 창을 더 공유하거나, 중지한 뒤 「다시 시작」을 누를 수 있기 때문입니다. 다른 codeg의 창도 마찬가지입니다."
     },
     "settings": {
       "pageTitle": "컴퓨터 사용",
@@ -5293,9 +5295,22 @@
         "never": "안 함 (직접 중지할 때까지)"
       },
       "blocklist": {
-        "label": "절대 공유할 수 없는 앱",
-        "hint": "한 줄에 하나씩: 번들 식별자(com.example.app), 실행 파일 이름(app.exe) 또는 전체 경로. 기본 목록(암호 관리자, 시스템 암호 입력 창, 시스템 설정)은 항상 적용됩니다.",
-        "placeholder": "com.example.app"
+        "label": "공유하지 않는 앱",
+        "hint": "이 앱들의 창은 에이전트와 공유할 수 없습니다. 필요 없는 기본 항목은 제거할 수 있고(잠긴 항목 제외), 번들 식별자(com.example.app), 실행 파일 이름(app.exe) 또는 전체 경로로 앱을 추가할 수도 있습니다.",
+        "placeholder": "com.example.app",
+        "add": "추가",
+        "remove": "{name} 제거",
+        "restore": "기본값으로 복원",
+        "locked": "시스템과 컴퓨터 사용 자체를 보호하므로 제거할 수 없습니다.",
+        "custom": "직접 추가함",
+        "duplicate": "이미 목록에 있습니다.",
+        "removedCount": "{count, plural, other {기본 앱 #개를 제거했습니다.}}",
+        "items": {
+          "systemSettings": "시스템 설정",
+          "credentialPrompts": "시스템 암호 및 권한 확인 창",
+          "keychain": "키체인 접근",
+          "passwords": "암호"
+        }
       },
       "stopKey": {
         "label": "중지 단축키",

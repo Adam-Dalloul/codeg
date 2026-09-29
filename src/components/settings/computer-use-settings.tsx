@@ -293,7 +293,7 @@ function PermissionsSection({ enabled }: { enabled: boolean }) {
 function MacPermissions({ enabled }: { enabled: boolean }) {
   const t = useTranslations("ComputerUse")
   const tp = useTranslations("ComputerUse.settings.permissions")
-  const { status, loading, error, refresh, request, openPermissionSettings } =
+  const { status, loading, error, refresh, request, revealHelper } =
     useComputerStatus(enabled)
   const permissions = enabled ? status?.permissions : undefined
   const development = status?.backend.peer === "development"
@@ -349,31 +349,35 @@ function MacPermissions({ enabled }: { enabled: boolean }) {
                       {t("permissions.granted")}
                     </span>
                   ) : (
-                    <div className="flex items-center gap-1">
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        onClick={() => void request(permission)}
-                      >
-                        {t("permissions.request")}
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        onClick={() => openPermissionSettings(permission)}
-                      >
-                        {t("permissions.openSettings")}
-                      </Button>
-                    </div>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => void request(permission)}
+                    >
+                      {t("permissions.request")}
+                    </Button>
                   )
                 }
               />
             ))}
           </SettingCard>
           {missing && (
-            <p className="text-xs leading-5 text-muted-foreground">
-              {t(development ? "permissions.whyDev" : "permissions.why")}
-            </p>
+            <div className="space-y-1 text-xs leading-5 text-muted-foreground">
+              <p>
+                {t("permissions.why")}
+                {development && ` ${t("permissions.devRebuild")}`}
+              </p>
+              <p>
+                {t("permissions.notListed")}{" "}
+                <button
+                  type="button"
+                  className="underline underline-offset-2 hover:text-foreground"
+                  onClick={revealHelper}
+                >
+                  {t("permissions.reveal")}
+                </button>
+              </p>
+            </div>
           )}
         </>
       )}

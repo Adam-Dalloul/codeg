@@ -108,15 +108,8 @@ function ComputerPopover() {
   const [open, setOpen] = useState(false)
   const [pickerOpen, setPickerOpen] = useState(false)
   const [stopping, setStopping] = useState(false)
-  const {
-    status,
-    loading,
-    error,
-    setError,
-    refresh,
-    request,
-    openPermissionSettings,
-  } = useComputerStatus(open)
+  const { status, loading, error, setError, refresh, request, revealHelper } =
+    useComputerStatus(open)
   const aliveRef = useRef(true)
   useEffect(() => {
     aliveRef.current = true
@@ -294,12 +287,16 @@ function ComputerPopover() {
               {t(`backend.${liveBackend.state}`)}
               {" · "}
               {t("driver", { version: liveBackend.driverVersion })}
+              {development && (
+                <span
+                  className="text-amber-600 dark:text-amber-400"
+                  title={t("devBuild")}
+                >
+                  {" · "}
+                  {t("devTag")}
+                </span>
+              )}
               {liveBackend.detail ? ` — ${liveBackend.detail}` : ""}
-            </p>
-          )}
-          {development && (
-            <p className="text-2xs text-amber-600 dark:text-amber-400">
-              {t("devBuild")}
             </p>
           )}
 
@@ -328,29 +325,33 @@ function ComputerPopover() {
                       {t("permissions.granted")}
                     </span>
                   ) : (
-                    <>
-                      <Button
-                        size="xs"
-                        variant="outline"
-                        onClick={() => void request(permission)}
-                      >
-                        {t("permissions.request")}
-                      </Button>
-                      <Button
-                        size="xs"
-                        variant="ghost"
-                        onClick={() => openPermissionSettings(permission)}
-                      >
-                        {t("permissions.openSettings")}
-                      </Button>
-                    </>
+                    <Button
+                      size="xs"
+                      variant="outline"
+                      onClick={() => void request(permission)}
+                    >
+                      {t("permissions.request")}
+                    </Button>
                   )}
                 </div>
               ))}
               {!(permissions.accessibility && permissions.screenRecording) && (
-                <p className="px-2 py-1.5 text-3xs leading-snug text-muted-foreground">
-                  {t(development ? "permissions.whyDev" : "permissions.why")}
-                </p>
+                <div className="space-y-1 px-2 py-1.5 text-3xs leading-snug text-muted-foreground">
+                  <p>
+                    {t("permissions.why")}
+                    {development && ` ${t("permissions.devRebuild")}`}
+                  </p>
+                  <p>
+                    {t("permissions.notListed")}{" "}
+                    <button
+                      type="button"
+                      className="underline underline-offset-2 hover:text-foreground"
+                      onClick={revealHelper}
+                    >
+                      {t("permissions.reveal")}
+                    </button>
+                  </p>
+                </div>
               )}
             </div>
           )}

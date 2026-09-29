@@ -12,9 +12,12 @@
  * another application may hold the same keys; the row says which, so nobody
  * counts on a shortcut that does nothing.
  *
- * The blocklist here only ever adds: the built-in entries — credential
- * managers, the system's password prompts, System Settings — are not shown as
- * editable because they are not.
+ * The blocklist is the default entries — credential managers, the system's
+ * password prompts, System Settings — less the ones the person took off,
+ * plus their own. The ones that guard computer use itself (System Settings,
+ * the password prompts) are shown locked: the backend keeps them whatever is
+ * sent. "Restore defaults" takes off everything added and puts back
+ * everything removed; like every edit here it is saved with Save.
  *
  * Each field is its own edit. Save sends only the fields this form changed,
  * and another window's save moves every field this form has not touched: a
@@ -26,7 +29,16 @@
 
 import { useCallback, useEffect, useRef, useState } from "react"
 import { useTranslations } from "next-intl"
-import { AppWindow, Keyboard, Monitor, RotateCw } from "lucide-react"
+import {
+  AppWindow,
+  Keyboard,
+  Lock,
+  Monitor,
+  Plus,
+  RotateCcw,
+  RotateCw,
+  X,
+} from "lucide-react"
 import { toast } from "sonner"
 
 import { useIsMac } from "@/hooks/use-is-mac"
@@ -49,7 +61,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import { Textarea } from "@/components/ui/textarea"
+import { Input } from "@/components/ui/input"
 import { toErrorMessage } from "@/lib/app-error"
 import {
   computerAvailable,
@@ -67,6 +79,7 @@ import {
 import {
   COMPUTER_TOOLS_SETTINGS_CHANGED_EVENT,
   type ComputerToolsSettings,
+  type DefaultBlock,
 } from "@/lib/computer/types"
 import { useComputerStopKey } from "@/lib/computer/use-stop-key"
 import { setShortcutRecorderArmed } from "@/lib/keyboard-shortcuts"
@@ -77,27 +90,23 @@ const TTL_CHOICES = [10, 30, 60, 240, 0] as const
 
 interface Values {
   ttl: number
-  /** One entry per line, as typed. */
-  blocklist: string
+  /** The person's own entries, in the order added. */
+  blocklist: string[]
+  /** Keys of the default entries taken off the list. */
+  removed: string[]
   /** Spelled as `stop-shortcut.ts` spells it; empty is off. */
   stopShortcut: string
 }
 
-const EMPTY: Values = { ttl: 30, blocklist: "", stopShortcut: "" }
+const EMPTY: Values = { ttl: 30, blocklist: [], removed: [], stopShortcut: "" }
 
 function fromSettings(settings: ComputerToolsSettings): Values {
   return {
     ttl: settings.grantTtlMinutes,
-    blocklist: settings.blocklist.join("\n"),
+    blocklist: settings.blocklist,
+    removed: settings.blocklistRemoved,
     stopShortcut: settings.stopShortcut,
   }
-}
-
-function entries(text: string): string[] {
-  return text
-    .split("\n")
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0)
 }
 
 function ttlDirty(values: Values, baseline: Values): boolean {
@@ -105,9 +114,13 @@ function ttlDirty(values: Values, baseline: Values): boolean {
 }
 
 function blocklistDirty(values: Values, baseline: Values): boolean {
+  return values.blocklist.join("\n") !== baseline.blocklist.join("\n")
+}
+
+function removedDirty(values: Values, baseline: Values): boolean {
   return (
-    entries(values.blocklist).join("\n") !==
-    entries(baseline.blocklist).join("\n")
+    [...values.removed].sort().join("\n") !==
+    [...baseline.removed].sort().join("\n")
   )
 }
 
@@ -126,6 +139,8 @@ export function ComputerSettingsSection() {
   const [baseline, setBaseline] = useState<Values>(EMPTY)
   /** Whether computer use is on: the stop shortcut is held only then. */
   const [enabled, setEnabled] = useState(false)
+  /** The default blocklist as this platform names it. */
+  const [defaults, setDefaults] = useState<DefaultBlock[]>([])
   // Read by the subscription below, which is set up once.
   const valuesRef = useRef(values)
   const baselineRef = useRef(baseline)
@@ -149,6 +164,7 @@ export function ComputerSettingsSection() {
         setBaseline(fromSettings(settings))
         setEnabled(settings.enabled)
       }
+      setDefaults(settings.blocklistDefaults)
       setLoaded(true)
       setLoadError(null)
     },
@@ -204,12 +220,14 @@ export function ComputerSettingsSection() {
           blocklist: blocklistDirty(current, base)
             ? prev.blocklist
             : next.blocklist,
+          removed: removedDirty(current, base) ? prev.removed : next.removed,
           stopShortcut: stopShortcutDirty(current, base)
             ? prev.stopShortcut
             : next.stopShortcut,
         }))
         setBaseline(next)
         setEnabled(remote.enabled)
+        setDefaults(remote.blocklistDefaults)
         setLoaded(true)
         setLoadError(null)
       }
@@ -227,8 +245,9 @@ export function ComputerSettingsSection() {
 
   const dirtyTtl = ttlDirty(values, baseline)
   const dirtyBlocklist = blocklistDirty(values, baseline)
+  const dirtyRemoved = removedDirty(values, baseline)
   const dirtyStopShortcut = stopShortcutDirty(values, baseline)
-  const dirty = dirtyTtl || dirtyBlocklist || dirtyStopShortcut
+  const dirty = dirtyTtl || dirtyBlocklist || dirtyRemoved || dirtyStopShortcut
   const editable = loaded && !saving
 
   const save = useCallback(async () => {
@@ -237,7 +256,8 @@ export function ComputerSettingsSection() {
     try {
       const applied = await setComputerToolsPreferences({
         grantTtlMinutes: dirtyTtl ? values.ttl : undefined,
-        blocklist: dirtyBlocklist ? entries(values.blocklist) : undefined,
+        blocklist: dirtyBlocklist ? values.blocklist : undefined,
+        blocklistRemoved: dirtyRemoved ? values.removed : undefined,
         stopShortcut: dirtyStopShortcut ? values.stopShortcut : undefined,
       })
       // The save's own broadcast, or another window's after it, may have
@@ -254,7 +274,7 @@ export function ComputerSettingsSection() {
     } finally {
       setSaving(false)
     }
-  }, [values, dirtyTtl, dirtyBlocklist, dirtyStopShortcut, t])
+  }, [values, dirtyTtl, dirtyBlocklist, dirtyRemoved, dirtyStopShortcut, t])
 
   return (
     <SettingsSection
@@ -309,23 +329,15 @@ export function ComputerSettingsSection() {
             </Select>
           }
         />
-        <SettingRow
-          title={t("blocklist.label")}
-          description={t("blocklist.hint")}
-          htmlFor="computer-blocklist"
-        >
-          <Textarea
-            id="computer-blocklist"
-            value={values.blocklist}
-            onChange={(e) =>
-              setValues((prev) => ({ ...prev, blocklist: e.target.value }))
-            }
-            placeholder={t("blocklist.placeholder")}
-            disabled={!editable}
-            rows={4}
-            className="font-mono text-xs"
-          />
-        </SettingRow>
+        <BlocklistRow
+          defaults={defaults}
+          blocklist={values.blocklist}
+          removed={values.removed}
+          disabled={!editable}
+          onChange={(blocklist, removed) =>
+            setValues((prev) => ({ ...prev, blocklist, removed }))
+          }
+        />
         {computerAvailable() && (
           <StopShortcutRow
             value={loaded ? values.stopShortcut : null}
@@ -349,6 +361,208 @@ export function ComputerSettingsSection() {
         savingLabel={t("saving")}
       />
     </SettingsSection>
+  )
+}
+
+/** The default entries named by the interface — the system's own — by key. */
+const SYSTEM_ENTRY_NAMES = {
+  "system-settings": "blocklist.items.systemSettings",
+  "credential-prompts": "blocklist.items.credentialPrompts",
+  keychain: "blocklist.items.keychain",
+  passwords: "blocklist.items.passwords",
+} as const
+
+/**
+ * The never-share list: the default entries not taken off (locked ones with
+ * a lock, the rest with a remove button), then the person's own, then a field
+ * to add one. Typing a default that was taken off puts it back.
+ */
+function BlocklistRow({
+  defaults,
+  blocklist,
+  removed,
+  disabled,
+  onChange,
+}: {
+  defaults: readonly DefaultBlock[]
+  blocklist: readonly string[]
+  removed: readonly string[]
+  disabled: boolean
+  onChange: (blocklist: string[], removed: string[]) => void
+}) {
+  const t = useTranslations("ComputerUse.settings")
+  const [draft, setDraft] = useState("")
+  const [duplicate, setDuplicate] = useState(false)
+  const shown = defaults.filter(
+    (entry) => entry.locked || !removed.includes(entry.key)
+  )
+  const removedCount = defaults.filter(
+    (entry) => !entry.locked && removed.includes(entry.key)
+  ).length
+  const atDefaults = blocklist.length === 0 && removedCount === 0
+
+  const nameOf = (entry: DefaultBlock) =>
+    entry.key in SYSTEM_ENTRY_NAMES
+      ? t(SYSTEM_ENTRY_NAMES[entry.key as keyof typeof SYSTEM_ENTRY_NAMES])
+      : entry.name
+
+  const add = () => {
+    const entry = draft.trim()
+    if (!entry) return
+    const lower = entry.toLowerCase()
+    const known = defaults.find((d) =>
+      d.names.some((name) => name.toLowerCase() === lower)
+    )
+    if (known && removed.includes(known.key) && !known.locked) {
+      onChange(
+        [...blocklist],
+        removed.filter((key) => key !== known.key)
+      )
+      setDraft("")
+      return
+    }
+    if (known || blocklist.some((e) => e.toLowerCase() === lower)) {
+      setDuplicate(true)
+      return
+    }
+    onChange([...blocklist, entry], [...removed])
+    setDraft("")
+  }
+
+  return (
+    <SettingRow
+      title={t("blocklist.label")}
+      description={t("blocklist.hint")}
+      htmlFor="computer-blocklist"
+      control={
+        <Button
+          size="xs"
+          variant="ghost"
+          onClick={() => {
+            onChange([], [])
+            setDuplicate(false)
+          }}
+          disabled={disabled || atDefaults}
+        >
+          <RotateCcw className="size-3" />
+          {t("blocklist.restore")}
+        </Button>
+      }
+    >
+      <div className="space-y-2">
+        <ul className="divide-y overflow-hidden rounded-lg border">
+          {shown.map((entry) => (
+            <li
+              key={entry.key}
+              className="flex items-center justify-between gap-3 px-3 py-1.5"
+            >
+              <span className="min-w-0">
+                <span className="block truncate text-sm">{nameOf(entry)}</span>
+                <span
+                  className="block truncate font-mono text-2xs text-muted-foreground"
+                  title={entry.names.join("\n")}
+                >
+                  {entry.names.join(" · ")}
+                </span>
+              </span>
+              {entry.locked ? (
+                <span
+                  className="flex size-7 shrink-0 items-center justify-center text-muted-foreground"
+                  title={t("blocklist.locked")}
+                  aria-label={t("blocklist.locked")}
+                >
+                  <Lock className="size-3.5" />
+                </span>
+              ) : (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  className="size-7 shrink-0"
+                  disabled={disabled}
+                  title={t("blocklist.remove", { name: nameOf(entry) })}
+                  aria-label={t("blocklist.remove", { name: nameOf(entry) })}
+                  onClick={() =>
+                    onChange([...blocklist], [...removed, entry.key])
+                  }
+                >
+                  <X className="size-3.5" />
+                </Button>
+              )}
+            </li>
+          ))}
+          {blocklist.map((entry) => (
+            <li
+              key={entry}
+              className="flex items-center justify-between gap-3 px-3 py-1.5"
+            >
+              <span className="min-w-0">
+                <span className="block truncate font-mono text-xs">
+                  {entry}
+                </span>
+                <span className="block truncate text-2xs text-muted-foreground">
+                  {t("blocklist.custom")}
+                </span>
+              </span>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                className="size-7 shrink-0"
+                disabled={disabled}
+                title={t("blocklist.remove", { name: entry })}
+                aria-label={t("blocklist.remove", { name: entry })}
+                onClick={() =>
+                  onChange(
+                    blocklist.filter((e) => e !== entry),
+                    [...removed]
+                  )
+                }
+              >
+                <X className="size-3.5" />
+              </Button>
+            </li>
+          ))}
+        </ul>
+        <div className="flex items-center gap-2">
+          <Input
+            id="computer-blocklist"
+            value={draft}
+            onChange={(e) => {
+              setDraft(e.target.value)
+              setDuplicate(false)
+            }}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.nativeEvent.isComposing) {
+                e.preventDefault()
+                add()
+              }
+            }}
+            placeholder={t("blocklist.placeholder")}
+            disabled={disabled}
+            className="h-8 font-mono text-xs"
+          />
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            onClick={add}
+            disabled={disabled || !draft.trim()}
+          >
+            <Plus className="size-3.5" />
+            {t("blocklist.add")}
+          </Button>
+        </div>
+        {duplicate && (
+          <p className="text-xs text-destructive">{t("blocklist.duplicate")}</p>
+        )}
+        {removedCount > 0 && (
+          <p className="text-xs text-muted-foreground">
+            {t("blocklist.removedCount", { count: removedCount })}
+          </p>
+        )}
+      </div>
+    </SettingRow>
   )
 }
 

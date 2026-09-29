@@ -163,13 +163,11 @@ export function ComputerWindowPicker({
     status,
     error: permissionError,
     request,
-    openPermissionSettings,
   } = useComputerStatus(open && computerAvailable())
   const permissions = status?.permissions
   const screenRecording = permissions?.required
     ? permissions.screenRecording
     : undefined
-  const development = status?.backend.peer === "development"
 
   const load = useCallback(async () => {
     const seq = ++loadSeqRef.current
@@ -346,36 +344,25 @@ export function ComputerWindowPicker({
         )}
 
         {screenRecording === false && (
-          <div className="space-y-1.5 rounded-md border border-amber-500/30 bg-amber-500/5 px-2 py-1.5">
-            <p className="text-xs text-amber-600 dark:text-amber-400">
-              {t("noScreenRecording")}
-            </p>
-            <p className="text-2xs leading-snug text-muted-foreground">
-              {tComputer(
-                development ? "permissions.whyDev" : "permissions.why"
-              )}
-            </p>
-            {permissionError && (
-              <p className="text-2xs break-words text-red-500">
-                {permissionError}
+          <div className="flex items-start justify-between gap-2 rounded-md border border-amber-500/30 bg-amber-500/5 px-2 py-1.5">
+            <div className="min-w-0 space-y-1">
+              <p className="text-xs text-amber-600 dark:text-amber-400">
+                {t("noScreenRecording")}
               </p>
-            )}
-            <div className="flex gap-1">
-              <Button
-                size="xs"
-                variant="outline"
-                onClick={() => void request("screenRecording")}
-              >
-                {tComputer("permissions.request")}
-              </Button>
-              <Button
-                size="xs"
-                variant="ghost"
-                onClick={() => openPermissionSettings("screenRecording")}
-              >
-                {tComputer("permissions.openSettings")}
-              </Button>
+              {permissionError && (
+                <p className="text-2xs break-words text-red-500">
+                  {permissionError}
+                </p>
+              )}
             </div>
+            <Button
+              size="xs"
+              variant="outline"
+              className="shrink-0"
+              onClick={() => void request("screenRecording")}
+            >
+              {tComputer("permissions.request")}
+            </Button>
           </div>
         )}
 

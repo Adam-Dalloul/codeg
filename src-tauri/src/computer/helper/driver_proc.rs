@@ -80,6 +80,12 @@ const DRIVER_CONFIG: &[u8] = br#"{"max_image_dimension":0}"#;
 #[cfg(target_os = "macos")]
 const PERMISSION_PROBE_ARG: &str = "--cua-internal-permission-probe";
 
+/// The same, but first raising the system's request for each permission the
+/// helper lacks — which is also what puts the helper in System Settings' list,
+/// with a switch to turn on.
+#[cfg(target_os = "macos")]
+const PERMISSION_REQUEST_ARG: &str = "--cua-internal-permission-probe-request";
+
 /// How long a permission probe has to answer.
 #[cfg(target_os = "macos")]
 const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
@@ -608,18 +614,25 @@ impl DriverProc {
 }
 
 /// Which of the helper's permissions are in force, as a fresh copy of the
-/// pinned driver at `path` reports them.
+/// pinned driver at `path` reports them — having first asked the system for
+/// the missing ones, when `request`.
 ///
 /// A fresh process because macOS keeps a process's first "not granted" for
 /// the rest of its life: the helper asking itself would go on hearing "no"
-/// after the person has said yes in System Settings. The copy does not
+/// after the person has said yes in System Settings. And it takes a request
+/// from each process only once: a second one from the helper itself — after
+/// the person removed a stale entry from the list, say — would reach nobody,
+/// and the helper would not be listed to be granted. The copy does not
 /// disclaim, so TCC answers it for its responsible process, the helper; and
 /// it is started as the driver is — under the launch requirement, suspended,
 /// its running image checked, then resumed — since it runs with the helper's
 /// grants too. (The file is not hashed first: the kernel refuses any other
 /// image, and a damaged download is the next launch's to report.)
 #[cfg(target_os = "macos")]
-pub async fn probe_permissions(path: &Path) -> Result<PermissionReport, HelperError> {
+pub async fn probe_permissions(
+    path: &Path,
+    request: bool,
+) -> Result<PermissionReport, HelperError> {
     use crate::computer::spawn::{spawn, ChildFd, SpawnSpec};
     use std::os::fd::AsRawFd;
     use std::os::unix::net::UnixStream;
@@ -643,7 +656,11 @@ pub async fn probe_permissions(path: &Path) -> Result<PermissionReport, HelperEr
     let requirement = driver_launch_requirement()?;
     let child = spawn(&SpawnSpec {
         program: path,
-        args: &[PERMISSION_PROBE_ARG],
+        args: &[if request {
+            PERMISSION_REQUEST_ARG
+        } else {
+            PERMISSION_PROBE_ARG
+        }],
         env: &env,
         stdio: [
             ChildFd::Null,

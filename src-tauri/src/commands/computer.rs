@@ -255,6 +255,12 @@ fn permission_name(permission: OsPermission) -> &'static str {
     }
 }
 
+/// The blocklist the settings `config` make: the defaults less those taken
+/// off, plus the user's own.
+fn blocklist_of(config: &ComputerToolsConfig) -> Blocklist {
+    Blocklist::configured(&config.blocklist, &config.blocklist_removed)
+}
+
 /// What a share is decided by: see `ComputerService::policy`.
 struct SharingPolicy {
     enabled: bool,
@@ -265,7 +271,7 @@ impl SharingPolicy {
     fn of(config: &ComputerToolsConfig) -> Self {
         Self {
             enabled: config.enabled,
-            blocklist: Blocklist::new(&config.blocklist),
+            blocklist: blocklist_of(config),
         }
     }
 }
@@ -419,12 +425,8 @@ impl ComputerService {
             if before.enabled && !after.enabled {
                 self.targets.revoke_all(GrantChange::Disabled)
             } else {
-                self.targets.sweep(
-                    now_ms(),
-                    after.grant_ttl,
-                    &self.me,
-                    &Blocklist::new(&after.blocklist),
-                )
+                self.targets
+                    .sweep(now_ms(), after.grant_ttl, &self.me, &blocklist_of(after))
             }
         };
         self.announce(&ended);
@@ -471,12 +473,9 @@ impl ComputerService {
     /// or on an application that has joined the blocklist.
     async fn sweep(&self) {
         let config = self.config.snapshot().await;
-        let ended = self.targets.sweep(
-            now_ms(),
-            config.grant_ttl,
-            &self.me,
-            &Blocklist::new(&config.blocklist),
-        );
+        let ended =
+            self.targets
+                .sweep(now_ms(), config.grant_ttl, &self.me, &blocklist_of(&config));
         self.announce(&ended);
     }
 
@@ -732,7 +731,7 @@ impl ComputerService {
     /// Steps 1–3: everything that has to hold before the helper is asked.
     async fn begin(&self, target_id: &str) -> Result<Admitted, Refusal> {
         let config = self.usable().await?;
-        let blocklist = Blocklist::new(&config.blocklist);
+        let blocklist = blocklist_of(&config);
         let ticket = match self.targets.begin_read(
             target_id,
             now_ms(),
@@ -799,7 +798,7 @@ impl ComputerService {
         // if it is not the one the window was shared from, neither is what
         // was read.
         self.check_identity(&ticket.target_id, &ticket.identity)?;
-        let blocklist = Blocklist::new(&config.blocklist);
+        let blocklist = blocklist_of(&config);
         match self.targets.finish_read(ticket, &self.me, &blocklist, mark) {
             Ok(generation) => Ok(generation),
             Err((why, ended)) => {
@@ -829,7 +828,7 @@ impl ComputerService {
             Ok(config) => config,
             Err(r) => return ComputerAppsOutcome::refused(r.slug, r.note),
         };
-        let blocklist = Blocklist::new(&config.blocklist);
+        let blocklist = blocklist_of(&config);
         let listed = self.backend.list_apps().await;
         // A Stop that came while the helper was listing refuses this too.
         if self.paused.load(Ordering::Acquire) {
@@ -867,7 +866,7 @@ impl ComputerService {
             Ok(config) => config,
             Err(r) => return ComputerWindowsOutcome::refused(r.slug, r.note),
         };
-        let blocklist = Blocklist::new(&config.blocklist);
+        let blocklist = blocklist_of(&config);
         let listed = self.backend.list_windows(pid).await;
         // Grants that have already ended by the rules as they are now must
         // not show — neither as a level nor as a title.
@@ -1090,7 +1089,7 @@ impl ComputerService {
     ) -> Result<(RawAct, Aim), Refusal> {
         let _turn = self.turn.lock().await;
         let config = self.usable().await?;
-        let blocklist = Blocklist::new(&config.blocklist);
+        let blocklist = blocklist_of(&config);
         let ticket = match self.targets.begin_act(
             target_id,
             now_ms(),
@@ -1340,6 +1339,19 @@ pub async fn computer_open_permission_settings(
         .map_err(|e| AppCommandError::configuration_invalid(e.to_string()))
 }
 
+/// Show codeg-computer-helper in the Finder — for dragging it into System
+/// Settings' list by hand, should it not be listed there after a request.
+#[tauri::command]
+pub async fn computer_reveal_helper(app: AppHandle) -> Result<(), AppCommandError> {
+    let helper = crate::computer::local::locate_helper_binary().ok_or_else(|| {
+        AppCommandError::configuration_invalid("codeg-computer-helper was not found")
+    })?;
+    use tauri_plugin_opener::OpenerExt;
+    app.opener()
+        .reveal_item_in_dir(helper)
+        .map_err(|e| AppCommandError::configuration_invalid(e.to_string()))
+}
+
 /// Every window, for the share picker.
 #[tauri::command]
 pub async fn computer_list_shareable_windows(
@@ -1350,7 +1362,7 @@ pub async fn computer_list_shareable_windows(
     if !config.enabled {
         return Ok(Vec::new());
     }
-    let blocklist = Blocklist::new(&config.blocklist);
+    let blocklist = blocklist_of(&config);
     let _turn = service.turn.lock().await;
     let windows = service
         .backend
@@ -1392,7 +1404,7 @@ pub async fn computer_window_thumbnail(
     };
     if !config.enabled
         || entry.gone
-        || grantable(&entry.app, &service.me, &Blocklist::new(&config.blocklist)).is_err()
+        || grantable(&entry.app, &service.me, &blocklist_of(&config)).is_err()
     {
         return Ok(None);
     }

@@ -5177,14 +5177,16 @@
     },
     "driver": "cua-driver {version}",
     "devBuild": "Build de desenvolvimento: o auxiliar não verifica qual programa o chama.",
+    "devTag": "build de desenvolvimento",
     "permissions": {
       "accessibility": "Acessibilidade",
       "screenRecording": "Gravação de Tela",
       "granted": "Concedida",
-      "request": "Solicitar",
-      "openSettings": "Abrir Ajustes",
-      "why": "Conceda-as ao codeg-computer-helper, não ao codeg. A Gravação de Tela serve para capturas; a Acessibilidade, para ler janelas e agir nelas.",
-      "whyDev": "Conceda-as ao codeg-computer-helper. O macOS trata cada recompilação de um build de desenvolvimento como um programa novo: remova a entrada antiga do codeg-computer-helper nos Ajustes do Sistema e conceda de novo."
+      "request": "Conceder…",
+      "why": "Ative o codeg-computer-helper nos Ajustes do Sistema, não o codeg. A Gravação de Tela permite que ele veja as janelas; a Acessibilidade, que as leia e aja nelas.",
+      "devRebuild": "Num build de desenvolvimento, cada recompilação anula a permissão anterior: remova primeiro o codeg-computer-helper antigo da lista e conceda de novo.",
+      "notListed": "Se o codeg-computer-helper não estiver na lista, arraste-o do Finder:",
+      "reveal": "Mostrar no Finder"
     },
     "shared": {
       "title": "{count, plural, =0 {Nenhuma janela compartilhada} one {# janela compartilhada} other {# janelas compartilhadas}}",
@@ -5246,7 +5248,7 @@
       "skipped": "{count, plural, one {# janela não pôde ser compartilhada; talvez tenha sido fechada.} other {# janelas não puderam ser compartilhadas; talvez tenham sido fechadas.}}",
       "unshareable": "{count, plural, one {# janela não pode ser compartilhada} other {# janelas não podem ser compartilhadas}}",
       "noneShareable": "Nenhuma destas janelas pode ser compartilhada.",
-      "codegWhy": "As janelas do codeg nunca são compartilhadas: um agente que pudesse operar o codeg poderia aprovar os próprios pedidos, compartilhar mais janelas consigo mesmo ou apertar Retomar depois que você apertar Parar. Outro codeg, como um build de desenvolvimento, também fica de fora, pois poderia compartilhar de volta as janelas deste."
+      "codegWhy": "As janelas do codeg nunca são compartilhadas: um agente que pudesse operar o codeg poderia aprovar os próprios pedidos, compartilhar mais janelas consigo mesmo ou apertar Retomar depois que você apertar Parar. O mesmo vale para outras cópias do codeg."
     },
     "settings": {
       "pageTitle": "Uso do computador",
@@ -5293,9 +5295,22 @@
         "never": "Nunca (até eu parar)"
       },
       "blocklist": {
-        "label": "Aplicativos que nunca podem ser compartilhados",
-        "hint": "Um por linha: um identificador de pacote (com.example.app), um nome de executável (app.exe) ou um caminho completo. A lista embutida — gerenciadores de senha, pedidos de senha do sistema, Ajustes do Sistema — sempre vale.",
-        "placeholder": "com.example.app"
+        "label": "Aplicativos nunca compartilhados",
+        "hint": "As janelas deles não podem ser compartilhadas com agentes. Remova os padrões de que não precisa (os bloqueados ficam) ou adicione um aplicativo por identificador de pacote (com.example.app), nome de executável (app.exe) ou caminho completo.",
+        "placeholder": "com.example.app",
+        "add": "Adicionar",
+        "remove": "Remover {name}",
+        "restore": "Restaurar padrão",
+        "locked": "Protege o sistema e o próprio uso do computador, por isso não pode ser removido.",
+        "custom": "Adicionado por você",
+        "duplicate": "Já está na lista.",
+        "removedCount": "{count, plural, one {# aplicativo padrão removido.} other {# aplicativos padrão removidos.}}",
+        "items": {
+          "systemSettings": "Ajustes do Sistema",
+          "credentialPrompts": "Pedidos de senha e autorização do sistema",
+          "keychain": "Acesso às Chaves",
+          "passwords": "Senhas"
+        }
       },
       "stopKey": {
         "label": "Atalho para parar",

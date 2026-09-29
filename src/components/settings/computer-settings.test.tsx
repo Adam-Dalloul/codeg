@@ -26,12 +26,51 @@ import {
   getComputerToolsSettings,
   setComputerToolsPreferences,
 } from "@/lib/computer/computer-api"
+import type { ComputerToolsSettings, DefaultBlock } from "@/lib/computer/types"
 
 const mockGet = vi.mocked(getComputerToolsSettings)
 const mockSet = vi.mocked(setComputerToolsPreferences)
 const mockStopKey = vi.mocked(computerStopKeyStatus)
 
 const DEFAULT_KEY = "Control+Alt+Escape"
+
+const DEFAULTS: DefaultBlock[] = [
+  {
+    key: "system-settings",
+    name: "System Settings",
+    locked: true,
+    names: ["systemsettings.exe"],
+  },
+  {
+    key: "1password",
+    name: "1Password",
+    locked: false,
+    names: ["1password.exe"],
+  },
+]
+
+/** The record as the backend answers it. */
+function record(
+  overrides: Partial<ComputerToolsSettings> = {}
+): ComputerToolsSettings {
+  return {
+    enabled: true,
+    grantTtlMinutes: 30,
+    blocklist: ["com.example.vault"],
+    blocklistRemoved: [],
+    blocklistDefaults: DEFAULTS,
+    stopShortcut: DEFAULT_KEY,
+    ...overrides,
+  }
+}
+
+const LABEL = "Apps that are never shared"
+
+/** Type an entry and add it to the list. */
+function addEntry(box: HTMLElement, entry: string) {
+  fireEvent.change(box, { target: { value: entry } })
+  fireEvent.click(screen.getByRole("button", { name: "Add" }))
+}
 
 function mount() {
   return render(
@@ -44,18 +83,15 @@ function mount() {
 beforeEach(() => {
   vi.clearAllMocks()
   handlers.clear()
-  mockGet.mockResolvedValue({
-    enabled: true,
-    grantTtlMinutes: 30,
-    blocklist: ["com.example.vault"],
-    stopShortcut: DEFAULT_KEY,
-  })
-  mockSet.mockImplementation(async (prefs) => ({
-    enabled: true,
-    grantTtlMinutes: prefs.grantTtlMinutes ?? 30,
-    blocklist: prefs.blocklist ?? ["com.example.vault"],
-    stopShortcut: prefs.stopShortcut ?? DEFAULT_KEY,
-  }))
+  mockGet.mockResolvedValue(record())
+  mockSet.mockImplementation(async (prefs) =>
+    record({
+      grantTtlMinutes: prefs.grantTtlMinutes ?? 30,
+      blocklist: prefs.blocklist ?? ["com.example.vault"],
+      blocklistRemoved: prefs.blocklistRemoved ?? [],
+      stopShortcut: prefs.stopShortcut ?? DEFAULT_KEY,
+    })
+  )
   mockStopKey.mockResolvedValue({ active: DEFAULT_KEY })
 })
 
@@ -77,17 +113,14 @@ function press(
 
 describe("ComputerSettingsSection", () => {
   /** Only what changed is written — never the switch, and not the timeout
-   * when only the blocklist moved — and the blocklist goes out as trimmed,
-   * non-empty entries. */
+   * when only the blocklist moved — and an entry goes out trimmed. */
   it("saves only the changed field, through the preferences writer", async () => {
     mount()
-    const box = await screen.findByLabelText(
-      "Applications that can never be shared"
-    )
-    await waitFor(() => expect(box).toHaveValue("com.example.vault"))
-    fireEvent.change(box, {
-      target: { value: "com.example.vault\n\n  keepass.exe  \n" },
-    })
+    const box = await screen.findByLabelText(LABEL)
+    await screen.findByText("com.example.vault")
+    await waitFor(() => expect(box).not.toBeDisabled())
+    addEntry(box, "  keepass.exe  ")
+    expect(box).toHaveValue("")
     fireEvent.click(screen.getByRole("button", { name: "Save" }))
     await waitFor(() => expect(mockSet).toHaveBeenCalledTimes(1))
     expect(mockSet.mock.calls[0][0]).toEqual({
@@ -96,27 +129,78 @@ describe("ComputerSettingsSection", () => {
     })
   })
 
+  /** A default can be taken off, but not a locked one; "restore defaults"
+   * takes off what was added and puts back what was removed. Each goes out
+   * as the one field it moved. */
+  it("takes a default off the list and restores the defaults", async () => {
+    mount()
+    const box = await screen.findByLabelText(LABEL)
+    await waitFor(() => expect(box).not.toBeDisabled())
+    expect(screen.getByText("System Settings")).toBeInTheDocument()
+    expect(
+      screen.queryByRole("button", { name: "Remove System Settings" })
+    ).toBeNull()
+    fireEvent.click(screen.getByRole("button", { name: "Remove 1Password" }))
+    expect(screen.queryByText("1Password")).toBeNull()
+    expect(screen.getByText("1 default app removed.")).toBeInTheDocument()
+    fireEvent.click(screen.getByRole("button", { name: "Save" }))
+    await waitFor(() => expect(mockSet).toHaveBeenCalledTimes(1))
+    expect(mockSet.mock.calls[0][0]).toEqual({
+      blocklistRemoved: ["1password"],
+    })
+
+    await waitFor(() => expect(box).not.toBeDisabled())
+    fireEvent.click(screen.getByRole("button", { name: "Restore defaults" }))
+    expect(screen.getByText("1Password")).toBeInTheDocument()
+    expect(screen.queryByText("com.example.vault")).toBeNull()
+    fireEvent.click(screen.getByRole("button", { name: "Save" }))
+    await waitFor(() => expect(mockSet).toHaveBeenCalledTimes(2))
+    expect(mockSet.mock.calls[1][0]).toEqual({
+      blocklist: [],
+      blocklistRemoved: [],
+    })
+  })
+
+  /** An entry already on the list is refused; a default that was taken off
+   * is put back when typed again. */
+  it("refuses a duplicate and puts a removed default back", async () => {
+    mockGet.mockResolvedValue(record({ blocklistRemoved: ["1password"] }))
+    mount()
+    const box = await screen.findByLabelText(LABEL)
+    await waitFor(() => expect(box).not.toBeDisabled())
+    addEntry(box, "COM.EXAMPLE.VAULT")
+    expect(screen.getByText("Already on the list.")).toBeInTheDocument()
+    addEntry(box, "1Password.exe")
+    expect(screen.getByText("1Password")).toBeInTheDocument()
+    expect(screen.queryByText(/default app removed/)).toBeNull()
+    fireEvent.click(screen.getByRole("button", { name: "Save" }))
+    await waitFor(() => expect(mockSet).toHaveBeenCalledTimes(1))
+    expect(mockSet.mock.calls[0][0]).toEqual({ blocklistRemoved: [] })
+  })
+
   /** Another window's save moves the fields this form has not touched and
    * leaves the one it has; saving then writes only that one. */
   it("merges a save made elsewhere into the fields it did not touch", async () => {
     mount()
-    const box = await screen.findByLabelText(
-      "Applications that can never be shared"
-    )
-    await waitFor(() => expect(box).toHaveValue("com.example.vault"))
+    const box = await screen.findByLabelText(LABEL)
+    await waitFor(() => expect(box).not.toBeDisabled())
     await waitFor(() =>
       expect(handlers.get("computer-tools-settings://changed")).toBeDefined()
     )
-    fireEvent.change(box, { target: { value: "com.example.mine" } })
+    fireEvent.click(
+      screen.getByRole("button", { name: "Remove com.example.vault" })
+    )
+    addEntry(box, "com.example.mine")
     act(() => {
-      handlers.get("computer-tools-settings://changed")!({
-        enabled: true,
-        grantTtlMinutes: 60,
-        blocklist: ["com.example.vault", "org.example.theirs"],
-        stopShortcut: DEFAULT_KEY,
-      })
+      handlers.get("computer-tools-settings://changed")!(
+        record({
+          grantTtlMinutes: 60,
+          blocklist: ["com.example.vault", "org.example.theirs"],
+        })
+      )
     })
-    expect(box).toHaveValue("com.example.mine")
+    expect(screen.getByText("com.example.mine")).toBeInTheDocument()
+    expect(screen.queryByText("org.example.theirs")).toBeNull()
     fireEvent.click(screen.getByRole("button", { name: "Save" }))
     await waitFor(() => expect(mockSet).toHaveBeenCalledTimes(1))
     expect(mockSet.mock.calls[0][0]).toEqual({
@@ -130,15 +214,13 @@ describe("ComputerSettingsSection", () => {
   it("stays locked after a failed read until one succeeds", async () => {
     mockGet.mockRejectedValueOnce(new Error("offline"))
     mount()
-    const box = await screen.findByLabelText(
-      "Applications that can never be shared"
-    )
+    const box = await screen.findByLabelText(LABEL)
     await screen.findByText(/offline/)
     expect(box).toBeDisabled()
     expect(screen.getByRole("button", { name: "Save" })).toBeDisabled()
     fireEvent.click(screen.getByRole("button", { name: "Refresh" }))
-    await waitFor(() => expect(box).toHaveValue("com.example.vault"))
-    expect(box).not.toBeDisabled()
+    await screen.findByText("com.example.vault")
+    await waitFor(() => expect(box).not.toBeDisabled())
   })
 
   /** Nothing can be edited while a save is on its way: its answer replaces
@@ -154,28 +236,22 @@ describe("ComputerSettingsSection", () => {
         })
     )
     mount()
-    const box = await screen.findByLabelText(
-      "Applications that can never be shared"
-    )
-    await waitFor(() => expect(box).toHaveValue("com.example.vault"))
-    fireEvent.change(box, { target: { value: "com.example.new" } })
+    const box = await screen.findByLabelText(LABEL)
+    await waitFor(() => expect(box).not.toBeDisabled())
+    addEntry(box, "com.example.new")
     fireEvent.click(screen.getByRole("button", { name: "Save" }))
     await waitFor(() => expect(box).toBeDisabled())
     await act(async () => {
-      finish({
-        enabled: true,
-        grantTtlMinutes: 30,
-        blocklist: ["com.example.new"],
-        stopShortcut: DEFAULT_KEY,
-      })
+      finish(record({ blocklist: ["com.example.new"] }))
     })
     await waitFor(() => expect(box).not.toBeDisabled())
-    expect(box).toHaveValue("com.example.new")
+    expect(screen.getByText("com.example.new")).toBeInTheDocument()
+    expect(screen.queryByText("com.example.vault")).toBeNull()
   })
 
   it("has nothing to save until something changes", async () => {
     mount()
-    await screen.findByLabelText("Applications that can never be shared")
+    await screen.findByLabelText(LABEL)
     await waitFor(() =>
       expect(screen.getByRole("button", { name: "Save" })).toBeDisabled()
     )
@@ -184,21 +260,21 @@ describe("ComputerSettingsSection", () => {
   /** Another window saved the record: an untouched form follows it. */
   it("follows a save made elsewhere", async () => {
     mount()
-    const box = await screen.findByLabelText(
-      "Applications that can never be shared"
-    )
+    await screen.findByLabelText(LABEL)
     await waitFor(() =>
       expect(handlers.get("computer-tools-settings://changed")).toBeDefined()
     )
     act(() => {
-      handlers.get("computer-tools-settings://changed")!({
-        enabled: true,
-        grantTtlMinutes: 60,
-        blocklist: ["org.example.other"],
-        stopShortcut: DEFAULT_KEY,
-      })
+      handlers.get("computer-tools-settings://changed")!(
+        record({
+          grantTtlMinutes: 60,
+          blocklist: ["org.example.other"],
+          blocklistRemoved: ["1password"],
+        })
+      )
     })
-    await waitFor(() => expect(box).toHaveValue("org.example.other"))
+    await screen.findByText("org.example.other")
+    expect(screen.queryByText("1Password")).toBeNull()
   })
 
   /** New keys are recorded off the physical keys, and saved as the one
@@ -292,11 +368,12 @@ describe("ComputerSettingsSection", () => {
         })
     )
     mount()
-    const box = await screen.findByLabelText(
-      "Applications that can never be shared"
+    const box = await screen.findByLabelText(LABEL)
+    await waitFor(() => expect(box).not.toBeDisabled())
+    fireEvent.click(
+      screen.getByRole("button", { name: "Remove com.example.vault" })
     )
-    await waitFor(() => expect(box).toHaveValue("com.example.vault"))
-    fireEvent.change(box, { target: { value: "com.example.new" } })
+    addEntry(box, "com.example.new")
     fireEvent.click(await shortcutButton())
     await screen.findByRole("button", { name: "Press keys…" })
     fireEvent.click(screen.getByRole("button", { name: "Save" }))
@@ -304,12 +381,7 @@ describe("ComputerSettingsSection", () => {
     press("KeyK", { ctrlKey: true, shiftKey: true })
     expect(screen.queryByRole("button", { name: "Press keys…" })).toBeNull()
     await act(async () => {
-      finish({
-        enabled: true,
-        grantTtlMinutes: 30,
-        blocklist: ["com.example.new"],
-        stopShortcut: DEFAULT_KEY,
-      })
+      finish(record({ blocklist: ["com.example.new"] }))
     })
     await shortcutButton()
     expect(mockSet.mock.calls[0][0]).toEqual({
@@ -318,12 +390,7 @@ describe("ComputerSettingsSection", () => {
   })
 
   it("says the shortcut waits for computer use to be switched on", async () => {
-    mockGet.mockResolvedValue({
-      enabled: false,
-      grantTtlMinutes: 30,
-      blocklist: [],
-      stopShortcut: DEFAULT_KEY,
-    })
+    mockGet.mockResolvedValue(record({ enabled: false, blocklist: [] }))
     mockStopKey.mockResolvedValue({})
     mount()
     await screen.findByText("Takes effect while computer use is switched on.")

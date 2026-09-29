@@ -5177,14 +5177,16 @@
     },
     "driver": "cua-driver {version}",
     "devBuild": "开发版：helper 不校验调用它的程序。",
+    "devTag": "开发版",
     "permissions": {
       "accessibility": "辅助功能",
       "screenRecording": "屏幕录制",
       "granted": "已授权",
-      "request": "请求授权",
-      "openSettings": "打开系统设置",
-      "why": "请授权给 codeg-computer-helper，而不是 codeg。「屏幕录制」用于截图，「辅助功能」用于读取和操作窗口。",
-      "whyDev": "请授权给 codeg-computer-helper。开发版每次重新编译，在 macOS 看来都是一个新程序：请先在系统设置中移除旧的 codeg-computer-helper，再重新授权。"
+      "request": "去授权",
+      "why": "请在系统设置中打开 codeg-computer-helper 的开关（不是 codeg）。「屏幕录制」用于查看窗口画面，「辅助功能」用于读取和操作窗口。",
+      "devRebuild": "开发版每次重新编译都会让旧授权失效：请先从列表中删掉旧的 codeg-computer-helper，再重新授权。",
+      "notListed": "如果列表里没有 codeg-computer-helper，可以从访达把它拖进去：",
+      "reveal": "在访达中显示"
     },
     "shared": {
       "title": "{count, plural, =0 {未共享窗口} other {已共享 # 个窗口}}",
@@ -5246,7 +5248,7 @@
       "skipped": "{count, plural, other {有 # 个窗口没能共享，可能已经关闭。}}",
       "unshareable": "{count, plural, other {# 个窗口不能共享}}",
       "noneShareable": "这些窗口都不能共享。",
-      "codegWhy": "codeg 的窗口永远不能共享：能操作 codeg 的智能体可以替自己批准请求、给自己共享更多窗口，或在你停止后点「恢复」。另一个 codeg（比如开发版）同样不能共享，因为它可以把这个 codeg 的窗口再共享回去。"
+      "codegWhy": "codeg 的窗口永远不能共享：能操作 codeg 的智能体可以替自己批准请求、给自己共享更多窗口，或在你停止后点「恢复」。其他 codeg 实例的窗口也一样。"
     },
     "settings": {
       "pageTitle": "电脑操作",
@@ -5293,9 +5295,22 @@
         "never": "永不（直到我停止）"
       },
       "blocklist": {
-        "label": "永不可共享的应用",
-        "hint": "每行一个：bundle 标识（com.example.app）、可执行文件名（app.exe）或完整路径。内置名单（密码管理器、系统密码弹窗、系统设置）始终生效。",
-        "placeholder": "com.example.app"
+        "label": "永不共享的应用",
+        "hint": "这些应用的窗口不能共享给智能体。不需要的默认项可以移除（锁定的除外），也可以按 bundle 标识（com.example.app）、可执行文件名（app.exe）或完整路径添加应用。",
+        "placeholder": "com.example.app",
+        "add": "添加",
+        "remove": "移除 {name}",
+        "restore": "恢复默认",
+        "locked": "它保护系统和电脑操作本身，不能移除。",
+        "custom": "你添加的",
+        "duplicate": "已经在名单里了。",
+        "removedCount": "{count, plural, other {已移除 # 个默认应用。}}",
+        "items": {
+          "systemSettings": "系统设置",
+          "credentialPrompts": "系统密码与授权弹窗",
+          "keychain": "钥匙串访问",
+          "passwords": "密码"
+        }
       },
       "stopKey": {
         "label": "停止快捷键",

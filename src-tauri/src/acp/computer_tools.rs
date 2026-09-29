@@ -484,8 +484,11 @@ pub struct ComputerToolsConfig {
     /// How long a shared window may go unread before its sharing ends. `None`
     /// is "until the user takes it back".
     pub grant_ttl: Option<Duration>,
-    /// Applications the user added to the built-in blocklist.
+    /// Applications the user added to the default blocklist.
     pub blocklist: Vec<String>,
+    /// Keys of the default blocklist entries the user took off it
+    /// (`computer::agent::DEFAULT_BLOCKLIST`; a locked one stays on).
+    pub blocklist_removed: Vec<String>,
     /// The shortcut that stops every agent at once, from anywhere; `None`
     /// when the person switched it off.
     pub stop_shortcut: Option<crate::computer::stop_shortcut::StopShortcut>,
@@ -684,6 +687,7 @@ mod tests {
             enabled: true,
             grant_ttl: Some(Duration::from_secs(1800)),
             blocklist: vec!["com.example.vault".into()],
+            blocklist_removed: vec!["1password".into()],
             stop_shortcut: None,
             switched_off: 0,
         };

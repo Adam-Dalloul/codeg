@@ -20,6 +20,7 @@ use serde::{Deserialize, Serialize};
 
 pub use crate::browser::agent::GrantLevel;
 
+use super::keys::Platform;
 use super::protocol::RawApp;
 
 /// codeg's own bundle identifier (`tauri.conf.json`), matched on any process
@@ -113,8 +114,7 @@ pub enum NotGrantable {
     /// that those are out of its reach.
     Codeg,
     /// The application is on the blocklist — a credential manager, the system
-    /// settings, or one the user added. The user may add to the list; an agent
-    /// cannot take anything off it.
+    /// settings, or one the user added.
     Blocklisted,
     /// codeg cannot tell which application this is, or which run of it: the
     /// platform gave no start time for its process (so a later process under
@@ -144,55 +144,216 @@ impl NotGrantable {
     }
 }
 
-/// Built-in blocklist: applications whose windows are credentials, or the
+/// One application on the default blocklist, as every platform names it.
+#[derive(Debug, Clone, Copy)]
+pub struct DefaultBlock {
+    /// Stable across releases: what a person's "take this one off" is
+    /// remembered by, so a name added to an entry later is off with it.
+    pub key: &'static str,
+    /// Its product name. The few that are the system's own are named by the
+    /// interface, in the person's language, by `key`.
+    pub name: &'static str,
+    /// A switch that decides who may read the screen and act on the computer
+    /// — this helper's own permissions included — or a prompt for the
+    /// credentials that change them. An agent that could operate one could
+    /// hand itself more, so it stays on the list whatever the settings say.
+    pub locked: bool,
+    /// Bundle identifiers.
+    pub macos: &'static [&'static str],
+    /// Executable file names.
+    pub windows: &'static [&'static str],
+    /// Executable file names.
+    pub linux: &'static [&'static str],
+}
+
+impl DefaultBlock {
+    fn names_on(&self, platform: Platform) -> &'static [&'static str] {
+        match platform {
+            Platform::Mac => self.macos,
+            Platform::Windows => self.windows,
+            Platform::Linux => self.linux,
+        }
+    }
+
+    fn all_names(&self) -> impl Iterator<Item = &'static str> {
+        self.macos
+            .iter()
+            .chain(self.windows)
+            .chain(self.linux)
+            .copied()
+    }
+}
+
+/// The default blocklist: applications whose windows are credentials, and the
 /// switches that decide who else may read the screen. Matched against a
 /// bundle identifier, a full path, or an executable's file name, without
-/// regard to case.
-pub const BUILTIN_BLOCKLIST: &[&str] = &[
-    // macOS: the keychain, the passwords app, and the system's own
-    // authentication prompts (an administrator password typed into one of
-    // these is exactly what must not reach a screenshot).
-    "com.apple.keychainaccess",
-    "com.apple.Passwords",
-    "com.apple.SecurityAgent",
-    "com.apple.LocalAuthentication.UIAgent",
+/// regard to case, on whichever platform names them.
+pub const DEFAULT_BLOCKLIST: &[DefaultBlock] = &[
     // System Settings holds the Privacy & Security pane that decides who may
     // record the screen, this helper included.
-    "com.apple.systempreferences",
-    "com.apple.Settings",
-    // Password managers.
-    "com.1password.1password",
-    "com.agilebits.onepassword7",
-    "com.bitwarden.desktop",
-    "org.keepassxc.keepassxc",
-    "com.lastpass.LastPass",
-    "in.sinew.Enpass-Desktop",
-    "me.proton.pass.electron",
-    "com.dashlane.dashlanephonefinal",
-    // Windows: the credential prompt, UAC, the Settings app, and the same
-    // managers by executable name.
-    "credentialuibroker.exe",
-    "consent.exe",
-    "systemsettings.exe",
-    "1password.exe",
-    "bitwarden.exe",
-    "keepass.exe",
-    "keepassxc.exe",
-    "enpass.exe",
-    "proton pass.exe",
-    "dashlane.exe",
-    // Linux: the keyring managers and the same password managers.
-    "seahorse",
-    "kwalletmanager5",
-    "keepassxc",
-    "bitwarden",
-    "1password",
+    DefaultBlock {
+        key: "system-settings",
+        name: "System Settings",
+        locked: true,
+        macos: &["com.apple.systempreferences", "com.apple.Settings"],
+        windows: &["systemsettings.exe"],
+        linux: &[],
+    },
+    // The system's own prompts for a password (an administrator password
+    // typed into one is exactly what must not reach a screenshot) and for
+    // elevation.
+    DefaultBlock {
+        key: "credential-prompts",
+        name: "Password prompts",
+        locked: true,
+        macos: &[
+            "com.apple.SecurityAgent",
+            "com.apple.LocalAuthentication.UIAgent",
+        ],
+        windows: &["credentialuibroker.exe", "consent.exe"],
+        linux: &[],
+    },
+    DefaultBlock {
+        key: "keychain",
+        name: "Keychain Access",
+        locked: false,
+        macos: &["com.apple.keychainaccess"],
+        windows: &[],
+        linux: &[],
+    },
+    DefaultBlock {
+        key: "seahorse",
+        name: "Passwords and Keys",
+        locked: false,
+        macos: &[],
+        windows: &[],
+        linux: &["seahorse"],
+    },
+    DefaultBlock {
+        key: "kwallet",
+        name: "KWallet Manager",
+        locked: false,
+        macos: &[],
+        windows: &[],
+        linux: &["kwalletmanager5"],
+    },
+    DefaultBlock {
+        key: "passwords",
+        name: "Passwords",
+        locked: false,
+        macos: &["com.apple.Passwords"],
+        windows: &[],
+        linux: &[],
+    },
+    DefaultBlock {
+        key: "1password",
+        name: "1Password",
+        locked: false,
+        macos: &["com.1password.1password", "com.agilebits.onepassword7"],
+        windows: &["1password.exe"],
+        linux: &["1password"],
+    },
+    DefaultBlock {
+        key: "bitwarden",
+        name: "Bitwarden",
+        locked: false,
+        macos: &["com.bitwarden.desktop"],
+        windows: &["bitwarden.exe"],
+        linux: &["bitwarden"],
+    },
+    DefaultBlock {
+        key: "keepass",
+        name: "KeePass",
+        locked: false,
+        macos: &[],
+        windows: &["keepass.exe"],
+        linux: &[],
+    },
+    DefaultBlock {
+        key: "keepassxc",
+        name: "KeePassXC",
+        locked: false,
+        macos: &["org.keepassxc.keepassxc"],
+        windows: &["keepassxc.exe"],
+        linux: &["keepassxc"],
+    },
+    DefaultBlock {
+        key: "lastpass",
+        name: "LastPass",
+        locked: false,
+        macos: &["com.lastpass.LastPass"],
+        windows: &[],
+        linux: &[],
+    },
+    DefaultBlock {
+        key: "enpass",
+        name: "Enpass",
+        locked: false,
+        macos: &["in.sinew.Enpass-Desktop"],
+        windows: &["enpass.exe"],
+        linux: &[],
+    },
+    DefaultBlock {
+        key: "proton-pass",
+        name: "Proton Pass",
+        locked: false,
+        macos: &["me.proton.pass.electron"],
+        windows: &["proton pass.exe"],
+        linux: &[],
+    },
+    DefaultBlock {
+        key: "dashlane",
+        name: "Dashlane",
+        locked: false,
+        macos: &["com.dashlane.dashlanephonefinal"],
+        windows: &["dashlane.exe"],
+        linux: &[],
+    },
 ];
 
-/// The applications whose windows can never be shared: the built-in list plus
-/// whatever the user added. Adding is the only direction — there is no way to
-/// express "except this one" — so an agent that edits the user's settings can
-/// at worst lock itself out of more.
+/// One default entry as the settings show it on this platform.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DefaultBlockView {
+    pub key: String,
+    pub name: String,
+    pub locked: bool,
+    /// How this platform names it.
+    pub names: Vec<String>,
+}
+
+/// The default entries this platform has a name for, in list order.
+pub fn default_blocklist(platform: Platform) -> Vec<DefaultBlockView> {
+    DEFAULT_BLOCKLIST
+        .iter()
+        .filter(|block| !block.names_on(platform).is_empty())
+        .map(|block| DefaultBlockView {
+            key: block.key.to_string(),
+            name: block.name.to_string(),
+            locked: block.locked,
+            names: block
+                .names_on(platform)
+                .iter()
+                .map(|name| name.to_string())
+                .collect(),
+        })
+        .collect()
+}
+
+/// Whether `key` names a default entry a person may take off the list.
+pub fn is_removable_default(key: &str) -> bool {
+    DEFAULT_BLOCKLIST
+        .iter()
+        .any(|block| block.key == key && !block.locked)
+}
+
+/// The applications whose windows can never be shared: the default list,
+/// less the entries the person took off it (never a locked one), plus
+/// whatever they added.
+///
+/// A person may take a default off — theirs to decide, from the settings. An
+/// agent that edits those settings behind them could do the same; what it
+/// cannot do is share a window: that still takes the person, in the picker.
 #[derive(Debug, Clone, Default)]
 pub struct Blocklist {
     /// Lowercased.
@@ -200,10 +361,19 @@ pub struct Blocklist {
 }
 
 impl Blocklist {
+    /// Every default entry, plus `user_entries`.
     pub fn new(user_entries: &[String]) -> Self {
-        let mut entries: Vec<String> = BUILTIN_BLOCKLIST
+        Self::configured(user_entries, &[])
+    }
+
+    /// The default entries but those whose keys are in `removed` (a locked
+    /// one stays whatever `removed` says), plus `user_entries`.
+    pub fn configured(user_entries: &[String], removed: &[String]) -> Self {
+        let mut entries: Vec<String> = DEFAULT_BLOCKLIST
             .iter()
-            .map(|s| s.to_lowercase())
+            .filter(|block| block.locked || !removed.iter().any(|key| key == block.key))
+            .flat_map(DefaultBlock::all_names)
+            .map(str::to_lowercase)
             .chain(
                 user_entries
                     .iter()
@@ -523,6 +693,57 @@ mod tests {
         );
         // An empty user entry is not a wildcard.
         assert!(!list.matches(&app(1, None, None)));
+    }
+
+    /// A default the person took off no longer blocks — by any of its names —
+    /// and a locked one blocks whatever the settings say; the rest stay.
+    #[test]
+    fn a_default_taken_off_the_list_no_longer_blocks_unless_locked() {
+        let list = Blocklist::configured(
+            &["com.example.vault".to_string()],
+            &[
+                "1password".to_string(),
+                "system-settings".to_string(),
+                "no-such-entry".to_string(),
+            ],
+        );
+        assert!(!list.matches(&app(1, Some("com.1password.1password"), None)));
+        assert!(!list.matches(&app(1, Some("com.agilebits.onepassword7"), None)));
+        assert!(!list.matches(&app(1, None, Some("C:\\Apps\\1Password.exe"))));
+        assert!(list.matches(&app(1, Some("com.apple.systempreferences"), None)));
+        assert!(list.matches(&app(1, Some("com.bitwarden.desktop"), None)));
+        assert!(list.matches(&app(1, Some("com.example.vault"), None)));
+        assert!(is_removable_default("1password"));
+        assert!(!is_removable_default("system-settings"));
+        assert!(!is_removable_default("no-such-entry"));
+    }
+
+    /// The settings show each platform only the entries it has a name for,
+    /// the locked ones first, by the names that platform uses.
+    #[test]
+    fn each_platform_is_shown_the_defaults_it_names() {
+        let mac = default_blocklist(Platform::Mac);
+        assert_eq!(mac[0].key, "system-settings");
+        assert!(mac[0].locked);
+        assert_eq!(
+            mac[0].names,
+            vec!["com.apple.systempreferences", "com.apple.Settings"]
+        );
+        assert!(mac.iter().any(|b| b.key == "passwords"));
+        assert!(!mac
+            .iter()
+            .any(|b| b.key == "keepass" || b.key == "seahorse"));
+        let windows = default_blocklist(Platform::Windows);
+        assert!(windows.iter().any(|b| b.key == "keepass"));
+        assert!(!windows.iter().any(|b| b.key == "passwords"));
+        let linux = default_blocklist(Platform::Linux);
+        assert!(linux.iter().any(|b| b.key == "seahorse"));
+        assert!(!linux.iter().any(|b| b.key == "system-settings"));
+        // Keys are unique: a removal names exactly one entry.
+        let mut keys: Vec<&str> = DEFAULT_BLOCKLIST.iter().map(|b| b.key).collect();
+        keys.sort_unstable();
+        keys.dedup();
+        assert_eq!(keys.len(), DEFAULT_BLOCKLIST.len());
     }
 
     /// A window whose process has no start time, or whose application has no

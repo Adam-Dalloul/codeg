@@ -125,13 +125,30 @@ export interface ComputerActivityPayload {
   at: number
 }
 
+/** One entry of the default blocklist, as this platform names it. Mirror of
+ *  Rust `DefaultBlockView`. */
+export interface DefaultBlock {
+  /** Stable: what taking it off the list is remembered by. */
+  key: string
+  /** Its product name; the system's own entries are named by the interface. */
+  name: string
+  /** Guards computer use itself: it cannot be taken off. */
+  locked: boolean
+  /** Bundle identifiers or executable names. */
+  names: string[]
+}
+
 /** Mirror of Rust `ComputerToolsSettings`. */
 export interface ComputerToolsSettings {
   enabled: boolean
   /** 0 is "until I take it back". */
   grantTtlMinutes: number
-  /** Applications added to the built-in blocklist. */
+  /** Applications added to the default blocklist. */
   blocklist: string[]
+  /** Keys of the default entries taken off it. */
+  blocklistRemoved: string[]
+  /** The default list, for showing; never sent back. */
+  blocklistDefaults: DefaultBlock[]
   /** The shortcut that stops every agent at once, spelled as
    *  `stop-shortcut.ts` spells it; empty when switched off. */
   stopShortcut: string

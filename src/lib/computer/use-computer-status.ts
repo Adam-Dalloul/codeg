@@ -12,6 +12,11 @@
 // A fetched value is only as new as the moment the fetch began; the shared
 // windows and the backend status it carries go to the store through the
 // `…Since` setters, which drop them if an event has moved on since.
+//
+// Granting is one step for the person: `request` has the helper ask macOS —
+// which lists the helper in System Settings, the only place either
+// permission is actually turned on — and, if it is still missing after
+// that, opens that pane.
 
 import { useCallback, useEffect, useRef, useState } from "react"
 
@@ -20,6 +25,7 @@ import { toErrorMessage } from "@/lib/app-error"
 import {
   computerOpenPermissionSettings,
   computerRequestPermission,
+  computerRevealHelper,
   computerStatus,
 } from "./computer-api"
 import {
@@ -84,8 +90,18 @@ export function useComputerStatus(live: boolean) {
 
   const request = useCallback(
     async (permission: OsPermission) => {
+      setError(null)
       try {
-        await computerRequestPermission(permission)
+        const report = await computerRequestPermission(permission)
+        const granted =
+          permission === "accessibility"
+            ? report.accessibility
+            : report.screenRecording
+        // Neither is ever turned on from the request itself: the switch is
+        // in System Settings.
+        if (report.required && !granted) {
+          await computerOpenPermissionSettings(permission)
+        }
         if (liveRef.current) await refresh()
       } catch (e) {
         setError(toErrorMessage(e))
@@ -100,6 +116,10 @@ export function useComputerStatus(live: boolean) {
     )
   }, [])
 
+  const revealHelper = useCallback(() => {
+    computerRevealHelper().catch((e) => setError(toErrorMessage(e)))
+  }, [])
+
   return {
     status,
     loading,
@@ -108,6 +128,7 @@ export function useComputerStatus(live: boolean) {
     refresh,
     request,
     openPermissionSettings,
+    revealHelper,
   }
 }
 

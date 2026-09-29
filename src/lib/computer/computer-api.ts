@@ -40,6 +40,8 @@ export async function setComputerToolsEnabled(
 export async function setComputerToolsPreferences(preferences: {
   grantTtlMinutes?: number
   blocklist?: string[]
+  /** Keys of the default entries to leave off the list. */
+  blocklistRemoved?: string[]
   /** Empty switches the shortcut off. */
   stopShortcut?: string
 }): Promise<ComputerToolsSettings> {
@@ -75,6 +77,11 @@ export async function computerOpenPermissionSettings(
   return getTransport().call("computer_open_permission_settings", {
     permission,
   })
+}
+
+/** Show codeg-computer-helper in the Finder, to drag into System Settings. */
+export async function computerRevealHelper(): Promise<void> {
+  return getTransport().call("computer_reveal_helper", {})
 }
 
 export async function computerListShareableWindows(): Promise<PickerWindow[]> {

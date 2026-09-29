@@ -510,6 +510,33 @@ impl HelperState {
         }
     }
 
+    /// Raise the system's request for what the helper lacks, then say what it
+    /// holds now. On macOS the request goes out from a fresh process, as the
+    /// check does, and for every missing permission at once: macOS takes one
+    /// request per process, and one from this long-lived helper would reach
+    /// nobody the second time — after the person removed a stale entry from
+    /// System Settings, say, which is exactly when the helper needs listing
+    /// again. Where no fresh process can be started, the request goes out
+    /// from here.
+    async fn request_permission(&self, permission: OsPermission) -> PermissionReport {
+        #[cfg(target_os = "macos")]
+        {
+            let path = self.driver_path.lock().await.clone();
+            if let Some(path) = path {
+                match driver_proc::probe_permissions(&path, true).await {
+                    Ok(_) => return self.permissions(true).await,
+                    Err(e) => tracing::warn!(
+                        "could not ask for permissions from a fresh process, asking here: {}",
+                        e.message
+                    ),
+                }
+            }
+        }
+        let prompts = self.prompts.clone();
+        let _ = tokio::task::spawn_blocking(move || prompts.request(permission)).await;
+        self.permissions(true).await
+    }
+
     /// Ask macOS, in a fresh process. Where that cannot be done — no driver
     /// configured yet, or one that would not start — ask here, and live with
     /// an answer this process may keep.
@@ -517,7 +544,7 @@ impl HelperState {
     async fn ask_system(&self) -> PermissionReport {
         let path = self.driver_path.lock().await.clone();
         if let Some(path) = path {
-            match driver_proc::probe_permissions(&path).await {
+            match driver_proc::probe_permissions(&path, false).await {
                 Ok(report) => return report,
                 Err(e) => tracing::warn!(
                     "could not check permissions in a fresh process, asking here: {}",
@@ -630,9 +657,7 @@ async fn handle_op(state: &HelperState, op: HelperOp) -> Result<serde_json::Valu
         }
         HelperOp::Permissions => value(state.permissions(true).await),
         HelperOp::RequestPermission { permission } => {
-            let prompts = state.prompts.clone();
-            let _ = tokio::task::spawn_blocking(move || prompts.request(permission)).await;
-            value(state.permissions(true).await)
+            value(state.request_permission(permission).await)
         }
         HelperOp::ListApps => {
             let driver = state.driver().await?;

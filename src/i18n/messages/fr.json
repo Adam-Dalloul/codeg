@@ -5177,14 +5177,16 @@
     },
     "driver": "cua-driver {version}",
     "devBuild": "Version de développement : l'assistant ne vérifie pas quel programme l'appelle.",
+    "devTag": "version de développement",
     "permissions": {
       "accessibility": "Accessibilité",
       "screenRecording": "Enregistrement de l'écran",
       "granted": "Accordé",
-      "request": "Demander",
-      "openSettings": "Ouvrir les Réglages",
-      "why": "Accordez-les à codeg-computer-helper, pas à codeg. L'Enregistrement de l'écran sert aux captures, l'Accessibilité à lire les fenêtres et à agir dessus.",
-      "whyDev": "Accordez-les à codeg-computer-helper. macOS considère chaque recompilation d'une version de développement comme un nouveau programme : retirez l'ancienne entrée codeg-computer-helper dans Réglages Système, puis accordez-les à nouveau."
+      "request": "Autoriser…",
+      "why": "Activez codeg-computer-helper dans Réglages Système, et non codeg. L'Enregistrement de l'écran lui permet de voir les fenêtres ; l'Accessibilité, de les lire et d'agir dessus.",
+      "devRebuild": "Dans une version de développement, chaque recompilation annule l'autorisation précédente : retirez d'abord l'ancien codeg-computer-helper de la liste, puis autorisez-le à nouveau.",
+      "notListed": "Si codeg-computer-helper n'apparaît pas dans la liste, faites-le glisser depuis le Finder :",
+      "reveal": "Afficher dans le Finder"
     },
     "shared": {
       "title": "{count, plural, =0 {Aucune fenêtre partagée} one {# fenêtre partagée} other {# fenêtres partagées}}",
@@ -5246,7 +5248,7 @@
       "skipped": "{count, plural, one {# fenêtre n'a pas pu être partagée ; elle a peut-être été fermée.} other {# fenêtres n'ont pas pu être partagées ; elles ont peut-être été fermées.}}",
       "unshareable": "{count, plural, one {# fenêtre ne peut pas être partagée} other {# fenêtres ne peuvent pas être partagées}}",
       "noneShareable": "Aucune de ces fenêtres ne peut être partagée.",
-      "codegWhy": "Les fenêtres de codeg ne sont jamais partagées : un agent capable de manipuler codeg pourrait approuver ses propres demandes, se partager d'autres fenêtres ou appuyer sur Reprendre après votre Arrêt. Un autre codeg, comme une version de développement, est exclu pour la même raison : il pourrait repartager les fenêtres de celui-ci."
+      "codegWhy": "Les fenêtres de codeg ne sont jamais partagées : un agent capable de manipuler codeg pourrait approuver ses propres demandes, se partager d'autres fenêtres ou appuyer sur Reprendre après votre Arrêt. Il en va de même pour les autres instances de codeg."
     },
     "settings": {
       "pageTitle": "Utilisation de l'ordinateur",
@@ -5293,9 +5295,22 @@
         "never": "Jamais (jusqu'à ce que je l'arrête)"
       },
       "blocklist": {
-        "label": "Applications jamais partageables",
-        "hint": "Une par ligne : un identifiant de paquet (com.example.app), un nom d'exécutable (app.exe) ou un chemin complet. La liste intégrée — gestionnaires de mots de passe, invites de mot de passe du système, Réglages Système — s'applique toujours.",
-        "placeholder": "com.example.app"
+        "label": "Applications jamais partagées",
+        "hint": "Leurs fenêtres ne peuvent pas être partagées avec les agents. Retirez les entrées par défaut inutiles (les verrouillées restent) ou ajoutez une application par identifiant de paquet (com.example.app), nom d'exécutable (app.exe) ou chemin complet.",
+        "placeholder": "com.example.app",
+        "add": "Ajouter",
+        "remove": "Retirer {name}",
+        "restore": "Rétablir les valeurs par défaut",
+        "locked": "Protège le système et l'utilisation de l'ordinateur elle-même ; impossible de le retirer.",
+        "custom": "Ajoutée par vous",
+        "duplicate": "Déjà dans la liste.",
+        "removedCount": "{count, plural, one {# application par défaut retirée.} other {# applications par défaut retirées.}}",
+        "items": {
+          "systemSettings": "Réglages Système",
+          "credentialPrompts": "Invites de mot de passe et d'autorisation du système",
+          "keychain": "Trousseaux d'accès",
+          "passwords": "Mots de passe"
+        }
       },
       "stopKey": {
         "label": "Raccourci d'arrêt",

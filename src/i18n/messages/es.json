@@ -5177,14 +5177,16 @@
     },
     "driver": "cua-driver {version}",
     "devBuild": "Compilación de desarrollo: el ayudante no comprueba qué programa lo llama.",
+    "devTag": "compilación de desarrollo",
     "permissions": {
       "accessibility": "Accesibilidad",
       "screenRecording": "Grabación de pantalla",
       "granted": "Concedido",
-      "request": "Solicitar",
-      "openSettings": "Abrir Ajustes",
-      "why": "Concédelos a codeg-computer-helper, no a codeg. La Grabación de pantalla sirve para capturas; la Accesibilidad, para leer ventanas y actuar en ellas.",
-      "whyDev": "Concédelos a codeg-computer-helper. macOS trata cada recompilación de una versión de desarrollo como un programa nuevo: quita la entrada antigua de codeg-computer-helper en Ajustes del Sistema y vuelve a concederlos."
+      "request": "Conceder…",
+      "why": "Activa codeg-computer-helper en Ajustes del Sistema, no codeg. La Grabación de pantalla le permite ver las ventanas; la Accesibilidad, leerlas y actuar en ellas.",
+      "devRebuild": "En una compilación de desarrollo cada recompilación anula el permiso anterior: quita primero el codeg-computer-helper antiguo de la lista y vuelve a concederlo.",
+      "notListed": "Si codeg-computer-helper no aparece en la lista, arrástralo desde el Finder:",
+      "reveal": "Mostrar en el Finder"
     },
     "shared": {
       "title": "{count, plural, =0 {Ninguna ventana compartida} one {# ventana compartida} other {# ventanas compartidas}}",
@@ -5246,7 +5248,7 @@
       "skipped": "{count, plural, one {No se pudo compartir # ventana; puede que se haya cerrado.} other {No se pudieron compartir # ventanas; puede que se hayan cerrado.}}",
       "unshareable": "{count, plural, one {# ventana no se puede compartir} other {# ventanas no se pueden compartir}}",
       "noneShareable": "Ninguna de estas ventanas se puede compartir.",
-      "codegWhy": "Las ventanas de codeg nunca se comparten: un agente que pudiera manejar codeg podría aprobar sus propias solicitudes, compartirse más ventanas o pulsar Reanudar después de que pulses Detener. Otra copia de codeg, como una versión de desarrollo, también queda fuera, porque podría volver a compartir las ventanas de esta."
+      "codegWhy": "Las ventanas de codeg nunca se comparten: un agente que pudiera manejar codeg podría aprobar sus propias solicitudes, compartirse más ventanas o pulsar Reanudar después de que pulses Detener. Lo mismo vale para otras copias de codeg."
     },
     "settings": {
       "pageTitle": "Uso del ordenador",
@@ -5293,9 +5295,22 @@
         "never": "Nunca (hasta que lo detenga)"
       },
       "blocklist": {
-        "label": "Aplicaciones que nunca se pueden compartir",
-        "hint": "Una por línea: un identificador de paquete (com.example.app), un nombre de ejecutable (app.exe) o una ruta completa. La lista integrada —gestores de contraseñas, peticiones de contraseña del sistema, Ajustes del Sistema— se aplica siempre.",
-        "placeholder": "com.example.app"
+        "label": "Aplicaciones que nunca se comparten",
+        "hint": "Sus ventanas no se pueden compartir con los agentes. Quita los predeterminados que no necesites (los bloqueados se quedan) o añade una aplicación por identificador de paquete (com.example.app), nombre de ejecutable (app.exe) o ruta completa.",
+        "placeholder": "com.example.app",
+        "add": "Añadir",
+        "remove": "Quitar {name}",
+        "restore": "Restablecer",
+        "locked": "Protege el sistema y el propio uso del ordenador, así que no se puede quitar.",
+        "custom": "Añadida por ti",
+        "duplicate": "Ya está en la lista.",
+        "removedCount": "{count, plural, one {# aplicación predeterminada quitada.} other {# aplicaciones predeterminadas quitadas.}}",
+        "items": {
+          "systemSettings": "Ajustes del Sistema",
+          "credentialPrompts": "Peticiones de contraseña y autorización del sistema",
+          "keychain": "Acceso a Llaveros",
+          "passwords": "Contraseñas"
+        }
       },
       "stopKey": {
         "label": "Atajo para detener",

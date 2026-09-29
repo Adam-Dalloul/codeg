@@ -18,6 +18,7 @@ const api = vi.hoisted(() => ({
   computerStatus: vi.fn<() => Promise<ComputerStatus>>(),
   computerRequestPermission: vi.fn(async () => ({})),
   computerOpenPermissionSettings: vi.fn(async () => {}),
+  computerRevealHelper: vi.fn(async () => {}),
   computerDriverInfo: vi.fn<() => Promise<DriverInfo>>(),
   computerDriverInstall: vi.fn<() => Promise<DriverInfo>>(),
   computerDriverUninstall: vi.fn<() => Promise<DriverInfo>>(),
@@ -41,6 +42,8 @@ function settings(enabled: boolean): ComputerToolsSettings {
     enabled,
     grantTtlMinutes: 30,
     blocklist: [],
+    blocklistRemoved: [],
+    blocklistDefaults: [],
     stopShortcut: "Control+Command+Escape",
   }
 }
@@ -226,7 +229,7 @@ describe("ComputerUseSettings", () => {
     act(() =>
       handlers.get("computer-tools-settings://changed")!(settings(true))
     )
-    fireEvent.click(await screen.findByRole("button", { name: "Request" }))
+    fireEvent.click(await screen.findByRole("button", { name: "Grant…" }))
     await waitFor(() =>
       expect(api.computerRequestPermission).toHaveBeenCalledWith(
         "screenRecording"

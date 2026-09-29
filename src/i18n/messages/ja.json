@@ -5177,14 +5177,16 @@
     },
     "driver": "cua-driver {version}",
     "devBuild": "開発ビルド：ヘルパーは呼び出し元のプログラムを検証しません。",
+    "devTag": "開発ビルド",
     "permissions": {
       "accessibility": "アクセシビリティ",
       "screenRecording": "画面収録",
       "granted": "許可済み",
-      "request": "許可を求める",
-      "openSettings": "設定を開く",
-      "why": "codeg ではなく codeg-computer-helper に許可してください。画面収録はスクリーンショットに、アクセシビリティはウィンドウの読み取りと操作に使います。",
-      "whyDev": "codeg-computer-helper に許可してください。開発ビルドは再ビルドのたびに macOS から別のプログラムと見なされます。システム設定で古い codeg-computer-helper を削除してから、もう一度許可してください。"
+      "request": "許可する…",
+      "why": "システム設定で codeg-computer-helper をオンにしてください（codeg ではありません）。画面収録はウィンドウの表示内容を見るため、アクセシビリティはウィンドウの読み取りと操作のために使います。",
+      "devRebuild": "開発ビルドでは再ビルドのたびに以前の許可が無効になります。先にリストから古い codeg-computer-helper を削除してから、もう一度許可してください。",
+      "notListed": "リストに codeg-computer-helper がない場合は、Finder からドラッグして追加してください：",
+      "reveal": "Finder で表示"
     },
     "shared": {
       "title": "{count, plural, =0 {共有中のウィンドウなし} other {# 個のウィンドウを共有中}}",
@@ -5246,7 +5248,7 @@
       "skipped": "{count, plural, other {# 個のウィンドウを共有できませんでした。閉じられた可能性があります。}}",
       "unshareable": "{count, plural, other {共有できないウィンドウ # 個}}",
       "noneShareable": "共有できるウィンドウはありません。",
-      "codegWhy": "codeg のウィンドウは決して共有されません。codeg を操作できるエージェントは、自分の要求を自分で承認したり、自分にさらにウィンドウを共有したり、停止した後に「再開」を押したりできてしまうためです。開発ビルドなど別の codeg も同じ理由で除外されます。そちらからこの codeg のウィンドウを共有し返せるからです。"
+      "codegWhy": "codeg のウィンドウは決して共有されません。codeg を操作できるエージェントは、自分の要求を自分で承認したり、自分にさらにウィンドウを共有したり、停止した後に「再開」を押したりできてしまうためです。ほかの codeg のウィンドウも同様です。"
     },
     "settings": {
       "pageTitle": "コンピューター操作",
@@ -5293,9 +5295,22 @@
         "never": "しない（自分で停止するまで）"
       },
       "blocklist": {
-        "label": "決して共有できないアプリ",
-        "hint": "1 行に 1 つ：バンドル ID（com.example.app）、実行ファイル名（app.exe）、またはフルパス。組み込みリスト（パスワードマネージャー、システムのパスワード入力画面、システム設定）は常に適用されます。",
-        "placeholder": "com.example.app"
+        "label": "共有しないアプリ",
+        "hint": "これらのアプリのウィンドウはエージェントと共有できません。不要な既定項目は削除でき（ロックされた項目を除く）、バンドル ID（com.example.app）、実行ファイル名（app.exe）、フルパスでアプリを追加することもできます。",
+        "placeholder": "com.example.app",
+        "add": "追加",
+        "remove": "{name} を削除",
+        "restore": "既定に戻す",
+        "locked": "システムとコンピューター操作そのものを守るため、削除できません。",
+        "custom": "追加した項目",
+        "duplicate": "すでにリストにあります。",
+        "removedCount": "{count, plural, other {既定のアプリを # 件削除しました。}}",
+        "items": {
+          "systemSettings": "システム設定",
+          "credentialPrompts": "システムのパスワード・認証の画面",
+          "keychain": "キーチェーンアクセス",
+          "passwords": "パスワード"
+        }
       },
       "stopKey": {
         "label": "停止ショートカット",

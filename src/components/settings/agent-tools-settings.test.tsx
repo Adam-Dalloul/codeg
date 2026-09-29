@@ -143,12 +143,16 @@ function primeBackend(
     enabled: computer,
     grantTtlMinutes: 45,
     blocklist: ["com.example.vault"],
+    blocklistRemoved: [],
+    blocklistDefaults: [],
     stopShortcut: "Control+Alt+Escape",
   })
   mockSetComputer.mockImplementation(async (enabled) => ({
     enabled,
     grantTtlMinutes: 45,
     blocklist: ["com.example.vault"],
+    blocklistRemoved: [],
+    blocklistDefaults: [],
     stopShortcut: "Control+Alt+Escape",
   }))
 }
@@ -515,6 +519,8 @@ describe("AgentToolsSettingsSection", () => {
         enabled: true,
         grantTtlMinutes: 45,
         blocklist: [],
+        blocklistRemoved: [],
+        blocklistDefaults: [],
       })
     })
     await waitFor(() => expect(row).toHaveAttribute("data-state", "checked"))
@@ -544,6 +550,8 @@ describe("AgentToolsSettingsSection", () => {
         enabled: true,
         grantTtlMinutes: 45,
         blocklist: [],
+        blocklistRemoved: [],
+        blocklistDefaults: [],
       })
     )
     await act(async () => {
@@ -569,6 +577,8 @@ describe("AgentToolsSettingsSection", () => {
               enabled,
               grantTtlMinutes: 45,
               blocklist: [],
+              blocklistRemoved: [],
+              blocklistDefaults: [],
               stopShortcut: "",
             })
         })

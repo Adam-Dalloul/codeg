@@ -19,6 +19,7 @@ const api = vi.hoisted(() => ({
   computerStatus: vi.fn<() => Promise<ComputerStatus>>(),
   computerRequestPermission: vi.fn(async () => ({})),
   computerOpenPermissionSettings: vi.fn(async () => {}),
+  computerRevealHelper: vi.fn(async () => {}),
 }))
 vi.mock("@/lib/computer/computer-api", () => api)
 vi.mock("@/lib/platform", () => ({
@@ -231,7 +232,7 @@ describe("ComputerWindowPicker", () => {
       await screen.findByText(/doesn't have Screen Recording yet/)
     ).toBeInTheDocument()
     expect(screen.getByText("Untitled window")).toBeInTheDocument()
-    fireEvent.click(screen.getByRole("button", { name: "Request" }))
+    fireEvent.click(screen.getByRole("button", { name: "Grant…" }))
     await act(async () => {
       await Promise.resolve()
     })
@@ -250,7 +251,7 @@ describe("ComputerWindowPicker", () => {
     api.computerListShareableWindows.mockResolvedValue([window("none")])
     mount()
     await screen.findByText(/doesn't have Screen Recording yet/)
-    fireEvent.click(screen.getByRole("button", { name: "Request" }))
+    fireEvent.click(screen.getByRole("button", { name: "Grant…" }))
     expect(
       await screen.findByText("the helper is not running")
     ).toBeInTheDocument()

@@ -17,7 +17,8 @@ const api = vi.hoisted(() => ({
     async (): Promise<ComputerStatePayload> => ({ shared: [], paused: false })
   ),
   computerRequestPermission: vi.fn(),
-  computerOpenPermissionSettings: vi.fn(),
+  computerOpenPermissionSettings: vi.fn(async () => {}),
+  computerRevealHelper: vi.fn(async () => {}),
   computerShareWindow: vi.fn(),
   computerShareWindows: vi.fn(),
   computerRevokeAll: vi.fn(),
@@ -85,6 +86,8 @@ beforeEach(() => {
     enabled: true,
     grantTtlMinutes: 30,
     blocklist: [],
+    blocklistRemoved: [],
+    blocklistDefaults: [],
     stopShortcut: "Control+Command+Escape",
   })
   api.computerStatus.mockResolvedValue(status())
@@ -98,6 +101,8 @@ describe("StatusBarComputer", () => {
       enabled: false,
       grantTtlMinutes: 30,
       blocklist: [],
+      blocklistRemoved: [],
+      blocklistDefaults: [],
       stopShortcut: "",
     })
     const { container } = mount()
@@ -105,19 +110,49 @@ describe("StatusBarComputer", () => {
     expect(container).toBeEmptyDOMElement()
   })
 
-  /** A missing permission is named, with a way to ask for it — for the
-   * helper, which is what gets the grant. */
-  it("offers to request a missing permission", async () => {
+  /** A missing permission is named, with one way to grant it: the helper
+   * asks macOS — which lists it in System Settings — and, still missing,
+   * System Settings opens at that pane, where the switch is. */
+  it("asks for a missing permission, then opens its pane", async () => {
+    api.computerRequestPermission.mockResolvedValue({
+      required: true,
+      accessibility: true,
+      screenRecording: false,
+    })
     mount()
     fireEvent.click(await screen.findByRole("button", { name: "Computer use" }))
     await screen.findByText("Screen Recording")
     expect(screen.getByText("Granted")).toBeInTheDocument()
-    fireEvent.click(screen.getByRole("button", { name: "Request" }))
+    expect(screen.queryByRole("button", { name: "Open Settings" })).toBeNull()
+    fireEvent.click(screen.getByRole("button", { name: "Grant…" }))
     await waitFor(() =>
-      expect(api.computerRequestPermission).toHaveBeenCalledWith(
+      expect(api.computerOpenPermissionSettings).toHaveBeenCalledWith(
         "screenRecording"
       )
     )
+    expect(api.computerRequestPermission).toHaveBeenCalledWith(
+      "screenRecording"
+    )
+    // Not listed there, it can be dragged in from the Finder.
+    fireEvent.click(screen.getByRole("button", { name: "Show in Finder" }))
+    await waitFor(() => expect(api.computerRevealHelper).toHaveBeenCalled())
+  })
+
+  /** Granted by the request itself — nothing more to open. */
+  it("opens nothing once the request has done it", async () => {
+    api.computerRequestPermission.mockResolvedValue({
+      required: true,
+      accessibility: true,
+      screenRecording: true,
+    })
+    mount()
+    fireEvent.click(await screen.findByRole("button", { name: "Computer use" }))
+    fireEvent.click(await screen.findByRole("button", { name: "Grant…" }))
+    await waitFor(() =>
+      expect(api.computerRequestPermission).toHaveBeenCalled()
+    )
+    await waitFor(() => expect(api.computerStatus).toHaveBeenCalledTimes(2))
+    expect(api.computerOpenPermissionSettings).not.toHaveBeenCalled()
   })
 
   /** codeg holding a permission itself is said — and nothing is held back
@@ -168,7 +203,7 @@ describe("StatusBarComputer", () => {
     })
     await waitFor(() => expect(api.computerStatus).toHaveBeenCalledTimes(2))
     await waitFor(() =>
-      expect(screen.queryByRole("button", { name: "Request" })).toBeNull()
+      expect(screen.queryByRole("button", { name: "Grant…" })).toBeNull()
     )
   })
 
@@ -186,7 +221,13 @@ describe("StatusBarComputer", () => {
     )
     mount()
     fireEvent.click(await screen.findByRole("button", { name: "Computer use" }))
-    await screen.findByText(/remove the old codeg-computer-helper entry/)
+    await screen.findByText(
+      /remove the old codeg-computer-helper from the list/
+    )
+    // Said once, as a tag on the status line.
+    expect(screen.getByTitle(/doesn't check/)).toHaveTextContent(
+      "development build"
+    )
   })
 
   /** Settings lead to the Computer use page. */
@@ -339,6 +380,8 @@ describe("StatusBarComputer", () => {
         enabled: true,
         grantTtlMinutes: 30,
         blocklist: [],
+        blocklistRemoved: [],
+        blocklistDefaults: [],
         stopShortcut: "",
       })
     )
@@ -348,6 +391,8 @@ describe("StatusBarComputer", () => {
         enabled: false,
         grantTtlMinutes: 30,
         blocklist: [],
+        blocklistRemoved: [],
+        blocklistDefaults: [],
         stopShortcut: "",
       })
     )

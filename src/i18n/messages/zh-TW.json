@@ -5177,14 +5177,16 @@
     },
     "driver": "cua-driver {version}",
     "devBuild": "開發版：helper 不驗證呼叫它的程式。",
+    "devTag": "開發版",
     "permissions": {
       "accessibility": "輔助使用",
       "screenRecording": "螢幕錄製",
       "granted": "已授權",
-      "request": "請求授權",
-      "openSettings": "打開系統設定",
-      "why": "請授權給 codeg-computer-helper，而不是 codeg。「螢幕錄製」用於截圖，「輔助使用」用於讀取和操作視窗。",
-      "whyDev": "請授權給 codeg-computer-helper。開發版每次重新編譯，在 macOS 看來都是一個新程式：請先在系統設定中移除舊的 codeg-computer-helper，再重新授權。"
+      "request": "前往授權",
+      "why": "請在系統設定中開啟 codeg-computer-helper 的開關（不是 codeg）。「螢幕錄製」用於檢視視窗畫面，「輔助使用」用於讀取和操作視窗。",
+      "devRebuild": "開發版每次重新編譯都會讓舊授權失效：請先從清單中刪除舊的 codeg-computer-helper，再重新授權。",
+      "notListed": "如果清單中沒有 codeg-computer-helper，可以從 Finder 把它拖進去：",
+      "reveal": "在 Finder 中顯示"
     },
     "shared": {
       "title": "{count, plural, =0 {未分享視窗} other {已分享 # 個視窗}}",
@@ -5246,7 +5248,7 @@
       "skipped": "{count, plural, other {有 # 個視窗未能分享，可能已經關閉。}}",
       "unshareable": "{count, plural, other {# 個視窗不能分享}}",
       "noneShareable": "這些視窗都不能分享。",
-      "codegWhy": "codeg 的視窗永遠不能分享：能操作 codeg 的智慧體可以替自己批准請求、給自己分享更多視窗，或在你停止後點「恢復」。另一個 codeg（例如開發版）同樣不能分享，因為它可以把這個 codeg 的視窗再分享回去。"
+      "codegWhy": "codeg 的視窗永遠不能分享：能操作 codeg 的智慧體可以替自己批准請求、給自己分享更多視窗，或在你停止後點「恢復」。其他 codeg 執行個體的視窗也一樣。"
     },
     "settings": {
       "pageTitle": "電腦操作",
@@ -5293,9 +5295,22 @@
         "never": "永不（直到我停止）"
       },
       "blocklist": {
-        "label": "永不可分享的應用程式",
-        "hint": "每行一個：bundle 識別碼（com.example.app）、執行檔名稱（app.exe）或完整路徑。內建名單（密碼管理器、系統密碼提示、系統設定）始終生效。",
-        "placeholder": "com.example.app"
+        "label": "永不分享的應用程式",
+        "hint": "這些應用程式的視窗不能分享給智慧體。不需要的預設項目可以移除（鎖定的除外），也可以按 bundle 識別碼（com.example.app）、執行檔名稱（app.exe）或完整路徑新增應用程式。",
+        "placeholder": "com.example.app",
+        "add": "新增",
+        "remove": "移除 {name}",
+        "restore": "恢復預設",
+        "locked": "它保護系統和電腦操作本身，不能移除。",
+        "custom": "你新增的",
+        "duplicate": "已經在名單中了。",
+        "removedCount": "{count, plural, other {已移除 # 個預設應用程式。}}",
+        "items": {
+          "systemSettings": "系統設定",
+          "credentialPrompts": "系統密碼與授權提示",
+          "keychain": "鑰匙圈存取",
+          "passwords": "密碼"
+        }
       },
       "stopKey": {
         "label": "停止快速鍵",

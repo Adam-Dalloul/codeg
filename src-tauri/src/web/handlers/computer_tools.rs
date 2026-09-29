@@ -72,6 +72,8 @@ pub struct SetComputerToolsPreferencesParams {
     #[serde(default)]
     pub blocklist: Option<Vec<String>>,
     #[serde(default)]
+    pub blocklist_removed: Option<Vec<String>>,
+    #[serde(default)]
     pub stop_shortcut: Option<String>,
 }
 
@@ -85,6 +87,7 @@ pub async fn set_computer_tools_preferences(
         &state.emitter,
         params.grant_ttl_minutes,
         params.blocklist,
+        params.blocklist_removed,
         params.stop_shortcut,
     )
     .await?;

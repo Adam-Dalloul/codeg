@@ -5177,14 +5177,16 @@
     },
     "driver": "cua-driver {version}",
     "devBuild": "Development build: the helper doesn't check which program calls it.",
+    "devTag": "development build",
     "permissions": {
       "accessibility": "Accessibility",
       "screenRecording": "Screen Recording",
       "granted": "Granted",
-      "request": "Request",
-      "openSettings": "Open Settings",
-      "why": "Grant these to codeg-computer-helper, not to codeg. Screen Recording is for screenshots, Accessibility for reading and acting on windows.",
-      "whyDev": "Grant these to codeg-computer-helper. macOS treats each rebuild of a development build as a new program: remove the old codeg-computer-helper entry in System Settings, then grant again."
+      "request": "Grant…",
+      "why": "Turn on codeg-computer-helper in System Settings — not codeg. Screen Recording lets it see windows; Accessibility lets it read and act on them.",
+      "devRebuild": "In a development build every rebuild voids the old grant: remove the old codeg-computer-helper from the list first, then grant again.",
+      "notListed": "If codeg-computer-helper isn't in the list, drag it in from the Finder:",
+      "reveal": "Show in Finder"
     },
     "shared": {
       "title": "{count, plural, =0 {No windows shared} one {# window shared} other {# windows shared}}",
@@ -5246,7 +5248,7 @@
       "skipped": "{count, plural, one {# window could not be shared; it may have closed.} other {# windows could not be shared; they may have closed.}}",
       "unshareable": "{count, plural, one {# window can't be shared} other {# windows can't be shared}}",
       "noneShareable": "None of these windows can be shared.",
-      "codegWhy": "codeg's windows are never shared: an agent that could operate codeg could approve its own requests, share more windows with itself, or press Resume after you press Stop. Another copy of codeg, such as a development build, is left out too, since it could share this one's windows back."
+      "codegWhy": "codeg's windows are never shared: an agent that could operate codeg could approve its own requests, share more windows with itself, or press Resume after you press Stop. The same goes for other copies of codeg."
     },
     "settings": {
       "pageTitle": "Computer use",
@@ -5293,9 +5295,22 @@
         "never": "Never (until I stop it)"
       },
       "blocklist": {
-        "label": "Applications that can never be shared",
-        "hint": "One per line: a bundle ID (com.example.app), an executable name (app.exe) or a full path. The built-in list — password managers, system password prompts, System Settings — always applies.",
-        "placeholder": "com.example.app"
+        "label": "Apps that are never shared",
+        "hint": "Their windows can't be shared with agents. Remove the defaults you don't need (locked ones stay), or add an app by bundle ID (com.example.app), executable name (app.exe) or full path.",
+        "placeholder": "com.example.app",
+        "add": "Add",
+        "remove": "Remove {name}",
+        "restore": "Restore defaults",
+        "locked": "Guards your system and computer use itself, so it can't be removed.",
+        "custom": "Added by you",
+        "duplicate": "Already on the list.",
+        "removedCount": "{count, plural, one {# default app removed.} other {# default apps removed.}}",
+        "items": {
+          "systemSettings": "System Settings",
+          "credentialPrompts": "System password and authorization prompts",
+          "keychain": "Keychain Access",
+          "passwords": "Passwords"
+        }
       },
       "stopKey": {
         "label": "Stop shortcut",

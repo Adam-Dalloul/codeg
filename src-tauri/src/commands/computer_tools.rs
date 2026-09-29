@@ -21,6 +21,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::acp::computer_tools::{ComputerToolsConfig, ComputerToolsRuntimeConfig};
 use crate::app_error::AppCommandError;
+use crate::computer::agent::{default_blocklist, is_removable_default, DefaultBlockView};
 use crate::computer::keys::Platform;
 use crate::computer::stop_shortcut::StopShortcut;
 use crate::db::service::app_metadata_service;
@@ -32,9 +33,15 @@ pub const KEY_COMPUTER_TOOLS_ENABLED: &str = "computer_tools.enabled";
 /// "until the user takes it back".
 pub const KEY_COMPUTER_TOOLS_GRANT_TTL_MINUTES: &str = "computer_tools.grant_ttl_minutes";
 
-/// Applications the user added to the built-in blocklist, as a JSON array of
+/// Applications the user added to the default blocklist, as a JSON array of
 /// bundle identifiers, paths or executable names.
 pub const KEY_COMPUTER_TOOLS_BLOCKLIST: &str = "computer_tools.blocklist";
+
+/// Default blocklist entries the user took off it, as a JSON array of their
+/// keys (`computer::agent::DEFAULT_BLOCKLIST`). Only the removals are kept,
+/// not the list they leave, so an entry a later release adds to the defaults
+/// is on everyone's list.
+pub const KEY_COMPUTER_TOOLS_BLOCKLIST_REMOVED: &str = "computer_tools.blocklist_removed";
 
 /// The shortcut that stops every agent at once, spelled as
 /// `computer::stop_shortcut` spells it; empty is "none". Absent is the
@@ -52,6 +59,13 @@ pub struct ComputerToolsSettings {
     pub grant_ttl_minutes: u32,
     #[serde(default)]
     pub blocklist: Vec<String>,
+    /// Keys of the default entries taken off the list.
+    #[serde(default)]
+    pub blocklist_removed: Vec<String>,
+    /// The default list as this platform names it — for the settings to
+    /// show; read, never written.
+    #[serde(default, skip_deserializing)]
+    pub blocklist_defaults: Vec<DefaultBlockView>,
     /// The stop shortcut's spelling; empty when the person switched it off.
     #[serde(default = "default_stop_shortcut")]
     pub stop_shortcut: String,
@@ -71,6 +85,8 @@ impl Default for ComputerToolsSettings {
             enabled: false,
             grant_ttl_minutes: DEFAULT_GRANT_TTL_MINUTES,
             blocklist: Vec::new(),
+            blocklist_removed: Vec::new(),
+            blocklist_defaults: default_blocklist(Platform::current()),
             stop_shortcut: default_stop_shortcut(),
         }
     }
@@ -83,6 +99,7 @@ impl ComputerToolsSettings {
             grant_ttl: (self.grant_ttl_minutes > 0)
                 .then(|| Duration::from_secs(u64::from(self.grant_ttl_minutes) * 60)),
             blocklist: normalize_blocklist(self.blocklist),
+            blocklist_removed: normalize_removed(self.blocklist_removed),
             stop_shortcut: StopShortcut::from_setting(&self.stop_shortcut, Platform::current()),
             // Kept by the runtime handle, not by the record.
             switched_off: 0,
@@ -122,6 +139,20 @@ fn normalize_blocklist(entries: Vec<String>) -> Vec<String> {
     out
 }
 
+/// The keys of default entries that may be taken off the list, once each, in
+/// the order given. A locked entry, or a key no entry has, is dropped: there
+/// is nothing it could take off.
+fn normalize_removed(keys: Vec<String>) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for key in keys {
+        let key = key.trim().to_string();
+        if is_removable_default(&key) && !out.contains(&key) {
+            out.push(key);
+        }
+    }
+    out
+}
+
 /// Read the persisted keys, falling back to the defaults for a missing or
 /// malformed value. Never errors hard.
 pub async fn load_computer_tools_settings(conn: &DatabaseConnection) -> ComputerToolsSettings {
@@ -149,6 +180,12 @@ pub async fn load_computer_tools_settings(conn: &DatabaseConnection) -> Computer
         .and_then(|r| serde_json::from_str::<Vec<String>>(&r).ok())
     {
         settings.blocklist = normalize_blocklist(v);
+    }
+    if let Some(v) = get(KEY_COMPUTER_TOOLS_BLOCKLIST_REMOVED)
+        .await
+        .and_then(|r| serde_json::from_str::<Vec<String>>(&r).ok())
+    {
+        settings.blocklist_removed = normalize_removed(v);
     }
     if let Some(v) = get(KEY_COMPUTER_TOOLS_STOP_SHORTCUT).await {
         settings.stop_shortcut = stored_stop_shortcut(&v);
@@ -191,8 +228,9 @@ pub async fn set_computer_tools_enabled_core(
     Ok(settings)
 }
 
-/// Move the grant timeout, the user's blocklist, the stop shortcut — only
-/// the ones given — leaving everything else at whatever the database says.
+/// Move the grant timeout, the user's blocklist (their additions and the
+/// defaults they took off), the stop shortcut — only the ones given —
+/// leaving everything else at whatever the database says.
 /// For the Computer use settings section, which edits these and not the
 /// switch (that one lives with the other tool groups, and in the status
 /// popover), and which sends only what the person changed: a form that
@@ -204,10 +242,15 @@ pub async fn set_computer_tools_preferences_core(
     emitter: &EventEmitter,
     grant_ttl_minutes: Option<u32>,
     blocklist: Option<Vec<String>>,
+    blocklist_removed: Option<Vec<String>>,
     stop_shortcut: Option<String>,
 ) -> Result<ComputerToolsSettings, AppCommandError> {
     let blocklist = blocklist
         .map(|list| serde_json::to_string(&normalize_blocklist(list)))
+        .transpose()
+        .map_err(|e| AppCommandError::configuration_invalid(e.to_string()))?;
+    let blocklist_removed = blocklist_removed
+        .map(|keys| serde_json::to_string(&normalize_removed(keys)))
         .transpose()
         .map_err(|e| AppCommandError::configuration_invalid(e.to_string()))?;
     let stop_shortcut = stop_shortcut
@@ -217,6 +260,7 @@ pub async fn set_computer_tools_preferences_core(
     let writes: Vec<(&str, String)> = [
         grant_ttl_minutes.map(|m| (KEY_COMPUTER_TOOLS_GRANT_TTL_MINUTES, m.to_string())),
         blocklist.map(|list| (KEY_COMPUTER_TOOLS_BLOCKLIST, list)),
+        blocklist_removed.map(|keys| (KEY_COMPUTER_TOOLS_BLOCKLIST_REMOVED, keys)),
         stop_shortcut.map(|s| (KEY_COMPUTER_TOOLS_STOP_SHORTCUT, s)),
     ]
     .into_iter()
@@ -247,11 +291,15 @@ pub async fn set_computer_tools_settings_core(
 ) -> Result<ComputerToolsSettings, AppCommandError> {
     let desired = ComputerToolsSettings {
         blocklist: normalize_blocklist(desired.blocklist),
+        blocklist_removed: normalize_removed(desired.blocklist_removed),
+        blocklist_defaults: default_blocklist(Platform::current()),
         stop_shortcut: checked_stop_shortcut(&desired.stop_shortcut)?,
         ..desired
     };
     let _guard = COMPUTER_TOOLS_WRITE_LOCK.lock().await;
     let blocklist = serde_json::to_string(&desired.blocklist)
+        .map_err(|e| AppCommandError::configuration_invalid(e.to_string()))?;
+    let blocklist_removed = serde_json::to_string(&desired.blocklist_removed)
         .map_err(|e| AppCommandError::configuration_invalid(e.to_string()))?;
     for (key, value) in [
         (KEY_COMPUTER_TOOLS_ENABLED, desired.enabled.to_string()),
@@ -260,6 +308,7 @@ pub async fn set_computer_tools_settings_core(
             desired.grant_ttl_minutes.to_string(),
         ),
         (KEY_COMPUTER_TOOLS_BLOCKLIST, blocklist),
+        (KEY_COMPUTER_TOOLS_BLOCKLIST_REMOVED, blocklist_removed),
         (
             KEY_COMPUTER_TOOLS_STOP_SHORTCUT,
             desired.stop_shortcut.clone(),
@@ -335,6 +384,7 @@ pub async fn set_computer_tools_preferences(
     #[cfg(feature = "tauri-runtime")] config: tauri::State<'_, ComputerToolsRuntimeConfig>,
     grant_ttl_minutes: Option<u32>,
     blocklist: Option<Vec<String>>,
+    blocklist_removed: Option<Vec<String>>,
     stop_shortcut: Option<String>,
 ) -> Result<ComputerToolsSettings, AppCommandError> {
     #[cfg(feature = "tauri-runtime")]
@@ -346,13 +396,19 @@ pub async fn set_computer_tools_preferences(
             &emitter,
             grant_ttl_minutes,
             blocklist,
+            blocklist_removed,
             stop_shortcut,
         )
         .await
     }
     #[cfg(not(feature = "tauri-runtime"))]
     {
-        let _ = (grant_ttl_minutes, blocklist, stop_shortcut);
+        let _ = (
+            grant_ttl_minutes,
+            blocklist,
+            blocklist_removed,
+            stop_shortcut,
+        );
         Err(AppCommandError::configuration_invalid("tauri-only command"))
     }
 }
@@ -388,11 +444,20 @@ mod tests {
                 "COM.EXAMPLE.VAULT".into(),
                 "keepass.exe".into(),
             ],
+            blocklist_removed: vec![
+                "1password".into(),
+                "system-settings".into(),
+                " 1password ".into(),
+                "no-such-entry".into(),
+            ],
+            blocklist_defaults: Vec::new(),
             stop_shortcut: String::new(),
         }
         .into_runtime_config();
         assert_eq!(cfg.grant_ttl, None);
         assert_eq!(cfg.blocklist, vec!["com.example.Vault", "keepass.exe"]);
+        // Only a default that may be taken off is, and once.
+        assert_eq!(cfg.blocklist_removed, vec!["1password"]);
         assert_eq!(cfg.stop_shortcut, None);
 
         let cfg = ComputerToolsSettings::default().into_runtime_config();
@@ -413,22 +478,47 @@ mod tests {
             &emitter,
             None,
             Some(vec!["com.example.Vault".into()]),
+            Some(vec!["bitwarden".into()]),
             None,
         )
         .await
         .unwrap();
-        let saved =
-            set_computer_tools_preferences_core(&db.conn, &config, &emitter, Some(10), None, None)
-                .await
-                .unwrap();
+        let saved = set_computer_tools_preferences_core(
+            &db.conn,
+            &config,
+            &emitter,
+            Some(10),
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
         assert_eq!(saved.grant_ttl_minutes, 10);
         assert_eq!(saved.blocklist, vec!["com.example.Vault"]);
+        assert_eq!(saved.blocklist_removed, vec!["bitwarden"]);
         assert_eq!(config.snapshot().await.blocklist, vec!["com.example.Vault"]);
-        let untouched =
-            set_computer_tools_preferences_core(&db.conn, &config, &emitter, None, None, None)
-                .await
-                .unwrap();
+        assert_eq!(config.snapshot().await.blocklist_removed, vec!["bitwarden"]);
+        let untouched = set_computer_tools_preferences_core(
+            &db.conn, &config, &emitter, None, None, None, None,
+        )
+        .await
+        .unwrap();
         assert_eq!(untouched, saved);
+        // Back to the defaults: nothing added, nothing taken off.
+        let restored = set_computer_tools_preferences_core(
+            &db.conn,
+            &config,
+            &emitter,
+            None,
+            Some(vec![]),
+            Some(vec![]),
+            None,
+        )
+        .await
+        .unwrap();
+        assert!(restored.blocklist.is_empty() && restored.blocklist_removed.is_empty());
+        assert!(!restored.blocklist_defaults.is_empty());
     }
 
     /// The stop shortcut is saved as the one spelling, switched off as empty,
@@ -444,6 +534,7 @@ mod tests {
                 &db.conn,
                 &config,
                 &emitter,
+                None,
                 None,
                 None,
                 Some(spelling.to_string()),
@@ -497,6 +588,27 @@ mod tests {
             serde_json::from_value(serde_json::json!({ "enabled": true })).unwrap();
         assert!(parsed.enabled);
         assert_eq!(parsed.grant_ttl_minutes, DEFAULT_GRANT_TTL_MINUTES);
+        assert!(parsed.blocklist_removed.is_empty());
         assert_eq!(parsed.stop_shortcut, default_stop_shortcut());
+    }
+
+    /// A stored removal of a locked entry, or of one no release knows, reads
+    /// as nothing taken off.
+    #[tokio::test]
+    async fn a_stored_removal_of_a_locked_entry_reads_as_none() {
+        let db = crate::db::test_helpers::fresh_in_memory_db().await;
+        app_metadata_service::upsert_value(
+            &db.conn,
+            KEY_COMPUTER_TOOLS_BLOCKLIST_REMOVED,
+            r#"["system-settings","credential-prompts","gone","keepassxc"]"#,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            load_computer_tools_settings(&db.conn)
+                .await
+                .blocklist_removed,
+            vec!["keepassxc"]
+        );
     }
 }

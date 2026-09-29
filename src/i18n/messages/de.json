@@ -5177,14 +5177,16 @@
     },
     "driver": "cua-driver {version}",
     "devBuild": "Entwicklungs-Build: Der Helfer prüft nicht, welches Programm ihn aufruft.",
+    "devTag": "Entwicklungs-Build",
     "permissions": {
       "accessibility": "Bedienungshilfen",
       "screenRecording": "Bildschirmaufnahme",
       "granted": "Erteilt",
-      "request": "Anfordern",
-      "openSettings": "Einstellungen öffnen",
-      "why": "Erteile sie codeg-computer-helper, nicht codeg. Bildschirmaufnahme dient Bildschirmfotos, Bedienungshilfen dem Lesen von Fenstern und dem Handeln darin.",
-      "whyDev": "Erteile sie codeg-computer-helper. macOS hält jeden neu kompilierten Entwicklungs-Build für ein neues Programm: Entferne den alten Eintrag codeg-computer-helper in den Systemeinstellungen und erteile die Berechtigung erneut."
+      "request": "Erteilen…",
+      "why": "Aktiviere codeg-computer-helper in den Systemeinstellungen – nicht codeg. Bildschirmaufnahme lässt ihn Fenster sehen, Bedienungshilfen lassen ihn sie lesen und darin handeln.",
+      "devRebuild": "In einem Entwicklungs-Build macht jeder Neubau die alte Berechtigung ungültig: Entferne zuerst den alten codeg-computer-helper aus der Liste und erteile sie dann erneut.",
+      "notListed": "Fehlt codeg-computer-helper in der Liste, zieh ihn aus dem Finder hinein:",
+      "reveal": "Im Finder zeigen"
     },
     "shared": {
       "title": "{count, plural, =0 {Keine Fenster freigegeben} one {# Fenster freigegeben} other {# Fenster freigegeben}}",
@@ -5246,7 +5248,7 @@
       "skipped": "{count, plural, one {# Fenster konnte nicht freigegeben werden; es wurde vielleicht geschlossen.} other {# Fenster konnten nicht freigegeben werden; sie wurden vielleicht geschlossen.}}",
       "unshareable": "{count, plural, one {# Fenster lässt sich nicht freigeben} other {# Fenster lassen sich nicht freigeben}}",
       "noneShareable": "Keines dieser Fenster lässt sich freigeben.",
-      "codegWhy": "Fenster von codeg werden nie freigegeben: Ein Agent, der codeg bedienen könnte, könnte seine eigenen Anfragen genehmigen, sich weitere Fenster freigeben oder nach deinem Anhalten auf Fortsetzen drücken. Ein anderes codeg, etwa ein Entwicklungs-Build, bleibt aus demselben Grund außen vor – es könnte die Fenster dieses codeg zurück freigeben."
+      "codegWhy": "Fenster von codeg werden nie freigegeben: Ein Agent, der codeg bedienen könnte, könnte seine eigenen Anfragen genehmigen, sich weitere Fenster freigeben oder nach deinem Anhalten auf Fortsetzen drücken. Dasselbe gilt für andere codeg-Instanzen."
     },
     "settings": {
       "pageTitle": "Computernutzung",
@@ -5293,9 +5295,22 @@
         "never": "Nie (bis ich sie beende)"
       },
       "blocklist": {
-        "label": "Anwendungen, die nie freigegeben werden können",
-        "hint": "Eine pro Zeile: eine Bundle-ID (com.example.app), ein Programmname (app.exe) oder ein vollständiger Pfad. Die eingebaute Liste – Passwortmanager, Passwortabfragen des Systems, Systemeinstellungen – gilt immer.",
-        "placeholder": "com.example.app"
+        "label": "Nie freigegebene Anwendungen",
+        "hint": "Ihre Fenster können nicht für Agenten freigegeben werden. Entferne Standardeinträge, die du nicht brauchst (gesperrte bleiben), oder füge eine Anwendung per Bundle-ID (com.example.app), Programmname (app.exe) oder vollständigem Pfad hinzu.",
+        "placeholder": "com.example.app",
+        "add": "Hinzufügen",
+        "remove": "{name} entfernen",
+        "restore": "Standard wiederherstellen",
+        "locked": "Schützt das System und die Computernutzung selbst und kann daher nicht entfernt werden.",
+        "custom": "Von dir hinzugefügt",
+        "duplicate": "Steht schon auf der Liste.",
+        "removedCount": "{count, plural, one {# Standardeintrag entfernt.} other {# Standardeinträge entfernt.}}",
+        "items": {
+          "systemSettings": "Systemeinstellungen",
+          "credentialPrompts": "Passwort- und Berechtigungsabfragen des Systems",
+          "keychain": "Schlüsselbundverwaltung",
+          "passwords": "Passwörter"
+        }
       },
       "stopKey": {
         "label": "Tastenkürzel zum Anhalten",
