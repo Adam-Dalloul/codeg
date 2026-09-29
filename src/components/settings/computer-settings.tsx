@@ -52,6 +52,7 @@ import {
   AlertDialogFooter,
   AlertDialogHeader,
   AlertDialogTitle,
+  AlertDialogTrigger,
 } from "@/components/ui/alert-dialog"
 import { Button } from "@/components/ui/button"
 import {
@@ -442,128 +443,131 @@ function BlocklistRow({
     setDraft("")
   }
 
+  // The dialog's root holds the whole row: the button that opens it is its
+  // trigger, which is where the focus goes back to when it closes.
   return (
-    <SettingRow
-      title={t("blocklist.label")}
-      description={t("blocklist.hint")}
-      htmlFor="computer-blocklist"
-      control={
-        <Button
-          size="xs"
-          variant="ghost"
-          onClick={() => setConfirmRestore(true)}
-          disabled={disabled || atDefaults}
-        >
-          <RotateCcw className="size-3" />
-          {t("blocklist.restore")}
-        </Button>
-      }
-    >
-      <div className="space-y-2">
-        <ul className="divide-y overflow-hidden rounded-lg border">
-          {shown.map((entry) => (
-            <li
-              key={entry.key}
-              className="flex items-center justify-between gap-3 px-3 py-1.5"
-            >
-              <span className="min-w-0">
-                <span className="block truncate text-sm">{nameOf(entry)}</span>
-                <span
-                  className="block truncate font-mono text-2xs text-muted-foreground"
-                  title={entry.names.join("\n")}
+    <AlertDialog open={confirmRestore} onOpenChange={setConfirmRestore}>
+      <SettingRow
+        title={t("blocklist.label")}
+        description={t("blocklist.hint")}
+        htmlFor="computer-blocklist"
+        control={
+          <AlertDialogTrigger asChild>
+            <Button size="xs" variant="ghost" disabled={disabled || atDefaults}>
+              <RotateCcw className="size-3" />
+              {t("blocklist.restore")}
+            </Button>
+          </AlertDialogTrigger>
+        }
+      >
+        <div className="space-y-2">
+          <ul className="divide-y overflow-hidden rounded-lg border">
+            {shown.map((entry) => (
+              <li
+                key={entry.key}
+                className="flex items-center justify-between gap-3 px-3 py-1.5"
+              >
+                <span className="min-w-0">
+                  <span className="block truncate text-sm">
+                    {nameOf(entry)}
+                  </span>
+                  <span
+                    className="block truncate font-mono text-2xs text-muted-foreground"
+                    title={entry.names.join("\n")}
+                  >
+                    {entry.names.join(" · ")}
+                  </span>
+                </span>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  className="size-7 shrink-0"
+                  disabled={disabled}
+                  title={t("blocklist.remove", { name: nameOf(entry) })}
+                  aria-label={t("blocklist.remove", { name: nameOf(entry) })}
+                  onClick={() =>
+                    onChange([...blocklist], [...removed, entry.key])
+                  }
                 >
-                  {entry.names.join(" · ")}
-                </span>
-              </span>
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon"
-                className="size-7 shrink-0"
-                disabled={disabled}
-                title={t("blocklist.remove", { name: nameOf(entry) })}
-                aria-label={t("blocklist.remove", { name: nameOf(entry) })}
-                onClick={() =>
-                  onChange([...blocklist], [...removed, entry.key])
-                }
+                  <X className="size-3.5" />
+                </Button>
+              </li>
+            ))}
+            {blocklist.map((entry) => (
+              <li
+                key={entry}
+                className="flex items-center justify-between gap-3 px-3 py-1.5"
               >
-                <X className="size-3.5" />
-              </Button>
-            </li>
-          ))}
-          {blocklist.map((entry) => (
-            <li
-              key={entry}
-              className="flex items-center justify-between gap-3 px-3 py-1.5"
+                <span className="min-w-0">
+                  <span className="block truncate font-mono text-xs">
+                    {entry}
+                  </span>
+                  <span className="block truncate text-2xs text-muted-foreground">
+                    {t("blocklist.custom")}
+                  </span>
+                </span>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  className="size-7 shrink-0"
+                  disabled={disabled}
+                  title={t("blocklist.remove", { name: entry })}
+                  aria-label={t("blocklist.remove", { name: entry })}
+                  onClick={() =>
+                    onChange(
+                      blocklist.filter((e) => e !== entry),
+                      [...removed]
+                    )
+                  }
+                >
+                  <X className="size-3.5" />
+                </Button>
+              </li>
+            ))}
+          </ul>
+          <div className="flex items-center gap-2">
+            <Input
+              id="computer-blocklist"
+              value={draft}
+              onChange={(e) => {
+                setDraft(e.target.value)
+                setDuplicate(false)
+              }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.nativeEvent.isComposing) {
+                  e.preventDefault()
+                  add()
+                }
+              }}
+              placeholder={t("blocklist.placeholder")}
+              disabled={disabled}
+              className="h-8 font-mono text-xs"
+            />
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              onClick={add}
+              disabled={disabled || !draft.trim()}
             >
-              <span className="min-w-0">
-                <span className="block truncate font-mono text-xs">
-                  {entry}
-                </span>
-                <span className="block truncate text-2xs text-muted-foreground">
-                  {t("blocklist.custom")}
-                </span>
-              </span>
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon"
-                className="size-7 shrink-0"
-                disabled={disabled}
-                title={t("blocklist.remove", { name: entry })}
-                aria-label={t("blocklist.remove", { name: entry })}
-                onClick={() =>
-                  onChange(
-                    blocklist.filter((e) => e !== entry),
-                    [...removed]
-                  )
-                }
-              >
-                <X className="size-3.5" />
-              </Button>
-            </li>
-          ))}
-        </ul>
-        <div className="flex items-center gap-2">
-          <Input
-            id="computer-blocklist"
-            value={draft}
-            onChange={(e) => {
-              setDraft(e.target.value)
-              setDuplicate(false)
-            }}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.nativeEvent.isComposing) {
-                e.preventDefault()
-                add()
-              }
-            }}
-            placeholder={t("blocklist.placeholder")}
-            disabled={disabled}
-            className="h-8 font-mono text-xs"
-          />
-          <Button
-            type="button"
-            size="sm"
-            variant="outline"
-            onClick={add}
-            disabled={disabled || !draft.trim()}
-          >
-            <Plus className="size-3.5" />
-            {t("blocklist.add")}
-          </Button>
+              <Plus className="size-3.5" />
+              {t("blocklist.add")}
+            </Button>
+          </div>
+          {duplicate && (
+            <p className="text-xs text-destructive">
+              {t("blocklist.duplicate")}
+            </p>
+          )}
+          {removedCount > 0 && (
+            <p className="text-xs text-muted-foreground">
+              {t("blocklist.removedCount", { count: removedCount })}
+            </p>
+          )}
         </div>
-        {duplicate && (
-          <p className="text-xs text-destructive">{t("blocklist.duplicate")}</p>
-        )}
-        {removedCount > 0 && (
-          <p className="text-xs text-muted-foreground">
-            {t("blocklist.removedCount", { count: removedCount })}
-          </p>
-        )}
-      </div>
 
-      <AlertDialog open={confirmRestore} onOpenChange={setConfirmRestore}>
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>
@@ -600,8 +604,8 @@ function BlocklistRow({
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
-      </AlertDialog>
-    </SettingRow>
+      </SettingRow>
+    </AlertDialog>
   )
 }
 

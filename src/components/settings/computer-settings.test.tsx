@@ -181,18 +181,22 @@ describe("ComputerSettingsSection", () => {
   })
 
   /** Restoring asks first — the person's own entries go with it — and
-   * backing out of the question changes nothing. */
+   * backing out of the question changes nothing, and puts the focus back on
+   * the button it was asked from. */
   it("leaves the list alone when the restore is not confirmed", async () => {
     mount()
     const box = await screen.findByLabelText(LABEL)
     await waitFor(() => expect(box).not.toBeDisabled())
-    fireEvent.click(screen.getByRole("button", { name: "Restore defaults" }))
+    const restore = screen.getByRole("button", { name: "Restore defaults" })
+    restore.focus()
+    fireEvent.click(restore)
     const confirm = await screen.findByRole("alertdialog")
     expect(within(confirm).queryByText(/default apps? you removed/)).toBeNull()
     fireEvent.click(within(confirm).getByRole("button", { name: "Cancel" }))
     await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull())
     expect(screen.getByText("com.example.vault")).toBeInTheDocument()
     expect(screen.getByRole("button", { name: "Save" })).toBeDisabled()
+    await waitFor(() => expect(restore).toHaveFocus())
   })
 
   /** An entry already on the list is refused; a default that was taken off
