@@ -7957,7 +7957,7 @@ async fn hermes_setup_argvs() -> (Vec<String>, Vec<String>) {
         // Unreachable: Hermes is always an Npx distribution. Fall through to
         // the npx guidance with the same pinned spec so a future match-arm
         // change can't resurrect a stale recipe.
-        _ => "hermes-agent@0.21.4",
+        _ => "hermes-agent@0.21.5",
     };
     let build = |tail: &[&str]| -> Vec<String> {
         let mut argv = vec![
@@ -17811,7 +17811,7 @@ wire_api = "chat"
     // either one can be the spec that actually lands.
     #[test]
     fn the_latest_spec_still_names_the_package_downstream_readers_key_off() {
-        let (latest, pinned) = npm_install_attempts("hermes-agent@0.21.4", None, true).unwrap();
+        let (latest, pinned) = npm_install_attempts("hermes-agent@0.21.5", None, true).unwrap();
         assert_eq!(latest, "hermes-agent@latest");
         assert!(npm_package_requires_scripts(&latest));
         assert!(npm_package_requires_scripts(&pinned.unwrap()));
@@ -19279,7 +19279,7 @@ wire_api = "chat"
                     .expect("npx recipe must pin via --package");
                 assert_eq!(
                     argv.get(pkg_idx + 1).map(String::as_str),
-                    Some("hermes-agent@0.21.4")
+                    Some("hermes-agent@0.21.5")
                 );
                 assert_eq!(argv.get(pkg_idx + 2).map(String::as_str), Some("hermes"));
             } else {
@@ -19891,7 +19891,7 @@ model = "gpt"
             )
         };
 
-        let annotated = annotate_npm_bootstrap_failure("hermes-agent@0.21.4", download());
+        let annotated = annotate_npm_bootstrap_failure("hermes-agent@0.21.5", download());
         let text = annotated.to_string();
         assert!(text.contains("fetch failed"), "keeps the original error");
         assert!(text.contains("HTTP(S)_PROXY"), "adds the proxy hint");
@@ -19903,7 +19903,7 @@ model = "gpt"
 
         // A hermes failure that isn't a download stays untouched.
         let permissions = annotate_npm_bootstrap_failure(
-            "hermes-agent@0.21.4",
+            "hermes-agent@0.21.5",
             AcpError::Protocol("failed to install npm package globally: EACCES".to_string()),
         );
         assert!(!permissions.to_string().contains("HTTP(S)_PROXY"));
