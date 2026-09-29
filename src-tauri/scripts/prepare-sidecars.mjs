@@ -23,7 +23,10 @@
 //   - Local `pnpm tauri dev` / `pnpm tauri build` invoke it without args and
 //     get a host-triple build, so the externalBin lookup still finds a file.
 //   - Skippable: set `CODEG_SKIP_SIDECAR=1` when iterating on the frontend
-//     and you don't care about delegation.
+//     and you don't care about delegation or computer use: a development
+//     codeg refuses a computer helper built from other sources than its own,
+//     so after a change under `src-tauri/src/computer/` run this script once
+//     (it is what rebuilds the helper) and restart `pnpm tauri dev`.
 //
 // Intentionally Node-only (no shell): runs identically on macOS, Linux,
 // Windows GitHub runners.
@@ -76,6 +79,10 @@ function resolveHostTriple() {
 function main() {
   if (process.env.CODEG_SKIP_SIDECAR === "1") {
     log("CODEG_SKIP_SIDECAR=1 — skipping sidecar preparation")
+    log(
+      "computer use refuses a helper older than src-tauri/src/computer/; " +
+        "run `pnpm tauri:prepare-sidecars` after changing it"
+    )
     return
   }
 

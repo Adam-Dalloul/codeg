@@ -10,10 +10,11 @@ fn main() {
 /// A fingerprint of the sources `codeg-computer-helper` is built from,
 /// compiled into it and into codeg alike (`CODEG_COMPUTER_SOURCE`). A
 /// development codeg refuses a helper whose fingerprint is not its own:
-/// `pnpm tauri dev` builds the helper once, as it starts, and only codeg after
-/// that, so a helper left over from before an edit would go on answering with
-/// the old code (see `computer::local`). Changes elsewhere in the crate that
-/// the helper also compiles in are not seen; they seldom touch it.
+/// `pnpm tauri dev` builds the helper once, as it starts (not at all under
+/// `CODEG_SKIP_SIDECAR=1`), and only codeg after that, so a helper left over
+/// from before an edit would go on answering with the old code (see
+/// `computer::local`). Changes elsewhere in the crate that the helper also
+/// compiles in are not seen; they seldom touch it.
 ///
 /// FNV-1a over each file's path and bytes, in path order — the same on every
 /// toolchain, which `DefaultHasher` does not promise.

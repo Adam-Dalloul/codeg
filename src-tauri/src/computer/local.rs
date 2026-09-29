@@ -18,7 +18,8 @@
 //! later frame against the process it verified. A development codeg checks
 //! instead that the helper was built from its own sources (the fingerprint
 //! `build.rs` compiles into both): `pnpm tauri dev` rebuilds only codeg after
-//! an edit, and a helper left over would answer with the old code.
+//! an edit — and not the helper at all under `CODEG_SKIP_SIDECAR=1` — and a
+//! helper left over would answer with the old code.
 //!
 //! **Life.** One helper per codeg, started on first use, restarted on the next
 //! call after it dies, stopped when computer use is switched off — and not
@@ -724,13 +725,15 @@ async fn launch(path: &std::path::Path) -> Result<Arc<Connection>, BackendError>
 
 /// Why a development codeg will not use a helper built from other sources
 /// than its own — which is what `pnpm tauri dev` leaves running after an edit:
-/// it builds the helper once, as it starts, and only codeg after that, and a
-/// stale helper answers with code that is no longer there. A release codeg
-/// ships with its own helper and does not ask.
+/// it builds the helper once, as it starts (never, under
+/// `CODEG_SKIP_SIDECAR=1`), and only codeg after that, and a stale helper
+/// answers with code that is no longer there. The words name the step that
+/// rebuilds it. A release codeg ships with its own helper and does not ask.
 fn stale_development_helper(source: Option<&str>) -> Option<&'static str> {
     (cfg!(debug_assertions) && source != Some(SOURCE_FINGERPRINT)).then_some(
-        "this development build's helper was built from older sources — restart \
-         `pnpm tauri dev` to rebuild it",
+        "this development build's helper was built from other sources — run \
+         `pnpm tauri:prepare-sidecars` (which `pnpm tauri dev` skips under \
+         CODEG_SKIP_SIDECAR=1), then restart `pnpm tauri dev`",
     )
 }
 
@@ -979,7 +982,8 @@ mod tests {
     fn a_development_codeg_refuses_a_stale_helper() {
         assert_eq!(stale_development_helper(Some(SOURCE_FINGERPRINT)), None);
         assert!(stale_development_helper(Some("0000000000000000")).is_some());
-        assert!(stale_development_helper(None).is_some_and(|why| why.contains("pnpm tauri dev")));
+        assert!(stale_development_helper(None)
+            .is_some_and(|why| why.contains("pnpm tauri:prepare-sidecars")));
     }
 
     /// A Stop holds in the backend itself, with no helper running to hear it:
