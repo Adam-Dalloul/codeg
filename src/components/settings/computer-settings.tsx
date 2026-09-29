@@ -16,8 +16,9 @@
  * password prompts, System Settings — less the ones the person took off,
  * plus their own. Every default can be taken off: none is out of an agent's
  * reach for want of a way, only for what it holds, and that is the person's
- * call. "Restore defaults" takes off everything added and puts back
- * everything removed; like every edit here it is saved with Save.
+ * call. "Restore defaults" — once confirmed — takes off everything added
+ * and puts back everything removed; like every edit here it is saved with
+ * Save.
  *
  * Each field is its own edit. Save sends only the fields this form changed,
  * and another window's save moves every field this form has not touched: a
@@ -42,6 +43,16 @@ import { toast } from "sonner"
 
 import { useIsMac } from "@/hooks/use-is-mac"
 
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog"
 import { Button } from "@/components/ui/button"
 import {
   SettingCard,
@@ -374,7 +385,9 @@ const SYSTEM_ENTRY_NAMES = {
 /**
  * The never-share list: the default entries not taken off, each with a
  * remove button, then the person's own, then a field to add one. Typing a
- * default that was taken off puts it back.
+ * default that was taken off puts it back. "Restore defaults" asks first,
+ * saying what it would take off and put back: the person's own entries go
+ * with it.
  */
 function BlocklistRow({
   defaults,
@@ -392,6 +405,7 @@ function BlocklistRow({
   const t = useTranslations("ComputerUse.settings")
   const [draft, setDraft] = useState("")
   const [duplicate, setDuplicate] = useState(false)
+  const [confirmRestore, setConfirmRestore] = useState(false)
   const shown = defaults.filter((entry) => !removed.includes(entry.key))
   const removedCount = defaults.length - shown.length
   const atDefaults = blocklist.length === 0 && removedCount === 0
@@ -437,10 +451,7 @@ function BlocklistRow({
         <Button
           size="xs"
           variant="ghost"
-          onClick={() => {
-            onChange([], [])
-            setDuplicate(false)
-          }}
+          onClick={() => setConfirmRestore(true)}
           disabled={disabled || atDefaults}
         >
           <RotateCcw className="size-3" />
@@ -551,6 +562,45 @@ function BlocklistRow({
           </p>
         )}
       </div>
+
+      <AlertDialog open={confirmRestore} onOpenChange={setConfirmRestore}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              {t("blocklist.restoreConfirmTitle")}
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {blocklist.length > 0 && (
+                <span className="block">
+                  {t("blocklist.restoreConfirmAdded", {
+                    count: blocklist.length,
+                  })}
+                </span>
+              )}
+              {removedCount > 0 && (
+                <span className="block">
+                  {t("blocklist.restoreConfirmRemoved", {
+                    count: removedCount,
+                  })}
+                </span>
+              )}
+              <span className="block">{t("blocklist.restoreConfirmSave")}</span>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>{t("blocklist.cancel")}</AlertDialogCancel>
+            <AlertDialogAction
+              disabled={disabled}
+              onClick={() => {
+                onChange([], [])
+                setDuplicate(false)
+              }}
+            >
+              {t("blocklist.restore")}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </SettingRow>
   )
 }

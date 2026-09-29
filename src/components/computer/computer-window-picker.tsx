@@ -31,6 +31,7 @@ import { useCallback, useEffect, useRef, useState } from "react"
 import { useTranslations } from "next-intl"
 import {
   AppWindow,
+  Check,
   ChevronDown,
   ChevronRight,
   Eye,
@@ -39,6 +40,7 @@ import {
   MousePointerClick,
   RotateCw,
   ShieldOff,
+  TriangleAlert,
 } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
@@ -62,6 +64,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import { ScrollArea } from "@/components/ui/scroll-area"
+import { Skeleton } from "@/components/ui/skeleton"
 import { toErrorMessage } from "@/lib/app-error"
 import {
   computerAvailable,
@@ -84,17 +87,14 @@ import type {
 import { useComputerStatus } from "@/lib/computer/use-computer-status"
 import { cn } from "@/lib/utils"
 
-function ThumbnailFrame({ children }: { children: React.ReactNode }) {
-  return (
-    <div className="flex aspect-video w-full items-center justify-center overflow-hidden rounded-md border bg-muted/40">
-      {children}
-    </div>
-  )
-}
+/** Tiles as wide as fit, none narrower than this: four across the dialog at
+ *  its widest, fewer as the window narrows. */
+const GRID = "grid grid-cols-[repeat(auto-fill,minmax(11.5rem,1fr))] gap-3"
 
 /** A picture of one shareable window, fetched once. Keyed by the caller on
  *  the target id and on the picker's picture round, so a different window —
- *  or the same one asked for again — is a fresh component. */
+ *  or the same one asked for again — is a fresh component. Shown whole, as
+ *  a window on a backdrop, whatever its shape. */
 function Thumbnail({ targetId }: { targetId: string }) {
   const [src, setSrc] = useState<string | null | undefined>(undefined)
   useEffect(() => {
@@ -112,16 +112,155 @@ function Thumbnail({ targetId }: { targetId: string }) {
   }, [targetId])
 
   return (
-    <ThumbnailFrame>
-      {src === undefined ? (
-        <Loader2 className="size-4 animate-spin text-muted-foreground" />
-      ) : src ? (
+    <div className="relative aspect-video w-full bg-muted/60">
+      {src ? (
         // eslint-disable-next-line @next/next/no-img-element -- a data: URL from the helper, not a route next/image could optimise
-        <img src={src} alt="" className="size-full object-contain" />
+        <img
+          src={src}
+          alt=""
+          className="absolute inset-0 m-auto max-h-[calc(100%-1rem)] max-w-[calc(100%-1rem)] rounded-[3px] shadow-sm ring-1 ring-black/5 dark:ring-white/10"
+        />
       ) : (
-        <AppWindow className="size-5 text-muted-foreground/60" />
+        <div className="absolute inset-0 flex items-center justify-center">
+          {src === undefined ? (
+            <Loader2 className="size-4 animate-spin text-muted-foreground" />
+          ) : (
+            <AppWindow className="size-6 text-muted-foreground/50" />
+          )}
+        </div>
       )}
-    </ThumbnailFrame>
+    </div>
+  )
+}
+
+/** One shareable window: its picture, whose it is, and the menu that sets
+ *  how far it is shared. The tile takes the colour of its level — violet
+ *  to be read, red to be acted on — as the strip over the screen does. */
+function WindowTile({
+  item: w,
+  level,
+  busy,
+  disabled,
+  pictures,
+  onLevel,
+}: {
+  item: PickerWindow
+  level: GrantLevel
+  busy: boolean
+  disabled: boolean
+  /** The picker's picture round, part of the picture's key. */
+  pictures: number
+  onLevel: (next: GrantLevel) => void
+}) {
+  const t = useTranslations("ComputerUse.picker")
+  return (
+    <div
+      className={cn(
+        "flex flex-col overflow-hidden rounded-2xl border bg-card transition-[border-color,box-shadow]",
+        level === "none" && "hover:border-foreground/20",
+        level === "read" && "border-violet-500/70 ring-2 ring-violet-500/15",
+        level === "control" && "border-red-500/70 ring-2 ring-red-500/15"
+      )}
+    >
+      <div className="relative">
+        <Thumbnail key={`${w.targetId}:${pictures}`} targetId={w.targetId} />
+        {w.minimized && (
+          <span className="absolute start-2 top-2 rounded-full bg-background/85 px-2 py-0.5 text-2xs text-muted-foreground shadow-sm backdrop-blur-sm">
+            {t("minimized")}
+          </span>
+        )}
+      </div>
+      <div className="space-y-0.5 border-t px-2.5 pt-2 pb-2.5">
+        {/* The title gets a line of its own, the width of the tile: it is
+            what tells two windows of one application apart. */}
+        <div className="flex items-center gap-2">
+          <p
+            className="min-w-0 flex-1 truncate text-xs font-medium"
+            title={w.appName}
+          >
+            {w.appName || t("unnamedApp")}
+          </p>
+          <LevelMenu
+            level={level}
+            busy={busy}
+            disabled={disabled}
+            onLevel={onLevel}
+          />
+        </div>
+        <p className="truncate text-2xs text-muted-foreground" title={w.title}>
+          {w.title || t("untitled")}
+        </p>
+      </div>
+    </div>
+  )
+}
+
+/** The menu that sets how far one window is shared, on a button that says
+ *  how far it is now. */
+function LevelMenu({
+  level,
+  busy,
+  disabled,
+  onLevel,
+}: {
+  level: GrantLevel
+  busy: boolean
+  disabled: boolean
+  onLevel: (next: GrantLevel) => void
+}) {
+  const t = useTranslations("ComputerUse.picker")
+  const option = (next: "read" | "control") => (
+    <DropdownMenuItem disabled={level === next} onSelect={() => onLevel(next)}>
+      {next === "read" ? (
+        <Eye className="size-3.5" />
+      ) : (
+        <MousePointerClick className="size-3.5" />
+      )}
+      {t(next === "read" ? "shareRead" : "shareControl")}
+      {level === next && <Check className="ms-auto size-3.5" />}
+    </DropdownMenuItem>
+  )
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button
+          size="xs"
+          variant="outline"
+          disabled={disabled}
+          className={cn(
+            level === "read" &&
+              "border-violet-500/40 bg-violet-500/10 text-violet-700 hover:bg-violet-500/20 hover:text-violet-700 aria-expanded:bg-violet-500/20 aria-expanded:text-violet-700 dark:text-violet-300 dark:hover:text-violet-300 dark:aria-expanded:text-violet-300",
+            level === "control" &&
+              "border-red-500/40 bg-red-500/10 text-red-600 hover:bg-red-500/20 hover:text-red-600 aria-expanded:bg-red-500/20 aria-expanded:text-red-600 dark:text-red-400 dark:hover:text-red-400 dark:aria-expanded:text-red-400"
+          )}
+        >
+          {busy ? (
+            <Loader2 className="animate-spin" />
+          ) : level === "control" ? (
+            <MousePointerClick />
+          ) : level === "read" ? (
+            <Eye />
+          ) : null}
+          {level === "none"
+            ? t("share")
+            : t(level === "control" ? "sharedControl" : "sharedRead")}
+          <ChevronDown className="opacity-60" />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="min-w-56">
+        {option("read")}
+        {option("control")}
+        {level !== "none" && (
+          <>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem onSelect={() => onLevel("none")}>
+              <ShieldOff className="size-3.5" />
+              {t("stopSharing")}
+            </DropdownMenuItem>
+          </>
+        )}
+      </DropdownMenuContent>
+    </DropdownMenu>
   )
 }
 
@@ -213,7 +352,8 @@ export function ComputerWindowPicker({
       (w): w is PickerWindow & { notGrantable: NotGrantable } =>
         !!w.notGrantable
     ) ?? []
-  const anyShared = shareable.some((w) => levelOf(w) !== "none")
+  const sharedCount = shareable.filter((w) => levelOf(w) !== "none").length
+  const anyShared = sharedCount > 0
 
   /** Every shareable window in the list, at one level — as each window's own
    *  menu would do it, one after the other. */
@@ -276,21 +416,31 @@ export function ComputerWindowPicker({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-3xl">
-        <DialogHeader>
-          <DialogTitle>{t("title")}</DialogTitle>
-          <DialogDescription>{t("description")}</DialogDescription>
-        </DialogHeader>
+      {/* A column: the header, toolbar and notices stay put, and only the
+          windows scroll — never the dialog around them as well. */}
+      <DialogContent className="flex max-h-[min(calc(100dvh-2rem),52rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-4xl">
+        <div className="px-6 pt-6">
+          <DialogHeader>
+            <DialogTitle>{t("title")}</DialogTitle>
+            <DialogDescription>{t("description")}</DialogDescription>
+          </DialogHeader>
+        </div>
 
-        <div className="flex items-center justify-between gap-2">
+        <div className="flex flex-wrap items-center justify-between gap-2 px-6 pt-5 pb-3">
           <p className="text-xs text-muted-foreground">
             {windows ? t("count", { count: shareable.length }) : t("loading")}
+            {anyShared && (
+              <span className="text-violet-600 dark:text-violet-400">
+                {" · "}
+                {t("sharedCount", { count: sharedCount })}
+              </span>
+            )}
           </p>
-          <div className="flex items-center gap-1">
+          <div className="flex items-center gap-1.5">
             {anyShared && (
               <Button
                 size="sm"
-                variant="ghost"
+                variant="destructive"
                 onClick={() => void stopAll()}
                 disabled={changing}
               >
@@ -310,7 +460,7 @@ export function ComputerWindowPicker({
                     <Layers className="size-3.5" />
                   )}
                   {t("shareAll")}
-                  <ChevronDown className="size-3" />
+                  <ChevronDown className="size-3 opacity-60" />
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end" className="min-w-56">
@@ -325,211 +475,151 @@ export function ComputerWindowPicker({
               </DropdownMenuContent>
             </DropdownMenu>
             <Button
-              size="sm"
+              size="icon-sm"
               variant="ghost"
               onClick={() => void reload()}
               disabled={windows === null}
+              title={t("refresh")}
+              aria-label={t("refresh")}
             >
               <RotateCw className="size-3.5" />
-              {t("refresh")}
             </Button>
           </div>
         </div>
 
-        {screenRecording === false && (
-          <div className="flex items-start justify-between gap-2 rounded-md border border-amber-500/30 bg-amber-500/5 px-2 py-1.5">
-            <div className="min-w-0 space-y-1">
-              <p className="text-xs text-amber-600 dark:text-amber-400">
-                {t("noScreenRecording")}
-              </p>
-              {permissionError && (
-                <p className="text-2xs break-words text-red-500">
-                  {permissionError}
-                </p>
-              )}
-            </div>
-            <Button
-              size="xs"
-              variant="outline"
-              className="shrink-0"
-              disabled={requesting !== null}
-              onClick={() => void request("screenRecording")}
-            >
-              {tComputer("permissions.request")}
-            </Button>
-          </div>
-        )}
-
-        {error && (
-          <div className="rounded-md border border-red-500/30 bg-red-500/5 px-2 py-1.5 text-xs break-words text-red-500">
-            {error}
-          </div>
-        )}
-
-        {notice && (
-          <div className="rounded-md border px-2 py-1.5 text-xs text-muted-foreground">
-            {notice}
-          </div>
-        )}
-
-        <ScrollArea className="max-h-[60vh]">
-          {windows === null ? (
-            <div className="flex h-40 items-center justify-center">
-              <Loader2 className="size-5 animate-spin text-muted-foreground" />
-            </div>
-          ) : (
-            <div className="space-y-3 pr-3">
-              {shareable.length === 0 ? (
-                <p className="py-10 text-center text-sm text-muted-foreground">
-                  {t(windows.length === 0 ? "empty" : "noneShareable")}
-                </p>
-              ) : (
-                <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-                  {shareable.map((w) => {
-                    const level = levelOf(w)
-                    const on = level !== "none"
-                    return (
-                      <div
-                        key={w.targetId}
-                        className={cn(
-                          "flex flex-col gap-2 rounded-lg border p-2",
-                          on && "border-violet-500/60 bg-violet-500/5"
-                        )}
-                      >
-                        <Thumbnail
-                          key={`${w.targetId}:${pictures}`}
-                          targetId={w.targetId}
-                        />
-                        <div className="min-w-0">
-                          <p className="truncate text-xs font-medium">
-                            {w.appName || t("unnamedApp")}
-                          </p>
-                          <p
-                            className="truncate text-2xs text-muted-foreground"
-                            title={w.title}
-                          >
-                            {w.title || t("untitled")}
-                            {w.minimized ? ` · ${t("minimized")}` : ""}
-                          </p>
-                        </div>
-                        <DropdownMenu>
-                          <DropdownMenuTrigger asChild>
-                            <Button
-                              size="sm"
-                              variant={on ? "outline" : "default"}
-                              disabled={changing}
-                              className={cn(
-                                level === "control" &&
-                                  "text-red-600 dark:text-red-400"
-                              )}
-                            >
-                              {busy === w.targetId ? (
-                                <Loader2 className="size-3.5 animate-spin" />
-                              ) : level === "control" ? (
-                                <MousePointerClick className="size-3.5" />
-                              ) : (
-                                <Eye className="size-3.5" />
-                              )}
-                              {level === "none"
-                                ? t("share")
-                                : t(
-                                    level === "control"
-                                      ? "sharedControl"
-                                      : "sharedRead"
-                                  )}
-                              <ChevronDown className="size-3" />
-                            </Button>
-                          </DropdownMenuTrigger>
-                          <DropdownMenuContent
-                            align="start"
-                            className="min-w-56"
-                          >
-                            <DropdownMenuItem
-                              disabled={level === "read"}
-                              onSelect={() => void setLevel(w, "read")}
-                            >
-                              <Eye className="size-3.5" />
-                              {t("shareRead")}
-                            </DropdownMenuItem>
-                            <DropdownMenuItem
-                              disabled={level === "control"}
-                              onSelect={() => void setLevel(w, "control")}
-                            >
-                              <MousePointerClick className="size-3.5" />
-                              {t("shareControl")}
-                            </DropdownMenuItem>
-                            {on && (
-                              <>
-                                <DropdownMenuSeparator />
-                                <DropdownMenuItem
-                                  onSelect={() => void setLevel(w, "none")}
-                                >
-                                  {t("stopSharing")}
-                                </DropdownMenuItem>
-                              </>
-                            )}
-                          </DropdownMenuContent>
-                        </DropdownMenu>
-                      </div>
-                    )
-                  })}
+        {(screenRecording === false || error || notice) && (
+          <div className="space-y-2 px-6 pb-3">
+            {screenRecording === false && (
+              <div className="flex items-center gap-2.5 rounded-xl border border-amber-500/30 bg-amber-500/5 px-3 py-2">
+                <TriangleAlert className="size-4 shrink-0 text-amber-500" />
+                <div className="min-w-0 flex-1 space-y-1">
+                  <p className="text-xs text-amber-700 dark:text-amber-400">
+                    {t("noScreenRecording")}
+                  </p>
+                  {permissionError && (
+                    <p className="text-2xs break-words text-red-500">
+                      {permissionError}
+                    </p>
+                  )}
                 </div>
-              )}
-
-              {unshareable.length > 0 && (
-                <Collapsible
-                  open={showUnshareable}
-                  onOpenChange={setShowUnshareable}
+                <Button
+                  size="xs"
+                  variant="outline"
+                  className="shrink-0"
+                  disabled={requesting !== null}
+                  onClick={() => void request("screenRecording")}
                 >
-                  <CollapsibleTrigger asChild>
-                    <button
-                      type="button"
-                      className="flex items-center gap-1 text-xs text-muted-foreground transition-colors hover:text-foreground"
-                    >
-                      <ChevronRight
-                        className={cn(
-                          "size-3.5 transition-transform",
-                          showUnshareable && "rotate-90"
-                        )}
-                      />
-                      {t("unshareable", { count: unshareable.length })}
-                    </button>
-                  </CollapsibleTrigger>
-                  <CollapsibleContent>
-                    <ul className="mt-2 divide-y overflow-hidden rounded-md border">
-                      {unshareable.map((w) => (
-                        <li
-                          key={w.targetId}
-                          className="flex items-center gap-2 px-2 py-1.5"
-                        >
-                          <ShieldOff className="size-3.5 shrink-0 text-muted-foreground" />
-                          <span className="min-w-0 flex-1">
-                            <span className="block truncate text-xs font-medium">
-                              {w.appName || t("unnamedApp")}
-                            </span>
+                  {tComputer("permissions.request")}
+                </Button>
+              </div>
+            )}
+
+            {error && (
+              <div className="rounded-xl border border-red-500/30 bg-red-500/5 px-3 py-2 text-xs break-words text-red-500">
+                {error}
+              </div>
+            )}
+
+            {notice && (
+              <div className="rounded-xl border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+                {notice}
+              </div>
+            )}
+          </div>
+        )}
+
+        <ScrollArea className="min-h-0 flex-1 border-t">
+          <div className="space-y-4 px-6 pt-4 pb-6">
+            {windows === null ? (
+              <div className={GRID} aria-hidden="true">
+                {Array.from({ length: 4 }, (_, i) => (
+                  <div key={i} className="overflow-hidden rounded-2xl border">
+                    <Skeleton className="aspect-video w-full rounded-none" />
+                    <div className="space-y-1.5 border-t px-2.5 py-2.5">
+                      <Skeleton className="h-3 w-2/3 rounded-md" />
+                      <Skeleton className="h-2.5 w-1/2 rounded-md" />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : shareable.length === 0 ? (
+              <div className="flex flex-col items-center gap-2 rounded-2xl border border-dashed px-6 py-10 text-center text-sm text-muted-foreground">
+                <AppWindow className="size-6 text-muted-foreground/50" />
+                {t(windows.length === 0 ? "empty" : "noneShareable")}
+              </div>
+            ) : (
+              <div className={GRID}>
+                {shareable.map((w) => (
+                  <WindowTile
+                    key={w.targetId}
+                    item={w}
+                    level={levelOf(w)}
+                    busy={busy === w.targetId}
+                    disabled={changing}
+                    pictures={pictures}
+                    onLevel={(next) => void setLevel(w, next)}
+                  />
+                ))}
+              </div>
+            )}
+
+            {unshareable.length > 0 && (
+              <Collapsible
+                open={showUnshareable}
+                onOpenChange={setShowUnshareable}
+              >
+                <CollapsibleTrigger asChild>
+                  <button
+                    type="button"
+                    className="flex items-center gap-1 text-xs text-muted-foreground transition-colors hover:text-foreground"
+                  >
+                    <ChevronRight
+                      className={cn(
+                        "size-3.5 transition-transform rtl:rotate-180",
+                        showUnshareable && "rotate-90 rtl:rotate-90"
+                      )}
+                    />
+                    {t("unshareable", { count: unshareable.length })}
+                  </button>
+                </CollapsibleTrigger>
+                <CollapsibleContent>
+                  <ul className="mt-2 divide-y overflow-hidden rounded-xl border">
+                    {unshareable.map((w) => (
+                      <li
+                        key={w.targetId}
+                        className="flex items-center gap-2.5 px-3 py-2"
+                      >
+                        <ShieldOff className="size-3.5 shrink-0 text-muted-foreground" />
+                        <span className="min-w-0 flex-1 truncate text-xs">
+                          <span className="font-medium">
+                            {w.appName || t("unnamedApp")}
+                          </span>
+                          {/* The title, when it says more than the name. */}
+                          {w.title && w.title !== w.appName && (
                             <span
-                              className="block truncate text-2xs text-muted-foreground"
+                              className="text-muted-foreground"
                               title={w.title}
                             >
-                              {w.title || t("untitled")}
+                              {" · "}
+                              {w.title}
                             </span>
-                          </span>
-                          <span className="shrink-0 text-2xs text-muted-foreground">
-                            {t(`notGrantable.${w.notGrantable}`)}
-                          </span>
-                        </li>
-                      ))}
-                    </ul>
-                    {unshareable.some((w) => w.notGrantable === "codeg") && (
-                      <p className="mt-2 text-2xs leading-snug text-muted-foreground">
-                        {t("codegWhy")}
-                      </p>
-                    )}
-                  </CollapsibleContent>
-                </Collapsible>
-              )}
-            </div>
-          )}
+                          )}
+                        </span>
+                        <span className="shrink-0 text-2xs text-muted-foreground">
+                          {t(`notGrantable.${w.notGrantable}`)}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                  {unshareable.some((w) => w.notGrantable === "codeg") && (
+                    <p className="mt-2 text-2xs leading-snug text-muted-foreground">
+                      {t("codegWhy")}
+                    </p>
+                  )}
+                </CollapsibleContent>
+              </Collapsible>
+            )}
+          </div>
         </ScrollArea>
       </DialogContent>
     </Dialog>

@@ -118,6 +118,24 @@ describe("ComputerWindowPicker", () => {
     ).not.toHaveAttribute("data-disabled")
   })
 
+  /** The toolbar says how many of the windows are shared, and the menu
+   * marks the level a window is at. */
+  it("counts the shared windows and marks each one's level", async () => {
+    api.computerListShareableWindows.mockResolvedValue([
+      window("read"),
+      window("none", { targetId: "w2", appName: "Notes", title: "todo" }),
+    ])
+    mount()
+    expect(await screen.findByText(/1 shared/)).toBeInTheDocument()
+    await openMenu(await screen.findByRole("button", { name: "Can read" }))
+    const current = screen.getByRole("menuitem", { name: "Let agents read it" })
+    expect(current).toHaveAttribute("data-disabled")
+    expect(current.querySelector("svg.lucide-check")).not.toBeNull()
+    expect(
+      screen.getByRole("menuitem", { name: "Stop sharing" })
+    ).toBeInTheDocument()
+  })
+
   /** Acting is the second decision, made from the same menu as reading. */
   it("offers acting on a window from the same menu", async () => {
     api.computerListShareableWindows.mockResolvedValue([window("none")])

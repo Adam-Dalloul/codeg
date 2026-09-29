@@ -1,4 +1,11 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react"
 import { NextIntlClientProvider } from "next-intl"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
@@ -127,9 +134,9 @@ describe("ComputerSettingsSection", () => {
     })
   })
 
-  /** Any default can be taken off — System Settings too; "restore defaults"
-   * takes off what was added and puts back what was removed. Each goes out
-   * as the one field it moved. */
+  /** Any default can be taken off — System Settings too; "restore defaults",
+   * once confirmed, takes off what was added and puts back what was removed.
+   * Each goes out as the one field it moved. */
   it("takes a default off the list and restores the defaults", async () => {
     mount()
     const box = await screen.findByLabelText(LABEL)
@@ -149,6 +156,19 @@ describe("ComputerSettingsSection", () => {
 
     await waitFor(() => expect(box).not.toBeDisabled())
     fireEvent.click(screen.getByRole("button", { name: "Restore defaults" }))
+    const confirm = await screen.findByRole("alertdialog")
+    expect(
+      within(confirm).getByText("The app you added comes off the list.")
+    ).toBeInTheDocument()
+    expect(
+      within(confirm).getByText(
+        "The 2 default apps you removed go back on the list."
+      )
+    ).toBeInTheDocument()
+    fireEvent.click(
+      within(confirm).getByRole("button", { name: "Restore defaults" })
+    )
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull())
     expect(screen.getByText("System Settings")).toBeInTheDocument()
     expect(screen.getByText("1Password")).toBeInTheDocument()
     expect(screen.queryByText("com.example.vault")).toBeNull()
@@ -158,6 +178,21 @@ describe("ComputerSettingsSection", () => {
       blocklist: [],
       blocklistRemoved: [],
     })
+  })
+
+  /** Restoring asks first — the person's own entries go with it — and
+   * backing out of the question changes nothing. */
+  it("leaves the list alone when the restore is not confirmed", async () => {
+    mount()
+    const box = await screen.findByLabelText(LABEL)
+    await waitFor(() => expect(box).not.toBeDisabled())
+    fireEvent.click(screen.getByRole("button", { name: "Restore defaults" }))
+    const confirm = await screen.findByRole("alertdialog")
+    expect(within(confirm).queryByText(/default apps? you removed/)).toBeNull()
+    fireEvent.click(within(confirm).getByRole("button", { name: "Cancel" }))
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull())
+    expect(screen.getByText("com.example.vault")).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "Save" })).toBeDisabled()
   })
 
   /** An entry already on the list is refused; a default that was taken off
