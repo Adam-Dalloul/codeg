@@ -67,6 +67,12 @@ const WRITE_TIMEOUT: Duration = Duration::from_secs(10);
 /// How long a freshly launched helper has to say it is ready.
 const READY_TIMEOUT: Duration = Duration::from_secs(15);
 
+/// How long a helper that has been told codeg is done gets to exit on its
+/// own: it stops its driver first — one still starting once it has started —
+/// within its own bound (`helper::SHUTDOWN_GRACE`, 60 s). Past this it is
+/// stopped by signal.
+const HELPER_EXIT_GRACE: Duration = Duration::from_secs(65);
+
 /// How long [`LocalBackend::close_now`] waits for the helper to say its
 /// driver is gone. A driver that is starting when the `Halt` arrives is
 /// stopped as soon as it has started; the helper bounds a start by its
@@ -130,6 +136,19 @@ enum HelperChild {
 }
 
 impl HelperChild {
+    /// Whether the helper exits by itself within `grace`.
+    async fn exits_within(&self, grace: Duration) -> bool {
+        match self {
+            #[cfg(target_os = "macos")]
+            HelperChild::Mac(child) => tokio::time::timeout(grace, child.wait()).await.is_ok(),
+            #[cfg(not(target_os = "macos"))]
+            HelperChild::Tokio(child) => {
+                let mut child = child.lock().await;
+                tokio::time::timeout(grace, child.wait()).await.is_ok()
+            }
+        }
+    }
+
     async fn stop(&self) {
         match self {
             #[cfg(target_os = "macos")]
@@ -160,6 +179,18 @@ impl Connection {
 
     async fn stop(&self) {
         self.child.stop().await;
+    }
+
+    /// End the helper the way codeg quitting does: its input ends, it stops
+    /// its driver — one still starting included, once that has started — and
+    /// exits. Stopped by signal if it has not within [`HELPER_EXIT_GRACE`].
+    async fn shut_down(&self) {
+        // The real writer is dropped, which closes the helper's input.
+        *self.writer.lock().await = Box::new(tokio::io::sink());
+        if !self.child.exits_within(HELPER_EXIT_GRACE).await {
+            tracing::warn!("[computer] the helper did not exit on its own; stopping it");
+            self.stop().await;
+        }
     }
 
     async fn request(&self, op: HelperOp) -> Result<HelperReply, BackendError> {
@@ -231,6 +262,10 @@ pub struct LocalBackend {
     /// helper running, the Stop reached nobody, and an action already past
     /// codeg's checks would start a fresh one.
     halted: AtomicBool,
+    /// Held for the whole of a [`close`](Self::close) or
+    /// [`close_now`](Self::close_now), so that one returning means the helper
+    /// another was already taking down is gone too.
+    closing: Mutex<()>,
     /// The settings, when this backend follows them (see [`with_switch`]).
     ///
     /// [`with_switch`]: Self::with_switch
@@ -254,6 +289,7 @@ impl LocalBackend {
             on_status: Box::new(on_status),
             redownloaded: AtomicBool::new(false),
             halted: AtomicBool::new(false),
+            closing: Mutex::new(()),
             switch: None,
         }
     }
@@ -289,24 +325,32 @@ impl LocalBackend {
 
     /// Stop the helper, if one is running, and start none until [`open`] —
     /// computer use was switched off. Taken under the same lock a start is
-    /// made under, so once this returns no helper runs and none will.
+    /// made under, so once this returns no helper runs and none will. The
+    /// helper is let go as when codeg quits, so its driver — even one still
+    /// starting — is gone with it.
     ///
     /// [`open`]: Self::open
     pub async fn close(&self) {
+        let _closing = self.closing.lock().await;
+        self.close_locked().await;
+    }
+
+    async fn close_locked(&self) {
         let connection = {
             let mut slot = self.slot.lock().await;
             slot.open = false;
             slot.connection.take()
         };
         if let Some(connection) = connection {
-            connection.stop().await;
+            connection.shut_down().await;
         }
         self.set_status(BackendState::Idle, None, None);
     }
 
     /// [`close`](Self::close), killing the driver first — whatever it is in the
-    /// middle of — rather than leaving it to finish once its helper has gone.
-    /// For removing the driver: nothing of it may still be running after.
+    /// middle of — rather than letting it finish its call. For removing the
+    /// driver: nothing of it may still be running after this returns, which is
+    /// also why it waits for a close already under way.
     ///
     /// The helper answers a `Halt` once no driver runs: at once, or — when one
     /// is still starting — once that one has started and been stopped for the
@@ -314,6 +358,7 @@ impl LocalBackend {
     /// [`HALT_ANSWER_TIMEOUT`]. Only a helper gone wrong is not waited for
     /// past that.
     pub async fn close_now(&self) {
+        let _closing = self.closing.lock().await;
         let connection = self.slot.lock().await.connection.clone();
         if let Some(connection) = connection.filter(|c| !c.is_closed()) {
             let halted =
@@ -322,7 +367,7 @@ impl LocalBackend {
                 tracing::warn!("[computer] the helper did not confirm killing the driver");
             }
         }
-        self.close().await;
+        self.close_locked().await;
     }
 
     /// The running helper, launching (and first fetching the driver for) one

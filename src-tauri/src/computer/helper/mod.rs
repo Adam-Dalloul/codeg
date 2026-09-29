@@ -745,9 +745,12 @@ fn encode(message: &HelperMessage) -> Vec<u8> {
     .unwrap_or_default()
 }
 
-/// How long, once codeg has gone, the driver gets to stop before the helper
-/// exits anyway (the driver then sees its stdin close and exits on its own).
-const SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
+/// How long, once codeg has gone, the helper waits for its driver to stop
+/// before it exits anyway (the driver then sees its stdin close and exits on
+/// its own). Long enough for a driver still starting — the launch holds the
+/// driver slot through its permission check, handshake and configuration —
+/// to finish starting and be stopped; one already running stops in seconds.
+const SHUTDOWN_GRACE: Duration = Duration::from_secs(60);
 
 /// Serve requests until codeg closes its end. Returns the exit code.
 ///
@@ -831,7 +834,9 @@ pub async fn serve(
     }
     // codeg is gone (or refused): stop the driver, and do not wait on the
     // requests still in flight — one may be parked on a permission prompt
-    // the person never answers, and nobody is left to answer anyway.
+    // the person never answers, and nobody is left to answer anyway. As for
+    // a Stop, a driver still starting stops itself once it has started.
+    state.halted.store(true, Ordering::Release);
     if tokio::time::timeout(SHUTDOWN_GRACE, state.shutdown())
         .await
         .is_err()
