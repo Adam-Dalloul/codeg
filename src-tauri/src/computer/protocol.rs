@@ -38,6 +38,11 @@ use super::types::{
 /// partial update), and codeg refuses to talk to it rather than guess.
 pub const PROTOCOL_VERSION: u32 = 3;
 
+/// A fingerprint of the sources the helper is built from, the same in codeg
+/// and the helper when both are built from one tree (see `build.rs`). The
+/// helper says it in [`HelperReady::source`]; a development codeg checks it.
+pub const SOURCE_FINGERPRINT: &str = env!("CODEG_COMPUTER_SOURCE");
+
 /// codeg → helper.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -281,6 +286,10 @@ pub struct HelperReady {
     pub version: String,
     /// What the helper knows about who it is talking to.
     pub peer: PeerCheck,
+    /// [`SOURCE_FINGERPRINT`] as the helper was built. Absent from a helper
+    /// older than the field, which a development codeg takes for a stale one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
 }
 
 /// Whether the helper checked codeg's code signature before serving it.
@@ -645,14 +654,25 @@ mod tests {
             protocol: PROTOCOL_VERSION,
             version: "0.0.0".into(),
             peer: PeerCheck::Development,
+            source: Some(SOURCE_FINGERPRINT.into()),
         });
         let wire = serde_json::to_value(&ready).unwrap();
         assert_eq!(wire["kind"], "ready");
         assert_eq!(wire["peer"], "development");
+        assert_eq!(wire["source"], SOURCE_FINGERPRINT);
         assert_eq!(
             serde_json::from_value::<HelperMessage>(wire).unwrap(),
             ready
         );
+        // A helper from before the field still introduces itself.
+        let older: HelperMessage = serde_json::from_value(serde_json::json!({
+            "kind": "ready", "protocol": PROTOCOL_VERSION, "version": "0.0.0", "peer": "development"
+        }))
+        .unwrap();
+        assert!(matches!(
+            older,
+            HelperMessage::Ready(HelperReady { source: None, .. })
+        ));
     }
 
     #[test]

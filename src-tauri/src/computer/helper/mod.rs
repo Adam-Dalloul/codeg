@@ -47,7 +47,7 @@ use super::driver;
 use super::protocol::{
     read_frame, HelperError, HelperErrorCode, HelperMessage, HelperOp, HelperReady, HelperReply,
     HelperRequest, OsPermission, PeerCheck, PermissionReport, RawAct, MAX_FRAME_BYTES,
-    PROTOCOL_VERSION,
+    PROTOCOL_VERSION, SOURCE_FINGERPRINT,
 };
 
 /// Exit codes, for codeg's log: they are all the helper says to a peer it has
@@ -784,6 +784,7 @@ pub async fn serve(
         protocol: PROTOCOL_VERSION,
         version: env!("CARGO_PKG_VERSION").to_string(),
         peer,
+        source: Some(SOURCE_FINGERPRINT.to_string()),
     }));
 
     let state = Arc::new(HelperState {
@@ -890,8 +891,9 @@ mod tests {
             HelperMessage::Ready(HelperReady {
                 protocol: PROTOCOL_VERSION,
                 peer: PeerCheck::Development,
+                source: Some(ref source),
                 ..
-            })
+            }) if source == SOURCE_FINGERPRINT
         ));
 
         write_frame(

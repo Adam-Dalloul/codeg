@@ -15,7 +15,10 @@
 //! helper then speaks first; on macOS codeg asks the kernel who is on the
 //! other end of its socket and checks that process against the helper's
 //! designated requirement (`CODEG_COMPUTER_HELPER_REQUIREMENT`), and every
-//! later frame against the process it verified.
+//! later frame against the process it verified. A development codeg checks
+//! instead that the helper was built from its own sources (the fingerprint
+//! `build.rs` compiles into both): `pnpm tauri dev` rebuilds only codeg after
+//! an edit, and a helper left over would answer with the old code.
 //!
 //! **Life.** One helper per codeg, started on first use, restarted on the next
 //! call after it dies, stopped when computer use is switched off — and not
@@ -39,7 +42,7 @@ use super::driver;
 use super::protocol::{
     read_frame, write_frame, HelperError, HelperErrorCode, HelperMessage, HelperOp, HelperReply,
     HelperRequest, OsPermission, PeerCheck, PermissionReport, RawAct, RawApp, RawCapture,
-    RawSnapshot, RawVerify, RawWindow, WindowAction, PROTOCOL_VERSION,
+    RawSnapshot, RawVerify, RawWindow, WindowAction, PROTOCOL_VERSION, SOURCE_FINGERPRINT,
 };
 use super::types::VerifyRequest;
 
@@ -661,6 +664,9 @@ async fn launch(path: &std::path::Path) -> Result<Arc<Connection>, BackendError>
         )
         .await);
     }
+    if let Some(why) = stale_development_helper(ready.source.as_deref()) {
+        return Err(abandon(child, why).await);
+    }
     let verified = match check_helper(peer_fd, ready.peer) {
         Ok(verified) => verified,
         Err(why) => return Err(abandon(child, &why).await),
@@ -714,6 +720,18 @@ async fn launch(path: &std::path::Path) -> Result<Arc<Connection>, BackendError>
         peer: ready.peer,
         child,
     }))
+}
+
+/// Why a development codeg will not use a helper built from other sources
+/// than its own — which is what `pnpm tauri dev` leaves running after an edit:
+/// it builds the helper once, as it starts, and only codeg after that, and a
+/// stale helper answers with code that is no longer there. A release codeg
+/// ships with its own helper and does not ask.
+fn stale_development_helper(source: Option<&str>) -> Option<&'static str> {
+    (cfg!(debug_assertions) && source != Some(SOURCE_FINGERPRINT)).then_some(
+        "this development build's helper was built from older sources — restart \
+         `pnpm tauri dev` to rebuild it",
+    )
 }
 
 async fn abandon(child: HelperChild, why: &str) -> BackendError {
@@ -952,6 +970,16 @@ mod tests {
             backend.list_apps().await,
             Err(BackendError::Unavailable(_))
         ));
+    }
+
+    /// A development codeg (every test build is one) takes only a helper built
+    /// from its own sources: not one from other sources, nor one too old to
+    /// say.
+    #[test]
+    fn a_development_codeg_refuses_a_stale_helper() {
+        assert_eq!(stale_development_helper(Some(SOURCE_FINGERPRINT)), None);
+        assert!(stale_development_helper(Some("0000000000000000")).is_some());
+        assert!(stale_development_helper(None).is_some_and(|why| why.contains("pnpm tauri dev")));
     }
 
     /// A Stop holds in the backend itself, with no helper running to hear it:
