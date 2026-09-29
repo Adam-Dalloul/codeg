@@ -6,7 +6,8 @@
 // alone. There is no HTTP face for sharing a window: what of this screen an
 // agent may see is for the person at this screen to decide.
 
-import { getTransport, isDesktop } from "@/lib/transport"
+import { isLocalDesktop } from "@/lib/platform"
+import { getTransport } from "@/lib/transport"
 
 import type {
   ComputerStatePayload,
@@ -45,9 +46,11 @@ export async function setComputerToolsPreferences(preferences: {
   return getTransport().call("set_computer_tools_preferences", preferences)
 }
 
-/** Whether this runtime can show the screen at all. */
+/** Whether this window is the desktop app on the machine whose screen this
+ *  is. A window bound to a remote workspace is a desktop runtime too, but its
+ *  calls go to another machine, where none of the screen commands exist. */
 export function computerAvailable(): boolean {
-  return isDesktop()
+  return isLocalDesktop()
 }
 
 export async function computerStatus(): Promise<ComputerStatus> {

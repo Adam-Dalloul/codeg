@@ -434,6 +434,17 @@ impl HelperState {
         // A fresh driver has taken no snapshots.
         self.snapshots().clear();
         *self.driver_saw.lock().unwrap_or_else(|p| p.into_inner()) = Some(seen);
+        // A check that ran while this one was starting, and found more than
+        // it started with, compared itself with no driver: compare now.
+        if self
+            .permissions
+            .lock()
+            .await
+            .as_ref()
+            .is_some_and(|(last, _)| gained(&seen, last))
+        {
+            self.driver_stale.store(true, Ordering::Release);
+        }
         *slot = Some(launched.clone());
         Ok(launched)
     }
@@ -523,12 +534,7 @@ impl HelperState {
     /// so the answer names the permission instead of being whatever the
     /// driver makes of a failed system call.
     async fn require(&self, permission: OsPermission) -> Result<(), HelperError> {
-        let report = self.permissions(false).await;
-        let granted = match permission {
-            OsPermission::Accessibility => report.accessibility,
-            OsPermission::ScreenRecording => report.screen_recording,
-        };
-        if granted {
+        if self.permissions(false).await.has(permission) {
             Ok(())
         } else {
             Err(HelperError::permission_missing(permission))
@@ -562,20 +568,30 @@ fn answer_stands(report: &PermissionReport, age: Duration) -> bool {
 }
 
 /// Whether `now` grants something `before` did not.
-#[cfg(any(test, target_os = "macos"))]
 fn gained(before: &PermissionReport, now: &PermissionReport) -> bool {
     (now.accessibility && !before.accessibility)
         || (now.screen_recording && !before.screen_recording)
 }
 
-/// Serve one op. A driver call that turns out to lack a permission clears
-/// the remembered answer, so the next call asks the system again rather than
-/// going on believing it granted.
+/// Serve one op. A driver call that turns out to lack a permission the
+/// remembered answer says is granted clears that answer, so the next call
+/// asks the system again rather than going on believing it. (A refusal that
+/// came from the remembered answer itself leaves it be: it is asked again on
+/// its own schedule.)
 async fn handle(state: &HelperState, op: HelperOp) -> Result<serde_json::Value, HelperError> {
     let result = handle_op(state, op).await;
-    if let Err(e) = &result {
-        if e.code == HelperErrorCode::PermissionMissing {
-            state.permissions.lock().await.take();
+    if let Err(HelperError {
+        code: HelperErrorCode::PermissionMissing,
+        permission: Some(permission),
+        ..
+    }) = &result
+    {
+        let mut last = state.permissions.lock().await;
+        if last
+            .as_ref()
+            .is_some_and(|(report, _)| report.has(*permission))
+        {
+            last.take();
         }
     }
     result

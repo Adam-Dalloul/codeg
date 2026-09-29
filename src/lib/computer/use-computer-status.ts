@@ -34,6 +34,10 @@ export function useComputerStatus(live: boolean) {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const aliveRef = useRef(true)
+  const liveRef = useRef(live)
+  useEffect(() => {
+    liveRef.current = live
+  }, [live])
   /** The latest refresh; an older one that answers late is dropped. */
   const seqRef = useRef(0)
   useEffect(() => {
@@ -82,7 +86,7 @@ export function useComputerStatus(live: boolean) {
     async (permission: OsPermission) => {
       try {
         await computerRequestPermission(permission)
-        await refresh()
+        if (liveRef.current) await refresh()
       } catch (e) {
         setError(toErrorMessage(e))
       }

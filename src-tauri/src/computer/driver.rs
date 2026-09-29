@@ -21,8 +21,10 @@
 //!
 //! Upgrading the driver is a code change to this file: new digests, new
 //! cdhashes, reviewed like any other. What a person can do from Settings is
-//! fetch this pinned release, clear older ones left from an earlier codeg,
-//! and remove the driver altogether — never pick another release.
+//! fetch this pinned release and remove the driver altogether — never pick
+//! another release. An older release left by an earlier codeg stays until
+//! then: the cache is shared with any other codeg on the machine, which may
+//! still run it.
 
 use crate::acp::error::AcpError;
 
@@ -197,18 +199,6 @@ pub async fn ensure_driver(on_progress: impl Fn(&str)) -> Result<std::path::Path
 pub async fn forget_cached_driver() -> Result<(), AcpError> {
     let _files = FILES.lock().await;
     crate::acp::binary_cache::clear_tool_cache(DRIVER_CACHE_ID)
-}
-
-/// Throw away the cached releases other than the pinned one — left behind
-/// by an earlier codeg that pinned another.
-pub async fn forget_other_drivers() -> Result<(), AcpError> {
-    let _files = FILES.lock().await;
-    for version in installed_driver_versions()? {
-        if version != DRIVER_VERSION {
-            crate::acp::binary_cache::clear_tool_version(DRIVER_CACHE_ID, &version)?;
-        }
-    }
-    Ok(())
 }
 
 /// The driver releases in the cache, newest first.

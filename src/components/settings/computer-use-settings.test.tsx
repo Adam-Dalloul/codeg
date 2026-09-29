@@ -111,6 +111,26 @@ describe("ComputerUseSettings", () => {
     await waitFor(() => expect(toggle).toBeChecked())
   })
 
+  /** Another window's write that lands while this one's is on its way is
+   *  newer than this one's answer. */
+  it("keeps a broadcast over its own older answer", async () => {
+    let answer: (s: ComputerToolsSettings) => void = () => {}
+    api.setComputerToolsEnabled.mockReturnValue(
+      new Promise((resolve) => {
+        answer = resolve
+      })
+    )
+    mount()
+    const toggle = await screen.findByRole("switch", { name: "Computer use" })
+    await waitFor(() => expect(toggle).not.toBeDisabled())
+    fireEvent.click(toggle)
+    act(() =>
+      handlers.get("computer-tools-settings://changed")!(settings(false))
+    )
+    await act(async () => answer(settings(true)))
+    expect(toggle).not.toBeChecked()
+  })
+
   /** No driver yet: it says so and offers to fetch it now. */
   it("installs the driver", async () => {
     api.computerDriverInstall.mockResolvedValue(

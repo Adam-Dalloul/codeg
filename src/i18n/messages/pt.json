@@ -5252,7 +5252,7 @@
       "pageDescription": "Deixe os agentes verem e usarem as janelas da área de trabalho que você compartilhar com eles.",
       "switch": {
         "label": "Uso do computador",
-        "hint": "Os agentes podem listar seus apps e janelas, ler as janelas que você compartilhar e clicar e digitar naquelas em que você deixar que ajam. Nada pode ser lido até você compartilhar pela barra de status.",
+        "hint": "Os agentes podem listar seus apps e janelas, ler as janelas que você compartilhar e clicar e digitar naquelas em que você deixar que ajam. Nenhuma janela pode ser lida até você compartilhá-la pela barra de status.",
         "failed": "Não foi possível alternar o uso do computador"
       },
       "driver": {

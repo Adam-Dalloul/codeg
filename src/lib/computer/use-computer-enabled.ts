@@ -9,7 +9,7 @@
 // missed; a broadcast that lands while that read is in flight is newer than
 // it. `null` until one or the other has answered.
 
-import { useCallback, useEffect, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 
 import { subscribe } from "@/lib/platform"
 
@@ -27,26 +27,28 @@ export function useComputerEnabled({
   desktopOnly: boolean
 }) {
   const [enabled, setEnabled] = useState<boolean | null>(null)
-  const [broadcasts, setBroadcasts] = useState(0)
+  /** Broadcasts heard so far: an answer to something asked before the last
+   *  of them is older than it. */
+  const heardRef = useRef(0)
 
   useEffect(() => {
     if (desktopOnly && !computerAvailable()) return
     let disposed = false
     let unsubscribe: (() => void) | undefined
-    let heard = 0
+    const asked = heardRef.current
     const ask = () => {
+      if (disposed) return
       getComputerToolsSettings()
         .then((s) => {
-          if (!disposed && heard === 0) setEnabled(s.enabled)
+          if (!disposed && heardRef.current === asked) setEnabled(s.enabled)
         })
         .catch(() => {})
     }
     subscribe<ComputerToolsSettings>(
       COMPUTER_TOOLS_SETTINGS_CHANGED_EVENT,
       (s) => {
-        heard += 1
+        heardRef.current += 1
         setEnabled(s.enabled)
-        setBroadcasts((n) => n + 1)
       }
     )
       .then((fn) => {
@@ -61,10 +63,18 @@ export function useComputerEnabled({
     }
   }, [desktopOnly])
 
-  /** A record a write of this window's answered with. */
-  const apply = useCallback((settings: ComputerToolsSettings) => {
-    setEnabled(settings.enabled)
-  }, [])
+  /** Where the broadcasts stand, to hand back to {@link applySince}. */
+  const mark = useCallback(() => heardRef.current, [])
 
-  return { enabled, apply, broadcasts }
+  /** The record a write answered with — unless a broadcast has landed since
+   *  `since` was marked: that one is newer (another window's write, or this
+   *  write's own). */
+  const applySince = useCallback(
+    (settings: ComputerToolsSettings, since: number) => {
+      if (heardRef.current === since) setEnabled(settings.enabled)
+    },
+    []
+  )
+
+  return { enabled, mark, applySince }
 }

@@ -224,6 +224,10 @@ pub struct LocalBackend {
     /// helper running, the Stop reached nobody, and an action already past
     /// codeg's checks would start a fresh one.
     halted: AtomicBool,
+    /// The settings, when this backend follows them (see [`with_switch`]).
+    ///
+    /// [`with_switch`]: Self::with_switch
+    switch: Option<crate::acp::computer_tools::ComputerToolsRuntimeConfig>,
 }
 
 impl LocalBackend {
@@ -243,7 +247,21 @@ impl LocalBackend {
             on_status: Box::new(on_status),
             redownloaded: AtomicBool::new(false),
             halted: AtomicBool::new(false),
+            switch: None,
         }
+    }
+
+    /// Start no helper unless `config` says computer use is on at that
+    /// moment. [`open`](Self::open) is told by a watcher of the settings, which
+    /// may be a change behind: one still acting on an earlier "on" must not
+    /// start a helper — and fetch a driver just removed — after the switch
+    /// has gone off.
+    pub fn with_switch(
+        mut self,
+        config: crate::acp::computer_tools::ComputerToolsRuntimeConfig,
+    ) -> Self {
+        self.switch = Some(config);
+        self
     }
 
     fn set_status(&self, state: BackendState, detail: Option<String>, peer: Option<PeerCheck>) {
@@ -279,11 +297,31 @@ impl LocalBackend {
         self.set_status(BackendState::Idle, None, None);
     }
 
+    /// [`close`](Self::close), killing the driver first — whatever it is in the
+    /// middle of — rather than leaving it to finish once its helper has gone.
+    /// For removing the driver: nothing of it may still be running after.
+    pub async fn close_now(&self) {
+        let connection = self.slot.lock().await.connection.clone();
+        if let Some(connection) = connection.filter(|c| !c.is_closed()) {
+            let halted =
+                tokio::time::timeout(Duration::from_secs(5), connection.request(HelperOp::Halt))
+                    .await;
+            if !matches!(halted, Ok(Ok(_))) {
+                tracing::warn!("[computer] the helper did not confirm killing the driver");
+            }
+        }
+        self.close().await;
+    }
+
     /// The running helper, launching (and first fetching the driver for) one
     /// if there is none.
     async fn connection(&self) -> Result<Arc<Connection>, BackendError> {
         let mut slot = self.slot.lock().await;
-        if !slot.open {
+        let switched_on = match &self.switch {
+            Some(config) => config.is_enabled().await,
+            None => true,
+        };
+        if !slot.open || !switched_on {
             return Err(BackendError::Unavailable(
                 "computer use is switched off".into(),
             ));
@@ -308,7 +346,11 @@ impl LocalBackend {
     }
 
     async fn connect(&self) -> Result<Arc<Connection>, BackendError> {
-        self.set_status(BackendState::Downloading, None, None);
+        // Said only when there is something to fetch: the settings page shows
+        // this as an install.
+        if driver::cached_driver_path().is_none() {
+            self.set_status(BackendState::Downloading, None, None);
+        }
         let driver_path = driver::ensure_driver(|_| {})
             .await
             .map_err(|e| BackendError::Unavailable(format!("could not fetch cua-driver: {e}")))?;

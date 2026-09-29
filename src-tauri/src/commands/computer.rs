@@ -255,6 +255,21 @@ fn permission_name(permission: OsPermission) -> &'static str {
     }
 }
 
+/// What a share is decided by: see `ComputerService::policy`.
+struct SharingPolicy {
+    enabled: bool,
+    blocklist: Blocklist,
+}
+
+impl SharingPolicy {
+    fn of(config: &ComputerToolsConfig) -> Self {
+        Self {
+            enabled: config.enabled,
+            blocklist: Blocklist::new(&config.blocklist),
+        }
+    }
+}
+
 /// A read that passed steps 1–3, and what step 4 checks it against.
 struct Admitted {
     ticket: ReadTicket,
@@ -286,7 +301,15 @@ pub struct ComputerService {
     /// Resume's "no Stop since?" and its "not stopped" — so a share cannot
     /// slip in between a Stop and its revocation and outlive it, and a Stop
     /// cannot slip in between a Resume's check and its write and be undone.
+    /// The same holds for a settings change and what it takes away: see
+    /// `policy`.
     grant_gate: std::sync::Mutex<()>,
+    /// The switch and the blocklist as the last settings change left them,
+    /// written under `grant_gate` by the change hook, which revokes under it
+    /// too. A share decides by these, under the same lock: it lands either
+    /// before a switch-off (and is revoked with the rest) or after it (and is
+    /// refused) — never after the revocation and still standing.
+    policy: std::sync::Mutex<SharingPolicy>,
     /// The stop shortcut, held with the OS while computer use is on.
     stop_key: StopKey,
     /// The strip above every window while anything is shared.
@@ -310,12 +333,16 @@ impl ComputerService {
         let status_app = app.clone();
         let drivers = Arc::new(DriverAdmin::new(app.clone()));
         let status_drivers = drivers.clone();
-        let backend = Arc::new(LocalBackend::new(move |status: &BackendStatus| {
-            events::emit_backend_status(&status_app, status);
-            status_drivers.backend_moved(status);
-        }));
+        let backend = Arc::new(
+            LocalBackend::new(move |status: &BackendStatus| {
+                events::emit_backend_status(&status_app, status);
+                status_drivers.backend_moved(status);
+            })
+            .with_switch(config.clone()),
+        );
         let indicator = Indicator::start(app.clone());
         let marker = Marker::start(app.clone());
+        let policy = SharingPolicy::of(&config.subscribe().borrow());
         let service = Arc::new(Self {
             app,
             backend,
@@ -327,6 +354,7 @@ impl ComputerService {
             pausing: tokio::sync::Mutex::new(()),
             stops: AtomicU64::new(0),
             grant_gate: std::sync::Mutex::new(()),
+            policy: std::sync::Mutex::new(policy),
             stop_key: StopKey::new(),
             indicator,
             marker,
@@ -385,15 +413,19 @@ impl ComputerService {
     /// ended the grants it named, and no read admitted after the write can
     /// use a grant the write ended.
     fn policy_changed(&self, before: &ComputerToolsConfig, after: &ComputerToolsConfig) {
-        let ended = if before.enabled && !after.enabled {
-            self.targets.revoke_all(GrantChange::Disabled)
-        } else {
-            self.targets.sweep(
-                now_ms(),
-                after.grant_ttl,
-                &self.me,
-                &Blocklist::new(&after.blocklist),
-            )
+        let ended = {
+            let _gate = self.grant_gate.lock().unwrap_or_else(|p| p.into_inner());
+            *self.policy.lock().unwrap_or_else(|p| p.into_inner()) = SharingPolicy::of(after);
+            if before.enabled && !after.enabled {
+                self.targets.revoke_all(GrantChange::Disabled)
+            } else {
+                self.targets.sweep(
+                    now_ms(),
+                    after.grant_ttl,
+                    &self.me,
+                    &Blocklist::new(&after.blocklist),
+                )
+            }
         };
         self.announce(&ended);
     }
@@ -500,23 +532,31 @@ impl ComputerService {
         }
     }
 
-    /// Share a window, unless a Stop is in force — decided under the same
-    /// lock a Stop takes to revoke, so no share lands between the two.
+    /// Share a window, unless computer use is off or a Stop is in force —
+    /// decided under the same lock a Stop and a settings change take to
+    /// revoke, so no share lands between either and its revocation.
     fn share_unless_stopped(
         &self,
         target_id: &str,
         level: GrantLevel,
-        blocklist: &Blocklist,
     ) -> Result<Option<ComputerGrantPayload>, AppCommandError> {
         let _gate = self.grant_gate.lock().unwrap_or_else(|p| p.into_inner());
-        if self.paused.load(Ordering::Acquire) && level != GrantLevel::None {
-            return Err(AppCommandError::configuration_invalid(
-                "computer use is stopped; resume it first",
-            ));
+        let policy = self.policy.lock().unwrap_or_else(|p| p.into_inner());
+        if level != GrantLevel::None {
+            if !policy.enabled {
+                return Err(AppCommandError::configuration_invalid(
+                    "computer use is switched off",
+                ));
+            }
+            if self.paused.load(Ordering::Acquire) {
+                return Err(AppCommandError::configuration_invalid(
+                    "computer use is stopped; resume it first",
+                ));
+            }
         }
         match self
             .targets
-            .share(target_id, level, now_ms(), &self.me, blocklist)
+            .share(target_id, level, now_ms(), &self.me, &policy.blocklist)
         {
             Ok(change) => Ok(change),
             Err(ShareError::NoSuchTarget) | Err(ShareError::Gone) => Err(
@@ -528,12 +568,25 @@ impl ComputerService {
         }
     }
 
+    /// Whether anything may be shared at all right now: computer use on, and
+    /// no Stop in force.
+    fn sharing_open(&self) -> bool {
+        let _gate = self.grant_gate.lock().unwrap_or_else(|p| p.into_inner());
+        self.policy
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .enabled
+            && !self.paused.load(Ordering::Acquire)
+    }
+
     /// Remove cua-driver, as the person asked from Settings: switch computer
     /// use off — through the settings writer, so every panel hears of it —
-    /// and stop the helper and its driver now, rather than whenever the
-    /// switch is followed, before the files go. Then every cached release,
-    /// and the homes dead drivers left behind. Switching back on fetches the
-    /// pinned release again.
+    /// then kill the driver (mid-call if it is in one) and stop the helper
+    /// now, rather than whenever the switch is followed, before the files go.
+    /// No helper starts again meanwhile: the backend asks the switch itself
+    /// before starting one. Then every cached release, and the homes dead
+    /// drivers left behind. Switching back on fetches the pinned release
+    /// again.
     async fn uninstall_driver(
         &self,
         conn: &sea_orm::DatabaseConnection,
@@ -552,7 +605,7 @@ impl ComputerService {
                 .await
                 .map_err(|e| e.to_string())?;
             }
-            self.backend.close().await;
+            self.backend.close_now().await;
             crate::computer::driver::forget_cached_driver()
                 .await
                 .map_err(|e| e.to_string())?;
@@ -1365,14 +1418,7 @@ pub async fn computer_share_window(
     level: GrantLevel,
 ) -> Result<Vec<SharedWindow>, AppCommandError> {
     let service = service(&app)?;
-    let config = service.config.snapshot().await;
-    if !config.enabled && level != GrantLevel::None {
-        return Err(AppCommandError::configuration_invalid(
-            "computer use is switched off",
-        ));
-    }
-    let blocklist = Blocklist::new(&config.blocklist);
-    let change = service.share_unless_stopped(&target_id, level, &blocklist)?;
+    let change = service.share_unless_stopped(&target_id, level)?;
     service.announce(&change.into_iter().collect::<Vec<_>>());
     Ok(service.targets.shared())
 }
@@ -1388,8 +1434,11 @@ pub struct ShareManyResult {
 }
 
 /// Share every window named at one level — the picker's "all" — each exactly
-/// as [`computer_share_window`] would share it, skipping the ones that cannot
-/// be, and telling the panels once.
+/// as [`computer_share_window`] would share it, one after another, skipping
+/// the ones that cannot be. A Stop or a switch-off that lands part way
+/// through is decided window by window, under the lock it revokes under:
+/// nothing is shared after it. Refused outright when the first window
+/// already could not be shared for that reason.
 #[tauri::command]
 pub async fn computer_share_windows(
     app: AppHandle,
@@ -1397,29 +1446,18 @@ pub async fn computer_share_windows(
     level: GrantLevel,
 ) -> Result<ShareManyResult, AppCommandError> {
     let service = service(&app)?;
-    let config = service.config.snapshot().await;
-    if !config.enabled && level != GrantLevel::None {
-        return Err(AppCommandError::configuration_invalid(
-            "computer use is switched off",
-        ));
-    }
-    if level != GrantLevel::None && service.paused.load(Ordering::Acquire) {
-        return Err(AppCommandError::configuration_invalid(
-            "computer use is stopped; resume it first",
-        ));
-    }
-    let blocklist = Blocklist::new(&config.blocklist);
-    let mut changes = Vec::new();
     let mut skipped = 0u32;
-    for target_id in &target_ids {
-        // A Stop that lands part way through is decided window by window,
-        // under the lock the Stop revokes under: nothing shared after it.
-        match service.share_unless_stopped(target_id, level, &blocklist) {
-            Ok(change) => changes.extend(change),
+    for (i, target_id) in target_ids.iter().enumerate() {
+        match service.share_unless_stopped(target_id, level) {
+            // Told as it happens, so a Stop's revocations are never told
+            // before a share they undid.
+            Ok(change) => service.announce(&change.into_iter().collect::<Vec<_>>()),
+            Err(e) if i == 0 && level != GrantLevel::None && !service.sharing_open() => {
+                return Err(e)
+            }
             Err(_) => skipped += 1,
         }
     }
-    service.announce(&changes);
     Ok(ShareManyResult {
         shared: service.targets.shared(),
         skipped,

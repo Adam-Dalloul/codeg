@@ -142,6 +142,9 @@ export function ComputerWindowPicker({
   const [busy, setBusy] = useState<string | null>(null)
   /** A change to every window at once is on its way. */
   const [bulk, setBulk] = useState(false)
+  /** One change at a time: a "stop sharing all" that lands before a share
+   *  still on its way would be undone by it, and the other way round. */
+  const changing = bulk || busy !== null
   const [showUnshareable, setShowUnshareable] = useState(false)
   /** The latest load; an older one that answers late is dropped. */
   const loadSeqRef = useRef(0)
@@ -252,7 +255,7 @@ export function ComputerWindowPicker({
                 size="sm"
                 variant="ghost"
                 onClick={() => void stopAll()}
-                disabled={bulk}
+                disabled={changing}
               >
                 {t("stopSharingAll")}
               </Button>
@@ -262,7 +265,7 @@ export function ComputerWindowPicker({
                 <Button
                   size="sm"
                   variant="outline"
-                  disabled={bulk || paused || shareable.length === 0}
+                  disabled={changing || paused || shareable.length === 0}
                 >
                   {bulk ? (
                     <Loader2 className="size-3.5 animate-spin" />
@@ -356,7 +359,7 @@ export function ComputerWindowPicker({
                             <Button
                               size="sm"
                               variant={on ? "outline" : "default"}
-                              disabled={busy === w.targetId}
+                              disabled={changing}
                               className={cn(
                                 level === "control" &&
                                   "text-red-600 dark:text-red-400"

@@ -490,18 +490,12 @@ pub fn clear_agent_cache(agent_type: AgentType) -> Result<(), AcpError> {
 
 /// Remove one agent's directory from ONE cache root.
 fn clear_agent_dir_in(root: &Path, agent_id: &str) -> Result<(), AcpError> {
-    clear_dir_in(root, &root.join(agent_id), agent_id)
-}
-
-/// Remove `dir`, somewhere under the cache root `root` — renamed aside into
-/// `root/.trash/` first where it cannot be removed in place. `label` names the
-/// aside.
-fn clear_dir_in(root: &Path, dir: &Path, label: &str) -> Result<(), AcpError> {
+    let dir = root.join(agent_id);
     if !dir.exists() {
         return Ok(());
     }
 
-    if std::fs::remove_dir_all(dir).is_ok() {
+    if std::fs::remove_dir_all(&dir).is_ok() {
         return Ok(());
     }
 
@@ -520,8 +514,8 @@ fn clear_dir_in(root: &Path, dir: &Path, label: &str) -> Result<(), AcpError> {
         .map(|d| d.as_nanos())
         .unwrap_or(0);
     let counter = TRASH_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let aside = trash_root.join(format!("{label}-{stamp}-{counter}"));
-    std::fs::rename(dir, &aside)
+    let aside = trash_root.join(format!("{agent_id}-{stamp}-{counter}"));
+    std::fs::rename(&dir, &aside)
         .map_err(|e| AcpError::DownloadFailed(format!("failed to clear cache: {e}")))?;
 
     let _ = std::fs::remove_dir_all(&aside);
@@ -879,25 +873,6 @@ pub(crate) fn tool_installed_versions(
 pub(crate) fn tool_binary_path(tool_id: &str, version: &str, cmd_name: &str) -> Option<PathBuf> {
     require_tool_cache_id(tool_id).ok()?;
     installed_binary_path(tool_id, version, cmd_name)
-}
-
-/// Remove one cached version of a tool, from both cache roots.
-pub(crate) fn clear_tool_version(tool_id: &str, version: &str) -> Result<(), AcpError> {
-    require_tool_cache_id(tool_id)?;
-    let version = normalize_version_label(version);
-    if version.is_empty() || version.starts_with('.') || version.contains(['/', '\\']) {
-        return Err(AcpError::DownloadFailed(format!(
-            "{version:?} is not a version label"
-        )));
-    }
-    let label = format!("{tool_id}-{version}");
-    let legacy = match legacy_cache_dir() {
-        Some(legacy) => clear_dir_in(&legacy, &legacy.join(tool_id).join(&version), &label),
-        None => Ok(()),
-    };
-    let root = cache_dir()?;
-    let current = clear_dir_in(&root, &root.join(tool_id).join(&version), &label);
-    legacy.and(current)
 }
 
 /// Hex SHA-256 of a file, streamed so a large archive never lands in memory.

@@ -5252,7 +5252,7 @@
       "pageDescription": "Lass Agenten die Desktop-Fenster sehen und bedienen, die du für sie freigibst.",
       "switch": {
         "label": "Computernutzung",
-        "hint": "Agenten können deine Apps und Fenster auflisten, freigegebene Fenster lesen und in denen klicken und tippen, in denen du sie handeln lässt. Lesbar ist nichts, bevor du es über die Statusleiste freigibst.",
+        "hint": "Agenten können deine Apps und Fenster auflisten, freigegebene Fenster lesen und in denen klicken und tippen, in denen du sie handeln lässt. Kein Fenster ist lesbar, bevor du es über die Statusleiste freigibst.",
         "failed": "Computernutzung konnte nicht umgeschaltet werden"
       },
       "driver": {

@@ -5252,7 +5252,7 @@
       "pageDescription": "Laissez les agents voir et utiliser les fenêtres du bureau que vous partagez avec eux.",
       "switch": {
         "label": "Utilisation de l'ordinateur",
-        "hint": "Les agents peuvent lister vos applications et fenêtres, lire les fenêtres que vous partagez, et cliquer et taper dans celles où vous les laissez agir. Rien n'est lisible avant que vous le partagiez depuis la barre d'état.",
+        "hint": "Les agents peuvent lister vos applications et fenêtres, lire les fenêtres que vous partagez, et cliquer et taper dans celles où vous les laissez agir. Aucune fenêtre n'est lisible avant que vous la partagiez depuis la barre d'état.",
         "failed": "Impossible de changer l'utilisation de l'ordinateur"
       },
       "driver": {

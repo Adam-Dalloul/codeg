@@ -174,10 +174,13 @@ fn parse_apps(value: &Value) -> Result<Vec<RawApp>, HelperError> {
         })
 }
 
-/// Remembers which application each running process is. Keyed by pid AND
-/// start time: a reused pid is a cache miss, never a stale hit.
+/// Remembers which application each running process is, so listing windows
+/// does not re-list every installed application each time. Keyed by pid AND
+/// start time: a reused pid is a cache miss, never a stale hit. Not used on
+/// macOS, where each listing reads the owners afresh (see [`list_windows`]).
 #[derive(Default)]
 pub struct AppCache {
+    #[cfg_attr(target_os = "macos", allow(dead_code))]
     apps: HashMap<(u32, Option<u64>), RawApp>,
 }
 
@@ -209,14 +212,15 @@ pub async fn list_windows(
     let result = call(driver, "list_windows", args, LIST_TIMEOUT).await?;
     let windows = parse_windows(structured("list_windows", &result)?)?;
 
-    let mut cache = cache.lock().await;
     let stamps: Vec<Option<u64>> = windows.iter().map(|w| process_start(w.pid)).collect();
     #[cfg(target_os = "macos")]
     {
-        Ok(join_identified(&mut cache, windows, stamps, pid.is_none()))
+        let _ = cache;
+        Ok(join_identified(windows, stamps))
     }
     #[cfg(not(target_os = "macos"))]
     {
+        let mut cache = cache.lock().await;
         let missing = windows
             .iter()
             .zip(&stamps)
@@ -261,43 +265,24 @@ async fn driver_apps(driver: &DriverProc) -> Result<Vec<RawApp>, HelperError> {
 }
 
 /// macOS: join each window with its application as the helper reads it off
-/// the owning process (`appident`), remembered per (pid, start time). A full
-/// listing (`prune`) rebuilds the memory from the processes that own a window
-/// now, so nothing is kept for one that has gone.
+/// the owning process now (`appident`) — once per process per listing, and
+/// never remembered past it: reading it is a system call and a small file,
+/// and a process that has since run another program (`exec` keeps the pid
+/// and the start time) is that program now.
 #[cfg(target_os = "macos")]
-fn join_identified(
-    cache: &mut AppCache,
-    windows: Vec<RawWindow>,
-    stamps: Vec<Option<u64>>,
-    prune: bool,
-) -> Vec<RawWindow> {
+fn join_identified(windows: Vec<RawWindow>, stamps: Vec<Option<u64>>) -> Vec<RawWindow> {
     let mut seen: HashMap<(u32, Option<u64>), RawApp> = HashMap::new();
-    let joined = windows
+    windows
         .into_iter()
         .zip(stamps)
         .map(|(mut window, started_at)| {
-            let key = (window.pid, started_at);
-            let app = match seen.get(&key) {
-                Some(app) => app.clone(),
-                None => {
-                    let app = cache
-                        .apps
-                        .remove(&key)
-                        .unwrap_or_else(|| identified(window.pid, started_at, &window.app.name));
-                    seen.insert(key, app.clone());
-                    app
-                }
-            };
-            window.app = app;
+            window.app = seen
+                .entry((window.pid, started_at))
+                .or_insert_with(|| identified(window.pid, started_at, &window.app.name))
+                .clone();
             window
         })
-        .collect();
-    if prune {
-        cache.apps = seen;
-    } else {
-        cache.apps.extend(seen);
-    }
-    joined
+        .collect()
 }
 
 /// The application `pid` runs, read off the process and then checked to be
@@ -310,7 +295,7 @@ fn identified(pid: u32, started_at: Option<u64>, name: &str) -> RawApp {
         .and_then(|_| crate::computer::appident::identify(pid))
         .filter(|_| process_start(pid) == started_at);
     let (path, bundle_id) = match identity {
-        Some(identity) => (Some(identity.path), identity.bundle_id),
+        Some(identity) => (Some(identity.path), Some(identity.bundle_id)),
         None => (None, None),
     };
     let name = if name.is_empty() {
@@ -953,40 +938,26 @@ mod tests {
         assert_eq!(listed, vec![(1, false), (2, true), (3, false)]);
     }
 
-    /// macOS: a window's application is read off its own process and kept
-    /// per (pid, start time); a full listing forgets the processes that no
-    /// longer own a window, a listing of one process forgets nothing.
+    /// macOS: a window's application is read off its own process, whatever
+    /// the driver said of it — here a bare executable (the test runner),
+    /// which is no application — and a process whose start time can no
+    /// longer be read (it has gone) is not read at all.
     #[cfg(target_os = "macos")]
     #[test]
-    fn applications_are_read_off_processes_and_forgotten_when_gone() {
+    fn applications_are_read_off_the_owning_process() {
         let me = std::process::id();
         let start = process_start(me);
-        let mut cache = AppCache::default();
-        let mut window = owned_window(me, start.unwrap(), None, true, 1);
+        let mut window = owned_window(me, start.unwrap(), Some("com.example.claimed"), true, 1);
         window.app.name = "cargo test".into();
-        let other = (me + 1, Some(1));
-        cache.apps.insert(
-            other,
-            RawApp {
-                pid: other.0,
-                name: "gone".into(),
-                bundle_id: Some("com.example.gone".into()),
-                path: None,
-                active: false,
-                started_at: other.1,
-            },
-        );
+        let mut gone = window.clone();
+        gone.window_id += 1;
 
-        let joined = join_identified(&mut cache, vec![window.clone()], vec![start], false);
-        // The test runner is a bare executable: listed, never identified.
+        let joined = join_identified(vec![window, gone], vec![start, None]);
         assert_eq!(joined[0].app.key(), None);
         assert_eq!(joined[0].app.name, "cargo test");
-        assert!(cache.apps.contains_key(&other));
-        assert!(cache.apps.contains_key(&(me, start)));
-
-        join_identified(&mut cache, vec![window], vec![start], true);
-        assert!(!cache.apps.contains_key(&other));
-        assert!(cache.apps.contains_key(&(me, start)));
+        assert_eq!(joined[0].app.started_at, start);
+        assert_eq!(joined[1].app.key(), None);
+        assert_eq!(joined[1].app.started_at, None);
     }
 
     /// Refs come from the elements the driver listed, placed by the tree: a

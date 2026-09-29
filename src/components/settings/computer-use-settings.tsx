@@ -72,13 +72,16 @@ import {
 export function ComputerUseSettings() {
   const t = useTranslations("ComputerUse.settings")
   const desktop = computerAvailable()
-  const { enabled, apply } = useComputerEnabled({ desktopOnly: false })
+  const { enabled, mark, applySince } = useComputerEnabled({
+    desktopOnly: false,
+  })
   const [switching, setSwitching] = useState(false)
 
   const setEnabled = async (next: boolean) => {
     setSwitching(true)
+    const since = mark()
     try {
-      apply(await setComputerToolsEnabled(next))
+      applySince(await setComputerToolsEnabled(next), since)
     } catch (e) {
       toast.error(t("switch.failed"), { description: toErrorMessage(e) })
     } finally {
@@ -144,9 +147,12 @@ function DriverSection() {
   const t = useTranslations("ComputerUse.settings.driver")
   const { info, error, install, uninstall } = useComputerDriver()
   const [confirmUninstall, setConfirmUninstall] = useState(false)
+  /** An install or removal this page asked for and has not heard back
+   *  from — before the backend's own word on it arrives. */
+  const [pending, setPending] = useState(false)
 
   const task = info?.task
-  const busy = task !== undefined
+  const busy = task !== undefined || pending
   const current = !!info && info.installed.includes(info.version)
   const older = info ? info.installed.filter((v) => v !== info.version) : []
   const progress = progressOf(info)
@@ -172,11 +178,23 @@ function DriverSection() {
   else line = t("notInstalled")
 
   const onInstall = async () => {
-    if (await install()) toast.success(t("installDone"))
+    if (busy) return
+    setPending(true)
+    try {
+      if (await install()) toast.success(t("installDone"))
+    } finally {
+      setPending(false)
+    }
   }
   const onUninstall = async () => {
-    if (await uninstall()) toast.success(t("uninstallDone"))
-    setConfirmUninstall(false)
+    if (busy) return
+    setPending(true)
+    try {
+      if (await uninstall()) toast.success(t("uninstallDone"))
+    } finally {
+      setPending(false)
+      setConfirmUninstall(false)
+    }
   }
 
   return (

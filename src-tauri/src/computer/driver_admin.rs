@@ -4,7 +4,8 @@
 //!
 //! Only ever the pinned release (`driver`): there is no choosing another, so
 //! "upgrade" is fetching the release this codeg pins where the cache holds
-//! only an older one, left by an earlier codeg. A download a starting helper
+//! only an older one, left by an earlier codeg (and left in place: another
+//! codeg on the machine may still run it). A download a starting helper
 //! makes for itself (`local::LocalBackend`) is shown here as well, followed
 //! through the backend's status.
 //!
@@ -163,16 +164,14 @@ impl DriverAdmin {
         self.emit();
     }
 
-    /// Fetch the pinned release, unless the cache already holds it, then
-    /// clear the others. Fails if an install or a removal is under way.
+    /// Fetch the pinned release, unless the cache already holds it. Fails if
+    /// an install or a removal is under way.
     pub async fn install(&self) -> Result<DriverInfo, String> {
         self.begin(DriverTask::FETCHING)?;
-        let result = match driver::ensure_driver(|line| self.progressed(line)).await {
-            Ok(_) => driver::forget_other_drivers()
-                .await
-                .map_err(|e| e.to_string()),
-            Err(e) => Err(e.to_string()),
-        };
+        let result = driver::ensure_driver(|line| self.progressed(line))
+            .await
+            .map(|_| ())
+            .map_err(|e| e.to_string());
         self.finish(result.as_ref().err().cloned());
         result.map(|()| self.info())
     }

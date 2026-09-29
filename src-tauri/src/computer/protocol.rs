@@ -365,6 +365,16 @@ pub struct PermissionReport {
     pub screen_recording: bool,
 }
 
+impl PermissionReport {
+    /// Whether `permission` is granted.
+    pub fn has(&self, permission: OsPermission) -> bool {
+        match permission {
+            OsPermission::Accessibility => self.accessibility,
+            OsPermission::ScreenRecording => self.screen_recording,
+        }
+    }
+}
+
 /// One running application, as the driver reports it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

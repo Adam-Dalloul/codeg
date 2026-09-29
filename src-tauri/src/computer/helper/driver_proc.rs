@@ -113,15 +113,27 @@ pub fn helper_data_dir() -> Option<PathBuf> {
 /// that was killed never got to remove its own. A home is named for the
 /// helper that made it (`<pid>-<nanos>`), and one whose helper still runs —
 /// this one, or another codeg's — is left alone. Best effort throughout.
+///
+/// Only real directories, reached without following a link: `runs` sits in a
+/// directory any process of the user can write, and a `runs` swapped for a
+/// link elsewhere must not turn this into a deletion there.
 pub fn sweep_dead_runs() {
-    let Some(base) = helper_data_dir() else {
+    if let Some(base) = helper_data_dir() {
+        sweep_dead_runs_in(&base.join("runs"), std::process::id());
+    }
+}
+
+fn sweep_dead_runs_in(runs: &Path, me: u32) {
+    if !std::fs::symlink_metadata(runs).is_ok_and(|m| m.file_type().is_dir()) {
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(runs) else {
         return;
     };
-    let Ok(entries) = std::fs::read_dir(base.join("runs")) else {
-        return;
-    };
-    let me = std::process::id();
     for entry in entries.flatten() {
+        if !entry.file_type().is_ok_and(|t| t.is_dir()) {
+            continue;
+        }
         let name = entry.file_name();
         let Some(pid) = name
             .to_str()
@@ -687,7 +699,10 @@ pub async fn probe_permissions(path: &Path) -> Result<PermissionReport, HelperEr
         ours.set_nonblocking(true)?;
         let stream = tokio::net::UnixStream::from_std(ours)?;
         let mut out = Vec::new();
-        stream.take(MAX_PROBE_OUTPUT).read_to_end(&mut out).await?;
+        stream
+            .take(MAX_PROBE_OUTPUT + 1)
+            .read_to_end(&mut out)
+            .await?;
         std::io::Result::Ok(out)
     };
     let out = tokio::time::timeout(PROBE_TIMEOUT, read).await;
@@ -703,6 +718,11 @@ pub async fn probe_permissions(path: &Path) -> Result<PermissionReport, HelperEr
         }
         Err(_) => return Err(unavailable("the permission check did not answer in time")),
     };
+    if out.len() as u64 > MAX_PROBE_OUTPUT {
+        return Err(HelperError::failed(
+            "the permission check answered with more than one short line",
+        ));
+    }
     let probe: Probe = serde_json::from_slice(out.trim_ascii())
         .map_err(|e| HelperError::failed(format!("the permission check answered oddly: {e}")))?;
     Ok(PermissionReport {
@@ -900,5 +920,32 @@ mod tests {
         let err = DriverProc::launch(&fake, artifact).await.err().unwrap();
         assert_eq!(err.code, HelperErrorCode::DriverRejected);
         assert!(!dir.path().join("ran").exists());
+    }
+
+    /// Dead helpers' homes go; this helper's, a live one's, anything that is
+    /// not a directory, and everything behind a `runs` that is a link stay.
+    #[cfg(unix)]
+    #[test]
+    fn only_dead_helpers_homes_are_swept() {
+        let dir = tempfile::tempdir().unwrap();
+        let runs = dir.path().join("runs");
+        let me = std::process::id();
+        for name in ["0-dead", "not-a-run"] {
+            std::fs::create_dir_all(runs.join(name).join("tmp")).unwrap();
+        }
+        std::fs::create_dir_all(runs.join(format!("{me}-mine"))).unwrap();
+        std::fs::write(runs.join("1-file"), b"").unwrap();
+        sweep_dead_runs_in(&runs, me);
+        assert!(!runs.join("0-dead").exists());
+        assert!(runs.join(format!("{me}-mine")).exists());
+        assert!(runs.join("not-a-run").exists());
+        assert!(runs.join("1-file").exists());
+
+        let elsewhere = dir.path().join("elsewhere");
+        std::fs::create_dir_all(elsewhere.join("0-precious")).unwrap();
+        let linked = dir.path().join("linked-runs");
+        std::os::unix::fs::symlink(&elsewhere, &linked).unwrap();
+        sweep_dead_runs_in(&linked, me);
+        assert!(elsewhere.join("0-precious").exists());
     }
 }

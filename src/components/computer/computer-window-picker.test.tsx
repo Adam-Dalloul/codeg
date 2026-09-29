@@ -162,6 +162,29 @@ describe("ComputerWindowPicker", () => {
     expect(api.computerListShareableWindows).toHaveBeenCalledTimes(2)
   })
 
+  /** One change at a time: "stop sharing all" waits for a share still on
+   *  its way, which would otherwise land after it and undo it. */
+  it("takes one change at a time", async () => {
+    api.computerListShareableWindows.mockResolvedValue([
+      window("read"),
+      window("none", { targetId: "w2", appName: "Notes", title: "todo" }),
+    ])
+    api.computerShareWindow.mockReturnValue(new Promise(() => {}))
+    mount()
+    const stopAll = await screen.findByRole("button", {
+      name: "Stop sharing all",
+    })
+    await openMenu(await screen.findByRole("button", { name: "Share" }))
+    await act(async () => {
+      fireEvent.click(
+        screen.getByRole("menuitem", { name: "Let agents read and act on it" })
+      )
+      await Promise.resolve()
+    })
+    expect(stopAll).toBeDisabled()
+    expect(screen.getByRole("button", { name: /Share all/ })).toBeDisabled()
+  })
+
   /** Stopping every sharing is there once anything is shared. */
   it("stops sharing every window at once", async () => {
     api.computerListShareableWindows.mockResolvedValue([window("read")])

@@ -17,6 +17,13 @@
 //! do Apple's own agents under `/System` — the login window, the Gatekeeper
 //! and keychain prompts, Control Center — except in the places Apple keeps
 //! the applications people use.
+//!
+//! A helper application inside another (`Foo.app/…/Foo Helper.app`) is the
+//! application it sits in: its windows are that application's, and so is its
+//! place on a blocklist — the Passwords menu-bar helper is Passwords. And an
+//! application is known by its bundle identifier: one whose `Info.plist`
+//! cannot be read is not told apart by its path instead, since the blocklist
+//! names password managers by identifier.
 
 /// Where Apple keeps the applications people use, under `/System`.
 const SYSTEM_APPLICATIONS: &[&str] = &[
@@ -38,8 +45,8 @@ const MAX_INFO_PLIST: u64 = 1 << 20;
 pub struct AppIdentity {
     /// The `.app` bundle.
     pub path: String,
-    /// `CFBundleIdentifier` from the bundle's `Info.plist`, when it has one.
-    pub bundle_id: Option<String>,
+    /// `CFBundleIdentifier` from the bundle's `Info.plist`.
+    pub bundle_id: String,
 }
 
 /// The bundle whose main executable `executable` is, or `None` when it is
@@ -60,6 +67,25 @@ pub fn main_app_bundle(executable: &str) -> Option<&str> {
         .then_some(bundle)
 }
 
+/// The outermost application bundle on `bundle`'s path — `bundle` itself
+/// unless it sits inside another application. See the module note.
+pub fn outermost_app_bundle(bundle: &str) -> &str {
+    let mut end = 0;
+    for part in bundle.split('/') {
+        end += part.len();
+        let stem = part.len().saturating_sub(4);
+        if stem > 0
+            && part
+                .get(stem..)
+                .is_some_and(|ext| ext.eq_ignore_ascii_case(".app"))
+        {
+            return &bundle[..end];
+        }
+        end += 1;
+    }
+    bundle
+}
+
 /// Whether `bundle` is one of Apple's own agents or panels rather than an
 /// application a person uses. See the module note.
 pub fn is_system_component(bundle: &str) -> bool {
@@ -75,13 +101,13 @@ pub fn is_system_component(bundle: &str) -> bool {
 #[cfg(target_os = "macos")]
 pub fn identify(pid: u32) -> Option<AppIdentity> {
     let executable = executable_path(pid)?;
-    let bundle = main_app_bundle(&executable)?;
+    let bundle = outermost_app_bundle(main_app_bundle(&executable)?);
     if is_system_component(bundle) {
         return None;
     }
     Some(AppIdentity {
         path: bundle.to_string(),
-        bundle_id: bundle_identifier(bundle),
+        bundle_id: bundle_identifier(bundle)?,
     })
 }
 
@@ -173,6 +199,33 @@ mod tests {
         ] {
             assert_eq!(main_app_bundle(other), None, "{other}");
         }
+    }
+
+    /// A helper application is the application it sits in; an application on
+    /// its own is itself.
+    #[test]
+    fn a_nested_helper_is_the_application_it_sits_in() {
+        assert_eq!(
+            outermost_app_bundle(
+                "/System/Applications/Passwords.app/Contents/Library/LoginItems/\
+                 PasswordsMenuBarExtra.app"
+            ),
+            "/System/Applications/Passwords.app"
+        );
+        assert_eq!(
+            outermost_app_bundle(
+                "/Applications/Visual Studio Code.app/Contents/Frameworks/Code Helper.app"
+            ),
+            "/Applications/Visual Studio Code.app"
+        );
+        assert_eq!(
+            outermost_app_bundle("/Applications/企业微信.app"),
+            "/Applications/企业微信.app"
+        );
+        assert_eq!(
+            outermost_app_bundle("/Library/Foo.framework/Resources/Helper.app"),
+            "/Library/Foo.framework/Resources/Helper.app"
+        );
     }
 
     /// Apple's agents are system components; the applications Apple ships —
