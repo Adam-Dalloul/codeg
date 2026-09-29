@@ -5224,6 +5224,7 @@
       "loading": "Chargement des fenêtres…",
       "refresh": "Actualiser",
       "empty": "Aucune fenêtre trouvée. S'il devrait y en avoir, vérifiez les autorisations dans le panneau Utilisation de l'ordinateur.",
+      "noScreenRecording": "codeg-computer-helper n'a pas encore l'Enregistrement de l'écran : les titres et les images des fenêtres ne peuvent pas s'afficher, et les agents ne peuvent pas lire les fenêtres.",
       "unnamedApp": "App inconnue",
       "untitled": "Fenêtre sans titre",
       "minimized": "réduite",

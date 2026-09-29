@@ -5224,6 +5224,7 @@
       "loading": "Cargando ventanas…",
       "refresh": "Actualizar",
       "empty": "No se encontraron ventanas. Si debería haber alguna, revisa los permisos en el panel Uso del ordenador.",
+      "noScreenRecording": "codeg-computer-helper todavía no tiene Grabación de pantalla: no se pueden mostrar los títulos ni las imágenes de las ventanas, y los agentes no pueden leerlas.",
       "unnamedApp": "App desconocida",
       "untitled": "Ventana sin título",
       "minimized": "minimizada",

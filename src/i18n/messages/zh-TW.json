@@ -5224,6 +5224,7 @@
       "loading": "正在載入視窗…",
       "refresh": "重新整理",
       "empty": "沒有找到視窗。如果應該有，請檢查「電腦操作」面板中的權限。",
+      "noScreenRecording": "codeg-computer-helper 還沒有「螢幕錄製」權限：看不到視窗標題和畫面，智慧體也讀不了視窗。",
       "unnamedApp": "未知應用程式",
       "untitled": "無標題視窗",
       "minimized": "已最小化",

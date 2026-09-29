@@ -5224,6 +5224,7 @@
       "loading": "Fenster werden geladen …",
       "refresh": "Aktualisieren",
       "empty": "Keine Fenster gefunden. Wenn es welche geben sollte, prüfe die Berechtigungen im Bereich Computernutzung.",
+      "noScreenRecording": "codeg-computer-helper hat noch keine Bildschirmaufnahme: Fenstertitel und -bilder können nicht angezeigt werden, und Agenten können keine Fenster lesen.",
       "unnamedApp": "Unbekannte App",
       "untitled": "Fenster ohne Titel",
       "minimized": "minimiert",

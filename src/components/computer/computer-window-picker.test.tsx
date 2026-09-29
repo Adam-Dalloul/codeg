@@ -2,7 +2,11 @@ import { act, fireEvent, render, screen } from "@testing-library/react"
 import { NextIntlClientProvider } from "next-intl"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
-import type { PickerWindow, ShareManyResult } from "@/lib/computer/types"
+import type {
+  ComputerStatus,
+  PickerWindow,
+  ShareManyResult,
+} from "@/lib/computer/types"
 
 const api = vi.hoisted(() => ({
   computerAvailable: vi.fn(() => false),
@@ -12,6 +16,9 @@ const api = vi.hoisted(() => ({
     vi.fn<(ids: string[], level: string) => Promise<ShareManyResult>>(),
   computerRevokeAll: vi.fn(async () => {}),
   computerWindowThumbnail: vi.fn(async () => null),
+  computerStatus: vi.fn<() => Promise<ComputerStatus>>(),
+  computerRequestPermission: vi.fn(async () => ({})),
+  computerOpenPermissionSettings: vi.fn(async () => {}),
 }))
 vi.mock("@/lib/computer/computer-api", () => api)
 vi.mock("@/lib/platform", () => ({
@@ -51,9 +58,22 @@ function mount() {
   )
 }
 
+function status(screenRecording: boolean): ComputerStatus {
+  return {
+    enabled: true,
+    platform: "macos",
+    verifiedPlatform: false,
+    backend: { state: "ready", driverVersion: "0.28.2", peer: "verified" },
+    permissions: { required: true, accessibility: true, screenRecording },
+    shared: [],
+    paused: false,
+  }
+}
+
 beforeEach(() => {
   vi.clearAllMocks()
   resetComputerStoreForTest()
+  api.computerAvailable.mockReturnValue(false)
 })
 
 describe("ComputerWindowPicker", () => {
@@ -196,6 +216,64 @@ describe("ComputerWindowPicker", () => {
       await Promise.resolve()
     })
     expect(api.computerRevokeAll).toHaveBeenCalled()
+  })
+
+  /** Without Screen Recording there are no titles and no pictures: the
+   *  picker says so and offers to grant it. */
+  it("says Screen Recording is missing and offers it", async () => {
+    api.computerAvailable.mockReturnValue(true)
+    api.computerStatus.mockResolvedValue(status(false))
+    api.computerListShareableWindows.mockResolvedValue([
+      window("none", { title: "" }),
+    ])
+    mount()
+    expect(
+      await screen.findByText(/doesn't have Screen Recording yet/)
+    ).toBeInTheDocument()
+    expect(screen.getByText("Untitled window")).toBeInTheDocument()
+    fireEvent.click(screen.getByRole("button", { name: "Request" }))
+    await act(async () => {
+      await Promise.resolve()
+    })
+    expect(api.computerRequestPermission).toHaveBeenCalledWith(
+      "screenRecording"
+    )
+  })
+
+  /** Back from System Settings with Screen Recording granted, the windows
+   *  are listed again and their pictures fetched again — and the notice is
+   *  gone. */
+  it("reads the windows again once Screen Recording arrives", async () => {
+    api.computerAvailable.mockReturnValue(true)
+    api.computerStatus.mockResolvedValue(status(false))
+    api.computerListShareableWindows.mockResolvedValue([window("none")])
+    mount()
+    await screen.findByText(/doesn't have Screen Recording yet/)
+    await screen.findByRole("button", { name: "Share" })
+    expect(api.computerListShareableWindows).toHaveBeenCalledTimes(1)
+    expect(api.computerWindowThumbnail).toHaveBeenCalledTimes(1)
+
+    api.computerStatus.mockResolvedValue(status(true))
+    await act(async () => {
+      globalThis.window.dispatchEvent(new Event("focus"))
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+    expect(screen.queryByText(/doesn't have Screen Recording yet/)).toBeNull()
+    expect(api.computerListShareableWindows).toHaveBeenCalledTimes(2)
+    expect(api.computerWindowThumbnail).toHaveBeenCalledTimes(2)
+  })
+
+  /** Refresh fetches the pictures again, not only the list. */
+  it("fetches the pictures again on refresh", async () => {
+    api.computerListShareableWindows.mockResolvedValue([window("none")])
+    mount()
+    await screen.findByRole("button", { name: "Share" })
+    expect(api.computerWindowThumbnail).toHaveBeenCalledTimes(1)
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Refresh" }))
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+    expect(api.computerWindowThumbnail).toHaveBeenCalledTimes(2)
   })
 
   /** Windows that can never be shared are kept out of the grid, folded

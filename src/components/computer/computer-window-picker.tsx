@@ -14,6 +14,12 @@
  * told) is kept out of the grid, in a folded list at the bottom with the
  * reason, and gets no picture.
  *
+ * Titles and pictures both need the helper to hold Screen Recording (macOS).
+ * Without it the picker says so, with the way to grant it; it reads the
+ * helper's permissions as it opens and again whenever this window comes back
+ * to the front, and once Screen Recording has arrived it lists the windows
+ * and fetches their pictures again. Refresh fetches the pictures again too.
+ *
  * Two levels are offered, as two entries of one menu — the browser's pair:
  * reading a window cannot change it, acting on it can, and they are
  * different decisions. A shared window moves between them without being
@@ -58,6 +64,7 @@ import {
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { toErrorMessage } from "@/lib/app-error"
 import {
+  computerAvailable,
   computerListShareableWindows,
   computerRevokeAll,
   computerShareWindow,
@@ -74,6 +81,7 @@ import type {
   NotGrantable,
   PickerWindow,
 } from "@/lib/computer/types"
+import { useComputerStatus } from "@/lib/computer/use-computer-status"
 import { cn } from "@/lib/utils"
 
 function ThumbnailFrame({ children }: { children: React.ReactNode }) {
@@ -85,7 +93,8 @@ function ThumbnailFrame({ children }: { children: React.ReactNode }) {
 }
 
 /** A picture of one shareable window, fetched once. Keyed by the caller on
- *  the target id, so a different window is a fresh component. */
+ *  the target id and on the picker's picture round, so a different window —
+ *  or the same one asked for again — is a fresh component. */
 function Thumbnail({ targetId }: { targetId: string }) {
   const [src, setSrc] = useState<string | null | undefined>(undefined)
   useEffect(() => {
@@ -146,8 +155,18 @@ export function ComputerWindowPicker({
    *  still on its way would be undone by it, and the other way round. */
   const changing = bulk || busy !== null
   const [showUnshareable, setShowUnshareable] = useState(false)
+  /** Bumped to fetch every picture again: each is fetched once per value. */
+  const [pictures, setPictures] = useState(0)
   /** The latest load; an older one that answers late is dropped. */
   const loadSeqRef = useRef(0)
+  const { status, request, openPermissionSettings } = useComputerStatus(
+    open && computerAvailable()
+  )
+  const permissions = status?.permissions
+  const screenRecording = permissions?.required
+    ? permissions.screenRecording
+    : undefined
+  const development = status?.backend.peer === "development"
 
   const load = useCallback(async () => {
     const seq = ++loadSeqRef.current
@@ -169,6 +188,24 @@ export function ComputerWindowPicker({
       void load()
     }
   }, [open, load])
+
+  /** The list again, and every picture in it. */
+  const reload = useCallback(() => {
+    setPictures((n) => n + 1)
+    return load()
+  }, [load])
+
+  /** Screen Recording was missing and is here now: the titles and pictures
+   *  it withheld can be had. */
+  const missedRef = useRef(false)
+  useEffect(() => {
+    if (screenRecording === false) {
+      missedRef.current = true
+    } else if (screenRecording && missedRef.current) {
+      missedRef.current = false
+      void reload()
+    }
+  }, [screenRecording, reload])
 
   const shareable = windows?.filter((w) => !w.notGrantable) ?? []
   const unshareable =
@@ -290,7 +327,7 @@ export function ComputerWindowPicker({
             <Button
               size="sm"
               variant="ghost"
-              onClick={() => void load()}
+              onClick={() => void reload()}
               disabled={windows === null}
             >
               <RotateCw className="size-3.5" />
@@ -302,6 +339,35 @@ export function ComputerWindowPicker({
         {paused && (
           <div className="rounded-md border border-amber-500/30 bg-amber-500/5 px-2 py-1.5 text-xs text-amber-600 dark:text-amber-400">
             {tComputer("stopped")}
+          </div>
+        )}
+
+        {screenRecording === false && (
+          <div className="space-y-1.5 rounded-md border border-amber-500/30 bg-amber-500/5 px-2 py-1.5">
+            <p className="text-xs text-amber-600 dark:text-amber-400">
+              {t("noScreenRecording")}
+            </p>
+            <p className="text-2xs leading-snug text-muted-foreground">
+              {tComputer(
+                development ? "permissions.whyDev" : "permissions.why"
+              )}
+            </p>
+            <div className="flex gap-1">
+              <Button
+                size="xs"
+                variant="outline"
+                onClick={() => void request("screenRecording")}
+              >
+                {tComputer("permissions.request")}
+              </Button>
+              <Button
+                size="xs"
+                variant="ghost"
+                onClick={() => openPermissionSettings("screenRecording")}
+              >
+                {tComputer("permissions.openSettings")}
+              </Button>
+            </div>
           </div>
         )}
 
@@ -341,7 +407,10 @@ export function ComputerWindowPicker({
                           on && "border-violet-500/60 bg-violet-500/5"
                         )}
                       >
-                        <Thumbnail key={w.targetId} targetId={w.targetId} />
+                        <Thumbnail
+                          key={`${w.targetId}:${pictures}`}
+                          targetId={w.targetId}
+                        />
                         <div className="min-w-0">
                           <p className="truncate text-xs font-medium">
                             {w.appName || t("unnamedApp")}

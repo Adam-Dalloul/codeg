@@ -5224,6 +5224,7 @@
       "loading": "Loading windows…",
       "refresh": "Refresh",
       "empty": "No windows found. If you expected some, check the permissions in the Computer use panel.",
+      "noScreenRecording": "codeg-computer-helper doesn't have Screen Recording yet: window titles and pictures can't be shown, and agents can't read windows.",
       "unnamedApp": "Unknown app",
       "untitled": "Untitled window",
       "minimized": "minimized",

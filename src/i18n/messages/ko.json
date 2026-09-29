@@ -5224,6 +5224,7 @@
       "loading": "창을 불러오는 중…",
       "refresh": "새로 고침",
       "empty": "창을 찾지 못했습니다. 있어야 한다면 컴퓨터 사용 패널에서 권한을 확인하세요.",
+      "noScreenRecording": "codeg-computer-helper에 아직 '화면 기록' 권한이 없습니다. 창 제목과 화면을 보여 줄 수 없고, 에이전트도 창을 읽을 수 없습니다.",
       "unnamedApp": "알 수 없는 앱",
       "untitled": "제목 없는 창",
       "minimized": "최소화됨",

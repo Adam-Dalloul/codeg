@@ -5224,6 +5224,7 @@
       "loading": "正在加载窗口…",
       "refresh": "刷新",
       "empty": "没有找到窗口。如果应该有，请检查「电脑操作」面板中的权限。",
+      "noScreenRecording": "codeg-computer-helper 还没有「屏幕录制」权限：看不到窗口标题和画面，智能体也读不了窗口。",
       "unnamedApp": "未知应用",
       "untitled": "无标题窗口",
       "minimized": "已最小化",

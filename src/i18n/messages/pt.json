@@ -5224,6 +5224,7 @@
       "loading": "Carregando janelas…",
       "refresh": "Atualizar",
       "empty": "Nenhuma janela encontrada. Se deveria haver alguma, verifique as permissões no painel Uso do computador.",
+      "noScreenRecording": "O codeg-computer-helper ainda não tem Gravação de Tela: os títulos e as imagens das janelas não podem ser mostrados, e os agentes não conseguem ler as janelas.",
       "unnamedApp": "App desconhecido",
       "untitled": "Janela sem título",
       "minimized": "minimizada",
