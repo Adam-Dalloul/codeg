@@ -26,7 +26,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react"
 import { useTranslations } from "next-intl"
-import { Keyboard, Monitor, RotateCw } from "lucide-react"
+import { AppWindow, Keyboard, Monitor, RotateCw } from "lucide-react"
 import { toast } from "sonner"
 
 import { useIsMac } from "@/hooks/use-is-mac"
@@ -258,7 +258,7 @@ export function ComputerSettingsSection() {
 
   return (
     <SettingsSection
-      icon={Monitor}
+      icon={AppWindow}
       title={t("title")}
       description={t("description")}
     >

@@ -5251,7 +5251,7 @@
       "pageTitle": "Utilisation de l'ordinateur",
       "pageDescription": "Laissez les agents voir et utiliser les fenêtres du bureau que vous partagez avec eux.",
       "switch": {
-        "label": "Utilisation de l'ordinateur",
+        "label": "Activer l'utilisation de l'ordinateur",
         "hint": "Les agents peuvent lister vos applications et fenêtres, lire les fenêtres que vous partagez, et cliquer et taper dans celles où vous les laissez agir. Aucune fenêtre n'est lisible avant que vous la partagiez depuis la barre d'état.",
         "failed": "Impossible de changer l'utilisation de l'ordinateur"
       },

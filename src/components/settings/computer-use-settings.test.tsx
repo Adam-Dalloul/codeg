@@ -101,7 +101,9 @@ describe("ComputerUseSettings", () => {
    *  other switch for computer use writes too. */
   it("switches computer use on", async () => {
     mount()
-    const toggle = await screen.findByRole("switch", { name: "Computer use" })
+    const toggle = await screen.findByRole("switch", {
+      name: "Enable computer use",
+    })
     await waitFor(() => expect(toggle).not.toBeDisabled())
     expect(toggle).not.toBeChecked()
     fireEvent.click(toggle)
@@ -121,7 +123,9 @@ describe("ComputerUseSettings", () => {
       })
     )
     mount()
-    const toggle = await screen.findByRole("switch", { name: "Computer use" })
+    const toggle = await screen.findByRole("switch", {
+      name: "Enable computer use",
+    })
     await waitFor(() => expect(toggle).not.toBeDisabled())
     fireEvent.click(toggle)
     act(() =>
@@ -239,7 +243,7 @@ describe("ComputerUseSettings", () => {
     api.computerAvailable.mockReturnValue(false)
     mount()
     expect(
-      await screen.findByRole("switch", { name: "Computer use" })
+      await screen.findByRole("switch", { name: "Enable computer use" })
     ).toBeInTheDocument()
     expect(screen.queryByText("Driver")).toBeNull()
     expect(screen.queryByText("Permissions")).toBeNull()

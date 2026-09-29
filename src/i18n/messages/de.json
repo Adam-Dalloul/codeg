@@ -5251,7 +5251,7 @@
       "pageTitle": "Computernutzung",
       "pageDescription": "Lass Agenten die Desktop-Fenster sehen und bedienen, die du für sie freigibst.",
       "switch": {
-        "label": "Computernutzung",
+        "label": "Computernutzung aktivieren",
         "hint": "Agenten können deine Apps und Fenster auflisten, freigegebene Fenster lesen und in denen klicken und tippen, in denen du sie handeln lässt. Kein Fenster ist lesbar, bevor du es über die Statusleiste freigibst.",
         "failed": "Computernutzung konnte nicht umgeschaltet werden"
       },

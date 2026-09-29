@@ -5251,7 +5251,7 @@
       "pageTitle": "Computer use",
       "pageDescription": "Let agents see and use the desktop windows you share with them.",
       "switch": {
-        "label": "Computer use",
+        "label": "Enable computer use",
         "hint": "Agents can list your apps and windows, read the windows you share, and click and type in the ones you let them act on. No window can be read until you share it from the status bar.",
         "failed": "Could not switch computer use"
       },

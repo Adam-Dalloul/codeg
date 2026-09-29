@@ -5251,7 +5251,7 @@
       "pageTitle": "Uso del ordenador",
       "pageDescription": "Deja que los agentes vean y usen las ventanas del escritorio que compartas con ellos.",
       "switch": {
-        "label": "Uso del ordenador",
+        "label": "Activar el uso del ordenador",
         "hint": "Los agentes pueden listar tus aplicaciones y ventanas, leer las ventanas que compartas y hacer clic y escribir en aquellas en las que les permitas actuar. No pueden leer ninguna ventana hasta que la compartas desde la barra de estado.",
         "failed": "No se pudo cambiar el uso del ordenador"
       },
