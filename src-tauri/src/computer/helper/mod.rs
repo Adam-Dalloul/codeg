@@ -321,6 +321,7 @@ fn same_file(a: i32, b: i32) -> bool {
 /// How long an answer that a permission is missing stands before the helper
 /// asks the system again. Asking starts a process; an agent retrying a
 /// screenshot in a loop should not start one per try.
+#[cfg(any(test, target_os = "macos"))]
 const RECHECK_MISSING: Duration = Duration::from_secs(2);
 
 /// What the running helper holds between requests.

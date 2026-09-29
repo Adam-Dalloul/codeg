@@ -584,9 +584,8 @@ impl ComputerService {
     /// then kill the driver (mid-call if it is in one) and stop the helper
     /// now, rather than whenever the switch is followed, before the files go.
     /// No helper starts again meanwhile: the backend asks the switch itself
-    /// before starting one. Then every cached release, and the homes dead
-    /// drivers left behind. Switching back on fetches the pinned release
-    /// again.
+    /// before starting one. Then every cached release. Switching back on
+    /// fetches the pinned release again.
     async fn uninstall_driver(
         &self,
         conn: &sea_orm::DatabaseConnection,
@@ -609,7 +608,6 @@ impl ComputerService {
             crate::computer::driver::forget_cached_driver()
                 .await
                 .map_err(|e| e.to_string())?;
-            crate::computer::helper::driver_proc::sweep_dead_runs();
             Ok::<(), String>(())
         }
         .await;

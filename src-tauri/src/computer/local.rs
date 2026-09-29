@@ -67,6 +67,13 @@ const WRITE_TIMEOUT: Duration = Duration::from_secs(10);
 /// How long a freshly launched helper has to say it is ready.
 const READY_TIMEOUT: Duration = Duration::from_secs(15);
 
+/// How long [`LocalBackend::close_now`] waits for the helper to say its
+/// driver is gone. A driver that is starting when the `Halt` arrives is
+/// stopped as soon as it has started; the helper bounds a start by its
+/// permission check (10 s), the driver's handshake (20 s) and its
+/// configuration (10 s), and a stop by a couple of seconds more.
+const HALT_ANSWER_TIMEOUT: Duration = Duration::from_secs(60);
+
 /// An outer bound on one request, so a helper that stops answering cannot
 /// hold a caller forever. Every op already carries a tighter bound of its own
 /// inside the helper; this one is only for a helper gone wrong.
@@ -300,12 +307,17 @@ impl LocalBackend {
     /// [`close`](Self::close), killing the driver first — whatever it is in the
     /// middle of — rather than leaving it to finish once its helper has gone.
     /// For removing the driver: nothing of it may still be running after.
+    ///
+    /// The helper answers a `Halt` once no driver runs: at once, or — when one
+    /// is still starting — once that one has started and been stopped for the
+    /// Stop it met, which the helper's own bounds on a start keep under
+    /// [`HALT_ANSWER_TIMEOUT`]. Only a helper gone wrong is not waited for
+    /// past that.
     pub async fn close_now(&self) {
         let connection = self.slot.lock().await.connection.clone();
         if let Some(connection) = connection.filter(|c| !c.is_closed()) {
             let halted =
-                tokio::time::timeout(Duration::from_secs(5), connection.request(HelperOp::Halt))
-                    .await;
+                tokio::time::timeout(HALT_ANSWER_TIMEOUT, connection.request(HelperOp::Halt)).await;
             if !matches!(halted, Ok(Ok(_))) {
                 tracing::warn!("[computer] the helper did not confirm killing the driver");
             }
