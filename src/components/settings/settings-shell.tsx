@@ -19,6 +19,7 @@ import {
   Keyboard,
   Menu,
   MessageSquareText,
+  MonitorCog,
   SendHorizontal,
   Palette,
   PlugZap,
@@ -53,6 +54,7 @@ interface SettingsNavItem {
     | "skill_packs"
     | "collaboration"
     | "browser"
+    | "computer_use"
     | "quick_messages"
     | "shortcuts"
     | "version_control"
@@ -108,6 +110,11 @@ const SETTINGS_NAV_ITEMS: SettingsNavItem[] = [
     href: "/settings/browser",
     labelKey: "browser",
     icon: Compass,
+  },
+  {
+    href: "/settings/computer-use",
+    labelKey: "computer_use",
+    icon: MonitorCog,
   },
   {
     href: "/settings/quick-messages",

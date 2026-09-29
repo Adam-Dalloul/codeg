@@ -54,6 +54,7 @@
       "skill_packs": "技能包",
       "collaboration": "協作",
       "browser": "瀏覽器",
+      "computer_use": "電腦操作",
       "quick_messages": "快捷訊息",
       "logs": "執行日誌"
     }
@@ -5153,7 +5154,7 @@
     "tooltipStopped": "電腦操作 · 已停止",
     "stop": "停止智慧體",
     "stopTooltip": "{count, plural, other {智慧體可操作 # 個視窗}} · 點擊全部停止",
-    "stopHint": "立即停止所有智慧體：在你恢復之前，任何視窗都不會被讀取或操作，所有視窗停止分享，進行中的操作會被中斷。",
+    "stopHint": "立即停止所有智慧體：中斷進行中的操作，所有視窗停止分享，直到你恢復。",
     "stopped": "已停止。在你恢復之前，任何智慧體都不能讀取或操作任何視窗。",
     "resume": "恢復",
     "indicator": {
@@ -5166,7 +5167,7 @@
       "stop": "停止",
       "stopWithKey": "立即停止所有智慧體（{key}）"
     },
-    "codegGranted": "codeg 本身已被授予「輔助使用」或「螢幕錄製」權限，因此每個智慧體的 shell 也都擁有它。請在「系統設定 → 隱私權與安全性」中移除 codeg。在此之前，電腦操作保持關閉。",
+    "codegGranted": "codeg 本身擁有「輔助使用」或「螢幕錄製」權限，智慧體的命令列可以不經分享直接使用它。如非必要，請在系統設定中為 codeg 關閉。",
     "backend": {
       "idle": "未啟動",
       "downloading": "正在下載驅動程式…",
@@ -5175,14 +5176,15 @@
       "failed": "失敗"
     },
     "driver": "cua-driver {version}",
-    "devBuild": "開發版：helper 不會驗證呼叫它的是哪個程式。",
+    "devBuild": "開發版：helper 不驗證呼叫它的程式。",
     "permissions": {
       "accessibility": "輔助使用",
       "screenRecording": "螢幕錄製",
       "granted": "已授權",
       "request": "請求授權",
       "openSettings": "打開系統設定",
-      "why": "這些權限授予 codeg-computer-helper，而不是 codeg：授予 codeg 的任何權限都會被每個智慧體的 shell 繼承。「螢幕錄製」用於截圖和視窗標題，「輔助使用」用於讀取和操作視窗內容。"
+      "why": "請授權給 codeg-computer-helper，而不是 codeg。「螢幕錄製」用於截圖，「輔助使用」用於讀取和操作視窗。",
+      "whyDev": "請授權給 codeg-computer-helper。開發版每次重新編譯，在 macOS 看來都是一個新程式：請先在系統設定中移除舊的 codeg-computer-helper，再重新授權。"
     },
     "shared": {
       "title": "{count, plural, =0 {未分享視窗} other {已分享 # 個視窗}}",
@@ -5217,7 +5219,7 @@
     "openSettings": "設定",
     "picker": {
       "title": "把視窗分享給智慧體",
-      "description": "所有對話中的智慧體都能讀取你分享的視窗——截圖和內容——如果你允許操作，還能在其中點擊和輸入，直到你停止分享、視窗關閉，或閒置超過設定中的時長。",
+      "description": "所有對話中的智慧體都能讀取你分享的視窗，並在你允許操作的視窗裡點擊和輸入。你停止分享、視窗關閉，或閒置超過設定中的時長後，分享即結束。",
       "count": "{count, plural, other {# 個視窗}}",
       "loading": "正在載入視窗…",
       "refresh": "重新整理",
@@ -5226,8 +5228,8 @@
       "untitled": "無標題視窗",
       "minimized": "已最小化",
       "notGrantable": {
-        "codeg": "codeg 自己的視窗",
-        "blocklisted": "不可分享",
+        "codeg": "codeg 的視窗",
+        "blocklisted": "在永不分享名單中",
         "unidentified": "無法識別所屬應用程式"
       },
       "share": "分享",
@@ -5235,11 +5237,54 @@
       "sharedControl": "可操作",
       "shareRead": "允許智慧體讀取",
       "shareControl": "允許智慧體讀取並操作",
-      "stopSharing": "停止分享"
+      "stopSharing": "停止分享",
+      "shareAll": "全部分享",
+      "shareAllRead": "全部允許讀取",
+      "shareAllControl": "全部允許讀取並操作",
+      "stopSharingAll": "全部停止分享",
+      "skipped": "{count, plural, other {有 # 個視窗未能分享，可能已經關閉。}}",
+      "unshareable": "{count, plural, other {# 個視窗不能分享}}",
+      "noneShareable": "這些視窗都不能分享。",
+      "codegWhy": "codeg 的視窗永遠不能分享：能操作 codeg 的智慧體可以替自己批准請求、給自己分享更多視窗，或在你停止後點「恢復」。另一個 codeg（例如開發版）同樣不能分享，因為它可以把這個 codeg 的視窗再分享回去。"
     },
     "settings": {
-      "title": "電腦操作",
-      "description": "在上方開啟電腦操作後，智慧體能看到你桌面上的哪些內容。",
+      "pageTitle": "電腦操作",
+      "pageDescription": "讓智慧體查看並操作你分享給它的桌面視窗。",
+      "switch": {
+        "label": "電腦操作",
+        "hint": "開啟後，智慧體可以列出應用程式和視窗，讀取你分享的視窗，並在你允許操作的視窗裡點擊和輸入。你從狀態列分享之前，任何視窗都不可讀。",
+        "failed": "切換電腦操作失敗"
+      },
+      "driver": {
+        "title": "驅動程式",
+        "description": "電腦操作透過開源的 cua-driver 讀取和操作視窗。codeg 只執行經過核對的 {version} 版本，首次需要時自動下載。",
+        "loading": "正在檢查…",
+        "unsupported": "cua-driver 沒有適用於此平台的版本。",
+        "installing": "正在安裝…",
+        "downloadingOf": "正在下載… {done} / {total} MB",
+        "downloadingSoFar": "正在下載… {done} MB",
+        "uninstalling": "正在解除安裝…",
+        "installed": "已安裝 · {version}",
+        "outdated": "已安裝 {installed}，目前的 codeg 使用 {version}。",
+        "notInstalled": "未安裝。首次使用電腦操作時會自動下載，也可以現在安裝。",
+        "install": "安裝",
+        "upgrade": "升級到 {version}",
+        "uninstall": "解除安裝",
+        "installDone": "cua-driver 已安裝",
+        "uninstallDone": "cua-driver 已解除安裝",
+        "confirmTitle": "解除安裝 cua-driver？",
+        "confirmDescription": "電腦操作會被關閉，所有視窗停止分享。重新開啟時會再次下載驅動程式。",
+        "cancel": "取消"
+      },
+      "permissions": {
+        "title": "系統權限",
+        "description": "macOS 需要為 codeg-computer-helper 授權。在系統設定中授權後回到這裡，狀態會自動更新。",
+        "off": "開啟電腦操作後，可以在這裡查看和授予權限。",
+        "accessibilityHint": "讀取視窗內容並操作視窗。",
+        "screenRecordingHint": "截圖和讀取視窗標題。"
+      },
+      "title": "分享與停止",
+      "description": "分享的視窗多久後停止分享、哪些應用程式永不分享，以及隨時停止所有智慧體的快捷鍵。",
       "ttl": {
         "label": "視窗閒置多久後停止分享",
         "hint": "分享的視窗在這麼長時間內沒有被任何智慧體讀取，就會停止分享。",
@@ -5248,12 +5293,12 @@
       },
       "blocklist": {
         "label": "永不可分享的應用程式",
-        "hint": "每行一個：bundle 識別碼（com.example.app）、執行檔名稱（app.exe）或完整路徑。會追加到內建名單——密碼管理器、系統的密碼提示和系統設定——內建名單不可移除。",
+        "hint": "每行一個：bundle 識別碼（com.example.app）、執行檔名稱（app.exe）或完整路徑。內建名單（密碼管理器、系統密碼提示、系統設定）始終生效。",
         "placeholder": "com.example.app"
       },
       "stopKey": {
         "label": "停止快速鍵",
-        "hint": "在任何應用程式中按下即可立即停止所有智慧體，效果同「停止」按鈕。電腦操作開啟期間，這組按鍵在所有應用程式中都歸 codeg 使用，請選擇你在別處不用的組合。",
+        "hint": "在任何應用程式中按下即可停止所有智慧體，效果同「停止」按鈕。電腦操作開啟時這組按鍵歸 codeg 使用，請選一組別處不用的組合。",
         "recording": "請按下按鍵…",
         "recordHint": "按住 Ctrl 和另一個修飾鍵（Alt 或 Shift），再按一個鍵。按 Esc 取消。",
         "recordHintMac": "按住 ⌃ 或 ⌘ 和另一個修飾鍵，再按一個鍵。按 Esc 取消。",
@@ -5270,7 +5315,7 @@
           "metaOffMac": "不能包含 Windows 鍵。"
         }
       },
-      "boundary": "在 macOS 上，「輔助使用」和「螢幕錄製」權限授予 codeg-computer-helper，它只為 codeg 服務，因此智慧體的 shell 用不了這些權限。在 Windows 和 Linux 上，你執行的任何程式本來就能讀取螢幕；在那裡，這些設定決定的是智慧體透過 codeg 能拿到什麼，而不是你電腦上的程式能做什麼。",
+      "boundary": "在 macOS 上，權限授予 codeg-computer-helper，只有 codeg 能使用，智慧體的命令列用不了。Windows 和 Linux 沒有這層隔離：這裡的設定決定的是智慧體透過 codeg 能拿到什麼，而不是電腦上的程式能做什麼。",
       "save": "儲存",
       "saving": "儲存中…",
       "saved": "電腦操作設定已儲存",

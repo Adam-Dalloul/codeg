@@ -4,10 +4,10 @@
 //! Neither raises a dialog. They are the only TCC-related calls allowed in
 //! codeg's own binary, and codeg asks them about itself for one reason: a
 //! person who once granted codeg either permission — by hand, or following
-//! an old guide — has handed it to every agent's shell, and codeg refuses to
-//! run computer use until that is undone. The helper asks the same questions
-//! about itself before reads that need them, so a missing permission is
-//! reported as one instead of as whatever the driver makes of it.
+//! an old guide — has handed it to every agent's shell, and should be told.
+//! The helper asks them about itself only when it cannot start a fresh
+//! process to ask in: macOS keeps a process's first "not granted" for its
+//! whole life (see `helper::driver_proc::probe_permissions`).
 //!
 //! The calls that *ask* for a permission are not here: they belong to the
 //! helper binary alone, so that nothing codeg links can raise a permission

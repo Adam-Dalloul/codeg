@@ -31,6 +31,10 @@
 //! reasons, and the file is hashed before every launch; there is no running
 //! image to check, and no TCC grant for a replacement to borrow.
 //!
+//! The same pinned build also answers the helper's permission questions on
+//! macOS ([`probe_permissions`]): a copy started only to report what TCC says
+//! and exit, under the same launch requirement and checks.
+//!
 //! Two settings in that home decide how the driver behaves over a long life:
 //!
 //! * **Its session never idles out.** The driver ends a caller's session
@@ -52,6 +56,8 @@ use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
 
 use super::mcp::{McpClient, McpError, ToolCallResult};
 use crate::computer::driver::{self, DriverArtifact};
+#[cfg(target_os = "macos")]
+use crate::computer::protocol::PermissionReport;
 use crate::computer::protocol::{HelperError, HelperErrorCode};
 
 /// How long the driver has to finish the MCP handshake.
@@ -67,6 +73,20 @@ const SESSION_IDLE_TTL_SECS: &str = "315360000";
 /// The driver's configuration file, relative to its home: captures at the
 /// window's own size (`0` is "no limit"). See the module note.
 const DRIVER_CONFIG: &[u8] = br#"{"max_image_dimension":0}"#;
+
+/// The argument that has the pinned driver answer one question and exit:
+/// what TCC lets its responsible process — the helper — do. Checked by the
+/// driver before anything else runs, logging and telemetry included.
+#[cfg(target_os = "macos")]
+const PERMISSION_PROBE_ARG: &str = "--cua-internal-permission-probe";
+
+/// How long a permission probe has to answer.
+#[cfg(target_os = "macos")]
+const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// The most a probe may print; its answer is one short line.
+#[cfg(target_os = "macos")]
+const MAX_PROBE_OUTPUT: u64 = 4096;
 
 /// Where the helper keeps the driver's per-launch home directories.
 ///
@@ -86,6 +106,34 @@ pub fn helper_data_dir() -> Option<PathBuf> {
     #[cfg(windows)]
     {
         dirs::data_local_dir().map(|d| d.join("app.codeg").join("computer-helper"))
+    }
+}
+
+/// Remove the per-launch homes left by drivers whose helper is gone: a helper
+/// that was killed never got to remove its own. A home is named for the
+/// helper that made it (`<pid>-<nanos>`), and one whose helper still runs —
+/// this one, or another codeg's — is left alone. Best effort throughout.
+pub fn sweep_dead_runs() {
+    let Some(base) = helper_data_dir() else {
+        return;
+    };
+    let Ok(entries) = std::fs::read_dir(base.join("runs")) else {
+        return;
+    };
+    let me = std::process::id();
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(pid) = name
+            .to_str()
+            .and_then(|n| n.split('-').next())
+            .and_then(|p| p.parse::<u32>().ok())
+        else {
+            continue;
+        };
+        if pid == me || crate::computer::procinfo::process_start(pid).is_some() {
+            continue;
+        }
+        let _ = std::fs::remove_dir_all(entry.path());
     }
 }
 
@@ -278,6 +326,7 @@ impl DriverProc {
 
         let base =
             helper_data_dir().ok_or_else(|| unavailable("no home directory for this account"))?;
+        sweep_dead_runs();
         let stamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_nanos())
@@ -571,6 +620,96 @@ impl DriverProc {
         }
         let _ = std::fs::remove_dir_all(&self.run_dir);
     }
+}
+
+/// Which of the helper's permissions are in force, as a fresh copy of the
+/// pinned driver at `path` reports them.
+///
+/// A fresh process because macOS keeps a process's first "not granted" for
+/// the rest of its life: the helper asking itself would go on hearing "no"
+/// after the person has said yes in System Settings. The copy does not
+/// disclaim, so TCC answers it for its responsible process, the helper; and
+/// it is started as the driver is — under the launch requirement, suspended,
+/// its running image checked, then resumed — since it runs with the helper's
+/// grants too. (The file is not hashed first: the kernel refuses any other
+/// image, and a damaged download is the next launch's to report.)
+#[cfg(target_os = "macos")]
+pub async fn probe_permissions(path: &Path) -> Result<PermissionReport, HelperError> {
+    use crate::computer::spawn::{spawn, ChildFd, SpawnSpec};
+    use std::os::fd::AsRawFd;
+    use std::os::unix::net::UnixStream;
+    use tokio::io::AsyncReadExt;
+
+    #[derive(serde::Deserialize)]
+    struct Probe {
+        accessibility: bool,
+        screen_recording: bool,
+    }
+
+    if !path.is_absolute() {
+        return Err(rejected("the driver path is not absolute"));
+    }
+    // The driver's own environment, homed in the helper's directory: the
+    // probe reads nothing from there, and gets nothing of the helper's.
+    let home =
+        helper_data_dir().ok_or_else(|| unavailable("no home directory for this account"))?;
+    let env = driver_environment(&home);
+    let (ours, theirs) = UnixStream::pair().map_err(|e| unavailable(format!("socketpair: {e}")))?;
+    let requirement = driver_launch_requirement()?;
+    let child = spawn(&SpawnSpec {
+        program: path,
+        args: &[PERMISSION_PROBE_ARG],
+        env: &env,
+        stdio: [
+            ChildFd::Null,
+            ChildFd::Inherit(theirs.as_raw_fd()),
+            ChildFd::Null,
+        ],
+        disclaim: false,
+        suspended: true,
+        launch_requirement: Some(&requirement),
+    })
+    .map_err(|e| unavailable(format!("could not start the permission check: {e}")))?;
+    drop(theirs);
+    if let Err(why) = verify_running_driver(child.pid()) {
+        child.kill();
+        let _ = child.wait().await;
+        return Err(rejected(why));
+    }
+    if let Err(e) = child.resume() {
+        child.kill();
+        let _ = child.wait().await;
+        return Err(unavailable(format!(
+            "could not resume the permission check: {e}"
+        )));
+    }
+    let read = async {
+        ours.set_nonblocking(true)?;
+        let stream = tokio::net::UnixStream::from_std(ours)?;
+        let mut out = Vec::new();
+        stream.take(MAX_PROBE_OUTPUT).read_to_end(&mut out).await?;
+        std::io::Result::Ok(out)
+    };
+    let out = tokio::time::timeout(PROBE_TIMEOUT, read).await;
+    // Done or not, it is not left behind.
+    child.kill();
+    let _ = child.wait().await;
+    let out = match out {
+        Ok(Ok(out)) => out,
+        Ok(Err(e)) => {
+            return Err(unavailable(format!(
+                "could not read the permission check: {e}"
+            )))
+        }
+        Err(_) => return Err(unavailable("the permission check did not answer in time")),
+    };
+    let probe: Probe = serde_json::from_slice(out.trim_ascii())
+        .map_err(|e| HelperError::failed(format!("the permission check answered oddly: {e}")))?;
+    Ok(PermissionReport {
+        required: true,
+        accessibility: probe.accessibility,
+        screen_recording: probe.screen_recording,
+    })
 }
 
 /// The kernel-held form of the pins: trycua's Developer ID, the driver's

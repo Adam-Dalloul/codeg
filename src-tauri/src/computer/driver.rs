@@ -20,7 +20,9 @@
 //!   satisfies it — which is what the cdhash is for.
 //!
 //! Upgrading the driver is a code change to this file: new digests, new
-//! cdhashes, reviewed like any other.
+//! cdhashes, reviewed like any other. What a person can do from Settings is
+//! fetch this pinned release, clear older ones left from an earlier codeg,
+//! and remove the driver altogether — never pick another release.
 
 use crate::acp::error::AcpError;
 
@@ -158,6 +160,11 @@ pub fn driver_entitlements_ok<S: AsRef<str>>(entitlements: &[S]) -> Result<(), S
     Ok(())
 }
 
+/// Held across every change to the cached driver files — a download for a
+/// helper that is starting, one a person asked for from Settings, a removal —
+/// so that none of them finds the files half made by another.
+static FILES: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 /// Download (or find in the cache) the pinned driver for this platform, and
 /// return its path.
 ///
@@ -172,6 +179,7 @@ pub async fn ensure_driver(on_progress: impl Fn(&str)) -> Result<std::path::Path
             crate::acp::registry::current_platform()
         ))
     })?;
+    let _files = FILES.lock().await;
     crate::acp::binary_cache::ensure_tool_binary_with_progress(
         DRIVER_CACHE_ID,
         DRIVER_VERSION,
@@ -183,11 +191,34 @@ pub async fn ensure_driver(on_progress: impl Fn(&str)) -> Result<std::path::Path
     .await
 }
 
-/// Throw the cached driver away, so the next [`ensure_driver`] downloads it
-/// again. For a cached file the helper refused: a corrupted download, or one
-/// someone replaced.
-pub fn forget_cached_driver() -> Result<(), AcpError> {
+/// Throw every cached driver away, so the next [`ensure_driver`] downloads
+/// the pinned one again: for a cached file the helper refused (a corrupted
+/// download, or one someone replaced), and for a person removing the driver.
+pub async fn forget_cached_driver() -> Result<(), AcpError> {
+    let _files = FILES.lock().await;
     crate::acp::binary_cache::clear_tool_cache(DRIVER_CACHE_ID)
+}
+
+/// Throw away the cached releases other than the pinned one — left behind
+/// by an earlier codeg that pinned another.
+pub async fn forget_other_drivers() -> Result<(), AcpError> {
+    let _files = FILES.lock().await;
+    for version in installed_driver_versions()? {
+        if version != DRIVER_VERSION {
+            crate::acp::binary_cache::clear_tool_version(DRIVER_CACHE_ID, &version)?;
+        }
+    }
+    Ok(())
+}
+
+/// The driver releases in the cache, newest first.
+pub fn installed_driver_versions() -> Result<Vec<String>, AcpError> {
+    crate::acp::binary_cache::tool_installed_versions(DRIVER_CACHE_ID, DRIVER_COMMAND)
+}
+
+/// Where the pinned release's executable is, when it is in the cache.
+pub fn cached_driver_path() -> Option<std::path::PathBuf> {
+    crate::acp::binary_cache::tool_binary_path(DRIVER_CACHE_ID, DRIVER_VERSION, DRIVER_COMMAND)
 }
 
 #[cfg(test)]

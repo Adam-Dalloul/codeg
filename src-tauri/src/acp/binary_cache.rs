@@ -490,12 +490,18 @@ pub fn clear_agent_cache(agent_type: AgentType) -> Result<(), AcpError> {
 
 /// Remove one agent's directory from ONE cache root.
 fn clear_agent_dir_in(root: &Path, agent_id: &str) -> Result<(), AcpError> {
-    let dir = root.join(agent_id);
+    clear_dir_in(root, &root.join(agent_id), agent_id)
+}
+
+/// Remove `dir`, somewhere under the cache root `root` — renamed aside into
+/// `root/.trash/` first where it cannot be removed in place. `label` names the
+/// aside.
+fn clear_dir_in(root: &Path, dir: &Path, label: &str) -> Result<(), AcpError> {
     if !dir.exists() {
         return Ok(());
     }
 
-    if std::fs::remove_dir_all(&dir).is_ok() {
+    if std::fs::remove_dir_all(dir).is_ok() {
         return Ok(());
     }
 
@@ -514,8 +520,8 @@ fn clear_agent_dir_in(root: &Path, agent_id: &str) -> Result<(), AcpError> {
         .map(|d| d.as_nanos())
         .unwrap_or(0);
     let counter = TRASH_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let aside = trash_root.join(format!("{agent_id}-{stamp}-{counter}"));
-    std::fs::rename(&dir, &aside)
+    let aside = trash_root.join(format!("{label}-{stamp}-{counter}"));
+    std::fs::rename(dir, &aside)
         .map_err(|e| AcpError::DownloadFailed(format!("failed to clear cache: {e}")))?;
 
     let _ = std::fs::remove_dir_all(&aside);
@@ -857,6 +863,43 @@ pub(crate) fn clear_tool_cache(tool_id: &str) -> Result<(), AcpError> {
     legacy.and(current)
 }
 
+/// The versions of a tool in the cache (either root), newest first — the tool
+/// counterpart of the scan behind [`detect_installed_version`].
+pub(crate) fn tool_installed_versions(
+    tool_id: &str,
+    cmd_name: &str,
+) -> Result<Vec<String>, AcpError> {
+    require_tool_cache_id(tool_id)?;
+    let mut versions = installed_version_labels(tool_id, cmd_name)?;
+    versions.sort_by(|a, b| version_cmp(b, a));
+    Ok(versions)
+}
+
+/// Where a tool's executable for `version` is, when that version is cached.
+pub(crate) fn tool_binary_path(tool_id: &str, version: &str, cmd_name: &str) -> Option<PathBuf> {
+    require_tool_cache_id(tool_id).ok()?;
+    installed_binary_path(tool_id, version, cmd_name)
+}
+
+/// Remove one cached version of a tool, from both cache roots.
+pub(crate) fn clear_tool_version(tool_id: &str, version: &str) -> Result<(), AcpError> {
+    require_tool_cache_id(tool_id)?;
+    let version = normalize_version_label(version);
+    if version.is_empty() || version.starts_with('.') || version.contains(['/', '\\']) {
+        return Err(AcpError::DownloadFailed(format!(
+            "{version:?} is not a version label"
+        )));
+    }
+    let label = format!("{tool_id}-{version}");
+    let legacy = match legacy_cache_dir() {
+        Some(legacy) => clear_dir_in(&legacy, &legacy.join(tool_id).join(&version), &label),
+        None => Ok(()),
+    };
+    let root = cache_dir()?;
+    let current = clear_dir_in(&root, &root.join(tool_id).join(&version), &label);
+    legacy.and(current)
+}
+
 /// Hex SHA-256 of a file, streamed so a large archive never lands in memory.
 fn file_sha256(path: &std::path::Path) -> Result<String, AcpError> {
     use sha2::{Digest, Sha256};
@@ -1119,6 +1162,18 @@ pub(crate) fn find_binary_recursive(dir: &PathBuf, name: &str) -> Option<PathBuf
     None
 }
 
+/// The line a download reports every megabyte. `computer::driver_admin`
+/// reads the numbers back out of it.
+pub(crate) fn download_progress_message(current_mb: u64, total_bytes: Option<u64>) -> String {
+    match total_bytes {
+        Some(total) => {
+            let total_mb = total as f64 / (1024.0 * 1024.0);
+            format!("Downloading... {current_mb:.0} MB / {total_mb:.1} MB")
+        }
+        None => format!("Downloading... {current_mb:.0} MB"),
+    }
+}
+
 async fn download_file_with_progress(
     url: &str,
     dest: &PathBuf,
@@ -1158,14 +1213,7 @@ async fn download_file_with_progress(
         let current_mb = downloaded / (1024 * 1024);
         if current_mb > last_reported_mb {
             last_reported_mb = current_mb;
-            if let Some(total) = total_size {
-                let total_mb = total as f64 / (1024.0 * 1024.0);
-                on_progress(&format!(
-                    "Downloading... {current_mb:.0} MB / {total_mb:.1} MB"
-                ));
-            } else {
-                on_progress(&format!("Downloading... {current_mb:.0} MB"));
-            }
+            on_progress(&download_progress_message(current_mb, total_size));
         }
     }
 

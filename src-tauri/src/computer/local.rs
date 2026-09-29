@@ -377,7 +377,7 @@ impl LocalBackend {
             if let Some(connection) = connection {
                 connection.stop().await;
             }
-            if let Err(clear) = driver::forget_cached_driver() {
+            if let Err(clear) = driver::forget_cached_driver().await {
                 tracing::warn!("[computer] could not clear the cached cua-driver: {clear}");
             }
         }

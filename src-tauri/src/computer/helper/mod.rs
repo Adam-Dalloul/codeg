@@ -35,7 +35,7 @@ pub mod tree;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use tokio::sync::{mpsc, Mutex};
@@ -318,6 +318,11 @@ fn same_file(a: i32, b: i32) -> bool {
     }
 }
 
+/// How long an answer that a permission is missing stands before the helper
+/// asks the system again. Asking starts a process; an agent retrying a
+/// screenshot in a loop should not start one per try.
+const RECHECK_MISSING: Duration = Duration::from_secs(2);
+
 /// What the running helper holds between requests.
 struct HelperState {
     prompts: Arc<dyn PermissionPrompts>,
@@ -330,6 +335,20 @@ struct HelperState {
     snapshots: std::sync::Mutex<SnapshotBook>,
     /// The person pressed Stop: no driver runs until codeg says `Resume`.
     halted: AtomicBool,
+    /// The helper's permissions as the system last answered, and when. Never
+    /// asked in this process on macOS: a process keeps the first "not
+    /// granted" it hears for the rest of its life (see [`permissions`]).
+    ///
+    /// [`permissions`]: Self::permissions
+    permissions: Mutex<Option<(PermissionReport, Instant)>>,
+    /// The permissions in force when the running driver started, while one
+    /// runs.
+    driver_saw: std::sync::Mutex<Option<PermissionReport>>,
+    /// A permission is in force that the running driver started without. The
+    /// driver may still hold the system's earlier "no" — for Screen Recording
+    /// macOS keeps it until the process ends — so the next call that needs
+    /// the driver starts a fresh one.
+    driver_stale: AtomicBool,
 }
 
 impl HelperState {
@@ -376,15 +395,20 @@ impl HelperState {
         }
     }
 
-    /// The running driver, starting it if there is none.
+    /// The running driver, starting it if there is none — or if the one
+    /// running started before a permission it now has (`driver_stale`).
     async fn driver(&self) -> Result<Arc<DriverProc>, HelperError> {
         self.check_not_halted()?;
         let mut slot = self.driver.lock().await;
-        if let Some(driver) = slot.as_ref().filter(|d| d.alive()) {
-            return Ok(driver.clone());
+        let stale = self.driver_stale.swap(false, Ordering::AcqRel);
+        if !stale {
+            if let Some(driver) = slot.as_ref().filter(|d| d.alive()) {
+                return Ok(driver.clone());
+            }
         }
-        if let Some(dead) = slot.take() {
-            dead.shutdown().await;
+        if let Some(old) = slot.take() {
+            self.forget_driver_saw();
+            old.shutdown().await;
         }
         let path = self.driver_path.lock().await.clone().ok_or_else(|| {
             HelperError::new(
@@ -398,6 +422,9 @@ impl HelperState {
                 "no driver release for this platform",
             )
         })?;
+        // What the new driver starts with, so a permission granted later is
+        // told apart from one it had all along.
+        let seen = self.permissions(false).await;
         let launched = Arc::new(DriverProc::launch(&path, artifact).await?);
         // A Stop that arrived while this one was starting stops it too.
         if let Err(halted) = self.check_not_halted() {
@@ -406,15 +433,105 @@ impl HelperState {
         }
         // A fresh driver has taken no snapshots.
         self.snapshots().clear();
+        *self.driver_saw.lock().unwrap_or_else(|p| p.into_inner()) = Some(seen);
         *slot = Some(launched.clone());
         Ok(launched)
+    }
+
+    fn forget_driver_saw(&self) {
+        *self.driver_saw.lock().unwrap_or_else(|p| p.into_inner()) = None;
     }
 
     async fn shutdown(&self) {
         let driver = self.driver.lock().await.take();
         self.snapshots().clear();
+        self.forget_driver_saw();
         if let Some(driver) = driver {
             driver.shutdown().await;
+        }
+    }
+
+    /// The helper's own OS permissions. `fresh` asks the system now;
+    /// otherwise a recent answer stands — one that both are granted until a
+    /// driver call says otherwise (see [`handle`]), one that something is
+    /// missing for [`RECHECK_MISSING`].
+    ///
+    /// On macOS the system is asked in a process started for the purpose
+    /// (`driver_proc::probe_permissions`), never in this one: macOS keeps a
+    /// process's first "not granted" for its whole life, and a helper that
+    /// asked itself would go on reporting a permission missing after the
+    /// person had granted it. A permission that has appeared since the running
+    /// driver started marks that driver stale.
+    async fn permissions(&self, fresh: bool) -> PermissionReport {
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = fresh;
+            PermissionReport {
+                required: false,
+                accessibility: true,
+                screen_recording: true,
+            }
+        }
+        #[cfg(target_os = "macos")]
+        {
+            let mut last = self.permissions.lock().await;
+            if !fresh {
+                if let Some((report, at)) = last.as_ref() {
+                    if answer_stands(report, at.elapsed()) {
+                        return *report;
+                    }
+                }
+            }
+            let report = self.ask_system().await;
+            if self
+                .driver_saw
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .as_ref()
+                .is_some_and(|saw| gained(saw, &report))
+            {
+                self.driver_stale.store(true, Ordering::Release);
+            }
+            *last = Some((report, Instant::now()));
+            report
+        }
+    }
+
+    /// Ask macOS, in a fresh process. Where that cannot be done — no driver
+    /// configured yet, or one that would not start — ask here, and live with
+    /// an answer this process may keep.
+    #[cfg(target_os = "macos")]
+    async fn ask_system(&self) -> PermissionReport {
+        let path = self.driver_path.lock().await.clone();
+        if let Some(path) = path {
+            match driver_proc::probe_permissions(&path).await {
+                Ok(report) => return report,
+                Err(e) => tracing::warn!(
+                    "could not check permissions in a fresh process, asking here: {}",
+                    e.message
+                ),
+            }
+        }
+        PermissionReport {
+            required: true,
+            accessibility: super::tcc::accessibility_granted(),
+            screen_recording: super::tcc::screen_recording_granted(),
+        }
+    }
+
+    /// Refuse an op up front when the helper lacks the permission it needs,
+    /// so the answer names the permission instead of being whatever the
+    /// driver makes of a failed system call.
+    async fn require(&self, permission: OsPermission) -> Result<(), HelperError> {
+        let report = self.permissions(false).await;
+        let granted = match permission {
+            OsPermission::Accessibility => report.accessibility,
+            OsPermission::ScreenRecording => report.screen_recording,
+        };
+        if granted {
+            Ok(())
+        } else {
+            Err(HelperError::permission_missing(permission))
         }
     }
 
@@ -429,48 +546,42 @@ impl HelperState {
         self.halted.store(true, Ordering::Release);
         let driver = self.driver.lock().await.take();
         self.snapshots().clear();
+        self.forget_driver_saw();
         if let Some(driver) = driver {
             driver.kill().await;
         }
     }
 }
 
-fn permission_report() -> PermissionReport {
-    #[cfg(target_os = "macos")]
-    {
-        PermissionReport {
-            required: true,
-            accessibility: super::tcc::accessibility_granted(),
-            screen_recording: super::tcc::screen_recording_granted(),
-        }
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        PermissionReport {
-            required: false,
-            accessibility: true,
-            screen_recording: true,
-        }
-    }
+/// Whether a remembered answer still stands: one that both permissions are
+/// granted does until a driver call says otherwise; one that something is
+/// missing, for [`RECHECK_MISSING`].
+#[cfg(any(test, target_os = "macos"))]
+fn answer_stands(report: &PermissionReport, age: Duration) -> bool {
+    (report.accessibility && report.screen_recording) || age < RECHECK_MISSING
 }
 
-/// Refuse an op up front when the helper lacks the permission it needs, so the
-/// answer names the permission instead of being whatever the driver makes of
-/// a failed system call.
-fn require(permission: OsPermission) -> Result<(), HelperError> {
-    let report = permission_report();
-    let granted = match permission {
-        OsPermission::Accessibility => report.accessibility,
-        OsPermission::ScreenRecording => report.screen_recording,
-    };
-    if granted {
-        Ok(())
-    } else {
-        Err(HelperError::permission_missing(permission))
-    }
+/// Whether `now` grants something `before` did not.
+#[cfg(any(test, target_os = "macos"))]
+fn gained(before: &PermissionReport, now: &PermissionReport) -> bool {
+    (now.accessibility && !before.accessibility)
+        || (now.screen_recording && !before.screen_recording)
 }
 
+/// Serve one op. A driver call that turns out to lack a permission clears
+/// the remembered answer, so the next call asks the system again rather than
+/// going on believing it granted.
 async fn handle(state: &HelperState, op: HelperOp) -> Result<serde_json::Value, HelperError> {
+    let result = handle_op(state, op).await;
+    if let Err(e) = &result {
+        if e.code == HelperErrorCode::PermissionMissing {
+            state.permissions.lock().await.take();
+        }
+    }
+    result
+}
+
+async fn handle_op(state: &HelperState, op: HelperOp) -> Result<serde_json::Value, HelperError> {
     fn value(v: impl serde::Serialize) -> Result<serde_json::Value, HelperError> {
         serde_json::to_value(v).map_err(|e| HelperError::failed(format!("encode: {e}")))
     }
@@ -499,13 +610,16 @@ async fn handle(state: &HelperState, op: HelperOp) -> Result<serde_json::Value, 
             }
             value(())
         }
-        HelperOp::Permissions => value(permission_report()),
+        HelperOp::Permissions => value(state.permissions(true).await),
         HelperOp::RequestPermission { permission } => {
             let prompts = state.prompts.clone();
             let _ = tokio::task::spawn_blocking(move || prompts.request(permission)).await;
-            value(permission_report())
+            value(state.permissions(true).await)
         }
-        HelperOp::ListApps => value(ops::list_apps(&*state.driver().await?).await?),
+        HelperOp::ListApps => {
+            let driver = state.driver().await?;
+            value(ops::list_apps(&driver, &state.apps).await?)
+        }
         HelperOp::ListWindows { pid } => {
             let driver = state.driver().await?;
             value(ops::list_windows(&driver, &state.apps, pid).await?)
@@ -516,7 +630,7 @@ async fn handle(state: &HelperState, op: HelperOp) -> Result<serde_json::Value, 
             window_id,
             max_dimension,
         } => {
-            require(OsPermission::ScreenRecording)?;
+            state.require(OsPermission::ScreenRecording).await?;
             let driver = state.driver().await?;
             value(ops::capture(&driver, pid, window_id, max_dimension).await?)
         }
@@ -527,7 +641,7 @@ async fn handle(state: &HelperState, op: HelperOp) -> Result<serde_json::Value, 
             max_elements,
             query,
         } => {
-            require(OsPermission::Accessibility)?;
+            state.require(OsPermission::Accessibility).await?;
             let driver = state.driver().await?;
             let (raw, facts) =
                 ops::snapshot(&driver, pid, window_id, max_depth, max_elements, query).await?;
@@ -540,7 +654,7 @@ async fn handle(state: &HelperState, op: HelperOp) -> Result<serde_json::Value, 
             request,
         } => {
             if request.expect.iter().any(|p| p.element.is_some()) {
-                require(OsPermission::Accessibility)?;
+                state.require(OsPermission::Accessibility).await?;
             }
             let driver = state.driver().await?;
             value(ops::verify(&driver, pid, window_id, &request).await?)
@@ -558,7 +672,7 @@ async fn handle(state: &HelperState, op: HelperOp) -> Result<serde_json::Value, 
             // the screen can lock or the application quit.
             state.deliverable(pid, started_at)?;
             for permission in act::permissions_for(&action) {
-                require(*permission)?;
+                state.require(*permission).await?;
             }
             let driver = state.driver().await?;
             let element_frame = {
@@ -656,6 +770,9 @@ pub async fn serve(
         apps: Mutex::new(AppCache::default()),
         snapshots: std::sync::Mutex::new(SnapshotBook::default()),
         halted: AtomicBool::new(false),
+        permissions: Mutex::new(None),
+        driver_saw: std::sync::Mutex::new(None),
+        driver_stale: AtomicBool::new(false),
     });
     let mut code = EXIT_OK;
     loop {
@@ -851,6 +968,29 @@ mod tests {
         );
         to_helper.shutdown().await.unwrap();
         assert_eq!(task.await.unwrap(), EXIT_OK);
+    }
+
+    /// A remembered "granted" stands; a remembered "missing" is asked again
+    /// once it is a moment old. Only a permission that appeared — not one that
+    /// went, nor one that was there all along — makes the running driver stale.
+    #[test]
+    fn a_missing_permission_is_asked_again_and_a_new_one_restarts_the_driver() {
+        let report = |accessibility, screen_recording| PermissionReport {
+            required: true,
+            accessibility,
+            screen_recording,
+        };
+        let long = RECHECK_MISSING + Duration::from_millis(1);
+        assert!(answer_stands(&report(true, true), long));
+        assert!(answer_stands(&report(true, false), Duration::ZERO));
+        assert!(!answer_stands(&report(true, false), long));
+        assert!(!answer_stands(&report(false, false), long));
+
+        assert!(gained(&report(true, false), &report(true, true)));
+        assert!(gained(&report(false, true), &report(true, true)));
+        assert!(!gained(&report(true, true), &report(true, true)));
+        assert!(!gained(&report(true, true), &report(false, true)));
+        assert!(!gained(&report(false, false), &report(false, false)));
     }
 
     /// An action for a pid that is not the process the window was shared

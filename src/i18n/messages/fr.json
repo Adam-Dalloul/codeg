@@ -54,6 +54,7 @@
       "skill_packs": "Packs de compétences",
       "collaboration": "Collaboration",
       "browser": "Navigateur",
+      "computer_use": "Utilisation de l'ordinateur",
       "quick_messages": "Messages rapides",
       "logs": "Journaux d'exécution"
     }
@@ -5153,7 +5154,7 @@
     "tooltipStopped": "Utilisation de l'ordinateur · arrêtée",
     "stop": "Arrêter les agents",
     "stopTooltip": "{count, plural, one {Les agents peuvent agir sur # fenêtre} other {Les agents peuvent agir sur # fenêtres}} · cliquez pour tous les arrêter",
-    "stopHint": "Arrête tous les agents d'un coup : rien n'est lu ni fait sur aucune fenêtre, toutes les fenêtres cessent d'être partagées et ce qui est en cours est interrompu, jusqu'à ce que vous repreniez.",
+    "stopHint": "Arrête tous les agents maintenant : ce qui est en cours est interrompu et toutes les fenêtres cessent d'être partagées, jusqu'à ce que vous repreniez.",
     "stopped": "Arrêté. Aucun agent ne peut lire ni agir sur une fenêtre tant que vous ne reprenez pas.",
     "resume": "Reprendre",
     "indicator": {
@@ -5166,7 +5167,7 @@
       "stop": "Arrêter",
       "stopWithKey": "Arrêter tous les agents d'un coup ({key})"
     },
-    "codegGranted": "codeg lui-même a reçu Accessibilité ou Enregistrement de l'écran : le shell de chaque agent l'a donc aussi. Retirez codeg dans Réglages Système → Confidentialité et sécurité. L'utilisation de l'ordinateur reste désactivée d'ici là.",
+    "codegGranted": "codeg lui-même dispose d'Accessibilité ou d'Enregistrement de l'écran : le shell des agents peut s'en servir sans rien partager. Si vous n'en avez pas besoin, désactivez-le pour codeg dans Réglages Système.",
     "backend": {
       "idle": "Non démarré",
       "downloading": "Téléchargement du pilote…",
@@ -5182,7 +5183,8 @@
       "granted": "Accordé",
       "request": "Demander",
       "openSettings": "Ouvrir les Réglages",
-      "why": "Ces autorisations vont à codeg-computer-helper, pas à codeg : tout ce qui est accordé à codeg est hérité par le shell de chaque agent. L'Enregistrement de l'écran sert aux captures et aux titres de fenêtres, l'Accessibilité à lire le contenu d'une fenêtre et à agir dessus."
+      "why": "Accordez-les à codeg-computer-helper, pas à codeg. L'Enregistrement de l'écran sert aux captures, l'Accessibilité à lire les fenêtres et à agir dessus.",
+      "whyDev": "Accordez-les à codeg-computer-helper. macOS considère chaque recompilation d'une version de développement comme un nouveau programme : retirez l'ancienne entrée codeg-computer-helper dans Réglages Système, puis accordez-les à nouveau."
     },
     "shared": {
       "title": "{count, plural, =0 {Aucune fenêtre partagée} one {# fenêtre partagée} other {# fenêtres partagées}}",
@@ -5217,7 +5219,7 @@
     "openSettings": "Réglages",
     "picker": {
       "title": "Partager une fenêtre avec les agents",
-      "description": "Les agents de toutes les conversations peuvent lire une fenêtre que vous partagez — sa capture et son contenu — et, si vous les laissez agir dessus, y cliquer et y taper, jusqu'à ce que vous arrêtiez le partage, qu'elle se ferme ou qu'elle reste inutilisée pendant la durée définie dans les réglages.",
+      "description": "Les agents de toutes les conversations peuvent lire les fenêtres que vous partagez, et cliquer et taper dans celles où vous les laissez agir. Le partage prend fin quand vous l'arrêtez, que la fenêtre se ferme ou qu'elle reste inutilisée pendant la durée définie dans les réglages.",
       "count": "{count, plural, one {# fenêtre} other {# fenêtres}}",
       "loading": "Chargement des fenêtres…",
       "refresh": "Actualiser",
@@ -5227,7 +5229,7 @@
       "minimized": "réduite",
       "notGrantable": {
         "codeg": "Fenêtre de codeg",
-        "blocklisted": "Partage impossible",
+        "blocklisted": "Dans la liste des exclusions",
         "unidentified": "Application non identifiable"
       },
       "share": "Partager",
@@ -5235,11 +5237,54 @@
       "sharedControl": "Peut agir",
       "shareRead": "Laisser les agents la lire",
       "shareControl": "Laisser les agents la lire et agir dessus",
-      "stopSharing": "Arrêter le partage"
+      "stopSharing": "Arrêter le partage",
+      "shareAll": "Tout partager",
+      "shareAllRead": "Laisser les agents toutes les lire",
+      "shareAllControl": "Laisser les agents toutes les lire et agir dessus",
+      "stopSharingAll": "Arrêter tous les partages",
+      "skipped": "{count, plural, one {# fenêtre n'a pas pu être partagée ; elle a peut-être été fermée.} other {# fenêtres n'ont pas pu être partagées ; elles ont peut-être été fermées.}}",
+      "unshareable": "{count, plural, one {# fenêtre ne peut pas être partagée} other {# fenêtres ne peuvent pas être partagées}}",
+      "noneShareable": "Aucune de ces fenêtres ne peut être partagée.",
+      "codegWhy": "Les fenêtres de codeg ne sont jamais partagées : un agent capable de manipuler codeg pourrait approuver ses propres demandes, se partager d'autres fenêtres ou appuyer sur Reprendre après votre Arrêt. Un autre codeg, comme une version de développement, est exclu pour la même raison : il pourrait repartager les fenêtres de celui-ci."
     },
     "settings": {
-      "title": "Utilisation de l'ordinateur",
-      "description": "Ce que les agents peuvent voir de votre bureau une fois l'utilisation de l'ordinateur activée ci-dessus.",
+      "pageTitle": "Utilisation de l'ordinateur",
+      "pageDescription": "Laissez les agents voir et utiliser les fenêtres du bureau que vous partagez avec eux.",
+      "switch": {
+        "label": "Utilisation de l'ordinateur",
+        "hint": "Les agents peuvent lister vos applications et fenêtres, lire les fenêtres que vous partagez, et cliquer et taper dans celles où vous les laissez agir. Rien n'est lisible avant que vous le partagiez depuis la barre d'état.",
+        "failed": "Impossible de changer l'utilisation de l'ordinateur"
+      },
+      "driver": {
+        "title": "Pilote",
+        "description": "L'utilisation de l'ordinateur lit les fenêtres et agit dessus via cua-driver, un programme open source. codeg n'exécute que la version qu'il a vérifiée, {version}, et la télécharge la première fois qu'elle est nécessaire.",
+        "loading": "Vérification…",
+        "unsupported": "cua-driver n'a pas de version pour cette plateforme.",
+        "installing": "Installation…",
+        "downloadingOf": "Téléchargement… {done} / {total} Mo",
+        "downloadingSoFar": "Téléchargement… {done} Mo",
+        "uninstalling": "Désinstallation…",
+        "installed": "Installé · {version}",
+        "outdated": "La version {installed} est installée ; ce codeg utilise la {version}.",
+        "notInstalled": "Non installé. Il est téléchargé la première fois que l'utilisation de l'ordinateur en a besoin, ou vous pouvez l'installer maintenant.",
+        "install": "Installer",
+        "upgrade": "Mettre à jour vers {version}",
+        "uninstall": "Désinstaller",
+        "installDone": "cua-driver installé",
+        "uninstallDone": "cua-driver désinstallé",
+        "confirmTitle": "Désinstaller cua-driver ?",
+        "confirmDescription": "L'utilisation de l'ordinateur sera désactivée et toutes les fenêtres cesseront d'être partagées. La réactiver téléchargera à nouveau le pilote.",
+        "cancel": "Annuler"
+      },
+      "permissions": {
+        "title": "Autorisations",
+        "description": "macOS les demande pour codeg-computer-helper. Accordez-en une dans Réglages Système puis revenez : l'affichage se met à jour tout seul.",
+        "off": "Activez l'utilisation de l'ordinateur pour vérifier et accorder les autorisations.",
+        "accessibilityHint": "Lire le contenu des fenêtres et agir dessus.",
+        "screenRecordingHint": "Faire des captures et lire les titres des fenêtres."
+      },
+      "title": "Partage et arrêt",
+      "description": "Combien de temps une fenêtre reste partagée, quelles applications ne sont jamais partagées, et le raccourci qui arrête tous les agents.",
       "ttl": {
         "label": "Arrêter le partage des fenêtres inutilisées après",
         "hint": "Une fenêtre partagée cesse de l'être quand aucun agent ne l'a lue pendant cette durée.",
@@ -5248,12 +5293,12 @@
       },
       "blocklist": {
         "label": "Applications jamais partageables",
-        "hint": "Une par ligne : un identifiant de paquet (com.example.app), un nom d'exécutable (app.exe) ou un chemin complet. S'ajoute à la liste intégrée — gestionnaires de mots de passe, invites de mot de passe du système et Réglages Système —, qui ne peut pas être retirée.",
+        "hint": "Une par ligne : un identifiant de paquet (com.example.app), un nom d'exécutable (app.exe) ou un chemin complet. La liste intégrée — gestionnaires de mots de passe, invites de mot de passe du système, Réglages Système — s'applique toujours.",
         "placeholder": "com.example.app"
       },
       "stopKey": {
         "label": "Raccourci d'arrêt",
-        "hint": "Arrête tous les agents d'un coup depuis n'importe quelle application, comme le bouton Arrêter. Tant que l'utilisation de l'ordinateur est activée, ces touches appartiennent à codeg dans toutes les applications : choisissez-en que vous n'utilisez pas ailleurs.",
+        "hint": "Arrête tous les agents depuis n'importe quelle application, comme le bouton Arrêter. Tant que l'utilisation de l'ordinateur est activée, ces touches appartiennent à codeg : choisissez-en que vous n'utilisez pas ailleurs.",
         "recording": "Appuyez sur les touches…",
         "recordHint": "Maintenez Ctrl et un autre modificateur (Alt ou Maj), puis appuyez sur une touche. Échap annule.",
         "recordHintMac": "Maintenez ⌃ ou ⌘ et un autre modificateur, puis appuyez sur une touche. Échap annule.",
@@ -5270,7 +5315,7 @@
           "metaOffMac": "La touche Windows ne peut pas en faire partie."
         }
       },
-      "boundary": "Sous macOS, les autorisations Accessibilité et Enregistrement de l'écran vont à codeg-computer-helper, qui ne sert que codeg : le shell d'un agent ne peut donc pas les utiliser. Sous Windows et Linux, tout programme que vous lancez peut déjà lire l'écran ; là, ces réglages décident de ce qui est remis aux agents via codeg, pas de ce qu'un programme de votre machine pourrait faire.",
+      "boundary": "Sous macOS, les autorisations vont à codeg-computer-helper, que seul codeg peut utiliser : le shell des agents ne le peut pas. Windows et Linux n'ont pas cette séparation : là, ces réglages décident de ce que les agents obtiennent via codeg, pas de ce que les programmes de votre ordinateur peuvent faire.",
       "save": "Enregistrer",
       "saving": "Enregistrement…",
       "saved": "Réglages d'utilisation de l'ordinateur enregistrés",

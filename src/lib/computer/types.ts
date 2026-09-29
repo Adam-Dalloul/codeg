@@ -154,6 +154,39 @@ export interface ComputerMarkerPayload {
   action: ComputerAction
 }
 
+/** What sharing several windows at once did. */
+export interface ShareManyResult {
+  shared: SharedWindow[]
+  /** How many of the windows named were not shared: closed since the list
+   *  was read, or never shareable. */
+  skipped: number
+}
+
+/** What is being done to cua-driver right now. */
+export type DriverTask =
+  | {
+      kind: "installing"
+      /** Megabytes so far, and in all, once the download has said. */
+      downloadedMb?: number
+      totalMb?: number
+    }
+  | { kind: "uninstalling" }
+
+/** cua-driver as Settings shows it (`computer_driver_info`). Desktop only. */
+export interface DriverInfo {
+  /** The release this codeg runs — the only one it will run. */
+  version: string
+  /** Whether that release has a build for this platform. */
+  supported: boolean
+  /** The releases in the cache, newest first. */
+  installed: string[]
+  /** Where the pinned release's executable is, once it is in the cache. */
+  path?: string
+  task?: DriverTask
+  /** How the last install or removal failed, until the next one. */
+  error?: string
+}
+
 /** `computer://state`: every shared window, and whether the person has
  *  pressed Stop. */
 export interface ComputerStatePayload {
@@ -168,6 +201,8 @@ export const COMPUTER_ACTIVITY_EVENT = "computer://agent-activity"
 export const COMPUTER_BACKEND_STATUS_EVENT = "computer://backend-status"
 export const COMPUTER_STOP_KEY_EVENT = "computer://stop-key"
 export const COMPUTER_MARKER_EVENT = "computer://marker"
+/** {@link DriverInfo}, whenever it changes or an install moves. */
+export const COMPUTER_DRIVER_EVENT = "computer://driver"
 /** The settings record, after any of its writers saved it. */
 export const COMPUTER_TOOLS_SETTINGS_CHANGED_EVENT =
   "computer-tools-settings://changed"

@@ -19,6 +19,7 @@ const api = vi.hoisted(() => ({
   computerRequestPermission: vi.fn(),
   computerOpenPermissionSettings: vi.fn(),
   computerShareWindow: vi.fn(),
+  computerShareWindows: vi.fn(),
   computerRevokeAll: vi.fn(),
   computerStop: vi.fn(async () => {}),
   computerResume: vi.fn(async () => {}),
@@ -35,7 +36,8 @@ vi.mock("@/lib/platform", () => ({
     return Promise.resolve(() => {})
   }),
 }))
-vi.mock("@/lib/api", () => ({ openSettingsWindow: vi.fn(async () => {}) }))
+const shell = vi.hoisted(() => ({ openSettingsWindow: vi.fn(async () => {}) }))
+vi.mock("@/lib/api", () => shell)
 
 import { StatusBarComputer } from "./status-bar-computer"
 import enMessages from "@/i18n/messages/en.json"
@@ -118,9 +120,10 @@ describe("StatusBarComputer", () => {
     )
   })
 
-  /** codeg holding a permission itself is the first thing said, and sharing
-   * is not offered while it lasts. */
-  it("warns when codeg itself holds a permission", async () => {
+  /** codeg holding a permission itself is said — and nothing is held back
+   * over it: agents' shells have that permission whatever computer use
+   * does. */
+  it("tells, and only tells, when codeg itself holds a permission", async () => {
     api.computerStatus.mockResolvedValue(
       status({
         codeg: {
@@ -132,10 +135,68 @@ describe("StatusBarComputer", () => {
     )
     mount()
     fireEvent.click(await screen.findByRole("button", { name: "Computer use" }))
-    await screen.findByText(/codeg itself has been granted/)
+    await screen.findByText(/codeg itself has Accessibility/)
     expect(
       screen.getByRole("button", { name: "Share a window…" })
-    ).toBeDisabled()
+    ).toBeEnabled()
+  })
+
+  /** Someone who went to System Settings to grant a permission comes back to
+   * this window: the rows are asked for again then, while the popover is
+   * open, and not while it is shut. */
+  it("asks again when the window comes back to the front", async () => {
+    mount()
+    const trigger = await screen.findByRole("button", { name: "Computer use" })
+    act(() => {
+      window.dispatchEvent(new Event("focus"))
+    })
+    expect(api.computerStatus).not.toHaveBeenCalled()
+    fireEvent.click(trigger)
+    await screen.findByText("Screen Recording")
+    expect(api.computerStatus).toHaveBeenCalledTimes(1)
+    api.computerStatus.mockResolvedValue(
+      status({
+        permissions: {
+          required: true,
+          accessibility: true,
+          screenRecording: true,
+        },
+      })
+    )
+    act(() => {
+      window.dispatchEvent(new Event("focus"))
+    })
+    await waitFor(() => expect(api.computerStatus).toHaveBeenCalledTimes(2))
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: "Request" })).toBeNull()
+    )
+  })
+
+  /** A development build's helper is a new program to macOS after every
+   * rebuild; with a permission missing, that is what the note says. */
+  it("explains a development build's lost grants", async () => {
+    api.computerStatus.mockResolvedValue(
+      status({
+        backend: {
+          state: "ready",
+          driverVersion: "0.28.2",
+          peer: "development",
+        },
+      })
+    )
+    mount()
+    fireEvent.click(await screen.findByRole("button", { name: "Computer use" }))
+    await screen.findByText(/remove the old codeg-computer-helper entry/)
+  })
+
+  /** Settings lead to the Computer use page. */
+  it("opens the Computer use settings page", async () => {
+    mount()
+    fireEvent.click(await screen.findByRole("button", { name: "Computer use" }))
+    fireEvent.click(await screen.findByRole("button", { name: "Settings" }))
+    await waitFor(() =>
+      expect(shell.openSettingsWindow).toHaveBeenCalledWith("computer-use")
+    )
   })
 
   it("lists shared windows and stops one", async () => {

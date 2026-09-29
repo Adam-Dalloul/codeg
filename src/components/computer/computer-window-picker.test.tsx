@@ -2,12 +2,15 @@ import { act, fireEvent, render, screen } from "@testing-library/react"
 import { NextIntlClientProvider } from "next-intl"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
-import type { PickerWindow } from "@/lib/computer/types"
+import type { PickerWindow, ShareManyResult } from "@/lib/computer/types"
 
 const api = vi.hoisted(() => ({
   computerAvailable: vi.fn(() => false),
   computerListShareableWindows: vi.fn<() => Promise<PickerWindow[]>>(),
   computerShareWindow: vi.fn(),
+  computerShareWindows:
+    vi.fn<(ids: string[], level: string) => Promise<ShareManyResult>>(),
+  computerRevokeAll: vi.fn(async () => {}),
   computerWindowThumbnail: vi.fn(async () => null),
 }))
 vi.mock("@/lib/computer/computer-api", () => api)
@@ -22,7 +25,10 @@ import {
   setComputerShared,
 } from "@/lib/computer/computer-store"
 
-function window(level: PickerWindow["level"]): PickerWindow {
+function window(
+  level: PickerWindow["level"],
+  overrides: Partial<PickerWindow> = {}
+): PickerWindow {
   return {
     targetId: "w1",
     appName: "TextEdit",
@@ -33,6 +39,7 @@ function window(level: PickerWindow["level"]): PickerWindow {
     onScreen: true,
     minimized: false,
     level,
+    ...overrides,
   }
 }
 
@@ -102,6 +109,94 @@ describe("ComputerWindowPicker", () => {
       await Promise.resolve()
     })
     expect(api.computerShareWindow).toHaveBeenCalledWith("w1", "control")
+  })
+
+  /** "All" is every window that can be shared — what the grid shows — and
+   * never one of the windows kept out of it. */
+  it("shares every shareable window at once", async () => {
+    api.computerListShareableWindows.mockResolvedValue([
+      window("none"),
+      window("read", { targetId: "w2", appName: "Notes", title: "todo" }),
+      window("none", {
+        targetId: "w3",
+        appName: "codeg",
+        title: "codeg",
+        notGrantable: "codeg",
+      }),
+    ])
+    api.computerShareWindows.mockResolvedValue({ shared: [], skipped: 0 })
+    mount()
+    await openMenu(await screen.findByRole("button", { name: /Share all/ }))
+    await act(async () => {
+      fireEvent.click(
+        screen.getByRole("menuitem", {
+          name: "Let agents read and act on all of them",
+        })
+      )
+      await Promise.resolve()
+    })
+    expect(api.computerShareWindows).toHaveBeenCalledWith(
+      ["w1", "w2"],
+      "control"
+    )
+  })
+
+  /** A window that closed between the list and the share is reported, and
+   * the list read again. */
+  it("says how many could not be shared", async () => {
+    api.computerListShareableWindows.mockResolvedValue([window("none")])
+    api.computerShareWindows.mockResolvedValue({ shared: [], skipped: 1 })
+    mount()
+    await openMenu(await screen.findByRole("button", { name: /Share all/ }))
+    await act(async () => {
+      fireEvent.click(
+        screen.getByRole("menuitem", { name: "Let agents read all of them" })
+      )
+      await Promise.resolve()
+    })
+    expect(
+      await screen.findByText(
+        "1 window could not be shared; it may have closed."
+      )
+    ).toBeInTheDocument()
+    expect(api.computerListShareableWindows).toHaveBeenCalledTimes(2)
+  })
+
+  /** Stopping every sharing is there once anything is shared. */
+  it("stops sharing every window at once", async () => {
+    api.computerListShareableWindows.mockResolvedValue([window("read")])
+    mount()
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Stop sharing all" })
+    )
+    await act(async () => {
+      await Promise.resolve()
+    })
+    expect(api.computerRevokeAll).toHaveBeenCalled()
+  })
+
+  /** Windows that can never be shared are kept out of the grid, folded
+   * away with their reasons — codeg's with why. */
+  it("folds the windows that cannot be shared away, with the reason", async () => {
+    api.computerListShareableWindows.mockResolvedValue([
+      window("none"),
+      window("none", {
+        targetId: "w3",
+        appName: "codeg",
+        title: "Settings",
+        notGrantable: "codeg",
+      }),
+    ])
+    mount()
+    await screen.findByRole("button", { name: "Share" })
+    expect(screen.queryByText("codeg's window")).toBeNull()
+    fireEvent.click(
+      screen.getByRole("button", { name: "1 window can't be shared" })
+    )
+    expect(await screen.findByText("codeg's window")).toBeInTheDocument()
+    expect(
+      screen.getByText(/could approve its own requests/)
+    ).toBeInTheDocument()
   })
 })
 

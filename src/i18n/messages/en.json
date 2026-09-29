@@ -54,6 +54,7 @@
       "skill_packs": "Skill Packs",
       "collaboration": "Collaboration",
       "browser": "Browser",
+      "computer_use": "Computer Use",
       "quick_messages": "Quick Messages",
       "logs": "Runtime Logs"
     }
@@ -5153,7 +5154,7 @@
     "tooltipStopped": "Computer use · stopped",
     "stop": "Stop agents",
     "stopTooltip": "{count, plural, one {Agents can act on # window} other {Agents can act on # windows}} · click to stop them all",
-    "stopHint": "Stop every agent at once: nothing is read or done on any window, every window stops being shared, and whatever is in progress is cut off — until you resume.",
+    "stopHint": "Stop every agent now: what is in progress is cut off and every window stops being shared, until you resume.",
     "stopped": "Stopped. No agent can read or act on any window until you resume.",
     "resume": "Resume",
     "indicator": {
@@ -5166,7 +5167,7 @@
       "stop": "Stop",
       "stopWithKey": "Stop every agent at once ({key})"
     },
-    "codegGranted": "codeg itself has been granted Accessibility or Screen Recording, so every agent's shell has it too. Remove codeg from System Settings → Privacy & Security. Computer use stays off until you do.",
+    "codegGranted": "codeg itself has Accessibility or Screen Recording, so agents' shells can use it without anything being shared. Unless you need it, turn it off for codeg in System Settings.",
     "backend": {
       "idle": "Not started",
       "downloading": "Downloading the driver…",
@@ -5175,14 +5176,15 @@
       "failed": "Failed"
     },
     "driver": "cua-driver {version}",
-    "devBuild": "Development build: the helper does not check which program is calling it.",
+    "devBuild": "Development build: the helper doesn't check which program calls it.",
     "permissions": {
       "accessibility": "Accessibility",
       "screenRecording": "Screen Recording",
       "granted": "Granted",
       "request": "Request",
       "openSettings": "Open Settings",
-      "why": "These go to codeg-computer-helper, not to codeg: anything granted to codeg is inherited by every agent's shell. Screen Recording is for screenshots and window titles, Accessibility for reading a window's contents and acting on it."
+      "why": "Grant these to codeg-computer-helper, not to codeg. Screen Recording is for screenshots, Accessibility for reading and acting on windows.",
+      "whyDev": "Grant these to codeg-computer-helper. macOS treats each rebuild of a development build as a new program: remove the old codeg-computer-helper entry in System Settings, then grant again."
     },
     "shared": {
       "title": "{count, plural, =0 {No windows shared} one {# window shared} other {# windows shared}}",
@@ -5217,7 +5219,7 @@
     "openSettings": "Settings",
     "picker": {
       "title": "Share a window with agents",
-      "description": "Agents in every conversation can read a window you share — its screenshot and its contents — and, if you let them act on it, click and type in it, until you stop sharing it, it closes, or it goes unused for the time set in Settings.",
+      "description": "Agents in every conversation can read the windows you share, and click and type in the ones you let them act on. Sharing ends when you stop it, the window closes, or it goes unused for the time set in Settings.",
       "count": "{count, plural, one {# window} other {# windows}}",
       "loading": "Loading windows…",
       "refresh": "Refresh",
@@ -5226,8 +5228,8 @@
       "untitled": "Untitled window",
       "minimized": "minimized",
       "notGrantable": {
-        "codeg": "codeg's own window",
-        "blocklisted": "Can't be shared",
+        "codeg": "codeg's window",
+        "blocklisted": "On the never-share list",
         "unidentified": "Can't tell which app this is"
       },
       "share": "Share",
@@ -5235,11 +5237,54 @@
       "sharedControl": "Can act",
       "shareRead": "Let agents read it",
       "shareControl": "Let agents read and act on it",
-      "stopSharing": "Stop sharing"
+      "stopSharing": "Stop sharing",
+      "shareAll": "Share all",
+      "shareAllRead": "Let agents read all of them",
+      "shareAllControl": "Let agents read and act on all of them",
+      "stopSharingAll": "Stop sharing all",
+      "skipped": "{count, plural, one {# window could not be shared; it may have closed.} other {# windows could not be shared; they may have closed.}}",
+      "unshareable": "{count, plural, one {# window can't be shared} other {# windows can't be shared}}",
+      "noneShareable": "None of these windows can be shared.",
+      "codegWhy": "codeg's windows are never shared: an agent that could operate codeg could approve its own requests, share more windows with itself, or press Resume after you press Stop. Another copy of codeg, such as a development build, is left out too, since it could share this one's windows back."
     },
     "settings": {
-      "title": "Computer use",
-      "description": "What agents may see of your desktop once computer use is switched on above.",
+      "pageTitle": "Computer use",
+      "pageDescription": "Let agents see and use the desktop windows you share with them.",
+      "switch": {
+        "label": "Computer use",
+        "hint": "Agents can list your apps and windows, read the windows you share, and click and type in the ones you let them act on. Nothing can be read until you share it from the status bar.",
+        "failed": "Could not switch computer use"
+      },
+      "driver": {
+        "title": "Driver",
+        "description": "Computer use reads and acts on windows through cua-driver, an open-source program. codeg runs only the release it has checked, {version}, and downloads it the first time it is needed.",
+        "loading": "Checking…",
+        "unsupported": "cua-driver has no build for this platform.",
+        "installing": "Installing…",
+        "downloadingOf": "Downloading… {done} / {total} MB",
+        "downloadingSoFar": "Downloading… {done} MB",
+        "uninstalling": "Uninstalling…",
+        "installed": "Installed · {version}",
+        "outdated": "{installed} is installed; this codeg runs {version}.",
+        "notInstalled": "Not installed. It is downloaded the first time computer use needs it, or you can install it now.",
+        "install": "Install",
+        "upgrade": "Upgrade to {version}",
+        "uninstall": "Uninstall",
+        "installDone": "cua-driver installed",
+        "uninstallDone": "cua-driver uninstalled",
+        "confirmTitle": "Uninstall cua-driver?",
+        "confirmDescription": "Computer use will be switched off and every window will stop being shared. Switching it back on downloads the driver again.",
+        "cancel": "Cancel"
+      },
+      "permissions": {
+        "title": "Permissions",
+        "description": "macOS asks for these for codeg-computer-helper. Grant one in System Settings and come back: this updates by itself.",
+        "off": "Switch computer use on to check and grant permissions.",
+        "accessibilityHint": "Read windows' contents and act on them.",
+        "screenRecordingHint": "Take screenshots and read window titles."
+      },
+      "title": "Sharing and stopping",
+      "description": "How long a shared window stays shared, which apps can never be shared, and the shortcut that stops every agent.",
       "ttl": {
         "label": "Stop sharing unused windows after",
         "hint": "A shared window stops being shared when no agent has read it for this long.",
@@ -5248,12 +5293,12 @@
       },
       "blocklist": {
         "label": "Applications that can never be shared",
-        "hint": "One per line: a bundle identifier (com.example.app), an executable name (app.exe) or a full path. Added to the built-in list — password managers, the system's password prompts and System Settings — which cannot be removed.",
+        "hint": "One per line: a bundle ID (com.example.app), an executable name (app.exe) or a full path. The built-in list — password managers, system password prompts, System Settings — always applies.",
         "placeholder": "com.example.app"
       },
       "stopKey": {
         "label": "Stop shortcut",
-        "hint": "Stops every agent at once from any app, like the Stop button. While computer use is on, these keys belong to codeg in every app, so choose ones you don't use elsewhere.",
+        "hint": "Stops every agent from any app, like the Stop button. While computer use is on these keys belong to codeg, so pick ones you don't use elsewhere.",
         "recording": "Press keys…",
         "recordHint": "Hold Ctrl and one more modifier (Alt or Shift), then press a key. Esc cancels.",
         "recordHintMac": "Hold ⌃ or ⌘ and one more modifier, then press a key. Esc cancels.",
@@ -5270,7 +5315,7 @@
           "metaOffMac": "The Windows key can't be part of it."
         }
       },
-      "boundary": "On macOS the Accessibility and Screen Recording permissions go to codeg-computer-helper, which serves only codeg, so an agent's shell cannot use them. On Windows and Linux any program you run can already read the screen; there these settings decide what agents are handed through codeg, not what a program on your machine could do.",
+      "boundary": "On macOS the permissions go to codeg-computer-helper, which only codeg can use, so agents' shells can't. Windows and Linux have no such separation: there these settings decide what agents get through codeg, not what programs on your computer can do.",
       "save": "Save",
       "saving": "Saving…",
       "saved": "Computer use settings saved",

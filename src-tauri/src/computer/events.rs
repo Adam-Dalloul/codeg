@@ -14,6 +14,7 @@ use super::agent::{
     ComputerActivityPayload, ComputerGrantPayload, AGENT_ACTIVITY_EVENT, AGENT_GRANT_EVENT,
 };
 use super::backend::BackendStatus;
+use super::driver_admin::DriverInfo;
 use super::stop_key::StopKeyStatus;
 use super::targets::SharedWindow;
 
@@ -26,6 +27,9 @@ pub const BACKEND_STATUS_EVENT: &str = "computer://backend-status";
 
 /// Whether the stop shortcut is in force, for every place that offers Stop.
 pub const STOP_KEY_EVENT: &str = "computer://stop-key";
+
+/// The driver as Settings shows it, whenever it changes or an install moves.
+pub const DRIVER_EVENT: &str = "computer://driver";
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -52,4 +56,8 @@ pub fn emit_backend_status(app: &AppHandle, status: &BackendStatus) {
 
 pub fn emit_stop_key(app: &AppHandle, status: &StopKeyStatus) {
     let _ = app.emit(STOP_KEY_EVENT, status);
+}
+
+pub fn emit_driver(app: &AppHandle, info: &DriverInfo) {
+    let _ = app.emit(DRIVER_EVENT, info);
 }

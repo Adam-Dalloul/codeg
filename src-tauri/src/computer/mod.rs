@@ -53,14 +53,17 @@
 //! - `spawn`     — macOS `posix_spawn` with the attributes the design needs
 //! - `tcc`       — macOS read-only TCC preflight queries
 //! - `procinfo`  — process start times, so a reused pid is not the same app
+//! - `appident`  — which application a process is, read off the process
 //! - `helper`    — the helper process's own logic (runs in the helper binary)
 //! - `local`     — codeg's side of the helper: launch, verify, talk
 //! - `events`    — what the frontend is told
+//! - `driver_admin` — the driver as Settings manages it: install, clear, remove
 //! - `stop_key`  — the stop shortcut as the OS holds it
 //! - `indicator` — the strip above every window while anything is shared
 //! - `marker`    — the mark an action leaves where it landed
 
 pub mod agent;
+pub mod appident;
 pub mod backend;
 pub mod driver;
 pub mod helper;
@@ -83,6 +86,8 @@ pub mod tcc;
 // codeg's side of the helper and the events it raises exist only where there
 // is a desktop: server mode has no windows to share, answers every call with
 // `computer_unavailable`, and never launches the helper at all.
+#[cfg(feature = "tauri-runtime")]
+pub mod driver_admin;
 #[cfg(feature = "tauri-runtime")]
 pub mod events;
 #[cfg(feature = "tauri-runtime")]

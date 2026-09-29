@@ -3,10 +3,10 @@
 /**
  * Computer use: how long a shared window stays shared while nobody reads it,
  * which applications can never be shared, and — on the desktop — the
- * shortcut that stops every agent at once. The on/off switch itself sits
- * with the other tool groups in the panel above (and in the status-bar
- * popover); this section edits only the settings under it, through a writer
- * that leaves the switch alone.
+ * shortcut that stops every agent at once. The on/off switch sits above it
+ * on the Computer use page (and with the other tool groups, and in the
+ * status-bar popover); this section edits only the settings under it,
+ * through a writer that leaves the switch alone.
  *
  * The stop shortcut is held with the OS only while computer use is on, and
  * another application may hold the same keys; the row says which, so nobody

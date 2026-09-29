@@ -54,6 +54,7 @@
       "skill_packs": "Skill-Pakete",
       "collaboration": "Zusammenarbeit",
       "browser": "Browser",
+      "computer_use": "Computernutzung",
       "quick_messages": "Schnellnachrichten",
       "logs": "Laufzeitprotokolle"
     }
@@ -5153,7 +5154,7 @@
     "tooltipStopped": "Computernutzung · angehalten",
     "stop": "Agenten anhalten",
     "stopTooltip": "{count, plural, one {Agenten können in # Fenster handeln} other {Agenten können in # Fenstern handeln}} · klicken, um alle anzuhalten",
-    "stopHint": "Hält alle Agenten sofort an: In keinem Fenster wird etwas gelesen oder getan, alle Freigaben enden und was gerade läuft, wird abgebrochen – bis du fortsetzt.",
+    "stopHint": "Hält alle Agenten sofort an: Was gerade läuft, wird abgebrochen, und alle Freigaben enden – bis du fortsetzt.",
     "stopped": "Angehalten. Kein Agent kann ein Fenster lesen oder darin handeln, bis du fortsetzt.",
     "resume": "Fortsetzen",
     "indicator": {
@@ -5166,7 +5167,7 @@
       "stop": "Anhalten",
       "stopWithKey": "Alle Agenten sofort anhalten ({key})"
     },
-    "codegGranted": "codeg selbst hat Bedienungshilfen oder Bildschirmaufnahme erhalten – damit hat sie auch die Shell jedes Agenten. Entferne codeg unter Systemeinstellungen → Datenschutz & Sicherheit. Bis dahin bleibt die Computernutzung aus.",
+    "codegGranted": "codeg selbst hat Bedienungshilfen oder Bildschirmaufnahme – die Shells der Agenten können das ohne jede Freigabe nutzen. Schalte es für codeg in den Systemeinstellungen aus, wenn du es nicht brauchst.",
     "backend": {
       "idle": "Nicht gestartet",
       "downloading": "Treiber wird geladen …",
@@ -5182,7 +5183,8 @@
       "granted": "Erteilt",
       "request": "Anfordern",
       "openSettings": "Einstellungen öffnen",
-      "why": "Diese gehen an codeg-computer-helper, nicht an codeg: Alles, was codeg erteilt wird, erbt die Shell jedes Agenten. Bildschirmaufnahme wird für Bildschirmfotos und Fenstertitel gebraucht, Bedienungshilfen zum Lesen von Fensterinhalten und zum Handeln darin."
+      "why": "Erteile sie codeg-computer-helper, nicht codeg. Bildschirmaufnahme dient Bildschirmfotos, Bedienungshilfen dem Lesen von Fenstern und dem Handeln darin.",
+      "whyDev": "Erteile sie codeg-computer-helper. macOS hält jeden neu kompilierten Entwicklungs-Build für ein neues Programm: Entferne den alten Eintrag codeg-computer-helper in den Systemeinstellungen und erteile die Berechtigung erneut."
     },
     "shared": {
       "title": "{count, plural, =0 {Keine Fenster freigegeben} one {# Fenster freigegeben} other {# Fenster freigegeben}}",
@@ -5217,7 +5219,7 @@
     "openSettings": "Einstellungen",
     "picker": {
       "title": "Ein Fenster für Agenten freigeben",
-      "description": "Agenten in jeder Unterhaltung können ein freigegebenes Fenster lesen – Bildschirmfoto und Inhalt – und, wenn du sie handeln lässt, darin klicken und tippen, bis du die Freigabe beendest, es geschlossen wird oder es so lange ungenutzt bleibt wie in den Einstellungen festgelegt.",
+      "description": "Agenten in jeder Unterhaltung können die Fenster lesen, die du freigibst, und in denen klicken und tippen, in denen du sie handeln lässt. Eine Freigabe endet, wenn du sie beendest, das Fenster geschlossen wird oder es so lange ungenutzt bleibt wie in den Einstellungen festgelegt.",
       "count": "{count, plural, one {# Fenster} other {# Fenster}}",
       "loading": "Fenster werden geladen …",
       "refresh": "Aktualisieren",
@@ -5227,7 +5229,7 @@
       "minimized": "minimiert",
       "notGrantable": {
         "codeg": "Fenster von codeg",
-        "blocklisted": "Nicht freigebbar",
+        "blocklisted": "Auf der Sperrliste",
         "unidentified": "App nicht identifizierbar"
       },
       "share": "Freigeben",
@@ -5235,11 +5237,54 @@
       "sharedControl": "Darf handeln",
       "shareRead": "Agenten lesen lassen",
       "shareControl": "Agenten lesen und handeln lassen",
-      "stopSharing": "Freigabe beenden"
+      "stopSharing": "Freigabe beenden",
+      "shareAll": "Alle freigeben",
+      "shareAllRead": "Agenten alle lesen lassen",
+      "shareAllControl": "Agenten alle lesen und darin handeln lassen",
+      "stopSharingAll": "Alle Freigaben beenden",
+      "skipped": "{count, plural, one {# Fenster konnte nicht freigegeben werden; es wurde vielleicht geschlossen.} other {# Fenster konnten nicht freigegeben werden; sie wurden vielleicht geschlossen.}}",
+      "unshareable": "{count, plural, one {# Fenster lässt sich nicht freigeben} other {# Fenster lassen sich nicht freigeben}}",
+      "noneShareable": "Keines dieser Fenster lässt sich freigeben.",
+      "codegWhy": "Fenster von codeg werden nie freigegeben: Ein Agent, der codeg bedienen könnte, könnte seine eigenen Anfragen genehmigen, sich weitere Fenster freigeben oder nach deinem Anhalten auf Fortsetzen drücken. Ein anderes codeg, etwa ein Entwicklungs-Build, bleibt aus demselben Grund außen vor – es könnte die Fenster dieses codeg zurück freigeben."
     },
     "settings": {
-      "title": "Computernutzung",
-      "description": "Was Agenten von deinem Desktop sehen dürfen, sobald die Computernutzung oben eingeschaltet ist.",
+      "pageTitle": "Computernutzung",
+      "pageDescription": "Lass Agenten die Desktop-Fenster sehen und bedienen, die du für sie freigibst.",
+      "switch": {
+        "label": "Computernutzung",
+        "hint": "Agenten können deine Apps und Fenster auflisten, freigegebene Fenster lesen und in denen klicken und tippen, in denen du sie handeln lässt. Lesbar ist nichts, bevor du es über die Statusleiste freigibst.",
+        "failed": "Computernutzung konnte nicht umgeschaltet werden"
+      },
+      "driver": {
+        "title": "Treiber",
+        "description": "Die Computernutzung liest und bedient Fenster über cua-driver, ein Open-Source-Programm. codeg führt nur die geprüfte Version {version} aus und lädt sie beim ersten Bedarf herunter.",
+        "loading": "Wird geprüft …",
+        "unsupported": "cua-driver hat keinen Build für diese Plattform.",
+        "installing": "Wird installiert …",
+        "downloadingOf": "Wird heruntergeladen … {done} / {total} MB",
+        "downloadingSoFar": "Wird heruntergeladen … {done} MB",
+        "uninstalling": "Wird deinstalliert …",
+        "installed": "Installiert · {version}",
+        "outdated": "{installed} ist installiert; dieses codeg verwendet {version}.",
+        "notInstalled": "Nicht installiert. Er wird heruntergeladen, sobald die Computernutzung ihn zum ersten Mal braucht, oder du installierst ihn jetzt.",
+        "install": "Installieren",
+        "upgrade": "Auf {version} aktualisieren",
+        "uninstall": "Deinstallieren",
+        "installDone": "cua-driver installiert",
+        "uninstallDone": "cua-driver deinstalliert",
+        "confirmTitle": "cua-driver deinstallieren?",
+        "confirmDescription": "Die Computernutzung wird ausgeschaltet und alle Freigaben enden. Beim erneuten Einschalten wird der Treiber wieder heruntergeladen.",
+        "cancel": "Abbrechen"
+      },
+      "permissions": {
+        "title": "Berechtigungen",
+        "description": "macOS verlangt sie für codeg-computer-helper. Erteile sie in den Systemeinstellungen und kehre zurück – die Anzeige aktualisiert sich von selbst.",
+        "off": "Schalte die Computernutzung ein, um Berechtigungen zu prüfen und zu erteilen.",
+        "accessibilityHint": "Fensterinhalte lesen und darin handeln.",
+        "screenRecordingHint": "Bildschirmfotos machen und Fenstertitel lesen."
+      },
+      "title": "Freigeben und Anhalten",
+      "description": "Wie lange ein Fenster freigegeben bleibt, welche Apps nie freigegeben werden und das Tastenkürzel, das alle Agenten anhält.",
       "ttl": {
         "label": "Freigabe ungenutzter Fenster beenden nach",
         "hint": "Ein freigegebenes Fenster wird nicht mehr geteilt, wenn es so lange kein Agent gelesen hat.",
@@ -5248,12 +5293,12 @@
       },
       "blocklist": {
         "label": "Anwendungen, die nie freigegeben werden können",
-        "hint": "Eine pro Zeile: eine Bundle-ID (com.example.app), ein Programmname (app.exe) oder ein vollständiger Pfad. Wird zur eingebauten Liste hinzugefügt – Passwortmanager, die Passwortabfragen des Systems und die Systemeinstellungen –, die sich nicht entfernen lässt.",
+        "hint": "Eine pro Zeile: eine Bundle-ID (com.example.app), ein Programmname (app.exe) oder ein vollständiger Pfad. Die eingebaute Liste – Passwortmanager, Passwortabfragen des Systems, Systemeinstellungen – gilt immer.",
         "placeholder": "com.example.app"
       },
       "stopKey": {
         "label": "Tastenkürzel zum Anhalten",
-        "hint": "Hält alle Agenten aus jeder App heraus sofort an, wie die Schaltfläche „Anhalten“. Solange die Computernutzung eingeschaltet ist, gehören diese Tasten in jeder App codeg – wähle also welche, die du sonst nicht verwendest.",
+        "hint": "Hält alle Agenten aus jeder App heraus an, wie die Schaltfläche „Anhalten“. Solange die Computernutzung eingeschaltet ist, gehören diese Tasten codeg – wähle also welche, die du sonst nicht verwendest.",
         "recording": "Tasten drücken …",
         "recordHint": "Strg und eine weitere Sondertaste (Alt oder Umschalt) halten, dann eine Taste drücken. Esc bricht ab.",
         "recordHintMac": "⌃ oder ⌘ und eine weitere Sondertaste halten, dann eine Taste drücken. Esc bricht ab.",
@@ -5270,7 +5315,7 @@
           "metaOffMac": "Die Windows-Taste darf nicht dazugehören."
         }
       },
-      "boundary": "Unter macOS gehen die Berechtigungen für Bedienungshilfen und Bildschirmaufnahme an codeg-computer-helper, der nur codeg bedient – die Shell eines Agenten kann sie also nicht nutzen. Unter Windows und Linux kann jedes Programm, das du ausführst, den Bildschirm ohnehin lesen; dort legen diese Einstellungen fest, was Agenten über codeg bekommen, nicht was ein Programm auf deinem Rechner tun könnte.",
+      "boundary": "Unter macOS gehen die Berechtigungen an codeg-computer-helper, den nur codeg nutzen kann – die Shells der Agenten können es nicht. Windows und Linux haben keine solche Trennung: Dort legen diese Einstellungen fest, was Agenten über codeg bekommen, nicht was Programme auf deinem Rechner tun können.",
       "save": "Speichern",
       "saving": "Wird gespeichert …",
       "saved": "Einstellungen zur Computernutzung gespeichert",

@@ -54,6 +54,7 @@
       "skill_packs": "技能包",
       "collaboration": "协作",
       "browser": "浏览器",
+      "computer_use": "电脑操作",
       "quick_messages": "快捷消息",
       "logs": "运行日志"
     }
@@ -5153,7 +5154,7 @@
     "tooltipStopped": "电脑操作 · 已停止",
     "stop": "停止智能体",
     "stopTooltip": "{count, plural, other {智能体可操作 # 个窗口}} · 点击全部停止",
-    "stopHint": "立即停止所有智能体：在你恢复之前，任何窗口都不会被读取或操作，所有窗口停止共享，正在进行的操作会被中断。",
+    "stopHint": "立即停止所有智能体：中断正在进行的操作，所有窗口停止共享，直到你恢复。",
     "stopped": "已停止。在你恢复之前，任何智能体都不能读取或操作任何窗口。",
     "resume": "恢复",
     "indicator": {
@@ -5166,7 +5167,7 @@
       "stop": "停止",
       "stopWithKey": "立即停止所有智能体（{key}）"
     },
-    "codegGranted": "codeg 本身已被授予「辅助功能」或「屏幕录制」权限，因此每个智能体的 shell 也都拥有它。请在「系统设置 → 隐私与安全性」中移除 codeg。在此之前，电脑操作保持关闭。",
+    "codegGranted": "codeg 本身拥有「辅助功能」或「屏幕录制」权限，智能体的命令行可以不经共享直接使用它。如非必要，请在系统设置中为 codeg 关闭。",
     "backend": {
       "idle": "未启动",
       "downloading": "正在下载驱动…",
@@ -5175,14 +5176,15 @@
       "failed": "失败"
     },
     "driver": "cua-driver {version}",
-    "devBuild": "开发版：helper 不会校验调用它的是哪个程序。",
+    "devBuild": "开发版：helper 不校验调用它的程序。",
     "permissions": {
       "accessibility": "辅助功能",
       "screenRecording": "屏幕录制",
       "granted": "已授权",
       "request": "请求授权",
       "openSettings": "打开系统设置",
-      "why": "这些权限授予 codeg-computer-helper，而不是 codeg：授予 codeg 的任何权限都会被每个智能体的 shell 继承。「屏幕录制」用于截图和窗口标题，「辅助功能」用于读取和操作窗口内容。"
+      "why": "请授权给 codeg-computer-helper，而不是 codeg。「屏幕录制」用于截图，「辅助功能」用于读取和操作窗口。",
+      "whyDev": "请授权给 codeg-computer-helper。开发版每次重新编译，在 macOS 看来都是一个新程序：请先在系统设置中移除旧的 codeg-computer-helper，再重新授权。"
     },
     "shared": {
       "title": "{count, plural, =0 {未共享窗口} other {已共享 # 个窗口}}",
@@ -5217,7 +5219,7 @@
     "openSettings": "设置",
     "picker": {
       "title": "把窗口共享给智能体",
-      "description": "所有对话中的智能体都能读取你共享的窗口——截图和内容——如果你允许操作，还能在其中点击和输入，直到你停止共享、窗口关闭，或闲置超过设置中的时长。",
+      "description": "所有对话中的智能体都能读取你共享的窗口，并在你允许操作的窗口里点击和输入。你停止共享、窗口关闭，或闲置超过设置中的时长后，共享即结束。",
       "count": "{count, plural, other {# 个窗口}}",
       "loading": "正在加载窗口…",
       "refresh": "刷新",
@@ -5226,8 +5228,8 @@
       "untitled": "无标题窗口",
       "minimized": "已最小化",
       "notGrantable": {
-        "codeg": "codeg 自己的窗口",
-        "blocklisted": "不可共享",
+        "codeg": "codeg 的窗口",
+        "blocklisted": "在永不共享名单中",
         "unidentified": "无法识别所属应用"
       },
       "share": "共享",
@@ -5235,11 +5237,54 @@
       "sharedControl": "可操作",
       "shareRead": "允许智能体读取",
       "shareControl": "允许智能体读取并操作",
-      "stopSharing": "停止共享"
+      "stopSharing": "停止共享",
+      "shareAll": "全部共享",
+      "shareAllRead": "全部允许读取",
+      "shareAllControl": "全部允许读取并操作",
+      "stopSharingAll": "全部停止共享",
+      "skipped": "{count, plural, other {有 # 个窗口没能共享，可能已经关闭。}}",
+      "unshareable": "{count, plural, other {# 个窗口不能共享}}",
+      "noneShareable": "这些窗口都不能共享。",
+      "codegWhy": "codeg 的窗口永远不能共享：能操作 codeg 的智能体可以替自己批准请求、给自己共享更多窗口，或在你停止后点「恢复」。另一个 codeg（比如开发版）同样不能共享，因为它可以把这个 codeg 的窗口再共享回去。"
     },
     "settings": {
-      "title": "电脑操作",
-      "description": "在上方开启电脑操作后，智能体能看到你桌面上的哪些内容。",
+      "pageTitle": "电脑操作",
+      "pageDescription": "让智能体查看并操作你共享给它的桌面窗口。",
+      "switch": {
+        "label": "电脑操作",
+        "hint": "开启后，智能体可以列出应用和窗口，读取你共享的窗口，并在你允许操作的窗口里点击和输入。你从状态栏共享之前，任何窗口都不可读。",
+        "failed": "切换电脑操作失败"
+      },
+      "driver": {
+        "title": "驱动",
+        "description": "电脑操作通过开源的 cua-driver 读取和操作窗口。codeg 只运行经过核对的 {version} 版本，首次需要时自动下载。",
+        "loading": "正在检查…",
+        "unsupported": "cua-driver 没有适用于此平台的版本。",
+        "installing": "正在安装…",
+        "downloadingOf": "正在下载… {done} / {total} MB",
+        "downloadingSoFar": "正在下载… {done} MB",
+        "uninstalling": "正在卸载…",
+        "installed": "已安装 · {version}",
+        "outdated": "已安装 {installed}，当前 codeg 使用 {version}。",
+        "notInstalled": "未安装。首次使用电脑操作时会自动下载，也可以现在安装。",
+        "install": "安装",
+        "upgrade": "升级到 {version}",
+        "uninstall": "卸载",
+        "installDone": "cua-driver 已安装",
+        "uninstallDone": "cua-driver 已卸载",
+        "confirmTitle": "卸载 cua-driver？",
+        "confirmDescription": "电脑操作会被关闭，所有窗口停止共享。重新开启时会再次下载驱动。",
+        "cancel": "取消"
+      },
+      "permissions": {
+        "title": "系统权限",
+        "description": "macOS 需要为 codeg-computer-helper 授权。在系统设置里授权后回到这里，状态会自动更新。",
+        "off": "开启电脑操作后，可以在这里查看和授予权限。",
+        "accessibilityHint": "读取窗口内容并操作窗口。",
+        "screenRecordingHint": "截图和读取窗口标题。"
+      },
+      "title": "共享与停止",
+      "description": "共享的窗口多久后停止共享、哪些应用永不共享，以及随时停止所有智能体的快捷键。",
       "ttl": {
         "label": "窗口闲置多久后停止共享",
         "hint": "共享的窗口在这么长时间内没有被任何智能体读取，就会停止共享。",
@@ -5248,12 +5293,12 @@
       },
       "blocklist": {
         "label": "永不可共享的应用",
-        "hint": "每行一个：bundle 标识（com.example.app）、可执行文件名（app.exe）或完整路径。会追加到内置名单——密码管理器、系统的密码弹窗和系统设置——内置名单不可移除。",
+        "hint": "每行一个：bundle 标识（com.example.app）、可执行文件名（app.exe）或完整路径。内置名单（密码管理器、系统密码弹窗、系统设置）始终生效。",
         "placeholder": "com.example.app"
       },
       "stopKey": {
         "label": "停止快捷键",
-        "hint": "在任何应用中按下即可立即停止所有智能体，效果同「停止」按钮。电脑操作开启期间，这组按键在所有应用中都归 codeg 使用，请选择你在别处不用的组合。",
+        "hint": "在任何应用中按下即可停止所有智能体，效果同「停止」按钮。电脑操作开启时这组按键归 codeg 使用，请选一组别处不用的组合。",
         "recording": "请按下按键…",
         "recordHint": "按住 Ctrl 和另一个修饰键（Alt 或 Shift），再按一个键。按 Esc 取消。",
         "recordHintMac": "按住 ⌃ 或 ⌘ 和另一个修饰键，再按一个键。按 Esc 取消。",
@@ -5270,7 +5315,7 @@
           "metaOffMac": "不能包含 Windows 键。"
         }
       },
-      "boundary": "在 macOS 上，「辅助功能」和「屏幕录制」权限授予 codeg-computer-helper，它只为 codeg 服务，因此智能体的 shell 用不了这些权限。在 Windows 和 Linux 上，你运行的任何程序本来就能读取屏幕；在那里，这些设置决定的是智能体通过 codeg 能拿到什么，而不是你电脑上的程序能做什么。",
+      "boundary": "在 macOS 上，权限授予 codeg-computer-helper，只有 codeg 能使用，智能体的命令行用不了。Windows 和 Linux 没有这层隔离：这里的设置决定的是智能体通过 codeg 能拿到什么，而不是电脑上的程序能做什么。",
       "save": "保存",
       "saving": "保存中…",
       "saved": "电脑操作设置已保存",

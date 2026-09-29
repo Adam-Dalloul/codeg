@@ -10,8 +10,9 @@
  *   * "In-conversation tools" — the tool groups codeg-mcp injects when an
  *     agent starts: feedback, ask-user-question, session info, the built-in
  *     browser, computer use and the create-from-chat writers
- *     (`agent-tools-settings.tsx`), with computer use's own two settings
- *     under them (`computer-settings.tsx`).
+ *     (`agent-tools-settings.tsx`). Computer use's own settings — the driver,
+ *     permissions, sharing — have a page of their own
+ *     (`computer-use-settings.tsx`).
  *
  * They used to sit at the bottom of `/settings/general`, which is how that
  * page grew to twice the length of what "general" describes — and why the
@@ -24,7 +25,6 @@ import { useTranslations } from "next-intl"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { DelegationSettingsSection } from "@/components/settings/delegation-settings"
 import { AgentToolsSettingsSection } from "@/components/settings/agent-tools-settings"
-import { ComputerSettingsSection } from "@/components/settings/computer-settings"
 
 export function CollaborationSettings() {
   const t = useTranslations("CollaborationSettings")
@@ -42,10 +42,6 @@ export function CollaborationSettings() {
         <DelegationSettingsSection />
 
         <AgentToolsSettingsSection />
-
-        {/* The two settings under the computer-use switch above: how long a
-            shared window stays shared, and what can never be shared. */}
-        <ComputerSettingsSection />
       </div>
     </ScrollArea>
   )

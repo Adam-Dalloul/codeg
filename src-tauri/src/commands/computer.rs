@@ -5,10 +5,8 @@
 //! Every agent read goes through the same five steps, in this order, because
 //! a read cannot be taken back:
 //!
-//! 1. **Switch and self-check.** The group is on (re-read now, not at
-//!    injection), and codeg itself holds neither Accessibility nor Screen
-//!    Recording — if it does, every agent's shell has them too, and computer
-//!    use refuses to run until that is undone.
+//! 1. **Switch.** The group is on (re-read now, not at injection), and the
+//!    person has not pressed Stop.
 //! 2. **Grant.** The window is one codeg named, it is shared, the grant has
 //!    not lapsed, and its application is not (or no longer) blocklisted.
 //! 3. **Identity.** The process that owned the window when it was shared is
@@ -74,6 +72,7 @@ use crate::computer::agent::{
 use crate::computer::backend::{
     ActRefusal, BackendError, BackendStatus, ComputerBackend, SnapshotOptions,
 };
+use crate::computer::driver_admin::{DriverAdmin, DriverInfo, DriverTask};
 use crate::computer::events;
 use crate::computer::indicator::{Indicator, Strip};
 use crate::computer::local::LocalBackend;
@@ -101,7 +100,10 @@ fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
-/// What codeg knows about its own TCC standing (macOS only).
+/// What codeg knows about its own TCC standing (macOS only). Shown to the
+/// person, never acted on: a permission codeg itself holds is one every
+/// agent's shell holds too, outside anything computer use decides — refusing
+/// to run would not take it back.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CodegTccStatus {
@@ -136,12 +138,6 @@ fn codeg_tcc() -> Option<CodegTccStatus> {
 fn codeg_tcc() -> Option<CodegTccStatus> {
     None
 }
-
-const CODEG_TCC_NOTE: &str = "Computer use is switched off on this Mac because codeg itself has \
-    been granted Accessibility or Screen Recording — and every agent's shell inherits whatever \
-    codeg has. Ask the user to remove codeg from System Settings → Privacy & Security → \
-    Accessibility and Screen Recording (the permissions belong to codeg-computer-helper). It \
-    cannot work until they have.";
 
 /// Cut `tree` to at most `max_chars` characters, on a line boundary. `0` is
 /// no cap. Returns the tree and whether anything was cut.
@@ -301,6 +297,8 @@ pub struct ComputerService {
     /// changes told at once are told in the order they were read — the
     /// older never lands last.
     state_gate: std::sync::Mutex<()>,
+    /// The driver as Settings manages it.
+    drivers: Arc<DriverAdmin>,
 }
 
 impl ComputerService {
@@ -310,8 +308,11 @@ impl ComputerService {
     /// grants whose time runs out.
     pub fn start(app: AppHandle, config: ComputerToolsRuntimeConfig) -> Arc<Self> {
         let status_app = app.clone();
+        let drivers = Arc::new(DriverAdmin::new(app.clone()));
+        let status_drivers = drivers.clone();
         let backend = Arc::new(LocalBackend::new(move |status: &BackendStatus| {
             events::emit_backend_status(&status_app, status);
+            status_drivers.backend_moved(status);
         }));
         let indicator = Indicator::start(app.clone());
         let marker = Marker::start(app.clone());
@@ -330,6 +331,7 @@ impl ComputerService {
             indicator,
             marker,
             state_gate: std::sync::Mutex::new(()),
+            drivers,
         });
 
         // What a change takes away is taken before the write that made it
@@ -526,6 +528,44 @@ impl ComputerService {
         }
     }
 
+    /// Remove cua-driver, as the person asked from Settings: switch computer
+    /// use off — through the settings writer, so every panel hears of it —
+    /// and stop the helper and its driver now, rather than whenever the
+    /// switch is followed, before the files go. Then every cached release,
+    /// and the homes dead drivers left behind. Switching back on fetches the
+    /// pinned release again.
+    async fn uninstall_driver(
+        &self,
+        conn: &sea_orm::DatabaseConnection,
+    ) -> Result<DriverInfo, AppCommandError> {
+        self.drivers
+            .begin(DriverTask::Uninstalling)
+            .map_err(AppCommandError::configuration_invalid)?;
+        let result = async {
+            if self.config.snapshot().await.enabled {
+                crate::commands::computer_tools::set_computer_tools_enabled_core(
+                    conn,
+                    &self.config,
+                    &crate::web::event_bridge::EventEmitter::Tauri(self.app.clone()),
+                    false,
+                )
+                .await
+                .map_err(|e| e.to_string())?;
+            }
+            self.backend.close().await;
+            crate::computer::driver::forget_cached_driver()
+                .await
+                .map_err(|e| e.to_string())?;
+            crate::computer::helper::driver_proc::sweep_dead_runs();
+            Ok::<(), String>(())
+        }
+        .await;
+        self.drivers.finish(result.as_ref().err().cloned());
+        result
+            .map(|()| self.drivers.info())
+            .map_err(AppCommandError::configuration_invalid)
+    }
+
     /// The person resumed. No grant comes back: what they stopped sharing
     /// they share again, window by window.
     pub async fn resume(&self) {
@@ -558,8 +598,7 @@ impl ComputerService {
         );
     }
 
-    /// Step 1: the switch, re-read now, codeg's own TCC standing, and the
-    /// person's Stop.
+    /// Step 1: the switch, re-read now, and the person's Stop.
     async fn usable(&self) -> Result<ComputerToolsConfig, Refusal> {
         if self.paused.load(Ordering::Acquire) {
             return Err(Refusal::refused(ERROR_PAUSED, STOPPED_NOTE.to_string()));
@@ -569,12 +608,6 @@ impl ComputerService {
             return Err(Refusal::refused(
                 ERROR_UNAVAILABLE,
                 NO_DESKTOP_NOTE.to_string(),
-            ));
-        }
-        if codeg_tcc().is_some_and(|s| s.is_leaking()) {
-            return Err(Refusal::refused(
-                ERROR_UNAVAILABLE,
-                CODEG_TCC_NOTE.to_string(),
             ));
         }
         Ok(config)
@@ -1344,6 +1377,55 @@ pub async fn computer_share_window(
     Ok(service.targets.shared())
 }
 
+/// What sharing several windows at once did.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShareManyResult {
+    pub shared: Vec<SharedWindow>,
+    /// How many of the windows named were not shared: closed since the list
+    /// was read, or never shareable.
+    pub skipped: u32,
+}
+
+/// Share every window named at one level — the picker's "all" — each exactly
+/// as [`computer_share_window`] would share it, skipping the ones that cannot
+/// be, and telling the panels once.
+#[tauri::command]
+pub async fn computer_share_windows(
+    app: AppHandle,
+    target_ids: Vec<String>,
+    level: GrantLevel,
+) -> Result<ShareManyResult, AppCommandError> {
+    let service = service(&app)?;
+    let config = service.config.snapshot().await;
+    if !config.enabled && level != GrantLevel::None {
+        return Err(AppCommandError::configuration_invalid(
+            "computer use is switched off",
+        ));
+    }
+    if level != GrantLevel::None && service.paused.load(Ordering::Acquire) {
+        return Err(AppCommandError::configuration_invalid(
+            "computer use is stopped; resume it first",
+        ));
+    }
+    let blocklist = Blocklist::new(&config.blocklist);
+    let mut changes = Vec::new();
+    let mut skipped = 0u32;
+    for target_id in &target_ids {
+        // A Stop that lands part way through is decided window by window,
+        // under the lock the Stop revokes under: nothing shared after it.
+        match service.share_unless_stopped(target_id, level, &blocklist) {
+            Ok(change) => changes.extend(change),
+            Err(_) => skipped += 1,
+        }
+    }
+    service.announce(&changes);
+    Ok(ShareManyResult {
+        shared: service.targets.shared(),
+        skipped,
+    })
+}
+
 /// The shared windows and whether Stop is in force — codeg's own state, with
 /// no helper to start, for a window that has just loaded.
 #[tauri::command]
@@ -1393,6 +1475,34 @@ pub async fn computer_resume(app: AppHandle) -> Result<(), AppCommandError> {
 #[tauri::command]
 pub async fn computer_stop_key_status(app: AppHandle) -> Result<StopKeyStatus, AppCommandError> {
     Ok(service(&app)?.stop_key_status())
+}
+
+/// cua-driver as Settings shows it: the release this codeg runs, what the
+/// cache holds, and anything under way.
+#[tauri::command]
+pub async fn computer_driver_info(app: AppHandle) -> Result<DriverInfo, AppCommandError> {
+    Ok(service(&app)?.drivers.info())
+}
+
+/// Fetch the release this codeg runs, and clear older ones. Progress travels
+/// on `computer://driver`.
+#[tauri::command]
+pub async fn computer_driver_install(app: AppHandle) -> Result<DriverInfo, AppCommandError> {
+    service(&app)?
+        .drivers
+        .install()
+        .await
+        .map_err(AppCommandError::configuration_invalid)
+}
+
+/// Remove cua-driver: computer use goes off, the helper stops, every cached
+/// release goes.
+#[tauri::command]
+pub async fn computer_driver_uninstall(
+    app: AppHandle,
+    db: tauri::State<'_, crate::db::AppDatabase>,
+) -> Result<DriverInfo, AppCommandError> {
+    service(&app)?.uninstall_driver(&db.conn).await
 }
 
 /// The strip's page, telling how large it drew itself (logical pixels).

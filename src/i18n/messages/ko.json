@@ -54,6 +54,7 @@
       "skill_packs": "스킬 팩",
       "collaboration": "협업",
       "browser": "브라우저",
+      "computer_use": "컴퓨터 사용",
       "quick_messages": "빠른 메시지",
       "logs": "실행 로그"
     }
@@ -5153,7 +5154,7 @@
     "tooltipStopped": "컴퓨터 사용 · 중지됨",
     "stop": "에이전트 중지",
     "stopTooltip": "{count, plural, other {에이전트가 창 #개를 조작할 수 있음}} · 클릭하면 모두 중지",
-    "stopHint": "모든 에이전트를 즉시 중지합니다. 다시 시작하기 전까지 어떤 창도 읽거나 조작하지 않고, 모든 창의 공유가 끝나며, 진행 중인 작업은 중단됩니다.",
+    "stopHint": "모든 에이전트를 지금 중지합니다. 진행 중인 작업이 중단되고, 다시 시작할 때까지 모든 창의 공유가 끝납니다.",
     "stopped": "중지됨. 다시 시작하기 전까지 어떤 에이전트도 어떤 창도 읽거나 조작할 수 없습니다.",
     "resume": "다시 시작",
     "indicator": {
@@ -5166,7 +5167,7 @@
       "stop": "중지",
       "stopWithKey": "모든 에이전트 즉시 중지 ({key})"
     },
-    "codegGranted": "codeg 자체에 「손쉬운 사용」 또는 「화면 기록」 권한이 부여되어 있어, 모든 에이전트의 셸도 이를 갖게 됩니다. 「시스템 설정 → 개인정보 보호 및 보안」에서 codeg를 제거하세요. 그 전까지 컴퓨터 사용은 꺼져 있습니다.",
+    "codegGranted": "codeg 자체에 「손쉬운 사용」 또는 「화면 기록」 권한이 있어, 에이전트의 셸이 공유 없이 이를 사용할 수 있습니다. 필요하지 않다면 시스템 설정에서 codeg의 권한을 끄세요.",
     "backend": {
       "idle": "시작 안 됨",
       "downloading": "드라이버 다운로드 중…",
@@ -5182,7 +5183,8 @@
       "granted": "허용됨",
       "request": "요청",
       "openSettings": "설정 열기",
-      "why": "이 권한은 codeg가 아니라 codeg-computer-helper에 부여됩니다. codeg에 부여된 권한은 모든 에이전트의 셸이 물려받기 때문입니다. 화면 기록은 스크린샷과 창 제목에, 손쉬운 사용은 창 내용을 읽고 조작하는 데 쓰입니다."
+      "why": "codeg가 아니라 codeg-computer-helper에 권한을 부여하세요. 화면 기록은 스크린샷에, 손쉬운 사용은 창을 읽고 조작하는 데 쓰입니다.",
+      "whyDev": "codeg-computer-helper에 권한을 부여하세요. 개발 빌드는 다시 빌드할 때마다 macOS가 새 프로그램으로 봅니다. 시스템 설정에서 이전 codeg-computer-helper 항목을 제거한 뒤 다시 부여하세요."
     },
     "shared": {
       "title": "{count, plural, =0 {공유 중인 창 없음} other {창 #개 공유 중}}",
@@ -5217,7 +5219,7 @@
     "openSettings": "설정",
     "picker": {
       "title": "에이전트와 창 공유",
-      "description": "공유한 창은 공유를 중지하거나, 창이 닫히거나, 설정한 시간 동안 사용되지 않을 때까지 모든 대화의 에이전트가 읽을 수 있습니다——스크린샷과 내용 모두. 조작을 허용하면 클릭하고 입력할 수도 있습니다.",
+      "description": "모든 대화의 에이전트가 공유한 창을 읽을 수 있고, 조작을 허용한 창에서는 클릭하고 입력할 수 있습니다. 공유를 중지하거나, 창이 닫히거나, 설정한 시간 동안 사용되지 않으면 공유가 끝납니다.",
       "count": "{count, plural, other {창 #개}}",
       "loading": "창을 불러오는 중…",
       "refresh": "새로 고침",
@@ -5226,8 +5228,8 @@
       "untitled": "제목 없는 창",
       "minimized": "최소화됨",
       "notGrantable": {
-        "codeg": "codeg 자체 창",
-        "blocklisted": "공유할 수 없음",
+        "codeg": "codeg의 창",
+        "blocklisted": "공유 금지 목록에 있음",
         "unidentified": "어떤 앱인지 확인할 수 없음"
       },
       "share": "공유",
@@ -5235,11 +5237,54 @@
       "sharedControl": "조작 가능",
       "shareRead": "에이전트가 읽도록 허용",
       "shareControl": "에이전트가 읽고 조작하도록 허용",
-      "stopSharing": "공유 중지"
+      "stopSharing": "공유 중지",
+      "shareAll": "모두 공유",
+      "shareAllRead": "모두 에이전트가 읽도록 허용",
+      "shareAllControl": "모두 에이전트가 읽고 조작하도록 허용",
+      "stopSharingAll": "모두 공유 중지",
+      "skipped": "{count, plural, other {창 #개를 공유하지 못했습니다. 닫혔을 수 있습니다.}}",
+      "unshareable": "{count, plural, other {공유할 수 없는 창 #개}}",
+      "noneShareable": "공유할 수 있는 창이 없습니다.",
+      "codegWhy": "codeg의 창은 절대 공유되지 않습니다. codeg를 조작할 수 있는 에이전트는 자신의 요청을 스스로 승인하거나, 자신에게 창을 더 공유하거나, 중지한 뒤 「다시 시작」을 누를 수 있기 때문입니다. 개발 빌드 같은 다른 codeg도 같은 이유로 제외됩니다. 그쪽에서 이 codeg의 창을 다시 공유할 수 있기 때문입니다."
     },
     "settings": {
-      "title": "컴퓨터 사용",
-      "description": "위에서 컴퓨터 사용을 켰을 때 에이전트가 데스크톱에서 무엇을 볼 수 있는지.",
+      "pageTitle": "컴퓨터 사용",
+      "pageDescription": "공유한 데스크톱 창을 에이전트가 보고 조작할 수 있게 합니다.",
+      "switch": {
+        "label": "컴퓨터 사용",
+        "hint": "에이전트가 앱과 창을 나열하고, 공유한 창을 읽고, 조작을 허용한 창에서 클릭하고 입력할 수 있습니다. 상태 표시줄에서 공유하기 전에는 어떤 창도 읽을 수 없습니다.",
+        "failed": "컴퓨터 사용을 전환하지 못했습니다"
+      },
+      "driver": {
+        "title": "드라이버",
+        "description": "컴퓨터 사용은 오픈 소스 프로그램인 cua-driver를 통해 창을 읽고 조작합니다. codeg는 확인을 거친 릴리스 {version}만 실행하며, 처음 필요할 때 다운로드합니다.",
+        "loading": "확인 중…",
+        "unsupported": "cua-driver에는 이 플랫폼용 빌드가 없습니다.",
+        "installing": "설치 중…",
+        "downloadingOf": "다운로드 중… {done} / {total} MB",
+        "downloadingSoFar": "다운로드 중… {done} MB",
+        "uninstalling": "제거 중…",
+        "installed": "설치됨 · {version}",
+        "outdated": "{installed}이(가) 설치되어 있습니다. 이 codeg는 {version}을(를) 사용합니다.",
+        "notInstalled": "설치되지 않았습니다. 컴퓨터 사용에 처음 필요할 때 다운로드되며, 지금 설치할 수도 있습니다.",
+        "install": "설치",
+        "upgrade": "{version}(으)로 업그레이드",
+        "uninstall": "제거",
+        "installDone": "cua-driver를 설치했습니다",
+        "uninstallDone": "cua-driver를 제거했습니다",
+        "confirmTitle": "cua-driver를 제거할까요?",
+        "confirmDescription": "컴퓨터 사용이 꺼지고 모든 창의 공유가 끝납니다. 다시 켜면 드라이버를 다시 다운로드합니다.",
+        "cancel": "취소"
+      },
+      "permissions": {
+        "title": "권한",
+        "description": "macOS에서는 codeg-computer-helper에 권한을 부여해야 합니다. 시스템 설정에서 부여한 뒤 여기로 돌아오면 자동으로 갱신됩니다.",
+        "off": "컴퓨터 사용을 켜면 여기에서 권한을 확인하고 부여할 수 있습니다.",
+        "accessibilityHint": "창 내용을 읽고 조작합니다.",
+        "screenRecordingHint": "스크린샷을 찍고 창 제목을 읽습니다."
+      },
+      "title": "공유와 중지",
+      "description": "공유한 창이 얼마나 오래 공유되는지, 절대 공유하지 않을 앱, 그리고 모든 에이전트를 멈추는 단축키.",
       "ttl": {
         "label": "사용되지 않는 창의 공유를 중지할 시간",
         "hint": "공유 중인 창을 이 시간 동안 어떤 에이전트도 읽지 않으면 공유가 중지됩니다.",
@@ -5248,12 +5293,12 @@
       },
       "blocklist": {
         "label": "절대 공유할 수 없는 앱",
-        "hint": "한 줄에 하나씩: 번들 식별자(com.example.app), 실행 파일 이름(app.exe) 또는 전체 경로. 기본 목록(암호 관리자, 시스템 암호 입력 창, 시스템 설정)에 추가되며, 기본 목록은 제거할 수 없습니다.",
+        "hint": "한 줄에 하나씩: 번들 식별자(com.example.app), 실행 파일 이름(app.exe) 또는 전체 경로. 기본 목록(암호 관리자, 시스템 암호 입력 창, 시스템 설정)은 항상 적용됩니다.",
         "placeholder": "com.example.app"
       },
       "stopKey": {
         "label": "중지 단축키",
-        "hint": "어느 앱에서든 중지 버튼처럼 모든 에이전트를 즉시 중지합니다. 컴퓨터 사용이 켜져 있는 동안 이 키는 모든 앱에서 codeg가 사용하므로, 다른 곳에서 쓰지 않는 조합을 고르세요.",
+        "hint": "어느 앱에서든 중지 버튼처럼 모든 에이전트를 중지합니다. 컴퓨터 사용이 켜져 있는 동안 이 키는 codeg가 사용하므로, 다른 곳에서 쓰지 않는 조합을 고르세요.",
         "recording": "키를 누르세요…",
         "recordHint": "Ctrl과 다른 보조 키(Alt 또는 Shift)를 누른 채 키를 누르세요. Esc로 취소합니다.",
         "recordHintMac": "⌃ 또는 ⌘과 다른 보조 키를 누른 채 키를 누르세요. Esc로 취소합니다.",
@@ -5270,7 +5315,7 @@
           "metaOffMac": "Windows 키는 포함할 수 없습니다."
         }
       },
-      "boundary": "macOS에서는 손쉬운 사용과 화면 기록 권한이 codeg-computer-helper에 부여되고, 헬퍼는 codeg에만 응답하므로 에이전트의 셸은 이를 사용할 수 없습니다. Windows와 Linux에서는 실행하는 어떤 프로그램이든 원래 화면을 읽을 수 있습니다. 그곳에서 이 설정은 codeg를 통해 에이전트에게 무엇을 넘길지를 정할 뿐, 컴퓨터의 프로그램이 할 수 있는 일을 정하지는 않습니다.",
+      "boundary": "macOS에서는 권한이 codeg-computer-helper에 부여되고 codeg만 사용할 수 있으므로, 에이전트의 셸은 사용할 수 없습니다. Windows와 Linux에는 이런 분리가 없습니다. 그곳에서 이 설정은 codeg를 통해 에이전트에게 무엇을 넘길지를 정할 뿐, 컴퓨터의 프로그램이 할 수 있는 일을 정하지는 않습니다.",
       "save": "저장",
       "saving": "저장 중…",
       "saved": "컴퓨터 사용 설정을 저장했습니다",

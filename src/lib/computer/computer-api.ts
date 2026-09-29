@@ -12,9 +12,11 @@ import type {
   ComputerStatePayload,
   ComputerStatus,
   ComputerToolsSettings,
+  DriverInfo,
   OsPermission,
   PermissionReport,
   PickerWindow,
+  ShareManyResult,
   SharedWindow,
   GrantLevel,
   StopKeyStatus,
@@ -90,6 +92,15 @@ export async function computerShareWindow(
   return getTransport().call("computer_share_window", { targetId, level })
 }
 
+/** Share every window named at one level — each as
+ *  {@link computerShareWindow} would, skipping those that cannot be. */
+export async function computerShareWindows(
+  targetIds: string[],
+  level: GrantLevel
+): Promise<ShareManyResult> {
+  return getTransport().call("computer_share_windows", { targetIds, level })
+}
+
 export async function computerRevokeAll(): Promise<void> {
   return getTransport().call("computer_revoke_all", {})
 }
@@ -117,4 +128,26 @@ export async function computerIndicatorFit(
   height: number
 ): Promise<void> {
   return getTransport().call("computer_indicator_fit", { width, height })
+}
+
+/** cua-driver: the release this codeg runs, what the cache holds, anything
+ *  under way. `computer://driver` carries the changes. */
+export async function computerDriverInfo(): Promise<DriverInfo> {
+  return getTransport().call("computer_driver_info", {})
+}
+
+/** Fetch the release this codeg runs and clear older ones. Answers once it
+ *  is done; the download's progress travels on `computer://driver`. */
+export async function computerDriverInstall(): Promise<DriverInfo> {
+  return getTransport().call(
+    "computer_driver_install",
+    {},
+    { timeoutMs: 600_000 }
+  )
+}
+
+/** Remove cua-driver: computer use is switched off and the helper stopped
+ *  first. */
+export async function computerDriverUninstall(): Promise<DriverInfo> {
+  return getTransport().call("computer_driver_uninstall", {})
 }
