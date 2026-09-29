@@ -972,8 +972,9 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             // is `compaction_update`), and real `failed`/`cancelled` states.
             // The summary rides the synthetic call's `raw_output` under a
             // `codeg.compactionSummary` claim and opens behind the divider's
-            // "Summary" toggle; history dividers stay summary-less because the
-            // transcript already shows it as the continuation turn beneath.
+            // "Summary" toggle; the history divider opens onto the same summary,
+            // folded in by `parsers::claude` from the transcript's continuation
+            // record.
             //
             // (q) The file-change report went native (#1138), and with it the
             // COST half of the "agentFileChangeReport stays out" record in

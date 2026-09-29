@@ -738,7 +738,7 @@ impl CodexParser {
                                         is_promotable_assistant_text(&text)
                                     };
                                     if promotable {
-                                        promotion.push_candidate(record_ordinal, is_user);
+                                        promotion.push_candidate(record_ordinal, is_user, &text);
                                         pending_promotions.push((
                                             is_user,
                                             is_user
@@ -752,6 +752,12 @@ impl CodexParser {
                             }
                         }
                     }
+                }
+                // The compaction's handoff summary is no message — the same
+                // denial the detail parser applies before drawing its divider.
+                "compacted" => {
+                    let summary = codex_compacted_summary(value.get("payload"));
+                    promotion.deny_compaction_summary(summary);
                 }
                 _ => {}
             }
@@ -3270,6 +3276,9 @@ impl CodexParser {
         // assigns unconditionally (newest wins), so it needs its own flag rather
         // than an ordinal comparison.
         let mut title_from_thread_name = false;
+        // Index in `messages` of the compaction divider the next
+        // `item_completed.ContextCompaction` names (see the `compacted` arm).
+        let mut unnamed_compaction_divider: Option<usize> = None;
 
         for line in lines {
             if line.trim().is_empty() {
@@ -3676,6 +3685,21 @@ impl CodexParser {
                                 }
                             }
                             "item_completed" => {
+                                // The compaction the last `compacted` record
+                                // drew a divider for, now under the id codex-acp
+                                // gave the live divider (`compactionId` IS this
+                                // item id): the two are then one event to
+                                // anything that meets both, and the frontend
+                                // keeps one (`dedupeCompactionItems`).
+                                if let Some(item_id) = context_compaction_item_id(payload) {
+                                    if let Some(divider) = unnamed_compaction_divider
+                                        .take()
+                                        .and_then(|at| messages.get_mut(at))
+                                    {
+                                        rename_compaction_divider(divider, item_id);
+                                    }
+                                    continue;
+                                }
                                 if let Some(call) = completed_mcp_call(payload) {
                                     let exec_id = if deferred_scripts.is_empty()
                                         && pending_exec_scripts.len() == 1
@@ -3930,10 +3954,7 @@ impl CodexParser {
                                         let last_assistant = if grouped_reasoning.is_empty()
                                             && pending_reasoning.is_empty()
                                         {
-                                            messages
-                                                .iter_mut()
-                                                .rev()
-                                                .find(|m| matches!(m.role, MessageRole::Assistant))
+                                            messages.iter_mut().rev().find(|m| bills_codex_usage(m))
                                         } else {
                                             None
                                         };
@@ -3973,6 +3994,7 @@ impl CodexParser {
                         // Any other response item closes it — emit the reasoning
                         // gathered so far as one card, here, so it can't be reordered
                         // behind this item.
+                        let before_flush = messages.len();
                         if payload_type != "reasoning" {
                             flush_pending_reasoning(
                                 &mut messages,
@@ -3981,6 +4003,11 @@ impl CodexParser {
                                 pending_reasoning_ts,
                             );
                         }
+                        // The card this record just closed, if any. When the
+                        // record is a compaction's handoff, that card is the
+                        // compaction's own thinking (see the `compacted` arm).
+                        let closed_reasoning_card =
+                            (messages.len() > before_flush).then(|| messages.len() - 1);
 
                         match payload_type {
                             // A sub-agent reporting back. Distinct from the
@@ -4795,13 +4822,15 @@ impl CodexParser {
                                 } else {
                                     None
                                 };
-                                promotion.push_candidate(record_ordinal, is_user);
+                                promotion.push_candidate(record_ordinal, is_user, &text);
                                 pending_promotions.push(PendingPromotedMessage {
                                     insert_at: messages.len(),
                                     is_user,
                                     blocks,
                                     timestamp,
                                     title_candidate,
+                                    closed_reasoning_card: closed_reasoning_card
+                                        .filter(|_| !is_user),
                                 });
                             }
                             "image_generation_call" => {
@@ -4870,6 +4899,74 @@ impl CodexParser {
                         }
                     }
                 }
+                // A context compaction. Live, codex-acp announces it as the
+                // `_meta.contextCompaction` call `<ContextCompactionCard>` draws as
+                // a divider between the work before it and after; this is the
+                // history half, so the reopened conversation keeps the divider
+                // where the live one stood. Without it the compaction left no
+                // mark at all, and the handoff codex wrote for its next model
+                // read as the tail of the reply before it.
+                //
+                // This record draws it rather than `event_msg.context_compacted`
+                // (≤ 0.148) or `item_completed.ContextCompaction` (0.149+): it is
+                // the one every codex version writes, once per compaction (521 of
+                // 521 across the local corpus, 0.104 – 0.156).
+                "compacted" => {
+                    let timestamp = parse_codex_timestamp(&value).unwrap_or_else(Utc::now);
+                    // Whatever the reasoning run still holds came before.
+                    flush_pending_reasoning(
+                        &mut messages,
+                        &mut grouped_reasoning,
+                        &mut pending_reasoning,
+                        pending_reasoning_ts,
+                    );
+                    let summary = codex_compacted_summary(value.get("payload"));
+                    let handoff = promotion
+                        .deny_compaction_summary(summary)
+                        .and_then(|index| pending_promotions.get(index));
+                    // What the compaction's own model call thought before it
+                    // wrote the handoff: codex publishes no item for it, so live
+                    // never shows it, and kept here it read as the last thought
+                    // of the reply before. Only while nothing has landed since,
+                    // which also keeps every other index into `messages` valid.
+                    let compaction_thinking = handoff
+                        .filter(|handoff| handoff.insert_at == messages.len())
+                        .and_then(|handoff| handoff.closed_reasoning_card)
+                        .filter(|&card| {
+                            card + 1 == messages.len()
+                                && matches!(
+                                    messages[card].content.as_slice(),
+                                    [ContentBlock::Thinking { .. }]
+                                )
+                        });
+                    if let Some(card) = compaction_thinking.and_then(|_| messages.pop()) {
+                        // Its round was already billed to it; hand that to the
+                        // reply it would have been shown with.
+                        if let Some(spent) = card.usage {
+                            match messages.iter_mut().rev().find(|m| bills_codex_usage(m)) {
+                                Some(owner) => {
+                                    owner.usage = Some(match owner.usage {
+                                        Some(ref existing) => codex_usage_add(existing, &spent),
+                                        None => spent,
+                                    });
+                                }
+                                None => {
+                                    pending_round_usage = Some(match pending_round_usage {
+                                        Some(ref pending) => codex_usage_add(pending, &spent),
+                                        None => spent,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                    messages.push(codex_compaction_divider(
+                        format!("compaction-{}", messages.len()),
+                        format!("codex-compaction-{record_ordinal}"),
+                        summary.map(str::to_string),
+                        timestamp,
+                    ));
+                    unnamed_compaction_divider = Some(messages.len() - 1);
+                }
                 _ => {}
             }
         }
@@ -4890,10 +4987,7 @@ impl CodexParser {
         // and never spoke again). Bill it here rather than discard it.
         if let (Some(pending), Some(last_msg)) = (
             pending_round_usage.take(),
-            messages
-                .iter_mut()
-                .rev()
-                .find(|m| matches!(m.role, MessageRole::Assistant)),
+            messages.iter_mut().rev().find(|m| bills_codex_usage(m)),
         ) {
             last_msg.usage = Some(match last_msg.usage {
                 Some(ref existing) => codex_usage_add(existing, &pending),
@@ -5332,7 +5426,11 @@ fn reconcile_turn_usage(turns: &mut [MessageTurn], recorded: &TurnUsage) {
     let target = turns
         .iter()
         .rposition(|t| t.usage.is_some())
-        .or_else(|| turns.iter().rposition(|t| matches!(t.role, TurnRole::Assistant)));
+        .or_else(|| {
+            turns.iter().rposition(|t| {
+                matches!(t.role, TurnRole::Assistant) && !is_codex_compaction_divider(&t.blocks)
+            })
+        });
     if let Some(turn) = target.and_then(|i| turns.get_mut(i)) {
         turn.usage = Some(match turn.usage {
             Some(ref existing) => codex_usage_add(existing, &missing),
@@ -6029,8 +6127,12 @@ struct PromotionCandidate {
     task_seg: usize,
     ctx_seg: usize,
     is_user: bool,
-    /// Set by the compaction-adjacency rule after the record was accepted.
+    /// Set once the record turns out to be a compaction's handoff summary —
+    /// see [`ResponseItemPromotion::deny_compaction_summary`].
     denied: bool,
+    /// [`compaction_summary_key`] of an assistant record's text, so a
+    /// compaction can recognize its own handoff among the candidates.
+    summary_key: Option<u64>,
 }
 
 /// A held-back `response_item.message`, kept parallel to
@@ -6047,6 +6149,10 @@ struct PendingPromotedMessage {
     /// Title this record would claim if it turns out to be the opening prompt.
     /// `None` for assistants, and for a user whose text is not title-worthy.
     title_candidate: Option<String>,
+    /// Index in `messages` of the reasoning card this assistant record's arrival
+    /// closed. Read only if the record turns out to be a compaction's handoff,
+    /// whose reasoning that card then is.
+    closed_reasoning_card: Option<usize>,
 }
 
 /// Decides which `response_item.payload.type == "message"` records may be
@@ -6094,8 +6200,16 @@ struct ResponseItemPromotion {
     saw_task_started: bool,
     candidates: Vec<PromotionCandidate>,
     /// Index of the assistant candidate that is still a compaction-summary
-    /// suspect — i.e. nothing but `token_count` has been seen since it.
+    /// suspect — i.e. nothing but the accounting of the response that wrote it
+    /// has been seen since.
     compaction_watch: Option<usize>,
+    /// The suspect the `compacted` record just denied by adjacency, held for
+    /// [`Self::deny_compaction_summary`] to report.
+    adjacent_summary: Option<usize>,
+    /// First candidate registered since the previous `compacted` record: a
+    /// compaction's handoff is always written after the compaction before it,
+    /// so nothing earlier can be one.
+    summary_floor: usize,
 }
 
 impl ResponseItemPromotion {
@@ -6107,6 +6221,8 @@ impl ResponseItemPromotion {
             saw_task_started: false,
             candidates: Vec::new(),
             compaction_watch: None,
+            adjacent_summary: None,
+            summary_floor: 0,
         }
     }
 
@@ -6117,16 +6233,23 @@ impl ResponseItemPromotion {
 
         // Compaction adjacency. codex writes the pre-compaction handoff summary
         // as an assistant message immediately followed by the `compacted`
-        // record, with at most a `token_count` between them. Denying by
-        // adjacency rather than "anywhere in this segment" matters: a rollout
-        // with no turn markers collapses into ONE segment, so a segment-wide
-        // rule would let a single compaction erase an entire imported prefix.
+        // record, with nothing between them but the accounting of the response
+        // that wrote it: a `token_count`, and since 0.152 a `token_usage_record`
+        // before it (111 of 503 real handoffs). Denying by adjacency rather than
+        // "anywhere in this segment" matters: a rollout with no turn markers
+        // collapses into ONE segment, so a segment-wide rule would let a single
+        // compaction erase an entire imported prefix. The handoff's own text is
+        // the second, independent identification — see
+        // [`Self::deny_compaction_summary`].
         match (msg_type, payload_type) {
             // Transparent — keeps the suspect under watch.
-            ("event_msg", "token_count") => {}
+            ("event_msg", "token_count") | ("token_usage_record", _) => {}
             ("compacted", _) | ("event_msg", "context_compacted") => {
                 if let Some(index) = self.compaction_watch.take() {
                     self.candidates[index].denied = true;
+                    if msg_type == "compacted" {
+                        self.adjacent_summary = Some(index);
+                    }
                 }
             }
             _ => self.compaction_watch = None,
@@ -6181,9 +6304,10 @@ impl ResponseItemPromotion {
     }
 
     /// Register a record the caller has already accepted (role allowlisted,
-    /// deny-lists passed, blocks non-empty). Returns its candidate index, which
-    /// is also its index into the caller's own parallel payload vector.
-    fn push_candidate(&mut self, ordinal: u64, is_user: bool) -> usize {
+    /// deny-lists passed, blocks non-empty). `text` is its first text block.
+    /// Returns its candidate index, which is also its index into the caller's
+    /// own parallel payload vector.
+    fn push_candidate(&mut self, ordinal: u64, is_user: bool, text: &str) -> usize {
         let index = self.candidates.len();
         self.candidates.push(PromotionCandidate {
             ordinal,
@@ -6191,11 +6315,42 @@ impl ResponseItemPromotion {
             ctx_seg: self.ctx_segments.len() - 1,
             is_user,
             denied: false,
+            summary_key: (!is_user).then(|| compaction_summary_key(text)),
         });
         if !is_user {
             self.compaction_watch = Some(index);
         }
         index
+    }
+
+    /// At a `compacted` record (after [`Self::note_record`] saw it): deny the
+    /// handoff summary this compaction wrote and return its candidate index.
+    ///
+    /// The handoff is text codex wrote for its next model, not a reply: live,
+    /// it is never streamed, and promoted it read as the tail of the answer
+    /// before it. `summary` is the text the record restates, and the handoff is
+    /// only ever the candidate carrying exactly that text — the one adjacency
+    /// picked, or, when a record codex has since wedged between the two broke
+    /// adjacency (the way `token_usage_record` once did), the latest one written
+    /// since the previous compaction. With nothing restated (an empty
+    /// `message`) there is nothing to confirm a candidate by, so `None`;
+    /// adjacency has still denied its suspect by then, exactly as before. `None`
+    /// too for a rollout that wrote no handoff at all (older codex kept the
+    /// summary in the `compacted` record alone).
+    fn deny_compaction_summary(&mut self, summary: Option<&str>) -> Option<usize> {
+        let adjacent = self.adjacent_summary.take();
+        let floor = std::mem::replace(&mut self.summary_floor, self.candidates.len());
+        let key = compaction_summary_key(summary?);
+        let index = adjacent
+            .filter(|&index| self.candidates[index].summary_key == Some(key))
+            .or_else(|| {
+                self.candidates[floor..]
+                    .iter()
+                    .rposition(|candidate| candidate.summary_key == Some(key))
+                    .map(|offset| floor + offset)
+            })?;
+        self.candidates[index].denied = true;
+        Some(index)
     }
 
     /// Which candidates survive, as a mask parallel to `candidates` (and to the
@@ -6232,6 +6387,132 @@ impl ResponseItemPromotion {
             .filter(|(candidate, kept)| **kept && candidate.is_user)
             .map(|(candidate, _)| candidate.ordinal)
             .min()
+    }
+}
+
+/// What codex puts in front of a compaction's handoff summary when it opens the
+/// compacted history with it (`SUMMARY_PREFIX`, its `compact/summary_prefix.md`),
+/// and restates in the rollout's `compacted` record: words for the next model,
+/// not part of the summary. Byte-identical, then a newline, in all 521
+/// compactions of the local corpus (codex 0.104 – 0.156).
+const CODEX_COMPACTION_SUMMARY_PREFIX: &str = concat!(
+    "Another language model started to solve this problem and produced a summary of its ",
+    "thinking process. You also have access to the state of the tools that were used by that ",
+    "language model. Use this to build on the work that has already been done and avoid ",
+    "duplicating work. Here is the summary produced by the other language model, use the ",
+    "information in this summary to assist with your own analysis:",
+);
+
+/// The handoff summary a `compacted` record restates, without codex's framing;
+/// `None` when it restates none.
+fn codex_compacted_summary(payload: Option<&serde_json::Value>) -> Option<&str> {
+    let message = payload?.get("message")?.as_str()?;
+    let summary = message
+        .strip_prefix(CODEX_COMPACTION_SUMMARY_PREFIX)
+        .unwrap_or(message)
+        .trim();
+    (!summary.is_empty()).then_some(summary)
+}
+
+/// Identity of a handoff summary's text, whitespace at its ends aside — what a
+/// `compacted` record's restatement is matched against.
+fn compaction_summary_key(text: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    text.trim().hash(&mut hasher);
+    hasher.finish()
+}
+
+/// Tool name of the compaction divider, spelled as every parser that draws one
+/// spells it (`parsers::claude::compaction_blocks` among them).
+const CODEX_COMPACTION_TOOL_NAME: &str = "context_compaction";
+
+/// The divider for a compaction, as the provider-neutral tool pair every
+/// agent's compaction renders through: a ToolUse tagged `_meta.contextCompaction`
+/// — which `<ContextCompactionCard>` matches on alone — and its paired
+/// ToolResult, without which the card reads as a compaction still running.
+///
+/// The marker is the bare `{version: 1}` codex-acp sends live, so the label
+/// reads the same reopened; codex records no token counts or trigger for it.
+/// The summary, when the rollout kept one, opens behind the divider's
+/// "Summary" toggle — see [`super::attach_compaction_summary`].
+fn codex_compaction_divider(
+    id: String,
+    tool_use_id: String,
+    summary: Option<String>,
+    timestamp: DateTime<Utc>,
+) -> UnifiedMessage {
+    let mut content = vec![
+        ContentBlock::ToolUse {
+            tool_use_id: Some(tool_use_id.clone()),
+            tool_name: CODEX_COMPACTION_TOOL_NAME.to_string(),
+            input_preview: None,
+            status: None,
+            meta: Some(serde_json::json!({ "contextCompaction": { "version": 1 } })),
+        },
+        ContentBlock::ToolResult {
+            tool_use_id: Some(tool_use_id),
+            output_preview: None,
+            is_error: false,
+            agent_stats: None,
+            images: Vec::new(),
+        },
+    ];
+    if let Some(summary) = summary {
+        super::attach_compaction_summary(&mut content, summary);
+    }
+    UnifiedMessage {
+        id,
+        role: MessageRole::Assistant,
+        content,
+        timestamp,
+        // Bookkeeping, not a reply: it never carries spend (see
+        // `bills_codex_usage`), and there is no model message to fork at.
+        usage: None,
+        duration_ms: None,
+        model: None,
+        completed_at: Some(timestamp),
+        agent_message_id: None,
+    }
+}
+
+/// Whether `blocks` are a compaction divider drawn by [`codex_compaction_divider`].
+fn is_codex_compaction_divider(blocks: &[ContentBlock]) -> bool {
+    matches!(
+        blocks.first(),
+        Some(ContentBlock::ToolUse { tool_name, .. }) if tool_name == CODEX_COMPACTION_TOOL_NAME
+    )
+}
+
+/// Whether `message` may carry a model round's spend: any assistant message
+/// but a compaction divider, which the frontend lifts out of the reply it sits
+/// in — spend billed to it would drop out of every reply's footer. (The same
+/// goes for `reconcile_turn_usage`'s last-resort target.)
+fn bills_codex_usage(message: &UnifiedMessage) -> bool {
+    matches!(message.role, MessageRole::Assistant) && !is_codex_compaction_divider(&message.content)
+}
+
+/// The id of the app-server item a `ContextCompaction` `item_completed`
+/// announces (codex 0.149+), or `None` for any other record.
+fn context_compaction_item_id(payload: &serde_json::Value) -> Option<&str> {
+    let item = payload.get("item")?;
+    if item.get("type").and_then(serde_json::Value::as_str) != Some("ContextCompaction") {
+        return None;
+    }
+    item.get("id")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+}
+
+/// Re-address a divider — its call and the paired result alike — by `id`.
+fn rename_compaction_divider(divider: &mut UnifiedMessage, id: &str) {
+    for block in &mut divider.content {
+        if let ContentBlock::ToolUse { tool_use_id, .. }
+        | ContentBlock::ToolResult { tool_use_id, .. } = block
+        {
+            *tool_use_id = Some(id.to_string());
+        }
     }
 }
 
@@ -7426,6 +7707,9 @@ mod tests {
     use super::resolve_codex_home_dir_from;
     use super::trim_subagent_replay_prefix;
     use super::RolloutFileName;
+    use super::codex_compacted_summary;
+    use super::CODEX_COMPACTION_SUMMARY_PREFIX;
+    use super::CODEX_COMPACTION_TOOL_NAME;
     use super::CODEX_PLAN_APPROVAL_PROMPT;
     use super::CODEX_PLAN_APPROVED_OUTPUT;
     use super::CODEX_SUBAGENT_LAUNCH_KEY;
@@ -14892,10 +15176,332 @@ mod tests {
             vec![
                 ("user", Some("before compaction".into())),
                 ("assistant", Some("real reply before".into())),
+                // The compaction divider, between the two replies.
+                ("assistant", None),
                 ("assistant", Some("real reply after".into())),
             ],
             "only the handoff summary is suppressed"
         );
+        // This record restates nothing, so nothing confirms what adjacency
+        // denied as the summary: the divider opens onto none.
+        assert_eq!(
+            compaction_dividers(&detail),
+            vec![("codex-compaction-6".to_string(), None)]
+        );
+    }
+
+    /// Every compaction divider as `(id, summary)`, in transcript order —
+    /// `summary` only where the call carries the claim that its result is one.
+    fn compaction_dividers(
+        detail: &crate::models::ConversationDetail,
+    ) -> Vec<(String, Option<String>)> {
+        detail
+            .turns
+            .iter()
+            .filter_map(|turn| match turn.blocks.as_slice() {
+                [ContentBlock::ToolUse {
+                    tool_use_id: Some(id),
+                    tool_name,
+                    meta,
+                    ..
+                }, ContentBlock::ToolResult {
+                    tool_use_id: Some(result_id),
+                    output_preview,
+                    ..
+                }] if tool_name == CODEX_COMPACTION_TOOL_NAME => {
+                    assert_eq!(id, result_id, "the pair must stay paired");
+                    assert_eq!(
+                        meta.as_ref().and_then(|m| m.get("contextCompaction")),
+                        Some(&serde_json::json!({"version": 1})),
+                        "the marker codex-acp sends live"
+                    );
+                    assert!(turn.usage.is_none(), "a divider never carries spend");
+                    let claimed = meta
+                        .as_ref()
+                        .and_then(|m| m.get(crate::parsers::COMPACTION_SUMMARY_META_KEY))
+                        == Some(&serde_json::json!(true));
+                    Some((id.clone(), output_preview.clone().filter(|_| claimed)))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn jsonl(records: &[serde_json::Value]) -> String {
+        records.iter().map(|record| format!("{record}\n")).collect()
+    }
+
+    fn record(ts: &str, kind: &str, payload: serde_json::Value) -> serde_json::Value {
+        serde_json::json!({ "timestamp": ts, "type": kind, "payload": payload })
+    }
+
+    fn assistant_item(ts: &str, text: &str) -> serde_json::Value {
+        record(
+            ts,
+            "response_item",
+            serde_json::json!({"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": text}]}),
+        )
+    }
+
+    fn token_count(ts: &str, input: u64, output: u64) -> serde_json::Value {
+        record(
+            ts,
+            "event_msg",
+            serde_json::json!({"type": "token_count", "info": {"total_token_usage": {"input_tokens": input, "cached_input_tokens": 0, "output_tokens": output}}}),
+        )
+    }
+
+    fn compacted(ts: &str, summary: &str) -> serde_json::Value {
+        record(
+            ts,
+            "compacted",
+            serde_json::json!({"message": format!("{CODEX_COMPACTION_SUMMARY_PREFIX}\n{summary}"), "replacement_history": []}),
+        )
+    }
+
+    const HANDOFF: &str = "## Task and status\nUser asked to clean /private/tmp.\n\n## Next\n- Confirm before deleting.";
+
+    /// A `/compact` as codex 0.152+ writes it: its own turn, whose handoff the
+    /// compaction's model call wrote as an assistant `response_item` — with
+    /// that call's `token_usage_record` now between it and `compacted`. That
+    /// record broke the adjacency rule, the handoff was promoted, and the
+    /// reopened conversation showed it glued to the reply before, with no
+    /// divider anywhere: the one live draws was missing.
+    #[test]
+    fn a_compaction_draws_the_live_divider_and_opens_onto_its_handoff() {
+        let content = jsonl(&[
+            record("2026-09-29T00:00:00Z", "session_meta", serde_json::json!({"id": "cmp-2", "cwd": "/tmp/demo", "cli_version": "0.156.1"})),
+            record("2026-09-29T00:00:01Z", "event_msg", serde_json::json!({"type": "task_started", "turn_id": "t1"})),
+            record("2026-09-29T00:00:02Z", "response_item", serde_json::json!({"type": "message", "role": "user", "content": [{"type": "input_text", "text": "look at /private/tmp"}]})),
+            assistant_item("2026-09-29T00:00:03Z", "It holds 40 stale folders."),
+            token_count("2026-09-29T00:00:04Z", 1000, 100),
+            record("2026-09-29T00:00:05Z", "event_msg", serde_json::json!({"type": "task_complete", "turn_id": "t1"})),
+            record("2026-09-29T00:01:00Z", "event_msg", serde_json::json!({"type": "task_started", "turn_id": "t2"})),
+            token_count("2026-09-29T00:01:01Z", 1000, 100),
+            assistant_item("2026-09-29T00:01:40Z", HANDOFF),
+            record("2026-09-29T00:01:40.100Z", "token_usage_record", serde_json::json!({"thread_id": "cmp-2", "turn_id": "t2"})),
+            token_count("2026-09-29T00:01:40.200Z", 2400, 180),
+            compacted("2026-09-29T00:01:40.300Z", HANDOFF),
+            record("2026-09-29T00:01:40.400Z", "event_msg", serde_json::json!({"type": "thread_settings_applied"})),
+            token_count("2026-09-29T00:01:40.500Z", 2400, 180),
+            record("2026-09-29T00:01:40.600Z", "event_msg", serde_json::json!({"type": "item_completed", "turn_id": "t2", "item": {"type": "ContextCompaction", "id": "01a0eaed-d00a-7480"}})),
+            record("2026-09-29T00:01:41Z", "event_msg", serde_json::json!({"type": "task_complete", "turn_id": "t2"})),
+        ]);
+        let detail = parse_rollout("compaction-handoff", &content, "cmp-2");
+
+        assert_eq!(
+            turn_texts(&detail),
+            vec![
+                ("user", Some("look at /private/tmp".into())),
+                ("assistant", Some("It holds 40 stale folders.".into())),
+                ("assistant", None),
+            ],
+            "the handoff is no reply; the divider stands where live drew it"
+        );
+        // Named by the item codex-acp names the live divider by, and opening
+        // onto the handoff without the framing codex addressed to its model.
+        assert_eq!(
+            compaction_dividers(&detail),
+            vec![("01a0eaed-d00a-7480".to_string(), Some(HANDOFF.to_string()))]
+        );
+        // Every token the rollout reported is still billed to a reply.
+        assert_eq!(turn_usage_total(&detail), 2580);
+        // The sidebar entry counts what the conversation renders: the prompt
+        // and the reply, not the handoff.
+        assert_eq!(summary_of("compaction-handoff-sum", &content).message_count, 2);
+    }
+
+    /// An automatic compaction mid-turn. The compaction's own model call thinks
+    /// before writing its handoff, and codex publishes no item for either, so
+    /// live shows neither — only the divider, between the work before it and
+    /// the work after. History has to agree: the thinking and the handoff read
+    /// as the tail of the reply otherwise.
+    #[test]
+    fn a_mid_turn_compaction_keeps_its_own_thinking_out_of_the_reply() {
+        let content = jsonl(&[
+            record("2026-09-29T00:00:00Z", "session_meta", serde_json::json!({"id": "cmp-3", "cwd": "/tmp/demo", "cli_version": "0.153.4"})),
+            record("2026-09-29T00:00:01Z", "event_msg", serde_json::json!({"type": "task_started", "turn_id": "t1"})),
+            record("2026-09-29T00:00:02Z", "response_item", serde_json::json!({"type": "message", "role": "user", "content": [{"type": "input_text", "text": "fix the race"}]})),
+            record("2026-09-29T00:00:03Z", "event_msg", serde_json::json!({"type": "item_completed", "item": {"type": "Reasoning", "id": "rs_1", "summary_text": ["**Looking at the lock**"]}})),
+            record("2026-09-29T00:00:03.100Z", "response_item", serde_json::json!({"type": "reasoning", "id": "rs_1", "summary": [{"type": "summary_text", "text": "**Looking at the lock**"}]})),
+            record("2026-09-29T00:00:04Z", "response_item", serde_json::json!({"type": "function_call", "name": "shell", "call_id": "c1", "arguments": "{\"command\":[\"rg\",\"lock\"]}"})),
+            record("2026-09-29T00:00:05Z", "response_item", serde_json::json!({"type": "function_call_output", "call_id": "c1", "output": "src/lock.rs:1"})),
+            record("2026-09-29T00:00:05.100Z", "token_usage_record", serde_json::json!({"turn_id": "t1"})),
+            token_count("2026-09-29T00:00:05.200Z", 1000, 100),
+            // The compaction's model call: its thinking, then its handoff.
+            record("2026-09-29T00:00:30Z", "response_item", serde_json::json!({"type": "reasoning", "id": "rs_c", "summary": [{"type": "summary_text", "text": "**Preparing concise handoff summary**"}]})),
+            assistant_item("2026-09-29T00:00:40Z", HANDOFF),
+            record("2026-09-29T00:00:40.100Z", "token_usage_record", serde_json::json!({"turn_id": "t1"})),
+            token_count("2026-09-29T00:00:40.200Z", 2400, 180),
+            compacted("2026-09-29T00:00:40.300Z", HANDOFF),
+            record("2026-09-29T00:00:40.400Z", "world_state", serde_json::json!({"full": true})),
+            record("2026-09-29T00:00:40.500Z", "turn_context", serde_json::json!({"turn_id": "t1", "model": "gpt-6"})),
+            record("2026-09-29T00:00:40.700Z", "event_msg", serde_json::json!({"type": "item_completed", "item": {"type": "ContextCompaction", "id": "cmp-item"}})),
+            record("2026-09-29T00:00:50Z", "event_msg", serde_json::json!({"type": "item_completed", "item": {"type": "Reasoning", "id": "rs_2", "summary_text": ["**Resuming the fix**"]}})),
+            record("2026-09-29T00:00:50.100Z", "response_item", serde_json::json!({"type": "reasoning", "id": "rs_2", "summary": [{"type": "summary_text", "text": "**Resuming the fix**"}]})),
+            assistant_item("2026-09-29T00:01:00Z", "Fixed the race."),
+            token_count("2026-09-29T00:01:00.100Z", 3500, 260),
+            record("2026-09-29T00:01:01Z", "event_msg", serde_json::json!({"type": "task_complete", "turn_id": "t1"})),
+        ]);
+        let detail = parse_rollout("compaction-midturn", &content, "cmp-3");
+
+        let thinking: Vec<&str> = detail
+            .turns
+            .iter()
+            .flat_map(|turn| &turn.blocks)
+            .filter_map(|block| match block {
+                ContentBlock::Thinking { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            thinking,
+            vec!["**Looking at the lock**", "**Resuming the fix**"],
+            "the compaction's own thinking is not the reply's"
+        );
+        assert_eq!(
+            compaction_dividers(&detail),
+            vec![("cmp-item".to_string(), Some(HANDOFF.to_string()))]
+        );
+        // The divider sits between the work before the compaction and after it.
+        let divider_at = detail
+            .turns
+            .iter()
+            .position(|turn| {
+                matches!(turn.blocks.first(), Some(ContentBlock::ToolUse { tool_name, .. })
+                    if tool_name == CODEX_COMPACTION_TOOL_NAME)
+            })
+            .expect("a divider");
+        let texts = turn_texts(&detail);
+        assert!(detail.turns[..divider_at].iter().any(|turn| turn
+            .blocks
+            .iter()
+            .any(|block| matches!(block, ContentBlock::ToolUse { tool_use_id: Some(id), .. } if id == "c1"))));
+        assert_eq!(texts.last(), Some(&("assistant", Some("Fixed the race.".into()))));
+        assert!(!texts.iter().any(|(_, text)| text.as_deref() == Some(HANDOFF)));
+        // The thinking card that went away had the compaction's round billed
+        // to it; that spend stays in the conversation, on the reply before.
+        assert_eq!(turn_usage_total(&detail), 3760);
+        let before_divider: u64 = detail.turns[..divider_at]
+            .iter()
+            .filter_map(|turn| turn.usage.as_ref())
+            .map(|usage| usage.input_tokens + usage.output_tokens)
+            .sum();
+        assert_eq!(before_divider, 2580, "both rounds before the divider stay there");
+    }
+
+    /// Codex before ~0.137 wrote no handoff record at all: the summary exists
+    /// only as the `compacted` record's restatement, and the divider opens onto
+    /// that. Named by position, since there is no app-server item either.
+    #[test]
+    fn an_older_compaction_opens_onto_the_summary_its_record_restates() {
+        let content = jsonl(&[
+            record("2026-05-31T10:00:00Z", "session_meta", serde_json::json!({"id": "cmp-4", "cwd": "/tmp/demo", "cli_version": "0.133.0"})),
+            record("2026-05-31T10:00:01Z", "event_msg", serde_json::json!({"type": "user_message", "message": "run the tests"})),
+            record("2026-05-31T10:00:02Z", "event_msg", serde_json::json!({"type": "agent_message", "message": "Running them."})),
+            record("2026-05-31T10:00:03Z", "response_item", serde_json::json!({"type": "function_call", "name": "shell", "call_id": "c1", "arguments": "{\"command\":[\"make\",\"test\"]}"})),
+            record("2026-05-31T10:00:04Z", "response_item", serde_json::json!({"type": "function_call_output", "call_id": "c1", "output": "ok"})),
+            compacted("2026-05-31T10:00:05Z", HANDOFF),
+            record("2026-05-31T10:00:06Z", "event_msg", serde_json::json!({"type": "context_compacted"})),
+            record("2026-05-31T10:00:07Z", "event_msg", serde_json::json!({"type": "agent_message", "message": "All green."})),
+        ]);
+        let detail = parse_rollout("compaction-legacy", &content, "cmp-4");
+
+        assert_eq!(
+            compaction_dividers(&detail),
+            vec![("codex-compaction-6".to_string(), Some(HANDOFF.to_string()))]
+        );
+        let texts = turn_texts(&detail);
+        assert_eq!(texts.first(), Some(&("user", Some("run the tests".into()))));
+        assert_eq!(texts.last(), Some(&("assistant", Some("All green.".into()))));
+    }
+
+    /// The text fallback only looks at what was written since the previous
+    /// compaction: a reply from before it cannot be this compaction's handoff,
+    /// however its text reads.
+    #[test]
+    fn the_text_fallback_never_reaches_past_the_previous_compaction() {
+        let call = |ts: &str, id: &str| {
+            [
+                record(ts, "response_item", serde_json::json!({"type": "function_call", "name": "shell", "call_id": id, "arguments": "{\"command\":[\"ls\"]}"})),
+                record(ts, "response_item", serde_json::json!({"type": "function_call_output", "call_id": id, "output": "ok"})),
+            ]
+        };
+        let mut records = vec![
+            record("2026-09-29T00:00:00Z", "session_meta", serde_json::json!({"id": "cmp-6", "cwd": "/tmp/demo"})),
+            record("2026-09-29T00:00:01Z", "event_msg", serde_json::json!({"type": "task_started", "turn_id": "t1"})),
+            record("2026-09-29T00:00:02Z", "response_item", serde_json::json!({"type": "message", "role": "user", "content": [{"type": "input_text", "text": "q1"}]})),
+            // A real reply that happens to read exactly like a later summary.
+            assistant_item("2026-09-29T00:00:03Z", HANDOFF),
+        ];
+        records.extend(call("2026-09-29T00:00:04Z", "c1"));
+        records.push(compacted("2026-09-29T00:00:05Z", "An earlier summary."));
+        records.extend([
+            record("2026-09-29T00:01:00Z", "event_msg", serde_json::json!({"type": "task_started", "turn_id": "t2"})),
+            record("2026-09-29T00:01:01Z", "response_item", serde_json::json!({"type": "message", "role": "user", "content": [{"type": "input_text", "text": "q2"}]})),
+        ]);
+        records.extend(call("2026-09-29T00:01:02Z", "c2"));
+        // A compaction that wrote no handoff of its own.
+        records.push(compacted("2026-09-29T00:01:03Z", HANDOFF));
+        let content = jsonl(&records);
+        let detail = parse_rollout("compaction-floor", &content, "cmp-6");
+
+        assert!(
+            turn_texts(&detail).contains(&("assistant", Some(HANDOFF.to_string()))),
+            "the reply before the first compaction stays"
+        );
+        assert_eq!(compaction_dividers(&detail).len(), 2);
+    }
+
+    /// The framing comes off exactly as codex writes it (copied from a real
+    /// `compacted` record), and a record with nothing restated has no summary.
+    #[test]
+    fn a_compacted_record_restates_the_handoff_under_codex_framing() {
+        let payload = serde_json::json!({"message": "Another language model started to solve this problem and produced a summary of its thinking process. You also have access to the state of the tools that were used by that language model. Use this to build on the work that has already been done and avoid duplicating work. Here is the summary produced by the other language model, use the information in this summary to assist with your own analysis:\n## Handoff Summary\n\n- Done."});
+        assert_eq!(
+            codex_compacted_summary(Some(&payload)),
+            Some("## Handoff Summary\n\n- Done.")
+        );
+        let empty = serde_json::json!({"message": "", "replacement_history": []});
+        assert_eq!(codex_compacted_summary(Some(&empty)), None);
+        assert_eq!(codex_compacted_summary(Some(&serde_json::json!({}))), None);
+    }
+
+    /// Adjacency is not the only thing standing between the handoff and the
+    /// transcript. A record codex has not written yet, wedged between the two
+    /// the way `token_usage_record` once was, must not leak it again: the text
+    /// the `compacted` record restates names the handoff by itself.
+    #[test]
+    fn the_handoff_is_recognized_by_its_text_when_adjacency_breaks() {
+        let content = jsonl(&[
+            record("2026-09-29T00:00:00Z", "session_meta", serde_json::json!({"id": "cmp-5", "cwd": "/tmp/demo"})),
+            record("2026-09-29T00:00:01Z", "event_msg", serde_json::json!({"type": "task_started", "turn_id": "t1"})),
+            record("2026-09-29T00:00:02Z", "response_item", serde_json::json!({"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]})),
+            assistant_item("2026-09-29T00:00:03Z", "Hello."),
+            record("2026-09-29T00:00:04Z", "event_msg", serde_json::json!({"type": "task_complete", "turn_id": "t1"})),
+            record("2026-09-29T00:01:00Z", "event_msg", serde_json::json!({"type": "task_started", "turn_id": "t2"})),
+            assistant_item("2026-09-29T00:01:40Z", HANDOFF),
+            record("2026-09-29T00:01:40.100Z", "some_future_accounting", serde_json::json!({"turn_id": "t2"})),
+            compacted("2026-09-29T00:01:40.300Z", HANDOFF),
+        ]);
+        let detail = parse_rollout("compaction-text", &content, "cmp-5");
+
+        assert_eq!(
+            turn_texts(&detail),
+            vec![
+                ("user", Some("hi".into())),
+                ("assistant", Some("Hello.".into())),
+                ("assistant", None),
+            ]
+        );
+        assert_eq!(
+            compaction_dividers(&detail)
+                .into_iter()
+                .map(|(_, summary)| summary)
+                .collect::<Vec<_>>(),
+            vec![Some(HANDOFF.to_string())]
+        );
+        assert_eq!(summary_of("compaction-text-sum", &content).message_count, 2);
     }
 
     #[test]

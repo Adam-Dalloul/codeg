@@ -66,6 +66,7 @@ use crate::acp::types::{
 use crate::logging::throttle::LeadingEdgeThrottle;
 use crate::models::agent::AgentType;
 use crate::network::proxy;
+use crate::parsers::COMPACTION_SUMMARY_META_KEY;
 use crate::web::event_bridge::{emit_with_state, emit_with_state_gated, EventEmitter};
 
 /// Injected into the agent process only when the user has opted in — see
@@ -16290,14 +16291,6 @@ fn session_compaction_event(dispatch: &Dispatch) -> Option<AcpEvent> {
 /// Title the synthetic compaction call carries, matching the one the grok
 /// bridge and both adapters' legacy calls use.
 const CONTEXT_COMPACTION_TITLE: &str = "Context compaction";
-
-/// `_meta` key claiming that a compaction call's `raw_output` IS its retained
-/// summary. Only [`session_compaction_event`] sets it, so it marks exactly the
-/// calls translated from the ACP compaction lifecycle. Codeg-namespaced (like
-/// `codeg.delegation`) rather than nested in `contextCompaction`, whose members
-/// are the adapters' reserved vocabulary. The frontend twin is
-/// `COMPACTION_SUMMARY_META_KEY` in `src/lib/context-compaction.ts`.
-const COMPACTION_SUMMARY_META_KEY: &str = "codeg.compactionSummary";
 
 /// Flatten an ACP summary payload — a `ContentBlock` or an array of them — to
 /// its text. Non-text blocks (an image in a summary would be novel) are
