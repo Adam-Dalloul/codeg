@@ -14,7 +14,7 @@ const api = vi.hoisted(() => ({
   getComputerToolsSettings: vi.fn(),
   computerStatus: vi.fn<() => Promise<ComputerStatus>>(),
   computerSharedState: vi.fn(
-    async (): Promise<ComputerStatePayload> => ({ shared: [], paused: false })
+    async (): Promise<ComputerStatePayload> => ({ shared: [] })
   ),
   computerRequestPermission: vi.fn(),
   computerOpenPermissionSettings: vi.fn(async () => {}),
@@ -23,7 +23,6 @@ const api = vi.hoisted(() => ({
   computerShareWindows: vi.fn(),
   computerRevokeAll: vi.fn(),
   computerStop: vi.fn(async () => {}),
-  computerResume: vi.fn(async () => {}),
   computerListShareableWindows: vi.fn(),
   computerWindowThumbnail: vi.fn(),
   computerStopKeyStatus: vi.fn(async (): Promise<StopKeyStatus> => ({})),
@@ -64,7 +63,6 @@ function status(overrides: Partial<ComputerStatus> = {}): ComputerStatus {
       selfResponsible: true,
     },
     shared: [],
-    paused: false,
     ...overrides,
   }
 }
@@ -92,8 +90,18 @@ beforeEach(() => {
   })
   api.computerStatus.mockResolvedValue(status())
   api.computerStopKeyStatus.mockResolvedValue({})
-  api.computerSharedState.mockResolvedValue({ shared: [], paused: false })
+  api.computerSharedState.mockResolvedValue({ shared: [] })
 })
+
+const controlled = {
+  targetId: "w4",
+  appName: "TextEdit",
+  appKey: "com.apple.TextEdit",
+  title: "notes.txt",
+  level: "control" as const,
+  grantedAt: 1,
+  lastUsedAt: 1,
+}
 
 describe("StatusBarComputer", () => {
   it("is not there while computer use is off", async () => {
@@ -110,14 +118,14 @@ describe("StatusBarComputer", () => {
     expect(container).toBeEmptyDOMElement()
   })
 
-  /** A missing permission is named, with one way to grant it: the helper
-   * asks macOS — which lists it in System Settings — and, still missing,
-   * System Settings opens at that pane, where the switch is. */
+  /** A missing permission is named, with one way to grant it: a helper
+   * asks macOS for that one — which lists it in System Settings — and, with
+   * no dialog of the system's to lead there, System Settings opens at that
+   * pane, where the switch is. */
   it("asks for a missing permission, then opens its pane", async () => {
     api.computerRequestPermission.mockResolvedValue({
-      required: true,
-      accessibility: true,
-      screenRecording: false,
+      report: { required: true, accessibility: true, screenRecording: false },
+      prompted: false,
     })
     mount()
     fireEvent.click(await screen.findByRole("button", { name: "Computer use" }))
@@ -138,6 +146,25 @@ describe("StatusBarComputer", () => {
     await waitFor(() => expect(api.computerRevealHelper).toHaveBeenCalled())
   })
 
+  /** When macOS puts up its own dialog — which has a button to the pane —
+   * System Settings is not opened as well: one thing at a time. */
+  it("leaves it to the system's own dialog when there is one", async () => {
+    api.computerRequestPermission.mockResolvedValue({
+      report: { required: true, accessibility: true, screenRecording: false },
+      prompted: true,
+    })
+    mount()
+    fireEvent.click(await screen.findByRole("button", { name: "Computer use" }))
+    fireEvent.click(await screen.findByRole("button", { name: "Grant…" }))
+    await waitFor(() =>
+      expect(api.computerRequestPermission).toHaveBeenCalledWith(
+        "screenRecording"
+      )
+    )
+    await waitFor(() => expect(api.computerStatus).toHaveBeenCalledTimes(2))
+    expect(api.computerOpenPermissionSettings).not.toHaveBeenCalled()
+  })
+
   /** One request at a time: a double click neither asks twice nor opens
    * System Settings twice. */
   it("asks once however often the button is clicked", async () => {
@@ -154,7 +181,14 @@ describe("StatusBarComputer", () => {
     fireEvent.click(grant)
     await waitFor(() => expect(grant).toBeDisabled())
     await act(async () =>
-      answer({ required: true, accessibility: true, screenRecording: false })
+      answer({
+        report: {
+          required: true,
+          accessibility: true,
+          screenRecording: false,
+        },
+        prompted: false,
+      })
     )
     expect(api.computerRequestPermission).toHaveBeenCalledTimes(1)
     await waitFor(() =>
@@ -165,9 +199,8 @@ describe("StatusBarComputer", () => {
   /** Granted by the request itself — nothing more to open. */
   it("opens nothing once the request has done it", async () => {
     api.computerRequestPermission.mockResolvedValue({
-      required: true,
-      accessibility: true,
-      screenRecording: true,
+      report: { required: true, accessibility: true, screenRecording: true },
+      prompted: false,
     })
     mount()
     fireEvent.click(await screen.findByRole("button", { name: "Computer use" }))
@@ -290,69 +323,37 @@ describe("StatusBarComputer", () => {
     )
   })
 
-  /** While a window is shared for control, Stop is beside the glyph, one
-   * click away, without opening anything. */
-  it("puts Stop beside the glyph while agents can act", async () => {
+  /** Stop sits in the popover, once: nothing beside the glyph, however much
+   * is shared. Pressed, it ends every sharing and cuts off what agents are
+   * doing. */
+  it("stops sharing from the popover, and only there", async () => {
+    api.computerStatus.mockResolvedValue(status({ shared: [controlled] }))
     mount()
     await screen.findByRole("button", { name: "Computer use" })
-    expect(screen.queryByRole("button", { name: "Stop agents" })).toBeNull()
-    act(() =>
-      setComputerShared([
-        {
-          targetId: "w4",
-          appName: "TextEdit",
-          appKey: "com.apple.TextEdit",
-          title: "notes.txt",
-          level: "control",
-          grantedAt: 1,
-          lastUsedAt: 1,
-        },
-      ])
+    act(() => setComputerShared([controlled]))
+    expect(screen.queryByRole("button", { name: /^Stop sharing/ })).toBeNull()
+    fireEvent.click(screen.getByRole("button", { name: "Computer use" }))
+    fireEvent.click(
+      await screen.findByRole("button", { name: /^Stop sharing/ })
     )
-    fireEvent.click(await screen.findByRole("button", { name: "Stop agents" }))
     await waitFor(() => expect(api.computerStop).toHaveBeenCalled())
   })
 
-  /** A window that loads after something was shared for control learns of
-   * it at once, and shows Stop without anyone opening the popover. */
-  it("shows Stop in a window that loaded after the sharing", async () => {
-    api.computerSharedState.mockResolvedValue({
-      shared: [
-        {
-          targetId: "w4",
-          appName: "TextEdit",
-          appKey: "com.apple.TextEdit",
-          title: "notes.txt",
-          level: "control",
-          grantedAt: 1,
-          lastUsedAt: 1,
-        },
-      ],
-      paused: false,
-    })
+  /** A window that loads after something was shared learns of it at once:
+   * the glyph says so without anyone opening the popover. */
+  it("knows of the sharing in a window that loaded after it", async () => {
+    api.computerSharedState.mockResolvedValue({ shared: [controlled] })
     mount()
-    expect(
-      await screen.findByRole("button", { name: "Stop agents" })
-    ).toBeInTheDocument()
+    const trigger = await screen.findByRole("button", { name: "Computer use" })
+    await waitFor(() => expect(trigger.title).toContain("1 window shared"))
     expect(api.computerStatus).not.toHaveBeenCalled()
   })
 
-  /** Where the stop shortcut is in force, both Stop buttons name it — and
+  /** Where the stop shortcut is in force, the Stop button names it — and
    * only then: a shortcut the OS would not take is not offered. */
   it("names the stop shortcut where it is in force", async () => {
-    const controlled = {
-      targetId: "w4",
-      appName: "TextEdit",
-      appKey: "com.apple.TextEdit",
-      title: "notes.txt",
-      level: "control" as const,
-      grantedAt: 1,
-      lastUsedAt: 1,
-    }
-    api.computerSharedState.mockResolvedValue({
-      shared: [controlled],
-      paused: false,
-    })
+    api.computerSharedState.mockResolvedValue({ shared: [controlled] })
+    api.computerStatus.mockResolvedValue(status({ shared: [controlled] }))
     // Asked only once the listener is in place, so no change can fall
     // between the answer and the first broadcast.
     let listening: boolean | undefined
@@ -361,29 +362,38 @@ describe("StatusBarComputer", () => {
       return { failed: "Control+Command+Escape", detail: "taken" }
     })
     mount()
-    const stop = await screen.findByRole("button", { name: "Stop agents" })
+    fireEvent.click(await screen.findByRole("button", { name: "Computer use" }))
+    const stop = await screen.findByRole("button", { name: /^Stop sharing/ })
     await waitFor(() => expect(listening).toBe(true))
-    expect(stop.title).not.toContain("⌃⌘Esc")
+    expect(stop).not.toHaveTextContent("⌃⌘Esc")
     await waitFor(() =>
       expect(handlers.get("computer://stop-key")).toBeDefined()
     )
     act(() =>
       handlers.get("computer://stop-key")!({ active: "Control+Command+Escape" })
     )
-    await waitFor(() => expect(stop.title).toContain("⌃⌘Esc"))
+    await waitFor(() => expect(stop).toHaveTextContent("⌃⌘Esc"))
   })
 
-  /** Stopped, the panel says so and offers only Resume — sharing waits. */
-  it("offers Resume while stopped, and nothing to share", async () => {
-    api.computerStatus.mockResolvedValue(status({ paused: true }))
+  /** Stopped is not a state: once every sharing has ended, there is nothing
+   * to resume, and sharing a window is right there as the first time. */
+  it("leaves nothing to resume after a Stop", async () => {
+    api.computerStatus.mockResolvedValue(status({ shared: [controlled] }))
     mount()
     fireEvent.click(await screen.findByRole("button", { name: "Computer use" }))
-    await screen.findByText(/No agent can read or act/)
+    fireEvent.click(
+      await screen.findByRole("button", { name: /^Stop sharing/ })
+    )
+    await waitFor(() => expect(api.computerStop).toHaveBeenCalled())
+    // What the backend's state event would carry.
+    act(() => setComputerShared([]))
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: /^Stop sharing/ })).toBeNull()
+    )
+    expect(screen.queryByRole("button", { name: "Resume" })).toBeNull()
     expect(
       screen.getByRole("button", { name: "Share a window…" })
-    ).toBeDisabled()
-    fireEvent.click(screen.getByRole("button", { name: "Resume" }))
-    await waitFor(() => expect(api.computerResume).toHaveBeenCalled())
+    ).toBeEnabled()
   })
 
   /** The switch flipped on elsewhere while the first read was in flight: the

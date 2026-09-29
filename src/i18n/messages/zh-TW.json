@@ -5151,21 +5151,16 @@
     "preview": "預覽",
     "refresh": "重新整理",
     "tooltipShared": "電腦操作 · {count, plural, other {已分享 # 個視窗}}",
-    "tooltipStopped": "電腦操作 · 已停止",
-    "stop": "停止智慧體",
-    "stopTooltip": "{count, plural, other {智慧體可操作 # 個視窗}} · 點擊全部停止",
-    "stopHint": "立即停止所有智慧體：中斷進行中的操作，所有視窗停止分享，直到你恢復。",
-    "stopped": "已停止。在你恢復之前，任何智慧體都不能讀取或操作任何視窗。",
-    "resume": "恢復",
+    "stop": "停止分享",
+    "stopHint": "立即停止分享所有視窗，並中斷智慧體正在進行的操作。之後需要時，再重新分享視窗即可。",
     "indicator": {
       "actOne": "智慧體可操作「{app}」",
       "actMany": "智慧體可操作 {count, plural, other {# 個視窗}}",
       "readOne": "智慧體可查看「{app}」",
       "readMany": "智慧體可查看 {count, plural, other {# 個視窗}}",
       "recent": "{app}：{action}",
-      "stopped": "已停止——請在 codeg 的「電腦操作」面板中恢復",
-      "stop": "停止",
-      "stopWithKey": "立即停止所有智慧體（{key}）"
+      "stop": "停止分享",
+      "stopWithKey": "停止分享所有視窗（{key}）"
     },
     "codegGranted": "codeg 本身擁有「輔助使用」或「螢幕錄製」權限，智慧體的命令列可以不經分享直接使用它。如非必要，請在系統設定中為 codeg 關閉。",
     "backend": {
@@ -5191,8 +5186,7 @@
     "shared": {
       "title": "{count, plural, =0 {未分享視窗} other {已分享 # 個視窗}}",
       "empty": "智慧體能列出你的視窗，但在你分享之前讀不到任何一個。",
-      "stop": "停止",
-      "stopAll": "全部停止"
+      "stop": "停止"
     },
     "level": {
       "read": "可讀取",
@@ -5248,7 +5242,7 @@
       "skipped": "{count, plural, other {有 # 個視窗未能分享，可能已經關閉。}}",
       "unshareable": "{count, plural, other {# 個視窗不能分享}}",
       "noneShareable": "這些視窗都不能分享。",
-      "codegWhy": "codeg 的視窗永遠不能分享：能操作 codeg 的智慧體可以替自己批准請求、給自己分享更多視窗，或在你停止後點「恢復」。其他 codeg 執行個體的視窗也一樣。"
+      "codegWhy": "codeg 的視窗永遠不能分享：能操作 codeg 的智慧體可以替自己批准請求，或給自己分享更多視窗。其他 codeg 執行個體的視窗也一樣。"
     },
     "settings": {
       "pageTitle": "電腦操作",
@@ -5287,7 +5281,7 @@
         "screenRecordingHint": "截圖和讀取視窗標題。"
       },
       "title": "分享與停止",
-      "description": "分享的視窗多久後停止分享、哪些應用程式永不分享，以及隨時停止所有智慧體的快捷鍵。",
+      "description": "分享的視窗多久後停止分享、哪些應用程式永不分享，以及隨時停止所有分享的快捷鍵。",
       "ttl": {
         "label": "視窗閒置多久後停止分享",
         "hint": "分享的視窗在這麼長時間內沒有被任何智慧體讀取，就會停止分享。",
@@ -5296,12 +5290,11 @@
       },
       "blocklist": {
         "label": "永不分享的應用程式",
-        "hint": "這些應用程式的視窗不能分享給智慧體。不需要的預設項目可以移除（鎖定的除外），也可以按 bundle 識別碼（com.example.app）、執行檔名稱（app.exe）或完整路徑新增應用程式。",
+        "hint": "這些應用程式的視窗不能分享給智慧體。不需要的預設項目可以移除，也可以按 bundle 識別碼（com.example.app）、執行檔名稱（app.exe）或完整路徑新增應用程式。",
         "placeholder": "com.example.app",
         "add": "新增",
         "remove": "移除 {name}",
         "restore": "恢復預設",
-        "locked": "它保護系統和電腦操作本身，不能移除。",
         "custom": "你新增的",
         "duplicate": "已經在名單中了。",
         "removedCount": "{count, plural, other {已移除 # 個預設應用程式。}}",
@@ -5314,16 +5307,16 @@
       },
       "stopKey": {
         "label": "停止快速鍵",
-        "hint": "在任何應用程式中按下即可停止所有智慧體，效果同「停止」按鈕。電腦操作開啟時這組按鍵歸 codeg 使用，請選一組別處不用的組合。",
+        "hint": "在任何應用程式中按下即可停止分享所有視窗，效果同「停止分享」按鈕。電腦操作開啟時這組按鍵歸 codeg 使用，請選一組別處不用的組合。",
         "recording": "請按下按鍵…",
         "recordHint": "按住 Ctrl 和另一個修飾鍵（Alt 或 Shift），再按一個鍵。按 Esc 取消。",
         "recordHintMac": "按住 ⌃ 或 ⌘ 和另一個修飾鍵，再按一個鍵。按 Esc 取消。",
         "off": "已關閉",
         "useDefault": "預設",
         "turnOff": "關閉",
-        "statusActive": "已生效：在任何地方按下即可停止所有智慧體。",
+        "statusActive": "已生效：在任何地方按下即可停止分享所有視窗。",
         "statusIdle": "開啟電腦操作後生效。",
-        "statusOff": "已關閉：只能用「停止」按鈕停止智慧體。",
+        "statusOff": "已關閉：只能用「停止分享」按鈕停止分享。",
         "statusFailed": "未生效：這組按鍵可能已被其他應用程式佔用，請換一組。",
         "problem": {
           "unsupportedKey": "不能使用這個鍵。請選擇字母、數字、F1–F12、Esc 或標點鍵。",

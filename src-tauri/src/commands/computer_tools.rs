@@ -21,7 +21,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::acp::computer_tools::{ComputerToolsConfig, ComputerToolsRuntimeConfig};
 use crate::app_error::AppCommandError;
-use crate::computer::agent::{default_blocklist, is_removable_default, DefaultBlockView};
+use crate::computer::agent::{default_blocklist, is_default_key, DefaultBlockView};
 use crate::computer::keys::Platform;
 use crate::computer::stop_shortcut::StopShortcut;
 use crate::db::service::app_metadata_service;
@@ -139,14 +139,13 @@ fn normalize_blocklist(entries: Vec<String>) -> Vec<String> {
     out
 }
 
-/// The keys of default entries that may be taken off the list, once each, in
-/// the order given. A locked entry, or a key no entry has, is dropped: there
-/// is nothing it could take off.
+/// The keys of default entries taken off the list, once each, in the order
+/// given. A key no entry has is dropped: there is nothing it could take off.
 fn normalize_removed(keys: Vec<String>) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for key in keys {
         let key = key.trim().to_string();
-        if is_removable_default(&key) && !out.contains(&key) {
+        if is_default_key(&key) && !out.contains(&key) {
             out.push(key);
         }
     }
@@ -456,8 +455,8 @@ mod tests {
         .into_runtime_config();
         assert_eq!(cfg.grant_ttl, None);
         assert_eq!(cfg.blocklist, vec!["com.example.Vault", "keepass.exe"]);
-        // Only a default that may be taken off is, and once.
-        assert_eq!(cfg.blocklist_removed, vec!["1password"]);
+        // Only a default is taken off, and once.
+        assert_eq!(cfg.blocklist_removed, vec!["1password", "system-settings"]);
         assert_eq!(cfg.stop_shortcut, None);
 
         let cfg = ComputerToolsSettings::default().into_runtime_config();
@@ -592,15 +591,16 @@ mod tests {
         assert_eq!(parsed.stop_shortcut, default_stop_shortcut());
     }
 
-    /// A stored removal of a locked entry, or of one no release knows, reads
-    /// as nothing taken off.
+    /// A stored removal of an entry no release knows reads as nothing taken
+    /// off; every default one — System Settings included — is the person's
+    /// to take off, and reads back once.
     #[tokio::test]
-    async fn a_stored_removal_of_a_locked_entry_reads_as_none() {
+    async fn a_stored_removal_reads_back_the_defaults_it_names() {
         let db = crate::db::test_helpers::fresh_in_memory_db().await;
         app_metadata_service::upsert_value(
             &db.conn,
             KEY_COMPUTER_TOOLS_BLOCKLIST_REMOVED,
-            r#"["system-settings","credential-prompts","gone","keepassxc"]"#,
+            r#"["system-settings","credential-prompts","gone","keepassxc","system-settings"]"#,
         )
         .await
         .unwrap();
@@ -608,7 +608,7 @@ mod tests {
             load_computer_tools_settings(&db.conn)
                 .await
                 .blocklist_removed,
-            vec!["keepassxc"]
+            vec!["system-settings", "credential-prompts", "keepassxc"]
         );
     }
 }

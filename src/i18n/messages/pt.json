@@ -5151,21 +5151,16 @@
     "preview": "Prévia",
     "refresh": "Atualizar",
     "tooltipShared": "Uso do computador · {count, plural, one {# janela compartilhada} other {# janelas compartilhadas}}",
-    "tooltipStopped": "Uso do computador · parado",
-    "stop": "Parar agentes",
-    "stopTooltip": "{count, plural, one {Os agentes podem agir em # janela} other {Os agentes podem agir em # janelas}} · clique para parar todos",
-    "stopHint": "Para todos os agentes agora: o que estiver em andamento é interrompido e todas as janelas deixam de ser compartilhadas, até você retomar.",
-    "stopped": "Parado. Nenhum agente pode ler nem agir em nenhuma janela até você retomar.",
-    "resume": "Retomar",
+    "stop": "Parar de compartilhar",
+    "stopHint": "Para de compartilhar todas as janelas agora e interrompe o que os agentes estiverem fazendo. Compartilhe uma janela de novo quando quiser que continuem.",
     "indicator": {
       "actOne": "Os agentes podem agir em {app}",
       "actMany": "Os agentes podem agir em {count, plural, one {# janela} other {# janelas}}",
       "readOne": "Os agentes podem ver {app}",
       "readMany": "Os agentes podem ver {count, plural, one {# janela} other {# janelas}}",
       "recent": "{action} em {app}",
-      "stopped": "Parado — retome no painel Uso do computador do codeg",
-      "stop": "Parar",
-      "stopWithKey": "Parar todos os agentes de uma vez ({key})"
+      "stop": "Parar de compartilhar",
+      "stopWithKey": "Parar de compartilhar todas as janelas ({key})"
     },
     "codegGranted": "O próprio codeg tem Acessibilidade ou Gravação de Tela, então o shell dos agentes pode usá-la sem que nada seja compartilhado. Se não precisar, desative-a para o codeg nos Ajustes do Sistema.",
     "backend": {
@@ -5191,8 +5186,7 @@
     "shared": {
       "title": "{count, plural, =0 {Nenhuma janela compartilhada} one {# janela compartilhada} other {# janelas compartilhadas}}",
       "empty": "Os agentes podem listar suas janelas, mas não ler nenhuma até você compartilhar uma.",
-      "stop": "Parar",
-      "stopAll": "Parar todas"
+      "stop": "Parar"
     },
     "level": {
       "read": "Pode ler",
@@ -5248,7 +5242,7 @@
       "skipped": "{count, plural, one {# janela não pôde ser compartilhada; talvez tenha sido fechada.} other {# janelas não puderam ser compartilhadas; talvez tenham sido fechadas.}}",
       "unshareable": "{count, plural, one {# janela não pode ser compartilhada} other {# janelas não podem ser compartilhadas}}",
       "noneShareable": "Nenhuma destas janelas pode ser compartilhada.",
-      "codegWhy": "As janelas do codeg nunca são compartilhadas: um agente que pudesse operar o codeg poderia aprovar os próprios pedidos, compartilhar mais janelas consigo mesmo ou apertar Retomar depois que você apertar Parar. O mesmo vale para outras cópias do codeg."
+      "codegWhy": "As janelas do codeg nunca são compartilhadas: um agente que pudesse operar o codeg poderia aprovar os próprios pedidos ou compartilhar mais janelas consigo mesmo. O mesmo vale para outras cópias do codeg."
     },
     "settings": {
       "pageTitle": "Uso do computador",
@@ -5287,7 +5281,7 @@
         "screenRecordingHint": "Fazer capturas e ler os títulos das janelas."
       },
       "title": "Compartilhar e parar",
-      "description": "Por quanto tempo uma janela continua compartilhada, quais apps nunca são compartilhados e o atalho que para todos os agentes.",
+      "description": "Por quanto tempo uma janela continua compartilhada, quais apps nunca são compartilhados e o atalho que para todo o compartilhamento de uma vez.",
       "ttl": {
         "label": "Parar de compartilhar janelas sem uso após",
         "hint": "Uma janela compartilhada deixa de ser compartilhada quando nenhum agente a lê por esse tempo.",
@@ -5296,12 +5290,11 @@
       },
       "blocklist": {
         "label": "Aplicativos nunca compartilhados",
-        "hint": "As janelas deles não podem ser compartilhadas com agentes. Remova os padrões de que não precisa (os bloqueados ficam) ou adicione um aplicativo por identificador de pacote (com.example.app), nome de executável (app.exe) ou caminho completo.",
+        "hint": "As janelas deles não podem ser compartilhadas com agentes. Remova os padrões de que não precisa ou adicione um aplicativo por identificador de pacote (com.example.app), nome de executável (app.exe) ou caminho completo.",
         "placeholder": "com.example.app",
         "add": "Adicionar",
         "remove": "Remover {name}",
         "restore": "Restaurar padrão",
-        "locked": "Protege o sistema e o próprio uso do computador, por isso não pode ser removido.",
         "custom": "Adicionado por você",
         "duplicate": "Já está na lista.",
         "removedCount": "{count, plural, one {# aplicativo padrão removido.} other {# aplicativos padrão removidos.}}",
@@ -5314,16 +5307,16 @@
       },
       "stopKey": {
         "label": "Atalho para parar",
-        "hint": "Para todos os agentes a partir de qualquer app, como o botão Parar. Enquanto o uso do computador estiver ligado, estas teclas pertencem ao codeg, então escolha teclas que você não usa em outro lugar.",
+        "hint": "Para de compartilhar todas as janelas a partir de qualquer app, como o botão Parar de compartilhar. Enquanto o uso do computador estiver ligado, estas teclas pertencem ao codeg, então escolha teclas que você não usa em outro lugar.",
         "recording": "Pressione as teclas…",
         "recordHint": "Segure Ctrl e outro modificador (Alt ou Shift) e pressione uma tecla. Esc cancela.",
         "recordHintMac": "Segure ⌃ ou ⌘ e outro modificador e pressione uma tecla. Esc cancela.",
         "off": "Desligado",
         "useDefault": "Padrão",
         "turnOff": "Desligar",
-        "statusActive": "Ativo: pressione em qualquer lugar para parar todos os agentes.",
+        "statusActive": "Ativo: pressione em qualquer lugar para parar de compartilhar todas as janelas.",
         "statusIdle": "Vale enquanto o uso do computador estiver ligado.",
-        "statusOff": "Desligado: só os botões Parar param os agentes.",
+        "statusOff": "Desligado: só os botões Parar de compartilhar param o compartilhamento.",
         "statusFailed": "Inativo: provavelmente outro app usa estas teclas. Escolha outras.",
         "problem": {
           "unsupportedKey": "Essa tecla não pode ser usada. Escolha uma letra, um dígito, F1–F12, Esc ou uma tecla de pontuação.",

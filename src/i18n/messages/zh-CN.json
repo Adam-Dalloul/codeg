@@ -5151,21 +5151,16 @@
     "preview": "预览",
     "refresh": "刷新",
     "tooltipShared": "电脑操作 · {count, plural, other {已共享 # 个窗口}}",
-    "tooltipStopped": "电脑操作 · 已停止",
-    "stop": "停止智能体",
-    "stopTooltip": "{count, plural, other {智能体可操作 # 个窗口}} · 点击全部停止",
-    "stopHint": "立即停止所有智能体：中断正在进行的操作，所有窗口停止共享，直到你恢复。",
-    "stopped": "已停止。在你恢复之前，任何智能体都不能读取或操作任何窗口。",
-    "resume": "恢复",
+    "stop": "停止共享",
+    "stopHint": "立即停止共享所有窗口，并中断智能体正在进行的操作。之后需要时，再重新共享窗口即可。",
     "indicator": {
       "actOne": "智能体可操作「{app}」",
       "actMany": "智能体可操作 {count, plural, other {# 个窗口}}",
       "readOne": "智能体可查看「{app}」",
       "readMany": "智能体可查看 {count, plural, other {# 个窗口}}",
       "recent": "{app}：{action}",
-      "stopped": "已停止——请在 codeg 的「电脑操作」面板中恢复",
-      "stop": "停止",
-      "stopWithKey": "立即停止所有智能体（{key}）"
+      "stop": "停止共享",
+      "stopWithKey": "停止共享所有窗口（{key}）"
     },
     "codegGranted": "codeg 本身拥有「辅助功能」或「屏幕录制」权限，智能体的命令行可以不经共享直接使用它。如非必要，请在系统设置中为 codeg 关闭。",
     "backend": {
@@ -5191,8 +5186,7 @@
     "shared": {
       "title": "{count, plural, =0 {未共享窗口} other {已共享 # 个窗口}}",
       "empty": "智能体能列出你的窗口，但在你共享之前读不到任何一个。",
-      "stop": "停止",
-      "stopAll": "全部停止"
+      "stop": "停止"
     },
     "level": {
       "read": "可读取",
@@ -5248,7 +5242,7 @@
       "skipped": "{count, plural, other {有 # 个窗口没能共享，可能已经关闭。}}",
       "unshareable": "{count, plural, other {# 个窗口不能共享}}",
       "noneShareable": "这些窗口都不能共享。",
-      "codegWhy": "codeg 的窗口永远不能共享：能操作 codeg 的智能体可以替自己批准请求、给自己共享更多窗口，或在你停止后点「恢复」。其他 codeg 实例的窗口也一样。"
+      "codegWhy": "codeg 的窗口永远不能共享：能操作 codeg 的智能体可以替自己批准请求，或给自己共享更多窗口。其他 codeg 实例的窗口也一样。"
     },
     "settings": {
       "pageTitle": "电脑操作",
@@ -5287,7 +5281,7 @@
         "screenRecordingHint": "截图和读取窗口标题。"
       },
       "title": "共享与停止",
-      "description": "共享的窗口多久后停止共享、哪些应用永不共享，以及随时停止所有智能体的快捷键。",
+      "description": "共享的窗口多久后停止共享、哪些应用永不共享，以及随时停止所有共享的快捷键。",
       "ttl": {
         "label": "窗口闲置多久后停止共享",
         "hint": "共享的窗口在这么长时间内没有被任何智能体读取，就会停止共享。",
@@ -5296,12 +5290,11 @@
       },
       "blocklist": {
         "label": "永不共享的应用",
-        "hint": "这些应用的窗口不能共享给智能体。不需要的默认项可以移除（锁定的除外），也可以按 bundle 标识（com.example.app）、可执行文件名（app.exe）或完整路径添加应用。",
+        "hint": "这些应用的窗口不能共享给智能体。不需要的默认项可以移除，也可以按 bundle 标识（com.example.app）、可执行文件名（app.exe）或完整路径添加应用。",
         "placeholder": "com.example.app",
         "add": "添加",
         "remove": "移除 {name}",
         "restore": "恢复默认",
-        "locked": "它保护系统和电脑操作本身，不能移除。",
         "custom": "你添加的",
         "duplicate": "已经在名单里了。",
         "removedCount": "{count, plural, other {已移除 # 个默认应用。}}",
@@ -5314,16 +5307,16 @@
       },
       "stopKey": {
         "label": "停止快捷键",
-        "hint": "在任何应用中按下即可停止所有智能体，效果同「停止」按钮。电脑操作开启时这组按键归 codeg 使用，请选一组别处不用的组合。",
+        "hint": "在任何应用中按下即可停止共享所有窗口，效果同「停止共享」按钮。电脑操作开启时这组按键归 codeg 使用，请选一组别处不用的组合。",
         "recording": "请按下按键…",
         "recordHint": "按住 Ctrl 和另一个修饰键（Alt 或 Shift），再按一个键。按 Esc 取消。",
         "recordHintMac": "按住 ⌃ 或 ⌘ 和另一个修饰键，再按一个键。按 Esc 取消。",
         "off": "已关闭",
         "useDefault": "默认",
         "turnOff": "关闭",
-        "statusActive": "已生效：在任何地方按下即可停止所有智能体。",
+        "statusActive": "已生效：在任何地方按下即可停止共享所有窗口。",
         "statusIdle": "开启电脑操作后生效。",
-        "statusOff": "已关闭：只能用「停止」按钮停止智能体。",
+        "statusOff": "已关闭：只能用「停止共享」按钮停止共享。",
         "statusFailed": "未生效：这组按键可能已被其他应用占用，请换一组。",
         "problem": {
           "unsupportedKey": "不能使用这个键。请选择字母、数字、F1–F12、Esc 或标点键。",

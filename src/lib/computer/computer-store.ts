@@ -47,9 +47,6 @@ export interface ComputerStoreState {
    *  Until then it is empty for want of news, not because nothing is shared
    *  (a grant made before this window loaded is not in it). */
   sharedKnown: boolean
-  /** The person pressed Stop and has not resumed. Travels with `shared`:
-   *  both come from `computer://state` and from the status fetch. */
-  paused: boolean
   backend: BackendStatus | null
   activity: readonly ComputerActivityLine[]
 }
@@ -59,7 +56,6 @@ const ACTIVITY_LIMIT = 50
 let state: ComputerStoreState = {
   shared: [],
   sharedKnown: false,
-  paused: false,
   backend: null,
   activity: [],
 }
@@ -74,15 +70,9 @@ function emit(next: ComputerStoreState) {
   for (const listener of listeners) listener()
 }
 
-/** The shared windows — and, when the source says, whether Stop is in
- *  force. A share or unshare answers with the list alone; Stop does not move
- *  with it. */
-export function setComputerShared(
-  shared: readonly SharedWindow[],
-  paused?: boolean
-): void {
+export function setComputerShared(shared: readonly SharedWindow[]): void {
   sharedVersion += 1
-  emit({ ...state, shared, sharedKnown: true, paused: paused ?? state.paused })
+  emit({ ...state, shared, sharedKnown: true })
 }
 
 export function setComputerBackend(backend: BackendStatus): void {
@@ -104,10 +94,9 @@ export function computerStoreMark(): ComputerStoreMark {
  *  `mark` was taken. */
 export function setComputerSharedSince(
   shared: readonly SharedWindow[],
-  mark: ComputerStoreMark,
-  paused?: boolean
+  mark: ComputerStoreMark
 ): void {
-  if (sharedVersion === mark.shared) setComputerShared(shared, paused)
+  if (sharedVersion === mark.shared) setComputerShared(shared)
 }
 
 /** A fetched backend status, unless something newer has landed since `mark`
@@ -142,7 +131,7 @@ function ensureStarted() {
   if (started || !computerAvailable()) return
   started = true
   void subscribe<ComputerStatePayload>(COMPUTER_STATE_EVENT, (p) =>
-    setComputerShared(p.shared, p.paused)
+    setComputerShared(p.shared)
   ).catch(() => {})
   void subscribe<ComputerActivityPayload>(
     COMPUTER_ACTIVITY_EVENT,
@@ -173,7 +162,6 @@ export function resetComputerStoreForTest(): void {
   state = {
     shared: [],
     sharedKnown: false,
-    paused: false,
     backend: null,
     activity: [],
   }

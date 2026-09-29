@@ -33,7 +33,7 @@ pub mod session;
 pub mod tree;
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -61,15 +61,13 @@ pub const EXIT_UNANCHORED: i32 = 3;
 /// module note.
 pub const PEER_REQUIREMENT: Option<&str> = option_env!("CODEG_COMPUTER_PEER_REQUIREMENT");
 
-/// The calls that raise a system permission request. Supplied by the helper
-/// binary, so that nothing codeg itself links can ever raise one in codeg's
-/// name.
-pub trait PermissionPrompts: Send + Sync + 'static {
-    fn request(&self, permission: OsPermission);
-}
-
 /// The helper's whole life: check the peer, serve it, exit when it goes away.
-pub fn run(prompts: impl PermissionPrompts) -> i32 {
+///
+/// (Asking macOS for a permission is not part of it: codeg starts a helper
+/// of its own for each request — see `REQUEST_PERMISSION_ARG` — and the
+/// binary answers that before it gets here, so nothing codeg itself links
+/// can raise a request in codeg's name.)
+pub fn run() -> i32 {
     let _ = tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
         .with_ansi(false)
@@ -101,21 +99,17 @@ pub fn run(prompts: impl PermissionPrompts) -> i32 {
         move || channel.raw.into_tokio(),
         channel.peer,
         channel.guard,
-        Arc::new(prompts),
     )
 }
 
 /// Build the helper's runtime, open the channel on it (tokio's socket wrapper
 /// registers with its reactor) and serve — then leave without waiting on
-/// whatever is still running there. A request may be parked in
-/// `spawn_blocking` on a permission prompt nobody will answer, and dropping a
-/// runtime waits for its blocking tasks; codeg is gone, and the process exits
+/// whatever is still running there: codeg is gone, and the process exits
 /// when this returns.
 fn serve_on_own_runtime(
     open: impl FnOnce() -> std::io::Result<Halves>,
     peer: PeerCheck,
     guard: Option<PeerGuard>,
-    prompts: Arc<dyn PermissionPrompts>,
 ) -> i32 {
     let runtime = match tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
@@ -136,7 +130,7 @@ fn serve_on_own_runtime(
                 return EXIT_FAILED;
             }
         };
-        serve(reader, writer, peer, guard, prompts).await
+        serve(reader, writer, peer, guard).await
     });
     runtime.shutdown_background();
     code
@@ -324,18 +318,32 @@ fn same_file(a: i32, b: i32) -> bool {
 #[cfg(any(test, target_os = "macos"))]
 const RECHECK_MISSING: Duration = Duration::from_secs(2);
 
+/// The running driver, and how many `Halt` frames had been read when the
+/// request that started it was — so a `Halt` read after that request is
+/// told from one read before it.
+struct RunningDriver {
+    proc: Arc<DriverProc>,
+    seen: u64,
+}
+
 /// What the running helper holds between requests.
 struct HelperState {
-    prompts: Arc<dyn PermissionPrompts>,
     /// Set by `Configure`.
     driver_path: Mutex<Option<PathBuf>>,
     /// The running driver, started on first use and again after it exits.
-    driver: Mutex<Option<Arc<DriverProc>>>,
+    driver: Mutex<Option<RunningDriver>>,
     apps: Mutex<AppCache>,
     /// The latest snapshot of each window, as the running driver keeps them.
     snapshots: std::sync::Mutex<SnapshotBook>,
-    /// The person pressed Stop: no driver runs until codeg says `Resume`.
-    halted: AtomicBool,
+    /// How many `Halt` frames have been read — moved the moment one is, and
+    /// once more when codeg goes. A request carries the count as it stood
+    /// when it was read, and nothing of it reaches a driver once the count
+    /// has moved on: a Stop cuts off what arrived before it, and only that.
+    halts: AtomicU64,
+    /// The latest of the person's Stops codeg has told of (`Halt::stop`). An
+    /// action let through before it is refused, even one whose frame
+    /// overtook the Stop's on the way.
+    stopped: AtomicU64,
     /// The helper's permissions as the system last answered, and when. Never
     /// asked in this process on macOS: a process keeps the first "not
     /// granted" it hears for the rest of its life (see [`permissions`]).
@@ -359,23 +367,31 @@ impl HelperState {
         self.snapshots.lock().unwrap_or_else(|p| p.into_inner())
     }
 
-    fn check_not_halted(&self) -> Result<(), HelperError> {
-        if self.halted.load(Ordering::Acquire) {
-            return Err(HelperError::new(
-                HelperErrorCode::Paused,
-                "The user pressed Stop in codeg's Computer use panel.",
-            ));
+    /// Whether a request read when `seen` `Halt` frames had been still may
+    /// reach a driver: none has been read since.
+    fn check_current(&self, seen: u64) -> Result<(), HelperError> {
+        if self.halts.load(Ordering::Acquire) != seen {
+            return Err(stopped());
         }
         Ok(())
     }
 
-    /// What must hold at the moment an action's driver call goes out:
-    /// nothing has been stopped, `pid` is still the process the window was
-    /// shared from (a relaunch under a reused pid is another process, whose
-    /// windows nobody shared), and the session is affirmatively unlocked and
-    /// on this console.
-    fn deliverable(&self, pid: u32, started_at: u64) -> Result<(), HelperError> {
-        self.check_not_halted()?;
+    /// What must hold at the moment an action's driver call goes out: no
+    /// Stop has come since it was read (`seen`) or since codeg let it through
+    /// (`stop`), `pid` is still the process the window was shared from (a
+    /// relaunch under a reused pid is another process, whose windows nobody
+    /// shared), and the session is affirmatively unlocked and on this console.
+    fn deliverable(
+        &self,
+        pid: u32,
+        started_at: u64,
+        seen: u64,
+        stop: u64,
+    ) -> Result<(), HelperError> {
+        self.check_current(seen)?;
+        if self.stopped.load(Ordering::Acquire) > stop {
+            return Err(stopped());
+        }
         if super::procinfo::process_start(pid) != Some(started_at) {
             return Err(HelperError::new(
                 HelperErrorCode::NoSuchWindow,
@@ -396,20 +412,30 @@ impl HelperState {
         }
     }
 
-    /// The running driver, starting it if there is none — or if the one
-    /// running started before a permission it now has (`driver_stale`).
-    async fn driver(&self) -> Result<Arc<DriverProc>, HelperError> {
-        self.check_not_halted()?;
+    /// The running driver, for a request read when `seen` `Halt` frames had
+    /// been — starting one if there is none, if the one running started
+    /// before a permission it now has (`driver_stale`), or if it started
+    /// before a Stop (the `Halt` that ends it may still be on its way to the
+    /// slot).
+    async fn driver(&self, seen: u64) -> Result<Arc<DriverProc>, HelperError> {
+        self.check_current(seen)?;
         let mut slot = self.driver.lock().await;
+        // A Stop read while this one waited for the slot.
+        self.check_current(seen)?;
         let stale = self.driver_stale.swap(false, Ordering::AcqRel);
         if !stale {
-            if let Some(driver) = slot.as_ref().filter(|d| d.alive()) {
-                return Ok(driver.clone());
+            if let Some(running) = slot.as_ref().filter(|d| d.seen == seen && d.proc.alive()) {
+                return Ok(running.proc.clone());
             }
         }
         if let Some(old) = slot.take() {
             self.forget_driver_saw();
-            old.shutdown().await;
+            if old.seen == seen {
+                old.proc.shutdown().await;
+            } else {
+                self.snapshots().clear();
+                old.proc.kill().await;
+            }
         }
         let path = self.driver_path.lock().await.clone().ok_or_else(|| {
             HelperError::new(
@@ -425,17 +451,17 @@ impl HelperState {
         })?;
         // What the new driver starts with, so a permission granted later is
         // told apart from one it had all along.
-        let seen = self.permissions(false).await;
+        let had = self.permissions(false).await;
         let launched =
-            Arc::new(DriverProc::launch(&path, artifact, || self.check_not_halted()).await?);
+            Arc::new(DriverProc::launch(&path, artifact, || self.check_current(seen)).await?);
         // A Stop that arrived while this one was starting stops it too.
-        if let Err(halted) = self.check_not_halted() {
+        if let Err(halted) = self.check_current(seen) {
             launched.shutdown().await;
             return Err(halted);
         }
         // A fresh driver has taken no snapshots.
         self.snapshots().clear();
-        *self.driver_saw.lock().unwrap_or_else(|p| p.into_inner()) = Some(seen);
+        *self.driver_saw.lock().unwrap_or_else(|p| p.into_inner()) = Some(had);
         // A check that ran while this one was starting, and found more than
         // it started with, compared itself with no driver: compare now.
         if self
@@ -443,11 +469,14 @@ impl HelperState {
             .lock()
             .await
             .as_ref()
-            .is_some_and(|(last, _)| gained(&seen, last))
+            .is_some_and(|(last, _)| gained(&had, last))
         {
             self.driver_stale.store(true, Ordering::Release);
         }
-        *slot = Some(launched.clone());
+        *slot = Some(RunningDriver {
+            proc: launched.clone(),
+            seen,
+        });
         Ok(launched)
     }
 
@@ -460,7 +489,7 @@ impl HelperState {
         self.snapshots().clear();
         self.forget_driver_saw();
         if let Some(driver) = driver {
-            driver.shutdown().await;
+            driver.proc.shutdown().await;
         }
     }
 
@@ -510,33 +539,6 @@ impl HelperState {
         }
     }
 
-    /// Raise the system's request for what the helper lacks, then say what it
-    /// holds now. On macOS the request goes out from a fresh process, as the
-    /// check does, and for every missing permission at once: macOS takes one
-    /// request per process, and one from this long-lived helper would reach
-    /// nobody the second time — after the person removed a stale entry from
-    /// System Settings, say, which is exactly when the helper needs listing
-    /// again. Where no fresh process can be started, the request goes out
-    /// from here.
-    async fn request_permission(&self, permission: OsPermission) -> PermissionReport {
-        #[cfg(target_os = "macos")]
-        {
-            let path = self.driver_path.lock().await.clone();
-            if let Some(path) = path {
-                match driver_proc::probe_permissions(&path, true).await {
-                    Ok(_) => return self.permissions(true).await,
-                    Err(e) => tracing::warn!(
-                        "could not ask for permissions from a fresh process, asking here: {}",
-                        e.message
-                    ),
-                }
-            }
-        }
-        let prompts = self.prompts.clone();
-        let _ = tokio::task::spawn_blocking(move || prompts.request(permission)).await;
-        self.permissions(true).await
-    }
-
     /// Ask macOS, in a fresh process. Where that cannot be done — no driver
     /// configured yet, or one that would not start — ask here, and live with
     /// an answer this process may keep.
@@ -544,7 +546,7 @@ impl HelperState {
     async fn ask_system(&self) -> PermissionReport {
         let path = self.driver_path.lock().await.clone();
         if let Some(path) = path {
-            match driver_proc::probe_permissions(&path, false).await {
+            match driver_proc::probe_permissions(&path).await {
                 Ok(report) => return report,
                 Err(e) => tracing::warn!(
                     "could not check permissions in a fresh process, asking here: {}",
@@ -570,22 +572,36 @@ impl HelperState {
         }
     }
 
-    /// Kill the driver now, whatever it is doing — unlike [`shutdown`], it
-    /// is given no time to finish what it is in the middle of. Every call
-    /// waiting on it fails at once. A driver still starting cannot be in the
-    /// middle of anything; it stops itself when it finishes starting (see
-    /// [`driver`](Self::driver)).
+    /// The `Halt` that was the `seen`-th: kill the driver started before it
+    /// now, whatever that driver is doing — unlike [`shutdown`], it is given
+    /// no time to finish what it is in the middle of, and every call waiting
+    /// on it fails at once. A driver started for a request read after this
+    /// `Halt` is left be. A driver still starting cannot be in the middle of
+    /// anything; one started for a request from before the `Halt` stops
+    /// itself when it has (see [`driver`](Self::driver)).
     ///
     /// [`shutdown`]: Self::shutdown
-    async fn halt(&self) {
-        self.halted.store(true, Ordering::Release);
-        let driver = self.driver.lock().await.take();
+    async fn halt(&self, seen: u64) {
+        let mut slot = self.driver.lock().await;
+        if !slot.as_ref().is_some_and(|d| d.seen < seen) {
+            return;
+        }
+        let driver = slot.take();
+        drop(slot);
         self.snapshots().clear();
         self.forget_driver_saw();
         if let Some(driver) = driver {
-            driver.kill().await;
+            driver.proc.kill().await;
         }
     }
+}
+
+/// What a request cut off by the person's Stop is answered.
+fn stopped() -> HelperError {
+    HelperError::new(
+        HelperErrorCode::Stopped,
+        "The user pressed Stop in codeg's Computer use panel.",
+    )
 }
 
 /// Whether a remembered answer still stands: one that both permissions are
@@ -602,13 +618,17 @@ fn gained(before: &PermissionReport, now: &PermissionReport) -> bool {
         || (now.screen_recording && !before.screen_recording)
 }
 
-/// Serve one op. A driver call that turns out to lack a permission the
-/// remembered answer says is granted clears that answer, so the next call
-/// asks the system again rather than going on believing it. (A refusal that
-/// came from the remembered answer itself leaves it be: it is asked again on
-/// its own schedule.)
-async fn handle(state: &HelperState, op: HelperOp) -> Result<serde_json::Value, HelperError> {
-    let result = handle_op(state, op).await;
+/// Serve one op, read when `seen` `Halt` frames had been. A driver call that
+/// turns out to lack a permission the remembered answer says is granted
+/// clears that answer, so the next call asks the system again rather than
+/// going on believing it. (A refusal that came from the remembered answer
+/// itself leaves it be: it is asked again on its own schedule.)
+async fn handle(
+    state: &HelperState,
+    op: HelperOp,
+    seen: u64,
+) -> Result<serde_json::Value, HelperError> {
+    let result = handle_op(state, op, seen).await;
     if let Err(HelperError {
         code: HelperErrorCode::PermissionMissing,
         permission: Some(permission),
@@ -626,7 +646,11 @@ async fn handle(state: &HelperState, op: HelperOp) -> Result<serde_json::Value, 
     result
 }
 
-async fn handle_op(state: &HelperState, op: HelperOp) -> Result<serde_json::Value, HelperError> {
+async fn handle_op(
+    state: &HelperState,
+    op: HelperOp,
+    seen: u64,
+) -> Result<serde_json::Value, HelperError> {
     fn value(v: impl serde::Serialize) -> Result<serde_json::Value, HelperError> {
         serde_json::to_value(v).map_err(|e| HelperError::failed(format!("encode: {e}")))
     }
@@ -656,15 +680,12 @@ async fn handle_op(state: &HelperState, op: HelperOp) -> Result<serde_json::Valu
             value(())
         }
         HelperOp::Permissions => value(state.permissions(true).await),
-        HelperOp::RequestPermission { permission } => {
-            value(state.request_permission(permission).await)
-        }
         HelperOp::ListApps => {
-            let driver = state.driver().await?;
+            let driver = state.driver(seen).await?;
             value(ops::list_apps(&driver, &state.apps).await?)
         }
         HelperOp::ListWindows { pid } => {
-            let driver = state.driver().await?;
+            let driver = state.driver(seen).await?;
             value(ops::list_windows(&driver, &state.apps, pid).await?)
         }
         HelperOp::ProcessStart { pid } => value(super::procinfo::process_start(pid)),
@@ -674,7 +695,7 @@ async fn handle_op(state: &HelperState, op: HelperOp) -> Result<serde_json::Valu
             max_dimension,
         } => {
             state.require(OsPermission::ScreenRecording).await?;
-            let driver = state.driver().await?;
+            let driver = state.driver(seen).await?;
             value(ops::capture(&driver, pid, window_id, max_dimension).await?)
         }
         HelperOp::Snapshot {
@@ -685,7 +706,7 @@ async fn handle_op(state: &HelperState, op: HelperOp) -> Result<serde_json::Valu
             query,
         } => {
             state.require(OsPermission::Accessibility).await?;
-            let driver = state.driver().await?;
+            let driver = state.driver(seen).await?;
             let (raw, facts) =
                 ops::snapshot(&driver, pid, window_id, max_depth, max_elements, query).await?;
             state.snapshots().record(pid, window_id, facts);
@@ -699,7 +720,7 @@ async fn handle_op(state: &HelperState, op: HelperOp) -> Result<serde_json::Valu
             if request.expect.iter().any(|p| p.element.is_some()) {
                 state.require(OsPermission::Accessibility).await?;
             }
-            let driver = state.driver().await?;
+            let driver = state.driver(seen).await?;
             value(ops::verify(&driver, pid, window_id, &request).await?)
         }
         HelperOp::Act {
@@ -708,16 +729,18 @@ async fn handle_op(state: &HelperState, op: HelperOp) -> Result<serde_json::Valu
             started_at,
             app_key,
             action,
+            stop,
         } => {
             // Asked first so a doomed action does not start a driver, and
             // again (inside `act`) just before each driver call goes out —
             // starting the driver and measuring the window take time in which
-            // the screen can lock or the application quit.
-            state.deliverable(pid, started_at)?;
+            // the screen can lock, the application quit or the person press
+            // Stop.
+            state.deliverable(pid, started_at, seen, stop)?;
             for permission in act::permissions_for(&action) {
                 state.require(*permission).await?;
             }
-            let driver = state.driver().await?;
+            let driver = state.driver(seen).await?;
             let element_frame = {
                 let book = state.snapshots();
                 book.check(pid, window_id, &action, app_key.as_deref())?;
@@ -729,7 +752,7 @@ async fn handle_op(state: &HelperState, op: HelperOp) -> Result<serde_json::Valu
                 Some(point) => act::check_point(&driver, pid, window_id, point).await?,
                 None => None,
             };
-            let deliverable = || state.deliverable(pid, started_at);
+            let deliverable = || state.deliverable(pid, started_at, seen, stop);
             let done = act::act(&driver, pid, window_id, &action, &deliverable).await?;
             value(RawAct {
                 element_frame,
@@ -737,12 +760,10 @@ async fn handle_op(state: &HelperState, op: HelperOp) -> Result<serde_json::Valu
                 ..done
             })
         }
-        HelperOp::Halt => {
-            state.halt().await;
-            value(())
-        }
-        HelperOp::Resume => {
-            state.halted.store(false, Ordering::Release);
+        // The count moved, and codeg's Stop was noted, when the frame was
+        // read (see `serve`); what is left is the driver.
+        HelperOp::Halt { .. } => {
+            state.halt(seen).await;
             value(())
         }
     }
@@ -789,7 +810,6 @@ pub async fn serve(
     mut writer: Box<dyn AsyncWrite + Send + Unpin>,
     peer: PeerCheck,
     guard: Option<PeerGuard>,
-    prompts: Arc<dyn PermissionPrompts>,
 ) -> i32 {
     let (tx, mut rx) = mpsc::unbounded_channel::<HelperMessage>();
     let writer_task = tokio::spawn(async move {
@@ -813,12 +833,12 @@ pub async fn serve(
     }));
 
     let state = Arc::new(HelperState {
-        prompts,
         driver_path: Mutex::new(None),
         driver: Mutex::new(None),
         apps: Mutex::new(AppCache::default()),
         snapshots: std::sync::Mutex::new(SnapshotBook::default()),
-        halted: AtomicBool::new(false),
+        halts: AtomicU64::new(0),
+        stopped: AtomicU64::new(0),
         permissions: Mutex::new(None),
         driver_saw: std::sync::Mutex::new(None),
         driver_stale: AtomicBool::new(false),
@@ -842,15 +862,18 @@ pub async fn serve(
             break;
         }
         // A Stop takes hold the moment its frame is read, not when its task
-        // is scheduled: an action already on its way meets it at the next
-        // check it makes before a driver call.
-        if matches!(request.op, HelperOp::Halt) {
-            state.halted.store(true, Ordering::Release);
+        // is scheduled: whatever was read before it meets it at the next
+        // check it makes before a driver call, and whatever is read after it
+        // does not.
+        if let HelperOp::Halt { stop } = request.op {
+            state.stopped.fetch_max(stop, Ordering::AcqRel);
+            state.halts.fetch_add(1, Ordering::AcqRel);
         }
+        let seen = state.halts.load(Ordering::Acquire);
         let state = state.clone();
         let tx = tx.clone();
         tokio::spawn(async move {
-            let reply = match handle(&state, request.op).await {
+            let reply = match handle(&state, request.op, seen).await {
                 Ok(value) => HelperReply {
                     id: request.id,
                     ok: Some(value),
@@ -862,10 +885,10 @@ pub async fn serve(
         });
     }
     // codeg is gone (or refused): stop the driver, and do not wait on the
-    // requests still in flight — one may be parked on a permission prompt
-    // the person never answers, and nobody is left to answer anyway. As for
-    // a Stop, a driver still starting stops itself once it has started.
-    state.halted.store(true, Ordering::Release);
+    // requests still in flight — nobody is left to answer. As for a Stop,
+    // nothing still in flight reaches a driver, and a driver still starting
+    // stops itself once it has started.
+    state.halts.fetch_add(1, Ordering::AcqRel);
     if tokio::time::timeout(SHUTDOWN_GRACE, state.shutdown())
         .await
         .is_err()
@@ -881,11 +904,6 @@ mod tests {
     use super::*;
     use crate::computer::protocol::write_frame;
 
-    struct NoPrompts;
-    impl PermissionPrompts for NoPrompts {
-        fn request(&self, _permission: OsPermission) {}
-    }
-
     async fn start() -> (
         tokio::task::JoinHandle<i32>,
         tokio::io::WriteHalf<tokio::io::DuplexStream>,
@@ -899,7 +917,6 @@ mod tests {
             Box::new(their_write),
             PeerCheck::Development,
             None,
-            Arc::new(NoPrompts),
         ));
         (task, our_write, our_read)
     }
@@ -960,10 +977,12 @@ mod tests {
         assert_eq!(task.await.unwrap(), EXIT_OK);
     }
 
-    /// After a Stop, nothing that needs the driver runs — reads and actions
-    /// alike — until codeg resumes; then the next call goes on as before.
+    /// A Stop cuts off what was sent before it and holds nothing after it:
+    /// an action codeg let through before the Stop is refused whenever it
+    /// arrives — even after the `Halt` — while what codeg sends after it
+    /// gets the answer it would have got had there been no Stop.
     #[tokio::test]
-    async fn a_stopped_helper_runs_no_driver_until_resumed() {
+    async fn a_stop_cuts_off_what_came_before_it_and_nothing_after() {
         use crate::computer::keys::{Chord, Key, Modifiers};
         use crate::computer::protocol::WindowAction;
         async fn ask(
@@ -979,19 +998,7 @@ mod tests {
             assert_eq!(reply.id, id);
             reply
         }
-        let (task, mut to_helper, mut from_helper) = start().await;
-        let _ready: HelperMessage = read_frame(&mut from_helper).await.unwrap();
-        let (to, from) = (&mut to_helper, &mut from_helper);
-        assert!(ask(to, from, 1, HelperOp::Halt).await.error.is_none());
-        assert_eq!(
-            ask(to, from, 2, HelperOp::ListApps)
-                .await
-                .error
-                .unwrap()
-                .code,
-            HelperErrorCode::Paused
-        );
-        let act = HelperOp::Act {
+        let act = |stop| HelperOp::Act {
             pid: std::process::id(),
             window_id: 1,
             started_at: crate::computer::procinfo::process_start(std::process::id()).unwrap(),
@@ -1003,20 +1010,41 @@ mod tests {
                     modifiers: Modifiers::default(),
                 },
             },
+            stop,
         };
+        let (task, mut to_helper, mut from_helper) = start().await;
+        let _ready: HelperMessage = read_frame(&mut from_helper).await.unwrap();
+        let (to, from) = (&mut to_helper, &mut from_helper);
+        assert!(ask(to, from, 1, HelperOp::Halt { stop: 1 })
+            .await
+            .error
+            .is_none());
+        // Let through before the Stop, arriving after it.
         assert_eq!(
-            ask(to, from, 3, act).await.error.unwrap().code,
-            HelperErrorCode::Paused
+            ask(to, from, 2, act(0)).await.error.unwrap().code,
+            HelperErrorCode::Stopped
         );
-        assert!(ask(to, from, 4, HelperOp::Resume).await.error.is_none());
-        // Resumed: back to the ordinary answer for a helper with no driver.
+        // Sent after it: the ordinary answers for a helper with no driver.
         assert_eq!(
-            ask(to, from, 5, HelperOp::ListApps)
+            ask(to, from, 3, HelperOp::ListApps)
                 .await
                 .error
                 .unwrap()
                 .code,
             HelperErrorCode::NotConfigured
+        );
+        assert_ne!(
+            ask(to, from, 4, act(1)).await.error.unwrap().code,
+            HelperErrorCode::Stopped
+        );
+        // A Stop told late — an older one — moves nothing back.
+        assert!(ask(to, from, 5, HelperOp::Halt { stop: 0 })
+            .await
+            .error
+            .is_none());
+        assert_eq!(
+            ask(to, from, 6, act(0)).await.error.unwrap().code,
+            HelperErrorCode::Stopped
         );
         to_helper.shutdown().await.unwrap();
         assert_eq!(task.await.unwrap(), EXIT_OK);
@@ -1071,6 +1099,7 @@ mod tests {
                             modifiers: Modifiers::default(),
                         },
                     },
+                    stop: 0,
                 },
             },
         )
@@ -1124,102 +1153,5 @@ mod tests {
         };
         assert_eq!(reply.id, 9);
         assert!(reply.error.unwrap().message.contains("more than"));
-    }
-
-    struct ParkedPrompts(std::sync::Mutex<std::sync::mpsc::Receiver<()>>);
-    impl PermissionPrompts for ParkedPrompts {
-        fn request(&self, _permission: OsPermission) {
-            let _ = self.0.lock().unwrap().recv();
-        }
-    }
-
-    /// A request that never finishes — a permission prompt nobody answers —
-    /// does not keep the helper alive once codeg has gone.
-    #[tokio::test]
-    async fn the_helper_leaves_with_codeg_even_mid_request() {
-        let (release, parked) = std::sync::mpsc::channel::<()>();
-        let (ours, theirs) = tokio::io::duplex(1 << 20);
-        let (their_read, their_write) = tokio::io::split(theirs);
-        let (mut from_helper, mut to_helper) = tokio::io::split(ours);
-        let task = tokio::spawn(serve(
-            Box::new(their_read),
-            Box::new(their_write),
-            PeerCheck::Development,
-            None,
-            Arc::new(ParkedPrompts(std::sync::Mutex::new(parked))),
-        ));
-        let _ready: HelperMessage = read_frame(&mut from_helper).await.unwrap();
-        write_frame(
-            &mut to_helper,
-            &HelperRequest {
-                id: 1,
-                op: HelperOp::RequestPermission {
-                    permission: OsPermission::Accessibility,
-                },
-            },
-        )
-        .await
-        .unwrap();
-        tokio::time::sleep(Duration::from_millis(50)).await;
-        to_helper.shutdown().await.unwrap();
-        let code = tokio::time::timeout(Duration::from_secs(10), task)
-            .await
-            .expect("the helper exits")
-            .unwrap();
-        assert_eq!(code, EXIT_OK);
-        drop(release);
-    }
-
-    /// The same, for the helper process as it really runs — on a runtime of
-    /// its own, whose drop would otherwise wait for the parked request.
-    #[test]
-    fn the_helper_process_leaves_with_codeg_even_mid_request() {
-        let (release, parked) = std::sync::mpsc::channel::<()>();
-        let (ours, theirs) = tokio::io::duplex(1 << 20);
-        let helper = std::thread::spawn(move || {
-            serve_on_own_runtime(
-                move || {
-                    let (read, write) = tokio::io::split(theirs);
-                    Ok((
-                        Box::new(read) as Box<dyn AsyncRead + Send + Unpin>,
-                        Box::new(write) as Box<dyn AsyncWrite + Send + Unpin>,
-                    ))
-                },
-                PeerCheck::Development,
-                None,
-                Arc::new(ParkedPrompts(std::sync::Mutex::new(parked))),
-            )
-        });
-        let codeg = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        codeg.block_on(async {
-            let (mut from_helper, mut to_helper) = tokio::io::split(ours);
-            let _ready: HelperMessage = read_frame(&mut from_helper).await.unwrap();
-            write_frame(
-                &mut to_helper,
-                &HelperRequest {
-                    id: 1,
-                    op: HelperOp::RequestPermission {
-                        permission: OsPermission::ScreenRecording,
-                    },
-                },
-            )
-            .await
-            .unwrap();
-            tokio::time::sleep(Duration::from_millis(50)).await;
-            to_helper.shutdown().await.unwrap();
-        });
-        let started = std::time::Instant::now();
-        while !helper.is_finished() {
-            assert!(
-                started.elapsed() < Duration::from_secs(10),
-                "the helper is still waiting on the parked request"
-            );
-            std::thread::sleep(Duration::from_millis(20));
-        }
-        assert_eq!(helper.join().unwrap(), EXIT_OK);
-        drop(release);
     }
 }

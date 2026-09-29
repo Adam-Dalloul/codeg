@@ -85,9 +85,13 @@ pub const ERROR_BACKGROUND_UNAVAILABLE: &str = "computer_background_unavailable"
 /// option, more text than one call can type. The note says which.
 pub const ERROR_ACTION_FAILED: &str = "computer_action_failed";
 
-/// The person pressed Stop, or the screen is locked. Nothing reaches any
-/// window until they resume.
+/// The screen is locked, or another user's session is active. Nothing
+/// reaches any window until it is unlocked.
 pub const ERROR_PAUSED: &str = "computer_paused";
+
+/// The person pressed Stop: every window stopped being shared, and whatever
+/// was under way was cut off. Nothing is shared again until they share it.
+pub const ERROR_STOPPED: &str = "computer_stopped";
 
 /// What a `computer_snapshot` asks for when the caller names no cap — the
 /// same default as `browser_snapshot`, for the same reason: the caller who
@@ -260,9 +264,9 @@ pub fn no_pointing_note(target_id: &str) -> String {
     )
 }
 
-pub const STOPPED_NOTE: &str = "The user pressed Stop in codeg's Computer use panel: nothing \
-     reaches any window, and nothing is read, until they resume it. Do not retry on your own — \
-     tell the user, and wait for them to say go on.";
+pub const STOPPED_NOTE: &str = "The user pressed Stop in codeg's Computer use panel: every \
+     window stopped being shared, and whatever was under way was cut off. Do not retry on your \
+     own — tell the user, and go on only once they share a window with you again.";
 
 /// What an action tool answers: what the action did, or why it did not
 /// happen.
@@ -487,7 +491,7 @@ pub struct ComputerToolsConfig {
     /// Applications the user added to the default blocklist.
     pub blocklist: Vec<String>,
     /// Keys of the default blocklist entries the user took off it
-    /// (`computer::agent::DEFAULT_BLOCKLIST`; a locked one stays on).
+    /// (`computer::agent::DEFAULT_BLOCKLIST`).
     pub blocklist_removed: Vec<String>,
     /// The shortcut that stops every agent at once, from anywhere; `None`
     /// when the person switched it off.

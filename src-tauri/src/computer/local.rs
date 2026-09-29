@@ -42,8 +42,9 @@ use super::backend::{
 use super::driver;
 use super::protocol::{
     read_frame, write_frame, HelperError, HelperErrorCode, HelperMessage, HelperOp, HelperReply,
-    HelperRequest, OsPermission, PeerCheck, PermissionReport, RawAct, RawApp, RawCapture,
-    RawSnapshot, RawVerify, RawWindow, WindowAction, PROTOCOL_VERSION, SOURCE_FINGERPRINT,
+    HelperRequest, OsPermission, PeerCheck, PermissionAsked, PermissionReport, RawAct, RawApp,
+    RawCapture, RawSnapshot, RawVerify, RawWindow, WindowAction, PROTOCOL_VERSION,
+    SOURCE_FINGERPRINT,
 };
 use super::types::VerifyRequest;
 
@@ -99,6 +100,15 @@ const HALT_ANSWER_TIMEOUT: Duration = Duration::from_secs(60);
 /// hold a caller forever. Every op already carries a tighter bound of its own
 /// inside the helper; this one is only for a helper gone wrong.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// How long a helper started for one permission request has to answer. It
+/// asks, then watches a couple of seconds for the system's dialog.
+#[cfg(target_os = "macos")]
+const PERMISSION_ASK_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// The most a permission-request helper may print: one short line.
+#[cfg(target_os = "macos")]
+const MAX_ASK_OUTPUT: u64 = 256;
 
 pub fn helper_file_name() -> &'static str {
     if cfg!(windows) {
@@ -272,11 +282,11 @@ pub struct LocalBackend {
     /// checks, so a download that keeps failing them is reported rather than
     /// fetched again on every call.
     redownloaded: AtomicBool,
-    /// The person pressed Stop. Kept here as well as in the helper, because
-    /// the helper that heard it may not be the one an action reaches: with no
-    /// helper running, the Stop reached nobody, and an action already past
-    /// codeg's checks would start a fresh one.
-    halted: AtomicBool,
+    /// The latest of the person's Stops this backend was told of. Kept here
+    /// as well as in the helper, because the helper that heard it may not be
+    /// the one an action reaches: with no helper running, the Stop reached
+    /// nobody, and an action let through before it would start a fresh one.
+    stopped: AtomicU64,
     /// Held for the whole of a [`close`](Self::close) or
     /// [`close_now`](Self::close_now), so that one returning means the helper
     /// another was already taking down is gone too.
@@ -303,7 +313,7 @@ impl LocalBackend {
             }),
             on_status: Box::new(on_status),
             redownloaded: AtomicBool::new(false),
-            halted: AtomicBool::new(false),
+            stopped: AtomicU64::new(0),
             closing: Mutex::new(()),
             switch: None,
         }
@@ -376,8 +386,12 @@ impl LocalBackend {
         let _closing = self.closing.lock().await;
         let connection = self.slot.lock().await.connection.clone();
         if let Some(connection) = connection.filter(|c| !c.is_closed()) {
-            let halted =
-                tokio::time::timeout(HALT_ANSWER_TIMEOUT, connection.request(HelperOp::Halt)).await;
+            // No new Stop: the helper goes with its driver, and every action
+            // let through so far is refused on its way there anyway.
+            let halt = HelperOp::Halt {
+                stop: self.stopped.load(Ordering::Acquire),
+            };
+            let halted = tokio::time::timeout(HALT_ANSWER_TIMEOUT, connection.request(halt)).await;
             if !matches!(halted, Ok(Ok(_))) {
                 tracing::warn!("[computer] the helper did not confirm killing the driver");
             }
@@ -512,11 +526,31 @@ impl ComputerBackend for LocalBackend {
         self.call(HelperOp::Permissions).await
     }
 
+    /// Asked of a helper started for the purpose rather than of the running
+    /// one: macOS takes a request from each process once, and the one that
+    /// served the first click would reach nobody on the second — after the
+    /// person removed a stale entry from System Settings, say, which is
+    /// exactly when the helper needs listing again.
     async fn request_permission(
         &self,
         permission: OsPermission,
-    ) -> Result<PermissionReport, BackendError> {
-        self.call(HelperOp::RequestPermission { permission }).await
+    ) -> Result<PermissionAsked, BackendError> {
+        #[cfg(target_os = "macos")]
+        {
+            let helper = locate_helper_binary().ok_or_else(|| {
+                BackendError::Unavailable(format!(
+                    "{} is missing from this installation",
+                    helper_file_name()
+                ))
+            })?;
+            ask_for_permission(&helper, permission).await
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            // Nothing here is granted per application.
+            let _ = permission;
+            Ok(PermissionAsked { prompted: false })
+        }
     }
 
     async fn list_apps(&self) -> Result<Vec<RawApp>, BackendError> {
@@ -582,21 +616,23 @@ impl ComputerBackend for LocalBackend {
         started_at: u64,
         app_key: Option<String>,
         action: WindowAction,
+        stop: u64,
     ) -> Result<RawAct, BackendError> {
         let stopped = || {
             BackendError::Refused(
-                ActRefusal::Paused,
+                ActRefusal::Stopped,
                 "The user pressed Stop in codeg's Computer use panel.".into(),
             )
         };
         // Before a helper is started for it, and again with the helper in
         // hand, as late as codeg can: a Stop that came while one was being
-        // started stops this action too.
-        if self.halted.load(Ordering::Acquire) {
+        // started stops this action too. The helper holds it to the same
+        // count, for a Stop that overtakes it on the way there.
+        if self.stopped.load(Ordering::Acquire) > stop {
             return Err(stopped());
         }
         let connection = self.connection().await?;
-        if self.halted.load(Ordering::Acquire) {
+        if self.stopped.load(Ordering::Acquire) > stop {
             return Err(stopped());
         }
         let reply = connection
@@ -606,29 +642,26 @@ impl ComputerBackend for LocalBackend {
                 started_at,
                 app_key,
                 action,
+                stop,
             })
             .await?;
         self.decode(reply).await
     }
 
-    /// Stop: no action goes out through this backend from now on, and a
-    /// running helper kills its driver. With no helper running there is
-    /// nothing to kill, and none is started for it.
-    async fn halt(&self) -> Result<(), BackendError> {
-        self.halted.store(true, Ordering::Release);
-        self.to_running(HelperOp::Halt).await
-    }
-
-    async fn resume(&self) -> Result<(), BackendError> {
-        let told = self.to_running(HelperOp::Resume).await;
-        self.halted.store(false, Ordering::Release);
-        told
+    /// The person's `stop`-th Stop: no action let through before it goes out
+    /// through this backend, and a running helper kills its driver. With no
+    /// helper running there is nothing to kill, and none is started for it.
+    /// Nothing is held after it: what comes next goes out as usual.
+    async fn halt(&self, stop: u64) -> Result<(), BackendError> {
+        self.stopped.fetch_max(stop, Ordering::AcqRel);
+        self.to_running(HelperOp::Halt { stop }).await
     }
 }
 
 impl LocalBackend {
     /// Send `op` to the helper if one is running; with none, there is no one
-    /// to tell (a helper started later starts un-halted).
+    /// to tell (what a helper started later is sent is held to the Stops
+    /// counted here).
     async fn to_running(&self, op: HelperOp) -> Result<(), BackendError> {
         let connection = self.slot.lock().await.connection.clone();
         match connection.filter(|c| !c.is_closed()) {
@@ -768,16 +801,8 @@ fn spawn_helper(path: &std::path::Path) -> Result<(HelperChild, Io, PeerFd), Bac
         |what: &str, e: std::io::Error| BackendError::Unavailable(format!("{what}: {e}"));
     let (ours, theirs) = UnixStream::pair().map_err(|e| unavailable("socketpair", e))?;
     let (err_ours, err_theirs) = UnixStream::pair().map_err(|e| unavailable("socketpair", e))?;
-    // The helper reads nothing from its environment that decides anything;
-    // these are here so the few system calls that look at them are not
-    // surprised.
-    let env = vec![(
-        "PATH".to_string(),
-        "/usr/bin:/bin:/usr/sbin:/sbin".to_string(),
-    )];
-    let requirement = HELPER_TEAM_ID
-        .filter(|team| !team.trim().is_empty())
-        .map(|team| super::launch_req::signed_by(team, HELPER_SIGNING_ID));
+    let env = helper_environment();
+    let requirement = helper_launch_requirement();
     let child = spawn(&SpawnSpec {
         program: path,
         args: &[],
@@ -810,6 +835,97 @@ fn spawn_helper(path: &std::path::Path) -> Result<(HelperChild, Io, PeerFd), Bac
         (Box::new(reader), Box::new(writer), Box::new(err_reader)),
         Some(peer_fd),
     ))
+}
+
+/// The helper's whole environment. It reads nothing from it that decides
+/// anything; this is here so the few system calls that look are not
+/// surprised.
+#[cfg(target_os = "macos")]
+fn helper_environment() -> Vec<(String, String)> {
+    vec![(
+        "PATH".to_string(),
+        "/usr/bin:/bin:/usr/sbin:/sbin".to_string(),
+    )]
+}
+
+/// What the kernel holds a helper launch to in a release build: this team's
+/// Developer ID build of the helper, and nothing else from that path.
+#[cfg(target_os = "macos")]
+fn helper_launch_requirement() -> Option<Vec<u8>> {
+    HELPER_TEAM_ID
+        .filter(|team| !team.trim().is_empty())
+        .map(|team| super::launch_req::signed_by(team, HELPER_SIGNING_ID))
+}
+
+/// Have a helper started for the purpose ask macOS for `permission`, and say
+/// whether the system put up its own dialog. Started exactly as the serving
+/// helper is — its own TCC principal, under the same launch requirement — so
+/// the request names the helper and lists it in System Settings; it serves
+/// no one and exits once it has answered.
+#[cfg(target_os = "macos")]
+async fn ask_for_permission(
+    path: &std::path::Path,
+    permission: OsPermission,
+) -> Result<PermissionAsked, BackendError> {
+    use super::protocol::REQUEST_PERMISSION_ARG;
+    use super::spawn::{spawn, ChildFd, SpawnSpec};
+    use std::os::fd::AsRawFd;
+    use std::os::unix::net::UnixStream;
+    use tokio::io::AsyncReadExt;
+
+    let unavailable =
+        |what: &str, e: std::io::Error| BackendError::Unavailable(format!("{what}: {e}"));
+    let (ours, theirs) = UnixStream::pair().map_err(|e| unavailable("socketpair", e))?;
+    let env = helper_environment();
+    let requirement = helper_launch_requirement();
+    let child = spawn(&SpawnSpec {
+        program: path,
+        args: &[REQUEST_PERMISSION_ARG, permission.arg()],
+        env: &env,
+        stdio: [
+            ChildFd::Null,
+            ChildFd::Inherit(theirs.as_raw_fd()),
+            ChildFd::Null,
+        ],
+        disclaim: true,
+        suspended: false,
+        launch_requirement: requirement.as_deref(),
+    })
+    .map_err(|e| unavailable("could not start the helper to ask", e))?;
+    drop(theirs);
+    let read = async {
+        ours.set_nonblocking(true)?;
+        let stream = tokio::net::UnixStream::from_std(ours)?;
+        let mut out = Vec::new();
+        stream
+            .take(MAX_ASK_OUTPUT + 1)
+            .read_to_end(&mut out)
+            .await?;
+        std::io::Result::Ok(out)
+    };
+    let out = tokio::time::timeout(PERMISSION_ASK_TIMEOUT, read).await;
+    // Done or not, it is not left behind.
+    child.kill();
+    let _ = child.wait().await;
+    let out = match out {
+        Ok(Ok(out)) => out,
+        Ok(Err(e)) => return Err(unavailable("could not read the helper's answer", e)),
+        Err(_) => {
+            return Err(BackendError::Unavailable(
+                "the helper asking for the permission did not answer in time".into(),
+            ))
+        }
+    };
+    if out.len() as u64 > MAX_ASK_OUTPUT {
+        return Err(BackendError::Failed(
+            "the helper asking for the permission answered with more than one short line".into(),
+        ));
+    }
+    serde_json::from_slice(out.trim_ascii()).map_err(|e| {
+        BackendError::Failed(format!(
+            "the helper asking for the permission answered oddly: {e}"
+        ))
+    })
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -972,6 +1088,11 @@ mod tests {
                         );
                     }
                 }
+                // A Stop kills the driver and holds nothing after it: the
+                // next call runs on a fresh one.
+                backend.halt(1).await.expect("the helper hears the Stop");
+                let again = backend.list_apps().await.expect("apps after a Stop");
+                assert!(!again.is_empty());
             },
         )
         .await;
@@ -998,13 +1119,14 @@ mod tests {
     }
 
     /// A Stop holds in the backend itself, with no helper running to hear it:
-    /// no action goes out — and no helper is started for one — until Resume.
+    /// an action let through before it does not go out — and no helper is
+    /// started for one — while one let through after it is not held back.
     #[tokio::test]
-    async fn a_stop_holds_with_no_helper_to_hear_it() {
+    async fn a_stop_holds_back_what_came_before_it_with_no_helper_to_hear_it() {
         use crate::computer::keys::{Chord, Key, Modifiers};
         let backend = LocalBackend::new(|_: &BackendStatus| {});
         backend.open().await;
-        backend.halt().await.unwrap();
+        backend.halt(1).await.unwrap();
         let act = || WindowAction::Key {
             element: None,
             chord: Chord {
@@ -1013,16 +1135,24 @@ mod tests {
             },
         };
         assert_eq!(
-            backend.act(1, 1, 1, None, act()).await.unwrap_err(),
+            backend.act(1, 1, 1, None, act(), 0).await.unwrap_err(),
             BackendError::Refused(
-                ActRefusal::Paused,
+                ActRefusal::Stopped,
                 "The user pressed Stop in codeg's Computer use panel.".into()
             )
         );
         // Nothing was started for the refused action.
         assert_eq!(backend.status().await.state, BackendState::Idle);
-        backend.resume().await.unwrap();
-        assert!(!backend.halted.load(Ordering::Acquire));
+        // One let through after the Stop goes on to start a helper — here it
+        // meets the switch, off, instead.
+        backend.close().await;
+        assert!(matches!(
+            backend.act(1, 1, 1, None, act(), 1).await.unwrap_err(),
+            BackendError::Unavailable(_)
+        ));
+        // A Stop told late moves nothing back.
+        backend.halt(0).await.unwrap();
+        assert_eq!(backend.stopped.load(Ordering::Acquire), 1);
     }
 
     /// A debug build takes the helper from `CODEG_COMPUTER_HELPER_BIN` when

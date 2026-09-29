@@ -15,7 +15,7 @@ import type {
   ComputerToolsSettings,
   DriverInfo,
   OsPermission,
-  PermissionReport,
+  PermissionRequestResult,
   PickerWindow,
   ShareManyResult,
   SharedWindow,
@@ -59,15 +59,17 @@ export async function computerStatus(): Promise<ComputerStatus> {
   return getTransport().call("computer_status", {})
 }
 
-/** The shared windows and whether Stop is in force: codeg's own state, with
- *  no helper to start — cheap enough to ask for when a window loads. */
+/** The shared windows: codeg's own state, with no helper to start — cheap
+ *  enough to ask for when a window loads. */
 export async function computerSharedState(): Promise<ComputerStatePayload> {
   return getTransport().call("computer_shared_state", {})
 }
 
+/** Ask macOS for this one permission, from a helper started for the
+ *  purpose, and say where that leaves things. */
 export async function computerRequestPermission(
   permission: OsPermission
-): Promise<PermissionReport> {
+): Promise<PermissionRequestResult> {
   return getTransport().call("computer_request_permission", { permission })
 }
 
@@ -115,15 +117,11 @@ export async function computerRevokeAll(): Promise<void> {
   return getTransport().call("computer_revoke_all", {})
 }
 
-/** Stop every agent at once: nothing is read or done on any window, every
- *  window stops being shared, and whatever is in progress is cut off — until
- *  {@link computerResume}. */
+/** Stop sharing, all at once: every window stops being shared and whatever
+ *  agents are in the middle of is cut off. Nothing is held after it —
+ *  sharing a window again is the next step. */
 export async function computerStop(): Promise<void> {
   return getTransport().call("computer_stop", {})
-}
-
-export async function computerResume(): Promise<void> {
-  return getTransport().call("computer_resume", {})
 }
 
 /** Whether the stop shortcut is in force; `computer://stop-key` carries the

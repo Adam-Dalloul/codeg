@@ -10,16 +10,18 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 use super::protocol::{
-    HelperError, HelperErrorCode, OsPermission, PeerCheck, PermissionReport, RawAct, RawApp,
-    RawCapture, RawSnapshot, RawVerify, RawWindow, WindowAction,
+    HelperError, HelperErrorCode, OsPermission, PeerCheck, PermissionAsked, PermissionReport,
+    RawAct, RawApp, RawCapture, RawSnapshot, RawVerify, RawWindow, WindowAction,
 };
 use super::types::VerifyRequest;
 
 /// Why an action was refused, or did not happen, at the helper or the driver.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ActRefusal {
-    /// The person pressed Stop, or the session is locked.
+    /// The session is locked, or another user's is active.
     Paused,
+    /// The person pressed Stop before this went out, or while it did.
+    Stopped,
     /// The element or point is from a snapshot or capture the window has
     /// moved past.
     StaleRef,
@@ -89,6 +91,7 @@ impl From<HelperError> for BackendError {
                 BackendError::Failed(e.message)
             }
             HelperErrorCode::Paused => BackendError::Refused(ActRefusal::Paused, e.message),
+            HelperErrorCode::Stopped => BackendError::Refused(ActRefusal::Stopped, e.message),
             HelperErrorCode::StaleRef => BackendError::Refused(ActRefusal::StaleRef, e.message),
             HelperErrorCode::OutOfTarget => {
                 BackendError::Refused(ActRefusal::OutOfTarget, e.message)
@@ -151,12 +154,14 @@ pub trait ComputerBackend: Send + Sync {
     /// The executor's own OS permissions — never codeg's.
     async fn permissions(&self) -> Result<PermissionReport, BackendError>;
 
-    /// Raise the system's request for one permission, charged to the
-    /// executor. A person pressed a button for this; nothing else calls it.
+    /// Raise the system's request for one permission — that one alone —
+    /// charged to the executor, and say whether the system put up its own
+    /// dialog for it. A person pressed a button for this; nothing else calls
+    /// it.
     async fn request_permission(
         &self,
         permission: OsPermission,
-    ) -> Result<PermissionReport, BackendError>;
+    ) -> Result<PermissionAsked, BackendError>;
 
     async fn list_apps(&self) -> Result<Vec<RawApp>, BackendError>;
 
@@ -187,9 +192,10 @@ pub trait ComputerBackend: Send + Sync {
     ) -> Result<RawVerify, BackendError>;
 
     /// Act on one window, in the background. The caller has checked the
-    /// grant; the backend checks, at the moment of delivery, what it can see
-    /// — that `pid` is still the process that started at `started_at`, that
-    /// the session is not locked, that nothing has been stopped.
+    /// grant, having counted `stop` Stops before it did; the backend checks,
+    /// at the moment of delivery, what it can see — that `pid` is still the
+    /// process that started at `started_at`, that the session is not locked,
+    /// that no later Stop has been [`halt`](Self::halt)ed.
     async fn act(
         &self,
         pid: u32,
@@ -197,13 +203,13 @@ pub trait ComputerBackend: Send + Sync {
         started_at: u64,
         app_key: Option<String>,
         action: WindowAction,
+        stop: u64,
     ) -> Result<RawAct, BackendError>;
 
-    /// Stop everything at once: whatever the executor is doing is abandoned,
-    /// and nothing that needs it runs until [`resume`](Self::resume).
-    async fn halt(&self) -> Result<(), BackendError>;
-
-    async fn resume(&self) -> Result<(), BackendError>;
+    /// The person's `stop`-th Stop: whatever the executor is doing is
+    /// abandoned, and no action let through before it goes out. What comes
+    /// after it runs as usual.
+    async fn halt(&self, stop: u64) -> Result<(), BackendError>;
 }
 
 #[cfg(test)]
@@ -229,6 +235,15 @@ mod tests {
         assert!(matches!(
             BackendError::from(HelperError::new(HelperErrorCode::NotConfigured, "x")),
             BackendError::Unavailable(_)
+        ));
+        // A Stop and a locked screen are told apart all the way up.
+        assert!(matches!(
+            BackendError::from(HelperError::new(HelperErrorCode::Stopped, "x")),
+            BackendError::Refused(ActRefusal::Stopped, _)
+        ));
+        assert!(matches!(
+            BackendError::from(HelperError::new(HelperErrorCode::Paused, "x")),
+            BackendError::Refused(ActRefusal::Paused, _)
         ));
     }
 }

@@ -13,10 +13,12 @@
 // windows and the backend status it carries go to the store through the
 // `…Since` setters, which drop them if an event has moved on since.
 //
-// Granting is one step for the person: `request` has the helper ask macOS —
-// which lists the helper in System Settings, the only place either
-// permission is actually turned on — and, if it is still missing after
-// that, opens that pane.
+// Granting is one step for the person: `request` has a helper started for
+// the purpose ask macOS for that one permission — which lists the helper in
+// System Settings, the only place either is actually turned on. macOS puts up
+// a dialog of its own for it, with a button to that pane, until the person
+// has once turned the switch off there; after that it says nothing, and
+// `request` opens the pane itself. Never both at once.
 
 import { useCallback, useEffect, useRef, useState } from "react"
 
@@ -65,7 +67,7 @@ export function useComputerStatus(live: boolean) {
       const next = await computerStatus()
       if (!aliveRef.current || seq !== seqRef.current) return
       setStatus(next)
-      setComputerSharedSince(next.shared, mark, next.paused)
+      setComputerSharedSince(next.shared, mark)
       setComputerBackendSince(next.backend, mark)
       setError(null)
     } catch (e) {
@@ -99,14 +101,14 @@ export function useComputerStatus(live: boolean) {
       setRequesting(permission)
       setError(null)
       try {
-        const report = await computerRequestPermission(permission)
+        const { report, prompted } = await computerRequestPermission(permission)
         const granted =
           permission === "accessibility"
             ? report.accessibility
             : report.screenRecording
         // Neither is ever turned on from the request itself: the switch is
-        // in System Settings.
-        if (report.required && !granted) {
+        // in System Settings, which the system's own dialog leads to.
+        if (report.required && !granted && !prompted) {
           await computerOpenPermissionSettings(permission)
         }
         if (liveRef.current) await refresh()

@@ -5151,21 +5151,16 @@
     "preview": "Versión preliminar",
     "refresh": "Actualizar",
     "tooltipShared": "Uso del ordenador · {count, plural, one {# ventana compartida} other {# ventanas compartidas}}",
-    "tooltipStopped": "Uso del ordenador · detenido",
-    "stop": "Detener agentes",
-    "stopTooltip": "{count, plural, one {Los agentes pueden actuar en # ventana} other {Los agentes pueden actuar en # ventanas}} · haz clic para detenerlos a todos",
-    "stopHint": "Detén a todos los agentes ahora: se interrumpe lo que esté en curso y todas las ventanas dejan de compartirse, hasta que reanudes.",
-    "stopped": "Detenido. Ningún agente puede leer ni actuar en ninguna ventana hasta que reanudes.",
-    "resume": "Reanudar",
+    "stop": "Dejar de compartir",
+    "stopHint": "Deja de compartir todas las ventanas ahora e interrumpe lo que estén haciendo los agentes. Vuelve a compartir una ventana cuando quieras que sigan.",
     "indicator": {
       "actOne": "Los agentes pueden actuar en {app}",
       "actMany": "Los agentes pueden actuar en {count, plural, one {# ventana} other {# ventanas}}",
       "readOne": "Los agentes pueden ver {app}",
       "readMany": "Los agentes pueden ver {count, plural, one {# ventana} other {# ventanas}}",
       "recent": "{action} en {app}",
-      "stopped": "Detenido: reanuda desde el panel Uso del ordenador de codeg",
-      "stop": "Detener",
-      "stopWithKey": "Detener todos los agentes a la vez ({key})"
+      "stop": "Dejar de compartir",
+      "stopWithKey": "Dejar de compartir todas las ventanas ({key})"
     },
     "codegGranted": "codeg tiene Accesibilidad o Grabación de pantalla, así que la shell de los agentes puede usarla sin que compartas nada. Si no lo necesitas, desactívalo para codeg en Ajustes del Sistema.",
     "backend": {
@@ -5191,8 +5186,7 @@
     "shared": {
       "title": "{count, plural, =0 {Ninguna ventana compartida} one {# ventana compartida} other {# ventanas compartidas}}",
       "empty": "Los agentes pueden listar tus ventanas, pero no leer ninguna hasta que compartas una.",
-      "stop": "Detener",
-      "stopAll": "Detener todas"
+      "stop": "Detener"
     },
     "level": {
       "read": "Puede leer",
@@ -5248,7 +5242,7 @@
       "skipped": "{count, plural, one {No se pudo compartir # ventana; puede que se haya cerrado.} other {No se pudieron compartir # ventanas; puede que se hayan cerrado.}}",
       "unshareable": "{count, plural, one {# ventana no se puede compartir} other {# ventanas no se pueden compartir}}",
       "noneShareable": "Ninguna de estas ventanas se puede compartir.",
-      "codegWhy": "Las ventanas de codeg nunca se comparten: un agente que pudiera manejar codeg podría aprobar sus propias solicitudes, compartirse más ventanas o pulsar Reanudar después de que pulses Detener. Lo mismo vale para otras copias de codeg."
+      "codegWhy": "Las ventanas de codeg nunca se comparten: un agente que pudiera manejar codeg podría aprobar sus propias solicitudes o compartirse más ventanas. Lo mismo vale para otras copias de codeg."
     },
     "settings": {
       "pageTitle": "Uso del ordenador",
@@ -5287,7 +5281,7 @@
         "screenRecordingHint": "Hacer capturas y leer los títulos de las ventanas."
       },
       "title": "Compartir y detener",
-      "description": "Cuánto tiempo sigue compartida una ventana, qué aplicaciones no se pueden compartir nunca y el atajo que detiene a todos los agentes.",
+      "description": "Cuánto tiempo sigue compartida una ventana, qué aplicaciones no se pueden compartir nunca y el atajo que deja de compartirlo todo a la vez.",
       "ttl": {
         "label": "Dejar de compartir ventanas sin uso tras",
         "hint": "Una ventana compartida deja de estarlo cuando ningún agente la ha leído durante este tiempo.",
@@ -5296,12 +5290,11 @@
       },
       "blocklist": {
         "label": "Aplicaciones que nunca se comparten",
-        "hint": "Sus ventanas no se pueden compartir con los agentes. Quita los predeterminados que no necesites (los bloqueados se quedan) o añade una aplicación por identificador de paquete (com.example.app), nombre de ejecutable (app.exe) o ruta completa.",
+        "hint": "Sus ventanas no se pueden compartir con los agentes. Quita los predeterminados que no necesites o añade una aplicación por identificador de paquete (com.example.app), nombre de ejecutable (app.exe) o ruta completa.",
         "placeholder": "com.example.app",
         "add": "Añadir",
         "remove": "Quitar {name}",
         "restore": "Restablecer",
-        "locked": "Protege el sistema y el propio uso del ordenador, así que no se puede quitar.",
         "custom": "Añadida por ti",
         "duplicate": "Ya está en la lista.",
         "removedCount": "{count, plural, one {# aplicación predeterminada quitada.} other {# aplicaciones predeterminadas quitadas.}}",
@@ -5314,16 +5307,16 @@
       },
       "stopKey": {
         "label": "Atajo para detener",
-        "hint": "Detiene a todos los agentes desde cualquier aplicación, como el botón Detener. Mientras el uso del ordenador esté activado, estas teclas son de codeg, así que elige unas que no uses en otro sitio.",
+        "hint": "Deja de compartir todas las ventanas desde cualquier aplicación, como el botón Dejar de compartir. Mientras el uso del ordenador esté activado, estas teclas son de codeg, así que elige unas que no uses en otro sitio.",
         "recording": "Pulsa las teclas…",
         "recordHint": "Mantén Ctrl y otro modificador (Alt o Mayús) y pulsa una tecla. Esc cancela.",
         "recordHintMac": "Mantén ⌃ o ⌘ y otro modificador y pulsa una tecla. Esc cancela.",
         "off": "Desactivado",
         "useDefault": "Predeterminado",
         "turnOff": "Desactivar",
-        "statusActive": "Activo: púlsalo en cualquier sitio para detener todos los agentes.",
+        "statusActive": "Activo: púlsalo en cualquier sitio para dejar de compartir todas las ventanas.",
         "statusIdle": "Se aplica mientras el uso del ordenador está activado.",
-        "statusOff": "Desactivado: solo los botones Detener detienen a los agentes.",
+        "statusOff": "Desactivado: solo los botones Dejar de compartir detienen el uso compartido.",
         "statusFailed": "No activo: probablemente otra aplicación usa estas teclas. Elige otras.",
         "problem": {
           "unsupportedKey": "Esa tecla no se puede usar. Elige una letra, un dígito, F1–F12, Esc o una tecla de puntuación.",

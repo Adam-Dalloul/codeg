@@ -17,7 +17,10 @@ const api = vi.hoisted(() => ({
   computerRevokeAll: vi.fn(async () => {}),
   computerWindowThumbnail: vi.fn(async () => null),
   computerStatus: vi.fn<() => Promise<ComputerStatus>>(),
-  computerRequestPermission: vi.fn(async () => ({})),
+  computerRequestPermission: vi.fn(async () => ({
+    report: { required: true, accessibility: true, screenRecording: false },
+    prompted: false,
+  })),
   computerOpenPermissionSettings: vi.fn(async () => {}),
   computerRevealHelper: vi.fn(async () => {}),
 }))
@@ -67,7 +70,6 @@ function status(screenRecording: boolean): ComputerStatus {
     backend: { state: "ready", driverVersion: "0.28.2", peer: "verified" },
     permissions: { required: true, accessibility: true, screenRecording },
     shared: [],
-    paused: false,
   }
 }
 
@@ -100,21 +102,20 @@ describe("ComputerWindowPicker", () => {
     ).toBeInTheDocument()
   })
 
-  /** Stopped — even from another codeg window — the picker says so and
-   * offers nothing to share; taking a window back stays possible. */
-  it("offers no sharing while stopped", async () => {
+  /** A Stop — even from another codeg window — ends every sharing and holds
+   * nothing back: the window is on offer again at once. */
+  it("offers sharing again straight after a Stop", async () => {
     api.computerListShareableWindows.mockResolvedValue([window("read")])
     mount()
     await screen.findByRole("button", { name: "Can read" })
-    act(() => setComputerShared([], true))
+    act(() => setComputerShared([]))
     await openMenu(await screen.findByRole("button", { name: "Share" }))
     expect(
       screen.getByRole("menuitem", { name: "Let agents read it" })
-    ).toHaveAttribute("data-disabled")
+    ).not.toHaveAttribute("data-disabled")
     expect(
       screen.getByRole("menuitem", { name: "Let agents read and act on it" })
-    ).toHaveAttribute("data-disabled")
-    expect(screen.getByText(/No agent can read or act/)).toBeInTheDocument()
+    ).not.toHaveAttribute("data-disabled")
   })
 
   /** Acting is the second decision, made from the same menu as reading. */

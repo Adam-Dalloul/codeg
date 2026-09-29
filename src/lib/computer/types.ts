@@ -18,6 +18,16 @@ export interface PermissionReport {
   screenRecording: boolean
 }
 
+/** What asking for one permission did. */
+export interface PermissionRequestResult {
+  /** The helper's permissions once the system had been asked. */
+  report: PermissionReport
+  /** macOS put up its own dialog for it, with a button to the right pane of
+   *  System Settings. It does not once the person has turned the switch off
+   *  there. */
+  prompted: boolean
+}
+
 export type BackendState =
   | "idle"
   | "downloading"
@@ -62,8 +72,6 @@ export interface ComputerStatus {
   permissions?: PermissionReport
   codeg?: CodegTccStatus
   shared: SharedWindow[]
-  /** The person pressed Stop and has not resumed. */
-  paused: boolean
 }
 
 export interface Rect {
@@ -132,8 +140,6 @@ export interface DefaultBlock {
   key: string
   /** Its product name; the system's own entries are named by the interface. */
   name: string
-  /** Guards computer use itself: it cannot be taken off. */
-  locked: boolean
   /** Bundle identifiers or executable names. */
   names: string[]
 }
@@ -204,11 +210,9 @@ export interface DriverInfo {
   error?: string
 }
 
-/** `computer://state`: every shared window, and whether the person has
- *  pressed Stop. */
+/** `computer://state`: every shared window. */
 export interface ComputerStatePayload {
   shared: SharedWindow[]
-  paused: boolean
 }
 
 /** Every shared window, whenever any grant changes. Desktop only. */

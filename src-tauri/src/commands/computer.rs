@@ -5,8 +5,7 @@
 //! Every agent read goes through the same five steps, in this order, because
 //! a read cannot be taken back:
 //!
-//! 1. **Switch.** The group is on (re-read now, not at injection), and the
-//!    person has not pressed Stop.
+//! 1. **Switch.** The group is on (re-read now, not at injection).
 //! 2. **Grant.** The window is one codeg named, it is shared, the grant has
 //!    not lapsed, and its application is not (or no longer) blocklisted.
 //! 3. **Identity.** The process that owned the window when it was shared is
@@ -15,11 +14,11 @@
 //!    codeg itself (a process's start time is not TCC-governed), not of the
 //!    helper.
 //! 4. **Read, then check again.** The helper reads; then everything above is
-//!    checked once more — the grant under the same epoch, the switch (not
-//!    switched off, not even off and on again, while the read was in flight),
-//!    the blocklist as it is now, and the identity — because the person may
-//!    have taken the window back while the read was in flight, and the read
-//!    holds exactly what they took back.
+//!    checked once more — no Stop since, the grant under the same epoch, the
+//!    switch (not switched off, not even off and on again, while the read was
+//!    in flight), the blocklist as it is now, and the identity — because the
+//!    person may have taken the window back while the read was in flight, and
+//!    the read holds exactly what they took back.
 //! 5. **Audit.** Every attempt — done, refused or failed — leaves a line on
 //!    the panel's activity list.
 //!
@@ -35,16 +34,19 @@
 //! turn has come, not before it waited behind a twenty-second snapshot —
 //! time in which the person could have taken the window back.
 //!
-//! **Stop.** The person's Stop pauses everything (every call answers
-//! `computer_paused` until they resume), ends every grant, and has the helper
-//! kill the driver mid-action. It does not wait for the queue.
+//! **Stop.** The person's Stop ends every grant and has the helper kill the
+//! driver mid-action; every call already under way answers
+//! `computer_stopped`, and no action let through before it goes out after it
+//! (Stops are counted, and an action carries the count all the way to the
+//! helper). It does not wait for the queue, and it leaves nothing behind:
+//! what the person shares next is shared as usual.
 //!
 //! Sharing and unsharing are Tauri commands only. There is no HTTP face for
 //! them: deciding what of this screen an agent may see is for the person at
 //! this screen.
 
 use std::collections::BTreeSet;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -60,7 +62,7 @@ use crate::acp::computer_tools::{
     SnapshotRequest, DEFAULT_MAX_DIMENSION, DEFAULT_SNAPSHOT_MAX_CHARS, ERROR_ACTION_FAILED,
     ERROR_BACKGROUND_UNAVAILABLE, ERROR_BLOCKED, ERROR_CONTROL_REQUIRED, ERROR_GRANT_REQUIRED,
     ERROR_NO_SUCH_TARGET, ERROR_OCCLUDED, ERROR_OUT_OF_TARGET, ERROR_PAUSED,
-    ERROR_PERMISSION_MISSING, ERROR_READ_FAILED, ERROR_STALE_REF, ERROR_UNAVAILABLE,
+    ERROR_PERMISSION_MISSING, ERROR_READ_FAILED, ERROR_STALE_REF, ERROR_STOPPED, ERROR_UNAVAILABLE,
     NEEDS_ELEMENT_NOTE, NO_DESKTOP_NOTE, OUT_OF_IMAGE_NOTE, PASTE_NOTE, SECRET_FIELD_NOTE,
     STOPPED_NOTE,
 };
@@ -78,7 +80,7 @@ use crate::computer::indicator::{Indicator, Strip};
 use crate::computer::local::LocalBackend;
 use crate::computer::marker::Marker;
 use crate::computer::procinfo::process_start;
-use crate::computer::protocol::{OsPermission, PermissionReport, RawAct};
+use crate::computer::protocol::{OsPermission, PermissionAsked, PermissionReport, RawAct};
 use crate::computer::stop_key::{StopKey, StopKeyStatus};
 use crate::computer::targets::{
     ActDenied, Aim, ReadMark, ReadRefusal, ReadTicket, ShareError, SharedWindow, Staleness,
@@ -203,6 +205,7 @@ fn refused_act(kind: ActRefusal, words: String) -> Refusal {
             ERROR_PAUSED,
             format!("{words} Nothing reaches any window until then; try again later."),
         ),
+        ActRefusal::Stopped => stopped(),
         ActRefusal::StaleRef => Refusal::failed(ERROR_STALE_REF, words),
         ActRefusal::OutOfTarget => Refusal::failed(ERROR_OUT_OF_TARGET, words),
         ActRefusal::Occluded => Refusal::failed(ERROR_OCCLUDED, words),
@@ -210,6 +213,11 @@ fn refused_act(kind: ActRefusal, words: String) -> Refusal {
         ActRefusal::SecretField => Refusal::refused(ERROR_BLOCKED, words),
         ActRefusal::Failed => Refusal::failed(ERROR_ACTION_FAILED, words),
     }
+}
+
+/// A call the person's Stop cut off.
+fn stopped() -> Refusal {
+    Refusal::refused(ERROR_STOPPED, STOPPED_NOTE.to_string())
 }
 
 /// An action refused before anything was sent, in words.
@@ -281,6 +289,8 @@ struct Admitted {
     ticket: ReadTicket,
     /// The switch-off count when the read was admitted.
     switched_off: u64,
+    /// The Stop count when the read was admitted.
+    stop: u64,
 }
 
 /// The desktop's computer-use service. One per app, managed as Tauri state.
@@ -292,23 +302,15 @@ pub struct ComputerService {
     me: SelfIdentity,
     /// Held for every call that reaches the driver. See the module note.
     turn: tokio::sync::Mutex<()>,
-    /// The person pressed Stop and has not resumed.
-    paused: AtomicBool,
-    /// Held while the helper is told of a Stop or a Resume, so it hears them
-    /// in the order the person pressed them — a Resume overtaking the Stop
-    /// before it would leave the helper stopped under a panel that says it
-    /// is not.
-    pausing: tokio::sync::Mutex<()>,
-    /// Moved by every Stop: a Resume that was already on its way when a Stop
-    /// came does not undo it.
+    /// How many times the person has pressed Stop. Whatever began before
+    /// the latest one — a share, a read, an action — is refused when it
+    /// finds the count moved; whatever begins after it goes on as usual.
     stops: AtomicU64,
-    /// Held across "is it stopped?" and the share that follows, across a
-    /// Stop's "stopped" and the revocation that follows, and across a
-    /// Resume's "no Stop since?" and its "not stopped" — so a share cannot
-    /// slip in between a Stop and its revocation and outlive it, and a Stop
-    /// cannot slip in between a Resume's check and its write and be undone.
-    /// The same holds for a settings change and what it takes away: see
-    /// `policy`.
+    /// Held across "has a Stop come since this share began?" and the share
+    /// that follows, and across a Stop's count and the revocation that
+    /// follows — so a share begun before a Stop cannot slip in between the
+    /// two and outlive it. The same holds for a settings change and what it
+    /// takes away: see `policy`.
     grant_gate: std::sync::Mutex<()>,
     /// The switch and the blocklist as the last settings change left them,
     /// written under `grant_gate` by the change hook, which revokes under it
@@ -356,8 +358,6 @@ impl ComputerService {
             config: config.clone(),
             me: SelfIdentity::current(),
             turn: tokio::sync::Mutex::new(()),
-            paused: AtomicBool::new(false),
-            pausing: tokio::sync::Mutex::new(()),
             stops: AtomicU64::new(0),
             grant_gate: std::sync::Mutex::new(()),
             policy: std::sync::Mutex::new(policy),
@@ -491,53 +491,57 @@ impl ComputerService {
     }
 
     /// Tell the panels, and bring the strip and the marker in line: the
-    /// strip is up while anything is shared (and a moment after a Stop), the
-    /// marker ready while anything is shared for control.
+    /// strip is up while anything is shared, the marker ready while anything
+    /// is shared for control.
     fn emit_state(&self) {
         let _told = self.state_gate.lock().unwrap_or_else(|p| p.into_inner());
         let shared = self.targets.shared();
-        let paused = self.paused.load(Ordering::Acquire);
-        events::emit_state(&self.app, &shared, paused);
-        self.indicator.set(Strip::of(!shared.is_empty(), paused));
+        events::emit_state(&self.app, &shared);
+        self.indicator.set(Strip::of(!shared.is_empty()));
         self.marker
             .arm(shared.iter().any(|w| w.level == GrantLevel::Control));
     }
 
-    /// The person pressed Stop: from now on every call is refused, every
-    /// grant ends, and the helper kills the driver — mid-action if it is in
-    /// one. In that order, so that nothing admitted after this call can go
-    /// out, and nothing already out outlives the driver.
+    /// The person pressed Stop: every grant ends, whatever is under way is
+    /// cut off, and the helper kills the driver — mid-action if it is in
+    /// one. The count moves with the revocation, before anything is waited
+    /// on, so nothing let through before this Stop goes out after it; and
+    /// nothing is held after it: sharing a window again is the next step.
     pub async fn stop(&self) {
-        // Refused and ended at once, before anything is waited on.
-        let ended = {
+        let (ended, stop) = {
             let _gate = self.grant_gate.lock().unwrap_or_else(|p| p.into_inner());
-            self.stops.fetch_add(1, Ordering::AcqRel);
-            self.paused.store(true, Ordering::Release);
-            self.targets.revoke_all(GrantChange::Stopped)
+            let stop = self.stops.fetch_add(1, Ordering::AcqRel) + 1;
+            (self.targets.revoke_all(GrantChange::Stopped), stop)
         };
         for change in &ended {
             events::emit_grant(&self.app, change);
         }
         self.emit_state();
-        let _order = self.pausing.lock().await;
-        // A Resume pressed after this Stop, and heard first, has already put
-        // things back; stopping the helper now would leave it stopped under
-        // a panel that says it is not.
-        if !self.paused.load(Ordering::Acquire) {
-            return;
-        }
-        if let Err(e) = self.backend.halt().await {
+        if let Err(e) = self.backend.halt(stop).await {
             tracing::warn!("[computer] the helper did not confirm the stop: {e}");
         }
     }
 
-    /// Share a window, unless computer use is off or a Stop is in force —
-    /// decided under the same lock a Stop and a settings change take to
-    /// revoke, so no share lands between either and its revocation.
+    /// How many times the person has pressed Stop, for whatever begins now
+    /// to be held to.
+    fn stop_count(&self) -> u64 {
+        self.stops.load(Ordering::Acquire)
+    }
+
+    /// Whether a Stop has come since `stop` was counted.
+    fn stopped_since(&self, stop: u64) -> bool {
+        self.stop_count() != stop
+    }
+
+    /// Share a window, unless computer use is off or the person has pressed
+    /// Stop since the share began (`since`) — decided under the same lock a
+    /// Stop and a settings change take to revoke, so no share lands between
+    /// either and its revocation.
     fn share_unless_stopped(
         &self,
         target_id: &str,
         level: GrantLevel,
+        since: u64,
     ) -> Result<Option<ComputerGrantPayload>, AppCommandError> {
         let _gate = self.grant_gate.lock().unwrap_or_else(|p| p.into_inner());
         let policy = self.policy.lock().unwrap_or_else(|p| p.into_inner());
@@ -547,9 +551,9 @@ impl ComputerService {
                     "computer use is switched off",
                 ));
             }
-            if self.paused.load(Ordering::Acquire) {
+            if self.stopped_since(since) {
                 return Err(AppCommandError::configuration_invalid(
-                    "computer use is stopped; resume it first",
+                    "Stop was pressed while this was being shared; share it again",
                 ));
             }
         }
@@ -567,15 +571,15 @@ impl ComputerService {
         }
     }
 
-    /// Whether anything may be shared at all right now: computer use on, and
-    /// no Stop in force.
-    fn sharing_open(&self) -> bool {
+    /// Whether a share begun at `since` may still land: computer use on,
+    /// and no Stop since.
+    fn sharing_open(&self, since: u64) -> bool {
         let _gate = self.grant_gate.lock().unwrap_or_else(|p| p.into_inner());
         self.policy
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .enabled
-            && !self.paused.load(Ordering::Acquire)
+            && !self.stopped_since(since)
     }
 
     /// Remove cua-driver, as the person asked from Settings: switch computer
@@ -616,26 +620,6 @@ impl ComputerService {
             .map_err(AppCommandError::configuration_invalid)
     }
 
-    /// The person resumed. No grant comes back: what they stopped sharing
-    /// they share again, window by window.
-    pub async fn resume(&self) {
-        let stops = self.stops.load(Ordering::Acquire);
-        let _order = self.pausing.lock().await;
-        if let Err(e) = self.backend.resume().await {
-            tracing::warn!("[computer] the helper did not confirm the resume: {e}");
-        }
-        // A Stop pressed while this was on its way stands — decided under the
-        // lock a Stop takes to set `paused`, so none lands between the check
-        // and the write and is undone by it.
-        {
-            let _gate = self.grant_gate.lock().unwrap_or_else(|p| p.into_inner());
-            if self.stops.load(Ordering::Acquire) == stops {
-                self.paused.store(false, Ordering::Release);
-            }
-        }
-        self.emit_state();
-    }
-
     fn record(&self, target_id: &str, action: ComputerAction, outcome: ActivityOutcome) {
         events::emit_activity(
             &self.app,
@@ -648,11 +632,8 @@ impl ComputerService {
         );
     }
 
-    /// Step 1: the switch, re-read now, and the person's Stop.
+    /// Step 1: the switch, re-read now.
     async fn usable(&self) -> Result<ComputerToolsConfig, Refusal> {
-        if self.paused.load(Ordering::Acquire) {
-            return Err(Refusal::refused(ERROR_PAUSED, STOPPED_NOTE.to_string()));
-        }
         let config = self.config.snapshot().await;
         if !config.enabled {
             return Err(Refusal::refused(
@@ -692,22 +673,36 @@ impl ComputerService {
         }
     }
 
-    /// A backend error on an action. What differs from a read: an action
-    /// that failed or lost its helper on the way may have happened anyway,
-    /// and the words say so; and a helper that went away because the person
-    /// pressed Stop is reported as the Stop.
-    fn backend_act_refusal(&self, target_id: &str, e: BackendError) -> Refusal {
-        match e {
-            BackendError::Unavailable(_) if self.paused.load(Ordering::Acquire) => {
-                Refusal::refused(
-                    ERROR_PAUSED,
+    /// A backend error on a read or a listing admitted at Stop count
+    /// `stop`: one that met the person's Stop on its way — the driver it was
+    /// using killed under it — is reported as the Stop.
+    fn backend_read_refusal(&self, target_id: Option<&str>, e: BackendError, stop: u64) -> Refusal {
+        if self.stopped_since(stop) {
+            return stopped();
+        }
+        self.backend_refusal(target_id, e)
+    }
+
+    /// A backend error on an action let through at Stop count `stop`. What
+    /// differs from a read: an action that failed or lost its helper on the
+    /// way may have happened anyway, and the words say so; and a helper that
+    /// went away because the person pressed Stop is reported as the Stop.
+    fn backend_act_refusal(&self, target_id: &str, e: BackendError, stop: u64) -> Refusal {
+        if self.stopped_since(stop) {
+            return match e {
+                // Refused before it went out, whatever for: not done.
+                BackendError::Refused(kind, _) if kind != ActRefusal::Failed => stopped(),
+                _ => Refusal::refused(
+                    ERROR_STOPPED,
                     format!(
                         "The user pressed Stop while this action was on its way: it may or may \
                          not have happened. {STOPPED_NOTE}"
                     ),
                 )
-                .maybe_done()
-            }
+                .maybe_done(),
+            };
+        }
+        match e {
             BackendError::Unavailable(why) => Refusal::failed(
                 ERROR_UNAVAILABLE,
                 format!(
@@ -730,6 +725,9 @@ impl ComputerService {
 
     /// Steps 1–3: everything that has to hold before the helper is asked.
     async fn begin(&self, target_id: &str) -> Result<Admitted, Refusal> {
+        // Counted before the grant is looked at: a Stop after this revokes
+        // the grant, or is caught by `finish`.
+        let stop = self.stop_count();
         let config = self.usable().await?;
         let blocklist = blocklist_of(&config);
         let ticket = match self.targets.begin_read(
@@ -759,6 +757,7 @@ impl ComputerService {
         Ok(Admitted {
             ticket,
             switched_off: config.switched_off,
+            stop,
         })
     }
 
@@ -790,6 +789,9 @@ impl ComputerService {
         let ticket = &admitted.ticket;
         let refused =
             || Refusal::refused(ERROR_GRANT_REQUIRED, grant_required_note(&ticket.target_id));
+        if self.stopped_since(admitted.stop) {
+            return Err(stopped());
+        }
         let config = self.usable().await?;
         if config.switched_off != admitted.switched_off {
             return Err(refused());
@@ -824,15 +826,16 @@ impl ComputerService {
 
     pub async fn agent_list_apps(&self) -> ComputerAppsOutcome {
         let _turn = self.turn.lock().await;
+        let stop = self.stop_count();
         let config = match self.usable().await {
             Ok(config) => config,
             Err(r) => return ComputerAppsOutcome::refused(r.slug, r.note),
         };
         let blocklist = blocklist_of(&config);
         let listed = self.backend.list_apps().await;
-        // A Stop that came while the helper was listing refuses this too.
-        if self.paused.load(Ordering::Acquire) {
-            return ComputerAppsOutcome::refused(ERROR_PAUSED, STOPPED_NOTE);
+        // A Stop that came while the helper was listing cuts this off too.
+        if self.stopped_since(stop) {
+            return ComputerAppsOutcome::refused(ERROR_STOPPED, STOPPED_NOTE);
         }
         match listed {
             Ok(apps) => ComputerAppsOutcome {
@@ -854,7 +857,7 @@ impl ComputerService {
                 note: None,
             },
             Err(e) => {
-                let r = self.backend_refusal(None, e);
+                let r = self.backend_read_refusal(None, e, stop);
                 ComputerAppsOutcome::refused(r.slug, r.note)
             }
         }
@@ -862,6 +865,7 @@ impl ComputerService {
 
     pub async fn agent_list_windows(&self, pid: Option<u32>) -> ComputerWindowsOutcome {
         let _turn = self.turn.lock().await;
+        let stop = self.stop_count();
         let config = match self.usable().await {
             Ok(config) => config,
             Err(r) => return ComputerWindowsOutcome::refused(r.slug, r.note),
@@ -871,10 +875,10 @@ impl ComputerService {
         // Grants that have already ended by the rules as they are now must
         // not show — neither as a level nor as a title.
         self.sweep().await;
-        // A Stop that came while the helper was listing, or since, refuses
-        // this too; nothing below waits on anything.
-        if self.paused.load(Ordering::Acquire) {
-            return ComputerWindowsOutcome::refused(ERROR_PAUSED, STOPPED_NOTE);
+        // A Stop that came while the helper was listing, or since, cuts this
+        // off too; nothing below waits on anything.
+        if self.stopped_since(stop) {
+            return ComputerWindowsOutcome::refused(ERROR_STOPPED, STOPPED_NOTE);
         }
         match listed {
             Ok(windows) => {
@@ -891,7 +895,7 @@ impl ComputerService {
                 }
             }
             Err(e) => {
-                let r = self.backend_refusal(None, e);
+                let r = self.backend_read_refusal(None, e, stop);
                 ComputerWindowsOutcome::refused(r.slug, r.note)
             }
         }
@@ -912,7 +916,7 @@ impl ComputerService {
             .backend
             .capture(ticket.identity.pid, ticket.identity.window_id, Some(max))
             .await
-            .map_err(|e| self.backend_refusal(Some(target_id), e))?;
+            .map_err(|e| self.backend_read_refusal(Some(target_id), e, admitted.stop))?;
         let window_bounds = if raw.window_bounds.is_empty() {
             ticket.bounds
         } else {
@@ -979,7 +983,7 @@ impl ComputerService {
                 },
             )
             .await
-            .map_err(|e| self.backend_refusal(Some(target_id), e))?;
+            .map_err(|e| self.backend_read_refusal(Some(target_id), e, admitted.stop))?;
         let (tree, cut) = cut_tree(
             &raw.tree,
             request.max_chars.unwrap_or(DEFAULT_SNAPSHOT_MAX_CHARS),
@@ -1049,7 +1053,7 @@ impl ComputerService {
             .backend
             .verify(ticket.identity.pid, ticket.identity.window_id, request)
             .await
-            .map_err(|e| self.backend_refusal(Some(target_id), e))?;
+            .map_err(|e| self.backend_read_refusal(Some(target_id), e, admitted.stop))?;
         self.finish(&admitted, None).await?;
         Ok(VerifyOutcome {
             target_id: target_id.to_string(),
@@ -1079,15 +1083,16 @@ impl ComputerService {
     }
 
     /// One action, checked from the top: its turn at the driver first, then
-    /// the switch and Stop, the grant and the action against what the agent
-    /// last read, the process — and then the helper, which checks again what
-    /// only it can see.
+    /// the switch, the grant and the action against what the agent last
+    /// read, the process, no Stop since it began — and then the helper,
+    /// which checks again what only it can see, the Stop count included.
     async fn act_once(
         &self,
         target_id: &str,
         request: &ComputerActRequest,
     ) -> Result<(RawAct, Aim), Refusal> {
         let _turn = self.turn.lock().await;
+        let stop = self.stop_count();
         let config = self.usable().await?;
         let blocklist = blocklist_of(&config);
         let ticket = match self.targets.begin_act(
@@ -1106,6 +1111,11 @@ impl ComputerService {
         };
         let started_at = self.check_identity(target_id, &ticket.identity)?;
         let aim = ticket.aim;
+        // The grant was looked at after `stop` was counted, so a Stop in
+        // between either revoked it above or shows here.
+        if self.stopped_since(stop) {
+            return Err(stopped());
+        }
         self.backend
             .act(
                 ticket.identity.pid,
@@ -1113,10 +1123,11 @@ impl ComputerService {
                 started_at,
                 ticket.app.key().map(str::to_string),
                 ticket.action,
+                stop,
             )
             .await
             .map(|raw| (raw, aim))
-            .map_err(|e| self.backend_act_refusal(target_id, e))
+            .map_err(|e| self.backend_act_refusal(target_id, e, stop))
     }
 
     /// Act on a window shared for control. A key pressed more than once is
@@ -1239,8 +1250,6 @@ pub struct ComputerStatus {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub codeg: Option<CodegTccStatus>,
     pub shared: Vec<SharedWindow>,
-    /// The person pressed Stop and has not resumed.
-    pub paused: bool,
 }
 
 /// One window, as the share picker shows it to the person — title and all:
@@ -1302,21 +1311,35 @@ pub async fn computer_status(app: AppHandle) -> Result<ComputerStatus, AppComman
         permissions,
         codeg: codeg_tcc(),
         shared: service.targets.shared(),
-        paused: service.paused.load(Ordering::Acquire),
     })
 }
 
-/// Raise the system's request for one permission, charged to the helper.
+/// What asking for a permission did.
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PermissionRequestResult {
+    /// The helper's permissions once the system had been asked.
+    pub report: PermissionReport,
+    /// The system put up its own dialog for it, which has a button to the
+    /// right pane of System Settings.
+    pub prompted: bool,
+}
+
+/// Raise the system's request for one permission — that one alone — charged
+/// to the helper, and say where that leaves things.
 #[tauri::command]
 pub async fn computer_request_permission(
     app: AppHandle,
     permission: OsPermission,
-) -> Result<PermissionReport, AppCommandError> {
-    service(&app)?
+) -> Result<PermissionRequestResult, AppCommandError> {
+    let service = service(&app)?;
+    let PermissionAsked { prompted } = service
         .backend
         .request_permission(permission)
         .await
-        .map_err(backend_error)
+        .map_err(backend_error)?;
+    let report = service.backend.permissions().await.map_err(backend_error)?;
+    Ok(PermissionRequestResult { report, prompted })
 }
 
 /// Open System Settings at the pane for one permission.
@@ -1428,7 +1451,8 @@ pub async fn computer_share_window(
     level: GrantLevel,
 ) -> Result<Vec<SharedWindow>, AppCommandError> {
     let service = service(&app)?;
-    let change = service.share_unless_stopped(&target_id, level)?;
+    let since = service.stop_count();
+    let change = service.share_unless_stopped(&target_id, level, since)?;
     service.announce(&change.into_iter().collect::<Vec<_>>());
     Ok(service.targets.shared())
 }
@@ -1447,8 +1471,9 @@ pub struct ShareManyResult {
 /// as [`computer_share_window`] would share it, one after another, skipping
 /// the ones that cannot be. A Stop or a switch-off that lands part way
 /// through is decided window by window, under the lock it revokes under:
-/// nothing is shared after it. Refused outright when the first window
-/// already could not be shared for that reason.
+/// nothing is shared after it (the next share, begun after the Stop, is).
+/// Refused outright when the first window already could not be shared for
+/// that reason.
 #[tauri::command]
 pub async fn computer_share_windows(
     app: AppHandle,
@@ -1456,13 +1481,14 @@ pub async fn computer_share_windows(
     level: GrantLevel,
 ) -> Result<ShareManyResult, AppCommandError> {
     let service = service(&app)?;
+    let since = service.stop_count();
     let mut skipped = 0u32;
     for (i, target_id) in target_ids.iter().enumerate() {
-        match service.share_unless_stopped(target_id, level) {
+        match service.share_unless_stopped(target_id, level, since) {
             // Told as it happens, so a Stop's revocations are never told
             // before a share they undid.
             Ok(change) => service.announce(&change.into_iter().collect::<Vec<_>>()),
-            Err(e) if i == 0 && level != GrantLevel::None && !service.sharing_open() => {
+            Err(e) if i == 0 && level != GrantLevel::None && !service.sharing_open(since) => {
                 return Err(e)
             }
             Err(_) => skipped += 1,
@@ -1474,24 +1500,21 @@ pub async fn computer_share_windows(
     })
 }
 
-/// The shared windows and whether Stop is in force — codeg's own state, with
-/// no helper to start, for a window that has just loaded.
+/// The shared windows — codeg's own state, with no helper to start, for a
+/// window that has just loaded.
 #[tauri::command]
 pub async fn computer_shared_state(app: AppHandle) -> Result<SharedState, AppCommandError> {
     let service = service(&app)?;
     Ok(SharedState {
         shared: service.targets.shared(),
-        paused: service.paused.load(Ordering::Acquire),
     })
 }
 
-/// What `computer_shared_state` answers: the same pair `computer://state`
-/// carries.
+/// What `computer_shared_state` answers: what `computer://state` carries.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SharedState {
     pub shared: Vec<SharedWindow>,
-    pub paused: bool,
 }
 
 /// Stop sharing every window.
@@ -1503,18 +1526,11 @@ pub async fn computer_revoke_all(app: AppHandle) -> Result<(), AppCommandError> 
     Ok(())
 }
 
-/// Stop: every agent call refused, every grant ended, the driver killed
-/// mid-action. Answers once all three are done.
+/// Stop: every grant ended, whatever is under way cut off, the driver killed
+/// mid-action. Answers once all three are done. Nothing is held after it.
 #[tauri::command]
 pub async fn computer_stop(app: AppHandle) -> Result<(), AppCommandError> {
     service(&app)?.stop().await;
-    Ok(())
-}
-
-/// Resume after a Stop. Nothing is shared again by it.
-#[tauri::command]
-pub async fn computer_resume(app: AppHandle) -> Result<(), AppCommandError> {
-    service(&app)?.resume().await;
     Ok(())
 }
 

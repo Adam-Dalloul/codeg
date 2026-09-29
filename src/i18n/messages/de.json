@@ -5151,21 +5151,16 @@
     "preview": "Vorschau",
     "refresh": "Aktualisieren",
     "tooltipShared": "Computernutzung · {count, plural, one {# Fenster freigegeben} other {# Fenster freigegeben}}",
-    "tooltipStopped": "Computernutzung · angehalten",
-    "stop": "Agenten anhalten",
-    "stopTooltip": "{count, plural, one {Agenten können in # Fenster handeln} other {Agenten können in # Fenstern handeln}} · klicken, um alle anzuhalten",
-    "stopHint": "Hält alle Agenten sofort an: Was gerade läuft, wird abgebrochen, und alle Freigaben enden – bis du fortsetzt.",
-    "stopped": "Angehalten. Kein Agent kann ein Fenster lesen oder darin handeln, bis du fortsetzt.",
-    "resume": "Fortsetzen",
+    "stop": "Freigabe beenden",
+    "stopHint": "Beendet sofort die Freigabe aller Fenster und bricht ab, was Agenten gerade tun. Gib ein Fenster erneut frei, wenn sie weitermachen sollen.",
     "indicator": {
       "actOne": "Agenten können in {app} handeln",
       "actMany": "Agenten können in {count, plural, one {# Fenster} other {# Fenstern}} handeln",
       "readOne": "Agenten können {app} sehen",
       "readMany": "Agenten können {count, plural, one {# Fenster} other {# Fenster}} sehen",
       "recent": "{action} in {app}",
-      "stopped": "Angehalten – fortsetzen im Computernutzung-Bereich von codeg",
-      "stop": "Anhalten",
-      "stopWithKey": "Alle Agenten sofort anhalten ({key})"
+      "stop": "Freigabe beenden",
+      "stopWithKey": "Freigabe aller Fenster beenden ({key})"
     },
     "codegGranted": "codeg selbst hat Bedienungshilfen oder Bildschirmaufnahme – die Shells der Agenten können das ohne jede Freigabe nutzen. Schalte es für codeg in den Systemeinstellungen aus, wenn du es nicht brauchst.",
     "backend": {
@@ -5191,8 +5186,7 @@
     "shared": {
       "title": "{count, plural, =0 {Keine Fenster freigegeben} one {# Fenster freigegeben} other {# Fenster freigegeben}}",
       "empty": "Agenten können deine Fenster auflisten, aber keines lesen, bis du eines freigibst.",
-      "stop": "Beenden",
-      "stopAll": "Alle beenden"
+      "stop": "Beenden"
     },
     "level": {
       "read": "Darf lesen",
@@ -5248,7 +5242,7 @@
       "skipped": "{count, plural, one {# Fenster konnte nicht freigegeben werden; es wurde vielleicht geschlossen.} other {# Fenster konnten nicht freigegeben werden; sie wurden vielleicht geschlossen.}}",
       "unshareable": "{count, plural, one {# Fenster lässt sich nicht freigeben} other {# Fenster lassen sich nicht freigeben}}",
       "noneShareable": "Keines dieser Fenster lässt sich freigeben.",
-      "codegWhy": "Fenster von codeg werden nie freigegeben: Ein Agent, der codeg bedienen könnte, könnte seine eigenen Anfragen genehmigen, sich weitere Fenster freigeben oder nach deinem Anhalten auf Fortsetzen drücken. Dasselbe gilt für andere codeg-Instanzen."
+      "codegWhy": "Fenster von codeg werden nie freigegeben: Ein Agent, der codeg bedienen könnte, könnte seine eigenen Anfragen genehmigen oder sich weitere Fenster freigeben. Dasselbe gilt für andere codeg-Instanzen."
     },
     "settings": {
       "pageTitle": "Computernutzung",
@@ -5287,7 +5281,7 @@
         "screenRecordingHint": "Bildschirmfotos machen und Fenstertitel lesen."
       },
       "title": "Freigeben und Anhalten",
-      "description": "Wie lange ein Fenster freigegeben bleibt, welche Apps nie freigegeben werden und das Tastenkürzel, das alle Agenten anhält.",
+      "description": "Wie lange ein Fenster freigegeben bleibt, welche Apps nie freigegeben werden und das Tastenkürzel, das alle Freigaben auf einmal beendet.",
       "ttl": {
         "label": "Freigabe ungenutzter Fenster beenden nach",
         "hint": "Ein freigegebenes Fenster wird nicht mehr geteilt, wenn es so lange kein Agent gelesen hat.",
@@ -5296,12 +5290,11 @@
       },
       "blocklist": {
         "label": "Nie freigegebene Anwendungen",
-        "hint": "Ihre Fenster können nicht für Agenten freigegeben werden. Entferne Standardeinträge, die du nicht brauchst (gesperrte bleiben), oder füge eine Anwendung per Bundle-ID (com.example.app), Programmname (app.exe) oder vollständigem Pfad hinzu.",
+        "hint": "Ihre Fenster können nicht für Agenten freigegeben werden. Entferne Standardeinträge, die du nicht brauchst, oder füge eine Anwendung per Bundle-ID (com.example.app), Programmname (app.exe) oder vollständigem Pfad hinzu.",
         "placeholder": "com.example.app",
         "add": "Hinzufügen",
         "remove": "{name} entfernen",
         "restore": "Standard wiederherstellen",
-        "locked": "Schützt das System und die Computernutzung selbst und kann daher nicht entfernt werden.",
         "custom": "Von dir hinzugefügt",
         "duplicate": "Steht schon auf der Liste.",
         "removedCount": "{count, plural, one {# Standardeintrag entfernt.} other {# Standardeinträge entfernt.}}",
@@ -5314,16 +5307,16 @@
       },
       "stopKey": {
         "label": "Tastenkürzel zum Anhalten",
-        "hint": "Hält alle Agenten aus jeder App heraus an, wie die Schaltfläche „Anhalten“. Solange die Computernutzung eingeschaltet ist, gehören diese Tasten codeg – wähle also welche, die du sonst nicht verwendest.",
+        "hint": "Beendet die Freigabe aller Fenster aus jeder App heraus, wie die Schaltfläche „Freigabe beenden“. Solange die Computernutzung eingeschaltet ist, gehören diese Tasten codeg – wähle also welche, die du sonst nicht verwendest.",
         "recording": "Tasten drücken …",
         "recordHint": "Strg und eine weitere Sondertaste (Alt oder Umschalt) halten, dann eine Taste drücken. Esc bricht ab.",
         "recordHintMac": "⌃ oder ⌘ und eine weitere Sondertaste halten, dann eine Taste drücken. Esc bricht ab.",
         "off": "Aus",
         "useDefault": "Standard",
         "turnOff": "Ausschalten",
-        "statusActive": "Aktiv: Überall drücken, um alle Agenten anzuhalten.",
+        "statusActive": "Aktiv: Überall drücken, um die Freigabe aller Fenster zu beenden.",
         "statusIdle": "Wirkt, solange die Computernutzung eingeschaltet ist.",
-        "statusOff": "Aus: Nur die Schaltflächen „Anhalten“ halten Agenten an.",
+        "statusOff": "Aus: Nur die Schaltflächen „Freigabe beenden“ beenden die Freigabe.",
         "statusFailed": "Nicht aktiv: Vermutlich verwendet eine andere App diese Tasten. Wähle andere.",
         "problem": {
           "unsupportedKey": "Diese Taste geht nicht. Wähle einen Buchstaben, eine Ziffer, F1–F12, Esc oder eine Satzzeichentaste.",

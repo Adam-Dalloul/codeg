@@ -5,10 +5,11 @@
  * agents may do and in which application, what one has just done, and Stop.
  *
  * It lives in a window of its own (`computer-indicator`), which the backend
- * shows while anything is shared and hides a moment after a Stop. This part
- * only draws it, sizes the window to what it drew — the words are as long as
- * the language makes them — and passes Stop on. The whole strip is a drag
- * handle except the button, so it can be moved off whatever it covers.
+ * shows while anything is shared and hides once nothing is — a Stop, which
+ * ends every sharing, included. This part only draws it, sizes the window to
+ * what it drew — the words are as long as the language makes them — and
+ * passes Stop on. The whole strip is a drag handle except the button, so it
+ * can be moved off whatever it covers.
  *
  * It names applications, never window titles: it is on the screen for
  * anyone looking at it, or at a recording of it.
@@ -58,7 +59,7 @@ const TRANSPARENT = "html,body{background:transparent!important}"
 export function ComputerIndicator() {
   const t = useTranslations("ComputerUse")
   const isMac = useIsMac()
-  const { shared, sharedKnown, paused, activity } = useComputerStore()
+  const { shared, sharedKnown, activity } = useComputerStore()
   const stopKey = useComputerStopKey()
   const [stopping, setStopping] = useState(false)
   const [now, setNow] = useState(() => Date.now())
@@ -68,7 +69,7 @@ export function ComputerIndicator() {
   useEffect(() => {
     const mark = computerStoreMark()
     computerSharedState()
-      .then((s) => setComputerSharedSince(s.shared, mark, s.paused))
+      .then((s) => setComputerSharedSince(s.shared, mark))
       .catch(() => {})
   }, [])
 
@@ -126,13 +127,11 @@ export function ComputerIndicator() {
   const controlled = shared.filter((w) => w.level === "control")
   const acting = controlled.length > 0
   const subject = acting ? controlled : shared
-  const stopped = paused && shared.length === 0
   const appOf = (targetId: string) =>
     shared.find((w) => w.targetId === targetId)?.appName
 
   let summary: string | null = null
-  if (stopped) summary = t("indicator.stopped")
-  else if (subject.length === 1)
+  if (subject.length === 1)
     summary = t(acting ? "indicator.actOne" : "indicator.readOne", {
       app: subject[0].appName,
     })
@@ -153,12 +152,7 @@ export function ComputerIndicator() {
         ref={stripRef}
         data-tauri-drag-region
         style={{ margin: MARGIN }}
-        className={cn(
-          "flex w-max max-w-[680px] shrink-0 cursor-default select-none items-center gap-2 rounded-full border py-1 pl-3 text-xs shadow-lg",
-          stopped
-            ? "border-amber-500/40 bg-amber-50 py-1.5 pr-3 text-amber-800 dark:bg-amber-950 dark:text-amber-200"
-            : "border-border bg-background pr-1 text-foreground"
-        )}
+        className="flex w-max max-w-[680px] shrink-0 cursor-default select-none items-center gap-2 rounded-full border border-border bg-background py-1 pr-1 pl-3 text-xs text-foreground shadow-lg"
       >
         {sharedKnown && summary && (
           <>
@@ -167,11 +161,7 @@ export function ComputerIndicator() {
               data-tauri-drag-region
               className={cn(
                 "size-2 shrink-0 rounded-full",
-                stopped
-                  ? "bg-amber-500"
-                  : acting
-                    ? "animate-pulse bg-red-500"
-                    : "bg-violet-500"
+                acting ? "animate-pulse bg-red-500" : "bg-violet-500"
               )}
             />
             <span
@@ -180,7 +170,7 @@ export function ComputerIndicator() {
             >
               {summary}
             </span>
-            {recent && !stopped && (
+            {recent && (
               <span
                 data-tauri-drag-region
                 className="min-w-0 truncate text-muted-foreground"
@@ -195,26 +185,24 @@ export function ComputerIndicator() {
             )}
           </>
         )}
-        {!stopped && (
-          <Button
-            size="xs"
-            variant="destructive"
-            className="shrink-0 rounded-full"
-            onClick={() => void stop()}
-            disabled={stopping || !sharedKnown}
-            title={
-              shortcut
-                ? t("indicator.stopWithKey", { key: shortcut })
-                : t("stopHint")
-            }
-          >
-            <Square className="size-2.5 fill-current" />
-            {t("indicator.stop")}
-            {shortcut && (
-              <kbd className="font-sans text-3xs opacity-80">{shortcut}</kbd>
-            )}
-          </Button>
-        )}
+        <Button
+          size="xs"
+          variant="destructive"
+          className="shrink-0 rounded-full"
+          onClick={() => void stop()}
+          disabled={stopping || !sharedKnown}
+          title={
+            shortcut
+              ? t("indicator.stopWithKey", { key: shortcut })
+              : t("stopHint")
+          }
+        >
+          <Square className="size-2.5 fill-current" />
+          {t("indicator.stop")}
+          {shortcut && (
+            <kbd className="font-sans text-3xs opacity-80">{shortcut}</kbd>
+          )}
+        </Button>
       </div>
     </div>
   )

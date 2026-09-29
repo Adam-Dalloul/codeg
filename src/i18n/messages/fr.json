@@ -5151,21 +5151,16 @@
     "preview": "Aperçu",
     "refresh": "Actualiser",
     "tooltipShared": "Utilisation de l'ordinateur · {count, plural, one {# fenêtre partagée} other {# fenêtres partagées}}",
-    "tooltipStopped": "Utilisation de l'ordinateur · arrêtée",
-    "stop": "Arrêter les agents",
-    "stopTooltip": "{count, plural, one {Les agents peuvent agir sur # fenêtre} other {Les agents peuvent agir sur # fenêtres}} · cliquez pour tous les arrêter",
-    "stopHint": "Arrête tous les agents maintenant : ce qui est en cours est interrompu et toutes les fenêtres cessent d'être partagées, jusqu'à ce que vous repreniez.",
-    "stopped": "Arrêté. Aucun agent ne peut lire ni agir sur une fenêtre tant que vous ne reprenez pas.",
-    "resume": "Reprendre",
+    "stop": "Arrêter le partage",
+    "stopHint": "Arrête immédiatement le partage de toutes les fenêtres et interrompt ce que font les agents. Partagez à nouveau une fenêtre quand vous voulez qu'ils reprennent.",
     "indicator": {
       "actOne": "Les agents peuvent agir sur {app}",
       "actMany": "Les agents peuvent agir sur {count, plural, one {# fenêtre} other {# fenêtres}}",
       "readOne": "Les agents peuvent voir {app}",
       "readMany": "Les agents peuvent voir {count, plural, one {# fenêtre} other {# fenêtres}}",
       "recent": "{action} dans {app}",
-      "stopped": "Arrêté — reprenez depuis le panneau Utilisation de l'ordinateur de codeg",
-      "stop": "Arrêter",
-      "stopWithKey": "Arrêter tous les agents d'un coup ({key})"
+      "stop": "Arrêter le partage",
+      "stopWithKey": "Arrêter le partage de toutes les fenêtres ({key})"
     },
     "codegGranted": "codeg lui-même dispose d'Accessibilité ou d'Enregistrement de l'écran : le shell des agents peut s'en servir sans rien partager. Si vous n'en avez pas besoin, désactivez-le pour codeg dans Réglages Système.",
     "backend": {
@@ -5191,8 +5186,7 @@
     "shared": {
       "title": "{count, plural, =0 {Aucune fenêtre partagée} one {# fenêtre partagée} other {# fenêtres partagées}}",
       "empty": "Les agents peuvent lister vos fenêtres, mais n'en lire aucune tant que vous n'en partagez pas une.",
-      "stop": "Arrêter",
-      "stopAll": "Tout arrêter"
+      "stop": "Arrêter"
     },
     "level": {
       "read": "Peut lire",
@@ -5248,7 +5242,7 @@
       "skipped": "{count, plural, one {# fenêtre n'a pas pu être partagée ; elle a peut-être été fermée.} other {# fenêtres n'ont pas pu être partagées ; elles ont peut-être été fermées.}}",
       "unshareable": "{count, plural, one {# fenêtre ne peut pas être partagée} other {# fenêtres ne peuvent pas être partagées}}",
       "noneShareable": "Aucune de ces fenêtres ne peut être partagée.",
-      "codegWhy": "Les fenêtres de codeg ne sont jamais partagées : un agent capable de manipuler codeg pourrait approuver ses propres demandes, se partager d'autres fenêtres ou appuyer sur Reprendre après votre Arrêt. Il en va de même pour les autres instances de codeg."
+      "codegWhy": "Les fenêtres de codeg ne sont jamais partagées : un agent capable de manipuler codeg pourrait approuver ses propres demandes ou se partager d'autres fenêtres. Il en va de même pour les autres instances de codeg."
     },
     "settings": {
       "pageTitle": "Utilisation de l'ordinateur",
@@ -5287,7 +5281,7 @@
         "screenRecordingHint": "Faire des captures et lire les titres des fenêtres."
       },
       "title": "Partage et arrêt",
-      "description": "Combien de temps une fenêtre reste partagée, quelles applications ne sont jamais partagées, et le raccourci qui arrête tous les agents.",
+      "description": "Combien de temps une fenêtre reste partagée, quelles applications ne sont jamais partagées, et le raccourci qui arrête tout le partage d'un coup.",
       "ttl": {
         "label": "Arrêter le partage des fenêtres inutilisées après",
         "hint": "Une fenêtre partagée cesse de l'être quand aucun agent ne l'a lue pendant cette durée.",
@@ -5296,12 +5290,11 @@
       },
       "blocklist": {
         "label": "Applications jamais partagées",
-        "hint": "Leurs fenêtres ne peuvent pas être partagées avec les agents. Retirez les entrées par défaut inutiles (les verrouillées restent) ou ajoutez une application par identifiant de paquet (com.example.app), nom d'exécutable (app.exe) ou chemin complet.",
+        "hint": "Leurs fenêtres ne peuvent pas être partagées avec les agents. Retirez les entrées par défaut inutiles ou ajoutez une application par identifiant de paquet (com.example.app), nom d'exécutable (app.exe) ou chemin complet.",
         "placeholder": "com.example.app",
         "add": "Ajouter",
         "remove": "Retirer {name}",
         "restore": "Rétablir les valeurs par défaut",
-        "locked": "Protège le système et l'utilisation de l'ordinateur elle-même ; impossible de le retirer.",
         "custom": "Ajoutée par vous",
         "duplicate": "Déjà dans la liste.",
         "removedCount": "{count, plural, one {# application par défaut retirée.} other {# applications par défaut retirées.}}",
@@ -5314,16 +5307,16 @@
       },
       "stopKey": {
         "label": "Raccourci d'arrêt",
-        "hint": "Arrête tous les agents depuis n'importe quelle application, comme le bouton Arrêter. Tant que l'utilisation de l'ordinateur est activée, ces touches appartiennent à codeg : choisissez-en que vous n'utilisez pas ailleurs.",
+        "hint": "Arrête le partage de toutes les fenêtres depuis n'importe quelle application, comme le bouton Arrêter le partage. Tant que l'utilisation de l'ordinateur est activée, ces touches appartiennent à codeg : choisissez-en que vous n'utilisez pas ailleurs.",
         "recording": "Appuyez sur les touches…",
         "recordHint": "Maintenez Ctrl et un autre modificateur (Alt ou Maj), puis appuyez sur une touche. Échap annule.",
         "recordHintMac": "Maintenez ⌃ ou ⌘ et un autre modificateur, puis appuyez sur une touche. Échap annule.",
         "off": "Désactivé",
         "useDefault": "Par défaut",
         "turnOff": "Désactiver",
-        "statusActive": "Actif : appuyez n'importe où pour arrêter tous les agents.",
+        "statusActive": "Actif : appuyez n'importe où pour arrêter le partage de toutes les fenêtres.",
         "statusIdle": "Prend effet quand l'utilisation de l'ordinateur est activée.",
-        "statusOff": "Désactivé : seuls les boutons Arrêter arrêtent les agents.",
+        "statusOff": "Désactivé : seuls les boutons Arrêter le partage arrêtent le partage.",
         "statusFailed": "Inactif : une autre application utilise sans doute ces touches. Choisissez-en d'autres.",
         "problem": {
           "unsupportedKey": "Cette touche ne peut pas servir. Choisissez une lettre, un chiffre, F1–F12, Échap ou une touche de ponctuation.",

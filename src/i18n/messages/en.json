@@ -5151,21 +5151,16 @@
     "preview": "Preview",
     "refresh": "Refresh",
     "tooltipShared": "Computer use · {count, plural, one {# window shared} other {# windows shared}}",
-    "tooltipStopped": "Computer use · stopped",
-    "stop": "Stop agents",
-    "stopTooltip": "{count, plural, one {Agents can act on # window} other {Agents can act on # windows}} · click to stop them all",
-    "stopHint": "Stop every agent now: what is in progress is cut off and every window stops being shared, until you resume.",
-    "stopped": "Stopped. No agent can read or act on any window until you resume.",
-    "resume": "Resume",
+    "stop": "Stop sharing",
+    "stopHint": "Stop sharing every window now, and cut off whatever agents are doing. Share a window again whenever you want them back.",
     "indicator": {
       "actOne": "Agents can act on {app}",
       "actMany": "Agents can act on {count, plural, one {# window} other {# windows}}",
       "readOne": "Agents can see {app}",
       "readMany": "Agents can see {count, plural, one {# window} other {# windows}}",
       "recent": "{action} in {app}",
-      "stopped": "Stopped — resume from codeg's Computer use panel",
-      "stop": "Stop",
-      "stopWithKey": "Stop every agent at once ({key})"
+      "stop": "Stop sharing",
+      "stopWithKey": "Stop sharing every window ({key})"
     },
     "codegGranted": "codeg itself has Accessibility or Screen Recording, so agents' shells can use it without anything being shared. Unless you need it, turn it off for codeg in System Settings.",
     "backend": {
@@ -5191,8 +5186,7 @@
     "shared": {
       "title": "{count, plural, =0 {No windows shared} one {# window shared} other {# windows shared}}",
       "empty": "Agents can list your windows but read none of them until you share one.",
-      "stop": "Stop",
-      "stopAll": "Stop all"
+      "stop": "Stop"
     },
     "level": {
       "read": "Can read",
@@ -5248,7 +5242,7 @@
       "skipped": "{count, plural, one {# window could not be shared; it may have closed.} other {# windows could not be shared; they may have closed.}}",
       "unshareable": "{count, plural, one {# window can't be shared} other {# windows can't be shared}}",
       "noneShareable": "None of these windows can be shared.",
-      "codegWhy": "codeg's windows are never shared: an agent that could operate codeg could approve its own requests, share more windows with itself, or press Resume after you press Stop. The same goes for other copies of codeg."
+      "codegWhy": "codeg's windows are never shared: an agent that could operate codeg could approve its own requests or share more windows with itself. The same goes for other copies of codeg."
     },
     "settings": {
       "pageTitle": "Computer use",
@@ -5287,7 +5281,7 @@
         "screenRecordingHint": "Take screenshots and read window titles."
       },
       "title": "Sharing and stopping",
-      "description": "How long a shared window stays shared, which apps can never be shared, and the shortcut that stops every agent.",
+      "description": "How long a shared window stays shared, which apps can never be shared, and the shortcut that stops all sharing at once.",
       "ttl": {
         "label": "Stop sharing unused windows after",
         "hint": "A shared window stops being shared when no agent has read it for this long.",
@@ -5296,12 +5290,11 @@
       },
       "blocklist": {
         "label": "Apps that are never shared",
-        "hint": "Their windows can't be shared with agents. Remove the defaults you don't need (locked ones stay), or add an app by bundle ID (com.example.app), executable name (app.exe) or full path.",
+        "hint": "Their windows can't be shared with agents. Remove the defaults you don't need, or add an app by bundle ID (com.example.app), executable name (app.exe) or full path.",
         "placeholder": "com.example.app",
         "add": "Add",
         "remove": "Remove {name}",
         "restore": "Restore defaults",
-        "locked": "Guards your system and computer use itself, so it can't be removed.",
         "custom": "Added by you",
         "duplicate": "Already on the list.",
         "removedCount": "{count, plural, one {# default app removed.} other {# default apps removed.}}",
@@ -5314,16 +5307,16 @@
       },
       "stopKey": {
         "label": "Stop shortcut",
-        "hint": "Stops every agent from any app, like the Stop button. While computer use is on these keys belong to codeg, so pick ones you don't use elsewhere.",
+        "hint": "Stops sharing every window from any app, like the Stop sharing button. While computer use is on these keys belong to codeg, so pick ones you don't use elsewhere.",
         "recording": "Press keys…",
         "recordHint": "Hold Ctrl and one more modifier (Alt or Shift), then press a key. Esc cancels.",
         "recordHintMac": "Hold ⌃ or ⌘ and one more modifier, then press a key. Esc cancels.",
         "off": "Off",
         "useDefault": "Default",
         "turnOff": "Turn off",
-        "statusActive": "Active: press it anywhere to stop every agent.",
+        "statusActive": "Active: press it anywhere to stop sharing every window.",
         "statusIdle": "Takes effect while computer use is switched on.",
-        "statusOff": "Off: only the Stop buttons stop agents.",
+        "statusOff": "Off: only the Stop sharing buttons stop sharing.",
         "statusFailed": "Not active: another app is probably using these keys. Choose others.",
         "problem": {
           "unsupportedKey": "That key can't be used. Choose a letter, a digit, F1–F12, Esc or a punctuation key.",

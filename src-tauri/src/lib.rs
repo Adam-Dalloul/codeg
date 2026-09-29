@@ -1799,7 +1799,6 @@ mod tauri_app {
                 crate::commands::computer::computer_revoke_all,
                 crate::commands::computer::computer_stop,
                 crate::commands::computer::computer_shared_state,
-                crate::commands::computer::computer_resume,
                 crate::commands::computer::computer_stop_key_status,
                 crate::commands::computer::computer_indicator_fit,
                 crate::commands::computer::computer_driver_info,

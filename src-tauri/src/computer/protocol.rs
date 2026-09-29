@@ -36,7 +36,7 @@ use super::types::{
 /// Bumped whenever a frame changes shape. The helper ships in the same bundle
 /// as codeg, so a mismatch means a broken install (a helper left behind by a
 /// partial update), and codeg refuses to talk to it rather than guess.
-pub const PROTOCOL_VERSION: u32 = 3;
+pub const PROTOCOL_VERSION: u32 = 4;
 
 /// A fingerprint of the sources the helper is built from, the same in codeg
 /// and the helper when both are built from one tree (see `build.rs`). The
@@ -64,14 +64,9 @@ pub enum HelperOp {
         driver_version: String,
     },
     /// The helper's own OS permissions. Read-only: never raises a dialog.
+    /// (Asking for one is not an op: codeg starts a helper of its own for
+    /// that — see [`REQUEST_PERMISSION_ARG`].)
     Permissions,
-    /// Raise the system's request for one permission, charged to the helper.
-    /// Only ever sent because a person pressed a button in codeg's permission
-    /// guide.
-    #[serde(rename_all = "camelCase")]
-    RequestPermission {
-        permission: OsPermission,
-    },
     ListApps,
     /// Every normal window, or only `pid`'s.
     #[serde(rename_all = "camelCase")]
@@ -112,7 +107,7 @@ pub enum HelperOp {
     /// Act on one window. codeg has checked the grant, the addressing and the
     /// keys; the helper checks again what only it can see at the moment of
     /// delivery — that the pid is still the process the window was shared
-    /// from, that the session is not locked, that nothing has been stopped —
+    /// from, that the session is not locked, that no Stop has come since —
     /// and refuses secret fields itself.
     #[serde(rename_all = "camelCase")]
     Act {
@@ -125,14 +120,38 @@ pub enum HelperOp {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         app_key: Option<String>,
         action: WindowAction,
+        /// How many Stops codeg had counted when it let the action through.
+        /// Refused once the helper has heard of a later one, whichever frame
+        /// reached it first.
+        stop: u64,
     },
-    /// The person pressed Stop: kill the driver now — whatever it is in the
-    /// middle of — and refuse everything that needs one until [`Resume`].
-    ///
-    /// [`Resume`]: HelperOp::Resume
-    Halt,
-    /// Undo a [`HelperOp::Halt`]. The next call starts a fresh driver.
-    Resume,
+    /// The person pressed Stop (codeg's `stop`-th): kill the driver now —
+    /// whatever it is in the middle of — and deliver nothing that arrived
+    /// before this frame, nor any action let through before this Stop.
+    /// What arrives after it runs as usual, on a fresh driver: a Stop ends
+    /// what is under way, not computer use.
+    #[serde(rename_all = "camelCase")]
+    Halt {
+        stop: u64,
+    },
+}
+
+/// The argument that starts the helper for one permission request instead
+/// of serving codeg: `codeg-computer-helper --request-permission
+/// accessibility`. codeg starts it as it starts the helper — its own TCC
+/// principal — so the request names the helper; and a fresh process each
+/// time, because macOS takes a request from each process once. It asks for
+/// that permission alone, then prints a [`PermissionAsked`] line and exits.
+pub const REQUEST_PERMISSION_ARG: &str = "--request-permission";
+
+/// What a `--request-permission` helper prints.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PermissionAsked {
+    /// The system put up its own request, which has a button to the right
+    /// pane of System Settings. It does not once the person has turned the
+    /// switch off there — and never for a permission already granted.
+    pub prompted: bool,
 }
 
 /// An element of a snapshot the helper took, by the driver's snapshot id and
@@ -363,6 +382,22 @@ pub enum OsPermission {
     ScreenRecording,
 }
 
+impl OsPermission {
+    /// How [`REQUEST_PERMISSION_ARG`] names it.
+    pub fn arg(self) -> &'static str {
+        match self {
+            OsPermission::Accessibility => "accessibility",
+            OsPermission::ScreenRecording => "screen-recording",
+        }
+    }
+
+    pub fn from_arg(arg: &str) -> Option<Self> {
+        [OsPermission::Accessibility, OsPermission::ScreenRecording]
+            .into_iter()
+            .find(|p| p.arg() == arg)
+    }
+}
+
 /// The helper's OS permissions, as the helper itself sees them.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -542,9 +577,12 @@ pub enum HelperErrorCode {
     BadRequest,
     /// Anything else, in words.
     Failed,
-    /// No input goes anywhere right now: the person pressed Stop, or the
-    /// session is locked.
+    /// No input goes anywhere right now: the session is locked, or another
+    /// user's is active.
     Paused,
+    /// The person pressed Stop after this was sent, or before it was let
+    /// through: it was cut off.
+    Stopped,
     /// The element or point is from a snapshot or capture the window has
     /// moved past — a newer snapshot replaced it, the window changed size.
     StaleRef,
@@ -646,6 +684,48 @@ mod tests {
         let err = refused.decode::<RawCapture>().unwrap_err();
         assert_eq!(err.code, HelperErrorCode::PermissionMissing);
         assert_eq!(err.permission, Some(OsPermission::ScreenRecording));
+    }
+
+    /// A Stop and an action each carry codeg's count of Stops, which is what
+    /// the helper holds one against the other by.
+    #[test]
+    fn a_stop_and_an_action_carry_the_stop_count() {
+        let halt = serde_json::to_value(HelperOp::Halt { stop: 3 }).unwrap();
+        assert_eq!(halt, serde_json::json!({"kind": "halt", "stop": 3}));
+        let act = HelperOp::Act {
+            pid: 1,
+            window_id: 2,
+            started_at: 3,
+            app_key: None,
+            action: WindowAction::Scroll {
+                at: None,
+                direction: ScrollDirection::Down,
+                amount: 1,
+                unit: ScrollUnit::Line,
+            },
+            stop: 5,
+        };
+        let wire = serde_json::to_value(&act).unwrap();
+        assert_eq!(wire["stop"], 5);
+        assert_eq!(serde_json::from_value::<HelperOp>(wire).unwrap(), act);
+        // An action without one is not an action from this codeg.
+        assert!(serde_json::from_value::<HelperOp>(serde_json::json!({
+            "kind": "act", "pid": 1, "windowId": 2, "startedAt": 3,
+            "action": {"kind": "scroll", "direction": "down", "amount": 1, "unit": "line"}
+        }))
+        .is_err());
+    }
+
+    /// The request helper is told the permission by name, and says whether
+    /// the system asked.
+    #[test]
+    fn a_permission_request_is_named_and_answered() {
+        for permission in [OsPermission::Accessibility, OsPermission::ScreenRecording] {
+            assert_eq!(OsPermission::from_arg(permission.arg()), Some(permission));
+        }
+        assert_eq!(OsPermission::from_arg("screenRecording"), None);
+        let asked: PermissionAsked = serde_json::from_str(r#"{"prompted":true}"#).unwrap();
+        assert!(asked.prompted);
     }
 
     #[test]

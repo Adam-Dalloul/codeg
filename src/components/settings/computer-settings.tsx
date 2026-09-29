@@ -3,7 +3,7 @@
 /**
  * Computer use: how long a shared window stays shared while nobody reads it,
  * which applications can never be shared, and — on the desktop — the
- * shortcut that stops every agent at once. The on/off switch sits above it
+ * shortcut that stops all sharing at once. The on/off switch sits above it
  * on the Computer use page (and with the other tool groups, and in the
  * status-bar popover); this section edits only the settings under it,
  * through a writer that leaves the switch alone.
@@ -14,9 +14,9 @@
  *
  * The blocklist is the default entries — credential managers, the system's
  * password prompts, System Settings — less the ones the person took off,
- * plus their own. The ones that guard computer use itself (System Settings,
- * the password prompts) are shown locked: the backend keeps them whatever is
- * sent. "Restore defaults" takes off everything added and puts back
+ * plus their own. Every default can be taken off: none is out of an agent's
+ * reach for want of a way, only for what it holds, and that is the person's
+ * call. "Restore defaults" takes off everything added and puts back
  * everything removed; like every edit here it is saved with Save.
  *
  * Each field is its own edit. Save sends only the fields this form changed,
@@ -32,7 +32,6 @@ import { useTranslations } from "next-intl"
 import {
   AppWindow,
   Keyboard,
-  Lock,
   Monitor,
   Plus,
   RotateCcw,
@@ -393,12 +392,8 @@ function BlocklistRow({
   const t = useTranslations("ComputerUse.settings")
   const [draft, setDraft] = useState("")
   const [duplicate, setDuplicate] = useState(false)
-  const shown = defaults.filter(
-    (entry) => entry.locked || !removed.includes(entry.key)
-  )
-  const removedCount = defaults.filter(
-    (entry) => !entry.locked && removed.includes(entry.key)
-  ).length
+  const shown = defaults.filter((entry) => !removed.includes(entry.key))
+  const removedCount = defaults.length - shown.length
   const atDefaults = blocklist.length === 0 && removedCount === 0
 
   const nameOf = (entry: DefaultBlock) =>
@@ -417,7 +412,7 @@ function BlocklistRow({
         d.name.toLowerCase() === lower ||
         nameOf(d).toLowerCase() === lower
     )
-    if (known && removed.includes(known.key) && !known.locked) {
+    if (known && removed.includes(known.key)) {
       onChange(
         [...blocklist],
         removed.filter((key) => key !== known.key)
@@ -469,30 +464,20 @@ function BlocklistRow({
                   {entry.names.join(" · ")}
                 </span>
               </span>
-              {entry.locked ? (
-                <span
-                  className="flex size-7 shrink-0 items-center justify-center text-muted-foreground"
-                  title={t("blocklist.locked")}
-                  aria-label={t("blocklist.locked")}
-                >
-                  <Lock className="size-3.5" />
-                </span>
-              ) : (
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon"
-                  className="size-7 shrink-0"
-                  disabled={disabled}
-                  title={t("blocklist.remove", { name: nameOf(entry) })}
-                  aria-label={t("blocklist.remove", { name: nameOf(entry) })}
-                  onClick={() =>
-                    onChange([...blocklist], [...removed, entry.key])
-                  }
-                >
-                  <X className="size-3.5" />
-                </Button>
-              )}
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                className="size-7 shrink-0"
+                disabled={disabled}
+                title={t("blocklist.remove", { name: nameOf(entry) })}
+                aria-label={t("blocklist.remove", { name: nameOf(entry) })}
+                onClick={() =>
+                  onChange([...blocklist], [...removed, entry.key])
+                }
+              >
+                <X className="size-3.5" />
+              </Button>
             </li>
           ))}
           {blocklist.map((entry) => (

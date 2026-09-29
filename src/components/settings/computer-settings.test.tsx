@@ -38,13 +38,11 @@ const DEFAULTS: DefaultBlock[] = [
   {
     key: "system-settings",
     name: "System Settings",
-    locked: true,
     names: ["systemsettings.exe"],
   },
   {
     key: "1password",
     name: "1Password",
-    locked: false,
     names: ["1password.exe"],
   },
 ]
@@ -129,28 +127,29 @@ describe("ComputerSettingsSection", () => {
     })
   })
 
-  /** A default can be taken off, but not a locked one; "restore defaults"
+  /** Any default can be taken off — System Settings too; "restore defaults"
    * takes off what was added and puts back what was removed. Each goes out
    * as the one field it moved. */
   it("takes a default off the list and restores the defaults", async () => {
     mount()
     const box = await screen.findByLabelText(LABEL)
     await waitFor(() => expect(box).not.toBeDisabled())
-    expect(screen.getByText("System Settings")).toBeInTheDocument()
-    expect(
-      screen.queryByRole("button", { name: "Remove System Settings" })
-    ).toBeNull()
+    fireEvent.click(
+      screen.getByRole("button", { name: "Remove System Settings" })
+    )
     fireEvent.click(screen.getByRole("button", { name: "Remove 1Password" }))
+    expect(screen.queryByText("System Settings")).toBeNull()
     expect(screen.queryByText("1Password")).toBeNull()
-    expect(screen.getByText("1 default app removed.")).toBeInTheDocument()
+    expect(screen.getByText("2 default apps removed.")).toBeInTheDocument()
     fireEvent.click(screen.getByRole("button", { name: "Save" }))
     await waitFor(() => expect(mockSet).toHaveBeenCalledTimes(1))
     expect(mockSet.mock.calls[0][0]).toEqual({
-      blocklistRemoved: ["1password"],
+      blocklistRemoved: ["system-settings", "1password"],
     })
 
     await waitFor(() => expect(box).not.toBeDisabled())
     fireEvent.click(screen.getByRole("button", { name: "Restore defaults" }))
+    expect(screen.getByText("System Settings")).toBeInTheDocument()
     expect(screen.getByText("1Password")).toBeInTheDocument()
     expect(screen.queryByText("com.example.vault")).toBeNull()
     fireEvent.click(screen.getByRole("button", { name: "Save" }))
@@ -357,7 +356,9 @@ describe("ComputerSettingsSection", () => {
     act(() => {
       handlers.get("computer://stop-key")!({ active: DEFAULT_KEY })
     })
-    await screen.findByText("Active: press it anywhere to stop every agent.")
+    await screen.findByText(
+      "Active: press it anywhere to stop sharing every window."
+    )
   })
 
   /** Until the stored shortcut has been read, the row claims nothing — not

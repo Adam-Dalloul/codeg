@@ -9,14 +9,12 @@
 //! main screen, above other windows and on every Space, never taking focus
 //! (a click on Stop works without it), and draggable out of the way. Made the
 //! first time something is shared, then hidden rather than closed, so it
-//! stays where the person put it. After a Stop it stays up a moment longer,
-//! saying so, then goes.
+//! stays where the person put it. It goes the moment nothing is shared — a
+//! Stop included, which ends every sharing.
 //!
 //! What it says is the page's business (`computer://state`,
 //! `computer://agent-activity`); when it is up is decided here, from the
 //! same state.
-
-use std::time::Duration;
 
 use tauri::{
     AppHandle, LogicalSize, Manager, PhysicalPosition, WebviewUrl, WebviewWindow,
@@ -31,8 +29,6 @@ const WIDTH: f64 = 360.0;
 const HEIGHT: f64 = 44.0;
 /// How far below the top of the main screen's work area it starts.
 const TOP: f64 = 10.0;
-/// How long it stays up after a Stop, saying so.
-const STOPPED_FOR: Duration = Duration::from_millis(2500);
 
 /// What the strip should be doing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -40,16 +36,14 @@ pub enum Strip {
     Hidden,
     /// Something is shared.
     Shown,
-    /// Nothing is shared any more because the person pressed Stop.
-    Stopped,
 }
 
 impl Strip {
-    pub fn of(shared: bool, paused: bool) -> Strip {
-        match (shared, paused) {
-            (true, _) => Strip::Shown,
-            (false, true) => Strip::Stopped,
-            (false, false) => Strip::Hidden,
+    pub fn of(shared: bool) -> Strip {
+        if shared {
+            Strip::Shown
+        } else {
+            Strip::Hidden
         }
     }
 }
@@ -84,23 +78,6 @@ async fn follow(app: AppHandle, mut rx: watch::Receiver<Strip>) {
             Strip::Shown => {
                 if let Some(window) = window(&app) {
                     let _ = window.show();
-                }
-            }
-            Strip::Stopped => {
-                if let Some(window) = app.get_webview_window(INDICATOR_LABEL) {
-                    if window.is_visible().unwrap_or(false) {
-                        tokio::select! {
-                            _ = tokio::time::sleep(STOPPED_FOR) => {
-                                let _ = window.hide();
-                            }
-                            changed = rx.changed() => {
-                                if changed.is_err() {
-                                    break;
-                                }
-                                continue;
-                            }
-                        }
-                    }
                 }
             }
             Strip::Hidden => {
@@ -203,11 +180,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn it_is_up_while_anything_is_shared_and_says_so_after_a_stop() {
-        assert_eq!(Strip::of(true, false), Strip::Shown);
-        assert_eq!(Strip::of(true, true), Strip::Shown);
-        assert_eq!(Strip::of(false, true), Strip::Stopped);
-        assert_eq!(Strip::of(false, false), Strip::Hidden);
+    fn it_is_up_while_anything_is_shared() {
+        assert_eq!(Strip::of(true), Strip::Shown);
+        assert_eq!(Strip::of(false), Strip::Hidden);
     }
 
     #[test]

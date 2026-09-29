@@ -11,7 +11,7 @@ import type {
 const api = vi.hoisted(() => ({
   computerAvailable: vi.fn(() => true),
   computerSharedState: vi.fn(
-    async (): Promise<ComputerStatePayload> => ({ shared: [], paused: false })
+    async (): Promise<ComputerStatePayload> => ({ shared: [] })
   ),
   computerStop: vi.fn(async () => {}),
   computerIndicatorFit: vi.fn(async () => {}),
@@ -72,14 +72,13 @@ afterEach(() => {
 
 describe("ComputerIndicator", () => {
   /** It names the application agents may act on — never the window's title
-   * — and Stop there stops them, with the shortcut on the button. */
+   * — and Stop there stops sharing, with the shortcut on the button. */
   it("says what agents may do, and stops them", async () => {
     api.computerSharedState.mockResolvedValue({
       shared: [
         window_("w1", "TextEdit", "control"),
         window_("w2", "Notes", "read"),
       ],
-      paused: false,
     })
     api.computerStopKeyStatus.mockResolvedValue({
       active: "Control+Command+Escape",
@@ -101,7 +100,6 @@ describe("ComputerIndicator", () => {
         window_("w1", "TextEdit", "read"),
         window_("w2", "Notes", "read"),
       ],
-      paused: false,
     })
     mount()
     expect(
@@ -109,17 +107,20 @@ describe("ComputerIndicator", () => {
     ).toBeInTheDocument()
   })
 
-  /** After a Stop, while it is still up, it says so — with nothing left to
-   * stop. */
-  it("says it stopped", async () => {
-    api.computerSharedState.mockResolvedValue({ shared: [], paused: true })
+  /** Its Stop is the popover's: it stops sharing, says so, and names the
+   * shortcut in its tooltip. */
+  it("calls its Stop by what it does", async () => {
+    api.computerSharedState.mockResolvedValue({
+      shared: [window_("w1", "TextEdit", "read")],
+    })
+    api.computerStopKeyStatus.mockResolvedValue({
+      active: "Control+Command+Escape",
+    })
     mount()
-    expect(
-      await screen.findByText(
-        "Stopped — resume from codeg's Computer use panel"
-      )
-    ).toBeInTheDocument()
-    expect(screen.queryByRole("button")).toBeNull()
+    const stop = await screen.findByRole("button", { name: /^Stop sharing/ })
+    await waitFor(() =>
+      expect(stop.title).toBe("Stop sharing every window (⌃⌘Esc)")
+    )
   })
 
   /** An action that just went through is named for a moment; reads, and
@@ -127,7 +128,6 @@ describe("ComputerIndicator", () => {
   it("names what an agent has just done", async () => {
     api.computerSharedState.mockResolvedValue({
       shared: [window_("w1", "TextEdit", "control")],
-      paused: false,
     })
     mount()
     await screen.findByText("Agents can act on TextEdit")
@@ -177,7 +177,6 @@ describe("ComputerIndicator", () => {
   it("does not shrink to the window it is in", async () => {
     api.computerSharedState.mockResolvedValue({
       shared: [window_("w1", "TextEdit", "control")],
-      paused: false,
     })
     mount()
     const summary = await screen.findByText("Agents can act on TextEdit")

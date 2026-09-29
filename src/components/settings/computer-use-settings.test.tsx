@@ -16,7 +16,10 @@ const api = vi.hoisted(() => ({
   setComputerToolsPreferences: vi.fn(),
   computerStopKeyStatus: vi.fn(async () => ({})),
   computerStatus: vi.fn<() => Promise<ComputerStatus>>(),
-  computerRequestPermission: vi.fn(async () => ({})),
+  computerRequestPermission: vi.fn(async () => ({
+    report: { required: true, accessibility: true, screenRecording: false },
+    prompted: false,
+  })),
   computerOpenPermissionSettings: vi.fn(async () => {}),
   computerRevealHelper: vi.fn(async () => {}),
   computerDriverInfo: vi.fn<() => Promise<DriverInfo>>(),
@@ -74,7 +77,6 @@ function status(overrides: Partial<ComputerStatus> = {}): ComputerStatus {
       selfResponsible: true,
     },
     shared: [],
-    paused: false,
     ...overrides,
   }
 }
