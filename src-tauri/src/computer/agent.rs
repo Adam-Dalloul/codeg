@@ -217,9 +217,11 @@ impl Blocklist {
     }
 
     /// Whether `app` is on the list, by bundle identifier, by full path, or by
-    /// the file name at the end of its path.
+    /// the file name at the end of its path — for a Chromium browser running
+    /// from its clone (`Foo.app.bundle`, see `appident`), also by the file
+    /// name of the bundle it was cloned from (`Foo.app`).
     pub fn matches(&self, app: &RawApp) -> bool {
-        let mut names: Vec<String> = Vec::with_capacity(3);
+        let mut names: Vec<String> = Vec::with_capacity(4);
         if let Some(bundle) = app.bundle_id.as_deref().filter(|s| !s.is_empty()) {
             names.push(bundle.to_lowercase());
         }
@@ -230,7 +232,11 @@ impl Blocklist {
             // another platform, and a path from the driver is only ever one
             // platform's spelling anyway.
             if let Some(file) = path.rsplit(['/', '\\']).find(|part| !part.is_empty()) {
-                names.push(file.to_lowercase());
+                let file = file.to_lowercase();
+                if let Some(cloned) = file.strip_suffix(".bundle").filter(|f| f.ends_with(".app")) {
+                    names.push(cloned.to_string());
+                }
+                names.push(file);
             }
         }
         names
@@ -487,13 +493,23 @@ mod tests {
     #[test]
     fn the_blocklist_matches_every_name_an_application_goes_by() {
         let me = SelfIdentity::default();
-        let list = Blocklist::new(&["  com.example.Vault ".to_string(), String::new()]);
+        let list = Blocklist::new(&[
+            "  com.example.Vault ".to_string(),
+            String::new(),
+            "Vault Browser.app".to_string(),
+        ]);
         for blocked in [
             app(1, Some("com.1password.1password"), None),
             app(1, Some("COM.APPLE.KEYCHAINACCESS"), None),
             app(1, None, Some("C:\\Program Files\\Bitwarden\\Bitwarden.exe")),
             app(1, None, Some("/usr/bin/keepassxc")),
             app(1, Some("com.example.vault"), None),
+            // A clone of a bundle named on the list by its file name.
+            app(
+                1,
+                Some("com.example.browser"),
+                Some("/private/var/folders/xy/X/c/Vault Browser.app.bundle"),
+            ),
         ] {
             assert_eq!(
                 grantable(&blocked, &me, &list),
