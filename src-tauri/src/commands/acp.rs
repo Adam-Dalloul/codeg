@@ -16039,6 +16039,13 @@ base_url = \"https://example.test/v1\"
         assert_eq!(loaded.default_thinking_level.as_deref(), Some("max"));
     }
 
+    /// How long a test waits on a fake pi that is expected to answer. The query
+    /// returns the moment pi replies, so this only bounds a real hang — while a
+    /// fake that answers in milliseconds can still take seconds to start on a
+    /// loaded CI runner (Windows `cmd.exe` above all), and a tight bound turns
+    /// that stall into a spurious `TimedOut`.
+    const PI_ANSWER_DEADLINE: Duration = Duration::from_secs(30);
+
     #[cfg(unix)]
     fn fake_pi(dir: &Path, name: &str, body: &str) -> PathBuf {
         use std::os::unix::fs::PermissionsExt;
@@ -16070,7 +16077,7 @@ esac
         let mut env = BTreeMap::new();
         env.insert("PI_ACP_PI_COMMAND".into(), script.to_string_lossy().into_owned());
         env.insert("PI_CODING_AGENT_DIR".into(), temp.path().to_string_lossy().into_owned());
-        let catalog = query_pi_model_catalog(&env, Duration::from_secs(2)).await;
+        let catalog = query_pi_model_catalog(&env, PI_ANSWER_DEADLINE).await;
         assert_eq!(catalog.status, PiCatalogStatus::Ok);
         assert_eq!(catalog.models.len(), 1);
         assert_eq!(catalog.models[0].id, "via-override");
@@ -16082,7 +16089,7 @@ esac
     #[tokio::test]
     async fn pi_catalog_says_why_pi_gave_no_answer() {
         let temp = tempfile::tempdir().unwrap();
-        let status_for = |command: String| {
+        let status_for = |command: String, deadline: Duration| {
             let env = BTreeMap::from([
                 ("PI_ACP_PI_COMMAND".to_string(), command),
                 (
@@ -16090,19 +16097,19 @@ esac
                     temp.path().to_string_lossy().into_owned(),
                 ),
             ]);
-            async move {
-                query_pi_model_catalog(&env, Duration::from_millis(500))
-                    .await
-                    .status
-            }
+            async move { query_pi_model_catalog(&env, deadline).await.status }
         };
 
         assert_eq!(
-            status_for("./pi-test.sh".into()).await,
+            status_for("./pi-test.sh".into(), PI_ANSWER_DEADLINE).await,
             PiCatalogStatus::RelativePath
         );
         assert_eq!(
-            status_for("/nonexistent/definitely-not-pi-xyz".into()).await,
+            status_for(
+                "/nonexistent/definitely-not-pi-xyz".into(),
+                PI_ANSWER_DEADLINE
+            )
+            .await,
             PiCatalogStatus::NotFound
         );
         let refusing = fake_pi(
@@ -16113,17 +16120,21 @@ printf '%s\n' '{"id":"codeg-models","type":"response","command":"get_available_m
 "#,
         );
         assert_eq!(
-            status_for(refusing.to_string_lossy().into_owned()).await,
+            status_for(refusing.to_string_lossy().into_owned(), PI_ANSWER_DEADLINE).await,
             PiCatalogStatus::Failed
         );
         let silent = fake_pi(temp.path(), "silent-pi", "read request\n");
         assert_eq!(
-            status_for(silent.to_string_lossy().into_owned()).await,
+            status_for(silent.to_string_lossy().into_owned(), PI_ANSWER_DEADLINE).await,
             PiCatalogStatus::Failed
         );
         let slow = fake_pi(temp.path(), "slow-pi", "sleep 30\n");
         assert_eq!(
-            status_for(slow.to_string_lossy().into_owned()).await,
+            status_for(
+                slow.to_string_lossy().into_owned(),
+                Duration::from_millis(500)
+            )
+            .await,
             PiCatalogStatus::TimedOut
         );
     }
@@ -16174,7 +16185,7 @@ echo {"id":"codeg-models","type":"response","command":"get_available_models","su
         ).unwrap();
         let mut env = BTreeMap::new();
         env.insert("PI_ACP_PI_COMMAND".into(), script.to_string_lossy().into_owned());
-        let catalog = query_pi_model_catalog(&env, Duration::from_secs(3)).await;
+        let catalog = query_pi_model_catalog(&env, PI_ANSWER_DEADLINE).await;
         assert_eq!(catalog.status, PiCatalogStatus::Ok);
         assert_eq!(catalog.models.len(), 1);
         assert_eq!(catalog.models[0].id, "windows");
