@@ -1385,6 +1385,7 @@
       "haikuDefaultModel": "デフォルト Haiku モデル",
       "sonnetDefaultModel": "デフォルト Sonnet モデル",
       "opusDefaultModel": "デフォルト Opus モデル",
+      "fableDefaultModel": "デフォルト Fable モデル",
       "customModelOption": "カスタムモデル ID",
       "customModelOptionName": "カスタムモデル名",
       "customModelOptionDescription": "カスタムモデルの説明",
@@ -3079,7 +3080,8 @@
           "httpStatus": " (HTTP {status})"
         },
         "configOptionAdjusted": "{agent} は{option}を {requested} ではなく {actual} にしました",
-        "noticeTitle": "{agent}：{title}"
+        "noticeTitle": "{agent}：{title}",
+        "pluginLoadFailedTitle": "{agent} で {count} 個のプラグインを読み込めませんでした"
       },
       "connectionLifecycle": {
         "tasks": {
@@ -4264,6 +4266,7 @@
     "claudeHaikuDefaultModel": "デフォルトの Haiku モデル",
     "claudeSonnetDefaultModel": "デフォルトの Sonnet モデル",
     "claudeOpusDefaultModel": "デフォルトの Opus モデル",
+    "claudeFableDefaultModel": "デフォルトの Fable モデル",
     "claudeCustomModelOption": "カスタムモデル ID",
     "claudeCustomModelOptionName": "カスタムモデル名",
     "claudeCustomModelOptionDescription": "カスタムモデルの説明",

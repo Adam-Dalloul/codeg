@@ -57,12 +57,11 @@ use crate::acp::terminal_runtime::{
 };
 use crate::acp::types::{
     AcpEvent, AsyncTaskDelta, AsyncTaskUsage, AvailableCommandInfo, ConnectionInfo,
-    ConnectionStatus, GrokModelSpec,
-    PermissionOptionInfo, PlanEntryInfo, PromptCapabilitiesInfo, PromptInputBlock,
-    SessionConfigBooleanInfo, SessionConfigKindInfo, SessionConfigOptionInfo,
-    SessionConfigSelectGroupInfo, SessionConfigSelectInfo, SessionConfigSelectOptionInfo,
-    SessionFailureRecord, SessionModeInfo, SessionModeStateInfo, SessionNotice,
-    ToolCallImageInfo, UserMessageBlock,
+    ConnectionStatus, GrokModelSpec, PermissionOptionInfo, PlanEntryInfo, PluginLoadFailure,
+    PromptCapabilitiesInfo, PromptInputBlock, SessionConfigBooleanInfo, SessionConfigKindInfo,
+    SessionConfigOptionInfo, SessionConfigSelectGroupInfo, SessionConfigSelectInfo,
+    SessionConfigSelectOptionInfo, SessionFailureRecord, SessionModeInfo, SessionModeStateInfo,
+    SessionNotice, ToolCallImageInfo, UserMessageBlock,
 };
 use crate::logging::throttle::LeadingEdgeThrottle;
 use crate::models::agent::AgentType;
@@ -6592,11 +6591,17 @@ async fn run_connection(
                                     // a compaction card would linger in the
                                     // live state as in-flight content (see
                                     // `grok_ext_notification_skipped_on_replay`).
+                                    // So is a claude frame reporting plugin
+                                    // failures, which only the live loop can
+                                    // tell from a repeat (see
+                                    // `claude_plugin_failures_skipped_on_replay`).
                                     // The typed closure above draws the same
                                     // line by forwarding only AvailableCommands.
                                     let mut replay_cb_state =
                                         CodeBuddyLiveState::default();
-                                    if !grok_ext_notification_skipped_on_replay(&dispatch, agent_type) {
+                                    if !grok_ext_notification_skipped_on_replay(&dispatch, agent_type)
+                                        && !claude_plugin_failures_skipped_on_replay(&dispatch)
+                                    {
                                         maybe_emit_ext_notification(&st, &h, agent_type, dispatch, &mut replay_cb_state).await;
                                     }
                                     Ok(())
@@ -8210,6 +8215,97 @@ fn config_option_rejects_value(option: &SessionConfigOption, value: &str) -> boo
     advertised.binary_search(&value.to_string()).is_err()
 }
 
+/// The plain twin of a saved model pick whose `[1m]` spelling the model
+/// selector no longer lists — `opus[1m]` → `opus` — when the selector lists
+/// the twin.
+///
+/// Claude Code CLI 2.1.283 (claude-agent-acp 0.83.0+) is what makes this
+/// reachable. The adapter's own live test (`model-presentation.test.ts`)
+/// records the Opus row going from `opus[1m]` "Opus (1M context)" to plain
+/// `opus` "Opus" — Opus is natively 1M-context, so it is the same model on the
+/// same window, renamed; the CLI builds the row either way depending on the
+/// account. A user who had picked the old row has `opus[1m]` saved, and
+/// [`config_option_rejects_value`] rightly refuses to replay a value the list
+/// no longer offers, so every connect would silently land on the account's
+/// default model instead. The adapter would have resolved the old spelling
+/// itself (its `resolveModelPreference` maps `opus[1m]` onto the `opus` row),
+/// but codeg's screen runs first.
+///
+/// Healed here, off the agent's answer, rather than rewritten in the saved
+/// preferences, because only the answer says which spelling is current: a
+/// gateway account (`ANTHROPIC_BASE_URL`) on 2.1.284 still lists `opus[1m]`
+/// and no plain `opus` row at all (measured), so rewriting the stored value
+/// would break it.
+///
+/// Deliberately narrow:
+///
+/// * Only the model selector — `[1m]` is a model-id spelling — and only for
+///   Claude Code (see [`heal_retired_context_lane_picks`]).
+/// * Only when [`config_option_rejects_value`] proves the exact value gone AND
+///   the twin is listed, so it inherits that function's refusals (a non-select
+///   or an empty list proves nothing) and a pick the agent still offers is
+///   never touched: where `sonnet` and `sonnet[1m]` are both listed, as on the
+///   gateway above, `sonnet[1m]` replays as it is.
+/// * Only the direction the rename took; a saved plain pick is never moved
+///   onto a `[1m]` row.
+///
+/// So it never trades away a lane the session offers. When the `[1m]` row is
+/// gone, the choice is between the same model on the lane the account does
+/// offer and the account's default model — on the measured gateway that
+/// default is Opus, listed at twice Sonnet's per-token price.
+fn heal_retired_context_lane_pick(option: &SessionConfigOption, value: &str) -> Option<String> {
+    if !is_model_config_option(option) {
+        return None;
+    }
+    let twin = strip_context_lane_suffix(value)?;
+    (config_option_rejects_value(option, value) && !config_option_rejects_value(option, twin))
+        .then(|| twin.to_string())
+}
+
+/// `value` without its trailing `[1m]`, matched case-insensitively — the same
+/// suffix the CLI drops when it compares model aliases. `None` when there is
+/// no such suffix or nothing would be left.
+fn strip_context_lane_suffix(value: &str) -> Option<&str> {
+    const SUFFIX: &str = "[1m]";
+    let split = value.len().checked_sub(SUFFIX.len())?;
+    let (twin, suffix) = (value.get(..split)?, value.get(split..)?);
+    (!twin.is_empty() && suffix.eq_ignore_ascii_case(SUFFIX)).then_some(twin)
+}
+
+/// [`heal_retired_context_lane_pick`] over a whole preference set, against the
+/// options the session was established with. Every other entry is returned
+/// unchanged, and so is every entry for an agent other than Claude Code: `[1m]`
+/// is claude-agent-acp's spelling, and it is the only agent whose rename of it
+/// has been observed.
+fn heal_retired_context_lane_picks(
+    agent_type: AgentType,
+    options: &[SessionConfigOption],
+    preferred: &BTreeMap<String, String>,
+) -> BTreeMap<String, String> {
+    if agent_type != AgentType::ClaudeCode {
+        return preferred.clone();
+    }
+    preferred
+        .iter()
+        .map(|(config_id, value_id)| {
+            let healed = options
+                .iter()
+                .find(|o| o.id.to_string() == *config_id)
+                .and_then(|o| heal_retired_context_lane_pick(o, value_id));
+            match healed {
+                Some(twin) => {
+                    tracing::info!(
+                        "[ACP] preferred config '{config_id}'='{value_id}' is no longer \
+                         offered; replaying '{twin}', the spelling the agent lists now"
+                    );
+                    (config_id.clone(), twin)
+                }
+                None => (config_id.clone(), value_id.clone()),
+            }
+        })
+        .collect()
+}
+
 /// [`config_option_rejects_value`] for the mode channel: whether the session's
 /// OWN mode list proves a saved `preferred_mode_id` cannot be selected, so
 /// `session/set_mode` for it at connect is a guaranteed error.
@@ -8415,6 +8511,12 @@ async fn apply_preferred_session_options(
         pinned.iter().any(|id| id == config_id)
             || (agent_type == AgentType::Cline && config_id == CLINE_PROVIDER_CONFIG_OPTION_ID)
     };
+    // A model pick saved under a `[1m]` spelling the agent has since renamed
+    // replays as the spelling it lists now (see `heal_retired_context_lane_pick`).
+    // Healed once, against the same INITIAL list the order below is taken
+    // from, so the replay, the screen and the ledger all see one value.
+    let preferred_config_values =
+        &heal_retired_context_lane_picks(agent_type, &options, preferred_config_values);
     // Model first — see `order_preferred_config_values`. Ordered once against
     // the INITIAL list: every later list is the same agent's answer to a set,
     // so the model selector cannot move between ids mid-replay.
@@ -14467,6 +14569,13 @@ struct CodeBuddyLiveState {
     /// result of its own (see the `ToolCallUpdate` arm), and the map is cleared
     /// at turn start like `hosted_terminal_calls`.
     claude_viewed_results: HashMap<String, String>,
+    /// The plugin-failure list last forwarded as
+    /// [`AcpEvent::PluginLoadFailures`] (see `take_new_claude_plugin_failures`).
+    /// Claude Code repeats `plugin_errors` on every turn's `system/init`, so
+    /// without this each turn would re-raise the same warning. Kept across
+    /// turns — only a CHANGED list is news — and cleared by an init that lists
+    /// none, so a failure that went away and came back is reported again.
+    claude_reported_plugin_failures: Option<Vec<PluginLoadFailure>>,
 }
 
 /// One announced-but-unpaired Grok `spawn_subagent` call. `description` /
@@ -15437,6 +15546,92 @@ fn stash_claude_viewed_results(params: &serde_json::Value, cb_state: &mut CodeBu
     }
 }
 
+/// The plugins a claude `system/init` frame reports it could not load
+/// (`plugin_errors`, CLI 2.1.283+), read off the raw SDK stream.
+///
+/// claude-agent-acp only logs these ("Plugin load failures … have no ACP
+/// surface"), and its stderr reaches nobody. `None` for any other frame, and
+/// for an init that lists none: the CLI omits the key when nothing failed, and
+/// every CLI before 2.1.283 omits it always. An entry with no `plugin` name is
+/// dropped — nothing would say which plugin it is about. `type` is an open
+/// category ("treat a value you do not recognize as a generic failure"), so a
+/// missing one reads as `generic-error`.
+fn claude_plugin_load_failures(params: &serde_json::Value) -> Option<Vec<PluginLoadFailure>> {
+    let message = claude_init_frame(params)?;
+    let text = |entry: &serde_json::Value, key: &str| {
+        entry
+            .get(key)
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+    };
+    let failures: Vec<PluginLoadFailure> = message
+        .get("plugin_errors")?
+        .as_array()?
+        .iter()
+        .filter_map(|entry| {
+            Some(PluginLoadFailure {
+                plugin: text(entry, "plugin")?,
+                kind: text(entry, "type").unwrap_or_else(|| "generic-error".to_string()),
+                message: text(entry, "message").unwrap_or_default(),
+                path: text(entry, "path"),
+            })
+        })
+        .collect();
+    (!failures.is_empty()).then_some(failures)
+}
+
+/// The `message` of `_claude/sdkMessage` params when it is the CLI's
+/// `system/init` frame, which the CLI sends again at the start of every turn.
+fn claude_init_frame(params: &serde_json::Value) -> Option<&serde_json::Value> {
+    let message = params.get("message")?;
+    (message.get("type").and_then(|v| v.as_str()) == Some("system")
+        && message.get("subtype").and_then(|v| v.as_str()) == Some("init"))
+    .then_some(message)
+}
+
+/// [`claude_plugin_load_failures`] when the list is news. The CLI repeats
+/// `plugin_errors` on every turn's `system/init`, so a list is returned only
+/// when it differs from the one last forwarded on this connection. An init
+/// that lists none means the failures are gone: it forwards nothing, and
+/// forgets the last list, so the same failure coming back later is news again.
+fn take_new_claude_plugin_failures(
+    params: &serde_json::Value,
+    cb_state: &mut CodeBuddyLiveState,
+) -> Option<Vec<PluginLoadFailure>> {
+    claude_init_frame(params)?;
+    let Some(failures) = claude_plugin_load_failures(params) else {
+        cb_state.claude_reported_plugin_failures = None;
+        return None;
+    };
+    if cb_state.claude_reported_plugin_failures.as_ref() == Some(&failures) {
+        return None;
+    }
+    cb_state.claude_reported_plugin_failures = Some(failures.clone());
+    Some(failures)
+}
+
+/// Whether the historical `session/load` replay drops a claude raw-SDK frame
+/// that reports plugin load failures.
+///
+/// claude-agent-acp sends `_claude/sdkMessage` only from its live consumer,
+/// which the first prompt starts, and replays history as `session/update`s —
+/// so no such frame reaches the drain today. The replay seam still drops one,
+/// for two reasons that hold whatever the adapter does: a plugin failure is
+/// only news about the process running now, which the next turn's init reports
+/// to the live loop anyway; and the drain hands every frame a throwaway
+/// `CodeBuddyLiveState`, so nothing there could tell a repeat from news.
+fn claude_plugin_failures_skipped_on_replay(dispatch: &Dispatch) -> bool {
+    match dispatch {
+        Dispatch::Notification(notification) => {
+            notification.method() == CLAUDE_SDK_EXT_METHOD
+                && claude_plugin_load_failures(notification.params()).is_some()
+        }
+        _ => false,
+    }
+}
+
 /// Last stop for a dispatch the typed `session/update` pipeline didn't claim.
 ///
 /// A notification no mapper claims is dropped, but not invisibly; a request is
@@ -15487,6 +15682,9 @@ async fn maybe_emit_ext_notification(
     let turn_active = state.read().await.status == ConnectionStatus::Prompting;
     if agent_type == AgentType::ClaudeCode && notification.method() == CLAUDE_SDK_EXT_METHOD {
         stash_claude_viewed_results(notification.params(), cb_state);
+        if let Some(failures) = take_new_claude_plugin_failures(notification.params(), cb_state) {
+            emit_with_state(state, emitter, AcpEvent::PluginLoadFailures { failures }).await;
+        }
     }
     // A grok `subagent_spawned` can yield TWO events (the card's session stamp
     // and the background-activity report), so this mapper hands back a list; an
@@ -21356,6 +21554,294 @@ mod tests {
         assert!(map_claude_sdk_ext_notification(&missing_fields).is_none());
     }
 
+    /// `_claude/sdkMessage` params carrying the `system/init` Claude Code
+    /// 2.1.284 sent through claude-agent-acp 0.84.0 for three deliberately
+    /// broken directory plugins — captured live, trimmed to the fields read
+    /// here, paths shortened.
+    fn claude_init_with_plugin_errors() -> serde_json::Value {
+        serde_json::json!({
+            "sessionId": "s1",
+            "message": {
+                "type": "system",
+                "subtype": "init",
+                "model": "claude-fable-5-1[1m]",
+                "plugins": [{
+                    "name": "context7",
+                    "path": "/p/cache/claude-plugins-official/context7/unknown",
+                    "source": "context7@claude-plugins-official"
+                }],
+                "plugin_errors": [
+                    {
+                        "plugin": "inline[0]",
+                        "type": "path-not-found",
+                        "message": "Path not found: /tmp/p/does-not-exist (commands)",
+                        "path": "/tmp/p/does-not-exist"
+                    },
+                    {
+                        "plugin": "inline[1]",
+                        "type": "generic-error",
+                        "message": "Failed to load plugin: Plugin broken-plugin has a corrupt manifest file at /tmp/p/broken-plugin/.claude-plugin/plugin.json. JSON parse error: JSON Parse error: Unexpected token '}'",
+                        "path": "/tmp/p/broken-plugin"
+                    },
+                    {
+                        "plugin": "inline[2]",
+                        "type": "generic-error",
+                        "message": "Failed to load plugin: hooks: must be an object mapping event names to matcher arrays",
+                        "path": "/tmp/p/hookfail-plugin"
+                    }
+                ]
+            }
+        })
+    }
+
+    #[test]
+    fn plugin_failures_are_read_off_a_claude_init_frame() {
+        let failures =
+            claude_plugin_load_failures(&claude_init_with_plugin_errors()).expect("three failures");
+        assert_eq!(failures.len(), 3);
+        assert_eq!(
+            failures[0],
+            PluginLoadFailure {
+                plugin: "inline[0]".to_string(),
+                kind: "path-not-found".to_string(),
+                message: "Path not found: /tmp/p/does-not-exist (commands)".to_string(),
+                path: Some("/tmp/p/does-not-exist".to_string()),
+            }
+        );
+        assert_eq!(failures[2].kind, "generic-error");
+    }
+
+    #[test]
+    fn frames_that_list_no_plugin_failures_report_none() {
+        let init = |extra: serde_json::Value| {
+            let mut message = serde_json::json!({"type": "system", "subtype": "init"});
+            message
+                .as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            serde_json::json!({"sessionId": "s1", "message": message})
+        };
+        // The CLI omits the key when nothing failed, and so does every CLI
+        // before 2.1.283.
+        assert_eq!(
+            claude_plugin_load_failures(&init(serde_json::json!({}))),
+            None
+        );
+        assert_eq!(
+            claude_plugin_load_failures(&init(serde_json::json!({"plugin_errors": []}))),
+            None
+        );
+        // The same field on any other frame is not an init's list.
+        let mut retry = claude_init_with_plugin_errors();
+        retry["message"]["subtype"] = serde_json::json!("api_retry");
+        assert_eq!(claude_plugin_load_failures(&retry), None);
+        let mut assistant = claude_init_with_plugin_errors();
+        assistant["message"]["type"] = serde_json::json!("assistant");
+        assert_eq!(claude_plugin_load_failures(&assistant), None);
+        assert_eq!(
+            claude_plugin_load_failures(&serde_json::json!({"sessionId": "s1"})),
+            None
+        );
+    }
+
+    #[test]
+    fn an_unnamed_plugin_failure_is_dropped_and_an_untyped_one_reads_generic() {
+        let params = serde_json::json!({
+            "sessionId": "s1",
+            "message": {
+                "type": "system",
+                "subtype": "init",
+                "plugin_errors": [
+                    {"type": "generic-error", "message": "no name"},
+                    {"plugin": "  ", "message": "blank name"},
+                    {"plugin": "guard@acme", "message": "hooks: bad"}
+                ]
+            }
+        });
+        assert_eq!(
+            claude_plugin_load_failures(&params),
+            Some(vec![PluginLoadFailure {
+                plugin: "guard@acme".to_string(),
+                kind: "generic-error".to_string(),
+                message: "hooks: bad".to_string(),
+                path: None,
+            }])
+        );
+    }
+
+    #[test]
+    fn plugin_failures_are_forwarded_once_per_distinct_list() {
+        let mut cb = CodeBuddyLiveState::default();
+        let broken = claude_init_with_plugin_errors();
+        assert_eq!(
+            take_new_claude_plugin_failures(&broken, &mut cb).map(|f| f.len()),
+            Some(3)
+        );
+        // The CLI repeats the list on every turn's init: not news.
+        assert_eq!(take_new_claude_plugin_failures(&broken, &mut cb), None);
+        // A changed list is.
+        let mut fewer = broken.clone();
+        fewer["message"]["plugin_errors"]
+            .as_array_mut()
+            .unwrap()
+            .truncate(1);
+        assert_eq!(
+            take_new_claude_plugin_failures(&fewer, &mut cb).map(|f| f.len()),
+            Some(1)
+        );
+        assert_eq!(take_new_claude_plugin_failures(&fewer, &mut cb), None);
+        // A frame that is not an init neither reports nor forgets anything.
+        let mut assistant = broken.clone();
+        assistant["message"]["type"] = serde_json::json!("assistant");
+        assert_eq!(take_new_claude_plugin_failures(&assistant, &mut cb), None);
+        assert_eq!(take_new_claude_plugin_failures(&fewer, &mut cb), None);
+    }
+
+    #[test]
+    fn a_plugin_failure_that_went_away_and_came_back_is_reported_again() {
+        let mut cb = CodeBuddyLiveState::default();
+        let broken = claude_init_with_plugin_errors();
+        let mut clean = broken.clone();
+        clean["message"]
+            .as_object_mut()
+            .unwrap()
+            .remove("plugin_errors");
+        assert!(take_new_claude_plugin_failures(&broken, &mut cb).is_some());
+        // A clean init reports nothing…
+        assert_eq!(take_new_claude_plugin_failures(&clean, &mut cb), None);
+        // …and the same failure coming back is news again.
+        assert_eq!(
+            take_new_claude_plugin_failures(&broken, &mut cb).map(|f| f.len()),
+            Some(3)
+        );
+        // An empty list is a clean init too.
+        let mut empty = broken.clone();
+        empty["message"]["plugin_errors"] = serde_json::json!([]);
+        assert_eq!(take_new_claude_plugin_failures(&empty, &mut cb), None);
+        assert!(take_new_claude_plugin_failures(&broken, &mut cb).is_some());
+    }
+
+    #[test]
+    fn the_session_load_replay_drops_only_frames_reporting_plugin_failures() {
+        let frame = |method: &str, params: serde_json::Value| {
+            Dispatch::Notification(UntypedMessage::new(method, params).unwrap())
+        };
+        let broken = claude_init_with_plugin_errors();
+        assert!(claude_plugin_failures_skipped_on_replay(&frame(
+            CLAUDE_SDK_EXT_METHOD,
+            broken.clone()
+        )));
+        // A clean init and an API retry still reach the replay's usual path.
+        let mut clean = broken.clone();
+        clean["message"]
+            .as_object_mut()
+            .unwrap()
+            .remove("plugin_errors");
+        assert!(!claude_plugin_failures_skipped_on_replay(&frame(
+            CLAUDE_SDK_EXT_METHOD,
+            clean
+        )));
+        assert!(!claude_plugin_failures_skipped_on_replay(&frame(
+            CLAUDE_SDK_EXT_METHOD,
+            serde_json::json!({
+                "sessionId": "s1",
+                "message": {"type": "system", "subtype": "api_retry", "attempt": 1}
+            })
+        )));
+        // The same payload under any other method is not claude's raw stream.
+        assert!(!claude_plugin_failures_skipped_on_replay(&frame(
+            "_vendor/other",
+            broken
+        )));
+    }
+
+    #[test]
+    fn plugin_load_failures_reach_the_frontend_in_its_shape() {
+        let event = AcpEvent::PluginLoadFailures {
+            failures: vec![
+                PluginLoadFailure {
+                    plugin: "inline[0]".to_string(),
+                    kind: "path-not-found".to_string(),
+                    message: "Path not found: /x".to_string(),
+                    path: Some("/x".to_string()),
+                },
+                PluginLoadFailure {
+                    plugin: "guard@acme".to_string(),
+                    kind: "hook-load-failed".to_string(),
+                    message: "hooks: bad".to_string(),
+                    path: None,
+                },
+            ],
+        };
+        // `lib/types.ts` reads `type: "plugin_load_failures"` and each entry's
+        // `plugin` / `kind` / `message` / optional `path`.
+        assert_eq!(
+            serde_json::to_value(&event).unwrap(),
+            serde_json::json!({
+                "type": "plugin_load_failures",
+                "failures": [
+                    {
+                        "plugin": "inline[0]",
+                        "kind": "path-not-found",
+                        "message": "Path not found: /x",
+                        "path": "/x"
+                    },
+                    {"plugin": "guard@acme", "kind": "hook-load-failed", "message": "hooks: bad"}
+                ]
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn a_claude_init_frame_raises_its_plugin_failures_once() {
+        let state = Arc::new(RwLock::new(SessionState::new(
+            "conn-plugins".to_string(),
+            AgentType::ClaudeCode,
+            None,
+            "win".to_string(),
+            None,
+        )));
+        let mut cb = CodeBuddyLiveState::default();
+        let init = || {
+            Dispatch::Notification(
+                UntypedMessage::new(CLAUDE_SDK_EXT_METHOD, claude_init_with_plugin_errors())
+                    .unwrap(),
+            )
+        };
+        for _ in 0..3 {
+            maybe_emit_ext_notification(
+                &state,
+                &EventEmitter::Noop,
+                AgentType::ClaudeCode,
+                init(),
+                &mut cb,
+            )
+            .await;
+        }
+        // Another agent's raw frames are never read for this: only claude asks
+        // for the raw SDK stream.
+        maybe_emit_ext_notification(
+            &state,
+            &EventEmitter::Noop,
+            AgentType::Codex,
+            init(),
+            &mut CodeBuddyLiveState::default(),
+        )
+        .await;
+        let raised: Vec<usize> = state
+            .read()
+            .await
+            .recent_events_after(0)
+            .expect("buffered")
+            .iter()
+            .filter_map(|envelope| match &envelope.payload {
+                AcpEvent::PluginLoadFailures { failures } => Some(failures.len()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(raised, vec![3], "one event for three identical inits");
+    }
+
     /// The five `_x.ai/session/setup` frames grok 1.0.40 emits BEFORE the
     /// session id exists, captured verbatim off `grok agent stdio` during
     /// `session/new`. Each carries `"sessionId": null`, which is what killed the
@@ -24540,6 +25026,153 @@ mod tests {
         .expect("parses");
         assert!(!config_option_rejects_value(&grouped, "openai/gpt-5"));
         assert!(config_option_rejects_value(&grouped, "openai/gpt-5-mini"));
+    }
+
+    /// The model selector claude-agent-acp 0.84.0 answers `session/new` with
+    /// once codeg advertises `recommendedValue` (no `default` row), in either
+    /// Opus spelling its CLI builds: `opus[1m]` (measured live on a gateway
+    /// account) or plain `opus` (the adapter's own live test, 0.83.0).
+    fn claude_model_selector(opus_row: &str) -> SessionConfigOption {
+        let rows: Vec<serde_json::Value> = [
+            opus_row,
+            "claude-fable-5-1[1m]",
+            "sonnet",
+            "sonnet[1m]",
+            "haiku",
+        ]
+        .iter()
+        .map(|value| serde_json::json!({"value": value, "name": value}))
+        .collect();
+        serde_json::from_value(serde_json::json!({
+            "type": "select",
+            "id": "model",
+            "name": "Model",
+            "category": "model",
+            "currentValue": opus_row,
+            "options": rows,
+        }))
+        .expect("parses")
+    }
+
+    #[test]
+    fn a_retired_context_lane_pick_replays_as_its_plain_twin() {
+        let renamed = claude_model_selector("opus");
+        assert_eq!(
+            heal_retired_context_lane_pick(&renamed, "opus[1m]").as_deref(),
+            Some("opus")
+        );
+        // The CLI drops the suffix case-insensitively when it compares aliases.
+        assert_eq!(
+            heal_retired_context_lane_pick(&renamed, "opus[1M]").as_deref(),
+            Some("opus")
+        );
+    }
+
+    #[test]
+    fn a_context_lane_pick_the_agent_still_lists_is_left_alone() {
+        assert_eq!(
+            heal_retired_context_lane_pick(&claude_model_selector("opus[1m]"), "opus[1m]"),
+            None
+        );
+        // `sonnet[1m]` is still a row of its own next to `sonnet`.
+        assert_eq!(
+            heal_retired_context_lane_pick(&claude_model_selector("opus"), "sonnet[1m]"),
+            None
+        );
+    }
+
+    #[test]
+    fn a_context_lane_pick_heals_only_onto_a_listed_twin() {
+        let renamed = claude_model_selector("opus");
+        // Retired, but its plain twin is not listed either: left for the
+        // screen to skip, as before.
+        assert_eq!(
+            heal_retired_context_lane_pick(&renamed, "claude-opus-5[1m]"),
+            None
+        );
+        // A bare suffix leaves no twin at all.
+        assert_eq!(heal_retired_context_lane_pick(&renamed, "[1m]"), None);
+        // Never the other way round: a plain pick is not moved onto a
+        // separately priced `[1m]` lane.
+        assert_eq!(
+            heal_retired_context_lane_pick(&claude_model_selector("opus[1m]"), "opus"),
+            None
+        );
+    }
+
+    #[test]
+    fn only_a_listed_model_selector_heals_a_context_lane_pick() {
+        let effort: SessionConfigOption = serde_json::from_value(serde_json::json!({
+            "type": "select",
+            "id": "effort",
+            "name": "Effort",
+            "category": "thought_level",
+            "currentValue": "high",
+            "options": [{"value": "high", "name": "High"}],
+        }))
+        .expect("parses");
+        assert_eq!(heal_retired_context_lane_pick(&effort, "high[1m]"), None);
+        // An empty list proves nothing, exactly as for `config_option_rejects_value`.
+        let unlisted: SessionConfigOption = serde_json::from_value(serde_json::json!({
+            "type": "select",
+            "id": "model",
+            "name": "Model",
+            "category": "model",
+            "currentValue": "opus",
+            "options": [],
+        }))
+        .expect("parses");
+        assert_eq!(heal_retired_context_lane_pick(&unlisted, "opus[1m]"), None);
+    }
+
+    #[test]
+    fn healing_a_preference_set_rewrites_only_the_retired_model_pick() {
+        let options = vec![
+            claude_model_selector("opus"),
+            serde_json::from_value(serde_json::json!({
+                "type": "select",
+                "id": "effort",
+                "name": "Effort",
+                "category": "thought_level",
+                "currentValue": "high",
+                "options": [{"value": "high", "name": "High"}, {"value": "xhigh", "name": "xHigh"}],
+            }))
+            .expect("parses"),
+        ];
+        let preferred = BTreeMap::from([
+            ("effort".to_string(), "xhigh".to_string()),
+            ("model".to_string(), "opus[1m]".to_string()),
+            // An id the agent never advertised passes through untouched, for
+            // the agent to judge as before.
+            ("unlisted".to_string(), "x[1m]".to_string()),
+        ]);
+        assert_eq!(
+            heal_retired_context_lane_picks(AgentType::ClaudeCode, &options, &preferred),
+            BTreeMap::from([
+                ("effort".to_string(), "xhigh".to_string()),
+                ("model".to_string(), "opus".to_string()),
+                ("unlisted".to_string(), "x[1m]".to_string()),
+            ])
+        );
+        // On an account that still lists the pick, the set is unchanged.
+        let still_listed = vec![claude_model_selector("opus[1m]")];
+        assert_eq!(
+            heal_retired_context_lane_picks(AgentType::ClaudeCode, &still_listed, &preferred),
+            preferred
+        );
+        // `[1m]` is claude's spelling: no other agent's pick is rewritten, even
+        // against the very list that heals claude's.
+        for agent in [
+            AgentType::Codex,
+            AgentType::OpenCode,
+            AgentType::Custom("acme"),
+        ] {
+            assert_eq!(
+                heal_retired_context_lane_picks(agent, &options, &preferred),
+                preferred,
+                "{agent:?}"
+            );
+        }
     }
 
     #[test]

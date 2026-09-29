@@ -10359,9 +10359,13 @@ const CLAUDE_MODEL_KEY_MAP: &[(&str, &str)] = &[
     ("haiku", "ANTHROPIC_DEFAULT_HAIKU_MODEL"),
     ("sonnet", "ANTHROPIC_DEFAULT_SONNET_MODEL"),
     ("opus", "ANTHROPIC_DEFAULT_OPUS_MODEL"),
+    // What the `fable` alias resolves to (and so `best`, where Fable is
+    // available), and the id the CLI recognizes as a Fable model for its
+    // automatic model fallback on third-party providers.
+    ("fable", "ANTHROPIC_DEFAULT_FABLE_MODEL"),
     // The custom model option trio appends one entry to the in-session /model
     // picker (a model the provider's gateway serves). Carried by the provider's
-    // model JSON like the five model fields, so binding/cascade pushes it too.
+    // model JSON like the six model fields, so binding/cascade pushes it too.
     ("customOption", "ANTHROPIC_CUSTOM_MODEL_OPTION"),
     ("customOptionName", "ANTHROPIC_CUSTOM_MODEL_OPTION_NAME"),
     (
@@ -10378,7 +10382,7 @@ const CLAUDE_MODEL_KEY_MAP: &[(&str, &str)] = &[
 /// "clear". This lets the caller overwrite even when the provider's value is
 /// empty.
 ///
-/// - Claude: returns one entry per `CLAUDE_MODEL_KEY_MAP` row — the five
+/// - Claude: returns one entry per `CLAUDE_MODEL_KEY_MAP` row — the six
 ///   ANTHROPIC_*_MODEL fields plus the ANTHROPIC_CUSTOM_MODEL_OPTION trio. Each
 ///   entry is `None` when the provider's JSON omits that key or has an empty
 ///   value.
@@ -16895,6 +16899,29 @@ wire_api = "chat"
             bare.get("ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION"),
             Some(&None)
         );
+    }
+
+    #[test]
+    fn parse_provider_model_emits_claude_default_fable_model() {
+        // `fable` is a provider-owned pin like the other model fields: a value
+        // sets ANTHROPIC_DEFAULT_FABLE_MODEL (trimmed), and an omitted one is an
+        // authoritative clear, so the previous provider's Fable pin cannot
+        // survive a bind or a provider edit.
+        let out = parse_provider_model(
+            AgentType::ClaudeCode,
+            Some(r#"{"opus":"gw/opus","fable":" gw/fable "}"#),
+        );
+        assert_eq!(
+            out.get("ANTHROPIC_DEFAULT_FABLE_MODEL"),
+            Some(&Some("gw/fable".to_string()))
+        );
+        assert_eq!(
+            out.get("ANTHROPIC_DEFAULT_OPUS_MODEL"),
+            Some(&Some("gw/opus".to_string()))
+        );
+
+        let bare = parse_provider_model(AgentType::ClaudeCode, Some(r#"{"main":"x"}"#));
+        assert_eq!(bare.get("ANTHROPIC_DEFAULT_FABLE_MODEL"), Some(&None));
     }
 
     #[test]

@@ -229,6 +229,7 @@ interface AgentDraft {
   claudeDefaultHaikuModel: string
   claudeDefaultSonnetModel: string
   claudeDefaultOpusModel: string
+  claudeDefaultFableModel: string
   claudeCustomModelOption: string
   claudeCustomModelOptionName: string
   claudeCustomModelOptionDescription: string
@@ -612,6 +613,7 @@ const CLAUDE_MODEL_ENV_KEYS = {
   claudeDefaultHaikuModel: "ANTHROPIC_DEFAULT_HAIKU_MODEL",
   claudeDefaultSonnetModel: "ANTHROPIC_DEFAULT_SONNET_MODEL",
   claudeDefaultOpusModel: "ANTHROPIC_DEFAULT_OPUS_MODEL",
+  claudeDefaultFableModel: "ANTHROPIC_DEFAULT_FABLE_MODEL",
   claudeCustomModelOption: "ANTHROPIC_CUSTOM_MODEL_OPTION",
   claudeCustomModelOptionName: "ANTHROPIC_CUSTOM_MODEL_OPTION_NAME",
   claudeCustomModelOptionDescription:
@@ -1033,6 +1035,7 @@ function extractImportantConfigValues(
   claudeDefaultHaikuModel: string
   claudeDefaultSonnetModel: string
   claudeDefaultOpusModel: string
+  claudeDefaultFableModel: string
   claudeCustomModelOption: string
   claudeCustomModelOptionName: string
   claudeCustomModelOptionDescription: string
@@ -1070,6 +1073,9 @@ function extractImportantConfigValues(
   ])
   const claudeDefaultOpusModel = findEnvValue(mergedEnv, [
     CLAUDE_MODEL_ENV_KEYS.claudeDefaultOpusModel,
+  ])
+  const claudeDefaultFableModel = findEnvValue(mergedEnv, [
+    CLAUDE_MODEL_ENV_KEYS.claudeDefaultFableModel,
   ])
   const claudeCustomModelOption = findEnvValue(mergedEnv, [
     CLAUDE_MODEL_ENV_KEYS.claudeCustomModelOption,
@@ -1114,6 +1120,8 @@ function extractImportantConfigValues(
       agentType === "claude_code" ? claudeDefaultSonnetModel : "",
     claudeDefaultOpusModel:
       agentType === "claude_code" ? claudeDefaultOpusModel : "",
+    claudeDefaultFableModel:
+      agentType === "claude_code" ? claudeDefaultFableModel : "",
     claudeCustomModelOption:
       agentType === "claude_code" ? claudeCustomModelOption : "",
     claudeCustomModelOptionName:
@@ -3372,6 +3380,10 @@ export function patchImportantConfigText(
       patch.claudeDefaultOpusModel
     )
     assignEnv(
+      CLAUDE_MODEL_ENV_KEYS.claudeDefaultFableModel,
+      patch.claudeDefaultFableModel
+    )
+    assignEnv(
       CLAUDE_MODEL_ENV_KEYS.claudeCustomModelOption,
       patch.claudeCustomModelOption
     )
@@ -3425,6 +3437,7 @@ export function applyClaudeProviderToConfigText(
     claudeDefaultHaikuModel: model.haiku ?? "",
     claudeDefaultSonnetModel: model.sonnet ?? "",
     claudeDefaultOpusModel: model.opus ?? "",
+    claudeDefaultFableModel: model.fable ?? "",
     claudeCustomModelOption: model.customOption ?? "",
     claudeCustomModelOptionName: model.customOptionName ?? "",
     claudeCustomModelOptionDescription: model.customOptionDescription ?? "",
@@ -3566,6 +3579,9 @@ function applyImportantFieldToDraft(
   if (key === "claudeDefaultOpusModel") {
     return { ...draft, claudeDefaultOpusModel: value }
   }
+  if (key === "claudeDefaultFableModel") {
+    return { ...draft, claudeDefaultFableModel: value }
+  }
   if (key === "claudeCustomModelOption") {
     return { ...draft, claudeCustomModelOption: value }
   }
@@ -3585,6 +3601,7 @@ function buildImportantPatchFromDraft(draft: AgentDraft): ImportantDraftPatch {
     claudeDefaultHaikuModel: draft.claudeDefaultHaikuModel,
     claudeDefaultSonnetModel: draft.claudeDefaultSonnetModel,
     claudeDefaultOpusModel: draft.claudeDefaultOpusModel,
+    claudeDefaultFableModel: draft.claudeDefaultFableModel,
     claudeCustomModelOption: draft.claudeCustomModelOption,
     claudeCustomModelOptionName: draft.claudeCustomModelOptionName,
     claudeCustomModelOptionDescription:
@@ -3785,6 +3802,7 @@ function buildAgentDraft(agent: AcpAgentInfo): AgentDraft {
     claudeDefaultHaikuModel: important.claudeDefaultHaikuModel,
     claudeDefaultSonnetModel: important.claudeDefaultSonnetModel,
     claudeDefaultOpusModel: important.claudeDefaultOpusModel,
+    claudeDefaultFableModel: important.claudeDefaultFableModel,
     claudeCustomModelOption: important.claudeCustomModelOption,
     claudeCustomModelOptionName: important.claudeCustomModelOptionName,
     claudeCustomModelOptionDescription:
@@ -5825,6 +5843,7 @@ export function AcpAgentSettings() {
         claudeDefaultHaikuModel: important.claudeDefaultHaikuModel,
         claudeDefaultSonnetModel: important.claudeDefaultSonnetModel,
         claudeDefaultOpusModel: important.claudeDefaultOpusModel,
+        claudeDefaultFableModel: important.claudeDefaultFableModel,
         claudeCustomModelOption: important.claudeCustomModelOption,
         claudeCustomModelOptionName: important.claudeCustomModelOptionName,
         claudeCustomModelOptionDescription:
@@ -6020,6 +6039,7 @@ export function AcpAgentSettings() {
         const claudeHaiku = claudeModel.haiku ?? ""
         const claudeSonnet = claudeModel.sonnet ?? ""
         const claudeOpus = claudeModel.opus ?? ""
+        const claudeFable = claudeModel.fable ?? ""
         const claudeCustomOption = claudeModel.customOption ?? ""
         const claudeCustomOptionName = claudeModel.customOptionName ?? ""
         const claudeCustomOptionDescription =
@@ -6036,8 +6056,9 @@ export function AcpAgentSettings() {
             claudeDefaultHaikuModel: claudeHaiku,
             claudeDefaultSonnetModel: claudeSonnet,
             claudeDefaultOpusModel: claudeOpus,
+            claudeDefaultFableModel: claudeFable,
             // The custom model option travels with the provider's model JSON,
-            // authoritative like the five model fields: a defined value sets it,
+            // authoritative like the six model fields: a defined value sets it,
             // an empty/omitted value clears the key from config.env.
             claudeCustomModelOption: claudeCustomOption,
             claudeCustomModelOptionName: claudeCustomOptionName,
@@ -6094,6 +6115,12 @@ export function AcpAgentSettings() {
           nextEnvText = patchEnvByImportantKey(
             agentType,
             nextEnvText,
+            "claudeDefaultFableModel",
+            claudeFable
+          )
+          nextEnvText = patchEnvByImportantKey(
+            agentType,
+            nextEnvText,
             "claudeCustomModelOption",
             claudeCustomOption
           )
@@ -6119,6 +6146,7 @@ export function AcpAgentSettings() {
             claudeDefaultHaikuModel: claudeHaiku,
             claudeDefaultSonnetModel: claudeSonnet,
             claudeDefaultOpusModel: claudeOpus,
+            claudeDefaultFableModel: claudeFable,
             claudeCustomModelOption: claudeCustomOption,
             claudeCustomModelOptionName: claudeCustomOptionName,
             claudeCustomModelOptionDescription: claudeCustomOptionDescription,
@@ -10232,7 +10260,7 @@ supports_websockets = true`}
                             event.target.value
                           )
                         }}
-                        placeholder="claude-sonnet-5"
+                        placeholder="claude-sonnet-5-5"
                       />
                     </div>
 
@@ -10274,7 +10302,7 @@ supports_websockets = true`}
                         placeholder={`{
   "apiProvider": "anthropic",
   "apiKey": "sk-...",
-  "model": "claude-sonnet-5"
+  "model": "claude-sonnet-5-5"
 }`}
                       />
                       {selectedConfigError && (
@@ -11744,7 +11772,7 @@ supports_websockets = true`}
                                   event.target.value
                                 )
                               }}
-                              placeholder="claude-sonnet-5"
+                              placeholder="claude-sonnet-5-5"
                             />
                           </div>
                           <div className="space-y-1.5">
@@ -11801,10 +11829,10 @@ supports_websockets = true`}
                                   event.target.value
                                 )
                               }}
-                              placeholder="claude-sonnet-5"
+                              placeholder="claude-sonnet-5-5"
                             />
                           </div>
-                          <div className="space-y-1.5 md:col-span-2">
+                          <div className="space-y-1.5">
                             <label className="text-2xs text-muted-foreground">
                               {t("claude.opusDefaultModel")}
                             </label>
@@ -11821,6 +11849,25 @@ supports_websockets = true`}
                                 )
                               }}
                               placeholder="claude-opus-5-5"
+                            />
+                          </div>
+                          <div className="space-y-1.5">
+                            <label className="text-2xs text-muted-foreground">
+                              {t("claude.fableDefaultModel")}
+                            </label>
+                            <Input
+                              value={selectedDraft.claudeDefaultFableModel}
+                              readOnly={
+                                selectedDraft.claudeAuthMode ===
+                                "model_provider"
+                              }
+                              onChange={(event) => {
+                                handleImportantConfigChange(
+                                  "claudeDefaultFableModel",
+                                  event.target.value
+                                )
+                              }}
+                              placeholder="claude-fable-5-1"
                             />
                           </div>
                         </div>
@@ -11953,7 +12000,7 @@ supports_websockets = true`}
                                 event.target.value
                               )
                             }}
-                            placeholder="gpt-6-astra / claude-sonnet-5 / gemini-3.1-pro-preview"
+                            placeholder="gpt-6-astra / claude-sonnet-5-5 / gemini-3.1-pro-preview"
                           />
                         </div>
                       )

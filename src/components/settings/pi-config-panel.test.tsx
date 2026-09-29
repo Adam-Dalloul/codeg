@@ -86,7 +86,7 @@ async function renderPanel(
   })
   if (expectModel !== null) {
     await waitFor(() =>
-      expect(screen.getByPlaceholderText("claude-sonnet-5")).toHaveValue(
+      expect(screen.getByPlaceholderText("claude-sonnet-5-5")).toHaveValue(
         expectModel
       )
     )
@@ -236,7 +236,7 @@ describe("Pi default thinking level", () => {
     const answer = pending<PiModelCatalog>()
     api.listPiModelCapabilities.mockReturnValue(answer.promise)
     await renderPanel()
-    fireEvent.change(screen.getByPlaceholderText("claude-sonnet-5"), {
+    fireEvent.change(screen.getByPlaceholderText("claude-sonnet-5-5"), {
       target: { value: "gpt-4" },
     })
     await act(async () => answer.resolve(ANSWERED))
@@ -363,7 +363,7 @@ describe("Pi native config source", () => {
     view.rerender(panel({ PI_CODING_AGENT_DIR: "/tmp/another-agent" }))
     await waitFor(() => expect(api.loadPiConfig).toHaveBeenCalledTimes(2))
     await waitFor(() =>
-      expect(screen.getByPlaceholderText("claude-sonnet-5")).toHaveValue(
+      expect(screen.getByPlaceholderText("claude-sonnet-5-5")).toHaveValue(
         "gpt-4"
       )
     )
@@ -371,7 +371,7 @@ describe("Pi native config source", () => {
 
   it("keeps unsaved edits when a change leaves the agent directory alone", async () => {
     const view = await renderPanel()
-    fireEvent.change(screen.getByPlaceholderText("claude-sonnet-5"), {
+    fireEvent.change(screen.getByPlaceholderText("claude-sonnet-5-5"), {
       target: { value: "gpt-5.6-sol-edited" },
     })
     view.rerender(
@@ -384,7 +384,7 @@ describe("Pi native config source", () => {
       expect(api.listPiModelCapabilities).toHaveBeenCalledTimes(2)
     )
     expect(api.loadPiConfig).toHaveBeenCalledTimes(1)
-    expect(screen.getByPlaceholderText("claude-sonnet-5")).toHaveValue(
+    expect(screen.getByPlaceholderText("claude-sonnet-5-5")).toHaveValue(
       "gpt-5.6-sol-edited"
     )
   })
@@ -398,7 +398,7 @@ describe("Pi native config source", () => {
     expect(
       await screen.findByText("Couldn't read Pi's settings: database is locked")
     ).toBeInTheDocument()
-    expect(screen.getByPlaceholderText("claude-sonnet-5")).toHaveValue("")
+    expect(screen.getByPlaceholderText("claude-sonnet-5-5")).toHaveValue("")
     await saveConfig()
     expect(api.acpUpdatePiConfig).not.toHaveBeenCalled()
   })

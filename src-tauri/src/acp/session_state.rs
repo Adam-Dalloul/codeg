@@ -1406,6 +1406,10 @@ impl SessionState {
                 // alert list) is the client's business: storing one here
                 // would bring it back on every snapshot.
             }
+            AcpEvent::PluginLoadFailures { .. } => {
+                // Same reasoning as a notice: an announcement, kept by the
+                // client's alert list, never re-raised by a snapshot.
+            }
             AcpEvent::AsyncTask { delta } => {
                 // The SAME merge the frontend reducer applies, so a client
                 // seeded from the snapshot and one that watched every delta

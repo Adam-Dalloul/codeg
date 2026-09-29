@@ -1488,9 +1488,80 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             // turn (the plan was dropped with the mode still `plan`); #1173
             // announces a resumed native subagent generation on time — native
             // subagent sessions stay unadopted, so inert here.
+            //
+            // 0.83.0 + 0.84.0 are two upstream changes (#1186, #1189), both
+            // dependency bumps: `@anthropic-ai/claude-agent-sdk` 0.3.280 →
+            // 0.3.283 → 0.3.284, i.e. the bundled CLI 2.1.280 → 2.1.284; the
+            // ACP SDK 1.5.0 → 1.5.1; `engines.node` still ">=22". The ACP
+            // traffic codeg reads was measured the same way as for 0.82.0 and
+            // did not move: the adapter's scenario harness (40 scenarios, mocked
+            // SDK) re-run on both tags with codeg's exact `clientCapabilities`,
+            // and with each opt-in AIR capability added, is byte-identical, and
+            // so is `initialize` minus the version. What moved is the CLI behind
+            // it — including the raw SDK stream codeg also reads, see (nn) —
+            // measured live over stdio with no model call (a `UserPromptSubmit`
+            // hook blocks the prompt).
+            //
+            // (ll) **Sonnet 5.5** (`claude-sonnet-5-5`, CLI 2.1.284): the
+            // default `sonnet` alias and `latest_per_family.sonnet` move to it —
+            // a natively 1M-context model whose default effort is `medium`. The
+            // per-provider Sonnet aliases (Bedrock / Vertex / Foundry …) are
+            // unchanged from 2.1.280. The picker's `sonnet` / `sonnet[1m]` rows
+            // keep their ids and simply resolve to 5.5 (measured through an
+            // `ANTHROPIC_BASE_URL` gateway), so there is no saved pick to
+            // migrate. The settings panels' model placeholders name it.
+            //
+            // (mm) The Opus row can drop its `[1m]` spelling (CLI 2.1.283): the
+            // adapter's own live test records `opus[1m]` "Opus (1M context)"
+            // becoming plain `opus` "Opus" (Opus is natively 1M), while the same
+            // gateway on 2.1.284 still lists `opus[1m]` (measured) — the CLI
+            // builds either row depending on the account. A pick saved
+            // as `opus[1m]` would then be screened out by
+            // `config_option_rejects_value` on every connect, landing the user
+            // on the default model; `heal_retired_context_lane_pick` replays it
+            // as `opus` instead, off the agent's own list.
+            //
+            // (nn) Plugin load failures (CLI 2.1.283, `system/init`'s
+            // `plugin_errors`) have "no ACP surface": the adapter only writes
+            // them to its stderr. codeg reads them off the raw SDK stream it
+            // already takes (`claude_plugin_load_failures`) and raises one
+            // warning per new list. Measured: an ENABLED plugin that is merely
+            // absent — an unknown marketplace plugin, or the `<id>@local` MCP
+            // gate markers `commands::mcp` writes into `enabledPlugins` — is not
+            // reported; a plugin that exists and fails to load (bad manifest,
+            // hooks that do not parse, a missing path) is.
+            //
+            // (oo) ⚠️ An accepted cost, fixable only upstream. #1186 refines a
+            // guessed context window with a BACKGROUND `getContextUsage()` after
+            // `session/new` and after every model switch. The window is a free
+            // fix (the context ring stops reading 200K until the first result),
+            // but the call takes the default `detail: 'full'`, which sends a
+            // burst of `count_tokens` requests (about 20 per call, counted at a
+            // local gateway; 0.82.0 sends none), and SDK control requests are
+            // serialized — so the NEXT control request waits for it, and so
+            // does a prompt. Measured with codeg's connect-time replay shape:
+            // the first `set_config_option` after `session/new` took ~0.5 s
+            // (fast local gateway) / ~2 s (a remote gateway) instead of ~0.03 s,
+            // the effort replay after a model switch the same again, and a
+            // first prompt sent right after `session/new` 2.2–2.5 s instead of
+            // 0.05 s; against a gateway that never answers `count_tokens`, both
+            // were still blocked when the probe gave up (90–120 s).
+            // `getContextUsage({ detail: "summary" })` returns the same
+            // `rawMaxTokens` in ~0.1 s with no request at all (measured on both
+            // gateways), so the fix is a one-liner in the adapter. codeg has no
+            // lever on the call: the adapter is a global npm install, and the
+            // CLI offers no setting for the default `detail`. Reported upstream
+            // with a repro as agentclientprotocol/claude-agent-acp#1192; check
+            // it on the next bump.
+            //
+            // (pp) Inert: managed `deniedModels` now also filters the picker
+            // (#1186); the adapter ignores the new `mcp_tool_listing` stream
+            // event; `conversation_reset` gains `trigger` / `user_message_uuid`
+            // / `timestamp` and `system/init` gains `view_mode` — codeg reads
+            // none of those frames.
             distribution: AgentDistribution::Npx {
-                version: "0.82.0",
-                package: "@agentclientprotocol/claude-agent-acp@0.82.0",
+                version: "0.84.0",
+                package: "@agentclientprotocol/claude-agent-acp@0.84.0",
                 cmd: "claude-agent-acp",
                 args: &[],
                 env: &[],
@@ -3536,8 +3607,8 @@ mod tests {
     fn registry_pins_current_acp_agent_versions() {
         assert_npx_version(
             AgentType::ClaudeCode,
-            "0.82.0",
-            "@agentclientprotocol/claude-agent-acp@0.82.0",
+            "0.84.0",
+            "@agentclientprotocol/claude-agent-acp@0.84.0",
             Some("22.0.0"),
         );
         assert_npx_version(

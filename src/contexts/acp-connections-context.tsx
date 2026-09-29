@@ -94,6 +94,7 @@ import {
 } from "@/lib/async-tasks"
 import { contentBlocksFromUserMessage } from "@/lib/user-message-blocks"
 import { presentSessionNotice, splitHeadline } from "@/lib/session-notices"
+import { presentPluginLoadFailures } from "@/lib/plugin-load-failures"
 import {
   acpErrorNotifiesDesktop,
   isTurnFailureCode,
@@ -5250,6 +5251,31 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
                 })
               : notice.title,
             description: notice.description,
+          })
+          break
+        }
+        case "plugin_load_failures": {
+          // Plugins the agent could not load (Claude Code 2.1.283+, read off
+          // the raw SDK stream by the backend — the adapter gives them no ACP
+          // surface). A warning, so it is kept in the alert list: a missing
+          // plugin is missing its commands, skills and MCP servers, and a
+          // failed hook may be the one guarding its permissions. Keyed by the
+          // failing plugins, so each new session that hits the same broken
+          // plugin refreshes one entry (see `lib/plugin-load-failures`). The
+          // per-plugin lines are the CLI's own English, shown verbatim.
+          if (quiet) break
+          const pc = storeRef.current.connections.get(contextKey)
+          const agentType: AgentType = pc?.agentType ?? "claude_code"
+          const failures = presentPluginLoadFailures(agentType, e.failures)
+          if (!failures) break
+          notify({
+            level: "warning",
+            key: failures.key,
+            title: t("pluginLoadFailedTitle", {
+              agent: getAgentLabel(agentType),
+              count: failures.count,
+            }),
+            description: failures.description,
           })
           break
         }

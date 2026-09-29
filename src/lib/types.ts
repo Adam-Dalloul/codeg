@@ -2662,6 +2662,16 @@ export type AcpEvent =
       notice: SessionNotice
     }
   /**
+   * Plugins Claude Code could not load (CLI 2.1.283+, see `PluginLoadFailure`).
+   * The backend reads them off the raw SDK stream's `system/init` frames and
+   * forwards a set once per connection, again only when it changes. NOT
+   * replayed and not kept in the snapshot — like a notice, it is an event.
+   */
+  | {
+      type: "plugin_load_failures"
+      failures: PluginLoadFailure[]
+    }
+  /**
    * A JetBrains AIR async-task delta (claude + codex, and Grok workflows
    * translated to the same shape — see `AsyncTaskDelta`).
    * PARTIAL by design: the reducer merges it into the connection's task table
@@ -3035,6 +3045,23 @@ export interface SessionNotice {
    *  verbatim, exactly as `SessionFailureRecord.title` already is. */
   title: string
   description?: string | null
+}
+
+/**
+ * One entry of Claude Code's `system/init.plugin_errors` (CLI 2.1.283+): a
+ * plugin that did not load, or loaded without one of its components.
+ */
+export interface PluginLoadFailure {
+  /** `name@marketplace`, or the positional `inline[N]` / `synced[N]` tag of a
+   *  directory entry that failed before it had a name. */
+  plugin: string
+  /** The CLI's category, from an open set (`path-not-found`, `generic-error`,
+   *  `manifest-validation-error`, `dependency-unsatisfied`, …). */
+  kind: string
+  /** CLI-authored English, shown verbatim. */
+  message: string
+  /** The entry's path, for a directory entry that did not load at all. */
+  path?: string | null
 }
 
 export interface SessionFailureRecord {
@@ -4681,7 +4708,8 @@ export interface ModelProviderInfo {
   agent_type: AgentType
   /**
    * Model value, interpretation depends on agent_type:
-   * - claude_code: JSON string of {main, reasoning, haiku, sonnet, opus}
+   * - claude_code: JSON string of {main, reasoning, haiku, sonnet, opus,
+   *   fable} plus the custom model option trio
    * - codex / gemini / others: plain model name string
    */
   model: string | null
@@ -4704,6 +4732,7 @@ export interface ClaudeProviderModel {
   haiku?: string
   sonnet?: string
   opus?: string
+  fable?: string
   /** ANTHROPIC_CUSTOM_MODEL_OPTION — id of a custom entry appended to the
    *  in-session /model picker (e.g. a model the gateway serves). */
   customOption?: string
@@ -4727,6 +4756,7 @@ export function parseClaudeProviderModel(
       "haiku",
       "sonnet",
       "opus",
+      "fable",
       "customOption",
       "customOptionName",
       "customOptionDescription",
@@ -4750,6 +4780,7 @@ export function serializeClaudeProviderModel(
   if (obj.haiku?.trim()) cleaned.haiku = obj.haiku.trim()
   if (obj.sonnet?.trim()) cleaned.sonnet = obj.sonnet.trim()
   if (obj.opus?.trim()) cleaned.opus = obj.opus.trim()
+  if (obj.fable?.trim()) cleaned.fable = obj.fable.trim()
   if (obj.customOption?.trim()) cleaned.customOption = obj.customOption.trim()
   if (obj.customOptionName?.trim())
     cleaned.customOptionName = obj.customOptionName.trim()

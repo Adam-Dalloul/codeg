@@ -92,6 +92,31 @@ pub struct SessionNotice {
     pub description: Option<String>,
 }
 
+/// One plugin Claude Code could not load, as its `system/init` frame lists it
+/// in `plugin_errors` (CLI 2.1.283+): a plugin that did not load at all, or one
+/// that loaded without one of its components.
+///
+/// claude-agent-acp gives these no ACP surface — it only writes them to its
+/// stderr — so codeg reads them off the raw SDK stream it already subscribes to
+/// (`emitRawSDKMessages`). Field for field the CLI's entry, except that its
+/// `type` is `kind` here, the key the frontend reads.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PluginLoadFailure {
+    /// `name@marketplace`, or the positional `inline[N]` / `synced[N]` tag of a
+    /// directory entry that failed before it had a name.
+    pub plugin: String,
+    /// The CLI's category, from an OPEN set (`path-not-found`,
+    /// `generic-error`, `manifest-validation-error`, `dependency-unsatisfied`,
+    /// `hook-load-failed`, …) — a plain string so a new one passes through.
+    pub kind: String,
+    /// CLI-authored display text, in its own English; shown verbatim.
+    pub message: String,
+    /// The entry's path, present only for a directory entry that did not load
+    /// at all.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+}
+
 /// One JetBrains AIR typed session failure record
 /// (`session_info_update._meta.jetbrains.air.sessionFailure`; claude-agent-acp
 /// 0.67+/codex-acp 1.2+, published only because `build_client_capabilities`
@@ -633,6 +658,14 @@ pub enum AcpEvent {
     /// advertises `session.notices` to: claude-agent-acp (0.81+) and codex-acp
     /// (1.13+). Dropped on the replay seam — a notice has no history position.
     SessionNotice { notice: SessionNotice },
+    /// The plugins Claude Code reported it could not load (see
+    /// [`PluginLoadFailure`]). The CLI repeats the list on every turn's
+    /// `system/init`, so this is emitted once per conversation loop and again
+    /// only when the list changes — which includes coming back after an init
+    /// that listed none. Like [`Self::SessionNotice`] it is an event,
+    /// not state: `SessionState::apply_event` keeps none of it, and the frontend
+    /// shows it as a warning notification.
+    PluginLoadFailures { failures: Vec<PluginLoadFailure> },
     /// A JetBrains AIR async-task delta (see [`AsyncTaskDelta`]). Emitted for
     /// every frame codeg could read; the merge into whole rows happens
     /// identically in `SessionState::apply_event` (which the snapshot is taken

@@ -1385,6 +1385,7 @@
       "haikuDefaultModel": "Default Haiku Model",
       "sonnetDefaultModel": "Default Sonnet Model",
       "opusDefaultModel": "Default Opus Model",
+      "fableDefaultModel": "Default Fable Model",
       "customModelOption": "Custom Model ID",
       "customModelOptionName": "Custom Model Name",
       "customModelOptionDescription": "Custom Model Description",
@@ -3079,7 +3080,8 @@
           "httpStatus": " (HTTP {status})"
         },
         "configOptionAdjusted": "{agent} set {option} to {actual} instead of {requested}",
-        "noticeTitle": "{agent}: {title}"
+        "noticeTitle": "{agent}: {title}",
+        "pluginLoadFailedTitle": "{agent} couldn't load {count, plural, one {# plugin} other {# plugins}}"
       },
       "connectionLifecycle": {
         "tasks": {
@@ -4283,6 +4285,7 @@
     "claudeHaikuDefaultModel": "Default Haiku Model",
     "claudeSonnetDefaultModel": "Default Sonnet Model",
     "claudeOpusDefaultModel": "Default Opus Model",
+    "claudeFableDefaultModel": "Default Fable Model",
     "claudeCustomModelOption": "Custom Model ID",
     "claudeCustomModelOptionName": "Custom Model Name",
     "claudeCustomModelOptionDescription": "Custom Model Description",

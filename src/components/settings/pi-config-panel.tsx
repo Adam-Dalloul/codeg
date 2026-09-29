@@ -1299,7 +1299,7 @@ export function PiConfigPanel({
           <Input
             value={model}
             onChange={(event) => setModel(event.target.value)}
-            placeholder="claude-sonnet-5"
+            placeholder="claude-sonnet-5-5"
             spellCheck={false}
             disabled={savingCreds || loadingCreds}
           />

@@ -1385,6 +1385,7 @@
       "haikuDefaultModel": "Modelo Haiku padrão",
       "sonnetDefaultModel": "Modelo Sonnet padrão",
       "opusDefaultModel": "Modelo Opus padrão",
+      "fableDefaultModel": "Modelo Fable padrão",
       "customModelOption": "ID do modelo personalizado",
       "customModelOptionName": "Nome do modelo personalizado",
       "customModelOptionDescription": "Descrição do modelo personalizado",
@@ -3079,7 +3080,8 @@
           "httpStatus": " (HTTP {status})"
         },
         "configOptionAdjusted": "O {agent} definiu {option} como {actual} em vez de {requested}",
-        "noticeTitle": "{agent}: {title}"
+        "noticeTitle": "{agent}: {title}",
+        "pluginLoadFailedTitle": "{agent} não conseguiu carregar {count, plural, one {# plugin} other {# plugins}}"
       },
       "connectionLifecycle": {
         "tasks": {
@@ -4264,6 +4266,7 @@
     "claudeHaikuDefaultModel": "Modelo Haiku Padrão",
     "claudeSonnetDefaultModel": "Modelo Sonnet Padrão",
     "claudeOpusDefaultModel": "Modelo Opus Padrão",
+    "claudeFableDefaultModel": "Modelo Fable Padrão",
     "claudeCustomModelOption": "ID do modelo personalizado",
     "claudeCustomModelOptionName": "Nome do modelo personalizado",
     "claudeCustomModelOptionDescription": "Descrição do modelo personalizado",

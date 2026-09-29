@@ -1385,6 +1385,7 @@
       "haikuDefaultModel": "Haiku 預設模型",
       "sonnetDefaultModel": "Sonnet 預設模型",
       "opusDefaultModel": "Opus 預設模型",
+      "fableDefaultModel": "Fable 預設模型",
       "customModelOption": "自訂模型 ID",
       "customModelOptionName": "自訂模型名稱",
       "customModelOptionDescription": "自訂模型描述",
@@ -3079,7 +3080,8 @@
           "httpStatus": "（HTTP {status}）"
         },
         "configOptionAdjusted": "{agent} 把{option}設成了 {actual}，而不是 {requested}",
-        "noticeTitle": "{agent}：{title}"
+        "noticeTitle": "{agent}：{title}",
+        "pluginLoadFailedTitle": "{agent} 有 {count} 個外掛載入失敗"
       },
       "connectionLifecycle": {
         "tasks": {
@@ -4264,6 +4266,7 @@
     "claudeHaikuDefaultModel": "預設 Haiku 模型",
     "claudeSonnetDefaultModel": "預設 Sonnet 模型",
     "claudeOpusDefaultModel": "預設 Opus 模型",
+    "claudeFableDefaultModel": "預設 Fable 模型",
     "claudeCustomModelOption": "自訂模型 ID",
     "claudeCustomModelOptionName": "自訂模型名稱",
     "claudeCustomModelOptionDescription": "自訂模型描述",

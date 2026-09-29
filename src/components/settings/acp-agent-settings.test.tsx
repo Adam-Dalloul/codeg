@@ -1140,6 +1140,26 @@ describe("applyClaudeProviderToConfigText — provider-bound stale config", () =
     expect(env.ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION).toBe("via gateway")
   })
 
+  // The Fable pin is provider-owned like the other model pins: a reload can
+  // carry the previous provider's ANTHROPIC_DEFAULT_FABLE_MODEL in the on-disk
+  // config, and a save for a provider that pins no Fable model must drop it.
+  it("writes the provider's Fable pin and clears a stale one", () => {
+    const pinned = applyClaudeProviderToConfigText("", {
+      api_url: "https://gw.example/v1",
+      api_key: "sk-x",
+      model: JSON.stringify({ main: "prov-main", fable: "gw/fable" }),
+    })
+    expect(envOf(pinned).ANTHROPIC_DEFAULT_FABLE_MODEL).toBe("gw/fable")
+
+    const unpinned = applyClaudeProviderToConfigText(pinned, {
+      api_url: "https://gw.example/v1",
+      api_key: "sk-x",
+      model: JSON.stringify({ main: "prov-main" }),
+    })
+    expect(envOf(unpinned).ANTHROPIC_DEFAULT_FABLE_MODEL).toBeUndefined()
+    expect(envOf(unpinned).ANTHROPIC_MODEL).toBe("prov-main")
+  })
+
   // The hardening toggles are not provider-controlled, so a provider-authoritative
   // rewrite must leave them intact while it overwrites the model keys.
   it("preserves a hardening env flag through the provider rewrite", () => {

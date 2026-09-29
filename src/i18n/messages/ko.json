@@ -1385,6 +1385,7 @@
       "haikuDefaultModel": "기본 Haiku 모델",
       "sonnetDefaultModel": "기본 Sonnet 모델",
       "opusDefaultModel": "기본 Opus 모델",
+      "fableDefaultModel": "기본 Fable 모델",
       "customModelOption": "사용자 지정 모델 ID",
       "customModelOptionName": "사용자 지정 모델 이름",
       "customModelOptionDescription": "사용자 지정 모델 설명",
@@ -3079,7 +3080,8 @@
           "httpStatus": " (HTTP {status})"
         },
         "configOptionAdjusted": "{agent}이(가) {option}을(를) {requested} 대신 {actual}(으)로 설정했습니다",
-        "noticeTitle": "{agent}: {title}"
+        "noticeTitle": "{agent}: {title}",
+        "pluginLoadFailedTitle": "{agent}에서 플러그인 {count}개를 불러오지 못했습니다"
       },
       "connectionLifecycle": {
         "tasks": {
@@ -4264,6 +4266,7 @@
     "claudeHaikuDefaultModel": "기본 Haiku 모델",
     "claudeSonnetDefaultModel": "기본 Sonnet 모델",
     "claudeOpusDefaultModel": "기본 Opus 모델",
+    "claudeFableDefaultModel": "기본 Fable 모델",
     "claudeCustomModelOption": "사용자 지정 모델 ID",
     "claudeCustomModelOptionName": "사용자 지정 모델 이름",
     "claudeCustomModelOptionDescription": "사용자 지정 모델 설명",
