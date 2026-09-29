@@ -13,6 +13,7 @@ pub mod hermes;
 pub mod kimi_code;
 pub mod openclaw;
 pub mod opencode;
+mod opencode_context_window;
 pub mod pi;
 pub mod qoder;
 mod summary_cache;
@@ -1005,7 +1006,8 @@ pub fn latest_turn_total_usage_tokens(turns: &[MessageTurn]) -> Option<u64> {
 /// Deliberately NOT [`latest_turn_total_usage_tokens`], which adds
 /// `output_tokens` too: for this counter shape the reply is not resident in the
 /// prompt window that produced it, so including it over-reports the gauge by
-/// the last turn's output. Claude Code and Qoder both write this shape.
+/// the last turn's output. Claude Code, Qoder and OpenCode all write this
+/// shape (OpenCode's `tokens.input` already has the cached part taken out).
 pub fn latest_turn_prompt_usage_tokens(turns: &[MessageTurn]) -> Option<u64> {
     turns.iter().rev().find_map(|turn| {
         turn.usage.as_ref().and_then(|usage| {

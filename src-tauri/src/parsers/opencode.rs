@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::future::Future;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use chrono::{DateTime, TimeZone, Utc};
@@ -10,10 +10,13 @@ use sea_orm::{
 };
 
 use crate::models::*;
+use crate::parsers::opencode_context_window::{ModelLimitSources, ModelRef};
 use crate::parsers::{folder_name_from_path, truncate_str, AgentParser, ParseError};
 
 pub struct OpenCodeParser {
     base_dir: PathBuf,
+    /// Where the context window of a session's model is looked up.
+    model_limits: ModelLimitSources,
 }
 
 impl Default for OpenCodeParser {
@@ -25,14 +28,24 @@ impl Default for OpenCodeParser {
 impl OpenCodeParser {
     pub fn new() -> Self {
         let base_dir = resolve_opencode_base_dir();
-        Self { base_dir }
+        Self {
+            base_dir,
+            model_limits: ModelLimitSources::from_env(),
+        }
     }
 
     /// Test-only constructor that lets callers point the parser at a fixture
     /// directory containing an `opencode.db` SQLite file.
+    ///
+    /// It reads nothing else: no OpenCode config or catalog from the machine
+    /// running the test, so a context window comes only from the model-name
+    /// guess.
     #[cfg(any(test, feature = "test-utils"))]
     pub fn with_base_dir(base_dir: PathBuf) -> Self {
-        Self { base_dir }
+        Self {
+            base_dir,
+            model_limits: ModelLimitSources::default(),
+        }
     }
 
     fn sqlite_db_path(&self) -> PathBuf {
@@ -199,7 +212,10 @@ impl OpenCodeParser {
             .await?
             .ok_or_else(|| ParseError::ConversationNotFound(conversation_id.to_string()))?;
 
-        let messages = match store {
+        let LoadedMessages {
+            messages,
+            latest_model,
+        } = match store {
             SessionStore::Legacy => self.load_sqlite_messages(&conn, conversation_id).await?,
             SessionStore::V2 => self.load_v2_messages(&conn, conversation_id).await?,
         };
@@ -210,9 +226,27 @@ impl OpenCodeParser {
         // OpenCode stamps `time.created` / `time.completed` on assistant
         // messages itself; this only covers ones written with no completion.
         super::backfill_turn_durations(&mut turns, &[]);
-        let context_window_used_tokens = super::latest_turn_total_usage_tokens(&turns);
-        let context_window_max_tokens =
-            super::infer_context_window_max_tokens(summary.model.as_deref());
+        // The same reading OpenCode's own ACP adapter reports live: occupancy
+        // is `input + cache.read + cache.write` of the latest reply
+        // (`contextTokens`), whose output is not resident in the window that
+        // produced it; the window is `limit.context` of the model that reply
+        // ran on (`findContextLimit`), which OpenCode looks up rather than
+        // writes down — see `opencode_context_window`.
+        let context_window_used_tokens = super::latest_turn_prompt_usage_tokens(&turns);
+        let context_window_max_tokens = latest_model
+            .as_ref()
+            .and_then(|model| {
+                self.model_limits
+                    .context_window(summary.folder_path.as_deref().map(Path::new), model)
+            })
+            .or_else(|| {
+                super::infer_context_window_max_tokens(
+                    latest_model
+                        .as_ref()
+                        .map(|model| model.model_id.as_str())
+                        .or(summary.model.as_deref()),
+                )
+            });
         let session_stats = super::merge_context_window_stats(
             super::compute_session_stats(&turns),
             context_window_used_tokens,
@@ -231,7 +265,7 @@ impl OpenCodeParser {
         &self,
         conn: &DatabaseConnection,
         conversation_id: &str,
-    ) -> Result<Vec<UnifiedMessage>, ParseError> {
+    ) -> Result<LoadedMessages, ParseError> {
         let rows = conn
             .query_all(Statement::from_sql_and_values(
                 DbBackend::Sqlite,
@@ -251,6 +285,7 @@ impl OpenCodeParser {
         let subagent_tools = batch_load_subagent_tool_calls(conn, &subagent_session_ids).await;
 
         let mut messages = Vec::with_capacity(rows.len());
+        let mut latest_model = None;
 
         for row in rows {
             let msg_id: String = row.try_get("", "id")?;
@@ -286,6 +321,14 @@ impl OpenCodeParser {
             } else {
                 None
             };
+            if is_assistant {
+                if let Some(model) = ModelRef::new(
+                    value.get("providerID").and_then(|p| p.as_str()),
+                    msg_model.as_deref(),
+                ) {
+                    latest_model = Some(model);
+                }
+            }
 
             let (mut content_blocks, usage_from_step_finish) = self
                 .load_sqlite_parts(conn, &msg_id, &subagent_tools)
@@ -369,7 +412,10 @@ impl OpenCodeParser {
             });
         }
 
-        Ok(messages)
+        Ok(LoadedMessages {
+            messages,
+            latest_model,
+        })
     }
 
     /// Scan all tool parts in this conversation to extract subagent session IDs.
@@ -737,7 +783,7 @@ impl OpenCodeParser {
         &self,
         conn: &DatabaseConnection,
         conversation_id: &str,
-    ) -> Result<Vec<UnifiedMessage>, ParseError> {
+    ) -> Result<LoadedMessages, ParseError> {
         let rows = conn
             .query_all(Statement::from_sql_and_values(
                 DbBackend::Sqlite,
@@ -782,6 +828,7 @@ impl OpenCodeParser {
         let subagent_tools = batch_load_v2_subagent_tool_calls(conn, &subagent_session_ids).await;
 
         let mut messages = Vec::with_capacity(entries.len());
+        let mut latest_model = None;
         for (msg_id, is_assistant, row_time_created, value) in entries {
             let created_ms = value
                 .get("time")
@@ -801,6 +848,15 @@ impl OpenCodeParser {
                     .and_then(|m| m.get("id"))
                     .and_then(|m| m.as_str())
                     .map(str::to_string);
+                if let Some(model) = ModelRef::new(
+                    value
+                        .get("model")
+                        .and_then(|m| m.get("providerID"))
+                        .and_then(|p| p.as_str()),
+                    model.as_deref(),
+                ) {
+                    latest_model = Some(model);
+                }
                 (
                     MessageRole::Assistant,
                     blocks,
@@ -847,8 +903,20 @@ impl OpenCodeParser {
             });
         }
 
-        Ok(messages)
+        Ok(LoadedMessages {
+            messages,
+            latest_model,
+        })
     }
+}
+
+/// A session's messages, read from either store.
+struct LoadedMessages {
+    messages: Vec<UnifiedMessage>,
+    /// The provider and model of the latest assistant message that names one:
+    /// the model OpenCode sizes its context gauge by (`latestAssistantMessage`),
+    /// and the one the session would carry on with.
+    latest_model: Option<ModelRef>,
 }
 
 impl AgentParser for OpenCodeParser {
@@ -4036,5 +4104,222 @@ mod tests {
             ("Continued in 1.x".into(), "later answer from 1.x".into())
         );
         assert_eq!(last_text("ses_f").0, "Created by 2.x");
+    }
+
+    /// A legacy message row whose `data` is given whole, plus one text part.
+    fn legacy_message(
+        fx: &mut DbFixture,
+        session: &str,
+        id: &str,
+        created: i64,
+        data: serde_json::Value,
+    ) {
+        fx.exec(
+            "INSERT INTO message (id, session_id, time_created, data) VALUES (?, ?, ?, ?)",
+            [
+                id.into(),
+                session.into(),
+                created.into(),
+                data.to_string().into(),
+            ],
+        );
+        let part = serde_json::json!({ "type": "text", "text": format!("text of {id}") });
+        fx.exec(
+            "INSERT INTO part (id, message_id, time_created, data) VALUES (?, ?, ?, ?)",
+            [
+                format!("prt_{id}").into(),
+                id.into(),
+                created.into(),
+                part.to_string().into(),
+            ],
+        );
+    }
+
+    /// OpenCode's own models.dev cache, reduced to the models these tests use.
+    /// Project config stays off: the fixture sessions' `/work/app` is a real
+    /// path on the machine running the suite.
+    fn catalog_sources(root: &std::path::Path) -> super::ModelLimitSources {
+        let catalog = root.join("models.json");
+        std::fs::write(
+            &catalog,
+            serde_json::json!({
+                "opencode": { "models": {
+                    "big-pickle": { "limit": { "context": 200000, "input": 160000, "output": 32000 } },
+                    "small": { "limit": { "context": 32000, "output": 4096 } }
+                } }
+            })
+            .to_string(),
+        )
+        .expect("write catalog");
+        super::ModelLimitSources {
+            catalog_file: Some(catalog),
+            ..Default::default()
+        }
+    }
+
+    /// The case a reopened session lost its gauge over: a model only
+    /// OpenCode's catalog knows (OpenCode Zen's `big-pickle`), whose window the
+    /// live view got from OpenCode's own `usage_update`.
+    #[test]
+    fn a_reopened_session_is_sized_like_opencode_sizes_it_live() {
+        use crate::parsers::AgentParser;
+
+        let t0: i64 = 1_790_612_421_000;
+        let mut fx = DbFixture::new(&LEGACY_TABLES);
+        fx.legacy_session("ses_zen", "Friendly greeting", t0, t0 + 9_000);
+        fx.legacy_text("ses_zen", "msg_u1", "user", t0 + 10, "hi");
+        legacy_message(
+            &mut fx,
+            "ses_zen",
+            "msg_a1",
+            t0 + 20,
+            serde_json::json!({
+                "role": "assistant",
+                "time": { "created": t0 + 20, "completed": t0 + 90 },
+                "providerID": "opencode",
+                "modelID": "small",
+                "tokens": { "input": 1000, "output": 50, "reasoning": 0, "cache": { "read": 0, "write": 0 } }
+            }),
+        );
+        fx.legacy_text("ses_zen", "msg_u2", "user", t0 + 100, "and again");
+        legacy_message(
+            &mut fx,
+            "ses_zen",
+            "msg_a2",
+            t0 + 110,
+            serde_json::json!({
+                "role": "assistant",
+                "time": { "created": t0 + 110, "completed": t0 + 190 },
+                "providerID": "opencode",
+                "modelID": "big-pickle",
+                "tokens": {
+                    "total": 9348, "input": 7399, "output": 10, "reasoning": 0,
+                    "cache": { "read": 1939, "write": 0 }
+                }
+            }),
+        );
+        let (dir, mut parser) = fx.build();
+
+        // Nothing to look the window up in: `big-pickle` means nothing to the
+        // name guess, so only the occupancy is known.
+        let stats = parser
+            .get_conversation("ses_zen")
+            .expect("detail")
+            .session_stats
+            .expect("stats");
+        assert_eq!(stats.context_window_max_tokens, None);
+        // `input + cache.read + cache.write` of the latest reply: its output is
+        // not resident in the window, and earlier replies are not added in.
+        assert_eq!(stats.context_window_used_tokens, Some(9_338));
+
+        parser.model_limits = catalog_sources(dir.path());
+        let stats = parser
+            .get_conversation("ses_zen")
+            .expect("detail")
+            .session_stats
+            .expect("stats");
+        // The latest reply's model decides, not the session's first.
+        assert_eq!(stats.context_window_max_tokens, Some(200_000));
+        assert_eq!(stats.context_window_used_tokens, Some(9_338));
+        let percent = stats.context_window_usage_percent.expect("percent");
+        assert!((percent - 4.669).abs() < 0.001, "percent was {percent}");
+    }
+
+    #[test]
+    fn a_2x_session_is_sized_by_the_model_its_latest_reply_named() {
+        use crate::parsers::AgentParser;
+
+        let t0: i64 = 1_790_612_421_000;
+        let mut fx = DbFixture::new(&V2_TABLES);
+        fx.v2_session("ses_v2", None, Some("Sized"), t0, t0 + 9_000);
+        fx.v2_message(
+            "ses_v2",
+            "msg_01",
+            1,
+            "user",
+            t0 + 10,
+            serde_json::json!({ "time": { "created": t0 + 10 }, "text": "hi" }),
+        );
+        fx.v2_message(
+            "ses_v2",
+            "msg_02",
+            2,
+            "assistant",
+            t0 + 20,
+            serde_json::json!({
+                "time": { "created": t0 + 20, "completed": t0 + 90 },
+                "model": { "id": "big-pickle", "providerID": "opencode", "variant": null },
+                "tokens": { "input": 3000, "output": 400, "reasoning": 0, "cache": { "read": 1000, "write": 500 } },
+                "content": [{ "type": "text", "text": "hello" }]
+            }),
+        );
+        let (dir, mut parser) = fx.build();
+        parser.model_limits = catalog_sources(dir.path());
+
+        let stats = parser
+            .get_conversation("ses_v2")
+            .expect("detail")
+            .session_stats
+            .expect("stats");
+        assert_eq!(stats.context_window_max_tokens, Some(200_000));
+        assert_eq!(stats.context_window_used_tokens, Some(4_500));
+    }
+
+    /// A custom provider's window lives only in the config it was declared
+    /// in, and a project's config is found from the session's own directory.
+    #[test]
+    fn a_custom_model_is_sized_by_the_config_of_the_sessions_project() {
+        use crate::parsers::AgentParser;
+
+        let t0: i64 = 1_790_612_421_000;
+        let project = tempfile::tempdir().expect("project dir");
+        std::fs::create_dir(project.path().join(".git")).expect("git dir");
+        std::fs::write(
+            project.path().join("opencode.jsonc"),
+            r#"{
+                // Declared by the project, not by the catalog.
+                "provider": { "X": { "models": { "xx": { "limit": { "context": 32768, }, }, }, }, },
+            }"#,
+        )
+        .expect("project config");
+
+        let mut fx = DbFixture::new(&LEGACY_TABLES);
+        fx.exec(
+            "INSERT INTO session (id, directory, title, time_created, time_updated) \
+             VALUES (?, ?, 'Custom', ?, ?)",
+            [
+                "ses_custom".into(),
+                project.path().to_string_lossy().into_owned().into(),
+                t0.into(),
+                (t0 + 9_000).into(),
+            ],
+        );
+        fx.legacy_text("ses_custom", "msg_u1", "user", t0 + 10, "hi");
+        legacy_message(
+            &mut fx,
+            "ses_custom",
+            "msg_a1",
+            t0 + 20,
+            serde_json::json!({
+                "role": "assistant",
+                "time": { "created": t0 + 20, "completed": t0 + 90 },
+                "providerID": "X",
+                "modelID": "xx",
+                "tokens": { "input": 2000, "output": 30, "reasoning": 0, "cache": { "read": 0, "write": 0 } }
+            }),
+        );
+        let (dir, mut parser) = fx.build();
+        parser.model_limits = super::ModelLimitSources {
+            project_config: true,
+            ..catalog_sources(dir.path())
+        };
+
+        let stats = parser
+            .get_conversation("ses_custom")
+            .expect("detail")
+            .session_stats
+            .expect("stats");
+        assert_eq!(stats.context_window_max_tokens, Some(32_768));
+        assert_eq!(stats.context_window_used_tokens, Some(2_000));
     }
 }
