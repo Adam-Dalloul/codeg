@@ -4710,7 +4710,8 @@
     "none": "Aucune branche",
     "local": "Locale",
     "remote": "Distante",
-    "useCustom": "Utiliser « {query} »"
+    "useCustom": "Utiliser « {query} »",
+    "head": "HEAD"
   },
   "BackupSettings": {
     "tabs": {
@@ -5484,7 +5485,6 @@
     "promptPlaceholder": "Décrivez la tâche pour l’agent — @ pour référencer des fichiers, / pour les commandes",
     "folderPlaceholder": "Choisir un dossier",
     "baseBranch": "Branche de base",
-    "baseBranchPlaceholder": "Branche actuelle",
     "baseBranchDefault": "Branche actuelle au démarrage de la tâche",
     "baseBranchHint": "La tâche part de cette branche, et la fusion l’y ramène.",
     "agentInheritedHint": "Hérité des réglages des tâches — modifiez-le pour personnaliser cette tâche",

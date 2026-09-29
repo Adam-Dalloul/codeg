@@ -4710,7 +4710,8 @@
     "none": "Sem branches",
     "local": "Local",
     "remote": "Remoto",
-    "useCustom": "Usar \"{query}\""
+    "useCustom": "Usar \"{query}\"",
+    "head": "HEAD"
   },
   "BackupSettings": {
     "tabs": {
@@ -5484,7 +5485,6 @@
     "promptPlaceholder": "Descreva a tarefa para o agente — @ para referenciar arquivos, / para comandos",
     "folderPlaceholder": "Selecione uma pasta",
     "baseBranch": "Branch base",
-    "baseBranchPlaceholder": "Branch atual",
     "baseBranchDefault": "Branch atual quando a tarefa iniciar",
     "baseBranchHint": "A tarefa parte deste branch e o merge a devolve para ele.",
     "agentInheritedHint": "Herdado das configurações de tarefas; altere para personalizar esta tarefa",

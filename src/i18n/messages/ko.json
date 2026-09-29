@@ -4710,7 +4710,8 @@
     "none": "브랜치 없음",
     "local": "로컬",
     "remote": "원격",
-    "useCustom": "\"{query}\" 사용"
+    "useCustom": "\"{query}\" 사용",
+    "head": "HEAD"
   },
   "BackupSettings": {
     "tabs": {
@@ -5484,7 +5485,6 @@
     "promptPlaceholder": "에이전트에게 작업을 설명하세요 — @로 파일 참조, /로 명령",
     "folderPlaceholder": "폴더 선택",
     "baseBranch": "기준 브랜치",
-    "baseBranchPlaceholder": "현재 브랜치",
     "baseBranchDefault": "작업이 시작될 때의 현재 브랜치",
     "baseBranchHint": "작업은 이 브랜치에서 갈라져 나오고, 병합도 이 브랜치로 돌아갑니다.",
     "agentInheritedHint": "작업 설정에서 상속됨 — 변경하면 이 작업에만 적용됩니다",

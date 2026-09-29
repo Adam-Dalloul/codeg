@@ -4122,7 +4122,8 @@
     "none": "No branches",
     "local": "Local",
     "remote": "Remote",
-    "useCustom": "Use \"{query}\""
+    "useCustom": "Use \"{query}\"",
+    "head": "HEAD"
   },
   "ChatChannelSettings": {
     "loading": "Loading...",
@@ -5484,7 +5485,6 @@
     "promptPlaceholder": "Describe the task for the agent — @ to reference files, / for commands",
     "folderPlaceholder": "Select a folder",
     "baseBranch": "Base branch",
-    "baseBranchPlaceholder": "Current branch",
     "baseBranchDefault": "Current branch when the task starts",
     "baseBranchHint": "The task branches from here, and merging lands it back on this branch.",
     "agentInheritedHint": "Inherited from task settings — change it to override for this task",

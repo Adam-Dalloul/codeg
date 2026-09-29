@@ -4710,7 +4710,8 @@
     "none": "無分支",
     "local": "本機",
     "remote": "遠端",
-    "useCustom": "使用「{query}」"
+    "useCustom": "使用「{query}」",
+    "head": "HEAD"
   },
   "BackupSettings": {
     "tabs": {
@@ -5484,7 +5485,6 @@
     "promptPlaceholder": "向 agent 描述任務——輸入 @ 可引用檔案，/ 可喚起指令",
     "folderPlaceholder": "選擇資料夾",
     "baseBranch": "基準分支",
-    "baseBranchPlaceholder": "目前分支",
     "baseBranchDefault": "任務開始時的目前分支",
     "baseBranchHint": "任務從該分支拉出工作樹，合併時也會落回該分支。",
     "agentInheritedHint": "繼承自任務設定，修改後僅對本任務生效",

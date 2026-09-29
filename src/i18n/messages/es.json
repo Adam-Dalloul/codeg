@@ -4710,7 +4710,8 @@
     "none": "Sin ramas",
     "local": "Local",
     "remote": "Remota",
-    "useCustom": "Usar «{query}»"
+    "useCustom": "Usar «{query}»",
+    "head": "HEAD"
   },
   "BackupSettings": {
     "tabs": {
@@ -5484,7 +5485,6 @@
     "promptPlaceholder": "Describe la tarea para el agente — @ para referenciar archivos, / para comandos",
     "folderPlaceholder": "Selecciona una carpeta",
     "baseBranch": "Rama base",
-    "baseBranchPlaceholder": "Rama actual",
     "baseBranchDefault": "Rama actual al iniciar la tarea",
     "baseBranchHint": "La tarea parte de esta rama y la fusión la devuelve a ella.",
     "agentInheritedHint": "Heredado de la configuración de tareas; cámbialo para personalizar esta tarea",

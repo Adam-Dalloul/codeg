@@ -4710,7 +4710,8 @@
     "none": "Keine Branches",
     "local": "Lokal",
     "remote": "Remote",
-    "useCustom": "„{query}“ verwenden"
+    "useCustom": "„{query}“ verwenden",
+    "head": "HEAD"
   },
   "BackupSettings": {
     "tabs": {
@@ -5484,7 +5485,6 @@
     "promptPlaceholder": "Beschreibe die Aufgabe für den Agenten — @ für Dateiverweise, / für Befehle",
     "folderPlaceholder": "Ordner wählen",
     "baseBranch": "Basis-Branch",
-    "baseBranchPlaceholder": "Aktueller Branch",
     "baseBranchDefault": "Aktueller Branch beim Start der Aufgabe",
     "baseBranchHint": "Die Aufgabe zweigt von diesem Branch ab und wird beim Mergen wieder dorthin übernommen.",
     "agentInheritedHint": "Aus den Aufgaben-Einstellungen geerbt — Änderungen gelten nur für diese Aufgabe",

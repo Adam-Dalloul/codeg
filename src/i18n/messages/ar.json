@@ -4710,7 +4710,8 @@
     "none": "لا توجد فروع",
     "local": "محلي",
     "remote": "بعيد",
-    "useCustom": "استخدام \"{query}\""
+    "useCustom": "استخدام \"{query}\"",
+    "head": "HEAD"
   },
   "BackupSettings": {
     "tabs": {
@@ -5484,7 +5485,6 @@
     "promptPlaceholder": "صف المهمة للوكيل — استخدم @ للإشارة إلى الملفات و / للأوامر",
     "folderPlaceholder": "اختر مجلدًا",
     "baseBranch": "الفرع الأساسي",
-    "baseBranchPlaceholder": "الفرع الحالي",
     "baseBranchDefault": "الفرع الحالي عند بدء المهمة",
     "baseBranchHint": "تتفرّع المهمة من هذا الفرع، ويعيدها الدمج إليه.",
     "agentInheritedHint": "موروث من إعدادات المهام — عدِّله ليصبح خاصًا بهذه المهمة",
