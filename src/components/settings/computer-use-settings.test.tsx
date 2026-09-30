@@ -48,6 +48,7 @@ function settings(enabled: boolean): ComputerToolsSettings {
     blocklistRemoved: [],
     blocklistDefaults: [],
     stopShortcut: "Control+Command+Escape",
+    showIndicator: true,
   }
 }
 

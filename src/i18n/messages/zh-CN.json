@@ -5212,7 +5212,7 @@
       }
     },
     "share": "共享窗口…",
-    "openSettings": "设置",
+    "openSettings": "打开详细设置",
     "picker": {
       "title": "把窗口共享给智能体",
       "description": "所有对话中的智能体都能读取你共享的窗口，并在你允许操作的窗口里点击和输入。你停止共享、窗口关闭，或闲置超过设置中的时长后，共享即结束。",
@@ -5230,12 +5230,13 @@
         "blocklisted": "在永不共享名单中",
         "unidentified": "无法识别所属应用"
       },
-      "share": "共享",
-      "sharedRead": "可读取",
-      "sharedControl": "可操作",
       "shareRead": "允许智能体读取",
       "shareControl": "允许智能体读取并操作",
       "stopSharing": "停止共享",
+      "levelNone": "不共享",
+      "levelRead": "可读取",
+      "levelControl": "可操作",
+      "levelLabel": "智能体对 {app} 的权限",
       "shareAll": "全部共享",
       "shareAllRead": "全部允许读取",
       "shareAllControl": "全部允许读取并操作",
@@ -5282,7 +5283,7 @@
         "screenRecordingHint": "截图和读取窗口标题。"
       },
       "title": "共享与停止",
-      "description": "共享的窗口多久后停止共享、哪些应用永不共享，以及随时停止所有共享的快捷键。",
+      "description": "共享的窗口多久后停止共享、哪些应用永不共享，以及随时停止所有共享的快捷键和悬浮停止条。",
       "ttl": {
         "label": "窗口闲置多久后停止共享",
         "hint": "共享的窗口在这么长时间内没有被任何智能体读取，就会停止共享。",
@@ -5329,6 +5330,10 @@
           "weakModifiers": "至少按住两个修饰键，其中一个是 Ctrl（Mac 上也可以是 ⌘）。",
           "metaOffMac": "不能包含 Windows 键。"
         }
+      },
+      "strip": {
+        "label": "悬浮停止条",
+        "hint": "共享窗口期间，在所有窗口上方悬浮一条提示条，写明智能体能做什么，并带「停止共享」按钮。关闭后，仍可在状态栏的「电脑操作」气泡里或用停止快捷键停止共享。"
       },
       "boundary": "在 macOS 上，权限授予 codeg-computer-helper，只有 codeg 能使用，智能体的命令行用不了。Windows 和 Linux 没有这层隔离：这里的设置决定的是智能体通过 codeg 能拿到什么，而不是电脑上的程序能做什么。",
       "save": "保存",

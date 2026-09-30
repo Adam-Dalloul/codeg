@@ -1,11 +1,13 @@
-import { act, fireEvent, render, screen } from "@testing-library/react"
+import { act, fireEvent, render, screen, within } from "@testing-library/react"
 import { NextIntlClientProvider } from "next-intl"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
 import type {
   ComputerStatus,
+  GrantLevel,
   PickerWindow,
   ShareManyResult,
+  SharedWindow,
 } from "@/lib/computer/types"
 
 const api = vi.hoisted(() => ({
@@ -85,9 +87,11 @@ describe("ComputerWindowPicker", () => {
   it("shows a grant the store has not heard of yet", async () => {
     api.computerListShareableWindows.mockResolvedValue([window("read")])
     mount()
-    expect(
-      await screen.findByRole("button", { name: "Can read" })
-    ).toBeInTheDocument()
+    const levels = await levelsOf("TextEdit")
+    expect(levels.getByRole("button", { name: "Read" })).toHaveAttribute(
+      "aria-pressed",
+      "true"
+    )
   })
 
   /** Once the store knows, it is the live word: a grant that ended while the
@@ -95,31 +99,36 @@ describe("ComputerWindowPicker", () => {
   it("follows the store once it knows", async () => {
     api.computerListShareableWindows.mockResolvedValue([window("read")])
     mount()
-    await screen.findByRole("button", { name: "Can read" })
+    const levels = await levelsOf("TextEdit")
     act(() => setComputerShared([]))
-    expect(
-      await screen.findByRole("button", { name: "Share" })
-    ).toBeInTheDocument()
+    expect(levels.getByRole("button", { name: "Off" })).toHaveAttribute(
+      "aria-pressed",
+      "true"
+    )
+    expect(levels.getByRole("button", { name: "Read" })).toHaveAttribute(
+      "aria-pressed",
+      "false"
+    )
   })
 
   /** A Stop — even from another codeg window — ends every sharing and holds
    * nothing back: the window is on offer again at once. */
   it("offers sharing again straight after a Stop", async () => {
     api.computerListShareableWindows.mockResolvedValue([window("read")])
+    api.computerShareWindow.mockResolvedValue([])
     mount()
-    await screen.findByRole("button", { name: "Can read" })
+    const levels = await levelsOf("TextEdit")
     act(() => setComputerShared([]))
-    await openMenu(await screen.findByRole("button", { name: "Share" }))
-    expect(
-      screen.getByRole("menuitem", { name: "Let agents read it" })
-    ).not.toHaveAttribute("data-disabled")
-    expect(
-      screen.getByRole("menuitem", { name: "Let agents read and act on it" })
-    ).not.toHaveAttribute("data-disabled")
+    expect(levels.getByRole("button", { name: "Read" })).toBeEnabled()
+    await act(async () => {
+      fireEvent.click(levels.getByRole("button", { name: "Read" }))
+      await Promise.resolve()
+    })
+    expect(api.computerShareWindow).toHaveBeenCalledWith("w1", "read")
   })
 
-  /** The toolbar says how many of the windows are shared, and the menu
-   * marks the level a window is at. */
+  /** The toolbar says how many of the windows are shared; each window's
+   *  level is marked where it is changed. */
   it("counts the shared windows and marks each one's level", async () => {
     api.computerListShareableWindows.mockResolvedValue([
       window("read"),
@@ -127,28 +136,61 @@ describe("ComputerWindowPicker", () => {
     ])
     mount()
     expect(await screen.findByText(/1 shared/)).toBeInTheDocument()
-    await openMenu(await screen.findByRole("button", { name: "Can read" }))
-    const current = screen.getByRole("menuitem", { name: "Let agents read it" })
-    expect(current).toHaveAttribute("data-disabled")
-    expect(current.querySelector("svg.lucide-check")).not.toBeNull()
-    expect(
-      screen.getByRole("menuitem", { name: "Stop sharing" })
-    ).toBeInTheDocument()
+    const textEdit = await levelsOf("TextEdit")
+    const notes = await levelsOf("Notes")
+    const pressed = (levels: typeof textEdit) =>
+      levels
+        .getAllByRole("button")
+        .filter((b) => b.getAttribute("aria-pressed") === "true")
+        .map((b) => b.textContent)
+    expect(pressed(textEdit)).toEqual(["Read"])
+    expect(pressed(notes)).toEqual(["Off"])
   })
 
-  /** Acting is the second decision, made from the same menu as reading. */
-  it("offers acting on a window from the same menu", async () => {
-    api.computerListShareableWindows.mockResolvedValue([window("none")])
-    api.computerShareWindow.mockResolvedValue([])
+  /** Each level is one click, from any other — acting straight away, or
+   *  taking a shared window back — and the one in force does nothing. */
+  it("changes a window's level with one click", async () => {
+    const listed = [
+      window("none"),
+      window("read", { targetId: "w2", appName: "Notes", title: "todo" }),
+    ]
+    api.computerListShareableWindows.mockResolvedValue(listed)
+    // The backend's answer: every window shared once the change is made.
+    let shared: SharedWindow[] = [sharedOf(listed[1], "read")]
+    api.computerShareWindow.mockImplementation(
+      async (targetId: string, level: GrantLevel) => {
+        shared = shared.filter((w) => w.targetId !== targetId)
+        const item = listed.find((w) => w.targetId === targetId)!
+        if (level !== "none") shared = [...shared, sharedOf(item, level)]
+        return shared
+      }
+    )
     mount()
-    await openMenu(await screen.findByRole("button", { name: "Share" }))
+    const textEdit = await levelsOf("TextEdit")
+    const notes = await levelsOf("Notes")
     await act(async () => {
-      fireEvent.click(
-        screen.getByRole("menuitem", { name: "Let agents read and act on it" })
-      )
+      fireEvent.click(textEdit.getByRole("button", { name: "Act" }))
       await Promise.resolve()
     })
-    expect(api.computerShareWindow).toHaveBeenCalledWith("w1", "control")
+    expect(api.computerShareWindow).toHaveBeenLastCalledWith("w1", "control")
+    expect(textEdit.getByRole("button", { name: "Act" })).toHaveAttribute(
+      "aria-pressed",
+      "true"
+    )
+    await act(async () => {
+      fireEvent.click(notes.getByRole("button", { name: "Off" }))
+      await Promise.resolve()
+    })
+    expect(api.computerShareWindow).toHaveBeenLastCalledWith("w2", "none")
+    expect(notes.getByRole("button", { name: "Off" })).toHaveAttribute(
+      "aria-pressed",
+      "true"
+    )
+    await act(async () => {
+      fireEvent.click(notes.getByRole("button", { name: "Off" }))
+      await Promise.resolve()
+    })
+    expect(api.computerShareWindow).toHaveBeenCalledTimes(2)
   })
 
   /** "All" is every window that can be shared — what the grid shows — and
@@ -214,15 +256,16 @@ describe("ComputerWindowPicker", () => {
     const stopAll = await screen.findByRole("button", {
       name: "Stop sharing all",
     })
-    await openMenu(await screen.findByRole("button", { name: "Share" }))
+    const notes = await levelsOf("Notes")
     await act(async () => {
-      fireEvent.click(
-        screen.getByRole("menuitem", { name: "Let agents read and act on it" })
-      )
+      fireEvent.click(notes.getByRole("button", { name: "Act" }))
       await Promise.resolve()
     })
     expect(stopAll).toBeDisabled()
     expect(screen.getByRole("button", { name: /Share all/ })).toBeDisabled()
+    const textEdit = await levelsOf("TextEdit")
+    expect(textEdit.getByRole("button", { name: "Off" })).toBeDisabled()
+    expect(notes.getByRole("button", { name: "Read" })).toBeDisabled()
   })
 
   /** Stopping every sharing is there once anything is shared. */
@@ -285,7 +328,7 @@ describe("ComputerWindowPicker", () => {
     api.computerListShareableWindows.mockResolvedValue([window("none")])
     mount()
     await screen.findByText(/doesn't have Screen Recording yet/)
-    await screen.findByRole("button", { name: "Share" })
+    await levelsOf("TextEdit")
     expect(api.computerListShareableWindows).toHaveBeenCalledTimes(1)
     expect(api.computerWindowThumbnail).toHaveBeenCalledTimes(1)
 
@@ -303,7 +346,7 @@ describe("ComputerWindowPicker", () => {
   it("fetches the pictures again on refresh", async () => {
     api.computerListShareableWindows.mockResolvedValue([window("none")])
     mount()
-    await screen.findByRole("button", { name: "Share" })
+    await levelsOf("TextEdit")
     expect(api.computerWindowThumbnail).toHaveBeenCalledTimes(1)
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: "Refresh" }))
@@ -325,7 +368,7 @@ describe("ComputerWindowPicker", () => {
       }),
     ])
     mount()
-    await screen.findByRole("button", { name: "Share" })
+    await levelsOf("TextEdit")
     expect(screen.queryByText("codeg's window")).toBeNull()
     fireEvent.click(
       screen.getByRole("button", { name: "1 window can't be shared" })
@@ -336,6 +379,27 @@ describe("ComputerWindowPicker", () => {
     ).toBeInTheDocument()
   })
 })
+
+function sharedOf(item: PickerWindow, level: GrantLevel): SharedWindow {
+  return {
+    targetId: item.targetId,
+    appName: item.appName,
+    appKey: item.appKey,
+    title: item.title,
+    level,
+    grantedAt: 0,
+    lastUsedAt: 0,
+  }
+}
+
+/** The level buttons of the window of `app`. */
+async function levelsOf(app: string) {
+  return within(
+    await screen.findByRole("group", {
+      name: `What agents may do with ${app}`,
+    })
+  )
+}
 
 // jsdom has no `PointerEvent`; Radix reads `button` off the event.
 function fireMouse(target: Element, type: string) {

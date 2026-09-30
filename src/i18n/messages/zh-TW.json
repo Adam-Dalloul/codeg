@@ -5212,7 +5212,7 @@
       }
     },
     "share": "分享視窗…",
-    "openSettings": "設定",
+    "openSettings": "開啟詳細設定",
     "picker": {
       "title": "把視窗分享給智慧體",
       "description": "所有對話中的智慧體都能讀取你分享的視窗，並在你允許操作的視窗裡點擊和輸入。你停止分享、視窗關閉，或閒置超過設定中的時長後，分享即結束。",
@@ -5230,12 +5230,13 @@
         "blocklisted": "在永不分享名單中",
         "unidentified": "無法識別所屬應用程式"
       },
-      "share": "分享",
-      "sharedRead": "可讀取",
-      "sharedControl": "可操作",
       "shareRead": "允許智慧體讀取",
       "shareControl": "允許智慧體讀取並操作",
       "stopSharing": "停止分享",
+      "levelNone": "不分享",
+      "levelRead": "可讀取",
+      "levelControl": "可操作",
+      "levelLabel": "智慧體對 {app} 的權限",
       "shareAll": "全部分享",
       "shareAllRead": "全部允許讀取",
       "shareAllControl": "全部允許讀取並操作",
@@ -5282,7 +5283,7 @@
         "screenRecordingHint": "截圖和讀取視窗標題。"
       },
       "title": "分享與停止",
-      "description": "分享的視窗多久後停止分享、哪些應用程式永不分享，以及隨時停止所有分享的快捷鍵。",
+      "description": "分享的視窗多久後停止分享、哪些應用程式永不分享，以及隨時停止所有分享的快捷鍵和懸浮停止列。",
       "ttl": {
         "label": "視窗閒置多久後停止分享",
         "hint": "分享的視窗在這麼長時間內沒有被任何智慧體讀取，就會停止分享。",
@@ -5329,6 +5330,10 @@
           "weakModifiers": "至少按住兩個修飾鍵，其中一個是 Ctrl（Mac 上也可以是 ⌘）。",
           "metaOffMac": "不能包含 Windows 鍵。"
         }
+      },
+      "strip": {
+        "label": "懸浮停止列",
+        "hint": "分享視窗期間，在所有視窗上方懸浮一條提示列，寫明智慧體能做什麼，並附「停止分享」按鈕。關閉後，仍可在狀態列的「電腦操作」氣泡裡或用停止快速鍵停止分享。"
       },
       "boundary": "在 macOS 上，權限授予 codeg-computer-helper，只有 codeg 能使用，智慧體的命令列用不了。Windows 和 Linux 沒有這層隔離：這裡的設定決定的是智慧體透過 codeg 能拿到什麼，而不是電腦上的程式能做什麼。",
       "save": "儲存",

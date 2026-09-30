@@ -46,7 +46,7 @@
 //! this screen.
 
 use std::collections::BTreeSet;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -322,6 +322,9 @@ pub struct ComputerService {
     stop_key: StopKey,
     /// The strip above every window while anything is shared.
     indicator: Indicator,
+    /// Whether the person wants the strip at all (Settings), as the last
+    /// settings change the service followed left it.
+    strip_wanted: AtomicBool,
     /// The mark an action leaves where it landed.
     marker: Marker,
     /// Held across reading the state and telling everyone of it, so two
@@ -350,7 +353,11 @@ impl ComputerService {
         );
         let indicator = Indicator::start(app.clone());
         let marker = Marker::start(app.clone());
-        let policy = SharingPolicy::of(&config.subscribe().borrow());
+        let (policy, strip_wanted) = {
+            let settings = config.subscribe();
+            let settings = settings.borrow();
+            (SharingPolicy::of(&settings), settings.show_indicator)
+        };
         let service = Arc::new(Self {
             app,
             backend,
@@ -363,6 +370,7 @@ impl ComputerService {
             policy: std::sync::Mutex::new(policy),
             stop_key: StopKey::new(),
             indicator,
+            strip_wanted: AtomicBool::new(strip_wanted),
             marker,
             state_gate: std::sync::Mutex::new(()),
             drivers,
@@ -438,6 +446,7 @@ impl ComputerService {
     /// and is not started again while the switch is off.
     async fn follow(self: &Arc<Self>, config: &ComputerToolsConfig, went_off: bool) {
         self.follow_stop_key(config);
+        self.follow_strip(config.show_indicator);
         if went_off || !config.enabled {
             self.backend.close().await;
         }
@@ -463,6 +472,15 @@ impl ComputerService {
         if let Some(status) = self.stop_key.sync(&self.app, wanted, on_press) {
             events::emit_stop_key(&self.app, &status);
         }
+    }
+
+    /// Put the strip up or down for the person's choice in Settings — the
+    /// sharing it follows is unchanged.
+    fn follow_strip(&self, wanted: bool) {
+        let _told = self.state_gate.lock().unwrap_or_else(|p| p.into_inner());
+        self.strip_wanted.store(wanted, Ordering::Release);
+        let shared = !self.targets.shared().is_empty();
+        self.indicator.set(Strip::of(shared, wanted));
     }
 
     pub fn stop_key_status(&self) -> StopKeyStatus {
@@ -491,13 +509,16 @@ impl ComputerService {
     }
 
     /// Tell the panels, and bring the strip and the marker in line: the
-    /// strip is up while anything is shared, the marker ready while anything
-    /// is shared for control.
+    /// strip is up while anything is shared (unless the person turned it
+    /// off), the marker ready while anything is shared for control.
     fn emit_state(&self) {
         let _told = self.state_gate.lock().unwrap_or_else(|p| p.into_inner());
         let shared = self.targets.shared();
         events::emit_state(&self.app, &shared);
-        self.indicator.set(Strip::of(!shared.is_empty()));
+        self.indicator.set(Strip::of(
+            !shared.is_empty(),
+            self.strip_wanted.load(Ordering::Acquire),
+        ));
         self.marker
             .arm(shared.iter().any(|w| w.level == GrantLevel::Control));
     }

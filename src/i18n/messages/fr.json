@@ -5212,7 +5212,7 @@
       }
     },
     "share": "Partager une fenêtre…",
-    "openSettings": "Réglages",
+    "openSettings": "Ouvrir les réglages détaillés",
     "picker": {
       "title": "Partager une fenêtre avec les agents",
       "description": "Les agents de toutes les conversations peuvent lire les fenêtres que vous partagez, et cliquer et taper dans celles où vous les laissez agir. Le partage prend fin quand vous l'arrêtez, que la fenêtre se ferme ou qu'elle reste inutilisée pendant la durée définie dans les réglages.",
@@ -5230,12 +5230,13 @@
         "blocklisted": "Dans la liste des exclusions",
         "unidentified": "Application non identifiable"
       },
-      "share": "Partager",
-      "sharedRead": "Peut lire",
-      "sharedControl": "Peut agir",
       "shareRead": "Laisser les agents la lire",
       "shareControl": "Laisser les agents la lire et agir dessus",
       "stopSharing": "Arrêter le partage",
+      "levelNone": "Non",
+      "levelRead": "Lire",
+      "levelControl": "Agir",
+      "levelLabel": "Ce que les agents peuvent faire avec {app}",
       "shareAll": "Tout partager",
       "shareAllRead": "Laisser les agents toutes les lire",
       "shareAllControl": "Laisser les agents toutes les lire et agir dessus",
@@ -5282,7 +5283,7 @@
         "screenRecordingHint": "Faire des captures et lire les titres des fenêtres."
       },
       "title": "Partage et arrêt",
-      "description": "Combien de temps une fenêtre reste partagée, quelles applications ne sont jamais partagées, et le raccourci qui arrête tout le partage d'un coup.",
+      "description": "Combien de temps une fenêtre reste partagée, quelles applications ne sont jamais partagées, et le raccourci et la barre flottante qui arrêtent tout le partage d'un coup.",
       "ttl": {
         "label": "Arrêter le partage des fenêtres inutilisées après",
         "hint": "Une fenêtre partagée cesse de l'être quand aucun agent ne l'a lue pendant cette durée.",
@@ -5329,6 +5330,10 @@
           "weakModifiers": "Maintenez au moins deux modificateurs, dont Ctrl (ou ⌘ sur un Mac).",
           "metaOffMac": "La touche Windows ne peut pas en faire partie."
         }
+      },
+      "strip": {
+        "label": "Barre d'arrêt flottante",
+        "hint": "Tant qu'une fenêtre est partagée, une barre flotte au-dessus de toutes les fenêtres pour indiquer ce que les agents peuvent faire, avec un bouton Arrêter le partage. Désactivée, vous pouvez toujours arrêter le partage depuis le panneau Utilisation de l'ordinateur de la barre d'état ou avec le raccourci d'arrêt."
       },
       "boundary": "Sous macOS, les autorisations vont à codeg-computer-helper, que seul codeg peut utiliser : le shell des agents ne le peut pas. Windows et Linux n'ont pas cette séparation : là, ces réglages décident de ce que les agents obtiennent via codeg, pas de ce que les programmes de votre ordinateur peuvent faire.",
       "save": "Enregistrer",

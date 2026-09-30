@@ -5212,7 +5212,7 @@
       }
     },
     "share": "Compartir una ventana…",
-    "openSettings": "Ajustes",
+    "openSettings": "Abrir ajustes detallados",
     "picker": {
       "title": "Compartir una ventana con los agentes",
       "description": "Los agentes de cualquier conversación pueden leer las ventanas que compartas y hacer clic y escribir en aquellas en las que les permitas actuar. El uso compartido termina cuando lo detienes, la ventana se cierra o pasa sin uso el tiempo fijado en los ajustes.",
@@ -5230,12 +5230,13 @@
         "blocklisted": "En la lista de no compartir",
         "unidentified": "No se puede identificar la app"
       },
-      "share": "Compartir",
-      "sharedRead": "Puede leer",
-      "sharedControl": "Puede actuar",
       "shareRead": "Permitir que los agentes la lean",
       "shareControl": "Permitir que los agentes la lean y actúen en ella",
       "stopSharing": "Dejar de compartir",
+      "levelNone": "No",
+      "levelRead": "Leer",
+      "levelControl": "Actuar",
+      "levelLabel": "Lo que los agentes pueden hacer con {app}",
       "shareAll": "Compartir todas",
       "shareAllRead": "Permitir que los agentes las lean todas",
       "shareAllControl": "Permitir que los agentes las lean y actúen en todas",
@@ -5282,7 +5283,7 @@
         "screenRecordingHint": "Hacer capturas y leer los títulos de las ventanas."
       },
       "title": "Compartir y detener",
-      "description": "Cuánto tiempo sigue compartida una ventana, qué aplicaciones no se pueden compartir nunca y el atajo que deja de compartirlo todo a la vez.",
+      "description": "Cuánto tiempo sigue compartida una ventana, qué aplicaciones no se pueden compartir nunca y el atajo y la barra flotante que dejan de compartirlo todo a la vez.",
       "ttl": {
         "label": "Dejar de compartir ventanas sin uso tras",
         "hint": "Una ventana compartida deja de estarlo cuando ningún agente la ha leído durante este tiempo.",
@@ -5329,6 +5330,10 @@
           "weakModifiers": "Mantén al menos dos modificadores, uno de ellos Ctrl (o ⌘ en un Mac).",
           "metaOffMac": "No puede incluir la tecla Windows."
         }
+      },
+      "strip": {
+        "label": "Barra flotante para detener",
+        "hint": "Mientras compartes alguna ventana, una barra flota sobre todas las ventanas indicando lo que pueden hacer los agentes, con un botón Dejar de compartir. Si la desactivas, puedes seguir dejando de compartir desde el panel de Uso del ordenador en la barra de estado o con el atajo para detener."
       },
       "boundary": "En macOS los permisos se conceden a codeg-computer-helper, que solo puede usar codeg, así que la shell de los agentes no puede. Windows y Linux no tienen esa separación: allí estos ajustes deciden lo que los agentes obtienen a través de codeg, no lo que pueden hacer los programas de tu equipo.",
       "save": "Guardar",

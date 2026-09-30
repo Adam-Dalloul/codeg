@@ -5212,7 +5212,7 @@
       }
     },
     "share": "Fenster freigeben …",
-    "openSettings": "Einstellungen",
+    "openSettings": "Alle Einstellungen öffnen",
     "picker": {
       "title": "Ein Fenster für Agenten freigeben",
       "description": "Agenten in jeder Unterhaltung können die Fenster lesen, die du freigibst, und in denen klicken und tippen, in denen du sie handeln lässt. Eine Freigabe endet, wenn du sie beendest, das Fenster geschlossen wird oder es so lange ungenutzt bleibt wie in den Einstellungen festgelegt.",
@@ -5230,12 +5230,13 @@
         "blocklisted": "Auf der Sperrliste",
         "unidentified": "App nicht identifizierbar"
       },
-      "share": "Freigeben",
-      "sharedRead": "Darf lesen",
-      "sharedControl": "Darf handeln",
       "shareRead": "Agenten lesen lassen",
       "shareControl": "Agenten lesen und handeln lassen",
       "stopSharing": "Freigabe beenden",
+      "levelNone": "Aus",
+      "levelRead": "Lesen",
+      "levelControl": "Handeln",
+      "levelLabel": "Was Agenten mit {app} dürfen",
       "shareAll": "Alle freigeben",
       "shareAllRead": "Agenten alle lesen lassen",
       "shareAllControl": "Agenten alle lesen und darin handeln lassen",
@@ -5282,7 +5283,7 @@
         "screenRecordingHint": "Bildschirmfotos machen und Fenstertitel lesen."
       },
       "title": "Freigeben und Anhalten",
-      "description": "Wie lange ein Fenster freigegeben bleibt, welche Apps nie freigegeben werden und das Tastenkürzel, das alle Freigaben auf einmal beendet.",
+      "description": "Wie lange ein Fenster freigegeben bleibt, welche Apps nie freigegeben werden und das Tastenkürzel und die schwebende Leiste, die alle Freigaben auf einmal beenden.",
       "ttl": {
         "label": "Freigabe ungenutzter Fenster beenden nach",
         "hint": "Ein freigegebenes Fenster wird nicht mehr geteilt, wenn es so lange kein Agent gelesen hat.",
@@ -5329,6 +5330,10 @@
           "weakModifiers": "Halte mindestens zwei Sondertasten, eine davon Strg (oder ⌘ auf einem Mac).",
           "metaOffMac": "Die Windows-Taste darf nicht dazugehören."
         }
+      },
+      "strip": {
+        "label": "Schwebende Stopp-Leiste",
+        "hint": "Solange ein Fenster freigegeben ist, schwebt über allen Fenstern eine Leiste, die sagt, was Agenten dürfen, mit der Schaltfläche „Freigabe beenden“. Ausgeschaltet kannst du Freigaben weiterhin im Computernutzungs-Popover der Statusleiste oder mit dem Tastenkürzel zum Anhalten beenden."
       },
       "boundary": "Unter macOS gehen die Berechtigungen an codeg-computer-helper, den nur codeg nutzen kann – die Shells der Agenten können es nicht. Windows und Linux haben keine solche Trennung: Dort legen diese Einstellungen fest, was Agenten über codeg bekommen, nicht was Programme auf deinem Rechner tun können.",
       "save": "Speichern",

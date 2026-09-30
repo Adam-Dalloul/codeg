@@ -65,6 +65,7 @@ function record(
     blocklistRemoved: [],
     blocklistDefaults: DEFAULTS,
     stopShortcut: DEFAULT_KEY,
+    showIndicator: true,
     ...overrides,
   }
 }
@@ -95,6 +96,7 @@ beforeEach(() => {
       blocklist: prefs.blocklist ?? ["com.example.vault"],
       blocklistRemoved: prefs.blocklistRemoved ?? [],
       stopShortcut: prefs.stopShortcut ?? DEFAULT_KEY,
+      showIndicator: prefs.showIndicator ?? true,
     })
   )
   mockStopKey.mockResolvedValue({ active: DEFAULT_KEY })
@@ -443,6 +445,24 @@ describe("ComputerSettingsSection", () => {
     expect(mockSet.mock.calls[0][0]).toEqual({
       blocklist: ["com.example.new"],
     })
+  })
+
+  /** The floating stop bar is one more field: on unless turned off, and
+   *  saved alone. */
+  it("turns the floating stop bar off, saving only that", async () => {
+    mount()
+    const strip = await screen.findByRole("switch", {
+      name: "Floating stop bar",
+    })
+    await waitFor(() => expect(strip).not.toBeDisabled())
+    expect(strip).toBeChecked()
+    fireEvent.click(strip)
+    expect(strip).not.toBeChecked()
+    fireEvent.click(screen.getByRole("button", { name: "Save" }))
+    await waitFor(() => expect(mockSet).toHaveBeenCalledTimes(1))
+    expect(mockSet.mock.calls[0][0]).toEqual({ showIndicator: false })
+    await waitFor(() => expect(strip).not.toBeDisabled())
+    expect(strip).not.toBeChecked()
   })
 
   it("says the shortcut waits for computer use to be switched on", async () => {

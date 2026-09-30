@@ -20,18 +20,19 @@
  * to the front, and once Screen Recording has arrived it lists the windows
  * and fetches their pictures again. Refresh fetches the pictures again too.
  *
- * Two levels are offered, as two entries of one menu — the browser's pair:
- * reading a window cannot change it, acting on it can, and they are
- * different decisions. A shared window moves between them without being
- * taken back first. The same two, and "stop sharing", are offered for every
- * shareable window in the list at once.
+ * Two levels are offered — the browser's pair: reading a window cannot
+ * change it, acting on it can, and they are different decisions. Each window
+ * has the three choices side by side, not sharing among them, so what it is
+ * shared for can be seen and changed with one click; a shared window moves
+ * between the levels without being taken back first. The same two, and
+ * "stop sharing", are offered for every shareable window in the list at
+ * once.
  */
 
 import { useCallback, useEffect, useRef, useState } from "react"
 import { useTranslations } from "next-intl"
 import {
   AppWindow,
-  Check,
   ChevronDown,
   ChevronRight,
   Eye,
@@ -53,7 +54,6 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
-  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import {
@@ -88,8 +88,9 @@ import { useComputerStatus } from "@/lib/computer/use-computer-status"
 import { cn } from "@/lib/utils"
 
 /** Tiles as wide as fit, none narrower than this: four across the dialog at
- *  its widest, fewer as the window narrows. */
-const GRID = "grid grid-cols-[repeat(auto-fill,minmax(11.5rem,1fr))] gap-3"
+ *  its widest, fewer as the window narrows — wide enough for the three
+ *  levels side by side in every language. */
+const GRID = "grid grid-cols-[repeat(auto-fill,minmax(13rem,1fr))] gap-3"
 
 /** A picture of one shareable window, fetched once. Keyed by the caller on
  *  the target id and on the picker's picture round, so a different window —
@@ -133,26 +134,28 @@ function Thumbnail({ targetId }: { targetId: string }) {
   )
 }
 
-/** One shareable window: its picture, whose it is, and the menu that sets
- *  how far it is shared. The tile takes the colour of its level — violet
- *  to be read, red to be acted on — as the strip over the screen does. */
+/** One shareable window: its picture, whose it is, and what it is shared
+ *  for. The tile takes the colour of its level — violet to be read, red to
+ *  be acted on — as the strip over the screen does. */
 function WindowTile({
   item: w,
   level,
-  busy,
+  pending,
   disabled,
   pictures,
   onLevel,
 }: {
   item: PickerWindow
   level: GrantLevel
-  busy: boolean
+  /** The level a change on its way for this window is going to. */
+  pending: GrantLevel | null
   disabled: boolean
   /** The picker's picture round, part of the picture's key. */
   pictures: number
   onLevel: (next: GrantLevel) => void
 }) {
   const t = useTranslations("ComputerUse.picker")
+  const appName = w.appName || t("unnamedApp")
   return (
     <div
       className={cn(
@@ -170,97 +173,97 @@ function WindowTile({
           </span>
         )}
       </div>
-      <div className="space-y-0.5 border-t px-2.5 pt-2 pb-2.5">
-        {/* The title gets a line of its own, the width of the tile: it is
-            what tells two windows of one application apart. */}
-        <div className="flex items-center gap-2">
-          <p
-            className="min-w-0 flex-1 truncate text-xs font-medium"
-            title={w.appName}
-          >
-            {w.appName || t("unnamedApp")}
+      <div className="flex flex-1 flex-col gap-2 border-t px-2.5 pt-2 pb-2.5">
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-xs font-medium" title={appName}>
+            {appName}
           </p>
-          <LevelMenu
-            level={level}
-            busy={busy}
-            disabled={disabled}
-            onLevel={onLevel}
-          />
+          <p
+            className="truncate text-2xs text-muted-foreground"
+            title={w.title}
+          >
+            {w.title || t("untitled")}
+          </p>
         </div>
-        <p className="truncate text-2xs text-muted-foreground" title={w.title}>
-          {w.title || t("untitled")}
-        </p>
+        <LevelControl
+          appName={appName}
+          level={level}
+          pending={pending}
+          disabled={disabled}
+          onLevel={onLevel}
+        />
       </div>
     </div>
   )
 }
 
-/** The menu that sets how far one window is shared, on a button that says
- *  how far it is now. */
-function LevelMenu({
+const LEVELS = [
+  { level: "none", label: "levelNone" },
+  { level: "read", label: "levelRead" },
+  { level: "control", label: "levelControl" },
+] as const
+
+/** Not shared, read, act — side by side, the one in force marked, each a
+ *  click away. Buttons rather than radios: arrowing across radios would
+ *  share the window at every stop on the way. Words only: a third of a
+ *  narrow tile has no room for an icon beside "Handeln" or "読み取り". */
+function LevelControl({
+  appName,
   level,
-  busy,
+  pending,
   disabled,
   onLevel,
 }: {
+  appName: string
   level: GrantLevel
-  busy: boolean
+  pending: GrantLevel | null
   disabled: boolean
   onLevel: (next: GrantLevel) => void
 }) {
   const t = useTranslations("ComputerUse.picker")
-  const option = (next: "read" | "control") => (
-    <DropdownMenuItem disabled={level === next} onSelect={() => onLevel(next)}>
-      {next === "read" ? (
-        <Eye className="size-3.5" />
-      ) : (
-        <MousePointerClick className="size-3.5" />
-      )}
-      {t(next === "read" ? "shareRead" : "shareControl")}
-      {level === next && <Check className="ms-auto size-3.5" />}
-    </DropdownMenuItem>
-  )
+  const hint: Record<GrantLevel, string | undefined> = {
+    none: level === "none" ? undefined : t("stopSharing"),
+    read: t("shareRead"),
+    control: t("shareControl"),
+  }
   return (
-    <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <Button
-          size="xs"
-          variant="outline"
-          disabled={disabled}
-          className={cn(
-            level === "read" &&
-              "border-violet-500/40 bg-violet-500/10 text-violet-700 hover:bg-violet-500/20 hover:text-violet-700 aria-expanded:bg-violet-500/20 aria-expanded:text-violet-700 dark:text-violet-300 dark:hover:text-violet-300 dark:aria-expanded:text-violet-300",
-            level === "control" &&
-              "border-red-500/40 bg-red-500/10 text-red-600 hover:bg-red-500/20 hover:text-red-600 aria-expanded:bg-red-500/20 aria-expanded:text-red-600 dark:text-red-400 dark:hover:text-red-400 dark:aria-expanded:text-red-400"
-          )}
-        >
-          {busy ? (
-            <Loader2 className="animate-spin" />
-          ) : level === "control" ? (
-            <MousePointerClick />
-          ) : level === "read" ? (
-            <Eye />
-          ) : null}
-          {level === "none"
-            ? t("share")
-            : t(level === "control" ? "sharedControl" : "sharedRead")}
-          <ChevronDown className="opacity-60" />
-        </Button>
-      </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" className="min-w-56">
-        {option("read")}
-        {option("control")}
-        {level !== "none" && (
-          <>
-            <DropdownMenuSeparator />
-            <DropdownMenuItem onSelect={() => onLevel("none")}>
-              <ShieldOff className="size-3.5" />
-              {t("stopSharing")}
-            </DropdownMenuItem>
-          </>
-        )}
-      </DropdownMenuContent>
-    </DropdownMenu>
+    <div
+      role="group"
+      aria-label={t("levelLabel", { app: appName })}
+      className="grid grid-cols-3 gap-0.5 rounded-full bg-muted p-0.5"
+    >
+      {LEVELS.map(({ level: option, label }) => {
+        const on = level === option
+        return (
+          <button
+            key={option}
+            type="button"
+            aria-pressed={on}
+            disabled={disabled}
+            title={hint[option]}
+            onClick={() => {
+              if (!on) onLevel(option)
+            }}
+            className={cn(
+              "flex h-6 min-w-0 items-center justify-center gap-1 rounded-full px-1.5 text-2xs font-medium text-muted-foreground transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:cursor-default disabled:opacity-60",
+              !on && "hover:bg-background/60 hover:text-foreground",
+              on && "bg-background text-foreground shadow-sm",
+              on &&
+                option === "read" &&
+                "bg-violet-600 text-white dark:bg-violet-500",
+              on &&
+                option === "control" &&
+                "bg-red-600 text-white dark:bg-red-500"
+            )}
+          >
+            {pending === option && (
+              <Loader2 className="size-3 shrink-0 animate-spin" />
+            )}
+            <span className="truncate">{t(label)}</span>
+          </button>
+        )
+      })}
+    </div>
   )
 }
 
@@ -285,7 +288,11 @@ export function ComputerWindowPicker({
   const [windows, setWindows] = useState<PickerWindow[] | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
-  const [busy, setBusy] = useState<string | null>(null)
+  /** The window a change is on its way for, and the level it goes to. */
+  const [busy, setBusy] = useState<{
+    targetId: string
+    level: GrantLevel
+  } | null>(null)
   /** A change to every window at once is on its way. */
   const [bulk, setBulk] = useState(false)
   /** One change at a time: a "stop sharing all" that lands before a share
@@ -398,7 +405,7 @@ export function ComputerWindowPicker({
 
   const setLevel = async (item: PickerWindow, next: GrantLevel) => {
     const mark = computerStoreMark()
-    setBusy(item.targetId)
+    setBusy({ targetId: item.targetId, level: next })
     setError(null)
     try {
       setComputerSharedSince(
@@ -418,7 +425,7 @@ export function ComputerWindowPicker({
     <Dialog open={open} onOpenChange={onOpenChange}>
       {/* A column: the header, toolbar and notices stay put, and only the
           windows scroll — never the dialog around them as well. */}
-      <DialogContent className="flex max-h-[min(calc(100dvh-2rem),52rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-4xl">
+      <DialogContent className="flex max-h-[min(calc(100dvh-2rem),52rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-5xl">
         <div className="px-6 pt-6">
           <DialogHeader>
             <DialogTitle>{t("title")}</DialogTitle>
@@ -554,7 +561,7 @@ export function ComputerWindowPicker({
                     key={w.targetId}
                     item={w}
                     level={levelOf(w)}
-                    busy={busy === w.targetId}
+                    pending={busy?.targetId === w.targetId ? busy.level : null}
                     disabled={changing}
                     pictures={pictures}
                     onLevel={(next) => void setLevel(w, next)}

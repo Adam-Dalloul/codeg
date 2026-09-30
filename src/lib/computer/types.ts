@@ -158,6 +158,9 @@ export interface ComputerToolsSettings {
   /** The shortcut that stops all sharing at once, spelled as
    *  `stop-shortcut.ts` spells it; empty when switched off. */
   stopShortcut: string
+  /** Whether the strip with Stop on it floats above every window while
+   *  anything is shared. */
+  showIndicator: boolean
 }
 
 /** `computer://stop-key`: whether the stop shortcut is in force. */

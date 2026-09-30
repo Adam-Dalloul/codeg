@@ -87,6 +87,7 @@ beforeEach(() => {
     blocklistRemoved: [],
     blocklistDefaults: [],
     stopShortcut: "Control+Command+Escape",
+    showIndicator: true,
   })
   api.computerStatus.mockResolvedValue(status())
   api.computerStopKeyStatus.mockResolvedValue({})
@@ -112,6 +113,7 @@ describe("StatusBarComputer", () => {
       blocklistRemoved: [],
       blocklistDefaults: [],
       stopShortcut: "",
+      showIndicator: true,
     })
     const { container } = mount()
     await waitFor(() => expect(api.getComputerToolsSettings).toHaveBeenCalled())
@@ -291,7 +293,9 @@ describe("StatusBarComputer", () => {
   it("opens the Computer use settings page", async () => {
     mount()
     fireEvent.click(await screen.findByRole("button", { name: "Computer use" }))
-    fireEvent.click(await screen.findByRole("button", { name: "Settings" }))
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Open full settings" })
+    )
     await waitFor(() =>
       expect(shell.openSettingsWindow).toHaveBeenCalledWith("computer-use")
     )
@@ -417,6 +421,7 @@ describe("StatusBarComputer", () => {
         blocklistRemoved: [],
         blocklistDefaults: [],
         stopShortcut: "",
+        showIndicator: true,
       })
     )
     await screen.findByRole("button", { name: "Computer use" })
@@ -428,6 +433,7 @@ describe("StatusBarComputer", () => {
         blocklistRemoved: [],
         blocklistDefaults: [],
         stopShortcut: "",
+        showIndicator: true,
       })
     )
     expect(

@@ -16,7 +16,8 @@ use crate::app_error::AppCommandError;
 use crate::app_state::AppState;
 use crate::commands::computer_tools::{
     load_computer_tools_settings, set_computer_tools_enabled_core,
-    set_computer_tools_preferences_core, set_computer_tools_settings_core, ComputerToolsSettings,
+    set_computer_tools_preferences_core, set_computer_tools_settings_core,
+    ComputerToolsPreferences, ComputerToolsSettings,
 };
 
 pub async fn get_computer_tools_settings(
@@ -64,31 +65,15 @@ pub async fn set_computer_tools_enabled(
 }
 
 /// Any of them; an absent one is left as it is.
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SetComputerToolsPreferencesParams {
-    #[serde(default)]
-    pub grant_ttl_minutes: Option<u32>,
-    #[serde(default)]
-    pub blocklist: Option<Vec<String>>,
-    #[serde(default)]
-    pub blocklist_removed: Option<Vec<String>>,
-    #[serde(default)]
-    pub stop_shortcut: Option<String>,
-}
-
 pub async fn set_computer_tools_preferences(
     Extension(state): Extension<Arc<AppState>>,
-    Json(params): Json<SetComputerToolsPreferencesParams>,
+    Json(preferences): Json<ComputerToolsPreferences>,
 ) -> Result<Json<ComputerToolsSettings>, AppCommandError> {
     let saved = set_computer_tools_preferences_core(
         &state.db.conn,
         &state.computer_tools_config,
         &state.emitter,
-        params.grant_ttl_minutes,
-        params.blocklist,
-        params.blocklist_removed,
-        params.stop_shortcut,
+        preferences,
     )
     .await?;
     Ok(Json(saved))

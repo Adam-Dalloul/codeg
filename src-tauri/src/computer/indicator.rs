@@ -10,7 +10,9 @@
 //! (a click on Stop works without it), and draggable out of the way. Made the
 //! first time something is shared, then hidden rather than closed, so it
 //! stays where the person put it. It goes the moment nothing is shared — a
-//! Stop included, which ends every sharing.
+//! Stop included, which ends every sharing — and stays down, shared or not,
+//! while the person has turned it off in Settings; Stop is still in the
+//! status-bar popover then, and on the stop shortcut.
 //!
 //! What it says is the page's business (`computer://state`,
 //! `computer://agent-activity`); when it is up is decided here, from the
@@ -39,8 +41,10 @@ pub enum Strip {
 }
 
 impl Strip {
-    pub fn of(shared: bool) -> Strip {
-        if shared {
+    /// `shared`: anything is shared; `wanted`: the person has not turned the
+    /// strip off.
+    pub fn of(shared: bool, wanted: bool) -> Strip {
+        if shared && wanted {
             Strip::Shown
         } else {
             Strip::Hidden
@@ -180,9 +184,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn it_is_up_while_anything_is_shared() {
-        assert_eq!(Strip::of(true), Strip::Shown);
-        assert_eq!(Strip::of(false), Strip::Hidden);
+    fn it_is_up_while_anything_is_shared_unless_turned_off() {
+        assert_eq!(Strip::of(true, true), Strip::Shown);
+        assert_eq!(Strip::of(false, true), Strip::Hidden);
+        assert_eq!(Strip::of(true, false), Strip::Hidden);
+        assert_eq!(Strip::of(false, false), Strip::Hidden);
     }
 
     #[test]

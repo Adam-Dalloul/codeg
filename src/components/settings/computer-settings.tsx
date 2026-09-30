@@ -3,10 +3,12 @@
 /**
  * Computer use: how long a shared window stays shared while nobody reads it,
  * which applications can never be shared, and — on the desktop — the
- * shortcut that stops all sharing at once. The on/off switch sits above it
- * on the Computer use page (and with the other tool groups, and in the
- * status-bar popover); this section edits only the settings under it,
- * through a writer that leaves the switch alone.
+ * shortcut that stops all sharing at once and whether the strip with Stop on
+ * it floats above every window while anything is shared (turned off, Stop is
+ * still in the status-bar popover and on the shortcut). The on/off switch
+ * sits above it on the Computer use page (and with the other tool groups,
+ * and in the status-bar popover); this section edits only the settings
+ * under it, through a writer that leaves the switch alone.
  *
  * The stop shortcut is held with the OS only while computer use is on, and
  * another application may hold the same keys; the row says which, so nobody
@@ -34,6 +36,7 @@ import {
   AppWindow,
   Keyboard,
   Monitor,
+  PanelTop,
   Plus,
   RotateCcw,
   RotateCw,
@@ -73,6 +76,7 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { Input } from "@/components/ui/input"
+import { Switch } from "@/components/ui/switch"
 import { toErrorMessage } from "@/lib/app-error"
 import {
   computerAvailable,
@@ -107,9 +111,16 @@ interface Values {
   removed: string[]
   /** Spelled as `stop-shortcut.ts` spells it; empty is off. */
   stopShortcut: string
+  showIndicator: boolean
 }
 
-const EMPTY: Values = { ttl: 30, blocklist: [], removed: [], stopShortcut: "" }
+const EMPTY: Values = {
+  ttl: 30,
+  blocklist: [],
+  removed: [],
+  stopShortcut: "",
+  showIndicator: true,
+}
 
 function fromSettings(settings: ComputerToolsSettings): Values {
   return {
@@ -117,6 +128,7 @@ function fromSettings(settings: ComputerToolsSettings): Values {
     blocklist: settings.blocklist,
     removed: settings.blocklistRemoved,
     stopShortcut: settings.stopShortcut,
+    showIndicator: settings.showIndicator,
   }
 }
 
@@ -137,6 +149,10 @@ function removedDirty(values: Values, baseline: Values): boolean {
 
 function stopShortcutDirty(values: Values, baseline: Values): boolean {
   return values.stopShortcut !== baseline.stopShortcut
+}
+
+function showIndicatorDirty(values: Values, baseline: Values): boolean {
+  return values.showIndicator !== baseline.showIndicator
 }
 
 export function ComputerSettingsSection() {
@@ -235,6 +251,9 @@ export function ComputerSettingsSection() {
           stopShortcut: stopShortcutDirty(current, base)
             ? prev.stopShortcut
             : next.stopShortcut,
+          showIndicator: showIndicatorDirty(current, base)
+            ? prev.showIndicator
+            : next.showIndicator,
         }))
         setBaseline(next)
         setEnabled(remote.enabled)
@@ -258,7 +277,13 @@ export function ComputerSettingsSection() {
   const dirtyBlocklist = blocklistDirty(values, baseline)
   const dirtyRemoved = removedDirty(values, baseline)
   const dirtyStopShortcut = stopShortcutDirty(values, baseline)
-  const dirty = dirtyTtl || dirtyBlocklist || dirtyRemoved || dirtyStopShortcut
+  const dirtyShowIndicator = showIndicatorDirty(values, baseline)
+  const dirty =
+    dirtyTtl ||
+    dirtyBlocklist ||
+    dirtyRemoved ||
+    dirtyStopShortcut ||
+    dirtyShowIndicator
   const editable = loaded && !saving
 
   const save = useCallback(async () => {
@@ -270,6 +295,7 @@ export function ComputerSettingsSection() {
         blocklist: dirtyBlocklist ? values.blocklist : undefined,
         blocklistRemoved: dirtyRemoved ? values.removed : undefined,
         stopShortcut: dirtyStopShortcut ? values.stopShortcut : undefined,
+        showIndicator: dirtyShowIndicator ? values.showIndicator : undefined,
       })
       // The save's own broadcast, or another window's after it, may have
       // landed first; the last broadcast is then the newest record there is.
@@ -285,7 +311,15 @@ export function ComputerSettingsSection() {
     } finally {
       setSaving(false)
     }
-  }, [values, dirtyTtl, dirtyBlocklist, dirtyRemoved, dirtyStopShortcut, t])
+  }, [
+    values,
+    dirtyTtl,
+    dirtyBlocklist,
+    dirtyRemoved,
+    dirtyStopShortcut,
+    dirtyShowIndicator,
+    t,
+  ])
 
   return (
     <SettingsSection
@@ -357,6 +391,24 @@ export function ComputerSettingsSection() {
             disabled={!editable}
             onChange={(stopShortcut) =>
               setValues((prev) => ({ ...prev, stopShortcut }))
+            }
+          />
+        )}
+        {computerAvailable() && (
+          <SettingRow
+            icon={PanelTop}
+            title={t("strip.label")}
+            description={t("strip.hint")}
+            htmlFor="computer-show-indicator"
+            control={
+              <Switch
+                id="computer-show-indicator"
+                checked={values.showIndicator}
+                onCheckedChange={(showIndicator) =>
+                  setValues((prev) => ({ ...prev, showIndicator }))
+                }
+                disabled={!editable}
+              />
             }
           />
         )}

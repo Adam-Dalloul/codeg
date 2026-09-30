@@ -146,6 +146,7 @@ function primeBackend(
     blocklistRemoved: [],
     blocklistDefaults: [],
     stopShortcut: "Control+Alt+Escape",
+    showIndicator: true,
   })
   mockSetComputer.mockImplementation(async (enabled) => ({
     enabled,
@@ -154,6 +155,7 @@ function primeBackend(
     blocklistRemoved: [],
     blocklistDefaults: [],
     stopShortcut: "Control+Alt+Escape",
+    showIndicator: true,
   }))
 }
 
@@ -580,6 +582,7 @@ describe("AgentToolsSettingsSection", () => {
               blocklistRemoved: [],
               blocklistDefaults: [],
               stopShortcut: "",
+              showIndicator: true,
             })
         })
     )

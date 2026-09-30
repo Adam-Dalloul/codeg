@@ -5212,7 +5212,7 @@
       }
     },
     "share": "Share a window…",
-    "openSettings": "Settings",
+    "openSettings": "Open full settings",
     "picker": {
       "title": "Share a window with agents",
       "description": "Agents in every conversation can read the windows you share, and click and type in the ones you let them act on. Sharing ends when you stop it, the window closes, or it goes unused for the time set in Settings.",
@@ -5230,12 +5230,13 @@
         "blocklisted": "On the never-share list",
         "unidentified": "Can't tell which app this is"
       },
-      "share": "Share",
-      "sharedRead": "Can read",
-      "sharedControl": "Can act",
       "shareRead": "Let agents read it",
       "shareControl": "Let agents read and act on it",
       "stopSharing": "Stop sharing",
+      "levelNone": "Off",
+      "levelRead": "Read",
+      "levelControl": "Act",
+      "levelLabel": "What agents may do with {app}",
       "shareAll": "Share all",
       "shareAllRead": "Let agents read all of them",
       "shareAllControl": "Let agents read and act on all of them",
@@ -5282,7 +5283,7 @@
         "screenRecordingHint": "Take screenshots and read window titles."
       },
       "title": "Sharing and stopping",
-      "description": "How long a shared window stays shared, which apps can never be shared, and the shortcut that stops all sharing at once.",
+      "description": "How long a shared window stays shared, which apps can never be shared, and the shortcut and floating bar that stop all sharing at once.",
       "ttl": {
         "label": "Stop sharing unused windows after",
         "hint": "A shared window stops being shared when no agent has read it for this long.",
@@ -5329,6 +5330,10 @@
           "weakModifiers": "Hold at least two modifiers, one of them Ctrl (or ⌘ on a Mac).",
           "metaOffMac": "The Windows key can't be part of it."
         }
+      },
+      "strip": {
+        "label": "Floating stop bar",
+        "hint": "While any window is shared, a bar floats above all windows saying what agents may do, with a Stop sharing button. Turned off, you can still stop sharing from the Computer use popover in the status bar or with the stop shortcut."
       },
       "boundary": "On macOS the permissions go to codeg-computer-helper, which only codeg can use, so agents' shells can't. Windows and Linux have no such separation: there these settings decide what agents get through codeg, not what programs on your computer can do.",
       "save": "Save",

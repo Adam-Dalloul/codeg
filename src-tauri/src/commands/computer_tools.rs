@@ -1,6 +1,8 @@
 //! The computer-use settings: whether an agent may see the desktop at all,
 //! how long a shared window stays shared unused, which applications can
-//! never be shared, and the shortcut that stops every agent at once.
+//! never be shared, the shortcut that stops every agent at once, and whether
+//! the strip with Stop on it floats above every window while anything is
+//! shared.
 //!
 //! Separate from `commands::computer`, which is the desktop feature itself and
 //! exists only in the desktop build: these switches are read by the shared
@@ -48,6 +50,10 @@ pub const KEY_COMPUTER_TOOLS_BLOCKLIST_REMOVED: &str = "computer_tools.blocklist
 /// platform's default.
 pub const KEY_COMPUTER_TOOLS_STOP_SHORTCUT: &str = "computer_tools.stop_shortcut";
 
+/// Whether the strip above every window comes up while anything is shared,
+/// `true` or `false`. Absent is `true`.
+pub const KEY_COMPUTER_TOOLS_SHOW_INDICATOR: &str = "computer_tools.show_indicator";
+
 /// The grant timeout when the user has chosen none.
 pub const DEFAULT_GRANT_TTL_MINUTES: u32 = 30;
 
@@ -69,6 +75,10 @@ pub struct ComputerToolsSettings {
     /// The stop shortcut's spelling; empty when the person switched it off.
     #[serde(default = "default_stop_shortcut")]
     pub stop_shortcut: String,
+    /// Whether the strip with Stop on it floats above every window while
+    /// anything is shared.
+    #[serde(default = "default_show_indicator")]
+    pub show_indicator: bool,
 }
 
 fn default_ttl() -> u32 {
@@ -77,6 +87,10 @@ fn default_ttl() -> u32 {
 
 fn default_stop_shortcut() -> String {
     StopShortcut::default_for(Platform::current()).to_string()
+}
+
+fn default_show_indicator() -> bool {
+    true
 }
 
 impl Default for ComputerToolsSettings {
@@ -88,6 +102,7 @@ impl Default for ComputerToolsSettings {
             blocklist_removed: Vec::new(),
             blocklist_defaults: default_blocklist(Platform::current()),
             stop_shortcut: default_stop_shortcut(),
+            show_indicator: default_show_indicator(),
         }
     }
 }
@@ -101,6 +116,7 @@ impl ComputerToolsSettings {
             blocklist: normalize_blocklist(self.blocklist),
             blocklist_removed: normalize_removed(self.blocklist_removed),
             stop_shortcut: StopShortcut::from_setting(&self.stop_shortcut, Platform::current()),
+            show_indicator: self.show_indicator,
             // Kept by the runtime handle, not by the record.
             switched_off: 0,
         }
@@ -189,6 +205,12 @@ pub async fn load_computer_tools_settings(conn: &DatabaseConnection) -> Computer
     if let Some(v) = get(KEY_COMPUTER_TOOLS_STOP_SHORTCUT).await {
         settings.stop_shortcut = stored_stop_shortcut(&v);
     }
+    if let Some(v) = get(KEY_COMPUTER_TOOLS_SHOW_INDICATOR)
+        .await
+        .and_then(|r| r.parse().ok())
+    {
+        settings.show_indicator = v;
+    }
     settings
 }
 
@@ -227,9 +249,28 @@ pub async fn set_computer_tools_enabled_core(
     Ok(settings)
 }
 
+/// The preferences one write moves: each one given is written, each one
+/// absent is left at whatever the database says.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ComputerToolsPreferences {
+    #[serde(default)]
+    pub grant_ttl_minutes: Option<u32>,
+    #[serde(default)]
+    pub blocklist: Option<Vec<String>>,
+    /// Keys of the default entries to leave off the list.
+    #[serde(default)]
+    pub blocklist_removed: Option<Vec<String>>,
+    /// Empty switches the shortcut off.
+    #[serde(default)]
+    pub stop_shortcut: Option<String>,
+    #[serde(default)]
+    pub show_indicator: Option<bool>,
+}
+
 /// Move the grant timeout, the user's blocklist (their additions and the
-/// defaults they took off), the stop shortcut — only the ones given —
-/// leaving everything else at whatever the database says.
+/// defaults they took off), the stop shortcut, the strip — only the ones
+/// given — leaving everything else at whatever the database says.
 /// For the Computer use settings section, which edits these and not the
 /// switch (that one lives with the other tool groups, and in the status
 /// popover), and which sends only what the person changed: a form that
@@ -239,11 +280,15 @@ pub async fn set_computer_tools_preferences_core(
     conn: &DatabaseConnection,
     config: &ComputerToolsRuntimeConfig,
     emitter: &EventEmitter,
-    grant_ttl_minutes: Option<u32>,
-    blocklist: Option<Vec<String>>,
-    blocklist_removed: Option<Vec<String>>,
-    stop_shortcut: Option<String>,
+    preferences: ComputerToolsPreferences,
 ) -> Result<ComputerToolsSettings, AppCommandError> {
+    let ComputerToolsPreferences {
+        grant_ttl_minutes,
+        blocklist,
+        blocklist_removed,
+        stop_shortcut,
+        show_indicator,
+    } = preferences;
     let blocklist = blocklist
         .map(|list| serde_json::to_string(&normalize_blocklist(list)))
         .transpose()
@@ -261,6 +306,7 @@ pub async fn set_computer_tools_preferences_core(
         blocklist.map(|list| (KEY_COMPUTER_TOOLS_BLOCKLIST, list)),
         blocklist_removed.map(|keys| (KEY_COMPUTER_TOOLS_BLOCKLIST_REMOVED, keys)),
         stop_shortcut.map(|s| (KEY_COMPUTER_TOOLS_STOP_SHORTCUT, s)),
+        show_indicator.map(|on| (KEY_COMPUTER_TOOLS_SHOW_INDICATOR, on.to_string())),
     ]
     .into_iter()
     .flatten()
@@ -311,6 +357,10 @@ pub async fn set_computer_tools_settings_core(
         (
             KEY_COMPUTER_TOOLS_STOP_SHORTCUT,
             desired.stop_shortcut.clone(),
+        ),
+        (
+            KEY_COMPUTER_TOOLS_SHOW_INDICATOR,
+            desired.show_indicator.to_string(),
         ),
     ] {
         app_metadata_service::upsert_value(conn, key, &value)
@@ -376,6 +426,9 @@ pub async fn set_computer_tools_enabled(
     }
 }
 
+// One argument per preference, as the web handler takes them: the page sends
+// the same flat object to both.
+#[allow(clippy::too_many_arguments)]
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
 pub async fn set_computer_tools_preferences(
     #[cfg(feature = "tauri-runtime")] app: tauri::AppHandle,
@@ -385,29 +438,23 @@ pub async fn set_computer_tools_preferences(
     blocklist: Option<Vec<String>>,
     blocklist_removed: Option<Vec<String>>,
     stop_shortcut: Option<String>,
+    show_indicator: Option<bool>,
 ) -> Result<ComputerToolsSettings, AppCommandError> {
+    let preferences = ComputerToolsPreferences {
+        grant_ttl_minutes,
+        blocklist,
+        blocklist_removed,
+        stop_shortcut,
+        show_indicator,
+    };
     #[cfg(feature = "tauri-runtime")]
     {
         let emitter = EventEmitter::Tauri(app);
-        set_computer_tools_preferences_core(
-            &db.conn,
-            &config,
-            &emitter,
-            grant_ttl_minutes,
-            blocklist,
-            blocklist_removed,
-            stop_shortcut,
-        )
-        .await
+        set_computer_tools_preferences_core(&db.conn, &config, &emitter, preferences).await
     }
     #[cfg(not(feature = "tauri-runtime"))]
     {
-        let _ = (
-            grant_ttl_minutes,
-            blocklist,
-            blocklist_removed,
-            stop_shortcut,
-        );
+        let _ = preferences;
         Err(AppCommandError::configuration_invalid("tauri-only command"))
     }
 }
@@ -451,6 +498,7 @@ mod tests {
             ],
             blocklist_defaults: Vec::new(),
             stop_shortcut: String::new(),
+            show_indicator: false,
         }
         .into_runtime_config();
         assert_eq!(cfg.grant_ttl, None);
@@ -458,9 +506,11 @@ mod tests {
         // Only a default is taken off, and once.
         assert_eq!(cfg.blocklist_removed, vec!["1password", "system-settings"]);
         assert_eq!(cfg.stop_shortcut, None);
+        assert!(!cfg.show_indicator);
 
         let cfg = ComputerToolsSettings::default().into_runtime_config();
         assert_eq!(cfg.grant_ttl, Some(Duration::from_secs(30 * 60)));
+        assert!(cfg.show_indicator);
     }
 
     /// Saving one preference leaves the other as another writer left it — a
@@ -471,53 +521,57 @@ mod tests {
         let db = crate::db::test_helpers::fresh_in_memory_db().await;
         let config = ComputerToolsRuntimeConfig::new();
         let emitter = EventEmitter::Noop;
-        set_computer_tools_preferences_core(
-            &db.conn,
-            &config,
-            &emitter,
-            None,
-            Some(vec!["com.example.Vault".into()]),
-            Some(vec!["bitwarden".into()]),
-            None,
-        )
+        let write = |preferences: ComputerToolsPreferences| {
+            set_computer_tools_preferences_core(&db.conn, &config, &emitter, preferences)
+        };
+        write(ComputerToolsPreferences {
+            blocklist: Some(vec!["com.example.Vault".into()]),
+            blocklist_removed: Some(vec!["bitwarden".into()]),
+            ..Default::default()
+        })
         .await
         .unwrap();
-        let saved = set_computer_tools_preferences_core(
-            &db.conn,
-            &config,
-            &emitter,
-            Some(10),
-            None,
-            None,
-            None,
-        )
+        let saved = write(ComputerToolsPreferences {
+            grant_ttl_minutes: Some(10),
+            ..Default::default()
+        })
         .await
         .unwrap();
         assert_eq!(saved.grant_ttl_minutes, 10);
         assert_eq!(saved.blocklist, vec!["com.example.Vault"]);
         assert_eq!(saved.blocklist_removed, vec!["bitwarden"]);
+        assert!(saved.show_indicator);
         assert_eq!(config.snapshot().await.blocklist, vec!["com.example.Vault"]);
         assert_eq!(config.snapshot().await.blocklist_removed, vec!["bitwarden"]);
-        let untouched = set_computer_tools_preferences_core(
-            &db.conn, &config, &emitter, None, None, None, None,
-        )
+        let untouched = write(ComputerToolsPreferences::default()).await.unwrap();
+        assert_eq!(untouched, saved);
+        // The strip, alone.
+        let hidden = write(ComputerToolsPreferences {
+            show_indicator: Some(false),
+            ..Default::default()
+        })
         .await
         .unwrap();
-        assert_eq!(untouched, saved);
+        assert_eq!(
+            hidden,
+            ComputerToolsSettings {
+                show_indicator: false,
+                ..saved.clone()
+            }
+        );
+        assert!(!config.snapshot().await.show_indicator);
+        assert!(!load_computer_tools_settings(&db.conn).await.show_indicator);
         // Back to the defaults: nothing added, nothing taken off.
-        let restored = set_computer_tools_preferences_core(
-            &db.conn,
-            &config,
-            &emitter,
-            None,
-            Some(vec![]),
-            Some(vec![]),
-            None,
-        )
+        let restored = write(ComputerToolsPreferences {
+            blocklist: Some(vec![]),
+            blocklist_removed: Some(vec![]),
+            ..Default::default()
+        })
         .await
         .unwrap();
         assert!(restored.blocklist.is_empty() && restored.blocklist_removed.is_empty());
         assert!(!restored.blocklist_defaults.is_empty());
+        assert!(!restored.show_indicator);
     }
 
     /// The stop shortcut is saved as the one spelling, switched off as empty,
@@ -533,10 +587,10 @@ mod tests {
                 &db.conn,
                 &config,
                 &emitter,
-                None,
-                None,
-                None,
-                Some(spelling.to_string()),
+                ComputerToolsPreferences {
+                    stop_shortcut: Some(spelling.to_string()),
+                    ..Default::default()
+                },
             )
         };
         let saved = set("Shift+Control+KeyK").await.unwrap();
@@ -589,6 +643,7 @@ mod tests {
         assert_eq!(parsed.grant_ttl_minutes, DEFAULT_GRANT_TTL_MINUTES);
         assert!(parsed.blocklist_removed.is_empty());
         assert_eq!(parsed.stop_shortcut, default_stop_shortcut());
+        assert!(parsed.show_indicator);
     }
 
     /// A stored removal of an entry no release knows reads as nothing taken

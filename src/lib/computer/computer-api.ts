@@ -34,9 +34,9 @@ export async function setComputerToolsEnabled(
   return getTransport().call("set_computer_tools_enabled", { enabled })
 }
 
-/** Move the grant timeout, the blocklist, the stop shortcut — only what is
- *  given; the rest of the record (the switch included) stays as it is
- *  stored. */
+/** Move the grant timeout, the blocklist, the stop shortcut, the strip —
+ *  only what is given; the rest of the record (the switch included) stays
+ *  as it is stored. */
 export async function setComputerToolsPreferences(preferences: {
   grantTtlMinutes?: number
   blocklist?: string[]
@@ -44,6 +44,7 @@ export async function setComputerToolsPreferences(preferences: {
   blocklistRemoved?: string[]
   /** Empty switches the shortcut off. */
   stopShortcut?: string
+  showIndicator?: boolean
 }): Promise<ComputerToolsSettings> {
   return getTransport().call("set_computer_tools_preferences", preferences)
 }

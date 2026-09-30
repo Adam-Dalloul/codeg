@@ -5212,7 +5212,7 @@
       }
     },
     "share": "Compartilhar uma janela…",
-    "openSettings": "Ajustes",
+    "openSettings": "Abrir ajustes detalhados",
     "picker": {
       "title": "Compartilhar uma janela com os agentes",
       "description": "Os agentes de qualquer conversa podem ler as janelas que você compartilhar, e clicar e digitar naquelas em que você deixar que ajam. O compartilhamento termina quando você o interrompe, a janela fecha ou fica sem uso pelo tempo definido nos ajustes.",
@@ -5230,12 +5230,13 @@
         "blocklisted": "Na lista de nunca compartilhar",
         "unidentified": "Não é possível identificar o app"
       },
-      "share": "Compartilhar",
-      "sharedRead": "Pode ler",
-      "sharedControl": "Pode agir",
       "shareRead": "Deixar os agentes lerem",
       "shareControl": "Deixar os agentes lerem e agirem nela",
       "stopSharing": "Parar de compartilhar",
+      "levelNone": "Não",
+      "levelRead": "Ler",
+      "levelControl": "Agir",
+      "levelLabel": "O que os agentes podem fazer com {app}",
       "shareAll": "Compartilhar todas",
       "shareAllRead": "Deixar os agentes lerem todas",
       "shareAllControl": "Deixar os agentes lerem e agirem em todas",
@@ -5282,7 +5283,7 @@
         "screenRecordingHint": "Fazer capturas e ler os títulos das janelas."
       },
       "title": "Compartilhar e parar",
-      "description": "Por quanto tempo uma janela continua compartilhada, quais apps nunca são compartilhados e o atalho que para todo o compartilhamento de uma vez.",
+      "description": "Por quanto tempo uma janela continua compartilhada, quais apps nunca são compartilhados e o atalho e a barra flutuante que param todo o compartilhamento de uma vez.",
       "ttl": {
         "label": "Parar de compartilhar janelas sem uso após",
         "hint": "Uma janela compartilhada deixa de ser compartilhada quando nenhum agente a lê por esse tempo.",
@@ -5329,6 +5330,10 @@
           "weakModifiers": "Segure pelo menos dois modificadores, um deles Ctrl (ou ⌘ num Mac).",
           "metaOffMac": "A tecla Windows não pode fazer parte dele."
         }
+      },
+      "strip": {
+        "label": "Barra flutuante de parada",
+        "hint": "Enquanto alguma janela estiver compartilhada, uma barra flutua sobre todas as janelas dizendo o que os agentes podem fazer, com um botão Parar de compartilhar. Desligada, você ainda pode parar de compartilhar pelo painel de Uso do computador na barra de status ou com o atalho para parar."
       },
       "boundary": "No macOS, as permissões vão para o codeg-computer-helper, que só o codeg pode usar, então o shell dos agentes não pode. O Windows e o Linux não têm essa separação: lá, estes ajustes decidem o que os agentes recebem pelo codeg, não o que os programas do seu computador podem fazer.",
       "save": "Salvar",

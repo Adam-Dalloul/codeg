@@ -482,7 +482,7 @@ impl ComputerToolAccess for NoComputerDesktop {
 /// The computer-use settings as the tool surface reads them, at injection and
 /// again at call time — like the browser group, because switching it off
 /// should stop the agent that is already running, not only the next one.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ComputerToolsConfig {
     pub enabled: bool,
     /// How long a shared window may go unread before its sharing ends. `None`
@@ -496,12 +496,29 @@ pub struct ComputerToolsConfig {
     /// The shortcut that stops every agent at once, from anywhere; `None`
     /// when the person switched it off.
     pub stop_shortcut: Option<crate::computer::stop_shortcut::StopShortcut>,
+    /// Whether the strip above every window comes up while anything is
+    /// shared. On unless the person turned it off: Stop is on it.
+    pub show_indicator: bool,
     /// How many times the group has been switched off since codeg started.
     /// Kept by [`ComputerToolsRuntimeConfig::set`], never persisted: it is
     /// what lets a watcher that only sees the latest value — a quick off and
     /// on again arrives as one change — still see that there was an off, and
     /// a read in flight see that one happened while it was.
     pub switched_off: u64,
+}
+
+impl Default for ComputerToolsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            grant_ttl: None,
+            blocklist: Vec::new(),
+            blocklist_removed: Vec::new(),
+            stop_shortcut: None,
+            show_indicator: true,
+            switched_off: 0,
+        }
+    }
 }
 
 /// Shared, hot-swappable handle to [`ComputerToolsConfig`]. Cloned into
@@ -693,6 +710,7 @@ mod tests {
             blocklist: vec!["com.example.vault".into()],
             blocklist_removed: vec!["1password".into()],
             stop_shortcut: None,
+            show_indicator: false,
             switched_off: 0,
         };
         cfg.set(on.clone()).await;
