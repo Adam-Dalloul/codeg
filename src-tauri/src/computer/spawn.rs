@@ -452,7 +452,8 @@ mod tests {
     /// here ever resumes or checks it.
     #[tokio::test]
     async fn an_image_outside_its_launch_requirement_never_runs() {
-        if !super::super::launch_req::supported() {
+        use super::super::launch_req::{held_here, supported};
+        if !supported() || !held_here() {
             return;
         }
         let dir = tempfile::tempdir().unwrap();

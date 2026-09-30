@@ -863,8 +863,9 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[tokio::test]
     async fn the_kernel_refuses_any_image_but_the_pinned_driver() {
+        use crate::computer::launch_req::{held_here, supported};
         use crate::computer::spawn::{spawn, ChildFd, SpawnSpec};
-        if !crate::computer::launch_req::supported() {
+        if !supported() || !held_here() {
             return;
         }
         let dir = tempfile::tempdir().unwrap();

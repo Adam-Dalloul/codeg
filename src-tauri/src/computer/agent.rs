@@ -627,7 +627,9 @@ mod tests {
 
     /// codeg is recognised by pid, by its bundle identifier on any pid, and
     /// by its executable or bundle path — the last is what a development build
-    /// (which has no bundle identifier) is recognised by.
+    /// (which has no bundle identifier) is recognised by. A path in another
+    /// case is codeg's only where the filesystem ignores case: on Linux it
+    /// names another file.
     #[test]
     fn codeg_is_never_grantable_however_it_is_described() {
         let me = SelfIdentity {
@@ -643,7 +645,6 @@ mod tests {
             app(200, Some("app.codeg"), None),
             app(200, Some("APP.CODEG"), None),
             app(300, None, Some("/Applications/codeg.app")),
-            app(300, None, Some("/applications/CODEG.app")),
             app(
                 300,
                 None,
@@ -665,6 +666,14 @@ mod tests {
                 "{codeg:?}"
             );
         }
+        assert_eq!(
+            grantable(&app(300, None, Some("/applications/CODEG.app")), &me, &list),
+            if cfg!(any(windows, target_os = "macos")) {
+                Err(NotGrantable::Codeg)
+            } else {
+                Ok(())
+            }
+        );
         assert_eq!(
             grantable(&app(300, Some("com.apple.TextEdit"), None), &me, &list),
             Ok(())
