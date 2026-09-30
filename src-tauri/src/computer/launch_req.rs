@@ -18,6 +18,11 @@
 //! directory; the kernel then validates every page against it as the page is
 //! loaded, so no byte outside the signed build can execute.
 //!
+//! The kernel holds a launch to its requirement only while System Integrity
+//! Protection is on. With it off — GitHub's hosted macOS runners run that way
+//! — an image outside its requirement simply runs, and the check of the
+//! running image before it is resumed is all that is left.
+//!
 //! The requirement travels as a CoreEntitlements DER dictionary,
 //! `{ccat: 0, comp: 1, reqs: {…facts}, vers: 1}`. The encoder below writes
 //! exactly the subset used here and is pinned, byte for byte, to what Apple's
@@ -178,6 +183,19 @@ fn set_fn() -> Option<SetFn> {
 /// Whether this macOS can attach a launch requirement to a spawn.
 pub fn supported() -> bool {
     set_fn().is_some()
+}
+
+/// Whether the kernel here can be counted on to hold a launch to its
+/// requirement: System Integrity Protection is wholly on. The tests that
+/// prove the kernel refuses an image have nothing to prove anywhere else.
+#[cfg(test)]
+pub(crate) fn held_here() -> bool {
+    extern "C" {
+        fn csr_get_active_config(config: *mut u32) -> c_int;
+    }
+    let mut config = 0u32;
+    // SAFETY: writes one `csr_config_t` (a `u32`) through a valid pointer.
+    unsafe { csr_get_active_config(&mut config) == 0 && config == 0 }
 }
 
 /// Attach `requirement` to `attr`, so the kernel refuses to run any image
