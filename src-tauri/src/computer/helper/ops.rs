@@ -100,12 +100,14 @@ fn string(value: &Value, key: &str) -> Option<String> {
 
 /// Running applications, each stamped with its start time.
 ///
-/// On macOS, the applications that own a normal window, each identified by
-/// the helper itself (see [`list_windows`]); the frontmost of them is the one
-/// owning the frontmost window on screen. The driver's own list is not read
-/// there: it is frozen at the driver's first call. An application with no
-/// window has nothing to share anyway.
-#[cfg(target_os = "macos")]
+/// On macOS and Windows, the applications that own a normal window, each
+/// identified by the helper itself (see [`list_windows`]); the frontmost of
+/// them is the one owning the frontmost window on screen. The driver's own
+/// list is not read there: on macOS it is frozen at the driver's first call,
+/// and on Windows it knows most processes by their executable's file name
+/// alone (see `appident`). An application with no window has nothing to share
+/// anyway.
+#[cfg(any(target_os = "macos", windows))]
 pub async fn list_apps(
     driver: &DriverProc,
     cache: &tokio::sync::Mutex<AppCache>,
@@ -113,7 +115,7 @@ pub async fn list_apps(
     Ok(apps_of(list_windows(driver, cache, None).await?))
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", windows)))]
 pub async fn list_apps(
     driver: &DriverProc,
     _cache: &tokio::sync::Mutex<AppCache>,
@@ -123,7 +125,7 @@ pub async fn list_apps(
 
 /// The identified applications among `windows`' owners, once each, with the
 /// owner of the frontmost window on screen marked active.
-#[cfg(any(test, target_os = "macos"))]
+#[cfg(any(test, target_os = "macos", windows))]
 fn apps_of(windows: Vec<RawWindow>) -> Vec<RawApp> {
     let front = windows
         .iter()
@@ -152,7 +154,7 @@ fn required_array<'a>(tool: &str, value: &'a Value, key: &str) -> Result<&'a [Va
         .ok_or_else(|| HelperError::failed(format!("{tool} answered without `{key}`")))
 }
 
-#[cfg(any(test, not(target_os = "macos")))]
+#[cfg(any(test, not(any(target_os = "macos", windows))))]
 fn parse_apps(value: &Value) -> Result<Vec<RawApp>, HelperError> {
     required_array("list_apps", value, "apps").map(|apps| {
             apps.iter()
@@ -179,20 +181,21 @@ fn parse_apps(value: &Value) -> Result<Vec<RawApp>, HelperError> {
 /// Remembers which application each running process is, so listing windows
 /// does not re-list every installed application each time. Keyed by pid AND
 /// start time: a reused pid is a cache miss, never a stale hit. Not used on
-/// macOS, where each listing reads the owners afresh (see [`list_windows`]).
+/// macOS or Windows, where each listing reads the owners afresh (see
+/// [`list_windows`]).
 #[derive(Default)]
 pub struct AppCache {
-    #[cfg_attr(target_os = "macos", allow(dead_code))]
+    #[cfg_attr(any(target_os = "macos", windows), allow(dead_code))]
     apps: HashMap<(u32, Option<u64>), RawApp>,
 }
 
 impl AppCache {
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", windows)))]
     fn lookup(&self, pid: u32, started_at: Option<u64>) -> Option<&RawApp> {
         self.apps.get(&(pid, started_at))
     }
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", windows)))]
     fn refill(&mut self, apps: Vec<RawApp>) {
         self.apps = apps
             .into_iter()
@@ -220,7 +223,16 @@ pub async fn list_windows(
         let _ = cache;
         Ok(join_identified(windows, stamps))
     }
-    #[cfg(not(target_os = "macos"))]
+    // Naming a packaged application the first time can take the Start menu
+    // a fifth of a second: off the runtime's two threads.
+    #[cfg(windows)]
+    {
+        let _ = cache;
+        tokio::task::spawn_blocking(move || join_identified(windows, stamps))
+            .await
+            .map_err(|e| HelperError::failed(format!("the windows' owners could not be read: {e}")))
+    }
+    #[cfg(not(any(target_os = "macos", windows)))]
     {
         let mut cache = cache.lock().await;
         let missing = windows
@@ -258,20 +270,21 @@ pub async fn list_windows(
     }
 }
 
-/// The driver's list of running applications (Windows and Linux, where it is
-/// read afresh on every call).
-#[cfg(not(target_os = "macos"))]
+/// The driver's list of running applications (Linux, where it is read afresh
+/// on every call).
+#[cfg(not(any(target_os = "macos", windows)))]
 async fn driver_apps(driver: &DriverProc) -> Result<Vec<RawApp>, HelperError> {
     let result = call(driver, "list_apps", json!({}), LIST_TIMEOUT).await?;
     parse_apps(structured("list_apps", &result)?)
 }
 
-/// macOS: join each window with its application as the helper reads it off
-/// the owning process now (`appident`) — once per process per listing, and
-/// never remembered past it: reading it is a system call and a small file,
-/// and a process that has since run another program (`exec` keeps the pid
-/// and the start time) is that program now.
-#[cfg(target_os = "macos")]
+/// macOS and Windows: join each window with its application as the helper
+/// reads it off the owning process now (`appident`) — once per process per
+/// listing, and never remembered past it: reading it is a few system calls
+/// (and on macOS a small file), and on macOS a process that has since run
+/// another program (`exec` keeps the pid and the start time) is that program
+/// now. (What Windows calls an executable is kept: see `appident`.)
+#[cfg(any(target_os = "macos", windows))]
 fn join_identified(windows: Vec<RawWindow>, stamps: Vec<Option<u64>>) -> Vec<RawWindow> {
     let mut seen: HashMap<(u32, Option<u64>), RawApp> = HashMap::new();
     windows
@@ -311,6 +324,36 @@ fn identified(pid: u32, started_at: Option<u64>, owner: &str) -> RawApp {
             name: identity.name(owner),
             bundle_id: Some(identity.bundle_id),
             path: Some(identity.path),
+            ..unidentified
+        },
+        None => unidentified,
+    }
+}
+
+/// Windows: the application `pid` runs — its executable, read off the process
+/// with its start time through one handle, which must still be the start time
+/// the window list's owner had (a pid reused in between would lend the window
+/// another application's identity) — and named as Windows names it to the
+/// person (see `appident`). Unidentified (no path, the window list's name)
+/// when that cannot be read, or when the process runs no application: a
+/// host, whose windows are other applications', or one of the system's own
+/// agents.
+#[cfg(windows)]
+fn identified(pid: u32, started_at: Option<u64>, owner: &str) -> RawApp {
+    let app = started_at
+        .and_then(|started_at| crate::computer::appident::windows_application(pid, started_at));
+    let unidentified = RawApp {
+        pid,
+        name: owner.to_string(),
+        bundle_id: None,
+        path: None,
+        active: false,
+        started_at,
+    };
+    match app {
+        Some(app) => RawApp {
+            name: app.name,
+            path: Some(app.path),
             ..unidentified
         },
         None => unidentified,
@@ -1071,6 +1114,40 @@ mod tests {
         assert_eq!(joined[0].app.started_at, start);
         assert_eq!(joined[1].app.key(), None);
         assert_eq!(joined[1].app.started_at, None);
+    }
+
+    /// Windows: a window's application is read off its own process — here
+    /// the test runner, known by its full path and named as `appident` names
+    /// it, whatever the driver called it — and a process whose start time can
+    /// no longer be read (it has gone) is not read at all. The applications
+    /// are then those owners, the unidentified one left out.
+    #[cfg(windows)]
+    #[test]
+    fn windows_applications_are_read_off_the_owning_process() {
+        let me = std::process::id();
+        let start = process_start(me);
+        let mut window = owned_window(me, start.unwrap(), None, true, 1);
+        window.app.name = "cargo test".into();
+        let mut gone = window.clone();
+        gone.window_id += 1;
+
+        let joined = join_identified(vec![window, gone], vec![start, None]);
+        let exe = std::env::current_exe().unwrap();
+        let key = joined[0].app.key().expect("the test runner, identified");
+        assert!(key.eq_ignore_ascii_case(&exe.to_string_lossy()), "{key}");
+        let named = crate::computer::appident::windows_application(me, start.unwrap())
+            .expect("the test runner")
+            .name;
+        assert_eq!(joined[0].app.name, named);
+        assert_eq!(joined[0].app.bundle_id, None);
+        assert_eq!(joined[0].app.started_at, start);
+        assert_eq!(joined[1].app.key(), None);
+        assert_eq!(joined[1].app.name, "cargo test");
+        assert_eq!(joined[1].app.started_at, None);
+
+        let apps = apps_of(joined);
+        assert_eq!(apps.len(), 1);
+        assert_eq!(apps[0].pid, me);
     }
 
     /// Refs come from the elements the driver listed, placed by the tree: a

@@ -43,6 +43,53 @@
 //! bundle's own (untranslated) `Info.plist` does not have is taken as a
 //! translation. The Finder's own translated name is not to be had here: a
 //! process with no bundle of its own is answered in the development language.
+//!
+//! **Windows.** There the driver's answer names no application at all: its
+//! list carries each process's executable by file name alone, and a path only
+//! for the few whose file name happens to match a Start menu shortcut — none,
+//! on many machines. So the helper reads the full path off the process itself
+//! (with its start time, through the same handle: see `procinfo`), and the
+//! executable is the application — unless it draws for other applications,
+//! or is the system's own. `ApplicationFrameHost.exe` draws the frame of every
+//! packaged application's window — Settings, Calculator — while the
+//! application draws what is in it in a window of its own process, laid over
+//! the frame; `msedgewebview2.exe` draws the inspector and the dialogs of
+//! every application built on WebView2, codeg among them. A window of either
+//! is any of those applications', and which one cannot be told from the
+//! host's path: taken for the host, it would pass for an application no
+//! blocklist names, and for one that is not codeg. So the hosts' windows stay
+//! unidentified, as on macOS does a process drawing for another application;
+//! a packaged application's own window, listed beside its frame, is known by
+//! its own executable. And the system's own agents stay unidentified, as
+//! Apple's under `/System` do: the Start menu, the lock screen, the prompts
+//! for a PIN or for an account's password, which Windows keeps each in a
+//! folder of its own in `SystemApps`.
+//!
+//! On Windows an application is called what Windows calls it to the person.
+//! A packaged one — Terminal, Settings, the Notepad Windows 11 ships — goes by
+//! its entry in the Start menu (the shell's Apps folder), in the person's
+//! language: 终端, 设置, 记事本 in Chinese. Its executable's own description
+//! is no name for it: Terminal's says "Windows Terminal Host", Notepad's
+//! "Notepad.exe", Photos' nothing at all. Any other application goes by what
+//! Task Manager calls it: the description in its executable's version
+//! resource, in the person's language where Windows carries a translation —
+//! Explorer is "Windows 资源管理器" in Chinese — or, where it gives none, its
+//! file name. A name only says what to call an application, never what it is
+//! (its path does), so each is read once per executable and kept: the Start
+//! menu can take a fifth of a second to answer.
+
+/// Windows: the executables whose windows are other applications'. See the
+/// module note.
+const HOSTS: &[&str] = &["ApplicationFrameHost.exe", "msedgewebview2.exe"];
+
+/// Windows: the folder the system keeps its own agents in. See the module
+/// note.
+const SYSTEM_APPS: &str = "SystemApps";
+
+/// Windows: how many applications' names are kept (see the module note).
+/// Past that they are all read again, as they are needed.
+#[cfg(windows)]
+const MAX_WINDOWS_NAMES: usize = 256;
 
 /// Where Apple keeps the applications people use, under `/System`.
 const SYSTEM_APPLICATIONS: &[&str] = &[
@@ -165,11 +212,326 @@ pub fn is_system_component(bundle: &str) -> bool {
         && !bundle.eq_ignore_ascii_case(FINDER)
 }
 
+/// Whether the executable at `path` is an application a person uses, as
+/// Windows runs them: not a host, whose windows are other applications', and
+/// not one of the system's own agents (see the module note). Hosts are known
+/// by their file names, in any case, wherever they are; an executable
+/// anywhere in a folder named `SystemApps` is taken for an agent. Both can
+/// only keep a window from being shared, never let one be.
+pub fn is_windows_application(path: &str) -> bool {
+    let mut parts = path.rsplit(['\\', '/']);
+    let Some(file) = parts.next().filter(|file| !file.is_empty()) else {
+        return false;
+    };
+    !HOSTS.iter().any(|host| file.eq_ignore_ascii_case(host))
+        && !parts.any(|dir| dir.eq_ignore_ascii_case(SYSTEM_APPS))
+}
+
 /// The application `pid` runs, when it is one (see the module note). macOS
-/// only: elsewhere the driver's own list is read afresh on every call.
+/// only: Windows has `windows_application`, and Linux reads the driver's own
+/// list afresh on every call.
 #[cfg(target_os = "macos")]
 pub fn identify(pid: u32) -> Option<AppIdentity> {
     identify_executable(&executable_path(pid)?)
+}
+
+/// Windows: an application, as the process running it shows.
+#[cfg(windows)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WindowsApp {
+    /// Its executable's full path, which is what it is known by.
+    pub path: String,
+    /// What to call it (see the module note).
+    pub name: String,
+}
+
+/// Windows: the application `pid` runs — when the process is still the one
+/// that started at `started_at`, and runs an application
+/// ([`is_windows_application`]).
+#[cfg(windows)]
+pub fn windows_application(pid: u32, started_at: u64) -> Option<WindowsApp> {
+    let image = crate::computer::procinfo::process_image(pid)?;
+    if image.started != started_at || !is_windows_application(&image.path) {
+        return None;
+    }
+    Some(WindowsApp {
+        name: windows_name(&image.path, image.app_user_model_id.as_deref()),
+        path: image.path,
+    })
+}
+
+/// Windows: what to call the application whose executable is at `path` —
+/// `app_user_model_id` names it when it is a packaged one. Read once and
+/// kept (see the module note); the lock is not held while it is read.
+#[cfg(windows)]
+fn windows_name(path: &str, app_user_model_id: Option<&str>) -> String {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+
+    type Names = HashMap<(String, Option<String>), String>;
+    static NAMES: OnceLock<Mutex<Names>> = OnceLock::new();
+    let names = NAMES.get_or_init(Mutex::default);
+    let key = (path.to_string(), app_user_model_id.map(str::to_string));
+    if let Some(name) = names.lock().ok().and_then(|names| names.get(&key).cloned()) {
+        return name;
+    }
+    let name = app_user_model_id
+        .and_then(windows_names::start_menu_name)
+        .or_else(|| windows_names::file_description(path))
+        .unwrap_or_else(|| {
+            path.rsplit(['\\', '/'])
+                .next()
+                .filter(|file| !file.is_empty())
+                .unwrap_or(path)
+                .to_string()
+        });
+    if let Ok(mut names) = names.lock() {
+        if names.len() >= MAX_WINDOWS_NAMES {
+            names.clear();
+        }
+        names.insert(key, name.clone());
+    }
+    name
+}
+
+/// Windows: the two places an application's name is read from (see the
+/// module note).
+#[cfg(windows)]
+mod windows_names {
+    use std::ffi::c_void;
+    use std::ptr;
+
+    use windows_sys::Win32::Storage::FileSystem::{
+        GetFileVersionInfoExW, GetFileVersionInfoSizeExW, VerQueryValueW, FILE_VER_GET_LOCALISED,
+    };
+    use windows_sys::Win32::UI::Shell::SIGDN_NORMALDISPLAY;
+
+    /// The largest version resource read: real ones are a few kilobytes, and
+    /// the helper does not read an unbounded one because an executable says
+    /// so.
+    const MAX_VERSION_INFO: u32 = 1 << 20;
+
+    /// Where a version resource's strings are looked for when it does not
+    /// say which languages it has them in: US English, then no language,
+    /// each as Unicode and as Windows' Western code page.
+    const FALLBACK_TRANSLATIONS: [(u16, u16); 4] = [
+        (0x0409, 0x04b0),
+        (0x0409, 0x04e4),
+        (0x0000, 0x04b0),
+        (0x0000, 0x04e4),
+    ];
+
+    /// `COINIT_MULTITHREADED`.
+    const COINIT_MULTITHREADED: u32 = 0;
+
+    // Declared here: windows-sys has these behind features this crate does
+    // not turn on (`Win32_System_Com`, `Win32_UI_Shell_Common`), and turning
+    // one on rebuilds every crate that shares windows-sys — Tauri among them.
+    #[link(name = "ole32")]
+    extern "system" {
+        fn CoInitializeEx(reserved: *const c_void, co_init: u32) -> i32;
+        fn CoUninitialize();
+        fn CoTaskMemFree(block: *const c_void);
+    }
+    #[link(name = "shell32")]
+    extern "system" {
+        fn SHParseDisplayName(
+            name: *const u16,
+            bind_context: *mut c_void,
+            id_list: *mut *mut c_void,
+            attributes_asked: u32,
+            attributes: *mut u32,
+        ) -> i32;
+        fn SHGetNameFromIDList(id_list: *const c_void, kind: i32, name: *mut *mut u16) -> i32;
+        fn ILFree(id_list: *const c_void);
+    }
+
+    /// What the Start menu calls the packaged application
+    /// `app_user_model_id`: the display name of its entry in the shell's
+    /// Apps folder, which is in the person's language.
+    pub fn start_menu_name(app_user_model_id: &str) -> Option<String> {
+        // Declared first, so the list and the string below are let go of
+        // while COM is still entered.
+        let _com = Com::enter();
+        let item = wide(&format!(r"shell:AppsFolder\{app_user_model_id}"));
+        let mut id_list = ptr::null_mut();
+        // SAFETY: a NUL-terminated name, no bind context, and an out-pointer
+        // for the item's id list, which is ours to free once it is set.
+        let status = unsafe {
+            SHParseDisplayName(
+                item.as_ptr(),
+                ptr::null_mut(),
+                &mut id_list,
+                0,
+                ptr::null_mut(),
+            )
+        };
+        if status < 0 || id_list.is_null() {
+            return None;
+        }
+        let id_list = IdList(id_list);
+        let mut name = ptr::null_mut();
+        // SAFETY: a live id list; on success `name` is a NUL-terminated
+        // string of the caller's to free.
+        let status = unsafe { SHGetNameFromIDList(id_list.0, SIGDN_NORMALDISPLAY, &mut name) };
+        if status < 0 || name.is_null() {
+            return None;
+        }
+        let name = TaskString(name);
+        trimmed(&name.units())
+    }
+
+    /// The description in the version resource of the executable at `path`,
+    /// in the person's language where Windows carries a translation of it.
+    pub fn file_description(path: &str) -> Option<String> {
+        let path = wide(path);
+        let mut unused = 0;
+        // SAFETY: a NUL-terminated path and a valid out-pointer.
+        let size = unsafe {
+            GetFileVersionInfoSizeExW(FILE_VER_GET_LOCALISED, path.as_ptr(), &mut unused)
+        };
+        if size == 0 || size > MAX_VERSION_INFO {
+            return None;
+        }
+        let mut block = vec![0u8; size as usize];
+        // SAFETY: `block` holds `size` bytes, the size just asked for.
+        let read = unsafe {
+            GetFileVersionInfoExW(
+                FILE_VER_GET_LOCALISED,
+                path.as_ptr(),
+                0,
+                size,
+                block.as_mut_ptr().cast(),
+            )
+        };
+        if read == 0 {
+            return None;
+        }
+        // The languages the strings are in, as (language, code page) pairs.
+        let listed: Vec<(u16, u16)> = value(&block, r"\VarFileInfo\Translation", |bytes| bytes)
+            .map(|bytes| {
+                bytes
+                    .chunks_exact(4)
+                    .map(|pair| {
+                        (
+                            u16::from_le_bytes([pair[0], pair[1]]),
+                            u16::from_le_bytes([pair[2], pair[3]]),
+                        )
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        listed
+            .into_iter()
+            .chain(FALLBACK_TRANSLATIONS)
+            .find_map(|(language, code_page)| {
+                let key = format!(r"\StringFileInfo\{language:04X}{code_page:04X}\FileDescription");
+                // A string's length is given in UTF-16 units.
+                let bytes = value(&block, &key, |units| units.saturating_mul(2))?;
+                let units: Vec<u16> = bytes
+                    .chunks_exact(2)
+                    .map(|unit| u16::from_le_bytes([unit[0], unit[1]]))
+                    .collect();
+                trimmed(&units)
+            })
+    }
+
+    /// The value at `sub_block` of the version resource read into `block`,
+    /// as the bytes it spans there — `length` turns the length the call gives
+    /// into bytes. `None` when there is no such value, or it would reach past
+    /// the resource.
+    fn value<'a>(
+        block: &'a [u8],
+        sub_block: &str,
+        length: impl Fn(usize) -> usize,
+    ) -> Option<&'a [u8]> {
+        let sub_block = wide(sub_block);
+        let mut found: *mut c_void = ptr::null_mut();
+        let mut len = 0u32;
+        // SAFETY: `block` is the resource GetFileVersionInfoExW filled, and
+        // both out-pointers are valid; what `found` points at is read only
+        // below, once it is known to lie within `block`.
+        let ok = unsafe {
+            VerQueryValueW(
+                block.as_ptr().cast(),
+                sub_block.as_ptr(),
+                &mut found,
+                &mut len,
+            )
+        };
+        if ok == 0 || found.is_null() {
+            return None;
+        }
+        let start = (found as usize).checked_sub(block.as_ptr() as usize)?;
+        block.get(start..start.checked_add(length(len as usize))?)
+    }
+
+    /// `units` up to the first NUL, trimmed; `None` when nothing is left.
+    fn trimmed(units: &[u16]) -> Option<String> {
+        let units = units.split(|unit| *unit == 0).next().unwrap_or(units);
+        let text = String::from_utf16_lossy(units);
+        let text = text.trim();
+        (!text.is_empty()).then(|| text.to_string())
+    }
+
+    fn wide(text: &str) -> Vec<u16> {
+        text.encode_utf16().chain(Some(0)).collect()
+    }
+
+    /// COM, entered on this thread while the guard lives: the shell's names
+    /// are read through it. A thread already in COM in the other mode stays
+    /// so, which serves as well.
+    struct Com(bool);
+
+    impl Com {
+        fn enter() -> Self {
+            // SAFETY: no reserved pointer; a success (S_OK, or S_FALSE when
+            // already entered) is balanced in `drop`.
+            let status = unsafe { CoInitializeEx(ptr::null(), COINIT_MULTITHREADED) };
+            Self(status >= 0)
+        }
+    }
+
+    impl Drop for Com {
+        fn drop(&mut self) {
+            if self.0 {
+                // SAFETY: balances the CoInitializeEx that succeeded.
+                unsafe { CoUninitialize() };
+            }
+        }
+    }
+
+    /// An item id list the shell allocated, freed when dropped.
+    struct IdList(*mut c_void);
+
+    impl Drop for IdList {
+        fn drop(&mut self) {
+            // SAFETY: the list SHParseDisplayName returned, freed once.
+            unsafe { ILFree(self.0) };
+        }
+    }
+
+    /// A string the shell allocated with COM's allocator, freed when dropped.
+    struct TaskString(*mut u16);
+
+    impl TaskString {
+        fn units(&self) -> Vec<u16> {
+            let mut len = 0;
+            // SAFETY: a NUL-terminated string, read up to its NUL.
+            while unsafe { *self.0.add(len) } != 0 {
+                len += 1;
+            }
+            // SAFETY: the `len` units just read before the NUL.
+            unsafe { std::slice::from_raw_parts(self.0, len) }.to_vec()
+        }
+    }
+
+    impl Drop for TaskString {
+        fn drop(&mut self) {
+            // SAFETY: the string SHGetNameFromIDList returned, freed once.
+            unsafe { CoTaskMemFree(self.0.cast()) };
+        }
+    }
 }
 
 /// The application `executable` is the main executable of — or sits inside,
@@ -444,6 +806,88 @@ mod tests {
         assert_eq!(
             helper.name("Google Chrome Helper (Alerts)"),
             "Google Chrome"
+        );
+    }
+
+    /// Windows: an executable is an application unless it is a host — by its
+    /// file name, in any case and wherever it is — or one of the system's
+    /// agents in `SystemApps`. The applications Windows ships elsewhere,
+    /// Settings and Edge among them, are applications.
+    #[test]
+    fn windows_applications_are_told_from_hosts_and_agents() {
+        for application in [
+            r"C:\Windows\ImmersiveControlPanel\SystemSettings.exe",
+            r"C:\Windows\explorer.exe",
+            r"C:\Windows\System32\Taskmgr.exe",
+            r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+            r"C:\Program Files\WindowsApps\Microsoft.WindowsTerminal_1.23.0.0_x64__8wekyb3d8bbwe\WindowsTerminal.exe",
+            r"C:\ApplicationFrameHost.exe\Other.exe",
+            r"C:\Windows\System32\ApplicationFrameHost.exe.bak",
+            r"C:\Tools\SystemApps.exe",
+        ] {
+            assert!(is_windows_application(application), "{application}");
+        }
+        for other in [
+            r"C:\Windows\System32\ApplicationFrameHost.exe",
+            r"c:\windows\system32\applicationframehost.EXE",
+            r"C:\Program Files (x86)\Microsoft\EdgeWebView\Application\129.0.2792.79\msedgewebview2.exe",
+            r"C:\Windows\SystemApps\microsoft.creddialoghost_cw5n1h2txyewy\CredDialogHost.exe",
+            r"C:\Windows\SystemApps\Microsoft.LockApp_cw5n1h2txyewy\LockApp.exe",
+            r"D:\WINNT\systemapps\MicrosoftWindows.Client.CBS_cw5n1h2txyewy\TextInputHost.exe",
+            r"C:\Windows\SystemApps\",
+            "",
+        ] {
+            assert!(!is_windows_application(other), "{other}");
+        }
+    }
+
+    /// Windows: this test runner is read off its own process — by its full
+    /// path, while it is the process that started when it did — and goes by
+    /// its description, or its file name where it gives none.
+    #[cfg(windows)]
+    #[test]
+    fn a_windows_application_is_its_executable() {
+        let me = std::process::id();
+        let started = crate::computer::procinfo::process_start(me).unwrap();
+        let app = windows_application(me, started).expect("this process's executable");
+        let exe = std::env::current_exe().unwrap();
+        assert!(
+            app.path.eq_ignore_ascii_case(&exe.to_string_lossy()),
+            "{}",
+            app.path
+        );
+        let file = exe.file_name().unwrap().to_string_lossy().into_owned();
+        assert_eq!(
+            app.name,
+            windows_names::file_description(&app.path).unwrap_or(file),
+            "{}",
+            app.path
+        );
+        // A process that started at another time is another process.
+        assert_eq!(windows_application(me, started.wrapping_add(1)), None);
+        assert_eq!(windows_application(0, 0), None);
+    }
+
+    /// Windows: a system library describes itself, in whatever language;
+    /// a file that is not there describes nothing, and the Start menu has no
+    /// entry for an application that does not exist.
+    #[cfg(windows)]
+    #[test]
+    fn windows_names_are_read_where_windows_keeps_them() {
+        let root = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into());
+        let kernel = format!(r"{root}\System32\kernel32.dll");
+        let description = windows_names::file_description(&kernel);
+        assert!(
+            description.as_deref().is_some_and(|d| !d.is_empty()),
+            "{kernel}: {description:?}"
+        );
+        assert_eq!(
+            windows_names::file_description(r"C:\nonexistent\Nothing.exe"),
+            None
+        );
+        assert_eq!(
+            windows_names::start_menu_name("Codeg.Nonexistent_0000000000000!App"),
+            None
         );
     }
 

@@ -28,6 +28,12 @@ use super::protocol::RawApp;
 /// out of reach as this one.
 pub const CODEG_BUNDLE_ID: &str = "app.codeg";
 
+/// The file names codeg's executable goes by, matched on any process's path
+/// for the same reason, where an application has no bundle identifier to
+/// know it by: on Windows, a development build next to the installed one is
+/// otherwise just another executable.
+pub const CODEG_EXECUTABLES: &[&str] = &["codeg.exe", "codeg"];
+
 /// A grant in force on one window.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -419,7 +425,8 @@ impl SelfIdentity {
     }
 
     /// Whether `app` is codeg: this process, any process calling itself
-    /// codeg's bundle, or anything run from this codeg's executable or bundle.
+    /// codeg's bundle, any executable named as codeg's is, or anything run
+    /// from this codeg's executable or bundle.
     pub fn owns(&self, app: &RawApp) -> bool {
         if app.pid == self.pid {
             return true;
@@ -434,6 +441,19 @@ impl SelfIdentity {
         let Some(path) = app.path.as_deref().filter(|s| !s.is_empty()) else {
             return false;
         };
+        // Split on both separators, as the blocklist does: a Windows path is
+        // still one when checked in a test on another platform.
+        if path
+            .rsplit(['/', '\\'])
+            .find(|part| !part.is_empty())
+            .is_some_and(|file| {
+                CODEG_EXECUTABLES
+                    .iter()
+                    .any(|name| file.eq_ignore_ascii_case(name))
+            })
+        {
+            return true;
+        }
         let path = Path::new(path);
         [self.exe.as_deref(), self.bundle.as_deref()]
             .into_iter()
@@ -629,6 +649,15 @@ mod tests {
                 None,
                 Some("/Applications/codeg.app/Contents/MacOS/codeg"),
             ),
+            // Any other codeg, wherever it runs from, by its executable's
+            // name: Windows gives no bundle identifier to know it by.
+            app(
+                400,
+                None,
+                Some(r"C:\Users\me\codeg\src-tauri\target\debug\codeg.exe"),
+            ),
+            app(400, None, Some(r"C:\Program Files\codeg\CODEG.EXE")),
+            app(400, None, Some("/usr/bin/codeg")),
         ] {
             assert_eq!(
                 grantable(&codeg, &me, &list),
@@ -640,6 +669,17 @@ mod tests {
             grantable(&app(300, Some("com.apple.TextEdit"), None), &me, &list),
             Ok(())
         );
+        for other in [
+            r"C:\Tools\codegen.exe",
+            r"C:\codeg\WindowsTerminal.exe",
+            r"C:\Tools\codeg.exe.old",
+        ] {
+            assert_eq!(
+                grantable(&app(400, None, Some(other)), &me, &list),
+                Ok(()),
+                "{other}"
+            );
+        }
     }
 
     /// The blocklist matches bundle ids, full paths and executable names, in
@@ -656,6 +696,11 @@ mod tests {
             app(1, Some("com.1password.1password"), None),
             app(1, Some("COM.APPLE.KEYCHAINACCESS"), None),
             app(1, None, Some("C:\\Program Files\\Bitwarden\\Bitwarden.exe")),
+            app(
+                1,
+                None,
+                Some("C:\\Windows\\ImmersiveControlPanel\\SystemSettings.exe"),
+            ),
             app(1, None, Some("/usr/bin/keepassxc")),
             app(1, Some("com.example.vault"), None),
             // A clone of a bundle named on the list by its file name.
