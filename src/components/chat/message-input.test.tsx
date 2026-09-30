@@ -22,6 +22,7 @@ import {
 import {
   clearMessageInputDraftV2,
   loadMessageInputDraftV2,
+  saveMessageInputDraftV2,
 } from "@/lib/message-input-draft"
 import {
   emitAttachFileToSession,
@@ -341,34 +342,82 @@ describe("MessageInput (RichComposer integration)", () => {
   // conversation's progress. The tab-activation auto-focus fires on every such
   // switch, and on a phone focusing the editor raises the soft keyboard over the
   // transcript. A coarse pointer therefore keeps the caret (and the keyboard)
-  // out until the user taps the composer, which focuses it as usual.
-  it("leaves the composer unfocused when a tab becomes active on a coarse pointer", async () => {
-    coarsePointer.mockReturnValue(true)
-    const { container } = renderInput({ isActive: true })
-    await waitFor(() =>
-      expect(container.querySelector('[role="textbox"]')).not.toBeNull()
-    )
-    const editor = container.querySelector('[role="textbox"]') as HTMLElement
+  // out until the user taps the composer, which focuses it as usual. A fine
+  // pointer is the mouse-driven behaviour the gate must not change: activating
+  // a tab still puts the caret in the composer, no keyboard in the picture.
+  //
+  // Both pointer kinds wait the same frames and then assert, so the fine side
+  // proves the wait covers the whole focus hand-off and the coarse side cannot
+  // pass by looking too early. A seeded draft makes readiness visible: the
+  // render that flips the composer ready schedules the draft restore and the
+  // auto-focus in that order, so once the draft is on screen the auto-focus
+  // frame has run. Tiptap's `focus` command then lands the DOM focus a frame
+  // later still (in jsdom; on iOS, Android and Safari it also focuses at once).
+  describe.each([
+    ["coarse", "leaves the composer unfocused", true, false],
+    ["fine", "focuses the composer", false, true],
+  ] as const)(
+    "on a %s pointer, tab activation %s",
+    (_pointer, _outcome, coarse, focused) => {
+      const draftKey = "test:tab-activation-focus"
+      const composer = (isActive: boolean) => (
+        <NextIntlClientProvider locale="en" messages={enMessages}>
+          <MessageInput
+            onSend={vi.fn()}
+            promptCapabilities={CAPS}
+            draftStorageKey={draftKey}
+            isActive={isActive}
+          />
+        </NextIntlClientProvider>
+      )
+      const nextFrame = () =>
+        act(async () => {
+          await new Promise((resolve) =>
+            requestAnimationFrame(() => resolve(null))
+          )
+        })
+      async function mountReady(isActive: boolean) {
+        coarsePointer.mockReturnValue(coarse)
+        saveMessageInputDraftV2(draftKey, {
+          type: "doc",
+          content: [
+            { type: "paragraph", content: [{ type: "text", text: "draft" }] },
+          ],
+        })
+        const view = render(composer(isActive))
+        await waitFor(
+          () =>
+            expect(
+              view.container.querySelector('[role="textbox"]')?.textContent
+            ).toBe("draft"),
+          { timeout: 5000 }
+        )
+        return view
+      }
+      afterEach(() => clearMessageInputDraftV2(draftKey))
 
-    // Let the auto-focus effect's frame (and the editor's own follow-up) run
-    // before asserting nothing claimed focus.
-    await act(async () => {
-      await new Promise((resolve) => requestAnimationFrame(() => resolve(null)))
-    })
-    expect(document.activeElement).not.toBe(editor)
-  })
+      it("when the session opens in an active tab", async () => {
+        const { container } = await mountReady(true)
+        await nextFrame() // Tiptap's deferred DOM focus
+        const editor = container.querySelector('[role="textbox"]')
+        expect(document.activeElement).toBe(focused ? editor : document.body)
+      })
 
-  // The mouse-driven behaviour the gate must not change: opening a tab still
-  // puts the caret in the composer, no keyboard in the picture.
-  it("focuses the composer when a tab becomes active on a fine pointer", async () => {
-    coarsePointer.mockReturnValue(false)
-    const { container } = renderInput({ isActive: true })
-    await waitFor(() =>
-      expect(container.querySelector('[role="textbox"]')).not.toBeNull()
-    )
-    const editor = container.querySelector('[role="textbox"]') as HTMLElement
-    await waitFor(() => expect(document.activeElement).toBe(editor))
-  })
+      it("when switching to a session already open in the background", async () => {
+        const { container, rerender } = await mountReady(false)
+        // Still in the background, the composer holds no focus, so whatever
+        // the assertion below sees is the switch's doing.
+        await nextFrame() // Tiptap's deferred DOM focus, were one scheduled
+        expect(document.activeElement).toBe(document.body)
+
+        rerender(composer(true))
+        await nextFrame() // the auto-focus effect's own frame
+        await nextFrame() // Tiptap's deferred DOM focus
+        const editor = container.querySelector('[role="textbox"]')
+        expect(document.activeElement).toBe(focused ? editor : document.body)
+      })
+    }
+  )
 
   // A browser with no Pointer Events dispatches no `pointerdown` and names no
   // pointer kind on its clicks, so both paths above stand down and plain
