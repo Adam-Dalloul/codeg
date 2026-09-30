@@ -42,6 +42,7 @@ vi.mock("@/lib/api", () => shell)
 import { StatusBarComputer } from "./status-bar-computer"
 import enMessages from "@/i18n/messages/en.json"
 import {
+  recordComputerActivity,
   resetComputerStoreForTest,
   setComputerShared,
 } from "@/lib/computer/computer-store"
@@ -398,6 +399,38 @@ describe("StatusBarComputer", () => {
     expect(
       screen.getByRole("button", { name: "Share a window…" })
     ).toBeEnabled()
+  })
+
+  /** Recent activity can be cleared: the list goes with its button, the
+   * popover keeps the focus, and what agents do next starts a new list. */
+  it("clears recent activity", async () => {
+    mount()
+    fireEvent.click(await screen.findByRole("button", { name: "Computer use" }))
+    act(() =>
+      recordComputerActivity({
+        targetId: "w4",
+        action: "capture",
+        outcome: "done",
+        at: 1,
+      })
+    )
+    await screen.findByText("Recent activity")
+    const clear = screen.getByRole("button", { name: "Clear recent activity" })
+    clear.focus()
+    fireEvent.click(clear)
+    expect(screen.queryByText("Recent activity")).toBeNull()
+    expect(screen.getByRole("dialog")).toHaveFocus()
+
+    act(() =>
+      recordComputerActivity({
+        targetId: "w4",
+        action: "click",
+        outcome: "refused",
+        at: 2,
+      })
+    )
+    expect(await screen.findByText("Click · w4")).toBeInTheDocument()
+    expect(screen.queryByText(/Screenshot/)).toBeNull()
   })
 
   /** The switch flipped on elsewhere while the first read was in flight: the

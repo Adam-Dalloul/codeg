@@ -5228,6 +5228,7 @@
     },
     "activity": {
       "title": "Recent activity",
+      "clear": "Clear recent activity",
       "capture": "Screenshot",
       "snapshot": "Read",
       "verify": "Check",

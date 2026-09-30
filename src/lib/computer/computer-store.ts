@@ -126,6 +126,13 @@ export function recordComputerActivity(payload: ComputerActivityPayload): void {
   emit({ ...state, activity })
 }
 
+/** Empty the activity list: what this window has seen goes, and what agents
+ *  do next starts a fresh one. Nothing an agent did is undone. */
+export function clearComputerActivity(): void {
+  if (state.activity.length === 0) return
+  emit({ ...state, activity: [] })
+}
+
 /** Start listening, once per window. A no-op outside the desktop runtime. */
 function ensureStarted() {
   if (started || !computerAvailable()) return

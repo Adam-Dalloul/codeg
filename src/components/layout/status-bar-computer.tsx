@@ -30,6 +30,7 @@
 import { useEffect, useRef, useState } from "react"
 import { useTranslations } from "next-intl"
 import {
+  BrushCleaning,
   ChevronDown,
   CircleAlert,
   CircleCheck,
@@ -62,6 +63,7 @@ import {
   computerStop,
 } from "@/lib/computer/computer-api"
 import {
+  clearComputerActivity,
   computerStoreMark,
   setComputerSharedSince,
   useComputerStore,
@@ -114,6 +116,7 @@ function ComputerPopover() {
     revealHelper,
   } = useComputerStatus(open)
   const aliveRef = useRef(true)
+  const contentRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
     aliveRef.current = true
     return () => {
@@ -157,6 +160,13 @@ function ComputerPopover() {
     }
   }
 
+  // The button goes with the list it clears: the popover takes the focus
+  // first, so it is not lost with the button.
+  const clearActivity = () => {
+    contentRef.current?.focus()
+    clearComputerActivity()
+  }
+
   const liveBackend = backend ?? status?.backend ?? null
   const codegLeaks = codegHoldsPermission(status)
   const permissions = status?.permissions
@@ -185,7 +195,12 @@ function ComputerPopover() {
             />
           </button>
         </PopoverTrigger>
-        <PopoverContent side="top" align="end" className="w-88 gap-2 p-2.5">
+        <PopoverContent
+          ref={contentRef}
+          side="top"
+          align="end"
+          className="w-88 gap-2 p-2.5"
+        >
           <div className="flex items-center justify-between gap-2">
             <span className="flex items-center gap-1.5 truncate text-xs font-medium">
               {t("title")}
@@ -377,7 +392,18 @@ function ComputerPopover() {
 
           {activity.length > 0 && (
             <div className="rounded-lg border px-2 py-1.5">
-              <p className="mb-1 text-2xs font-medium">{t("activity.title")}</p>
+              <div className="mb-1 flex items-center justify-between gap-2">
+                <p className="text-2xs font-medium">{t("activity.title")}</p>
+                <button
+                  type="button"
+                  onClick={clearActivity}
+                  title={t("activity.clear")}
+                  aria-label={t("activity.clear")}
+                  className="text-muted-foreground transition-colors hover:text-foreground"
+                >
+                  <BrushCleaning className="h-3 w-3" />
+                </button>
+              </div>
               <ul className="space-y-0.5">
                 {activity.slice(0, ACTIVITY_SHOWN).map((line, i) => (
                   <li

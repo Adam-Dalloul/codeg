@@ -6,6 +6,7 @@ vi.mock("@/lib/platform", () => ({
 vi.mock("./computer-api", () => ({ computerAvailable: () => false }))
 
 import {
+  clearComputerActivity,
   computerStoreMark,
   recordComputerActivity,
   resetComputerStoreForTest,
@@ -13,7 +14,7 @@ import {
   setComputerSharedSince,
   useComputerStore,
 } from "./computer-store"
-import { renderHook } from "@testing-library/react"
+import { act, renderHook } from "@testing-library/react"
 
 beforeEach(() => resetComputerStoreForTest())
 
@@ -73,6 +74,25 @@ describe("computer store", () => {
     const lines = state().activity
     expect(lines).toHaveLength(50)
     expect(lines[0].targetId).toBe("w79")
+  })
+
+  /** Cleared, the list starts over: the next attempt is a line of its own,
+   * not one more on the count of a line that is gone. */
+  it("starts over once cleared", () => {
+    const attempt = {
+      targetId: "w1",
+      action: "capture",
+      outcome: "done",
+    } as const
+    recordComputerActivity({ ...attempt, at: 1 })
+    recordComputerActivity({ ...attempt, at: 2 })
+    clearComputerActivity()
+    expect(state().activity).toEqual([])
+
+    act(() => recordComputerActivity({ ...attempt, at: 3 }))
+    expect(state().activity.map((l) => [l.targetId, l.count, l.at])).toEqual([
+      ["w1", 1, 3],
+    ])
   })
 
   it("takes the shared list as given", () => {

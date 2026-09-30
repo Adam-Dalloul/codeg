@@ -5228,6 +5228,7 @@
     },
     "activity": {
       "title": "最近活動",
+      "clear": "清空最近活動",
       "capture": "截圖",
       "snapshot": "讀取",
       "verify": "檢查",

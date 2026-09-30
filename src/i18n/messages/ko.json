@@ -5228,6 +5228,7 @@
     },
     "activity": {
       "title": "최근 활동",
+      "clear": "최근 활동 지우기",
       "capture": "스크린샷",
       "snapshot": "읽기",
       "verify": "확인",
