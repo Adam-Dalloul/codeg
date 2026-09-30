@@ -2288,9 +2288,69 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             // (r) `@openai/codex` 0.158.0 deletes the hidden `gpt-5.4` stub (11 →
             // 10 slugs) and adds no `ModelInfo` field; the offline snapshot is
             // regenerated and the strictness re-probed (`codex_model_catalog.rs`).
+            //
+            // 2.0.1 is two upstream changes (#562, #565), both `@openai/codex`
+            // bumps: ^0.158.0 → **^0.159.1**, which a fresh install resolves to
+            // 0.159.2 (a Windows console fix; its bundled catalog is
+            // byte-identical to 0.159.1's). `engines` is still absent, so the
+            // 20.0.0 floor stays. The adapter's own code moves by one table row
+            // (see (v)): its scenario harness (33 scenarios, a mocked app-server)
+            // replays byte-identically under codeg's exact `clientCapabilities`
+            // on both tags, and the live `initialize` response matches 2.0.0's
+            // field for field apart from the version.
+            //
+            // (s) **GPT-6.1 Sol** (0.159.1) is codex's new DEFAULT: priority 1,
+            // ahead of GPT-6 Astra, taking the catalog from 10 slugs to 11. Live
+            // on a throwaway `CODEX_HOME` in codeg's bound-provider shape, a
+            // fresh `session/new` opens on `gpt-6.1-sol` (2.0.0: `gpt-6-astra`),
+            // the AIR `recommendedValue` follows, and the `model` option reads
+            // 6.1 Sol / 6 Astra / 6 Sol / 6 Luna / 5.6 Sol / 5.6 Terra /
+            // 5.6 Luna / 5.5. A session with neither a root `model` nor a saved
+            // composer pick to replay moves with it — so a gateway that does not
+            // serve the new slug refuses such sessions until a model is picked.
+            // Its recommended effort is `low` (6 Sol's is `medium`). No
+            // `ModelInfo` field was added; the offline snapshot is regenerated
+            // from the 0.159.2 binary and the strictness re-probed
+            // (`codex_model_catalog.rs`).
+            //
+            // (t) The catalog's FILE order stopped being priority order: GPT-6.1
+            // Sol sits second in `models.json`, and in `debug models --bundled`,
+            // behind GPT-6 Astra's priority 2. codex sorts by priority, but
+            // codeg's generated `model_catalog_json` renumbered the officials by
+            // position — a user with custom models or removed officials would
+            // have got 6 Astra ahead of 6.1 Sol, and as the default. Both catalog
+            // loaders now sort (`codex_model_catalog::sort_by_priority`), and so
+            // do the expansion and the root-`model` fallback.
+            //
+            // (u) That generated catalog is a whole-table replace which codeg
+            // only rewrote on a settings save, so those same users would not
+            // have seen GPT-6.1 Sol at all after upgrading. Installing or
+            // upgrading codex-acp now refreshes the official catalog from the
+            // codex it drives and re-expands codeg's catalog from its stored
+            // intent (`resync_codex_generated_catalog` in commands/acp.rs).
+            //
+            // (v) Inert or not adopted. A live stdio diff shows one more change:
+            // the `$plugin-creator` skill command is gone (0.159.0 removed the
+            // bundled skill; codeg never referenced it). `tooManyDenials` joins
+            // the error table as `provider_error` — the typed cause 0.159 gives
+            // its Guardian circuit breaker behind the opt-in
+            // `auto_review.circuit_break_action = "strict"`, which codeg does
+            // not write. Strict mode puts it on an INTERRUPTED turn's `error`
+            // and sends no `error` notification, while `handleFailedTurn`
+            // reports FAILED turns only, so codeg sees no typed failure from it
+            // either way; the rollout's `turn_aborted` gains the same optional
+            // `error`, and `parsers::codex` does not read `turn_aborted`.
+            // `features.instant_interrupt` (new input preempting a streaming
+            // response) is `Stage::UnderDevelopment` — "not ready for external
+            // use" — so it stays off. Item anchors for `thread/items/list` and
+            // the single-server `serverName` filter on `mcpServerStatus/list` are
+            // new app-server parameters the adapter does not send (it pages with
+            // opaque string cursors and lists every server). `.aws` directories
+            // under a writable root are now protected by the sandbox: stricter,
+            // never looser.
             distribution: AgentDistribution::Npx {
-                version: "2.0.0",
-                package: "@agentclientprotocol/codex-acp@2.0.0",
+                version: "2.0.1",
+                package: "@agentclientprotocol/codex-acp@2.0.1",
                 cmd: "codex-acp",
                 args: &[],
                 env: &[],
@@ -3650,8 +3710,8 @@ mod tests {
         );
         assert_npx_version(
             AgentType::Codex,
-            "2.0.0",
-            "@agentclientprotocol/codex-acp@2.0.0",
+            "2.0.1",
+            "@agentclientprotocol/codex-acp@2.0.1",
             Some("20.0.0"),
         );
         assert_npx_version(AgentType::Pi, "0.0.34", "pi-acp@0.0.34", Some("22.0.0"));

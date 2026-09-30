@@ -3945,6 +3945,108 @@ fn drop_codex_catalog_reference() -> Result<(), AcpError> {
     Ok(())
 }
 
+/// What [`resync_codex_generated_catalog_at`] did.
+#[derive(Debug, PartialEq)]
+enum CodexCatalogResync {
+    /// No catalog codeg can regenerate: config.toml references none, references
+    /// the user's own, or codeg's intent sidecar is missing.
+    NotOwned,
+    /// The generated catalog was re-expanded against the new official list.
+    Rewritten,
+    /// Nothing deviates from codex's own list any more, so the reference and
+    /// the generated files were removed and codex's catalog applies untouched.
+    Released,
+}
+
+/// Re-expand codeg's generated codex catalog (`model_catalog_json`) against
+/// `snapshot`, the official catalog of the codex that is now installed.
+///
+/// The key is a whole-table replace that codeg only rewrites when the model
+/// settings are saved, so a codex upgrade that ships new official models left
+/// every user with custom models or removed officials on the OLD table: codex
+/// 0.159.1 (codex-acp 2.0.1) made GPT-6.1 Sol its default and they would not
+/// see it until they happened to re-save. Expanding the stored intent (the
+/// source sidecar) against the new catalog is exactly what that re-save writes.
+///
+/// Only a catalog codeg owns is touched — config.toml must reference codeg's
+/// own file, and the sidecar must exist. A catalog without a sidecar is NOT
+/// re-imported: read against the new list, every newly shipped official would
+/// look like one the user removed. The root `model` is left alone; the user's
+/// explicit default is part of the sidecar and survives the rewrite as-is.
+fn resync_codex_generated_catalog_at(
+    codex_home: &Path,
+    snapshot: &[serde_json::Value],
+) -> Result<CodexCatalogResync, AcpError> {
+    let config_path = codex_home.join("config.toml");
+    let config_toml = match fs::read_to_string(&config_path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(CodexCatalogResync::NotOwned)
+        }
+        Err(e) => {
+            return Err(AcpError::protocol(format!(
+                "read codex config.toml failed: {e}"
+            )))
+        }
+    };
+    let owned = config_toml
+        .parse::<toml::Value>()
+        .ok()
+        .as_ref()
+        .and_then(|doc| doc.get("model_catalog_json"))
+        .and_then(toml::Value::as_str)
+        .is_some_and(|value| is_codeg_owned_catalog_ref(value, codex_home));
+    if !owned {
+        return Ok(CodexCatalogResync::NotOwned);
+    }
+    let raw = match fs::read_to_string(codex_home.join(crate::acp::codex_model_catalog::SOURCE_REL))
+    {
+        Ok(raw) => raw,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(CodexCatalogResync::NotOwned)
+        }
+        Err(e) => {
+            return Err(AcpError::protocol(format!(
+                "read codex catalog source failed: {e}"
+            )))
+        }
+    };
+    let config = crate::acp::codex_model_catalog::parse_model_config(Some(&raw));
+    let released = crate::acp::codex_model_catalog::is_effectively_empty(&config, snapshot);
+    if released {
+        // Reference first, files second: codex refuses to start on a
+        // `model_catalog_json` that points at a missing file, so a failure in
+        // between must leave a stale-but-valid table, never a dangling key.
+        if let Some(next) = remove_codex_catalog_key(&config_toml, codex_home)? {
+            fs::write(&config_path, next)
+                .map_err(|e| AcpError::protocol(format!("write codex config.toml failed: {e}")))?;
+        }
+    }
+    crate::acp::codex_model_catalog::write_catalog_files(&raw, codex_home, snapshot)
+        .map_err(|e| AcpError::protocol(e.to_string()))?;
+    Ok(if released {
+        CodexCatalogResync::Released
+    } else {
+        CodexCatalogResync::Rewritten
+    })
+}
+
+/// After codex-acp is (re)installed: refresh the cached official catalog from
+/// the codex it now drives, then bring codeg's generated catalog in line (see
+/// [`resync_codex_generated_catalog_at`]). Only a LIVE catalog is used — the
+/// stale cache or the compiled-in snapshot would just rewrite the old table.
+/// Best-effort: an install never fails over this.
+async fn resync_codex_generated_catalog() {
+    let Some(snapshot) = crate::acp::codex_catalog_source::refresh_live_catalog().await else {
+        tracing::warn!("[acp] codex installed, but its model catalog could not be read");
+        return;
+    };
+    match resync_codex_generated_catalog_at(&codex_home_dir(), &snapshot) {
+        Ok(outcome) => tracing::info!("[acp] codex model catalog after install: {outcome:?}"),
+        Err(e) => tracing::warn!("[acp] codex model catalog resync failed: {e}"),
+    }
+}
+
 /// Apply the Codex panel's sandbox / approval PATCH to the raw config.toml text,
 /// format-preservingly (comments and unmanaged keys are kept). Values are
 /// validated against the upstream vocabularies first, so a UI bug can never
@@ -13227,6 +13329,18 @@ pub(crate) async fn acp_prepare_npx_agent_core(
             )
             .await
             .map_err(|e| AcpError::protocol(e.to_string()))?;
+
+            // A new codex-acp can drive a codex with a different official
+            // model list; codeg's generated catalog must follow it.
+            if agent_type == AgentType::Codex {
+                emit_agent_install_event(
+                    emitter,
+                    &task_id,
+                    AgentInstallEventKind::Log,
+                    "Refreshing the Codex model catalog...",
+                );
+                resync_codex_generated_catalog().await;
+            }
             emit_acp_agents_updated(emitter, "npx_prepared", Some(agent_type));
             Ok(resolved)
         }
@@ -14683,6 +14797,191 @@ base_url = \"https://example.test/v1\"
             home
         ));
         assert!(!is_codeg_owned_catalog_ref("manual.json", home));
+    }
+
+    fn catalog_slugs(home: &Path) -> Vec<String> {
+        let text = fs::read_to_string(home.join(crate::acp::codex_model_catalog::CATALOG_REL))
+            .expect("generated catalog");
+        serde_json::from_str::<serde_json::Value>(&text).expect("catalog json")["models"]
+            .as_array()
+            .expect("models")
+            .iter()
+            .filter_map(|m| m["slug"].as_str().map(str::to_owned))
+            .collect()
+    }
+
+    /// The official list before codex 0.159.1: today's minus GPT-6.1 Sol.
+    fn catalog_without_gpt_6_1_sol() -> Vec<serde_json::Value> {
+        crate::acp::codex_model_catalog::bundled_snapshot_models()
+            .into_iter()
+            .filter(|m| m["slug"] != "gpt-6.1-sol")
+            .collect()
+    }
+
+    /// A catalog codeg generated before an upgrade is re-expanded from its
+    /// stored intent, so the new official model shows up — in codex's own
+    /// rank, behind the custom — without the user re-saving anything.
+    #[test]
+    fn resync_rewrites_codegs_catalog_against_the_new_official_list() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let home = dir.path();
+        let config = config_with_catalog_ref(crate::acp::codex_model_catalog::CATALOG_REL);
+        fs::write(home.join("config.toml"), &config).unwrap();
+        let intent = r#"{"customs":[{"slug":"gw/x","base":"gpt-5.6-sol"}],"default":"gw/x"}"#;
+        crate::acp::codex_model_catalog::write_catalog_files(
+            intent,
+            home,
+            &catalog_without_gpt_6_1_sol(),
+        )
+        .unwrap()
+        .expect("customs → generated catalog");
+        assert!(!catalog_slugs(home).iter().any(|s| s == "gpt-6.1-sol"));
+
+        // Today's list plus one model no compiled-in snapshot has, so only
+        // the list passed in can put it in the table.
+        let mut new = crate::acp::codex_model_catalog::bundled_snapshot_models();
+        let mut unshipped = new
+            .iter()
+            .find(|m| m["slug"] == "gpt-5.5")
+            .cloned()
+            .expect("gpt-5.5 in snapshot");
+        unshipped["slug"] = serde_json::Value::String("gpt-test-unshipped".into());
+        new.push(unshipped);
+        assert_eq!(
+            resync_codex_generated_catalog_at(home, &new).unwrap(),
+            CodexCatalogResync::Rewritten
+        );
+        let slugs = catalog_slugs(home);
+        assert_eq!(slugs[..3], ["gw/x", "gpt-6.1-sol", "gpt-6-astra"]);
+        assert!(slugs.iter().any(|s| s == "gpt-test-unshipped"));
+        assert_eq!(slugs.len(), new.len() + 1);
+        // The intent and config.toml are untouched: same bytes as before.
+        assert_eq!(
+            fs::read_to_string(home.join(crate::acp::codex_model_catalog::SOURCE_REL)).unwrap(),
+            intent
+        );
+        assert_eq!(
+            fs::read_to_string(home.join("config.toml")).unwrap(),
+            config
+        );
+    }
+
+    /// Nothing that codeg cannot regenerate is touched: the user's own catalog,
+    /// a config with no catalog at all, and a codeg catalog whose intent sidecar
+    /// is gone (re-importing it against the NEW list would read every newly
+    /// shipped official as one the user removed).
+    #[test]
+    fn resync_leaves_catalogs_codeg_cannot_regenerate_alone() {
+        let new = crate::acp::codex_model_catalog::bundled_snapshot_models();
+        let intent = r#"{"customs":[{"slug":"gw/x","base":"gpt-5.6-sol"}]}"#;
+        let catalog_path = |home: &Path| home.join(crate::acp::codex_model_catalog::CATALOG_REL);
+
+        // No config.toml at all.
+        let dir = tempfile::tempdir().expect("tempdir");
+        assert_eq!(
+            resync_codex_generated_catalog_at(dir.path(), &new).unwrap(),
+            CodexCatalogResync::NotOwned
+        );
+
+        // The user's own catalog, even with a codeg sidecar lying around.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let home = dir.path();
+        fs::write(
+            home.join("config.toml"),
+            config_with_catalog_ref("manual.json"),
+        )
+        .unwrap();
+        fs::write(
+            home.join(crate::acp::codex_model_catalog::SOURCE_REL),
+            intent,
+        )
+        .unwrap();
+        assert_eq!(
+            resync_codex_generated_catalog_at(home, &new).unwrap(),
+            CodexCatalogResync::NotOwned
+        );
+        assert!(!catalog_path(home).exists(), "no catalog was generated");
+        assert_eq!(
+            fs::read_to_string(home.join("config.toml")).unwrap(),
+            config_with_catalog_ref("manual.json"),
+            "the user's reference is left byte-identical"
+        );
+
+        // No `model_catalog_json` key.
+        fs::write(home.join("config.toml"), "model = \"gpt-5.5\"\n").unwrap();
+        assert_eq!(
+            resync_codex_generated_catalog_at(home, &new).unwrap(),
+            CodexCatalogResync::NotOwned
+        );
+        assert!(!catalog_path(home).exists(), "no catalog was generated");
+
+        // codeg's reference, but no sidecar: the old table stays as it is.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let home = dir.path();
+        fs::write(
+            home.join("config.toml"),
+            config_with_catalog_ref(crate::acp::codex_model_catalog::CATALOG_REL),
+        )
+        .unwrap();
+        crate::acp::codex_model_catalog::write_catalog_files(
+            intent,
+            home,
+            &catalog_without_gpt_6_1_sol(),
+        )
+        .unwrap()
+        .expect("seeded");
+        fs::remove_file(home.join(crate::acp::codex_model_catalog::SOURCE_REL)).unwrap();
+        let before = fs::read_to_string(catalog_path(home)).unwrap();
+        assert_eq!(
+            resync_codex_generated_catalog_at(home, &new).unwrap(),
+            CodexCatalogResync::NotOwned
+        );
+        assert_eq!(fs::read_to_string(catalog_path(home)).unwrap(), before);
+    }
+
+    /// When the new list makes the takeover moot (the only removal names a model
+    /// codex has since retired), control goes back to codex: the reference is
+    /// dropped — format-preservingly — and the generated files with it, so
+    /// config.toml never points at a file that is gone.
+    #[test]
+    fn resync_releases_a_takeover_the_new_list_makes_moot() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let home = dir.path();
+        fs::write(
+            home.join("config.toml"),
+            config_with_catalog_ref(crate::acp::codex_model_catalog::CATALOG_REL),
+        )
+        .unwrap();
+        // The old list still LISTED a model the user removed; the new one no
+        // longer ships it at all.
+        let mut old = crate::acp::codex_model_catalog::bundled_snapshot_models();
+        let mut retired = old
+            .iter()
+            .find(|m| m["slug"] == "gpt-5.5")
+            .cloned()
+            .expect("gpt-5.5 in snapshot");
+        retired["slug"] = serde_json::Value::String("gpt-5.4-retired".into());
+        old.push(retired);
+        let intent = r#"{"customs":[],"excludedOfficials":["gpt-5.4-retired"]}"#;
+        crate::acp::codex_model_catalog::write_catalog_files(intent, home, &old)
+            .unwrap()
+            .expect("a live removal → generated catalog");
+
+        let new = crate::acp::codex_model_catalog::bundled_snapshot_models();
+        assert_eq!(
+            resync_codex_generated_catalog_at(home, &new).unwrap(),
+            CodexCatalogResync::Released
+        );
+        let config = fs::read_to_string(home.join("config.toml")).unwrap();
+        assert!(!config.contains("model_catalog_json"), "{config}");
+        assert!(config.contains("# my codex config"));
+        assert!(config.contains("model = \"gw/x\"           # the model"));
+        assert!(!home
+            .join(crate::acp::codex_model_catalog::CATALOG_REL)
+            .exists());
+        assert!(!home
+            .join(crate::acp::codex_model_catalog::SOURCE_REL)
+            .exists());
     }
 
     #[test]
