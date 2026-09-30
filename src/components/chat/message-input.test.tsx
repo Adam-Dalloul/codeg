@@ -97,6 +97,13 @@ vi.mock("@/components/chat/conversation-context-bar", () => ({
 vi.mock("./composer-context-usage", () => ({
   ComposerContextUsage: () => null,
 }))
+// Pointer kind drives whether focusing the composer raises a soft keyboard.
+// Defaults to a mouse-driven device (the desktop behaviour every other test
+// asserts around); the keyboard tests below flip it to a touch-first one.
+const coarsePointer = vi.hoisted(() => vi.fn(() => false))
+vi.mock("@/hooks/use-is-coarse-pointer", () => ({
+  useIsCoarsePointer: coarsePointer,
+}))
 vi.mock("./composer-connection-status", () => ({
   ComposerConnectionStatus: () => null,
 }))
@@ -248,7 +255,10 @@ function renderInput(
 }
 
 describe("MessageInput (RichComposer integration)", () => {
-  afterEach(() => cleanup())
+  afterEach(() => {
+    cleanup()
+    coarsePointer.mockReturnValue(false)
+  })
 
   it("mounts and renders the rich-text composer surface", async () => {
     const { container } = renderInput({})
@@ -325,6 +335,39 @@ describe("MessageInput (RichComposer integration)", () => {
     // An event that names no pointer kind at all counts as a mouse too.
     fireEvent.click(card)
     expect(document.activeElement).not.toBe(editor)
+  })
+
+  // Switching a session is most often a read — you glance at another
+  // conversation's progress. The tab-activation auto-focus fires on every such
+  // switch, and on a phone focusing the editor raises the soft keyboard over the
+  // transcript. A coarse pointer therefore keeps the caret (and the keyboard)
+  // out until the user taps the composer, which focuses it as usual.
+  it("leaves the composer unfocused when a tab becomes active on a coarse pointer", async () => {
+    coarsePointer.mockReturnValue(true)
+    const { container } = renderInput({ isActive: true })
+    await waitFor(() =>
+      expect(container.querySelector('[role="textbox"]')).not.toBeNull()
+    )
+    const editor = container.querySelector('[role="textbox"]') as HTMLElement
+
+    // Let the auto-focus effect's frame (and the editor's own follow-up) run
+    // before asserting nothing claimed focus.
+    await act(async () => {
+      await new Promise((resolve) => requestAnimationFrame(() => resolve(null)))
+    })
+    expect(document.activeElement).not.toBe(editor)
+  })
+
+  // The mouse-driven behaviour the gate must not change: opening a tab still
+  // puts the caret in the composer, no keyboard in the picture.
+  it("focuses the composer when a tab becomes active on a fine pointer", async () => {
+    coarsePointer.mockReturnValue(false)
+    const { container } = renderInput({ isActive: true })
+    await waitFor(() =>
+      expect(container.querySelector('[role="textbox"]')).not.toBeNull()
+    )
+    const editor = container.querySelector('[role="textbox"]') as HTMLElement
+    await waitFor(() => expect(document.activeElement).toBe(editor))
   })
 
   // A browser with no Pointer Events dispatches no `pointerdown` and names no

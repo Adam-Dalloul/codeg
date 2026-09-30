@@ -103,6 +103,7 @@ import {
   type ModelOptionGroup,
 } from "@/lib/model-config-groups"
 import { useAgentSkills } from "@/hooks/use-agent-skills"
+import { useIsCoarsePointer } from "@/hooks/use-is-coarse-pointer"
 import { useScrollbarSafeDismiss } from "@/hooks/use-scrollbar-safe-dismiss"
 import { useAgentVocabulary } from "@/hooks/use-agent-vocabulary"
 import {
@@ -472,6 +473,9 @@ export function MessageInput({
   // Flips true once the RichComposer's async (immediatelyRender:false) editor has
   // mounted, so the hydration effect can use the imperative handle.
   const [composerReady, setComposerReady] = useState(false)
+  // On a touch-first device focusing the editor raises the soft keyboard, which
+  // the tab-activation auto-focus below must not do on its own.
+  const isCoarsePointer = useIsCoarsePointer()
 
   const syncComposerEmpty = useCallback(() => {
     const ed = editorRef.current?.getEditor()
@@ -686,13 +690,21 @@ export function MessageInput({
   // editor a tick after mount (mirrors the hydration effect's gate). Ordered
   // after that hydration effect so this rAF runs after its setContent, landing
   // the caret at the end of a restored draft rather than before it.
+  //
+  // Skipped entirely on a coarse pointer: this effect also fires when a session
+  // merely *becomes active*, and on a phone focusing the editor raises the soft
+  // keyboard — switching sessions to read progress would shove the keyboard
+  // over the transcript. Tapping the composer still focuses it (native focus in
+  // the text, the chrome-press handler in the padding), so the keyboard comes
+  // up on demand instead of on tab switch.
   useEffect(() => {
+    if (isCoarsePointer) return
     if (isActive && composerReady && !isPrompting) {
       requestAnimationFrame(() => {
         editorRef.current?.focus()
       })
     }
-  }, [isActive, composerReady, isPrompting])
+  }, [isCoarsePointer, isActive, composerReady, isPrompting])
 
   // Re-hydrate when the user (re)edits a *different* queue item after the
   // initial mount hydration above. Keyed on the item id (not display text) so
