@@ -189,9 +189,9 @@ pub fn permission_missing_note(permission: &str) -> String {
 
 pub fn control_required_note(target_id: &str) -> String {
     format!(
-        "Window {target_id} is shared with you for reading only. Ask the user to allow control \
-         of it: in codeg's status bar they open Computer use and set that window to \"Read and \
-         control\". Only they can; retrying will not change it. You can still read the window."
+        "Window {target_id} is shared with you for reading only. Ask the user to let you act on \
+         it: in codeg's status bar they open Computer use and set that window to \"Read and \
+         act\". Only they can; retrying will not change it. You can still read the window."
     )
 }
 
