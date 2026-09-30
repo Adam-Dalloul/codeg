@@ -98,6 +98,8 @@ import type {
   FolderLinkDetail,
   FolderLinkPlan,
   FolderLinkRequestItem,
+  CanvasBoard,
+  CanvasBoardSummary,
   CanvasMutation,
   CanvasNode,
   CanvasNodeKind,
@@ -3068,15 +3070,67 @@ export interface GroupIntoRegionResult {
   deletedIds: number[]
 }
 
-/** The full canvas node set plus the revision it was read at. */
-export async function canvasListNodes(): Promise<CanvasSnapshot> {
-  return getTransport().call("canvas_list_nodes", {})
+/** Input for `canvasCreateBoard`. Every field optional — an unnamed board is
+ *  a real board, titled "Untitled canvas" by the client. */
+export interface CreateCanvasBoardInput {
+  name?: string
+  description?: string
+  color?: string
 }
 
+/** Field-by-field board patch: absent = untouched, empty string clears. */
+export interface CanvasBoardPatchInput {
+  name?: string
+  description?: string
+  color?: string
+}
+
+/** Every canvas, most recently edited first, each with its node count and a
+ *  thumbnail's worth of node footprints. */
+export async function canvasListBoards(): Promise<CanvasBoardSummary[]> {
+  return getTransport().call("canvas_list_boards", {})
+}
+
+export async function canvasCreateBoard(
+  input: CreateCanvasBoardInput
+): Promise<CanvasBoard> {
+  return getTransport().call("canvas_create_board", { input })
+}
+
+export async function canvasUpdateBoard(
+  boardId: number,
+  patch: CanvasBoardPatchInput
+): Promise<CanvasBoard> {
+  return getTransport().call("canvas_update_board", { boardId, patch })
+}
+
+/** Delete a board and everything on it (terminal cards' shells included). The
+ *  value is the ids of the nodes removed. Idempotent: a board already gone is a
+ *  success with an empty list. */
+export async function canvasDeleteBoard(
+  boardId: number
+): Promise<CanvasMutation<number[]>> {
+  return getTransport().call("canvas_delete_board", { boardId })
+}
+
+/** One board's node set plus the (global) revision it was read at. A board
+ *  that no longer exists rejects with `not_found`. */
+export async function canvasListNodes(
+  boardId: number
+): Promise<CanvasSnapshot> {
+  return getTransport().call("canvas_list_nodes", { boardId })
+}
+
+/** Place a node on a board. The board is its own argument rather than a field
+ *  of `input`: the node menus build the input without knowing which board
+ *  they are on, and the board view is what supplies it. */
 export async function canvasCreateNode(
+  boardId: number,
   input: CreateCanvasNodeInput
 ): Promise<CanvasMutation<CanvasNode>> {
-  return getTransport().call("canvas_create_node", { input })
+  return getTransport().call("canvas_create_node", {
+    input: { ...input, boardId },
+  })
 }
 
 /** "Collect these conversations into a region": the region write, its member
@@ -3084,9 +3138,12 @@ export async function canvasCreateNode(
  *  ONE revision. Doing it as create + N × memberAdd + M × delete would spray a
  *  dozen events for one gesture and make every intermediate state observable. */
 export async function canvasGroupIntoRegion(
+  boardId: number,
   input: GroupIntoRegionInput
 ): Promise<CanvasMutation<GroupIntoRegionResult>> {
-  return getTransport().call("canvas_group_into_region", { input })
+  return getTransport().call("canvas_group_into_region", {
+    input: { ...input, boardId },
+  })
 }
 
 export async function canvasUpdateNode(

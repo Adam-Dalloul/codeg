@@ -744,6 +744,10 @@ export type CanvasNodeKind =
  *  soft references — a binding whose target is gone renders as unresolved. */
 export interface CanvasNode {
   id: number
+  /** The canvas (`CanvasBoard.id`) this node sits on. Fixed for the node's
+   *  life — which is what lets a client scope the global event stream to the
+   *  one board it shows. */
+  board_id: number
   kind: CanvasNodeKind
   folder_id: number | null
   /** kind=group: the sidebar folder group this region mirrors. */
@@ -775,9 +779,13 @@ export interface CanvasNode {
   updated_at: string
 }
 
-/** Response of `canvas_list_nodes`: the full node set plus the revision it was
- *  read at (single read transaction server-side). Seeds `lastRevision`. */
+/** Response of `canvas_list_nodes`: one board's full node set plus the
+ *  revision it was read at (single read transaction server-side). Seeds
+ *  `lastRevision`. The revision is workspace-global, not per board. */
 export interface CanvasSnapshot {
+  /** The board `nodes` belongs to — echoed so an answer that arrives after the
+   *  client switched boards can be recognised as someone else's. */
+  board_id: number
   nodes: CanvasNode[]
   revision: number
 }
@@ -825,6 +833,49 @@ export type CanvasChange =
     }
 
 export const CANVAS_CHANGED_EVENT = "canvas://changed"
+
+/** One canvas on the canvas list. Mirrors the Rust `CanvasBoard`. `name` is
+ *  null until the user names it (render a localized "Untitled canvas"). */
+export interface CanvasBoard {
+  id: number
+  name: string | null
+  description: string | null
+  /** Theme-preset color name (FolderThemeColor vocabulary), or null. */
+  color: string | null
+  created_at: string
+  /** Last change to the board OR anything on it — node writes stamp it too,
+   *  which is what the list is ordered by. */
+  updated_at: string
+}
+
+/** One node's footprint on a board's list card. */
+export interface CanvasBoardPreviewRect {
+  kind: CanvasNodeKind
+  x: number
+  y: number
+  width: number
+  height: number
+  color: string | null
+}
+
+/** Row of `canvas_list_boards`: the board plus what its card shows about the
+ *  nodes on it. Mirrors the Rust `CanvasBoardSummary`. */
+export interface CanvasBoardSummary {
+  board: CanvasBoard
+  node_count: number
+  /** Terminal cards on the board — shells a board delete would stop. */
+  terminal_count: number
+  /** Largest-first footprints, capped server-side (a thumbnail, not a render). */
+  preview: CanvasBoardPreviewRect[]
+}
+
+/** Payload of the `canvas-board://changed` side-channel: a board was created
+ *  or edited (full row), or deleted. Mirrors the Rust `CanvasBoardChange`. */
+export type CanvasBoardChange =
+  | { kind: "upsert"; board: CanvasBoard }
+  | { kind: "deleted"; id: number }
+
+export const CANVAS_BOARD_CHANGED_EVENT = "canvas-board://changed"
 
 export interface DbConversationDetail {
   summary: DbConversationSummary

@@ -285,6 +285,22 @@ pub fn build_router(
         )
         // ─── Canvas ───
         .route(
+            "/canvas_list_boards",
+            post(handlers::canvas::canvas_list_boards),
+        )
+        .route(
+            "/canvas_create_board",
+            post(handlers::canvas::canvas_create_board),
+        )
+        .route(
+            "/canvas_update_board",
+            post(handlers::canvas::canvas_update_board),
+        )
+        .route(
+            "/canvas_delete_board",
+            post(handlers::canvas::canvas_delete_board),
+        )
+        .route(
             "/canvas_list_nodes",
             post(handlers::canvas::canvas_list_nodes),
         )
