@@ -376,9 +376,9 @@ pub struct BrokerComputerVerifyRequest {
 }
 
 /// One action on a window shared for control. Backs `computer_click`,
-/// `computer_scroll`, `computer_type`, `computer_press_key` and
-/// `computer_set_value`; every check happens behind it, in
-/// `commands::computer`.
+/// `computer_scroll`, `computer_type`, `computer_press_key`,
+/// `computer_set_value` and `computer_restore`; every check happens behind
+/// it, in `commands::computer`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BrokerComputerActRequest {
     pub token: String,

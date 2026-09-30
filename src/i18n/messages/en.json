@@ -5237,6 +5237,7 @@
       "type": "Type",
       "key": "Key",
       "set-value": "Set value",
+      "restore": "Restore",
       "outcome": {
         "done": "done",
         "refused": "refused",

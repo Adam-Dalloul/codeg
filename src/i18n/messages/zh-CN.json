@@ -5237,6 +5237,7 @@
       "type": "输入",
       "key": "按键",
       "set-value": "设值",
+      "restore": "恢复窗口",
       "outcome": {
         "done": "完成",
         "refused": "被拒",

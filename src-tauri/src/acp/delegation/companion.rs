@@ -190,10 +190,10 @@ pub struct CompanionFeatures {
     /// Computer use: `computer_list_apps` / `computer_list_windows` /
     /// `computer_screenshot` / `computer_snapshot` / `computer_verify`, and
     /// the actions `computer_click` / `computer_scroll` / `computer_type` /
-    /// `computer_press_key` / `computer_set_value`. Off unless the desktop
-    /// build's setting says otherwise — the listing names the applications on
-    /// the user's screen. Reading a window, and acting on it, is then gated
-    /// per window by the person, behind this switch.
+    /// `computer_press_key` / `computer_set_value` / `computer_restore`. Off
+    /// unless the desktop build's setting says otherwise — the listing names
+    /// the applications on the user's screen. Reading a window, and acting on
+    /// it, is then gated per window by the person, behind this switch.
     pub computer: bool,
 }
 
@@ -268,7 +268,8 @@ impl CompanionFeatures {
             "browser_eval" => self.browser && self.browser_eval,
             "computer_list_apps" | "computer_list_windows" | "computer_screenshot"
             | "computer_snapshot" | "computer_verify" | "computer_click" | "computer_scroll"
-            | "computer_type" | "computer_press_key" | "computer_set_value" => self.computer,
+            | "computer_type" | "computer_press_key" | "computer_set_value"
+            | "computer_restore" => self.computer,
             "delegate_to_agent" | "get_delegation_status" | "cancel_delegation"
             | "resume_delegation" => self.delegation,
             _ => false,
@@ -941,7 +942,7 @@ async fn build_tools_call_spawn(
             register_and_spawn(inflight, id, None, round_trip, render_computer_verify_result).await
         }
         "computer_click" | "computer_scroll" | "computer_type" | "computer_press_key"
-        | "computer_set_value" => {
+        | "computer_set_value" | "computer_restore" => {
             let (target_id, request) = match computer_act_request(&name, &arguments) {
                 Ok(parsed) => parsed,
                 Err(msg) => return LineAction::Respond(err(id, -32602, msg)),
@@ -3045,6 +3046,7 @@ fn computer_act_arguments(tool: &str) -> &'static [&'static str] {
             "generation",
         ],
         "computer_set_value" => &["targetId", "target_id", "ref", "generation", "value"],
+        "computer_restore" => &["targetId", "target_id"],
         _ => &[],
     }
 }
@@ -3196,6 +3198,7 @@ pub fn computer_act_request(
             target: computer_element(arguments, tool)?,
             value: computer_text(arguments, tool, "value")?,
         },
+        "computer_restore" => ComputerActRequest::Restore,
         other => return Err(format!("unknown tool: {other}")),
     };
     Ok((target_id, request))
@@ -5802,6 +5805,7 @@ mod tests {
                 "computer_type".to_string(),
                 "computer_press_key".to_string(),
                 "computer_set_value".to_string(),
+                "computer_restore".to_string(),
             ]
         );
         assert!(CompanionFeatures::parse(Some("sessions,computer")).computer);
@@ -6007,6 +6011,17 @@ mod tests {
                 repeat: 3,
             }
         );
+        // Restoring takes the window and nothing else.
+        assert_eq!(
+            computer_act_request("computer_restore", &json!({ "targetId": "w1" })).unwrap(),
+            ("w1".to_string(), ComputerActRequest::Restore)
+        );
+        assert!(computer_act_request(
+            "computer_restore",
+            &json!({ "targetId": "w1", "activate": true })
+        )
+        .unwrap_err()
+        .contains("no argument `activate`"));
         // `null` is an option left out — what clients that fill in every
         // optional field send — and gets the documented default.
         let (_, nulls) = computer_act_request(

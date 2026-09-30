@@ -5237,6 +5237,7 @@
       "type": "입력",
       "key": "키",
       "set-value": "값 설정",
+      "restore": "창 복원",
       "outcome": {
         "done": "완료",
         "refused": "거부됨",

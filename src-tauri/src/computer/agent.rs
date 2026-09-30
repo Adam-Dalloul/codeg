@@ -544,6 +544,8 @@ pub enum ComputerAction {
     Key,
     /// Set an element's value outright.
     SetValue,
+    /// Put a minimized window back on the screen.
+    Restore,
 }
 
 impl ComputerAction {
@@ -556,6 +558,7 @@ impl ComputerAction {
             R::Type { .. } => ComputerAction::Type,
             R::Key { .. } => ComputerAction::Key,
             R::SetValue { .. } => ComputerAction::SetValue,
+            R::Restore => ComputerAction::Restore,
         }
     }
 }

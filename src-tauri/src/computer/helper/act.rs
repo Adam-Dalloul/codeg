@@ -8,6 +8,12 @@
 //! also accept (a desktop scope, a foreground delivery, a file to write a
 //! debug image to, a zoom's coordinates) is never asked for.
 //!
+//! One action is the helper's own: putting a minimized window back on the
+//! screen ([`WindowAction::Restore`]), which the driver has no call for. It
+//! goes through Accessibility, to that one window of that one process, and
+//! brings nothing to the front (see [`super::axwin`]); the driver is only
+//! asked afterwards whether the window is on the screen again.
+//!
 //! Before a call goes out, what only the helper knows is checked:
 //!
 //! * **The element.** The driver keeps the latest snapshot of each window and
@@ -49,6 +55,12 @@ const ACT_TIMEOUT: Duration = Duration::from_secs(30);
 const TYPE_TIMEOUT: Duration = Duration::from_secs(130);
 /// Measuring a window before a point is clicked in it.
 const MEASURE_TIMEOUT: Duration = Duration::from_secs(15);
+/// How long a restored window has to be seen on the screen again: the Dock's
+/// animation, and an application slow to draw.
+#[cfg(target_os = "macos")]
+const RESTORE_WAIT: Duration = Duration::from_secs(3);
+#[cfg(target_os = "macos")]
+const RESTORE_POLL: Duration = Duration::from_millis(100);
 
 /// How many windows' latest snapshots the helper remembers. The driver keeps
 /// eight per process; this bounds the helper's memory, not the driver's.
@@ -210,27 +222,9 @@ pub async fn check_point(
              computer_snapshot instead.",
         ));
     }
-    let result = driver
-        .call(
-            "list_windows",
-            json!({ "pid": pid, "on_screen_only": false }),
-            MEASURE_TIMEOUT,
-        )
-        .await?;
-    if result.is_error {
-        return Err(super::ops::tool_error("list_windows", &result));
-    }
-    let bounds = result
-        .structured
-        .as_ref()
-        .and_then(|s| s.get("windows"))
-        .and_then(Value::as_array)
-        .and_then(|windows| {
-            windows
-                .iter()
-                .find(|w| w.get("window_id").and_then(Value::as_u64) == Some(window_id))
-        })
-        .and_then(|w| w.get("bounds"))
+    let window = listed(driver, pid, window_id).await?;
+    let bounds = window
+        .get("bounds")
         .ok_or_else(|| HelperError::new(HelperErrorCode::NoSuchWindow, "the window is gone"))?;
     let number = |key: &str| bounds.get(key).and_then(Value::as_f64);
     let (width, height) = (
@@ -254,6 +248,97 @@ pub async fn check_point(
         }),
         _ => None,
     })
+}
+
+/// The driver's listing of one window now, as it gave it.
+async fn listed(driver: &DriverProc, pid: u32, window_id: u64) -> Result<Value, HelperError> {
+    let result = driver
+        .call(
+            "list_windows",
+            json!({ "pid": pid, "on_screen_only": false }),
+            MEASURE_TIMEOUT,
+        )
+        .await?;
+    if result.is_error {
+        return Err(super::ops::tool_error("list_windows", &result));
+    }
+    result
+        .structured
+        .as_ref()
+        .and_then(|s| s.get("windows"))
+        .and_then(Value::as_array)
+        .and_then(|windows| {
+            windows
+                .iter()
+                .find(|w| w.get("window_id").and_then(Value::as_u64) == Some(window_id))
+        })
+        .cloned()
+        .ok_or_else(|| HelperError::new(HelperErrorCode::NoSuchWindow, "the window is gone"))
+}
+
+/// Put the window back on the screen if it is minimized, then watch for it
+/// there: confirmed once the driver lists it on screen, unverifiable if it
+/// has not shown within [`RESTORE_WAIT`]. A window that is not minimized is
+/// already as the action would leave it. Nothing is brought to the front.
+#[cfg(target_os = "macos")]
+async fn restore(driver: &DriverProc, pid: u32, window_id: u64) -> Result<RawAct, HelperError> {
+    use super::axwin::Restore;
+    let effect = |effect| RawAct {
+        effect,
+        route: None,
+        submitted: None,
+        element_frame: None,
+        window_frame: None,
+    };
+    match super::axwin::restore(pid, window_id).await {
+        Restore::Asked => {}
+        Restore::NotMinimized => return Ok(effect(ActEffect::Confirmed)),
+        Restore::AppHidden => {
+            return Err(HelperError::new(
+                HelperErrorCode::Occluded,
+                "Its application is hidden, so the window would not show even restored. Ask the \
+                 user to show the application.",
+            ))
+        }
+        Restore::Unlisted => {
+            return Err(HelperError::new(
+                HelperErrorCode::Occluded,
+                "The window cannot be reached to restore it: it may be on another desktop \
+                 (Space). Ask the user to bring it back.",
+            ))
+        }
+        Restore::Failed(code) => {
+            return Err(HelperError::new(
+                HelperErrorCode::ActionFailed,
+                format!(
+                    "The window's application did not restore it (Accessibility error {code}). \
+                     Ask the user to restore it."
+                ),
+            ))
+        }
+    }
+    let deadline = tokio::time::Instant::now() + RESTORE_WAIT;
+    loop {
+        let window = listed(driver, pid, window_id).await?;
+        if window.get("is_on_screen").and_then(Value::as_bool) == Some(true) {
+            return Ok(effect(ActEffect::Confirmed));
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Ok(effect(ActEffect::Unverifiable));
+        }
+        tokio::time::sleep(RESTORE_POLL).await;
+    }
+}
+
+/// Not done elsewhere yet: the drivers have no call for it, and nothing here
+/// stands in for one.
+#[cfg(not(target_os = "macos"))]
+async fn restore(_driver: &DriverProc, _pid: u32, _window_id: u64) -> Result<RawAct, HelperError> {
+    Err(HelperError::new(
+        HelperErrorCode::ActionFailed,
+        "Restoring a minimized window is not available on this platform. Ask the user to \
+         restore it.",
+    ))
 }
 
 /// The permissions an action needs of the OS: every action reaches the
@@ -379,6 +464,10 @@ pub async fn act(
             deliverable()?;
             one(driver, "set_value", args, ACT_TIMEOUT).await
         }
+        WindowAction::Restore => {
+            deliverable()?;
+            restore(driver, pid, window_id).await
+        }
     }
 }
 
@@ -502,9 +591,17 @@ fn act_error(tool: &str, result: &ToolCallResult) -> HelperError {
         ),
         "minimized_or_hidden_window" | "window_minimized" | "element_not_visible" => error(
             HelperErrorCode::Occluded,
-            "The window is minimized or its application is hidden, so pointer and key input \
-             cannot reach it. Ask the user to show it — or use computer_set_value, or a click \
-             on an element by ref, which may still work.",
+            if cfg!(target_os = "macos") {
+                "The window is minimized or its application is hidden, so pointer and key input \
+                 cannot reach it. A minimized window (computer_list_windows marks it) comes back \
+                 with computer_restore — the user will see it — and then this can be tried \
+                 again; a hidden application has to be shown by the user. A click on an element \
+                 by ref, or computer_set_value, may work as it is."
+            } else {
+                "The window is minimized or its application is hidden, so pointer and key input \
+                 cannot reach it. Ask the user to show it — or use computer_set_value, or a click \
+                 on an element by ref, which may still work."
+            },
         ),
         "same_pid_keyboard_ambiguity" => error(
             HelperErrorCode::Occluded,
@@ -814,6 +911,19 @@ mod tests {
             assert_eq!(e.code, want, "{structured}");
             assert!(!e.message.contains("driver words"), "{}", e.message);
         }
+        // A minimized window points at the way back where there is one.
+        let minimized = act_error(
+            "type_text",
+            &refused(
+                json!({"code": "minimized_or_hidden_window", "effect": "refused"}),
+                "",
+            ),
+        );
+        assert_eq!(minimized.code, HelperErrorCode::Occluded);
+        assert_eq!(
+            minimized.message.contains("computer_restore"),
+            cfg!(target_os = "macos")
+        );
         let budget = act_error(
             "type_text",
             &refused(

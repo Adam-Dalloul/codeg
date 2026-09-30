@@ -19,7 +19,9 @@
 //! from here: the helper translates each op below into fixed driver calls,
 //! and there is no op that carries a tool name. The one op that changes a
 //! window, [`HelperOp::Act`], carries a closed [`WindowAction`] whose every
-//! field the helper rebuilds into the driver's arguments itself.
+//! field the helper rebuilds into the driver's arguments itself — save
+//! [`WindowAction::Restore`], which the helper carries out through
+//! Accessibility, on that one window, since the driver has no call for it.
 
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -36,7 +38,7 @@ use super::types::{
 /// Bumped whenever a frame changes shape. The helper ships in the same bundle
 /// as codeg, so a mismatch means a broken install (a helper left behind by a
 /// partial update), and codeg refuses to talk to it rather than guess.
-pub const PROTOCOL_VERSION: u32 = 4;
+pub const PROTOCOL_VERSION: u32 = 5;
 
 /// A fingerprint of the sources the helper is built from, the same in codeg
 /// and the helper when both are built from one tree (see `build.rs`). The
@@ -224,6 +226,9 @@ pub enum WindowAction {
     },
     #[serde(rename_all = "camelCase")]
     SetValue { element: ElementRef, value: String },
+    /// Put the window back on the screen if it is minimized. The helper's
+    /// own, through Accessibility: the driver has no call for it.
+    Restore,
 }
 
 impl WindowAction {
@@ -468,6 +473,9 @@ pub struct RawWindow {
     pub title: String,
     pub bounds: Rect,
     pub on_screen: bool,
+    /// `None` when the platform cannot say. On macOS the driver never does;
+    /// the helper asks Accessibility about the windows that could be
+    /// (`helper::ops::mark_minimized`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub minimized: Option<bool>,
     /// `false` for a window on another Space (desktop); `None` when the
@@ -659,6 +667,18 @@ mod tests {
         assert_eq!(wire["kind"], "capture");
         assert_eq!(wire["windowId"], 7);
         assert_eq!(serde_json::from_value::<HelperOp>(wire).unwrap(), op);
+
+        // An action with nothing to say beyond its kind.
+        let restore = HelperOp::Act {
+            pid: 42,
+            window_id: 7,
+            started_at: 1,
+            app_key: None,
+            action: WindowAction::Restore,
+        };
+        let wire = serde_json::to_value(&restore).unwrap();
+        assert_eq!(wire["action"], serde_json::json!({ "kind": "restore" }));
+        assert_eq!(serde_json::from_value::<HelperOp>(wire).unwrap(), restore);
 
         assert!(serde_json::from_value::<HelperOp>(serde_json::json!({
             "kind": "callTool",

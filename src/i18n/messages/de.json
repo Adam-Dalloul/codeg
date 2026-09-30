@@ -5237,6 +5237,7 @@
       "type": "Eingabe",
       "key": "Taste",
       "set-value": "Wert setzen",
+      "restore": "Wiederherstellen",
       "outcome": {
         "done": "erledigt",
         "refused": "abgelehnt",

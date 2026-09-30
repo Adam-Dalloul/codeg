@@ -122,6 +122,7 @@ export type ComputerAction =
   | "type"
   | "key"
   | "set-value"
+  | "restore"
 export type ActivityOutcome = "done" | "refused" | "failed"
 
 /** `computer://agent-activity` */

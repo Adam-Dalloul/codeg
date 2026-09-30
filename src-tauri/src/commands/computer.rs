@@ -1438,7 +1438,9 @@ pub async fn computer_list_shareable_windows(
 }
 
 /// A small picture of one window for the picker, as a `data:` URL. Never for
-/// a window that can never be shared — there is no decision to make about it.
+/// a window that can never be shared — there is no decision to make about it
+/// — nor for a minimized one, which shows nothing to capture (the helper
+/// refuses one it finds minimized since the list was read).
 #[tauri::command]
 pub async fn computer_window_thumbnail(
     app: AppHandle,
@@ -1451,6 +1453,7 @@ pub async fn computer_window_thumbnail(
     };
     if !config.enabled
         || entry.gone
+        || entry.minimized == Some(true)
         || grantable(&entry.app, &service.me, &blocklist_of(&config)).is_err()
     {
         return Ok(None);
@@ -1462,7 +1465,9 @@ pub async fn computer_window_thumbnail(
         .await
     {
         Ok(raw) => Ok(Some(format!("data:image/png;base64,{}", raw.png_base64))),
-        Err(BackendError::PermissionMissing(_)) | Err(BackendError::NoSuchWindow) => Ok(None),
+        Err(BackendError::PermissionMissing(_))
+        | Err(BackendError::NoSuchWindow)
+        | Err(BackendError::Refused(ActRefusal::Occluded, _)) => Ok(None),
         Err(e) => Err(backend_error(e)),
     }
 }

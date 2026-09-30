@@ -5237,6 +5237,7 @@
       "type": "Saisie",
       "key": "Touche",
       "set-value": "Valeur",
+      "restore": "Restaurer",
       "outcome": {
         "done": "fait",
         "refused": "refusé",

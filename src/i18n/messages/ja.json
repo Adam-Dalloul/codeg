@@ -5237,6 +5237,7 @@
       "type": "入力",
       "key": "キー",
       "set-value": "値の設定",
+      "restore": "復元",
       "outcome": {
         "done": "完了",
         "refused": "拒否",

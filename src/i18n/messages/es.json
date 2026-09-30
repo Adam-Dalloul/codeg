@@ -5237,6 +5237,7 @@
       "type": "Escritura",
       "key": "Tecla",
       "set-value": "Valor",
+      "restore": "Restaurar",
       "outcome": {
         "done": "hecho",
         "refused": "rechazado",

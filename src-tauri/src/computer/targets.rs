@@ -832,6 +832,7 @@ fn resolve(entry: &TargetEntry, request: &ComputerActRequest) -> Result<WindowAc
             element: resolve_element(entry, target, true)?,
             value: value.clone(),
         },
+        ComputerActRequest::Restore => WindowAction::Restore,
     })
 }
 
@@ -1367,6 +1368,17 @@ mod tests {
             repeat: 1,
         };
         assert_eq!(act(&table, &id, &quit), Err(ActDenied::ControlRequired));
+        // Putting a minimized window back changes what is on the screen: an
+        // action like any other.
+        assert_eq!(
+            act(&table, &id, &ComputerActRequest::Restore),
+            Err(ActDenied::ControlRequired)
+        );
+        share(&table, &id, GrantLevel::Control);
+        assert_eq!(
+            act(&table, &id, &ComputerActRequest::Restore),
+            Ok(WindowAction::Restore)
+        );
         share(&table, &id, GrantLevel::None);
         assert_eq!(
             act(&table, &id, &click_ref(&snapshot, 1)),

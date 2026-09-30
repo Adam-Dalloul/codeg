@@ -26,6 +26,8 @@
 //! check; the helper serves its stdin, which is the pipe codeg gave it.
 
 pub mod act;
+#[cfg(target_os = "macos")]
+pub mod axwin;
 pub mod driver_proc;
 pub mod mcp;
 pub mod ops;
@@ -44,6 +46,8 @@ use self::act::SnapshotBook;
 use self::driver_proc::DriverProc;
 use self::ops::AppCache;
 use super::driver;
+#[cfg(target_os = "macos")]
+use super::protocol::RawWindow;
 use super::protocol::{
     read_frame, HelperError, HelperErrorCode, HelperMessage, HelperOp, HelperReady, HelperReply,
     HelperRequest, OsPermission, PeerCheck, PermissionReport, RawAct, MAX_FRAME_BYTES,
@@ -563,6 +567,28 @@ impl HelperState {
         }
     }
 
+    /// `windows`, with the minimized ones marked — when this helper may ask
+    /// Accessibility, which only a process started for the purpose can
+    /// establish (see [`permissions`](Self::permissions)). Without it they
+    /// stay unmarked, and unlisted, as before.
+    #[cfg(target_os = "macos")]
+    async fn mark_minimized(&self, mut windows: Vec<RawWindow>) -> Vec<RawWindow> {
+        if self.permissions(false).await.accessibility {
+            ops::mark_minimized(&mut windows).await;
+        }
+        windows
+    }
+
+    /// Whether `pid`'s window `window_id` is minimized, when this helper may
+    /// ask Accessibility and the application says.
+    #[cfg(target_os = "macos")]
+    async fn minimized(&self, pid: u32, window_id: u64) -> Option<bool> {
+        if !self.permissions(false).await.accessibility {
+            return None;
+        }
+        axwin::is_minimized(pid, window_id).await
+    }
+
     /// The person's `stop`-th Stop: kill the driver started for a request
     /// from before it now, whatever that driver is doing — unlike
     /// [`shutdown`], it is given no time to finish what it is in the middle
@@ -677,7 +703,10 @@ async fn handle_op(
         }
         HelperOp::ListWindows { pid } => {
             let driver = state.driver(stop).await?;
-            value(ops::list_windows(&driver, &state.apps, pid).await?)
+            let windows = ops::list_windows(&driver, &state.apps, pid).await?;
+            #[cfg(target_os = "macos")]
+            let windows = state.mark_minimized(windows).await;
+            value(windows)
         }
         HelperOp::ProcessStart { pid } => value(super::procinfo::process_start(pid)),
         HelperOp::Capture {
@@ -686,6 +715,10 @@ async fn handle_op(
             max_dimension,
         } => {
             state.require(OsPermission::ScreenRecording).await?;
+            #[cfg(target_os = "macos")]
+            if state.minimized(pid, window_id).await == Some(true) {
+                return Err(ops::minimized_capture());
+            }
             let driver = state.driver(stop).await?;
             value(ops::capture(&driver, pid, window_id, max_dimension).await?)
         }

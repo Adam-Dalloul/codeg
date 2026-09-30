@@ -386,6 +386,9 @@ pub enum ComputerActRequest {
     /// position, a pop-up menu's choice.
     #[serde(rename_all = "camelCase")]
     SetValue { target: ElementTarget, value: String },
+    /// Put a minimized window back on the screen: typing, keys, scrolling,
+    /// a point and a screenshot all need it there.
+    Restore,
 }
 
 /// How far the driver can vouch for an action it carried out.
@@ -479,6 +482,9 @@ mod tests {
         }))
         .unwrap();
         assert!(matches!(typed, ComputerActRequest::Type { submit: false, .. }));
+        let restore: ComputerActRequest =
+            serde_json::from_value(serde_json::json!({ "kind": "restore" })).unwrap();
+        assert_eq!(restore, ComputerActRequest::Restore);
         for bad in [
             serde_json::json!({ "kind": "click", "target": { "kind": "desktop" }, "count": 1 }),
             serde_json::json!({ "kind": "click", "count": 1, "target": { "kind": "element",
