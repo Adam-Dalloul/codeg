@@ -4167,7 +4167,7 @@ export function buildVersionCheck(
     kind: "custom_install",
     payload: agent.agent_type,
   }
-  // Offered immediately left of Custom install, on the card's bottom row:
+  // Offered on the card's bottom row, which it shares with Custom install:
   // both install a version other than the recommended one, through the same
   // path. The offer never changes a branch's status, which still judges the
   // installed version against the recommended one.
@@ -5609,6 +5609,10 @@ export function AcpAgentSettings() {
           busyGated && !running
             ? "disabled:opacity-50"
             : "disabled:bg-muted/30 disabled:opacity-100",
+          // The unreviewed-latest offer installs a release nobody has vetted,
+          // so it wears the warning tone, disabled or not.
+          fix.kind === "upgrade_latest" &&
+            "border-amber-500/40 bg-amber-500/10 text-amber-700 hover:bg-amber-500/20 hover:text-amber-800 disabled:bg-amber-500/10 dark:text-amber-300 dark:hover:text-amber-200",
           className
         )}
         disabled={("disabled" in fix && fix.disabled === true) || busyGated}
@@ -5692,12 +5696,13 @@ export function AcpAgentSettings() {
           </div>
         )}
         {/*
-          Never wrapped apart: the unreviewed-latest offer stays immediately
-          left of Custom install. When the row runs out of width the labels
-          wrap instead (Button's base classes forbid both shrinking and
-          wrapping, hence the overrides). Custom install gives way down to its
-          longest word, the flex default minimum; the offer takes what is left
-          and only below its own longest word breaks inside one, which
+          Never wrapped apart: the unreviewed-latest offer holds the row's
+          start and Custom install its end, the offer's auto end margin taking
+          up the slack. When the row runs out of width the labels wrap instead
+          (Button's base classes forbid both shrinking and wrapping, hence the
+          overrides). Custom install gives way down to its longest word, the
+          flex default minimum; the offer takes what is left and only below
+          its own longest word breaks inside one, which
           `overflow-wrap: anywhere` allows for a long version such as
           `2026.10.03-abcdef1`.
         */}
@@ -5711,7 +5716,7 @@ export function AcpAgentSettings() {
                 cn(
                   "h-auto min-h-6 shrink rounded-2xl py-1 text-left whitespace-normal",
                   fix.kind === "upgrade_latest" &&
-                    "min-w-0 [overflow-wrap:anywhere]"
+                    "me-auto min-w-0 [overflow-wrap:anywhere]"
                 )
               )
             )}

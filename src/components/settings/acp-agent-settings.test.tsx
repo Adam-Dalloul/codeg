@@ -1020,7 +1020,7 @@ describe("unreviewed latest release in Version Status", () => {
     expect(latestReleaseOffer(gemini(), null)).toBeNull()
   })
 
-  it("sits immediately left of Custom install and never changes the status", () => {
+  it("shares the bottom row with Custom install and never changes the status", () => {
     // At the recommended version: still a pass, but no longer "Already
     // latest" beside an offer of something newer.
     const atPin = buildVersionCheck(gemini(), true, release)
@@ -1075,7 +1075,7 @@ describe("unreviewed latest release in Version Status", () => {
     expect(unreadable?.message).toContain("Local version is not comparable")
     expect(unreadable?.footerFixes?.[0].kind).toBe("upgrade_latest")
 
-    // Not installed: offered next to Custom install, Install stays primary.
+    // Not installed: offered beside Custom install, Install stays primary.
     const missing = buildVersionCheck(
       gemini({ installed_version: null }),
       true,

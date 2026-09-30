@@ -231,7 +231,7 @@ describe("AcpAgentSettings — unreviewed latest release", () => {
     expect(toast.error).not.toHaveBeenCalled()
   })
 
-  it("sits immediately left of Custom install, on a row of their own", async () => {
+  it("holds the start of a row it shares only with Custom install", async () => {
     vi.mocked(acpFetchAgentLatestRelease).mockResolvedValue({
       version: "0.61.0",
     })
@@ -245,7 +245,9 @@ describe("AcpAgentSettings — unreviewed latest release", () => {
     })
     expect(offer.nextElementSibling).toBe(customInstall)
     expect(offer.parentElement?.children).toHaveLength(2)
-    expect(offer.parentElement).toHaveClass("flex-nowrap")
+    expect(offer.parentElement).toHaveClass("flex-nowrap", "justify-end")
+    // Its auto end margin keeps Custom install at the far end.
+    expect(offer).toHaveClass("me-auto")
     // The Uninstall action keeps its place in the row above.
     expect(
       screen.getByRole("button", { name: "Uninstall" }).parentElement
