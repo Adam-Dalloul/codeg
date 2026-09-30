@@ -898,6 +898,10 @@ fn show_and_focus_window(app: &AppHandle, label: &str) {
     let _ = window.unminimize();
     let _ = window.show();
     let _ = window.set_focus();
+    // A `main` hidden to the tray is back, so the next launch reopens it too.
+    // Not left to the focus event: `set_focus` is skipped where the app is not
+    // allowed to take focus, and the window is open all the same.
+    crate::commands::workspace_windows::note_shown(app, label);
 }
 
 pub fn restore_windows_after_settings(

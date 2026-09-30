@@ -4686,6 +4686,7 @@
     "saveFailed": "Failed to save remote connection",
     "deleteFailed": "Failed to delete remote connection",
     "openFailed": "Failed to open remote workspace",
+    "restoreFailed": "No se pudo volver a abrir el espacio de trabajo remoto \"{name}\"",
     "connectionLoadFailed": "Failed to load remote connection: {message}",
     "connectionExpired": "Remote connection \"{name}\" is expired. Update its token and reload this window."
   },

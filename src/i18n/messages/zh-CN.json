@@ -4706,6 +4706,7 @@
     "saveFailed": "保存远端连接失败",
     "deleteFailed": "删除远端连接失败",
     "openFailed": "打开远端工作区失败",
+    "restoreFailed": "无法重新打开远端工作区“{name}”",
     "connectionLoadFailed": "加载远端连接失败：{message}",
     "connectionExpired": "远端连接“{name}”已失效。请更新 Token 后重新加载此窗口。"
   },

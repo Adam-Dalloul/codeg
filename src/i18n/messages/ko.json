@@ -4686,6 +4686,7 @@
     "saveFailed": "Failed to save remote connection",
     "deleteFailed": "Failed to delete remote connection",
     "openFailed": "Failed to open remote workspace",
+    "restoreFailed": "원격 워크스페이스 \"{name}\"을(를) 다시 열 수 없습니다",
     "connectionLoadFailed": "Failed to load remote connection: {message}",
     "connectionExpired": "Remote connection \"{name}\" is expired. Update its token and reload this window."
   },

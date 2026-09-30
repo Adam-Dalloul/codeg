@@ -4686,6 +4686,7 @@
     "saveFailed": "Échec de l’enregistrement de la connexion distante",
     "deleteFailed": "Échec de la suppression de la connexion distante",
     "openFailed": "Échec de l’ouverture de l’espace de travail distant",
+    "restoreFailed": "Impossible de rouvrir l’espace de travail distant « {name} »",
     "connectionLoadFailed": "Échec du chargement de la connexion distante : {message}",
     "connectionExpired": "La connexion distante « {name} » a expiré. Mettez son jeton à jour, puis rechargez cette fenêtre."
   },
