@@ -565,6 +565,46 @@ fn action_result(tool: &str, result: &ToolCallResult) -> Result<RawAct, HelperEr
     })
 }
 
+/// The window class Chromium gives its windows on Windows
+/// (`Chrome_WidgetWin_1`), as the driver names a refused target's.
+const CHROMIUM_WINDOW_CLASS: &str = "Chrome_WidgetWin_";
+
+/// What the agent is told when the driver would not send the input in the
+/// background. A key or text is refused for the application as a whole —
+/// aimed at an element by ref as much as at the window, and every time — so
+/// the words say what still reaches it, rather than suggest a ref. On Windows
+/// the commonest such application is one built on Chromium, which drops every
+/// key that does not come from the front; the driver names it by its window
+/// class.
+fn background_refusal(tool: &str, result: &ToolCallResult) -> String {
+    if !matches!(tool, "press_key" | "type_text") {
+        return "This application does not take that kind of input in the background, and codeg \
+                does not bring windows to the front. Try an element by ref, or computer_set_value."
+            .to_string();
+    }
+    let mut words = "This application takes no key presses or typing while it is in the \
+                     background, and codeg does not bring windows to the front, so nothing was \
+                     sent — and trying again, by ref or not, will not change that. Fill a field \
+                     with computer_set_value instead, and click by ref what the key would have \
+                     done (a search or submit button, in place of return), or ask the user to \
+                     press it."
+        .to_string();
+    let chromium = result
+        .structured
+        .as_ref()
+        .and_then(|s| s.get("target_class"))
+        .and_then(Value::as_str)
+        .is_some_and(|class| class.starts_with(CHROMIUM_WINDOW_CLASS));
+    if chromium {
+        words.push_str(
+            " On Windows no application built on Chromium takes keys in the background: Edge, \
+             Chrome, VS Code and other Electron apps. For a web page, codeg's own browser (the \
+             browser_* tools) does.",
+        );
+    }
+    words
+}
+
 /// A refused action, by the driver's code, in words for the agent. Only where
 /// the driver's own text is the useful part (an action that was tried and
 /// failed) is it passed on, shortened.
@@ -630,8 +670,7 @@ fn act_error(tool: &str, result: &ToolCallResult) -> HelperError {
         | "background_uipi_blocked"
         | "input_delivery_unavailable" => error(
             HelperErrorCode::BackgroundUnavailable,
-            "This application does not take that kind of input in the background, and codeg \
-             does not bring windows to the front. Try an element by ref, or computer_set_value.",
+            &background_refusal(tool, result),
         ),
         "type_text_synthesis_budget_exceeded" => {
             let chunk = result
@@ -927,6 +966,28 @@ mod tests {
             assert_eq!(e.code, want, "{structured}");
             assert!(!e.message.contains("driver words"), "{}", e.message);
         }
+        // Keys and typing refused in the background: a ref would not help,
+        // so what still reaches the application is named instead — and a
+        // Chromium window, by its class, is said to be one. A click is still
+        // pointed at a ref.
+        let background = |tool: &str, class: &str| {
+            let refusal = json!({"code": "background_unavailable", "target_class": class});
+            let e = act_error(tool, &refused(refusal, "driver words"));
+            assert_eq!(e.code, HelperErrorCode::BackgroundUnavailable);
+            assert!(!e.message.contains("driver words"), "{}", e.message);
+            e.message
+        };
+        for tool in ["press_key", "type_text"] {
+            let edge = background(tool, "Chrome_WidgetWin_1");
+            assert!(edge.contains("computer_set_value"), "{edge}");
+            assert!(edge.contains("Chromium"), "{edge}");
+            let other = background(tool, "HwndWrapper[App;;1]");
+            assert!(other.contains("computer_set_value"), "{other}");
+            assert!(!other.contains("Chromium"), "{other}");
+        }
+        let click = background("click", "Chrome_WidgetWin_1");
+        assert!(click.contains("element by ref"), "{click}");
+        assert!(!click.contains("Chromium"), "{click}");
         // A minimized window points at the way back where there is one.
         let minimized = act_error(
             "type_text",
