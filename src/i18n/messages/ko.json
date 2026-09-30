@@ -5484,6 +5484,8 @@
     "baseBranchDefault": "작업이 시작될 때의 현재 브랜치",
     "baseBranchHint": "작업은 이 브랜치에서 갈라져 나오고, 병합도 이 브랜치로 돌아갑니다.",
     "agentInheritedHint": "작업 설정에서 상속됨 — 변경하면 이 작업에만 적용됩니다",
+    "agentNoDefaultHint": "작업 설정에 기본 에이전트가 없습니다 — 선택한 에이전트가 이 작업에 저장됩니다",
+    "agentInheritedUnavailableHint": "작업 설정의 기본 에이전트({agent})를 사용할 수 없습니다 — 선택한 에이전트가 이 작업에 저장됩니다",
     "agentOverrideReset": "상속으로 되돌리기",
     "sectionTarget": "대상",
     "errorTitle": "제목을 입력하세요",

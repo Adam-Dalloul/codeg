@@ -5484,6 +5484,8 @@
     "baseBranchDefault": "Branche actuelle au démarrage de la tâche",
     "baseBranchHint": "La tâche part de cette branche, et la fusion l’y ramène.",
     "agentInheritedHint": "Hérité des réglages des tâches — modifiez-le pour personnaliser cette tâche",
+    "agentNoDefaultHint": "Aucun agent par défaut dans les réglages des tâches — l'agent sélectionné sera enregistré avec la tâche",
+    "agentInheritedUnavailableHint": "L'agent {agent} des réglages des tâches n'est pas disponible — l'agent sélectionné sera enregistré avec la tâche",
     "agentOverrideReset": "Revenir à l'héritage",
     "sectionTarget": "Cible",
     "errorTitle": "Le titre est requis",

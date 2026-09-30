@@ -5484,6 +5484,8 @@
     "baseBranchDefault": "任务开始时的当前分支",
     "baseBranchHint": "任务从该分支拉出工作树，合并时也落回该分支。",
     "agentInheritedHint": "继承自任务设置，修改后仅对本任务生效",
+    "agentNoDefaultHint": "任务设置中没有默认 agent，当前选中的 agent 将随任务保存",
+    "agentInheritedUnavailableHint": "任务设置中的 {agent} 不可用，当前选中的 agent 将随任务保存",
     "agentOverrideReset": "恢复继承",
     "sectionTarget": "目标",
     "errorTitle": "请输入标题",

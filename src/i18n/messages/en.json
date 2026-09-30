@@ -5484,6 +5484,8 @@
     "baseBranchDefault": "Current branch when the task starts",
     "baseBranchHint": "The task branches from here, and merging lands it back on this branch.",
     "agentInheritedHint": "Inherited from task settings — change it to override for this task",
+    "agentNoDefaultHint": "No default agent in task settings — the selected agent will be saved with the task",
+    "agentInheritedUnavailableHint": "{agent} from task settings isn't available — the selected agent will be saved with the task",
     "agentOverrideReset": "Reset to inherited",
     "sectionTarget": "Target",
     "errorTitle": "Title is required",

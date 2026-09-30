@@ -5484,6 +5484,8 @@
     "baseBranchDefault": "任務開始時的目前分支",
     "baseBranchHint": "任務從該分支拉出工作樹，合併時也會落回該分支。",
     "agentInheritedHint": "繼承自任務設定，修改後僅對本任務生效",
+    "agentNoDefaultHint": "任務設定中沒有預設 agent，目前選取的 agent 將隨任務儲存",
+    "agentInheritedUnavailableHint": "任務設定中的 {agent} 無法使用，目前選取的 agent 將隨任務儲存",
     "agentOverrideReset": "恢復繼承",
     "sectionTarget": "目標",
     "errorTitle": "請輸入標題",

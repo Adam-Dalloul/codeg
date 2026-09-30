@@ -5484,6 +5484,8 @@
     "baseBranchDefault": "タスク開始時の現在のブランチ",
     "baseBranchHint": "タスクはこのブランチから分岐し、マージもこのブランチに戻ります。",
     "agentInheritedHint": "タスク設定から継承 — 変更するとこのタスク専用になります",
+    "agentNoDefaultHint": "タスク設定に既定のエージェントがありません — 選択中のエージェントをこのタスクに保存します",
+    "agentInheritedUnavailableHint": "タスク設定の {agent} は利用できません — 選択中のエージェントをこのタスクに保存します",
     "agentOverrideReset": "継承に戻す",
     "sectionTarget": "ターゲット",
     "errorTitle": "タイトルを入力してください",
