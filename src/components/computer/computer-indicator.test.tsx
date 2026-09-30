@@ -183,6 +183,16 @@ describe("ComputerIndicator", () => {
       })
     )
     expect(screen.getByText("Click in TextEdit")).toBeInTheDocument()
+    // Bringing a minimized window back changes the screen: news too.
+    act(() =>
+      activity({
+        targetId: "w1",
+        action: "restore",
+        outcome: "done",
+        at: Date.now(),
+      })
+    )
+    expect(screen.getByText("Restore in TextEdit")).toBeInTheDocument()
   })
 
   /** The strip is as wide as its words, whatever the window's width: the

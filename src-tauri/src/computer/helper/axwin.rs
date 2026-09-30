@@ -95,11 +95,17 @@ pub enum Restore {
 
 /// Put `pid`'s window `window_id` back on the screen if it is minimized — as
 /// clicking it in the Dock would, except that its application is not brought
-/// to the front.
-pub async fn restore(pid: u32, window_id: u64) -> Restore {
-    tokio::task::spawn_blocking(move || restore_now(pid, window_id))
+/// to the front. `ready` is asked on the same thread just before the one
+/// change is made, once everything read to decide on it has been read; what
+/// it refuses is not done, and its error comes back as it is.
+pub async fn restore<E: Send + 'static>(
+    pid: u32,
+    window_id: u64,
+    ready: impl FnOnce() -> Result<(), E> + Send + 'static,
+) -> Result<Restore, E> {
+    tokio::task::spawn_blocking(move || restore_now(pid, window_id, ready))
         .await
-        .unwrap_or(Restore::Failed(AX_FAILURE))
+        .unwrap_or(Ok(Restore::Failed(AX_FAILURE)))
 }
 
 fn minimized_now(pid: u32) -> Option<HashMap<u64, Option<bool>>> {
@@ -113,26 +119,31 @@ fn minimized_now(pid: u32) -> Option<HashMap<u64, Option<bool>>> {
     )
 }
 
-fn restore_now(pid: u32, window_id: u64) -> Restore {
+fn restore_now<E>(
+    pid: u32,
+    window_id: u64,
+    ready: impl FnOnce() -> Result<(), E>,
+) -> Result<Restore, E> {
     let Some(app) = application(pid) else {
-        return Restore::Failed(AX_FAILURE);
+        return Ok(Restore::Failed(AX_FAILURE));
     };
     if flag(&app, "AXHidden") == Some(true) {
-        return Restore::AppHidden;
+        return Ok(Restore::AppHidden);
     }
     let windows = match windows(&app) {
         Ok(windows) => windows,
-        Err(e) => return Restore::Failed(e),
+        Err(e) => return Ok(Restore::Failed(e)),
     };
     let Some(window) = windows
         .into_iter()
         .find(|w| window_number(w) == Some(window_id))
     else {
-        return Restore::Unlisted;
+        return Ok(Restore::Unlisted);
     };
     if flag(&window, "AXMinimized") == Some(false) {
-        return Restore::NotMinimized;
+        return Ok(Restore::NotMinimized);
     }
+    ready()?;
     let name = CFString::from_static_string("AXMinimized");
     // SAFETY: a live window element, a valid attribute name and a CFBoolean
     // that outlives the call.
@@ -143,11 +154,11 @@ fn restore_now(pid: u32, window_id: u64) -> Restore {
             CFBoolean::false_value().as_CFTypeRef(),
         )
     };
-    if err == AX_SUCCESS {
+    Ok(if err == AX_SUCCESS {
         Restore::Asked
     } else {
         Restore::Failed(err)
-    }
+    })
 }
 
 /// `pid`'s application, as Accessibility sees it.

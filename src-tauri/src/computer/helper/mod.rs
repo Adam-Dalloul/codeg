@@ -342,8 +342,8 @@ struct HelperState {
     /// moved the moment its frame is read — and to [`STOP_ALL`] when codeg
     /// goes. Nothing of a request from before it (`HelperRequest::stop`)
     /// reaches a driver after that, whichever frame arrived first; what is
-    /// from after it runs as usual.
-    stopped: AtomicU64,
+    /// from after it runs as usual. Shared with each action's [`Delivery`].
+    stopped: Arc<AtomicU64>,
     /// The helper's permissions as the system last answered, and when. Never
     /// asked in this process on macOS: a process keeps the first "not
     /// granted" it hears for the rest of its life (see [`permissions`]).
@@ -376,30 +376,14 @@ impl HelperState {
         Ok(())
     }
 
-    /// What must hold at the moment an action's driver call goes out: no
-    /// Stop has come since codeg let it through (`stop`), `pid` is still the
-    /// process the window was shared from (a relaunch under a reused pid is
-    /// another process, whose windows nobody shared), and the session is
-    /// affirmatively unlocked and on this console.
-    fn deliverable(&self, pid: u32, started_at: u64, stop: u64) -> Result<(), HelperError> {
-        self.check_not_stopped(stop)?;
-        if super::procinfo::process_start(pid) != Some(started_at) {
-            return Err(HelperError::new(
-                HelperErrorCode::NoSuchWindow,
-                "the window's process is gone",
-            ));
-        }
-        match session::state() {
-            session::SessionState::Unlocked => Ok(()),
-            session::SessionState::Locked => Err(HelperError::new(
-                HelperErrorCode::Paused,
-                "The screen is locked, or another user's session is active.",
-            )),
-            session::SessionState::Unknown => Err(HelperError::new(
-                HelperErrorCode::ActionFailed,
-                "codeg cannot tell whether this desktop's session is locked, so it does not act \
-                 on windows here; retrying will not change that. Reading windows still works.",
-            )),
+    /// What an action on `pid`'s window, let through at Stop count `stop`,
+    /// must still find when it goes out (see [`Delivery`]).
+    fn delivery(&self, pid: u32, started_at: u64, stop: u64) -> Delivery {
+        Delivery {
+            stopped: self.stopped.clone(),
+            stop,
+            pid,
+            started_at,
         }
     }
 
@@ -497,8 +481,11 @@ impl HelperState {
     /// (`driver_proc::probe_permissions`), never in this one: macOS keeps a
     /// process's first "not granted" for its whole life, and a helper that
     /// asked itself would go on reporting a permission missing after the
-    /// person had granted it. A permission that has appeared since the running
-    /// driver started marks that driver stale.
+    /// person had granted it — and could not use it itself (see `axwin`).
+    /// When no such process can be started, the last answer stands for now
+    /// and the next call asks again; with none, nothing is granted. A
+    /// permission that has appeared since the running driver started marks
+    /// that driver stale.
     async fn permissions(&self, fresh: bool) -> PermissionReport {
         #[cfg(not(target_os = "macos"))]
         {
@@ -519,7 +506,16 @@ impl HelperState {
                     }
                 }
             }
-            let report = self.ask_system().await;
+            let Some(report) = self.ask_system().await else {
+                return last.as_ref().map_or(
+                    PermissionReport {
+                        required: true,
+                        accessibility: false,
+                        screen_recording: false,
+                    },
+                    |(report, _)| *report,
+                );
+            };
             if self
                 .driver_saw
                 .lock()
@@ -534,25 +530,22 @@ impl HelperState {
         }
     }
 
-    /// Ask macOS, in a fresh process. Where that cannot be done — no driver
-    /// configured yet, or one that would not start — ask here, and live with
-    /// an answer this process may keep.
+    /// Ask macOS, in a fresh process; `None` where that cannot be done — no
+    /// driver configured yet, or one that would not start. Never asked here
+    /// instead: this process would keep a "not granted" for the rest of its
+    /// life, and it makes Accessibility calls of its own.
     #[cfg(target_os = "macos")]
-    async fn ask_system(&self) -> PermissionReport {
-        let path = self.driver_path.lock().await.clone();
-        if let Some(path) = path {
-            match driver_proc::probe_permissions(&path).await {
-                Ok(report) => return report,
-                Err(e) => tracing::warn!(
-                    "could not check permissions in a fresh process, asking here: {}",
+    async fn ask_system(&self) -> Option<PermissionReport> {
+        let path = self.driver_path.lock().await.clone()?;
+        match driver_proc::probe_permissions(&path).await {
+            Ok(report) => Some(report),
+            Err(e) => {
+                tracing::warn!(
+                    "could not check permissions in a fresh process: {}",
                     e.message
-                ),
+                );
+                None
             }
-        }
-        PermissionReport {
-            required: true,
-            accessibility: super::tcc::accessibility_granted(),
-            screen_recording: super::tcc::screen_recording_granted(),
         }
     }
 
@@ -609,6 +602,48 @@ impl HelperState {
         self.forget_driver_saw();
         if let Some(driver) = driver {
             driver.proc.kill().await;
+        }
+    }
+}
+
+/// What must hold at the moment an action goes out: no Stop has come since
+/// codeg let it through, the pid is still the process the window was shared
+/// from (a relaunch under a reused pid is another process, whose windows
+/// nobody shared), and the session is affirmatively unlocked and on this
+/// console. Asked just before each driver call — and, for the change the
+/// helper makes itself through Accessibility, on the thread that makes it,
+/// after everything read to decide on it: owned for that.
+#[derive(Clone)]
+pub struct Delivery {
+    stopped: Arc<AtomicU64>,
+    stop: u64,
+    pid: u32,
+    started_at: u64,
+}
+
+impl Delivery {
+    /// Whether the action may go out now.
+    pub fn check(&self) -> Result<(), HelperError> {
+        if self.stopped.load(Ordering::Acquire) > self.stop {
+            return Err(stopped());
+        }
+        if super::procinfo::process_start(self.pid) != Some(self.started_at) {
+            return Err(HelperError::new(
+                HelperErrorCode::NoSuchWindow,
+                "the window's process is gone",
+            ));
+        }
+        match session::state() {
+            session::SessionState::Unlocked => Ok(()),
+            session::SessionState::Locked => Err(HelperError::new(
+                HelperErrorCode::Paused,
+                "The screen is locked, or another user's session is active.",
+            )),
+            session::SessionState::Unknown => Err(HelperError::new(
+                HelperErrorCode::ActionFailed,
+                "codeg cannot tell whether this desktop's session is locked, so it does not act \
+                 on windows here; retrying will not change that. Reading windows still works.",
+            )),
         }
     }
 }
@@ -759,7 +794,8 @@ async fn handle_op(
             // starting the driver and measuring the window take time in which
             // the screen can lock, the application quit or the person press
             // Stop.
-            state.deliverable(pid, started_at, stop)?;
+            let delivery = state.delivery(pid, started_at, stop);
+            delivery.check()?;
             for permission in act::permissions_for(&action) {
                 state.require(*permission).await?;
             }
@@ -775,8 +811,7 @@ async fn handle_op(
                 Some(point) => act::check_point(&driver, pid, window_id, point).await?,
                 None => None,
             };
-            let deliverable = || state.deliverable(pid, started_at, stop);
-            let done = act::act(&driver, pid, window_id, &action, &deliverable).await?;
+            let done = act::act(&driver, pid, window_id, &action, &delivery).await?;
             value(RawAct {
                 element_frame,
                 window_frame,
@@ -860,7 +895,7 @@ pub async fn serve(
         driver: Mutex::new(None),
         apps: Mutex::new(AppCache::default()),
         snapshots: std::sync::Mutex::new(SnapshotBook::default()),
-        stopped: AtomicU64::new(0),
+        stopped: Arc::new(AtomicU64::new(0)),
         permissions: Mutex::new(None),
         driver_saw: std::sync::Mutex::new(None),
         driver_stale: AtomicBool::new(false),

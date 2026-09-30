@@ -5,9 +5,10 @@
 //! codeg's own binary, and codeg asks them about itself for one reason: a
 //! person who once granted codeg either permission — by hand, or following
 //! an old guide — has handed it to every agent's shell, and should be told.
-//! The helper asks them about itself only when it cannot start a fresh
-//! process to ask in: macOS keeps a process's first "not granted" for its
-//! whole life (see `helper::driver_proc::probe_permissions`).
+//! The helper never asks them about itself: macOS keeps a process's first
+//! "not granted" for its whole life, and the helper makes Accessibility calls
+//! of its own. It asks a process started for the purpose (see
+//! `helper::driver_proc::probe_permissions`).
 //!
 //! The calls that *ask* for a permission are not here: they belong to the
 //! helper binary alone, so that nothing codeg links can raise a permission

@@ -39,6 +39,7 @@ use serde_json::{json, Value};
 
 use super::driver_proc::DriverProc;
 use super::mcp::ToolCallResult;
+use super::Delivery;
 use crate::computer::keys::Platform;
 use crate::computer::protocol::{
     DriverTarget, ElementRef, HelperError, HelperErrorCode, OsPermission, RawAct, WindowAction,
@@ -278,10 +279,19 @@ async fn listed(driver: &DriverProc, pid: u32, window_id: u64) -> Result<Value, 
 
 /// Put the window back on the screen if it is minimized, then watch for it
 /// there: confirmed once the driver lists it on screen, unverifiable if it
-/// has not shown within [`RESTORE_WAIT`]. A window that is not minimized is
-/// already as the action would leave it. Nothing is brought to the front.
+/// has not by the time [`RESTORE_WAIT`] has passed (a look already asked is
+/// answered first, however long the driver takes). A window that is not
+/// minimized is already as the action would leave it. Nothing is brought to
+/// the front. `deliverable` is asked again on the thread that makes the
+/// change, just before it: reading the application's windows first can take
+/// long enough for the person to press Stop.
 #[cfg(target_os = "macos")]
-async fn restore(driver: &DriverProc, pid: u32, window_id: u64) -> Result<RawAct, HelperError> {
+async fn restore(
+    driver: &DriverProc,
+    pid: u32,
+    window_id: u64,
+    deliverable: &Delivery,
+) -> Result<RawAct, HelperError> {
     use super::axwin::Restore;
     let effect = |effect| RawAct {
         effect,
@@ -290,7 +300,8 @@ async fn restore(driver: &DriverProc, pid: u32, window_id: u64) -> Result<RawAct
         element_frame: None,
         window_frame: None,
     };
-    match super::axwin::restore(pid, window_id).await {
+    let ready = deliverable.clone();
+    match super::axwin::restore(pid, window_id, move || ready.check()).await? {
         Restore::Asked => {}
         Restore::NotMinimized => return Ok(effect(ActEffect::Confirmed)),
         Restore::AppHidden => {
@@ -333,7 +344,12 @@ async fn restore(driver: &DriverProc, pid: u32, window_id: u64) -> Result<RawAct
 /// Not done elsewhere yet: the drivers have no call for it, and nothing here
 /// stands in for one.
 #[cfg(not(target_os = "macos"))]
-async fn restore(_driver: &DriverProc, _pid: u32, _window_id: u64) -> Result<RawAct, HelperError> {
+async fn restore(
+    _driver: &DriverProc,
+    _pid: u32,
+    _window_id: u64,
+    _deliverable: &Delivery,
+) -> Result<RawAct, HelperError> {
     Err(HelperError::new(
         HelperErrorCode::ActionFailed,
         "Restoring a minimized window is not available on this platform. Ask the user to \
@@ -361,7 +377,7 @@ pub async fn act(
     pid: u32,
     window_id: u64,
     action: &WindowAction,
-    deliverable: &(dyn Fn() -> Result<(), HelperError> + Sync),
+    deliverable: &Delivery,
 ) -> Result<RawAct, HelperError> {
     let platform = Platform::current();
     let mut args = json!({
@@ -386,7 +402,7 @@ pub async fn act(
                 args["button"] = json!("middle");
             }
             put_target(&mut args, at);
-            deliverable()?;
+            deliverable.check()?;
             one(driver, tool, args, ACT_TIMEOUT).await
         }
         WindowAction::Scroll {
@@ -409,7 +425,7 @@ pub async fn act(
             if let Some(at) = at {
                 put_target(&mut args, at);
             }
-            deliverable()?;
+            deliverable.check()?;
             one(driver, "scroll", args, ACT_TIMEOUT).await
         }
         WindowAction::Type {
@@ -420,7 +436,7 @@ pub async fn act(
             put_element(&mut args, element);
             let mut key = args.clone();
             args["text"] = json!(text);
-            deliverable()?;
+            deliverable.check()?;
             let typed = one(driver, "type_text", args, TYPE_TIMEOUT).await?;
             if !*submit {
                 return Ok(typed);
@@ -428,7 +444,7 @@ pub async fn act(
             key["key"] = json!("return");
             // Typing can take a while: the second call is held to the same
             // conditions as the first, at its own moment.
-            let pressed = match deliverable() {
+            let pressed = match deliverable.check() {
                 Ok(()) => one(driver, "press_key", key, ACT_TIMEOUT).await,
                 Err(e) => Err(e),
             };
@@ -455,18 +471,18 @@ pub async fn act(
             if let Some(element) = element {
                 put_element(&mut args, element);
             }
-            deliverable()?;
+            deliverable.check()?;
             one(driver, "press_key", args, ACT_TIMEOUT).await
         }
         WindowAction::SetValue { element, value } => {
             put_element(&mut args, element);
             args["value"] = json!(value);
-            deliverable()?;
+            deliverable.check()?;
             one(driver, "set_value", args, ACT_TIMEOUT).await
         }
         WindowAction::Restore => {
-            deliverable()?;
-            restore(driver, pid, window_id).await
+            deliverable.check()?;
+            restore(driver, pid, window_id, deliverable).await
         }
     }
 }

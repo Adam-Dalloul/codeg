@@ -50,6 +50,7 @@ const ACTIONS: ReadonlySet<ComputerAction> = new Set([
   "type",
   "key",
   "set-value",
+  "restore",
 ])
 
 /** Painted before any script runs, so the window never flashes a
