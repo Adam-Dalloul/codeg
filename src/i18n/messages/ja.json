@@ -1998,7 +1998,7 @@
       "tasks": "ToDo タスク",
       "loadingSubsessions": "サブ会話を読み込み中…",
       "forge": "リポジトリパネル",
-      "canvas": "無限会話",
+      "canvas": "無限キャンバス",
       "folderGroup": {
         "newGroup": "新しいグループ",
         "newGroupTitle": "新しいフォルダグループ",
@@ -6175,7 +6175,7 @@
     "save": "保存"
   },
   "Canvas": {
-    "title": "無限会話",
+    "title": "無限キャンバス",
     "untitled": "無題の会話",
     "unresolvedConversation": "会話は削除されました",
     "removeCard": "カードを削除",

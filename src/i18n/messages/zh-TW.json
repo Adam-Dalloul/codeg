@@ -1998,7 +1998,7 @@
       "tasks": "待辦任務",
       "loadingSubsessions": "正在載入子會話…",
       "forge": "儲存庫面板",
-      "canvas": "無限會話",
+      "canvas": "無限畫布",
       "folderGroup": {
         "newGroup": "新增分組",
         "newGroupTitle": "新增資料夾分組",
@@ -6175,7 +6175,7 @@
     "save": "儲存"
   },
   "Canvas": {
-    "title": "無限會話",
+    "title": "無限畫布",
     "untitled": "未命名會話",
     "unresolvedConversation": "會話已刪除",
     "removeCard": "移除卡片",

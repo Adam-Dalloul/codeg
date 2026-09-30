@@ -1998,7 +1998,7 @@
       "tasks": "할 일",
       "loadingSubsessions": "하위 대화 로드 중…",
       "forge": "리포지토리 패널",
-      "canvas": "무한 대화",
+      "canvas": "무한 캔버스",
       "folderGroup": {
         "newGroup": "새 그룹",
         "newGroupTitle": "새 폴더 그룹",
@@ -6175,7 +6175,7 @@
     "save": "저장"
   },
   "Canvas": {
-    "title": "무한 대화",
+    "title": "무한 캔버스",
     "untitled": "제목 없는 대화",
     "unresolvedConversation": "대화가 삭제됨",
     "removeCard": "카드 제거",

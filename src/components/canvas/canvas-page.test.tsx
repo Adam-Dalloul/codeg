@@ -88,7 +88,7 @@ describe("CanvasPage", () => {
     expect(screen.queryByTestId("board-view")).toBeNull()
     // The breadcrumb is just the route title here — nothing to go back to.
     expect(
-      screen.getByRole("heading", { name: "Infinite Conversations" })
+      screen.getByRole("heading", { name: "Infinite Canvas" })
     ).toBeTruthy()
   })
 

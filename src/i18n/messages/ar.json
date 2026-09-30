@@ -1998,7 +1998,7 @@
       "tasks": "المهام قيد الانتظار",
       "loadingSubsessions": "جارٍ تحميل المحادثات الفرعية…",
       "forge": "لوحة المستودع",
-      "canvas": "محادثات لا نهائية",
+      "canvas": "لوحة لا نهائية",
       "folderGroup": {
         "newGroup": "مجموعة جديدة",
         "newGroupTitle": "مجموعة مجلدات جديدة",
@@ -6175,7 +6175,7 @@
     "save": "حفظ"
   },
   "Canvas": {
-    "title": "محادثات لا نهائية",
+    "title": "لوحة لا نهائية",
     "untitled": "محادثة بلا عنوان",
     "unresolvedConversation": "تم حذف المحادثة",
     "removeCard": "إزالة البطاقة",

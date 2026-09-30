@@ -1998,7 +1998,7 @@
       "tasks": "Tâches à faire",
       "loadingSubsessions": "Chargement des sous-conversations…",
       "forge": "Panneau du dépôt",
-      "canvas": "Conversations infinies",
+      "canvas": "Canevas infini",
       "folderGroup": {
         "newGroup": "Nouveau groupe",
         "newGroupTitle": "Nouveau groupe de dossiers",
@@ -6175,7 +6175,7 @@
     "save": "Enregistrer"
   },
   "Canvas": {
-    "title": "Conversations infinies",
+    "title": "Canevas infini",
     "untitled": "Conversation sans titre",
     "unresolvedConversation": "Conversation supprimée",
     "removeCard": "Retirer la carte",

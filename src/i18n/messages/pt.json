@@ -1998,7 +1998,7 @@
       "tasks": "Tarefas a fazer",
       "loadingSubsessions": "Carregando subconversas…",
       "forge": "Painel do repositório",
-      "canvas": "Conversas infinitas",
+      "canvas": "Canvas infinito",
       "folderGroup": {
         "newGroup": "Novo grupo",
         "newGroupTitle": "Novo grupo de pastas",
@@ -6175,7 +6175,7 @@
     "save": "Salvar"
   },
   "Canvas": {
-    "title": "Conversas infinitas",
+    "title": "Canvas infinito",
     "untitled": "Conversa sem título",
     "unresolvedConversation": "Conversa removida",
     "removeCard": "Remover cartão",

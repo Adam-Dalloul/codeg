@@ -1998,7 +1998,7 @@
       "tasks": "To-dos",
       "loadingSubsessions": "Unterkonversationen werden geladen…",
       "forge": "Repository-Panel",
-      "canvas": "Unendliche Unterhaltungen",
+      "canvas": "Unendlicher Canvas",
       "folderGroup": {
         "newGroup": "Neue Gruppe",
         "newGroupTitle": "Neue Ordnergruppe",
@@ -6175,7 +6175,7 @@
     "save": "Speichern"
   },
   "Canvas": {
-    "title": "Unendliche Unterhaltungen",
+    "title": "Unendlicher Canvas",
     "untitled": "Unbenannte Unterhaltung",
     "unresolvedConversation": "Unterhaltung gelöscht",
     "removeCard": "Karte entfernen",
