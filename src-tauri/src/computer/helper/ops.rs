@@ -6,8 +6,8 @@
 //! there are the only ones the helper ever calls, with arguments built from
 //! typed fields — never a tool name or an argument object that came from
 //! codeg as-is. (What the driver's listing leaves unsaid — which windows are
-//! minimized, on macOS — the helper asks Accessibility itself: see
-//! [`mark_minimized`].)
+//! minimized, and on macOS which applications hidden — the helper asks the
+//! system itself: see `mark_out_of_sight`.)
 
 use std::collections::HashMap;
 use std::time::Duration;
@@ -112,7 +112,8 @@ pub async fn list_apps(
 }
 
 /// The identified applications among the owners of `windows` a person could
-/// mean — on screen, minimized, or on another desktop or Space — once each,
+/// mean — on screen, minimized, hidden with their application, or on another
+/// desktop or Space — once each,
 /// with the one whose window is frontmost on screen marked active. One
 /// process can be several: the frame host is the application in each of its
 /// frames. A window nobody can see on this desktop names no application: an
@@ -122,12 +123,15 @@ pub async fn list_apps(
 ///
 /// On macOS and Windows these are the running applications, each identified
 /// by the helper itself (see [`list_windows`]), from the listing — minimized
-/// windows marked — that a window list is made from.
+/// and hidden windows marked — that a window list is made from.
 #[cfg(any(test, target_os = "macos", windows))]
 pub fn apps_of(windows: Vec<RawWindow>) -> Vec<RawApp> {
     let app_of = |w: &RawWindow| (w.pid, w.app.started_at, w.app.key().map(str::to_string));
     let meant = |w: &RawWindow| {
-        w.on_screen || w.minimized == Some(true) || w.on_current_space == Some(false)
+        w.on_screen
+            || w.minimized == Some(true)
+            || w.hidden == Some(true)
+            || w.on_current_space == Some(false)
     };
     let front = windows
         .iter()
@@ -429,6 +433,7 @@ fn parse_windows(value: &Value) -> Result<Vec<RawWindow>, HelperError> {
                         bounds,
                         on_screen: flag(w, "is_on_screen").unwrap_or(false),
                         minimized: flag(w, "minimized"),
+                        hidden: None,
                         on_current_space: flag(w, "on_current_space"),
                         z_index: w.get("z_index").and_then(Value::as_i64),
                         content: None,
@@ -446,20 +451,59 @@ fn parse_windows(value: &Value) -> Result<Vec<RawWindow>, HelperError> {
         })
 }
 
-/// macOS: mark which of `windows` are minimized, which the driver's listing
-/// never says. There a minimized window is only off screen and still on its
-/// Space, as are the hidden windows applications keep — so codeg, which
-/// lists the one and not the other, would list neither. Accessibility tells
-/// them apart (see `super::axwin`), and is asked about those windows alone.
-/// Only called while the helper may ask it.
+/// macOS: mark which of `windows` are minimized, and which belong to a
+/// hidden (⌘H) application — neither of which the driver's listing says.
+/// There such a window is only off screen, as are the hidden windows
+/// applications keep — so codeg, which lists the one and not the other, would
+/// list neither. Accessibility tells them apart (see `super::axwin`), and is
+/// asked about those applications alone ([`owners_to_ask`]). Only called while
+/// the helper may ask it.
 #[cfg(target_os = "macos")]
-pub async fn mark_minimized(windows: &mut [RawWindow]) {
-    let owners = unexplained_owners(windows);
-    if owners.is_empty() {
+pub async fn mark_out_of_sight(windows: &mut [RawWindow]) {
+    let (listed, maybe) = owners_to_ask(windows);
+    if listed.is_empty() && maybe.is_empty() {
         return;
     }
-    let said = super::axwin::minimized(owners).await;
-    settle_minimized(windows, &said);
+    let said = super::axwin::window_states(listed, maybe).await;
+    settle(windows, &said);
+}
+
+/// X11: mark which of `windows` the window manager has minimized (iconified),
+/// and which are on another of its desktops — neither of which the driver's
+/// listing says: to it all of them are only not mapped.
+#[cfg(all(target_os = "linux", feature = "computer-helper"))]
+pub async fn mark_out_of_sight(windows: &mut [RawWindow]) {
+    let open: Vec<u64> = windows
+        .iter()
+        .filter(|w| !w.on_screen && w.minimized.is_none())
+        .map(|w| w.window_id)
+        .collect();
+    if open.is_empty() {
+        return;
+    }
+    let said = tokio::task::spawn_blocking(move || super::x11win::window_states(&open))
+        .await
+        .unwrap_or_default();
+    for window in windows.iter_mut() {
+        if let Some(state) = said.get(&window.window_id) {
+            window.minimized = Some(state.minimized);
+            if state.elsewhere {
+                window.on_current_space = Some(false);
+            }
+        }
+    }
+}
+
+/// What one application says of its windows (macOS, see `super::axwin`).
+#[cfg(any(test, target_os = "macos"))]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AppWindows {
+    /// Whether the application is hidden (⌘H); `None` when it would not say.
+    pub hidden: Option<bool>,
+    /// Each window it lists, by window id: whether it is minimized — `None`
+    /// for one that would not say. Empty when its windows were not asked
+    /// for.
+    pub minimized: HashMap<u64, Option<bool>>,
 }
 
 /// Whether the listing leaves open if `window` is minimized when it could be:
@@ -470,41 +514,83 @@ fn unexplained(window: &RawWindow) -> bool {
     !window.on_screen && window.minimized.is_none() && window.on_current_space.is_some()
 }
 
-/// The processes with a window [`unexplained`], once each.
+/// Which applications Accessibility is asked about, and how much: those
+/// with a window [`unexplained`], about all their windows (`listed`); those
+/// with nothing on the screen and a window off it, only whether they are
+/// hidden — and their windows only if they are (`maybe`): a hidden
+/// application's windows may be on no Space, like the furniture every
+/// application keeps.
 #[cfg(any(test, target_os = "macos"))]
-fn unexplained_owners(windows: &[RawWindow]) -> std::collections::BTreeSet<u32> {
-    windows
+fn owners_to_ask(
+    windows: &[RawWindow],
+) -> (
+    std::collections::BTreeSet<u32>,
+    std::collections::BTreeSet<u32>,
+) {
+    let listed: std::collections::BTreeSet<u32> = windows
         .iter()
         .filter(|w| unexplained(w))
         .map(|w| w.pid)
-        .collect()
+        .collect();
+    let showing: std::collections::BTreeSet<u32> = windows
+        .iter()
+        .filter(|w| w.on_screen)
+        .map(|w| w.pid)
+        .collect();
+    let maybe = windows
+        .iter()
+        .filter(|w| !w.on_screen && w.minimized.is_none())
+        .map(|w| w.pid)
+        .filter(|pid| !showing.contains(pid) && !listed.contains(pid))
+        .collect();
+    (listed, maybe)
 }
 
-/// Write down what each application said of its windows (`said`, by pid and
-/// then window id) for the windows the listing left open. A window its
-/// application did not list stays unsaid: not one a person can bring up.
+/// Write down what each application said of its windows (`said`, by pid) for
+/// the windows the listing left open — off screen, and not said to be
+/// minimized or not. A window its application did not list stays unsaid: not
+/// one a person can bring up. One on no Space is written down only when its
+/// application is hidden — otherwise it is furniture, whatever is said of it.
 #[cfg(any(test, target_os = "macos"))]
-fn settle_minimized(windows: &mut [RawWindow], said: &HashMap<u32, HashMap<u64, Option<bool>>>) {
-    for window in windows.iter_mut().filter(|w| unexplained(w)) {
-        if let Some(minimized) = said
-            .get(&window.pid)
-            .and_then(|by_id| by_id.get(&window.window_id))
-        {
-            window.minimized = *minimized;
+fn settle(windows: &mut [RawWindow], said: &HashMap<u32, AppWindows>) {
+    for window in windows
+        .iter_mut()
+        .filter(|w| !w.on_screen && w.minimized.is_none())
+    {
+        let Some(app) = said.get(&window.pid) else {
+            continue;
+        };
+        let Some(minimized) = app.minimized.get(&window.window_id) else {
+            continue;
+        };
+        let hidden = app.hidden == Some(true);
+        if window.on_current_space.is_none() && !hidden {
+            continue;
+        }
+        window.minimized = *minimized;
+        if hidden {
+            window.hidden = Some(true);
         }
     }
 }
 
-/// The answer to a screenshot of a minimized window. A minimized window shows
-/// nothing to capture, and whatever a capture gave would not be what it
-/// shows when it is back.
+/// The answer to a screenshot of a window that is minimized, or whose
+/// application is hidden. Such a window shows nothing to capture, and
+/// whatever a capture gave would not be what it shows when it is back.
 #[cfg(target_os = "macos")]
-pub fn minimized_capture() -> HelperError {
+pub fn out_of_sight_capture(why: super::axwin::OutOfSight) -> HelperError {
+    let what = match why {
+        super::axwin::OutOfSight::Minimized => "The window is minimized",
+        super::axwin::OutOfSight::AppHidden => "The window's application is hidden",
+    };
     HelperError::new(
         HelperErrorCode::Occluded,
-        "The window is minimized, so there is no picture of it to take. computer_snapshot still \
-         reads it as it is. To see it, it has to be back on the screen: computer_restore does \
-         that if it is shared with you for control; otherwise ask the user to restore it.",
+        format!(
+            "{what}, so there is no picture of it to take. computer_snapshot still reads it as it \
+             is, and actions by ref still reach it. To see it, it has to be back on the screen: \
+             computer_restore does that if it is shared with you for control; otherwise ask the \
+             user to bring it back."
+        ),
     )
 }
 
@@ -1038,15 +1124,17 @@ mod tests {
         assert_eq!(windows[1].minimized, Some(false));
     }
 
-    /// Accessibility is asked only about windows the listing leaves open —
-    /// off screen yet on a Space — and only what it said of those is written
-    /// down: a window on screen, on no Space, or already said to be minimized
-    /// or not is left as the listing had it; so is one its application did
-    /// not list.
+    /// Accessibility is asked about all the windows of an application with a
+    /// window the listing leaves open — off screen yet on a Space — and, of
+    /// one with nothing on the screen, only whether it is hidden; and only
+    /// what it said of open windows is written down: a window on screen, or
+    /// already said to be minimized or not, is left as the listing had it; so
+    /// is one its application did not list, and one on no Space unless its
+    /// application is hidden.
     #[test]
     fn only_the_windows_the_listing_leaves_open_are_settled() {
         let minimized = owned_window(5, 1, Some("com.apple.Terminal"), false, 1);
-        let hidden = owned_window(5, 1, Some("com.apple.Terminal"), false, 2);
+        let furniture = owned_window(5, 1, Some("com.apple.Terminal"), false, 2);
         let on_screen = owned_window(5, 1, Some("com.apple.Terminal"), true, 3);
         let mut nowhere = owned_window(6, 1, Some("com.google.Chrome"), false, 1);
         nowhere.on_current_space = None;
@@ -1054,39 +1142,72 @@ mod tests {
         said_already.minimized = Some(false);
         let mut elsewhere = owned_window(8, 1, Some("com.example.X"), false, 1);
         elsewhere.on_current_space = Some(false);
+        // ⌘H: one window on a Space, one on none.
+        let hidden_here = owned_window(9, 1, Some("com.apple.Notes"), false, 1);
+        let mut hidden_nowhere = owned_window(9, 1, Some("com.apple.Notes"), false, 2);
+        hidden_nowhere.on_current_space = None;
         let mut windows = vec![
             minimized.clone(),
-            hidden.clone(),
+            furniture.clone(),
             on_screen.clone(),
             nowhere.clone(),
             said_already.clone(),
             elsewhere.clone(),
+            hidden_here.clone(),
+            hidden_nowhere.clone(),
         ];
-        assert_eq!(
-            unexplained_owners(&windows),
-            std::collections::BTreeSet::from([5, 8])
-        );
+        let (listed, maybe) = owners_to_ask(&windows);
+        assert_eq!(listed, std::collections::BTreeSet::from([5, 8, 9]));
+        // Chrome has nothing on the screen; Terminal has, and W said.
+        assert_eq!(maybe, std::collections::BTreeSet::from([6]));
 
+        let app = |hidden, minimized: &[(u64, Option<bool>)]| AppWindows {
+            hidden,
+            minimized: minimized.iter().copied().collect(),
+        };
         let said = HashMap::from([
             // Terminal lists its minimized window (and the one on screen);
-            // the hidden one is not among its windows at all.
+            // its furniture is not among its windows at all.
             (
                 5,
-                HashMap::from([
-                    (minimized.window_id, Some(true)),
-                    (on_screen.window_id, Some(false)),
-                ]),
+                app(
+                    Some(false),
+                    &[
+                        (minimized.window_id, Some(true)),
+                        (on_screen.window_id, Some(false)),
+                    ],
+                ),
             ),
-            (8, HashMap::from([(elsewhere.window_id, Some(true))])),
-            // Asked or not, what Chrome says of a window on no Space is not
-            // written down.
-            (6, HashMap::from([(nowhere.window_id, Some(true))])),
+            (8, app(Some(false), &[(elsewhere.window_id, Some(true))])),
+            // Asked or not, what an application that is not hidden says of a
+            // window on no Space is not written down.
+            (6, app(Some(false), &[(nowhere.window_id, Some(true))])),
+            (
+                9,
+                app(
+                    Some(true),
+                    &[
+                        (hidden_here.window_id, Some(false)),
+                        (hidden_nowhere.window_id, Some(true)),
+                    ],
+                ),
+            ),
         ]);
-        settle_minimized(&mut windows, &said);
-        let state: Vec<Option<bool>> = windows.iter().map(|w| w.minimized).collect();
+        settle(&mut windows, &said);
+        let state: Vec<(Option<bool>, Option<bool>)> =
+            windows.iter().map(|w| (w.minimized, w.hidden)).collect();
         assert_eq!(
             state,
-            vec![Some(true), None, None, None, Some(false), Some(true)]
+            vec![
+                (Some(true), None),
+                (None, None),
+                (None, None),
+                (None, None),
+                (Some(false), None),
+                (Some(true), None),
+                (Some(false), Some(true)),
+                (Some(true), Some(true)),
+            ]
         );
     }
 
@@ -1109,6 +1230,7 @@ mod tests {
             },
             on_screen,
             minimized: None,
+            hidden: None,
             on_current_space: Some(true),
             z_index: Some(z),
             content: None,

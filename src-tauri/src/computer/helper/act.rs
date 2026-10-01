@@ -10,11 +10,17 @@
 //! and switches back. What the driver would also accept (a desktop scope, a
 //! file to write a debug image to, a zoom's coordinates) is never asked for.
 //!
-//! One action is the helper's own: putting a minimized window back on the
-//! screen ([`WindowAction::Restore`]), which the driver has no call for. It
-//! goes through Accessibility, to that one window of that one process, and
-//! brings nothing to the front (see [`super::axwin`]); the driver is only
-//! asked afterwards whether the window is on the screen again.
+//! One action is the helper's own on macOS and Windows: putting a window back
+//! on the screen ([`WindowAction::Restore`]), which the driver has no call
+//! for that leaves it in the background. On macOS it goes through
+//! Accessibility — the application shown again if it is hidden, the window
+//! out of the Dock if it is minimized (see [`super::axwin`]); on Windows the
+//! window is shown again without being made active (see `super::hwnd`).
+//! Either way to that one window of that one process, bringing nothing to the
+//! front. On Linux the driver's `bring_to_front` is the only way, and it
+//! brings the window to the front: done only when codeg sent the restore
+//! for the front. The driver is asked afterwards whether the window is on
+//! the screen again.
 //!
 //! Before a call goes out, what only the helper knows is checked:
 //!
@@ -60,10 +66,8 @@ const TYPE_TIMEOUT: Duration = Duration::from_secs(130);
 /// Measuring a window before a point is clicked in it.
 const MEASURE_TIMEOUT: Duration = Duration::from_secs(15);
 /// How long a restored window has to be seen on the screen again: the Dock's
-/// animation, and an application slow to draw.
-#[cfg(target_os = "macos")]
+/// or the taskbar's animation, and an application slow to draw.
 const RESTORE_WAIT: Duration = Duration::from_secs(3);
-#[cfg(target_os = "macos")]
 const RESTORE_POLL: Duration = Duration::from_millis(100);
 
 /// How many windows' latest snapshots the helper remembers. The driver keeps
@@ -280,22 +284,20 @@ async fn listed(driver: &DriverProc, pid: u32, window_id: u64) -> Result<Value, 
         .ok_or_else(|| HelperError::new(HelperErrorCode::NoSuchWindow, "the window is gone"))
 }
 
-/// Put the window back on the screen if it is minimized, then watch for it
-/// there: confirmed once the driver lists it on screen, unverifiable if it
-/// has not by the time [`RESTORE_WAIT`] has passed (a look already asked is
-/// answered first, however long the driver takes). A window that is not
-/// minimized is already as the action would leave it. Nothing is brought to
-/// the front. `deliverable` is asked again on the thread that makes the
-/// change, just before it: reading the application's windows first can take
-/// long enough for the person to press Stop.
-#[cfg(target_os = "macos")]
+/// Put the window back on the screen, then watch for it there: confirmed
+/// once the driver lists it on screen, unverifiable if it has not by the time
+/// [`RESTORE_WAIT`] has passed (a look already asked is answered first,
+/// however long the driver takes). A window already on the screen is as the
+/// action would leave it. `deliverable` is asked again just before each
+/// change: reading the application's windows first can take long enough for
+/// the person to press Stop.
 async fn restore(
     driver: &DriverProc,
     pid: u32,
     window_id: u64,
+    mode: ActDelivery,
     deliverable: &Delivery,
 ) -> Result<RawAct, HelperError> {
-    use super::axwin::Restore;
     let effect = |effect| RawAct {
         effect,
         route: None,
@@ -304,33 +306,8 @@ async fn restore(
         element_frame: None,
         window_frame: None,
     };
-    let ready = deliverable.clone();
-    match super::axwin::restore(pid, window_id, move || ready.check()).await? {
-        Restore::Asked => {}
-        Restore::NotMinimized => return Ok(effect(ActEffect::Confirmed)),
-        Restore::AppHidden => {
-            return Err(HelperError::new(
-                HelperErrorCode::Occluded,
-                "Its application is hidden, so the window would not show even restored. Ask the \
-                 user to show the application.",
-            ))
-        }
-        Restore::Unlisted => {
-            return Err(HelperError::new(
-                HelperErrorCode::Occluded,
-                "The window cannot be reached to restore it: it may be on another desktop \
-                 (Space). Ask the user to bring it back.",
-            ))
-        }
-        Restore::Failed(code) => {
-            return Err(HelperError::new(
-                HelperErrorCode::ActionFailed,
-                format!(
-                    "The window's application did not restore it (Accessibility error {code}). \
-                     Ask the user to restore it."
-                ),
-            ))
-        }
+    if !ask_back(driver, pid, window_id, mode, deliverable).await? {
+        return Ok(effect(ActEffect::Confirmed));
     }
     let deadline = tokio::time::Instant::now() + RESTORE_WAIT;
     loop {
@@ -345,20 +322,141 @@ async fn restore(
     }
 }
 
-/// Not done elsewhere yet: the drivers have no call for it, and nothing here
-/// stands in for one.
-#[cfg(not(target_os = "macos"))]
-async fn restore(
+/// Ask for the window back, through Accessibility: its application shown
+/// again if hidden, then the window out of the Dock if minimized. `false`
+/// when it was neither — nothing was asked. The window is looked for in the
+/// driver's listing first: showing a hidden application again shows all its
+/// windows, which is done only for a window of it that is still there.
+#[cfg(target_os = "macos")]
+async fn ask_back(
+    driver: &DriverProc,
+    pid: u32,
+    window_id: u64,
+    _mode: ActDelivery,
+    deliverable: &Delivery,
+) -> Result<bool, HelperError> {
+    use super::axwin::Restore;
+    let window = listed(driver, pid, window_id).await?;
+    if window.get("is_on_screen").and_then(Value::as_bool) == Some(true) {
+        return Ok(false);
+    }
+    let ready = deliverable.clone();
+    match super::axwin::restore(pid, window_id, move || ready.check()).await? {
+        Restore::Asked => Ok(true),
+        Restore::AlreadyShown => Ok(false),
+        Restore::Unlisted => Err(HelperError::new(
+            HelperErrorCode::Occluded,
+            "The window cannot be reached to restore it: it may be on another desktop \
+             (Space). Ask the user to bring it back.",
+        )),
+        Restore::Failed(code) => Err(HelperError::new(
+            HelperErrorCode::ActionFailed,
+            format!(
+                "The window's application did not restore it (Accessibility error {code}). \
+                 Ask the user to restore it."
+            ),
+        )),
+    }
+}
+
+/// Ask for the window back: shown again where it was if it is minimized,
+/// without being made the active window. `false` when it was not minimized.
+#[cfg(windows)]
+async fn ask_back(
     _driver: &DriverProc,
-    _pid: u32,
-    _window_id: u64,
-    _deliverable: &Delivery,
-) -> Result<RawAct, HelperError> {
-    Err(HelperError::new(
-        HelperErrorCode::ActionFailed,
-        "Restoring a minimized window is not available on this platform. Ask the user to \
-         restore it.",
-    ))
+    pid: u32,
+    window_id: u64,
+    _mode: ActDelivery,
+    deliverable: &Delivery,
+) -> Result<bool, HelperError> {
+    use super::hwnd::Restore;
+    let ready = deliverable.clone();
+    let asked = tokio::task::spawn_blocking(move || {
+        super::hwnd::restore(window_id, pid, move || ready.check())
+    })
+    .await
+    .map_err(|e| HelperError::failed(format!("restore: {e}")))??;
+    match asked {
+        Restore::Asked => Ok(true),
+        Restore::AlreadyShown => Ok(false),
+        Restore::NotTheWindow => Err(HelperError::new(
+            HelperErrorCode::NoSuchWindow,
+            "the window is gone",
+        )),
+    }
+}
+
+/// Ask for the window back through the driver, which on Linux can only do it
+/// by bringing it to the front — which codeg asked for only where the person
+/// allows it. `false` when it is on the screen already. Where the window
+/// manager says the window is not minimized — on another desktop — it is not
+/// brought over, as on the other platforms; where nothing says (Wayland), an
+/// off-screen window is brought back.
+#[cfg(not(any(target_os = "macos", windows)))]
+async fn ask_back(
+    driver: &DriverProc,
+    pid: u32,
+    window_id: u64,
+    mode: ActDelivery,
+    deliverable: &Delivery,
+) -> Result<bool, HelperError> {
+    let window = listed(driver, pid, window_id).await?;
+    if window.get("is_on_screen").and_then(Value::as_bool) == Some(true) {
+        return Ok(false);
+    }
+    if minimized_on_x11(window_id).await == Some(false) {
+        return Err(HelperError::new(
+            HelperErrorCode::Occluded,
+            "The window is not minimized: it is on another desktop, or otherwise out of reach. \
+             Ask the user to bring it back.",
+        ));
+    }
+    if mode != ActDelivery::Foreground {
+        return Err(HelperError::new(
+            HelperErrorCode::BackgroundUnavailable,
+            "On Linux a window comes back on the screen only by being brought to the front.",
+        ));
+    }
+    deliverable.check()?;
+    let result = driver
+        .call(
+            "bring_to_front",
+            json!({ "pid": pid, "window_id": window_id }),
+            ACT_TIMEOUT,
+        )
+        .await?;
+    if result.is_error {
+        return Err(HelperError::new(
+            HelperErrorCode::ActionFailed,
+            format!(
+                "The window could not be brought back: {}. Ask the user to restore it.",
+                super::ops::tool_error("bring_to_front", &result).message
+            ),
+        ));
+    }
+    Ok(true)
+}
+
+/// Whether the X11 window manager has window `window_id` minimized; `None`
+/// where it cannot be asked.
+#[cfg(not(any(target_os = "macos", windows)))]
+async fn minimized_on_x11(window_id: u64) -> Option<bool> {
+    #[cfg(all(target_os = "linux", feature = "computer-helper"))]
+    {
+        tokio::task::spawn_blocking(move || {
+            super::x11win::window_states(&[window_id])
+                .get(&window_id)
+                .map(|state| state.minimized)
+        })
+        .await
+        .ok()
+        .flatten()
+    }
+    #[cfg(not(all(target_os = "linux", feature = "computer-helper")))]
+    {
+        let _ = window_id;
+        None
+    }
 }
 
 /// The permissions an action needs of the OS: every action reaches the
@@ -495,31 +593,41 @@ pub async fn act(
         }
         WindowAction::Restore => {
             deliverable.check()?;
-            restore(driver, pid, window_id, deliverable).await
+            restore(driver, pid, window_id, mode, deliverable).await
         }
     }
 }
 
 /// Keys and typing sent with the window brought to the front go in as real
 /// input, and combine with whatever modifier is held at that moment (see
-/// `keystate`): while the person holds one, none is sent. In the background
-/// they reach the window alone, and go as asked.
+/// `keystate`): while the person holds one — or where that cannot be told —
+/// none is sent. In the background they reach the window alone, and go as
+/// asked.
 fn keys_free(
     mode: ActDelivery,
-    held: impl FnOnce() -> Vec<&'static str>,
+    held: impl FnOnce() -> Option<Vec<&'static str>>,
 ) -> Result<(), HelperError> {
     if mode != ActDelivery::Foreground {
         return Ok(());
     }
-    let held = held();
-    if held.is_empty() {
-        return Ok(());
+    match held() {
+        Some(held) if held.is_empty() => Ok(()),
+        Some(held) => Err(HelperError::new(
+            HelperErrorCode::ActionFailed,
+            modifiers_held(&held),
+        )),
+        None => Err(HelperError::new(
+            HelperErrorCode::ActionFailed,
+            MODIFIERS_UNKNOWN,
+        )),
     }
-    Err(HelperError::new(
-        HelperErrorCode::ActionFailed,
-        modifiers_held(&held),
-    ))
 }
+
+/// What the agent is told where the held modifiers cannot be told.
+const MODIFIERS_UNKNOWN: &str = "On this desktop codeg cannot tell whether the user is holding \
+     down a modifier key, and keys sent with the window brought to the front would combine with \
+     one — so nothing was sent, and retrying will not change that. Leave `delivery` out to send \
+     it in the background, or use computer_set_value or a click on an element by ref.";
 
 /// What the agent is told when the person is holding `held` down.
 fn modifiers_held(held: &[&str]) -> String {
@@ -760,17 +868,11 @@ fn act_error(tool: &str, mode: ActDelivery, result: &ToolCallResult) -> HelperEr
         ),
         "minimized_or_hidden_window" | "window_minimized" | "element_not_visible" => error(
             HelperErrorCode::Occluded,
-            if cfg!(target_os = "macos") {
-                "The window is minimized or its application is hidden, so pointer and key input \
-                 cannot reach it. A minimized window (computer_list_windows marks it) comes back \
-                 with computer_restore — the user will see it — and then this can be tried \
-                 again; a hidden application has to be shown by the user. A click on an element \
-                 by ref, or computer_set_value, may work as it is."
-            } else {
-                "The window is minimized or its application is hidden, so pointer and key input \
-                 cannot reach it. Ask the user to show it — or use computer_set_value, or a click \
-                 on an element by ref, which may still work."
-            },
+            "The window is minimized or its application is hidden, so pointer and key input \
+             cannot reach it. Such a window (computer_list_windows marks it minimized or hidden) \
+             comes back with computer_restore — the user will see it — and then this can be \
+             tried again. A click on an element by ref, or computer_set_value, may work as it \
+             is.",
         ),
         "same_pid_keyboard_ambiguity" => error(
             HelperErrorCode::Occluded,
@@ -1129,10 +1231,7 @@ mod tests {
             ),
         );
         assert_eq!(minimized.code, HelperErrorCode::Occluded);
-        assert_eq!(
-            minimized.message.contains("computer_restore"),
-            cfg!(target_os = "macos")
-        );
+        assert!(minimized.message.contains("computer_restore"));
         let budget = act_error(
             "type_text",
             back,
@@ -1227,8 +1326,8 @@ mod tests {
     #[test]
     fn keys_at_the_front_wait_for_held_modifiers() {
         let front = ActDelivery::Foreground;
-        assert!(keys_free(front, Vec::new).is_ok());
-        let e = keys_free(front, || vec!["Ctrl"]).unwrap_err();
+        assert!(keys_free(front, || Some(Vec::new())).is_ok());
+        let e = keys_free(front, || Some(vec!["Ctrl"])).unwrap_err();
         assert_eq!(e.code, HelperErrorCode::ActionFailed);
         assert!(
             e.message.contains("holding down Ctrl right now"),
@@ -1236,13 +1335,17 @@ mod tests {
             e.message
         );
         assert!(e.message.contains("nothing was sent"), "{}", e.message);
-        let e = keys_free(front, || vec!["Ctrl", "Shift", "the Windows key"]).unwrap_err();
+        let e = keys_free(front, || Some(vec!["Ctrl", "Shift", "the Windows key"])).unwrap_err();
         assert!(
             e.message.contains("Ctrl, Shift and the Windows key"),
             "{}",
             e.message
         );
         assert!(keys_free(ActDelivery::Background, || unreachable!("not asked")).is_ok());
+        // Where the platform will not say, nothing goes at the front either.
+        let e = keys_free(front, || None).unwrap_err();
+        assert_eq!(e.code, HelperErrorCode::ActionFailed);
+        assert!(e.message.contains("cannot tell"), "{}", e.message);
     }
 
     /// Only a point needs the window measured — and Screen Recording, to

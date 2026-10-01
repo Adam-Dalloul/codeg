@@ -5013,7 +5013,7 @@
     "computer": {
       "label": "Voir et utiliser les fenêtres du bureau",
       "short": "Lister les apps et fenêtres ; lire celles que vous partagez, agir sur celles que vous autorisez.",
-      "hint": "Permet à un agent de lister les applications et fenêtres de votre bureau, de lire les fenêtres que vous lui partagez — une capture, son contenu, si elle affiche ce qui est attendu — et de cliquer, taper et appuyer sur des touches dans celles que vous partagez pour agir. Rien n'est lisible tant que vous ne partagez pas une fenêtre depuis le panneau Utilisation de l'ordinateur de la barre d'état, et on ne peut agir sur aucune sans votre accord en plus ; le partage prend fin quand la fenêtre se ferme, après un moment sans utilisation ou quand vous l'arrêtez, et Arrêter les agents dans ce panneau les arrête tous d'un coup. Les saisies arrivent à la fenêtre en arrière-plan ; pour une action qui ne passe pas en arrière-plan, un agent peut mettre la fenêtre au premier plan, ce que vous pouvez désactiver dans les réglages d'Utilisation de l'ordinateur. Application de bureau uniquement, et sous Linux il lit les fenêtres sans encore agir dessus ; sous macOS, des autorisations doivent être accordées à codeg-computer-helper. Aperçu."
+      "hint": "Permet à un agent de lister les applications et fenêtres de votre bureau, de lire les fenêtres que vous lui partagez — une capture, son contenu, si elle affiche ce qui est attendu — et de cliquer, taper et appuyer sur des touches dans celles que vous partagez pour agir. Rien n'est lisible tant que vous ne partagez pas une fenêtre depuis le panneau Utilisation de l'ordinateur de la barre d'état, et on ne peut agir sur aucune sans votre accord en plus ; le partage prend fin quand la fenêtre se ferme, après un moment sans utilisation ou quand vous l'arrêtez, et Arrêter les agents dans ce panneau les arrête tous d'un coup. Les saisies arrivent à la fenêtre en arrière-plan ; pour une action qui ne passe pas en arrière-plan, un agent peut mettre la fenêtre au premier plan, ce que vous pouvez désactiver dans les réglages d'Utilisation de l'ordinateur. Application de bureau uniquement ; sous macOS, des autorisations doivent être accordées à codeg-computer-helper. Aperçu."
     },
     "automations": {
       "label": "Créer des automatisations",
@@ -5259,6 +5259,7 @@
       "unnamedApp": "App inconnue",
       "untitled": "Fenêtre sans titre",
       "minimized": "Réduite",
+      "hidden": "Masquée",
       "notGrantable": {
         "codeg": "Fenêtre de codeg",
         "blocklisted": "Dans la liste des exclusions",

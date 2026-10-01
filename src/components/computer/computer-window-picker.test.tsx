@@ -51,6 +51,7 @@ function window(
     bounds: { x: 0, y: 0, width: 800, height: 600 },
     onScreen: true,
     minimized: false,
+    hidden: false,
     level,
     ...overrides,
   }
@@ -92,6 +93,26 @@ describe("ComputerWindowPicker", () => {
       "aria-pressed",
       "true"
     )
+  })
+
+  /** A window off the screen says why: minimized, or its application
+   * hidden (⌘H) — minimized first, when it is both. */
+  it("marks a window that is minimized or hidden", async () => {
+    api.computerListShareableWindows.mockResolvedValue([
+      window("none", { targetId: "w1", appName: "Notes", hidden: true }),
+      window("none", {
+        targetId: "w2",
+        appName: "Mail",
+        minimized: true,
+        hidden: true,
+      }),
+      window("none", { targetId: "w3", appName: "TextEdit" }),
+    ])
+    mount()
+    await levelsOf("Notes")
+    expect(screen.getByText("Hidden")).toBeInTheDocument()
+    expect(screen.getByText("Minimized")).toBeInTheDocument()
+    expect(screen.getAllByText(/^(Hidden|Minimized)$/)).toHaveLength(2)
   })
 
   /** Once the store knows, it is the live word: a grant that ended while the

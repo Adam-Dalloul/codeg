@@ -75,6 +75,8 @@ pub struct TargetEntry {
     pub bounds: Rect,
     pub on_screen: bool,
     pub minimized: Option<bool>,
+    /// macOS: its application is hidden (⌘H).
+    pub hidden: Option<bool>,
     pub on_current_space: Option<bool>,
     pub grant: Option<ComputerGrant>,
     /// Moves on every transition into or out of a grant, so a generation
@@ -97,8 +99,8 @@ pub struct TargetEntry {
 }
 
 impl TargetEntry {
-    /// Whether this window belongs in a listing: on screen, minimized, on
-    /// another Space, or shared. What that leaves out is the invisible
+    /// Whether this window belongs in a listing: on screen, minimized, hidden
+    /// with its application, on another Space, or shared. What that leaves out is the invisible
     /// furniture every desktop is full of — an application's hidden helper
     /// windows, the Finder's off-screen desktop strips — which nobody means to
     /// share and a picker full of would hide the ones they do. A shared window
@@ -107,6 +109,7 @@ impl TargetEntry {
     pub fn worth_listing(&self) -> bool {
         self.on_screen
             || self.minimized == Some(true)
+            || self.hidden == Some(true)
             || self.on_current_space == Some(false)
             || self.grant.is_some()
     }
@@ -124,6 +127,7 @@ impl TargetEntry {
             bounds: self.bounds,
             on_screen: self.on_screen,
             minimized: self.minimized,
+            hidden: self.hidden,
             level,
             title: visible_title(level, &self.title),
             note: grantable(&self.app, me, blocklist)
@@ -397,6 +401,7 @@ impl TargetTable {
                             bounds: Rect::default(),
                             on_screen: false,
                             minimized: None,
+                            hidden: None,
                             on_current_space: None,
                             grant: None,
                             epoch: 0,
@@ -420,6 +425,7 @@ impl TargetTable {
                 entry.bounds = window.bounds;
                 entry.on_screen = window.on_screen;
                 entry.minimized = window.minimized;
+                entry.hidden = window.hidden;
                 entry.on_current_space = window.on_current_space;
             }
             seen.push(target_id);
@@ -957,6 +963,7 @@ mod tests {
             },
             on_screen: true,
             minimized: Some(false),
+            hidden: None,
             on_current_space: Some(true),
             z_index: None,
             content: None,
@@ -1277,6 +1284,34 @@ mod tests {
         assert!(ended.is_empty());
         assert!(listed[0].worth_listing());
         assert_eq!(read(&table, &id).as_deref(), Ok("1.1"));
+    }
+
+    /// A window whose application is hidden (⌘H) is listed, and says so to
+    /// an agent — off the screen, and neither minimized nor furniture — so
+    /// it can be shared and brought back.
+    #[test]
+    fn a_window_of_a_hidden_application_is_listed_as_hidden() {
+        let table = TargetTable::new();
+        let mut hidden = window(10, 111, 5, "Notes");
+        hidden.on_screen = false;
+        hidden.minimized = Some(false);
+        hidden.hidden = Some(true);
+        let (listed, _) = table.observe(&[hidden], None);
+        assert!(listed[0].worth_listing());
+        let summary = listed[0].agent_summary(&me(), &Blocklist::new(&[]));
+        assert_eq!(summary.hidden, Some(true));
+        assert!(!summary.on_screen);
+        let wire = serde_json::to_value(&summary).unwrap();
+        assert_eq!(wire["hidden"], true);
+
+        // Shown again: no longer said to be hidden.
+        let (listed, _) = table.observe(&[window(10, 111, 5, "Notes")], None);
+        let summary = listed[0].agent_summary(&me(), &Blocklist::new(&[]));
+        assert_eq!(summary.hidden, None);
+        assert!(serde_json::to_value(&summary)
+            .unwrap()
+            .get("hidden")
+            .is_none());
     }
 
     #[test]

@@ -51,7 +51,7 @@ test-utils = ["computer-helper", "server-bin", "mcp-bin"]
 # `tauri build` would compile is not the helper that ships. That is the one
 # `prepare-sidecars` builds with this feature — a sidecar, and on macOS an app
 # of its own (see `tauri.macos.conf.json`).
-computer-helper = []
+computer-helper = ["dep:x11rb"]
 # The `codeg-server` binary. Off unless asked for, for the same reason: the
 # desktop app serves its web interface from its own process and has no use
 # for a second server, so it must not ship one (70–90 MB) in its bundle.
@@ -291,6 +291,11 @@ windows = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Com"
 # feature — if wry ever stops asking for it, the failure is a version error
 # here rather than a missing symbol somewhere in the shim.
 webkit2gtk = { version = "=2.0.2", features = ["v2_40"], optional = true }
+# The computer-use helper asks the X11 window manager what the driver's
+# listing leaves unsaid — which windows are minimized, which on another
+# desktop — and which modifier keys are held. The helper's alone, so only
+# with `computer-helper`. Pure Rust; the version the driver itself uses.
+x11rb = { version = "0.13", optional = true }
 gtk = { version = "0.18", optional = true }
 javascriptcore-rs = { version = "=1.1.2", optional = true }
 

@@ -5013,7 +5013,7 @@
     "computer": {
       "label": "See and use your desktop's windows",
       "short": "List apps and windows; read the ones you share, act on the ones you allow.",
-      "hint": "Lets an agent list the applications and windows on your desktop, read the windows you share with it — a screenshot, its contents, whether it shows what it expects — and click, type and press keys in the ones you share for acting. Nothing is readable until you share a window from the Computer use panel in the status bar, and nothing can be acted on unless you also let agents act on it; sharing ends when the window closes, after a while unused, or when you stop it, and Stop agents in that panel halts every agent at once. Input goes to the window in the background; for an action that will not go in the background, an agent may bring the window to the front, which you can switch off in Computer use settings. Desktop app only, and on Linux it reads windows but does not act on them yet; on macOS it needs permissions granted to codeg-computer-helper. Preview."
+      "hint": "Lets an agent list the applications and windows on your desktop, read the windows you share with it — a screenshot, its contents, whether it shows what it expects — and click, type and press keys in the ones you share for acting. Nothing is readable until you share a window from the Computer use panel in the status bar, and nothing can be acted on unless you also let agents act on it; sharing ends when the window closes, after a while unused, or when you stop it, and Stop agents in that panel halts every agent at once. Input goes to the window in the background; for an action that will not go in the background, an agent may bring the window to the front, which you can switch off in Computer use settings. Desktop app only; on macOS it needs permissions granted to codeg-computer-helper. Preview."
     },
     "automations": {
       "label": "Create automations",
@@ -5259,6 +5259,7 @@
       "unnamedApp": "Unknown app",
       "untitled": "Untitled window",
       "minimized": "Minimized",
+      "hidden": "Hidden",
       "notGrantable": {
         "codeg": "codeg's window",
         "blocklisted": "On the never-share list",

@@ -305,6 +305,13 @@ pub const FOREGROUND_NOT_ALLOWED_NOTE: &str = "Bringing a window to the front fo
      background; if only the front will do, ask the user whether to switch it back on — only \
      they can.";
 
+/// Said when a window is to be restored on Linux — which takes bringing it
+/// to the front — and the person does not allow that.
+pub const RESTORE_NEEDS_FRONT_NOTE: &str = "On Linux a minimized window comes back on the screen \
+     only by being brought to the front, and the user has switched that off in codeg's Computer \
+     use settings (\"Let agents bring windows to the front\"), so nothing was sent. Ask the user \
+     to restore the window, or whether to switch that back on — only they can.";
+
 /// What an action the application would not take in the background can try
 /// next, as the person has the front set: the words that end every
 /// `computer_background_unavailable` note.
@@ -738,6 +745,7 @@ mod tests {
                 bounds: Default::default(),
                 on_screen: true,
                 minimized: None,
+                hidden: None,
                 level: GrantLevel::None,
                 title: None,
                 note: None,

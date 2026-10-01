@@ -94,6 +94,8 @@ export interface PickerWindow {
   bounds: Rect
   onScreen: boolean
   minimized: boolean
+  /** Its application is hidden (macOS ⌘H). */
+  hidden: boolean
   level: GrantLevel
   notGrantable?: NotGrantable
 }

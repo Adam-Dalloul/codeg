@@ -167,9 +167,9 @@ function WindowTile({
     >
       <div className="relative">
         <Thumbnail key={`${w.targetId}:${pictures}`} targetId={w.targetId} />
-        {w.minimized && (
+        {(w.minimized || w.hidden) && (
           <span className="absolute start-2 top-2 rounded-full bg-background/85 px-2 py-0.5 text-2xs text-muted-foreground shadow-sm backdrop-blur-sm">
-            {t("minimized")}
+            {w.minimized ? t("minimized") : t("hidden")}
           </span>
         )}
       </div>

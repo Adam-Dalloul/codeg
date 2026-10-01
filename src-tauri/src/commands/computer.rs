@@ -65,7 +65,7 @@ use crate::acp::computer_tools::{
     ERROR_NO_SUCH_TARGET, ERROR_OCCLUDED, ERROR_OUT_OF_TARGET, ERROR_PAUSED,
     ERROR_PERMISSION_MISSING, ERROR_READ_FAILED, ERROR_STALE_REF, ERROR_STOPPED, ERROR_UNAVAILABLE,
     FOREGROUND_NOT_ALLOWED_NOTE, NEEDS_ELEMENT_NOTE, NO_DESKTOP_NOTE, OUT_OF_IMAGE_NOTE,
-    PASTE_NOTE, SECRET_FIELD_NOTE, STOPPED_NOTE,
+    PASTE_NOTE, RESTORE_NEEDS_FRONT_NOTE, SECRET_FIELD_NOTE, STOPPED_NOTE,
 };
 use crate::app_error::AppCommandError;
 use crate::computer::agent::{
@@ -230,6 +230,33 @@ fn delivery_for(
     requested: Option<ActDelivery>,
     config: &ComputerToolsConfig,
 ) -> Result<ActDelivery, Refusal> {
+    delivery_on(
+        request,
+        requested,
+        config,
+        crate::computer::keys::Platform::current(),
+    )
+}
+
+/// [`delivery_for`] on `platform`: an action that can be done there only at
+/// the front (see [`ComputerActRequest::needs_front`]) goes there where the
+/// person allows it, and not at all where they do not.
+fn delivery_on(
+    request: &ComputerActRequest,
+    requested: Option<ActDelivery>,
+    config: &ComputerToolsConfig,
+    platform: crate::computer::keys::Platform,
+) -> Result<ActDelivery, Refusal> {
+    if request.needs_front(platform) {
+        return if config.allow_foreground {
+            Ok(ActDelivery::Foreground)
+        } else {
+            Err(Refusal::refused(
+                ERROR_FOREGROUND_NOT_ALLOWED,
+                RESTORE_NEEDS_FRONT_NOTE.to_string(),
+            ))
+        };
+    }
     if !request.can_come_forward() {
         return Ok(ActDelivery::Background);
     }
@@ -1362,6 +1389,8 @@ pub struct PickerWindow {
     pub bounds: Rect,
     pub on_screen: bool,
     pub minimized: bool,
+    /// Its application is hidden (macOS ⌘H).
+    pub hidden: bool,
     pub level: GrantLevel,
     /// Why it can never be shared, when that is so.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1505,6 +1534,7 @@ pub async fn computer_list_shareable_windows(
             bounds: e.bounds,
             on_screen: e.on_screen,
             minimized: e.minimized.unwrap_or(false),
+            hidden: e.hidden.unwrap_or(false),
             target_id: e.target_id,
         })
         .collect())
@@ -1512,8 +1542,9 @@ pub async fn computer_list_shareable_windows(
 
 /// A small picture of one window for the picker, as a `data:` URL. Never for
 /// a window that can never be shared — there is no decision to make about it
-/// — nor for a minimized one, which shows nothing to capture (the helper
-/// refuses one it finds minimized since the list was read).
+/// — nor for a minimized one, or one whose application is hidden, which shows
+/// nothing to capture (the helper refuses one it finds so since the list was
+/// read).
 #[tauri::command]
 pub async fn computer_window_thumbnail(
     app: AppHandle,
@@ -1527,6 +1558,7 @@ pub async fn computer_window_thumbnail(
     if !config.enabled
         || entry.gone
         || entry.minimized == Some(true)
+        || entry.hidden == Some(true)
         || grantable(&entry.app, &service.me, &blocklist_of(&config)).is_err()
     {
         return Ok(None);
@@ -1718,7 +1750,13 @@ mod tests {
         requested: Option<ActDelivery>,
         config: &ComputerToolsConfig,
     ) -> Result<ActDelivery, &'static str> {
-        delivery_for(request, requested, config).map_err(|r| r.slug)
+        delivery_on(
+            request,
+            requested,
+            config,
+            crate::computer::keys::Platform::Mac,
+        )
+        .map_err(|r| r.slug)
     }
 
     /// An action goes as the agent asked, or as the person set it — the
@@ -1777,6 +1815,49 @@ mod tests {
             delivery(&ComputerActRequest::Restore, None, &by_default),
             Ok(Background)
         );
+    }
+
+    /// On Linux a window comes back only by being brought to the front: a
+    /// restore goes there where the person allows it, whatever was asked,
+    /// and is refused where they do not. Nothing else changes there.
+    #[test]
+    fn a_restore_on_linux_goes_to_the_front_or_not_at_all() {
+        use crate::computer::keys::Platform;
+        use crate::computer::types::ActDelivery::{Background, Foreground};
+        let on_linux = |request: &ComputerActRequest,
+                        requested: Option<ActDelivery>,
+                        config: &ComputerToolsConfig| {
+            delivery_on(request, requested, config, Platform::Linux).map_err(|r| r.slug)
+        };
+        let allowed = ComputerToolsConfig::default();
+        let off = ComputerToolsConfig {
+            allow_foreground: false,
+            ..Default::default()
+        };
+        let restore = ComputerActRequest::Restore;
+        assert_eq!(on_linux(&restore, None, &allowed), Ok(Foreground));
+        assert_eq!(
+            on_linux(&restore, Some(Background), &allowed),
+            Ok(Foreground)
+        );
+        assert_eq!(
+            on_linux(&restore, None, &off),
+            Err(ERROR_FOREGROUND_NOT_ALLOWED)
+        );
+        for platform in [Platform::Mac, Platform::Windows] {
+            assert_eq!(
+                delivery_on(&restore, None, &allowed, platform).map_err(|r| r.slug),
+                Ok(Background)
+            );
+        }
+        let set = ComputerActRequest::SetValue {
+            target: crate::computer::types::ElementTarget {
+                generation: "1.1".into(),
+                index: 3,
+            },
+            value: "x".into(),
+        };
+        assert_eq!(on_linux(&set, Some(Foreground), &off), Ok(Background));
     }
 
     /// Only a refusal from the background is ended with what the settings

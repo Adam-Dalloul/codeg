@@ -20,8 +20,9 @@
 //! and there is no op that carries a tool name. The one op that changes a
 //! window, [`HelperOp::Act`], carries a closed [`WindowAction`] whose every
 //! field the helper rebuilds into the driver's arguments itself — save
-//! [`WindowAction::Restore`], which the helper carries out through
-//! Accessibility, on that one window, since the driver has no call for it.
+//! [`WindowAction::Restore`], which on macOS and Windows the helper carries
+//! out itself, on that one window, since the driver has no call that leaves
+//! it in the background.
 
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -38,7 +39,7 @@ use super::types::{
 /// Bumped whenever a frame changes shape. The helper ships in the same bundle
 /// as codeg, so a mismatch means a broken install (a helper left behind by a
 /// partial update), and codeg refuses to talk to it rather than guess.
-pub const PROTOCOL_VERSION: u32 = 8;
+pub const PROTOCOL_VERSION: u32 = 9;
 
 /// A fingerprint of the sources the helper is built from, the same in codeg
 /// and the helper when both are built from one tree (see `build.rs`). The
@@ -237,8 +238,11 @@ pub enum WindowAction {
     },
     #[serde(rename_all = "camelCase")]
     SetValue { element: ElementRef, value: String },
-    /// Put the window back on the screen if it is minimized. The helper's
-    /// own, through Accessibility: the driver has no call for it.
+    /// Put the window back on the screen: out of the Dock or the taskbar if
+    /// it is minimized, and on macOS its application shown again if it is
+    /// hidden. The helper's own on macOS (Accessibility) and Windows; on
+    /// Linux the driver's, which can only do it by bringing the window to
+    /// the front — so there it goes only with [`ActDelivery::Foreground`].
     Restore,
 }
 
@@ -498,10 +502,15 @@ pub struct RawWindow {
     pub bounds: Rect,
     pub on_screen: bool,
     /// `None` when the platform cannot say. On macOS the driver never does;
-    /// the helper asks Accessibility about the windows that could be
-    /// (`helper::ops::mark_minimized`).
+    /// the helper asks Accessibility about the windows that could be, and on
+    /// X11 the window manager (`helper::ops::mark_out_of_sight`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub minimized: Option<bool>,
+    /// macOS: its application is hidden (⌘H), so the window is off the screen
+    /// with nothing of its own having changed. `None` when that is not so or
+    /// cannot be told.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hidden: Option<bool>,
     /// `false` for a window on another Space (desktop); `None` when the
     /// platform cannot say.
     #[serde(default, skip_serializing_if = "Option::is_none")]

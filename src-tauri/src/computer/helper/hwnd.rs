@@ -77,7 +77,13 @@ const IID_VIRTUAL_DESKTOP_MANAGER: GUID = GUID::from_u128(0xa5cd92ff_29be_454c_8
 extern "system" {
     fn GetWindowThreadProcessId(window: HWND, pid: *mut u32) -> u32;
     fn FindWindowExW(parent: HWND, after: HWND, class: *const u16, title: *const u16) -> HWND;
+    fn IsIconic(window: HWND) -> BOOL;
+    fn ShowWindowAsync(window: HWND, command: i32) -> BOOL;
 }
+
+/// `SW_SHOWNOACTIVATE`: back to its most recent size and place, without
+/// being made the active window.
+const SW_SHOWNOACTIVATE: i32 = 4;
 #[link(name = "dwmapi")]
 extern "system" {
     fn DwmGetWindowAttribute(window: HWND, attribute: u32, value: *mut c_void, size: u32) -> i32;
@@ -336,6 +342,43 @@ pub fn frame_holds(frame: u64, host: u32, pid: u32) -> Option<bool> {
         .peekable();
     inside.peek()?;
     Some(inside.all(|drawer| drawer == pid))
+}
+
+/// What asking for a window back came to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Restore {
+    /// It was minimized, and it was asked to come back.
+    Asked,
+    /// It is not minimized: there was nothing to do.
+    AlreadyShown,
+    /// No such window, or not `pid`'s.
+    NotTheWindow,
+}
+
+/// Put `pid`'s window `window_id` back on the screen if it is minimized —
+/// as clicking it on the taskbar would, except that it is not made the
+/// active window: the person's keyboard focus stays where it is. `ready` is
+/// asked just before the one change is made; what it refuses is not done.
+pub fn restore<E>(
+    window_id: u64,
+    pid: u32,
+    ready: impl FnOnce() -> Result<(), E>,
+) -> Result<Restore, E> {
+    let Some(window) = handle(window_id) else {
+        return Ok(Restore::NotTheWindow);
+    };
+    if owner(window) != Some(pid) {
+        return Ok(Restore::NotTheWindow);
+    }
+    // SAFETY: a handle is a plain value; a stale one answers no.
+    if unsafe { IsIconic(window) } == 0 {
+        return Ok(Restore::AlreadyShown);
+    }
+    ready()?;
+    // SAFETY: as above. Asynchronous, so a hung application cannot hold the
+    // helper: whether the window came back is read afterwards.
+    unsafe { ShowWindowAsync(window, SW_SHOWNOACTIVATE) };
+    Ok(Restore::Asked)
 }
 
 /// What a walk turned up: nothing, one (however often it turned up), or

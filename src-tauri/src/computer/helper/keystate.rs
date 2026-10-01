@@ -13,9 +13,9 @@
 //! is recorded.
 
 /// The modifiers held down at this moment, by the name the person knows them
-/// by, each once; empty when none is held, or where the platform will not
-/// say.
-pub fn held_modifiers() -> Vec<&'static str> {
+/// by, each once — empty when none is held; `None` where the platform will
+/// not say, which is not the same as none.
+pub fn held_modifiers() -> Option<Vec<&'static str>> {
     imp::held_modifiers()
 }
 
@@ -38,7 +38,7 @@ mod imp {
         fn GetAsyncKeyState(key: i32) -> i16;
     }
 
-    pub fn held_modifiers() -> Vec<&'static str> {
+    pub fn held_modifiers() -> Option<Vec<&'static str>> {
         let mut held = Vec::new();
         for (key, name) in KEYS {
             // SAFETY: a virtual-key code; the top bit of the answer says the
@@ -48,7 +48,7 @@ mod imp {
                 held.push(name);
             }
         }
-        held
+        Some(held)
     }
 }
 
@@ -73,22 +73,38 @@ mod imp {
         fn CGEventSourceFlagsState(state: i32) -> u64;
     }
 
-    pub fn held_modifiers() -> Vec<&'static str> {
+    pub fn held_modifiers() -> Option<Vec<&'static str>> {
         // SAFETY: a pure query of the keyboard's state.
         let flags = unsafe { CGEventSourceFlagsState(COMBINED_SESSION_STATE) };
-        FLAGS
-            .iter()
-            .filter(|(mask, _)| flags & mask != 0)
-            .map(|(_, name)| *name)
-            .collect()
+        Some(
+            FLAGS
+                .iter()
+                .filter(|(mask, _)| flags & mask != 0)
+                .map(|(_, name)| *name)
+                .collect(),
+        )
     }
 }
 
-/// Elsewhere no input is sent at the front.
-#[cfg(not(any(windows, target_os = "macos")))]
+/// X11: the keyboard as the server has it at this moment, read through its
+/// modifier map (see `super::x11win`). Not on Wayland, which tells no client
+/// what keys are down.
+#[cfg(all(target_os = "linux", feature = "computer-helper"))]
 mod imp {
-    pub fn held_modifiers() -> Vec<&'static str> {
-        Vec::new()
+    pub fn held_modifiers() -> Option<Vec<&'static str>> {
+        super::super::x11win::held_modifiers()
+    }
+}
+
+/// Elsewhere the platform will not say.
+#[cfg(not(any(
+    windows,
+    target_os = "macos",
+    all(target_os = "linux", feature = "computer-helper")
+)))]
+mod imp {
+    pub fn held_modifiers() -> Option<Vec<&'static str>> {
+        None
     }
 }
 
@@ -100,7 +116,9 @@ mod tests {
     /// are one — and only modifiers.
     #[test]
     fn held_modifiers_are_named_once() {
-        let held = held_modifiers();
+        let Some(held) = held_modifiers() else {
+            return;
+        };
         let mut seen = held.clone();
         seen.dedup();
         assert_eq!(held.len(), seen.len(), "{held:?}");

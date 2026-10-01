@@ -2709,6 +2709,8 @@ pub fn render_computer_windows_result(outcome: &Value) -> Value {
                 ));
                 if w.get("minimized").and_then(Value::as_bool) == Some(true) {
                     out.push_str("  [minimized]");
+                } else if w.get("hidden").and_then(Value::as_bool) == Some(true) {
+                    out.push_str("  [hidden]");
                 } else if w.get("onScreen").and_then(Value::as_bool) == Some(false) {
                     out.push_str("  [off screen]");
                 }

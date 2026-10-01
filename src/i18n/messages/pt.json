@@ -5013,7 +5013,7 @@
     "computer": {
       "label": "Ver e usar as janelas da área de trabalho",
       "short": "Listar apps e janelas; ler as que você compartilhar e agir nas que permitir.",
-      "hint": "Permite que um agente liste os aplicativos e janelas da sua área de trabalho, leia as janelas que você compartilhar com ele — uma captura, o conteúdo, se mostra o que se espera — e clique, digite e pressione teclas nas que você compartilhar para agir. Nada fica legível até você compartilhar uma janela no painel Uso do computador da barra de status, e em nenhuma é possível agir sem que você também permita; o compartilhamento termina quando a janela fecha, depois de um tempo sem uso ou quando você o interrompe, e Parar agentes nesse painel para todos de uma vez. A entrada chega à janela em segundo plano; para uma ação que não chega em segundo plano, um agente pode trazer a janela para a frente, o que você pode desativar nas configurações de Uso do computador. Apenas no app para desktop, e no Linux por enquanto lê as janelas, mas não age nelas; no macOS, exige permissões concedidas ao codeg-computer-helper. Prévia."
+      "hint": "Permite que um agente liste os aplicativos e janelas da sua área de trabalho, leia as janelas que você compartilhar com ele — uma captura, o conteúdo, se mostra o que se espera — e clique, digite e pressione teclas nas que você compartilhar para agir. Nada fica legível até você compartilhar uma janela no painel Uso do computador da barra de status, e em nenhuma é possível agir sem que você também permita; o compartilhamento termina quando a janela fecha, depois de um tempo sem uso ou quando você o interrompe, e Parar agentes nesse painel para todos de uma vez. A entrada chega à janela em segundo plano; para uma ação que não chega em segundo plano, um agente pode trazer a janela para a frente, o que você pode desativar nas configurações de Uso do computador. Apenas no app para desktop; no macOS, exige permissões concedidas ao codeg-computer-helper. Prévia."
     },
     "automations": {
       "label": "Criar automações",
@@ -5259,6 +5259,7 @@
       "unnamedApp": "App desconhecido",
       "untitled": "Janela sem título",
       "minimized": "Minimizada",
+      "hidden": "Oculta",
       "notGrantable": {
         "codeg": "Janela do codeg",
         "blocklisted": "Na lista de nunca compartilhar",

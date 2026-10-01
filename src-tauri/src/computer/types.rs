@@ -90,6 +90,10 @@ pub struct AgentWindowSummary {
     pub on_screen: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub minimized: Option<bool>,
+    /// Its application is hidden (macOS ⌘H): off the screen as a whole,
+    /// with nothing of the window's own changed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hidden: Option<bool>,
     pub level: GrantLevel,
     /// Present only from [`GrantLevel::Read`] upwards.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -386,8 +390,9 @@ pub enum ComputerActRequest {
     /// position, a pop-up menu's choice.
     #[serde(rename_all = "camelCase")]
     SetValue { target: ElementTarget, value: String },
-    /// Put a minimized window back on the screen: typing, keys, scrolling,
-    /// a point and a screenshot all need it there.
+    /// Put a window back on the screen — out of the Dock or the taskbar if it
+    /// is minimized, its application shown again if it is hidden: typing,
+    /// keys, scrolling, a point and a screenshot all need it there.
     Restore,
 }
 
@@ -402,6 +407,13 @@ impl ComputerActRequest {
             self,
             Self::Click { .. } | Self::Scroll { .. } | Self::Type { .. } | Self::Key { .. }
         )
+    }
+
+    /// Whether the action can be done at all only by bringing the window to
+    /// the front on `platform`: restoring a window on Linux, where the only
+    /// way back is the window manager's activation.
+    pub fn needs_front(&self, platform: crate::computer::keys::Platform) -> bool {
+        matches!(self, Self::Restore) && platform == crate::computer::keys::Platform::Linux
     }
 }
 

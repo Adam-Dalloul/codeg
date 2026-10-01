@@ -5013,7 +5013,7 @@
     "computer": {
       "label": "Fenster des Desktops sehen und bedienen",
       "short": "Apps und Fenster auflisten; freigegebene lesen, erlaubte bedienen.",
-      "hint": "Lässt einen Agenten die Anwendungen und Fenster auf deinem Desktop auflisten, die Fenster lesen, die du für ihn freigibst – ein Bildschirmfoto, den Inhalt, ob es zeigt, was erwartet wird –, und in denen klicken, tippen und Tasten drücken, die du zum Handeln freigibst. Nichts ist lesbar, bis du im Bereich „Computernutzung“ in der Statusleiste ein Fenster freigibst, und in keinem Fenster wird gehandelt, wenn du das nicht auch erlaubst; die Freigabe endet, wenn das Fenster geschlossen wird, nach einer Weile ohne Nutzung oder wenn du sie beendest, und „Agenten anhalten“ in diesem Bereich hält alle auf einmal an. Eingaben erreichen das Fenster im Hintergrund; für eine Aktion, die im Hintergrund nicht ankommt, darf ein Agent das Fenster nach vorn holen – das lässt sich in den Einstellungen zur Computernutzung abschalten. Nur in der Desktop-App, und unter Linux liest es Fenster vorerst nur, ohne darin zu handeln; unter macOS sind Berechtigungen für codeg-computer-helper nötig. Vorschau."
+      "hint": "Lässt einen Agenten die Anwendungen und Fenster auf deinem Desktop auflisten, die Fenster lesen, die du für ihn freigibst – ein Bildschirmfoto, den Inhalt, ob es zeigt, was erwartet wird –, und in denen klicken, tippen und Tasten drücken, die du zum Handeln freigibst. Nichts ist lesbar, bis du im Bereich „Computernutzung“ in der Statusleiste ein Fenster freigibst, und in keinem Fenster wird gehandelt, wenn du das nicht auch erlaubst; die Freigabe endet, wenn das Fenster geschlossen wird, nach einer Weile ohne Nutzung oder wenn du sie beendest, und „Agenten anhalten“ in diesem Bereich hält alle auf einmal an. Eingaben erreichen das Fenster im Hintergrund; für eine Aktion, die im Hintergrund nicht ankommt, darf ein Agent das Fenster nach vorn holen – das lässt sich in den Einstellungen zur Computernutzung abschalten. Nur in der Desktop-App; unter macOS sind Berechtigungen für codeg-computer-helper nötig. Vorschau."
     },
     "automations": {
       "label": "Automatisierungen erstellen",
@@ -5259,6 +5259,7 @@
       "unnamedApp": "Unbekannte App",
       "untitled": "Fenster ohne Titel",
       "minimized": "Minimiert",
+      "hidden": "Ausgeblendet",
       "notGrantable": {
         "codeg": "Fenster von codeg",
         "blocklisted": "Auf der Sperrliste",

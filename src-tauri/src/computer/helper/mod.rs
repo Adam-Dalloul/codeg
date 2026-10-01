@@ -36,6 +36,8 @@ pub mod mcp;
 pub mod ops;
 pub mod session;
 pub mod tree;
+#[cfg(all(target_os = "linux", feature = "computer-helper"))]
+pub mod x11win;
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -570,17 +572,16 @@ impl HelperState {
         }
     }
 
-    /// The normal windows, each joined with its application — on macOS with
-    /// the minimized ones marked ([`mark_minimized`](Self::mark_minimized)).
+    /// The normal windows, each joined with its application — with the
+    /// minimized ones, and on macOS those of hidden applications, marked
+    /// ([`mark_out_of_sight`](Self::mark_out_of_sight)).
     async fn list_windows(
         &self,
         driver: &DriverProc,
         pid: Option<u32>,
     ) -> Result<Vec<RawWindow>, HelperError> {
         let windows = ops::list_windows(driver, &self.apps, pid).await?;
-        #[cfg(target_os = "macos")]
-        let windows = self.mark_minimized(windows).await;
-        Ok(windows)
+        Ok(self.mark_out_of_sight(windows).await)
     }
 
     /// The running applications: on macOS and Windows the owners of the
@@ -598,26 +599,36 @@ impl HelperState {
         }
     }
 
-    /// `windows`, with the minimized ones marked — when this helper may ask
-    /// Accessibility, which only a process started for the purpose can
-    /// establish (see [`permissions`](Self::permissions)). Without it they
-    /// stay unmarked, and unlisted, as before.
-    #[cfg(target_os = "macos")]
-    async fn mark_minimized(&self, mut windows: Vec<RawWindow>) -> Vec<RawWindow> {
+    /// `windows`, with the minimized ones and those of hidden applications
+    /// marked — on macOS when this helper may ask Accessibility, which only a
+    /// process started for the purpose can establish (see
+    /// [`permissions`](Self::permissions)); without it they stay unmarked,
+    /// and unlisted. On X11 the window manager is asked. Elsewhere the
+    /// driver's listing says all it can.
+    async fn mark_out_of_sight(&self, mut windows: Vec<RawWindow>) -> Vec<RawWindow> {
+        #[cfg(target_os = "macos")]
         if self.permissions(false).await.accessibility {
-            ops::mark_minimized(&mut windows).await;
+            ops::mark_out_of_sight(&mut windows).await;
         }
+        #[cfg(all(target_os = "linux", feature = "computer-helper"))]
+        ops::mark_out_of_sight(&mut windows).await;
+        #[cfg(not(any(
+            target_os = "macos",
+            all(target_os = "linux", feature = "computer-helper")
+        )))]
+        let _ = &mut windows;
         windows
     }
 
-    /// Whether `pid`'s window `window_id` is minimized, when this helper may
-    /// ask Accessibility and the application says.
+    /// Whether `pid`'s window `window_id` is minimized or its application
+    /// hidden, when this helper may ask Accessibility and the application
+    /// says.
     #[cfg(target_os = "macos")]
-    async fn minimized(&self, pid: u32, window_id: u64) -> Option<bool> {
+    async fn out_of_sight(&self, pid: u32, window_id: u64) -> Option<axwin::OutOfSight> {
         if !self.permissions(false).await.accessibility {
             return None;
         }
-        axwin::is_minimized(pid, window_id).await
+        axwin::out_of_sight(pid, window_id).await
     }
 
     /// The person's `stop`-th Stop: kill the driver started for a request
@@ -817,8 +828,8 @@ async fn handle_op(
         } => {
             state.require(OsPermission::ScreenRecording).await?;
             #[cfg(target_os = "macos")]
-            if state.minimized(pid, window_id).await == Some(true) {
-                return Err(ops::minimized_capture());
+            if let Some(why) = state.out_of_sight(pid, window_id).await {
+                return Err(ops::out_of_sight_capture(why));
             }
             let driver = state.driver(stop).await?;
             value(ops::capture(&driver, pid, window_id, max_dimension).await?)
