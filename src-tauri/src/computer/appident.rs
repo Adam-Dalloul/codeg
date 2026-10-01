@@ -460,12 +460,11 @@ mod windows_names {
         let listed: Vec<(u16, u16)> = value(&block, r"\VarFileInfo\Translation", |bytes| bytes)
             .map(|bytes| {
                 bytes
-                    .chunks_exact(4)
-                    .map(|pair| {
-                        (
-                            u16::from_le_bytes([pair[0], pair[1]]),
-                            u16::from_le_bytes([pair[2], pair[3]]),
-                        )
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .map(|&[l0, l1, c0, c1]| {
+                        (u16::from_le_bytes([l0, l1]), u16::from_le_bytes([c0, c1]))
                     })
                     .collect()
             })
@@ -478,8 +477,10 @@ mod windows_names {
                 // A string's length is given in UTF-16 units.
                 let bytes = value(&block, &key, |units| units.saturating_mul(2))?;
                 let units: Vec<u16> = bytes
-                    .chunks_exact(2)
-                    .map(|unit| u16::from_le_bytes([unit[0], unit[1]]))
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
+                    .map(|&unit| u16::from_le_bytes(unit))
                     .collect();
                 trimmed(&units)
             })

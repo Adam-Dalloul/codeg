@@ -707,8 +707,12 @@ mod tests {
         // The front, said as the driver says it; and an act that does not
         // say goes in the background.
         let front = HelperOp::Act {
+            pid: 42,
+            window_id: 7,
+            started_at: 1,
+            app_key: None,
+            action: WindowAction::Restore,
             delivery: ActDelivery::Foreground,
-            ..restore.clone()
         };
         assert_eq!(
             serde_json::to_value(&front).unwrap()["delivery"],

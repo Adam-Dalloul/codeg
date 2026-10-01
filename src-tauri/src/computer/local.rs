@@ -1174,7 +1174,10 @@ mod tests {
             },
         };
         assert_eq!(
-            backend.act(1, 1, 1, None, act(), 0).await.unwrap_err(),
+            backend
+                .act(1, 1, 1, None, act(), ActDelivery::Background, 0)
+                .await
+                .unwrap_err(),
             BackendError::Refused(
                 ActRefusal::Stopped,
                 "The user pressed Stop in codeg's Computer use panel.".into()
@@ -1186,7 +1189,10 @@ mod tests {
         // meets the switch, off, instead.
         backend.close().await;
         assert!(matches!(
-            backend.act(1, 1, 1, None, act(), 1).await.unwrap_err(),
+            backend
+                .act(1, 1, 1, None, act(), ActDelivery::Background, 1)
+                .await
+                .unwrap_err(),
             BackendError::Unavailable(_)
         ));
         // A Stop told late moves nothing back.

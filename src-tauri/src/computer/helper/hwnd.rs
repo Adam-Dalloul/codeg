@@ -441,8 +441,7 @@ mod tests {
             string(&id).app_user_model_id().as_deref(),
             Some("Microsoft.WindowsCalculator_8wekyb3d8bbwe!App")
         );
-        let long: Vec<u16> = std::iter::repeat(u16::from(b'a'))
-            .take(MAX_APP_USER_MODEL_ID)
+        let long: Vec<u16> = std::iter::repeat_n(u16::from(b'a'), MAX_APP_USER_MODEL_ID)
             .chain(Some(0))
             .collect();
         assert_eq!(string(&long).app_user_model_id(), None);
