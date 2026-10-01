@@ -921,6 +921,10 @@ jobs:
         id: version
         run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
 
+      # `latest` is the newest stable release. A release candidate goes out
+      # under its own version only, so nothing that pulls `latest` is moved
+      # onto it; the line that would name `latest` is left empty, and
+      # build-push-action skips empty lines.
       - name: Build and push Docker image
         uses: docker/build-push-action@v6
         with:
@@ -930,9 +934,9 @@ jobs:
           push: true
           tags: |
             ghcr.io/${{ github.repository }}:${{ steps.version.outputs.version }}
-            ghcr.io/${{ github.repository }}:latest
             ${{ secrets.DOCKERHUB_USERNAME }}/codeg:${{ steps.version.outputs.version }}
-            ${{ secrets.DOCKERHUB_USERNAME }}/codeg:latest
+            ${{ needs.create-draft-release.outputs.prerelease != 'true' && format('ghcr.io/{0}:latest', github.repository) || '' }}
+            ${{ needs.create-draft-release.outputs.prerelease != 'true' && format('{0}/codeg:latest', secrets.DOCKERHUB_USERNAME) || '' }}
 
   publish-release:
     needs:
