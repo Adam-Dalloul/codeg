@@ -830,9 +830,11 @@ impl ComputerService {
     }
 
     /// Step 3. A pid that no longer answers with the start time it had when
-    /// the window was shared is a different process. A window without a start
-    /// time cannot have been shared at all (`NotGrantable::Unidentified`).
-    /// Returns the start time the grant is held against.
+    /// the window was shared is a different process — the window's owner, or
+    /// the process drawing inside a frame (`WindowIdentity::content`). A
+    /// window without a start time cannot have been shared at all
+    /// (`NotGrantable::Unidentified`). Returns the start time the grant is
+    /// held against.
     fn check_identity(&self, target_id: &str, identity: &WindowIdentity) -> Result<u64, Refusal> {
         let Some(started_at) = identity.started_at else {
             return Err(Refusal::refused(
@@ -840,7 +842,10 @@ impl ComputerService {
                 blocked_note(target_id, NotGrantable::Unidentified.note()),
             ));
         };
-        if process_start(identity.pid) != Some(started_at) {
+        let content_changed = identity
+            .content
+            .is_some_and(|run| process_start(run.pid) != Some(run.started_at));
+        if process_start(identity.pid) != Some(started_at) || content_changed {
             let ended: Vec<_> = self.targets.target_changed(target_id).into_iter().collect();
             self.announce(&ended);
             return Err(Refusal::failed(

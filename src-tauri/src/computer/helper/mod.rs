@@ -29,6 +29,8 @@ pub mod act;
 #[cfg(target_os = "macos")]
 pub mod axwin;
 pub mod driver_proc;
+#[cfg(windows)]
+pub mod hwnd;
 pub mod mcp;
 pub mod ops;
 pub mod session;

@@ -12,7 +12,11 @@
 //! **Identity is `(pid, process start time, window id)`.** A pid alone is
 //! reused; an application relaunched is a new process whose windows were never
 //! shared, even when they look the same. A window whose identity no longer
-//! turns up in a listing is gone, and so is its grant.
+//! turns up in a listing is gone, and so is its grant. Where another process
+//! draws what is inside a window — a packaged application inside the frame
+//! Windows draws for it — that process's run is part of the identity too:
+//! the frame is that run's window, and another run of it in the same frame is
+//! another window.
 
 use std::collections::{BTreeSet, HashMap};
 use std::sync::Mutex;
@@ -26,7 +30,7 @@ use super::agent::{
 };
 use super::keys::{classify, Chord, ChordClass, Platform};
 use super::protocol::{
-    DriverTarget, ElementRef, RawAct, RawApp, RawWindow, WindowAction, WindowPoint,
+    DriverTarget, ElementRef, ProcessRun, RawAct, RawApp, RawWindow, WindowAction, WindowPoint,
 };
 use super::types::{
     AgentAppRef, AgentTarget, AgentWindowSummary, ComputerActRequest, ElementTarget, PointTarget,
@@ -42,6 +46,10 @@ pub struct WindowIdentity {
     /// listed, and matched on the other two fields alone.
     pub started_at: Option<u64>,
     pub window_id: u64,
+    /// The run of the process drawing inside the window, where that is not
+    /// its owner (`RawWindow::content`). See the module note.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content: Option<ProcessRun>,
 }
 
 impl WindowIdentity {
@@ -50,6 +58,7 @@ impl WindowIdentity {
             pid: window.pid,
             started_at: window.app.started_at,
             window_id: window.window_id,
+            content: window.content,
         }
     }
 }
@@ -950,6 +959,7 @@ mod tests {
             minimized: Some(false),
             on_current_space: Some(true),
             z_index: None,
+            content: None,
             app: raw_app(pid, started_at, "com.apple.TextEdit"),
         }
     }
@@ -995,6 +1005,35 @@ mod tests {
         // And the old id no longer resolves: it was never shared, so it is
         // simply forgotten.
         assert!(table.get(&first[0].target_id).is_none());
+    }
+
+    /// A frame is the window of the run of the application drawing inside it:
+    /// listed with that run again it is the same window, shared as it was;
+    /// with another run inside, it is another window, and the grant ends.
+    #[test]
+    fn a_frame_is_the_window_of_the_run_inside_it() {
+        let table = TargetTable::new();
+        let framed = |pid: u32, started_at: u64| RawWindow {
+            content: Some(ProcessRun { pid, started_at }),
+            ..window(10, 111, 5, "Calculator")
+        };
+        let (first, _) = table.observe(&[framed(30, 333)], None);
+        let id = first[0].target_id.clone();
+        share(&table, &id, GrantLevel::Read);
+        let (again, ended) = table.observe(&[framed(30, 333)], None);
+        assert_eq!(again[0].target_id, id);
+        assert!(ended.is_empty());
+        assert!(read(&table, &id).is_ok());
+
+        let (relaunched, ended) = table.observe(&[framed(31, 444)], None);
+        assert_ne!(relaunched[0].target_id, id);
+        assert_eq!(ended.len(), 1);
+        assert_eq!(ended[0].change, GrantChange::TargetChanged);
+        assert_eq!(read(&table, &id), Err(ReadRefusal::GrantRequired));
+        assert_eq!(
+            read(&table, &relaunched[0].target_id),
+            Err(ReadRefusal::GrantRequired)
+        );
     }
 
     /// A shared window that stops turning up takes its grant with it, and its

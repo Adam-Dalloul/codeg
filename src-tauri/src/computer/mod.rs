@@ -54,7 +54,8 @@
 //! - `spawn`     — macOS `posix_spawn` with the attributes the design needs
 //! - `tcc`       — macOS read-only TCC preflight queries
 //! - `procinfo`  — process start times, so a reused pid is not the same app
-//! - `appident`  — which application a process is, read off the process
+//! - `appident`  — which application a process is, read off the process; a
+//!   frame on Windows is the one drawing inside it
 //! - `helper`    — the helper process's own logic (runs in the helper binary)
 //! - `local`     — codeg's side of the helper: launch, verify, talk
 //! - `events`    — what the frontend is told

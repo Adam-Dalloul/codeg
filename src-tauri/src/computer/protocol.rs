@@ -38,7 +38,7 @@ use super::types::{
 /// Bumped whenever a frame changes shape. The helper ships in the same bundle
 /// as codeg, so a mismatch means a broken install (a helper left behind by a
 /// partial update), and codeg refuses to talk to it rather than guess.
-pub const PROTOCOL_VERSION: u32 = 6;
+pub const PROTOCOL_VERSION: u32 = 7;
 
 /// A fingerprint of the sources the helper is built from, the same in codeg
 /// and the helper when both are built from one tree (see `build.rs`). The
@@ -467,6 +467,15 @@ impl RawApp {
     }
 }
 
+/// One run of a process: its pid, and the start stamp that tells it from a
+/// later process under the same pid (`procinfo::process_start`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProcessRun {
+    pub pid: u32,
+    pub started_at: u64,
+}
+
 /// One normal window, as the driver reports it, joined with its application.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -491,6 +500,13 @@ pub struct RawWindow {
     /// Higher is closer to the front; `None` when the platform cannot say.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub z_index: Option<i64>,
+    /// Windows: the process drawing what is inside the window, where that is
+    /// not the process owning it — a packaged application, inside the frame
+    /// `ApplicationFrameHost` draws for it (see `appident`). `app` is then
+    /// that process's application, and the window is that application's only
+    /// as long as this same run of it is inside.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content: Option<ProcessRun>,
     pub app: RawApp,
 }
 

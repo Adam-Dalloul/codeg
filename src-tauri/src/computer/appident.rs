@@ -52,18 +52,20 @@
 //! executable is the application — unless it draws for other applications,
 //! or is the system's own. `ApplicationFrameHost.exe` draws the frame of every
 //! packaged application's window — Settings, Calculator — while the
-//! application draws what is in it in a window of its own process, laid over
+//! application draws what is in it, in a window of its own process set inside
 //! the frame; `msedgewebview2.exe` draws the inspector and the dialogs of
 //! every application built on WebView2, codeg among them. A window of either
 //! is any of those applications', and which one cannot be told from the
 //! host's path: taken for the host, it would pass for an application no
-//! blocklist names, and for one that is not codeg. So the hosts' windows stay
-//! unidentified, as on macOS does a process drawing for another application;
-//! a packaged application's own window, listed beside its frame, is known by
-//! its own executable. And the system's own agents stay unidentified, as
-//! Apple's under `/System` do: the Start menu, the lock screen, the prompts
-//! for a PIN or for an account's password, which Windows keeps each in a
-//! folder of its own in `SystemApps`.
+//! blocklist names, and for one that is not codeg. So a frame is taken for
+//! the application of the process drawing inside it, which the helper finds
+//! by the frame's handle (see `helper::hwnd`) — and for as long as that same
+//! run of it is inside; the frame host lends its windows nothing of its own.
+//! A window of WebView2's stays unidentified, as on macOS does a process
+//! drawing for another application. And the system's own agents stay
+//! unidentified, as Apple's under `/System` do, framed or not: the Start
+//! menu, the lock screen, the prompts for a PIN or for an account's password,
+//! which Windows keeps each in a folder of its own in `SystemApps`.
 //!
 //! On Windows an application is called what Windows calls it to the person.
 //! A packaged one — Terminal, Settings, the Notepad Windows 11 ships — goes by
@@ -80,7 +82,11 @@
 
 /// Windows: the executables whose windows are other applications'. See the
 /// module note.
-const HOSTS: &[&str] = &["ApplicationFrameHost.exe", "msedgewebview2.exe"];
+const HOSTS: &[&str] = &[FRAME_HOST, "msedgewebview2.exe"];
+
+/// Windows: the host whose every window is a frame with an application
+/// drawing inside it. See the module note.
+const FRAME_HOST: &str = "ApplicationFrameHost.exe";
 
 /// Windows: the folder the system keeps its own agents in. See the module
 /// note.
@@ -227,9 +233,19 @@ pub fn is_windows_application(path: &str) -> bool {
         && !parts.any(|dir| dir.eq_ignore_ascii_case(SYSTEM_APPS))
 }
 
+/// Whether the executable at `path` is the frame host, known by its file
+/// name as the other hosts are. Taking a process for it lends its windows no
+/// identity: each is still the application of the process drawing inside it,
+/// or nobody's (see the module note).
+pub fn is_frame_host(path: &str) -> bool {
+    path.rsplit(['\\', '/'])
+        .next()
+        .is_some_and(|file| file.eq_ignore_ascii_case(FRAME_HOST))
+}
+
 /// The application `pid` runs, when it is one (see the module note). macOS
-/// only: Windows has `windows_application`, and Linux reads the driver's own
-/// list afresh on every call.
+/// only: Windows has `windows_owner`, and Linux reads the driver's own list
+/// afresh on every call.
 #[cfg(target_os = "macos")]
 pub fn identify(pid: u32) -> Option<AppIdentity> {
     identify_executable(&executable_path(pid)?)
@@ -245,19 +261,49 @@ pub struct WindowsApp {
     pub name: String,
 }
 
+/// Windows: whose the windows of a process are (see the module note).
+#[cfg(windows)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WindowsOwner {
+    /// An application ([`is_windows_application`]): they are its own.
+    Application(WindowsApp),
+    /// The frame host: each is the application drawing inside it.
+    FrameHost,
+    /// Another host, one of the system's agents, or a process that has gone
+    /// or will not say: nobody's that can be told.
+    Unknown,
+}
+
+/// Windows: whose the windows of `pid` are — read off the process, while it
+/// is still the one that started at `started_at`.
+#[cfg(windows)]
+pub fn windows_owner(pid: u32, started_at: u64) -> WindowsOwner {
+    let Some(image) =
+        crate::computer::procinfo::process_image(pid).filter(|image| image.started == started_at)
+    else {
+        return WindowsOwner::Unknown;
+    };
+    if is_frame_host(&image.path) {
+        return WindowsOwner::FrameHost;
+    }
+    if !is_windows_application(&image.path) {
+        return WindowsOwner::Unknown;
+    }
+    WindowsOwner::Application(WindowsApp {
+        name: windows_name(&image.path, image.app_user_model_id.as_deref()),
+        path: image.path,
+    })
+}
+
 /// Windows: the application `pid` runs — when the process is still the one
 /// that started at `started_at`, and runs an application
 /// ([`is_windows_application`]).
 #[cfg(windows)]
 pub fn windows_application(pid: u32, started_at: u64) -> Option<WindowsApp> {
-    let image = crate::computer::procinfo::process_image(pid)?;
-    if image.started != started_at || !is_windows_application(&image.path) {
-        return None;
+    match windows_owner(pid, started_at) {
+        WindowsOwner::Application(app) => Some(app),
+        WindowsOwner::FrameHost | WindowsOwner::Unknown => None,
     }
-    Some(WindowsApp {
-        name: windows_name(&image.path, image.app_user_model_id.as_deref()),
-        path: image.path,
-    })
 }
 
 /// Windows: what to call the application whose executable is at `path` —
@@ -293,6 +339,9 @@ fn windows_name(path: &str, app_user_model_id: Option<&str>) -> String {
     }
     name
 }
+
+#[cfg(windows)]
+pub(crate) use windows_names::Com;
 
 /// Windows: the two places an application's name is read from (see the
 /// module note).
@@ -479,12 +528,13 @@ mod windows_names {
     }
 
     /// COM, entered on this thread while the guard lives: the shell's names
-    /// are read through it. A thread already in COM in the other mode stays
-    /// so, which serves as well.
-    struct Com(bool);
+    /// are read through it, and the virtual desktops asked (see
+    /// `helper::hwnd`). A thread already in COM in the other mode stays so,
+    /// which serves as well.
+    pub(crate) struct Com(bool);
 
     impl Com {
-        fn enter() -> Self {
+        pub(crate) fn enter() -> Self {
             // SAFETY: no reserved pointer; a success (S_OK, or S_FALSE when
             // already entered) is balanced in `drop`.
             let status = unsafe { CoInitializeEx(ptr::null(), COINIT_MULTITHREADED) };
@@ -812,7 +862,8 @@ mod tests {
     /// Windows: an executable is an application unless it is a host — by its
     /// file name, in any case and wherever it is — or one of the system's
     /// agents in `SystemApps`. The applications Windows ships elsewhere,
-    /// Settings and Edge among them, are applications.
+    /// Settings and Edge among them, are applications. The frame host is
+    /// told from the other hosts the same way.
     #[test]
     fn windows_applications_are_told_from_hosts_and_agents() {
         for application in [
@@ -838,6 +889,21 @@ mod tests {
             "",
         ] {
             assert!(!is_windows_application(other), "{other}");
+        }
+        // Of the hosts, the frame host alone frames an application.
+        assert!(is_frame_host(
+            r"C:\Windows\System32\ApplicationFrameHost.exe"
+        ));
+        assert!(is_frame_host(
+            r"c:\windows\system32\applicationframehost.EXE"
+        ));
+        for other in [
+            r"C:\Program Files (x86)\Microsoft\EdgeWebView\Application\129.0.2792.79\msedgewebview2.exe",
+            r"C:\ApplicationFrameHost.exe\Other.exe",
+            r"C:\Windows\System32\ApplicationFrameHost.exe.bak",
+            "",
+        ] {
+            assert!(!is_frame_host(other), "{other}");
         }
     }
 

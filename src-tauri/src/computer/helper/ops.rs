@@ -100,9 +100,9 @@ fn string(value: &Value, key: &str) -> Option<String> {
 
 /// Running applications, each stamped with its start time.
 ///
-/// On macOS and Windows, the applications that own a normal window, each
+/// On macOS and Windows, the applications with a normal window, each
 /// identified by the helper itself (see [`list_windows`]); the frontmost of
-/// them is the one owning the frontmost window on screen. The driver's own
+/// them is the one whose window is frontmost on screen. The driver's own
 /// list is not read there: on macOS it is frozen at the driver's first call,
 /// and on Windows it knows most processes by their executable's file name
 /// alone (see `appident`). An application with no window has nothing to share
@@ -124,21 +124,23 @@ pub async fn list_apps(
 }
 
 /// The identified applications among `windows`' owners, once each, with the
-/// owner of the frontmost window on screen marked active.
+/// one whose window is frontmost on screen marked active. One process can be
+/// several: the frame host is the application in each of its frames.
 #[cfg(any(test, target_os = "macos", windows))]
 fn apps_of(windows: Vec<RawWindow>) -> Vec<RawApp> {
+    let app_of = |w: &RawWindow| (w.pid, w.app.started_at, w.app.key().map(str::to_string));
     let front = windows
         .iter()
         .filter(|w| w.on_screen)
         .max_by_key(|w| w.z_index.unwrap_or(i64::MIN))
-        .map(|w| (w.pid, w.app.started_at));
+        .map(app_of);
     let mut seen = std::collections::HashSet::new();
     windows
         .into_iter()
-        .filter(|w| w.app.key().is_some() && seen.insert((w.pid, w.app.started_at)))
-        .map(|w| RawApp {
-            active: front == Some((w.pid, w.app.started_at)),
-            ..w.app
+        .filter(|w| w.app.key().is_some() && seen.insert(app_of(w)))
+        .map(|w| {
+            let active = front == Some(app_of(&w));
+            RawApp { active, ..w.app }
         })
         .collect()
 }
@@ -278,13 +280,12 @@ async fn driver_apps(driver: &DriverProc) -> Result<Vec<RawApp>, HelperError> {
     parse_apps(structured("list_apps", &result)?)
 }
 
-/// macOS and Windows: join each window with its application as the helper
-/// reads it off the owning process now (`appident`) — once per process per
-/// listing, and never remembered past it: reading it is a few system calls
-/// (and on macOS a small file), and on macOS a process that has since run
-/// another program (`exec` keeps the pid and the start time) is that program
-/// now. (What Windows calls an executable is kept: see `appident`.)
-#[cfg(any(target_os = "macos", windows))]
+/// macOS: join each window with its application as the helper reads it off
+/// the owning process now (`appident`) — once per process per listing, and
+/// never remembered past it: reading it is a few system calls and a small
+/// file, and a process that has since run another program (`exec` keeps the
+/// pid and the start time) is that program now.
+#[cfg(target_os = "macos")]
 fn join_identified(windows: Vec<RawWindow>, stamps: Vec<Option<u64>>) -> Vec<RawWindow> {
     let mut seen: HashMap<(u32, Option<u64>), RawApp> = HashMap::new();
     windows
@@ -330,34 +331,80 @@ fn identified(pid: u32, started_at: Option<u64>, owner: &str) -> RawApp {
     }
 }
 
-/// Windows: the application `pid` runs — its executable, read off the process
+/// Windows: join each window with its application, and say of it what the
+/// listing leaves unsaid (see `super::hwnd`): a window the compositor hides
+/// is off the screen — on another virtual desktop, or out of sight on this
+/// one; one the system will not place stays as the listing had it. What the
+/// system says of a window counts only while its handle is still the listed
+/// process's: a window closed since, its handle handed on, says nothing of
+/// the one listed.
+///
+/// The application is the owning process's executable, read off the process
 /// with its start time through one handle, which must still be the start time
 /// the window list's owner had (a pid reused in between would lend the window
-/// another application's identity) — and named as Windows names it to the
-/// person (see `appident`). Unidentified (no path, the window list's name)
-/// when that cannot be read, or when the process runs no application: a
-/// host, whose windows are other applications', or one of the system's own
-/// agents.
+/// another application's identity) — or, for a frame, the executable of the
+/// process drawing inside it, read the same way. Each is named as Windows
+/// names it to the person (see `appident`), and read once per listing.
+/// Unidentified (no path, the window list's name) when that cannot be read,
+/// or when the process runs no application: a host other than the frame
+/// host, or one of the system's own agents.
 #[cfg(windows)]
-fn identified(pid: u32, started_at: Option<u64>, owner: &str) -> RawApp {
-    let app = started_at
-        .and_then(|started_at| crate::computer::appident::windows_application(pid, started_at));
-    let unidentified = RawApp {
-        pid,
-        name: owner.to_string(),
-        bundle_id: None,
-        path: None,
-        active: false,
-        started_at,
-    };
-    match app {
-        Some(app) => RawApp {
-            name: app.name,
-            path: Some(app.path),
-            ..unidentified
-        },
-        None => unidentified,
-    }
+fn join_identified(windows: Vec<RawWindow>, stamps: Vec<Option<u64>>) -> Vec<RawWindow> {
+    use crate::computer::appident::{windows_application, windows_owner, WindowsApp, WindowsOwner};
+    use crate::computer::protocol::ProcessRun;
+
+    let desktop = super::hwnd::Desktop::open();
+    let mut owners: HashMap<(u32, u64), WindowsOwner> = HashMap::new();
+    let mut contents: HashMap<ProcessRun, Option<WindowsApp>> = HashMap::new();
+    windows
+        .into_iter()
+        .zip(stamps)
+        .map(|(mut window, started_at)| {
+            let held = desktop.owner(window.window_id) == Some(window.pid);
+            if held && desktop.cloaked(window.window_id) {
+                if let Some(here) = desktop.on_current_desktop(window.window_id) {
+                    window.on_screen = false;
+                    window.on_current_space = Some(here);
+                }
+            }
+            let owner = started_at.map(|started_at| {
+                owners
+                    .entry((window.pid, started_at))
+                    .or_insert_with(|| windows_owner(window.pid, started_at))
+                    .clone()
+            });
+            let app = match owner {
+                Some(WindowsOwner::Application(app)) => Some(app),
+                Some(WindowsOwner::FrameHost) if held => {
+                    window.content = desktop
+                        .frame_content(window.window_id, window.pid)
+                        .and_then(|pid| {
+                            process_start(pid).map(|started_at| ProcessRun { pid, started_at })
+                        });
+                    window.content.and_then(|run| {
+                        contents
+                            .entry(run)
+                            .or_insert_with(|| windows_application(run.pid, run.started_at))
+                            .clone()
+                    })
+                }
+                _ => None,
+            };
+            let (name, path) = match app {
+                Some(app) => (app.name, Some(app.path)),
+                None => (std::mem::take(&mut window.app.name), None),
+            };
+            window.app = RawApp {
+                pid: window.pid,
+                name,
+                bundle_id: None,
+                path,
+                active: false,
+                started_at,
+            };
+            window
+        })
+        .collect()
 }
 
 /// The windows in a `list_windows` answer that could be someone's window at
@@ -388,6 +435,7 @@ fn parse_windows(value: &Value) -> Result<Vec<RawWindow>, HelperError> {
                         minimized: flag(w, "minimized"),
                         on_current_space: flag(w, "on_current_space"),
                         z_index: w.get("z_index").and_then(Value::as_i64),
+                        content: None,
                         app: RawApp {
                             pid,
                             name: string(w, "app_name").unwrap_or_default(),
@@ -1067,6 +1115,7 @@ mod tests {
             minimized: None,
             on_current_space: Some(true),
             z_index: Some(z),
+            content: None,
             app: RawApp {
                 pid,
                 name: format!("app {pid}"),
