@@ -42,8 +42,15 @@ tauri-runtime = [
 # Exposes test scaffolding (`AppState::new_for_test`, `EventEmitter::test_web_only`,
 # `ConnectionManager::insert_test_connection`, parser `with_base_dir`, the
 # `db::test_helpers` module) for integration tests in `tests/*.rs`. Without
-# this feature the items are physically uncompiled in release builds.
-test-utils = []
+# this feature the items are physically uncompiled in release builds. It
+# also builds the computer-use helper, so the test and lint runs cover it.
+test-utils = ["computer-helper"]
+# The `codeg-computer-helper` binary. Off unless asked for: the Tauri CLI puts
+# every binary target whose features are on into a bundle, and the copy
+# `tauri build` would compile is not the helper that ships. That is the one
+# `prepare-sidecars` builds with this feature — a sidecar, and on macOS an app
+# of its own (see `tauri.macos.conf.json`).
+computer-helper = []
 # Built-in browser. `browser-child` compiles the embedded surface: a wry child
 # webview created directly through tauri-runtime-wry's re-exported `wry`
 # (`WebViewBuilder::build_as_child`), which is exactly how tauri-runtime-wry
@@ -75,11 +82,11 @@ required-features = []
 
 # The computer-use executor: holds the OS permissions (macOS TCC) in place of
 # codeg, and runs the pinned cua-driver as its child. No Tauri: it is launched
-# by the desktop app and serves only it.
+# by the desktop app and serves only it. Built only with `computer-helper`.
 [[bin]]
 name = "codeg-computer-helper"
 path = "src/bin/codeg_computer_helper.rs"
-required-features = []
+required-features = ["computer-helper"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [], optional = true }

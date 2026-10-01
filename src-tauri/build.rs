@@ -3,6 +3,7 @@ fn main() {
     #[cfg(feature = "tauri-runtime")]
     {
         ensure_sidecar_placeholder();
+        place_helper_for_development();
         tauri_build::build();
     }
 }
@@ -120,5 +121,41 @@ fn ensure_sidecar_placeholder() {
                 path.display()
             );
         }
+    }
+}
+
+/// On macOS the computer-use helper is no sidecar: a bundle carries it as an
+/// app of its own (`tauri.macos.conf.json`), so Tauri no longer copies it
+/// next to the build as it does `bundle.externalBin`. This does, for a
+/// development codeg, which is not bundled and looks for the helper beside
+/// itself. The staged file is already watched by `ensure_sidecar_placeholder`.
+#[cfg(feature = "tauri-runtime")]
+fn place_helper_for_development() {
+    use std::path::PathBuf;
+
+    let triple = std::env::var("TARGET").unwrap_or_default();
+    if !triple.contains("apple-darwin") {
+        return;
+    }
+    let staged = PathBuf::from(format!("binaries/codeg-computer-helper-{triple}"));
+    // `target/[<triple>/]<profile>/build/<pkg>-<hash>/out`, as tauri-build
+    // finds the same directory: there is no other way to it from here.
+    let out_dir = PathBuf::from(std::env::var_os("OUT_DIR").unwrap_or_default());
+    let Some(profile_dir) = out_dir.ancestors().nth(3) else {
+        return;
+    };
+    let placed = profile_dir.join("codeg-computer-helper");
+    // Through a new file renamed into place: a helper still running from the
+    // old one keeps its own, where writing over it would kill it.
+    let incoming = profile_dir.join("codeg-computer-helper.incoming");
+    if let Err(e) =
+        std::fs::copy(&staged, &incoming).and_then(|_| std::fs::rename(&incoming, &placed))
+    {
+        let _ = std::fs::remove_file(&incoming);
+        println!(
+            "cargo:warning=could not place {} at {}: {e}",
+            staged.display(),
+            placed.display()
+        );
     }
 }

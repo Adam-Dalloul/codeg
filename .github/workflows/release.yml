@@ -323,7 +323,7 @@ jobs:
           fi
           anchor="anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] /* exists */ and certificate leaf[field.1.2.840.113635.100.6.1.13] /* exists */ and certificate leaf[subject.OU] = \"${APPLE_TEAM_ID}\""
           echo "CODEG_COMPUTER_PEER_REQUIREMENT=identifier \"app.codeg\" and ${anchor}" >> "$GITHUB_ENV"
-          echo "CODEG_COMPUTER_HELPER_REQUIREMENT=identifier \"codeg-computer-helper\" and ${anchor}" >> "$GITHUB_ENV"
+          echo "CODEG_COMPUTER_HELPER_REQUIREMENT=identifier \"app.codeg.computer-helper\" and ${anchor}" >> "$GITHUB_ENV"
           echo "CODEG_COMPUTER_TEAM_ID=${APPLE_TEAM_ID}" >> "$GITHUB_ENV"
 
       # Build the sidecars — the `codeg-mcp` companion and the
@@ -331,10 +331,14 @@ jobs:
       # and stage them at `src-tauri/binaries/<bin>-<triple>{.exe}`.
       # `tauri-action` (below) then bundles them via the `bundle.externalBin`
       # entries in `tauri.conf.json` — Tauri installs them next to the main
-      # executable (Contents/MacOS on macOS, install root on Linux/Windows)
-      # where the runtime finds them via `current_exe` sibling lookup. The
-      # Linux arm64 cross env vars set above also apply to this cargo
-      # invocation.
+      # executable (install root on Linux/Windows) where the runtime finds
+      # them via `current_exe` sibling lookup. On macOS the helper is no
+      # sidecar: it is staged as `src-tauri/binaries/codeg-computer-helper.app`
+      # and bundled as `Contents/Helpers/codeg-computer-helper.app`
+      # (`tauri.macos.conf.json`), since macOS charges an executable's
+      # permissions to the app bundle it sits in — a helper in Contents/MacOS
+      # would hold codeg's. The Linux arm64 cross env vars set above also
+      # apply to this cargo invocation.
       - name: Stage sidecars for Tauri bundle
         shell: bash
         run: pnpm tauri:prepare-sidecars --target ${{ matrix.target }}
@@ -354,6 +358,16 @@ jobs:
             fi
             ls -la "$file"
           done
+          case "${{ matrix.target }}" in
+            *apple-darwin*)
+              helper="src-tauri/binaries/codeg-computer-helper.app/Contents/MacOS/codeg-computer-helper"
+              if [ ! -s "$helper" ]; then
+                echo "FATAL: helper app executable $helper missing or empty after prepare-sidecars"
+                exit 1
+              fi
+              ls -la "$helper"
+              ;;
+          esac
 
       - name: Import Apple Developer ID certificate
         if: contains(matrix.target, 'apple-darwin')
@@ -451,6 +465,22 @@ jobs:
           cert_id="$(echo "$cert_info" | awk -F'"' '{print $2}')"
           echo "APPLE_SIGNING_IDENTITY=$cert_id" >> "$GITHUB_ENV"
           echo "Using Apple signing identity: $cert_id"
+
+      # Tauri copies the helper app into the bundle (`bundle.macOS.files`)
+      # without signing it, and signs the bundle around it without `--deep`,
+      # so it is signed here, before the bundle is built — inside out, as
+      # Apple requires — with the hardened runtime, a secure timestamp and no
+      # entitlements, as notarization and the gate below need.
+      - name: Sign the computer-use helper app (macOS)
+        if: contains(matrix.target, 'apple-darwin')
+        shell: bash
+        run: |
+          set -euo pipefail
+          helper_app="src-tauri/binaries/codeg-computer-helper.app"
+          codesign --force --options runtime --timestamp \
+            --sign "$APPLE_SIGNING_IDENTITY" "$helper_app"
+          codesign --verify --strict -R="${CODEG_COMPUTER_HELPER_REQUIREMENT}" "$helper_app"
+          codesign -dv "$helper_app" 2>&1 | grep -E '^(Identifier|TeamIdentifier)='
 
       - name: Build and upload to draft release (Linux arm64)
         if: matrix.target == 'aarch64-unknown-linux-gnu'
@@ -562,6 +592,10 @@ jobs:
       # The release gate for computer use on macOS. Notarization and a
       # `runtime` flag prove neither of the things that matter here, so each is
       # checked on the bundle that was just built and signed:
+      #   * the helper is an app of its own, `Contents/Helpers/
+      #     codeg-computer-helper.app`, and no bare copy of it is in
+      #     `Contents/MacOS/`: macOS charges an executable's permissions to the
+      #     app bundle it sits in, so a helper there would hold codeg's;
       #   * codeg, codeg-mcp and codeg-computer-helper carry NO entitlements —
       #     in particular none that let another process load code into them
       #     (library-validation / dyld / get-task-allow exemptions), and codeg
@@ -589,20 +623,29 @@ jobs:
             exit 1
           fi
           codesign --verify --strict --deep "$app"
-          for bin in codeg codeg-mcp codeg-computer-helper; do
-            path="$app/Contents/MacOS/$bin"
+          helper_app="$app/Contents/Helpers/codeg-computer-helper.app"
+          if [ -e "$app/Contents/MacOS/codeg-computer-helper" ]; then
+            echo "FATAL: codeg-computer-helper is in Contents/MacOS, where macOS charges it to codeg"
+            exit 1
+          fi
+          if [ ! -d "$helper_app" ]; then
+            echo "FATAL: $helper_app not found"
+            exit 1
+          fi
+          for path in "$app/Contents/MacOS/codeg" "$app/Contents/MacOS/codeg-mcp" "$helper_app"; do
+            name="$(basename "$path")"
             if ! codesign -dv "$path" 2>&1 | grep -q 'flags=0x[0-9a-f]*(runtime)'; then
-              echo "FATAL: $bin is not signed with the hardened runtime"
+              echo "FATAL: $name is not signed with the hardened runtime"
               exit 1
             fi
             if codesign -d --entitlements - --xml "$path" 2>/dev/null | grep -q '<key>'; then
-              echo "FATAL: $bin carries entitlements; codeg's executables must carry none"
+              echo "FATAL: $name carries entitlements; codeg's executables must carry none"
               codesign -d --entitlements - "$path" || true
               exit 1
             fi
           done
           codesign --verify --strict -R="${CODEG_COMPUTER_PEER_REQUIREMENT}" "$app/Contents/MacOS/codeg"
-          codesign --verify --strict -R="${CODEG_COMPUTER_HELPER_REQUIREMENT}" "$app/Contents/MacOS/codeg-computer-helper"
+          codesign --verify --strict -R="${CODEG_COMPUTER_HELPER_REQUIREMENT}" "$helper_app"
           deny='^_(CGEventPost|CGEventPostToPid|CGEventPostToPSN|CGEventTapCreate|CGEventTapCreateForPid|CGEventTapCreateForPSN|CGWindowListCreateImage|CGWindowListCreateImageFromArray|CGDisplayCreateImage|CGDisplayCreateImageForRect|CGDisplayStreamCreate|CGDisplayStreamCreateWithDispatchQueue|CGRequestScreenCaptureAccess|CGRequestPostEventAccess|AXIsProcessTrustedWithOptions|AXUIElement[A-Za-z]*|AXObserver[A-Za-z]*)$|^_OBJC_CLASS_\$_SC(ShareableContent|Stream|ScreenshotManager|ContentFilter|ContentSharingPicker)$'
           for bin in codeg codeg-mcp; do
             hits="$(nm -u "$app/Contents/MacOS/$bin" | grep -E "$deny" || true)"

@@ -27,7 +27,7 @@
 //! its way. It exits on its own when codeg does: its stdin closes.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
@@ -55,8 +55,16 @@ pub const HELPER_REQUIREMENT: Option<&str> = option_env!("CODEG_COMPUTER_HELPER_
 /// the helper is launched only as a Developer ID build of this team.
 pub const HELPER_TEAM_ID: Option<&str> = option_env!("CODEG_COMPUTER_TEAM_ID");
 
-/// The helper's signing identifier (its designated requirement names it too).
-pub const HELPER_SIGNING_ID: &str = "codeg-computer-helper";
+/// The helper's signing identifier (its designated requirement names it too):
+/// on macOS, the bundle identifier of the helper app.
+pub const HELPER_SIGNING_ID: &str = "app.codeg.computer-helper";
+
+/// The helper's own app inside codeg's on macOS, in `Contents/Helpers/`. macOS
+/// charges an executable's permissions to the app bundle it sits in, so a
+/// helper beside codeg in `Contents/MacOS/` would hold codeg's — every
+/// agent's shell's — and none of its own. In an app of its own it is a
+/// principal of its own.
+pub const HELPER_APP: &str = "codeg-computer-helper.app";
 
 // A release build pins both or neither: a requirement checked after launch
 // without the launch requirement would let a wrapper run first.
@@ -118,13 +126,14 @@ pub fn helper_file_name() -> &'static str {
     }
 }
 
-/// The helper next to the running executable — `Contents/MacOS/` in the app
-/// bundle, the install directory elsewhere, `target/<profile>/` in
-/// development (the sidecar step copies it there). Deliberately no `PATH`
-/// lookup: a helper found somewhere else is not the one that shipped. A debug
-/// build also honours `CODEG_COMPUTER_HELPER_BIN`, for running a freshly
-/// built helper; a release build ignores it, since the variable can be set
-/// for codeg by anything that can set a launch environment.
+/// The helper that shipped with the running executable: inside
+/// [`HELPER_APP`] when codeg runs from an app bundle on macOS, next to it
+/// otherwise — the install directory, or `target/<profile>/` in development
+/// (the build copies it there). Deliberately no `PATH` lookup: a helper found
+/// somewhere else is not the one that shipped. A debug build also honours
+/// `CODEG_COMPUTER_HELPER_BIN`, for running a freshly built helper; a release
+/// build ignores it, since the variable can be set for codeg by anything that
+/// can set a launch environment.
 pub fn locate_helper_binary() -> Option<PathBuf> {
     if cfg!(debug_assertions) {
         if let Some(raw) = std::env::var_os("CODEG_COMPUTER_HELPER_BIN") {
@@ -135,8 +144,44 @@ pub fn locate_helper_binary() -> Option<PathBuf> {
         }
     }
     let exe = std::env::current_exe().ok()?;
-    let candidate = exe.parent()?.join(helper_file_name());
+    let candidate = helper_for(&exe, cfg!(target_os = "macos"))?;
     candidate.is_file().then_some(candidate)
+}
+
+/// Where the helper of a codeg running as `exe` is, on macOS (`mac`) or
+/// elsewhere.
+fn helper_for(exe: &Path, mac: bool) -> Option<PathBuf> {
+    let dir = exe.parent()?;
+    let contents = dir.parent().filter(|contents| {
+        mac && dir.file_name().is_some_and(|n| n == "MacOS")
+            && contents.file_name().is_some_and(|n| n == "Contents")
+            && contents
+                .parent()
+                .and_then(Path::extension)
+                .is_some_and(|e| e.eq_ignore_ascii_case("app"))
+    });
+    Some(match contents {
+        Some(contents) => contents
+            .join("Helpers")
+            .join(HELPER_APP)
+            .join("Contents")
+            .join("MacOS")
+            .join(helper_file_name()),
+        None => dir.join(helper_file_name()),
+    })
+}
+
+/// What to show in the Finder for adding the helper to System Settings by
+/// hand: the helper app where there is one — the executable inside it would
+/// be listed by its path, which macOS never asks about — and the helper
+/// itself otherwise.
+pub fn helper_to_reveal() -> Option<PathBuf> {
+    let helper = locate_helper_binary()?;
+    let app = helper
+        .ancestors()
+        .find(|p| p.file_name().is_some_and(|n| n == HELPER_APP))
+        .map(Path::to_path_buf);
+    Some(app.unwrap_or(helper))
 }
 
 type Pending = Arc<StdMutex<HashMap<u64, oneshot::Sender<HelperReply>>>>;
@@ -1223,5 +1268,145 @@ mod tests {
                 );
             },
         );
+    }
+
+    /// On macOS a codeg in an app bundle runs the helper inside the helper
+    /// app, never one beside it in `Contents/MacOS/`; anywhere else the
+    /// helper is beside codeg.
+    #[test]
+    fn a_bundled_codeg_on_macos_runs_the_helper_app() {
+        let name = helper_file_name();
+        let bundled = Path::new("/Applications/codeg.app/Contents/MacOS/codeg");
+        assert_eq!(
+            helper_for(bundled, true).unwrap(),
+            Path::new("/Applications/codeg.app/Contents/Helpers")
+                .join(HELPER_APP)
+                .join("Contents/MacOS")
+                .join(name)
+        );
+        assert_eq!(
+            helper_for(bundled, false).unwrap(),
+            Path::new("/Applications/codeg.app/Contents/MacOS").join(name)
+        );
+        for unbundled in [
+            "/src/codeg/src-tauri/target/debug/codeg",
+            "/tmp/MacOS/codeg",
+            "/tmp/codeg.bundle/Contents/MacOS/codeg",
+        ] {
+            let exe = Path::new(unbundled);
+            assert_eq!(
+                helper_for(exe, true).unwrap(),
+                exe.parent().unwrap().join(name),
+                "{unbundled}"
+            );
+        }
+    }
+
+    /// The Finder is shown the helper app — what System Settings lists by its
+    /// identifier — rather than the executable inside it.
+    #[test]
+    fn the_helper_app_is_what_is_revealed() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = dir
+            .path()
+            .join("codeg.app/Contents/Helpers")
+            .join(HELPER_APP);
+        let inside = app.join("Contents/MacOS").join(helper_file_name());
+        std::fs::create_dir_all(inside.parent().unwrap()).unwrap();
+        std::fs::write(&inside, b"").unwrap();
+        temp_env::with_var("CODEG_COMPUTER_HELPER_BIN", Some(&inside), || {
+            assert_eq!(helper_to_reveal(), Some(app.clone()));
+        });
+        let bare = dir.path().join(helper_file_name());
+        std::fs::write(&bare, b"").unwrap();
+        temp_env::with_var("CODEG_COMPUTER_HELPER_BIN", Some(&bare), || {
+            assert_eq!(helper_to_reveal(), Some(bare.clone()));
+        });
+    }
+
+    /// The helper app is put together from files the compiler never sees —
+    /// the Info.plist the sidecar step fills in, the bundle configuration
+    /// that carries the app, the binary target's feature gate — and they
+    /// must agree with what codeg looks for and launches.
+    #[test]
+    fn the_helper_ships_as_codeg_looks_for_it() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let plist =
+            std::fs::read_to_string(root.join("macos/codeg-computer-helper.plist")).unwrap();
+        let value = |key: &str| -> Option<String> {
+            let rest = plist
+                .split(&format!("<key>{key}</key>"))
+                .nth(1)?
+                .trim_start();
+            if rest.starts_with("<true/>") {
+                return Some("true".into());
+            }
+            Some(
+                rest.strip_prefix("<string>")?
+                    .split("</string>")
+                    .next()?
+                    .into(),
+            )
+        };
+        assert_eq!(
+            value("CFBundleIdentifier").as_deref(),
+            Some(HELPER_SIGNING_ID)
+        );
+        assert_eq!(
+            value("CFBundleExecutable").as_deref(),
+            Some("codeg-computer-helper")
+        );
+        // The name System Settings lists it by, as the settings page names it.
+        assert_eq!(
+            value("CFBundleName").as_deref(),
+            Some("codeg-computer-helper")
+        );
+        assert_eq!(value("CFBundlePackageType").as_deref(), Some("APPL"));
+        // No Dock icon for a process that never shows a window.
+        assert_eq!(value("LSUIElement").as_deref(), Some("true"));
+
+        let config = |name: &str| -> serde_json::Value {
+            serde_json::from_str(&std::fs::read_to_string(root.join(name)).unwrap()).unwrap()
+        };
+        let sidecars = |config: &serde_json::Value| -> Vec<String> {
+            config["bundle"]["externalBin"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| v.as_str().unwrap().to_string())
+                .collect()
+        };
+        let mac = config("tauri.macos.conf.json");
+        assert!(sidecars(&mac)
+            .iter()
+            .all(|b| !b.contains("codeg-computer-helper")));
+        assert_eq!(
+            mac["bundle"]["macOS"]["files"][format!("Helpers/{HELPER_APP}")].as_str(),
+            Some(format!("binaries/{HELPER_APP}").as_str())
+        );
+        let base = config("tauri.conf.json");
+        assert!(sidecars(&base).contains(&"binaries/codeg-computer-helper".to_string()));
+
+        // The copy `tauri build` would compile stays out of every bundle: the
+        // CLI bundles a binary target only when its features are among those
+        // it was given, and it is never given this one.
+        let manifest: toml::Table = std::fs::read_to_string(root.join("Cargo.toml"))
+            .unwrap()
+            .parse()
+            .unwrap();
+        let helper_bin = manifest["bin"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|b| b["name"].as_str() == Some("codeg-computer-helper"))
+            .unwrap();
+        assert_eq!(
+            helper_bin["required-features"].as_array().unwrap(),
+            &vec![toml::Value::from("computer-helper")]
+        );
+        assert!(!manifest["features"]["default"]
+            .as_array()
+            .unwrap()
+            .contains(&toml::Value::from("computer-helper")));
     }
 }

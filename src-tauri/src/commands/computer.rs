@@ -1463,7 +1463,7 @@ pub async fn computer_open_permission_settings(
 /// Settings' list by hand, should it not be listed there after a request.
 #[tauri::command]
 pub async fn computer_reveal_helper(app: AppHandle) -> Result<(), AppCommandError> {
-    let helper = crate::computer::local::locate_helper_binary().ok_or_else(|| {
+    let helper = crate::computer::local::helper_to_reveal().ok_or_else(|| {
         AppCommandError::configuration_invalid("codeg-computer-helper was not found")
     })?;
     use tauri_plugin_opener::OpenerExt;
