@@ -678,16 +678,19 @@ pub enum AcpEvent {
     /// into the same deltas without advertising anything to it.
     AsyncTask { delta: AsyncTaskDelta },
     /// `session/load` failed in a way codeg cannot paper over — the agent has
-    /// no record of this `session_id`, the session/process died, or it is
-    /// archived. Emitted instead of silently falling back to `session/new`, so
-    /// the frontend can surface the failure with reload / new-conversation
-    /// actions.
+    /// no record of this `session_id`, the session/process died, it is
+    /// archived, or another client holds it open. Emitted instead of silently
+    /// falling back to `session/new`, so the frontend can surface the failure
+    /// with reload / new-conversation actions.
     SessionLoadFailed {
         session_id: String,
         message: String,
         /// Stable machine-readable identifier: `"resource_not_found"` for
-        /// JSON-RPC -32002, or `"session_unavailable"` / `"session_archived"`
-        /// matched on the wire message. See `classify_session_load_failure`.
+        /// JSON-RPC -32002, `"session_busy"` for codex-acp's typed
+        /// `data.reason: "thread_active_writer"` (2.1.0+; matched on the wire
+        /// message before that), or `"session_unavailable"` /
+        /// `"session_archived"` matched on the wire message. See
+        /// `classify_session_load_error`.
         code: String,
     },
     /// Available slash commands updated

@@ -2348,9 +2348,108 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             // opaque string cursors and lists every server). `.aws` directories
             // under a writable root are now protected by the sandbox: stricter,
             // never looser.
+            //
+            // 2.1.0 is two fixes, #570 and #564. Its changelog also lists #552
+            // "ACP v2 support" — the reason for the minor — but #573 reverted
+            // it before the release, so the tag's source differs from 2.0.1's
+            // by the two fixes alone; when #552 lands again it needs its own
+            // measurement. Dependencies are unchanged (`@openai/codex`
+            // ^0.159.1, which a fresh install now resolves to 0.159.3: a
+            // TUI-only backport whose `debug models --bundled` output is
+            // byte-identical to the snapshot), and `engines` is still absent.
+            // Live over stdio with codeg's exact `clientCapabilities`, the
+            // `initialize` and `session/new` responses and every frame after
+            // them match 2.0.1's apart from the version.
+            //
+            // (w) #570, `request_user_input` for AIR clients, which codeg is.
+            // An `isOther` question no longer gets the synthetic "None of the
+            // above" choice, its note field gains
+            // `_meta.jetbrains.air.customAnswer: true`, and a choice-field
+            // string that matches no option is the user's own answer, handed
+            // to codex as `["None of the above", "user_note: <text>"]` —
+            // codex's own encoding, the one its TUI writes for "Other". codeg
+            // already sent the card's "Other" text that way (main field,
+            // verbatim), so the round trip needs nothing. What changed is the
+            // reloaded rollout: 2.0.1 handed codex `["<text>"]`, and the pair
+            // would have read back as two picks, so the frontend's
+            // `parseCodexAnswers` decodes it to the text. The same decode reads
+            // answers given in codex's TUI, which writes notes the same way.
+            // The marker is a bare `true` here and `{questionId,
+            // isCustomAnswer: true}` on claude; `question::
+            // is_custom_answer_property` reads both. Recorded off the adapter's
+            // own handler driven with codeg's capabilities, on both tags.
+            //
+            // (x) #564: a `session/load` / `session/resume` of a thread another
+            // app-server holds — the Codex app, the CLI, an IDE extension, or
+            // codeg's own forking connection — fails with -32600 and
+            // `data.reason: "thread_active_writer"` instead of a -32603
+            // carrying codex's raw text. `classify_session_load_error` keys the
+            // `session_busy` banner on the reason; the text match stays for
+            // older adapters, and the banner copy now names both kinds of
+            // holder (it named only the fork). Reproduced live on both tags
+            // with two adapter processes on one `CODEX_HOME`; once the holder
+            // exits, the same load succeeds, so the banner's Reload recovers.
+            // codeg's own forking connection no longer holds on until it
+            // exits: it closes the parent right after the step that resumes
+            // the child (`connection::close_forked_parent`), and codex then
+            // unloads the thread after `thread_unload_delay_secs` (60 by
+            // default). Live on 2.1.0, the sibling's load succeeded 61 s after
+            // the close, at once with the delay set to 0, and never without
+            // the close.
+            //
+            // 2.1.1 is three fixes, #572, #577 and #571. Dependencies are
+            // unchanged (a fresh install still resolves `@openai/codex`
+            // 0.159.3) and `engines` is still absent; the published bundle
+            // differs from 2.1.0's by the three fixes and the version. Measured
+            // live over stdio with codeg's exact `clientCapabilities` against a
+            // scripted Responses server: a plain turn's frames match 2.1.0's
+            // apart from the version, and each fix shows up as below.
+            //
+            // (y) #572: when codex's turn error is a service error envelope —
+            // `{"type":"error","status":4xx|5xx,"error":{"type":…,"message":…}}`
+            // with one of nine known error types, the body codex passes on
+            // verbatim for an HTTP 400 — the `sessionFailure` title (and the
+            // legacy text chunk codeg does not get) carry `error.message`
+            // instead of the JSON. codeg shows the title as sent, so the
+            // banner reads the sentence with no change here. Live, a 400 with
+            // that body ends the prompt `end_turn` with the failure on its
+            // `_meta`, titled with the JSON on 2.1.0 and with the message on
+            // 2.1.1. The adapter leaves one place undecoded: a failed
+            // compaction's `error` (`compaction_update`), which the compaction
+            // card shows. Live, a compaction whose request got that 400 put the
+            // JSON on the card beside the readable banner, so codeg reads the
+            // card's error down itself (`acp::service_error`, the adapter's
+            // rule ported, with JavaScript's idea of a blank message; only a
+            // body escaping a lone surrogate, which serde_json refuses, stays
+            // as written).
+            //
+            // (z) #577: the `request_user_input` note field also carries the
+            // root `_meta._askUserQuestionCustomAnswer: true`, because released
+            // AIR builds read only that key. `question::
+            // is_custom_answer_property` now reads a bare `true` under either
+            // key. Recorded live (plan mode, a model that calls the tool), the
+            // form differs from 2.1.0's by that key alone, and codex is handed
+            // the same answers on both: `["Run tests"]` for a pick,
+            // `["None of the above", "user_note: <text>"]` for typed text.
+            //
+            // (aa) #571: `session/load` replays the attachment envelope the
+            // Codex desktop app writes into a user message (`# Files mentioned
+            // by the user:` … `## My request:`) as one `resource_link` per file
+            // plus the request text, and a native local image, audio file or
+            // file mention as a `resource_link`. codeg never renders that
+            // replay (the transcript comes from the rollout), so
+            // `parsers::codex` decodes the same envelope itself
+            // (`parsers::codex_desktop_attachments`): each file becomes the
+            // link codeg renders any attachment as, a badge plus a chip, with
+            // the request after it. It also reads the early desktop marker
+            // `## My request for Codex:`, which 2.1.1 replays as text. Live on
+            // both tags: 2.1.0 replays either envelope as one text block, 2.1.1
+            // splits the current one and leaves the early one whole. Across a
+            // local corpus of 4,137 rollouts, the one message that decodes is
+            // the one desktop envelope in it.
             distribution: AgentDistribution::Npx {
-                version: "2.0.1",
-                package: "@agentclientprotocol/codex-acp@2.0.1",
+                version: "2.1.1",
+                package: "@agentclientprotocol/codex-acp@2.1.1",
                 cmd: "codex-acp",
                 args: &[],
                 env: &[],
@@ -3768,8 +3867,8 @@ mod tests {
         );
         assert_npx_version(
             AgentType::Codex,
-            "2.0.1",
-            "@agentclientprotocol/codex-acp@2.0.1",
+            "2.1.1",
+            "@agentclientprotocol/codex-acp@2.1.1",
             Some("20.0.0"),
         );
         assert_npx_version(AgentType::Pi, "0.0.34", "pi-acp@0.0.34", Some("22.0.0"));
