@@ -2411,8 +2411,8 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             name: "OpenClaw",
             description: "OpenClaw is a personal AI assistant you run on your own devices.",
             distribution: AgentDistribution::Npx {
-                version: "2026.9.6",
-                package: "openclaw@2026.9.6",
+                version: "2026.9.7",
+                package: "openclaw@2026.9.7",
                 cmd: "openclaw",
                 args: &["acp"],
                 env: &[],
@@ -2426,12 +2426,26 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
                 // preflight and then hard-fail at launch, so the floor tracks
                 // the LOWEST supported release. (codeg's `node_required` is a
                 // single minimum, so it cannot express the excluded 25.x and
-                // 26.0.x windows.) 2026.9.4 and 2026.9.6 leave that range and
-                // those floors untouched, and the `supports_mcp: false` anchor
-                // still reads verbatim: `assertSupportedSessionSetup` throws
-                // "ACP bridge mode does not support per-session MCP servers"
-                // from `dist/server-*.mjs` at the same 4 call sites, with `acp`
-                // registered in `dist/acp-cli-*.mjs`.
+                // 26.0.x windows.) 2026.9.4 through 2026.9.7 leave that range
+                // and those floors untouched (`node-version.mjs` is
+                // byte-identical), and the `supports_mcp: false` anchor still
+                // reads verbatim: `assertSupportedSessionSetup` throws "ACP
+                // bridge mode does not support per-session MCP servers" from
+                // `dist/server-*.mjs` at the same 3 call sites (`newSession`,
+                // `loadSession`, `resumeSession`), with `acp` registered in
+                // `dist/acp-cli-*.mjs`.
+                //
+                // 2026.9.7 leaves `initialize` and the update kinds alone and
+                // changes two paths codeg only sees through their output. A
+                // streamed reply is merged from delta-only gateway frames
+                // (`mergeChatStreamMessage`), still reaching codeg as message
+                // and thought chunks. And a prompt cut off by a gateway
+                // disconnect is now rebuilt from the session's chat history;
+                // when that fails, the bridge sends an `agent_message_chunk`
+                // "[OpenClaw interruption] Full reply recovery unavailable
+                // (<reason>). Check the session history." and fails the
+                // `session/prompt` with that message, which codeg reports like
+                // any other failed prompt.
                 //
                 // 2026.9.6's one wire-visible change is ORDER: `session/update`s
                 // for a session are now held until that session's
@@ -2452,9 +2466,21 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             supports_mcp: true,
             name: "Cline",
             description: "Autonomous coding agent CLI",
+            // 3.0.66 moved cline's build from Bun 1.3.13 to 1.4.2, and its
+            // darwin binaries pass `codesign --verify --strict`. The earlier
+            // pins checked (3.0.55, 3.0.60–3.0.65) all shipped Bun's broken
+            // ad-hoc signature (the last, partial page hashed as if
+            // zero-padded), and macOS 27 SIGKILLs such a binary when its exit
+            // path reads that page (`atexit` → `dladdr`): there even
+            // `cline --version` exited 137, and ACP sessions died within a
+            // second of `initialize`. The
+            // ACP surface is unchanged in 3.0.67: `apps/cli/src/acp` has no
+            // diff since 3.0.65, and `initialize` / `session/new` match it but
+            // for the version. What did move for codeg is token accounting;
+            // see `outputTokens` in `parsers::cline`.
             distribution: AgentDistribution::Npx {
-                version: "3.0.65",
-                package: "cline@3.0.65",
+                version: "3.0.67",
+                package: "cline@3.0.67",
                 cmd: "cline",
                 args: &["--acp"],
                 env: &[],
@@ -2466,40 +2492,48 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             supports_mcp: true,
             name: "OpenCode",
             description: "The open source coding agent",
+            // 1.18.34 is the first release whose darwin binaries are signed
+            // with a Developer ID (hardened runtime; upstream's release CI
+            // gained the signing job in this release) rather than the broken
+            // ad-hoc signature Bun leaves behind — the one macOS 27 kills
+            // binaries over (see the Cline entry). 1.18.33's darwin-arm64
+            // binary fails `codesign --verify --strict` yet ran, so nothing
+            // had happened to read its bad page. The ACP surface is unchanged:
+            // `acp --help`, `initialize` and `session/new` match 1.18.33.
             distribution: AgentDistribution::Binary {
-                version: "1.18.33",
+                version: "1.18.34",
                 cmd: "opencode",
                 args: &["acp"],
                 env: &[],
                 platforms: &[
                     PlatformBinary {
                         platform: "darwin-aarch64",
-                        url: "https://github.com/anomalyco/opencode/releases/download/v1.18.33/opencode-darwin-arm64.zip",
+                        url: "https://github.com/anomalyco/opencode/releases/download/v1.18.34/opencode-darwin-arm64.zip",
                         sha256: None,
                     },
                     PlatformBinary {
                         platform: "darwin-x86_64",
-                        url: "https://github.com/anomalyco/opencode/releases/download/v1.18.33/opencode-darwin-x64.zip",
+                        url: "https://github.com/anomalyco/opencode/releases/download/v1.18.34/opencode-darwin-x64.zip",
                         sha256: None,
                     },
                     PlatformBinary {
                         platform: "linux-aarch64",
-                        url: "https://github.com/anomalyco/opencode/releases/download/v1.18.33/opencode-linux-arm64.tar.gz",
+                        url: "https://github.com/anomalyco/opencode/releases/download/v1.18.34/opencode-linux-arm64.tar.gz",
                         sha256: None,
                     },
                     PlatformBinary {
                         platform: "linux-x86_64",
-                        url: "https://github.com/anomalyco/opencode/releases/download/v1.18.33/opencode-linux-x64.tar.gz",
+                        url: "https://github.com/anomalyco/opencode/releases/download/v1.18.34/opencode-linux-x64.tar.gz",
                         sha256: None,
                     },
                     PlatformBinary {
                         platform: "windows-aarch64",
-                        url: "https://github.com/anomalyco/opencode/releases/download/v1.18.33/opencode-windows-arm64.zip",
+                        url: "https://github.com/anomalyco/opencode/releases/download/v1.18.34/opencode-windows-arm64.zip",
                         sha256: None,
                     },
                     PlatformBinary {
                         platform: "windows-x86_64",
-                        url: "https://github.com/anomalyco/opencode/releases/download/v1.18.33/opencode-windows-x64.zip",
+                        url: "https://github.com/anomalyco/opencode/releases/download/v1.18.34/opencode-windows-x64.zip",
                         sha256: None,
                     },
                 ],
@@ -2583,9 +2617,18 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             supports_mcp: true,
             name: "CodeBuddy",
             description: "Tencent Cloud's official AI coding assistant (ACP)",
+            // Since 2.160.0 both bundles `require("esbuild")` unguarded at
+            // load, while `esbuild` is only an OPTIONAL dependency: an install
+            // that drops optional deps dies on `--acp` with "Cannot find module
+            // 'esbuild'" although `--version` still answers. codeg's own
+            // `npm install -g` always passes `--include=optional`, so a managed
+            // install carries it. The `@agentclientprotocol/sdk` and
+            // `@openai/agents-core` dependencies added alongside are type-only
+            // (no `dist/` code loads them), and `initialize` / `session/new`
+            // are unchanged in 2.161.0.
             distribution: AgentDistribution::Npx {
-                version: "2.159.0",
-                package: "@tencent-ai/codebuddy-code@2.159.0",
+                version: "2.161.0",
+                package: "@tencent-ai/codebuddy-code@2.161.0",
                 cmd: "codebuddy",
                 args: &["--acp"],
                 env: &[],
@@ -2924,17 +2967,26 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             // `models` that the composer's selectors and context ring read, and
             // prompting straight after it works. It also skips `session/load`'s
             // history replay, which codeg only drained to discard. The 1.0.1–
-            // 1.0.41 patches add nothing further here: re-probed live against
-            // the 1.0.41 binary, `initialize` still answers
+            // 1.0.46 patches add nothing further here: re-probed live against
+            // the 1.0.46 binary, `initialize` still answers
             // `sessionCapabilities: {list, resume, close}` plus the same
             // `promptCapabilities.embeddedContext` (and `mcpCapabilities`
-            // http+sse, `loadSession: true`), so the resume rung stands. All
-            // six `@xai-official/grok-<os>-<arch>` optional deps are published
-            // at 1.0.41 — they are OPTIONAL, so a platform that lags would fail
-            // only for that platform's users, at run time, in the trampoline.
-            // The pin tracks `dist-tags.latest`, NOT the highest version
-            // number; at 1.0.41 `latest` and `alpha` point at the same version,
-            // so nothing is staged ahead of it.
+            // http+sse, `loadSession: true`), and `session/resume` still
+            // carries `x.ai/sessionConfig` and the per-model `models`, so the
+            // resume rung stands. All six `@xai-official/grok-<os>-<arch>`
+            // optional deps are published at 1.0.46 — they are OPTIONAL, so a
+            // platform that lags would fail only for that platform's users, at
+            // run time, in the trampoline. The pin tracks `dist-tags.latest`,
+            // NOT the highest version number; at 1.0.46 `latest` and `alpha`
+            // point at the same version, so nothing is staged ahead of it.
+            //
+            // One tool input codeg renders did change after 1.0.41:
+            // `run_terminal_command` dropped `background` and `timeout` for
+            // `block_until_ms` (how long to wait before backgrounding the
+            // command: 30000 by default, 0 at once), so a grok shell card no
+            // longer has a timeout to show. A background launch still answers
+            // with the text "Background task <id> started", which is what
+            // codeg's launch matcher (`parseBackgroundLaunch`) reads.
             //
             // 1.0.40 DID add one thing that reaches codeg, and it needed a fix
             // on our side: it narrates `session/new` progress on the
@@ -2947,16 +2999,18 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             // frame and it would sit in the retry queue for the connection's
             // life. `ClaimNullSessionIds` in connection.rs claims
             // those frames before they can be parked, so this bump is safe only
-            // together with that guard.
+            // together with that guard. 1.0.46 still sends exactly those five
+            // (`auth` … `mcp_merge`); the `agent_build` phase added since
+            // 1.0.41 comes after the id exists and carries it.
             distribution: AgentDistribution::Npx {
-                version: "1.0.41",
-                package: "@xai-official/grok@1.0.41",
+                version: "1.0.46",
+                package: "@xai-official/grok@1.0.46",
                 cmd: "grok",
                 // Only the ACP subcommand lives here. Grok's ROOT-level launch
                 // flags (`--no-auto-update` always, `--permission-mode <value>`
                 // only for a non-default permission mode) MUST precede this
                 // subcommand — `grok agent stdio` itself rejects them (re-verified
-                // against 1.0.41: it still only accepts --debug/--debug-file/
+                // against 1.0.46: it still only accepts --debug/--debug-file/
                 // --leader-socket) — so `build_agent` inserts them ahead of these
                 // args rather than appending after. Since 1.0.3 `grok --help` no
                 // longer LISTS `--no-auto-update`, but it is still accepted:
@@ -2967,7 +3021,7 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
                 // auto/dontAsk/bypassPermissions/plan).
                 args: &["agent", "stdio"],
                 env: &[],
-                // `@xai-official/grok@1.0.41` declares `engines.node: ">=20"`;
+                // `@xai-official/grok@1.0.46` declares `engines.node: ">=20"`;
                 // surface that in preflight so Node 18 isn't silently accepted.
                 node_required: Some("20.0.0"),
             },
@@ -2989,39 +3043,39 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             // (downloads.cursor.com/lab/<version>/<os>/<arch>/...); custom
             // versions substitute into the same pattern.
             distribution: AgentDistribution::Binary {
-                version: "2026.09.26-dd393fe",
+                version: "2026.09.28-64d2043",
                 cmd: "cursor-agent",
                 args: &["acp"],
                 env: &[],
                 platforms: &[
                     PlatformBinary {
                         platform: "darwin-aarch64",
-                        url: "https://downloads.cursor.com/lab/2026.09.26-dd393fe/darwin/arm64/agent-cli-package.tar.gz",
+                        url: "https://downloads.cursor.com/lab/2026.09.28-64d2043/darwin/arm64/agent-cli-package.tar.gz",
                         sha256: None,
                     },
                     PlatformBinary {
                         platform: "darwin-x86_64",
-                        url: "https://downloads.cursor.com/lab/2026.09.26-dd393fe/darwin/x64/agent-cli-package.tar.gz",
+                        url: "https://downloads.cursor.com/lab/2026.09.28-64d2043/darwin/x64/agent-cli-package.tar.gz",
                         sha256: None,
                     },
                     PlatformBinary {
                         platform: "linux-aarch64",
-                        url: "https://downloads.cursor.com/lab/2026.09.26-dd393fe/linux/arm64/agent-cli-package.tar.gz",
+                        url: "https://downloads.cursor.com/lab/2026.09.28-64d2043/linux/arm64/agent-cli-package.tar.gz",
                         sha256: None,
                     },
                     PlatformBinary {
                         platform: "linux-x86_64",
-                        url: "https://downloads.cursor.com/lab/2026.09.26-dd393fe/linux/x64/agent-cli-package.tar.gz",
+                        url: "https://downloads.cursor.com/lab/2026.09.28-64d2043/linux/x64/agent-cli-package.tar.gz",
                         sha256: None,
                     },
                     PlatformBinary {
                         platform: "windows-aarch64",
-                        url: "https://downloads.cursor.com/lab/2026.09.26-dd393fe/windows/arm64/agent-cli-package.zip",
+                        url: "https://downloads.cursor.com/lab/2026.09.28-64d2043/windows/arm64/agent-cli-package.zip",
                         sha256: None,
                     },
                     PlatformBinary {
                         platform: "windows-x86_64",
-                        url: "https://downloads.cursor.com/lab/2026.09.26-dd393fe/windows/x64/agent-cli-package.zip",
+                        url: "https://downloads.cursor.com/lab/2026.09.28-64d2043/windows/x64/agent-cli-package.zip",
                         sha256: None,
                     },
                 ],
@@ -3216,10 +3270,13 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             // and MCP http+sse — so the resume rung and the codeg-mcp
             // companion work with no adapters in between. Auth is the qoder
             // account (`qoder login`, or the IDE's qoder-browser flow); there
-            // is no API-key env to manage. Model, mode (default/acceptEdits/
-            // bypassPermissions/plan) and reasoning effort arrive through
-            // standard `configOptions`, so the composer selectors need no
-            // per-agent code. Session logs land as
+            // is no API-key env to manage. Model, mode and reasoning effort
+            // arrive through standard `configOptions`, so the composer
+            // selectors need no per-agent code. The modes are default/
+            // acceptEdits/auto/dontAsk/yolo, `yolo` being the one labelled
+            // "Bypass Permissions" (`bypassPermissions` is accepted as an alias
+            // for it, `plan` is rejected) — re-read live on 1.1.64 and 1.1.65,
+            // and nothing in codeg names them. Session logs land as
             // `$QODER_CONFIG_DIR/projects/<encoded-cwd>/<sessionId>.jsonl`
             // (default `~/.qoder/...`) in the Claude-Code-style chunk-log
             // envelope, which `parsers::qoder` reads for history — including
@@ -3244,8 +3301,9 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             // writes zeros.
             //
             // The name is assembled at runtime from a `QODER_`/`QODERCN_`
-            // prefix (`Sr(A) = `${vv}${A}``, `ebA = Sr("EXPOSE_TOKEN_USAGE")`),
-            // so grepping the bundle for the full literal returns nothing —
+            // prefix (`Sr(A) = `${vv}${A}``, `ebA = Sr("EXPOSE_TOKEN_USAGE")`
+            // in 1.1.54; the minified names change every build), so grepping
+            // the bundle for the full literal returns nothing —
             // grep the bare suffix instead, the same trap `parsers::qoder`
             // documents for the config-dir vars.
             //
@@ -3253,8 +3311,8 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             // `runtime_env` override it, so a user who wants the redaction back
             // sets `QODER_EXPOSE_TOKEN_USAGE=0` in the agent's env settings.
             distribution: AgentDistribution::Npx {
-                version: "1.1.64",
-                package: "@qoder-ai/qodercli@1.1.64",
+                version: "1.1.65",
+                package: "@qoder-ai/qodercli@1.1.65",
                 cmd: "qoder",
                 args: &["--acp"],
                 env: &[("QODER_EXPOSE_TOKEN_USAGE", "1")],
@@ -3590,8 +3648,8 @@ mod tests {
         let meta = get_agent_meta(AgentType::Cursor);
         assert_binary_version(
             AgentType::Cursor,
-            "2026.09.26-dd393fe",
-            "/lab/2026.09.26-dd393fe/",
+            "2026.09.28-64d2043",
+            "/lab/2026.09.28-64d2043/",
         );
         match meta.distribution {
             AgentDistribution::Binary {
@@ -3679,25 +3737,25 @@ mod tests {
             Some("20.0.0"),
         );
         // OpenClaw's floor is a RUNTIME gate (`node-version.mjs`), not just
-        // `engines` metadata: 2026.9.3 retired the Node 22 lane and 2026.9.6
+        // `engines` metadata: 2026.9.3 retired the Node 22 lane and 2026.9.7
         // keeps that range, so this must stay at the lowest release the guard
         // admits (see the registry entry).
         assert_npx_version(
             AgentType::OpenClaw,
-            "2026.9.6",
-            "openclaw@2026.9.6",
+            "2026.9.7",
+            "openclaw@2026.9.7",
             Some("24.16.0"),
         );
         assert_npx_version(
             AgentType::Cline,
-            "3.0.65",
-            "cline@3.0.65",
+            "3.0.67",
+            "cline@3.0.67",
             Some("22.0.0"),
         );
         assert_npx_version(
             AgentType::CodeBuddy,
-            "2.159.0",
-            "@tencent-ai/codebuddy-code@2.159.0",
+            "2.161.0",
+            "@tencent-ai/codebuddy-code@2.161.0",
             Some("22.0.0"),
         );
         // Kimi Code must never land on 0.37.0–0.38.0: every session in that
@@ -3717,8 +3775,8 @@ mod tests {
         assert_npx_version(AgentType::Pi, "0.0.34", "pi-acp@0.0.34", Some("22.0.0"));
         assert_npx_version(
             AgentType::Grok,
-            "1.0.41",
-            "@xai-official/grok@1.0.41",
+            "1.0.46",
+            "@xai-official/grok@1.0.46",
             Some("20.0.0"),
         );
         assert_npx_version(
@@ -3729,11 +3787,11 @@ mod tests {
         );
         assert_npx_version(
             AgentType::Qoder,
-            "1.1.64",
-            "@qoder-ai/qodercli@1.1.64",
+            "1.1.65",
+            "@qoder-ai/qodercli@1.1.65",
             Some("20.0.0"),
         );
-        assert_binary_version(AgentType::OpenCode, "1.18.33", "/releases/download/v1.18.33/");
+        assert_binary_version(AgentType::OpenCode, "1.18.34", "/releases/download/v1.18.34/");
         // Hermes rides the community npm bridge (upstream retired its PyPI
         // channel at 0.19.0; see the registry entry). The npm package version
         // tracks the upstream version 1:1, and the pin must stay EXACT — the
