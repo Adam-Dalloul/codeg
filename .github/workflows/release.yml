@@ -612,6 +612,9 @@ jobs:
       #     never asks it to — `StopShortcut` names no media key and no webview
       #     is given the shortcut plugin, both held by tests. Nothing else is
       #     let through.
+      #   * the bundle carries no `codeg-server`, and its `codeg-mcp` is the
+      #     sidecar built without the desktop features (no WebKit): the copies
+      #     `tauri build` compiles itself stay out (`server-bin` / `mcp-bin`).
       - name: Verify computer-use signing and symbols (macOS)
         if: contains(matrix.target, 'apple-darwin')
         shell: bash
@@ -630,6 +633,14 @@ jobs:
           fi
           if [ ! -d "$helper_app" ]; then
             echo "FATAL: $helper_app not found"
+            exit 1
+          fi
+          if [ -e "$app/Contents/MacOS/codeg-server" ]; then
+            echo "FATAL: codeg-server is in the desktop bundle; its binary target must need server-bin"
+            exit 1
+          fi
+          if otool -L "$app/Contents/MacOS/codeg-mcp" | grep -q 'WebKit'; then
+            echo "FATAL: codeg-mcp links WebKit: tauri build's own copy replaced the sidecar"
             exit 1
           fi
           for path in "$app/Contents/MacOS/codeg" "$app/Contents/MacOS/codeg-mcp" "$helper_app"; do
@@ -797,10 +808,10 @@ jobs:
         # session (see acp/delegation/companion.rs). Built with the same
         # `--no-default-features --target` flags as the server so it shares
         # the cross-compile env (Linux arm64) without dragging in tauri
-        # runtime deps.
+        # runtime deps. Each binary target needs its own feature (Cargo.toml).
         run: |
-          cargo build --release --bin codeg-server --no-default-features --target ${{ matrix.target }}
-          cargo build --release --bin codeg-mcp --no-default-features --target ${{ matrix.target }}
+          cargo build --release --bin codeg-server --no-default-features --features server-bin --target ${{ matrix.target }}
+          cargo build --release --bin codeg-mcp --no-default-features --features mcp-bin --target ${{ matrix.target }}
 
       - name: Package (Unix)
         if: runner.os != 'Windows'

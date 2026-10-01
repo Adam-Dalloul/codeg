@@ -43,14 +43,24 @@ tauri-runtime = [
 # `ConnectionManager::insert_test_connection`, parser `with_base_dir`, the
 # `db::test_helpers` module) for integration tests in `tests/*.rs`. Without
 # this feature the items are physically uncompiled in release builds. It
-# also builds the computer-use helper, so the test and lint runs cover it.
-test-utils = ["computer-helper"]
+# also builds the three standalone binaries below, so the test and lint runs
+# cover them.
+test-utils = ["computer-helper", "server-bin", "mcp-bin"]
 # The `codeg-computer-helper` binary. Off unless asked for: the Tauri CLI puts
 # every binary target whose features are on into a bundle, and the copy
 # `tauri build` would compile is not the helper that ships. That is the one
 # `prepare-sidecars` builds with this feature — a sidecar, and on macOS an app
 # of its own (see `tauri.macos.conf.json`).
 computer-helper = []
+# The `codeg-server` binary. Off unless asked for, for the same reason: the
+# desktop app serves its web interface from its own process and has no use
+# for a second server, so it must not ship one (70–90 MB) in its bundle.
+server-bin = []
+# The `codeg-mcp` binary, likewise: the companion that ships is the sidecar
+# `prepare-sidecars` builds without the desktop features, and the copy `tauri
+# build` would compile — with them, WebKit and all — would replace it in the
+# bundle.
+mcp-bin = []
 # Built-in browser. `browser-child` compiles the embedded surface: a wry child
 # webview created directly through tauri-runtime-wry's re-exported `wry`
 # (`WebViewBuilder::build_as_child`), which is exactly how tauri-runtime-wry
@@ -70,15 +80,20 @@ name = "codeg"
 path = "src/main.rs"
 required-features = ["tauri-runtime"]
 
+# The standalone server. Built only with `server-bin` (and, for the real
+# thing, without the default features): `cargo build --release --bin
+# codeg-server --no-default-features --features server-bin`.
 [[bin]]
 name = "codeg-server"
 path = "src/bin/codeg_server.rs"
-required-features = []
+required-features = ["server-bin"]
 
+# The MCP companion each agent session runs. Built only with `mcp-bin` (and,
+# for the real thing, without the default features).
 [[bin]]
 name = "codeg-mcp"
 path = "src/bin/codeg_mcp.rs"
-required-features = []
+required-features = ["mcp-bin"]
 
 # The computer-use executor: holds the OS permissions (macOS TCC) in place of
 # codeg, and runs the pinned cua-driver as its child. No Tauri: it is launched
@@ -87,6 +102,12 @@ required-features = []
 name = "codeg-computer-helper"
 path = "src/bin/codeg_computer_helper.rs"
 required-features = ["computer-helper"]
+
+# Runs the `codeg-server` binary, so only where that is built.
+[[test]]
+name = "credential_helper_subprocess"
+path = "tests/credential_helper_subprocess.rs"
+required-features = ["server-bin"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [], optional = true }

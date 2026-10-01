@@ -5,9 +5,9 @@
 // What it does:
 //   1. Resolves the target triple — `--target <triple>` arg, or
 //      `TAURI_TARGET_TRIPLE` env, or the host's `rustc -vV` host triple.
-//   2. Runs `cargo build --release --no-default-features` for each sidecar
-//      bin (`codeg-mcp`, `codeg-computer-helper`) for that triple from
-//      `src-tauri/`.
+//   2. Runs `cargo build --release --no-default-features`, with the feature
+//      each binary target requires, for each sidecar bin (`codeg-mcp`,
+//      `codeg-computer-helper`) for that triple from `src-tauri/`.
 //   3. Copies each produced binary to
 //      `src-tauri/binaries/<bin>-<triple>{.exe}` so Tauri's externalBin
 //      bundler picks it up under its bare name at install time.
@@ -57,6 +57,8 @@ const BINARIES_DIR = join(SRC_TAURI, "binaries")
 // Every sidecar in `bundle.externalBin`, in the order they are built. (On
 // macOS the helper is bundled as an app instead; see `stageHelperApp`.)
 const BIN_NAMES = ["codeg-mcp", "codeg-computer-helper"]
+// The features their binary targets require (Cargo.toml).
+const FEATURES = "mcp-bin,computer-helper"
 const HELPER = "codeg-computer-helper"
 const HELPER_APP = join(BINARIES_DIR, `${HELPER}.app`)
 
@@ -145,16 +147,16 @@ function main() {
 
   log(`target triple: ${target}`)
   log(
-    `building ${BIN_NAMES.join(", ")} (--release --no-default-features --features computer-helper)`
+    `building ${BIN_NAMES.join(", ")} (--release --no-default-features --features ${FEATURES})`
   )
 
   // cargo build needs to run from src-tauri so it resolves the local manifest
   // and shares the swatinem/rust-cache key with other cargo invocations.
   // `--no-default-features` keeps the sidecars free of the Tauri runtime deps
-  // — their required-features are empty, so this just enables cross-compile
-  // without dragging in macOS-private-api / Linux WebKit / Windows WebView2.
-  // One cargo invocation for both, so they share one dependency build. The
-  // helper's binary target needs `computer-helper` (see Cargo.toml).
+  // — so they cross-compile without dragging in macOS-private-api / Linux
+  // WebKit / Windows WebView2. One cargo invocation for both, so they share
+  // one dependency build. Each binary target needs its own feature (see
+  // Cargo.toml): off by default, so `tauri build` leaves them alone.
   execFileSync(
     "cargo",
     [
@@ -163,7 +165,7 @@ function main() {
       ...BIN_NAMES.flatMap((name) => ["--bin", name]),
       "--no-default-features",
       "--features",
-      "computer-helper",
+      FEATURES,
       "--target",
       target,
     ],
