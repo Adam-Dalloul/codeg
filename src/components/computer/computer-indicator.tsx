@@ -46,9 +46,11 @@ const MARGIN = 6
  *  says agents can see it. */
 const ACTIONS: ReadonlySet<ComputerAction> = new Set([
   "click",
+  "drag",
   "scroll",
   "type",
   "key",
+  "hold-key",
   "set-value",
   "restore",
 ])

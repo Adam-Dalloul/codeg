@@ -345,19 +345,47 @@ pub const MAX_KEY_REPEAT: u32 = 20;
 /// The most wheel notches (or keystrokes) one `computer_scroll` sends.
 pub const MAX_SCROLL_AMOUNT: u32 = 25;
 
+/// The longest a drag's path may take, the driver's own bound.
+pub const MAX_DRAG_MS: u32 = 10_000;
+
+/// The longest one `computer_hold_key` holds its key. Each press takes its
+/// own turn at the driver, so other calls go in between; the bound is on how
+/// long one call keeps pressing.
+pub const MAX_HOLD_MS: u32 = 10_000;
+
+fn no_modifiers(modifiers: &crate::computer::keys::Modifiers) -> bool {
+    modifiers.is_empty()
+}
+
 /// What an agent asks to do to one shared window. A closed set, rebuilt field
 /// by field on its way to the driver, like the verify predicates.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum ComputerActRequest {
     /// Click an element, or a point. `count` is 1 or 2 (a double click, left
-    /// button only).
+    /// button only). `modifiers` are held down for the click.
     #[serde(rename_all = "camelCase")]
     Click {
         target: AgentTarget,
         #[serde(default)]
         button: PointerButton,
         count: u8,
+        #[serde(default, skip_serializing_if = "no_modifiers")]
+        modifiers: crate::computer::keys::Modifiers,
+    },
+    /// Press at one point of the window's latest screenshot, move to another
+    /// and let go — with `modifiers` held for the whole of it. `duration_ms`
+    /// is how long the path takes.
+    #[serde(rename_all = "camelCase")]
+    Drag {
+        from: PointTarget,
+        to: PointTarget,
+        #[serde(default)]
+        button: PointerButton,
+        #[serde(default, skip_serializing_if = "no_modifiers")]
+        modifiers: crate::computer::keys::Modifiers,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        duration_ms: Option<u32>,
     },
     /// Scroll at an element or a point — or, with no target, whatever has
     /// focus in the window.
@@ -386,6 +414,16 @@ pub enum ComputerActRequest {
         chord: crate::computer::keys::Chord,
         repeat: u32,
     },
+    /// Hold a key down for `duration_ms`, as a held key repeats: pressed,
+    /// then — after the system's usual delay — again and again until the
+    /// time is up. On an element or on whatever has focus.
+    #[serde(rename_all = "camelCase")]
+    HoldKey {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        target: Option<ElementTarget>,
+        chord: crate::computer::keys::Chord,
+        duration_ms: u32,
+    },
     /// Set an element's value outright — a text field's text, a slider's
     /// position, a pop-up menu's choice.
     #[serde(rename_all = "camelCase")]
@@ -405,7 +443,12 @@ impl ComputerActRequest {
     pub fn can_come_forward(&self) -> bool {
         matches!(
             self,
-            Self::Click { .. } | Self::Scroll { .. } | Self::Type { .. } | Self::Key { .. }
+            Self::Click { .. }
+                | Self::Drag { .. }
+                | Self::Scroll { .. }
+                | Self::Type { .. }
+                | Self::Key { .. }
+                | Self::HoldKey { .. }
         )
     }
 
@@ -519,6 +562,7 @@ mod tests {
                 }),
                 button: PointerButton::Left,
                 count: 1,
+                modifiers: Default::default(),
             }
         );
         let typed: ComputerActRequest = serde_json::from_value(serde_json::json!({
@@ -531,6 +575,31 @@ mod tests {
         let restore: ComputerActRequest =
             serde_json::from_value(serde_json::json!({ "kind": "restore" })).unwrap();
         assert_eq!(restore, ComputerActRequest::Restore);
+        let drag: ComputerActRequest = serde_json::from_value(serde_json::json!({
+            "kind": "drag",
+            "from": { "generation": "2.4", "x": 1, "y": 2 },
+            "to": { "generation": "2.4", "x": 30, "y": 40 },
+            "modifiers": { "shift": true }
+        }))
+        .unwrap();
+        assert!(matches!(
+            drag,
+            ComputerActRequest::Drag { modifiers, duration_ms: None, .. } if modifiers.shift
+        ));
+        let hold: ComputerActRequest = serde_json::from_value(serde_json::json!({
+            "kind": "holdKey",
+            "chord": { "key": "right" },
+            "durationMs": 1500
+        }))
+        .unwrap();
+        assert!(matches!(
+            hold,
+            ComputerActRequest::HoldKey {
+                target: None,
+                duration_ms: 1500,
+                ..
+            }
+        ));
         for bad in [
             serde_json::json!({ "kind": "click", "target": { "kind": "desktop" }, "count": 1 }),
             serde_json::json!({ "kind": "click", "count": 1, "target": { "kind": "element",

@@ -5234,9 +5234,11 @@
       "snapshot": "読み取り",
       "verify": "確認",
       "click": "クリック",
+      "drag": "ドラッグ",
       "scroll": "スクロール",
       "type": "入力",
       "key": "キー",
+      "hold-key": "キー長押し",
       "set-value": "値の設定",
       "restore": "復元",
       "outcome": {

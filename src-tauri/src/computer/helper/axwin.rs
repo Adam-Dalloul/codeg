@@ -118,6 +118,30 @@ pub async fn out_of_sight(pid: u32, window_id: u64) -> Option<OutOfSight> {
     .flatten()
 }
 
+/// The windows `pid`'s application names as its focused one and as its
+/// main one, by window id: what it brings forward when it is activated.
+/// Each `None` where it names none, or would not say.
+pub async fn focused_and_main(pid: u32) -> (Option<u64>, Option<u64>) {
+    tokio::task::spawn_blocking(move || {
+        let Some(app) = application(pid) else {
+            return (None, None);
+        };
+        // SAFETY: a pure query.
+        let element_type = unsafe { AXUIElementGetTypeID() };
+        let named = |name: &'static str| {
+            let window = attribute(&app, name).ok()?;
+            // SAFETY: a live object, only asked its type.
+            if unsafe { CFGetTypeID(window.as_CFTypeRef()) } != element_type {
+                return None;
+            }
+            window_number(&window)
+        };
+        (named("AXFocusedWindow"), named("AXMainWindow"))
+    })
+    .await
+    .unwrap_or((None, None))
+}
+
 /// What asking for a window back came to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Restore {

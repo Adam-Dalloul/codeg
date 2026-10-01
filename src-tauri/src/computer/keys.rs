@@ -329,6 +329,28 @@ pub fn classify(chord: &Chord, platform: Platform) -> ChordClass {
     }
 }
 
+/// Whether a window grant reaches `modifiers` held during a click or a drag
+/// on `platform`: Shift and Control everywhere — a click with them stays the
+/// window's own (extending a selection, a context click). On a Mac Command
+/// too, and not Option: Option-clicking a window's close button closes every
+/// window of the application, and minimizing or zooming acts on them all the
+/// same. Elsewhere Alt, and never the Windows / Super key, which is the
+/// desktop's.
+pub fn pointer_modifiers_allowed(modifiers: Modifiers, platform: Platform) -> bool {
+    match platform {
+        Platform::Mac => !modifiers.alt,
+        Platform::Windows | Platform::Linux => !modifiers.meta,
+    }
+}
+
+/// Whether `platform`'s driver holds `modifiers` down over a drag. macOS's
+/// does. Windows' and Linux's drag without them and answer that they
+/// dragged — a move where a copy was meant — so there a drag with keys held
+/// is not sent at all.
+pub fn drag_carries_modifiers(modifiers: Modifiers, platform: Platform) -> bool {
+    modifiers.is_empty() || platform == Platform::Mac
+}
+
 /// The chords a window grant allows, in words, for a refusal to quote.
 pub fn window_chords_note(platform: Platform) -> &'static str {
     match platform {
@@ -351,6 +373,42 @@ pub fn window_chords_note(platform: Platform) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Shift and Control may be held over a pointer everywhere; Command on a
+    /// Mac, not Option, which reaches every window of the application; Alt
+    /// elsewhere, never the Windows and Super keys, which are the desktop's.
+    #[test]
+    fn pointer_modifiers_stop_where_the_window_does() {
+        let m = |names: &[&str]| Modifiers::parse(names).unwrap();
+        for platform in [Platform::Mac, Platform::Windows, Platform::Linux] {
+            assert!(pointer_modifiers_allowed(m(&[]), platform));
+            assert!(pointer_modifiers_allowed(m(&["shift", "ctrl"]), platform));
+        }
+        assert!(pointer_modifiers_allowed(
+            m(&["cmd", "shift"]),
+            Platform::Mac
+        ));
+        assert!(!pointer_modifiers_allowed(m(&["option"]), Platform::Mac));
+        assert!(pointer_modifiers_allowed(m(&["alt"]), Platform::Windows));
+        assert!(pointer_modifiers_allowed(m(&["alt"]), Platform::Linux));
+        assert!(!pointer_modifiers_allowed(m(&["win"]), Platform::Windows));
+        assert!(!pointer_modifiers_allowed(
+            m(&["super", "shift"]),
+            Platform::Linux
+        ));
+    }
+
+    /// Keys are held over a drag only where the driver holds them.
+    #[test]
+    fn drags_hold_keys_only_on_a_mac() {
+        let shift = Modifiers::parse(&["shift"]).unwrap();
+        assert!(drag_carries_modifiers(shift, Platform::Mac));
+        for platform in [Platform::Mac, Platform::Windows, Platform::Linux] {
+            assert!(drag_carries_modifiers(Modifiers::default(), platform));
+        }
+        assert!(!drag_carries_modifiers(shift, Platform::Windows));
+        assert!(!drag_carries_modifiers(shift, Platform::Linux));
+    }
 
     fn chord(key: &str, modifiers: &[&str]) -> Chord {
         Chord {

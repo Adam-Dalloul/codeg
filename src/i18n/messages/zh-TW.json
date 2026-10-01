@@ -5234,9 +5234,11 @@
       "snapshot": "讀取",
       "verify": "檢查",
       "click": "點擊",
+      "drag": "拖曳",
       "scroll": "捲動",
       "type": "輸入",
       "key": "按鍵",
+      "hold-key": "按住按鍵",
       "set-value": "設值",
       "restore": "還原視窗",
       "outcome": {

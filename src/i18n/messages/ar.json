@@ -5234,9 +5234,11 @@
       "snapshot": "قراءة",
       "verify": "تحقق",
       "click": "نقر",
+      "drag": "سحب",
       "scroll": "تمرير",
       "type": "كتابة",
       "key": "مفتاح",
+      "hold-key": "ضغط مستمر على مفتاح",
       "set-value": "تعيين قيمة",
       "restore": "استعادة",
       "outcome": {

@@ -74,7 +74,10 @@ async fn call(
     Ok(result)
 }
 
-fn structured<'a>(tool: &str, result: &'a ToolCallResult) -> Result<&'a Value, HelperError> {
+pub(super) fn structured<'a>(
+    tool: &str,
+    result: &'a ToolCallResult,
+) -> Result<&'a Value, HelperError> {
     result
         .structured
         .as_ref()
@@ -414,7 +417,7 @@ fn join_identified(windows: Vec<RawWindow>, stamps: Vec<Option<u64>>) -> Vec<Raw
 /// application is hidden (⌘H) is off screen and still the same window, and a
 /// listing that dropped it would read as the window closing and end the
 /// grant.
-fn parse_windows(value: &Value) -> Result<Vec<RawWindow>, HelperError> {
+pub(super) fn parse_windows(value: &Value) -> Result<Vec<RawWindow>, HelperError> {
     let flag = |w: &Value, key: &str| w.get(key).and_then(Value::as_bool);
     required_array("list_windows", value, "windows").map(|windows| {
             windows

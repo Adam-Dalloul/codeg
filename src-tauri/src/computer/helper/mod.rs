@@ -886,10 +886,7 @@ async fn handle_op(
                     .element()
                     .and_then(|element| book.frame(pid, window_id, element))
             };
-            let window_frame = match action.point() {
-                Some(point) => act::check_point(&driver, pid, window_id, point).await?,
-                None => None,
-            };
+            let window_frame = act::check_points(&driver, pid, window_id, &action.points()).await?;
             let done = act::act(&driver, pid, window_id, &action, mode, &delivery).await?;
             value(RawAct {
                 element_frame,

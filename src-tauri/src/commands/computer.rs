@@ -56,16 +56,17 @@ use tauri::{AppHandle, Manager};
 use crate::acp::computer_tools::{
     background_next_step, blocked_note, chord_beyond_note, control_required_note, cut_away_note,
     grant_required_note, no_pointing_note, no_such_ref_note, no_such_target_note,
-    not_actionable_note, permission_missing_note, stale_capture_note, stale_snapshot_note,
-    ComputerActOutcome, ComputerAppsOutcome, ComputerCaptureOutcome, ComputerSnapshotOutcome,
-    ComputerToolAccess, ComputerToolsConfig, ComputerToolsRuntimeConfig, ComputerVerifyOutcome,
-    ComputerWindowsOutcome, InputPolicy, SnapshotRequest, DEFAULT_MAX_DIMENSION,
-    DEFAULT_SNAPSHOT_MAX_CHARS, ERROR_ACTION_FAILED, ERROR_BACKGROUND_UNAVAILABLE, ERROR_BLOCKED,
-    ERROR_CONTROL_REQUIRED, ERROR_FOREGROUND_NOT_ALLOWED, ERROR_GRANT_REQUIRED,
-    ERROR_NO_SUCH_TARGET, ERROR_OCCLUDED, ERROR_OUT_OF_TARGET, ERROR_PAUSED,
-    ERROR_PERMISSION_MISSING, ERROR_READ_FAILED, ERROR_STALE_REF, ERROR_STOPPED, ERROR_UNAVAILABLE,
-    FOREGROUND_NOT_ALLOWED_NOTE, NEEDS_ELEMENT_NOTE, NO_DESKTOP_NOTE, OUT_OF_IMAGE_NOTE,
-    PASTE_NOTE, RESTORE_NEEDS_FRONT_NOTE, SECRET_FIELD_NOTE, STOPPED_NOTE,
+    not_actionable_note, permission_missing_note, reshared_note, stale_capture_note,
+    stale_snapshot_note, ComputerActOutcome, ComputerAppsOutcome, ComputerCaptureOutcome,
+    ComputerSnapshotOutcome, ComputerToolAccess, ComputerToolsConfig, ComputerToolsRuntimeConfig,
+    ComputerVerifyOutcome, ComputerWindowsOutcome, InputPolicy, SnapshotRequest,
+    DEFAULT_MAX_DIMENSION, DEFAULT_SNAPSHOT_MAX_CHARS, DRAG_MODIFIERS_NOTE, ERROR_ACTION_FAILED,
+    ERROR_BACKGROUND_UNAVAILABLE, ERROR_BLOCKED, ERROR_CONTROL_REQUIRED,
+    ERROR_FOREGROUND_NOT_ALLOWED, ERROR_GRANT_REQUIRED, ERROR_NO_SUCH_TARGET, ERROR_OCCLUDED,
+    ERROR_OUT_OF_TARGET, ERROR_PAUSED, ERROR_PERMISSION_MISSING, ERROR_READ_FAILED,
+    ERROR_STALE_REF, ERROR_STOPPED, ERROR_UNAVAILABLE, FOREGROUND_NOT_ALLOWED_NOTE,
+    NEEDS_ELEMENT_NOTE, NO_DESKTOP_NOTE, OUT_OF_IMAGE_NOTE, PASTE_NOTE, RESTORE_NEEDS_FRONT_NOTE,
+    SECRET_FIELD_NOTE, STOPPED_NOTE,
 };
 use crate::app_error::AppCommandError;
 use crate::computer::agent::{
@@ -88,8 +89,8 @@ use crate::computer::targets::{
     TargetTable, WindowIdentity,
 };
 use crate::computer::types::{
-    ActDelivery, ActReport, AgentAppRef, AgentAppSummary, ComputerActRequest, Rect,
-    VerifyOutcome, VerifyRequest, WindowCapture, WindowSnapshot, MAX_KEY_REPEAT,
+    ActDelivery, ActReport, AgentAppRef, AgentAppSummary, ComputerActRequest, Rect, VerifyOutcome,
+    VerifyRequest, WindowCapture, WindowSnapshot, MAX_HOLD_MS, MAX_KEY_REPEAT,
 };
 
 /// How often lapsed grants are swept, so the panel shows a window as no
@@ -324,6 +325,9 @@ fn denied(target_id: &str, why: ActDenied) -> Refusal {
         ActDenied::Paste => Refusal::refused(ERROR_GRANT_REQUIRED, PASTE_NOTE.into()),
         ActDenied::NeedsElement => Refusal::failed(ERROR_ACTION_FAILED, NEEDS_ELEMENT_NOTE.into()),
         ActDenied::NoPointing => Refusal::failed(ERROR_ACTION_FAILED, no_pointing_note(target_id)),
+        ActDenied::DragModifiers => {
+            Refusal::failed(ERROR_ACTION_FAILED, DRAG_MODIFIERS_NOTE.into())
+        }
     }
 }
 
@@ -1183,20 +1187,29 @@ impl ComputerService {
         }
     }
 
-    /// One action, checked from the top: its turn at the driver first, then
-    /// the switch, the grant and the action against what the agent last
-    /// read, the process, whether its window may come to the front if that
-    /// is how it is to go (`requested`, or the person's default), no Stop
-    /// since it began — and then the helper, which checks again what only it
-    /// can see, the Stop count included. Answers with how it was delivered.
+    /// One action, checked from the top — its turn at the driver held by
+    /// the caller (`_turn`) — the switch, the grant and the action against
+    /// what the agent last read, the process, whether its window may come to
+    /// the front if that is how it is to go (`requested`, or the person's
+    /// default), no Stop since it began — and then the helper, which checks
+    /// again what only it can see, the Stop count included. A press after the
+    /// first of one key (`later`) is held to the Stop count and the sharing
+    /// the first went out under.
     async fn act_once(
         &self,
+        _turn: &tokio::sync::MutexGuard<'_, ()>,
         target_id: &str,
         request: &ComputerActRequest,
         requested: Option<ActDelivery>,
-    ) -> Result<(RawAct, Aim, ActDelivery), Refusal> {
-        let _turn = self.turn.lock().await;
-        let stop = self.stop_count();
+        later: Option<LaterPress>,
+    ) -> Result<Press, Refusal> {
+        // A Stop since the first press ends the presses, whatever has been
+        // shared again since.
+        let stop = match later {
+            Some(first) if self.stopped_since(first.stop) => return Err(stopped()),
+            Some(first) => first.stop,
+            None => self.stop_count(),
+        };
         let config = self.usable().await?;
         let blocklist = blocklist_of(&config);
         let ticket = match self.targets.begin_act(
@@ -1213,6 +1226,15 @@ impl ComputerService {
                 return Err(denied(target_id, why));
             }
         };
+        let epoch = ticket.epoch;
+        // So does the window taken back and shared again: a new sharing,
+        // which the presses did not begin under.
+        if later.is_some_and(|first| first.epoch != epoch) {
+            return Err(Refusal::refused(
+                ERROR_GRANT_REQUIRED,
+                reshared_note(target_id),
+            ));
+        }
         let started_at = self.check_identity(target_id, &ticket.identity)?;
         let aim = ticket.aim;
         // Against the settings as they are now: the front turned off since
@@ -1223,6 +1245,7 @@ impl ComputerService {
         if self.stopped_since(stop) {
             return Err(stopped());
         }
+        let sent_at = tokio::time::Instant::now();
         self.backend
             .act(
                 ticket.identity.pid,
@@ -1235,7 +1258,14 @@ impl ComputerService {
                 stop,
             )
             .await
-            .map(|raw| (raw, aim, delivery))
+            .map(|raw| Press {
+                raw,
+                aim,
+                delivery,
+                sent_at,
+                stop,
+                epoch,
+            })
             .map_err(|e| {
                 with_next_step(
                     self.backend_act_refusal(target_id, e, stop),
@@ -1248,8 +1278,11 @@ impl ComputerService {
     /// Act on a window shared for control, brought to the front for it or
     /// not as `delivery` asks — or as the person set it, when it does not. A
     /// key pressed more than once is that many actions, each checked on its
-    /// own: taking the window back between two presses, or the front, stops
-    /// the rest.
+    /// own and each taking its own turn at the driver: taking the window
+    /// back between two presses, the front, or Stop ends the rest. So is a
+    /// held key: pressed at once, then — after the delay a held key waits
+    /// before it repeats — at the rate it repeats, until its time is up
+    /// ([`Presses`]), counted from the first press in real time.
     pub async fn agent_act(
         &self,
         target_id: &str,
@@ -1257,57 +1290,172 @@ impl ComputerService {
         delivery: Option<ActDelivery>,
     ) -> ComputerActOutcome {
         let action = ComputerAction::of(&request);
-        let presses = match &request {
-            ComputerActRequest::Key { repeat, .. } => (*repeat).clamp(1, MAX_KEY_REPEAT),
-            _ => 1,
+        let presses = Presses::of(&request);
+        let mark = |press: &Press| {
+            if let Some(at) = press.aim.landing(&press.raw) {
+                self.marker.mark(at, action);
+            }
         };
-        let mut done: Option<(RawAct, ActDelivery)> = None;
-        for pressed in 0..presses {
-            match self.act_once(target_id, &request, delivery).await {
-                Ok((raw, aim, delivered)) => {
-                    if let Some(at) = aim.landing(&raw) {
-                        self.marker.mark(at, action);
+        let first = {
+            let turn = self.turn.lock().await;
+            self.act_once(&turn, target_id, &request, delivery, None)
+                .await
+        };
+        let first = match first {
+            Ok(press) => press,
+            Err(r) => {
+                self.record(target_id, action, r.outcome);
+                return ComputerActOutcome::refused(target_id, r.slug, r.note);
+            }
+        };
+        mark(&first);
+        let later = LaterPress {
+            stop: first.stop,
+            epoch: first.epoch,
+            until: presses.length().map(|length| first.sent_at + length),
+        };
+        let time_up = |at: tokio::time::Instant| later.until.is_some_and(|until| at >= until);
+        let mut next = first.sent_at;
+        let mut pressed: u32 = 1;
+        let mut done = first;
+        loop {
+            match presses {
+                Presses::Count(count) if pressed >= count => break,
+                Presses::Count(_) => {}
+                Presses::Held(_) => {
+                    next += if pressed == 1 {
+                        HOLD_DELAY
+                    } else {
+                        HOLD_INTERVAL
+                    };
+                    // A press that took longer than the gap is not made up
+                    // for: the next goes as soon as it can.
+                    next = next.max(tokio::time::Instant::now());
+                    if time_up(next) {
+                        break;
                     }
-                    done = Some((raw, delivered));
+                    tokio::time::sleep_until(next).await;
+                }
+            }
+            let press = {
+                let turn = self.turn.lock().await;
+                // The turn may have been a while coming.
+                if time_up(tokio::time::Instant::now()) {
+                    break;
+                }
+                self.act_once(&turn, target_id, &request, delivery, Some(later))
+                    .await
+            };
+            match press {
+                Ok(press) => {
+                    mark(&press);
+                    pressed += 1;
+                    done = press;
                 }
                 Err(r) => {
                     self.record(target_id, action, r.outcome);
-                    let note = match (pressed, r.maybe_done) {
-                        (0, _) => r.note,
-                        (_, false) => format!(
-                            "The key was pressed {pressed} of {presses} times, then stopped: {}",
-                            r.note
-                        ),
-                        (_, true) => format!(
-                            "The key was pressed {pressed} of {presses} times; the press after \
-                             that may or may not have gone out: {}",
-                            r.note
-                        ),
-                    };
+                    let note = format!("{}{}", presses.cut_short(pressed, r.maybe_done), r.note);
                     return ComputerActOutcome::refused(target_id, r.slug, note);
                 }
             }
         }
         self.record(target_id, action, ActivityOutcome::Done);
-        let Some((raw, delivery)) = done else {
-            return ComputerActOutcome::refused(
-                target_id,
-                ERROR_ACTION_FAILED,
-                "Nothing was done.",
-            );
-        };
         ComputerActOutcome::done(
             target_id,
             ActReport {
                 target_id: target_id.to_string(),
-                effect: raw.effect,
-                route: raw.route,
-                delivery,
-                presses: (presses > 1).then_some(presses),
-                submitted: raw.submitted,
-                submit_note: raw.submit_note,
+                effect: done.raw.effect,
+                route: done.raw.route,
+                delivery: done.delivery,
+                presses: presses.reported(pressed),
+                submitted: done.raw.submitted,
+                submit_note: done.raw.submit_note,
             },
         )
+    }
+}
+
+/// One press that went out.
+struct Press {
+    raw: RawAct,
+    aim: Aim,
+    delivery: ActDelivery,
+    /// When it was sent: a held key's time runs from its first press.
+    sent_at: tokio::time::Instant,
+    /// The Stop count it was held to.
+    stop: u64,
+    /// The sharing it went out under (see `TargetEntry::epoch`).
+    epoch: u64,
+}
+
+/// What a press after the first of one key is held to: the Stop count and
+/// the sharing the first went out under, and for a held key when its time
+/// is up.
+#[derive(Debug, Clone, Copy)]
+struct LaterPress {
+    stop: u64,
+    epoch: u64,
+    until: Option<tokio::time::Instant>,
+}
+
+/// A held key goes in once, then again after the delay a held key waits
+/// before it repeats, then at the rate it repeats — as fast as the
+/// presses go through, and no faster.
+const HOLD_DELAY: Duration = Duration::from_millis(500);
+const HOLD_INTERVAL: Duration = Duration::from_millis(50);
+
+/// How many times an action goes out: once; `repeat` times back to back for
+/// a key; for a held key, as often as its time allows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Presses {
+    Count(u32),
+    Held(Duration),
+}
+
+impl Presses {
+    /// How long a held key is held; nothing for a count of presses.
+    fn length(self) -> Option<Duration> {
+        match self {
+            Presses::Held(length) => Some(length),
+            Presses::Count(_) => None,
+        }
+    }
+
+    fn of(request: &ComputerActRequest) -> Self {
+        match request {
+            ComputerActRequest::Key { repeat, .. } => {
+                Presses::Count((*repeat).clamp(1, MAX_KEY_REPEAT))
+            }
+            ComputerActRequest::HoldKey { duration_ms, .. } => Presses::Held(
+                Duration::from_millis(u64::from((*duration_ms).min(MAX_HOLD_MS))),
+            ),
+            _ => Presses::Count(1),
+        }
+    }
+
+    /// What the report says of the presses: how many went out, for a key
+    /// pressed more than once or held.
+    fn reported(self, pressed: u32) -> Option<u32> {
+        match self {
+            Presses::Count(count) => (count > 1).then_some(count),
+            Presses::Held(_) => Some(pressed),
+        }
+    }
+
+    /// How a refusal after `pressed` presses begins: what did go out, and
+    /// whether the press that failed may have gone out too.
+    fn cut_short(self, pressed: u32, maybe_done: bool) -> String {
+        let after = if maybe_done {
+            "; the press after that may or may not have gone out: "
+        } else {
+            ", then stopped: "
+        };
+        match self {
+            Presses::Count(count) => {
+                format!("The key was pressed {pressed} of {count} times{after}")
+            }
+            Presses::Held(_) => format!("The key was held for {pressed} presses{after}"),
+        }
     }
 }
 

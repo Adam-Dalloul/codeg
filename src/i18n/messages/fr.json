@@ -5234,9 +5234,11 @@
       "snapshot": "Lecture",
       "verify": "Vérification",
       "click": "Clic",
+      "drag": "Glisser",
       "scroll": "Défilement",
       "type": "Saisie",
       "key": "Touche",
+      "hold-key": "Touche maintenue",
       "set-value": "Valeur",
       "restore": "Restaurer",
       "outcome": {

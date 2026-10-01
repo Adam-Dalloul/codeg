@@ -253,6 +253,8 @@ pub enum ActDenied {
     /// The screenshot the point came from cannot be mapped back to the
     /// window's pixels.
     NoPointing,
+    /// Keys held over a drag where the driver would drag without them.
+    DragModifiers,
 }
 
 /// How a ref or point is out of date.
@@ -281,6 +283,10 @@ pub enum Staleness {
 pub struct ActTicket {
     pub target_id: String,
     pub identity: WindowIdentity,
+    /// The sharing the action was let through under (see
+    /// [`TargetEntry::epoch`]): a key pressed again and again is held to the
+    /// sharing its first press went out under.
+    pub epoch: u64,
     pub app: RawApp,
     pub action: WindowAction,
     pub aim: Aim,
@@ -763,6 +769,7 @@ impl TargetTable {
         Ok(ActTicket {
             target_id: entry.target_id.clone(),
             identity: entry.identity,
+            epoch: entry.epoch,
             app: entry.app.clone(),
             aim: Aim::of(entry, &action),
             action,
@@ -805,11 +812,37 @@ fn resolve(entry: &TargetEntry, request: &ComputerActRequest) -> Result<WindowAc
             target,
             button,
             count,
-        } => WindowAction::Click {
-            at: resolve_target(entry, target)?,
-            button: *button,
-            count: *count,
-        },
+            modifiers,
+        } => {
+            check_pointer_modifiers(*modifiers)?;
+            WindowAction::Click {
+                at: resolve_target(entry, target)?,
+                button: *button,
+                count: *count,
+                modifiers: *modifiers,
+            }
+        }
+        ComputerActRequest::Drag {
+            from,
+            to,
+            button,
+            modifiers,
+            duration_ms,
+        } => {
+            check_pointer_modifiers(*modifiers)?;
+            if !super::keys::drag_carries_modifiers(*modifiers, Platform::current()) {
+                return Err(ActDenied::DragModifiers);
+            }
+            WindowAction::Drag {
+                from: resolve_point(entry, from)?,
+                to: resolve_point(entry, to)?,
+                button: *button,
+                modifiers: *modifiers,
+                duration_ms: duration_ms
+                    .unwrap_or(DEFAULT_DRAG_MS)
+                    .min(super::types::MAX_DRAG_MS),
+            }
+        }
         ComputerActRequest::Scroll {
             target,
             direction,
@@ -843,12 +876,38 @@ fn resolve(entry: &TargetEntry, request: &ComputerActRequest) -> Result<WindowAc
                 chord: *chord,
             }
         }
+        // A held key is the key pressed, again and again: each press is an
+        // action of its own (see `commands::computer`).
+        ComputerActRequest::HoldKey { target, chord, .. } => {
+            check_chord(chord, target.is_some())?;
+            WindowAction::Key {
+                element: target
+                    .as_ref()
+                    .map(|t| resolve_element(entry, t, chord.types_text()))
+                    .transpose()?,
+                chord: *chord,
+            }
+        }
         ComputerActRequest::SetValue { target, value } => WindowAction::SetValue {
             element: resolve_element(entry, target, true)?,
             value: value.clone(),
         },
         ComputerActRequest::Restore => WindowAction::Restore,
     })
+}
+
+/// How long a drag's path takes when the agent does not say: the driver's
+/// own default.
+const DEFAULT_DRAG_MS: u32 = 500;
+
+/// Whether a window grant reaches `modifiers` held over a click or a drag
+/// (see `keys::pointer_modifiers_allowed`).
+fn check_pointer_modifiers(modifiers: super::keys::Modifiers) -> Result<(), ActDenied> {
+    if super::keys::pointer_modifiers_allowed(modifiers, Platform::current()) {
+        Ok(())
+    } else {
+        Err(ActDenied::ChordBeyond)
+    }
 }
 
 /// Whether a window grant reaches `chord` — and, for a key that types a
@@ -1398,6 +1457,7 @@ mod tests {
             }),
             button: PointerButton::Left,
             count: 1,
+            modifiers: Modifiers::default(),
         }
     }
 
@@ -1410,6 +1470,7 @@ mod tests {
             }),
             button: PointerButton::Left,
             count: 1,
+            modifiers: Modifiers::default(),
         }
     }
 
@@ -1476,6 +1537,7 @@ mod tests {
                 }),
                 button: PointerButton::Left,
                 count: 1,
+                modifiers: Modifiers::default(),
             })
         );
         assert_eq!(
@@ -1520,6 +1582,149 @@ mod tests {
         }
     }
 
+    /// A drag's two points are read in the latest screenshot like a click's
+    /// one, each refused as a click's would be; keys are held over it only on
+    /// a Mac, and there not Option; a held key is judged as a pressed one.
+    #[test]
+    fn drags_and_held_keys_resolve_like_clicks_and_keys() {
+        let table = TargetTable::new();
+        let (id, snapshot, capture) = shared_and_read(&table, GrantLevel::Control);
+        let point = |generation: &str, x: f64, y: f64| PointTarget {
+            generation: generation.into(),
+            x,
+            y,
+        };
+        let drag =
+            |from: PointTarget, to: PointTarget, modifiers: Modifiers| ComputerActRequest::Drag {
+                from,
+                to,
+                button: PointerButton::Left,
+                modifiers,
+                duration_ms: Some(60_000),
+            };
+        let none = Modifiers::default();
+        let shift = Modifiers {
+            shift: true,
+            ..Modifiers::default()
+        };
+        match act(
+            &table,
+            &id,
+            &drag(
+                point(&capture, 10.0, 20.0),
+                point(&capture, 300.0, 400.0),
+                none,
+            ),
+        ) {
+            Ok(WindowAction::Drag {
+                from,
+                to,
+                modifiers,
+                duration_ms,
+                ..
+            }) => {
+                // 1000×500 image of a 2000×1000 capture: twice the pixels.
+                assert_eq!((from.x, from.y), (20.0, 40.0));
+                assert_eq!((to.x, to.y), (600.0, 800.0));
+                assert_eq!(modifiers, none);
+                assert_eq!(duration_ms, crate::computer::types::MAX_DRAG_MS);
+            }
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(
+            act(
+                &table,
+                &id,
+                &drag(
+                    point(&capture, 10.0, 20.0),
+                    point(&capture, 1500.0, 20.0),
+                    none
+                )
+            ),
+            Err(ActDenied::OutOfImage)
+        );
+        assert_eq!(
+            act(
+                &table,
+                &id,
+                &drag(
+                    point(&snapshot, 10.0, 20.0),
+                    point(&capture, 30.0, 20.0),
+                    none
+                )
+            ),
+            Err(ActDenied::Stale(Staleness::OldCapture))
+        );
+        let held = |modifiers: Modifiers| {
+            act(
+                &table,
+                &id,
+                &drag(
+                    point(&capture, 1.0, 1.0),
+                    point(&capture, 2.0, 2.0),
+                    modifiers,
+                ),
+            )
+        };
+        let command = Modifiers {
+            meta: true,
+            ..Modifiers::default()
+        };
+        let option = Modifiers {
+            alt: true,
+            ..Modifiers::default()
+        };
+        if Platform::current() == Platform::Mac {
+            for allowed in [shift, command] {
+                match held(allowed) {
+                    Ok(WindowAction::Drag { modifiers, .. }) => assert_eq!(modifiers, allowed),
+                    other => panic!("{other:?}"),
+                }
+            }
+            assert_eq!(held(option), Err(ActDenied::ChordBeyond));
+        } else {
+            // The desktop's key is refused as a key; the rest because the
+            // driver would drag without them.
+            assert_eq!(held(command), Err(ActDenied::ChordBeyond));
+            for dropped in [shift, option] {
+                assert_eq!(held(dropped), Err(ActDenied::DragModifiers));
+            }
+        }
+
+        let hold = |chord: Chord, target: Option<ElementTarget>| ComputerActRequest::HoldKey {
+            target,
+            chord,
+            duration_ms: 99_000,
+        };
+        let right = Chord {
+            key: Key::Right,
+            modifiers: Modifiers::default(),
+        };
+        assert_eq!(
+            act(&table, &id, &hold(right, None)),
+            Ok(WindowAction::Key {
+                element: None,
+                chord: right,
+            })
+        );
+        let letter = Chord {
+            key: Key::Char('w'),
+            modifiers: Modifiers::default(),
+        };
+        assert_eq!(
+            act(&table, &id, &hold(letter, None)),
+            Err(ActDenied::NeedsElement)
+        );
+        let secret = ElementTarget {
+            generation: snapshot.clone(),
+            index: 2,
+        };
+        assert_eq!(
+            act(&table, &id, &hold(letter, Some(secret))),
+            Err(ActDenied::Secret)
+        );
+    }
+
     /// A point is read in the latest screenshot's pixels and mapped back to
     /// the window's own; one outside the image, or from another screenshot,
     /// is refused.
@@ -1538,6 +1743,7 @@ mod tests {
                 }),
                 button: PointerButton::Left,
                 count: 1,
+                modifiers: Modifiers::default(),
             })
         );
         for (x, y) in [(1000.0, 10.0), (10.0, 500.0), (-1.0, 3.0), (f64::NAN, 3.0)] {

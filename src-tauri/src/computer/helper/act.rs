@@ -49,7 +49,7 @@ use super::driver_proc::DriverProc;
 use super::keystate::held_modifiers;
 use super::mcp::ToolCallResult;
 use super::Delivery;
-use crate::computer::keys::Platform;
+use crate::computer::keys::{Modifiers, Platform};
 use crate::computer::protocol::{
     DriverTarget, ElementRef, HelperError, HelperErrorCode, OsPermission, RawAct, WindowAction,
     WindowPoint,
@@ -69,6 +69,11 @@ const MEASURE_TIMEOUT: Duration = Duration::from_secs(15);
 /// or the taskbar's animation, and an application slow to draw.
 const RESTORE_WAIT: Duration = Duration::from_secs(3);
 const RESTORE_POLL: Duration = Duration::from_millis(100);
+
+/// The driver's intermediate pointer moves along a drag: one every 25 ms of
+/// its path, within the driver's own bounds.
+const DRAG_STEP_MS: u32 = 25;
+const MAX_DRAG_STEPS: u32 = 200;
 
 /// How many windows' latest snapshots the helper remembers. The driver keeps
 /// eight per process; this bounds the helper's memory, not the driver's.
@@ -214,15 +219,20 @@ fn is_safari(app_key: &str) -> bool {
     key.starts_with("com.apple.safari") || key.ends_with("/safari.app")
 }
 
-/// Check that a point is still where it was read: the window is the size it
-/// was when the capture the point came from was taken. Returns where the
-/// window is now, when the driver said — for the marker, not for aiming.
-pub async fn check_point(
+/// Check that the points of an action are still where they were read: the
+/// window is the size it was when the capture they came from was taken —
+/// measured once for all of them. Returns where the window is now, when the
+/// driver said — for the marker, not for aiming. Nothing to check, nothing
+/// measured.
+pub async fn check_points(
     driver: &DriverProc,
     pid: u32,
     window_id: u64,
-    point: &WindowPoint,
+    points: &[&WindowPoint],
 ) -> Result<Option<Rect>, HelperError> {
+    if points.is_empty() {
+        return Ok(None);
+    }
     if !driver.full_size_captures() {
         return Err(HelperError::new(
             HelperErrorCode::ActionFailed,
@@ -239,7 +249,10 @@ pub async fn check_point(
         number("width").unwrap_or(0.0),
         number("height").unwrap_or(0.0),
     );
-    if (width - point.window_width).abs() > 1.0 || (height - point.window_height).abs() > 1.0 {
+    let resized = |point: &&WindowPoint| {
+        (width - point.window_width).abs() > 1.0 || (height - point.window_height).abs() > 1.0
+    };
+    if points.iter().any(resized) {
         return Err(HelperError::new(
             HelperErrorCode::StaleRef,
             "The window has changed size since that screenshot, so its contents are not where \
@@ -491,7 +504,12 @@ pub async fn act(
         "delivery_mode": mode.as_str(),
     });
     match action {
-        WindowAction::Click { at, button, count } => {
+        WindowAction::Click {
+            at,
+            button,
+            count,
+            modifiers,
+        } => {
             let tool = match (button, count) {
                 (PointerButton::Left, 1) | (PointerButton::Middle, 1) => "click",
                 (PointerButton::Left, 2) => "double_click",
@@ -506,9 +524,41 @@ pub async fn act(
             if *button == PointerButton::Middle {
                 args["button"] = json!("middle");
             }
+            put_modifiers(&mut args, *modifiers, platform);
             put_target(&mut args, at);
             deliverable.check()?;
             one(driver, tool, args, mode, ACT_TIMEOUT).await
+        }
+        WindowAction::Drag {
+            from,
+            to,
+            button,
+            modifiers,
+            duration_ms,
+        } => {
+            // Whole pixels: Linux's driver rounds a drag's points where it
+            // truncates a click's, and rounding up could put a point in the
+            // image's last half pixel just past its edge.
+            args["from_x"] = json!(from.x.floor());
+            args["from_y"] = json!(from.y.floor());
+            args["to_x"] = json!(to.x.floor());
+            args["to_y"] = json!(to.y.floor());
+            args["button"] = json!(match button {
+                PointerButton::Left => "left",
+                PointerButton::Right => "right",
+                PointerButton::Middle => "middle",
+            });
+            args["duration_ms"] = json!(duration_ms);
+            args["steps"] = json!((duration_ms / DRAG_STEP_MS).clamp(1, MAX_DRAG_STEPS));
+            put_modifiers(&mut args, *modifiers, platform);
+            #[cfg(target_os = "macos")]
+            if mode == ActDelivery::Foreground {
+                deliverable.check()?;
+                front_of_its_app(driver, pid, window_id).await?;
+            }
+            deliverable.check()?;
+            let timeout = ACT_TIMEOUT + Duration::from_millis(u64::from(*duration_ms));
+            one(driver, "drag", args, mode, timeout).await
         }
         WindowAction::Scroll {
             at,
@@ -595,6 +645,86 @@ pub async fn act(
             deliverable.check()?;
             restore(driver, pid, window_id, mode, deliverable).await
         }
+    }
+}
+
+/// A drag at the front on macOS goes in as real pointer input once the
+/// driver has brought the application forward — the application, not the
+/// window: the windows the application names as its focused and main ones
+/// come forward with it, and the drag lands on whatever is then under the
+/// pointer. So it is sent only for the window that is already its
+/// application's front one: on the screen; ahead, in the window server's
+/// order, of every other window of the application on this desktop or on
+/// another (that one would come forward, and the desktop switch to it); and
+/// not behind another the application names as focused or main. Asked just
+/// before the drag.
+#[cfg(target_os = "macos")]
+async fn front_of_its_app(
+    driver: &DriverProc,
+    pid: u32,
+    window_id: u64,
+) -> Result<(), HelperError> {
+    let result = driver
+        .call(
+            "list_windows",
+            json!({ "pid": pid, "on_screen_only": false }),
+            MEASURE_TIMEOUT,
+        )
+        .await?;
+    if result.is_error {
+        return Err(super::ops::tool_error("list_windows", &result));
+    }
+    let windows = super::ops::parse_windows(super::ops::structured("list_windows", &result)?)?;
+    let Some(target) = windows
+        .iter()
+        .find(|w| w.pid == pid && w.window_id == window_id)
+    else {
+        return Err(HelperError::new(
+            HelperErrorCode::NoSuchWindow,
+            "the window is gone",
+        ));
+    };
+    if !target.on_screen {
+        return Err(HelperError::new(
+            HelperErrorCode::Occluded,
+            "The window is not on the screen — minimized, hidden or on another desktop (Space) — \
+             and a drag at the front goes wherever the pointer is. computer_restore brings back a \
+             minimized window or a hidden application; otherwise ask the user to bring it back.",
+        ));
+    }
+    let front = target.z_index;
+    let ahead = windows
+        .iter()
+        .filter(|w| w.pid == pid && w.window_id != window_id)
+        .filter(|w| w.on_screen || w.on_current_space == Some(false))
+        .any(|w| match (w.z_index, front) {
+            (Some(other), Some(front)) => other > front,
+            // Where the order cannot be told, it cannot be ruled out.
+            _ => true,
+        });
+    let (focused, main) = super::axwin::focused_and_main(pid).await;
+    let named_other = [focused, main]
+        .into_iter()
+        .flatten()
+        .any(|named| named != window_id);
+    if ahead || named_other {
+        return Err(HelperError::new(
+            HelperErrorCode::Occluded,
+            "Another window of this application is in front of this one, or is the one the \
+             application brings forward, and a drag at the front would land on it — so nothing \
+             was sent. Once this window is the application's front one, drag again: ask the user \
+             to click it, or bring it forward with a computer_click on it at the front.",
+        ));
+    }
+    Ok(())
+}
+
+/// The modifiers held over a pointer action, as `platform`'s driver spells
+/// them; none, nothing said.
+fn put_modifiers(args: &mut Value, modifiers: Modifiers, platform: Platform) {
+    let names = modifiers.driver_names(platform);
+    if !names.is_empty() {
+        args["modifier"] = json!(names);
     }
 }
 
@@ -1009,8 +1139,11 @@ mod tests {
             at: DriverTarget::Element(e),
             button: PointerButton::Left,
             count: 1,
+            modifiers: Modifiers::default(),
         };
-        assert!(book.check(1, 10, &click(element("s00000001", 3)), None).is_ok());
+        assert!(book
+            .check(1, 10, &click(element("s00000001", 3)), None)
+            .is_ok());
         let code = |r: Result<(), HelperError>| r.unwrap_err().code;
         assert_eq!(
             code(book.check(1, 10, &click(element("s00000001", 4)), None)),
@@ -1070,6 +1203,7 @@ mod tests {
                 at: DriverTarget::Element(pw()),
                 button: PointerButton::Left,
                 count: 1,
+                modifiers: Modifiers::default(),
             },
             WindowAction::Key {
                 element: Some(pw()),
@@ -1361,6 +1495,7 @@ mod tests {
             }),
             button: PointerButton::Left,
             count: 1,
+            modifiers: Modifiers::default(),
         };
         assert!(permissions_for(&at_point).contains(&OsPermission::ScreenRecording));
         let at_element = WindowAction::SetValue {

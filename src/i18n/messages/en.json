@@ -5234,9 +5234,11 @@
       "snapshot": "Read",
       "verify": "Check",
       "click": "Click",
+      "drag": "Drag",
       "scroll": "Scroll",
       "type": "Type",
       "key": "Key",
+      "hold-key": "Hold key",
       "set-value": "Set value",
       "restore": "Restore",
       "outcome": {

@@ -30,7 +30,11 @@ use serde_json::Value;
 
 pub use crate::acp::delegation::transport::{read_frame, write_frame, MAX_FRAME_BYTES};
 
-use super::keys::Chord;
+fn no_modifiers(modifiers: &Modifiers) -> bool {
+    modifiers.is_empty()
+}
+
+use super::keys::{Chord, Modifiers};
 use super::types::{
     ActDelivery, ActEffect, ActRoute, PointerButton, PredicateResult, Rect, ScrollDirection,
     ScrollUnit, VerifyRequest, VerifyStatus,
@@ -39,7 +43,7 @@ use super::types::{
 /// Bumped whenever a frame changes shape. The helper ships in the same bundle
 /// as codeg, so a mismatch means a broken install (a helper left behind by a
 /// partial update), and codeg refuses to talk to it rather than guess.
-pub const PROTOCOL_VERSION: u32 = 9;
+pub const PROTOCOL_VERSION: u32 = 10;
 
 /// A fingerprint of the sources the helper is built from, the same in codeg
 /// and the helper when both are built from one tree (see `build.rs`). The
@@ -215,6 +219,20 @@ pub enum WindowAction {
         at: DriverTarget,
         button: PointerButton,
         count: u8,
+        /// Held down for the click.
+        #[serde(default, skip_serializing_if = "no_modifiers")]
+        modifiers: Modifiers,
+    },
+    /// Press at `from`, move to `to` over `duration_ms`, let go — with
+    /// `modifiers` held for the whole of it.
+    #[serde(rename_all = "camelCase")]
+    Drag {
+        from: WindowPoint,
+        to: WindowPoint,
+        button: PointerButton,
+        #[serde(default, skip_serializing_if = "no_modifiers")]
+        modifiers: Modifiers,
+        duration_ms: u32,
     },
     #[serde(rename_all = "camelCase")]
     Scroll {
@@ -266,7 +284,8 @@ impl WindowAction {
         }
     }
 
-    /// The point the action names, if it names one.
+    /// Where the action lands, if at a point: the one it names — for a
+    /// drag, where it lets go.
     pub fn point(&self) -> Option<&WindowPoint> {
         match self {
             WindowAction::Click {
@@ -276,8 +295,17 @@ impl WindowAction {
             | WindowAction::Scroll {
                 at: Some(DriverTarget::Point(p)),
                 ..
-            } => Some(p),
+            }
+            | WindowAction::Drag { to: p, .. } => Some(p),
             _ => None,
+        }
+    }
+
+    /// Every point the action names: a drag's two, another's one.
+    pub fn points(&self) -> Vec<&WindowPoint> {
+        match self {
+            WindowAction::Drag { from, to, .. } => vec![from, to],
+            _ => self.point().into_iter().collect(),
         }
     }
 

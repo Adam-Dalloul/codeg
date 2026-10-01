@@ -1,7 +1,8 @@
 //! Listener-facing access for computer use (`computer_list_apps`,
 //! `computer_list_windows`, `computer_screenshot`, `computer_snapshot`,
-//! `computer_verify`, and the actions `computer_click`, `computer_scroll`,
-//! `computer_type`, `computer_press_key`, `computer_set_value`) carried by
+//! `computer_verify`, and the actions `computer_click`, `computer_drag`,
+//! `computer_scroll`, `computer_type`, `computer_press_key`,
+//! `computer_hold_key`, `computer_set_value`, `computer_restore`) carried by
 //! codeg-mcp.
 //!
 //! The same split as the browser tools: nothing here decides whether a window
@@ -233,6 +234,23 @@ pub fn chord_beyond_note() -> String {
          not reach, so it was not pressed; retrying will not change it. {} For anything else, \
          act on an element: computer_click by ref, or computer_set_value.",
         crate::computer::keys::window_chords_note(crate::computer::keys::Platform::current())
+    )
+}
+
+/// Said when keys are to be held over a drag on a system whose driver would
+/// drag without them.
+pub const DRAG_MODIFIERS_NOTE: &str = "Holding keys down over a drag is not available on this \
+     system: the drag would go without them, so nothing was sent. Drag without `modifiers`, or \
+     reach the same end another way.";
+
+/// Said when the window was taken back between two presses of one key and
+/// shared again before the next: the presses end with the sharing they began
+/// under.
+pub fn reshared_note(target_id: &str) -> String {
+    format!(
+        "Window {target_id} was taken back from you while the key was being pressed, which \
+         ended the presses; the user has shared it again since. Look at the window again before \
+         going on."
     )
 }
 

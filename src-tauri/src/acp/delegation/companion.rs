@@ -266,11 +266,22 @@ impl CompanionFeatures {
             // parent bug, or someone editing the agent's MCP config by hand —
             // cannot leave the strongest tool as the only one present.
             "browser_eval" => self.browser && self.browser_eval,
-            "computer_list_apps" | "computer_list_windows" | "computer_screenshot"
-            | "computer_snapshot" | "computer_verify" | "computer_click" | "computer_scroll"
-            | "computer_type" | "computer_press_key" | "computer_set_value"
+            "computer_list_apps"
+            | "computer_list_windows"
+            | "computer_screenshot"
+            | "computer_snapshot"
+            | "computer_verify"
+            | "computer_click"
+            | "computer_drag"
+            | "computer_scroll"
+            | "computer_type"
+            | "computer_press_key"
+            | "computer_hold_key"
+            | "computer_set_value"
             | "computer_restore" => self.computer,
-            "delegate_to_agent" | "get_delegation_status" | "cancel_delegation"
+            "delegate_to_agent"
+            | "get_delegation_status"
+            | "cancel_delegation"
             | "resume_delegation" => self.delegation,
             _ => false,
         }
@@ -939,10 +950,18 @@ async fn build_tools_call_spawn(
             };
             let round_trip =
                 Box::pin(async move { client_computer_verify_round_trip(&socket, &req).await });
-            register_and_spawn(inflight, id, None, round_trip, render_computer_verify_result).await
+            register_and_spawn(
+                inflight,
+                id,
+                None,
+                round_trip,
+                render_computer_verify_result,
+            )
+            .await
         }
-        "computer_click" | "computer_scroll" | "computer_type" | "computer_press_key"
-        | "computer_set_value" | "computer_restore" => {
+        "computer_click" | "computer_drag" | "computer_scroll" | "computer_type"
+        | "computer_press_key" | "computer_hold_key" | "computer_set_value"
+        | "computer_restore" => {
             let (target_id, request, delivery) = match computer_act_request(&name, &arguments) {
                 Ok(parsed) => parsed,
                 Err(msg) => return LineAction::Respond(err(id, -32602, msg)),
@@ -2963,6 +2982,32 @@ fn computer_target(
     }
 }
 
+/// The modifiers an action names (`modifiers`, an array of names); none
+/// when it names none.
+fn computer_modifiers(
+    arguments: &Value,
+    tool: &str,
+) -> Result<crate::computer::keys::Modifiers, String> {
+    use crate::computer::keys::Modifiers;
+    match arguments.get("modifiers") {
+        None | Some(Value::Null) => Ok(Modifiers::default()),
+        Some(Value::Array(items)) => {
+            let names = items
+                .iter()
+                .map(|v| {
+                    v.as_str()
+                        .map(str::to_string)
+                        .ok_or_else(|| format!("{tool}: `modifiers` must be an array of names"))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            Modifiers::parse(&names).map_err(|e| format!("{tool}: {e}"))
+        }
+        Some(other) => Err(format!(
+            "{tool}: `modifiers` must be an array of names, not {other}"
+        )),
+    }
+}
+
 /// An element an action must name — typing, a value, a key on an element.
 fn computer_element(
     arguments: &Value,
@@ -3055,6 +3100,18 @@ fn computer_act_arguments(tool: &str) -> &'static [&'static str] {
             "generation",
             "button",
             "count",
+            "modifiers",
+            "delivery",
+        ],
+        "computer_drag" => &[
+            "targetId",
+            "target_id",
+            "from",
+            "to",
+            "generation",
+            "button",
+            "modifiers",
+            "durationMs",
             "delivery",
         ],
         "computer_scroll" => &[
@@ -3087,6 +3144,16 @@ fn computer_act_arguments(tool: &str) -> &'static [&'static str] {
             "generation",
             "delivery",
         ],
+        "computer_hold_key" => &[
+            "targetId",
+            "target_id",
+            "key",
+            "modifiers",
+            "durationMs",
+            "ref",
+            "generation",
+            "delivery",
+        ],
         "computer_set_value" => &["targetId", "target_id", "ref", "generation", "value"],
         "computer_restore" => &["targetId", "target_id"],
         _ => &[],
@@ -3111,9 +3178,9 @@ pub fn computer_act_request(
     ),
     String,
 > {
-    use crate::computer::keys::{Chord, Key, Modifiers};
+    use crate::computer::keys::{Chord, Key};
     use crate::computer::types::{
-        ActDelivery, ComputerActRequest, PointerButton, ScrollDirection, ScrollUnit,
+        ActDelivery, ComputerActRequest, PointerButton, ScrollDirection, ScrollUnit, MAX_HOLD_MS,
         MAX_KEY_REPEAT, MAX_SCROLL_AMOUNT,
     };
     let allowed = computer_act_arguments(tool);
@@ -3155,6 +3222,52 @@ pub fn computer_act_request(
                 target,
                 button,
                 count: count as u8,
+                modifiers: computer_modifiers(arguments, tool)?,
+            }
+        }
+        "computer_drag" => {
+            let generation = computer_generation(arguments, tool, "from")?;
+            let point = |name: &str| -> Result<crate::computer::types::PointTarget, String> {
+                let value = arguments
+                    .get(name)
+                    .filter(|v| !v.is_null())
+                    .ok_or_else(|| {
+                        format!(
+                            "{tool} requires `from` and `to`, each an [x, y] point in the \
+                             image computer_screenshot returned"
+                        )
+                    })?;
+                let (x, y) = computer_coordinate(value, tool)?;
+                Ok(crate::computer::types::PointTarget {
+                    generation: generation.clone(),
+                    x,
+                    y,
+                })
+            };
+            ComputerActRequest::Drag {
+                from: point("from")?,
+                to: point("to")?,
+                button: match computer_choice(
+                    arguments,
+                    tool,
+                    "button",
+                    &["left", "right", "middle"],
+                )? {
+                    Some("right") => PointerButton::Right,
+                    Some("middle") => PointerButton::Middle,
+                    _ => PointerButton::Left,
+                },
+                modifiers: computer_modifiers(arguments, tool)?,
+                duration_ms: match arguments.get("durationMs").filter(|v| !v.is_null()) {
+                    None => None,
+                    Some(_) => Some(computer_count(
+                        arguments,
+                        tool,
+                        "durationMs",
+                        0..=crate::computer::types::MAX_DRAG_MS,
+                        0,
+                    )?),
+                },
             }
         }
         "computer_scroll" => {
@@ -3196,32 +3309,16 @@ pub fn computer_act_request(
             },
             submit: computer_bool(arguments, tool, "submit")?,
         },
-        "computer_press_key" => {
+        "computer_press_key" | "computer_hold_key" => {
             let key = arguments
                 .get("key")
                 .and_then(Value::as_str)
                 .ok_or_else(|| format!("{tool} requires `key`, a string"))?;
             let key = Key::parse(key).map_err(|e| format!("{tool}: {e}"))?;
-            let modifiers = match arguments.get("modifiers") {
-                None | Some(Value::Null) => Modifiers::default(),
-                Some(Value::Array(items)) => {
-                    let names = items
-                        .iter()
-                        .map(|v| {
-                            v.as_str().map(str::to_string).ok_or_else(|| {
-                                format!("{tool}: `modifiers` must be an array of names")
-                            })
-                        })
-                        .collect::<Result<Vec<_>, _>>()?;
-                    Modifiers::parse(&names).map_err(|e| format!("{tool}: {e}"))?
-                }
-                Some(other) => {
-                    return Err(format!(
-                        "{tool}: `modifiers` must be an array of names, not {other}"
-                    ))
-                }
+            let chord = Chord {
+                key,
+                modifiers: computer_modifiers(arguments, tool)?,
             };
-            let chord = Chord { key, modifiers };
             let target = match computer_target(arguments, tool)? {
                 Some(crate::computer::types::AgentTarget::Element(e)) => Some(e),
                 Some(crate::computer::types::AgentTarget::Point(_)) => {
@@ -3238,10 +3335,23 @@ pub fn computer_act_request(
                      pass its `ref` and `generation`, or type the text with computer_type"
                 ));
             }
-            ComputerActRequest::Key {
-                target,
-                chord,
-                repeat: computer_count(arguments, tool, "repeat", 1..=MAX_KEY_REPEAT, 1)?,
+            if tool == "computer_hold_key" {
+                if arguments.get("durationMs").is_none_or(Value::is_null) {
+                    return Err(format!(
+                        "{tool} requires `durationMs`, how long to hold the key (at most {MAX_HOLD_MS})"
+                    ));
+                }
+                ComputerActRequest::HoldKey {
+                    target,
+                    chord,
+                    duration_ms: computer_count(arguments, tool, "durationMs", 1..=MAX_HOLD_MS, 1)?,
+                }
+            } else {
+                ComputerActRequest::Key {
+                    target,
+                    chord,
+                    repeat: computer_count(arguments, tool, "repeat", 1..=MAX_KEY_REPEAT, 1)?,
+                }
             }
         }
         "computer_set_value" => ComputerActRequest::SetValue {
@@ -5837,7 +5947,7 @@ mod tests {
     };
 
     /// The computer group gates as its own thing: off by default, not riding
-    /// on the browser's switch, and exactly its ten tools when on — the
+    /// on the browser's switch, and exactly its tools when on — the
     /// actions with the reads, since acting is gated per window by the
     /// person, not by a switch of its own.
     #[tokio::test]
@@ -5869,9 +5979,11 @@ mod tests {
                 "computer_snapshot".to_string(),
                 "computer_verify".to_string(),
                 "computer_click".to_string(),
+                "computer_drag".to_string(),
                 "computer_scroll".to_string(),
                 "computer_type".to_string(),
                 "computer_press_key".to_string(),
+                "computer_hold_key".to_string(),
                 "computer_set_value".to_string(),
                 "computer_restore".to_string(),
             ]
@@ -5937,6 +6049,124 @@ mod tests {
         .contains("expect[0]"));
     }
 
+    /// A drag names two points in one screenshot and may hold modifiers; a
+    /// held key names how long; a click may hold modifiers too. Each is as
+    /// strict as the rest: an argument the tool does not take, or a length
+    /// past the bound, is refused.
+    #[test]
+    fn drags_holds_and_held_modifiers_parse_strictly() {
+        use crate::computer::keys::{Chord, Key, Modifiers};
+        use crate::computer::types::{ComputerActRequest, PointTarget, PointerButton};
+        let (_, drag, delivery) = computer_act_request(
+            "computer_drag",
+            &json!({ "targetId": "w1", "from": [1, 2], "to": [30, 40.5], "generation": "3.1",
+                     "modifiers": ["shift", "alt"], "durationMs": 800,
+                     "delivery": "foreground" }),
+        )
+        .unwrap();
+        assert_eq!(
+            drag,
+            ComputerActRequest::Drag {
+                from: PointTarget {
+                    generation: "3.1".into(),
+                    x: 1.0,
+                    y: 2.0
+                },
+                to: PointTarget {
+                    generation: "3.1".into(),
+                    x: 30.0,
+                    y: 40.5
+                },
+                button: PointerButton::Left,
+                modifiers: Modifiers {
+                    shift: true,
+                    alt: true,
+                    ..Modifiers::default()
+                },
+                duration_ms: Some(800),
+            }
+        );
+        assert_eq!(
+            delivery,
+            Some(crate::computer::types::ActDelivery::Foreground)
+        );
+        let (_, hold, _) = computer_act_request(
+            "computer_hold_key",
+            &json!({ "targetId": "w1", "key": "right", "durationMs": 1500 }),
+        )
+        .unwrap();
+        assert_eq!(
+            hold,
+            ComputerActRequest::HoldKey {
+                target: None,
+                chord: Chord {
+                    key: Key::Right,
+                    modifiers: Modifiers::default()
+                },
+                duration_ms: 1500,
+            }
+        );
+        let (_, click, _) = computer_act_request(
+            "computer_click",
+            &json!({ "targetId": "w1", "coordinate": [5, 5], "generation": "3.1",
+                     "modifiers": ["cmd"] }),
+        )
+        .unwrap();
+        assert!(matches!(
+            click,
+            ComputerActRequest::Click { modifiers, .. } if modifiers.meta
+        ));
+        for (tool, bad, says) in [
+            (
+                "computer_drag",
+                json!({ "targetId": "w1", "from": [1, 2], "generation": "3.1" }),
+                "`from` and `to`",
+            ),
+            (
+                "computer_drag",
+                json!({ "targetId": "w1", "from": [1, 2], "to": [3, 4] }),
+                "generation",
+            ),
+            (
+                "computer_drag",
+                json!({ "targetId": "w1", "from": [1, 2], "to": [3, 4],
+                                      "generation": "3.1", "durationMs": 99_999 }),
+                "durationMs",
+            ),
+            (
+                "computer_drag",
+                json!({ "targetId": "w1", "from": [1, 2], "to": [3, 4],
+                                      "generation": "3.1", "count": 2 }),
+                "takes no argument",
+            ),
+            (
+                "computer_hold_key",
+                json!({ "targetId": "w1", "key": "right" }),
+                "durationMs",
+            ),
+            (
+                "computer_hold_key",
+                json!({ "targetId": "w1", "key": "right", "durationMs": 60_000 }),
+                "durationMs",
+            ),
+            (
+                "computer_hold_key",
+                json!({ "targetId": "w1", "key": "right", "durationMs": 500,
+                                          "repeat": 3 }),
+                "takes no argument",
+            ),
+            (
+                "computer_click",
+                json!({ "targetId": "w1", "coordinate": [5, 5], "generation": "3.1",
+                                       "modifiers": ["hyper"] }),
+                "not a modifier",
+            ),
+        ] {
+            let e = computer_act_request(tool, &bad).unwrap_err();
+            assert!(e.contains(says), "{tool} {bad}: {e}");
+        }
+    }
+
     /// Action arguments are checked as strictly: a ref needs its generation,
     /// a button is one of three, a boolean is a boolean, and a key that would
     /// type a character is refused without an element to type it into.
@@ -5964,6 +6194,7 @@ mod tests {
                 }),
                 button: PointerButton::Left,
                 count: 1,
+                modifiers: Default::default(),
             }
         );
         let (_, point, _) = computer_act_request(
@@ -5982,6 +6213,7 @@ mod tests {
                 }),
                 button: PointerButton::Right,
                 count: 1,
+                modifiers: Default::default(),
             }
         );
         for (tool, bad, says) in [

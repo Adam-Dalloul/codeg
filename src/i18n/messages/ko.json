@@ -5234,9 +5234,11 @@
       "snapshot": "읽기",
       "verify": "확인",
       "click": "클릭",
+      "drag": "드래그",
       "scroll": "스크롤",
       "type": "입력",
       "key": "키",
+      "hold-key": "키 누르고 있기",
       "set-value": "값 설정",
       "restore": "창 복원",
       "outcome": {

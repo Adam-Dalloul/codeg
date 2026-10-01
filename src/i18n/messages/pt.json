@@ -5234,9 +5234,11 @@
       "snapshot": "Leitura",
       "verify": "Verificação",
       "click": "Clique",
+      "drag": "Arrastar",
       "scroll": "Rolagem",
       "type": "Digitação",
       "key": "Tecla",
+      "hold-key": "Tecla pressionada",
       "set-value": "Valor",
       "restore": "Restaurar",
       "outcome": {

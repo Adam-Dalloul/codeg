@@ -557,11 +557,15 @@ pub enum ComputerAction {
     /// Checked predicates against it.
     Verify,
     Click,
+    /// Dragged from one point to another.
+    Drag,
     Scroll,
     /// Typed text into an element.
     Type,
     /// Pressed a key.
     Key,
+    /// Held a key down.
+    HoldKey,
     /// Set an element's value outright.
     SetValue,
     /// Put a minimized window back on the screen.
@@ -574,9 +578,11 @@ impl ComputerAction {
         use super::types::ComputerActRequest as R;
         match request {
             R::Click { .. } => ComputerAction::Click,
+            R::Drag { .. } => ComputerAction::Drag,
             R::Scroll { .. } => ComputerAction::Scroll,
             R::Type { .. } => ComputerAction::Type,
             R::Key { .. } => ComputerAction::Key,
+            R::HoldKey { .. } => ComputerAction::HoldKey,
             R::SetValue { .. } => ComputerAction::SetValue,
             R::Restore => ComputerAction::Restore,
         }

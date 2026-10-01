@@ -5234,9 +5234,11 @@
       "snapshot": "读取",
       "verify": "检查",
       "click": "点击",
+      "drag": "拖拽",
       "scroll": "滚动",
       "type": "输入",
       "key": "按键",
+      "hold-key": "按住按键",
       "set-value": "设值",
       "restore": "恢复窗口",
       "outcome": {
