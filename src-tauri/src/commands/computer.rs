@@ -1201,6 +1201,7 @@ impl ComputerService {
                 ticket.identity.pid,
                 ticket.identity.window_id,
                 started_at,
+                ticket.identity.content,
                 ticket.app.key().map(str::to_string),
                 ticket.action,
                 delivery,
@@ -1277,6 +1278,7 @@ impl ComputerService {
                 delivery,
                 presses: (presses > 1).then_some(presses),
                 submitted: raw.submitted,
+                submit_note: raw.submit_note,
             },
         )
     }

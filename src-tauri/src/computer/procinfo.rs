@@ -25,6 +25,19 @@ pub fn process_start(pid: u32) -> Option<u64> {
     imp::process_start(pid)
 }
 
+/// Windows: `pid`'s start stamp, read through a handle held open while
+/// `still` is asked — so a `still` that finds `pid` where it was found before
+/// (a window's owner, say) has found this very run of it: the system does not
+/// hand a pid to another process while a handle to it is open. `None` when it
+/// is not running, the system will not say, or `still` answers `false`.
+#[cfg(windows)]
+pub fn process_start_while(pid: u32, still: impl FnOnce() -> bool) -> Option<u64> {
+    if pid == 0 {
+        return None;
+    }
+    imp::process_start_while(pid, still)
+}
+
 /// Windows: what `pid` runs, read through one handle — so all of it is the
 /// same process's, even should the pid pass to another process in between.
 /// `None` when it is not running, or the system will not say.
@@ -203,6 +216,13 @@ mod imp {
         Process::open(pid)?.start()
     }
 
+    pub fn process_start_while(pid: u32, still: impl FnOnce() -> bool) -> Option<u64> {
+        let process = Process::open(pid)?;
+        let started = process.start()?;
+        // Asked with the handle still open: see `process_start_while`.
+        still().then_some(started)
+    }
+
     pub fn process_image(pid: u32) -> Option<super::ProcessImage> {
         let process = Process::open(pid)?;
         Some(super::ProcessImage {
@@ -253,6 +273,17 @@ mod tests {
         );
         assert_eq!(image.app_user_model_id, None);
         assert_eq!(process_image(0), None);
+    }
+
+    /// Windows: the start stamp is given only when what is asked with the
+    /// handle open still holds.
+    #[cfg(windows)]
+    #[test]
+    fn a_start_is_given_only_while_what_is_asked_holds() {
+        let me = std::process::id();
+        assert_eq!(process_start_while(me, || true), process_start(me));
+        assert_eq!(process_start_while(me, || false), None);
+        assert_eq!(process_start_while(0, || true), None);
     }
 
     #[cfg(target_os = "linux")]

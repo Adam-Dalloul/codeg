@@ -97,6 +97,23 @@ const SYSTEM_APPS: &str = "SystemApps";
 #[cfg(windows)]
 const MAX_WINDOWS_NAMES: usize = 256;
 
+/// Windows: how long a listing waits for an application's name before it
+/// goes by its file name for now (see `windows_name`). The Start menu takes
+/// a fifth of a second at worst when it is well.
+#[cfg(windows)]
+const NAME_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Windows: once a name has not come in time, how long no listing waits for
+/// another — a shell slow to name one application is slow for all.
+#[cfg(windows)]
+const NAME_SLOW: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Windows: the most names read at once. A read the shell never answers
+/// keeps its thread; past this many, applications go by their file names
+/// until one comes back, rather than a thread more each.
+#[cfg(windows)]
+const MAX_NAME_READERS: usize = 4;
+
 /// Where Apple keeps the applications people use, under `/System`.
 const SYSTEM_APPLICATIONS: &[&str] = &[
     "/System/Applications/",
@@ -221,16 +238,77 @@ pub fn is_system_component(bundle: &str) -> bool {
 /// Whether the executable at `path` is an application a person uses, as
 /// Windows runs them: not a host, whose windows are other applications', and
 /// not one of the system's own agents (see the module note). Hosts are known
-/// by their file names, in any case, wherever they are; an executable
-/// anywhere in a folder named `SystemApps` is taken for an agent. Both can
-/// only keep a window from being shared, never let one be.
+/// by their file names, in any case, wherever they are; the agents by where
+/// they are, the `SystemApps` folder of the system's own Windows folder — or,
+/// where the system will not say which folder that is, any folder named so.
+/// Both can only keep a window from being shared, never let one be.
 pub fn is_windows_application(path: &str) -> bool {
+    is_application_outside(path, system_apps_folder())
+}
+
+/// [`is_windows_application`], with the system's agents in `system_apps` —
+/// or, where that is not known, in any folder named `SystemApps`.
+fn is_application_outside(path: &str, system_apps: Option<&str>) -> bool {
     let mut parts = path.rsplit(['\\', '/']);
     let Some(file) = parts.next().filter(|file| !file.is_empty()) else {
         return false;
     };
-    !HOSTS.iter().any(|host| file.eq_ignore_ascii_case(host))
-        && !parts.any(|dir| dir.eq_ignore_ascii_case(SYSTEM_APPS))
+    if HOSTS.iter().any(|host| file.eq_ignore_ascii_case(host)) {
+        return false;
+    }
+    match system_apps {
+        Some(folder) => !is_inside(path, folder),
+        None => !parts.any(|dir| dir.eq_ignore_ascii_case(SYSTEM_APPS)),
+    }
+}
+
+/// Whether `path` lies inside `folder`: the same letters, in any case, with
+/// either separator, and a separator after them.
+fn is_inside(path: &str, folder: &str) -> bool {
+    let fold = |c: char| {
+        if c == '/' {
+            '\\'
+        } else {
+            c.to_ascii_lowercase()
+        }
+    };
+    let mut path = path.chars().map(fold);
+    folder.chars().map(fold).all(|c| path.next() == Some(c)) && path.next() == Some('\\')
+}
+
+/// Windows: the `SystemApps` folder of the system's own Windows folder,
+/// asked once; `None` when the system will not say.
+#[cfg(windows)]
+fn system_apps_folder() -> Option<&'static str> {
+    use std::sync::OnceLock;
+
+    // Declared here: windows-sys has it behind a feature this crate does not
+    // turn on (`Win32_System_SystemInformation`), and turning one on rebuilds
+    // every crate that shares windows-sys — Tauri among them.
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetSystemWindowsDirectoryW(buffer: *mut u16, size: u32) -> u32;
+    }
+    static FOLDER: OnceLock<Option<String>> = OnceLock::new();
+    FOLDER
+        .get_or_init(|| {
+            let mut buf = [0u16; 512];
+            // SAFETY: `buf` holds as many units as said; the answer is the
+            // number written without the NUL, or the size needed when that
+            // is more than there is room for.
+            let len = unsafe { GetSystemWindowsDirectoryW(buf.as_mut_ptr(), buf.len() as u32) };
+            let len = usize::try_from(len)
+                .ok()
+                .filter(|len| (1..buf.len()).contains(len))?;
+            let windows = String::from_utf16(&buf[..len]).ok()?;
+            Some(format!(r"{}\{SYSTEM_APPS}", windows.trim_end_matches('\\')))
+        })
+        .as_deref()
+}
+
+#[cfg(not(windows))]
+fn system_apps_folder() -> Option<&'static str> {
+    None
 }
 
 /// Whether the executable at `path` is the frame host, known by its file
@@ -308,36 +386,94 @@ pub fn windows_application(pid: u32, started_at: u64) -> Option<WindowsApp> {
 
 /// Windows: what to call the application whose executable is at `path` —
 /// `app_user_model_id` names it when it is a packaged one. Read once and
-/// kept (see the module note); the lock is not held while it is read.
+/// kept (see the module note), on a thread of its own: a listing waits for it
+/// [`NAME_WAIT`] at most — no longer at all for a while after one has not
+/// come in time ([`NAME_SLOW`]) — and meanwhile goes by the file name, so a
+/// shell that does not answer cannot hold a listing up. A name still being
+/// read is not asked for again, no more than [`MAX_NAME_READERS`] are read at
+/// once, and one is kept when it comes, for the listings after.
 #[cfg(windows)]
 fn windows_name(path: &str, app_user_model_id: Option<&str>) -> String {
-    use std::collections::HashMap;
-    use std::sync::{Mutex, OnceLock};
+    use std::collections::{HashMap, HashSet};
+    use std::sync::{mpsc, Mutex, OnceLock};
+    use std::time::{Duration, Instant};
 
-    type Names = HashMap<(String, Option<String>), String>;
+    type Key = (String, Option<String>);
+    #[derive(Default)]
+    struct Names {
+        known: HashMap<Key, String>,
+        /// Being read by a thread that has not answered yet.
+        asking: HashSet<Key>,
+        /// Until when no listing waits for a name.
+        slow_until: Option<Instant>,
+    }
     static NAMES: OnceLock<Mutex<Names>> = OnceLock::new();
-    let names = NAMES.get_or_init(Mutex::default);
-    let key = (path.to_string(), app_user_model_id.map(str::to_string));
-    if let Some(name) = names.lock().ok().and_then(|names| names.get(&key).cloned()) {
-        return name;
-    }
-    let name = app_user_model_id
-        .and_then(windows_names::start_menu_name)
-        .or_else(|| windows_names::file_description(path))
-        .unwrap_or_else(|| {
-            path.rsplit(['\\', '/'])
-                .next()
-                .filter(|file| !file.is_empty())
-                .unwrap_or(path)
-                .to_string()
-        });
-    if let Ok(mut names) = names.lock() {
-        if names.len() >= MAX_WINDOWS_NAMES {
-            names.clear();
+    let names: &'static Mutex<Names> = NAMES.get_or_init(Mutex::default);
+    let key: Key = (path.to_string(), app_user_model_id.map(str::to_string));
+    let wait = {
+        let Ok(mut held) = names.lock() else {
+            return file_name_of(path);
+        };
+        if let Some(name) = held.known.get(&key) {
+            return name.clone();
         }
-        names.insert(key, name.clone());
+        if held.asking.len() >= MAX_NAME_READERS || !held.asking.insert(key.clone()) {
+            return file_name_of(path);
+        }
+        if held.slow_until.is_some_and(|until| Instant::now() < until) {
+            Duration::ZERO
+        } else {
+            NAME_WAIT
+        }
+    };
+    let (told, answer) = mpsc::channel();
+    let asked = key.clone();
+    let reader = std::thread::Builder::new()
+        .name("codeg-app-name".into())
+        .spawn(move || {
+            let (path, id) = &asked;
+            let name = id
+                .as_deref()
+                .and_then(windows_names::start_menu_name)
+                .or_else(|| windows_names::file_description(path))
+                .unwrap_or_else(|| file_name_of(path));
+            if let Ok(mut held) = names.lock() {
+                held.asking.remove(&asked);
+                if held.known.len() >= MAX_WINDOWS_NAMES {
+                    held.known.clear();
+                }
+                held.known.insert(asked.clone(), name.clone());
+            }
+            let _ = told.send(name);
+        });
+    if reader.is_err() {
+        if let Ok(mut held) = names.lock() {
+            held.asking.remove(&key);
+        }
+        return file_name_of(path);
     }
-    name
+    match answer.recv_timeout(wait) {
+        Ok(name) => name,
+        Err(_) => {
+            if !wait.is_zero() {
+                if let Ok(mut held) = names.lock() {
+                    held.slow_until = Some(Instant::now() + NAME_SLOW);
+                }
+            }
+            file_name_of(path)
+        }
+    }
+}
+
+/// Windows: the file name of the executable at `path` — what an application
+/// is called when nothing better says.
+#[cfg(windows)]
+fn file_name_of(path: &str) -> String {
+    path.rsplit(['\\', '/'])
+        .next()
+        .filter(|file| !file.is_empty())
+        .unwrap_or(path)
+        .to_string()
 }
 
 #[cfg(windows)]
@@ -862,11 +998,15 @@ mod tests {
 
     /// Windows: an executable is an application unless it is a host — by its
     /// file name, in any case and wherever it is — or one of the system's
-    /// agents in `SystemApps`. The applications Windows ships elsewhere,
-    /// Settings and Edge among them, are applications. The frame host is
-    /// told from the other hosts the same way.
+    /// agents in the `SystemApps` folder of the system's Windows folder (in
+    /// any folder named so, where the system will not say which that is). The
+    /// applications Windows ships elsewhere, Settings and Edge among them,
+    /// are applications, and so is one a person keeps in a `SystemApps`
+    /// folder of their own. The frame host is told from the other hosts the
+    /// same way.
     #[test]
     fn windows_applications_are_told_from_hosts_and_agents() {
+        let system = Some(r"C:\Windows\SystemApps");
         for application in [
             r"C:\Windows\ImmersiveControlPanel\SystemSettings.exe",
             r"C:\Windows\explorer.exe",
@@ -876,20 +1016,37 @@ mod tests {
             r"C:\ApplicationFrameHost.exe\Other.exe",
             r"C:\Windows\System32\ApplicationFrameHost.exe.bak",
             r"C:\Tools\SystemApps.exe",
+            r"C:\Windows\SystemAppsX\Thing.exe",
         ] {
-            assert!(is_windows_application(application), "{application}");
+            assert!(is_application_outside(application, system), "{application}");
+            assert!(is_application_outside(application, None), "{application}");
         }
         for other in [
             r"C:\Windows\System32\ApplicationFrameHost.exe",
             r"c:\windows\system32\applicationframehost.EXE",
             r"C:\Program Files (x86)\Microsoft\EdgeWebView\Application\129.0.2792.79\msedgewebview2.exe",
             r"C:\Windows\SystemApps\microsoft.creddialoghost_cw5n1h2txyewy\CredDialogHost.exe",
-            r"C:\Windows\SystemApps\Microsoft.LockApp_cw5n1h2txyewy\LockApp.exe",
-            r"D:\WINNT\systemapps\MicrosoftWindows.Client.CBS_cw5n1h2txyewy\TextInputHost.exe",
+            r"c:\windows\systemapps\Microsoft.LockApp_cw5n1h2txyewy\LockApp.exe",
+            "C:/Windows/SystemApps/Microsoft.LockApp_cw5n1h2txyewy/LockApp.exe",
             r"C:\Windows\SystemApps\",
             "",
         ] {
-            assert!(!is_windows_application(other), "{other}");
+            assert!(!is_application_outside(other, system), "{other}");
+            assert!(!is_application_outside(other, None), "{other}");
+        }
+        // A `SystemApps` folder that is not the system's: a person's own is
+        // theirs — unless the system will not say which is its own.
+        for elsewhere in [
+            r"C:\Tools\SystemApps\Thing\Thing.exe",
+            r"D:\WINNT\systemapps\MicrosoftWindows.Client.CBS_cw5n1h2txyewy\TextInputHost.exe",
+        ] {
+            assert!(is_application_outside(elsewhere, system), "{elsewhere}");
+            assert!(!is_application_outside(elsewhere, None), "{elsewhere}");
+        }
+        // The system's own folder, where it says.
+        if let Some(folder) = system_apps_folder() {
+            let lock = format!(r"{folder}\Microsoft.LockApp_cw5n1h2txyewy\LockApp.exe");
+            assert!(!is_windows_application(&lock), "{lock}");
         }
         // Of the hosts, the frame host alone frames an application.
         assert!(is_frame_host(

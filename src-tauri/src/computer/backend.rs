@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use super::protocol::{
     HelperError, HelperErrorCode, OsPermission, PeerCheck, PermissionAsked, PermissionReport,
-    RawAct, RawApp, RawCapture, RawSnapshot, RawVerify, RawWindow, WindowAction,
+    ProcessRun, RawAct, RawApp, RawCapture, RawSnapshot, RawVerify, RawWindow, WindowAction,
 };
 use super::types::{ActDelivery, VerifyRequest};
 
@@ -196,14 +196,17 @@ pub trait ComputerBackend: Send + Sync {
     /// checked the grant — and that the person allows the front, if that is
     /// the delivery — having counted `stop` Stops before it did; the backend
     /// checks, at the moment of delivery, what it can see — that `pid` is
-    /// still the process that started at `started_at`, that the session is
-    /// not locked, that no later Stop has been [`halt`](Self::halt)ed.
+    /// still the process that started at `started_at` and, where another
+    /// process draws inside the window, that `content` is still its run;
+    /// that the session is not locked; that no later Stop has been
+    /// [`halt`](Self::halt)ed.
     #[allow(clippy::too_many_arguments)]
     async fn act(
         &self,
         pid: u32,
         window_id: u64,
         started_at: u64,
+        content: Option<ProcessRun>,
         app_key: Option<String>,
         action: WindowAction,
         delivery: ActDelivery,

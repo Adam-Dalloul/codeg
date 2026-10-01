@@ -31,6 +31,7 @@ pub mod axwin;
 pub mod driver_proc;
 #[cfg(windows)]
 pub mod hwnd;
+pub mod keystate;
 pub mod mcp;
 pub mod ops;
 pub mod session;
@@ -48,12 +49,10 @@ use self::act::SnapshotBook;
 use self::driver_proc::DriverProc;
 use self::ops::AppCache;
 use super::driver;
-#[cfg(target_os = "macos")]
-use super::protocol::RawWindow;
 use super::protocol::{
     read_frame, HelperError, HelperErrorCode, HelperMessage, HelperOp, HelperReady, HelperReply,
-    HelperRequest, OsPermission, PeerCheck, PermissionReport, RawAct, MAX_FRAME_BYTES,
-    PROTOCOL_VERSION, SOURCE_FINGERPRINT, STOP_ALL,
+    HelperRequest, OsPermission, PeerCheck, PermissionReport, ProcessRun, RawAct, RawApp,
+    RawWindow, MAX_FRAME_BYTES, PROTOCOL_VERSION, SOURCE_FINGERPRINT, STOP_ALL,
 };
 
 /// Exit codes, for codeg's log: they are all the helper says to a peer it has
@@ -378,14 +377,23 @@ impl HelperState {
         Ok(())
     }
 
-    /// What an action on `pid`'s window, let through at Stop count `stop`,
-    /// must still find when it goes out (see [`Delivery`]).
-    fn delivery(&self, pid: u32, started_at: u64, stop: u64) -> Delivery {
+    /// What an action on `pid`'s window `window_id`, let through at Stop
+    /// count `stop`, must still find when it goes out (see [`Delivery`]).
+    fn delivery(
+        &self,
+        pid: u32,
+        window_id: u64,
+        started_at: u64,
+        content: Option<ProcessRun>,
+        stop: u64,
+    ) -> Delivery {
         Delivery {
             stopped: self.stopped.clone(),
             stop,
             pid,
+            window_id,
             started_at,
+            content,
         }
     }
 
@@ -562,6 +570,34 @@ impl HelperState {
         }
     }
 
+    /// The normal windows, each joined with its application — on macOS with
+    /// the minimized ones marked ([`mark_minimized`](Self::mark_minimized)).
+    async fn list_windows(
+        &self,
+        driver: &DriverProc,
+        pid: Option<u32>,
+    ) -> Result<Vec<RawWindow>, HelperError> {
+        let windows = ops::list_windows(driver, &self.apps, pid).await?;
+        #[cfg(target_os = "macos")]
+        let windows = self.mark_minimized(windows).await;
+        Ok(windows)
+    }
+
+    /// The running applications: on macOS and Windows the owners of the
+    /// windows a person could mean ([`ops::apps_of`]), from the listing
+    /// [`list_windows`](Self::list_windows) gives; elsewhere the driver's
+    /// own list.
+    async fn list_apps(&self, driver: &DriverProc) -> Result<Vec<RawApp>, HelperError> {
+        #[cfg(any(target_os = "macos", windows))]
+        {
+            Ok(ops::apps_of(self.list_windows(driver, None).await?))
+        }
+        #[cfg(not(any(target_os = "macos", windows)))]
+        {
+            ops::list_apps(driver, &self.apps).await
+        }
+    }
+
     /// `windows`, with the minimized ones marked — when this helper may ask
     /// Accessibility, which only a process started for the purpose can
     /// establish (see [`permissions`](Self::permissions)). Without it they
@@ -611,16 +647,20 @@ impl HelperState {
 /// What must hold at the moment an action goes out: no Stop has come since
 /// codeg let it through, the pid is still the process the window was shared
 /// from (a relaunch under a reused pid is another process, whose windows
-/// nobody shared), and the session is affirmatively unlocked and on this
-/// console. Asked just before each driver call — and, for the change the
-/// helper makes itself through Accessibility, on the thread that makes it,
-/// after everything read to decide on it: owned for that.
+/// nobody shared), so is the process drawing inside it where that is another
+/// (a frame's application, relaunched into the same frame, is a window nobody
+/// shared), and the session is affirmatively unlocked and on this console.
+/// Asked just before each driver call — and, for the change the helper makes
+/// itself through Accessibility, on the thread that makes it, after
+/// everything read to decide on it: owned for that.
 #[derive(Clone)]
 pub struct Delivery {
     stopped: Arc<AtomicU64>,
     stop: u64,
     pid: u32,
+    window_id: u64,
     started_at: u64,
+    content: Option<ProcessRun>,
 }
 
 impl Delivery {
@@ -635,6 +675,14 @@ impl Delivery {
                 "the window's process is gone",
             ));
         }
+        if let Some(run) = self.content {
+            if self.content_start(run) != Some(run.started_at) {
+                return Err(HelperError::new(
+                    HelperErrorCode::NoSuchWindow,
+                    "the application that was in the window is gone from it",
+                ));
+            }
+        }
         match session::state() {
             session::SessionState::Unlocked => Ok(()),
             session::SessionState::Locked => Err(HelperError::new(
@@ -646,6 +694,25 @@ impl Delivery {
                 "codeg cannot tell whether this desktop's session is locked, so it does not act \
                  on windows here; retrying will not change that. Reading windows still works.",
             )),
+        }
+    }
+
+    /// The start stamp of `run`, the process drawing inside the window — on
+    /// Windows read through a handle held while the frame is found still
+    /// showing that process, where it says (see `hwnd::frame_holds`): a frame
+    /// showing another is not the window that was shared. Elsewhere no window
+    /// has another process drawing inside it.
+    fn content_start(&self, run: ProcessRun) -> Option<u64> {
+        #[cfg(windows)]
+        {
+            super::procinfo::process_start_while(run.pid, || {
+                hwnd::frame_holds(self.window_id, self.pid, run.pid) != Some(false)
+            })
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = self.window_id;
+            super::procinfo::process_start(run.pid)
         }
     }
 }
@@ -736,14 +803,11 @@ async fn handle_op(
         HelperOp::Permissions => value(state.permissions(true).await),
         HelperOp::ListApps => {
             let driver = state.driver(stop).await?;
-            value(ops::list_apps(&driver, &state.apps).await?)
+            value(state.list_apps(&driver).await?)
         }
         HelperOp::ListWindows { pid } => {
             let driver = state.driver(stop).await?;
-            let windows = ops::list_windows(&driver, &state.apps, pid).await?;
-            #[cfg(target_os = "macos")]
-            let windows = state.mark_minimized(windows).await;
-            value(windows)
+            value(state.list_windows(&driver, pid).await?)
         }
         HelperOp::ProcessStart { pid } => value(super::procinfo::process_start(pid)),
         HelperOp::Capture {
@@ -788,6 +852,7 @@ async fn handle_op(
             pid,
             window_id,
             started_at,
+            content,
             app_key,
             action,
             delivery: mode,
@@ -797,7 +862,7 @@ async fn handle_op(
             // starting the driver and measuring the window take time in which
             // the screen can lock, the application quit or the person press
             // Stop.
-            let delivery = state.delivery(pid, started_at, stop);
+            let delivery = state.delivery(pid, window_id, started_at, content, stop);
             delivery.check()?;
             for permission in act::permissions_for(&action) {
                 state.require(*permission).await?;
@@ -1066,6 +1131,7 @@ mod tests {
             pid: std::process::id(),
             window_id: 1,
             started_at: crate::computer::procinfo::process_start(std::process::id()).unwrap(),
+            content: None,
             app_key: None,
             action: WindowAction::Key {
                 element: None,
@@ -1175,6 +1241,7 @@ mod tests {
                     pid: std::process::id(),
                     window_id: 1,
                     started_at: started_at.wrapping_add(1),
+                    content: None,
                     app_key: None,
                     action: WindowAction::Key {
                         element: None,

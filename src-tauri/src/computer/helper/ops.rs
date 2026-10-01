@@ -98,23 +98,11 @@ fn string(value: &Value, key: &str) -> Option<String> {
         .map(str::to_string)
 }
 
-/// Running applications, each stamped with its start time.
-///
-/// On macOS and Windows, the applications with a normal window, each
-/// identified by the helper itself (see [`list_windows`]); the frontmost of
-/// them is the one whose window is frontmost on screen. The driver's own
-/// list is not read there: on macOS it is frozen at the driver's first call,
-/// and on Windows it knows most processes by their executable's file name
-/// alone (see `appident`). An application with no window has nothing to share
-/// anyway.
-#[cfg(any(target_os = "macos", windows))]
-pub async fn list_apps(
-    driver: &DriverProc,
-    cache: &tokio::sync::Mutex<AppCache>,
-) -> Result<Vec<RawApp>, HelperError> {
-    Ok(apps_of(list_windows(driver, cache, None).await?))
-}
-
+/// Running applications, each stamped with its start time: the driver's own
+/// list. On macOS and Windows that list is not read — on macOS it is frozen
+/// at the driver's first call, and on Windows it knows most processes by
+/// their executable's file name alone (see `appident`) — and the
+/// applications are the owners of the windows instead ([`apps_of`]).
 #[cfg(not(any(target_os = "macos", windows)))]
 pub async fn list_apps(
     driver: &DriverProc,
@@ -123,12 +111,24 @@ pub async fn list_apps(
     driver_apps(driver).await
 }
 
-/// The identified applications among `windows`' owners, once each, with the
-/// one whose window is frontmost on screen marked active. One process can be
-/// several: the frame host is the application in each of its frames.
+/// The identified applications among the owners of `windows` a person could
+/// mean — on screen, minimized, or on another desktop or Space — once each,
+/// with the one whose window is frontmost on screen marked active. One
+/// process can be several: the frame host is the application in each of its
+/// frames. A window nobody can see on this desktop names no application: an
+/// application with only such windows has nothing to share, and the one a
+/// minimized frame shows is already named by the frame — its own window,
+/// standing outside the frame meanwhile, would name it twice.
+///
+/// On macOS and Windows these are the running applications, each identified
+/// by the helper itself (see [`list_windows`]), from the listing — minimized
+/// windows marked — that a window list is made from.
 #[cfg(any(test, target_os = "macos", windows))]
-fn apps_of(windows: Vec<RawWindow>) -> Vec<RawApp> {
+pub fn apps_of(windows: Vec<RawWindow>) -> Vec<RawApp> {
     let app_of = |w: &RawWindow| (w.pid, w.app.started_at, w.app.key().map(str::to_string));
+    let meant = |w: &RawWindow| {
+        w.on_screen || w.minimized == Some(true) || w.on_current_space == Some(false)
+    };
     let front = windows
         .iter()
         .filter(|w| w.on_screen)
@@ -137,7 +137,7 @@ fn apps_of(windows: Vec<RawWindow>) -> Vec<RawApp> {
     let mut seen = std::collections::HashSet::new();
     windows
         .into_iter()
-        .filter(|w| w.app.key().is_some() && seen.insert(app_of(w)))
+        .filter(|w| meant(w) && w.app.key().is_some() && seen.insert(app_of(w)))
         .map(|w| {
             let active = front == Some(app_of(&w));
             RawApp { active, ..w.app }
@@ -376,11 +376,7 @@ fn join_identified(windows: Vec<RawWindow>, stamps: Vec<Option<u64>>) -> Vec<Raw
             let app = match owner {
                 Some(WindowsOwner::Application(app)) => Some(app),
                 Some(WindowsOwner::FrameHost) if held => {
-                    window.content = desktop
-                        .frame_content(window.window_id, window.pid)
-                        .and_then(|pid| {
-                            process_start(pid).map(|started_at| ProcessRun { pid, started_at })
-                        });
+                    window.content = desktop.frame_content(window.window_id, window.pid);
                     window.content.and_then(|run| {
                         contents
                             .entry(run)
@@ -1127,20 +1123,42 @@ mod tests {
         }
     }
 
-    /// The applications are the identified owners of the windows, each once;
-    /// the active one owns the frontmost window on screen, whatever sits
-    /// higher off screen, and an owner nobody could identify is left out.
+    /// The applications are the identified owners of the windows a person
+    /// could mean, each once; the active one owns the frontmost window on
+    /// screen, whatever sits higher off screen. An owner nobody could
+    /// identify is left out, and so is one whose only window nobody can see
+    /// on this desktop — such as a packaged application's own window, which
+    /// stands outside its minimized frame while the frame names it.
     #[test]
     fn apps_are_the_identified_owners_of_windows() {
+        let minimized = RawWindow {
+            minimized: Some(true),
+            ..owned_window(3, 300, Some("com.example.three"), false, 9)
+        };
+        let elsewhere = RawWindow {
+            on_current_space: Some(false),
+            ..owned_window(5, 500, Some("com.example.five"), false, 2)
+        };
+        let frame = RawWindow {
+            minimized: Some(true),
+            ..owned_window(7, 700, Some(r"C:\Apps\Calculator.exe"), false, 4)
+        };
         let apps = apps_of(vec![
             owned_window(1, 100, Some("com.example.one"), true, 3),
             owned_window(2, 200, Some("com.example.two"), true, 7),
             owned_window(1, 100, Some("com.example.one"), true, 5),
-            owned_window(3, 300, Some("com.example.three"), false, 9),
+            minimized,
             owned_window(4, 400, None, true, 1),
+            elsewhere,
+            owned_window(6, 600, Some("com.example.six"), false, 8),
+            frame,
+            owned_window(8, 800, Some(r"C:\Apps\Calculator.exe"), false, 6),
         ]);
         let listed: Vec<(u32, bool)> = apps.iter().map(|a| (a.pid, a.active)).collect();
-        assert_eq!(listed, vec![(1, false), (2, true), (3, false)]);
+        assert_eq!(
+            listed,
+            vec![(1, false), (2, true), (3, false), (5, false), (7, false)]
+        );
     }
 
     /// macOS: a window's application is read off its own process, whatever

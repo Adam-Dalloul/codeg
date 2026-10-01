@@ -40,6 +40,7 @@ use std::time::Duration;
 use serde_json::{json, Value};
 
 use super::driver_proc::DriverProc;
+use super::keystate::held_modifiers;
 use super::mcp::ToolCallResult;
 use super::Delivery;
 use crate::computer::keys::Platform;
@@ -299,6 +300,7 @@ async fn restore(
         effect,
         route: None,
         submitted: None,
+        submit_note: None,
         element_frame: None,
         window_frame: None,
     };
@@ -374,7 +376,8 @@ pub fn permissions_for(action: &WindowAction) -> &'static [OsPermission] {
 /// call, or two for typing that ends with return, both delivered alike.
 /// `deliverable` is asked just before each call goes out — whatever must
 /// still hold at the moment of delivery (nothing stopped, the same process,
-/// an unlocked session) — and a call it refuses is not made.
+/// an unlocked session) — and a call it refuses is not made; so is a key or
+/// typing at the front while the person holds a modifier ([`keys_free`]).
 pub async fn act(
     driver: &DriverProc,
     pid: u32,
@@ -441,6 +444,7 @@ pub async fn act(
             let mut key = args.clone();
             args["text"] = json!(text);
             deliverable.check()?;
+            keys_free(mode, held_modifiers)?;
             let typed = one(driver, "type_text", args, mode, TYPE_TIMEOUT).await?;
             if !*submit {
                 return Ok(typed);
@@ -448,7 +452,10 @@ pub async fn act(
             key["key"] = json!("return");
             // Typing can take a while: the second call is held to the same
             // conditions as the first, at its own moment.
-            let pressed = match deliverable.check() {
+            let pressed = match deliverable
+                .check()
+                .and_then(|()| keys_free(mode, held_modifiers))
+            {
                 Ok(()) => one(driver, "press_key", key, mode, ACT_TIMEOUT).await,
                 Err(e) => Err(e),
             };
@@ -459,9 +466,10 @@ pub async fn act(
                     submitted: Some(true),
                     ..typed
                 },
-                // The text went in; return did not. Said as such.
-                Err(_) => RawAct {
+                // The text went in; return did not. Said as such, and why.
+                Err(e) => RawAct {
                     submitted: Some(false),
+                    submit_note: Some(e.message),
                     ..typed
                 },
             })
@@ -476,6 +484,7 @@ pub async fn act(
                 put_element(&mut args, element);
             }
             deliverable.check()?;
+            keys_free(mode, held_modifiers)?;
             one(driver, "press_key", args, mode, ACT_TIMEOUT).await
         }
         WindowAction::SetValue { element, value } => {
@@ -489,6 +498,41 @@ pub async fn act(
             restore(driver, pid, window_id, deliverable).await
         }
     }
+}
+
+/// Keys and typing sent with the window brought to the front go in as real
+/// input, and combine with whatever modifier is held at that moment (see
+/// `keystate`): while the person holds one, none is sent. In the background
+/// they reach the window alone, and go as asked.
+fn keys_free(
+    mode: ActDelivery,
+    held: impl FnOnce() -> Vec<&'static str>,
+) -> Result<(), HelperError> {
+    if mode != ActDelivery::Foreground {
+        return Ok(());
+    }
+    let held = held();
+    if held.is_empty() {
+        return Ok(());
+    }
+    Err(HelperError::new(
+        HelperErrorCode::ActionFailed,
+        modifiers_held(&held),
+    ))
+}
+
+/// What the agent is told when the person is holding `held` down.
+fn modifiers_held(held: &[&str]) -> String {
+    let names = match held {
+        [] => String::new(),
+        [one] => (*one).to_string(),
+        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
+    };
+    format!(
+        "The user is holding down {names} right now. Keys sent with the window brought to the \
+         front go in as real input and would have combined with what they hold, so nothing was \
+         sent. Try again in a moment; if this keeps happening, ask the user to let go of {names}."
+    )
 }
 
 /// The less certain of two effects: confirmed, then unverifiable, then
@@ -566,6 +610,7 @@ fn action_result(tool: &str, result: &ToolCallResult) -> Result<RawAct, HelperEr
         effect,
         route,
         submitted: None,
+        submit_note: None,
         element_frame: None,
         window_frame: None,
     })
@@ -617,20 +662,51 @@ const HIGHER_RIGHTS: &str = "That window's application runs with more rights tha
      administrator), and Windows lets no input from codeg reach it, in the background or at the \
      front. Nothing was sent; ask the user to do this step.";
 
+/// A call with the window brought to the front that failed before any input
+/// went out.
+const FRONT_NOT_HAD: &str = "The window could not be brought to the front just now, so nothing \
+     was sent. Try again in a moment; if it keeps failing, ask the user to do this step.";
+
+/// A call with the window brought to the front that failed with its input
+/// sent, or perhaps sent.
+const FRONT_LOST: &str = "This action, with the window brought to the front, did not finish \
+     cleanly, so whether it went through cannot be told — it may have. Read the window \
+     (computer_snapshot or computer_screenshot) before doing it again: repeating it blindly could \
+     do it twice.";
+
+/// What the driver says, word for word, only of a front it failed to have
+/// before any input went out: on Windows its `foreground_unavailable: …`
+/// texts that end "no input was sent" (or never got as far as the mouse); on
+/// macOS the activation that came before the keys. A failure said any other
+/// way may have come after.
+const NOTHING_SENT: [&str; 7] = [
+    "no input was sent",
+    "no mouse input was sent",
+    "before mouse input could be sent",
+    "foreground HID delivery is unavailable",
+    "could not resolve target window for foreground HID delivery",
+    "rejected foreground HID activation",
+    "did not become focused for foreground HID delivery",
+];
+
 /// What to say of a call with the window brought to the front that the
 /// driver could not deliver; `None` for any other failure. On Windows the
 /// driver says it in words, not codes (`foreground_unavailable: …` when the
-/// window did not come forward in time, `UIPI: …` for an application running
-/// with more rights than it); on macOS by the code `delivery_failed`.
+/// window was not, or did not stay, at the front; `UIPI: …` for an
+/// application running with more rights than it); on macOS by the code
+/// `delivery_failed`. Only a failure the driver says came before any input
+/// went out is one to simply try again: a click it found the window gone
+/// from the front *after* may well have landed.
 fn front_failure(code: &str, text: &str) -> Option<&'static str> {
     let text = text.trim_start();
     if text.starts_with("UIPI") {
         Some(HIGHER_RIGHTS)
     } else if code == "delivery_failed" || text.starts_with("foreground_unavailable") {
-        Some(
-            "The window could not be brought to the front just now, so nothing was sent. Try \
-             again in a moment; if it keeps failing, ask the user to do this step.",
-        )
+        if NOTHING_SENT.iter().any(|said| text.contains(said)) {
+            Some(FRONT_NOT_HAD)
+        } else {
+            Some(FRONT_LOST)
+        }
     } else {
         None
     }
@@ -1078,7 +1154,10 @@ mod tests {
 
     /// The front fails in words of its own — a window that would not come
     /// forward, an application with more rights than codeg — and they are
-    /// read as such only when the front was asked for.
+    /// read as such only when the front was asked for. Only a failure the
+    /// driver says came before any input went out is one to try again; one
+    /// it found after (the window gone from the front once the click was
+    /// sent) or does not place may have done what was asked.
     #[test]
     fn the_front_fails_in_its_own_words() {
         let failed = |code: Option<&str>, text: &str| ToolCallResult {
@@ -1087,26 +1166,83 @@ mod tests {
             structured: code.map(|code| json!({ "code": code })),
         };
         let front = ActDelivery::Foreground;
-        let windows = failed(
+        let not_had = |e: &HelperError| {
+            assert_eq!(e.code, HelperErrorCode::ActionFailed);
+            assert!(e.message.contains("nothing was sent"), "{}", e.message);
+            assert!(!e.message.contains("HWND"), "{}", e.message);
+        };
+        let lost = |e: &HelperError| {
+            assert_eq!(e.code, HelperErrorCode::ActionFailed);
+            assert!(e.message.contains("may have"), "{}", e.message);
+            assert!(!e.message.contains("nothing was sent"), "{}", e.message);
+            assert!(!e.message.contains("HWND"), "{}", e.message);
+        };
+        // The pinned driver's own words, before and after the input.
+        for before in [
+            "foreground_unavailable: Windows did not confirm exact target HWND 0x1 for type_text \
+             within 500 ms (actual foreground HWND 0x2). Route the request through the \
+             UIAccess-manifested cua-driver-uia worker; no input was sent.",
+            "foreground_unavailable: Windows did not activate exact target HWND 0x1 (actual \
+             foreground HWND 0x2); no mouse input was sent",
+            "foreground_unavailable: exact target HWND 0x1 disappeared before mouse input could \
+             be sent",
+        ] {
+            not_had(&act_error("click", front, &failed(None, before)));
+        }
+        let after = failed(
             None,
-            "foreground_unavailable: Windows did not confirm exact target HWND 0x1 within 500 ms",
+            "foreground_unavailable: exact target HWND 0x1 or a verified same-process post-action \
+             window was not foreground after the click (actual foreground HWND 0x2)",
         );
-        let e = act_error("press_key", front, &windows);
-        assert_eq!(e.code, HelperErrorCode::ActionFailed);
-        assert!(e.message.contains("brought to the front"), "{}", e.message);
-        assert!(!e.message.contains("HWND"), "{}", e.message);
+        lost(&act_error("click", front, &after));
+        lost(&act_error(
+            "press_key",
+            front,
+            &failed(None, "foreground_unavailable: something new"),
+        ));
         let mac = failed(
             Some("delivery_failed"),
-            "WindowServer rejected foreground HID activation",
+            "press_key delivery failed: WindowServer rejected foreground HID activation",
         );
-        let e = act_error("press_key", front, &mac);
-        assert!(e.message.contains("brought to the front"), "{}", e.message);
+        not_had(&act_error("press_key", front, &mac));
+        lost(&act_error(
+            "press_key",
+            front,
+            &failed(
+                Some("delivery_failed"),
+                "press_key delivery failed: post rejected",
+            ),
+        ));
         let rights = failed(None, "UIPI: target hwnd 0x1 is at High integrity");
         let e = act_error("type_text", front, &rights);
         assert!(e.message.contains("administrator"), "{}", e.message);
         // In the background the same words are the driver's own.
         let e = act_error("press_key", ActDelivery::Background, &mac);
         assert!(e.message.contains("WindowServer"), "{}", e.message);
+    }
+
+    /// At the front, keys and typing wait for the person's modifiers: none
+    /// is sent while one is held, and the agent is told which. In the
+    /// background the held keys do not matter, and are not even asked.
+    #[test]
+    fn keys_at_the_front_wait_for_held_modifiers() {
+        let front = ActDelivery::Foreground;
+        assert!(keys_free(front, Vec::new).is_ok());
+        let e = keys_free(front, || vec!["Ctrl"]).unwrap_err();
+        assert_eq!(e.code, HelperErrorCode::ActionFailed);
+        assert!(
+            e.message.contains("holding down Ctrl right now"),
+            "{}",
+            e.message
+        );
+        assert!(e.message.contains("nothing was sent"), "{}", e.message);
+        let e = keys_free(front, || vec!["Ctrl", "Shift", "the Windows key"]).unwrap_err();
+        assert!(
+            e.message.contains("Ctrl, Shift and the Windows key"),
+            "{}",
+            e.message
+        );
+        assert!(keys_free(ActDelivery::Background, || unreachable!("not asked")).is_ok());
     }
 
     /// Only a point needs the window measured — and Screen Recording, to

@@ -38,7 +38,7 @@ use super::types::{
 /// Bumped whenever a frame changes shape. The helper ships in the same bundle
 /// as codeg, so a mismatch means a broken install (a helper left behind by a
 /// partial update), and codeg refuses to talk to it rather than guess.
-pub const PROTOCOL_VERSION: u32 = 7;
+pub const PROTOCOL_VERSION: u32 = 8;
 
 /// A fingerprint of the sources the helper is built from, the same in codeg
 /// and the helper when both are built from one tree (see `build.rs`). The
@@ -118,7 +118,8 @@ pub enum HelperOp {
     /// Act on one window. codeg has checked the grant, the addressing, the
     /// keys and — for the front — that the person allows it; the helper
     /// checks again what only it can see at the moment of delivery — that
-    /// the pid is still the process the window was shared from, that the
+    /// the pid is still the process the window was shared from, and the
+    /// process drawing inside it still the run it was shared with, that the
     /// session is not locked, that no Stop has come since the action was let
     /// through — and refuses secret fields itself.
     #[serde(rename_all = "camelCase")]
@@ -127,6 +128,10 @@ pub enum HelperOp {
         window_id: u64,
         /// The process start time the grant is held against.
         started_at: u64,
+        /// The run of the process drawing inside the window, where that is
+        /// not its owner (`RawWindow::content`): part of what was shared.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        content: Option<ProcessRun>,
         /// The application's key (bundle identifier or path), for the driver
         /// paths that differ by application.
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -294,6 +299,10 @@ pub struct RawAct {
     /// For typing with `submit`: whether return was pressed after the text.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub submitted: Option<bool>,
+    /// For typing with `submit` whose return did not go out: why, in words
+    /// for the agent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub submit_note: Option<String>,
     /// Where the action was aimed, as the helper knew it when it went out:
     /// the element's frame in the snapshot it was addressed by, and — for a
     /// point — the window's frame, measured just before. In the platform's
@@ -695,6 +704,7 @@ mod tests {
             pid: 42,
             window_id: 7,
             started_at: 1,
+            content: None,
             app_key: None,
             action: WindowAction::Restore,
             delivery: ActDelivery::Background,
@@ -702,22 +712,31 @@ mod tests {
         let wire = serde_json::to_value(&restore).unwrap();
         assert_eq!(wire["action"], serde_json::json!({ "kind": "restore" }));
         assert_eq!(wire["delivery"], "background");
+        assert!(wire.get("content").is_none());
         assert_eq!(serde_json::from_value::<HelperOp>(wire).unwrap(), restore);
 
         // The front, said as the driver says it; and an act that does not
-        // say goes in the background.
+        // say goes in the background. A frame's window carries the run of
+        // the application drawing inside it.
         let front = HelperOp::Act {
             pid: 42,
             window_id: 7,
             started_at: 1,
+            content: Some(ProcessRun {
+                pid: 43,
+                started_at: 2,
+            }),
             app_key: None,
             action: WindowAction::Restore,
             delivery: ActDelivery::Foreground,
         };
+        let wire = serde_json::to_value(&front).unwrap();
+        assert_eq!(wire["delivery"], "foreground");
         assert_eq!(
-            serde_json::to_value(&front).unwrap()["delivery"],
-            "foreground"
+            wire["content"],
+            serde_json::json!({ "pid": 43, "startedAt": 2 })
         );
+        assert_eq!(serde_json::from_value::<HelperOp>(wire).unwrap(), front);
         let mut unsaid = serde_json::to_value(&restore).unwrap();
         unsaid.as_object_mut().unwrap().remove("delivery");
         assert_eq!(serde_json::from_value::<HelperOp>(unsaid).unwrap(), restore);

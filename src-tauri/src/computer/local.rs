@@ -42,8 +42,8 @@ use super::backend::{
 use super::driver;
 use super::protocol::{
     read_frame, write_frame, HelperError, HelperErrorCode, HelperMessage, HelperOp, HelperReply,
-    HelperRequest, OsPermission, PeerCheck, PermissionAsked, PermissionReport, RawAct, RawApp,
-    RawCapture, RawSnapshot, RawVerify, RawWindow, WindowAction, PROTOCOL_VERSION,
+    HelperRequest, OsPermission, PeerCheck, PermissionAsked, PermissionReport, ProcessRun, RawAct,
+    RawApp, RawCapture, RawSnapshot, RawVerify, RawWindow, WindowAction, PROTOCOL_VERSION,
     SOURCE_FINGERPRINT, STOP_ALL,
 };
 use super::types::{ActDelivery, VerifyRequest};
@@ -630,6 +630,7 @@ impl ComputerBackend for LocalBackend {
         pid: u32,
         window_id: u64,
         started_at: u64,
+        content: Option<ProcessRun>,
         app_key: Option<String>,
         action: WindowAction,
         delivery: ActDelivery,
@@ -658,6 +659,7 @@ impl ComputerBackend for LocalBackend {
                     pid,
                     window_id,
                     started_at,
+                    content,
                     app_key,
                     action,
                     delivery,
@@ -1175,7 +1177,7 @@ mod tests {
         };
         assert_eq!(
             backend
-                .act(1, 1, 1, None, act(), ActDelivery::Background, 0)
+                .act(1, 1, 1, None, None, act(), ActDelivery::Background, 0)
                 .await
                 .unwrap_err(),
             BackendError::Refused(
@@ -1190,7 +1192,7 @@ mod tests {
         backend.close().await;
         assert!(matches!(
             backend
-                .act(1, 1, 1, None, act(), ActDelivery::Background, 1)
+                .act(1, 1, 1, None, None, act(), ActDelivery::Background, 1)
                 .await
                 .unwrap_err(),
             BackendError::Unavailable(_)

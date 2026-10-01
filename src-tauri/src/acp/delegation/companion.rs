@@ -3301,9 +3301,15 @@ pub fn render_computer_act_result(outcome: &Value) -> Value {
     }
     match action.get("submitted").and_then(Value::as_bool) {
         Some(true) => out.push_str(" Return was pressed after the text."),
-        Some(false) => out.push_str(
-            " Return could not be pressed after the text; press it with computer_press_key.",
-        ),
+        Some(false) => match action.get("submitNote").and_then(Value::as_str) {
+            Some(why) => out.push_str(&format!(
+                " Return could not be pressed after the text: {why} Press it with \
+                 computer_press_key once that allows."
+            )),
+            None => out.push_str(
+                " Return could not be pressed after the text; press it with computer_press_key.",
+            ),
+        },
         None => {}
     }
     out.push_str(" Take a new computer_snapshot or computer_screenshot to see the result.");
@@ -6195,6 +6201,20 @@ mod tests {
         let text = vague["content"][0]["text"].as_str().unwrap();
         assert!(text.contains("computer_verify"), "{text}");
         assert!(text.contains("Return could not be pressed"), "{text}");
+        // Why it could not be, where the helper said.
+        let held = render_computer_act_result(&json!({
+            "targetId": "w2",
+            "action": { "targetId": "w2", "effect": "unverifiable", "delivery": "foreground",
+                        "submitted": false,
+                        "submitNote": "The user is holding down Ctrl right now." }
+        }));
+        let text = held["content"][0]["text"].as_str().unwrap();
+        assert!(
+            text.contains(
+                "Return could not be pressed after the text: The user is holding down Ctrl"
+            ),
+            "{text}"
+        );
         let refused = render_computer_act_result(&json!({
             "targetId": "w2", "error": "computer_control_required", "note": "ask for control"
         }));

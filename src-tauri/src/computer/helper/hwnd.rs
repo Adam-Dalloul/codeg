@@ -30,7 +30,8 @@ use windows_sys::core::GUID;
 use windows_sys::Win32::Foundation::{BOOL, HWND};
 
 use crate::computer::appident::Com;
-use crate::computer::procinfo::process_image;
+use crate::computer::procinfo::{process_image, process_start_while};
+use crate::computer::protocol::ProcessRun;
 
 /// The class of the window a packaged application draws in.
 const CORE_WINDOW_CLASS: &str = "Windows.UI.Core.CoreWindow";
@@ -278,28 +279,44 @@ impl Desktop {
         (status >= 0).then_some(on != 0)
     }
 
-    /// The process drawing inside `frame`, a window of the frame host `host`
-    /// (see the module note); `None` when no process is, or when which one
-    /// cannot be told.
-    pub fn frame_content(&self, frame: u64, host: u32) -> Option<u32> {
+    /// The run of the process drawing inside `frame`, a window of the frame
+    /// host `host` (see the module note); `None` when no process is, or when
+    /// which one cannot be told. The run is read off the process it was found
+    /// by — through the handle the core window is found still inside the
+    /// frame and still that process's with, or the one its application was
+    /// read through — so a pid that passed to another process in between
+    /// cannot lend the frame that process's identity.
+    pub fn frame_content(&self, frame: u64, host: u32) -> Option<ProcessRun> {
         let frame = handle(frame)?;
-        let inside = core_windows(frame)
-            .filter_map(owner)
-            .filter(|pid| *pid != host);
-        match found(inside) {
-            Found::One(pid) => Some(pid),
+        let inside: Vec<(HWND, u32)> = core_windows(frame)
+            .filter_map(|window| Some((window, owner(window)?)))
+            .filter(|(_, pid)| *pid != host)
+            .collect();
+        match found(inside.iter().map(|(_, pid)| *pid)) {
+            Found::One(pid) => {
+                let window = inside.first()?.0;
+                let started_at = process_start_while(pid, || {
+                    owner(window) == Some(pid) && core_windows(frame).any(|w| w == window)
+                })?;
+                Some(ProcessRun { pid, started_at })
+            }
             Found::Several => None,
             // Minimized: the core window stands on its own.
             Found::Nothing => {
                 let shown = app_user_model_id(frame)?;
-                let runs_it = |pid: &u32| {
-                    process_image(*pid)
-                        .and_then(|image| image.app_user_model_id)
-                        .is_some_and(|id| id == shown)
-                };
-                let standing = core_windows(ptr::null_mut()).filter_map(owner);
-                match found(standing.filter(runs_it)) {
-                    Found::One(pid) => Some(pid),
+                let runs = core_windows(ptr::null_mut())
+                    .filter_map(owner)
+                    .filter_map(|pid| {
+                        let image = process_image(pid)?;
+                        (image.app_user_model_id.as_deref() == Some(shown.as_str())).then_some(
+                            ProcessRun {
+                                pid,
+                                started_at: image.started,
+                            },
+                        )
+                    });
+                match found(runs) {
+                    Found::One(run) => Some(run),
                     Found::Nothing | Found::Several => None,
                 }
             }
@@ -307,20 +324,34 @@ impl Desktop {
     }
 }
 
-/// What a walk turned up: no process, one (however many of its windows), or
+/// Whether the process drawing inside `frame`, a window of the frame host
+/// `host`, is still `pid` — where the frame says: `None` while no core window
+/// is inside it (minimized, or in passing), when only that the run is alive
+/// can be told.
+pub fn frame_holds(frame: u64, host: u32, pid: u32) -> Option<bool> {
+    let frame = handle(frame)?;
+    let mut inside = core_windows(frame)
+        .filter_map(owner)
+        .filter(|drawer| *drawer != host)
+        .peekable();
+    inside.peek()?;
+    Some(inside.all(|drawer| drawer == pid))
+}
+
+/// What a walk turned up: nothing, one (however often it turned up), or
 /// several.
 #[derive(Debug, PartialEq, Eq)]
-enum Found {
+enum Found<T> {
     Nothing,
-    One(u32),
+    One(T),
     Several,
 }
 
-fn found(mut pids: impl Iterator<Item = u32>) -> Found {
-    let Some(first) = pids.next() else {
+fn found<T: PartialEq>(mut items: impl Iterator<Item = T>) -> Found<T> {
+    let Some(first) = items.next() else {
         return Found::Nothing;
     };
-    if pids.all(|pid| pid == first) {
+    if items.all(|item| item == first) {
         Found::One(first)
     } else {
         Found::Several
@@ -402,7 +433,7 @@ mod tests {
     #[test]
     fn one_process_is_found_however_often_it_turns_up() {
         assert_eq!(found([7, 7, 7].into_iter()), Found::One(7));
-        assert_eq!(found(std::iter::empty()), Found::Nothing);
+        assert_eq!(found(std::iter::empty::<u32>()), Found::Nothing);
         assert_eq!(found([7, 8, 7].into_iter()), Found::Several);
     }
 
@@ -415,6 +446,7 @@ mod tests {
         assert!(!desktop.cloaked(0));
         assert_eq!(desktop.on_current_desktop(0), None);
         assert_eq!(desktop.frame_content(0, std::process::id()), None);
+        assert_eq!(frame_holds(0, std::process::id(), 1), None);
     }
 
     /// The value is laid out as the system's is, and its string is read up

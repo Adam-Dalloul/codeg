@@ -1013,7 +1013,7 @@
             "background",
             "foreground"
           ],
-          "description": "How the input reaches the window. `background` leaves it where it is; `foreground` brings it to the front for this one action and then switches back — the user sees it, and on Windows a click moves their pointer — and is refused with `computer_foreground_not_allowed` unless the user allows it. Leave it out for the user's default (computer_list_windows says which it is)."
+          "description": "How the input reaches the window. `background` leaves it where it is; `foreground` brings it to the front for this one action and then switches back — the user sees it, and on Windows a click moves their pointer — and is refused with `computer_foreground_not_allowed` unless the user allows it. Leave it out for the user's default (computer_list_windows says which it is). With `foreground`, nothing is sent while the user is holding down a modifier key — Ctrl, Alt, Shift or the Windows key; on macOS Command, Option, Control or Shift — since the keys would combine with it: that answers `computer_action_failed`, and trying again a moment later helps."
         }
       }
     }
@@ -1072,7 +1072,7 @@
             "background",
             "foreground"
           ],
-          "description": "How the input reaches the window. `background` leaves it where it is; `foreground` brings it to the front for this one action and then switches back — the user sees it, and on Windows a click moves their pointer — and is refused with `computer_foreground_not_allowed` unless the user allows it. Leave it out for the user's default (computer_list_windows says which it is)."
+          "description": "How the input reaches the window. `background` leaves it where it is; `foreground` brings it to the front for this one action and then switches back — the user sees it, and on Windows a click moves their pointer — and is refused with `computer_foreground_not_allowed` unless the user allows it. Leave it out for the user's default (computer_list_windows says which it is). With `foreground`, nothing is sent while the user is holding down a modifier key — Ctrl, Alt, Shift or the Windows key; on macOS Command, Option, Control or Shift — since the keys would combine with it: that answers `computer_action_failed`, and trying again a moment later helps."
         }
       }
     }

@@ -478,6 +478,9 @@ pub struct ActReport {
     /// For typing with `submit`: whether return was pressed after it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub submitted: Option<bool>,
+    /// For typing with `submit` whose return was not pressed: why.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub submit_note: Option<String>,
 }
 
 #[cfg(test)]

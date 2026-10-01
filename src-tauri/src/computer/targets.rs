@@ -1567,6 +1567,7 @@ mod tests {
             effect: ActEffect::Confirmed,
             route: None,
             submitted: None,
+            submit_note: None,
             element_frame,
             window_frame,
         };
