@@ -9,22 +9,33 @@
 ;
 ;     Error opening file for writing: ...\codeg\codeg-mcp.exe
 ;
-; Stop any running companion processes before the installer writes new
-; binaries (or removes the existing ones on uninstall). taskkill returns
-; non-zero when no processes match, which is fine — we ignore the result.
+; codeg-computer-helper.exe, the computer-use helper, is codeg's own child
+; and exits when codeg does — but not necessarily before the updater starts
+; writing, and a running one holds its file just the same. `/T` takes the
+; cua-driver it runs with it (the driver lives in the user's cache, not here,
+; but is the helper's child and has no business outliving it).
+;
+; Stop any running companion and helper processes before the installer
+; writes new binaries (or removes the existing ones on uninstall). taskkill
+; returns non-zero when no processes match, which is fine — we ignore the
+; result.
 
 !macro NSIS_HOOK_PREINSTALL
-  DetailPrint "Stopping any running codeg-mcp processes..."
+  DetailPrint "Stopping any running codeg-mcp and codeg-computer-helper processes..."
   nsExec::Exec 'taskkill /F /T /IM codeg-mcp.exe'
   Pop $0
+  nsExec::Exec 'taskkill /F /T /IM codeg-computer-helper.exe'
+  Pop $0
   ; Small grace period so the OS releases file handles before the
-  ; installer attempts to overwrite codeg-mcp.exe.
+  ; installer attempts to overwrite the binaries.
   Sleep 500
 !macroend
 
 !macro NSIS_HOOK_PREUNINSTALL
-  DetailPrint "Stopping any running codeg-mcp processes..."
+  DetailPrint "Stopping any running codeg-mcp and codeg-computer-helper processes..."
   nsExec::Exec 'taskkill /F /T /IM codeg-mcp.exe'
+  Pop $0
+  nsExec::Exec 'taskkill /F /T /IM codeg-computer-helper.exe'
   Pop $0
   Sleep 500
 !macroend
