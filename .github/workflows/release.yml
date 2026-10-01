@@ -573,6 +573,11 @@ jobs:
       #   * codeg and codeg-mcp reference no Accessibility / event-posting /
       #     screen-capture API: holding or using those is the helper's job
       #     alone. `AXIsProcessTrusted` is the one allowed read-only query.
+      #     codeg alone may also import `CGEventTapCreate`: global-hotkey,
+      #     behind the stop shortcut, links it to watch media keys, and codeg
+      #     never asks it to — `StopShortcut` names no media key and no webview
+      #     is given the shortcut plugin, both held by tests. Nothing else is
+      #     let through.
       - name: Verify computer-use signing and symbols (macOS)
         if: contains(matrix.target, 'apple-darwin')
         shell: bash
@@ -601,6 +606,9 @@ jobs:
           deny='^_(CGEventPost|CGEventPostToPid|CGEventPostToPSN|CGEventTapCreate|CGEventTapCreateForPid|CGEventTapCreateForPSN|CGWindowListCreateImage|CGWindowListCreateImageFromArray|CGDisplayCreateImage|CGDisplayCreateImageForRect|CGDisplayStreamCreate|CGDisplayStreamCreateWithDispatchQueue|CGRequestScreenCaptureAccess|CGRequestPostEventAccess|AXIsProcessTrustedWithOptions|AXUIElement[A-Za-z]*|AXObserver[A-Za-z]*)$|^_OBJC_CLASS_\$_SC(ShareableContent|Stream|ScreenshotManager|ContentFilter|ContentSharingPicker)$'
           for bin in codeg codeg-mcp; do
             hits="$(nm -u "$app/Contents/MacOS/$bin" | grep -E "$deny" || true)"
+            if [ "$bin" = codeg ]; then
+              hits="$(printf '%s\n' "$hits" | grep -vx '_CGEventTapCreate' || true)"
+            fi
             if [ -n "$hits" ]; then
               echo "FATAL: $bin references APIs only codeg-computer-helper may use:"
               echo "$hits"
