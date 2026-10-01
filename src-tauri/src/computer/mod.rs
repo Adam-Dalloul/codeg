@@ -22,7 +22,10 @@
 //!   codeg can notice that it *has* been granted one by mistake.
 //! * **The executor is `codeg-computer-helper`**, a separately signed binary
 //!   that codeg launches as its own responsible process and that refuses to
-//!   serve anything but a code-signature-verified codeg ([`helper`]).
+//!   serve anything but a code-signature-verified codeg ([`helper`]). On
+//!   macOS it is an app of its own, run from a copy outside codeg's bundle:
+//!   Screen Recording is charged to the outermost app of the same team around
+//!   an executable, which inside the bundle is codeg (`helper_app`).
 //! * **The driver (cua-driver) runs as the helper's child** without
 //!   disclaiming, so its TCC requests are charged to the helper. It lives in a
 //!   user-writable cache, so the helper launches it under a launch requirement
@@ -57,6 +60,8 @@
 //! - `appident`  — which application a process is, read off the process; a
 //!   frame on Windows is the one drawing inside it
 //! - `helper`    — the helper process's own logic (runs in the helper binary)
+//! - `helper_app` — the helper app's copy outside codeg's bundle, which is
+//!   what codeg runs on macOS
 //! - `local`     — codeg's side of the helper: launch, verify, talk
 //! - `events`    — what the frontend is told
 //! - `driver_admin` — the driver as Settings manages it: install, clear, remove
@@ -94,6 +99,8 @@ pub mod driver_admin;
 pub mod events;
 #[cfg(feature = "tauri-runtime")]
 pub mod indicator;
+#[cfg(all(feature = "tauri-runtime", target_os = "macos"))]
+pub mod helper_app;
 #[cfg(feature = "tauri-runtime")]
 pub mod local;
 #[cfg(feature = "tauri-runtime")]

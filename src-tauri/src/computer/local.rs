@@ -2,7 +2,9 @@
 //! check that it is our helper, and talk to it.
 //!
 //! **Launch.** On macOS the helper is spawned with responsibility disclaimed,
-//! so it is the TCC principal and codeg is not, over a socketpair duplicated
+//! so it is the TCC principal and codeg is not — from a copy of its app
+//! outside codeg's bundle, since inside it macOS would charge its Screen
+//! Recording to codeg all the same (`helper_app`) — over a socketpair duplicated
 //! onto its stdin and stdout — the only rendezvous there is, with no path in
 //! the filesystem for another process to get to first. Its other descriptors
 //! are closed on exec, its environment is a fixed few variables. Elsewhere it
@@ -63,7 +65,9 @@ pub const HELPER_SIGNING_ID: &str = "app.codeg.computer-helper";
 /// charges an executable's permissions to the app bundle it sits in, so a
 /// helper beside codeg in `Contents/MacOS/` would hold codeg's — every
 /// agent's shell's — and none of its own. In an app of its own it is a
-/// principal of its own.
+/// principal of its own for Accessibility; for Screen Recording only once it
+/// is out of codeg's bundle, which is why codeg runs a copy of this app
+/// (`helper_app`).
 pub const HELPER_APP: &str = "codeg-computer-helper.app";
 
 // A release build pins both or neither: a requirement checked after launch
@@ -171,17 +175,97 @@ fn helper_for(exe: &Path, mac: bool) -> Option<PathBuf> {
     })
 }
 
+/// The helper to start: on macOS, when the shipped helper app sits inside
+/// codeg's bundle, its copy outside it — made or brought up to date first —
+/// and the shipped helper itself otherwise.
+async fn helper_to_run() -> Result<PathBuf, BackendError> {
+    let shipped = locate_helper_binary().ok_or_else(|| {
+        BackendError::Unavailable(format!(
+            "{} is missing from this installation",
+            helper_file_name()
+        ))
+    })?;
+    #[cfg(target_os = "macos")]
+    if let Some(app) = nested_helper_app(&shipped).map(Path::to_path_buf) {
+        let home = super::helper::driver_proc::helper_data_dir().ok_or_else(|| {
+            BackendError::Unavailable("no home directory for this account".into())
+        })?;
+        return tokio::task::spawn_blocking(move || copy_to_run(&app, &home))
+            .await
+            .map_err(|e| BackendError::Unavailable(format!("copying the helper: {e}")))?;
+    }
+    Ok(shipped)
+}
+
+/// Bring the copy of the helper app `shipped` in `home` up to date, and say
+/// where its executable is: with every link followed, as the kernel will
+/// find it, and in no app but its own — inside another, its Screen Recording
+/// would be that app's again.
+#[cfg(target_os = "macos")]
+fn copy_to_run(shipped: &Path, home: &Path) -> Result<PathBuf, BackendError> {
+    let failed = |e: std::io::Error| {
+        BackendError::Unavailable(format!("could not copy {HELPER_APP} to run: {e}"))
+    };
+    let installed = super::helper_app::install(shipped, home).map_err(failed)?;
+    let exe = std::fs::canonicalize(
+        installed
+            .join("Contents")
+            .join("MacOS")
+            .join(helper_file_name()),
+    )
+    .map_err(failed)?;
+    if !alone_in_its_app(&exe) {
+        return Err(BackendError::Unavailable(format!(
+            "the copy of {HELPER_APP} to run is at {}, not in an app of its own",
+            exe.display()
+        )));
+    }
+    Ok(exe)
+}
+
+/// Whether exactly one app bundle is around `exe`.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn alone_in_its_app(exe: &Path) -> bool {
+    exe.ancestors()
+        .filter(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("app")))
+        .count()
+        == 1
+}
+
+/// The helper app `helper` is the main executable of, when that app sits
+/// inside another app's bundle — where macOS would charge its Screen
+/// Recording to the app around it.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn nested_helper_app(helper: &Path) -> Option<&Path> {
+    let macos = helper.parent()?;
+    let contents = macos.parent()?;
+    let app = contents.parent()?;
+    let named = |p: &Path, name: &str| p.file_name().is_some_and(|n| n == name);
+    let inside_an_app = app
+        .ancestors()
+        .skip(1)
+        .any(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("app")));
+    (named(macos, "MacOS")
+        && named(contents, "Contents")
+        && named(app, HELPER_APP)
+        && inside_an_app)
+        .then_some(app)
+}
+
 /// What to show in the Finder for adding the helper to System Settings by
-/// hand: the helper app where there is one — the executable inside it would
-/// be listed by its path, which macOS never asks about — and the helper
-/// itself otherwise.
-pub fn helper_to_reveal() -> Option<PathBuf> {
-    let helper = locate_helper_binary()?;
-    let app = helper
+/// hand: the helper app codeg runs, where there is one — the executable
+/// inside it would be listed by its path, which macOS never asks about — and
+/// the helper itself otherwise.
+pub async fn helper_to_reveal() -> Result<PathBuf, BackendError> {
+    Ok(app_of(helper_to_run().await?))
+}
+
+/// The helper app `helper` is in, or `helper` when it is in none.
+fn app_of(helper: PathBuf) -> PathBuf {
+    helper
         .ancestors()
         .find(|p| p.file_name().is_some_and(|n| n == HELPER_APP))
-        .map(Path::to_path_buf);
-    Some(app.unwrap_or(helper))
+        .map_or_else(|| helper.clone(), Path::to_path_buf)
 }
 
 type Pending = Arc<StdMutex<HashMap<u64, oneshot::Sender<HelperReply>>>>;
@@ -488,12 +572,7 @@ impl LocalBackend {
             .await
             .map_err(|e| BackendError::Unavailable(format!("could not fetch cua-driver: {e}")))?;
         self.set_status(BackendState::Starting, None, None);
-        let helper = locate_helper_binary().ok_or_else(|| {
-            BackendError::Unavailable(format!(
-                "{} is missing from this installation",
-                helper_file_name()
-            ))
-        })?;
+        let helper = helper_to_run().await?;
         let connection = launch(&helper).await?;
         let configured = connection
             .request(
@@ -597,12 +676,9 @@ impl ComputerBackend for LocalBackend {
                     "computer use is switched off".into(),
                 ));
             }
-            let helper = locate_helper_binary().ok_or_else(|| {
-                BackendError::Unavailable(format!(
-                    "{} is missing from this installation",
-                    helper_file_name()
-                ))
-            })?;
+            // The copy the running helper is started from, so the request
+            // names the principal that will use the grant.
+            let helper = helper_to_run().await?;
             ask_for_permission(&helper, permission).await
         }
         #[cfg(not(target_os = "macos"))]
@@ -1306,22 +1382,58 @@ mod tests {
     /// identifier — rather than the executable inside it.
     #[test]
     fn the_helper_app_is_what_is_revealed() {
-        let dir = tempfile::tempdir().unwrap();
-        let app = dir
-            .path()
-            .join("codeg.app/Contents/Helpers")
+        let copy = Path::new("/Users/u/Library/Application Support/app.codeg/computer-helper")
             .join(HELPER_APP);
-        let inside = app.join("Contents/MacOS").join(helper_file_name());
-        std::fs::create_dir_all(inside.parent().unwrap()).unwrap();
-        std::fs::write(&inside, b"").unwrap();
-        temp_env::with_var("CODEG_COMPUTER_HELPER_BIN", Some(&inside), || {
-            assert_eq!(helper_to_reveal(), Some(app.clone()));
-        });
-        let bare = dir.path().join(helper_file_name());
-        std::fs::write(&bare, b"").unwrap();
-        temp_env::with_var("CODEG_COMPUTER_HELPER_BIN", Some(&bare), || {
-            assert_eq!(helper_to_reveal(), Some(bare.clone()));
-        });
+        assert_eq!(
+            app_of(copy.join("Contents/MacOS").join(helper_file_name())),
+            copy
+        );
+        let bare = Path::new("/src/codeg/src-tauri/target/debug").join(helper_file_name());
+        assert_eq!(app_of(bare.clone()), bare);
+    }
+
+    /// The helper app shipped inside codeg's bundle is run from a copy —
+    /// inside it macOS charges Screen Recording to codeg — and a helper in no
+    /// app, or in an app of its own, from where it is.
+    #[test]
+    fn only_a_helper_app_inside_another_is_copied_to_run() {
+        let name = helper_file_name();
+        let shipped = Path::new("/Applications/codeg.app/Contents/Helpers").join(HELPER_APP);
+        assert_eq!(
+            nested_helper_app(&shipped.join("Contents/MacOS").join(name)),
+            Some(shipped.as_path())
+        );
+        for alone in [
+            Path::new("/src/codeg/src-tauri/target/debug").join(name),
+            Path::new("/Applications/codeg.app/Contents/MacOS").join(name),
+            Path::new("/Users/u/Library/Application Support/app.codeg/computer-helper")
+                .join(HELPER_APP)
+                .join("Contents/MacOS")
+                .join(name),
+            Path::new("/Applications/codeg.app/Contents/Helpers/other.app/Contents/MacOS")
+                .join(name),
+            shipped.join("Contents/Resources").join(name),
+        ] {
+            assert_eq!(nested_helper_app(&alone), None, "{}", alone.display());
+        }
+    }
+
+    /// The copy is run only from an app of its own: not from inside another
+    /// app, where a linked data directory might have put it, nor bare.
+    #[test]
+    fn the_copy_runs_only_in_an_app_of_its_own() {
+        let exe = |app: &Path| app.join("Contents/MacOS").join(helper_file_name());
+        let home = Path::new("/Users/u/Library/Application Support/app.codeg/computer-helper");
+        assert!(alone_in_its_app(&exe(&home.join(HELPER_APP))));
+        for wrong in [
+            exe(&Path::new("/Applications/codeg.app/Contents/Helpers").join(HELPER_APP)),
+            exe(Path::new(
+                "/Applications/codeg.app/Contents/Helpers/other.app",
+            )),
+            home.join(helper_file_name()),
+        ] {
+            assert!(!alone_in_its_app(&wrong), "{}", wrong.display());
+        }
     }
 
     /// The helper app is put together from files the compiler never sees —
