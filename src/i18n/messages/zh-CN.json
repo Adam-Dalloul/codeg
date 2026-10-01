@@ -4707,6 +4707,7 @@
     "saveFailed": "保存远端连接失败",
     "deleteFailed": "删除远端连接失败",
     "openFailed": "打开远端工作区失败",
+    "restoreFailed": "无法重新打开远端工作区“{name}”",
     "connectionLoadFailed": "加载远端连接失败：{message}",
     "connectionExpired": "远端连接“{name}”已失效。请更新 Token 后重新加载此窗口。"
   },
@@ -5700,6 +5701,8 @@
     "baseBranchDefault": "任务开始时的当前分支",
     "baseBranchHint": "任务从该分支拉出工作树，合并时也落回该分支。",
     "agentInheritedHint": "继承自任务设置，修改后仅对本任务生效",
+    "agentNoDefaultHint": "任务设置中没有默认 agent，当前选中的 agent 将随任务保存",
+    "agentInheritedUnavailableHint": "任务设置中的 {agent} 不可用，当前选中的 agent 将随任务保存",
     "agentOverrideReset": "恢复继承",
     "sectionTarget": "目标",
     "errorTitle": "请输入标题",
