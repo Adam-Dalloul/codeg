@@ -89,6 +89,8 @@ beforeEach(() => {
     blocklistDefaults: [],
     stopShortcut: "Control+Command+Escape",
     showIndicator: true,
+    allowForeground: false,
+    defaultDelivery: "background",
   })
   api.computerStatus.mockResolvedValue(status())
   api.computerStopKeyStatus.mockResolvedValue({})
@@ -115,6 +117,8 @@ describe("StatusBarComputer", () => {
       blocklistDefaults: [],
       stopShortcut: "",
       showIndicator: true,
+      allowForeground: false,
+      defaultDelivery: "background",
     })
     const { container } = mount()
     await waitFor(() => expect(api.getComputerToolsSettings).toHaveBeenCalled())
@@ -455,6 +459,8 @@ describe("StatusBarComputer", () => {
         blocklistDefaults: [],
         stopShortcut: "",
         showIndicator: true,
+        allowForeground: false,
+        defaultDelivery: "background",
       })
     )
     await screen.findByRole("button", { name: "Computer use" })
@@ -467,6 +473,8 @@ describe("StatusBarComputer", () => {
         blocklistDefaults: [],
         stopShortcut: "",
         showIndicator: true,
+        allowForeground: false,
+        defaultDelivery: "background",
       })
     )
     expect(

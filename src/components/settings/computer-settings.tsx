@@ -14,6 +14,13 @@
  * another application may hold the same keys; the row says which, so nobody
  * counts on a shortcut that does nothing.
  *
+ * Agents' input goes to a window in the background unless an agent asks to
+ * bring it to the front — some applications take keys no other way — which
+ * is allowed until the person switches it off; and, while it is allowed,
+ * whether that is how every action goes by default. The default shows as
+ * Background, and cannot be changed, while the front is switched off; the
+ * choice made before is kept for when it is back on.
+ *
  * The blocklist is the default entries — credential managers, the system's
  * password prompts, System Settings — less the ones the person took off,
  * plus their own. Every default can be taken off: none is out of an agent's
@@ -35,7 +42,9 @@ import { useTranslations } from "next-intl"
 import {
   AppWindow,
   Keyboard,
+  Layers,
   Monitor,
+  MousePointerClick,
   PanelTop,
   Plus,
   RotateCcw,
@@ -93,6 +102,7 @@ import {
 } from "@/lib/computer/stop-shortcut"
 import {
   COMPUTER_TOOLS_SETTINGS_CHANGED_EVENT,
+  type ComputerDelivery,
   type ComputerToolsSettings,
   type DefaultBlock,
 } from "@/lib/computer/types"
@@ -112,6 +122,9 @@ interface Values {
   /** Spelled as `stop-shortcut.ts` spells it; empty is off. */
   stopShortcut: string
   showIndicator: boolean
+  allowForeground: boolean
+  /** As chosen — in force only while `allowForeground` is on. */
+  defaultDelivery: ComputerDelivery
 }
 
 const EMPTY: Values = {
@@ -120,6 +133,8 @@ const EMPTY: Values = {
   removed: [],
   stopShortcut: "",
   showIndicator: true,
+  allowForeground: true,
+  defaultDelivery: "background",
 }
 
 function fromSettings(settings: ComputerToolsSettings): Values {
@@ -129,6 +144,8 @@ function fromSettings(settings: ComputerToolsSettings): Values {
     removed: settings.blocklistRemoved,
     stopShortcut: settings.stopShortcut,
     showIndicator: settings.showIndicator,
+    allowForeground: settings.allowForeground,
+    defaultDelivery: settings.defaultDelivery,
   }
 }
 
@@ -153,6 +170,14 @@ function stopShortcutDirty(values: Values, baseline: Values): boolean {
 
 function showIndicatorDirty(values: Values, baseline: Values): boolean {
   return values.showIndicator !== baseline.showIndicator
+}
+
+function allowForegroundDirty(values: Values, baseline: Values): boolean {
+  return values.allowForeground !== baseline.allowForeground
+}
+
+function defaultDeliveryDirty(values: Values, baseline: Values): boolean {
+  return values.defaultDelivery !== baseline.defaultDelivery
 }
 
 export function ComputerSettingsSection() {
@@ -254,6 +279,12 @@ export function ComputerSettingsSection() {
           showIndicator: showIndicatorDirty(current, base)
             ? prev.showIndicator
             : next.showIndicator,
+          allowForeground: allowForegroundDirty(current, base)
+            ? prev.allowForeground
+            : next.allowForeground,
+          defaultDelivery: defaultDeliveryDirty(current, base)
+            ? prev.defaultDelivery
+            : next.defaultDelivery,
         }))
         setBaseline(next)
         setEnabled(remote.enabled)
@@ -278,12 +309,16 @@ export function ComputerSettingsSection() {
   const dirtyRemoved = removedDirty(values, baseline)
   const dirtyStopShortcut = stopShortcutDirty(values, baseline)
   const dirtyShowIndicator = showIndicatorDirty(values, baseline)
+  const dirtyAllowForeground = allowForegroundDirty(values, baseline)
+  const dirtyDefaultDelivery = defaultDeliveryDirty(values, baseline)
   const dirty =
     dirtyTtl ||
     dirtyBlocklist ||
     dirtyRemoved ||
     dirtyStopShortcut ||
-    dirtyShowIndicator
+    dirtyShowIndicator ||
+    dirtyAllowForeground ||
+    dirtyDefaultDelivery
   const editable = loaded && !saving
 
   const save = useCallback(async () => {
@@ -296,6 +331,12 @@ export function ComputerSettingsSection() {
         blocklistRemoved: dirtyRemoved ? values.removed : undefined,
         stopShortcut: dirtyStopShortcut ? values.stopShortcut : undefined,
         showIndicator: dirtyShowIndicator ? values.showIndicator : undefined,
+        allowForeground: dirtyAllowForeground
+          ? values.allowForeground
+          : undefined,
+        defaultDelivery: dirtyDefaultDelivery
+          ? values.defaultDelivery
+          : undefined,
       })
       // The save's own broadcast, or another window's after it, may have
       // landed first; the last broadcast is then the newest record there is.
@@ -318,6 +359,8 @@ export function ComputerSettingsSection() {
     dirtyRemoved,
     dirtyStopShortcut,
     dirtyShowIndicator,
+    dirtyAllowForeground,
+    dirtyDefaultDelivery,
     t,
   ])
 
@@ -413,6 +456,70 @@ export function ComputerSettingsSection() {
           />
         )}
       </SettingCard>
+
+      {computerAvailable() && (
+        <SettingCard>
+          <SettingRow
+            icon={Layers}
+            title={t("foreground.label")}
+            description={t("foreground.hint")}
+            htmlFor="computer-allow-foreground"
+            control={
+              <Switch
+                id="computer-allow-foreground"
+                checked={values.allowForeground}
+                onCheckedChange={(allowForeground) =>
+                  setValues((prev) => ({ ...prev, allowForeground }))
+                }
+                disabled={!editable}
+              />
+            }
+          />
+          <SettingRow
+            icon={MousePointerClick}
+            title={t("delivery.label")}
+            description={
+              values.allowForeground
+                ? t("delivery.hint")
+                : t("delivery.hintOff")
+            }
+            htmlFor="computer-default-delivery"
+            control={
+              <Select
+                // Background, whatever was chosen, while the front is not
+                // allowed: that is what an action gets then.
+                value={
+                  values.allowForeground ? values.defaultDelivery : "background"
+                }
+                onValueChange={(v) =>
+                  setValues((prev) => ({
+                    ...prev,
+                    defaultDelivery:
+                      v === "foreground" ? "foreground" : "background",
+                  }))
+                }
+                disabled={!editable || !values.allowForeground}
+              >
+                <SelectTrigger
+                  id="computer-default-delivery"
+                  size="sm"
+                  className="w-40"
+                >
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="background">
+                    {t("delivery.background")}
+                  </SelectItem>
+                  <SelectItem value="foreground">
+                    {t("delivery.foreground")}
+                  </SelectItem>
+                </SelectContent>
+              </Select>
+            }
+          />
+        </SettingCard>
+      )}
 
       <SettingNote icon={Monitor}>{t("boundary")}</SettingNote>
 

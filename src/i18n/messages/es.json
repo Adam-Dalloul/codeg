@@ -5012,7 +5012,7 @@
     "computer": {
       "label": "Ver y usar las ventanas del escritorio",
       "short": "Lista apps y ventanas; lee las que compartas y actúa en las que permitas.",
-      "hint": "Permite que un agente liste las aplicaciones y ventanas de tu escritorio, lea las ventanas que compartas con él —una captura, su contenido, si muestra lo que se espera— y haga clic, escriba y pulse teclas en las que compartas para actuar. Nada es legible hasta que compartas una ventana desde el panel Uso del ordenador de la barra de estado, y en ninguna se puede actuar salvo que también lo permitas; el uso compartido termina cuando la ventana se cierra, tras un rato sin uso o cuando lo detienes, y Detener agentes en ese panel los para a todos a la vez. La entrada llega a la ventana en segundo plano, sin traerla al frente. Solo en la app de escritorio, y en Linux por ahora lee las ventanas pero no actúa en ellas; en macOS requiere permisos concedidos a codeg-computer-helper. Versión preliminar."
+      "hint": "Permite que un agente liste las aplicaciones y ventanas de tu escritorio, lea las ventanas que compartas con él —una captura, su contenido, si muestra lo que se espera— y haga clic, escriba y pulse teclas en las que compartas para actuar. Nada es legible hasta que compartas una ventana desde el panel Uso del ordenador de la barra de estado, y en ninguna se puede actuar salvo que también lo permitas; el uso compartido termina cuando la ventana se cierra, tras un rato sin uso o cuando lo detienes, y Detener agentes en ese panel los para a todos a la vez. La entrada llega a la ventana en segundo plano; para una acción que no llega en segundo plano, un agente puede traer la ventana al frente, algo que puedes desactivar en los ajustes de Uso del ordenador. Solo en la app de escritorio, y en Linux por ahora lee las ventanas pero no actúa en ellas; en macOS requiere permisos concedidos a codeg-computer-helper. Versión preliminar."
     },
     "automations": {
       "label": "Crear automatizaciones",
@@ -5315,8 +5315,8 @@
         "accessibilityHint": "Leer el contenido de las ventanas y actuar en ellas.",
         "screenRecordingHint": "Hacer capturas y leer los títulos de las ventanas."
       },
-      "title": "Compartir y detener",
-      "description": "Cuánto tiempo sigue compartida una ventana, qué aplicaciones no se pueden compartir nunca y el atajo y la barra flotante que dejan de compartirlo todo a la vez.",
+      "title": "Compartir, entrada y detener",
+      "description": "Cuánto tiempo sigue compartida una ventana, qué aplicaciones no se pueden compartir nunca, el atajo y la barra flotante que dejan de compartirlo todo a la vez, y si los agentes pueden traer una ventana al frente para actuar en ella.",
       "ttl": {
         "label": "Dejar de compartir ventanas sin uso tras",
         "hint": "Una ventana compartida deja de estarlo cuando ningún agente la ha leído durante este tiempo.",
@@ -5367,6 +5367,17 @@
       "strip": {
         "label": "Barra flotante para detener",
         "hint": "Mientras compartes alguna ventana, una barra flota sobre todas las ventanas indicando lo que pueden hacer los agentes, con un botón Dejar de compartir. Si la desactivas, puedes seguir dejando de compartir desde el panel de Uso del ordenador en la barra de estado o con el atajo para detener."
+      },
+      "foreground": {
+        "label": "Permitir que los agentes traigan ventanas al frente",
+        "hint": "Algunas aplicaciones no aceptan teclas ni escritura mientras están en segundo plano; en Windows, ninguna basada en Chromium, como Edge, Chrome o VS Code. Con esto activado, un agente puede traer al frente una ventana en la que le permites actuar durante una sola acción y luego volver a la ventana en la que estabas. Verás la ventana pasar al frente; lo que escribas en ese momento puede ir a ella, y en Windows un clic mueve el puntero del ratón."
+      },
+      "delivery": {
+        "label": "Modo de entrada predeterminado",
+        "hint": "Cómo llegan a una ventana los clics, el desplazamiento, la escritura y las teclas de los agentes cuando no piden ninguno de los dos. Segundo plano deja la ventana donde está y el puntero y el teclado para ti; Primer plano trae la ventana al frente en cada acción.",
+        "hintOff": "Siempre Segundo plano mientras los agentes no puedan traer ventanas al frente.",
+        "background": "Segundo plano",
+        "foreground": "Primer plano"
       },
       "boundary": "En macOS los permisos se conceden a codeg-computer-helper, que solo puede usar codeg, así que la shell de los agentes no puede. Windows y Linux no tienen esa separación: allí estos ajustes deciden lo que los agentes obtienen a través de codeg, no lo que pueden hacer los programas de tu equipo.",
       "save": "Guardar",

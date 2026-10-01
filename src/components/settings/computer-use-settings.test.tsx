@@ -49,6 +49,8 @@ function settings(enabled: boolean): ComputerToolsSettings {
     blocklistDefaults: [],
     stopShortcut: "Control+Command+Escape",
     showIndicator: true,
+    allowForeground: false,
+    defaultDelivery: "background",
   }
 }
 

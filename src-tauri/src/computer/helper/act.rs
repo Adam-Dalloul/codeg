@@ -3,10 +3,12 @@
 //! Every action codeg sends is a closed [`WindowAction`]; this module builds
 //! the driver's arguments from its fields — the tool (`click`,
 //! `double_click`, `right_click`, `scroll`, `type_text`, `press_key`,
-//! `set_value`), the window, the element or the point, always
-//! `delivery_mode: "background"` — and nothing else. What the driver would
-//! also accept (a desktop scope, a foreground delivery, a file to write a
-//! debug image to, a zoom's coordinates) is never asked for.
+//! `set_value`), the window, the element or the point, the `delivery_mode`
+//! codeg asked for — and nothing else. That is `"background"` unless codeg
+//! asked for the front, which it does only where the person allows it: the
+//! driver then brings the window forward for the one call, sends real input
+//! and switches back. What the driver would also accept (a desktop scope, a
+//! file to write a debug image to, a zoom's coordinates) is never asked for.
 //!
 //! One action is the helper's own: putting a minimized window back on the
 //! screen ([`WindowAction::Restore`]), which the driver has no call for. It
@@ -46,7 +48,7 @@ use crate::computer::protocol::{
     WindowPoint,
 };
 use crate::computer::types::{
-    ActEffect, ActRoute, PointerButton, Rect, ScrollDirection, ScrollUnit,
+    ActDelivery, ActEffect, ActRoute, PointerButton, Rect, ScrollDirection, ScrollUnit,
 };
 
 /// Everything but typing: one click, one key, one value.
@@ -368,22 +370,24 @@ pub fn permissions_for(action: &WindowAction) -> &'static [OsPermission] {
     }
 }
 
-/// Carry out `action` on the window: one driver call, or two for typing that
-/// ends with return. `deliverable` is asked just before each call goes out —
-/// whatever must still hold at the moment of delivery (nothing stopped, the
-/// same process, an unlocked session) — and a call it refuses is not made.
+/// Carry out `action` on the window, delivered as `mode` says: one driver
+/// call, or two for typing that ends with return, both delivered alike.
+/// `deliverable` is asked just before each call goes out — whatever must
+/// still hold at the moment of delivery (nothing stopped, the same process,
+/// an unlocked session) — and a call it refuses is not made.
 pub async fn act(
     driver: &DriverProc,
     pid: u32,
     window_id: u64,
     action: &WindowAction,
+    mode: ActDelivery,
     deliverable: &Delivery,
 ) -> Result<RawAct, HelperError> {
     let platform = Platform::current();
     let mut args = json!({
         "pid": pid,
         "window_id": window_id,
-        "delivery_mode": "background",
+        "delivery_mode": mode.as_str(),
     });
     match action {
         WindowAction::Click { at, button, count } => {
@@ -403,7 +407,7 @@ pub async fn act(
             }
             put_target(&mut args, at);
             deliverable.check()?;
-            one(driver, tool, args, ACT_TIMEOUT).await
+            one(driver, tool, args, mode, ACT_TIMEOUT).await
         }
         WindowAction::Scroll {
             at,
@@ -426,7 +430,7 @@ pub async fn act(
                 put_target(&mut args, at);
             }
             deliverable.check()?;
-            one(driver, "scroll", args, ACT_TIMEOUT).await
+            one(driver, "scroll", args, mode, ACT_TIMEOUT).await
         }
         WindowAction::Type {
             element,
@@ -437,7 +441,7 @@ pub async fn act(
             let mut key = args.clone();
             args["text"] = json!(text);
             deliverable.check()?;
-            let typed = one(driver, "type_text", args, TYPE_TIMEOUT).await?;
+            let typed = one(driver, "type_text", args, mode, TYPE_TIMEOUT).await?;
             if !*submit {
                 return Ok(typed);
             }
@@ -445,7 +449,7 @@ pub async fn act(
             // Typing can take a while: the second call is held to the same
             // conditions as the first, at its own moment.
             let pressed = match deliverable.check() {
-                Ok(()) => one(driver, "press_key", key, ACT_TIMEOUT).await,
+                Ok(()) => one(driver, "press_key", key, mode, ACT_TIMEOUT).await,
                 Err(e) => Err(e),
             };
             Ok(match pressed {
@@ -472,13 +476,13 @@ pub async fn act(
                 put_element(&mut args, element);
             }
             deliverable.check()?;
-            one(driver, "press_key", args, ACT_TIMEOUT).await
+            one(driver, "press_key", args, mode, ACT_TIMEOUT).await
         }
         WindowAction::SetValue { element, value } => {
             put_element(&mut args, element);
             args["value"] = json!(value);
             deliverable.check()?;
-            one(driver, "set_value", args, ACT_TIMEOUT).await
+            one(driver, "set_value", args, mode, ACT_TIMEOUT).await
         }
         WindowAction::Restore => {
             deliverable.check()?;
@@ -518,16 +522,18 @@ fn put_target(args: &mut Value, at: &DriverTarget) {
     }
 }
 
-/// One driver call, and what it did.
+/// One driver call, delivered as `mode` says (and as `args` already asks),
+/// and what it did.
 async fn one(
     driver: &DriverProc,
     tool: &str,
     args: Value,
+    mode: ActDelivery,
     timeout: Duration,
 ) -> Result<RawAct, HelperError> {
     let result = driver.call(tool, args, timeout).await?;
     if result.is_error {
-        return Err(act_error(tool, &result));
+        return Err(act_error(tool, mode, &result));
     }
     action_result(tool, &result)
 }
@@ -572,22 +578,22 @@ const CHROMIUM_WINDOW_CLASS: &str = "Chrome_WidgetWin_";
 /// What the agent is told when the driver would not send the input in the
 /// background. A key or text is refused for the application as a whole —
 /// aimed at an element by ref as much as at the window, and every time — so
-/// the words say what still reaches it, rather than suggest a ref. On Windows
-/// the commonest such application is one built on Chromium, which drops every
-/// key that does not come from the front; the driver names it by its window
-/// class.
+/// the words say what still reaches it in the background, rather than
+/// suggest a ref. On Windows the commonest such application is one built on
+/// Chromium, which drops every key that does not come from the front; the
+/// driver names it by its window class. Whether the front is to be had is
+/// the person's setting, which codeg knows and adds to these words.
 fn background_refusal(tool: &str, result: &ToolCallResult) -> String {
     if !matches!(tool, "press_key" | "type_text") {
-        return "This application does not take that kind of input in the background, and codeg \
-                does not bring windows to the front. Try an element by ref, or computer_set_value."
+        return "This application does not take that kind of input in the background. Try an \
+                element by ref, or computer_set_value."
             .to_string();
     }
     let mut words = "This application takes no key presses or typing while it is in the \
-                     background, and codeg does not bring windows to the front, so nothing was \
-                     sent — and trying again, by ref or not, will not change that. Fill a field \
-                     with computer_set_value instead, and click by ref what the key would have \
-                     done (a search or submit button, in place of return), or ask the user to \
-                     press it."
+                     background, so nothing was sent — and trying again in the background, by \
+                     ref or not, will not change that. Fill a field with computer_set_value \
+                     instead, and click by ref what the key would have done (a search or submit \
+                     button, in place of return), or ask the user to press it."
         .to_string();
     let chromium = result
         .structured
@@ -605,12 +611,43 @@ fn background_refusal(tool: &str, result: &ToolCallResult) -> String {
     words
 }
 
+/// A window whose application runs with more rights than the driver: no
+/// input reaches it, whichever way it is sent.
+const HIGHER_RIGHTS: &str = "That window's application runs with more rights than codeg (as \
+     administrator), and Windows lets no input from codeg reach it, in the background or at the \
+     front. Nothing was sent; ask the user to do this step.";
+
+/// What to say of a call with the window brought to the front that the
+/// driver could not deliver; `None` for any other failure. On Windows the
+/// driver says it in words, not codes (`foreground_unavailable: …` when the
+/// window did not come forward in time, `UIPI: …` for an application running
+/// with more rights than it); on macOS by the code `delivery_failed`.
+fn front_failure(code: &str, text: &str) -> Option<&'static str> {
+    let text = text.trim_start();
+    if text.starts_with("UIPI") {
+        Some(HIGHER_RIGHTS)
+    } else if code == "delivery_failed" || text.starts_with("foreground_unavailable") {
+        Some(
+            "The window could not be brought to the front just now, so nothing was sent. Try \
+             again in a moment; if it keeps failing, ask the user to do this step.",
+        )
+    } else {
+        None
+    }
+}
+
 /// A refused action, by the driver's code, in words for the agent. Only where
 /// the driver's own text is the useful part (an action that was tried and
-/// failed) is it passed on, shortened.
-fn act_error(tool: &str, result: &ToolCallResult) -> HelperError {
+/// failed) is it passed on, shortened. `mode` is how the call was delivered:
+/// the front fails in ways of its own.
+fn act_error(tool: &str, mode: ActDelivery, result: &ToolCallResult) -> HelperError {
     let code = result.code().unwrap_or("");
     let error = |code: HelperErrorCode, words: &str| HelperError::new(code, words);
+    if mode == ActDelivery::Foreground {
+        if let Some(words) = front_failure(code, &result.text()) {
+            return error(HelperErrorCode::ActionFailed, words);
+        }
+    }
     match code {
         "stale_element_token"
         | "invalid_element_token"
@@ -665,12 +702,21 @@ fn act_error(tool: &str, result: &ToolCallResult) -> HelperError {
              keys are sent in the background. Use computer_set_value on the field, or a click \
              on an element by ref — or ask the user to close the application's other windows.",
         ),
+        // Refused in the background, and not for want of rights: the front
+        // may take it, where the person allows it.
         "background_unavailable"
         | "background_occluded"
-        | "background_uipi_blocked"
-        | "input_delivery_unavailable" => error(
+        | "SCREEN_SHARING_REQUIRES_FOREGROUND_HID" => error(
             HelperErrorCode::BackgroundUnavailable,
             &background_refusal(tool, result),
+        ),
+        // The front would be refused as well.
+        "background_uipi_blocked" => error(HelperErrorCode::ActionFailed, HIGHER_RIGHTS),
+        "input_delivery_unavailable" => error(
+            HelperErrorCode::ActionFailed,
+            "This window takes no typing from codeg: Windows can accept it without it ever \
+             reaching the prompt, so it is not sent, in the background or at the front. Ask the \
+             user to type it, or run the command another way.",
         ),
         "type_text_synthesis_budget_exceeded" => {
             let chunk = result
@@ -961,20 +1007,23 @@ mod tests {
                 HelperErrorCode::NoSuchWindow,
             ),
         ];
+        let back = ActDelivery::Background;
         for (structured, want) in cases {
-            let e = act_error("click", &refused(structured.clone(), "driver words"));
+            let e = act_error("click", back, &refused(structured.clone(), "driver words"));
             assert_eq!(e.code, want, "{structured}");
             assert!(!e.message.contains("driver words"), "{}", e.message);
         }
         // Keys and typing refused in the background: a ref would not help,
         // so what still reaches the application is named instead — and a
         // Chromium window, by its class, is said to be one. A click is still
-        // pointed at a ref.
+        // pointed at a ref. Whether the front may be tried is not the
+        // helper's to say.
         let background = |tool: &str, class: &str| {
             let refusal = json!({"code": "background_unavailable", "target_class": class});
-            let e = act_error(tool, &refused(refusal, "driver words"));
+            let e = act_error(tool, back, &refused(refusal, "driver words"));
             assert_eq!(e.code, HelperErrorCode::BackgroundUnavailable);
             assert!(!e.message.contains("driver words"), "{}", e.message);
+            assert!(!e.message.contains("front"), "{}", e.message);
             e.message
         };
         for tool in ["press_key", "type_text"] {
@@ -988,9 +1037,16 @@ mod tests {
         let click = background("click", "Chrome_WidgetWin_1");
         assert!(click.contains("element by ref"), "{click}");
         assert!(!click.contains("Chromium"), "{click}");
+        // What the front would not help either is no background refusal.
+        for code in ["background_uipi_blocked", "input_delivery_unavailable"] {
+            let e = act_error("type_text", back, &refused(json!({ "code": code }), ""));
+            assert_eq!(e.code, HelperErrorCode::ActionFailed, "{code}");
+            assert!(e.message.contains("at the front"), "{}", e.message);
+        }
         // A minimized window points at the way back where there is one.
         let minimized = act_error(
             "type_text",
+            back,
             &refused(
                 json!({"code": "minimized_or_hidden_window", "effect": "refused"}),
                 "",
@@ -1003,6 +1059,7 @@ mod tests {
         );
         let budget = act_error(
             "type_text",
+            back,
             &refused(
                 json!({"code": "type_text_synthesis_budget_exceeded", "max_chunk_chars": 2578}),
                 "",
@@ -1012,10 +1069,44 @@ mod tests {
         assert!(budget.message.contains("2578"));
         let other = act_error(
             "set_value",
+            back,
             &refused(json!({"code": "tool_invocation_failed"}), "element is disabled"),
         );
         assert_eq!(other.code, HelperErrorCode::ActionFailed);
         assert!(other.message.contains("element is disabled"));
+    }
+
+    /// The front fails in words of its own — a window that would not come
+    /// forward, an application with more rights than codeg — and they are
+    /// read as such only when the front was asked for.
+    #[test]
+    fn the_front_fails_in_its_own_words() {
+        let failed = |code: Option<&str>, text: &str| ToolCallResult {
+            is_error: true,
+            content: vec![json!({"type": "text", "text": text})],
+            structured: code.map(|code| json!({ "code": code })),
+        };
+        let front = ActDelivery::Foreground;
+        let windows = failed(
+            None,
+            "foreground_unavailable: Windows did not confirm exact target HWND 0x1 within 500 ms",
+        );
+        let e = act_error("press_key", front, &windows);
+        assert_eq!(e.code, HelperErrorCode::ActionFailed);
+        assert!(e.message.contains("brought to the front"), "{}", e.message);
+        assert!(!e.message.contains("HWND"), "{}", e.message);
+        let mac = failed(
+            Some("delivery_failed"),
+            "WindowServer rejected foreground HID activation",
+        );
+        let e = act_error("press_key", front, &mac);
+        assert!(e.message.contains("brought to the front"), "{}", e.message);
+        let rights = failed(None, "UIPI: target hwnd 0x1 is at High integrity");
+        let e = act_error("type_text", front, &rights);
+        assert!(e.message.contains("administrator"), "{}", e.message);
+        // In the background the same words are the driver's own.
+        let e = act_error("press_key", ActDelivery::Background, &mac);
+        assert!(e.message.contains("WindowServer"), "{}", e.message);
     }
 
     /// Only a point needs the window measured — and Screen Recording, to

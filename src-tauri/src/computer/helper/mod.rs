@@ -788,6 +788,7 @@ async fn handle_op(
             started_at,
             app_key,
             action,
+            delivery: mode,
         } => {
             // Asked first so a doomed action does not start a driver, and
             // again (inside `act`) just before each driver call goes out —
@@ -811,7 +812,7 @@ async fn handle_op(
                 Some(point) => act::check_point(&driver, pid, window_id, point).await?,
                 None => None,
             };
-            let done = act::act(&driver, pid, window_id, &action, &delivery).await?;
+            let done = act::act(&driver, pid, window_id, &action, mode, &delivery).await?;
             value(RawAct {
                 element_frame,
                 window_frame,
@@ -1071,6 +1072,7 @@ mod tests {
                     modifiers: Modifiers::default(),
                 },
             },
+            delivery: Default::default(),
         };
         let (task, mut to_helper, mut from_helper) = start().await;
         let _ready: HelperMessage = read_frame(&mut from_helper).await.unwrap();
@@ -1179,6 +1181,7 @@ mod tests {
                             modifiers: Modifiers::default(),
                         },
                     },
+                    delivery: Default::default(),
                 },
                 stop: 0,
             },

@@ -5012,7 +5012,7 @@
     "computer": {
       "label": "Voir et utiliser les fenêtres du bureau",
       "short": "Lister les apps et fenêtres ; lire celles que vous partagez, agir sur celles que vous autorisez.",
-      "hint": "Permet à un agent de lister les applications et fenêtres de votre bureau, de lire les fenêtres que vous lui partagez — une capture, son contenu, si elle affiche ce qui est attendu — et de cliquer, taper et appuyer sur des touches dans celles que vous partagez pour agir. Rien n'est lisible tant que vous ne partagez pas une fenêtre depuis le panneau Utilisation de l'ordinateur de la barre d'état, et on ne peut agir sur aucune sans votre accord en plus ; le partage prend fin quand la fenêtre se ferme, après un moment sans utilisation ou quand vous l'arrêtez, et Arrêter les agents dans ce panneau les arrête tous d'un coup. Les saisies arrivent à la fenêtre en arrière-plan, sans la mettre au premier plan. Application de bureau uniquement, et sous Linux il lit les fenêtres sans encore agir dessus ; sous macOS, des autorisations doivent être accordées à codeg-computer-helper. Aperçu."
+      "hint": "Permet à un agent de lister les applications et fenêtres de votre bureau, de lire les fenêtres que vous lui partagez — une capture, son contenu, si elle affiche ce qui est attendu — et de cliquer, taper et appuyer sur des touches dans celles que vous partagez pour agir. Rien n'est lisible tant que vous ne partagez pas une fenêtre depuis le panneau Utilisation de l'ordinateur de la barre d'état, et on ne peut agir sur aucune sans votre accord en plus ; le partage prend fin quand la fenêtre se ferme, après un moment sans utilisation ou quand vous l'arrêtez, et Arrêter les agents dans ce panneau les arrête tous d'un coup. Les saisies arrivent à la fenêtre en arrière-plan ; pour une action qui ne passe pas en arrière-plan, un agent peut mettre la fenêtre au premier plan, ce que vous pouvez désactiver dans les réglages d'Utilisation de l'ordinateur. Application de bureau uniquement, et sous Linux il lit les fenêtres sans encore agir dessus ; sous macOS, des autorisations doivent être accordées à codeg-computer-helper. Aperçu."
     },
     "automations": {
       "label": "Créer des automatisations",
@@ -5315,8 +5315,8 @@
         "accessibilityHint": "Lire le contenu des fenêtres et agir dessus.",
         "screenRecordingHint": "Faire des captures et lire les titres des fenêtres."
       },
-      "title": "Partage et arrêt",
-      "description": "Combien de temps une fenêtre reste partagée, quelles applications ne sont jamais partagées, et le raccourci et la barre flottante qui arrêtent tout le partage d'un coup.",
+      "title": "Partage, saisie et arrêt",
+      "description": "Combien de temps une fenêtre reste partagée, quelles applications ne sont jamais partagées, le raccourci et la barre flottante qui arrêtent tout le partage d'un coup, et si les agents peuvent mettre une fenêtre au premier plan pour y agir.",
       "ttl": {
         "label": "Arrêter le partage des fenêtres inutilisées après",
         "hint": "Une fenêtre partagée cesse de l'être quand aucun agent ne l'a lue pendant cette durée.",
@@ -5367,6 +5367,17 @@
       "strip": {
         "label": "Barre d'arrêt flottante",
         "hint": "Tant qu'une fenêtre est partagée, une barre flotte au-dessus de toutes les fenêtres pour indiquer ce que les agents peuvent faire, avec un bouton Arrêter le partage. Désactivée, vous pouvez toujours arrêter le partage depuis le panneau Utilisation de l'ordinateur de la barre d'état ou avec le raccourci d'arrêt."
+      },
+      "foreground": {
+        "label": "Autoriser les agents à mettre des fenêtres au premier plan",
+        "hint": "Certaines applications n'acceptent ni touches ni saisie tant qu'elles sont en arrière-plan — sous Windows, toutes celles construites sur Chromium, comme Edge, Chrome et VS Code. Avec cette option, un agent peut mettre au premier plan, le temps d'une action, une fenêtre sur laquelle vous le laissez agir, puis revenir à la fenêtre où vous étiez. Vous verrez la fenêtre passer devant ; ce que vous tapez à ce moment peut y arriver, et sous Windows un clic déplace le pointeur de la souris."
+      },
+      "delivery": {
+        "label": "Mode de saisie par défaut",
+        "hint": "Comment les clics, le défilement, la saisie et les touches des agents atteignent une fenêtre quand ils ne demandent ni l'un ni l'autre. Arrière-plan laisse la fenêtre où elle est, et le pointeur et le clavier à vous ; Premier plan met la fenêtre devant à chaque action.",
+        "hintOff": "Toujours Arrière-plan tant que les agents ne peuvent pas mettre de fenêtres au premier plan.",
+        "background": "Arrière-plan",
+        "foreground": "Premier plan"
       },
       "boundary": "Sous macOS, les autorisations vont à codeg-computer-helper, que seul codeg peut utiliser : le shell des agents ne le peut pas. Windows et Linux n'ont pas cette séparation : là, ces réglages décident de ce que les agents obtiennent via codeg, pas de ce que les programmes de votre ordinateur peuvent faire.",
       "save": "Enregistrer",

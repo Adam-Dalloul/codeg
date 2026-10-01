@@ -1,8 +1,9 @@
 //! The mark an agent's action leaves on the screen: for a moment after a
 //! click, a scroll or typing lands, a ring where it landed. Actions are
-//! delivered in the background, where nothing else on the screen moves — the
-//! real pointer stays with the person — and a person should be able to see
-//! that something was done, and where.
+//! delivered in the background — unless the person lets a window come to the
+//! front for them — where nothing else on the screen moves: the real pointer
+//! stays with the person, and a person should be able to see that something
+//! was done, and where.
 //!
 //! A codeg window of its own: transparent, above other windows, never taking
 //! focus, and passing every click through to whatever is under it. It is

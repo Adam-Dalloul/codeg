@@ -384,6 +384,10 @@ pub struct BrokerComputerActRequest {
     pub token: String,
     pub target_id: String,
     pub request: crate::computer::types::ComputerActRequest,
+    /// How the call asked for the action to reach the window; the person's
+    /// default when it did not say.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delivery: Option<crate::computer::types::ActDelivery>,
 }
 
 /// Tagged top-level message dispatched by the listener. Adding new variants

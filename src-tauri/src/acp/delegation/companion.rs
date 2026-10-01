@@ -943,7 +943,7 @@ async fn build_tools_call_spawn(
         }
         "computer_click" | "computer_scroll" | "computer_type" | "computer_press_key"
         | "computer_set_value" | "computer_restore" => {
-            let (target_id, request) = match computer_act_request(&name, &arguments) {
+            let (target_id, request, delivery) = match computer_act_request(&name, &arguments) {
                 Ok(parsed) => parsed,
                 Err(msg) => return LineAction::Respond(err(id, -32602, msg)),
             };
@@ -951,6 +951,7 @@ async fn build_tools_call_spawn(
                 token: ctx.token.clone(),
                 target_id,
                 request,
+                delivery,
             };
             // No broker-side cancel: an action cannot be recalled halfway,
             // and it finishes on the codeg side, which writes its line on
@@ -2648,6 +2649,30 @@ pub fn render_computer_apps_result(outcome: &Value) -> Value {
     })
 }
 
+/// How actions reach a window, as the user has it set (a listing's `input`):
+/// what an agent needs before it acts, since the tool descriptions cannot
+/// follow the settings.
+fn computer_input_policy_line(input: &Value) -> &'static str {
+    let front_allowed = input.get("foregroundAllowed").and_then(Value::as_bool) == Some(true);
+    let front_default = input.get("default").and_then(Value::as_str) == Some("foreground");
+    match (front_allowed, front_default) {
+        (true, true) => {
+            "Input: the user has each action bring its window to the front, then switch back to \
+             the window they were in — they will see it, and on Windows a click moves their \
+             pointer. Pass `delivery: \"background\"` to leave the window where it is."
+        }
+        (true, false) => {
+            "Input: actions go to a window in the background, leaving it where it is. Where an \
+             application will not take one that way, pass `delivery: \"foreground\"`: the user \
+             allows a window to be brought to the front for that one action."
+        }
+        (false, _) => {
+            "Input: actions go to a window in the background, leaving it where it is; the user \
+             has switched off bringing windows to the front."
+        }
+    }
+}
+
 /// Map a `computer_list_windows` outcome into a `tools/call` result: one line
 /// per window, and the unshared ones say what to do about it.
 pub fn render_computer_windows_result(outcome: &Value) -> Value {
@@ -2705,6 +2730,10 @@ pub fn render_computer_windows_result(outcome: &Value) -> Value {
                      codeg's status bar they open Computer use and press \"Share a window…\" — it \
                      is theirs to give.",
                 );
+            }
+            if let Some(input) = outcome.get("input") {
+                out.push('\n');
+                out.push_str(computer_input_policy_line(input));
             }
             out
         }
@@ -3024,6 +3053,7 @@ fn computer_act_arguments(tool: &str) -> &'static [&'static str] {
             "generation",
             "button",
             "count",
+            "delivery",
         ],
         "computer_scroll" => &[
             "targetId",
@@ -3034,8 +3064,17 @@ fn computer_act_arguments(tool: &str) -> &'static [&'static str] {
             "ref",
             "coordinate",
             "generation",
+            "delivery",
         ],
-        "computer_type" => &["targetId", "target_id", "ref", "generation", "text", "submit"],
+        "computer_type" => &[
+            "targetId",
+            "target_id",
+            "ref",
+            "generation",
+            "text",
+            "submit",
+            "delivery",
+        ],
         "computer_press_key" => &[
             "targetId",
             "target_id",
@@ -3044,6 +3083,7 @@ fn computer_act_arguments(tool: &str) -> &'static [&'static str] {
             "repeat",
             "ref",
             "generation",
+            "delivery",
         ],
         "computer_set_value" => &["targetId", "target_id", "ref", "generation", "value"],
         "computer_restore" => &["targetId", "target_id"],
@@ -3051,20 +3091,28 @@ fn computer_act_arguments(tool: &str) -> &'static [&'static str] {
     }
 }
 
-/// Build one computer action from a tool call. Every argument is checked
-/// here, strictly — a `button: "middle"` read as the left button, a string
-/// read as a boolean, or an argument the tool does not take read as absent,
-/// is a different action from the one asked for. `null` is read as absent,
-/// as for every other computer tool: clients that fill in every optional
-/// field send it for the ones they mean to leave out.
+/// Build one computer action from a tool call, with how it is to reach the
+/// window when the call says (`delivery`; the person's default otherwise).
+/// Every argument is checked here, strictly — a `button: "middle"` read as
+/// the left button, a string read as a boolean, or an argument the tool does
+/// not take read as absent, is a different action from the one asked for.
+/// `null` is read as absent, as for every other computer tool: clients that
+/// fill in every optional field send it for the ones they mean to leave out.
 pub fn computer_act_request(
     tool: &str,
     arguments: &Value,
-) -> Result<(String, crate::computer::types::ComputerActRequest), String> {
+) -> Result<
+    (
+        String,
+        crate::computer::types::ComputerActRequest,
+        Option<crate::computer::types::ActDelivery>,
+    ),
+    String,
+> {
     use crate::computer::keys::{Chord, Key, Modifiers};
     use crate::computer::types::{
-        ComputerActRequest, PointerButton, ScrollDirection, ScrollUnit, MAX_KEY_REPEAT,
-        MAX_SCROLL_AMOUNT,
+        ActDelivery, ComputerActRequest, PointerButton, ScrollDirection, ScrollUnit,
+        MAX_KEY_REPEAT, MAX_SCROLL_AMOUNT,
     };
     let allowed = computer_act_arguments(tool);
     if let Some(unknown) = arguments
@@ -3201,7 +3249,14 @@ pub fn computer_act_request(
         "computer_restore" => ComputerActRequest::Restore,
         other => return Err(format!("unknown tool: {other}")),
     };
-    Ok((target_id, request))
+    // Only the tools that take it get this far with one (see
+    // `computer_act_arguments`).
+    let delivery = computer_choice(arguments, tool, "delivery", &["background", "foreground"])?
+        .map(|word| match word {
+            "foreground" => ActDelivery::Foreground,
+            _ => ActDelivery::Background,
+        });
+    Ok((target_id, request, delivery))
 }
 
 /// Map a computer action's outcome into a `tools/call` result: what happened,
@@ -3233,8 +3288,13 @@ pub fn render_computer_act_result(outcome: &Value) -> Value {
         "dom" => Some("through the page"),
         _ => None,
     };
-    if let Some(route) = route {
-        out.push_str(&format!(" Delivered in the background, {route}."));
+    match (s("delivery") == "foreground", route) {
+        (true, Some(route)) => out.push_str(&format!(
+            " Delivered with the window brought to the front for it, {route}."
+        )),
+        (true, None) => out.push_str(" The window was brought to the front for it."),
+        (false, Some(route)) => out.push_str(&format!(" Delivered in the background, {route}.")),
+        (false, None) => {}
     }
     if let Some(n) = action.get("presses").and_then(Value::as_u64) {
         out.push_str(&format!(" The key was pressed {n} times."));
@@ -5876,15 +5936,17 @@ mod tests {
     fn computer_action_arguments_are_checked_before_any_round_trip() {
         use crate::computer::keys::{Key, Modifiers};
         use crate::computer::types::{
-            AgentTarget, ComputerActRequest, ElementTarget, PointTarget, PointerButton,
-            ScrollDirection, ScrollUnit,
+            ActDelivery, AgentTarget, ComputerActRequest, ElementTarget, PointTarget,
+            PointerButton, ScrollDirection, ScrollUnit,
         };
-        let (id, click) = computer_act_request(
+        let (id, click, delivery) = computer_act_request(
             "computer_click",
             &json!({ "targetId": "w1", "ref": "[12]", "generation": "2.3" }),
         )
         .unwrap();
         assert_eq!(id, "w1");
+        // Not said: the user's default decides.
+        assert_eq!(delivery, None);
         assert_eq!(
             click,
             ComputerActRequest::Click {
@@ -5896,7 +5958,7 @@ mod tests {
                 count: 1,
             }
         );
-        let (_, point) = computer_act_request(
+        let (_, point, _) = computer_act_request(
             "computer_click",
             &json!({ "targetId": "w1", "coordinate": [10, 20.5], "generation": "2.4",
                      "button": "right" }),
@@ -5982,17 +6044,64 @@ mod tests {
                 json!({ "targetId": "w1", "ref": 3, "generation": "1.1", "buton": "right" }),
                 "no argument `buton`",
             ),
+            // The front is asked for by name, and only where a window can be
+            // brought forward for the action: not to set a value or restore.
             (
                 "computer_type",
                 json!({ "targetId": "w1", "ref": 3, "generation": "1.1", "text": "x",
+                        "delivery": "front" }),
+                "`delivery` must be one of background, foreground",
+            ),
+            (
+                "computer_press_key",
+                json!({ "targetId": "w1", "key": "return", "delivery": true }),
+                "`delivery` must be one of",
+            ),
+            (
+                "computer_set_value",
+                json!({ "targetId": "w1", "ref": 3, "generation": "1.1", "value": "x",
                         "delivery": "foreground" }),
+                "no argument `delivery`",
+            ),
+            (
+                "computer_restore",
+                json!({ "targetId": "w1", "delivery": "foreground" }),
                 "no argument `delivery`",
             ),
         ] {
             let error = computer_act_request(tool, &bad).unwrap_err();
             assert!(error.contains(says), "{tool} {bad}: {error}");
         }
-        let (_, key) = computer_act_request(
+        for (tool, args) in [
+            (
+                "computer_click",
+                json!({ "targetId": "w1", "ref": 3, "generation": "1.1" }),
+            ),
+            (
+                "computer_scroll",
+                json!({ "targetId": "w1", "direction": "down" }),
+            ),
+            (
+                "computer_type",
+                json!({ "targetId": "w1", "ref": 3, "generation": "1.1", "text": "x" }),
+            ),
+            (
+                "computer_press_key",
+                json!({ "targetId": "w1", "key": "return" }),
+            ),
+        ] {
+            for (word, want) in [
+                (json!("foreground"), Some(ActDelivery::Foreground)),
+                (json!("background"), Some(ActDelivery::Background)),
+                (json!(null), None),
+            ] {
+                let mut args = args.clone();
+                args["delivery"] = word;
+                let (_, _, delivery) = computer_act_request(tool, &args).unwrap();
+                assert_eq!(delivery, want, "{tool} {args}");
+            }
+        }
+        let (_, key, _) = computer_act_request(
             "computer_press_key",
             &json!({ "targetId": "w1", "key": "Tab", "modifiers": ["Shift"], "repeat": 3 }),
         )
@@ -6014,7 +6123,7 @@ mod tests {
         // Restoring takes the window and nothing else.
         assert_eq!(
             computer_act_request("computer_restore", &json!({ "targetId": "w1" })).unwrap(),
-            ("w1".to_string(), ComputerActRequest::Restore)
+            ("w1".to_string(), ComputerActRequest::Restore, None)
         );
         assert!(computer_act_request(
             "computer_restore",
@@ -6024,7 +6133,7 @@ mod tests {
         .contains("no argument `activate`"));
         // `null` is an option left out — what clients that fill in every
         // optional field send — and gets the documented default.
-        let (_, nulls) = computer_act_request(
+        let (_, nulls, _) = computer_act_request(
             "computer_click",
             &json!({ "targetId": "w1", "ref": 3, "generation": "1.1", "button": null,
                      "count": null, "coordinate": null }),
@@ -6038,7 +6147,7 @@ mod tests {
                 ..
             }
         ));
-        let (_, scroll) = computer_act_request(
+        let (_, scroll, _) = computer_act_request(
             "computer_scroll",
             &json!({ "targetId": "w1", "direction": "down", "unit": "page" }),
         )
@@ -6066,6 +6175,18 @@ mod tests {
         let text = done["content"][0]["text"].as_str().unwrap();
         assert!(text.contains("confirmed"), "{text}");
         assert!(text.contains("accessibility"), "{text}");
+        assert!(text.contains("in the background"), "{text}");
+        // Brought to the front: said so, route or not.
+        for action in [
+            json!({ "targetId": "w2", "effect": "unverifiable", "route": "global_input",
+                    "delivery": "foreground" }),
+            json!({ "targetId": "w2", "effect": "unverifiable", "delivery": "foreground" }),
+        ] {
+            let front = render_computer_act_result(&json!({ "targetId": "w2", "action": action }));
+            let text = front["content"][0]["text"].as_str().unwrap();
+            assert!(text.contains("brought to the front"), "{text}");
+            assert!(!text.contains("in the background"), "{text}");
+        }
         let vague = render_computer_act_result(&json!({
             "targetId": "w2",
             "action": { "targetId": "w2", "effect": "unverifiable", "delivery": "background",
@@ -6134,6 +6255,32 @@ mod tests {
         assert!(text.contains("[not shared]"), "{text}");
         assert!(text.contains("[never shareable: codeg's own window]"), "{text}");
         assert!(text.contains("Share a window"), "{text}");
+        assert!(!text.contains("Input:"), "{text}");
+    }
+
+    /// A listing says how actions reach the windows as the user has it set
+    /// now — the one place the settings reach the agent before it acts.
+    #[test]
+    fn a_computer_window_listing_says_how_input_goes() {
+        let listing = |input: Value| {
+            let out = render_computer_windows_result(&json!({
+                "windows": [
+                    { "targetId": "w1", "app": { "key": "k", "name": "Edge", "pid": 5 },
+                      "bounds": { "x": 0, "y": 0, "width": 800, "height": 600 },
+                      "onScreen": true, "level": "control" }
+                ],
+                "input": input
+            }));
+            out["content"][0]["text"].as_str().unwrap().to_string()
+        };
+        let off = listing(json!({ "default": "background", "foregroundAllowed": false }));
+        assert!(off.contains("switched off"), "{off}");
+        assert!(!off.contains("delivery:"), "{off}");
+        let allowed = listing(json!({ "default": "background", "foregroundAllowed": true }));
+        assert!(allowed.contains("delivery: \"foreground\""), "{allowed}");
+        let front = listing(json!({ "default": "foreground", "foregroundAllowed": true }));
+        assert!(front.contains("delivery: \"background\""), "{front}");
+        assert!(front.contains("to the front"), "{front}");
     }
 
     /// A verdict leads with the status, and "unknown" says it is not success.

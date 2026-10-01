@@ -1,7 +1,8 @@
 //! The strip that says, above every other window, that agents may use this
 //! screen: up while any window is shared, naming what they may do and where,
 //! with a Stop button on it. Actions happen in the background, in windows
-//! the person may not be looking at, and the codeg window with the rest of
+//! the person may not be looking at (at the front only for a moment, where
+//! they allow it), and the codeg window with the rest of
 //! the panel may be hidden; this is the part of computer use that is never
 //! out of sight.
 //!

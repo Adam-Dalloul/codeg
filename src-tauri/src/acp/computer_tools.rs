@@ -26,7 +26,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 
 use crate::computer::types::{
-    ActReport, AgentAppSummary, AgentWindowSummary, ComputerActRequest, VerifyOutcome,
+    ActDelivery, ActReport, AgentAppSummary, AgentWindowSummary, ComputerActRequest, VerifyOutcome,
     VerifyRequest, WindowCapture, WindowSnapshot,
 };
 
@@ -77,9 +77,15 @@ pub const ERROR_OUT_OF_TARGET: &str = "computer_out_of_target";
 /// could reach instead.
 pub const ERROR_OCCLUDED: &str = "computer_occluded";
 
-/// The application offers no background route for this action, and codeg
-/// does not bring windows to the front.
+/// The application offers no background route for this action. Whether it
+/// may go again with the window brought to the front is the person's to
+/// allow; the note says which it is.
 pub const ERROR_BACKGROUND_UNAVAILABLE: &str = "computer_background_unavailable";
+
+/// The agent asked for the window to be brought to the front for an action
+/// (`delivery: "foreground"`), and the person has not allowed that. Theirs to
+/// change, in codeg's settings; asking again changes nothing.
+pub const ERROR_FOREGROUND_NOT_ALLOWED: &str = "computer_foreground_not_allowed";
 
 /// The action was allowed and did not happen: a disabled control, no such
 /// option, more text than one call can type. The note says which.
@@ -139,6 +145,9 @@ impl ComputerAppsOutcome {
 #[serde(rename_all = "camelCase")]
 pub struct ComputerWindowsOutcome {
     pub windows: Vec<AgentWindowSummary>,
+    /// How actions reach the windows, as the person has it set now.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input: Option<InputPolicy>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -149,8 +158,30 @@ impl ComputerWindowsOutcome {
     pub fn refused(error: &str, note: impl Into<String>) -> Self {
         Self {
             windows: Vec::new(),
+            input: None,
             error: Some(error.to_string()),
             note: Some(note.into()),
+        }
+    }
+}
+
+/// How an action reaches a window, as the person has it set: said with every
+/// listing, so an agent knows before it acts whether a window may be brought
+/// to the front for it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InputPolicy {
+    /// What an action gets when the agent does not ask (`delivery`).
+    pub default: ActDelivery,
+    /// Whether an agent may ask for the front.
+    pub foreground_allowed: bool,
+}
+
+impl InputPolicy {
+    pub fn of(config: &ComputerToolsConfig) -> Self {
+        Self {
+            default: config.default_delivery_in_force(),
+            foreground_allowed: config.allow_foreground,
         }
     }
 }
@@ -267,6 +298,27 @@ pub fn no_pointing_note(target_id: &str) -> String {
 pub const STOPPED_NOTE: &str = "The user pressed Stop in codeg's Computer use panel: every \
      window stopped being shared, and whatever was under way was cut off. Do not retry on your \
      own — tell the user, and go on only once they share a window with you again.";
+
+pub const FOREGROUND_NOT_ALLOWED_NOTE: &str = "Bringing a window to the front for an action is \
+     not allowed: the user has switched it off in codeg's Computer use settings (\"Let agents \
+     bring windows to the front\"), so nothing was sent. Leave `delivery` out to act in the \
+     background; if only the front will do, ask the user whether to switch it back on — only \
+     they can.";
+
+/// What an action the application would not take in the background can try
+/// next, as the person has the front set: the words that end every
+/// `computer_background_unavailable` note.
+pub fn background_next_step(allow_foreground: bool) -> &'static str {
+    if allow_foreground {
+        "The user allows bringing a window to the front: call again with `delivery: \
+         \"foreground\"`, and codeg brings this window forward for that one action, then switches \
+         back to the window the user was in. They will see it happen, and on Windows a click \
+         moves their pointer."
+    } else {
+        "The user has switched off bringing windows to the front in codeg's Computer use \
+         settings; if nothing else will do, ask them whether to switch it back on."
+    }
+}
 
 /// What an action tool answers: what the action did, or why it did not
 /// happen.
@@ -440,8 +492,14 @@ pub trait ComputerToolAccess: Send + Sync {
     /// Check predicates against one shared window.
     async fn verify(&self, target_id: &str, request: VerifyRequest) -> ComputerVerifyOutcome;
 
-    /// Act on one window shared for control.
-    async fn act(&self, target_id: &str, request: ComputerActRequest) -> ComputerActOutcome;
+    /// Act on one window shared for control — brought to the front for it
+    /// or not as `delivery` asks, or as the person set it when it does not.
+    async fn act(
+        &self,
+        target_id: &str,
+        request: ComputerActRequest,
+        delivery: Option<ActDelivery>,
+    ) -> ComputerActOutcome;
 }
 
 /// The answer where there is no desktop: server mode, and the stub in every
@@ -474,7 +532,12 @@ impl ComputerToolAccess for NoComputerDesktop {
         ComputerVerifyOutcome::refused(target_id, ERROR_UNAVAILABLE, NO_DESKTOP_NOTE)
     }
 
-    async fn act(&self, target_id: &str, _request: ComputerActRequest) -> ComputerActOutcome {
+    async fn act(
+        &self,
+        target_id: &str,
+        _request: ComputerActRequest,
+        _delivery: Option<ActDelivery>,
+    ) -> ComputerActOutcome {
         ComputerActOutcome::refused(target_id, ERROR_UNAVAILABLE, NO_DESKTOP_NOTE)
     }
 }
@@ -499,6 +562,13 @@ pub struct ComputerToolsConfig {
     /// Whether the strip above every window comes up while anything is
     /// shared. On unless the person turned it off: Stop is on it.
     pub show_indicator: bool,
+    /// Whether an action may bring its window to the front
+    /// ([`ActDelivery::Foreground`]). On unless the person turned it off.
+    pub allow_foreground: bool,
+    /// What an action gets when the agent does not ask, as the person chose
+    /// it — in force only while they allow the front at all (see
+    /// [`Self::default_delivery_in_force`]).
+    pub default_delivery: ActDelivery,
     /// How many times the group has been switched off since codeg started.
     /// Kept by [`ComputerToolsRuntimeConfig::set`], never persisted: it is
     /// what lets a watcher that only sees the latest value — a quick off and
@@ -516,7 +586,21 @@ impl Default for ComputerToolsConfig {
             blocklist_removed: Vec::new(),
             stop_shortcut: None,
             show_indicator: true,
+            allow_foreground: true,
+            default_delivery: ActDelivery::Background,
             switched_off: 0,
+        }
+    }
+}
+
+impl ComputerToolsConfig {
+    /// What an action gets when the agent does not ask: the person's choice
+    /// while they allow the front at all, the background otherwise.
+    pub fn default_delivery_in_force(&self) -> ActDelivery {
+        if self.allow_foreground {
+            self.default_delivery
+        } else {
+            ActDelivery::Background
         }
     }
 }
@@ -658,6 +742,7 @@ mod tests {
                 title: None,
                 note: None,
             }],
+            input: Some(InputPolicy::of(&ComputerToolsConfig::default())),
             error: None,
             note: None,
         })
@@ -666,6 +751,40 @@ mod tests {
         assert_eq!(listed["windows"][0]["level"], "none");
         assert!(listed["windows"][0].get("title").is_none());
         assert!(listed.get("error").is_none());
+        // Out of the box: the background, with the front to be had for the
+        // asking.
+        assert_eq!(
+            listed["input"],
+            serde_json::json!({"default": "background", "foregroundAllowed": true})
+        );
+    }
+
+    /// The front is the default only while the person allows it at all; the
+    /// choice is kept for when they allow it again. The words that end a
+    /// background refusal say which way it is.
+    #[test]
+    fn the_front_is_the_default_only_while_it_is_allowed() {
+        let chosen = ComputerToolsConfig {
+            allow_foreground: false,
+            default_delivery: ActDelivery::Foreground,
+            ..Default::default()
+        };
+        assert_eq!(chosen.default_delivery_in_force(), ActDelivery::Background);
+        let allowed = ComputerToolsConfig {
+            allow_foreground: true,
+            ..chosen.clone()
+        };
+        assert_eq!(allowed.default_delivery_in_force(), ActDelivery::Foreground);
+        assert_eq!(
+            InputPolicy::of(&allowed),
+            InputPolicy {
+                default: ActDelivery::Foreground,
+                foreground_allowed: true,
+            }
+        );
+        assert!(background_next_step(true).contains("delivery: \"foreground\""));
+        assert!(!background_next_step(false).contains("delivery: \"foreground\""));
+        assert!(background_next_step(false).contains("ask them"));
     }
 
     #[tokio::test]
@@ -711,6 +830,8 @@ mod tests {
             blocklist_removed: vec!["1password".into()],
             stop_shortcut: None,
             show_indicator: false,
+            allow_foreground: true,
+            default_delivery: ActDelivery::Foreground,
             switched_off: 0,
         };
         cfg.set(on.clone()).await;

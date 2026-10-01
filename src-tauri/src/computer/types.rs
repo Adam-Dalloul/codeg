@@ -391,6 +391,20 @@ pub enum ComputerActRequest {
     Restore,
 }
 
+impl ComputerActRequest {
+    /// Whether the window can be brought to the front for this action
+    /// ([`ActDelivery::Foreground`]). A value is set through the
+    /// application's accessibility interface, which no window has to be in
+    /// front for, and a restore is codeg's own call: those two only ever go
+    /// in the background.
+    pub fn can_come_forward(&self) -> bool {
+        matches!(
+            self,
+            Self::Click { .. } | Self::Scroll { .. } | Self::Type { .. } | Self::Key { .. }
+        )
+    }
+}
+
 /// How far the driver can vouch for an action it carried out.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -423,13 +437,30 @@ pub enum ActRoute {
     Other,
 }
 
-/// How the input was delivered. Only background in this version: the
-/// application is not brought to the front and the person's own pointer and
-/// keyboard focus stay where they are.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// How the input reaches the window.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ActDelivery {
+    /// The window is not brought to the front, and the person's own pointer
+    /// and keyboard focus stay where they are.
+    #[default]
     Background,
+    /// The window is brought to the front for the one action, which then
+    /// goes in as real input, and the window the person was in is brought
+    /// back after it. Some applications take keys and typing no other way —
+    /// on Windows, every one built on Chromium. Only where the person has
+    /// allowed it in the settings.
+    Foreground,
+}
+
+impl ActDelivery {
+    /// The driver's word for it (`delivery_mode`).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Background => "background",
+            Self::Foreground => "foreground",
+        }
+    }
 }
 
 /// What one action on a shared window did.

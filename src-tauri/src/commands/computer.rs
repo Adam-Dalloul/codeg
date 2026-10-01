@@ -54,17 +54,18 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
 
 use crate::acp::computer_tools::{
-    blocked_note, chord_beyond_note, control_required_note, cut_away_note, grant_required_note,
-    no_pointing_note, no_such_ref_note, no_such_target_note, not_actionable_note,
-    permission_missing_note, stale_capture_note, stale_snapshot_note, ComputerActOutcome,
-    ComputerAppsOutcome, ComputerCaptureOutcome, ComputerSnapshotOutcome, ComputerToolAccess,
-    ComputerToolsConfig, ComputerToolsRuntimeConfig, ComputerVerifyOutcome, ComputerWindowsOutcome,
-    SnapshotRequest, DEFAULT_MAX_DIMENSION, DEFAULT_SNAPSHOT_MAX_CHARS, ERROR_ACTION_FAILED,
-    ERROR_BACKGROUND_UNAVAILABLE, ERROR_BLOCKED, ERROR_CONTROL_REQUIRED, ERROR_GRANT_REQUIRED,
+    background_next_step, blocked_note, chord_beyond_note, control_required_note, cut_away_note,
+    grant_required_note, no_pointing_note, no_such_ref_note, no_such_target_note,
+    not_actionable_note, permission_missing_note, stale_capture_note, stale_snapshot_note,
+    ComputerActOutcome, ComputerAppsOutcome, ComputerCaptureOutcome, ComputerSnapshotOutcome,
+    ComputerToolAccess, ComputerToolsConfig, ComputerToolsRuntimeConfig, ComputerVerifyOutcome,
+    ComputerWindowsOutcome, InputPolicy, SnapshotRequest, DEFAULT_MAX_DIMENSION,
+    DEFAULT_SNAPSHOT_MAX_CHARS, ERROR_ACTION_FAILED, ERROR_BACKGROUND_UNAVAILABLE, ERROR_BLOCKED,
+    ERROR_CONTROL_REQUIRED, ERROR_FOREGROUND_NOT_ALLOWED, ERROR_GRANT_REQUIRED,
     ERROR_NO_SUCH_TARGET, ERROR_OCCLUDED, ERROR_OUT_OF_TARGET, ERROR_PAUSED,
     ERROR_PERMISSION_MISSING, ERROR_READ_FAILED, ERROR_STALE_REF, ERROR_STOPPED, ERROR_UNAVAILABLE,
-    NEEDS_ELEMENT_NOTE, NO_DESKTOP_NOTE, OUT_OF_IMAGE_NOTE, PASTE_NOTE, SECRET_FIELD_NOTE,
-    STOPPED_NOTE,
+    FOREGROUND_NOT_ALLOWED_NOTE, NEEDS_ELEMENT_NOTE, NO_DESKTOP_NOTE, OUT_OF_IMAGE_NOTE,
+    PASTE_NOTE, SECRET_FIELD_NOTE, STOPPED_NOTE,
 };
 use crate::app_error::AppCommandError;
 use crate::computer::agent::{
@@ -218,6 +219,49 @@ fn refused_act(kind: ActRefusal, words: String) -> Refusal {
 /// A call the person's Stop cut off.
 fn stopped() -> Refusal {
     Refusal::refused(ERROR_STOPPED, STOPPED_NOTE.to_string())
+}
+
+/// How an action is to reach its window: as the agent asked, or as the
+/// person set it when it did not ask — the front only where they allow it,
+/// and only for an action that can be delivered there at all (see
+/// [`ComputerActRequest::can_come_forward`]).
+fn delivery_for(
+    request: &ComputerActRequest,
+    requested: Option<ActDelivery>,
+    config: &ComputerToolsConfig,
+) -> Result<ActDelivery, Refusal> {
+    if !request.can_come_forward() {
+        return Ok(ActDelivery::Background);
+    }
+    match requested.unwrap_or_else(|| config.default_delivery_in_force()) {
+        ActDelivery::Foreground if !config.allow_foreground => Err(Refusal::refused(
+            ERROR_FOREGROUND_NOT_ALLOWED,
+            FOREGROUND_NOT_ALLOWED_NOTE.to_string(),
+        )),
+        delivery => Ok(delivery),
+    }
+}
+
+/// An action the application would not take in the background, ended with
+/// what the person's settings leave the agent to try next: the front, or
+/// asking them for it — for an action that can come to the front at all.
+/// The helper's words say what happened; only codeg knows the settings.
+fn with_next_step(
+    refusal: Refusal,
+    request: &ComputerActRequest,
+    config: &ComputerToolsConfig,
+) -> Refusal {
+    if refusal.slug != ERROR_BACKGROUND_UNAVAILABLE || !request.can_come_forward() {
+        return refusal;
+    }
+    Refusal {
+        note: format!(
+            "{} {}",
+            refusal.note,
+            background_next_step(config.allow_foreground)
+        ),
+        ..refusal
+    }
 }
 
 /// An action refused before anything was sent, in words.
@@ -914,6 +958,7 @@ impl ComputerService {
                         .filter(|e| e.worth_listing())
                         .map(|e| e.agent_summary(&self.me, &blocklist))
                         .collect(),
+                    input: Some(InputPolicy::of(&config)),
                     error: None,
                     note: None,
                 }
@@ -1108,13 +1153,16 @@ impl ComputerService {
 
     /// One action, checked from the top: its turn at the driver first, then
     /// the switch, the grant and the action against what the agent last
-    /// read, the process, no Stop since it began — and then the helper,
-    /// which checks again what only it can see, the Stop count included.
+    /// read, the process, whether its window may come to the front if that
+    /// is how it is to go (`requested`, or the person's default), no Stop
+    /// since it began — and then the helper, which checks again what only it
+    /// can see, the Stop count included. Answers with how it was delivered.
     async fn act_once(
         &self,
         target_id: &str,
         request: &ComputerActRequest,
-    ) -> Result<(RawAct, Aim), Refusal> {
+        requested: Option<ActDelivery>,
+    ) -> Result<(RawAct, Aim, ActDelivery), Refusal> {
         let _turn = self.turn.lock().await;
         let stop = self.stop_count();
         let config = self.usable().await?;
@@ -1135,6 +1183,9 @@ impl ComputerService {
         };
         let started_at = self.check_identity(target_id, &ticket.identity)?;
         let aim = ticket.aim;
+        // Against the settings as they are now: the front turned off since
+        // the last press stops the next.
+        let delivery = delivery_for(request, requested, &config)?;
         // The grant was looked at after `stop` was counted, so a Stop in
         // between either revoked it above or shows here.
         if self.stopped_since(stop) {
@@ -1147,34 +1198,44 @@ impl ComputerService {
                 started_at,
                 ticket.app.key().map(str::to_string),
                 ticket.action,
+                delivery,
                 stop,
             )
             .await
-            .map(|raw| (raw, aim))
-            .map_err(|e| self.backend_act_refusal(target_id, e, stop))
+            .map(|raw| (raw, aim, delivery))
+            .map_err(|e| {
+                with_next_step(
+                    self.backend_act_refusal(target_id, e, stop),
+                    request,
+                    &config,
+                )
+            })
     }
 
-    /// Act on a window shared for control. A key pressed more than once is
-    /// that many actions, each checked on its own: taking the window back
-    /// between two presses stops the rest.
+    /// Act on a window shared for control, brought to the front for it or
+    /// not as `delivery` asks — or as the person set it, when it does not. A
+    /// key pressed more than once is that many actions, each checked on its
+    /// own: taking the window back between two presses, or the front, stops
+    /// the rest.
     pub async fn agent_act(
         &self,
         target_id: &str,
         request: ComputerActRequest,
+        delivery: Option<ActDelivery>,
     ) -> ComputerActOutcome {
         let action = ComputerAction::of(&request);
         let presses = match &request {
             ComputerActRequest::Key { repeat, .. } => (*repeat).clamp(1, MAX_KEY_REPEAT),
             _ => 1,
         };
-        let mut done: Option<RawAct> = None;
+        let mut done: Option<(RawAct, ActDelivery)> = None;
         for pressed in 0..presses {
-            match self.act_once(target_id, &request).await {
-                Ok((raw, aim)) => {
+            match self.act_once(target_id, &request, delivery).await {
+                Ok((raw, aim, delivered)) => {
                     if let Some(at) = aim.landing(&raw) {
                         self.marker.mark(at, action);
                     }
-                    done = Some(raw);
+                    done = Some((raw, delivered));
                 }
                 Err(r) => {
                     self.record(target_id, action, r.outcome);
@@ -1195,7 +1256,7 @@ impl ComputerService {
             }
         }
         self.record(target_id, action, ActivityOutcome::Done);
-        let Some(raw) = done else {
+        let Some((raw, delivery)) = done else {
             return ComputerActOutcome::refused(
                 target_id,
                 ERROR_ACTION_FAILED,
@@ -1208,7 +1269,7 @@ impl ComputerService {
                 target_id: target_id.to_string(),
                 effect: raw.effect,
                 route: raw.route,
-                delivery: ActDelivery::Background,
+                delivery,
                 presses: (presses > 1).then_some(presses),
                 submitted: raw.submitted,
             },
@@ -1249,8 +1310,13 @@ impl ComputerToolAccess for McpComputerTools {
         self.service.agent_verify(target_id, request).await
     }
 
-    async fn act(&self, target_id: &str, request: ComputerActRequest) -> ComputerActOutcome {
-        self.service.agent_act(target_id, request).await
+    async fn act(
+        &self,
+        target_id: &str,
+        request: ComputerActRequest,
+        delivery: Option<ActDelivery>,
+    ) -> ComputerActOutcome {
+        self.service.agent_act(target_id, request, delivery).await
     }
 }
 
@@ -1638,5 +1704,109 @@ mod tests {
         assert!(status(false, true, true).is_leaking());
         assert!(!status(false, false, true).is_leaking());
         assert!(!status(true, true, false).is_leaking());
+    }
+
+    fn delivery(
+        request: &ComputerActRequest,
+        requested: Option<ActDelivery>,
+        config: &ComputerToolsConfig,
+    ) -> Result<ActDelivery, &'static str> {
+        delivery_for(request, requested, config).map_err(|r| r.slug)
+    }
+
+    /// An action goes as the agent asked, or as the person set it — the
+    /// front only while they allow it, and never for a value or a restore,
+    /// which do not come forward at all.
+    #[test]
+    fn an_action_comes_forward_only_where_the_person_allows_it() {
+        use crate::computer::keys::{Chord, Key, Modifiers};
+        use crate::computer::types::ActDelivery::{Background, Foreground};
+        let key = ComputerActRequest::Key {
+            target: None,
+            chord: Chord {
+                key: Key::Tab,
+                modifiers: Modifiers::default(),
+            },
+            repeat: 1,
+        };
+        let allowed = ComputerToolsConfig::default();
+        assert!(allowed.allow_foreground);
+        let off = ComputerToolsConfig {
+            allow_foreground: false,
+            ..Default::default()
+        };
+        let by_default = ComputerToolsConfig {
+            default_delivery: Foreground,
+            ..allowed.clone()
+        };
+        assert_eq!(delivery(&key, None, &off), Ok(Background));
+        assert_eq!(
+            delivery(&key, Some(Foreground), &off),
+            Err(ERROR_FOREGROUND_NOT_ALLOWED)
+        );
+        assert_eq!(delivery(&key, Some(Foreground), &allowed), Ok(Foreground));
+        assert_eq!(delivery(&key, None, &allowed), Ok(Background));
+        assert_eq!(delivery(&key, None, &by_default), Ok(Foreground));
+        assert_eq!(
+            delivery(&key, Some(Background), &by_default),
+            Ok(Background)
+        );
+        // A default of the front the person has since stopped allowing is
+        // the background, not a refusal.
+        let revoked = ComputerToolsConfig {
+            allow_foreground: false,
+            ..by_default.clone()
+        };
+        assert_eq!(delivery(&key, None, &revoked), Ok(Background));
+        let set = ComputerActRequest::SetValue {
+            target: crate::computer::types::ElementTarget {
+                generation: "1.1".into(),
+                index: 3,
+            },
+            value: "x".into(),
+        };
+        assert_eq!(delivery(&set, Some(Foreground), &off), Ok(Background));
+        assert_eq!(
+            delivery(&ComputerActRequest::Restore, None, &by_default),
+            Ok(Background)
+        );
+    }
+
+    /// Only a refusal from the background is ended with what the settings
+    /// leave to try — the front where it is allowed, asking where it is not —
+    /// and only for an action that can come to the front.
+    #[test]
+    fn a_background_refusal_ends_with_what_the_settings_leave() {
+        let words = "The application would not take it.";
+        let refused = |slug| Refusal::failed(slug, words.to_string());
+        let scroll = ComputerActRequest::Scroll {
+            target: None,
+            direction: crate::computer::types::ScrollDirection::Down,
+            amount: 1,
+            unit: Default::default(),
+        };
+        let allowed = ComputerToolsConfig {
+            allow_foreground: true,
+            ..Default::default()
+        };
+        let next = with_next_step(refused(ERROR_BACKGROUND_UNAVAILABLE), &scroll, &allowed).note;
+        assert!(next.starts_with(words), "{next}");
+        assert!(next.contains("delivery: \"foreground\""), "{next}");
+        let off = ComputerToolsConfig {
+            allow_foreground: false,
+            ..Default::default()
+        };
+        let next = with_next_step(refused(ERROR_BACKGROUND_UNAVAILABLE), &scroll, &off).note;
+        assert!(!next.contains("delivery: \"foreground\""), "{next}");
+        assert!(next.contains("ask them"), "{next}");
+        assert_eq!(
+            with_next_step(refused(ERROR_OCCLUDED), &scroll, &allowed).note,
+            words
+        );
+        let restore = ComputerActRequest::Restore;
+        assert_eq!(
+            with_next_step(refused(ERROR_BACKGROUND_UNAVAILABLE), &restore, &allowed).note,
+            words
+        );
     }
 }

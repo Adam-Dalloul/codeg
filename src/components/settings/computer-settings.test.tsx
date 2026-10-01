@@ -6,6 +6,7 @@ import {
   waitFor,
   within,
 } from "@testing-library/react"
+import userEvent from "@testing-library/user-event"
 import { NextIntlClientProvider } from "next-intl"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
@@ -66,6 +67,8 @@ function record(
     blocklistDefaults: DEFAULTS,
     stopShortcut: DEFAULT_KEY,
     showIndicator: true,
+    allowForeground: true,
+    defaultDelivery: "background",
     ...overrides,
   }
 }
@@ -97,6 +100,8 @@ beforeEach(() => {
       blocklistRemoved: prefs.blocklistRemoved ?? [],
       stopShortcut: prefs.stopShortcut ?? DEFAULT_KEY,
       showIndicator: prefs.showIndicator ?? true,
+      allowForeground: prefs.allowForeground ?? true,
+      defaultDelivery: prefs.defaultDelivery ?? "background",
     })
   )
   mockStopKey.mockResolvedValue({ active: DEFAULT_KEY })
@@ -470,5 +475,67 @@ describe("ComputerSettingsSection", () => {
     mockStopKey.mockResolvedValue({})
     mount()
     await screen.findByText("Takes effect while computer use is switched on.")
+  })
+
+  /** Bringing windows to the front is on out of the box, with Background
+   *  the default input mode; making Foreground the default saves that, and
+   *  nothing else. */
+  it("lets agents bring windows to the front, and can make it the default", async () => {
+    const user = userEvent.setup()
+    mount()
+    const front = await screen.findByRole("switch", {
+      name: "Let agents bring windows to the front",
+    })
+    await waitFor(() => expect(front).not.toBeDisabled())
+    const mode = () =>
+      screen.getByRole("combobox", { name: "Default input mode" })
+    expect(front).toBeChecked()
+    expect(mode()).toHaveTextContent("Background")
+    expect(mode()).not.toBeDisabled()
+    await user.click(mode())
+    const list = await screen.findByRole("listbox")
+    await user.click(within(list).getByRole("option", { name: "Foreground" }))
+    expect(mode()).toHaveTextContent("Foreground")
+    await user.click(screen.getByRole("button", { name: "Save" }))
+    await waitFor(() => expect(mockSet).toHaveBeenCalledTimes(1))
+    expect(mockSet.mock.calls[0][0]).toEqual({ defaultDelivery: "foreground" })
+  })
+
+  /** Switched off, the default input mode is Background and cannot be
+   *  moved; only the switch is saved. */
+  it("switches bringing windows to the front off, saving only that", async () => {
+    mount()
+    const front = await screen.findByRole("switch", {
+      name: "Let agents bring windows to the front",
+    })
+    await waitFor(() => expect(front).not.toBeDisabled())
+    const mode = () =>
+      screen.getByRole("combobox", { name: "Default input mode" })
+    fireEvent.click(front)
+    expect(front).not.toBeChecked()
+    expect(mode()).toHaveTextContent("Background")
+    expect(mode()).toBeDisabled()
+    fireEvent.click(screen.getByRole("button", { name: "Save" }))
+    await waitFor(() => expect(mockSet).toHaveBeenCalledTimes(1))
+    expect(mockSet.mock.calls[0][0]).toEqual({ allowForeground: false })
+  })
+
+  /** A default of the front chosen before shows as Background while the
+   *  front is not allowed — that is what an action gets then — and comes
+   *  back when it is allowed again. */
+  it("shows the front as the default only while it is allowed", async () => {
+    mockGet.mockResolvedValue(
+      record({ allowForeground: false, defaultDelivery: "foreground" })
+    )
+    mount()
+    const front = await screen.findByRole("switch", {
+      name: "Let agents bring windows to the front",
+    })
+    await waitFor(() => expect(front).not.toBeDisabled())
+    const mode = () =>
+      screen.getByRole("combobox", { name: "Default input mode" })
+    expect(mode()).toHaveTextContent("Background")
+    fireEvent.click(front)
+    expect(mode()).toHaveTextContent("Foreground")
   })
 })

@@ -3,8 +3,9 @@
 //!
 //! Acting on a shared window follows the same rules, one level up: a window
 //! shared for control, one element or one point of what the agent last read
-//! of it, keys that stay inside the window, delivered in the background, and
-//! a Stop the person can press at any moment.
+//! of it, keys that stay inside the window, delivered in the background
+//! unless the person lets agents bring a window to the front for an action,
+//! and a Stop the person can press at any moment.
 //!
 //! The shape of this module is decided by one fact about macOS: TCC charges
 //! "Accessibility" and "Screen Recording" to a process's *responsible*

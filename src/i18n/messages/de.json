@@ -5012,7 +5012,7 @@
     "computer": {
       "label": "Fenster des Desktops sehen und bedienen",
       "short": "Apps und Fenster auflisten; freigegebene lesen, erlaubte bedienen.",
-      "hint": "Lässt einen Agenten die Anwendungen und Fenster auf deinem Desktop auflisten, die Fenster lesen, die du für ihn freigibst – ein Bildschirmfoto, den Inhalt, ob es zeigt, was erwartet wird –, und in denen klicken, tippen und Tasten drücken, die du zum Handeln freigibst. Nichts ist lesbar, bis du im Bereich „Computernutzung“ in der Statusleiste ein Fenster freigibst, und in keinem Fenster wird gehandelt, wenn du das nicht auch erlaubst; die Freigabe endet, wenn das Fenster geschlossen wird, nach einer Weile ohne Nutzung oder wenn du sie beendest, und „Agenten anhalten“ in diesem Bereich hält alle auf einmal an. Eingaben erreichen das Fenster im Hintergrund, ohne es nach vorn zu holen. Nur in der Desktop-App, und unter Linux liest es Fenster vorerst nur, ohne darin zu handeln; unter macOS sind Berechtigungen für codeg-computer-helper nötig. Vorschau."
+      "hint": "Lässt einen Agenten die Anwendungen und Fenster auf deinem Desktop auflisten, die Fenster lesen, die du für ihn freigibst – ein Bildschirmfoto, den Inhalt, ob es zeigt, was erwartet wird –, und in denen klicken, tippen und Tasten drücken, die du zum Handeln freigibst. Nichts ist lesbar, bis du im Bereich „Computernutzung“ in der Statusleiste ein Fenster freigibst, und in keinem Fenster wird gehandelt, wenn du das nicht auch erlaubst; die Freigabe endet, wenn das Fenster geschlossen wird, nach einer Weile ohne Nutzung oder wenn du sie beendest, und „Agenten anhalten“ in diesem Bereich hält alle auf einmal an. Eingaben erreichen das Fenster im Hintergrund; für eine Aktion, die im Hintergrund nicht ankommt, darf ein Agent das Fenster nach vorn holen – das lässt sich in den Einstellungen zur Computernutzung abschalten. Nur in der Desktop-App, und unter Linux liest es Fenster vorerst nur, ohne darin zu handeln; unter macOS sind Berechtigungen für codeg-computer-helper nötig. Vorschau."
     },
     "automations": {
       "label": "Automatisierungen erstellen",
@@ -5315,8 +5315,8 @@
         "accessibilityHint": "Fensterinhalte lesen und darin handeln.",
         "screenRecordingHint": "Bildschirmfotos machen und Fenstertitel lesen."
       },
-      "title": "Freigeben und Anhalten",
-      "description": "Wie lange ein Fenster freigegeben bleibt, welche Apps nie freigegeben werden und das Tastenkürzel und die schwebende Leiste, die alle Freigaben auf einmal beenden.",
+      "title": "Freigeben, Eingabe und Anhalten",
+      "description": "Wie lange ein Fenster freigegeben bleibt, welche Apps nie freigegeben werden, das Tastenkürzel und die schwebende Leiste, die alle Freigaben auf einmal beenden, und ob Agenten ein Fenster nach vorn holen dürfen, um darin zu handeln.",
       "ttl": {
         "label": "Freigabe ungenutzter Fenster beenden nach",
         "hint": "Ein freigegebenes Fenster wird nicht mehr geteilt, wenn es so lange kein Agent gelesen hat.",
@@ -5367,6 +5367,17 @@
       "strip": {
         "label": "Schwebende Stopp-Leiste",
         "hint": "Solange ein Fenster freigegeben ist, schwebt über allen Fenstern eine Leiste, die sagt, was Agenten dürfen, mit der Schaltfläche „Freigabe beenden“. Ausgeschaltet kannst du Freigaben weiterhin im Computernutzungs-Popover der Statusleiste oder mit dem Tastenkürzel zum Anhalten beenden."
+      },
+      "foreground": {
+        "label": "Agenten dürfen Fenster nach vorn holen",
+        "hint": "Manche Apps nehmen im Hintergrund keine Tasten und keine Texteingabe an – unter Windows alle, die auf Chromium aufbauen, etwa Edge, Chrome und VS Code. Ist dies aktiv, darf ein Agent ein Fenster, in dem er handeln darf, für eine Aktion nach vorn holen und danach zu deinem vorherigen Fenster zurückwechseln. Du siehst das Fenster nach vorn kommen; was du in dem Moment tippst, kann darin landen, und unter Windows bewegt ein Klick deinen Mauszeiger."
+      },
+      "delivery": {
+        "label": "Standard-Eingabemodus",
+        "hint": "Wie Klicks, Scrollen, Texteingabe und Tasten von Agenten ein Fenster erreichen, wenn sie nichts anderes verlangen. Hintergrund lässt das Fenster, wo es ist, und Maus und Tastatur dir; Vordergrund holt das Fenster für jede Aktion nach vorn.",
+        "hintOff": "Immer Hintergrund, solange Agenten keine Fenster nach vorn holen dürfen.",
+        "background": "Hintergrund",
+        "foreground": "Vordergrund"
       },
       "boundary": "Unter macOS gehen die Berechtigungen an codeg-computer-helper, den nur codeg nutzen kann – die Shells der Agenten können es nicht. Windows und Linux haben keine solche Trennung: Dort legen diese Einstellungen fest, was Agenten über codeg bekommen, nicht was Programme auf deinem Rechner tun können.",
       "save": "Speichern",

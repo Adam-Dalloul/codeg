@@ -1,8 +1,10 @@
 //! The computer-use settings: whether an agent may see the desktop at all,
 //! how long a shared window stays shared unused, which applications can
-//! never be shared, the shortcut that stops every agent at once, and whether
+//! never be shared, the shortcut that stops every agent at once, whether
 //! the strip with Stop on it floats above every window while anything is
-//! shared.
+//! shared, and whether an agent may have a window brought to the front to
+//! act on it — and, if so, whether that is how every action goes unless it
+//! asks otherwise.
 //!
 //! Separate from `commands::computer`, which is the desktop feature itself and
 //! exists only in the desktop build: these switches are read by the shared
@@ -26,6 +28,7 @@ use crate::app_error::AppCommandError;
 use crate::computer::agent::{default_blocklist, is_default_key, DefaultBlockView};
 use crate::computer::keys::Platform;
 use crate::computer::stop_shortcut::StopShortcut;
+use crate::computer::types::ActDelivery;
 use crate::db::service::app_metadata_service;
 use crate::web::event_bridge::{emit_event, EventEmitter, COMPUTER_TOOLS_SETTINGS_CHANGED_EVENT};
 
@@ -54,6 +57,16 @@ pub const KEY_COMPUTER_TOOLS_STOP_SHORTCUT: &str = "computer_tools.stop_shortcut
 /// `true` or `false`. Absent is `true`.
 pub const KEY_COMPUTER_TOOLS_SHOW_INDICATOR: &str = "computer_tools.show_indicator";
 
+/// Whether an agent may have a shared window brought to the front for an
+/// action, `true` or `false`. Absent is `true`: some applications take keys
+/// no other way, and the person can switch it off.
+pub const KEY_COMPUTER_TOOLS_ALLOW_FOREGROUND: &str = "computer_tools.allow_foreground";
+
+/// How an action reaches its window when the agent does not say,
+/// `background` or `foreground` — the second in force only while the front
+/// is allowed at all. Absent is `background`.
+pub const KEY_COMPUTER_TOOLS_DEFAULT_DELIVERY: &str = "computer_tools.default_delivery";
+
 /// The grant timeout when the user has chosen none.
 pub const DEFAULT_GRANT_TTL_MINUTES: u32 = 30;
 
@@ -79,6 +92,13 @@ pub struct ComputerToolsSettings {
     /// anything is shared.
     #[serde(default = "default_show_indicator")]
     pub show_indicator: bool,
+    /// Whether an agent may have a window brought to the front for an action.
+    #[serde(default = "default_allow_foreground")]
+    pub allow_foreground: bool,
+    /// What an action gets when the agent does not say; the front only while
+    /// it is allowed, and kept as chosen while it is not.
+    #[serde(default)]
+    pub default_delivery: ActDelivery,
 }
 
 fn default_ttl() -> u32 {
@@ -93,6 +113,10 @@ fn default_show_indicator() -> bool {
     true
 }
 
+fn default_allow_foreground() -> bool {
+    true
+}
+
 impl Default for ComputerToolsSettings {
     fn default() -> Self {
         Self {
@@ -103,6 +127,8 @@ impl Default for ComputerToolsSettings {
             blocklist_defaults: default_blocklist(Platform::current()),
             stop_shortcut: default_stop_shortcut(),
             show_indicator: default_show_indicator(),
+            allow_foreground: default_allow_foreground(),
+            default_delivery: ActDelivery::Background,
         }
     }
 }
@@ -117,9 +143,20 @@ impl ComputerToolsSettings {
             blocklist_removed: normalize_removed(self.blocklist_removed),
             stop_shortcut: StopShortcut::from_setting(&self.stop_shortcut, Platform::current()),
             show_indicator: self.show_indicator,
+            allow_foreground: self.allow_foreground,
+            default_delivery: self.default_delivery,
             // Kept by the runtime handle, not by the record.
             switched_off: 0,
         }
+    }
+}
+
+/// A delivery as the record spells it; anything else reads as absent.
+fn stored_delivery(stored: &str) -> Option<ActDelivery> {
+    match stored {
+        "background" => Some(ActDelivery::Background),
+        "foreground" => Some(ActDelivery::Foreground),
+        _ => None,
     }
 }
 
@@ -211,6 +248,18 @@ pub async fn load_computer_tools_settings(conn: &DatabaseConnection) -> Computer
     {
         settings.show_indicator = v;
     }
+    if let Some(v) = get(KEY_COMPUTER_TOOLS_ALLOW_FOREGROUND)
+        .await
+        .and_then(|r| r.parse().ok())
+    {
+        settings.allow_foreground = v;
+    }
+    if let Some(v) = get(KEY_COMPUTER_TOOLS_DEFAULT_DELIVERY)
+        .await
+        .and_then(|r| stored_delivery(&r))
+    {
+        settings.default_delivery = v;
+    }
     settings
 }
 
@@ -266,11 +315,16 @@ pub struct ComputerToolsPreferences {
     pub stop_shortcut: Option<String>,
     #[serde(default)]
     pub show_indicator: Option<bool>,
+    #[serde(default)]
+    pub allow_foreground: Option<bool>,
+    #[serde(default)]
+    pub default_delivery: Option<ActDelivery>,
 }
 
 /// Move the grant timeout, the user's blocklist (their additions and the
-/// defaults they took off), the stop shortcut, the strip — only the ones
-/// given — leaving everything else at whatever the database says.
+/// defaults they took off), the stop shortcut, the strip, whether a window
+/// may be brought to the front and how an action goes by default — only the
+/// ones given — leaving everything else at whatever the database says.
 /// For the Computer use settings section, which edits these and not the
 /// switch (that one lives with the other tool groups, and in the status
 /// popover), and which sends only what the person changed: a form that
@@ -288,6 +342,8 @@ pub async fn set_computer_tools_preferences_core(
         blocklist_removed,
         stop_shortcut,
         show_indicator,
+        allow_foreground,
+        default_delivery,
     } = preferences;
     let blocklist = blocklist
         .map(|list| serde_json::to_string(&normalize_blocklist(list)))
@@ -307,6 +363,8 @@ pub async fn set_computer_tools_preferences_core(
         blocklist_removed.map(|keys| (KEY_COMPUTER_TOOLS_BLOCKLIST_REMOVED, keys)),
         stop_shortcut.map(|s| (KEY_COMPUTER_TOOLS_STOP_SHORTCUT, s)),
         show_indicator.map(|on| (KEY_COMPUTER_TOOLS_SHOW_INDICATOR, on.to_string())),
+        allow_foreground.map(|on| (KEY_COMPUTER_TOOLS_ALLOW_FOREGROUND, on.to_string())),
+        default_delivery.map(|d| (KEY_COMPUTER_TOOLS_DEFAULT_DELIVERY, d.as_str().to_string())),
     ]
     .into_iter()
     .flatten()
@@ -361,6 +419,14 @@ pub async fn set_computer_tools_settings_core(
         (
             KEY_COMPUTER_TOOLS_SHOW_INDICATOR,
             desired.show_indicator.to_string(),
+        ),
+        (
+            KEY_COMPUTER_TOOLS_ALLOW_FOREGROUND,
+            desired.allow_foreground.to_string(),
+        ),
+        (
+            KEY_COMPUTER_TOOLS_DEFAULT_DELIVERY,
+            desired.default_delivery.as_str().to_string(),
         ),
     ] {
         app_metadata_service::upsert_value(conn, key, &value)
@@ -439,6 +505,8 @@ pub async fn set_computer_tools_preferences(
     blocklist_removed: Option<Vec<String>>,
     stop_shortcut: Option<String>,
     show_indicator: Option<bool>,
+    allow_foreground: Option<bool>,
+    default_delivery: Option<ActDelivery>,
 ) -> Result<ComputerToolsSettings, AppCommandError> {
     let preferences = ComputerToolsPreferences {
         grant_ttl_minutes,
@@ -446,6 +514,8 @@ pub async fn set_computer_tools_preferences(
         blocklist_removed,
         stop_shortcut,
         show_indicator,
+        allow_foreground,
+        default_delivery,
     };
     #[cfg(feature = "tauri-runtime")]
     {
@@ -470,6 +540,10 @@ mod tests {
         assert!(!defaults.enabled);
         assert_eq!(defaults.grant_ttl_minutes, DEFAULT_GRANT_TTL_MINUTES);
         assert!(defaults.blocklist.is_empty());
+        // Once it is on, an agent may bring a window to the front when it
+        // asks; actions still go in the background unless it does.
+        assert!(defaults.allow_foreground);
+        assert_eq!(defaults.default_delivery, ActDelivery::Background);
         // Stop, though, is there from the start.
         assert_eq!(
             defaults.into_runtime_config().stop_shortcut,
@@ -499,6 +573,8 @@ mod tests {
             blocklist_defaults: Vec::new(),
             stop_shortcut: String::new(),
             show_indicator: false,
+            allow_foreground: true,
+            default_delivery: ActDelivery::Foreground,
         }
         .into_runtime_config();
         assert_eq!(cfg.grant_ttl, None);
@@ -507,10 +583,14 @@ mod tests {
         assert_eq!(cfg.blocklist_removed, vec!["1password", "system-settings"]);
         assert_eq!(cfg.stop_shortcut, None);
         assert!(!cfg.show_indicator);
+        assert!(cfg.allow_foreground);
+        assert_eq!(cfg.default_delivery_in_force(), ActDelivery::Foreground);
 
         let cfg = ComputerToolsSettings::default().into_runtime_config();
         assert_eq!(cfg.grant_ttl, Some(Duration::from_secs(30 * 60)));
         assert!(cfg.show_indicator);
+        assert!(cfg.allow_foreground);
+        assert_eq!(cfg.default_delivery_in_force(), ActDelivery::Background);
     }
 
     /// Saving one preference leaves the other as another writer left it — a
@@ -561,6 +641,50 @@ mod tests {
         );
         assert!(!config.snapshot().await.show_indicator);
         assert!(!load_computer_tools_settings(&db.conn).await.show_indicator);
+        // The front, allowed unless switched off: a default chosen while it
+        // is off is kept — and in force once it is back on.
+        assert!(hidden.allow_foreground);
+        let off = write(ComputerToolsPreferences {
+            allow_foreground: Some(false),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+        assert!(!off.allow_foreground);
+        let stored = load_computer_tools_settings(&db.conn).await;
+        assert!(!stored.allow_foreground);
+        let chosen = write(ComputerToolsPreferences {
+            default_delivery: Some(ActDelivery::Foreground),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+        assert!(!chosen.allow_foreground);
+        assert_eq!(chosen.default_delivery, ActDelivery::Foreground);
+        assert_eq!(
+            config.snapshot().await.default_delivery_in_force(),
+            ActDelivery::Background
+        );
+        let allowed = write(ComputerToolsPreferences {
+            allow_foreground: Some(true),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            allowed,
+            ComputerToolsSettings {
+                allow_foreground: true,
+                ..chosen.clone()
+            }
+        );
+        assert_eq!(
+            config.snapshot().await.default_delivery_in_force(),
+            ActDelivery::Foreground
+        );
+        let reloaded = load_computer_tools_settings(&db.conn).await;
+        assert!(reloaded.allow_foreground);
+        assert_eq!(reloaded.default_delivery, ActDelivery::Foreground);
         // Back to the defaults: nothing added, nothing taken off.
         let restored = write(ComputerToolsPreferences {
             blocklist: Some(vec![]),
@@ -644,6 +768,26 @@ mod tests {
         assert!(parsed.blocklist_removed.is_empty());
         assert_eq!(parsed.stop_shortcut, default_stop_shortcut());
         assert!(parsed.show_indicator);
+        assert!(parsed.allow_foreground);
+        assert_eq!(parsed.default_delivery, ActDelivery::Background);
+    }
+
+    /// A stored default delivery that is neither word reads as the
+    /// background, like a missing one.
+    #[tokio::test]
+    async fn a_stored_delivery_that_is_no_delivery_reads_as_the_background() {
+        let db = crate::db::test_helpers::fresh_in_memory_db().await;
+        for (key, value) in [
+            (KEY_COMPUTER_TOOLS_ALLOW_FOREGROUND, "true"),
+            (KEY_COMPUTER_TOOLS_DEFAULT_DELIVERY, "Foreground"),
+        ] {
+            app_metadata_service::upsert_value(&db.conn, key, value)
+                .await
+                .unwrap();
+        }
+        let loaded = load_computer_tools_settings(&db.conn).await;
+        assert!(loaded.allow_foreground);
+        assert_eq!(loaded.default_delivery, ActDelivery::Background);
     }
 
     /// A stored removal of an entry no release knows reads as nothing taken

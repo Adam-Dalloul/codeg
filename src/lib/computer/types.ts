@@ -162,7 +162,17 @@ export interface ComputerToolsSettings {
   /** Whether the strip with Stop on it floats above every window while
    *  anything is shared. */
   showIndicator: boolean
+  /** Whether an agent may have a window brought to the front for an action.
+   *  On unless the person switched it off. */
+  allowForeground: boolean
+  /** How an action goes when the agent does not say; `foreground` is in
+   *  force only while `allowForeground` is on, and kept while it is off. */
+  defaultDelivery: ComputerDelivery
 }
+
+/** How an agent's action reaches a window: left where it is, or brought to
+ *  the front for the one action. Mirror of Rust `ActDelivery`. */
+export type ComputerDelivery = "background" | "foreground"
 
 /** `computer://stop-key`: whether the stop shortcut is in force. */
 export interface StopKeyStatus {

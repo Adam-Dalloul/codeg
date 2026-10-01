@@ -5012,7 +5012,7 @@
     "computer": {
       "label": "Ver e usar as janelas da área de trabalho",
       "short": "Listar apps e janelas; ler as que você compartilhar e agir nas que permitir.",
-      "hint": "Permite que um agente liste os aplicativos e janelas da sua área de trabalho, leia as janelas que você compartilhar com ele — uma captura, o conteúdo, se mostra o que se espera — e clique, digite e pressione teclas nas que você compartilhar para agir. Nada fica legível até você compartilhar uma janela no painel Uso do computador da barra de status, e em nenhuma é possível agir sem que você também permita; o compartilhamento termina quando a janela fecha, depois de um tempo sem uso ou quando você o interrompe, e Parar agentes nesse painel para todos de uma vez. A entrada chega à janela em segundo plano, sem trazê-la para a frente. Apenas no app para desktop, e no Linux por enquanto lê as janelas, mas não age nelas; no macOS, exige permissões concedidas ao codeg-computer-helper. Prévia."
+      "hint": "Permite que um agente liste os aplicativos e janelas da sua área de trabalho, leia as janelas que você compartilhar com ele — uma captura, o conteúdo, se mostra o que se espera — e clique, digite e pressione teclas nas que você compartilhar para agir. Nada fica legível até você compartilhar uma janela no painel Uso do computador da barra de status, e em nenhuma é possível agir sem que você também permita; o compartilhamento termina quando a janela fecha, depois de um tempo sem uso ou quando você o interrompe, e Parar agentes nesse painel para todos de uma vez. A entrada chega à janela em segundo plano; para uma ação que não chega em segundo plano, um agente pode trazer a janela para a frente, o que você pode desativar nas configurações de Uso do computador. Apenas no app para desktop, e no Linux por enquanto lê as janelas, mas não age nelas; no macOS, exige permissões concedidas ao codeg-computer-helper. Prévia."
     },
     "automations": {
       "label": "Criar automações",
@@ -5315,8 +5315,8 @@
         "accessibilityHint": "Ler o conteúdo das janelas e agir nelas.",
         "screenRecordingHint": "Fazer capturas e ler os títulos das janelas."
       },
-      "title": "Compartilhar e parar",
-      "description": "Por quanto tempo uma janela continua compartilhada, quais apps nunca são compartilhados e o atalho e a barra flutuante que param todo o compartilhamento de uma vez.",
+      "title": "Compartilhar, entrada e parar",
+      "description": "Por quanto tempo uma janela continua compartilhada, quais apps nunca são compartilhados, o atalho e a barra flutuante que param todo o compartilhamento de uma vez, e se os agentes podem trazer uma janela para a frente para agir nela.",
       "ttl": {
         "label": "Parar de compartilhar janelas sem uso após",
         "hint": "Uma janela compartilhada deixa de ser compartilhada quando nenhum agente a lê por esse tempo.",
@@ -5367,6 +5367,17 @@
       "strip": {
         "label": "Barra flutuante de parada",
         "hint": "Enquanto alguma janela estiver compartilhada, uma barra flutua sobre todas as janelas dizendo o que os agentes podem fazer, com um botão Parar de compartilhar. Desligada, você ainda pode parar de compartilhar pelo painel de Uso do computador na barra de status ou com o atalho para parar."
+      },
+      "foreground": {
+        "label": "Permitir que agentes tragam janelas para a frente",
+        "hint": "Alguns apps não aceitam teclas nem digitação enquanto estão em segundo plano — no Windows, nenhum baseado no Chromium, como Edge, Chrome e VS Code. Com isto ativado, um agente pode trazer para a frente, por uma única ação, uma janela em que você o deixa agir, e depois voltar para a janela em que você estava. Você verá a janela vir para a frente; o que você digitar nesse momento pode ir para ela, e no Windows um clique move o ponteiro do mouse."
+      },
+      "delivery": {
+        "label": "Modo de entrada padrão",
+        "hint": "Como cliques, rolagem, digitação e teclas dos agentes chegam a uma janela quando eles não pedem um nem outro. Segundo plano deixa a janela onde está e o ponteiro e o teclado com você; Primeiro plano traz a janela para a frente a cada ação.",
+        "hintOff": "Sempre Segundo plano enquanto os agentes não puderem trazer janelas para a frente.",
+        "background": "Segundo plano",
+        "foreground": "Primeiro plano"
       },
       "boundary": "No macOS, as permissões vão para o codeg-computer-helper, que só o codeg pode usar, então o shell dos agentes não pode. O Windows e o Linux não têm essa separação: lá, estes ajustes decidem o que os agentes recebem pelo codeg, não o que os programas do seu computador podem fazer.",
       "save": "Salvar",

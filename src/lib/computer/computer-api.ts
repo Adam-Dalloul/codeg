@@ -10,6 +10,7 @@ import { isLocalDesktop } from "@/lib/platform"
 import { getTransport } from "@/lib/transport"
 
 import type {
+  ComputerDelivery,
   ComputerStatePayload,
   ComputerStatus,
   ComputerToolsSettings,
@@ -34,9 +35,10 @@ export async function setComputerToolsEnabled(
   return getTransport().call("set_computer_tools_enabled", { enabled })
 }
 
-/** Move the grant timeout, the blocklist, the stop shortcut, the strip —
- *  only what is given; the rest of the record (the switch included) stays
- *  as it is stored. */
+/** Move the grant timeout, the blocklist, the stop shortcut, the strip,
+ *  whether a window may come to the front and how an action goes by
+ *  default — only what is given; the rest of the record (the switch
+ *  included) stays as it is stored. */
 export async function setComputerToolsPreferences(preferences: {
   grantTtlMinutes?: number
   blocklist?: string[]
@@ -45,6 +47,8 @@ export async function setComputerToolsPreferences(preferences: {
   /** Empty switches the shortcut off. */
   stopShortcut?: string
   showIndicator?: boolean
+  allowForeground?: boolean
+  defaultDelivery?: ComputerDelivery
 }): Promise<ComputerToolsSettings> {
   return getTransport().call("set_computer_tools_preferences", preferences)
 }

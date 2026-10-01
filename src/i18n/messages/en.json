@@ -5012,7 +5012,7 @@
     "computer": {
       "label": "See and use your desktop's windows",
       "short": "List apps and windows; read the ones you share, act on the ones you allow.",
-      "hint": "Lets an agent list the applications and windows on your desktop, read the windows you share with it — a screenshot, its contents, whether it shows what it expects — and click, type and press keys in the ones you share for acting. Nothing is readable until you share a window from the Computer use panel in the status bar, and nothing can be acted on unless you also let agents act on it; sharing ends when the window closes, after a while unused, or when you stop it, and Stop agents in that panel halts every agent at once. Input goes to the window in the background, without bringing it to the front. Desktop app only, and on Linux it reads windows but does not act on them yet; on macOS it needs permissions granted to codeg-computer-helper. Preview."
+      "hint": "Lets an agent list the applications and windows on your desktop, read the windows you share with it — a screenshot, its contents, whether it shows what it expects — and click, type and press keys in the ones you share for acting. Nothing is readable until you share a window from the Computer use panel in the status bar, and nothing can be acted on unless you also let agents act on it; sharing ends when the window closes, after a while unused, or when you stop it, and Stop agents in that panel halts every agent at once. Input goes to the window in the background; for an action that will not go in the background, an agent may bring the window to the front, which you can switch off in Computer use settings. Desktop app only, and on Linux it reads windows but does not act on them yet; on macOS it needs permissions granted to codeg-computer-helper. Preview."
     },
     "automations": {
       "label": "Create automations",
@@ -5315,8 +5315,8 @@
         "accessibilityHint": "Read windows' contents and act on them.",
         "screenRecordingHint": "Take screenshots and read window titles."
       },
-      "title": "Sharing and stopping",
-      "description": "How long a shared window stays shared, which apps can never be shared, and the shortcut and floating bar that stop all sharing at once.",
+      "title": "Sharing, input and stopping",
+      "description": "How long a shared window stays shared, which apps can never be shared, the shortcut and floating bar that stop all sharing at once, and whether agents may bring a window to the front to act on it.",
       "ttl": {
         "label": "Stop sharing unused windows after",
         "hint": "A shared window stops being shared when no agent has read it for this long.",
@@ -5367,6 +5367,17 @@
       "strip": {
         "label": "Floating stop bar",
         "hint": "While any window is shared, a bar floats above all windows saying what agents may do, with a Stop sharing button. Turned off, you can still stop sharing from the Computer use popover in the status bar or with the stop shortcut."
+      },
+      "foreground": {
+        "label": "Let agents bring windows to the front",
+        "hint": "Some apps take no keys or typing while they're in the background — on Windows, any built on Chromium, such as Edge, Chrome and VS Code. With this on, an agent may bring a window you let it act on to the front for one action, then switch back to the window you were in. You'll see the window come forward; anything you type at that moment may go to it, and on Windows a click moves your mouse pointer."
+      },
+      "delivery": {
+        "label": "Default input mode",
+        "hint": "How agents' clicks, scrolling, typing and keys reach a window when they don't ask for either. Background leaves the window where it is and your pointer and keyboard to you; Foreground brings the window to the front for every action.",
+        "hintOff": "Always Background while agents may not bring windows to the front.",
+        "background": "Background",
+        "foreground": "Foreground"
       },
       "boundary": "On macOS the permissions go to codeg-computer-helper, which only codeg can use, so agents' shells can't. Windows and Linux have no such separation: there these settings decide what agents get through codeg, not what programs on your computer can do.",
       "save": "Save",

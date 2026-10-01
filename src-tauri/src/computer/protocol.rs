@@ -31,14 +31,14 @@ pub use crate::acp::delegation::transport::{read_frame, write_frame, MAX_FRAME_B
 
 use super::keys::Chord;
 use super::types::{
-    ActEffect, ActRoute, PointerButton, PredicateResult, Rect, ScrollDirection, ScrollUnit,
-    VerifyRequest, VerifyStatus,
+    ActDelivery, ActEffect, ActRoute, PointerButton, PredicateResult, Rect, ScrollDirection,
+    ScrollUnit, VerifyRequest, VerifyStatus,
 };
 
 /// Bumped whenever a frame changes shape. The helper ships in the same bundle
 /// as codeg, so a mismatch means a broken install (a helper left behind by a
 /// partial update), and codeg refuses to talk to it rather than guess.
-pub const PROTOCOL_VERSION: u32 = 5;
+pub const PROTOCOL_VERSION: u32 = 6;
 
 /// A fingerprint of the sources the helper is built from, the same in codeg
 /// and the helper when both are built from one tree (see `build.rs`). The
@@ -115,11 +115,12 @@ pub enum HelperOp {
         window_id: u64,
         request: VerifyRequest,
     },
-    /// Act on one window. codeg has checked the grant, the addressing and the
-    /// keys; the helper checks again what only it can see at the moment of
-    /// delivery — that the pid is still the process the window was shared
-    /// from, that the session is not locked, that no Stop has come since the
-    /// action was let through — and refuses secret fields itself.
+    /// Act on one window. codeg has checked the grant, the addressing, the
+    /// keys and — for the front — that the person allows it; the helper
+    /// checks again what only it can see at the moment of delivery — that
+    /// the pid is still the process the window was shared from, that the
+    /// session is not locked, that no Stop has come since the action was let
+    /// through — and refuses secret fields itself.
     #[serde(rename_all = "camelCase")]
     Act {
         pid: u32,
@@ -131,6 +132,10 @@ pub enum HelperOp {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         app_key: Option<String>,
         action: WindowAction,
+        /// In the background, or with the window brought to the front for
+        /// it.
+        #[serde(default)]
+        delivery: ActDelivery,
     },
     /// The person pressed Stop — codeg's `stop`-th — or codeg is closing the
     /// helper ([`STOP_ALL`]): kill the driver started for a request from
@@ -194,7 +199,8 @@ pub enum DriverTarget {
 }
 
 /// One action on one window: the closed list the helper translates into
-/// driver calls. Always delivered in the background.
+/// driver calls. Delivered as its [`HelperOp::Act`] says — in the background
+/// unless the person allows the front and it was asked for.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum WindowAction {
@@ -675,10 +681,26 @@ mod tests {
             started_at: 1,
             app_key: None,
             action: WindowAction::Restore,
+            delivery: ActDelivery::Background,
         };
         let wire = serde_json::to_value(&restore).unwrap();
         assert_eq!(wire["action"], serde_json::json!({ "kind": "restore" }));
+        assert_eq!(wire["delivery"], "background");
         assert_eq!(serde_json::from_value::<HelperOp>(wire).unwrap(), restore);
+
+        // The front, said as the driver says it; and an act that does not
+        // say goes in the background.
+        let front = HelperOp::Act {
+            delivery: ActDelivery::Foreground,
+            ..restore.clone()
+        };
+        assert_eq!(
+            serde_json::to_value(&front).unwrap()["delivery"],
+            "foreground"
+        );
+        let mut unsaid = serde_json::to_value(&restore).unwrap();
+        unsaid.as_object_mut().unwrap().remove("delivery");
+        assert_eq!(serde_json::from_value::<HelperOp>(unsaid).unwrap(), restore);
 
         assert!(serde_json::from_value::<HelperOp>(serde_json::json!({
             "kind": "callTool",

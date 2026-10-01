@@ -13,7 +13,7 @@ use super::protocol::{
     HelperError, HelperErrorCode, OsPermission, PeerCheck, PermissionAsked, PermissionReport,
     RawAct, RawApp, RawCapture, RawSnapshot, RawVerify, RawWindow, WindowAction,
 };
-use super::types::VerifyRequest;
+use super::types::{ActDelivery, VerifyRequest};
 
 /// Why an action was refused, or did not happen, at the helper or the driver.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -191,11 +191,14 @@ pub trait ComputerBackend: Send + Sync {
         request: VerifyRequest,
     ) -> Result<RawVerify, BackendError>;
 
-    /// Act on one window, in the background. The caller has checked the
-    /// grant, having counted `stop` Stops before it did; the backend checks,
-    /// at the moment of delivery, what it can see — that `pid` is still the
-    /// process that started at `started_at`, that the session is not locked,
-    /// that no later Stop has been [`halt`](Self::halt)ed.
+    /// Act on one window, delivered as `delivery` says: in the background,
+    /// or with the window brought to the front for it. The caller has
+    /// checked the grant — and that the person allows the front, if that is
+    /// the delivery — having counted `stop` Stops before it did; the backend
+    /// checks, at the moment of delivery, what it can see — that `pid` is
+    /// still the process that started at `started_at`, that the session is
+    /// not locked, that no later Stop has been [`halt`](Self::halt)ed.
+    #[allow(clippy::too_many_arguments)]
     async fn act(
         &self,
         pid: u32,
@@ -203,6 +206,7 @@ pub trait ComputerBackend: Send + Sync {
         started_at: u64,
         app_key: Option<String>,
         action: WindowAction,
+        delivery: ActDelivery,
         stop: u64,
     ) -> Result<RawAct, BackendError>;
 

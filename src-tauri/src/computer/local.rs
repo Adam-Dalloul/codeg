@@ -46,7 +46,7 @@ use super::protocol::{
     RawCapture, RawSnapshot, RawVerify, RawWindow, WindowAction, PROTOCOL_VERSION,
     SOURCE_FINGERPRINT, STOP_ALL,
 };
-use super::types::VerifyRequest;
+use super::types::{ActDelivery, VerifyRequest};
 
 /// The helper's designated requirement, compiled into release builds.
 pub const HELPER_REQUIREMENT: Option<&str> = option_env!("CODEG_COMPUTER_HELPER_REQUIREMENT");
@@ -624,6 +624,7 @@ impl ComputerBackend for LocalBackend {
         .await
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn act(
         &self,
         pid: u32,
@@ -631,6 +632,7 @@ impl ComputerBackend for LocalBackend {
         started_at: u64,
         app_key: Option<String>,
         action: WindowAction,
+        delivery: ActDelivery,
         stop: u64,
     ) -> Result<RawAct, BackendError> {
         let stopped = || {
@@ -658,6 +660,7 @@ impl ComputerBackend for LocalBackend {
                     started_at,
                     app_key,
                     action,
+                    delivery,
                 },
                 stop,
             )

@@ -147,6 +147,8 @@ function primeBackend(
     blocklistDefaults: [],
     stopShortcut: "Control+Alt+Escape",
     showIndicator: true,
+    allowForeground: false,
+    defaultDelivery: "background",
   })
   mockSetComputer.mockImplementation(async (enabled) => ({
     enabled,
@@ -156,6 +158,8 @@ function primeBackend(
     blocklistDefaults: [],
     stopShortcut: "Control+Alt+Escape",
     showIndicator: true,
+    allowForeground: false,
+    defaultDelivery: "background",
   }))
 }
 
@@ -583,6 +587,8 @@ describe("AgentToolsSettingsSection", () => {
               blocklistDefaults: [],
               stopShortcut: "",
               showIndicator: true,
+              allowForeground: false,
+              defaultDelivery: "background",
             })
         })
     )

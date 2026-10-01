@@ -1077,7 +1077,9 @@ impl DelegationListener {
                 crate::acp::computer_tools::no_such_target_note(&req.target_id),
             );
         }
-        self.computer.act(&req.target_id, req.request).await
+        self.computer
+            .act(&req.target_id, req.request, req.delivery)
+            .await
     }
 
     /// Validate the token and hand the progress report to the task engine,
@@ -3780,12 +3782,13 @@ mod tests {
             &self,
             target_id: &str,
             request: crate::computer::types::ComputerActRequest,
+            delivery: Option<crate::computer::types::ActDelivery>,
         ) -> ComputerActOutcome {
             let kind = serde_json::to_value(&request).unwrap()["kind"].clone();
-            self.calls
-                .lock()
-                .await
-                .push(format!("act {target_id} {}", kind.as_str().unwrap_or("?")));
+            self.calls.lock().await.push(format!(
+                "act {target_id} {} {delivery:?}",
+                kind.as_str().unwrap_or("?")
+            ));
             ComputerActOutcome::refused(
                 target_id,
                 crate::acp::computer_tools::ERROR_CONTROL_REQUIRED,
@@ -3884,6 +3887,8 @@ mod tests {
                     },
                     value: "x".into(),
                 },
+                // Passed on as asked; whether it may be is the service's call.
+                delivery: Some(crate::computer::types::ActDelivery::Foreground),
             }),
         )
         .await;
@@ -3896,7 +3901,7 @@ mod tests {
                 "capture w7 Some(800)".to_string(),
                 "snapshot w7 Some(0)".to_string(),
                 "verify w7 1".to_string(),
-                "act w7 setValue".to_string(),
+                "act w7 setValue Some(Foreground)".to_string(),
             ]
         );
     }
@@ -3941,6 +3946,7 @@ mod tests {
                     },
                     repeat: 1,
                 },
+                delivery: None,
             }),
         )
         .await;
