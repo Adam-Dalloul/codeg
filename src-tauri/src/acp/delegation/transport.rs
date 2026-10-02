@@ -377,7 +377,8 @@ pub struct BrokerComputerVerifyRequest {
 
 /// One action on a window shared for control. Backs `computer_click`,
 /// `computer_drag`, `computer_scroll`, `computer_type`, `computer_press_key`,
-/// `computer_hold_key`, `computer_set_value` and `computer_restore`; every
+/// `computer_hold_key`, `computer_set_value`, `computer_restore` and
+/// `computer_invoke_menu`; every
 /// check happens behind it, in `commands::computer`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BrokerComputerActRequest {

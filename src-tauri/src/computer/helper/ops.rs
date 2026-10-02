@@ -17,7 +17,10 @@ use serde_json::{json, Map, Value};
 use super::act::{ElementFacts, SnapshotFacts};
 use super::driver_proc::DriverProc;
 use super::mcp::ToolCallResult;
-use super::tree::{is_masked, names_a_secret, redact_secrets, TreeNode};
+use super::tree::{
+    is_masked, names_a_secret, redact_secrets, without_app_menus, AppMenus, Dialect, TreeNode,
+    APP_MENU_ROLES,
+};
 use crate::computer::procinfo::process_start;
 use crate::computer::protocol::{
     HelperError, HelperErrorCode, OsPermission, RawApp, RawCapture, RawSnapshot, RawVerify,
@@ -746,6 +749,7 @@ pub async fn snapshot(
     max_depth: Option<u32>,
     max_elements: Option<u32>,
     query: Option<String>,
+    app_menus: bool,
 ) -> Result<(RawSnapshot, Option<SnapshotFacts>), HelperError> {
     let mut args = json!({
         "pid": pid,
@@ -768,12 +772,48 @@ pub async fn snapshot(
         .get("tree_markdown")
         .and_then(Value::as_str)
         .ok_or_else(|| HelperError::failed("get_window_state answered without a tree"))?;
-    let redacted = redact_secrets(tree);
+    // Without its application's menu bars unless the application is shared
+    // as a whole — and then without the Apple menu and the application menu:
+    // not shown, and nothing in them can be acted on. By where the tree puts
+    // them, and — for a window shared on its own — by their roles wherever
+    // it puts them.
+    let protected = if app_menus {
+        protected_menu_titles(pid).await
+    } else {
+        None
+    };
+    // Where the titles cannot be had, nothing of the menu bars is kept.
+    let keep = match &protected {
+        Some(protected) => AppMenus::Own { protected },
+        None => AppMenus::Withheld,
+    };
+    let (kept, withheld) = without_app_menus(tree, Dialect::current(), keep);
+    let redacted = redact_secrets(&kept);
+    let listed = meta.get("elements").map(|elements| {
+        if Dialect::current() != Dialect::Mac {
+            return elements.clone();
+        }
+        let in_reach = |element: &&Value| {
+            let index = element.get("element_index").and_then(Value::as_u64);
+            let role = element.get("role").and_then(Value::as_str).unwrap_or("");
+            !index.is_some_and(|i| u32::try_from(i).is_ok_and(|i| withheld.contains(&i)))
+                && (keep != AppMenus::Withheld || !APP_MENU_ROLES.contains(&role))
+        };
+        Value::Array(
+            elements
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter(in_reach)
+                .cloned()
+                .collect(),
+        )
+    });
     // No id when the driver kept no snapshot of the window (it could not
     // match its accessibility surface): the tree is still worth reading, and
     // nothing in it can be acted on.
     let snapshot_id = string(meta, "snapshot_id");
-    let (refs, elements) = element_refs(&redacted.nodes, meta.get("elements"));
+    let (refs, elements) = element_refs(&redacted.nodes, listed.as_ref());
     let facts = snapshot_id.clone().map(|id| SnapshotFacts {
         snapshot_id: id,
         elements,
@@ -796,6 +836,19 @@ pub async fn snapshot(
         refs,
     };
     Ok((raw, facts))
+}
+
+/// The titles of the Apple menu and the application menu of `pid` (macOS):
+/// what an application shared as a whole still does not reach.
+#[cfg(target_os = "macos")]
+async fn protected_menu_titles(pid: u32) -> Option<[String; 2]> {
+    super::axwin::protected_menu_titles(pid).await
+}
+
+/// Elsewhere a window's menus are its own (see `without_app_menus`).
+#[cfg(not(target_os = "macos"))]
+async fn protected_menu_titles(_pid: u32) -> Option<[String; 2]> {
+    None
 }
 
 /// The elements of a snapshot that can be acted on, and what is known of each.
@@ -850,12 +903,31 @@ fn element_refs(
             ElementFacts {
                 role: role.to_string(),
                 secret,
+                paste: names_a_paste_control(role, text("label")),
                 frame: element_frame(element),
             },
         );
     }
     refs.sort_by_key(|r| r.offset);
     (refs, facts)
+}
+
+/// Whether an element is a menu command or a button named for pasting: one
+/// pressed writes the person's clipboard into the window, as ⌘V / Ctrl+V
+/// does. Roles as the three platforms' trees spell them.
+fn names_a_paste_control(role: &str, label: &str) -> bool {
+    // Exactly these: a tab is a radio button, and "Pastebin" one to select.
+    const PRESSED: &[&str] = &[
+        "axmenuitem",
+        "axbutton",
+        "menuitem",
+        "button",
+        "splitbutton",
+        "menu item",
+        "push button",
+    ];
+    PRESSED.contains(&role.to_ascii_lowercase().as_str())
+        && crate::computer::keys::names_paste(label)
 }
 
 /// The driver's `frame` of one element (`{x, y, w, h}`, in desktop units),
@@ -1377,6 +1449,32 @@ mod tests {
         assert!(facts[&4].secret);
         // No structured list: nothing to offer.
         assert!(element_refs(&redacted.nodes, None).0.is_empty());
+    }
+
+    /// A control is a paste's when it is pressed to do something — a menu
+    /// item or a button, on each platform — and named for pasting; a tab
+    /// named "Pastebin" is selected, not pressed.
+    #[test]
+    fn a_paste_control_is_a_pressed_one_named_for_pasting() {
+        for (role, label) in [
+            ("AXMenuItem", "Paste and Match Style"),
+            ("AXButton", "Paste"),
+            ("MenuItem", "Paste"),
+            ("SplitButton", "Einfügen"),
+            ("menu item", "Paste"),
+            ("push button", "Coller"),
+        ] {
+            assert!(names_a_paste_control(role, label), "{role} {label}");
+        }
+        for (role, label) in [
+            ("AXRadioButton", "Pastebin"),
+            ("RadioButton", "Paste"),
+            ("AXMenuItem", "Copy"),
+            ("AXStaticText", "Paste"),
+            ("toggle button", "Paste"),
+        ] {
+            assert!(!names_a_paste_control(role, label), "{role} {label}");
+        }
     }
 
     /// An element's frame is kept when the driver gave all of it, with an

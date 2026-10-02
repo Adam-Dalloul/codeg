@@ -9,6 +9,12 @@
 //! field (select all, copy, cut, undo, redo, find, moving by word or line) —
 //! and everything else is refused as needing more than one window.
 //!
+//! An application shared as a whole reaches further: every chord it takes —
+//! its menu commands, ⌘W and ⌘Q among them — but still not the desktop's
+//! own (switching applications, the launcher, the screenshot keys, locking
+//! the screen or logging out, forcing applications to quit, moving between
+//! desktops), which reach past any one application ([`classify_for_app`]).
+//!
 //! **Paste is its own case.** ⌘V writes the clipboard into a window the agent
 //! can read, and the clipboard is the user's: what they last copied from a
 //! password manager is exactly what would come back in the next snapshot. A
@@ -329,6 +335,122 @@ pub fn classify(chord: &Chord, platform: Platform) -> ChordClass {
     }
 }
 
+/// Judge `chord` for a grant on a whole application: every chord the
+/// application takes, except a paste (see the module note) and the
+/// desktop's own shortcuts ([`desktop_chord`]), which stay [`ChordClass::Beyond`].
+pub fn classify_for_app(chord: &Chord, platform: Platform) -> ChordClass {
+    if classify(chord, platform) == ChordClass::Paste {
+        ChordClass::Paste
+    } else if desktop_chord(chord, platform) {
+        ChordClass::Beyond
+    } else {
+        ChordClass::Window
+    }
+}
+
+/// The desktop's own shortcuts on `platform`, which no application grant
+/// reaches: they switch applications, open the launcher, take screenshots,
+/// lock the screen or log out, force applications to quit, or move between
+/// desktops.
+fn desktop_chord(chord: &Chord, platform: Platform) -> bool {
+    let Chord { key, modifiers: m } = *chord;
+    match platform {
+        Platform::Mac => {
+            let (cmd, ctrl, opt, shift) = (m.meta, m.control, m.alt, m.shift);
+            // ⌘Tab; Spotlight (⌘Space, ⌥⌘Space), the input sources (⌃Space)
+            // and the character viewer (⌃⌘Space).
+            (cmd && key == Key::Tab)
+                || (key == Key::Space && (cmd || ctrl))
+                // Screenshots: ⇧⌘3 to ⇧⌘6, with ⌃ to the clipboard.
+                || (cmd && shift && matches!(key, Key::Char('3' | '4' | '5' | '6')))
+                // Lock the screen (⌃⌘Q), log out (⇧⌘Q), Force Quit (⌥⌘Esc).
+                || (cmd && ctrl && key == Key::Char('q'))
+                || (cmd && shift && key == Key::Char('q'))
+                || (cmd && opt && key == Key::Escape)
+                // The Dock (⌥⌘D), hiding every other application (⌥⌘H).
+                || (cmd && opt && matches!(key, Key::Char('d' | 'h')))
+                // Mission Control and the desktops (⌃ and an arrow), keyboard
+                // access to the menu bar, the Dock and the rest (⌃F1–F12),
+                // VoiceOver (⌘F5), Show Desktop (F11).
+                || (ctrl && (key.is_arrow() || matches!(key, Key::F(_))))
+                || (cmd && key == Key::F(5))
+                || (!cmd && !ctrl && !opt && key == Key::F(11))
+        }
+        // The Windows key; switching (Alt+Tab, Alt+Esc); Start (Ctrl+Esc) and
+        // the Task Manager (Ctrl+Shift+Esc); Ctrl+Alt with anything — the
+        // secure attention keys, the display's rotation, and AltGr's
+        // characters, which are typed with computer_type.
+        Platform::Windows => {
+            m.meta
+                || (m.alt && matches!(key, Key::Tab | Key::Escape))
+                || (m.control && key == Key::Escape)
+                || (m.control && m.alt)
+        }
+        // Super; switching (Alt+Tab, Alt+`, Alt+Esc); the launcher or the
+        // process monitor (Ctrl+Esc); the window manager's Alt+F-keys (the
+        // activities, the run dialog, moving and resizing) but Alt+F4, which
+        // closes the application's own window; Ctrl+Alt with anything — a
+        // terminal, the lock screen, logging out, the workspaces, the text
+        // consoles.
+        Platform::Linux => {
+            m.meta
+                || (m.alt && matches!(key, Key::Tab | Key::Escape | Key::Char('`')))
+                || (m.control && key == Key::Escape)
+                || (m.alt && matches!(key, Key::F(n) if n != 4))
+                || (m.control && m.alt)
+        }
+    }
+}
+
+/// [`pointer_modifiers_allowed`] for a grant on the whole application: Option
+/// too on a Mac — what it reaches beyond the window is the application's —
+/// and still never the Windows / Super key elsewhere.
+pub fn pointer_modifiers_allowed_for_app(modifiers: Modifiers, platform: Platform) -> bool {
+    !modifiers.meta || platform == Platform::Mac
+}
+
+/// Words a control's title uses for pasting, in the languages applications
+/// commonly come in. Matched anywhere in a title, case aside: "Paste and
+/// Match Style" is a paste too. Some of them also mean "insert" in their
+/// language, and refusing an Insert menu there is the safe side.
+const PASTE_WORDS: &[&str] = &[
+    "paste",
+    "粘贴",
+    "貼上",
+    "ペースト",
+    "貼り付け",
+    "붙여넣기",
+    "pegar",
+    "coller",
+    "colar",
+    "einsetzen",
+    "einfügen",
+    "incolla",
+    "plakken",
+    "вставить",
+    "вставка",
+    "لصق",
+    "yapıştır",
+    "wklej",
+    "klistra in",
+    "indsæt",
+    "lim inn",
+    "liitä",
+    "vložit",
+    "beilleszt",
+    "lipește",
+    "הדבק",
+    "tempel",
+];
+
+/// Whether a menu command or a control is named for pasting — which writes
+/// the person's clipboard into a window, as ⌘V / Ctrl+V does (see the module
+/// note).
+pub fn names_paste(title: &str) -> bool {
+    let title = title.to_lowercase();
+    PASTE_WORDS.iter().any(|word| title.contains(word))
+}
+
 /// Whether a window grant reaches `modifiers` held during a click or a drag
 /// on `platform`: Shift and Control everywhere — a click with them stays the
 /// window's own (extending a selection, a context click). On a Mac Command
@@ -396,6 +518,144 @@ mod tests {
             m(&["super", "shift"]),
             Platform::Linux
         ));
+    }
+
+    /// An application grant takes the application's own chords — menu
+    /// commands, closing and quitting — and never the desktop's, nor a paste.
+    #[test]
+    fn an_application_grant_takes_its_chords_but_not_the_desktops() {
+        let app = |key: &str, modifiers: &[&str], platform: Platform| {
+            classify_for_app(&chord(key, modifiers), platform)
+        };
+        for (key, modifiers) in [
+            ("q", &["cmd"][..]),
+            ("w", &["cmd"]),
+            ("n", &["cmd", "shift"]),
+            (",", &["cmd"]),
+            ("`", &["cmd"]),
+            ("h", &["cmd"]),
+            ("f", &["cmd", "ctrl"]),
+            ("f3", &[]),
+            ("delete", &["cmd"]),
+        ] {
+            assert_eq!(
+                app(key, modifiers, Platform::Mac),
+                ChordClass::Window,
+                "{key} {modifiers:?}"
+            );
+        }
+        for (key, modifiers) in [
+            ("tab", &["cmd"][..]),
+            ("tab", &["cmd", "shift"]),
+            ("space", &["cmd"]),
+            ("space", &["cmd", "alt"]),
+            ("space", &["ctrl"]),
+            ("4", &["cmd", "shift"]),
+            ("4", &["cmd", "shift", "ctrl"]),
+            ("q", &["cmd", "ctrl"]),
+            ("q", &["cmd", "shift"]),
+            ("escape", &["cmd", "alt"]),
+            ("h", &["cmd", "alt"]),
+            ("d", &["cmd", "alt"]),
+            ("left", &["ctrl"]),
+            ("up", &["ctrl"]),
+            ("f2", &["ctrl"]),
+            ("f5", &["cmd"]),
+            ("f11", &[]),
+        ] {
+            assert_eq!(
+                app(key, modifiers, Platform::Mac),
+                ChordClass::Beyond,
+                "{key} {modifiers:?}"
+            );
+        }
+        for platform in [Platform::Windows, Platform::Linux] {
+            for (key, modifiers) in [
+                ("w", &["ctrl"][..]),
+                ("q", &["ctrl"]),
+                ("n", &["ctrl", "shift"]),
+                ("f4", &["alt"]),
+                ("f", &["alt"]),
+                ("f5", &[]),
+                ("left", &["ctrl"]),
+            ] {
+                assert_eq!(
+                    app(key, modifiers, platform),
+                    ChordClass::Window,
+                    "{platform:?} {key} {modifiers:?}"
+                );
+            }
+            for (key, modifiers) in [
+                ("tab", &["alt"][..]),
+                ("escape", &["alt"]),
+                ("escape", &["ctrl"]),
+                ("escape", &["ctrl", "shift"]),
+                ("delete", &["ctrl", "alt"]),
+                ("t", &["ctrl", "alt"]),
+                ("l", &["win"]),
+                ("d", &["super"]),
+            ] {
+                assert_eq!(
+                    app(key, modifiers, platform),
+                    ChordClass::Beyond,
+                    "{platform:?} {key} {modifiers:?}"
+                );
+            }
+        }
+        assert_eq!(app("f2", &["alt"], Platform::Linux), ChordClass::Beyond);
+        assert_eq!(app("`", &["alt"], Platform::Linux), ChordClass::Beyond);
+        assert_eq!(app("f2", &["alt"], Platform::Windows), ChordClass::Window);
+        assert_eq!(app("v", &["cmd"], Platform::Mac), ChordClass::Paste);
+        assert_eq!(app("v", &["ctrl"], Platform::Windows), ChordClass::Paste);
+        assert_eq!(
+            app("v", &["ctrl", "shift"], Platform::Linux),
+            ChordClass::Paste
+        );
+    }
+
+    /// Option over the pointer reaches the application's other windows,
+    /// which an application grant covers; the desktop's key never.
+    #[test]
+    fn an_application_grant_takes_option_over_the_pointer() {
+        let m = |names: &[&str]| Modifiers::parse(names).unwrap();
+        assert!(pointer_modifiers_allowed_for_app(
+            m(&["option", "cmd"]),
+            Platform::Mac
+        ));
+        assert!(pointer_modifiers_allowed_for_app(
+            m(&["alt"]),
+            Platform::Windows
+        ));
+        assert!(!pointer_modifiers_allowed_for_app(
+            m(&["win"]),
+            Platform::Windows
+        ));
+        assert!(!pointer_modifiers_allowed_for_app(
+            m(&["super"]),
+            Platform::Linux
+        ));
+    }
+
+    /// A title is a paste's in any of the languages listed, wherever the
+    /// word sits in it.
+    #[test]
+    fn paste_is_known_by_its_name() {
+        for title in [
+            "Paste",
+            "Paste and Match Style",
+            "  paste special…",
+            "粘贴并匹配样式",
+            "貼上",
+            "ペースト",
+            "Einsetzen",
+            "Coller",
+            "Вставить",
+        ] {
+            assert!(names_paste(title), "{title}");
+        }
+        for title in ["Copy", "Cut", "Close", "Select All", "复制", "Kopieren"] {
+            assert!(!names_paste(title), "{title}");
+        }
     }
 
     /// Keys are held over a drag only where the driver holds them.

@@ -5218,7 +5218,8 @@
     "shared": {
       "title": "{count, plural, =0 {Aucune fenêtre partagée} one {# fenêtre partagée} other {# fenêtres partagées}}",
       "empty": "Les agents peuvent lister vos fenêtres, mais n'en lire aucune tant que vous n'en partagez pas une.",
-      "stop": "Arrêter"
+      "stop": "Arrêter",
+      "wholeApp": "Toute l'app · {count, plural, =0 {aucune fenêtre ouverte} one {# fenêtre} other {# fenêtres}}"
     },
     "level": {
       "read": "Peut lire",
@@ -5241,6 +5242,7 @@
       "hold-key": "Touche maintenue",
       "set-value": "Valeur",
       "restore": "Restaurer",
+      "menu": "Menu",
       "outcome": {
         "done": "fait",
         "refused": "refusé",
@@ -5274,6 +5276,10 @@
       "levelRead": "Lire",
       "levelControl": "Agir",
       "levelLabel": "Ce que les agents peuvent faire avec {app}",
+      "wholeApp": "Toute l'app",
+      "wholeAppHint": "Toutes les fenêtres de {app}, y compris celles ouvertes plus tard, ainsi que ses menus et raccourcis",
+      "appLevelLabel": "Ce que les agents peuvent faire avec tout {app}",
+      "viaApp": "Avec l'app",
       "shareAll": "Tout partager",
       "shareAllRead": "Laisser les agents toutes les lire",
       "shareAllControl": "Laisser les agents toutes les lire et agir dessus",

@@ -840,11 +840,20 @@ async fn handle_op(
             max_depth,
             max_elements,
             query,
+            app_menus,
         } => {
             state.require(OsPermission::Accessibility).await?;
             let driver = state.driver(stop).await?;
-            let (raw, facts) =
-                ops::snapshot(&driver, pid, window_id, max_depth, max_elements, query).await?;
+            let (raw, facts) = ops::snapshot(
+                &driver,
+                pid,
+                window_id,
+                max_depth,
+                max_elements,
+                query,
+                app_menus,
+            )
+            .await?;
             state.snapshots().record(pid, window_id, facts);
             value(raw)
         }

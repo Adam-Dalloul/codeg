@@ -118,6 +118,19 @@ export async function computerShareWindows(
   return getTransport().call("computer_share_windows", { targetIds, level })
 }
 
+/** Share an application as a whole at `level`, or end its share at `none`:
+ *  the one a window is of, or one already shared, by its share's id. */
+export async function computerShareApp(
+  app: { targetId: string } | { appId: string },
+  level: GrantLevel
+): Promise<ComputerStatePayload> {
+  return getTransport().call("computer_share_app", {
+    targetId: "targetId" in app ? app.targetId : null,
+    appId: "appId" in app ? app.appId : null,
+    level,
+  })
+}
+
 export async function computerRevokeAll(): Promise<void> {
   return getTransport().call("computer_revoke_all", {})
 }

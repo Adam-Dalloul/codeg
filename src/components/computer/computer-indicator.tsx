@@ -28,7 +28,7 @@ import {
 } from "@/lib/computer/computer-api"
 import {
   computerStoreMark,
-  setComputerSharedSince,
+  setComputerStateSince,
   useComputerStore,
 } from "@/lib/computer/computer-store"
 import { stopShortcutLabel } from "@/lib/computer/stop-shortcut"
@@ -53,6 +53,7 @@ const ACTIONS: ReadonlySet<ComputerAction> = new Set([
   "hold-key",
   "set-value",
   "restore",
+  "menu",
 ])
 
 /** Painted before any script runs, so the window never flashes a
@@ -62,7 +63,7 @@ const TRANSPARENT = "html,body{background:transparent!important}"
 export function ComputerIndicator() {
   const t = useTranslations("ComputerUse")
   const isMac = useIsMac()
-  const { shared, sharedKnown, activity } = useComputerStore()
+  const { shared, sharedApps, sharedKnown, activity } = useComputerStore()
   const stopKey = useComputerStopKey()
   const [stopping, setStopping] = useState(false)
   const [now, setNow] = useState(() => Date.now())
@@ -72,7 +73,7 @@ export function ComputerIndicator() {
   useEffect(() => {
     const mark = computerStoreMark()
     computerSharedState()
-      .then((s) => setComputerSharedSince(s.shared, mark))
+      .then((s) => setComputerStateSince(s, mark))
       .catch(() => {})
   }, [])
 
@@ -127,20 +128,35 @@ export function ComputerIndicator() {
     }
   }
 
-  const controlled = shared.filter((w) => w.level === "control")
+  // What is shared, as the person shared it: each application shared as a
+  // whole once — open windows or not — and each window shared on its own.
+  const units = [
+    ...sharedApps.map((a) => ({
+      name: a.appName,
+      level: a.level,
+      windows: a.windows,
+    })),
+    ...shared
+      .filter((w) => !w.wholeApp)
+      .map((w) => ({ name: w.appName, level: w.level, windows: 1 })),
+  ]
+  const controlled = units.filter((u) => u.level === "control")
   const acting = controlled.length > 0
-  const subject = acting ? controlled : shared
+  const subject = acting ? controlled : units
   const appOf = (targetId: string) =>
     shared.find((w) => w.targetId === targetId)?.appName
 
   let summary: string | null = null
   if (subject.length === 1)
     summary = t(acting ? "indicator.actOne" : "indicator.readOne", {
-      app: subject[0].appName,
+      app: subject[0].name,
     })
   else if (subject.length > 1)
     summary = t(acting ? "indicator.actMany" : "indicator.readMany", {
-      count: subject.length,
+      count: Math.max(
+        subject.reduce((n, u) => n + u.windows, 0),
+        subject.length
+      ),
     })
 
   const recentApp = recent ? appOf(recent.targetId) : undefined
@@ -190,7 +206,7 @@ export function ComputerIndicator() {
         )}
         {/* Nothing left to stop once a Stop has ended every sharing: the
             strip is on its way down then, and says nothing more. */}
-        {(!sharedKnown || shared.length > 0) && (
+        {(!sharedKnown || units.length > 0) && (
           <Button
             size="xs"
             variant="destructive"

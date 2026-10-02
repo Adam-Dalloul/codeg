@@ -35,6 +35,10 @@ pub enum ActRefusal {
     SecretField,
     /// Allowed, and it did not happen.
     Failed,
+    /// A paste by another route than a key (`HelperErrorCode::PasteRefused`).
+    Paste,
+    /// Past the application shared (`HelperErrorCode::BeyondApp`).
+    Beyond,
 }
 
 /// Why a backend call did not produce an answer.
@@ -104,6 +108,8 @@ impl From<HelperError> for BackendError {
                 BackendError::Refused(ActRefusal::SecretField, e.message)
             }
             HelperErrorCode::ActionFailed => BackendError::Refused(ActRefusal::Failed, e.message),
+            HelperErrorCode::PasteRefused => BackendError::Refused(ActRefusal::Paste, e.message),
+            HelperErrorCode::BeyondApp => BackendError::Refused(ActRefusal::Beyond, e.message),
         }
     }
 }
@@ -145,6 +151,9 @@ pub struct SnapshotOptions {
     pub max_depth: Option<u32>,
     pub max_elements: Option<u32>,
     pub query: Option<String>,
+    /// Read the application's menu bars too (macOS): for a window shared
+    /// with its whole application.
+    pub app_menus: bool,
 }
 
 #[async_trait]

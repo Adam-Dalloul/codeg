@@ -5218,7 +5218,8 @@
     "shared": {
       "title": "{count, plural, =0 {共有中のウィンドウなし} other {# 個のウィンドウを共有中}}",
       "empty": "エージェントはウィンドウを一覧できますが、あなたが共有するまでどれも読めません。",
-      "stop": "停止"
+      "stop": "停止",
+      "wholeApp": "アプリ全体 · {count, plural, =0 {開いているウィンドウなし} other {# 個のウィンドウ}}"
     },
     "level": {
       "read": "読み取り可",
@@ -5241,6 +5242,7 @@
       "hold-key": "キー長押し",
       "set-value": "値の設定",
       "restore": "復元",
+      "menu": "メニュー",
       "outcome": {
         "done": "完了",
         "refused": "拒否",
@@ -5274,6 +5276,10 @@
       "levelRead": "読み取り",
       "levelControl": "操作",
       "levelLabel": "{app} に対してエージェントができること",
+      "wholeApp": "アプリ全体",
+      "wholeAppHint": "{app} のすべてのウィンドウ（あとで開くものも含む）と、そのメニューやショートカット",
+      "appLevelLabel": "{app} 全体に対してエージェントができること",
+      "viaApp": "アプリごと共有",
       "shareAll": "すべて共有",
       "shareAllRead": "すべてエージェントに読み取りを許可",
       "shareAllControl": "すべてエージェントに読み取りと操作を許可",

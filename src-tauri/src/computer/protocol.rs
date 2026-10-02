@@ -43,7 +43,7 @@ use super::types::{
 /// Bumped whenever a frame changes shape. The helper ships in the same bundle
 /// as codeg, so a mismatch means a broken install (a helper left behind by a
 /// partial update), and codeg refuses to talk to it rather than guess.
-pub const PROTOCOL_VERSION: u32 = 10;
+pub const PROTOCOL_VERSION: u32 = 11;
 
 /// A fingerprint of the sources the helper is built from, the same in codeg
 /// and the helper when both are built from one tree (see `build.rs`). The
@@ -113,6 +113,12 @@ pub enum HelperOp {
         max_elements: Option<u32>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         query: Option<String>,
+        /// macOS: keep the application's menu bars in the tree, and their
+        /// elements actionable — for an application shared as a whole. A
+        /// window shared on its own is read without them: they act on the
+        /// whole application.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        app_menus: bool,
     },
     #[serde(rename_all = "camelCase")]
     Verify {
@@ -262,6 +268,11 @@ pub enum WindowAction {
     /// Linux the driver's, which can only do it by bringing the window to
     /// the front — so there it goes only with [`ActDelivery::Foreground`].
     Restore,
+    /// Choose a command from the application's menus, by the titles on the
+    /// way to it. The driver's, with the application brought to the front
+    /// for it (macOS and Linux).
+    #[serde(rename_all = "camelCase")]
+    InvokeMenu { path: Vec<String> },
 }
 
 impl WindowAction {
@@ -681,6 +692,12 @@ pub enum HelperErrorCode {
     /// The action was allowed and did not happen: a disabled control, no such
     /// option, more text than one call can type.
     ActionFailed,
+    /// A paste by another route — a menu command or a control named for
+    /// pasting: it would write the person's clipboard into the window.
+    PasteRefused,
+    /// A menu that reaches past the application shared: the Apple menu and
+    /// the application menu.
+    BeyondApp,
 }
 
 impl HelperError {

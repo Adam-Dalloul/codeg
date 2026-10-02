@@ -21,6 +21,7 @@ const api = vi.hoisted(() => ({
   computerRevealHelper: vi.fn(async () => {}),
   computerShareWindow: vi.fn(),
   computerShareWindows: vi.fn(),
+  computerShareApp: vi.fn(),
   computerRevokeAll: vi.fn(),
   computerStop: vi.fn(async () => {}),
   computerListShareableWindows: vi.fn(),
@@ -329,6 +330,39 @@ describe("StatusBarComputer", () => {
     fireEvent.click(screen.getByRole("button", { name: "Stop" }))
     await waitFor(() =>
       expect(api.computerShareWindow).toHaveBeenCalledWith("w4", "none")
+    )
+  })
+
+  /** An application shared as a whole is one row — its windows are not
+   * listed again — and stopping it ends its share. */
+  it("lists an application shared as a whole once, and stops it", async () => {
+    const viaApp = { ...controlled, wholeApp: true, appId: "a1" }
+    const shared = [viaApp, { ...viaApp, targetId: "w5", title: "todo.txt" }]
+    api.computerSharedState.mockResolvedValue({
+      shared,
+      apps: [
+        {
+          appId: "a1",
+          appName: "TextEdit",
+          appKey: "com.apple.TextEdit",
+          level: "control",
+          grantedAt: 1,
+          lastUsedAt: 1,
+          windows: 2,
+        },
+      ],
+    })
+    api.computerStatus.mockResolvedValue(status({ shared }))
+    api.computerShareApp.mockResolvedValue({ shared: [], apps: [] })
+    mount()
+    const trigger = await screen.findByRole("button", { name: "Computer use" })
+    await waitFor(() => expect(trigger.title).toContain("2 windows shared"))
+    fireEvent.click(trigger)
+    expect(await screen.findByText("Whole app · 2 windows")).toBeInTheDocument()
+    expect(screen.queryByText("notes.txt")).toBeNull()
+    fireEvent.click(screen.getByRole("button", { name: "Stop" }))
+    await waitFor(() =>
+      expect(api.computerShareApp).toHaveBeenCalledWith({ appId: "a1" }, "none")
     )
   })
 

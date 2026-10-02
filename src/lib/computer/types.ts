@@ -62,6 +62,23 @@ export interface SharedWindow {
   level: GrantLevel
   grantedAt: number
   lastUsedAt: number
+  /** Shared with its whole application ({@link SharedApp}), not on its own. */
+  wholeApp?: boolean
+  /** That application's share, when it is. */
+  appId?: string
+}
+
+/** An application shared as a whole: every window of it, the ones it opens
+ *  later too, its menus and its own shortcuts. */
+export interface SharedApp {
+  appId: string
+  appName: string
+  appKey: string
+  level: GrantLevel
+  grantedAt: number
+  lastUsedAt: number
+  /** How many of its windows are shared with it now. */
+  windows: number
 }
 
 export interface ComputerStatus {
@@ -97,6 +114,10 @@ export interface PickerWindow {
   /** Its application is hidden (macOS ⌘H). */
   hidden: boolean
   level: GrantLevel
+  /** Shared with its whole application, not on its own. */
+  wholeApp?: boolean
+  /** That application's share, when it is. */
+  appId?: string
   notGrantable?: NotGrantable
 }
 
@@ -127,6 +148,7 @@ export type ComputerAction =
   | "hold-key"
   | "set-value"
   | "restore"
+  | "menu"
 export type ActivityOutcome = "done" | "refused" | "failed"
 
 /** `computer://agent-activity` */
@@ -228,9 +250,11 @@ export interface DriverInfo {
   error?: string
 }
 
-/** `computer://state`: every shared window. */
+/** `computer://state`: every shared window, and the applications shared as
+ *  a whole. */
 export interface ComputerStatePayload {
   shared: SharedWindow[]
+  apps?: SharedApp[]
 }
 
 /** Every shared window, whenever any grant changes. Desktop only. */

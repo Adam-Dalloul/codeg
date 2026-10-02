@@ -2,8 +2,8 @@
 //! `computer_list_windows`, `computer_screenshot`, `computer_snapshot`,
 //! `computer_verify`, and the actions `computer_click`, `computer_drag`,
 //! `computer_scroll`, `computer_type`, `computer_press_key`,
-//! `computer_hold_key`, `computer_set_value`, `computer_restore`) carried by
-//! codeg-mcp.
+//! `computer_hold_key`, `computer_set_value`, `computer_restore`,
+//! `computer_invoke_menu`) carried by codeg-mcp.
 //!
 //! The same split as the browser tools: nothing here decides whether a window
 //! may be read. That is `crate::computer::agent` and the target table, and it
@@ -232,7 +232,9 @@ pub fn chord_beyond_note() -> String {
     format!(
         "That key acts on the whole application or on the desktop, which a shared window does \
          not reach, so it was not pressed; retrying will not change it. {} For anything else, \
-         act on an element: computer_click by ref, or computer_set_value.",
+         act on an element: computer_click by ref, or computer_set_value. An application the \
+         user shares as a whole takes its own shortcuts too, and its menus \
+         (computer_invoke_menu) — that is theirs to choose.",
         crate::computer::keys::window_chords_note(crate::computer::keys::Platform::current())
     )
 }
@@ -253,6 +255,33 @@ pub fn reshared_note(target_id: &str) -> String {
          going on."
     )
 }
+
+/// Said when a key is the desktop's own, under a grant on the whole
+/// application.
+pub const DESKTOP_CHORD_NOTE: &str = "That key is the desktop's own — it switches applications, \
+     opens the launcher, takes a screenshot, locks the screen or the like — which not even an \
+     application shared as a whole reaches, so it was not pressed; retrying will not change it.";
+
+/// Said when something only an application shared as a whole allows is
+/// asked of a window shared on its own.
+pub fn app_grant_required_note(target_id: &str) -> String {
+    format!(
+        "Menus act on the whole application, and window {target_id} is shared on its own. Ask \
+         the user to share its application as a whole, for \"Read and act\", in codeg's Computer \
+         use panel — only they can."
+    )
+}
+
+/// Said for a menu command on Windows, whose driver cannot choose one.
+pub const MENUS_UNAVAILABLE_NOTE: &str = "Menus cannot be chosen by title on Windows, so nothing \
+     was sent. Take a computer_snapshot and click the menu, then its item, by ref.";
+
+/// Said when a menu command is asked for and the person does not allow
+/// bringing windows to the front.
+pub const MENU_NEEDS_FRONT_NOTE: &str = "A menu command is chosen with its application brought to \
+     the front, and the user has switched that off in codeg's Computer use settings (\"Let agents \
+     bring windows to the front\"), so nothing was sent. Ask the user whether to switch it back \
+     on — only they can.";
 
 pub const PASTE_NOTE: &str = "Pasting is not available: the clipboard is the user's own, and \
      what is on it may not come from any window you may read. Type the text with computer_type \
@@ -764,6 +793,7 @@ mod tests {
                 on_screen: true,
                 minimized: None,
                 hidden: None,
+                whole_app: false,
                 level: GrantLevel::None,
                 title: None,
                 note: None,

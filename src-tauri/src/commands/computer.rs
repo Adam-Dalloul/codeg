@@ -54,24 +54,25 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
 
 use crate::acp::computer_tools::{
-    background_next_step, blocked_note, chord_beyond_note, control_required_note, cut_away_note,
-    grant_required_note, no_pointing_note, no_such_ref_note, no_such_target_note,
-    not_actionable_note, permission_missing_note, reshared_note, stale_capture_note,
-    stale_snapshot_note, ComputerActOutcome, ComputerAppsOutcome, ComputerCaptureOutcome,
-    ComputerSnapshotOutcome, ComputerToolAccess, ComputerToolsConfig, ComputerToolsRuntimeConfig,
-    ComputerVerifyOutcome, ComputerWindowsOutcome, InputPolicy, SnapshotRequest,
-    DEFAULT_MAX_DIMENSION, DEFAULT_SNAPSHOT_MAX_CHARS, DRAG_MODIFIERS_NOTE, ERROR_ACTION_FAILED,
-    ERROR_BACKGROUND_UNAVAILABLE, ERROR_BLOCKED, ERROR_CONTROL_REQUIRED,
-    ERROR_FOREGROUND_NOT_ALLOWED, ERROR_GRANT_REQUIRED, ERROR_NO_SUCH_TARGET, ERROR_OCCLUDED,
-    ERROR_OUT_OF_TARGET, ERROR_PAUSED, ERROR_PERMISSION_MISSING, ERROR_READ_FAILED,
-    ERROR_STALE_REF, ERROR_STOPPED, ERROR_UNAVAILABLE, FOREGROUND_NOT_ALLOWED_NOTE,
-    NEEDS_ELEMENT_NOTE, NO_DESKTOP_NOTE, OUT_OF_IMAGE_NOTE, PASTE_NOTE, RESTORE_NEEDS_FRONT_NOTE,
-    SECRET_FIELD_NOTE, STOPPED_NOTE,
+    app_grant_required_note, background_next_step, blocked_note, chord_beyond_note,
+    control_required_note, cut_away_note, grant_required_note, no_pointing_note, no_such_ref_note,
+    no_such_target_note, not_actionable_note, permission_missing_note, reshared_note,
+    stale_capture_note, stale_snapshot_note, ComputerActOutcome, ComputerAppsOutcome,
+    ComputerCaptureOutcome, ComputerSnapshotOutcome, ComputerToolAccess, ComputerToolsConfig,
+    ComputerToolsRuntimeConfig, ComputerVerifyOutcome, ComputerWindowsOutcome, InputPolicy,
+    SnapshotRequest, DEFAULT_MAX_DIMENSION, DEFAULT_SNAPSHOT_MAX_CHARS, DESKTOP_CHORD_NOTE,
+    DRAG_MODIFIERS_NOTE, ERROR_ACTION_FAILED, ERROR_BACKGROUND_UNAVAILABLE, ERROR_BLOCKED,
+    ERROR_CONTROL_REQUIRED, ERROR_FOREGROUND_NOT_ALLOWED, ERROR_GRANT_REQUIRED,
+    ERROR_NO_SUCH_TARGET, ERROR_OCCLUDED, ERROR_OUT_OF_TARGET, ERROR_PAUSED,
+    ERROR_PERMISSION_MISSING, ERROR_READ_FAILED, ERROR_STALE_REF, ERROR_STOPPED, ERROR_UNAVAILABLE,
+    FOREGROUND_NOT_ALLOWED_NOTE, MENUS_UNAVAILABLE_NOTE, MENU_NEEDS_FRONT_NOTE, NEEDS_ELEMENT_NOTE,
+    NO_DESKTOP_NOTE, OUT_OF_IMAGE_NOTE, PASTE_NOTE, RESTORE_NEEDS_FRONT_NOTE, SECRET_FIELD_NOTE,
+    STOPPED_NOTE,
 };
 use crate::app_error::AppCommandError;
 use crate::computer::agent::{
     grantable, visible_title, ActivityOutcome, Blocklist, ComputerAction, ComputerActivityPayload,
-    ComputerGrantPayload, GrantChange, GrantLevel, NotGrantable, SelfIdentity,
+    ComputerGrantPayload, GrantChange, GrantLevel, GrantScope, NotGrantable, SelfIdentity,
 };
 use crate::computer::backend::{
     ActRefusal, BackendError, BackendStatus, ComputerBackend, SnapshotOptions,
@@ -85,8 +86,8 @@ use crate::computer::procinfo::process_start;
 use crate::computer::protocol::{OsPermission, PermissionAsked, PermissionReport, RawAct};
 use crate::computer::stop_key::{StopKey, StopKeyStatus};
 use crate::computer::targets::{
-    ActDenied, Aim, ReadMark, ReadRefusal, ReadTicket, ShareError, SharedWindow, Staleness,
-    TargetTable, WindowIdentity,
+    ActDenied, Aim, AppChange, AppTarget, ReadMark, ReadRefusal, ReadTicket, ShareError, SharedApp,
+    SharedWindow, Staleness, TargetTable, WindowIdentity,
 };
 use crate::computer::types::{
     ActDelivery, ActReport, AgentAppRef, AgentAppSummary, ComputerActRequest, Rect, VerifyOutcome,
@@ -214,6 +215,8 @@ fn refused_act(kind: ActRefusal, words: String) -> Refusal {
         ActRefusal::BackgroundUnavailable => Refusal::failed(ERROR_BACKGROUND_UNAVAILABLE, words),
         ActRefusal::SecretField => Refusal::refused(ERROR_BLOCKED, words),
         ActRefusal::Failed => Refusal::failed(ERROR_ACTION_FAILED, words),
+        ActRefusal::Paste => Refusal::refused(ERROR_GRANT_REQUIRED, words),
+        ActRefusal::Beyond => Refusal::refused(ERROR_CONTROL_REQUIRED, words),
     }
 }
 
@@ -249,12 +252,16 @@ fn delivery_on(
     platform: crate::computer::keys::Platform,
 ) -> Result<ActDelivery, Refusal> {
     if request.needs_front(platform) {
+        let note = match request {
+            ComputerActRequest::InvokeMenu { .. } => MENU_NEEDS_FRONT_NOTE,
+            _ => RESTORE_NEEDS_FRONT_NOTE,
+        };
         return if config.allow_foreground {
             Ok(ActDelivery::Foreground)
         } else {
             Err(Refusal::refused(
                 ERROR_FOREGROUND_NOT_ALLOWED,
-                RESTORE_NEEDS_FRONT_NOTE.to_string(),
+                note.to_string(),
             ))
         };
     }
@@ -327,6 +334,15 @@ fn denied(target_id: &str, why: ActDenied) -> Refusal {
         ActDenied::NoPointing => Refusal::failed(ERROR_ACTION_FAILED, no_pointing_note(target_id)),
         ActDenied::DragModifiers => {
             Refusal::failed(ERROR_ACTION_FAILED, DRAG_MODIFIERS_NOTE.into())
+        }
+        ActDenied::DesktopChord => {
+            Refusal::refused(ERROR_CONTROL_REQUIRED, DESKTOP_CHORD_NOTE.into())
+        }
+        ActDenied::AppGrantRequired => {
+            Refusal::refused(ERROR_CONTROL_REQUIRED, app_grant_required_note(target_id))
+        }
+        ActDenied::MenusUnavailable => {
+            Refusal::failed(ERROR_ACTION_FAILED, MENUS_UNAVAILABLE_NOTE.into())
         }
     }
 }
@@ -512,7 +528,7 @@ impl ComputerService {
                     .sweep(now_ms(), after.grant_ttl, &self.me, &blocklist_of(after))
             }
         };
-        self.announce(&ended);
+        self.announce_change(ended);
     }
 
     /// Bring the helper and the stop shortcut in line with `config`.
@@ -554,12 +570,21 @@ impl ComputerService {
     fn follow_strip(&self, wanted: bool) {
         let _told = self.state_gate.lock().unwrap_or_else(|p| p.into_inner());
         self.strip_wanted.store(wanted, Ordering::Release);
-        let shared = !self.targets.shared().is_empty();
+        let shared = !self.targets.shared().is_empty() || !self.targets.shared_apps().is_empty();
         self.indicator.set(Strip::of(shared, wanted));
     }
 
     pub fn stop_key_status(&self) -> StopKeyStatus {
         self.stop_key.status()
+    }
+
+    /// What is shared now: every window, and the applications shared as a
+    /// whole.
+    fn shared_state(&self) -> SharedState {
+        SharedState {
+            shared: self.targets.shared(),
+            apps: self.targets.shared_apps(),
+        }
     }
 
     /// End the grants the settings as they are now no longer allow: lapsed,
@@ -569,7 +594,13 @@ impl ComputerService {
         let ended =
             self.targets
                 .sweep(now_ms(), config.grant_ttl, &self.me, &blocklist_of(&config));
-        self.announce(&ended);
+        self.announce_change(ended);
+        // An application that quit takes its share with it, though its
+        // windows — gone with it — cannot say so.
+        let quit = self
+            .targets
+            .prune_apps(|pid, started_at| process_start(pid) == Some(started_at));
+        self.announce_change(quit);
     }
 
     /// Tell the panel about grant changes: each transition, then the state.
@@ -583,19 +614,32 @@ impl ComputerService {
         self.emit_state();
     }
 
+    /// [`announce`](Self::announce), for a change that may have moved an
+    /// application's share too — which is state even with no window in it.
+    fn announce_change(&self, change: AppChange) {
+        if change.app_changed && change.windows.is_empty() {
+            self.emit_state();
+        } else {
+            self.announce(&change.windows);
+        }
+    }
+
     /// Tell the panels, and bring the strip and the marker in line: the
     /// strip is up while anything is shared (unless the person turned it
     /// off), the marker ready while anything is shared for control.
     fn emit_state(&self) {
         let _told = self.state_gate.lock().unwrap_or_else(|p| p.into_inner());
         let shared = self.targets.shared();
-        events::emit_state(&self.app, &shared);
+        let apps = self.targets.shared_apps();
+        events::emit_state(&self.app, &shared, &apps);
         self.indicator.set(Strip::of(
-            !shared.is_empty(),
+            !shared.is_empty() || !apps.is_empty(),
             self.strip_wanted.load(Ordering::Acquire),
         ));
-        self.marker
-            .arm(shared.iter().any(|w| w.level == GrantLevel::Control));
+        self.marker.arm(
+            shared.iter().any(|w| w.level == GrantLevel::Control)
+                || apps.iter().any(|a| a.level == GrantLevel::Control),
+        );
     }
 
     /// The person pressed Stop: every grant ends, whatever is under way is
@@ -612,7 +656,7 @@ impl ComputerService {
             self.backend.note_stop(stop);
             (self.targets.revoke_all(GrantChange::Stopped), stop)
         };
-        for change in &ended {
+        for change in &ended.windows {
             events::emit_grant(&self.app, change);
         }
         self.emit_state();
@@ -667,7 +711,46 @@ impl ComputerService {
             Err(ShareError::NotGrantable(why)) => {
                 Err(AppCommandError::configuration_invalid(why.note()))
             }
+            Err(ShareError::AppShared) => Err(AppCommandError::configuration_invalid(
+                "that window is shared with its whole application; change the application's \
+                 sharing instead",
+            )),
         }
+    }
+
+    /// Share an application as a whole, or end its share — as
+    /// [`share_unless_stopped`](Self::share_unless_stopped) shares a window,
+    /// under the same lock and for the same reasons.
+    fn share_app_unless_stopped(
+        &self,
+        target: AppTarget<'_>,
+        level: GrantLevel,
+        since: u64,
+    ) -> Result<AppChange, AppCommandError> {
+        let _gate = self.grant_gate.lock().unwrap_or_else(|p| p.into_inner());
+        let policy = self.policy.lock().unwrap_or_else(|p| p.into_inner());
+        if level != GrantLevel::None {
+            if !policy.enabled {
+                return Err(AppCommandError::configuration_invalid(
+                    "computer use is switched off",
+                ));
+            }
+            if self.stopped_since(since) {
+                return Err(AppCommandError::configuration_invalid(
+                    "Stop was pressed while this was being shared; share it again",
+                ));
+            }
+        }
+        self.targets
+            .share_app(target, level, now_ms(), &self.me, &policy.blocklist)
+            .map_err(|e| match e {
+                ShareError::NoSuchTarget | ShareError::Gone | ShareError::AppShared => {
+                    AppCommandError::configuration_invalid(
+                        "that application is gone; open the list again",
+                    )
+                }
+                ShareError::NotGrantable(why) => AppCommandError::configuration_invalid(why.note()),
+            })
     }
 
     /// Whether a share begun at `since` may still land: computer use on,
@@ -955,6 +1038,7 @@ impl ComputerService {
                             pid: app.pid,
                         },
                         active: app.active,
+                        level: self.targets.app_level(&app),
                     })
                     .collect(),
                 error: None,
@@ -1085,6 +1169,7 @@ impl ComputerService {
                     max_depth: request.max_depth,
                     max_elements: request.max_elements,
                     query: request.query,
+                    app_menus: ticket.scope == GrantScope::App,
                 },
             )
             .await
@@ -1540,6 +1625,11 @@ pub struct PickerWindow {
     /// Its application is hidden (macOS ⌘H).
     pub hidden: bool,
     pub level: GrantLevel,
+    /// Shared with its whole application, not on its own.
+    pub whole_app: bool,
+    /// That application's share, when it is.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub app_id: Option<String>,
     /// Why it can never be shared, when that is so.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub not_grantable: Option<NotGrantable>,
@@ -1672,9 +1762,18 @@ pub async fn computer_list_shareable_windows(
     Ok(entries
         .into_iter()
         .filter(|e| e.worth_listing())
-        .map(|e| PickerWindow {
+        .map(|e| {
+            let whole_app = e.grant.as_ref().is_some_and(|g| g.scope == GrantScope::App);
+            (e, whole_app)
+        })
+        .map(|(e, whole_app)| PickerWindow {
             not_grantable: grantable(&e.app, &service.me, &blocklist).err(),
             level: e.grant.as_ref().map_or(GrantLevel::None, |g| g.level),
+            app_id: whole_app
+                .then(|| service.targets.app_share_of(&e.target_id))
+                .flatten()
+                .map(|share| share.app_id),
+            whole_app,
             app_name: e.app.name.clone(),
             app_key: e.app.key().unwrap_or_default().to_string(),
             pid: e.app.pid,
@@ -1786,10 +1885,7 @@ pub async fn computer_share_windows(
 /// window that has just loaded.
 #[tauri::command]
 pub async fn computer_shared_state(app: AppHandle) -> Result<SharedState, AppCommandError> {
-    let service = service(&app)?;
-    Ok(SharedState {
-        shared: service.targets.shared(),
-    })
+    Ok(service(&app)?.shared_state())
 }
 
 /// What `computer_shared_state` answers: what `computer://state` carries.
@@ -1797,6 +1893,34 @@ pub async fn computer_shared_state(app: AppHandle) -> Result<SharedState, AppCom
 #[serde(rename_all = "camelCase")]
 pub struct SharedState {
     pub shared: Vec<SharedWindow>,
+    /// The applications shared as a whole.
+    pub apps: Vec<SharedApp>,
+}
+
+/// Share an application as a whole at `level`, or end its share at `none`:
+/// the application `target_id` is a window of, or the one shared as
+/// `app_id`. Answers with what is shared now.
+#[tauri::command]
+pub async fn computer_share_app(
+    app: AppHandle,
+    target_id: Option<String>,
+    app_id: Option<String>,
+    level: GrantLevel,
+) -> Result<SharedState, AppCommandError> {
+    let service = service(&app)?;
+    let target = match (&target_id, &app_id) {
+        (_, Some(app_id)) => AppTarget::Share(app_id),
+        (Some(target_id), None) => AppTarget::Window(target_id),
+        (None, None) => {
+            return Err(AppCommandError::configuration_invalid(
+                "name the application by one of its windows or by its share",
+            ))
+        }
+    };
+    let since = service.stop_count();
+    let change = service.share_app_unless_stopped(target, level, since)?;
+    service.announce_change(change);
+    Ok(service.shared_state())
 }
 
 /// Stop sharing every window.
@@ -1804,7 +1928,7 @@ pub struct SharedState {
 pub async fn computer_revoke_all(app: AppHandle) -> Result<(), AppCommandError> {
     let service = service(&app)?;
     let ended = service.targets.revoke_all(GrantChange::Revoked);
-    service.announce(&ended);
+    service.announce_change(ended);
     Ok(())
 }
 

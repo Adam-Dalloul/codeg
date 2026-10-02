@@ -13,6 +13,10 @@ use serde::{Deserialize, Serialize};
 
 pub use crate::browser::agent::GrantLevel;
 
+fn not_shared(level: &GrantLevel) -> bool {
+    *level == GrantLevel::None
+}
+
 /// A rectangle in the platform's desktop coordinate space: points on macOS,
 /// physical pixels on Windows, X11 pixels on Linux — whatever the platform
 /// reports window bounds in. Never mixed with screenshot pixels: a capture
@@ -60,6 +64,10 @@ pub struct AgentAppSummary {
     pub app: AgentAppRef,
     /// Whether it is the frontmost application.
     pub active: bool,
+    /// What it is shared for as a whole application — every window of it,
+    /// its menus and its own shortcuts — when the user shared it so.
+    #[serde(default, skip_serializing_if = "not_shared")]
+    pub level: GrantLevel,
     /// Why none of its windows can be shared, when that is so — codeg itself,
     /// or an application on the blocklist.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -95,6 +103,10 @@ pub struct AgentWindowSummary {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hidden: Option<bool>,
     pub level: GrantLevel,
+    /// Shared with its whole application: its menus and its own shortcuts
+    /// are in reach too.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub whole_app: bool,
     /// Present only from [`GrantLevel::Read`] upwards.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
@@ -432,6 +444,11 @@ pub enum ComputerActRequest {
     /// is minimized, its application shown again if it is hidden: typing,
     /// keys, scrolling, a point and a screenshot all need it there.
     Restore,
+    /// Choose a command from the application's menus, by the titles on the
+    /// way to it: `["File", "Export", "PDF…"]`. The application's own, so
+    /// only for an application shared as a whole.
+    #[serde(rename_all = "camelCase")]
+    InvokeMenu { path: Vec<String> },
 }
 
 impl ComputerActRequest {
@@ -454,9 +471,14 @@ impl ComputerActRequest {
 
     /// Whether the action can be done at all only by bringing the window to
     /// the front on `platform`: restoring a window on Linux, where the only
-    /// way back is the window manager's activation.
+    /// way back is the window manager's activation; and a menu command,
+    /// which the drivers choose with the application active.
     pub fn needs_front(&self, platform: crate::computer::keys::Platform) -> bool {
-        matches!(self, Self::Restore) && platform == crate::computer::keys::Platform::Linux
+        match self {
+            Self::Restore => platform == crate::computer::keys::Platform::Linux,
+            Self::InvokeMenu { .. } => true,
+            _ => false,
+        }
     }
 }
 

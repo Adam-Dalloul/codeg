@@ -5218,7 +5218,8 @@
     "shared": {
       "title": "{count, plural, =0 {Nenhuma janela compartilhada} one {# janela compartilhada} other {# janelas compartilhadas}}",
       "empty": "Os agentes podem listar suas janelas, mas não ler nenhuma até você compartilhar uma.",
-      "stop": "Parar"
+      "stop": "Parar",
+      "wholeApp": "App inteiro · {count, plural, =0 {nenhuma janela aberta} one {# janela} other {# janelas}}"
     },
     "level": {
       "read": "Pode ler",
@@ -5241,6 +5242,7 @@
       "hold-key": "Tecla pressionada",
       "set-value": "Valor",
       "restore": "Restaurar",
+      "menu": "Menu",
       "outcome": {
         "done": "feito",
         "refused": "recusado",
@@ -5274,6 +5276,10 @@
       "levelRead": "Ler",
       "levelControl": "Agir",
       "levelLabel": "O que os agentes podem fazer com {app}",
+      "wholeApp": "App inteiro",
+      "wholeAppHint": "Todas as janelas de {app}, inclusive as que abrir depois, além de seus menus e atalhos",
+      "appLevelLabel": "O que os agentes podem fazer com todo o {app}",
+      "viaApp": "Com o app",
       "shareAll": "Compartilhar todas",
       "shareAllRead": "Deixar os agentes lerem todas",
       "shareAllControl": "Deixar os agentes lerem e agirem em todas",

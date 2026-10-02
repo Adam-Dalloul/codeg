@@ -3,6 +3,7 @@ import { NextIntlClientProvider } from "next-intl"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
 import type {
+  ComputerStatePayload,
   ComputerStatus,
   GrantLevel,
   PickerWindow,
@@ -14,6 +15,8 @@ const api = vi.hoisted(() => ({
   computerAvailable: vi.fn(() => false),
   computerListShareableWindows: vi.fn<() => Promise<PickerWindow[]>>(),
   computerShareWindow: vi.fn(),
+  computerShareApp:
+    vi.fn<(app: object, level: string) => Promise<ComputerStatePayload>>(),
   computerShareWindows:
     vi.fn<(ids: string[], level: string) => Promise<ShareManyResult>>(),
   computerRevokeAll: vi.fn(async () => {}),
@@ -93,6 +96,102 @@ describe("ComputerWindowPicker", () => {
       "aria-pressed",
       "true"
     )
+  })
+
+  /** The windows are grouped by application, and an application can be
+   * shared as a whole from its group — by one of its windows the first time,
+   * by its share after. Its windows then go with it: shown at its level,
+   * their own choices waiting. */
+  it("shares an application as a whole from its group", async () => {
+    const one = window("none", { targetId: "w1" })
+    const two = window("none", { targetId: "w2", title: "todo.txt" })
+    const mail = window("none", {
+      targetId: "w3",
+      appName: "Mail",
+      appKey: "com.apple.mail",
+      pid: 7,
+    })
+    api.computerListShareableWindows.mockResolvedValue([one, two, mail])
+    api.computerShareApp.mockResolvedValue({
+      shared: [
+        { ...sharedOf(one, "control"), wholeApp: true, appId: "a1" },
+        { ...sharedOf(two, "control"), wholeApp: true, appId: "a1" },
+      ],
+      apps: [
+        {
+          appId: "a1",
+          appName: "TextEdit",
+          appKey: one.appKey,
+          level: "control",
+          grantedAt: 0,
+          lastUsedAt: 0,
+          windows: 2,
+        },
+      ],
+    })
+    mount()
+    const app = await appLevelsOf("TextEdit")
+    await act(async () => {
+      fireEvent.click(app.getByRole("button", { name: "Act" }))
+    })
+    expect(api.computerShareApp).toHaveBeenCalledWith(
+      { targetId: "w1" },
+      "control"
+    )
+    expect(app.getByRole("button", { name: "Act" })).toHaveAttribute(
+      "aria-pressed",
+      "true"
+    )
+    const tiles = screen.getAllByRole("group", {
+      name: "What agents may do with TextEdit",
+    })
+    expect(tiles).toHaveLength(2)
+    for (const tile of tiles) {
+      expect(within(tile).getByRole("button", { name: "Act" })).toHaveAttribute(
+        "aria-pressed",
+        "true"
+      )
+      expect(within(tile).getByRole("button", { name: "Off" })).toBeDisabled()
+    }
+    expect(screen.getAllByText("With the app")).toHaveLength(2)
+    expect(
+      (await levelsOf("Mail")).getByRole("button", { name: "Off" })
+    ).toHaveAttribute("aria-pressed", "true")
+
+    api.computerShareApp.mockResolvedValue({ shared: [], apps: [] })
+    await act(async () => {
+      fireEvent.click(app.getByRole("button", { name: "Off" }))
+    })
+    expect(api.computerShareApp).toHaveBeenLastCalledWith(
+      { appId: "a1" },
+      "none"
+    )
+  })
+
+  /** "Share all" leaves a window shared with its whole application to it. */
+  it("leaves a whole application's windows out of sharing all", async () => {
+    const one = window("none", { targetId: "w1" })
+    const mail = window("none", {
+      targetId: "w3",
+      appName: "Mail",
+      appKey: "com.apple.mail",
+      pid: 7,
+    })
+    api.computerListShareableWindows.mockResolvedValue([one, mail])
+    api.computerShareWindows.mockResolvedValue({ shared: [], skipped: 0 })
+    act(() =>
+      setComputerShared([
+        { ...sharedOf(one, "read"), wholeApp: true, appId: "a1" },
+      ])
+    )
+    mount()
+    await openMenu(await screen.findByRole("button", { name: /Share all/ }))
+    await act(async () => {
+      fireEvent.click(
+        screen.getByRole("menuitem", { name: "Let agents read all of them" })
+      )
+    })
+    expect(api.computerShareWindows).toHaveBeenCalledWith(["w3"], "read")
   })
 
   /** A window off the screen says why: minimized, or its application
@@ -400,6 +499,15 @@ describe("ComputerWindowPicker", () => {
     ).toBeInTheDocument()
   })
 })
+
+/** The level buttons of the whole application `app`. */
+async function appLevelsOf(app: string) {
+  return within(
+    await screen.findByRole("group", {
+      name: `What agents may do with all of ${app}`,
+    })
+  )
+}
 
 function sharedOf(item: PickerWindow, level: GrantLevel): SharedWindow {
   return {

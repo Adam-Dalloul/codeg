@@ -124,6 +124,33 @@ describe("ComputerIndicator", () => {
     )
   })
 
+  /** An application shared as a whole is still shared with every window of
+   * it closed — the next one it opens will be — so the strip keeps saying so,
+   * and keeps its Stop. */
+  it("keeps an application shared as a whole, windows or not", async () => {
+    api.computerSharedState.mockResolvedValue({
+      shared: [],
+      apps: [
+        {
+          appId: "a1",
+          appName: "Mail",
+          appKey: "com.apple.mail",
+          level: "control",
+          grantedAt: 1,
+          lastUsedAt: 1,
+          windows: 0,
+        },
+      ],
+    })
+    mount()
+    expect(
+      await screen.findByText("Agents can act on Mail")
+    ).toBeInTheDocument()
+    expect(
+      screen.getByRole("button", { name: /^Stop sharing/ })
+    ).toBeInTheDocument()
+  })
+
   /** Once a Stop has ended every sharing there is nothing left on the strip
    * to press while it goes. */
   it("offers no Stop once nothing is shared", async () => {

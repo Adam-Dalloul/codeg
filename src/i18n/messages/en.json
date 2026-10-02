@@ -5218,7 +5218,8 @@
     "shared": {
       "title": "{count, plural, =0 {No windows shared} one {# window shared} other {# windows shared}}",
       "empty": "Agents can list your windows but read none of them until you share one.",
-      "stop": "Stop"
+      "stop": "Stop",
+      "wholeApp": "Whole app · {count, plural, =0 {no windows open} one {# window} other {# windows}}"
     },
     "level": {
       "read": "Can read",
@@ -5241,6 +5242,7 @@
       "hold-key": "Hold key",
       "set-value": "Set value",
       "restore": "Restore",
+      "menu": "Menu",
       "outcome": {
         "done": "done",
         "refused": "refused",
@@ -5274,6 +5276,10 @@
       "levelRead": "Read",
       "levelControl": "Act",
       "levelLabel": "What agents may do with {app}",
+      "wholeApp": "Whole app",
+      "wholeAppHint": "Every window of {app}, including ones it opens later, plus its menus and its own shortcuts",
+      "appLevelLabel": "What agents may do with all of {app}",
+      "viaApp": "With the app",
       "shareAll": "Share all",
       "shareAllRead": "Let agents read all of them",
       "shareAllControl": "Let agents read and act on all of them",

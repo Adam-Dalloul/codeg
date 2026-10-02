@@ -46,6 +46,21 @@ pub struct ComputerGrant {
     pub granted_at: i64,
     /// Unix milliseconds of the last read this grant allowed.
     pub last_used_at: i64,
+    /// Whether the window was shared on its own, or with its whole
+    /// application.
+    #[serde(default)]
+    pub scope: GrantScope,
+}
+
+/// What a person shared when they shared a window: the window, or its whole
+/// application — every window of it, the ones it opens later included, its
+/// menus and its own shortcuts.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum GrantScope {
+    #[default]
+    Window,
+    App,
 }
 
 impl ComputerGrant {
@@ -54,6 +69,15 @@ impl ComputerGrant {
             level,
             granted_at: now,
             last_used_at: now,
+            scope: GrantScope::Window,
+        }
+    }
+
+    /// A window's share of its application's grant.
+    pub fn of_app(level: GrantLevel, now: i64) -> Self {
+        Self {
+            scope: GrantScope::App,
+            ..Self::new(level, now)
         }
     }
 
@@ -570,6 +594,8 @@ pub enum ComputerAction {
     SetValue,
     /// Put a minimized window back on the screen.
     Restore,
+    /// Chose a command from the application's menus.
+    Menu,
 }
 
 impl ComputerAction {
@@ -585,6 +611,7 @@ impl ComputerAction {
             R::HoldKey { .. } => ComputerAction::HoldKey,
             R::SetValue { .. } => ComputerAction::SetValue,
             R::Restore => ComputerAction::Restore,
+            R::InvokeMenu { .. } => ComputerAction::Menu,
         }
     }
 }

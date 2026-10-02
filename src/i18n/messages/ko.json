@@ -5218,7 +5218,8 @@
     "shared": {
       "title": "{count, plural, =0 {공유 중인 창 없음} other {창 #개 공유 중}}",
       "empty": "에이전트는 창 목록을 볼 수 있지만, 공유하기 전에는 어떤 창도 읽을 수 없습니다.",
-      "stop": "중지"
+      "stop": "중지",
+      "wholeApp": "앱 전체 · {count, plural, =0 {열린 창 없음} other {창 #개}}"
     },
     "level": {
       "read": "읽기 가능",
@@ -5241,6 +5242,7 @@
       "hold-key": "키 누르고 있기",
       "set-value": "값 설정",
       "restore": "창 복원",
+      "menu": "메뉴",
       "outcome": {
         "done": "완료",
         "refused": "거부됨",
@@ -5274,6 +5276,10 @@
       "levelRead": "읽기",
       "levelControl": "조작",
       "levelLabel": "에이전트가 {app}에서 할 수 있는 일",
+      "wholeApp": "앱 전체",
+      "wholeAppHint": "{app}의 모든 창(나중에 여는 창 포함)과 메뉴, 단축키",
+      "appLevelLabel": "에이전트가 {app} 전체에서 할 수 있는 일",
+      "viaApp": "앱과 함께 공유",
       "shareAll": "모두 공유",
       "shareAllRead": "모두 에이전트가 읽도록 허용",
       "shareAllControl": "모두 에이전트가 읽고 조작하도록 허용",

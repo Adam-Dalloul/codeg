@@ -5218,7 +5218,8 @@
     "shared": {
       "title": "{count, plural, =0 {Keine Fenster freigegeben} one {# Fenster freigegeben} other {# Fenster freigegeben}}",
       "empty": "Agenten können deine Fenster auflisten, aber keines lesen, bis du eines freigibst.",
-      "stop": "Beenden"
+      "stop": "Beenden",
+      "wholeApp": "Ganze App · {count, plural, =0 {kein Fenster offen} one {# Fenster} other {# Fenster}}"
     },
     "level": {
       "read": "Darf lesen",
@@ -5241,6 +5242,7 @@
       "hold-key": "Taste halten",
       "set-value": "Wert setzen",
       "restore": "Wiederherstellen",
+      "menu": "Menü",
       "outcome": {
         "done": "erledigt",
         "refused": "abgelehnt",
@@ -5274,6 +5276,10 @@
       "levelRead": "Lesen",
       "levelControl": "Handeln",
       "levelLabel": "Was Agenten mit {app} dürfen",
+      "wholeApp": "Ganze App",
+      "wholeAppHint": "Alle Fenster von {app}, auch später geöffnete, dazu ihre Menüs und Tastenkürzel",
+      "appLevelLabel": "Was Agenten mit ganz {app} dürfen",
+      "viaApp": "Mit der App",
       "shareAll": "Alle freigeben",
       "shareAllRead": "Agenten alle lesen lassen",
       "shareAllControl": "Agenten alle lesen und darin handeln lassen",

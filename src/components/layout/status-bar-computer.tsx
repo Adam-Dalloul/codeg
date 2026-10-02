@@ -30,6 +30,7 @@
 import { useEffect, useRef, useState } from "react"
 import { useTranslations } from "next-intl"
 import {
+  AppWindow,
   BrushCleaning,
   ChevronDown,
   CircleAlert,
@@ -58,6 +59,7 @@ import { ComputerWindowPicker } from "@/components/computer/computer-window-pick
 import { openSettingsWindow } from "@/lib/api"
 import { toErrorMessage } from "@/lib/app-error"
 import {
+  computerShareApp,
   computerShareWindow,
   computerSharedState,
   computerStop,
@@ -66,6 +68,7 @@ import {
   clearComputerActivity,
   computerStoreMark,
   setComputerSharedSince,
+  setComputerStateSince,
   useComputerStore,
   type ComputerActivityLine,
 } from "@/lib/computer/computer-store"
@@ -91,6 +94,67 @@ function formatTime(at: number): string {
   })
 }
 
+/** One shared thing in the popover — a window, or an application shared as
+ *  a whole — with what it is shared for, and a way to stop. */
+function SharedRow({
+  whole = false,
+  name,
+  detail,
+  level,
+  onLevel,
+}: {
+  whole?: boolean
+  name: string
+  detail?: string
+  level: GrantLevel
+  onLevel: (level: GrantLevel) => void
+}) {
+  const t = useTranslations("ComputerUse")
+  const Icon = whole ? AppWindow : Monitor
+  return (
+    <div className="flex items-center gap-2 px-2 py-1.5">
+      <Icon className={cn("size-3.5 shrink-0", AGENT_MARK)} />
+      <span className="min-w-0 flex-1">
+        <span className="block truncate text-2xs font-medium">{name}</span>
+        {detail && (
+          <span className="block truncate text-3xs text-muted-foreground">
+            {detail}
+          </span>
+        )}
+      </span>
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button
+            size="xs"
+            variant="ghost"
+            aria-label={t("level.change")}
+            className={cn(
+              level === "control" && "text-red-600 dark:text-red-400"
+            )}
+          >
+            {t(`level.${level === "control" ? "control" : "read"}`)}
+            <ChevronDown className="size-3" />
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end" className="min-w-48">
+          {(["read", "control"] as const).map((option) => (
+            <DropdownMenuItem
+              key={option}
+              disabled={level === option}
+              onSelect={() => onLevel(option)}
+            >
+              {t(`level.${option}Long`)}
+            </DropdownMenuItem>
+          ))}
+        </DropdownMenuContent>
+      </DropdownMenu>
+      <Button size="xs" variant="ghost" onClick={() => onLevel("none")}>
+        {t("shared.stop")}
+      </Button>
+    </div>
+  )
+}
+
 export function StatusBarComputer() {
   const { enabled } = useComputerEnabled({ desktopOnly: true })
   if (!enabled) return null
@@ -99,7 +163,12 @@ export function StatusBarComputer() {
 
 function ComputerPopover() {
   const t = useTranslations("ComputerUse")
-  const { shared, backend, activity } = useComputerStore()
+  const { shared, sharedApps, backend, activity } = useComputerStore()
+  // A window shared with its whole application is listed as the
+  // application, once.
+  const ownWindows = shared.filter((w) => !w.wholeApp)
+  const rows = sharedApps.length + ownWindows.length
+  const anyShared = rows > 0
   const isMac = useIsMac()
   const stopKey = useComputerStopKey()
   const [open, setOpen] = useState(false)
@@ -130,7 +199,7 @@ function ComputerPopover() {
   useEffect(() => {
     const mark = computerStoreMark()
     computerSharedState()
-      .then((s) => setComputerSharedSince(s.shared, mark))
+      .then((s) => setComputerStateSince(s, mark))
       .catch(() => {})
   }, [])
 
@@ -142,6 +211,15 @@ function ComputerPopover() {
     const mark = computerStoreMark()
     try {
       setComputerSharedSince(await computerShareWindow(targetId, level), mark)
+    } catch (e) {
+      setError(toErrorMessage(e))
+    }
+  }
+
+  const setAppLevel = async (appId: string, level: GrantLevel) => {
+    const mark = computerStoreMark()
+    try {
+      setComputerStateSince(await computerShareApp({ appId }, level), mark)
     } catch (e) {
       setError(toErrorMessage(e))
     }
@@ -184,15 +262,13 @@ function ComputerPopover() {
           <button
             aria-label={t("title")}
             title={
-              shared.length > 0
+              anyShared
                 ? t("tooltipShared", { count: shared.length })
                 : t("title")
             }
             className="relative flex items-center transition-colors hover:text-foreground"
           >
-            <Monitor
-              className={cn("size-3.5", shared.length > 0 && AGENT_MARK)}
-            />
+            <Monitor className={cn("size-3.5", anyShared && AGENT_MARK)} />
           </button>
         </PopoverTrigger>
         <PopoverContent
@@ -221,7 +297,7 @@ function ComputerPopover() {
             </button>
           </div>
 
-          {shared.length > 0 && (
+          {anyShared && (
             <Button
               size="sm"
               variant="destructive"
@@ -326,65 +402,30 @@ function ComputerPopover() {
                 {t("shared.title", { count: shared.length })}
               </span>
             </div>
-            {shared.length === 0 ? (
+            {rows === 0 ? (
               <p className="border-t px-2 py-1.5 text-3xs text-muted-foreground">
                 {t("shared.empty")}
               </p>
             ) : (
               <div className="divide-y border-t">
-                {shared.map((w) => (
-                  <div
+                {sharedApps.map((a) => (
+                  <SharedRow
+                    key={a.appId}
+                    whole
+                    name={a.appName}
+                    detail={t("shared.wholeApp", { count: a.windows })}
+                    level={a.level}
+                    onLevel={(level) => void setAppLevel(a.appId, level)}
+                  />
+                ))}
+                {ownWindows.map((w) => (
+                  <SharedRow
                     key={w.targetId}
-                    className="flex items-center gap-2 px-2 py-1.5"
-                  >
-                    <Monitor className={cn("size-3.5 shrink-0", AGENT_MARK)} />
-                    <span className="min-w-0 flex-1">
-                      <span className="block truncate text-2xs font-medium">
-                        {w.appName}
-                      </span>
-                      {w.title && (
-                        <span className="block truncate text-3xs text-muted-foreground">
-                          {w.title}
-                        </span>
-                      )}
-                    </span>
-                    <DropdownMenu>
-                      <DropdownMenuTrigger asChild>
-                        <Button
-                          size="xs"
-                          variant="ghost"
-                          aria-label={t("level.change")}
-                          className={cn(
-                            w.level === "control" &&
-                              "text-red-600 dark:text-red-400"
-                          )}
-                        >
-                          {t(
-                            `level.${w.level === "control" ? "control" : "read"}`
-                          )}
-                          <ChevronDown className="size-3" />
-                        </Button>
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent align="end" className="min-w-48">
-                        {(["read", "control"] as const).map((level) => (
-                          <DropdownMenuItem
-                            key={level}
-                            disabled={w.level === level}
-                            onSelect={() => void setLevel(w.targetId, level)}
-                          >
-                            {t(`level.${level}Long`)}
-                          </DropdownMenuItem>
-                        ))}
-                      </DropdownMenuContent>
-                    </DropdownMenu>
-                    <Button
-                      size="xs"
-                      variant="ghost"
-                      onClick={() => void setLevel(w.targetId, "none")}
-                    >
-                      {t("shared.stop")}
-                    </Button>
-                  </div>
+                    name={w.appName}
+                    detail={w.title}
+                    level={w.level}
+                    onLevel={(level) => void setLevel(w.targetId, level)}
+                  />
                 ))}
               </div>
             )}

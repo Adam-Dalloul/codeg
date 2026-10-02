@@ -27,6 +27,12 @@
  * between the levels without being taken back first. The same two, and
  * "stop sharing", are offered for every shareable window in the list at
  * once.
+ *
+ * The windows are grouped by application, and each application can be
+ * shared as a whole: every window of it, the ones it opens later too, its
+ * menus and its own shortcuts. While it is, its windows go with it — their
+ * own choices are shown as the application's, and wait until it is no longer
+ * shared.
  */
 
 import { useCallback, useEffect, useRef, useState } from "react"
@@ -70,6 +76,7 @@ import {
   computerAvailable,
   computerListShareableWindows,
   computerRevokeAll,
+  computerShareApp,
   computerShareWindow,
   computerShareWindows,
   computerWindowThumbnail,
@@ -77,6 +84,7 @@ import {
 import {
   computerStoreMark,
   setComputerSharedSince,
+  setComputerStateSince,
   useComputerStore,
 } from "@/lib/computer/computer-store"
 import type {
@@ -91,6 +99,14 @@ import { cn } from "@/lib/utils"
  *  its widest, fewer as the window narrows — wide enough for the three
  *  levels side by side in every language. */
 const GRID = "grid grid-cols-[repeat(auto-fill,minmax(13rem,1fr))] gap-3"
+
+/** The shareable windows of one application. */
+interface AppGroup {
+  /** The application's process and key: one application, one group. */
+  key: string
+  appName: string
+  windows: PickerWindow[]
+}
 
 /** A picture of one shareable window, fetched once. Keyed by the caller on
  *  the target id and on the picker's picture round, so a different window —
@@ -140,6 +156,7 @@ function Thumbnail({ targetId }: { targetId: string }) {
 function WindowTile({
   item: w,
   level,
+  viaApp,
   pending,
   disabled,
   pictures,
@@ -147,6 +164,8 @@ function WindowTile({
 }: {
   item: PickerWindow
   level: GrantLevel
+  /** Shared with its whole application: its level is the application's. */
+  viaApp: boolean
   /** The level a change on its way for this window is going to. */
   pending: GrantLevel | null
   disabled: boolean
@@ -172,6 +191,11 @@ function WindowTile({
             {w.minimized ? t("minimized") : t("hidden")}
           </span>
         )}
+        {viaApp && (
+          <span className="absolute end-2 top-2 rounded-full bg-background/85 px-2 py-0.5 text-2xs text-muted-foreground shadow-sm backdrop-blur-sm">
+            {t("viaApp")}
+          </span>
+        )}
       </div>
       <div className="flex flex-1 flex-col gap-2 border-t px-2.5 pt-2 pb-2.5">
         <div className="min-w-0 flex-1">
@@ -186,10 +210,10 @@ function WindowTile({
           </p>
         </div>
         <LevelControl
-          appName={appName}
+          label={t("levelLabel", { app: appName })}
           level={level}
           pending={pending}
-          disabled={disabled}
+          disabled={disabled || viaApp}
           onLevel={onLevel}
         />
       </div>
@@ -208,13 +232,14 @@ const LEVELS = [
  *  share the window at every stop on the way. Words only: a third of a
  *  narrow tile has no room for an icon beside "Handeln" or "読み取り". */
 function LevelControl({
-  appName,
+  label,
   level,
   pending,
   disabled,
   onLevel,
 }: {
-  appName: string
+  /** What the group is called to a screen reader. */
+  label: string
   level: GrantLevel
   pending: GrantLevel | null
   disabled: boolean
@@ -229,7 +254,7 @@ function LevelControl({
   return (
     <div
       role="group"
-      aria-label={t("levelLabel", { app: appName })}
+      aria-label={label}
       className="grid grid-cols-3 gap-0.5 rounded-full bg-muted p-0.5"
     >
       {LEVELS.map(({ level: option, label }) => {
@@ -281,10 +306,21 @@ export function ComputerWindowPicker({
   // while the picker is open. Until the store has heard anything, the list's
   // own word is the only one there is.
   const { shared, sharedKnown } = useComputerStore()
-  const levelOf = (w: PickerWindow): GrantLevel =>
-    sharedKnown
-      ? (shared.find((s) => s.targetId === w.targetId)?.level ?? "none")
-      : w.level
+  /** What a window is shared for, and whether with its whole application. */
+  const stateOf = (
+    w: PickerWindow
+  ): { level: GrantLevel; wholeApp: boolean; appId?: string } => {
+    if (!sharedKnown) {
+      return { level: w.level, wholeApp: !!w.wholeApp, appId: w.appId }
+    }
+    const s = shared.find((x) => x.targetId === w.targetId)
+    return {
+      level: s?.level ?? "none",
+      wholeApp: !!s?.wholeApp,
+      appId: s?.appId,
+    }
+  }
+  const levelOf = (w: PickerWindow): GrantLevel => stateOf(w).level
   const [windows, setWindows] = useState<PickerWindow[] | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
@@ -293,11 +329,16 @@ export function ComputerWindowPicker({
     targetId: string
     level: GrantLevel
   } | null>(null)
+  /** The application a change is on its way for, and the level it goes to. */
+  const [busyApp, setBusyApp] = useState<{
+    key: string
+    level: GrantLevel
+  } | null>(null)
   /** A change to every window at once is on its way. */
   const [bulk, setBulk] = useState(false)
   /** One change at a time: a "stop sharing all" that lands before a share
    *  still on its way would be undone by it, and the other way round. */
-  const changing = bulk || busy !== null
+  const changing = bulk || busy !== null || busyApp !== null
   const [showUnshareable, setShowUnshareable] = useState(false)
   /** Bumped to fetch every picture again: each is fetched once per value. */
   const [pictures, setPictures] = useState(0)
@@ -361,6 +402,26 @@ export function ComputerWindowPicker({
     ) ?? []
   const sharedCount = shareable.filter((w) => levelOf(w) !== "none").length
   const anyShared = sharedCount > 0
+  /** The shareable windows by application, in the list's order. */
+  const groups: AppGroup[] = []
+  for (const w of shareable) {
+    const key = `${w.pid}:${w.appKey}`
+    let group = groups.find((g) => g.key === key)
+    if (!group) {
+      group = { key, appName: w.appName || t("unnamedApp"), windows: [] }
+      groups.push(group)
+    }
+    group.windows.push(w)
+  }
+  /** What an application is shared for as a whole: what its windows shared
+   *  with it say. */
+  const appOf = (group: AppGroup): { level: GrantLevel; appId?: string } => {
+    for (const w of group.windows) {
+      const state = stateOf(w)
+      if (state.wholeApp) return { level: state.level, appId: state.appId }
+    }
+    return { level: "none" }
+  }
 
   /** Every shareable window in the list, at one level — as each window's own
    *  menu would do it, one after the other. */
@@ -370,8 +431,9 @@ export function ComputerWindowPicker({
     setError(null)
     setNotice(null)
     try {
+      // A window shared with its whole application goes with it.
       const result = await computerShareWindows(
-        shareable.map((w) => w.targetId),
+        shareable.filter((w) => !stateOf(w).wholeApp).map((w) => w.targetId),
         next
       )
       setComputerSharedSince(result.shared, mark)
@@ -400,6 +462,32 @@ export function ComputerWindowPicker({
       setError(toErrorMessage(e))
     } finally {
       setBulk(false)
+    }
+  }
+
+  const setAppLevel = async (
+    group: AppGroup,
+    appId: string | undefined,
+    next: GrantLevel
+  ) => {
+    const first = group.windows[0]
+    if (!appId && !first) return
+    const mark = computerStoreMark()
+    setBusyApp({ key: group.key, level: next })
+    setError(null)
+    try {
+      setComputerStateSince(
+        await computerShareApp(
+          appId ? { appId } : { targetId: first.targetId },
+          next
+        ),
+        mark
+      )
+    } catch (e) {
+      setError(toErrorMessage(e))
+      void load()
+    } finally {
+      setBusyApp(null)
     }
   }
 
@@ -555,18 +643,68 @@ export function ComputerWindowPicker({
                 {t(windows.length === 0 ? "empty" : "noneShareable")}
               </div>
             ) : (
-              <div className={GRID}>
-                {shareable.map((w) => (
-                  <WindowTile
-                    key={w.targetId}
-                    item={w}
-                    level={levelOf(w)}
-                    pending={busy?.targetId === w.targetId ? busy.level : null}
-                    disabled={changing}
-                    pictures={pictures}
-                    onLevel={(next) => void setLevel(w, next)}
-                  />
-                ))}
+              <div className="space-y-5">
+                {groups.map((group) => {
+                  const app = appOf(group)
+                  return (
+                    <section
+                      key={group.key}
+                      aria-label={group.appName}
+                      className="space-y-2"
+                    >
+                      <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1.5">
+                        <p className="min-w-0 truncate text-xs font-medium">
+                          {group.appName}
+                          <span className="font-normal text-muted-foreground">
+                            {" · "}
+                            {t("count", { count: group.windows.length })}
+                          </span>
+                        </p>
+                        <div
+                          className="flex items-center gap-2"
+                          title={t("wholeAppHint", { app: group.appName })}
+                        >
+                          <span className="text-2xs text-muted-foreground">
+                            {t("wholeApp")}
+                          </span>
+                          <div className="w-48">
+                            <LevelControl
+                              label={t("appLevelLabel", {
+                                app: group.appName,
+                              })}
+                              level={app.level}
+                              pending={
+                                busyApp?.key === group.key
+                                  ? busyApp.level
+                                  : null
+                              }
+                              disabled={changing}
+                              onLevel={(next) =>
+                                void setAppLevel(group, app.appId, next)
+                              }
+                            />
+                          </div>
+                        </div>
+                      </div>
+                      <div className={GRID}>
+                        {group.windows.map((w) => (
+                          <WindowTile
+                            key={w.targetId}
+                            item={w}
+                            level={levelOf(w)}
+                            viaApp={stateOf(w).wholeApp}
+                            pending={
+                              busy?.targetId === w.targetId ? busy.level : null
+                            }
+                            disabled={changing}
+                            pictures={pictures}
+                            onLevel={(next) => void setLevel(w, next)}
+                          />
+                        ))}
+                      </div>
+                    </section>
+                  )
+                })}
               </div>
             )}
 

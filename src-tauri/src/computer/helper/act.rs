@@ -84,6 +84,8 @@ const BOOK_WINDOWS: usize = 64;
 pub struct ElementFacts {
     pub role: String,
     pub secret: bool,
+    /// A menu command or a button named for pasting (`ops::element_refs`).
+    pub paste: bool,
     /// Where the element was on the screen when the snapshot was taken, in
     /// the platform's desktop units — for the marker, not for aiming (the
     /// driver aims by the element itself).
@@ -184,6 +186,15 @@ impl SnapshotBook {
             .filter(|f| f.snapshot_id == element.snapshot_id)
             .ok_or_else(stale)?;
         let found = facts.elements.get(&element.index).ok_or_else(stale)?;
+        // Pressing it pastes: the person's clipboard would land in the
+        // window. Scrolling over it does not.
+        if found.paste && !matches!(action, WindowAction::Scroll { .. }) {
+            return Err(HelperError::new(
+                HelperErrorCode::PasteRefused,
+                "That control pastes, and the clipboard is the user's own: what is on it may not \
+                 come from any window you may read. Type the text with computer_type instead.",
+            ));
+        }
         if found.secret && action.writes_text() {
             return Err(HelperError::new(
                 HelperErrorCode::SecretField,
@@ -641,6 +652,22 @@ pub async fn act(
             deliverable.check()?;
             one(driver, "set_value", args, mode, ACT_TIMEOUT).await
         }
+        WindowAction::InvokeMenu { path } => {
+            // The driver brings the application forward for it itself, and
+            // reads nothing but these three.
+            if platform == Platform::Windows {
+                return Err(HelperError::new(
+                    HelperErrorCode::ActionFailed,
+                    "Menus cannot be chosen by title on Windows: click the menu by its ref \
+                     instead.",
+                ));
+            }
+            #[cfg(target_os = "macos")]
+            menu_in_reach(pid, path).await?;
+            let args = json!({ "pid": pid, "window_id": window_id, "path": path });
+            deliverable.check()?;
+            one(driver, "invoke_menu", args, mode, ACT_TIMEOUT).await
+        }
         WindowAction::Restore => {
             deliverable.check()?;
             restore(driver, pid, window_id, mode, deliverable).await
@@ -717,6 +744,54 @@ async fn front_of_its_app(
         ));
     }
     Ok(())
+}
+
+/// Whether a menu command an application shared as a whole may be chosen
+/// (macOS): not in the Apple menu or the application menu, which reach past
+/// the application — restarting, logging out, Services, hiding every other
+/// application — and not one whose shortcut is ⌘V, a paste by another name.
+/// A command the walk through the menus as they stand cannot reach — a title
+/// missing or met twice, a menu that fills itself only once opened — is
+/// refused: what it is cannot be told before it is chosen.
+#[cfg(target_os = "macos")]
+async fn menu_in_reach(pid: u32, path: &[String]) -> Result<(), HelperError> {
+    use super::axwin::{menu_target, MENU_NO_COMMAND};
+    let target = menu_target(pid, path.to_vec()).await;
+    match target.bar_index {
+        None => Err(HelperError::new(
+            HelperErrorCode::ActionFailed,
+            format!(
+                "The menu bar has no single menu titled \"{}\". Read the menus again \
+                 (computer_snapshot) and use their titles exactly.",
+                path.first().map(String::as_str).unwrap_or_default()
+            ),
+        )),
+        Some(0 | 1) => Err(HelperError::new(
+            HelperErrorCode::BeyondApp,
+            "The Apple menu and the application menu reach past the application — restarting, \
+             logging out, Services, hiding the others — so nothing in them is chosen for an agent. \
+             The application's own shortcuts do what it needs of them (⌘, for its settings, ⌘Q to \
+             quit it).",
+        )),
+        Some(_) if !target.reached => Err(HelperError::new(
+            HelperErrorCode::ActionFailed,
+            "That command cannot be found in the application's menus as they stand: a title is \
+             missing or appears twice, or the menu fills itself only when opened. Read the menus \
+             again (computer_snapshot) and use their titles exactly; for a menu that fills itself, \
+             click it open and choose the item by ref.",
+        )),
+        Some(_) => match target.shortcut {
+            Some((key, mask)) if key.eq_ignore_ascii_case("v") && mask & MENU_NO_COMMAND == 0 => {
+                Err(HelperError::new(
+                    HelperErrorCode::PasteRefused,
+                    "That command pastes (⌘V), and the clipboard is the user's own: what is on it \
+                     may not come from any window you may read. Type the text with computer_type \
+                     instead.",
+                ))
+            }
+            _ => Ok(()),
+        },
+    }
 }
 
 /// The modifiers held over a pointer action, as `platform`'s driver spells
@@ -1091,12 +1166,53 @@ mod tests {
                         ElementFacts {
                             role: role.to_string(),
                             secret: *secret,
+                            paste: false,
                             frame: None,
                         },
                     )
                 })
                 .collect(),
         }
+    }
+
+    /// A control named for pasting is not pressed — by a click or a key —
+    /// whatever the grant: it would write the user's clipboard into the
+    /// window. Scrolling over it is nothing of the kind.
+    #[test]
+    fn a_paste_control_is_not_pressed() {
+        let mut book = SnapshotBook::default();
+        let mut snapshot = facts("s00000001", &[(4, "AXMenuItem", false)]);
+        if let Some(paste) = snapshot.elements.get_mut(&4) {
+            paste.paste = true;
+        }
+        book.record(1, 10, Some(snapshot));
+        let at = DriverTarget::Element(element("s00000001", 4));
+        let click = WindowAction::Click {
+            at: at.clone(),
+            button: PointerButton::Left,
+            count: 1,
+            modifiers: Modifiers::default(),
+        };
+        let key = WindowAction::Key {
+            element: Some(element("s00000001", 4)),
+            chord: Chord {
+                key: Key::Return,
+                modifiers: Modifiers::default(),
+            },
+        };
+        for pressed in [click, key] {
+            assert_eq!(
+                book.check(1, 10, &pressed, None).unwrap_err().code,
+                HelperErrorCode::PasteRefused
+            );
+        }
+        let scroll = WindowAction::Scroll {
+            at: Some(at),
+            direction: crate::computer::types::ScrollDirection::Down,
+            amount: 1,
+            unit: crate::computer::types::ScrollUnit::Line,
+        };
+        assert!(book.check(1, 10, &scroll, None).is_ok());
     }
 
     fn element(id: &str, index: u32) -> ElementRef {

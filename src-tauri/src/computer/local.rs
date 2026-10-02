@@ -727,6 +727,7 @@ impl ComputerBackend for LocalBackend {
             max_depth: options.max_depth,
             max_elements: options.max_elements,
             query: options.query,
+            app_menus: options.app_menus,
         })
         .await
     }

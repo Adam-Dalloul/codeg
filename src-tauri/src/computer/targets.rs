@@ -17,6 +17,13 @@
 //! Windows draws for it — that process's run is part of the identity too:
 //! the frame is that run's window, and another run of it in the same frame is
 //! another window.
+//!
+//! **An application can be shared as a whole** ([`AppIdentity`]): every window
+//! of it then carries the application's grant ([`GrantScope::App`]) — the
+//! ones it opens later too, as listings find them — and the application's
+//! one clock, which any of them being used keeps running. Ending the
+//! application's grant ends every window's share of it; a window's share
+//! cannot be changed on its own while the application is shared.
 
 use std::collections::{BTreeSet, HashMap};
 use std::sync::Mutex;
@@ -26,9 +33,9 @@ use serde::{Deserialize, Serialize};
 
 use super::agent::{
     generation, grantable, level_of, visible_title, Blocklist, ComputerGrant, ComputerGrantPayload,
-    GrantChange, GrantLevel, NotGrantable, SelfIdentity,
+    GrantChange, GrantLevel, GrantScope, NotGrantable, SelfIdentity,
 };
-use super::keys::{classify, Chord, ChordClass, Platform};
+use super::keys::{classify, classify_for_app, Chord, ChordClass, Platform};
 use super::protocol::{
     DriverTarget, ElementRef, ProcessRun, RawAct, RawApp, RawWindow, WindowAction, WindowPoint,
 };
@@ -129,6 +136,10 @@ impl TargetEntry {
             minimized: self.minimized,
             hidden: self.hidden,
             level,
+            whole_app: self
+                .grant
+                .as_ref()
+                .is_some_and(|g| g.scope == GrantScope::App),
             title: visible_title(level, &self.title),
             note: grantable(&self.app, me, blocklist)
                 .err()
@@ -148,6 +159,69 @@ pub struct SharedWindow {
     pub level: GrantLevel,
     pub granted_at: i64,
     pub last_used_at: i64,
+    /// Shared with its whole application ([`SharedApp`]), not on its own.
+    #[serde(default)]
+    pub whole_app: bool,
+    /// The share of that application, when it is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_id: Option<String>,
+}
+
+/// Which application, exactly: the run of the process that owns its
+/// windows, which application that is (a frame host is several), and the run
+/// drawing inside its frames where another process does. An application
+/// relaunched is another one, never shared.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct AppIdentity {
+    pub pid: u32,
+    pub started_at: u64,
+    pub key: String,
+    pub content: Option<ProcessRun>,
+}
+
+impl AppIdentity {
+    /// The application `entry` is a window of; `None` for one that cannot be
+    /// told (see [`NotGrantable::Unidentified`]).
+    pub fn of(entry: &TargetEntry) -> Option<Self> {
+        Some(Self {
+            pid: entry.identity.pid,
+            started_at: entry.identity.started_at?,
+            key: entry.app.key()?.to_string(),
+            content: entry.identity.content,
+        })
+    }
+
+    /// Whether `app`, as a listing of applications names it, is this one.
+    fn names(&self, app: &RawApp) -> bool {
+        self.content.is_none()
+            && app.pid == self.pid
+            && app.started_at == Some(self.started_at)
+            && app.key() == Some(self.key.as_str())
+    }
+}
+
+/// An application shared as a whole.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AppShare {
+    /// codeg's own name for the share, for the panel to change or end it by.
+    pub app_id: String,
+    /// Its clock is the application's: any window of it being used moves it.
+    pub grant: ComputerGrant,
+    pub app: RawApp,
+}
+
+/// An application shared as a whole, for codeg's own UI.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SharedApp {
+    pub app_id: String,
+    pub app_name: String,
+    pub app_key: String,
+    pub level: GrantLevel,
+    pub granted_at: i64,
+    pub last_used_at: i64,
+    /// How many of its windows are shared with it now.
+    pub windows: u32,
 }
 
 /// The latest snapshot an agent read of a window: the generation that named
@@ -223,6 +297,9 @@ pub struct ReadTicket {
     pub epoch: u64,
     pub app: RawApp,
     pub bounds: Rect,
+    /// Shared on its own, or with its application — whose menus a read then
+    /// takes in too.
+    pub scope: GrantScope,
 }
 
 /// Why an action may not go ahead, before anything is sent.
@@ -255,6 +332,13 @@ pub enum ActDenied {
     NoPointing,
     /// Keys held over a drag where the driver would drag without them.
     DragModifiers,
+    /// A key that is the desktop's own, which not even a grant on the whole
+    /// application reaches.
+    DesktopChord,
+    /// Something only an application shared as a whole allows — its menus.
+    AppGrantRequired,
+    /// A menu command on a system whose driver cannot choose one (Windows).
+    MenusUnavailable,
 }
 
 /// How a ref or point is out of date.
@@ -346,6 +430,17 @@ pub enum ShareError {
     NoSuchTarget,
     Gone,
     NotGrantable(NotGrantable),
+    /// The window is shared with its whole application: what it is shared
+    /// for is the application's, and changes with it.
+    AppShared,
+}
+
+/// What sharing an application, or ending its share, changed: the windows
+/// whose share moved with it, and whether the application's own did.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct AppChange {
+    pub windows: Vec<ComputerGrantPayload>,
+    pub app_changed: bool,
 }
 
 #[derive(Default)]
@@ -353,6 +448,8 @@ struct Inner {
     next_id: u64,
     entries: HashMap<String, TargetEntry>,
     by_identity: HashMap<WindowIdentity, String>,
+    next_app_id: u64,
+    apps: HashMap<AppIdentity, AppShare>,
 }
 
 /// See the module note.
@@ -381,7 +478,8 @@ impl TargetTable {
     /// application's windows says nothing about anyone else's.
     ///
     /// Returns the entries for the listed windows, in listing order, and the
-    /// grants that ended because their window is gone.
+    /// grants that changed: ended because their window is gone, or begun
+    /// because the window's application is shared as a whole.
     pub fn observe(
         &self,
         windows: &[RawWindow],
@@ -450,6 +548,22 @@ impl TargetTable {
                 ended.push(payload);
             }
         }
+        // A window of an application shared as a whole is shared with it as
+        // soon as a listing finds it a window a person could mean.
+        {
+            let Inner { entries, apps, .. } = &mut *inner;
+            for id in &seen {
+                let Some(entry) = entries.get_mut(id) else {
+                    continue;
+                };
+                if entry.grant.is_some() || entry.gone || !entry.worth_listing() {
+                    continue;
+                }
+                if let Some(share) = AppIdentity::of(entry).and_then(|app| apps.get(&app)) {
+                    ended.extend(Self::grant_with_app(entry, share));
+                }
+            }
+        }
 
         let entries = seen
             .iter()
@@ -504,7 +618,9 @@ impl TargetTable {
     /// Share a window at `level`, or stop sharing it at [`GrantLevel::None`].
     ///
     /// `Ok(None)` when nothing changed — the window was already at that level
-    /// — so the caller neither emits an event nor restarts the idle clock.
+    /// — so the caller neither emits an event nor restarts the idle clock. A
+    /// window shared with its whole application changes only with it
+    /// ([`ShareError::AppShared`]).
     pub fn share(
         &self,
         target_id: &str,
@@ -514,10 +630,16 @@ impl TargetTable {
         blocklist: &Blocklist,
     ) -> Result<Option<ComputerGrantPayload>, ShareError> {
         let mut inner = self.lock();
-        let entry = inner
-            .entries
-            .get_mut(target_id)
-            .ok_or(ShareError::NoSuchTarget)?;
+        let Inner { entries, apps, .. } = &mut *inner;
+        let entry = entries.get_mut(target_id).ok_or(ShareError::NoSuchTarget)?;
+        let with_app = entry
+            .grant
+            .as_ref()
+            .is_some_and(|g| g.scope == GrantScope::App)
+            || (!entry.gone && AppIdentity::of(entry).is_some_and(|app| apps.contains_key(&app)));
+        if with_app {
+            return Err(ShareError::AppShared);
+        }
         if level == GrantLevel::None {
             return Ok(Self::revoke_entry(entry, GrantChange::Revoked));
         }
@@ -548,6 +670,156 @@ impl TargetTable {
         }))
     }
 
+    /// Share an application as a whole at `level` — the one `target` names —
+    /// or end its share at [`GrantLevel::None`]. Every window of it codeg has
+    /// named and a person could mean takes the application's grant at its
+    /// level, one shared on its own before included; the ones it opens later
+    /// take it as listings find them. Ending it ends every window's share of
+    /// it.
+    pub fn share_app(
+        &self,
+        target: AppTarget<'_>,
+        level: GrantLevel,
+        now: i64,
+        me: &SelfIdentity,
+        blocklist: &Blocklist,
+    ) -> Result<AppChange, ShareError> {
+        let mut inner = self.lock();
+        let Inner {
+            entries,
+            apps,
+            next_app_id,
+            ..
+        } = &mut *inner;
+        let (identity, app) = match target {
+            AppTarget::Window(target_id) => {
+                let entry = entries.get(target_id).ok_or(ShareError::NoSuchTarget)?;
+                if entry.gone {
+                    return Err(ShareError::Gone);
+                }
+                let identity = AppIdentity::of(entry)
+                    .ok_or(ShareError::NotGrantable(NotGrantable::Unidentified))?;
+                (identity, entry.app.clone())
+            }
+            AppTarget::Share(app_id) => match apps.iter().find(|(_, s)| s.app_id == app_id) {
+                Some((identity, share)) => (identity.clone(), share.app.clone()),
+                None if level == GrantLevel::None => return Ok(AppChange::default()),
+                None => return Err(ShareError::NoSuchTarget),
+            },
+        };
+        if level == GrantLevel::None {
+            return Ok(Self::end_app(
+                entries,
+                apps,
+                &identity,
+                GrantChange::Revoked,
+            ));
+        }
+        grantable(&app, me, blocklist).map_err(ShareError::NotGrantable)?;
+        let app_changed = match apps.get_mut(&identity) {
+            Some(share) if share.grant.level == level => false,
+            // The same share at another level: its clock keeps running.
+            Some(share) => {
+                share.grant.level = level;
+                true
+            }
+            None => {
+                *next_app_id += 1;
+                apps.insert(
+                    identity.clone(),
+                    AppShare {
+                        app_id: format!("a{next_app_id}"),
+                        grant: ComputerGrant::of_app(level, now),
+                        app,
+                    },
+                );
+                true
+            }
+        };
+        let Some(share) = apps.get(&identity) else {
+            return Ok(AppChange::default());
+        };
+        let windows = entries
+            .values_mut()
+            .filter(|e| !e.gone && (e.grant.is_some() || e.worth_listing()))
+            .filter(|e| AppIdentity::of(e).as_ref() == Some(&identity))
+            .filter_map(|e| Self::grant_with_app(e, share))
+            .collect();
+        Ok(AppChange {
+            windows,
+            app_changed,
+        })
+    }
+
+    /// Give `entry` its share of the grant on its whole application, at that
+    /// grant's level and on its clock. A window already shared keeps the
+    /// reads made under its grant, as a change of level does.
+    fn grant_with_app(entry: &mut TargetEntry, share: &AppShare) -> Option<ComputerGrantPayload> {
+        let level = share.grant.level;
+        match entry.grant.as_mut() {
+            Some(grant) if grant.scope == GrantScope::App && grant.level == level => return None,
+            Some(grant) => {
+                grant.level = level;
+                grant.scope = GrantScope::App;
+            }
+            None => {
+                entry.grant = Some(share.grant.clone());
+                entry.epoch += 1;
+                entry.reads = 0;
+                entry.snapshot_mark = None;
+                entry.capture_mark = None;
+            }
+        }
+        Some(ComputerGrantPayload {
+            target_id: entry.target_id.clone(),
+            change: GrantChange::Granted,
+            level,
+        })
+    }
+
+    /// End the share of application `identity`, and every window's share of
+    /// it.
+    fn end_app(
+        entries: &mut HashMap<String, TargetEntry>,
+        apps: &mut HashMap<AppIdentity, AppShare>,
+        identity: &AppIdentity,
+        change: GrantChange,
+    ) -> AppChange {
+        let app_changed = apps.remove(identity).is_some();
+        let windows = entries
+            .values_mut()
+            .filter(|e| AppIdentity::of(e).as_ref() == Some(identity))
+            .filter_map(|e| Self::revoke_entry(e, change))
+            .collect();
+        AppChange {
+            windows,
+            app_changed,
+        }
+    }
+
+    /// End the grant `target_id` holds: its own, or — for a window shared
+    /// with its whole application — the application's, with every window's
+    /// share of it.
+    fn end_grant(
+        entries: &mut HashMap<String, TargetEntry>,
+        apps: &mut HashMap<AppIdentity, AppShare>,
+        target_id: &str,
+        change: GrantChange,
+    ) -> Vec<ComputerGrantPayload> {
+        let Some(entry) = entries.get_mut(target_id) else {
+            return Vec::new();
+        };
+        let app = entry
+            .grant
+            .as_ref()
+            .filter(|g| g.scope == GrantScope::App)
+            .and_then(|_| AppIdentity::of(entry));
+        match app {
+            Some(app) => Self::end_app(entries, apps, &app, change).windows,
+            None => Self::revoke_entry(entry, change).into_iter().collect(),
+        }
+    }
+
     fn revoke_entry(entry: &mut TargetEntry, change: GrantChange) -> Option<ComputerGrantPayload> {
         entry.grant.take()?;
         entry.epoch += 1;
@@ -560,15 +832,22 @@ impl TargetTable {
         })
     }
 
-    /// End every grant, for one reason. Used when the user switches computer
-    /// use off, which is a statement about every window at once.
-    pub fn revoke_all(&self, change: GrantChange) -> Vec<ComputerGrantPayload> {
+    /// End every grant, for one reason — the applications shared as a whole
+    /// with them. Used when the user switches computer use off, which is a
+    /// statement about every window at once, and for Stop.
+    pub fn revoke_all(&self, change: GrantChange) -> AppChange {
         let mut inner = self.lock();
-        inner
+        let app_changed = !inner.apps.is_empty();
+        inner.apps.clear();
+        let windows = inner
             .entries
             .values_mut()
             .filter_map(|entry| Self::revoke_entry(entry, change))
-            .collect()
+            .collect();
+        AppChange {
+            windows,
+            app_changed,
+        }
     }
 
     /// The window is not the one that was shared any more (it closed, or its
@@ -582,34 +861,119 @@ impl TargetTable {
     /// unused for `ttl`, or on a window that can no longer be shared (its
     /// application joined the blocklist). Run before anything is listed, when
     /// the settings change and on a timer, so what an agent sees of a window
-    /// never reflects a grant that has already ended.
+    /// never reflects a grant that has already ended. An application shared
+    /// as a whole goes on its own clock, which its windows share.
     pub fn sweep(
         &self,
         now: i64,
         ttl: Option<Duration>,
         me: &SelfIdentity,
         blocklist: &Blocklist,
-    ) -> Vec<ComputerGrantPayload> {
+    ) -> AppChange {
         let mut inner = self.lock();
-        inner
-            .entries
-            .values_mut()
-            .filter_map(|entry| {
-                let grant = entry.grant.as_ref()?;
-                if grantable(&entry.app, me, blocklist).is_err() {
-                    Self::revoke_entry(entry, GrantChange::Revoked)
-                } else if grant.lapsed(now, ttl) {
-                    Self::revoke_entry(entry, GrantChange::Expired)
+        let Inner { entries, apps, .. } = &mut *inner;
+        let ending: Vec<(AppIdentity, GrantChange)> = apps
+            .iter()
+            .filter_map(|(identity, share)| {
+                if grantable(&share.app, me, blocklist).is_err() {
+                    Some((identity.clone(), GrantChange::Revoked))
+                } else if share.grant.lapsed(now, ttl) {
+                    Some((identity.clone(), GrantChange::Expired))
                 } else {
                     None
                 }
             })
-            .collect()
+            .collect();
+        let mut out = AppChange::default();
+        for (identity, change) in ending {
+            out.absorb(Self::end_app(entries, apps, &identity, change));
+        }
+        for entry in entries.values_mut() {
+            let Some(grant) = entry.grant.as_ref() else {
+                continue;
+            };
+            let change = if grantable(&entry.app, me, blocklist).is_err() {
+                Some(GrantChange::Revoked)
+            } else if grant.scope == GrantScope::App {
+                // A share left of an application whose own has ended.
+                let shared = AppIdentity::of(entry).is_some_and(|app| apps.contains_key(&app));
+                (!shared).then_some(GrantChange::Revoked)
+            } else if grant.lapsed(now, ttl) {
+                Some(GrantChange::Expired)
+            } else {
+                None
+            };
+            if let Some(change) = change {
+                out.windows.extend(Self::revoke_entry(entry, change));
+            }
+        }
+        out
+    }
+
+    /// End the shares of applications that no longer run — `alive` says
+    /// whether a process run still does. Their windows have gone with them;
+    /// this is the application's own share, which would otherwise wait out
+    /// its clock.
+    pub fn prune_apps(&self, alive: impl Fn(u32, u64) -> bool) -> AppChange {
+        let mut inner = self.lock();
+        let Inner { entries, apps, .. } = &mut *inner;
+        let quit: Vec<AppIdentity> = apps
+            .keys()
+            .filter(|app| {
+                !alive(app.pid, app.started_at)
+                    || app
+                        .content
+                        .is_some_and(|run| !alive(run.pid, run.started_at))
+            })
+            .cloned()
+            .collect();
+        let mut out = AppChange::default();
+        for identity in quit {
+            out.absorb(Self::end_app(
+                entries,
+                apps,
+                &identity,
+                GrantChange::TargetChanged,
+            ));
+        }
+        out
+    }
+
+    /// Whether `entry`'s grant has lapsed: on its own clock, or — shared
+    /// with its whole application — on the application's (a share whose
+    /// application's own has ended has ended with it).
+    fn lapsed(
+        entry: &TargetEntry,
+        apps: &HashMap<AppIdentity, AppShare>,
+        now: i64,
+        ttl: Option<Duration>,
+    ) -> bool {
+        match entry.grant.as_ref() {
+            None => false,
+            Some(grant) if grant.scope == GrantScope::App => AppIdentity::of(entry)
+                .and_then(|app| apps.get(&app))
+                .is_none_or(|share| share.grant.lapsed(now, ttl)),
+            Some(grant) => grant.lapsed(now, ttl),
+        }
+    }
+
+    /// A read or an action used `entry`'s grant now: its clock, and its
+    /// application's when it is shared with it, start again.
+    fn used(entry: &mut TargetEntry, apps: &mut HashMap<AppIdentity, AppShare>, now: i64) {
+        let Some(grant) = entry.grant.as_mut() else {
+            return;
+        };
+        grant.last_used_at = now;
+        if grant.scope == GrantScope::App {
+            if let Some(share) = AppIdentity::of(entry).and_then(|app| apps.get_mut(&app)) {
+                share.grant.last_used_at = now;
+            }
+        }
     }
 
     /// Check a read may start: the window is one codeg named, it is shared,
     /// and the grant has not lapsed. A lapsed grant is ended here and its
-    /// payload returned alongside the refusal, because the caller is the one
+    /// payloads returned alongside the refusal, because the caller is the one
     /// holding an emitter.
     pub fn begin_read(
         &self,
@@ -618,34 +982,40 @@ impl TargetTable {
         ttl: Option<Duration>,
         me: &SelfIdentity,
         blocklist: &Blocklist,
-    ) -> Result<ReadTicket, (ReadRefusal, Option<ComputerGrantPayload>)> {
+    ) -> Result<ReadTicket, (ReadRefusal, Vec<ComputerGrantPayload>)> {
         let mut inner = self.lock();
-        let Some(entry) = inner.entries.get_mut(target_id) else {
-            return Err((ReadRefusal::NoSuchTarget, None));
+        let Inner { entries, apps, .. } = &mut *inner;
+        let Some(entry) = entries.get(target_id) else {
+            return Err((ReadRefusal::NoSuchTarget, Vec::new()));
         };
         // Checked even for a window that holds a grant: the blocklist can grow
         // while a window is shared, and the list is what the user said last.
         if let Err(why) = grantable(&entry.app, me, blocklist) {
-            let ended = Self::revoke_entry(entry, GrantChange::Revoked);
+            let ended = Self::end_grant(entries, apps, target_id, GrantChange::Revoked);
             return Err((ReadRefusal::NotGrantable(why), ended));
         }
-        let Some(grant) = entry.grant.as_mut() else {
-            return Err((ReadRefusal::GrantRequired, None));
+        let Some(grant) = entry.grant.as_ref() else {
+            return Err((ReadRefusal::GrantRequired, Vec::new()));
         };
-        if grant.lapsed(now, ttl) {
-            let ended = Self::revoke_entry(entry, GrantChange::Expired);
+        let (level, scope) = (grant.level, grant.scope);
+        if Self::lapsed(entry, apps, now, ttl) {
+            let ended = Self::end_grant(entries, apps, target_id, GrantChange::Expired);
             return Err((ReadRefusal::GrantRequired, ended));
         }
-        if !grant.level.allows(GrantLevel::Read) {
-            return Err((ReadRefusal::GrantRequired, None));
+        if !level.allows(GrantLevel::Read) {
+            return Err((ReadRefusal::GrantRequired, Vec::new()));
         }
-        grant.last_used_at = now;
+        let Some(entry) = entries.get_mut(target_id) else {
+            return Err((ReadRefusal::NoSuchTarget, Vec::new()));
+        };
+        Self::used(entry, apps, now);
         Ok(ReadTicket {
             target_id: entry.target_id.clone(),
             identity: entry.identity,
             epoch: entry.epoch,
             app: entry.app.clone(),
             bounds: entry.bounds,
+            scope,
         })
     }
 
@@ -654,8 +1024,8 @@ impl TargetTable {
     /// by the rules as they are now. The person may have taken the grant back,
     /// or put the application on the blocklist, while the capture was in
     /// flight, and what the capture holds is exactly what they took back. A
-    /// grant the blocklist now forbids is ended here, its payload returned for
-    /// the caller to announce.
+    /// grant the blocklist now forbids is ended here, its payloads returned
+    /// for the caller to announce.
     ///
     /// Returns the generation that names this read. `mark`, when the read
     /// leaves one, becomes the window's latest snapshot or screenshot under
@@ -666,21 +1036,25 @@ impl TargetTable {
         me: &SelfIdentity,
         blocklist: &Blocklist,
         mark: Option<ReadMark>,
-    ) -> Result<String, (ReadRefusal, Option<ComputerGrantPayload>)> {
+    ) -> Result<String, (ReadRefusal, Vec<ComputerGrantPayload>)> {
         let mut inner = self.lock();
-        let Some(entry) = inner.entries.get_mut(&ticket.target_id) else {
-            return Err((ReadRefusal::GrantRequired, None));
+        let Inner { entries, apps, .. } = &mut *inner;
+        let Some(entry) = entries.get(&ticket.target_id) else {
+            return Err((ReadRefusal::GrantRequired, Vec::new()));
         };
         let still = entry.identity == ticket.identity
             && entry.epoch == ticket.epoch
             && level_of(entry.grant.as_ref()).allows(GrantLevel::Read);
         if !still {
-            return Err((ReadRefusal::GrantRequired, None));
+            return Err((ReadRefusal::GrantRequired, Vec::new()));
         }
         if let Err(why) = grantable(&entry.app, me, blocklist) {
-            let ended = Self::revoke_entry(entry, GrantChange::Revoked);
+            let ended = Self::end_grant(entries, apps, &ticket.target_id, GrantChange::Revoked);
             return Err((ReadRefusal::NotGrantable(why), ended));
         }
+        let Some(entry) = entries.get_mut(&ticket.target_id) else {
+            return Err((ReadRefusal::GrantRequired, Vec::new()));
+        };
         entry.reads += 1;
         let generation = generation(entry.epoch, entry.reads);
         match mark {
@@ -726,10 +1100,11 @@ impl TargetTable {
     /// In this order, each answered before the next is asked: the window is
     /// one codeg named; it may still be shared at all; it is shared; the grant
     /// has not lapsed; it is shared for control — and only then anything about
-    /// the action itself: keys a window grant does not reach, then every ref
-    /// against the window's latest snapshot and every point against its
-    /// latest screenshot, as the agent was given them. A refusal therefore
-    /// never says more about a window than the agent was allowed to know.
+    /// the action itself: keys and menus the grant does not reach (a window's,
+    /// or its whole application's), then every ref against the window's
+    /// latest snapshot and every point against its latest screenshot, as the
+    /// agent was given them. A refusal therefore never says more about a
+    /// window than the agent was allowed to know.
     ///
     /// Counts as use of the grant, like a read.
     pub fn begin_act(
@@ -740,32 +1115,35 @@ impl TargetTable {
         me: &SelfIdentity,
         blocklist: &Blocklist,
         request: &ComputerActRequest,
-    ) -> Result<ActTicket, (ActDenied, Option<ComputerGrantPayload>)> {
+    ) -> Result<ActTicket, (ActDenied, Vec<ComputerGrantPayload>)> {
         let mut inner = self.lock();
-        let Some(entry) = inner.entries.get_mut(target_id) else {
-            return Err((ActDenied::NoSuchTarget, None));
+        let Inner { entries, apps, .. } = &mut *inner;
+        let Some(entry) = entries.get(target_id) else {
+            return Err((ActDenied::NoSuchTarget, Vec::new()));
         };
         if let Err(why) = grantable(&entry.app, me, blocklist) {
-            let ended = Self::revoke_entry(entry, GrantChange::Revoked);
+            let ended = Self::end_grant(entries, apps, target_id, GrantChange::Revoked);
             return Err((ActDenied::NotGrantable(why), ended));
         }
-        let Some(grant) = entry.grant.as_mut() else {
-            return Err((ActDenied::GrantRequired, None));
+        let Some(grant) = entry.grant.as_ref() else {
+            return Err((ActDenied::GrantRequired, Vec::new()));
         };
-        if grant.lapsed(now, ttl) {
-            let ended = Self::revoke_entry(entry, GrantChange::Expired);
+        let level = grant.level;
+        if Self::lapsed(entry, apps, now, ttl) {
+            let ended = Self::end_grant(entries, apps, target_id, GrantChange::Expired);
             return Err((ActDenied::GrantRequired, ended));
         }
-        if !grant.level.allows(GrantLevel::Read) {
-            return Err((ActDenied::GrantRequired, None));
+        if !level.allows(GrantLevel::Read) {
+            return Err((ActDenied::GrantRequired, Vec::new()));
         }
-        if !grant.level.allows(GrantLevel::Control) {
-            return Err((ActDenied::ControlRequired, None));
+        if !level.allows(GrantLevel::Control) {
+            return Err((ActDenied::ControlRequired, Vec::new()));
         }
-        let action = resolve(entry, request).map_err(|why| (why, None))?;
-        if let Some(grant) = entry.grant.as_mut() {
-            grant.last_used_at = now;
-        }
+        let action = resolve(entry, request).map_err(|why| (why, Vec::new()))?;
+        let Some(entry) = entries.get_mut(target_id) else {
+            return Err((ActDenied::NoSuchTarget, Vec::new()));
+        };
+        Self::used(entry, apps, now);
         Ok(ActTicket {
             target_id: entry.target_id.clone(),
             identity: entry.identity,
@@ -792,6 +1170,12 @@ impl TargetTable {
                     level: grant.level,
                     granted_at: grant.granted_at,
                     last_used_at: grant.last_used_at,
+                    whole_app: grant.scope == GrantScope::App,
+                    app_id: (grant.scope == GrantScope::App)
+                        .then(|| AppIdentity::of(e))
+                        .flatten()
+                        .and_then(|app| inner.apps.get(&app))
+                        .map(|share| share.app_id.clone()),
                 })
             })
             .collect();
@@ -802,11 +1186,80 @@ impl TargetTable {
         });
         out
     }
+
+    /// Every application shared as a whole, oldest share first.
+    pub fn shared_apps(&self) -> Vec<SharedApp> {
+        let inner = self.lock();
+        let mut out: Vec<SharedApp> = inner
+            .apps
+            .iter()
+            .map(|(identity, share)| SharedApp {
+                app_id: share.app_id.clone(),
+                app_name: share.app.name.clone(),
+                app_key: identity.key.clone(),
+                level: share.grant.level,
+                granted_at: share.grant.granted_at,
+                last_used_at: share.grant.last_used_at,
+                windows: inner
+                    .entries
+                    .values()
+                    .filter(|e| {
+                        e.grant.as_ref().is_some_and(|g| g.scope == GrantScope::App)
+                            && AppIdentity::of(e).as_ref() == Some(identity)
+                    })
+                    .count() as u32,
+            })
+            .collect();
+        out.sort_by(|a, b| {
+            a.granted_at
+                .cmp(&b.granted_at)
+                .then(a.app_id.cmp(&b.app_id))
+        });
+        out
+    }
+
+    /// What `app` — as a listing of applications names it — is shared for as
+    /// a whole; [`GrantLevel::None`] when it is not.
+    pub fn app_level(&self, app: &RawApp) -> GrantLevel {
+        self.lock()
+            .apps
+            .iter()
+            .find(|(identity, _)| identity.names(app))
+            .map_or(GrantLevel::None, |(_, share)| share.grant.level)
+    }
+
+    /// The share of the application `target_id` is a window of, if it is
+    /// shared as a whole.
+    pub fn app_share_of(&self, target_id: &str) -> Option<AppShare> {
+        let inner = self.lock();
+        let entry = inner.entries.get(target_id)?;
+        let identity = AppIdentity::of(entry)?;
+        inner.apps.get(&identity).cloned()
+    }
+}
+
+/// Which application [`TargetTable::share_app`] is to share: the one a window
+/// is of, or one already shared, by its share's id.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AppTarget<'a> {
+    Window(&'a str),
+    Share(&'a str),
+}
+
+impl AppChange {
+    fn absorb(&mut self, other: AppChange) {
+        self.windows.extend(other.windows);
+        self.app_changed |= other.app_changed;
+    }
 }
 
 /// The action as the helper carries it out: keys judged for a window grant,
 /// refs and points resolved against what the agent last read of the window.
 fn resolve(entry: &TargetEntry, request: &ComputerActRequest) -> Result<WindowAction, ActDenied> {
+    let scope = entry
+        .grant
+        .as_ref()
+        .map_or(GrantScope::Window, |grant| grant.scope);
     Ok(match request {
         ComputerActRequest::Click {
             target,
@@ -814,7 +1267,7 @@ fn resolve(entry: &TargetEntry, request: &ComputerActRequest) -> Result<WindowAc
             count,
             modifiers,
         } => {
-            check_pointer_modifiers(*modifiers)?;
+            check_pointer_modifiers(*modifiers, scope)?;
             WindowAction::Click {
                 at: resolve_target(entry, target)?,
                 button: *button,
@@ -829,7 +1282,7 @@ fn resolve(entry: &TargetEntry, request: &ComputerActRequest) -> Result<WindowAc
             modifiers,
             duration_ms,
         } => {
-            check_pointer_modifiers(*modifiers)?;
+            check_pointer_modifiers(*modifiers, scope)?;
             if !super::keys::drag_carries_modifiers(*modifiers, Platform::current()) {
                 return Err(ActDenied::DragModifiers);
             }
@@ -867,7 +1320,7 @@ fn resolve(entry: &TargetEntry, request: &ComputerActRequest) -> Result<WindowAc
             submit: *submit,
         },
         ComputerActRequest::Key { target, chord, .. } => {
-            check_chord(chord, target.is_some())?;
+            check_chord(chord, target.is_some(), scope)?;
             WindowAction::Key {
                 element: target
                     .as_ref()
@@ -879,7 +1332,7 @@ fn resolve(entry: &TargetEntry, request: &ComputerActRequest) -> Result<WindowAc
         // A held key is the key pressed, again and again: each press is an
         // action of its own (see `commands::computer`).
         ComputerActRequest::HoldKey { target, chord, .. } => {
-            check_chord(chord, target.is_some())?;
+            check_chord(chord, target.is_some(), scope)?;
             WindowAction::Key {
                 element: target
                     .as_ref()
@@ -893,6 +1346,23 @@ fn resolve(entry: &TargetEntry, request: &ComputerActRequest) -> Result<WindowAc
             value: value.clone(),
         },
         ComputerActRequest::Restore => WindowAction::Restore,
+        ComputerActRequest::InvokeMenu { path } => {
+            if scope != GrantScope::App {
+                return Err(ActDenied::AppGrantRequired);
+            }
+            if Platform::current() == Platform::Windows {
+                return Err(ActDenied::MenusUnavailable);
+            }
+            // A paste by its menu is a paste: it writes the person's
+            // clipboard into the window ("Paste Special", "Unformatted Text"
+            // included). The helper checks the command's own shortcut too.
+            if path.iter().any(|title| super::keys::names_paste(title)) {
+                return Err(ActDenied::Paste);
+            }
+            WindowAction::InvokeMenu {
+                path: path.iter().map(|title| title.trim().to_string()).collect(),
+            }
+        }
     })
 }
 
@@ -900,20 +1370,36 @@ fn resolve(entry: &TargetEntry, request: &ComputerActRequest) -> Result<WindowAc
 /// own default.
 const DEFAULT_DRAG_MS: u32 = 500;
 
-/// Whether a window grant reaches `modifiers` held over a click or a drag
-/// (see `keys::pointer_modifiers_allowed`).
-fn check_pointer_modifiers(modifiers: super::keys::Modifiers) -> Result<(), ActDenied> {
-    if super::keys::pointer_modifiers_allowed(modifiers, Platform::current()) {
-        Ok(())
-    } else {
-        Err(ActDenied::ChordBeyond)
+/// Whether the grant reaches `modifiers` held over a click or a drag: a
+/// window's (see `keys::pointer_modifiers_allowed`), or a whole
+/// application's (`keys::pointer_modifiers_allowed_for_app`).
+fn check_pointer_modifiers(
+    modifiers: super::keys::Modifiers,
+    scope: GrantScope,
+) -> Result<(), ActDenied> {
+    let platform = Platform::current();
+    let allowed = match scope {
+        GrantScope::Window => super::keys::pointer_modifiers_allowed(modifiers, platform),
+        GrantScope::App => super::keys::pointer_modifiers_allowed_for_app(modifiers, platform),
+    };
+    match (allowed, scope) {
+        (true, _) => Ok(()),
+        (false, GrantScope::Window) => Err(ActDenied::ChordBeyond),
+        (false, GrantScope::App) => Err(ActDenied::DesktopChord),
     }
 }
 
-/// Whether a window grant reaches `chord` — and, for a key that types a
-/// character, that it is aimed at a named element.
-fn check_chord(chord: &Chord, names_element: bool) -> Result<(), ActDenied> {
-    match classify(chord, Platform::current()) {
+/// Whether the grant — a window's, or a whole application's — reaches
+/// `chord`, and, for a key that types a character, that it is aimed at a
+/// named element.
+fn check_chord(chord: &Chord, names_element: bool, scope: GrantScope) -> Result<(), ActDenied> {
+    let platform = Platform::current();
+    let class = match scope {
+        GrantScope::Window => classify(chord, platform),
+        GrantScope::App => classify_for_app(chord, platform),
+    };
+    match class {
+        ChordClass::Beyond if scope == GrantScope::App => Err(ActDenied::DesktopChord),
         ChordClass::Beyond => Err(ActDenied::ChordBeyond),
         ChordClass::Paste => Err(ActDenied::Paste),
         ChordClass::Window if chord.types_text() && !names_element => Err(ActDenied::NeedsElement),
@@ -1202,12 +1688,15 @@ mod tests {
             .begin_read(&id, 1_000 + 1_000, ttl, &me(), &Blocklist::new(&[]))
             .unwrap_err();
         assert_eq!(refused.0, ReadRefusal::GrantRequired);
-        assert_eq!(refused.1.map(|p| p.change), Some(GrantChange::Expired));
+        assert_eq!(
+            refused.1.iter().map(|p| p.change).collect::<Vec<_>>(),
+            vec![GrantChange::Expired]
+        );
 
         share(&table, &id, GrantLevel::Read);
         let swept = table.sweep(1_000 + 1_000, ttl, &me(), &Blocklist::new(&[]));
-        assert_eq!(swept.len(), 1);
-        assert_eq!(swept[0].change, GrantChange::Expired);
+        assert_eq!(swept.windows.len(), 1);
+        assert_eq!(swept.windows[0].change, GrantChange::Expired);
         assert!(table.shared().is_empty());
     }
 
@@ -1224,8 +1713,8 @@ mod tests {
 
         share(&table, &id, GrantLevel::Read);
         let swept = table.sweep(2_000, None, &me(), &grown);
-        assert_eq!(swept.len(), 1);
-        assert_eq!(swept[0].change, GrantChange::Revoked);
+        assert_eq!(swept.windows.len(), 1);
+        assert_eq!(swept.windows[0].change, GrantChange::Revoked);
         let (listed, _) = table.observe(&[window(10, 111, 5, "Draft")], None);
         assert_eq!(listed[0].agent_summary(&me(), &grown).title, None);
 
@@ -1235,11 +1724,12 @@ mod tests {
         let ticket = table
             .begin_read(&id, 2_000, None, &me(), &Blocklist::new(&[]))
             .unwrap();
-        let (why, ended) = table
-            .finish_read(&ticket, &me(), &grown, None)
-            .unwrap_err();
+        let (why, ended) = table.finish_read(&ticket, &me(), &grown, None).unwrap_err();
         assert_eq!(why, ReadRefusal::NotGrantable(NotGrantable::Blocklisted));
-        assert_eq!(ended.map(|p| p.change), Some(GrantChange::Revoked));
+        assert_eq!(
+            ended.iter().map(|p| p.change).collect::<Vec<_>>(),
+            vec![GrantChange::Revoked]
+        );
         assert!(table.shared().is_empty());
     }
 
@@ -1302,7 +1792,10 @@ mod tests {
             refused.0,
             ReadRefusal::NotGrantable(NotGrantable::Blocklisted)
         );
-        assert_eq!(refused.1.map(|p| p.change), Some(GrantChange::Revoked));
+        assert_eq!(
+            refused.1.iter().map(|p| p.change).collect::<Vec<_>>(),
+            vec![GrantChange::Revoked]
+        );
     }
 
     /// The title a listing hands an agent follows the grant; the person's own
@@ -1381,9 +1874,274 @@ mod tests {
             share(&table, &entry.target_id, GrantLevel::Read);
         }
         let ended = table.revoke_all(GrantChange::Disabled);
-        assert_eq!(ended.len(), 2);
-        assert!(ended.iter().all(|p| p.change == GrantChange::Disabled));
+        assert_eq!(ended.windows.len(), 2);
+        assert!(ended
+            .windows
+            .iter()
+            .all(|p| p.change == GrantChange::Disabled));
         assert!(table.shared().is_empty());
+    }
+
+    // ── applications shared as a whole ─────────────────────────────────────
+
+    fn share_app(
+        table: &TargetTable,
+        target: AppTarget<'_>,
+        level: GrantLevel,
+    ) -> Result<AppChange, ShareError> {
+        table.share_app(target, level, 1_000, &me(), &Blocklist::new(&[]))
+    }
+
+    /// Sharing an application shares every window of it a person could mean,
+    /// a window shared on its own before included, and the ones a later
+    /// listing finds; nothing of another application. Its windows change
+    /// with it and only with it, and ending it ends them all.
+    #[test]
+    fn an_application_shared_as_a_whole_takes_every_window_of_it() {
+        let table = TargetTable::new();
+        let (listed, _) = table.observe(
+            &[
+                window(10, 111, 5, "One"),
+                window(10, 111, 6, "Two"),
+                window(20, 222, 7, "Other"),
+            ],
+            None,
+        );
+        let ids: Vec<String> = listed.iter().map(|e| e.target_id.clone()).collect();
+        share(&table, &ids[1], GrantLevel::Read);
+        let change = share_app(&table, AppTarget::Window(&ids[0]), GrantLevel::Control).unwrap();
+        assert!(change.app_changed);
+        assert_eq!(change.windows.len(), 2);
+        let shared = table.shared();
+        assert_eq!(shared.len(), 2);
+        assert!(shared
+            .iter()
+            .all(|w| w.whole_app && w.level == GrantLevel::Control));
+        let apps = table.shared_apps();
+        assert_eq!(apps.len(), 1);
+        assert_eq!(apps[0].windows, 2);
+        assert_eq!(apps[0].level, GrantLevel::Control);
+        assert_eq!(
+            table.app_level(&raw_app(10, 111, "com.apple.TextEdit")),
+            GrantLevel::Control
+        );
+        assert_eq!(
+            table.app_level(&raw_app(20, 222, "com.apple.TextEdit")),
+            GrantLevel::None
+        );
+        assert_eq!(
+            table.share(
+                &ids[0],
+                GrantLevel::Read,
+                1_000,
+                &me(),
+                &Blocklist::new(&[])
+            ),
+            Err(ShareError::AppShared)
+        );
+
+        // A window it opens later is shared with it once a listing finds it.
+        let (listed, changed) = table.observe(
+            &[
+                window(10, 111, 5, "One"),
+                window(10, 111, 6, "Two"),
+                window(10, 111, 8, "Three"),
+                window(20, 222, 7, "Other"),
+            ],
+            None,
+        );
+        assert_eq!(changed.len(), 1);
+        assert_eq!(changed[0].change, GrantChange::Granted);
+        assert!(
+            listed[2]
+                .agent_summary(&me(), &Blocklist::new(&[]))
+                .whole_app
+        );
+        assert!(
+            !listed[3]
+                .agent_summary(&me(), &Blocklist::new(&[]))
+                .whole_app
+        );
+        assert_eq!(table.shared_apps()[0].windows, 3);
+
+        let app_id = table.shared_apps()[0].app_id.clone();
+        let change = share_app(&table, AppTarget::Share(&app_id), GrantLevel::Read).unwrap();
+        assert_eq!(change.windows.len(), 3);
+        assert!(table.shared().iter().all(|w| w.level == GrantLevel::Read));
+        let change = share_app(&table, AppTarget::Share(&app_id), GrantLevel::None).unwrap();
+        assert!(change.app_changed);
+        assert_eq!(change.windows.len(), 3);
+        assert!(table.shared().is_empty());
+        assert!(table.shared_apps().is_empty());
+        // Ending what has already ended changes nothing.
+        assert_eq!(
+            share_app(&table, AppTarget::Share(&app_id), GrantLevel::None),
+            Ok(AppChange::default())
+        );
+    }
+
+    /// An application's windows go on its one clock: using any of them keeps
+    /// all of them shared, and when it runs out they all end together.
+    #[test]
+    fn an_application_share_runs_on_one_clock() {
+        let ttl = Some(Duration::from_secs(10));
+        let table = TargetTable::new();
+        let (listed, _) = table.observe(
+            &[window(10, 111, 5, "One"), window(10, 111, 6, "Two")],
+            None,
+        );
+        let (one, two) = (listed[0].target_id.clone(), listed[1].target_id.clone());
+        share_app(&table, AppTarget::Window(&one), GrantLevel::Read).unwrap();
+        table
+            .begin_read(&one, 9_000, ttl, &me(), &Blocklist::new(&[]))
+            .unwrap();
+        // Two's own grant was last used at 1 000; the application's at 9 000.
+        let ticket = table
+            .begin_read(&two, 15_000, ttl, &me(), &Blocklist::new(&[]))
+            .unwrap();
+        assert_eq!(ticket.scope, GrantScope::App);
+        let ended = table.sweep(26_000, ttl, &me(), &Blocklist::new(&[]));
+        assert!(ended.app_changed);
+        assert_eq!(ended.windows.len(), 2);
+        assert!(ended
+            .windows
+            .iter()
+            .all(|p| p.change == GrantChange::Expired));
+        assert!(table.shared_apps().is_empty());
+    }
+
+    /// An application on the blocklist, one that quit and Stop each end its
+    /// share as a whole.
+    #[test]
+    fn an_application_share_ends_with_the_blocklist_its_process_and_stop() {
+        let table = TargetTable::new();
+        let (listed, _) = table.observe(&[window(10, 111, 5, "One")], None);
+        let id = listed[0].target_id.clone();
+
+        share_app(&table, AppTarget::Window(&id), GrantLevel::Read).unwrap();
+        let grown = Blocklist::new(&["com.apple.TextEdit".to_string()]);
+        let ended = table.sweep(2_000, None, &me(), &grown);
+        assert!(ended.app_changed);
+        assert_eq!(ended.windows[0].change, GrantChange::Revoked);
+
+        share_app(&table, AppTarget::Window(&id), GrantLevel::Read).unwrap();
+        assert!(!table.prune_apps(|_, _| true).app_changed);
+        let quit = table.prune_apps(|pid, started_at| (pid, started_at) != (10, 111));
+        assert!(quit.app_changed);
+        assert!(table.shared_apps().is_empty());
+
+        share_app(&table, AppTarget::Window(&id), GrantLevel::Read).unwrap();
+        let stopped = table.revoke_all(GrantChange::Stopped);
+        assert!(stopped.app_changed);
+        assert!(table.shared_apps().is_empty());
+        assert!(table.shared().is_empty());
+        // A window of it found after Stop is not shared again.
+        let (_, changed) = table.observe(
+            &[window(10, 111, 5, "One"), window(10, 111, 9, "New")],
+            None,
+        );
+        assert!(changed.is_empty());
+    }
+
+    /// Menus, the application's own shortcuts and Option over the pointer
+    /// need the application shared as a whole; the desktop's shortcuts and a
+    /// paste stay out of reach even then.
+    #[test]
+    fn menus_and_application_shortcuts_need_the_whole_application() {
+        let table = TargetTable::new();
+        let (id, _, capture) = shared_and_read(&table, GrantLevel::Control);
+        let platform = Platform::current();
+        let primary = |key: char| ComputerActRequest::Key {
+            target: None,
+            chord: Chord {
+                key: Key::Char(key),
+                modifiers: if platform == Platform::Mac {
+                    Modifiers {
+                        meta: true,
+                        ..Modifiers::default()
+                    }
+                } else {
+                    Modifiers {
+                        control: true,
+                        ..Modifiers::default()
+                    }
+                },
+            },
+            repeat: 1,
+        };
+        let switch = ComputerActRequest::Key {
+            target: None,
+            chord: Chord {
+                key: Key::Tab,
+                modifiers: if platform == Platform::Mac {
+                    Modifiers {
+                        meta: true,
+                        ..Modifiers::default()
+                    }
+                } else {
+                    Modifiers {
+                        alt: true,
+                        ..Modifiers::default()
+                    }
+                },
+            },
+            repeat: 1,
+        };
+        let menu = ComputerActRequest::InvokeMenu {
+            path: vec![" File ".into(), "Close".into()],
+        };
+        let option_click = ComputerActRequest::Click {
+            target: AgentTarget::Point(PointTarget {
+                generation: capture.clone(),
+                x: 1.0,
+                y: 1.0,
+            }),
+            button: PointerButton::Left,
+            count: 1,
+            modifiers: Modifiers {
+                alt: true,
+                ..Modifiers::default()
+            },
+        };
+
+        assert_eq!(act(&table, &id, &menu), Err(ActDenied::AppGrantRequired));
+        assert_eq!(act(&table, &id, &primary('q')), Err(ActDenied::ChordBeyond));
+        assert_eq!(act(&table, &id, &switch), Err(ActDenied::ChordBeyond));
+        if platform == Platform::Mac {
+            assert_eq!(act(&table, &id, &option_click), Err(ActDenied::ChordBeyond));
+        }
+
+        share_app(&table, AppTarget::Window(&id), GrantLevel::Control).unwrap();
+        match act(&table, &id, &menu) {
+            Ok(WindowAction::InvokeMenu { path }) => {
+                assert_ne!(platform, Platform::Windows);
+                assert_eq!(path, vec!["File".to_string(), "Close".to_string()]);
+            }
+            Err(ActDenied::MenusUnavailable) => assert_eq!(platform, Platform::Windows),
+            other => panic!("{other:?}"),
+        }
+        assert!(act(&table, &id, &primary('q')).is_ok());
+        assert_eq!(act(&table, &id, &primary('v')), Err(ActDenied::Paste));
+        // A paste by its menu is a paste, wherever on the way it is named.
+        if platform != Platform::Windows {
+            for path in [
+                vec!["Edit".to_string(), "Paste".to_string()],
+                vec![
+                    "Edit".to_string(),
+                    "Paste Special…".to_string(),
+                    "Unformatted Text".to_string(),
+                ],
+            ] {
+                assert_eq!(
+                    act(&table, &id, &ComputerActRequest::InvokeMenu { path }),
+                    Err(ActDenied::Paste)
+                );
+            }
+        }
+        assert_eq!(act(&table, &id, &switch), Err(ActDenied::DesktopChord));
+        // The share of a window the application took on keeps what was read
+        // under its own: the screenshot's points still resolve.
+        assert!(act(&table, &id, &option_click).is_ok());
     }
 
     // ── acting ─────────────────────────────────────────────────────────────
@@ -1938,6 +2696,9 @@ mod tests {
             .begin_act(&id, 30_000, ttl, &me(), &Blocklist::new(&[]), &click_ref(&snapshot, 1))
             .unwrap_err();
         assert_eq!(why, ActDenied::GrantRequired);
-        assert_eq!(ended.map(|p| p.change), Some(GrantChange::Expired));
+        assert_eq!(
+            ended.iter().map(|p| p.change).collect::<Vec<_>>(),
+            vec![GrantChange::Expired]
+        );
     }
 }

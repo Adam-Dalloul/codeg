@@ -5218,7 +5218,8 @@
     "shared": {
       "title": "{count, plural, =0 {未分享視窗} other {已分享 # 個視窗}}",
       "empty": "智慧體能列出你的視窗，但在你分享之前讀不到任何一個。",
-      "stop": "停止"
+      "stop": "停止",
+      "wholeApp": "整個應用程式 · {count, plural, =0 {沒有開啟的視窗} other {# 個視窗}}"
     },
     "level": {
       "read": "可讀取",
@@ -5241,6 +5242,7 @@
       "hold-key": "按住按鍵",
       "set-value": "設值",
       "restore": "還原視窗",
+      "menu": "選單",
       "outcome": {
         "done": "完成",
         "refused": "被拒",
@@ -5274,6 +5276,10 @@
       "levelRead": "可讀取",
       "levelControl": "可操作",
       "levelLabel": "智慧體對 {app} 的權限",
+      "wholeApp": "整個應用程式",
+      "wholeAppHint": "{app} 的所有視窗（包括之後開啟的），以及它的選單和快速鍵",
+      "appLevelLabel": "智慧體對整個 {app} 的權限",
+      "viaApp": "隨應用程式分享",
       "shareAll": "全部分享",
       "shareAllRead": "全部允許讀取",
       "shareAllControl": "全部允許讀取並操作",

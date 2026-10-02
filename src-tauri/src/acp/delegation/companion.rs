@@ -189,8 +189,9 @@ pub struct CompanionFeatures {
     pub browser_eval: bool,
     /// Computer use: `computer_list_apps` / `computer_list_windows` /
     /// `computer_screenshot` / `computer_snapshot` / `computer_verify`, and
-    /// the actions `computer_click` / `computer_scroll` / `computer_type` /
-    /// `computer_press_key` / `computer_set_value` / `computer_restore`. Off
+    /// the actions `computer_click` / `computer_drag` / `computer_scroll` /
+    /// `computer_type` / `computer_press_key` / `computer_hold_key` /
+    /// `computer_set_value` / `computer_restore` / `computer_invoke_menu`. Off
     /// unless the desktop build's setting says otherwise — the listing names
     /// the applications on the user's screen. Reading a window, and acting on
     /// it, is then gated per window by the person, behind this switch.
@@ -278,7 +279,8 @@ impl CompanionFeatures {
             | "computer_press_key"
             | "computer_hold_key"
             | "computer_set_value"
-            | "computer_restore" => self.computer,
+            | "computer_restore"
+            | "computer_invoke_menu" => self.computer,
             "delegate_to_agent"
             | "get_delegation_status"
             | "cancel_delegation"
@@ -959,9 +961,15 @@ async fn build_tools_call_spawn(
             )
             .await
         }
-        "computer_click" | "computer_drag" | "computer_scroll" | "computer_type"
-        | "computer_press_key" | "computer_hold_key" | "computer_set_value"
-        | "computer_restore" => {
+        "computer_click"
+        | "computer_drag"
+        | "computer_scroll"
+        | "computer_type"
+        | "computer_press_key"
+        | "computer_hold_key"
+        | "computer_set_value"
+        | "computer_restore"
+        | "computer_invoke_menu" => {
             let (target_id, request, delivery) = match computer_act_request(&name, &arguments) {
                 Ok(parsed) => parsed,
                 Err(msg) => return LineAction::Respond(err(id, -32602, msg)),
@@ -2647,6 +2655,9 @@ pub fn render_computer_apps_result(outcome: &Value) -> Value {
                 if app.get("active").and_then(Value::as_bool) == Some(true) {
                     out.push_str("  [frontmost]");
                 }
+                if let Some(level) = app.get("level").and_then(Value::as_str) {
+                    out.push_str(&format!("  [shared as a whole: {level}]"));
+                }
                 if let Some(note) = app.get("note").and_then(Value::as_str) {
                     out.push_str(&format!("  — {note}"));
                 }
@@ -2735,6 +2746,8 @@ pub fn render_computer_windows_result(outcome: &Value) -> Value {
                 }
                 if blocked {
                     out.push_str(&format!("  [never shareable: {}]", s("note")));
+                } else if readable && w.get("wholeApp").and_then(Value::as_bool) == Some(true) {
+                    out.push_str(&format!("  [shared: {level}, with its whole application]"));
                 } else if readable {
                     out.push_str(&format!("  [shared: {level}]"));
                 } else {
@@ -3008,6 +3021,37 @@ fn computer_modifiers(
     }
 }
 
+/// The most titles a menu path may have: the drivers' own bound.
+const MAX_MENU_PATH: usize = 16;
+
+/// A menu command's path (`path`): the titles on the way to it, from the
+/// menu bar down — one to sixteen, none of them empty.
+fn computer_menu_path(arguments: &Value, tool: &str) -> Result<Vec<String>, String> {
+    let invalid = || {
+        format!(
+            "{tool} requires `path`: the titles from the menu bar down to the command, e.g. \
+             [\"File\", \"Export\", \"PDF…\"] — one to {MAX_MENU_PATH} of them"
+        )
+    };
+    let items = arguments
+        .get("path")
+        .and_then(Value::as_array)
+        .ok_or_else(invalid)?;
+    if items.is_empty() || items.len() > MAX_MENU_PATH {
+        return Err(invalid());
+    }
+    items
+        .iter()
+        .map(|item| {
+            item.as_str()
+                .map(str::trim)
+                .filter(|title| !title.is_empty())
+                .map(str::to_string)
+                .ok_or_else(invalid)
+        })
+        .collect()
+}
+
 /// An element an action must name — typing, a value, a key on an element.
 fn computer_element(
     arguments: &Value,
@@ -3156,6 +3200,7 @@ fn computer_act_arguments(tool: &str) -> &'static [&'static str] {
         ],
         "computer_set_value" => &["targetId", "target_id", "ref", "generation", "value"],
         "computer_restore" => &["targetId", "target_id"],
+        "computer_invoke_menu" => &["targetId", "target_id", "path"],
         _ => &[],
     }
 }
@@ -3359,6 +3404,9 @@ pub fn computer_act_request(
             value: computer_text(arguments, tool, "value")?,
         },
         "computer_restore" => ComputerActRequest::Restore,
+        "computer_invoke_menu" => ComputerActRequest::InvokeMenu {
+            path: computer_menu_path(arguments, tool)?,
+        },
         other => return Err(format!("unknown tool: {other}")),
     };
     // Only the tools that take it get this far with one (see
@@ -5986,6 +6034,7 @@ mod tests {
                 "computer_hold_key".to_string(),
                 "computer_set_value".to_string(),
                 "computer_restore".to_string(),
+                "computer_invoke_menu".to_string(),
             ]
         );
         assert!(CompanionFeatures::parse(Some("sessions,computer")).computer);
@@ -6164,6 +6213,52 @@ mod tests {
         ] {
             let e = computer_act_request(tool, &bad).unwrap_err();
             assert!(e.contains(says), "{tool} {bad}: {e}");
+        }
+    }
+
+    /// A menu command is its path of titles, trimmed: one to sixteen, none
+    /// empty, nothing else taken — no delivery, since it always goes at the
+    /// front.
+    #[test]
+    fn a_menu_command_is_a_path_of_titles() {
+        use crate::computer::types::ComputerActRequest;
+        let (id, menu, delivery) = computer_act_request(
+            "computer_invoke_menu",
+            &json!({ "targetId": "w4", "path": [" File ", "Export", "PDF…"] }),
+        )
+        .unwrap();
+        assert_eq!(id, "w4");
+        assert_eq!(
+            menu,
+            ComputerActRequest::InvokeMenu {
+                path: vec!["File".into(), "Export".into(), "PDF…".into()]
+            }
+        );
+        assert_eq!(delivery, None);
+        let seventeen: Vec<String> = (0..17).map(|i| format!("m{i}")).collect();
+        for (bad, says) in [
+            (json!({ "targetId": "w4" }), "requires `path`"),
+            (json!({ "targetId": "w4", "path": [] }), "requires `path`"),
+            (
+                json!({ "targetId": "w4", "path": ["File", "  "] }),
+                "requires `path`",
+            ),
+            (
+                json!({ "targetId": "w4", "path": "File" }),
+                "requires `path`",
+            ),
+            (json!({ "targetId": "w4", "path": [1] }), "requires `path`"),
+            (
+                json!({ "targetId": "w4", "path": seventeen }),
+                "requires `path`",
+            ),
+            (
+                json!({ "targetId": "w4", "path": ["File"], "delivery": "foreground" }),
+                "takes no argument",
+            ),
+        ] {
+            let e = computer_act_request("computer_invoke_menu", &bad).unwrap_err();
+            assert!(e.contains(says), "{bad}: {e}");
         }
     }
 

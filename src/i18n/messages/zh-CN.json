@@ -5218,7 +5218,8 @@
     "shared": {
       "title": "{count, plural, =0 {未共享窗口} other {已共享 # 个窗口}}",
       "empty": "智能体能列出你的窗口，但在你共享之前读不到任何一个。",
-      "stop": "停止"
+      "stop": "停止",
+      "wholeApp": "整个应用 · {count, plural, =0 {没有打开的窗口} other {# 个窗口}}"
     },
     "level": {
       "read": "可读取",
@@ -5241,6 +5242,7 @@
       "hold-key": "按住按键",
       "set-value": "设值",
       "restore": "恢复窗口",
+      "menu": "菜单",
       "outcome": {
         "done": "完成",
         "refused": "被拒",
@@ -5274,6 +5276,10 @@
       "levelRead": "可读取",
       "levelControl": "可操作",
       "levelLabel": "智能体对 {app} 的权限",
+      "wholeApp": "整个应用",
+      "wholeAppHint": "{app} 的所有窗口（包括之后打开的），以及它的菜单和快捷键",
+      "appLevelLabel": "智能体对整个 {app} 的权限",
+      "viaApp": "随应用共享",
       "shareAll": "全部共享",
       "shareAllRead": "全部允许读取",
       "shareAllControl": "全部允许读取并操作",

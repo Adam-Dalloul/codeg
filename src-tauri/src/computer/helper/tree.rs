@@ -10,6 +10,8 @@
 //! cannot disagree — a field the agent sees as `[redacted]` is the field it
 //! cannot type into.
 
+use std::collections::BTreeSet;
+
 /// Words that mark a field as a secret, in the languages codeg ships in.
 const SECRET_WORDS: &[&str] = &[
     "password",
@@ -64,6 +66,75 @@ pub struct TreeNode {
 /// words; recognising it by subrole needs the driver to report one.
 pub fn redact_secrets(tree: &str) -> Redacted {
     redact_tree(tree, Dialect::current())
+}
+
+/// The roles of an application's menu bars in the macOS tree — its menus
+/// and its status items — and of the items on them.
+pub const APP_MENU_ROLES: &[&str] = &["AXMenuBar", "AXExtrasMenuBar", "AXMenuBarItem"];
+
+/// How much of its application's menu bars a window's tree keeps (macOS).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AppMenus<'a> {
+    /// None of them: a window shared on its own does not reach its
+    /// application's menus.
+    Withheld,
+    /// The application's own menus, for an application shared as a whole —
+    /// but not the Apple menu and the application menu, the first two items
+    /// of its menu bar, named here by their titles as Accessibility gives
+    /// them (a tree cut down by a query may not show either, and a row's
+    /// place in it says nothing): they restart and log out, run Services and
+    /// hide every other application, reaching past this one.
+    Own { protected: &'a [String; 2] },
+}
+
+/// The tree without what `keep` leaves out of its application's menu bars,
+/// and the indices of the elements that were in it (macOS).
+///
+/// The driver's tree of a window carries its application's menu bars along
+/// with it. A menu bar's row goes with every line under it, up to the next
+/// row no deeper than itself — and so does each item on it, row by row,
+/// since the driver leaves out a menu bar's own row when it has nothing to
+/// say, keeping its items at their depth. Elsewhere a window's menus are its
+/// own, and the tree is left whole.
+pub fn without_app_menus(
+    tree: &str,
+    dialect: Dialect,
+    keep: AppMenus<'_>,
+) -> (String, BTreeSet<u32>) {
+    let mut withheld = BTreeSet::new();
+    if dialect != Dialect::Mac {
+        return (tree.to_string(), withheld);
+    }
+    let mut out = String::with_capacity(tree.len());
+    // The depth of what is being left out, while something is.
+    let mut leaving: Option<usize> = None;
+    for line in tree.split_inclusive('\n') {
+        if let Some(head) = dialect.head(line) {
+            let depth = line.len() - line.trim_start_matches(' ').len();
+            if leaving.is_some_and(|start| depth <= start) {
+                leaving = None;
+            }
+            if leaving.is_none() {
+                let leave = match (head.role, keep) {
+                    ("AXMenuBar" | "AXExtrasMenuBar" | "AXMenuBarItem", AppMenus::Withheld) => true,
+                    ("AXMenuBarItem", AppMenus::Own { protected }) => protected
+                        .iter()
+                        .any(|title| line.contains(&format!("AXMenuBarItem \"{title}\""))),
+                    _ => false,
+                };
+                if leave {
+                    leaving = Some(depth);
+                }
+            }
+            if leaving.is_some() {
+                withheld.extend(head.index);
+            }
+        }
+        if leaving.is_none() {
+            out.push_str(line);
+        }
+    }
+    (out, withheld)
 }
 
 /// The shape of a node line in the driver's tree on each platform.
@@ -329,6 +400,66 @@ mod tests {
     }
 
     /// A secret's value goes; its role and label, and every other line, stay.
+    /// A window shared on its own is read without its application's menu
+    /// bars: each goes with everything under it, and what follows at its
+    /// depth or above stays — whether the driver wrote the bar's own row or
+    /// left it out. An application shared as a whole keeps its own menus, and
+    /// not the Apple menu and the application menu. Elsewhere the tree is
+    /// left whole.
+    #[test]
+    fn the_applications_menu_bars_are_left_out() {
+        let tree = "- [0] AXWindow \"Doc\"\n  - [1] AXButton \"Save\"\n- AXMenuBar\n  - [2] AXMenuBarItem \"Apple\"\n    - [3] AXMenuItem \"Restart…\"\n  - [4] AXMenuBarItem \"TextEdit\"\n  - [5] AXMenuBarItem \"File\"\n    - AXMenu\n      - [6] AXMenuItem \"Close\" = \"two\nlines\"\n  - [7] AXMenuBarItem \"Edit\"\n- [8] AXSheet \"Save as\"\n  - [9] AXButton \"OK\"\n- [10] AXExtrasMenuBar\n  - [11] AXMenuBarItem \"Status\"\n";
+        let (kept, withheld) = without_app_menus(tree, Dialect::Mac, AppMenus::Withheld);
+        assert_eq!(
+            kept,
+            "- [0] AXWindow \"Doc\"\n  - [1] AXButton \"Save\"\n- [8] AXSheet \"Save as\"\n  - [9] AXButton \"OK\"\n"
+        );
+        assert_eq!(
+            withheld.into_iter().collect::<Vec<_>>(),
+            vec![2, 3, 4, 5, 6, 7, 10, 11]
+        );
+
+        // The bar's own row left out by the driver: its items, at their
+        // depth, go one by one — an open menu under them too.
+        let rowless = "- [0] AXWindow \"Doc\"\n  - [1] AXButton \"Save\"\n  - [2] AXMenuBarItem \"Apple\"\n  - [3] AXMenuBarItem \"TextEdit\"\n  - [4] AXMenuBarItem \"Edit\"\n      - [5] AXMenuItem \"Paste\"\n  - [6] AXMenuBarItem \"Window\"\n- [7] AXSheet \"Save as\"\n";
+        let (kept, withheld) = without_app_menus(rowless, Dialect::Mac, AppMenus::Withheld);
+        assert_eq!(
+            kept,
+            "- [0] AXWindow \"Doc\"\n  - [1] AXButton \"Save\"\n- [7] AXSheet \"Save as\"\n"
+        );
+        assert_eq!(
+            withheld.into_iter().collect::<Vec<_>>(),
+            vec![2, 3, 4, 5, 6]
+        );
+
+        // Shared as a whole: its own menus stay; the Apple menu and the
+        // application menu go, by their titles — wherever a query or the
+        // status items' bar puts them.
+        let protected = ["Apple".to_string(), "TextEdit".to_string()];
+        let own = AppMenus::Own {
+            protected: &protected,
+        };
+        let (kept, withheld) = without_app_menus(tree, Dialect::Mac, own);
+        assert!(kept.contains("[5] AXMenuBarItem \"File\""), "{kept}");
+        assert!(kept.contains("[6] AXMenuItem \"Close\""), "{kept}");
+        assert!(kept.contains("[11] AXMenuBarItem \"Status\""), "{kept}");
+        assert!(!kept.contains("Restart"), "{kept}");
+        assert!(!kept.contains("\"TextEdit\""), "{kept}");
+        assert_eq!(withheld.into_iter().collect::<Vec<_>>(), vec![2, 3, 4]);
+        let queried = "  - [5] AXMenuBarItem \"File\"\n    - [6] AXMenuItem \"Close\"\n  - [7] AXMenuBarItem \"TextEdit Help\"\n";
+        let (kept, withheld) = without_app_menus(queried, Dialect::Mac, own);
+        assert_eq!(kept, queried);
+        assert!(withheld.is_empty());
+        let extras_first = "  - [1] AXMenuBarItem \"Status\"\n  - [2] AXMenuBarItem \"Apple\"\n  - [3] AXMenuBarItem \"TextEdit\"\n    - [4] AXMenuItem \"Quit TextEdit\"\n  - [5] AXMenuBarItem \"File\"\n";
+        let (_, withheld) = without_app_menus(extras_first, Dialect::Mac, own);
+        assert_eq!(withheld.into_iter().collect::<Vec<_>>(), vec![2, 3, 4]);
+
+        let windows = "- [0] Window \"Doc\"\n  - [1] MenuBar \"Application\"\n";
+        let (kept, withheld) = without_app_menus(windows, Dialect::Windows, AppMenus::Withheld);
+        assert_eq!(kept, windows);
+        assert!(withheld.is_empty());
+    }
+
     #[test]
     fn secret_values_are_redacted_and_nothing_else_is() {
         let tree = "- [0] AXWindow \"Sign in\"\n  - [1] AXTextField \"Email\" = \"me@example.com\" [actions=[confirm]]\n  - [2] AXTextField \"Password\" = \"hunter2\" [id=pw actions=[confirm]]\n  - [3] AXTextField = \"秘密\" (密码)\n  - [4] AXSecureTextField = \"abc\" (x)\" (Code) [id=q]\n  - [5] AXStaticText = \"Forgot your password?\"\n";

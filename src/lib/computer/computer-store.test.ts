@@ -12,6 +12,7 @@ import {
   resetComputerStoreForTest,
   setComputerShared,
   setComputerSharedSince,
+  setComputerStateSince,
   useComputerStore,
 } from "./computer-store"
 import { act, renderHook } from "@testing-library/react"
@@ -112,6 +113,28 @@ describe("computer store", () => {
 
   /** A fetched list is only as new as the moment the fetch began: an event
    * that landed since is newer, and wins. */
+  /** The applications shared as a whole come with the state; a window's own
+   * share, which answers with its windows alone, leaves them as they were. */
+  it("keeps the shared applications until the state says otherwise", () => {
+    const app = {
+      appId: "a1",
+      appName: "Mail",
+      appKey: "com.apple.mail",
+      level: "read" as const,
+      grantedAt: 1,
+      lastUsedAt: 1,
+      windows: 0,
+    }
+    act(() =>
+      setComputerStateSince({ shared: [], apps: [app] }, computerStoreMark())
+    )
+    expect(state().sharedApps).toEqual([app])
+    act(() => setComputerShared([]))
+    expect(state().sharedApps).toEqual([app])
+    act(() => setComputerStateSince({ shared: [] }, computerStoreMark()))
+    expect(state().sharedApps).toEqual([])
+  })
+
   it("drops a fetched list an event has overtaken", () => {
     const window = (targetId: string) => ({
       targetId,
