@@ -862,8 +862,10 @@ pub enum AcpEvent {
 /// transcript mid-`#870`-hold and both double-renders the held turn and races
 /// the file's own last write.
 /// `tool_use_id` is the launching `tool_use`/`tool_result` block's id (Claude's
-/// SDK-level `toolu_…`), NOT `task_id`; `None` for a background shell (its
-/// notification carries no tool-use-id and it has no marker card to flip).
+/// SDK-level `toolu_…`), NOT `task_id`. A background shell's notification names
+/// its `Bash` call too, whose card has no marker to flip, so the frontend leaves
+/// it alone; `None` when the notification names no call (an MCP call moved to
+/// the background).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BackgroundSettledInfo {
     pub task_id: String,

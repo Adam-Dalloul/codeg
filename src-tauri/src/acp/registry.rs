@@ -1653,9 +1653,63 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             // takes the default `detail` (15 `count_tokens` on a measured
             // `session/new`, the same as 0.84.0), and the fix (#1201) is still
             // open.
+            //
+            // 0.85.1 is four upstream changes (#1212, #1205, #1216, #1217) and
+            // the ACP SDK 1.5.1 → 1.6.0. The Claude SDK stays 0.3.286, so the
+            // CLI is the same 2.1.286 binary (byte-identical in both installs),
+            // and `engines.node` stays ">=22". The scenario harness is again
+            // byte-identical on both tags with codeg's `clientCapabilities`,
+            // and so are `initialize` and `session/new` over stdio. The probes
+            // below ran live against the local fake Anthropic API, 0.85.0 and
+            // 0.85.1 side by side.
+            //
+            // (tt) #1212 fails a turn that ends `end_turn` while one of its
+            // foreground tool calls never got a result. Read from the source:
+            // each such call gets a `failed` update ("Claude ended the turn
+            // without returning a result for this tool."), and with AIR session
+            // failures negotiated the prompt settles `end_turn` carrying an
+            // `internal_error` `sessionFailure` titled "Claude ended the turn
+            // without returning results for tool calls: <ids>" — the generic
+            // failure banner shows it like any other. No probe trips it: a
+            // steered Bash or MCP call completes with its background notice
+            // before the turn ends; a tool call cut off at the output limit gets
+            // an `InputValidationError` result from 2.1.286; approving or
+            // cancelling a plan answers `ExitPlanMode` (codeg is offered no
+            // clear-context option); and a CLI killed mid-tool ends with "The
+            // connection to Claude was lost.", as on 0.85.0. The transcript
+            // keeps no trace of the failure, so a reload shows such a call with
+            // no result.
+            //
+            // (uu) #1205 restores background-task stops on `session/load`
+            // replay instead of showing the `<task-notification>` as a prompt.
+            // codeg never renders that replay, and `parsers::claude` already
+            // hides those records and strips one embedded in a prompt. But a
+            // background shell's notification names the `Bash` call that started
+            // it in `<tool-use-id>` — the probes show it, and so do transcripts
+            // from 2.1.257 on — and codeg's live settle path took every named
+            // call for a sub-agent launch: it rewrote a background command's
+            // card into the sub-agent lifecycle marker, which the command card
+            // printed raw. Since 2.1.286 a steer that lands during a command
+            // sends it to the background, so this hit whenever such a command
+            // finished. The runtime store now rewrites launch cards only
+            // (`applyBackgroundSettlementToTurns`).
+            //
+            // (vv) #1216 answers `session/close` without awaiting the interrupt
+            // reply: a fresh session closed in 519 ms on 0.85.0 and 2 ms on
+            // 0.85.1. codeg sends one close only, for the parent a fork leaves,
+            // and never awaits its answer, so the parent's CLI just exits
+            // sooner.
+            //
+            // (ww) #1217's draft ACP v2 is opt-in
+            // (`CLAUDE_AGENT_ACP_EXPERIMENTAL_V2=1`) and routes by the protocol
+            // version `initialize` asks for. codeg asks for 1; with the variable
+            // set, a whole codeg turn is frame-for-frame the same.
+            //
+            // (oo) still holds on 0.85.1: 15 `count_tokens` per `session/new`,
+            // and #1201 is still open.
             distribution: AgentDistribution::Npx {
-                version: "0.85.0",
-                package: "@agentclientprotocol/claude-agent-acp@0.85.0",
+                version: "0.85.1",
+                package: "@agentclientprotocol/claude-agent-acp@0.85.1",
                 cmd: "claude-agent-acp",
                 args: &[],
                 env: &[],
@@ -3918,8 +3972,8 @@ mod tests {
     fn registry_pins_current_acp_agent_versions() {
         assert_npx_version(
             AgentType::ClaudeCode,
-            "0.85.0",
-            "@agentclientprotocol/claude-agent-acp@0.85.0",
+            "0.85.1",
+            "@agentclientprotocol/claude-agent-acp@0.85.1",
             Some("22.0.0"),
         );
         assert_npx_version(
