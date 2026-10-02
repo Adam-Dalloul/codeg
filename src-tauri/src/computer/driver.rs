@@ -7,10 +7,13 @@
 //! Recording. So nothing about it is taken on trust from where it came from:
 //!
 //! * **The digests are ours.** The upstream release publishes `checksums.txt`
-//!   and `release-manifest.json` next to the archives, with no signature on
-//!   either; whoever can replace an archive can replace those too. The
-//!   archive and executable digests below were computed from the v0.28.2
-//!   release assets and are reviewed and signed with codeg's own code.
+//!   and `release-manifest.json` next to the archives, and since 0.32.0 a
+//!   Sigstore bundle for each, signed by trycua's release workflow — what
+//!   upstream says, which the helper does not take at runtime. The archive
+//!   and executable digests below were computed from the v0.32.0 release
+//!   assets, once their bundles checked out against that workflow
+//!   (`cd-rust-cua-driver.yml` at the release's tag), and are reviewed and
+//!   signed with codeg's own code.
 //! * **On macOS the running image is checked, not the file.** The helper
 //!   starts the driver suspended and checks the process that is about to run
 //!   against the designated requirement, the per-architecture cdhash, the
@@ -29,7 +32,7 @@
 use crate::acp::error::AcpError;
 
 /// The pinned release.
-pub const DRIVER_VERSION: &str = "0.28.2";
+pub const DRIVER_VERSION: &str = "0.32.0";
 
 /// The file name of the executable inside every archive, without `.exe`.
 pub const DRIVER_COMMAND: &str = "cua-driver";
@@ -58,39 +61,39 @@ pub struct DriverArtifact {
 pub const DRIVER_ARTIFACTS: &[DriverArtifact] = &[
     DriverArtifact {
         platform: "darwin-aarch64",
-        url: "https://github.com/trycua/cua/releases/download/cua-driver-rs-v0.28.2/cua-driver-rs-0.28.2-darwin-universal-binary.tar.gz",
-        archive_sha256: "386db225a3080714a0f9f935525e61efaf46709587ef8b94dd2df81aeb2f6daa",
-        executable_sha256: "af30d29cf33bd3bbda1330be7225b18881ea4c5af6df374e08627914b5ac334d",
+        url: "https://github.com/trycua/cua/releases/download/cua-driver-rs-v0.32.0/cua-driver-rs-0.32.0-darwin-universal-binary.tar.gz",
+        archive_sha256: "89b4b093db2f1c88264782f21f22f6813b7cad779c0e764ad20b5480a3f8b545",
+        executable_sha256: "d5762050791535fa85a9eae2f067167287cf4a4883b2051fe2dba33204c6e8b5",
     },
     DriverArtifact {
         platform: "darwin-x86_64",
-        url: "https://github.com/trycua/cua/releases/download/cua-driver-rs-v0.28.2/cua-driver-rs-0.28.2-darwin-universal-binary.tar.gz",
-        archive_sha256: "386db225a3080714a0f9f935525e61efaf46709587ef8b94dd2df81aeb2f6daa",
-        executable_sha256: "af30d29cf33bd3bbda1330be7225b18881ea4c5af6df374e08627914b5ac334d",
+        url: "https://github.com/trycua/cua/releases/download/cua-driver-rs-v0.32.0/cua-driver-rs-0.32.0-darwin-universal-binary.tar.gz",
+        archive_sha256: "89b4b093db2f1c88264782f21f22f6813b7cad779c0e764ad20b5480a3f8b545",
+        executable_sha256: "d5762050791535fa85a9eae2f067167287cf4a4883b2051fe2dba33204c6e8b5",
     },
     DriverArtifact {
         platform: "linux-aarch64",
-        url: "https://github.com/trycua/cua/releases/download/cua-driver-rs-v0.28.2/cua-driver-rs-0.28.2-linux-arm64-binary.tar.gz",
-        archive_sha256: "55e8a32839a4ac369a773df4dac87b345bd4567779221ade4a5e39223a45a2e8",
-        executable_sha256: "7bf81867627620c72a01a6bb514cc5af650a33a94cf5122b270aa09d07ce4161",
+        url: "https://github.com/trycua/cua/releases/download/cua-driver-rs-v0.32.0/cua-driver-rs-0.32.0-linux-arm64-binary.tar.gz",
+        archive_sha256: "603bf2d70e9fca06f59a74528cb1c26d47cd3eb1dceeb0827e04b6b8618e0e75",
+        executable_sha256: "03167f9045602ae79b679dfc9fa749ef20bfaafcd783106a10f96aac55068057",
     },
     DriverArtifact {
         platform: "linux-x86_64",
-        url: "https://github.com/trycua/cua/releases/download/cua-driver-rs-v0.28.2/cua-driver-rs-0.28.2-linux-x86_64-binary.tar.gz",
-        archive_sha256: "a1d99fd04bb4927ef5ffdbe60eb91ed8b51a2bab60e10fc604a75bd59ce69c3e",
-        executable_sha256: "3739101d072bdfdd83b7e70b3a16d9271f6eb124e7c5e69b3406f20f0910a4ca",
+        url: "https://github.com/trycua/cua/releases/download/cua-driver-rs-v0.32.0/cua-driver-rs-0.32.0-linux-x86_64-binary.tar.gz",
+        archive_sha256: "bb006010864e9a93b9f67035e345c3a076f0908d42fbe493bb21ede5f82f39a6",
+        executable_sha256: "2c56cc4c260f07c957a0f8ee905c2477ec8f2a9b548024999f3698c9864c20e0",
     },
     DriverArtifact {
         platform: "windows-aarch64",
-        url: "https://github.com/trycua/cua/releases/download/cua-driver-rs-v0.28.2/cua-driver-rs-0.28.2-windows-arm64-binary.zip",
-        archive_sha256: "578b88ff2dd56f06eb7e984d73aaf5e76f59c6fde9542c967d6a30d00213c680",
-        executable_sha256: "8f36d502e841485c59fd6734e2193841c61f234870f8b92c3d7d0c18123b28ba",
+        url: "https://github.com/trycua/cua/releases/download/cua-driver-rs-v0.32.0/cua-driver-rs-0.32.0-windows-arm64-binary.zip",
+        archive_sha256: "b5f2c3754423f24f283d18deadf8a9fff84bf564e15babbf9690fccb815ddf2e",
+        executable_sha256: "f4b192c8f13edcc594cdb6b0f535fb62dd77dfcbe99bbb3e7ee1b1f7426a3744",
     },
     DriverArtifact {
         platform: "windows-x86_64",
-        url: "https://github.com/trycua/cua/releases/download/cua-driver-rs-v0.28.2/cua-driver-rs-0.28.2-windows-x86_64-binary.zip",
-        archive_sha256: "1f4bfceeab64cb7f56be7aad774c3dc2d2910d1427e4be1d79939c706e8029ba",
-        executable_sha256: "dbbd52d75759900155fbf3d5f0a13c759a12d06ef17338b88b3f2b8b9c1ef8dc",
+        url: "https://github.com/trycua/cua/releases/download/cua-driver-rs-v0.32.0/cua-driver-rs-0.32.0-windows-x86_64-binary.zip",
+        archive_sha256: "16aa3666f4ab4faba2fa6261ecb9349d2e9a0c97eca2a0b0960db5a311c2b1e1",
+        executable_sha256: "d2477595e8b5ae850d119b48c8bbe5c16a1f229f3e99e706bd84622c2d7d98ae",
     },
 ];
 
@@ -110,9 +113,9 @@ pub const DRIVER_DESIGNATED_REQUIREMENT: &str = "identifier \"cua-driver\" and a
 /// one of these.
 pub const DRIVER_CDHASHES: &[&str] = &[
     // arm64
-    "f39eb6bac5737b09d32467dfd07da4cd5b64d9a2",
+    "85762daaf280608d0bbd29236fe929d58342f91a",
     // x86_64
-    "0f36b964a2420bc8da06f59163ad9fe46e9edc51",
+    "cca5c9457e7d3ac5bf82059b222499807fddc799",
 ];
 
 /// Exactly the entitlements the pinned build carries, and must carry: Apple

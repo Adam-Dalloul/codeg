@@ -5392,7 +5392,7 @@
       },
       "foreground": {
         "label": "Agenten dürfen Fenster nach vorn holen",
-        "hint": "Manche Apps nehmen im Hintergrund keine Tasten und keine Texteingabe an – unter Windows alle, die auf Chromium aufbauen, etwa Edge, Chrome und VS Code. Ist dies aktiv, darf ein Agent ein Fenster, in dem er handeln darf, für eine Aktion nach vorn holen und danach zu deinem vorherigen Fenster zurückwechseln. Du siehst das Fenster nach vorn kommen; was du in dem Moment tippst, kann darin landen, und unter Windows bewegt ein Klick deinen Mauszeiger."
+        "hint": "Manche Apps nehmen im Hintergrund keine Tasten und keine Texteingabe an – unter Windows alle, die auf Chromium aufbauen, etwa Edge, Chrome und VS Code. Ist dies aktiv, darf ein Agent ein Fenster, in dem er handeln darf, für eine Aktion nach vorn holen und danach zu deinem vorherigen Fenster zurückwechseln (unter Linux bleibt das Fenster vorn). Du siehst das Fenster nach vorn kommen; was du in dem Moment tippst, kann darin landen, und ein Klick kann deinen Mauszeiger bewegen."
       },
       "delivery": {
         "label": "Standard-Eingabemodus",

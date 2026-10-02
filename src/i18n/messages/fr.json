@@ -5392,7 +5392,7 @@
       },
       "foreground": {
         "label": "Autoriser les agents à mettre des fenêtres au premier plan",
-        "hint": "Certaines applications n'acceptent ni touches ni saisie tant qu'elles sont en arrière-plan — sous Windows, toutes celles construites sur Chromium, comme Edge, Chrome et VS Code. Avec cette option, un agent peut mettre au premier plan, le temps d'une action, une fenêtre sur laquelle vous le laissez agir, puis revenir à la fenêtre où vous étiez. Vous verrez la fenêtre passer devant ; ce que vous tapez à ce moment peut y arriver, et sous Windows un clic déplace le pointeur de la souris."
+        "hint": "Certaines applications n'acceptent ni touches ni saisie tant qu'elles sont en arrière-plan — sous Windows, toutes celles construites sur Chromium, comme Edge, Chrome et VS Code. Avec cette option, un agent peut mettre au premier plan, le temps d'une action, une fenêtre sur laquelle vous le laissez agir, puis revenir à la fenêtre où vous étiez (sous Linux, la fenêtre reste au premier plan). Vous verrez la fenêtre passer devant ; ce que vous tapez à ce moment peut y arriver, et un clic peut déplacer le pointeur de la souris."
       },
       "delivery": {
         "label": "Mode de saisie par défaut",

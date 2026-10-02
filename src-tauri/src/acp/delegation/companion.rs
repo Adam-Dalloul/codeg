@@ -2751,8 +2751,9 @@ fn computer_input_policy_line(input: &Value) -> &'static str {
     match (front_allowed, front_default) {
         (true, true) => {
             "Input: the user has each action bring its window to the front, then switch back to \
-             the window they were in — they will see it, and on Windows a click moves their \
-             pointer. Pass `delivery: \"background\"` to leave the window where it is."
+             the window they were in (on Linux it stays in front) — they will see it, and a click \
+             may move their pointer. Pass `delivery: \"background\"` to leave the window where it \
+             is."
         }
         (true, false) => {
             "Input: actions go to a window in the background, leaving it where it is. Where an \

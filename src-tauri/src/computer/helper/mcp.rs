@@ -107,15 +107,17 @@ impl ToolCallResult {
             .join("\n")
     }
 
-    /// The driver's machine-readable code for a refused call, from either of
-    /// the shapes it writes one in: `{code, …}` or
-    /// `{status: "refused", refusal: {code, …}}`.
+    /// The driver's machine-readable code for a refused call, from any of the
+    /// shapes it writes one in: `{code, …}`,
+    /// `{status: "refused", refusal: {code, …}}`, or — on an action it
+    /// answers without an error, `effect: "refused"` — `{error: {code, …}}`.
     pub fn code(&self) -> Option<&str> {
         let structured = self.structured.as_ref()?;
         structured
             .get("code")
             .and_then(Value::as_str)
             .or_else(|| structured.pointer("/refusal/code").and_then(Value::as_str))
+            .or_else(|| structured.pointer("/error/code").and_then(Value::as_str))
     }
 
     /// The first image block, as `(base64, mime)`.
@@ -488,9 +490,9 @@ mod tests {
         );
     }
 
-    /// A refusal's code is read from either shape the driver writes it in.
+    /// A refusal's code is read from whichever shape the driver writes it in.
     #[test]
-    fn a_refusal_code_is_found_in_either_shape() {
+    fn a_refusal_code_is_found_in_any_shape() {
         let refused = |structured: Value| ToolCallResult {
             is_error: true,
             content: Vec::new(),
@@ -503,6 +505,10 @@ mod tests {
         assert_eq!(
             refused(json!({"status": "refused", "refusal": {"code": "session_ended"}})).code(),
             Some("session_ended")
+        );
+        assert_eq!(
+            refused(json!({"effect": "refused", "error": {"code": "target_occluded"}})).code(),
+            Some("target_occluded")
         );
         assert_eq!(refused(json!({"effect": "confirmed"})).code(), None);
         assert_eq!(ToolCallResult::default().code(), None);

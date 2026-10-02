@@ -38,14 +38,15 @@
 //! Two settings in that home decide how the driver behaves over a long life:
 //!
 //! * **Its session never idles out.** The driver ends a caller's session
-//!   after five idle minutes and refuses every call after that — and the
-//!   helper's driver lives for as long as computer use is on.
+//!   after five idle minutes, and with it every snapshot the session holds —
+//!   every ref, and the capture a point is aimed by — and the helper's
+//!   driver lives for as long as computer use is on.
 //! * **It captures windows at their own size.** The driver converts a click's
-//!   pixel coordinates by the scale of the *last* capture it made of that
-//!   window, whoever asked for it and at whatever size — a picker thumbnail
-//!   in between would move every later click. At full size there is no scale
-//!   to remember: the helper shrinks images itself, and a point is always the
-//!   window's own pixel.
+//!   pixel coordinates by the scale of the capture in the window's latest
+//!   snapshot, at whatever size it was taken — one taken smaller in between
+//!   would move every later click. At full size there is no scale to
+//!   remember: the helper shrinks images itself, asks the driver for no other
+//!   size, and a point is always the window's own pixel.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

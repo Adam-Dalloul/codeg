@@ -5392,7 +5392,7 @@
       },
       "foreground": {
         "label": "Permitir que agentes tragam janelas para a frente",
-        "hint": "Alguns apps não aceitam teclas nem digitação enquanto estão em segundo plano — no Windows, nenhum baseado no Chromium, como Edge, Chrome e VS Code. Com isto ativado, um agente pode trazer para a frente, por uma única ação, uma janela em que você o deixa agir, e depois voltar para a janela em que você estava. Você verá a janela vir para a frente; o que você digitar nesse momento pode ir para ela, e no Windows um clique move o ponteiro do mouse."
+        "hint": "Alguns apps não aceitam teclas nem digitação enquanto estão em segundo plano — no Windows, nenhum baseado no Chromium, como Edge, Chrome e VS Code. Com isto ativado, um agente pode trazer para a frente, por uma única ação, uma janela em que você o deixa agir, e depois voltar para a janela em que você estava (no Linux, a janela fica na frente). Você verá a janela vir para a frente; o que você digitar nesse momento pode ir para ela, e um clique pode mover o ponteiro do mouse."
       },
       "delivery": {
         "label": "Modo de entrada padrão",

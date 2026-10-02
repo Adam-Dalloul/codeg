@@ -299,6 +299,12 @@ pub fn chord_beyond_note() -> String {
     )
 }
 
+/// Said when keys are to be held over a double-click in a window: the
+/// driver's double-click does not hold them.
+pub const DOUBLE_CLICK_MODIFIERS_NOTE: &str = "Holding keys down over a double-click is not \
+     available in a window, so nothing was sent. Double-click without `modifiers`, or reach the \
+     same end another way.";
+
 /// Said when keys are to be held over a drag on a system whose driver would
 /// drag without them.
 pub const DRAG_MODIFIERS_NOTE: &str = "Holding keys down over a drag is not available on this \
@@ -512,8 +518,8 @@ pub fn background_next_step(allow_foreground: bool) -> &'static str {
     if allow_foreground {
         "The user allows bringing a window to the front: call again with `delivery: \
          \"foreground\"`, and codeg brings this window forward for that one action, then switches \
-         back to the window the user was in. They will see it happen, and on Windows a click \
-         moves their pointer."
+         back to the window the user was in (on Linux it stays in front). They will see it \
+         happen, and a click may move their pointer."
     } else {
         "The user has switched off bringing windows to the front in codeg's Computer use \
          settings; if nothing else will do, ask them whether to switch it back on."

@@ -5392,7 +5392,7 @@
       },
       "foreground": {
         "label": "Let agents bring windows to the front",
-        "hint": "Some apps take no keys or typing while they're in the background — on Windows, any built on Chromium, such as Edge, Chrome and VS Code. With this on, an agent may bring a window you let it act on to the front for one action, then switch back to the window you were in. You'll see the window come forward; anything you type at that moment may go to it, and on Windows a click moves your mouse pointer."
+        "hint": "Some apps take no keys or typing while they're in the background — on Windows, any built on Chromium, such as Edge, Chrome and VS Code. With this on, an agent may bring a window you let it act on to the front for one action, then switch back to the window you were in (on Linux, it stays in front). You'll see the window come forward; anything you type at that moment may go to it, and a click may move your mouse pointer."
       },
       "delivery": {
         "label": "Default input mode",

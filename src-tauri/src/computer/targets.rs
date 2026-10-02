@@ -403,6 +403,10 @@ pub enum ActDenied {
     NoPointing,
     /// Keys held over a drag where the driver would drag without them.
     DragModifiers,
+    /// Keys held over a double-click in a window, which the driver's
+    /// double-click does not hold (macOS and Linux refuse them, Windows
+    /// double-clicks without them).
+    DoubleClickModifiers,
     /// A key that is the desktop's own, which not even a grant on the whole
     /// application reaches.
     DesktopChord,
@@ -1699,6 +1703,9 @@ fn resolve(
             modifiers,
         } => {
             check_pointer_modifiers(*modifiers, scope)?;
+            if *count == 2 && !modifiers.is_empty() {
+                return Err(ActDenied::DoubleClickModifiers);
+            }
             WindowAction::Click {
                 at: resolve_target(entry, target)?,
                 button: *button,
@@ -2668,6 +2675,34 @@ mod tests {
             None,
         );
         assert!(changed.is_empty());
+    }
+
+    /// A double-click in a window holds no keys down: the driver's
+    /// double-click does not hold them, on macOS and Linux refusing them and
+    /// on Windows going without them. A single click holds them.
+    #[test]
+    fn a_double_click_in_a_window_holds_no_keys() {
+        let table = TargetTable::new();
+        let (id, _, capture) = shared_and_read(&table, GrantLevel::Control);
+        let click = |count: u8, shift: bool| ComputerActRequest::Click {
+            target: AgentTarget::Point(PointTarget {
+                generation: capture.clone(),
+                x: 1.0,
+                y: 1.0,
+            }),
+            button: PointerButton::Left,
+            count,
+            modifiers: Modifiers {
+                shift,
+                ..Modifiers::default()
+            },
+        };
+        assert_eq!(
+            act(&table, &id, &click(2, true)),
+            Err(ActDenied::DoubleClickModifiers)
+        );
+        assert!(act(&table, &id, &click(2, false)).is_ok());
+        assert!(act(&table, &id, &click(1, true)).is_ok());
     }
 
     /// Menus, the application's own shortcuts and Option over the pointer

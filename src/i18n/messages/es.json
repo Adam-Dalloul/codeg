@@ -5392,7 +5392,7 @@
       },
       "foreground": {
         "label": "Permitir que los agentes traigan ventanas al frente",
-        "hint": "Algunas aplicaciones no aceptan teclas ni escritura mientras están en segundo plano; en Windows, ninguna basada en Chromium, como Edge, Chrome o VS Code. Con esto activado, un agente puede traer al frente una ventana en la que le permites actuar durante una sola acción y luego volver a la ventana en la que estabas. Verás la ventana pasar al frente; lo que escribas en ese momento puede ir a ella, y en Windows un clic mueve el puntero del ratón."
+        "hint": "Algunas aplicaciones no aceptan teclas ni escritura mientras están en segundo plano; en Windows, ninguna basada en Chromium, como Edge, Chrome o VS Code. Con esto activado, un agente puede traer al frente una ventana en la que le permites actuar durante una sola acción y luego volver a la ventana en la que estabas (en Linux, la ventana se queda al frente). Verás la ventana pasar al frente; lo que escribas en ese momento puede ir a ella, y un clic puede mover el puntero del ratón."
       },
       "delivery": {
         "label": "Modo de entrada predeterminado",

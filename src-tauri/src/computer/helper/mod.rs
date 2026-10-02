@@ -875,7 +875,14 @@ async fn handle_op(
                 return Err(ops::out_of_sight_capture(why));
             }
             let driver = state.driver(stop).await?;
-            value(ops::capture(&driver, pid, window_id, max_dimension).await?)
+            let captured = ops::capture(&driver, pid, window_id, max_dimension).await;
+            // Where a capture replaces the window's snapshot, the refs from
+            // the one before name nothing any more — whether or not this
+            // capture is handed on.
+            if ops::capture_replaces_snapshot() {
+                state.snapshots().record(pid, window_id, None);
+            }
+            value(captured?)
         }
         HelperOp::Snapshot {
             pid,
@@ -951,14 +958,32 @@ async fn handle_op(
                     .element()
                     .and_then(|element| book.frame(pid, window_id, element))
             };
-            let window_frame = act::check_points(&driver, pid, window_id, &action.points()).await?;
+            let mut window_frame =
+                act::check_points(&driver, pid, window_id, &action.points()).await?;
             let before = if use_of.track {
                 Some(clipboard::stamp(&driver).await?)
             } else {
                 None
             };
-            let done =
-                act::act(&driver, pid, window_id, &action, mode, &delivery, paste_ok).await?;
+            let first = act::act(&driver, pid, window_id, &action, mode, &delivery, paste_ok).await;
+            let done = match first {
+                // The driver aims a point only by its snapshot's capture of
+                // the window, and holds none just now — no snapshot taken
+                // since it started, or one it let go. Nothing went out: it is
+                // given a capture, the window is measured again (it may have
+                // changed size meanwhile), and the action goes once more. The
+                // capture becomes the window's snapshot, so the refs from the
+                // one before name nothing any more.
+                Err(e) if act::needs_capture(&e) => {
+                    if ops::publish_capture(&driver, pid, window_id).await? {
+                        state.snapshots().record(pid, window_id, None);
+                    }
+                    window_frame =
+                        act::check_points(&driver, pid, window_id, &action.points()).await?;
+                    act::act(&driver, pid, window_id, &action, mode, &delivery, paste_ok).await?
+                }
+                done => done?,
+            };
             let copied = match before {
                 Some(before) => clipboard::changed_since(&driver, before.value).await,
                 None => None,

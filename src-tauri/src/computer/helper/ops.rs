@@ -31,9 +31,15 @@ use crate::computer::types::{
 };
 
 const LIST_TIMEOUT: Duration = Duration::from_secs(30);
-/// The driver bounds its own accessibility walk at 20 s; the rest is the
-/// capture and the encode.
+/// A window-state read: an accessibility walk of at most [`WALK_BUDGET_MS`],
+/// the capture, and the encode.
 const WINDOW_STATE_TIMEOUT: Duration = Duration::from_secs(60);
+/// How long the driver may walk a window's accessibility tree for a
+/// snapshot, in milliseconds. Its own default is a second, which cuts a
+/// large application's tree short; this is the twenty seconds macOS had
+/// before it, and within [`WINDOW_STATE_TIMEOUT`] even where the driver
+/// waits twice that and five seconds more for an application to answer.
+const WALK_BUDGET_MS: u64 = 20_000;
 /// Added to the caller's own `timeoutMs` for `verify_state`.
 const VERIFY_OVERHEAD: Duration = Duration::from_secs(30);
 /// The driver's own bounds on a verify.
@@ -813,24 +819,172 @@ pub fn out_of_sight_capture(why: super::axwin::OutOfSight) -> HelperError {
 /// up in the image.
 ///
 /// Always captured at the window's own size — the driver is configured with
-/// no ceiling, and no `max_dimension` is ever passed to it (see
-/// `driver_proc`'s module note: a capture at any other size would change how
-/// the driver maps every later click's coordinates) — and shrunk here to
-/// `max_dimension`.
+/// no ceiling, and asked for none (see `driver_proc`'s module note: a capture
+/// at any other size would change how the driver maps every later click's
+/// coordinates) — and shrunk here to `max_dimension`.
+///
+/// Taken without making it the window's snapshot wherever that can be done.
+/// The driver keeps one snapshot of each window, and a capture taken as one
+/// replaces the snapshot the agent's refs name, leaving nothing for them to
+/// name. On macOS and Windows `verify_state` reads the window that way; the
+/// window's bounds and title then come from its listing — read before the
+/// capture and after it, and a point is not aimed by a capture the window
+/// changed size around — and the capture's scale from its size against them,
+/// as the driver reckons it. On Linux that
+/// read is cut down to a model-sized image, so the capture is a snapshot of
+/// its own there, at the window's size, and replaces the window's snapshot
+/// ([`capture_replaces_snapshot`]); one the driver took from the screen
+/// rather than from the window — for a pop-up of the application over it —
+/// could hold other windows, and is not handed on.
 pub async fn capture(
     driver: &DriverProc,
     pid: u32,
     window_id: u64,
     max_dimension: Option<u32>,
 ) -> Result<RawCapture, HelperError> {
+    let taken = take_capture(driver, pid, window_id).await?;
+    let data = taken.png_base64;
+    let shrunk = tokio::task::spawn_blocking(move || shrink_png(&data, max_dimension))
+        .await
+        .map_err(|e| HelperError::failed(format!("the capture could not be scaled: {e}")))?
+        .map_err(|e| HelperError::failed(format!("the capture could not be scaled: {e}")))?;
+    let scale = taken.scale.unwrap_or_else(|| {
+        reckoned_scale(
+            shrunk.native_width,
+            &taken.bounds,
+            cfg!(target_os = "macos"),
+        )
+    });
+    let full_size = driver.full_size_captures()
+        && taken.steady
+        && is_whole_window(
+            shrunk.native_width,
+            shrunk.native_height,
+            &taken.bounds,
+            scale,
+        );
+    Ok(RawCapture {
+        png_base64: shrunk.png_base64,
+        width: shrunk.width,
+        height: shrunk.height,
+        native_width: shrunk.native_width,
+        native_height: shrunk.native_height,
+        full_size,
+        window_bounds: taken.bounds,
+        title: taken.title,
+    })
+}
+
+/// Give the driver a capture of the window to aim points by, without a walk
+/// of its tree: a snapshot holding the capture alone, which takes the place
+/// of the window's snapshot. `Ok(true)`: it did, so the refs from the one
+/// before name nothing any more. `Ok(false)`: the window could not be
+/// captured, and its snapshot is as it was.
+pub async fn publish_capture(
+    driver: &DriverProc,
+    pid: u32,
+    window_id: u64,
+) -> Result<bool, HelperError> {
     let args = json!({
         "pid": pid,
         "window_id": window_id,
         "include_screenshot": true,
         "include_accessibility_tree": false,
+        "max_image_dimension": 0,
+    });
+    let result = call(driver, "get_window_state", args, WINDOW_STATE_TIMEOUT).await?;
+    Ok(result.image().is_some())
+}
+
+/// Whether capturing a window replaces the driver's snapshot of it — the one
+/// its refs name: only on Linux (see [`capture`]).
+pub fn capture_replaces_snapshot() -> bool {
+    cfg!(target_os = "linux")
+}
+
+/// What a capture brought back, before it is scaled.
+struct Taken {
+    png_base64: String,
+    bounds: Rect,
+    /// The backing scale the driver said the capture was taken at; `None`
+    /// where it said nothing of it.
+    scale: Option<f64>,
+    title: Option<String>,
+    /// Whether `bounds` are the window's as it was captured: read with the
+    /// capture, or the same before it and after it.
+    steady: bool,
+}
+
+/// macOS and Windows: one read through `verify_state`, which leaves the
+/// window's snapshot as it was, between two of the window's listings.
+#[cfg(not(target_os = "linux"))]
+async fn take_capture(driver: &DriverProc, pid: u32, window_id: u64) -> Result<Taken, HelperError> {
+    let before = super::act::listed(driver, pid, window_id)
+        .await?
+        .get("bounds")
+        .and_then(rect);
+    let args = json!({
+        "pid": pid,
+        "window_id": window_id,
+        "expect": [{ "window": { "exists": true } }],
+        "timeout_ms": 0,
+        "stable_samples": 1,
+        "include_screenshot": true,
+    });
+    let result = call(driver, "verify_state", args, WINDOW_STATE_TIMEOUT).await?;
+    let Some((data, mime)) = result.image() else {
+        // `verify_state` says nothing of why there is no picture; the
+        // listing says whether the window is still there.
+        super::act::listed(driver, pid, window_id).await?;
+        return Err(HelperError::failed(
+            "the window could not be captured: no image came back",
+        ));
+    };
+    if mime != "image/png" {
+        return Err(HelperError::failed(format!(
+            "the capture came back as {mime}"
+        )));
+    }
+    let png_base64 = data.to_string();
+    let window = super::act::listed(driver, pid, window_id).await?;
+    let bounds = window.get("bounds").and_then(rect);
+    Ok(Taken {
+        png_base64,
+        steady: same_size(before.as_ref(), bounds.as_ref()),
+        bounds: bounds.unwrap_or_default(),
+        scale: None,
+        title: string(&window, "title"),
+    })
+}
+
+/// Whether a window listed with `before` and then `after` kept its size —
+/// within a pixel, as a point's own check allows (`act::check_points`).
+#[cfg(any(not(target_os = "linux"), test))]
+fn same_size(before: Option<&Rect>, after: Option<&Rect>) -> bool {
+    match (before, after) {
+        (Some(before), Some(after)) => {
+            (before.width - after.width).abs() <= 1.0 && (before.height - after.height).abs() <= 1.0
+        }
+        _ => false,
+    }
+}
+
+/// Linux: a `get_window_state` at the window's own size, which becomes the
+/// window's snapshot.
+#[cfg(target_os = "linux")]
+async fn take_capture(driver: &DriverProc, pid: u32, window_id: u64) -> Result<Taken, HelperError> {
+    let args = json!({
+        "pid": pid,
+        "window_id": window_id,
+        "include_screenshot": true,
+        "include_accessibility_tree": false,
+        "max_image_dimension": 0,
     });
     let result = call(driver, "get_window_state", args, WINDOW_STATE_TIMEOUT).await?;
     let meta = structured("get_window_state", &result)?;
+    if meta.get("screenshot_composited").and_then(Value::as_bool) == Some(true) {
+        return Err(composited_capture());
+    }
     let Some((data, mime)) = result.image() else {
         // The capture half failed and the driver said why beside an
         // otherwise successful answer.
@@ -848,36 +1002,43 @@ pub async fn capture(
             "the capture came back as {mime}"
         )));
     }
-    let window_bounds = meta.get("window_bounds").and_then(rect).unwrap_or_default();
-    // The backing scale on macOS (points to pixels); the other platforms
-    // report bounds in the pixels they capture.
-    let scale = meta
-        .get("screenshot_scale")
-        .and_then(Value::as_f64)
-        .filter(|s| s.is_finite() && *s > 0.0)
-        .unwrap_or(1.0);
-    let data = data.to_string();
-    let shrunk = tokio::task::spawn_blocking(move || shrink_png(&data, max_dimension))
-        .await
-        .map_err(|e| HelperError::failed(format!("the capture could not be scaled: {e}")))?
-        .map_err(|e| HelperError::failed(format!("the capture could not be scaled: {e}")))?;
-    let full_size = driver.full_size_captures()
-        && is_whole_window(
-            shrunk.native_width,
-            shrunk.native_height,
-            &window_bounds,
-            scale,
-        );
-    Ok(RawCapture {
-        png_base64: shrunk.png_base64,
-        width: shrunk.width,
-        height: shrunk.height,
-        native_width: shrunk.native_width,
-        native_height: shrunk.native_height,
-        full_size,
-        window_bounds,
+    Ok(Taken {
+        png_base64: data.to_string(),
+        steady: true,
+        bounds: meta.get("window_bounds").and_then(rect).unwrap_or_default(),
+        scale: meta
+            .get("screenshot_scale")
+            .and_then(Value::as_f64)
+            .filter(|s| s.is_finite() && *s > 0.0),
         title: string(meta, "window_title"),
     })
+}
+
+/// A Linux capture the driver took from the screen, not from the window.
+#[cfg(target_os = "linux")]
+fn composited_capture() -> HelperError {
+    HelperError::new(
+        HelperErrorCode::Occluded,
+        "A pop-up of the window's application is over it, and a picture of it now would be \
+         taken from the screen, where other windows could be in it — so none was taken. Close \
+         the pop-up, or wait for it to close, then take the screenshot again.",
+    )
+}
+
+/// The scale of a capture `width` pixels wide of a window whose bounds are
+/// `bounds`, as the driver reckons it. In points (`points`: macOS) a window
+/// is captured at 1× or 2× — whichever its size is nearer; elsewhere bounds
+/// are in the pixels captured.
+fn reckoned_scale(width: u32, bounds: &Rect, points: bool) -> f64 {
+    if !points || bounds.width <= 0.0 {
+        return 1.0;
+    }
+    let ratio = f64::from(width) / bounds.width;
+    if (ratio - 1.0).abs() <= (ratio - 2.0).abs() {
+        1.0
+    } else {
+        2.0
+    }
 }
 
 /// A capture, shrunk to the size asked for.
@@ -950,6 +1111,13 @@ fn is_whole_window(width: u32, height: u32, bounds: &Rect, scale: f64) -> bool {
 /// A window's accessibility tree, with the values of anything that looks like
 /// a secret taken out — and, for the helper to hold on to, what it knows of
 /// each element that can be acted on (see [`SnapshotFacts`]).
+///
+/// It becomes the window's snapshot in the driver, which aims a point only
+/// for a window whose snapshot holds a capture of it: so the window is
+/// captured too, at its own size, and the picture thrown away. Where it
+/// cannot be captured (no Screen Recording, or out of sight) the tree comes
+/// back all the same. The walk has [`WALK_BUDGET_MS`]; past it the tree comes
+/// back cut short, and says so.
 pub async fn snapshot(
     driver: &DriverProc,
     pid: u32,
@@ -962,8 +1130,10 @@ pub async fn snapshot(
     let mut args = json!({
         "pid": pid,
         "window_id": window_id,
-        "include_screenshot": false,
+        "include_screenshot": true,
         "include_accessibility_tree": true,
+        "max_image_dimension": 0,
+        "timeout_ms": WALK_BUDGET_MS,
     });
     if let Some(depth) = max_depth.filter(|d| *d > 0) {
         args["max_depth"] = json!(depth);
@@ -1366,6 +1536,58 @@ mod tests {
         assert!(!is_whole_window(1568, 980, &bounds, 2.0));
         assert!(is_whole_window(1440, 900, &bounds, 1.0));
         assert!(!is_whole_window(1440, 900, &Rect::default(), 1.0));
+    }
+
+    /// A window's bounds read before a capture and after it agree only when
+    /// its size held, within a pixel; a listing that said nothing agrees
+    /// with nothing.
+    #[test]
+    fn a_window_that_changed_size_around_a_capture_is_told() {
+        let at = |width: f64, height: f64| Rect {
+            x: 0.0,
+            y: 0.0,
+            width,
+            height,
+        };
+        let (held, nudged, resized) = (at(1000.0, 600.0), at(1000.5, 599.0), at(1040.0, 624.0));
+        assert!(same_size(Some(&held), Some(&held)));
+        assert!(same_size(Some(&held), Some(&nudged)));
+        assert!(!same_size(Some(&held), Some(&resized)));
+        assert!(!same_size(None, Some(&held)));
+        assert!(!same_size(Some(&held), None));
+    }
+
+    /// A capture's scale, reckoned from its size as the driver reckons it:
+    /// in points, 1× or 2× — whichever is nearer — so a capture the driver
+    /// had shrunk is still told from a whole one; in pixels, 1×.
+    #[test]
+    fn a_capture_scale_is_reckoned_as_the_driver_does() {
+        let bounds = Rect {
+            x: 0.0,
+            y: 0.0,
+            width: 1000.0,
+            height: 600.0,
+        };
+        let whole = |width: u32, height: u32, points: bool| {
+            is_whole_window(
+                width,
+                height,
+                &bounds,
+                reckoned_scale(width, &bounds, points),
+            )
+        };
+        assert_eq!(reckoned_scale(2000, &bounds, true), 2.0);
+        assert_eq!(reckoned_scale(1000, &bounds, true), 1.0);
+        assert!(whole(2000, 1200, true));
+        assert!(whole(1000, 600, true));
+        // Shrunk to 1568 or 1200 wide: neither 1× nor 2× of the window.
+        assert!(!whole(1568, 941, true));
+        assert!(!whole(1200, 720, true));
+        // In pixels the bounds are the capture's own.
+        assert_eq!(reckoned_scale(2000, &bounds, false), 1.0);
+        assert!(!whole(2000, 1200, false));
+        assert!(whole(1000, 600, false));
+        assert_eq!(reckoned_scale(10, &Rect::default(), true), 1.0);
     }
 
     /// Only running, pid-bearing applications are kept.

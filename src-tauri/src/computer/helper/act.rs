@@ -4,11 +4,14 @@
 //! the driver's arguments from its fields — the tool (`click`,
 //! `double_click`, `right_click`, `scroll`, `type_text`, `press_key`,
 //! `set_value`), the window, the element or the point, the `delivery_mode`
-//! codeg asked for — and nothing else. That is `"background"` unless codeg
-//! asked for the front, which it does only where the person allows it: the
-//! driver then brings the window forward for the one call, sends real input
-//! and switches back. What the driver would also accept (a desktop scope, a
-//! file to write a debug image to, a zoom's coordinates) is never asked for.
+//! codeg asked for where the tool takes one (macOS's `set_value` does not) —
+//! and nothing else: the driver refuses an argument its tool does not name.
+//! That is `"background"` unless codeg asked for the front, which it does
+//! only where the person allows it: the driver then brings the window forward
+//! for the one call and sends real input — and on macOS and Windows switches
+//! back afterwards; on Linux the window stays in front. What the driver would
+//! also accept (a desktop scope, a file to write a debug image to, a zoom's
+//! coordinates) is never asked for.
 //!
 //! One action is the helper's own on macOS and Windows: putting a window back
 //! on the screen ([`WindowAction::Restore`]), which the driver has no call
@@ -25,14 +28,20 @@
 //! Before a call goes out, what only the helper knows is checked:
 //!
 //! * **The element.** The driver keeps the latest snapshot of each window and
-//!   addresses elements by its id; so does the helper ([`SnapshotBook`]),
-//!   with what the tree said of each element. A ref from any other snapshot
-//!   is stale, and text never goes into an element the tree judged secret
-//!   (see [`super::tree`]).
+//!   addresses an element by a token naming that snapshot and the element
+//!   (`<snapshot id>:<index>`); the helper keeps the same snapshot
+//!   ([`SnapshotBook`]), with what the tree said of each element. A ref from
+//!   any other snapshot is stale, and text never goes into an element the tree
+//!   judged secret (see [`super::tree`]).
 //! * **The point.** A point is in the window's own pixels, read off a
 //!   full-size capture of it at a certain size. The window is measured again
 //!   now; at another size its contents are laid out elsewhere, and the point
-//!   would land on something the agent never saw.
+//!   would land on something the agent never saw. The driver aims a point
+//!   only for a window whose latest snapshot holds a capture of it: every
+//!   snapshot the helper takes captures one (and keeps nothing of it), and
+//!   where the driver has none ([`needs_capture`]) the helper takes a
+//!   snapshot and sends the action once more — nothing went out the first
+//!   time.
 //!
 //! The rest of "is this input still going where it was meant to" is the
 //! driver's own background gate on macOS, which re-reads the window's owner,
@@ -283,7 +292,11 @@ pub async fn check_points(
 }
 
 /// The driver's listing of one window now, as it gave it.
-async fn listed(driver: &DriverProc, pid: u32, window_id: u64) -> Result<Value, HelperError> {
+pub(super) async fn listed(
+    driver: &DriverProc,
+    pid: u32,
+    window_id: u64,
+) -> Result<Value, HelperError> {
     let result = driver
         .call(
             "list_windows",
@@ -517,8 +530,10 @@ pub async fn act(
     let mut args = json!({
         "pid": pid,
         "window_id": window_id,
-        "delivery_mode": mode.as_str(),
     });
+    if takes_delivery(action, platform) {
+        args["delivery_mode"] = json!(mode.as_str());
+    }
     match action {
         WindowAction::Click {
             at,
@@ -936,9 +951,21 @@ fn weaker(a: ActEffect, b: ActEffect) -> ActEffect {
     }
 }
 
+/// Whether the driver's tool for `action` on `platform` takes a delivery
+/// mode: all but macOS's `set_value`, which sets a value through
+/// Accessibility alone.
+fn takes_delivery(action: &WindowAction, platform: Platform) -> bool {
+    !(platform == Platform::Mac && matches!(action, WindowAction::SetValue { .. }))
+}
+
 fn put_element(args: &mut Value, element: &ElementRef) {
-    args["snapshot_id"] = json!(element.snapshot_id);
-    args["element_index"] = json!(element.index);
+    args["element_token"] = json!(element_token(element));
+}
+
+/// The driver's name for an element: its snapshot's id and its index in that
+/// snapshot, as the driver writes them (`s0000002a:7`).
+fn element_token(element: &ElementRef) -> String {
+    format!("{}:{}", element.snapshot_id, element.index)
 }
 
 fn put_target(args: &mut Value, at: &DriverTarget) {
@@ -964,12 +991,17 @@ async fn one(
     if result.is_error {
         return Err(act_error(tool, mode, &result));
     }
-    action_result(tool, &result)
+    action_result(tool, mode, &result)
 }
 
 /// Read the driver's closed action result: how far it can vouch for the
-/// action, and the route it took.
-fn action_result(tool: &str, result: &ToolCallResult) -> Result<RawAct, HelperError> {
+/// action, and the route it took. One it refused without calling it an
+/// error says why by code (`error.code`), read as any refusal is.
+fn action_result(
+    tool: &str,
+    mode: ActDelivery,
+    result: &ToolCallResult,
+) -> Result<RawAct, HelperError> {
     let structured = result.structured.as_ref();
     let effect = structured
         .and_then(|s| s.get("effect"))
@@ -979,10 +1011,13 @@ fn action_result(tool: &str, result: &ToolCallResult) -> Result<RawAct, HelperEr
         Some("partial") => ActEffect::Partial,
         Some("suspected_noop") => ActEffect::SuspectedNoop,
         Some("refused") => {
-            return Err(HelperError::new(
-                HelperErrorCode::ActionFailed,
-                format!("The application refused the {tool}."),
-            ))
+            return Err(match result.code() {
+                Some(_) => act_error(tool, mode, result),
+                None => HelperError::new(
+                    HelperErrorCode::ActionFailed,
+                    format!("The application refused the {tool}."),
+                ),
+            })
         }
         // Delivered, and nothing said what came of it.
         _ => ActEffect::Unverifiable,
@@ -1012,9 +1047,31 @@ const CHROMIUM_WINDOW_CLASS: &str = "Chrome_WidgetWin_";
 /// the words say what still reaches it in the background, rather than
 /// suggest a ref. On Windows the commonest such application is one built on
 /// Chromium, which drops every key that does not come from the front; the
-/// driver names it by its window class. Whether the front is to be had is
-/// the person's setting, which codeg knows and adds to these words.
+/// driver names it by its window class. Two refusals are of another kind: on
+/// Windows an application's accessibility interface that did not finish a
+/// click it may already have acted on (`effect: "unverifiable"`), and on
+/// Linux background input that goes through `/dev/uinput`, which the
+/// session cannot write. Whether the front is to be had is the person's
+/// setting, which codeg knows and adds to these words.
 fn background_refusal(tool: &str, result: &ToolCallResult) -> String {
+    let said = |key: &str| {
+        result
+            .structured
+            .as_ref()
+            .and_then(|s| s.get(key))
+            .and_then(Value::as_str)
+    };
+    if said("effect") == Some("unverifiable") {
+        return "The application's accessibility interface did not finish that action, and it \
+                may have gone through even so. Read the window (computer_snapshot or \
+                computer_screenshot) before trying it again."
+            .to_string();
+    }
+    if result.code() == Some("uinput_unavailable") || said("cause") == Some("uinput_unavailable") {
+        return "This Linux desktop takes such input in the background only through \
+                /dev/uinput, which codeg cannot use here, so nothing was sent."
+            .to_string();
+    }
     if !matches!(tool, "press_key" | "type_text") {
         return "This application does not take that kind of input in the background. Try an \
                 element by ref, or computer_set_value."
@@ -1042,6 +1099,19 @@ fn background_refusal(tool: &str, result: &ToolCallResult) -> String {
     words
 }
 
+/// Said when the driver holds no capture of the window to aim a point by:
+/// its latest snapshot of the window has none. The helper then takes a
+/// snapshot, which captures the window, and tries once more
+/// ([`needs_capture`]); these words reach the agent only if that fails too.
+const NO_CAPTURE: &str = "The window has no capture to aim a point by just now, so nothing was \
+     sent. Take a new computer_screenshot and use a point from it.";
+
+/// Whether `error` is the driver holding no capture of the window to aim a
+/// point by: nothing was sent, and a snapshot gives it one.
+pub fn needs_capture(error: &HelperError) -> bool {
+    error.code == HelperErrorCode::StaleRef && error.message == NO_CAPTURE
+}
+
 /// A window whose application runs with more rights than the driver: no
 /// input reaches it, whichever way it is sent.
 const HIGHER_RIGHTS: &str = "That window's application runs with more rights than codeg (as \
@@ -1063,8 +1133,8 @@ const FRONT_LOST: &str = "This action, with the window brought to the front, did
 /// What the driver says, word for word, only of a front it failed to have
 /// before any input went out: on Windows its `foreground_unavailable: …`
 /// texts that end "no input was sent" (or never got as far as the mouse); on
-/// macOS the activation that came before the keys. A failure said any other
-/// way may have come after.
+/// macOS the activation that came before the keys or the click. A failure
+/// said any other way may have come after.
 const NOTHING_SENT: [&str; 7] = [
     "no input was sent",
     "no mouse input was sent",
@@ -1080,14 +1150,21 @@ const NOTHING_SENT: [&str; 7] = [
 /// driver says it in words, not codes (`foreground_unavailable: …` when the
 /// window was not, or did not stay, at the front; `UIPI: …` for an
 /// application running with more rights than it); on macOS by the code
-/// `delivery_failed`. Only a failure the driver says came before any input
-/// went out is one to simply try again: a click it found the window gone
-/// from the front *after* may well have landed.
+/// `delivery_failed`, or `foreground_unavailable` for a click at a point; on
+/// Linux by `foreground_unavailable` or, for a window manager that did not
+/// answer in time, `foreground_timeout`. Only a failure the driver says came
+/// before any input went out is one to simply try again: a click it found the
+/// window gone from the front *after* may well have landed.
 fn front_failure(code: &str, text: &str) -> Option<&'static str> {
     let text = text.trim_start();
     if text.starts_with("UIPI") {
         Some(HIGHER_RIGHTS)
-    } else if code == "delivery_failed" || text.starts_with("foreground_unavailable") {
+    } else if matches!(
+        code,
+        "delivery_failed" | "foreground_unavailable" | "foreground_timeout"
+    ) || text.starts_with("foreground_unavailable")
+        || text.starts_with("foreground_timeout")
+    {
         if NOTHING_SENT.iter().any(|said| text.contains(said)) {
             Some(FRONT_NOT_HAD)
         } else {
@@ -1111,17 +1188,12 @@ fn act_error(tool: &str, mode: ActDelivery, result: &ToolCallResult) -> HelperEr
         }
     }
     match code {
-        "stale_element_token"
-        | "invalid_element_token"
-        | "generation_mismatch"
-        | "invalid_snapshot_id"
-        | "snapshot_id_required"
-        | "element_index_required"
-        | "conflicting_element_target" => error(
+        "stale_element_token" | "invalid_element_token" | "conflicting_element_target" => error(
             HelperErrorCode::StaleRef,
             "That ref is from a snapshot this window has moved past. Take a new \
              computer_snapshot and use a ref from it.",
         ),
+        "screenshot_context_missing" => error(HelperErrorCode::StaleRef, NO_CAPTURE),
         "px_frame_mismatch" => error(
             HelperErrorCode::StaleRef,
             "The window changed while the point was being placed. Take a new \
@@ -1138,6 +1210,17 @@ fn act_error(tool: &str, mode: ActDelivery, result: &ToolCallResult) -> HelperEr
             HelperErrorCode::OutOfTarget,
             "That element is not part of this window — a menu or panel of the application's \
              own, perhaps. Only what is inside the shared window can be acted on.",
+        ),
+        "point_outside_window" => error(
+            HelperErrorCode::OutOfTarget,
+            "That point is outside the window as it is now, so nothing was sent. Take a new \
+             computer_screenshot and use a point from it.",
+        ),
+        "target_occluded" => error(
+            HelperErrorCode::Occluded,
+            "Another application's window is over that point, and the click would land on it \
+             instead, so nothing was sent. Click an element by ref, or ask the user to move the \
+             window that is in the way.",
         ),
         "off_space_or_ax_unresolved" => error(
             HelperErrorCode::Occluded,
@@ -1158,10 +1241,22 @@ fn act_error(tool: &str, mode: ActDelivery, result: &ToolCallResult) -> HelperEr
              keys are sent in the background. Use computer_set_value on the field, or a click \
              on an element by ref — or ask the user to close the application's other windows.",
         ),
+        "popup_keyboard_grab" => error(
+            HelperErrorCode::ActionFailed,
+            "A pop-up of the application — a menu or a list — holds the keyboard, so the keys \
+             were not sent. Choose from it or close it first, then try again.",
+        ),
+        "wm_chord_unavailable" => error(
+            HelperErrorCode::ActionFailed,
+            "The desktop's window manager takes that key combination for itself, so it was not \
+             sent to the window.",
+        ),
         // Refused in the background, and not for want of rights: the front
         // may take it, where the person allows it.
         "background_unavailable"
         | "background_occluded"
+        | "background_pointer_failed"
+        | "uinput_unavailable"
         | "SCREEN_SHARING_REQUIRES_FOREGROUND_HID" => error(
             HelperErrorCode::BackgroundUnavailable,
             &background_refusal(tool, result),
@@ -1202,6 +1297,43 @@ fn act_error(tool: &str, mode: ActDelivery, result: &ToolCallResult) -> HelperEr
             HelperErrorCode::ActionFailed,
             "The window is busy with other input. Try again in a moment.",
         ),
+        "set_value_unavailable" => error(
+            HelperErrorCode::ActionFailed,
+            "That element's value cannot be set directly here; nothing was changed. Type into it \
+             with computer_type, or choose with clicks.",
+        ),
+        "element_bounds_unavailable" => error(
+            HelperErrorCode::ActionFailed,
+            "Where that element is cannot be read, so it was not clicked. Click a point on it \
+             from a computer_screenshot, or an element inside it.",
+        ),
+        "ax_timeout" => error(
+            HelperErrorCode::ActionFailed,
+            "The application did not finish the action in time, so whether it went through \
+             cannot be told — it may have. Read the window (computer_snapshot or \
+             computer_screenshot) before doing it again.",
+        ),
+        "modified_pointer_unavailable" => error(
+            HelperErrorCode::ActionFailed,
+            "Keys cannot be held down through that pointer action on this desktop, so nothing \
+             was sent. Do it without modifiers.",
+        ),
+        // Arguments codeg built and the driver does not take: a fault here,
+        // not in what the agent asked.
+        "invalid_arguments" => {
+            tracing::error!(
+                "the driver refused the {tool} codeg built: {}",
+                result.text()
+            );
+            error(
+                HelperErrorCode::ActionFailed,
+                &format!(
+                    "The driver did not take the {tool} as codeg sent it, so nothing was sent. \
+                     That is a fault in codeg, not in the request — trying again will not help. \
+                     Tell the user."
+                ),
+            )
+        }
         "screen_recording_permission_denied" => {
             HelperError::permission_missing(OsPermission::ScreenRecording)
         }
@@ -1463,20 +1595,63 @@ mod tests {
             content: Vec::new(),
             structured: Some(structured),
         };
+        let back = ActDelivery::Background;
         let act = action_result(
             "click",
+            back,
             &ok(json!({"effect": "confirmed", "route": "accessibility",
                         "delivery": {"mode": "background"}, "evidence": [{"kind": "value_readback"}]})),
         )
         .unwrap();
         assert_eq!(act.effect, ActEffect::Confirmed);
         assert_eq!(act.route, Some(ActRoute::Accessibility));
-        let vague = action_result("click", &ToolCallResult::default()).unwrap();
+        let vague = action_result("click", back, &ToolCallResult::default()).unwrap();
         assert_eq!(vague.effect, ActEffect::Unverifiable);
-        let novel = action_result("click", &ok(json!({"effect": "unverifiable", "route": "telepathy"})))
-            .unwrap();
+        let novel = action_result(
+            "click",
+            back,
+            &ok(json!({"effect": "unverifiable", "route": "telepathy"})),
+        )
+        .unwrap();
         assert_eq!(novel.route, Some(ActRoute::Other));
-        assert!(action_result("click", &ok(json!({"effect": "refused"}))).is_err());
+        assert!(action_result("click", back, &ok(json!({"effect": "refused"}))).is_err());
+        // A refusal answered without an error says why by code, and is read
+        // as any refusal is.
+        let occluded = action_result(
+            "click",
+            back,
+            &ok(json!({"effect": "refused", "error": {"code": "target_occluded", "hint": "x"}})),
+        )
+        .unwrap_err();
+        assert_eq!(occluded.code, HelperErrorCode::Occluded);
+    }
+
+    /// An element goes to the driver by its token alone — the snapshot's id
+    /// and the element's index, as the driver writes them — and a delivery
+    /// mode goes with every action whose tool takes one: all but macOS's
+    /// `set_value`.
+    #[test]
+    fn the_driver_gets_only_what_its_tools_take() {
+        let mut args = json!({"pid": 1, "window_id": 2});
+        put_element(&mut args, &element("s0000002a", 7));
+        assert_eq!(
+            args,
+            json!({"pid": 1, "window_id": 2, "element_token": "s0000002a:7"})
+        );
+        let set = WindowAction::SetValue {
+            element: element("s0000002a", 7),
+            value: "x".into(),
+        };
+        let click = WindowAction::Click {
+            at: DriverTarget::Element(element("s0000002a", 7)),
+            button: PointerButton::Left,
+            count: 1,
+            modifiers: Modifiers::default(),
+        };
+        assert!(!takes_delivery(&set, Platform::Mac));
+        assert!(takes_delivery(&set, Platform::Windows));
+        assert!(takes_delivery(&set, Platform::Linux));
+        assert!(takes_delivery(&click, Platform::Mac));
     }
 
     /// The driver's refusals come back as the helper's codes, in the
@@ -1574,6 +1749,85 @@ mod tests {
         );
         assert_eq!(other.code, HelperErrorCode::ActionFailed);
         assert!(other.message.contains("element is disabled"));
+        // The driver with no capture of the window to aim by: nothing went
+        // out, and the helper knows to give it one.
+        let uncaptured = act_error(
+            "click",
+            back,
+            &refused(
+                json!({"code": "screenshot_context_missing"}),
+                "Call get_window_state",
+            ),
+        );
+        assert!(needs_capture(&uncaptured));
+        assert!(!uncaptured.message.contains("get_window_state"));
+        assert!(!needs_capture(&act_error(
+            "click",
+            back,
+            &refused(json!({"code": "stale_element_token"}), ""),
+        )));
+        for (code, want) in [
+            ("point_outside_window", HelperErrorCode::OutOfTarget),
+            ("target_occluded", HelperErrorCode::Occluded),
+            (
+                "background_pointer_failed",
+                HelperErrorCode::BackgroundUnavailable,
+            ),
+            ("popup_keyboard_grab", HelperErrorCode::ActionFailed),
+            ("wm_chord_unavailable", HelperErrorCode::ActionFailed),
+            ("set_value_unavailable", HelperErrorCode::ActionFailed),
+            ("element_bounds_unavailable", HelperErrorCode::ActionFailed),
+            (
+                "modified_pointer_unavailable",
+                HelperErrorCode::ActionFailed,
+            ),
+        ] {
+            let e = act_error(
+                "click",
+                back,
+                &refused(json!({ "code": code }), "driver words"),
+            );
+            assert_eq!(e.code, want, "{code}");
+            assert!(!e.message.contains("driver words"), "{code}: {}", e.message);
+        }
+        // What may have happened is said to have perhaps happened.
+        let late = act_error("click", back, &refused(json!({"code": "ax_timeout"}), ""));
+        assert!(late.message.contains("may have"), "{}", late.message);
+        let unverified = act_error(
+            "click",
+            back,
+            &refused(
+                json!({"code": "background_unavailable", "uia_status": "busy",
+                       "effect": "unverifiable"}),
+                "",
+            ),
+        );
+        assert_eq!(unverified.code, HelperErrorCode::BackgroundUnavailable);
+        assert!(
+            unverified.message.contains("may have"),
+            "{}",
+            unverified.message
+        );
+        // Linux input that needs /dev/uinput, by code or by cause.
+        for structured in [
+            json!({"code": "uinput_unavailable"}),
+            json!({"code": "background_unavailable", "cause": "uinput_unavailable"}),
+        ] {
+            let e = act_error("click", back, &refused(structured, ""));
+            assert_eq!(e.code, HelperErrorCode::BackgroundUnavailable);
+            assert!(e.message.contains("/dev/uinput"), "{}", e.message);
+        }
+        // Arguments the driver does not take are codeg's fault, said so.
+        let bad = act_error(
+            "set_value",
+            back,
+            &refused(
+                json!({"status": "refused", "refusal": {"code": "invalid_arguments"}}),
+                "",
+            ),
+        );
+        assert_eq!(bad.code, HelperErrorCode::ActionFailed);
+        assert!(bad.message.contains("fault in codeg"), "{}", bad.message);
     }
 
     /// The front fails in words of its own — a window that would not come
@@ -1635,6 +1889,34 @@ mod tests {
             &failed(
                 Some("delivery_failed"),
                 "press_key delivery failed: post rejected",
+            ),
+        ));
+        // macOS's click at a point, by its own code: before the click when
+        // it says so, and otherwise perhaps after.
+        not_had(&act_error(
+            "click",
+            front,
+            &failed(
+                Some("foreground_unavailable"),
+                "click failed: foreground HID delivery to window 5 was not possible: window 5 \
+                 did not become focused for foreground HID delivery",
+            ),
+        ));
+        lost(&act_error(
+            "click",
+            front,
+            &failed(
+                Some("foreground_unavailable"),
+                "click failed: foreground HID delivery to window 5 was not possible: post failed",
+            ),
+        ));
+        // Linux's window manager that did not answer in time.
+        lost(&act_error(
+            "press_key",
+            front,
+            &failed(
+                Some("foreground_timeout"),
+                "foreground_timeout: the window manager did not confirm activation",
             ),
         ));
         let rights = failed(None, "UIPI: target hwnd 0x1 is at High integrity");
