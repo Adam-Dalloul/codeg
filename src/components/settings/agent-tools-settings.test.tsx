@@ -18,6 +18,7 @@ vi.mock("@/lib/api", () => ({
 vi.mock("@/lib/computer/computer-api", () => ({
   getComputerToolsSettings: vi.fn(),
   setComputerToolsEnabled: vi.fn(),
+  useComputerAvailable: () => false,
 }))
 
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }))

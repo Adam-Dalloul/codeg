@@ -51,6 +51,7 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "tauri-runtime")]
 use tauri::{AppHandle, Manager};
 
 use crate::acp::computer_tools::{
@@ -82,15 +83,19 @@ use crate::computer::backend::{
     ActRefusal, BackendError, BackendStatus, ComputerBackend, SnapshotOptions,
 };
 use crate::computer::driver_admin::{DriverAdmin, DriverInfo, DriverTask};
-use crate::computer::events;
+use crate::computer::events::ComputerEvents;
+#[cfg(feature = "tauri-runtime")]
 use crate::computer::indicator::{Indicator, Strip};
 use crate::computer::local::LocalBackend;
+#[cfg(feature = "tauri-runtime")]
 use crate::computer::marker::Marker;
 use crate::computer::procinfo::process_start;
 use crate::computer::protocol::{
     ClipboardUse, OsPermission, PermissionAsked, PermissionReport, RawAct, ScreenRules,
 };
-use crate::computer::stop_key::{StopKey, StopKeyStatus};
+#[cfg(feature = "tauri-runtime")]
+use crate::computer::stop_key::StopKey;
+use crate::computer::stop_shortcut::StopKeyStatus;
 use crate::computer::targets::{
     ActDenied, Aim, AppChange, AppTarget, ReadMark, ReadRefusal, ReadTicket, ShareError, SharedApp,
     SharedScreen, SharedWindow, Staleness, TargetTable, WindowIdentity, SCREEN_TARGET_ID,
@@ -99,6 +104,7 @@ use crate::computer::types::{
     ActDelivery, ActReport, AgentAppRef, AgentAppSummary, AgentScreen, ComputerActRequest, Rect,
     VerifyOutcome, VerifyRequest, WindowCapture, WindowSnapshot, MAX_HOLD_MS, MAX_KEY_REPEAT,
 };
+use crate::web::event_bridge::{EventEmitter, WebEventBroadcaster};
 
 /// How often lapsed grants are swept, so the panel shows a window as no
 /// longer shared when its time runs out rather than at the next read.
@@ -425,9 +431,18 @@ struct Admitted {
     stop: u64,
 }
 
-/// The desktop's computer-use service. One per app, managed as Tauri state.
+/// The computer-use service: one per process — the desktop app's, managed as
+/// Tauri state, or codeg-server's where it is let share the screen it runs
+/// on (`CODEG_COMPUTER_USE`).
 pub struct ComputerService {
-    app: AppHandle,
+    /// Where what changes is told (see `computer::events`).
+    events: ComputerEvents,
+    /// Where a settings change the service makes itself is told — removing
+    /// the driver switches computer use off.
+    settings_events: EventEmitter,
+    /// What only the desktop app has; `None` in codeg-server.
+    #[cfg(feature = "tauri-runtime")]
+    desktop: Option<DesktopUi>,
     backend: Arc<LocalBackend>,
     targets: TargetTable,
     config: ComputerToolsRuntimeConfig,
@@ -450,15 +465,9 @@ pub struct ComputerService {
     /// before a switch-off (and is revoked with the rest) or after it (and is
     /// refused) — never after the revocation and still standing.
     policy: std::sync::Mutex<SharingPolicy>,
-    /// The stop shortcut, held with the OS while computer use is on.
-    stop_key: StopKey,
-    /// The strip above every window while anything is shared.
-    indicator: Indicator,
     /// Whether the person wants the strip at all (Settings), as the last
     /// settings change the service followed left it.
     strip_wanted: AtomicBool,
-    /// The mark an action leaves where it landed.
-    marker: Marker,
     /// Held across reading the state and telling everyone of it, so two
     /// changes told at once are told in the order they were read — the
     /// older never lands last.
@@ -468,6 +477,42 @@ pub struct ComputerService {
     /// What an agent last put on the clipboard itself (see
     /// [`OwnedClipboard`]); cleared by Stop.
     clipboard: std::sync::Mutex<Option<OwnedClipboard>>,
+}
+
+/// What the desktop app adds to computer use: the stop shortcut, held with
+/// the OS while computer use is on; the strip above every window while
+/// anything is shared; and the mark an action leaves where it landed.
+/// codeg-server has none of them — its Stop is in its web clients' panel.
+#[cfg(feature = "tauri-runtime")]
+struct DesktopUi {
+    app: AppHandle,
+    stop_key: StopKey,
+    indicator: Indicator,
+    marker: Marker,
+}
+
+/// Where a computer-use service runs.
+pub enum ComputerHost {
+    /// The desktop app: its own webviews are told, and it has the strip, the
+    /// marker and the stop shortcut.
+    #[cfg(feature = "tauri-runtime")]
+    Desktop(AppHandle),
+    /// codeg-server, let share the screen it runs on: its web clients are
+    /// told, through `broadcaster`; `emitter` is where it tells of settings.
+    Server {
+        broadcaster: Arc<WebEventBroadcaster>,
+        emitter: EventEmitter,
+    },
+}
+
+/// Run `task` on the runtime codeg runs on: Tauri's in the desktop app,
+/// which starts the service before any task of its own runs; the process's
+/// own in codeg-server.
+fn spawn_task(task: impl std::future::Future<Output = ()> + Send + 'static) {
+    #[cfg(feature = "tauri-runtime")]
+    tauri::async_runtime::spawn(task);
+    #[cfg(not(feature = "tauri-runtime"))]
+    tokio::spawn(task);
 }
 
 /// What an agent last put on the clipboard itself, as the clipboard was
@@ -527,26 +572,49 @@ impl ComputerService {
     /// (switching off ends every grant and stops the helper; a longer
     /// blocklist or a shorter timeout ends what they now forbid), and ending
     /// grants whose time runs out.
-    pub fn start(app: AppHandle, config: ComputerToolsRuntimeConfig) -> Arc<Self> {
-        let status_app = app.clone();
-        let drivers = Arc::new(DriverAdmin::new(app.clone()));
+    pub fn start(host: ComputerHost, config: ComputerToolsRuntimeConfig) -> Arc<Self> {
+        let (events, settings_events) = match &host {
+            #[cfg(feature = "tauri-runtime")]
+            ComputerHost::Desktop(app) => (
+                ComputerEvents::Desktop(app.clone()),
+                EventEmitter::Tauri(app.clone()),
+            ),
+            ComputerHost::Server {
+                broadcaster,
+                emitter,
+            } => (ComputerEvents::Web(broadcaster.clone()), emitter.clone()),
+        };
+        let status_events = events.clone();
+        let drivers = Arc::new(DriverAdmin::new(events.clone()));
         let status_drivers = drivers.clone();
         let backend = Arc::new(
             LocalBackend::new(move |status: &BackendStatus| {
-                events::emit_backend_status(&status_app, status);
+                status_events.backend_status(status);
                 status_drivers.backend_moved(status);
             })
             .with_switch(config.clone()),
         );
-        let indicator = Indicator::start(app.clone());
-        let marker = Marker::start(app.clone());
+        #[cfg(feature = "tauri-runtime")]
+        let desktop = match host {
+            ComputerHost::Desktop(app) => Some(DesktopUi {
+                stop_key: StopKey::new(),
+                indicator: Indicator::start(app.clone()),
+                marker: Marker::start(app.clone()),
+                app,
+            }),
+            ComputerHost::Server { .. } => None,
+        };
         let (policy, strip_wanted) = {
             let settings = config.subscribe();
             let settings = settings.borrow();
             (SharingPolicy::of(&settings), settings.show_indicator)
         };
+        config.mark_served();
         let service = Arc::new(Self {
-            app,
+            events,
+            settings_events,
+            #[cfg(feature = "tauri-runtime")]
+            desktop,
             backend,
             targets: TargetTable::new(),
             config: config.clone(),
@@ -555,10 +623,7 @@ impl ComputerService {
             stops: AtomicU64::new(0),
             grant_gate: std::sync::Mutex::new(()),
             policy: std::sync::Mutex::new(policy),
-            stop_key: StopKey::new(),
-            indicator,
             strip_wanted: AtomicBool::new(strip_wanted),
-            marker,
             state_gate: std::sync::Mutex::new(()),
             drivers,
             clipboard: std::sync::Mutex::new(None),
@@ -575,7 +640,7 @@ impl ComputerService {
 
         let watcher = Arc::downgrade(&service);
         let mut changes = config.subscribe();
-        tauri::async_runtime::spawn(async move {
+        spawn_task(async move {
             // The settings as they stand, then every change to them. A watch
             // channel keeps only the latest value, so an off-and-on-again is
             // told apart by the switch-off count, not by `enabled`.
@@ -596,7 +661,7 @@ impl ComputerService {
         });
 
         let sweeper = Arc::downgrade(&service);
-        tauri::async_runtime::spawn(async move {
+        spawn_task(async move {
             let mut tick = tokio::time::interval(EXPIRY_SWEEP);
             loop {
                 tick.tick().await;
@@ -653,19 +718,24 @@ impl ComputerService {
     /// off, there is nothing for it to stop, and it would only take the keys
     /// from every other application.
     fn follow_stop_key(self: &Arc<Self>, config: &ComputerToolsConfig) {
-        let wanted = config
-            .enabled
-            .then_some(config.stop_shortcut.as_ref())
-            .flatten();
-        let service = Arc::downgrade(self);
-        let on_press = move || {
-            if let Some(service) = service.upgrade() {
-                tauri::async_runtime::spawn(async move { service.stop().await });
+        #[cfg(feature = "tauri-runtime")]
+        if let Some(desktop) = &self.desktop {
+            let wanted = config
+                .enabled
+                .then_some(config.stop_shortcut.as_ref())
+                .flatten();
+            let service = Arc::downgrade(self);
+            let on_press = move || {
+                if let Some(service) = service.upgrade() {
+                    spawn_task(async move { service.stop().await });
+                }
+            };
+            if let Some(status) = desktop.stop_key.sync(&desktop.app, wanted, on_press) {
+                self.events.stop_key(&status);
             }
-        };
-        if let Some(status) = self.stop_key.sync(&self.app, wanted, on_press) {
-            events::emit_stop_key(&self.app, &status);
         }
+        #[cfg(not(feature = "tauri-runtime"))]
+        let _ = config;
     }
 
     /// Put the strip up or down for the person's choice in Settings — the
@@ -673,14 +743,21 @@ impl ComputerService {
     fn follow_strip(&self, wanted: bool) {
         let _told = self.state_gate.lock().unwrap_or_else(|p| p.into_inner());
         self.strip_wanted.store(wanted, Ordering::Release);
-        let shared = !self.targets.shared().is_empty()
-            || !self.targets.shared_apps().is_empty()
-            || self.targets.shared_screen().is_some();
-        self.indicator.set(Strip::of(shared, wanted));
+        #[cfg(feature = "tauri-runtime")]
+        if let Some(desktop) = &self.desktop {
+            let shared = !self.targets.shared().is_empty()
+                || !self.targets.shared_apps().is_empty()
+                || self.targets.shared_screen().is_some();
+            desktop.indicator.set(Strip::of(shared, wanted));
+        }
     }
 
     pub fn stop_key_status(&self) -> StopKeyStatus {
-        self.stop_key.status()
+        #[cfg(feature = "tauri-runtime")]
+        if let Some(desktop) = &self.desktop {
+            return desktop.stop_key.status();
+        }
+        StopKeyStatus::default()
     }
 
     /// The stamp of what an agent last put on the clipboard itself, while
@@ -759,7 +836,7 @@ impl ComputerService {
             return;
         }
         for change in changes {
-            events::emit_grant(&self.app, change);
+            self.events.grant(change);
         }
         self.emit_state();
     }
@@ -782,16 +859,19 @@ impl ComputerService {
         let shared = self.targets.shared();
         let apps = self.targets.shared_apps();
         let screen = self.targets.shared_screen();
-        events::emit_state(&self.app, &shared, &apps, screen.as_ref());
-        self.indicator.set(Strip::of(
-            !shared.is_empty() || !apps.is_empty() || screen.is_some(),
-            self.strip_wanted.load(Ordering::Acquire),
-        ));
-        self.marker.arm(
-            shared.iter().any(|w| w.level == GrantLevel::Control)
-                || apps.iter().any(|a| a.level == GrantLevel::Control)
-                || screen.is_some_and(|s| s.level == GrantLevel::Control),
-        );
+        self.events.state(&shared, &apps, screen.as_ref());
+        #[cfg(feature = "tauri-runtime")]
+        if let Some(desktop) = &self.desktop {
+            desktop.indicator.set(Strip::of(
+                !shared.is_empty() || !apps.is_empty() || screen.is_some(),
+                self.strip_wanted.load(Ordering::Acquire),
+            ));
+            desktop.marker.arm(
+                shared.iter().any(|w| w.level == GrantLevel::Control)
+                    || apps.iter().any(|a| a.level == GrantLevel::Control)
+                    || screen.is_some_and(|s| s.level == GrantLevel::Control),
+            );
+        }
     }
 
     /// The person pressed Stop: every grant ends, whatever is under way is
@@ -811,7 +891,7 @@ impl ComputerService {
             (self.targets.revoke_all(GrantChange::Stopped), stop)
         };
         for change in &ended.windows {
-            events::emit_grant(&self.app, change);
+            self.events.grant(change);
         }
         self.emit_state();
         if let Err(e) = self.backend.halt(stop).await {
@@ -978,7 +1058,7 @@ impl ComputerService {
                 crate::commands::computer_tools::set_computer_tools_enabled_core(
                     conn,
                     &self.config,
-                    &crate::web::event_bridge::EventEmitter::Tauri(self.app.clone()),
+                    &self.settings_events,
                     false,
                 )
                 .await
@@ -998,30 +1078,24 @@ impl ComputerService {
     }
 
     fn record(&self, target_id: &str, action: ComputerAction, outcome: ActivityOutcome) {
-        events::emit_activity(
-            &self.app,
-            &ComputerActivityPayload {
-                target_id: target_id.to_string(),
-                action,
-                outcome,
-                at: now_ms(),
-                app: None,
-            },
-        );
+        self.events.activity(&ComputerActivityPayload {
+            target_id: target_id.to_string(),
+            action,
+            outcome,
+            at: now_ms(),
+            app: None,
+        });
     }
 
     /// What was done to an application rather than to a window of it.
     fn record_app(&self, app: &str, action: ComputerAction, outcome: ActivityOutcome) {
-        events::emit_activity(
-            &self.app,
-            &ComputerActivityPayload {
-                target_id: String::new(),
-                action,
-                outcome,
-                at: now_ms(),
-                app: Some(app.to_string()),
-            },
-        );
+        self.events.activity(&ComputerActivityPayload {
+            target_id: String::new(),
+            action,
+            outcome,
+            at: now_ms(),
+            app: Some(app.to_string()),
+        });
     }
 
     /// Step 1: the switch, re-read now.
@@ -2001,9 +2075,13 @@ impl ComputerService {
         }
         let presses = Presses::of(&request);
         let mark = |press: &Press| {
-            if let Some(at) = press.aim.landing(&press.raw) {
-                self.marker.mark(at, action);
+            #[cfg(feature = "tauri-runtime")]
+            if let (Some(desktop), Some(at)) = (&self.desktop, press.aim.landing(&press.raw)) {
+                desktop.marker.mark(at, action);
             }
+            // No marker in codeg-server: nothing on its screen of codeg's.
+            #[cfg(not(feature = "tauri-runtime"))]
+            let _ = (press.aim, action);
         };
         let first = {
             let turn = self.turn.lock().await;
@@ -2272,7 +2350,8 @@ pub struct PickerWindow {
     pub not_grantable: Option<NotGrantable>,
 }
 
-fn platform_name() -> &'static str {
+/// `macos` / `windows` / `linux`: the machine whose screen this is.
+pub fn platform_name() -> &'static str {
     if cfg!(target_os = "macos") {
         "macos"
     } else if cfg!(windows) {
@@ -2282,6 +2361,8 @@ fn platform_name() -> &'static str {
     }
 }
 
+/// The computer service the desktop app manages, for its commands.
+#[cfg(feature = "tauri-runtime")]
 fn service(app: &AppHandle) -> Result<Arc<ComputerService>, AppCommandError> {
     app.try_state::<Arc<ComputerService>>()
         .map(|s| s.inner().clone())
@@ -2292,9 +2373,14 @@ fn backend_error(e: BackendError) -> AppCommandError {
     AppCommandError::configuration_invalid(e.to_string())
 }
 
-#[tauri::command]
-pub async fn computer_status(app: AppHandle) -> Result<ComputerStatus, AppCommandError> {
-    let service = service(&app)?;
+// The panel's commands. Each is a `_core` function the desktop app's Tauri
+// command and codeg-server's HTTP handler (`web::handlers::computer`) both
+// call; what only one of them can do — open System Settings, show a file in
+// the Finder, size the strip — is the command's own.
+
+pub async fn computer_status_core(
+    service: &ComputerService,
+) -> Result<ComputerStatus, AppCommandError> {
     let config = service.config.snapshot().await;
     // Asking for the helper's permissions starts the helper, which fetches
     // the driver on first use; only worth doing once the person has switched
@@ -2316,6 +2402,12 @@ pub async fn computer_status(app: AppHandle) -> Result<ComputerStatus, AppComman
     })
 }
 
+#[cfg(feature = "tauri-runtime")]
+#[tauri::command]
+pub async fn computer_status(app: AppHandle) -> Result<ComputerStatus, AppCommandError> {
+    computer_status_core(&*service(&app)?).await
+}
+
 /// What asking for a permission did.
 #[derive(Debug, Clone, Copy, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -2329,12 +2421,10 @@ pub struct PermissionRequestResult {
 
 /// Raise the system's request for one permission — that one alone — charged
 /// to the helper, and say where that leaves things.
-#[tauri::command]
-pub async fn computer_request_permission(
-    app: AppHandle,
+pub async fn computer_request_permission_core(
+    service: &ComputerService,
     permission: OsPermission,
 ) -> Result<PermissionRequestResult, AppCommandError> {
-    let service = service(&app)?;
     let PermissionAsked { prompted } = service
         .backend
         .request_permission(permission)
@@ -2344,20 +2434,40 @@ pub async fn computer_request_permission(
     Ok(PermissionRequestResult { report, prompted })
 }
 
-/// Open System Settings at the pane for one permission.
+#[cfg(feature = "tauri-runtime")]
 #[tauri::command]
-pub async fn computer_open_permission_settings(
+pub async fn computer_request_permission(
     app: AppHandle,
     permission: OsPermission,
-) -> Result<(), AppCommandError> {
+) -> Result<PermissionRequestResult, AppCommandError> {
+    computer_request_permission_core(&*service(&app)?, permission).await
+}
+
+/// The System Settings pane for one permission, as a URL; `None` off macOS,
+/// where there is no such pane.
+pub fn permission_settings_url(permission: OsPermission) -> Option<String> {
     if !cfg!(target_os = "macos") {
-        return Ok(());
+        return None;
     }
     let pane = match permission {
         OsPermission::Accessibility => "Privacy_Accessibility",
         OsPermission::ScreenRecording => "Privacy_ScreenCapture",
     };
-    let url = format!("x-apple.systempreferences:com.apple.preference.security?{pane}");
+    Some(format!(
+        "x-apple.systempreferences:com.apple.preference.security?{pane}"
+    ))
+}
+
+/// Open System Settings at the pane for one permission.
+#[cfg(feature = "tauri-runtime")]
+#[tauri::command]
+pub async fn computer_open_permission_settings(
+    app: AppHandle,
+    permission: OsPermission,
+) -> Result<(), AppCommandError> {
+    let Some(url) = permission_settings_url(permission) else {
+        return Ok(());
+    };
     use tauri_plugin_opener::OpenerExt;
     app.opener()
         .open_url(url, None::<&str>)
@@ -2366,6 +2476,7 @@ pub async fn computer_open_permission_settings(
 
 /// Show codeg-computer-helper in the Finder — for dragging it into System
 /// Settings' list by hand, should it not be listed there after a request.
+#[cfg(feature = "tauri-runtime")]
 #[tauri::command]
 pub async fn computer_reveal_helper(app: AppHandle) -> Result<(), AppCommandError> {
     let helper = crate::computer::local::helper_to_reveal()
@@ -2378,11 +2489,9 @@ pub async fn computer_reveal_helper(app: AppHandle) -> Result<(), AppCommandErro
 }
 
 /// Every window, for the share picker.
-#[tauri::command]
-pub async fn computer_list_shareable_windows(
-    app: AppHandle,
+pub async fn computer_list_shareable_windows_core(
+    service: &ComputerService,
 ) -> Result<Vec<PickerWindow>, AppCommandError> {
-    let service = service(&app)?;
     let config = service.config.snapshot().await;
     if !config.enabled {
         return Ok(Vec::new());
@@ -2429,19 +2538,25 @@ pub async fn computer_list_shareable_windows(
         .collect())
 }
 
+#[cfg(feature = "tauri-runtime")]
+#[tauri::command]
+pub async fn computer_list_shareable_windows(
+    app: AppHandle,
+) -> Result<Vec<PickerWindow>, AppCommandError> {
+    computer_list_shareable_windows_core(&*service(&app)?).await
+}
+
 /// A small picture of one window for the picker, as a `data:` URL. Never for
 /// a window that can never be shared — there is no decision to make about it
 /// — nor for a minimized one, or one whose application is hidden, which shows
 /// nothing to capture (the helper refuses one it finds so since the list was
 /// read).
-#[tauri::command]
-pub async fn computer_window_thumbnail(
-    app: AppHandle,
-    target_id: String,
+pub async fn computer_window_thumbnail_core(
+    service: &ComputerService,
+    target_id: &str,
 ) -> Result<Option<String>, AppCommandError> {
-    let service = service(&app)?;
     let config = service.config.snapshot().await;
-    let Some(entry) = service.targets.get(&target_id) else {
+    let Some(entry) = service.targets.get(target_id) else {
         return Ok(None);
     };
     if !config.enabled
@@ -2466,18 +2581,35 @@ pub async fn computer_window_thumbnail(
     }
 }
 
+#[cfg(feature = "tauri-runtime")]
+#[tauri::command]
+pub async fn computer_window_thumbnail(
+    app: AppHandle,
+    target_id: String,
+) -> Result<Option<String>, AppCommandError> {
+    computer_window_thumbnail_core(&*service(&app)?, &target_id).await
+}
+
 /// Share one window at `level`, or stop sharing it at `none`.
+pub async fn computer_share_window_core(
+    service: &ComputerService,
+    target_id: &str,
+    level: GrantLevel,
+) -> Result<Vec<SharedWindow>, AppCommandError> {
+    let since = service.stop_count();
+    let change = service.share_unless_stopped(target_id, level, since)?;
+    service.announce(&change.into_iter().collect::<Vec<_>>());
+    Ok(service.targets.shared())
+}
+
+#[cfg(feature = "tauri-runtime")]
 #[tauri::command]
 pub async fn computer_share_window(
     app: AppHandle,
     target_id: String,
     level: GrantLevel,
 ) -> Result<Vec<SharedWindow>, AppCommandError> {
-    let service = service(&app)?;
-    let since = service.stop_count();
-    let change = service.share_unless_stopped(&target_id, level, since)?;
-    service.announce(&change.into_iter().collect::<Vec<_>>());
-    Ok(service.targets.shared())
+    computer_share_window_core(&*service(&app)?, &target_id, level).await
 }
 
 /// What sharing several windows at once did.
@@ -2491,19 +2623,17 @@ pub struct ShareManyResult {
 }
 
 /// Share every window named at one level — the picker's "all" — each exactly
-/// as [`computer_share_window`] would share it, one after another, skipping
-/// the ones that cannot be. A Stop or a switch-off that lands part way
-/// through is decided window by window, under the lock it revokes under:
+/// as [`computer_share_window_core`] would share it, one after another,
+/// skipping the ones that cannot be. A Stop or a switch-off that lands part
+/// way through is decided window by window, under the lock it revokes under:
 /// nothing is shared after it (the next share, begun after the Stop, is).
 /// Refused outright when the first window already could not be shared for
 /// that reason.
-#[tauri::command]
-pub async fn computer_share_windows(
-    app: AppHandle,
-    target_ids: Vec<String>,
+pub async fn computer_share_windows_core(
+    service: &ComputerService,
+    target_ids: &[String],
     level: GrantLevel,
 ) -> Result<ShareManyResult, AppCommandError> {
-    let service = service(&app)?;
     let since = service.stop_count();
     let mut skipped = 0u32;
     for (i, target_id) in target_ids.iter().enumerate() {
@@ -2523,11 +2653,26 @@ pub async fn computer_share_windows(
     })
 }
 
+#[cfg(feature = "tauri-runtime")]
+#[tauri::command]
+pub async fn computer_share_windows(
+    app: AppHandle,
+    target_ids: Vec<String>,
+    level: GrantLevel,
+) -> Result<ShareManyResult, AppCommandError> {
+    computer_share_windows_core(&*service(&app)?, &target_ids, level).await
+}
+
 /// The shared windows — codeg's own state, with no helper to start, for a
 /// window that has just loaded.
+pub fn computer_shared_state_core(service: &ComputerService) -> SharedState {
+    service.shared_state()
+}
+
+#[cfg(feature = "tauri-runtime")]
 #[tauri::command]
 pub async fn computer_shared_state(app: AppHandle) -> Result<SharedState, AppCommandError> {
-    Ok(service(&app)?.shared_state())
+    Ok(computer_shared_state_core(&*service(&app)?))
 }
 
 /// What `computer_shared_state` answers: what `computer://state` carries.
@@ -2544,30 +2689,35 @@ pub struct SharedState {
 
 /// Share the entire screen at `level`, or end its share at `none`. Answers
 /// with what is shared now.
-#[tauri::command]
-pub async fn computer_share_screen(
-    app: AppHandle,
+pub async fn computer_share_screen_core(
+    service: &ComputerService,
     level: GrantLevel,
 ) -> Result<SharedState, AppCommandError> {
-    let service = service(&app)?;
     let since = service.stop_count();
     let change = service.share_screen_unless_stopped(level, since)?;
     service.announce_change(change);
     Ok(service.shared_state())
 }
 
+#[cfg(feature = "tauri-runtime")]
+#[tauri::command]
+pub async fn computer_share_screen(
+    app: AppHandle,
+    level: GrantLevel,
+) -> Result<SharedState, AppCommandError> {
+    computer_share_screen_core(&*service(&app)?, level).await
+}
+
 /// Share an application as a whole at `level`, or end its share at `none`:
 /// the application `target_id` is a window of, or the one shared as
 /// `app_id`. Answers with what is shared now.
-#[tauri::command]
-pub async fn computer_share_app(
-    app: AppHandle,
-    target_id: Option<String>,
-    app_id: Option<String>,
+pub async fn computer_share_app_core(
+    service: &ComputerService,
+    target_id: Option<&str>,
+    app_id: Option<&str>,
     level: GrantLevel,
 ) -> Result<SharedState, AppCommandError> {
-    let service = service(&app)?;
-    let target = match (&target_id, &app_id) {
+    let target = match (target_id, app_id) {
         (_, Some(app_id)) => AppTarget::Share(app_id),
         (Some(target_id), None) => AppTarget::Window(target_id),
         (None, None) => {
@@ -2582,59 +2732,112 @@ pub async fn computer_share_app(
     Ok(service.shared_state())
 }
 
-/// Stop sharing every window.
+#[cfg(feature = "tauri-runtime")]
 #[tauri::command]
-pub async fn computer_revoke_all(app: AppHandle) -> Result<(), AppCommandError> {
-    let service = service(&app)?;
+pub async fn computer_share_app(
+    app: AppHandle,
+    target_id: Option<String>,
+    app_id: Option<String>,
+    level: GrantLevel,
+) -> Result<SharedState, AppCommandError> {
+    computer_share_app_core(
+        &*service(&app)?,
+        target_id.as_deref(),
+        app_id.as_deref(),
+        level,
+    )
+    .await
+}
+
+/// Stop sharing every window.
+pub fn computer_revoke_all_core(service: &ComputerService) {
     let ended = service.targets.revoke_all(GrantChange::Revoked);
     service.announce_change(ended);
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[tauri::command]
+pub async fn computer_revoke_all(app: AppHandle) -> Result<(), AppCommandError> {
+    computer_revoke_all_core(&*service(&app)?);
     Ok(())
 }
 
 /// Stop: every grant ended, whatever is under way cut off, the driver killed
 /// mid-action. Answers once all three are done. Nothing is held after it.
+pub async fn computer_stop_core(service: &ComputerService) {
+    service.stop().await;
+}
+
+#[cfg(feature = "tauri-runtime")]
 #[tauri::command]
 pub async fn computer_stop(app: AppHandle) -> Result<(), AppCommandError> {
-    service(&app)?.stop().await;
+    computer_stop_core(&*service(&app)?).await;
     Ok(())
 }
 
 /// Whether the stop shortcut is in force — the same status
-/// `computer://stop-key` carries when it changes.
+/// `computer://stop-key` carries when it changes. Empty where there is none
+/// (codeg-server).
+pub fn computer_stop_key_status_core(service: &ComputerService) -> StopKeyStatus {
+    service.stop_key_status()
+}
+
+#[cfg(feature = "tauri-runtime")]
 #[tauri::command]
 pub async fn computer_stop_key_status(app: AppHandle) -> Result<StopKeyStatus, AppCommandError> {
-    Ok(service(&app)?.stop_key_status())
+    Ok(computer_stop_key_status_core(&*service(&app)?))
 }
 
 /// cua-driver as Settings shows it: the release this codeg runs, what the
 /// cache holds, and anything under way.
+pub fn computer_driver_info_core(service: &ComputerService) -> DriverInfo {
+    service.drivers.info()
+}
+
+#[cfg(feature = "tauri-runtime")]
 #[tauri::command]
 pub async fn computer_driver_info(app: AppHandle) -> Result<DriverInfo, AppCommandError> {
-    Ok(service(&app)?.drivers.info())
+    Ok(computer_driver_info_core(&*service(&app)?))
 }
 
 /// Fetch the release this codeg runs, and clear older ones. Progress travels
 /// on `computer://driver`.
-#[tauri::command]
-pub async fn computer_driver_install(app: AppHandle) -> Result<DriverInfo, AppCommandError> {
-    service(&app)?
+pub async fn computer_driver_install_core(
+    service: &ComputerService,
+) -> Result<DriverInfo, AppCommandError> {
+    service
         .drivers
         .install()
         .await
         .map_err(AppCommandError::configuration_invalid)
 }
 
+#[cfg(feature = "tauri-runtime")]
+#[tauri::command]
+pub async fn computer_driver_install(app: AppHandle) -> Result<DriverInfo, AppCommandError> {
+    computer_driver_install_core(&*service(&app)?).await
+}
+
 /// Remove cua-driver: computer use goes off, the helper stops, every cached
 /// release goes.
+pub async fn computer_driver_uninstall_core(
+    service: &ComputerService,
+    conn: &sea_orm::DatabaseConnection,
+) -> Result<DriverInfo, AppCommandError> {
+    service.uninstall_driver(conn).await
+}
+
+#[cfg(feature = "tauri-runtime")]
 #[tauri::command]
 pub async fn computer_driver_uninstall(
     app: AppHandle,
     db: tauri::State<'_, crate::db::AppDatabase>,
 ) -> Result<DriverInfo, AppCommandError> {
-    service(&app)?.uninstall_driver(&db.conn).await
+    computer_driver_uninstall_core(&*service(&app)?, &db.conn).await
 }
 
 /// The strip's page, telling how large it drew itself (logical pixels).
+#[cfg(feature = "tauri-runtime")]
 #[tauri::command]
 pub async fn computer_indicator_fit(app: AppHandle, width: f64, height: f64) {
     crate::computer::indicator::fit(&app, width, height);

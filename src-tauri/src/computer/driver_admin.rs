@@ -16,11 +16,10 @@
 use std::sync::Mutex;
 
 use serde::Serialize;
-use tauri::AppHandle;
 
 use super::backend::{BackendState, BackendStatus};
 use super::driver;
-use super::events;
+use super::events::ComputerEvents;
 
 /// cua-driver, as the settings page shows it.
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -84,14 +83,14 @@ impl Progress {
 }
 
 pub struct DriverAdmin {
-    app: AppHandle,
+    events: ComputerEvents,
     progress: Mutex<Progress>,
 }
 
 impl DriverAdmin {
-    pub fn new(app: AppHandle) -> Self {
+    pub fn new(events: ComputerEvents) -> Self {
         Self {
-            app,
+            events,
             progress: Mutex::new(Progress::default()),
         }
     }
@@ -118,7 +117,7 @@ impl DriverAdmin {
     }
 
     fn emit(&self) {
-        events::emit_driver(&self.app, &self.info());
+        self.events.driver(&self.info());
     }
 
     /// Claim the driver for `task`, unless an install or a removal already

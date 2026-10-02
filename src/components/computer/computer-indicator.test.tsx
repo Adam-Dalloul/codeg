@@ -10,6 +10,9 @@ import type {
 
 const api = vi.hoisted(() => ({
   computerAvailable: vi.fn(() => true),
+  useComputerAvailable: () => api.computerAvailable(),
+  askComputerServed: vi.fn(async () => true),
+  subscribeComputerServed: vi.fn(() => () => {}),
   computerSharedState: vi.fn(
     async (): Promise<ComputerStatePayload> => ({ shared: [] })
   ),

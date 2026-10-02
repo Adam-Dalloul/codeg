@@ -11,26 +11,12 @@
 
 use std::sync::Mutex;
 
-use serde::Serialize;
 use tauri::{AppHandle, Manager, Wry};
 use tauri_plugin_global_shortcut::{GlobalShortcut, Shortcut, ShortcutState};
 
 use super::stop_shortcut::StopShortcut;
 
-/// Where the stop shortcut stands.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct StopKeyStatus {
-    /// The shortcut in force, spelled as the settings spell it.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub active: Option<String>,
-    /// The shortcut the settings name that the OS would not take — most
-    /// likely another application holds it — and what the OS said.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub failed: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub detail: Option<String>,
-}
+pub use super::stop_shortcut::StopKeyStatus;
 
 #[derive(Default)]
 struct Inner {

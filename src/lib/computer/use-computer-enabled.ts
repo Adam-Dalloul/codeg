@@ -13,7 +13,7 @@ import { useCallback, useEffect, useRef, useState } from "react"
 
 import { subscribe } from "@/lib/platform"
 
-import { computerAvailable, getComputerToolsSettings } from "./computer-api"
+import { getComputerToolsSettings, useComputerAvailable } from "./computer-api"
 import {
   COMPUTER_TOOLS_SETTINGS_CHANGED_EVENT,
   type ComputerToolsSettings,
@@ -22,17 +22,18 @@ import {
 export function useComputerEnabled({
   desktopOnly,
 }: {
-  /** Never asks outside the desktop runtime (answers `null` there): for
-   *  what only exists on the desktop, like the status-bar popover. */
+  /** Never asks where computer use is not served (answers `null` there):
+   *  for what only exists with it, like the status-bar popover. */
   desktopOnly: boolean
 }) {
   const [enabled, setEnabled] = useState<boolean | null>(null)
   /** Broadcasts heard so far: an answer to something asked before the last
    *  of them is older than it. */
   const heardRef = useRef(0)
+  const available = useComputerAvailable()
 
   useEffect(() => {
-    if (desktopOnly && !computerAvailable()) return
+    if (desktopOnly && !available) return
     let disposed = false
     let unsubscribe: (() => void) | undefined
     const asked = heardRef.current
@@ -61,7 +62,7 @@ export function useComputerEnabled({
       disposed = true
       unsubscribe?.()
     }
-  }, [desktopOnly])
+  }, [desktopOnly, available])
 
   /** Where the broadcasts stand, to hand back to {@link applySince}. */
   const mark = useCallback(() => heardRef.current, [])

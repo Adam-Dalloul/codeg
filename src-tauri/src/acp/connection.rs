@@ -5403,14 +5403,15 @@ where
         // tools there would promise a capability that cannot exist, and the
         // agent would find out by being told "no tabs" forever.
         browser: cfg!(feature = "tauri-runtime") && injection.browser.is_enabled().await,
-        browser_eval: cfg!(feature = "tauri-runtime")
-            && injection.browser.is_eval_enabled().await,
-        // `cfg!` for the same reason as the browser: the windows are the
-        // desktop session's, and the server binary has none.
-        computer: cfg!(feature = "tauri-runtime") && injection.computer.is_enabled().await,
-        computer_launch: cfg!(feature = "tauri-runtime")
+        browser_eval: cfg!(feature = "tauri-runtime") && injection.browser.is_eval_enabled().await,
+        // Only where this process serves computer use: the desktop app, and
+        // codeg-server where the person who runs it has let it share the
+        // screen it runs on (`CODEG_COMPUTER_USE`). Elsewhere there are no
+        // windows to offer.
+        computer: injection.computer.is_served() && injection.computer.is_enabled().await,
+        computer_launch: injection.computer.is_served()
             && injection.computer.is_launch_enabled().await,
-        computer_clipboard: cfg!(feature = "tauri-runtime")
+        computer_clipboard: injection.computer.is_served()
             && injection.computer.is_clipboard_enabled().await,
     };
     // `None` (no feature enabled) short-circuits BEFORE the binary lookup, the

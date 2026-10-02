@@ -18,7 +18,11 @@ import { useSyncExternalStore } from "react"
 
 import { subscribe } from "@/lib/platform"
 
-import { computerAvailable } from "./computer-api"
+import {
+  askComputerServed,
+  computerAvailable,
+  subscribeComputerServed,
+} from "./computer-api"
 import {
   COMPUTER_ACTIVITY_EVENT,
   COMPUTER_BACKEND_STATUS_EVENT,
@@ -71,6 +75,8 @@ let state: ComputerStoreState = {
 }
 const listeners = new Set<() => void>()
 let started = false
+/** Waiting for a server to say it serves computer use. */
+let awaitingServed = false
 /** Moved by every write to `shared` / `backend`. */
 let sharedVersion = 0
 let backendVersion = 0
@@ -168,9 +174,21 @@ export function clearComputerActivity(): void {
   emit({ ...state, activity: [] })
 }
 
-/** Start listening, once per window. A no-op outside the desktop runtime. */
+/** Start listening, once per window — once it is known to have computer use
+ *  at all (a web window asks its server first). */
 function ensureStarted() {
-  if (started || !computerAvailable()) return
+  if (started) return
+  if (!computerAvailable()) {
+    // Started as soon as the server says so — now, or once it is back.
+    if (!awaitingServed) {
+      awaitingServed = true
+      subscribeComputerServed(() => {
+        if (computerAvailable()) ensureStarted()
+      })
+    }
+    void askComputerServed()
+    return
+  }
   started = true
   void subscribe<ComputerStatePayload>(COMPUTER_STATE_EVENT, (p) =>
     setComputerShared(p.shared, p.apps ?? [], p.screen ?? null)

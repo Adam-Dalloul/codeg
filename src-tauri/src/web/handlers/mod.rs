@@ -6,6 +6,7 @@ pub mod background;
 pub mod backup;
 pub mod browser_bridge;
 pub mod browser_tools;
+pub mod computer;
 pub mod computer_tools;
 pub mod chat_authoring;
 pub mod chat_channel;

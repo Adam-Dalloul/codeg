@@ -14,10 +14,19 @@ vi.mock("@/lib/computer/computer-api", () => ({
   getComputerToolsSettings: vi.fn(),
   setComputerToolsPreferences: vi.fn(),
   computerAvailable: vi.fn(() => true),
+  useComputerAvailable: vi.fn(() => true),
+  computerServerPlatform: vi.fn(() => where.serverPlatform),
+  askComputerServed: vi.fn(async () => true),
   computerStopKeyStatus: vi.fn(),
 }))
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }))
 vi.mock("@/hooks/use-is-mac", () => ({ useIsMac: () => false }))
+/** Where the page runs: the desktop app's own machine, or a web client of a
+ *  server that shares its screen (and that server's machine). */
+const where = vi.hoisted(() => ({
+  local: true,
+  serverPlatform: null as "macos" | "windows" | "linux" | null,
+}))
 const platform = vi.hoisted(() => ({ isLinux: false }))
 vi.mock("@/hooks/use-platform", () => ({
   usePlatform: () => ({
@@ -30,6 +39,7 @@ vi.mock("@/hooks/use-platform", () => ({
 
 const handlers = new Map<string, (p: unknown) => void>()
 vi.mock("@/lib/platform", () => ({
+  isLocalDesktop: () => where.local,
   subscribe: vi.fn((event: string, handler: (p: unknown) => void) => {
     handlers.set(event, handler)
     return Promise.resolve(() => {})
@@ -118,6 +128,8 @@ beforeEach(() => {
   )
   mockStopKey.mockResolvedValue({ active: DEFAULT_KEY })
   platform.isLinux = false
+  where.local = true
+  where.serverPlatform = null
 })
 
 /** The shortcut button, once the stored values are in. */
@@ -576,6 +588,36 @@ describe("ComputerSettingsSection", () => {
     fireEvent.click(screen.getByRole("button", { name: "Save" }))
     await waitFor(() => expect(mockSet).toHaveBeenCalledTimes(1))
     expect(mockSet.mock.calls[0][0]).toEqual({ screenEnabled: true })
+  })
+
+  /** A server that shares its screen has no stop shortcut and no floating
+   *  bar — its Stop is in this panel — and offers the entire screen where
+   *  its own machine can, whatever machine this page shows on. */
+  it("on a server, leaves out what only the desktop app has", async () => {
+    where.local = false
+    where.serverPlatform = "windows"
+    platform.isLinux = true
+    mount()
+    await screen.findByRole("switch", { name: "Let agents use the clipboard" })
+    expect(
+      screen.getByRole("switch", { name: "Offer the entire screen" })
+    ).toBeInTheDocument()
+    expect(
+      screen.queryByRole("switch", { name: "Floating stop bar" })
+    ).toBeNull()
+    expect(screen.queryByText("Stop shortcut")).toBeNull()
+  })
+
+  /** A Linux server offers no entire screen, whatever machine the page
+   *  shows on. */
+  it("on a Linux server, has no entire screen to offer", async () => {
+    where.local = false
+    where.serverPlatform = "linux"
+    mount()
+    await screen.findByRole("switch", { name: "Let agents use the clipboard" })
+    expect(
+      screen.queryByRole("switch", { name: "Offer the entire screen" })
+    ).toBeNull()
   })
 
   /** Linux is not offered the entire screen, so there is nothing to turn

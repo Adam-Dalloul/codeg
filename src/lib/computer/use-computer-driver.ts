@@ -12,10 +12,10 @@ import { toErrorMessage } from "@/lib/app-error"
 import { subscribe } from "@/lib/platform"
 
 import {
-  computerAvailable,
   computerDriverInfo,
   computerDriverInstall,
   computerDriverUninstall,
+  useComputerAvailable,
 } from "./computer-api"
 import { COMPUTER_DRIVER_EVENT, type DriverInfo } from "./types"
 
@@ -25,9 +25,10 @@ export function useComputerDriver() {
   /** Broadcasts heard so far: an answer to something asked before the last
    *  of them is older than it. */
   const heardRef = useRef(0)
+  const available = useComputerAvailable()
 
   useEffect(() => {
-    if (!computerAvailable()) return
+    if (!available) return
     let disposed = false
     let unsubscribe: (() => void) | undefined
     const asked = heardRef.current
@@ -55,7 +56,7 @@ export function useComputerDriver() {
       disposed = true
       unsubscribe?.()
     }
-  }, [])
+  }, [available])
 
   const run = useCallback(async (action: () => Promise<DriverInfo>) => {
     setError(null)

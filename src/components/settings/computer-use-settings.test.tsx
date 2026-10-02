@@ -10,6 +10,10 @@ import type {
 
 const api = vi.hoisted(() => ({
   computerAvailable: vi.fn(() => true),
+  useComputerAvailable: () => api.computerAvailable(),
+  askComputerServed: vi.fn(async () => api.computerAvailable()),
+  subscribeComputerServed: vi.fn(() => () => {}),
+  computerServerPlatform: vi.fn(() => null),
   getComputerToolsSettings: vi.fn<() => Promise<ComputerToolsSettings>>(),
   setComputerToolsEnabled:
     vi.fn<(enabled: boolean) => Promise<ComputerToolsSettings>>(),
@@ -31,6 +35,7 @@ vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }))
 vi.mock("@/hooks/use-is-mac", () => ({ useIsMac: () => true }))
 const handlers = new Map<string, (p: unknown) => void>()
 vi.mock("@/lib/platform", () => ({
+  isLocalDesktop: () => true,
   subscribe: vi.fn((event: string, handler: (p: unknown) => void) => {
     handlers.set(event, handler)
     return Promise.resolve(() => {})

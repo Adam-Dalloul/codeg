@@ -16,9 +16,8 @@ pub mod chat_channel;
 /// path validation and URI encoding stay compiled in every mode so their tests
 /// run without the tauri stack.
 pub mod clipboard;
-/// Computer use on the desktop: sharing windows, the helper, the agent reads.
-/// Desktop-only — server mode has no screen.
-#[cfg(feature = "tauri-runtime")]
+/// Computer use: sharing windows, the helper, the agent reads — the desktop
+/// app's, and codeg-server's where it is let share the screen it runs on.
 pub mod computer;
 /// The computer-use switches. Like `browser_tools`, compiled in both runtimes:
 /// the shared codeg-mcp plumbing reads them.

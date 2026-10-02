@@ -3,7 +3,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest"
 vi.mock("@/lib/platform", () => ({
   subscribe: vi.fn(() => Promise.resolve(() => {})),
 }))
-vi.mock("./computer-api", () => ({ computerAvailable: () => false }))
+vi.mock("./computer-api", () => ({
+  computerAvailable: () => false,
+  askComputerServed: () => Promise.resolve(false),
+  subscribeComputerServed: () => () => {},
+}))
 
 import {
   clearComputerActivity,

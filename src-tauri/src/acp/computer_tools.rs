@@ -858,6 +858,9 @@ pub struct ComputerToolsRuntimeConfig {
     inner: Arc<RwLock<ComputerToolsConfig>>,
     changes: Arc<tokio::sync::watch::Sender<ComputerToolsConfig>>,
     hook: Arc<std::sync::RwLock<Option<ChangeHook>>>,
+    /// Whether this process serves computer use at all (see
+    /// [`mark_served`](Self::mark_served)).
+    served: Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// See [`ComputerToolsRuntimeConfig::on_change`].
@@ -869,6 +872,7 @@ impl Default for ComputerToolsRuntimeConfig {
             inner: Arc::new(RwLock::new(ComputerToolsConfig::default())),
             changes: Arc::new(tokio::sync::watch::channel(ComputerToolsConfig::default()).0),
             hook: Arc::new(std::sync::RwLock::new(None)),
+            served: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }
 }
@@ -911,6 +915,20 @@ impl ComputerToolsRuntimeConfig {
 
     pub async fn is_enabled(&self) -> bool {
         self.inner.read().await.enabled
+    }
+
+    /// Note that this process serves computer use — a computer service has
+    /// started: always in the desktop app, and in codeg-server where the
+    /// person who runs it lets it share the screen it runs on. Until then
+    /// the tools are offered to no agent, whatever the switch says.
+    pub fn mark_served(&self) {
+        self.served
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
+
+    /// See [`mark_served`](Self::mark_served).
+    pub fn is_served(&self) -> bool {
+        self.served.load(std::sync::atomic::Ordering::Acquire)
     }
 
     /// Whether starting applications and moving windows is offered: computer

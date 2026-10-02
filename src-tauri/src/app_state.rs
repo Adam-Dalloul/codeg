@@ -81,6 +81,11 @@ pub struct AppState {
     /// when the group is switched off. Carried in both runtimes for the same
     /// reason as `browser_tools_config`: one setting, one popover.
     pub computer_tools_config: crate::acp::computer_tools::ComputerToolsRuntimeConfig,
+    /// codeg-server's computer service, where the person who runs it has let
+    /// it share the screen it runs on (`CODEG_COMPUTER_USE`) — set once,
+    /// after the persisted settings are applied. Never set in the desktop
+    /// app's web service: its screen is shared from the desktop window.
+    pub computer_service: std::sync::OnceLock<Arc<crate::commands::computer::ComputerService>>,
     /// Serializes mutually-exclusive system operations — in-place
     /// self-update, restart, rollback — so a second click can't race a
     /// download/swap already in flight. Handlers `try_lock` and reject when
@@ -273,6 +278,7 @@ impl AppState {
             chat_authoring_config,
             browser_tools_config,
             computer_tools_config,
+            computer_service: std::sync::OnceLock::new(),
             system_op_lock: default_system_op_lock(),
             update_state: default_update_state(),
         }

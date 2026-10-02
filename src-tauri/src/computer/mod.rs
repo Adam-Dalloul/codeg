@@ -90,19 +90,19 @@ pub mod spawn;
 #[cfg(target_os = "macos")]
 pub mod tcc;
 
-// codeg's side of the helper and the events it raises exist only where there
-// is a desktop: server mode has no windows to share, answers every call with
-// `computer_unavailable`, and never launches the helper at all.
-#[cfg(feature = "tauri-runtime")]
+// codeg's side of the helper and the events it raises: the desktop app's,
+// and codeg-server's where the person who runs it lets it share the screen
+// it runs on (`CODEG_COMPUTER_USE`).
 pub mod driver_admin;
-#[cfg(feature = "tauri-runtime")]
 pub mod events;
+#[cfg(target_os = "macos")]
+pub mod helper_app;
+pub mod local;
+
+// What only the desktop app has: a window above every other, the mark an
+// action leaves, and a shortcut held with the OS.
 #[cfg(feature = "tauri-runtime")]
 pub mod indicator;
-#[cfg(all(feature = "tauri-runtime", target_os = "macos"))]
-pub mod helper_app;
-#[cfg(feature = "tauri-runtime")]
-pub mod local;
 #[cfg(feature = "tauri-runtime")]
 pub mod marker;
 #[cfg(feature = "tauri-runtime")]

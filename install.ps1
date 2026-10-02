@@ -199,6 +199,15 @@ if ($ServerProcesses) {
     Write-Host "codeg-server stopped."
 }
 
+# codeg-computer-helper.exe exits with the codeg-server that started it, but
+# not necessarily before the copy below; it holds its file the same way.
+# Stopped with the cua-driver it runs (`taskkill /T`).
+if (Get-Process -Name "codeg-computer-helper" -ErrorAction SilentlyContinue) {
+    Write-Host "Stopping running codeg-computer-helper process(es)..."
+    & taskkill.exe /F /T /IM codeg-computer-helper.exe 2>$null | Out-Null
+    Start-Sleep -Seconds 1
+}
+
 $McpProcesses = Get-Process -Name "codeg-mcp" -ErrorAction SilentlyContinue
 if ($McpProcesses) {
     Write-Host "Stopping running codeg-mcp companion process(es)..."
@@ -248,6 +257,13 @@ foreach ($name in $ManagedBins) {
     $src = Join-Path $TmpDir $Artifact "$name.exe"
     $dst = Join-Path $InstallDir "$name.exe"
     Copy-Item $src -Destination $dst -Force
+}
+# codeg-computer-helper.exe: computer use, which codeg-server offers only when
+# started with CODEG_COMPUTER_USE=1 in a desktop session. Installed when the
+# release ships it (older ones do not).
+$HelperSrc = Join-Path $TmpDir $Artifact "codeg-computer-helper.exe"
+if (Test-Path $HelperSrc) {
+    Copy-Item $HelperSrc -Destination (Join-Path $InstallDir "codeg-computer-helper.exe") -Force
 }
 
 # Re-canonicalize destination now that the file exists. Pre-install canon may

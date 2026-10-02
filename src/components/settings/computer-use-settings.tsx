@@ -58,8 +58,9 @@ import { Switch } from "@/components/ui/switch"
 import { useIsMac } from "@/hooks/use-is-mac"
 import { toErrorMessage } from "@/lib/app-error"
 import {
-  computerAvailable,
+  computerServerPlatform,
   setComputerToolsEnabled,
+  useComputerAvailable,
 } from "@/lib/computer/computer-api"
 import type { DriverInfo, OsPermission } from "@/lib/computer/types"
 import { useComputerDriver } from "@/lib/computer/use-computer-driver"
@@ -71,7 +72,9 @@ import {
 
 export function ComputerUseSettings() {
   const t = useTranslations("ComputerUse.settings")
-  const desktop = computerAvailable()
+  // The driver and the permissions are where computer use is served: the
+  // desktop app's machine, or a server's that shares the screen it runs on.
+  const desktop = useComputerAvailable()
   const { enabled, mark, applySince } = useComputerEnabled({
     desktopOnly: false,
   })
@@ -283,10 +286,12 @@ function DriverSection() {
 }
 
 /** macOS only: the permissions belong to the helper, and nowhere else is
- *  there anything to grant. */
+ *  there anything to grant. The Mac is the one whose screen this is: this
+ *  machine, or the server's that shares its screen. */
 function PermissionsSection({ enabled }: { enabled: boolean }) {
   const isMac = useIsMac()
-  if (!isMac) return null
+  const server = computerServerPlatform()
+  if (!(server ? server === "macos" : isMac)) return null
   return <MacPermissions enabled={enabled} />
 }
 

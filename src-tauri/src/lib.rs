@@ -1061,6 +1061,10 @@ mod tauri_app {
                     app.manage(session_info_config.clone());
                     app.manage(chat_authoring_config.clone());
                     app.manage(browser_tools_config.clone());
+                    // The desktop app always serves computer use (its service
+                    // starts below): said now, before any session could be
+                    // started and ask whether to offer the tools.
+                    computer_tools_config.mark_served();
                     app.manage(computer_tools_config.clone());
                     app.manage(crate::commands::delegation::DelegationSocketPath(
                         socket_path.clone(),
@@ -1120,7 +1124,7 @@ mod tauri_app {
                     // the persisted settings are applied, so the watcher's
                     // first view of the switch is the stored one.
                     let computer_service = crate::commands::computer::ComputerService::start(
-                        app.handle().clone(),
+                        crate::commands::computer::ComputerHost::Desktop(app.handle().clone()),
                         computer_tools_config.clone(),
                     );
                     app.manage(computer_service.clone());

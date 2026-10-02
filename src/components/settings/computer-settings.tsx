@@ -91,9 +91,10 @@ import { Input } from "@/components/ui/input"
 import { Switch } from "@/components/ui/switch"
 import { toErrorMessage } from "@/lib/app-error"
 import {
-  computerAvailable,
+  computerServerPlatform,
   getComputerToolsSettings,
   setComputerToolsPreferences,
+  useComputerAvailable,
 } from "@/lib/computer/computer-api"
 import {
   defaultStopShortcut,
@@ -111,7 +112,7 @@ import {
 } from "@/lib/computer/types"
 import { useComputerStopKey } from "@/lib/computer/use-stop-key"
 import { setShortcutRecorderArmed } from "@/lib/keyboard-shortcuts"
-import { subscribe } from "@/lib/platform"
+import { isLocalDesktop, subscribe } from "@/lib/platform"
 
 /** The choices offered, in minutes; 0 is "until I take it back". */
 const TTL_CHOICES = [10, 30, 60, 240, 0] as const
@@ -359,9 +360,18 @@ export function ComputerSettingsSection() {
     dirtyClipboardEnabled ||
     dirtyScreenEnabled
   const editable = loaded && !saving
+  // Computer use itself, here: the desktop app's, or a server's that shares
+  // the screen it runs on. The stop shortcut and the strip are the desktop
+  // app's alone — a server has neither, its Stop is in this panel.
+  const available = useComputerAvailable()
+  const desktopHere = isLocalDesktop()
   // The entire screen is offered on macOS and Windows: Linux has no one list
-  // of every window on it to judge them by.
-  const { isLinux } = usePlatform()
+  // of every window on it to judge them by. The machine is the server's,
+  // where a server shares its screen — not the one this page shows on.
+  const { isLinux: localLinux } = usePlatform()
+  const isLinux = desktopHere
+    ? localLinux
+    : computerServerPlatform() === "linux"
 
   const save = useCallback(async () => {
     setSaving(true)
@@ -476,7 +486,7 @@ export function ComputerSettingsSection() {
             setValues((prev) => ({ ...prev, blocklist, removed }))
           }
         />
-        {computerAvailable() && (
+        {desktopHere && (
           <StopShortcutRow
             value={loaded ? values.stopShortcut : null}
             saved={loaded && !dirtyStopShortcut ? baseline.stopShortcut : null}
@@ -487,7 +497,7 @@ export function ComputerSettingsSection() {
             }
           />
         )}
-        {computerAvailable() && (
+        {desktopHere && (
           <SettingRow
             icon={PanelTop}
             title={t("strip.label")}
@@ -507,7 +517,7 @@ export function ComputerSettingsSection() {
         )}
       </SettingCard>
 
-      {computerAvailable() && (
+      {available && (
         <SettingCard>
           <SettingRow
             icon={Layers}
@@ -571,7 +581,7 @@ export function ComputerSettingsSection() {
         </SettingCard>
       )}
 
-      {computerAvailable() && (
+      {available && (
         <SettingCard>
           <SettingRow
             icon={AppWindow}

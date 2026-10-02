@@ -19,7 +19,25 @@
 
 use std::fmt;
 
+use serde::Serialize;
+
 use crate::computer::keys::Platform;
+
+/// Where the stop shortcut stands. Held with the OS by the desktop app
+/// alone: codeg-server has none, and says so with this left empty.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StopKeyStatus {
+    /// The shortcut in force, spelled as the settings spell it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub active: Option<String>,
+    /// The shortcut the settings name that the OS would not take — most
+    /// likely another application holds it — and what the OS said.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub failed: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
 
 /// The punctuation keys of the main block, by W3C code.
 const PUNCTUATION: &[&str] = &[

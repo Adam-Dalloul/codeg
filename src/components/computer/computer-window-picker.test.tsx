@@ -13,6 +13,10 @@ import type {
 
 const api = vi.hoisted(() => ({
   computerAvailable: vi.fn(() => false),
+  useComputerAvailable: () => api.computerAvailable(),
+  askComputerServed: vi.fn(async () => api.computerAvailable()),
+  subscribeComputerServed: vi.fn(() => () => {}),
+  computerServerPlatform: vi.fn(() => null),
   computerListShareableWindows: vi.fn<() => Promise<PickerWindow[]>>(),
   computerShareWindow: vi.fn(),
   computerShareApp:
