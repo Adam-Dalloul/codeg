@@ -57,17 +57,19 @@ use crate::acp::terminal_runtime::{
 };
 use crate::acp::types::{
     AcpEvent, AsyncTaskDelta, AsyncTaskUsage, AvailableCommandInfo, ConnectionInfo,
-    ConnectionStatus, GrokModelSpec, PermissionOptionInfo, PlanEntryInfo, PluginLoadFailure,
-    PromptCapabilitiesInfo, PromptInputBlock, SessionConfigBooleanInfo, SessionConfigKindInfo,
-    SessionConfigOptionInfo, SessionConfigSelectGroupInfo, SessionConfigSelectInfo,
-    SessionConfigSelectOptionInfo, SessionFailureRecord, SessionModeInfo, SessionModeStateInfo,
-    SessionNotice, ToolCallImageInfo, UserMessageBlock,
+    ConnectionStatus, GrokModelCatalog, GrokModelSpec, PermissionOptionInfo, PlanEntryInfo,
+    PluginLoadFailure, PromptCapabilitiesInfo, PromptInputBlock, SessionConfigBooleanInfo,
+    SessionConfigKindInfo, SessionConfigOptionInfo, SessionConfigSelectGroupInfo,
+    SessionConfigSelectInfo, SessionConfigSelectOptionInfo, SessionFailureRecord, SessionModeInfo,
+    SessionModeStateInfo, SessionNotice, ToolCallImageInfo, UserMessageBlock,
 };
 use crate::logging::throttle::LeadingEdgeThrottle;
 use crate::models::agent::AgentType;
 use crate::network::proxy;
 use crate::parsers::COMPACTION_SUMMARY_META_KEY;
-use crate::web::event_bridge::{emit_with_state, emit_with_state_gated, EventEmitter};
+use crate::web::event_bridge::{
+    emit_with_state, emit_with_state_built, emit_with_state_gated, EventEmitter,
+};
 
 /// Injected into the agent process only when the user has opted in — see
 /// [`force_command_color_enabled`] for why it is not a default.
@@ -3751,6 +3753,183 @@ fn set_grok_effort_selector_for_model(
     }
 }
 
+/// `_x.ai/models/update` — Grok's model catalog broadcast. Connection-level: it
+/// carries NO `sessionId` (see [`GrokModelCatalogBroadcasts`]).
+const GROK_MODELS_UPDATE_METHOD: &str = "_x.ai/models/update";
+
+/// Read a `_x.ai/models/update` broadcast. As grok 1.0.40 sends it (captured
+/// live):
+///
+///   {"currentModelId": "grok-4.7",
+///    "availableModels": [{"modelId", "name", "description",
+///                         "_meta": {"totalContextTokens", "agentType",
+///                                   "supportsReasoningEffort", "reasoningEffort",
+///                                   "reasoningEfforts": [{"id", "value", "label",
+///                                                         "description",
+///                                                         "default"}]}}]}
+///
+/// — the entry shape of a handshake's `models`, custom `[model.<id>]` endpoints
+/// included. `None` when it names no usable model (`availableModels` missing,
+/// malformed or empty, or no entry with a model id), so a bad frame can never
+/// wipe the picker. `currentModelId` is deliberately not read; see
+/// [`fold_grok_catalog_into_picker`].
+fn parse_grok_model_catalog(params: &serde_json::Value) -> Option<GrokModelCatalog> {
+    let entries = params.get("availableModels")?.as_array()?;
+    let mut models: Vec<SessionConfigSelectOptionInfo> = Vec::new();
+    for entry in entries {
+        let Some(model_id) = entry
+            .get("modelId")
+            .and_then(|v| v.as_str())
+            .filter(|id| !id.is_empty())
+        else {
+            continue;
+        };
+        if models.iter().any(|row| row.value == model_id) {
+            continue;
+        }
+        let name = entry
+            .get("name")
+            .and_then(|v| v.as_str())
+            .filter(|name| !name.trim().is_empty())
+            .unwrap_or(model_id);
+        models.push(SessionConfigSelectOptionInfo {
+            value: model_id.to_string(),
+            name: name.to_string(),
+            description: None,
+        });
+    }
+    if models.is_empty() {
+        return None;
+    }
+    Some(GrokModelCatalog {
+        models,
+        specs: parse_grok_model_specs(Some(params)),
+    })
+}
+
+/// Fold a catalog broadcast's specs into the session's.
+///
+/// What a model OFFERS — its efforts, whether it takes one, its window — comes
+/// from the broadcast: it is the newer catalog, and the only source for a model
+/// the handshake did not know. A `default` the session already had for a model
+/// is kept, though: a handshake's per-model `reasoningEffort` folds in the
+/// session's own effort (`default_reasoning_effort` included — a live 1.0.40
+/// handshake said `xhigh` where the broadcast after it said `high`), while the
+/// broadcast's is the bare catalog default. Models the broadcast no longer
+/// lists keep their spec: the session may still be running on one.
+fn fold_grok_catalog_specs(
+    specs: &mut HashMap<String, GrokModelSpec>,
+    catalog: &HashMap<String, GrokModelSpec>,
+) {
+    for (model_id, fresh) in catalog {
+        let default = specs
+            .get(model_id)
+            .and_then(|known| known.default.clone())
+            .or_else(|| fresh.default.clone());
+        specs.insert(
+            model_id.clone(),
+            GrokModelSpec {
+                default,
+                ..fresh.clone()
+            },
+        );
+    }
+}
+
+/// Fold a catalog broadcast into a Grok picker: the model rows become the
+/// catalog's, and nothing the session chose moves.
+///
+/// * The checkmark stays on the model the picker shows, and nothing here sends
+///   `session/set_model`. The broadcast's `currentModelId` is grok's
+///   process-wide pick, not a switch of this session; grok's own pager does not
+///   move its selection on it either. A session whose model the catalog no
+///   longer lists is still running on it, so its row is kept, first, rather
+///   than dropped — the pager keeps it displayed too.
+/// * The effort selector is rebuilt from the current model's refreshed spec but
+///   keeps the value it shows — the user's pick, or the session's own effort —
+///   even if the refreshed list no longer offers it, the way
+///   [`build_grok_effort_option`] keeps an out-of-list default. The catalog's
+///   default only fills in where there was no effort selector to keep a value
+///   from. A model with no spec keeps its effort selector as it is.
+///
+/// A list with no model selector is left alone: a broadcast refreshes a
+/// picker, it never invents one.
+fn fold_grok_catalog_into_picker(
+    opts: &mut Vec<SessionConfigOptionInfo>,
+    catalog: &GrokModelCatalog,
+    specs: &HashMap<String, GrokModelSpec>,
+) {
+    let Some(model) = opts
+        .iter_mut()
+        .filter(|o| o.id == GROK_MODEL_OPTION_ID)
+        .find_map(|o| match &mut o.kind {
+            SessionConfigKindInfo::Select(sel) => Some(sel),
+            SessionConfigKindInfo::Boolean(_) => None,
+        })
+    else {
+        return;
+    };
+    let current = model.current_value.clone();
+    let mut rows = catalog.models.clone();
+    if !rows.iter().any(|row| row.value == current) {
+        rows.insert(
+            0,
+            kept_select_row(&model.options, &current, || current.clone(), None),
+        );
+    }
+    model.options = rows;
+
+    if !specs.contains_key(&current) {
+        return;
+    }
+    let kept_effort = opts
+        .iter()
+        .filter(|o| o.id == GROK_EFFORT_OPTION_ID)
+        .find_map(|o| match &o.kind {
+            SessionConfigKindInfo::Select(sel) => Some((
+                sel.current_value.clone(),
+                kept_select_row(
+                    &sel.options,
+                    &sel.current_value,
+                    || grok_effort_label(&sel.current_value).to_string(),
+                    grok_effort_description(&sel.current_value),
+                ),
+            )),
+            SessionConfigKindInfo::Boolean(_) => None,
+        });
+    opts.retain(|o| o.id != GROK_EFFORT_OPTION_ID);
+    let Some(mut effort) = build_grok_effort_option(&current, specs) else {
+        return;
+    };
+    if let (Some((value, row)), SessionConfigKindInfo::Select(sel)) =
+        (kept_effort, &mut effort.kind)
+    {
+        if !sel.options.iter().any(|o| o.value == value) {
+            sel.options.insert(0, row);
+        }
+        sel.current_value = value;
+    }
+    opts.push(effort);
+}
+
+/// The row `value` already has in `rows`, or a fresh one named by `name` — for
+/// a value a refreshed list no longer offers but the picker still shows.
+fn kept_select_row(
+    rows: &[SessionConfigSelectOptionInfo],
+    value: &str,
+    name: impl FnOnce() -> String,
+    description: Option<&str>,
+) -> SessionConfigSelectOptionInfo {
+    rows.iter()
+        .find(|row| row.value == value)
+        .cloned()
+        .unwrap_or_else(|| SessionConfigSelectOptionInfo {
+            value: value.to_string(),
+            name: name(),
+            description: description.map(str::to_string),
+        })
+}
+
 /// Grok does not emit the standard ACP `config_options` / `modes` channels that
 /// codeg's generic composer-selector pipeline reads (which is why the composer
 /// showed no selectors for Grok). Instead it ships its selectors in a
@@ -3867,18 +4046,33 @@ fn synthesize_grok_config_options(
     }
 }
 
-/// Emit an already-mapped `SessionConfigOptionInfo` list (used by the Grok path,
-/// which synthesizes `Info` directly rather than mapping schema `SessionConfigOption`s).
-async fn emit_session_config_options_info(
+/// Emit the picker a Grok session establishment built (grok's selectors are
+/// synthesized as `Info` directly rather than mapped from schema
+/// `SessionConfigOption`s), folded with the model catalog broadcast that came in
+/// while it was being built, if one did.
+///
+/// The broadcast can land anywhere in an establishment — after the handshake
+/// answered but before this emit, for one, when applying the saved preferences
+/// awaits `session/set_model` — and the handshake may predate the catalog it
+/// brings, so it waits in `SessionState::grok_catalog_broadcast`. It is taken
+/// under the emit's own lock, so a broadcast either lands before (and is folded
+/// in here) or after (and [`GrokModelCatalogBroadcasts`] folds it into this
+/// picker), never in between.
+async fn emit_grok_established_picker(
     state: &Arc<RwLock<SessionState>>,
     emitter: &EventEmitter,
-    config_options: Vec<SessionConfigOptionInfo>,
+    mut opts: Vec<SessionConfigOptionInfo>,
 ) {
-    emit_with_state(
-        state,
-        emitter,
-        AcpEvent::SessionConfigOptions { config_options },
-    )
+    emit_with_state_built(state, emitter, move |s| {
+        if let Some(catalog) = s.grok_catalog_broadcast.take() {
+            let specs = s.grok_model_specs.get_or_insert_with(HashMap::new);
+            fold_grok_catalog_specs(specs, &catalog.specs);
+            fold_grok_catalog_into_picker(&mut opts, &catalog, specs);
+        }
+        Some(AcpEvent::SessionConfigOptions {
+            config_options: opts,
+        })
+    })
     .await;
 }
 
@@ -4259,11 +4453,12 @@ async fn set_grok_config_option(
     };
     match set_grok_model(cx, session_id, model_id, effort).await {
         Ok(()) => {
-            let (current, specs) = {
-                let g = state.read().await;
-                (g.config_options.clone(), g.grok_model_specs.clone())
-            };
-            if let Some(mut opts) = current {
+            // Built under the emit's own lock, from the picker as it is now: a
+            // model catalog broadcast refreshes it from the connection's
+            // dispatch task, and re-emitting a list read before that would
+            // undo the refresh (see `GrokModelCatalogBroadcasts`).
+            emit_with_state_built(state, emitter, |s| {
+                let mut opts = s.config_options.clone()?;
                 if let Some(SessionConfigKindInfo::Select(sel)) = opts
                     .iter_mut()
                     .find(|o| o.id == config_id)
@@ -4276,12 +4471,15 @@ async fn set_grok_config_option(
                 // set_model. An EFFORT change leaves the list shape alone; no
                 // specs ⇒ leave as-is (flat-fallback session).
                 if config_id == GROK_MODEL_OPTION_ID {
-                    if let Some(specs) = &specs {
+                    if let Some(specs) = &s.grok_model_specs {
                         set_grok_effort_selector_for_model(&mut opts, &value_id, specs);
                     }
                 }
-                emit_session_config_options_info(state, emitter, opts).await;
-            }
+                Some(AcpEvent::SessionConfigOptions {
+                    config_options: opts,
+                })
+            })
+            .await;
             Ok(())
         }
         Err(e) if is_grok_incompatible_agent_switch(&e) => {
@@ -4301,15 +4499,16 @@ async fn emit_grok_incompatible_agent_switch(
     state: &Arc<RwLock<SessionState>>,
     emitter: &EventEmitter,
 ) {
-    // Clone the options out of the read guard into a local BEFORE emitting: the
-    // `emit_*` helpers re-acquire this same state's WRITE lock, and an `if let`
-    // scrutinee keeps its temporary (the read guard) alive across the whole body
-    // in Rust 2021 — so reading inline would deadlock. `current_value` is
-    // unchanged because the switch never took effect.
-    let current = state.read().await.config_options.clone();
-    if let Some(opts) = current {
-        emit_session_config_options_info(state, emitter, opts).await;
-    }
+    // Re-emit the options as they stand, read under the emit's own write lock:
+    // a separate read first would race a model catalog broadcast refreshing the
+    // picker in between, and re-emit the list from before it. `current_value`
+    // is unchanged because the switch never took effect.
+    emit_with_state_built(state, emitter, |s| {
+        s.config_options
+            .clone()
+            .map(|config_options| AcpEvent::SessionConfigOptions { config_options })
+    })
+    .await;
     emit_with_state(
         state,
         emitter,
@@ -4354,8 +4553,8 @@ async fn apply_and_emit_session_config_options(
         if let Some(mut opts) = synthesize_grok_config_options(grok_meta, &specs) {
             // Cache the per-model effort map so a later model switch can rebuild
             // the effort selector for the target model (grok ships it only at
-            // session birth). `None` when empty keeps the switch path on the
-            // flat-fallback branch.
+            // session birth, and on a catalog broadcast). `None` when empty
+            // keeps the switch path on the flat-fallback branch.
             state.write().await.grok_model_specs = (!specs.is_empty()).then(|| specs.clone());
             let session_id = session.session_id().clone();
             apply_grok_preferred_options(
@@ -4366,7 +4565,7 @@ async fn apply_and_emit_session_config_options(
                 &specs,
             )
             .await;
-            emit_session_config_options_info(state, emitter, opts).await;
+            emit_grok_established_picker(state, emitter, opts).await;
             return;
         }
         // No x.ai/sessionConfig (unexpected): fall through to the standard path,
@@ -5741,6 +5940,13 @@ async fn run_connection(
         // First in the chain on purpose: it has to claim a null-`sessionId`
         // message before the runtime can park it for retry. See the type docs.
         .with_handler(ClaimNullSessionIds)
+        // Grok's model catalog broadcast names no session, so no session
+        // router ever claims it. See the type docs.
+        .with_handler(GrokModelCatalogBroadcasts {
+            agent_type,
+            state: Arc::clone(&state),
+            emitter: emitter.clone(),
+        })
         .on_receive_request(
             {
                 let emitter_inner = emitter_clone.clone();
@@ -11823,6 +12029,12 @@ async fn run_conversation_loop(
                     cwd,
                     fork_point.as_ref().map(|p| &p.message_id)
                 );
+                // The fork's establishment starts here. A Grok catalog broadcast
+                // that landed before it is already on this session's picker, and
+                // the forked session's handshake is answered from the catalog it
+                // brought; only one landing from now on can be newer than that
+                // handshake (see `SessionState::grok_catalog_broadcast`).
+                state.write().await.grok_catalog_broadcast = None;
                 let result =
                     crate::acp::fork::fork_session(&cx, &sid, cwd, fork_point.as_ref()).await;
                 match result {
@@ -15614,6 +15826,103 @@ fn has_null_session_id(message: &UntypedMessage) -> bool {
         .params()
         .get("sessionId")
         .is_some_and(serde_json::Value::is_null)
+}
+
+/// Claims Grok's model catalog broadcast, `_x.ai/models/update`, and folds it
+/// into the connection's model picker (issue #876).
+///
+/// Grok fetches its catalog after startup, and again when its login changes —
+/// after refreshing an expired token, for one — and announces every fetch on
+/// this method, typically several identical frames within milliseconds. A
+/// session established before the fetch landed was handed whatever catalog grok
+/// had then, which can be only its bundled models: loaded on an expired token,
+/// a session showed Grok 4.6 and 4.5 while the catalog that arrived 0.7s later
+/// also had both 4.7 models.
+///
+/// The broadcast names no session. The per-session router matches on
+/// `params.sessionId`, so it never claimed this frame, nothing else did either,
+/// and the runtime dropped it unhandled: the picker kept the handshake's list
+/// for the life of the connection. It has to be claimed here in the builder
+/// chain — a message without a `sessionId` is never parked for a router added
+/// later. A connection drives one grok process and the catalog is that
+/// process's, so the broadcast belongs to whatever session the connection holds
+/// or is establishing; for the latter it waits in
+/// `SessionState::grok_catalog_broadcast`.
+///
+/// Handled inline on the dispatch loop rather than spawned: in arrival order,
+/// each frame folds against the state the one before it left, which is what
+/// makes a repeat a no-op. It takes nothing but the session state's lock, which
+/// the permission handler on this same loop already takes inline
+/// (`handle_permission_request`).
+struct GrokModelCatalogBroadcasts {
+    agent_type: AgentType,
+    state: Arc<RwLock<SessionState>>,
+    emitter: EventEmitter,
+}
+
+impl<Counterpart: Role> HandleDispatchFrom<Counterpart> for GrokModelCatalogBroadcasts {
+    async fn handle_dispatch_from(
+        &mut self,
+        message: Dispatch,
+        _connection: ConnectionTo<Counterpart>,
+    ) -> Result<Handled<Dispatch>, agent_client_protocol::Error> {
+        match message {
+            Dispatch::Notification(notification)
+                if self.agent_type == AgentType::Grok
+                    && notification.method() == GROK_MODELS_UPDATE_METHOD =>
+            {
+                apply_grok_model_catalog(&self.state, &self.emitter, notification.params()).await;
+                Ok(Handled::Yes)
+            }
+            message => Ok(Handled::No {
+                message,
+                retry: false,
+            }),
+        }
+    }
+
+    fn describe_chain(&self) -> impl std::fmt::Debug {
+        "GrokModelCatalogBroadcasts"
+    }
+}
+
+/// Fold one `_x.ai/models/update` into the connection's state: always into the
+/// session's model specs and the establishment slot, and into the picker on
+/// screen if there is one — emitted only when that changed it, so a repeated
+/// broadcast is a no-op.
+async fn apply_grok_model_catalog(
+    state: &Arc<RwLock<SessionState>>,
+    emitter: &EventEmitter,
+    params: &serde_json::Value,
+) {
+    let Some(catalog) = parse_grok_model_catalog(params) else {
+        tracing::debug!("[ACP][grok] model catalog broadcast lists no usable model; ignored");
+        return;
+    };
+    let models = catalog.models.len();
+    let refreshed = emit_with_state_built(state, emitter, move |s| {
+        let specs = s.grok_model_specs.get_or_insert_with(HashMap::new);
+        fold_grok_catalog_specs(specs, &catalog.specs);
+        let picker = s.config_options.as_ref().and_then(|shown| {
+            let mut next = shown.clone();
+            fold_grok_catalog_into_picker(&mut next, &catalog, specs);
+            (next != *shown).then_some(next)
+        });
+        s.grok_catalog_broadcast = Some(catalog);
+        picker.map(|config_options| AcpEvent::SessionConfigOptions { config_options })
+    })
+    .await;
+    if refreshed {
+        tracing::info!(
+            models,
+            "[ACP][grok] model catalog broadcast refreshed the model picker"
+        );
+    } else {
+        tracing::debug!(
+            models,
+            "[ACP][grok] model catalog broadcast left the model picker as it was"
+        );
+    }
 }
 
 /// `_auth/status_update` — the agent reporting which identity IT is logged in
@@ -30414,6 +30723,9 @@ mod tests {
         later: Vec<GrokFrame>,
         /// When the client sends `session/cancel`.
         on_cancel: Vec<GrokFrame>,
+        /// When the client sends `session/fork`: sent while the request is
+        /// outstanding, before it is answered with an error.
+        on_fork: Vec<GrokFrame>,
         /// Whether the session supports `session/fork`.
         forks: bool,
     }
@@ -30559,6 +30871,12 @@ mod tests {
         }
     }
 
+    /// `session/set_model` as the agent receives it, the raw params object.
+    #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, JsonRpcRequest)]
+    #[request(method = "session/set_model", response = serde_json::Value)]
+    #[serde(transparent)]
+    struct TestSetModelRequest(serde_json::Value);
+
     /// `run_conversation_loop` for a Grok session, attached to a scripted agent.
     struct GrokLoop {
         state: Arc<RwLock<SessionState>>,
@@ -30567,6 +30885,8 @@ mod tests {
         events: tokio::sync::broadcast::Receiver<Arc<crate::acp::types::EventEnvelope>>,
         /// Every event the loop emitted so far, in order.
         seen: Vec<AcpEvent>,
+        /// Every `session/set_model` the agent received, in order.
+        set_models: Arc<std::sync::Mutex<Vec<serde_json::Value>>>,
         go: Arc<tokio::sync::Notify>,
         respond: Arc<tokio::sync::Notify>,
         after: Arc<tokio::sync::Notify>,
@@ -30576,7 +30896,9 @@ mod tests {
 
     impl GrokLoop {
         async fn start(script: GrokScript) -> Self {
-            use agent_client_protocol::schema::v1::PromptResponse;
+            use agent_client_protocol::schema::v1::{
+                ForkSessionRequest, ForkSessionResponse, PromptResponse,
+            };
 
             let supports_fork = script.forks;
             let script = Arc::new(script);
@@ -30587,9 +30909,12 @@ mod tests {
 
             let prompt_script = Arc::clone(&script);
             let cancel_script = Arc::clone(&script);
+            let fork_script = Arc::clone(&script);
             let agent_go = Arc::clone(&go);
             let agent_respond = Arc::clone(&respond);
             let agent_after = Arc::clone(&after);
+            let set_models = Arc::new(std::sync::Mutex::new(Vec::new()));
+            let agent_set_models = Arc::clone(&set_models);
             let agent = tokio::spawn(async move {
                 let _ = Agent
                     .builder()
@@ -30598,6 +30923,15 @@ mod tests {
                                responder: Responder<NewSessionResponse>,
                                _cx: ConnectionTo<Client>| {
                             responder.respond(NewSessionResponse::new(SessionId::new("s1")))
+                        },
+                        on_receive_request!(),
+                    )
+                    .on_receive_request(
+                        async move |req: TestSetModelRequest,
+                                    responder: Responder<serde_json::Value>,
+                                    _cx: ConnectionTo<Client>| {
+                            agent_set_models.lock().unwrap().push(req.0);
+                            responder.respond(serde_json::json!({}))
                         },
                         on_receive_request!(),
                     )
@@ -30634,6 +30968,18 @@ mod tests {
                         },
                         on_receive_notification!(),
                     )
+                    .on_receive_request(
+                        async move |_req: ForkSessionRequest,
+                                    responder: Responder<ForkSessionResponse>,
+                                    cx: ConnectionTo<Client>| {
+                            send_grok_frames(&cx, &fork_script.on_fork)?;
+                            responder.respond_with_error(
+                                agent_client_protocol::Error::internal_error()
+                                    .data("scripted fork failure"),
+                            )
+                        },
+                        on_receive_request!(),
+                    )
                     .connect_with(agent_end, async move |cx: ConnectionTo<Client>| {
                         agent_go.notified().await;
                         send_grok_frames(&cx, &script.later)?;
@@ -30652,6 +30998,7 @@ mod tests {
             let events = state.read().await.event_stream().subscribe();
             let (cmd_tx, mut cmd_rx) = mpsc::channel(16);
             let loop_state = Arc::clone(&state);
+            let catalog_state = Arc::clone(&state);
             let asks = Arc::new(RecordingAsks::default());
             let injection = DelegationInjection {
                 questions: Arc::clone(&asks) as Arc<dyn crate::acp::question::SessionQuestionAccess>,
@@ -30664,6 +31011,13 @@ mod tests {
             let client = tokio::spawn(async move {
                 let _ = Client
                     .builder()
+                    // As `run_connection` registers it: the catalog broadcast
+                    // names no session, so no session router sees it.
+                    .with_handler(GrokModelCatalogBroadcasts {
+                        agent_type: AgentType::Grok,
+                        state: catalog_state,
+                        emitter: EventEmitter::Noop,
+                    })
                     .connect_with(client_end, async move |cx: ConnectionTo<Agent>| {
                         let raw = cx
                             .send_request_to(
@@ -30705,6 +31059,7 @@ mod tests {
                 cmd_tx,
                 events,
                 seen: Vec::new(),
+                set_models,
                 go,
                 respond,
                 after,
@@ -30857,6 +31212,7 @@ mod tests {
                 grok_barrier(),
             ],
             on_cancel: Vec::new(),
+            on_fork: Vec::new(),
             // Released once the test has seen the launch turn's own frames, so
             // they are read in-turn rather than racing the response.
             hold_response: true,
@@ -31184,6 +31540,547 @@ mod tests {
             "refused as busy, not attempted"
         );
         grok.shutdown().await;
+    }
+
+    // ── Grok's model catalog broadcast, `_x.ai/models/update` (#876) ────────
+    //
+    // Shapes captured live off `grok agent stdio` (1.0.40): the broadcast is
+    // connection-level — NO `sessionId` — and grok repeats it within a few
+    // milliseconds. Its per-model `_meta.reasoningEffort` is the CATALOG
+    // default, while the same field in a handshake's `models` folds in the
+    // session's own effort.
+
+    /// One `availableModels[]` entry as grok 1.0.40 ships it.
+    fn grok_catalog_entry(id: &str, name: &str, effort_default: Option<&str>) -> serde_json::Value {
+        let mut meta = serde_json::json!({
+            "totalContextTokens": 256000,
+            "agentType": "grok-build-plan",
+            "supportsReasoningEffort": effort_default.is_some(),
+        });
+        if let Some(default) = effort_default {
+            meta["reasoningEffort"] = default.into();
+            meta["reasoningEfforts"] = serde_json::json!([
+                {"id": "xhigh", "value": "xhigh", "label": "Extra High", "description": "Maximum reasoning for the hardest tasks.", "default": false},
+                {"id": "high", "value": "high", "label": "High", "description": "Thorough reasoning and quality. Recommended.", "default": true},
+                {"id": "medium", "value": "medium", "label": "Medium", "description": "Strong quality with a faster turnaround.", "default": false},
+                {"id": "low", "value": "low", "label": "Low", "description": "Fastest responses. Best for simple tasks.", "default": false}
+            ]);
+        }
+        serde_json::json!({
+            "modelId": id,
+            "name": name,
+            "description": format!("{name} description"),
+            "_meta": meta,
+        })
+    }
+
+    /// The catalog the issue's session received once grok had refreshed it.
+    fn grok_remote_catalog() -> Vec<serde_json::Value> {
+        vec![
+            grok_catalog_entry("grok-4.7", "Grok 4.7", Some("high")),
+            grok_catalog_entry("grok-4.7-build-fast", "Grok 4.7 Build Fast", None),
+            grok_catalog_entry("grok-4.6", "Grok 4.6", Some("high")),
+            grok_catalog_entry("grok-4.5", "Grok 4.5", Some("high")),
+        ]
+    }
+
+    fn grok_models_update_frame(current: &str, models: Vec<serde_json::Value>) -> GrokFrame {
+        (
+            "_x.ai/models/update",
+            serde_json::json!({"currentModelId": current, "availableModels": models}),
+        )
+    }
+
+    /// What `session/new` / `session/load` answers while grok still has only
+    /// its bundled catalog — Grok 4.6 (checked) and Grok 4.5 — as
+    /// `(_meta, models)`.
+    fn grok_bundled_handshake() -> (
+        serde_json::Map<String, serde_json::Value>,
+        serde_json::Value,
+    ) {
+        let meta = serde_json::from_value(serde_json::json!({
+            "x.ai/sessionConfig": {"options": [
+                {"id": "grok-4.6", "category": "model", "label": "Grok 4.6", "selected": true},
+                {"id": "grok-4.5", "category": "model", "label": "Grok 4.5", "selected": false},
+                {"id": "xhigh", "category": "mode", "label": "Extra High", "selected": false},
+                {"id": "high", "category": "mode", "label": "High", "selected": true},
+                {"id": "medium", "category": "mode", "label": "Medium", "selected": false},
+                {"id": "low", "category": "mode", "label": "Low", "selected": false}
+            ]}
+        }))
+        .unwrap();
+        let models = serde_json::json!({
+            "currentModelId": "grok-4.6",
+            "availableModels": [
+                grok_catalog_entry("grok-4.6", "Grok 4.6", Some("high")),
+                grok_catalog_entry("grok-4.5", "Grok 4.5", Some("high")),
+            ],
+        });
+        (meta, models)
+    }
+
+    /// The picker the bundled handshake built, with the user's own effort pick
+    /// applied the way `set_grok_config_option` leaves it.
+    fn grok_handshake_picker(
+        effort: &str,
+    ) -> (Vec<SessionConfigOptionInfo>, HashMap<String, GrokModelSpec>) {
+        let (meta, models) = grok_bundled_handshake();
+        let specs = parse_grok_model_specs(Some(&models));
+        let mut opts = synthesize_grok_config_options(Some(&meta), &specs).expect("a picker");
+        let effort_selector = opts
+            .iter_mut()
+            .find(|o| o.id == GROK_EFFORT_OPTION_ID)
+            .expect("an effort selector");
+        let SessionConfigKindInfo::Select(sel) = &mut effort_selector.kind else {
+            panic!("effort is a select");
+        };
+        sel.current_value = effort.to_string();
+        (opts, specs)
+    }
+
+    fn select_values(option: &SessionConfigOptionInfo) -> Vec<String> {
+        expect_select(&option.kind)
+            .options
+            .iter()
+            .map(|o| o.value.clone())
+            .collect()
+    }
+
+    fn config_option_events(seen: &[AcpEvent]) -> Vec<Vec<SessionConfigOptionInfo>> {
+        seen.iter()
+            .filter_map(|e| match e {
+                AcpEvent::SessionConfigOptions { config_options } => Some(config_options.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The issue's sequence end to end, over the real runtime: the composer
+    /// was built from the bundled handshake, then the real catalog arrives on
+    /// the session-less `_x.ai/models/update`, three times. The model list is
+    /// replaced once; the checkmark stays on the model the composer shows (the
+    /// broadcast's `currentModelId` is no session switch), and so does the
+    /// effort the user picked (the catalog default is not the session's).
+    #[tokio::test]
+    async fn a_grok_catalog_broadcast_refreshes_the_model_picker() {
+        let update = grok_models_update_frame("grok-4.6", grok_remote_catalog());
+        let mut grok = GrokLoop::start(GrokScript {
+            later: vec![update.clone(), update.clone(), update, grok_barrier()],
+            ..GrokScript::default()
+        })
+        .await;
+        let (opts, specs) = grok_handshake_picker("medium");
+        {
+            let mut st = grok.state.write().await;
+            st.config_options = Some(opts);
+            st.grok_model_specs = Some(specs);
+        }
+        grok.release_later();
+        grok.until_barrier().await;
+
+        let pickers = config_option_events(&grok.seen);
+        assert_eq!(
+            pickers.len(),
+            1,
+            "three identical broadcasts refresh once: {pickers:#?}"
+        );
+        let picker = &pickers[0];
+        assert_eq!(picker[0].id, GROK_MODEL_OPTION_ID);
+        assert_eq!(
+            select_values(&picker[0]),
+            ["grok-4.7", "grok-4.7-build-fast", "grok-4.6", "grok-4.5"]
+        );
+        assert_eq!(expect_select(&picker[0].kind).current_value, "grok-4.6");
+        assert_eq!(picker[1].id, GROK_EFFORT_OPTION_ID);
+        assert_eq!(expect_select(&picker[1].kind).current_value, "medium");
+        assert!(
+            grok.set_models.lock().unwrap().is_empty(),
+            "a catalog broadcast switches nothing on the agent"
+        );
+        // The refresh is the connection's state, not just an event.
+        assert_eq!(
+            grok.state.read().await.config_options.as_ref(),
+            Some(picker)
+        );
+        grok.shutdown().await;
+    }
+
+    /// The models the broadcast added are real choices: switching to one goes
+    /// out as a plain `session/set_model`, lands with that model's effort
+    /// selector — known only from the broadcast — and the switch's own re-emit
+    /// keeps the refreshed list.
+    #[tokio::test]
+    async fn switching_to_a_model_only_the_catalog_broadcast_listed_keeps_the_refreshed_picker() {
+        // grok-4.7's efforts differ from grok-4.6's, so the selector after the
+        // switch can only have come from grok-4.7's own spec.
+        let mut catalog = grok_remote_catalog();
+        catalog[0]["_meta"]["reasoningEffort"] = "low".into();
+        catalog[0]["_meta"]["reasoningEfforts"] = serde_json::json!([
+            {"id": "high", "label": "High", "description": "Thorough."},
+            {"id": "low", "label": "Low", "description": "Fast."}
+        ]);
+        let mut grok = GrokLoop::start(GrokScript {
+            later: vec![
+                grok_models_update_frame("grok-4.6", catalog),
+                grok_barrier(),
+            ],
+            ..GrokScript::default()
+        })
+        .await;
+        let (opts, specs) = grok_handshake_picker("medium");
+        {
+            let mut st = grok.state.write().await;
+            st.config_options = Some(opts);
+            st.grok_model_specs = Some(specs);
+        }
+        grok.release_later();
+        grok.until_barrier().await;
+
+        grok.send(ConnectionCommand::SetConfigOption {
+            config_id: GROK_MODEL_OPTION_ID.to_string(),
+            value_id: "grok-4.7".to_string(),
+        })
+        .await;
+        grok.until("the switch's re-emit", |e| {
+            matches!(e, AcpEvent::SessionConfigOptions { config_options }
+                if expect_select(&config_options[0].kind).current_value == "grok-4.7")
+        })
+        .await;
+
+        let pickers = config_option_events(&grok.seen);
+        let picker = pickers.last().expect("the switch re-emits");
+        assert_eq!(
+            select_values(&picker[0]),
+            ["grok-4.7", "grok-4.7-build-fast", "grok-4.6", "grok-4.5"]
+        );
+        assert_eq!(picker[1].id, GROK_EFFORT_OPTION_ID);
+        assert_eq!(select_values(&picker[1]), ["high", "low"]);
+        assert_eq!(expect_select(&picker[1].kind).current_value, "low");
+        assert_eq!(
+            *grok.set_models.lock().unwrap(),
+            [serde_json::json!({"sessionId": "s1", "modelId": "grok-4.7"})]
+        );
+        grok.shutdown().await;
+    }
+
+    #[test]
+    fn a_grok_catalog_broadcast_reads_as_picker_rows_and_specs() {
+        let mut models = grok_remote_catalog();
+        // A repeated id keeps its first row; an entry without one is skipped;
+        // a blank name falls back to the id.
+        models.push(grok_catalog_entry("grok-4.7", "Grok 4.7 again", None));
+        models.push(serde_json::json!({"name": "no id"}));
+        models.push(serde_json::json!({"modelId": "byo-model", "name": " "}));
+        let catalog = parse_grok_model_catalog(&serde_json::json!({
+            "currentModelId": "grok-4.6",
+            "availableModels": models,
+        }))
+        .expect("a usable catalog");
+        let rows: Vec<(&str, &str)> = catalog
+            .models
+            .iter()
+            .map(|row| (row.value.as_str(), row.name.as_str()))
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                ("grok-4.7", "Grok 4.7"),
+                ("grok-4.7-build-fast", "Grok 4.7 Build Fast"),
+                ("grok-4.6", "Grok 4.6"),
+                ("grok-4.5", "Grok 4.5"),
+                ("byo-model", "byo-model"),
+            ]
+        );
+        // Rows read like the handshake's `x.ai/sessionConfig` ones: no
+        // description, though the broadcast carries one.
+        assert!(catalog.models.iter().all(|row| row.description.is_none()));
+        let g47 = &catalog.specs["grok-4.7-build-fast"];
+        assert!(!g47.supports);
+        assert_eq!(catalog.specs["grok-4.6"].default.as_deref(), Some("high"));
+        assert_eq!(catalog.specs["grok-4.6"].context_window, Some(256_000));
+    }
+
+    /// An empty or unusable list can never wipe the picker: nothing parses.
+    #[test]
+    fn a_grok_catalog_broadcast_without_a_usable_model_is_ignored() {
+        for params in [
+            serde_json::json!({}),
+            serde_json::json!({"currentModelId": "grok-4.6"}),
+            serde_json::json!({"availableModels": null}),
+            serde_json::json!({"availableModels": {"modelId": "grok-4.6"}}),
+            serde_json::json!({"availableModels": []}),
+            serde_json::json!({"availableModels": [{"name": "Grok 4.6"}, {"modelId": ""}, {"modelId": 7}]}),
+        ] {
+            assert!(parse_grok_model_catalog(&params).is_none(), "{params}");
+        }
+    }
+
+    #[tokio::test]
+    async fn an_unusable_grok_catalog_broadcast_leaves_the_picker_alone() {
+        let (opts, specs) = grok_handshake_picker("medium");
+        let mut st = SessionState::new("c".into(), AgentType::Grok, None, "w".into(), None);
+        st.config_options = Some(opts.clone());
+        st.grok_model_specs = Some(specs);
+        let state = Arc::new(RwLock::new(st));
+
+        apply_grok_model_catalog(
+            &state,
+            &EventEmitter::Noop,
+            &serde_json::json!({"currentModelId": "grok-4.6", "availableModels": []}),
+        )
+        .await;
+
+        let st = state.read().await;
+        assert_eq!(st.config_options.as_ref(), Some(&opts));
+        assert!(st.grok_catalog_broadcast.is_none());
+        assert_eq!(st.event_seq, 0, "nothing emitted");
+    }
+
+    fn grok_catalog(models: Vec<serde_json::Value>) -> GrokModelCatalog {
+        parse_grok_model_catalog(&serde_json::json!({ "availableModels": models }))
+            .expect("a usable catalog")
+    }
+
+    /// A session whose model the catalog dropped is still running on it: the
+    /// row stays (first) and so does everything about its effort.
+    #[test]
+    fn a_grok_catalog_that_drops_the_session_model_keeps_it_on_the_picker() {
+        let (mut opts, mut specs) = grok_handshake_picker("medium");
+        let before_effort = opts[1].clone();
+        let catalog = grok_catalog(vec![grok_catalog_entry(
+            "grok-4.7",
+            "Grok 4.7",
+            Some("high"),
+        )]);
+        fold_grok_catalog_specs(&mut specs, &catalog.specs);
+        fold_grok_catalog_into_picker(&mut opts, &catalog, &specs);
+
+        assert_eq!(select_values(&opts[0]), ["grok-4.6", "grok-4.7"]);
+        let model = expect_select(&opts[0].kind);
+        assert_eq!(model.current_value, "grok-4.6");
+        assert_eq!(model.options[0].name, "Grok 4.6", "the row it had is kept");
+        assert_eq!(opts[1], before_effort);
+    }
+
+    #[test]
+    fn a_grok_catalog_refresh_keeps_the_session_effort_and_follows_the_model_capabilities() {
+        // The user's effort is kept even where the refreshed list drops it,
+        // shown with the row it had.
+        let (mut opts, mut specs) = grok_handshake_picker("medium");
+        let mut narrower = grok_catalog_entry("grok-4.6", "Grok 4.6", Some("high"));
+        narrower["_meta"]["reasoningEfforts"] = serde_json::json!([
+            {"id": "high", "label": "High", "description": "Thorough."},
+            {"id": "low", "label": "Low", "description": "Fast."}
+        ]);
+        let catalog = grok_catalog(vec![narrower]);
+        fold_grok_catalog_specs(&mut specs, &catalog.specs);
+        fold_grok_catalog_into_picker(&mut opts, &catalog, &specs);
+        assert_eq!(opts[1].id, GROK_EFFORT_OPTION_ID);
+        assert_eq!(select_values(&opts[1]), ["medium", "high", "low"]);
+        let effort = expect_select(&opts[1].kind);
+        assert_eq!(effort.current_value, "medium");
+        assert_eq!(
+            effort.options[0].description.as_deref(),
+            Some("Strong quality with a faster turnaround.")
+        );
+
+        // A model the catalog says takes no effort loses the selector.
+        let (mut opts, mut specs) = grok_handshake_picker("medium");
+        let catalog = grok_catalog(vec![grok_catalog_entry("grok-4.6", "Grok 4.6", None)]);
+        fold_grok_catalog_specs(&mut specs, &catalog.specs);
+        fold_grok_catalog_into_picker(&mut opts, &catalog, &specs);
+        assert_eq!(opts.len(), 1, "no effort selector: {opts:#?}");
+
+        // With no effort selector to keep a value from, the model's default
+        // fills in.
+        let (mut opts, mut specs) = grok_handshake_picker("medium");
+        opts.retain(|o| o.id != GROK_EFFORT_OPTION_ID);
+        let catalog = grok_catalog(grok_remote_catalog());
+        fold_grok_catalog_specs(&mut specs, &catalog.specs);
+        fold_grok_catalog_into_picker(&mut opts, &catalog, &specs);
+        assert_eq!(expect_select(&opts[1].kind).current_value, "high");
+    }
+
+    /// The catalog refreshes what each model offers, but a default the session
+    /// already had stays — the handshake's folds in the session's own effort.
+    #[test]
+    fn grok_catalog_specs_refresh_capabilities_and_keep_known_defaults() {
+        let mut specs = parse_grok_model_specs(Some(&serde_json::json!({
+            "availableModels": [
+                {"modelId": "grok-4.6", "_meta": {
+                    "totalContextTokens": 131072, "supportsReasoningEffort": true,
+                    "reasoningEffort": "xhigh",
+                    "reasoningEfforts": [{"id": "high"}, {"id": "low"}]
+                }},
+                {"modelId": "retired", "_meta": {"totalContextTokens": 8192}}
+            ]
+        })));
+        let catalog = grok_catalog(grok_remote_catalog());
+        fold_grok_catalog_specs(&mut specs, &catalog.specs);
+
+        let g46 = &specs["grok-4.6"];
+        assert_eq!(
+            g46.default.as_deref(),
+            Some("xhigh"),
+            "the session's own default stays"
+        );
+        assert_eq!(
+            g46.options.len(),
+            4,
+            "what it offers comes from the catalog"
+        );
+        assert_eq!(g46.context_window, Some(256_000));
+        assert_eq!(
+            specs["grok-4.7"].default.as_deref(),
+            Some("high"),
+            "a new model takes the catalog's"
+        );
+        assert!(!specs["grok-4.7-build-fast"].supports);
+        assert_eq!(
+            specs["retired"].context_window,
+            Some(8192),
+            "a dropped model keeps its spec"
+        );
+    }
+
+    #[test]
+    fn a_picker_without_a_model_selector_is_left_alone_by_a_grok_catalog() {
+        let (mut opts, mut specs) = grok_handshake_picker("medium");
+        opts.retain(|o| o.id != GROK_MODEL_OPTION_ID);
+        let before = opts.clone();
+        let catalog = grok_catalog(grok_remote_catalog());
+        fold_grok_catalog_specs(&mut specs, &catalog.specs);
+        fold_grok_catalog_into_picker(&mut opts, &catalog, &specs);
+        assert_eq!(opts, before);
+    }
+
+    /// A fork is a new establishment: a broadcast from before it is already on
+    /// the session's picker, and must not be folded into the forked session's
+    /// handshake, which grok answers from the catalog that broadcast brought.
+    /// One landing while `session/fork` is outstanding may be newer than that
+    /// handshake, so it must survive for the fork's picker.
+    #[tokio::test]
+    async fn a_fork_keeps_only_the_grok_catalog_broadcast_sent_during_it() {
+        let mut grok = GrokLoop::start(GrokScript {
+            later: vec![
+                grok_models_update_frame("grok-4.6", grok_remote_catalog()),
+                grok_barrier(),
+            ],
+            on_fork: vec![grok_models_update_frame(
+                "grok-4.8",
+                vec![grok_catalog_entry("grok-4.8", "Grok 4.8", Some("high"))],
+            )],
+            forks: true,
+            ..GrokScript::default()
+        })
+        .await;
+        grok.release_later();
+        grok.until_barrier().await;
+        assert!(grok.state.read().await.grok_catalog_broadcast.is_some());
+
+        let (reply, answer) = oneshot::channel();
+        grok.send(ConnectionCommand::Fork {
+            fork_point: None,
+            reply,
+        })
+        .await;
+        // The scripted fork fails, after grok broadcast its catalog mid-request.
+        let refused = answer.await.expect("the loop answers");
+        assert!(refused.is_err(), "the scripted fork fails");
+        let st = grok.state.read().await;
+        let kept: Vec<&str> = st
+            .grok_catalog_broadcast
+            .as_ref()
+            .expect("the broadcast sent during the fork survives")
+            .models
+            .iter()
+            .map(|row| row.value.as_str())
+            .collect();
+        assert_eq!(kept, ["grok-4.8"], "the one from before the fork is gone");
+        drop(st);
+        grok.shutdown().await;
+    }
+
+    /// `currentModelId` on the broadcast is grok's process-wide pick, not a
+    /// switch of this session: one naming another model moves neither the
+    /// checkmark nor the effort, and sends the agent nothing.
+    #[tokio::test]
+    async fn a_grok_catalog_broadcast_naming_another_current_model_moves_nothing() {
+        let mut grok = GrokLoop::start(GrokScript {
+            later: vec![
+                grok_models_update_frame("grok-4.7", grok_remote_catalog()),
+                grok_barrier(),
+            ],
+            ..GrokScript::default()
+        })
+        .await;
+        let (opts, specs) = grok_handshake_picker("medium");
+        {
+            let mut st = grok.state.write().await;
+            st.config_options = Some(opts);
+            st.grok_model_specs = Some(specs);
+        }
+        grok.release_later();
+        grok.until_barrier().await;
+
+        let pickers = config_option_events(&grok.seen);
+        assert_eq!(pickers.len(), 1, "the list still refreshes: {pickers:#?}");
+        let picker = &pickers[0];
+        assert_eq!(
+            select_values(&picker[0]),
+            ["grok-4.7", "grok-4.7-build-fast", "grok-4.6", "grok-4.5"]
+        );
+        assert_eq!(expect_select(&picker[0].kind).current_value, "grok-4.6");
+        assert_eq!(expect_select(&picker[1].kind).current_value, "medium");
+        assert!(grok.set_models.lock().unwrap().is_empty());
+        grok.shutdown().await;
+    }
+
+    /// A broadcast that lands while a session is being established — before
+    /// the picker exists — is folded into the picker the establishment emits,
+    /// and taken, so a later establishment never re-applies it.
+    #[tokio::test]
+    async fn a_grok_catalog_broadcast_during_establishment_reaches_its_picker() {
+        let state = Arc::new(RwLock::new(SessionState::new(
+            "c".into(),
+            AgentType::Grok,
+            None,
+            "w".into(),
+            None,
+        )));
+        let update = grok_models_update_frame("grok-4.6", grok_remote_catalog());
+        apply_grok_model_catalog(&state, &EventEmitter::Noop, &update.1).await;
+        {
+            let st = state.read().await;
+            assert_eq!(st.event_seq, 0, "no picker yet, so nothing to emit");
+            assert!(st.grok_catalog_broadcast.is_some());
+        }
+
+        // The establishment caches the handshake's specs, then emits — with an
+        // effort that is not the catalog's default.
+        let (opts, specs) = grok_handshake_picker("medium");
+        state.write().await.grok_model_specs = Some(specs);
+        emit_grok_established_picker(&state, &EventEmitter::Noop, opts).await;
+
+        let st = state.read().await;
+        let picker = st.config_options.as_ref().expect("emitted");
+        assert_eq!(
+            select_values(&picker[0]),
+            ["grok-4.7", "grok-4.7-build-fast", "grok-4.6", "grok-4.5"]
+        );
+        assert_eq!(expect_select(&picker[0].kind).current_value, "grok-4.6");
+        assert_eq!(expect_select(&picker[1].kind).current_value, "medium");
+        assert!(
+            st.grok_catalog_broadcast.is_none(),
+            "taken by the establishment"
+        );
+        assert!(
+            st.grok_model_specs
+                .as_ref()
+                .unwrap()
+                .contains_key("grok-4.7"),
+            "a later switch to a new model finds its spec"
+        );
     }
 
     /// `_session/steering` as the agent receives it, the raw params object.

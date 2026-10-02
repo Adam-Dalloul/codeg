@@ -1336,21 +1336,21 @@ pub struct SessionModeStateInfo {
     pub available_modes: Vec<SessionModeInfo>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SessionConfigSelectOptionInfo {
     pub value: String,
     pub name: String,
     pub description: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SessionConfigSelectGroupInfo {
     pub group: String,
     pub name: String,
     pub options: Vec<SessionConfigSelectOptionInfo>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SessionConfigSelectInfo {
     pub current_value: String,
     pub options: Vec<SessionConfigSelectOptionInfo>,
@@ -1359,19 +1359,19 @@ pub struct SessionConfigSelectInfo {
 
 /// An on/off toggle config option (ACP's boolean `SessionConfigOption`). Cline
 /// 3.0.50+ ships one as `auto_approve` ("Auto-approve tools").
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SessionConfigBooleanInfo {
     pub current_value: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum SessionConfigKindInfo {
     Select(SessionConfigSelectInfo),
     Boolean(SessionConfigBooleanInfo),
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SessionConfigOptionInfo {
     pub id: String,
     pub name: String,
@@ -1414,6 +1414,21 @@ pub struct GrokModelSpec {
     /// it, and the caller falls back to
     /// [`crate::parsers::infer_context_window_max_tokens`].
     pub context_window: Option<u64>,
+}
+
+/// Grok's model catalog as its `_x.ai/models/update` broadcast states it: the
+/// list a session's model picker should offer, plus each model's spec.
+/// Backend-internal — NOT serialized onto the wire.
+#[derive(Debug, Clone)]
+pub struct GrokModelCatalog {
+    /// The picker's model rows in catalog order — `value` is the model id and
+    /// `name` its display name. No description: the rows a handshake's
+    /// `x.ai/sessionConfig` yields carry none, and the picker must read the
+    /// same whichever of the two built it.
+    pub models: Vec<SessionConfigSelectOptionInfo>,
+    /// Per-model specs, parsed exactly as a handshake's `models` are. Each
+    /// `default` here is the bare catalog default, not a session's own effort.
+    pub specs: std::collections::HashMap<String, GrokModelSpec>,
 }
 
 /// Read-only snapshot of the modes + config_options an agent advertises
