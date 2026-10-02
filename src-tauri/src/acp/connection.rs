@@ -4766,7 +4766,7 @@ fn build_client_capabilities(
     // unaffected — its text already arrived through the bridge. One that
     // printed nothing now completes as a bare status, and the only reader
     // that cared is grep's "No matches": rg exits 1 when nothing matched, so
-    // that arrives as a silent `failed`. `isCodexGrepNoMatchResult` (frontend
+    // that arrives as a silent `failed`. `isGrepNoMatchResult` (frontend
     // adapter) reads that shape — live `failed`, grep, no output at all — as
     // "no matches", since a real rg failure prints a diagnostic that streams
     // in like any other output.
@@ -9038,6 +9038,11 @@ fn track_terminal_tool_calls(
     }
 }
 
+/// The body of the `[terminal exited: …]` line every terminal-backed tool call
+/// ends with. The frontend reads that line back: a search that matched nothing
+/// ends `[terminal exited: exit code: 1]`, and `isGrepNoMatchCommandResult`
+/// (`src/lib/grep-no-match.ts`) matches it verbatim, so rewording it here needs
+/// the same change there.
 fn format_terminal_exit_status(exit_status: &TerminalExitStatus) -> String {
     let mut parts = Vec::new();
     if let Some(code) = exit_status.exit_code {
@@ -12705,7 +12710,7 @@ const CODEX_SEARCH_ACTION_META_KEY: &str = "codeg.codexSearchAction";
 /// that capability codex-acp completes a command that printed nothing as a
 /// bare `failed` status — no `rawOutput` envelope, so no exit code (see
 /// `build_client_capabilities`). For a search that is almost always rg's exit
-/// 1, "no matches", and `isCodexGrepNoMatchResult` presents it that way — but a
+/// 1, "no matches", and `isGrepNoMatchResult` presents it that way — but a
 /// bare `failed` with no output is also what an interrupted grep from another
 /// adapter can look like, so the rule must know the call is codex's. Only the
 /// backend knows the agent at frame level, hence the marker.

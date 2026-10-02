@@ -2267,7 +2267,7 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             // (`terminal_exit` is for shell commands only), and the single
             // reader that needed one — grep's "No matches", rg's exit 1 — now
             // reads the live `failed`-with-no-output shape instead
-            // (`isCodexGrepNoMatchResult`).
+            // (`isGrepNoMatchResult`).
             //
             // (h) `@openai/codex` ^0.154.0 → **^0.155.1** (caret on a 0.x minor
             // pins it inside 0.155.x, so this does not drift to 0.156.0). Two
