@@ -46,7 +46,8 @@ use super::protocol::{
     read_frame, write_frame, ClipboardUse, HelperError, HelperErrorCode, HelperMessage, HelperOp,
     HelperReply, HelperRequest, InstalledApp, OsPermission, PeerCheck, PermissionAsked,
     PermissionReport, ProcessRun, RawAct, RawApp, RawCapture, RawClipboard, RawLaunch, RawSnapshot,
-    RawVerify, RawWindow, WindowAction, PROTOCOL_VERSION, SOURCE_FINGERPRINT, STOP_ALL,
+    RawVerify, RawWindow, ScreenGeometry, ScreenRules, WindowAction, PROTOCOL_VERSION,
+    SOURCE_FINGERPRINT, STOP_ALL,
 };
 use super::types::{ActDelivery, VerifyRequest};
 
@@ -818,6 +819,67 @@ impl ComputerBackend for LocalBackend {
                     action,
                     delivery,
                     clipboard,
+                },
+                stop,
+            )
+            .await?;
+        self.decode(reply).await
+    }
+
+    async fn capture_screen(
+        &self,
+        rules: ScreenRules,
+        max_dimension: Option<u32>,
+    ) -> Result<RawCapture, BackendError> {
+        self.call(HelperOp::CaptureScreen {
+            rules,
+            max_dimension,
+        })
+        .await
+    }
+
+    async fn act_screen(
+        &self,
+        rules: ScreenRules,
+        action: WindowAction,
+        geometry: ScreenGeometry,
+        stop: u64,
+        still: &(dyn Fn() -> bool + Send + Sync),
+    ) -> Result<RawAct, BackendError> {
+        let stopped = || {
+            BackendError::Refused(
+                ActRefusal::Stopped,
+                "The user pressed Stop in codeg's Computer use panel.".into(),
+            )
+        };
+        // As an action on a window: checked before a helper is started for
+        // it and again with the helper in hand, and sent once. Starting the
+        // helper, or its driver, can take seconds, in which the sharing may
+        // have been taken back: both are had first, and `still` asked after
+        // — the action then starts nothing (`HelperOp::ActScreen`).
+        if self.stopped.load(Ordering::Acquire) > stop {
+            return Err(stopped());
+        }
+        let connection = self.connection().await?;
+        let ready = connection.request(HelperOp::DriverReady, stop).await?;
+        self.decode::<()>(ready).await?;
+        if self.stopped.load(Ordering::Acquire) > stop {
+            return Err(stopped());
+        }
+        if !still() {
+            return Err(BackendError::Refused(
+                ActRefusal::Revoked,
+                "The entire screen's sharing changed before the action went out — taken back, \
+                 lowered to reading, or the never-share list grew — so nothing was sent."
+                    .into(),
+            ));
+        }
+        let reply = connection
+            .request(
+                HelperOp::ActScreen {
+                    rules,
+                    action,
+                    geometry,
                 },
                 stop,
             )

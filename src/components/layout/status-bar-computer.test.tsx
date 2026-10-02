@@ -22,6 +22,7 @@ const api = vi.hoisted(() => ({
   computerShareWindow: vi.fn(),
   computerShareWindows: vi.fn(),
   computerShareApp: vi.fn(),
+  computerShareScreen: vi.fn(),
   computerRevokeAll: vi.fn(),
   computerStop: vi.fn(async () => {}),
   computerListShareableWindows: vi.fn(),
@@ -363,6 +364,40 @@ describe("StatusBarComputer", () => {
     fireEvent.click(screen.getByRole("button", { name: "Stop" }))
     await waitFor(() =>
       expect(api.computerShareApp).toHaveBeenCalledWith({ appId: "a1" }, "none")
+    )
+  })
+
+  /** The entire screen shared is one row — the windows shared with it are
+   * not listed again — and stopping it ends the screen's share. What agents
+   * did on it reads as done to the screen. */
+  it("lists the entire screen once, and stops it", async () => {
+    const viaScreen = { ...controlled, wholeScreen: true }
+    const shared = [viaScreen, { ...viaScreen, targetId: "w5" }]
+    api.computerSharedState.mockResolvedValue({
+      shared,
+      apps: [],
+      screen: { level: "control", grantedAt: 1, lastUsedAt: 1, windows: 2 },
+    })
+    api.computerStatus.mockResolvedValue(status({ shared }))
+    api.computerShareScreen.mockResolvedValue({ shared: [], apps: [] })
+    mount()
+    const trigger = await screen.findByRole("button", { name: "Computer use" })
+    await waitFor(() => expect(trigger.title).toContain("2 windows shared"))
+    act(() =>
+      recordComputerActivity({
+        targetId: "d1",
+        action: "click",
+        outcome: "done",
+        at: 1,
+      })
+    )
+    fireEvent.click(trigger)
+    expect(await screen.findByText("2 windows")).toBeInTheDocument()
+    expect(screen.queryByText("notes.txt")).toBeNull()
+    expect(screen.getByText(/Click · Entire screen/)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole("button", { name: "Stop" }))
+    await waitFor(() =>
+      expect(api.computerShareScreen).toHaveBeenCalledWith("none")
     )
   })
 

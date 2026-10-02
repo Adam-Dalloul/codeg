@@ -18,6 +18,15 @@ vi.mock("@/lib/computer/computer-api", () => ({
 }))
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }))
 vi.mock("@/hooks/use-is-mac", () => ({ useIsMac: () => false }))
+const platform = vi.hoisted(() => ({ isLinux: false }))
+vi.mock("@/hooks/use-platform", () => ({
+  usePlatform: () => ({
+    platform: platform.isLinux ? "linux" : "windows",
+    isMac: false,
+    isWindows: !platform.isLinux,
+    isLinux: platform.isLinux,
+  }),
+}))
 
 const handlers = new Map<string, (p: unknown) => void>()
 vi.mock("@/lib/platform", () => ({
@@ -104,9 +113,11 @@ beforeEach(() => {
       defaultDelivery: prefs.defaultDelivery ?? "background",
       launchEnabled: prefs.launchEnabled ?? false,
       clipboardEnabled: prefs.clipboardEnabled ?? false,
+      screenEnabled: prefs.screenEnabled ?? false,
     })
   )
   mockStopKey.mockResolvedValue({ active: DEFAULT_KEY })
+  platform.isLinux = false
 })
 
 /** The shortcut button, once the stored values are in. */
@@ -550,6 +561,32 @@ describe("ComputerSettingsSection", () => {
     fireEvent.click(screen.getByRole("button", { name: "Save" }))
     await waitFor(() => expect(mockSet).toHaveBeenCalledTimes(1))
     expect(mockSet.mock.calls[0][0]).toEqual({ clipboardEnabled: true })
+  })
+
+  /** The entire screen is not offered until the person turns it on;
+   *  turning it on saves only that. */
+  it("offers the entire screen, saving only that", async () => {
+    mount()
+    const offer = await screen.findByRole("switch", {
+      name: "Offer the entire screen",
+    })
+    await waitFor(() => expect(offer).not.toBeDisabled())
+    expect(offer).not.toBeChecked()
+    fireEvent.click(offer)
+    fireEvent.click(screen.getByRole("button", { name: "Save" }))
+    await waitFor(() => expect(mockSet).toHaveBeenCalledTimes(1))
+    expect(mockSet.mock.calls[0][0]).toEqual({ screenEnabled: true })
+  })
+
+  /** Linux is not offered the entire screen, so there is nothing to turn
+   *  on there. */
+  it("has no entire screen to offer on Linux", async () => {
+    platform.isLinux = true
+    mount()
+    await screen.findByRole("switch", { name: "Let agents use the clipboard" })
+    expect(
+      screen.queryByRole("switch", { name: "Offer the entire screen" })
+    ).toBeNull()
   })
 
   /** A default of the front chosen before shows as Background while the

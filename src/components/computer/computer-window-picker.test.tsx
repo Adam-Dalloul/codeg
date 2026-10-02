@@ -17,6 +17,8 @@ const api = vi.hoisted(() => ({
   computerShareWindow: vi.fn(),
   computerShareApp:
     vi.fn<(app: object, level: string) => Promise<ComputerStatePayload>>(),
+  computerShareScreen:
+    vi.fn<(level: string) => Promise<ComputerStatePayload>>(),
   computerShareWindows:
     vi.fn<(ids: string[], level: string) => Promise<ShareManyResult>>(),
   computerRevokeAll: vi.fn(async () => {}),
@@ -166,6 +168,64 @@ describe("ComputerWindowPicker", () => {
       { appId: "a1" },
       "none"
     )
+  })
+
+  /** Where it is offered, the entire screen heads the list; sharing it
+   * takes every window with it, their own choices — and their
+   * applications' — waiting while it is shared. */
+  it("shares the entire screen, which every window goes with", async () => {
+    const one = window("none", { targetId: "w1" })
+    api.computerAvailable.mockReturnValue(true)
+    api.computerStatus.mockResolvedValue({
+      ...status(true),
+      screenOffered: true,
+    })
+    api.computerListShareableWindows.mockResolvedValue([one])
+    api.computerShareScreen.mockResolvedValue({
+      shared: [{ ...sharedOf(one, "read"), wholeScreen: true }],
+      apps: [],
+      screen: { level: "read", grantedAt: 0, lastUsedAt: 0, windows: 1 },
+    })
+    mount()
+    const card = within(
+      await screen.findByRole("group", {
+        name: "What agents may do with the entire screen",
+      })
+    )
+    await act(async () => {
+      fireEvent.click(card.getByRole("button", { name: "Read" }))
+    })
+    expect(api.computerShareScreen).toHaveBeenCalledWith("read")
+    expect(card.getByRole("button", { name: "Read" })).toHaveAttribute(
+      "aria-pressed",
+      "true"
+    )
+    const levels = await levelsOf("TextEdit")
+    expect(levels.getByRole("button", { name: "Read" })).toHaveAttribute(
+      "aria-pressed",
+      "true"
+    )
+    expect(levels.getByRole("button", { name: "Off" })).toBeDisabled()
+    expect(screen.getByText("With the screen")).toBeInTheDocument()
+    expect(
+      (await appLevelsOf("TextEdit")).getByRole("button", { name: "Act" })
+    ).toBeDisabled()
+    expect(screen.getByRole("button", { name: /Share all/ })).toBeDisabled()
+  })
+
+  /** Where it is not offered — switched off, or on Linux — the screen is
+   * not in the list. */
+  it("offers the entire screen only where it is offered", async () => {
+    api.computerAvailable.mockReturnValue(true)
+    api.computerStatus.mockResolvedValue(status(true))
+    api.computerListShareableWindows.mockResolvedValue([window("none")])
+    mount()
+    await levelsOf("TextEdit")
+    expect(
+      screen.queryByRole("group", {
+        name: "What agents may do with the entire screen",
+      })
+    ).toBeNull()
   })
 
   /** "Share all" leaves a window shared with its whole application to it. */

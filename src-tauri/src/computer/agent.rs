@@ -61,6 +61,10 @@ pub enum GrantScope {
     #[default]
     Window,
     App,
+    /// Shared with the entire screen: every window the rules allow, and the
+    /// desktop's own shortcuts too — but never the keys that lock the screen
+    /// or log out.
+    Screen,
 }
 
 impl ComputerGrant {
@@ -77,6 +81,14 @@ impl ComputerGrant {
     pub fn of_app(level: GrantLevel, now: i64) -> Self {
         Self {
             scope: GrantScope::App,
+            ..Self::new(level, now)
+        }
+    }
+
+    /// A window's share of the entire screen's grant.
+    pub fn of_screen(level: GrantLevel, now: i64) -> Self {
+        Self {
+            scope: GrantScope::Screen,
             ..Self::new(level, now)
         }
     }
@@ -377,6 +389,19 @@ impl Blocklist {
         Self::configured(user_entries, &[])
     }
 
+    /// The list as it stands, lowercased: what it is sent to the helper as.
+    pub fn entries(&self) -> &[String] {
+        &self.entries
+    }
+
+    /// A list made of `entries` as [`entries`](Self::entries) gave them.
+    pub fn from_entries(entries: &[String]) -> Self {
+        let mut entries: Vec<String> = entries.iter().map(|e| e.to_lowercase()).collect();
+        entries.sort();
+        entries.dedup();
+        Self { entries }
+    }
+
     /// The default entries but those whose keys are in `removed`, plus
     /// `user_entries`.
     pub fn configured(user_entries: &[String], removed: &[String]) -> Self {
@@ -470,7 +495,8 @@ impl Blocklist {
 }
 
 /// Enough about this codeg process to recognise its windows in a listing.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SelfIdentity {
     pub pid: u32,
     /// The running executable.

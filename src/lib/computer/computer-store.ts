@@ -29,6 +29,7 @@ import {
   type ComputerActivityPayload,
   type ComputerStatePayload,
   type SharedApp,
+  type SharedScreen,
   type SharedWindow,
 } from "./types"
 
@@ -48,6 +49,8 @@ export interface ComputerStoreState {
   shared: readonly SharedWindow[]
   /** The applications shared as a whole. */
   sharedApps: readonly SharedApp[]
+  /** The entire screen, when it is shared. */
+  sharedScreen: SharedScreen | null
   /** Whether `shared` has been told anything yet — by an event or a fetch.
    *  Until then it is empty for want of news, not because nothing is shared
    *  (a grant made before this window loaded is not in it). */
@@ -61,6 +64,7 @@ const ACTIVITY_LIMIT = 50
 let state: ComputerStoreState = {
   shared: [],
   sharedApps: [],
+  sharedScreen: null,
   sharedKnown: false,
   backend: null,
   activity: [],
@@ -76,17 +80,21 @@ function emit(next: ComputerStoreState) {
   for (const listener of listeners) listener()
 }
 
-/** The shared windows — and the applications shared as a whole, when the
- *  news carries them (a window's own share answers with its windows alone). */
+/** The shared windows — and the applications shared as a whole and the
+ *  entire screen, when the news carries them (a window's own share answers
+ *  with its windows alone). */
 export function setComputerShared(
   shared: readonly SharedWindow[],
-  sharedApps?: readonly SharedApp[]
+  sharedApps?: readonly SharedApp[],
+  sharedScreen?: SharedScreen | null
 ): void {
   sharedVersion += 1
   emit({
     ...state,
     shared,
     sharedApps: sharedApps ?? state.sharedApps,
+    sharedScreen:
+      sharedScreen === undefined ? state.sharedScreen : sharedScreen,
     sharedKnown: true,
   })
 }
@@ -115,14 +123,14 @@ export function setComputerSharedSince(
   if (sharedVersion === mark.shared) setComputerShared(shared)
 }
 
-/** A fetched state — windows and applications — unless something newer has
- *  landed since `mark` was taken. */
+/** A fetched state — windows, applications and the screen — unless
+ *  something newer has landed since `mark` was taken. */
 export function setComputerStateSince(
   next: ComputerStatePayload,
   mark: ComputerStoreMark
 ): void {
   if (sharedVersion === mark.shared)
-    setComputerShared(next.shared, next.apps ?? [])
+    setComputerShared(next.shared, next.apps ?? [], next.screen ?? null)
 }
 
 /** A fetched backend status, unless something newer has landed since `mark`
@@ -165,7 +173,7 @@ function ensureStarted() {
   if (started || !computerAvailable()) return
   started = true
   void subscribe<ComputerStatePayload>(COMPUTER_STATE_EVENT, (p) =>
-    setComputerShared(p.shared, p.apps ?? [])
+    setComputerShared(p.shared, p.apps ?? [], p.screen ?? null)
   ).catch(() => {})
   void subscribe<ComputerActivityPayload>(
     COMPUTER_ACTIVITY_EVENT,
@@ -196,6 +204,7 @@ export function resetComputerStoreForTest(): void {
   state = {
     shared: [],
     sharedApps: [],
+    sharedScreen: null,
     sharedKnown: false,
     backend: null,
     activity: [],

@@ -2766,13 +2766,29 @@ fn computer_input_policy_line(input: &Value) -> &'static str {
     }
 }
 
-/// Map a `computer_list_windows` outcome into a `tools/call` result: one line
-/// per window, and the unshared ones say what to do about it.
+/// Map a `computer_list_windows` outcome into a `tools/call` result: the
+/// entire screen first when the user shares it, then one line per window, and
+/// the unshared ones say what to do about it.
 pub fn render_computer_windows_result(outcome: &Value) -> Value {
     let windows = outcome.get("windows").and_then(Value::as_array);
+    let screen = outcome
+        .get("screen")
+        .filter(|s| s.is_object())
+        .map(|screen| {
+            let s = |k: &str| screen.get(k).and_then(Value::as_str).unwrap_or("");
+            format!(
+                "The entire screen:\n  {}  [shared: {}]  — computer_screenshot shows all of it, \
+                 what is never shared painted over; computer_click, computer_drag and \
+                 computer_scroll take points from that picture, at the front as the user's own \
+                 pointer. Keys and typing go to a window.\n\n",
+                s("targetId"),
+                s("level"),
+            )
+        })
+        .unwrap_or_default();
     let text = match windows {
         Some(windows) if !windows.is_empty() => {
-            let mut out = format!("Windows ({}):\n", windows.len());
+            let mut out = format!("{screen}Windows ({}):\n", windows.len());
             let mut any_unshared = false;
             for w in windows {
                 let s = |k: &str| w.get(k).and_then(Value::as_str).unwrap_or("");
@@ -2809,6 +2825,8 @@ pub fn render_computer_windows_result(outcome: &Value) -> Value {
                 }
                 if blocked {
                     out.push_str(&format!("  [never shareable: {}]", s("note")));
+                } else if readable && w.get("wholeScreen").and_then(Value::as_bool) == Some(true) {
+                    out.push_str(&format!("  [shared: {level}, with the entire screen]"));
                 } else if readable && w.get("wholeApp").and_then(Value::as_bool) == Some(true) {
                     out.push_str(&format!("  [shared: {level}, with its whole application]"));
                 } else if readable {
@@ -2834,11 +2852,13 @@ pub fn render_computer_windows_result(outcome: &Value) -> Value {
             }
             out
         }
-        _ => outcome
-            .get("note")
-            .and_then(Value::as_str)
-            .unwrap_or("No windows are open.")
-            .to_string(),
+        _ => {
+            let none = outcome
+                .get("note")
+                .and_then(Value::as_str)
+                .unwrap_or("No windows are open.");
+            format!("{screen}{none}")
+        }
     };
     json!({
         "content": [{ "type": "text", "text": text }],
@@ -2868,18 +2888,35 @@ pub fn render_computer_capture_result(outcome: &Value) -> Value {
         .and_then(Value::as_str)
         .map(|t| format!(" \"{t}\""))
         .unwrap_or_default();
-    let text = format!(
-        "Screenshot of window {}{title} — a {}×{} px image of the window at ({:.0}, {:.0}), \
-         {:.0}×{:.0} in desktop coordinates. Generation {}. {COMPUTER_DATA_NOT_INSTRUCTIONS}",
-        s("targetId"),
-        n("width"),
-        n("height"),
-        b("x"),
-        b("y"),
-        b("width"),
-        b("height"),
-        s("generation"),
-    );
+    let text = if s("targetId") == crate::computer::targets::SCREEN_TARGET_ID {
+        format!(
+            "Screenshot of the entire screen ({}) — a {}×{} px image of the screen, {:.0}×{:.0} \
+             in desktop coordinates. What is never shared — codeg's own windows, the \
+             applications on the user's never-share list, the system's own views of other \
+             windows (an overview of every window, previews, notifications), and parts of the \
+             screen no application the user could share owns — is painted over, and a point on \
+             it is refused. Generation {}. {COMPUTER_DATA_NOT_INSTRUCTIONS}",
+            s("targetId"),
+            n("width"),
+            n("height"),
+            b("width"),
+            b("height"),
+            s("generation"),
+        )
+    } else {
+        format!(
+            "Screenshot of window {}{title} — a {}×{} px image of the window at ({:.0}, {:.0}), \
+             {:.0}×{:.0} in desktop coordinates. Generation {}. {COMPUTER_DATA_NOT_INSTRUCTIONS}",
+            s("targetId"),
+            n("width"),
+            n("height"),
+            b("x"),
+            b("y"),
+            b("width"),
+            b("height"),
+            s("generation"),
+        )
+    };
     let mut structured = outcome.clone();
     if let Some(c) = structured.get_mut("capture").and_then(Value::as_object_mut) {
         c.remove("data");

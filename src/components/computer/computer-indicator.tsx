@@ -66,7 +66,8 @@ const TRANSPARENT = "html,body{background:transparent!important}"
 export function ComputerIndicator() {
   const t = useTranslations("ComputerUse")
   const isMac = useIsMac()
-  const { shared, sharedApps, sharedKnown, activity } = useComputerStore()
+  const { shared, sharedApps, sharedScreen, sharedKnown, activity } =
+    useComputerStore()
   const stopKey = useComputerStopKey()
   const [stopping, setStopping] = useState(false)
   const [now, setNow] = useState(() => Date.now())
@@ -133,6 +134,7 @@ export function ComputerIndicator() {
 
   // What is shared, as the person shared it: each application shared as a
   // whole once — open windows or not — and each window shared on its own.
+  // The entire screen, when it is shared, is all of it.
   const units = [
     ...sharedApps.map((a) => ({
       name: a.appName,
@@ -140,17 +142,21 @@ export function ComputerIndicator() {
       windows: a.windows,
     })),
     ...shared
-      .filter((w) => !w.wholeApp)
+      .filter((w) => !w.wholeApp && !w.wholeScreen)
       .map((w) => ({ name: w.appName, level: w.level, windows: 1 })),
   ]
   const controlled = units.filter((u) => u.level === "control")
-  const acting = controlled.length > 0
+  const acting = sharedScreen
+    ? sharedScreen.level === "control"
+    : controlled.length > 0
   const subject = acting ? controlled : units
   const appOf = (targetId: string) =>
     shared.find((w) => w.targetId === targetId)?.appName
 
   let summary: string | null = null
-  if (subject.length === 1)
+  if (sharedScreen)
+    summary = t(acting ? "indicator.actScreen" : "indicator.readScreen")
+  else if (subject.length === 1)
     summary = t(acting ? "indicator.actOne" : "indicator.readOne", {
       app: subject[0].name,
     })
@@ -209,7 +215,7 @@ export function ComputerIndicator() {
         )}
         {/* Nothing left to stop once a Stop has ended every sharing: the
             strip is on its way down then, and says nothing more. */}
-        {(!sharedKnown || units.length > 0) && (
+        {(!sharedKnown || units.length > 0 || sharedScreen) && (
           <Button
             size="xs"
             variant="destructive"

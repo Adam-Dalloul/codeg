@@ -33,6 +33,11 @@
  * menus and its own shortcuts. While it is, its windows go with it — their
  * own choices are shown as the application's, and wait until it is no longer
  * shared.
+ *
+ * Where the person has switched it on (macOS and Windows), the entire screen
+ * heads the list: every window that may be shared, the ones that come up
+ * later too, and the desktop's own shortcuts. While it is shared, every
+ * window and application goes with it, and their own choices wait.
  */
 
 import { useCallback, useEffect, useRef, useState } from "react"
@@ -46,6 +51,7 @@ import {
   Loader2,
   MousePointerClick,
   RotateCw,
+  ScreenShare,
   ShieldOff,
   TriangleAlert,
 } from "lucide-react"
@@ -77,6 +83,7 @@ import {
   computerListShareableWindows,
   computerRevokeAll,
   computerShareApp,
+  computerShareScreen,
   computerShareWindow,
   computerShareWindows,
   computerWindowThumbnail,
@@ -157,6 +164,7 @@ function WindowTile({
   item: w,
   level,
   viaApp,
+  viaScreen,
   pending,
   disabled,
   pictures,
@@ -166,6 +174,8 @@ function WindowTile({
   level: GrantLevel
   /** Shared with its whole application: its level is the application's. */
   viaApp: boolean
+  /** Shared with the entire screen: its level is the screen's. */
+  viaScreen: boolean
   /** The level a change on its way for this window is going to. */
   pending: GrantLevel | null
   disabled: boolean
@@ -191,9 +201,9 @@ function WindowTile({
             {w.minimized ? t("minimized") : t("hidden")}
           </span>
         )}
-        {viaApp && (
+        {(viaApp || viaScreen) && (
           <span className="absolute end-2 top-2 rounded-full bg-background/85 px-2 py-0.5 text-2xs text-muted-foreground shadow-sm backdrop-blur-sm">
-            {t("viaApp")}
+            {t(viaScreen ? "viaScreen" : "viaApp")}
           </span>
         )}
       </div>
@@ -213,11 +223,54 @@ function WindowTile({
           label={t("levelLabel", { app: appName })}
           level={level}
           pending={pending}
-          disabled={disabled || viaApp}
+          disabled={disabled || viaApp || viaScreen}
           onLevel={onLevel}
         />
       </div>
     </div>
+  )
+}
+
+/** The entire screen, at the head of the list: what it is shared for, and
+ *  what sharing it takes in. Coloured by its level, as a window's tile. */
+function ScreenCard({
+  level,
+  pending,
+  disabled,
+  onLevel,
+}: {
+  level: GrantLevel
+  pending: GrantLevel | null
+  disabled: boolean
+  onLevel: (next: GrantLevel) => void
+}) {
+  const t = useTranslations("ComputerUse.picker")
+  return (
+    <section
+      aria-label={t("screenTitle")}
+      className={cn(
+        "flex flex-wrap items-center gap-x-3 gap-y-2 rounded-2xl border bg-card px-3 py-2.5 transition-[border-color,box-shadow]",
+        level === "read" && "border-violet-500/70 ring-2 ring-violet-500/15",
+        level === "control" && "border-red-500/70 ring-2 ring-red-500/15"
+      )}
+    >
+      <ScreenShare className="size-4 shrink-0 text-muted-foreground" />
+      <div className="min-w-0 flex-1">
+        <p className="text-xs font-medium">{t("screenTitle")}</p>
+        <p className="text-2xs leading-snug text-muted-foreground">
+          {t("screenHint")}
+        </p>
+      </div>
+      <div className="w-48">
+        <LevelControl
+          label={t("screenLevelLabel")}
+          level={level}
+          pending={pending}
+          disabled={disabled}
+          onLevel={onLevel}
+        />
+      </div>
+    </section>
   )
 }
 
@@ -305,19 +358,31 @@ export function ComputerWindowPicker({
   // as it was fetched: a grant can end (it lapses, another window stops it)
   // while the picker is open. Until the store has heard anything, the list's
   // own word is the only one there is.
-  const { shared, sharedKnown } = useComputerStore()
-  /** What a window is shared for, and whether with its whole application. */
+  const { shared, sharedScreen, sharedKnown } = useComputerStore()
+  /** What a window is shared for, and whether with its whole application or
+   *  the entire screen. */
   const stateOf = (
     w: PickerWindow
-  ): { level: GrantLevel; wholeApp: boolean; appId?: string } => {
+  ): {
+    level: GrantLevel
+    wholeApp: boolean
+    appId?: string
+    wholeScreen: boolean
+  } => {
     if (!sharedKnown) {
-      return { level: w.level, wholeApp: !!w.wholeApp, appId: w.appId }
+      return {
+        level: w.level,
+        wholeApp: !!w.wholeApp,
+        appId: w.appId,
+        wholeScreen: !!w.wholeScreen,
+      }
     }
     const s = shared.find((x) => x.targetId === w.targetId)
     return {
       level: s?.level ?? "none",
       wholeApp: !!s?.wholeApp,
       appId: s?.appId,
+      wholeScreen: !!s?.wholeScreen,
     }
   }
   const levelOf = (w: PickerWindow): GrantLevel => stateOf(w).level
@@ -334,11 +399,14 @@ export function ComputerWindowPicker({
     key: string
     level: GrantLevel
   } | null>(null)
+  /** The level a change to the entire screen is on its way to. */
+  const [busyScreen, setBusyScreen] = useState<GrantLevel | null>(null)
   /** A change to every window at once is on its way. */
   const [bulk, setBulk] = useState(false)
   /** One change at a time: a "stop sharing all" that lands before a share
    *  still on its way would be undone by it, and the other way round. */
-  const changing = bulk || busy !== null || busyApp !== null
+  const changing =
+    bulk || busy !== null || busyApp !== null || busyScreen !== null
   const [showUnshareable, setShowUnshareable] = useState(false)
   /** Bumped to fetch every picture again: each is fetched once per value. */
   const [pictures, setPictures] = useState(0)
@@ -354,6 +422,11 @@ export function ComputerWindowPicker({
   const screenRecording = permissions?.required
     ? permissions.screenRecording
     : undefined
+  /** What the entire screen is shared for. While it is, every window and
+   *  application goes with it. */
+  const screenLevel: GrantLevel = sharedScreen?.level ?? "none"
+  const screenShared = screenLevel !== "none"
+  const screenOffered = !!status?.screenOffered || screenShared
 
   const load = useCallback(async () => {
     const seq = ++loadSeqRef.current
@@ -491,6 +564,19 @@ export function ComputerWindowPicker({
     }
   }
 
+  const setScreenLevel = async (next: GrantLevel) => {
+    const mark = computerStoreMark()
+    setBusyScreen(next)
+    setError(null)
+    try {
+      setComputerStateSince(await computerShareScreen(next), mark)
+    } catch (e) {
+      setError(toErrorMessage(e))
+    } finally {
+      setBusyScreen(null)
+    }
+  }
+
   const setLevel = async (item: PickerWindow, next: GrantLevel) => {
     const mark = computerStoreMark()
     setBusy({ targetId: item.targetId, level: next })
@@ -547,7 +633,7 @@ export function ComputerWindowPicker({
                 <Button
                   size="sm"
                   variant="outline"
-                  disabled={changing || shareable.length === 0}
+                  disabled={changing || screenShared || shareable.length === 0}
                 >
                   {bulk ? (
                     <Loader2 className="size-3.5 animate-spin" />
@@ -625,6 +711,14 @@ export function ComputerWindowPicker({
 
         <ScrollArea className="min-h-0 flex-1 border-t">
           <div className="space-y-4 px-6 pt-4 pb-6">
+            {screenOffered && (
+              <ScreenCard
+                level={screenLevel}
+                pending={busyScreen}
+                disabled={changing}
+                onLevel={(next) => void setScreenLevel(next)}
+              />
+            )}
             {windows === null ? (
               <div className={GRID} aria-hidden="true">
                 {Array.from({ length: 4 }, (_, i) => (
@@ -678,7 +772,7 @@ export function ComputerWindowPicker({
                                   ? busyApp.level
                                   : null
                               }
-                              disabled={changing}
+                              disabled={changing || screenShared}
                               onLevel={(next) =>
                                 void setAppLevel(group, app.appId, next)
                               }
@@ -693,10 +787,11 @@ export function ComputerWindowPicker({
                             item={w}
                             level={levelOf(w)}
                             viaApp={stateOf(w).wholeApp}
+                            viaScreen={stateOf(w).wholeScreen}
                             pending={
                               busy?.targetId === w.targetId ? busy.level : null
                             }
-                            disabled={changing}
+                            disabled={changing || screenShared}
                             pictures={pictures}
                             onLevel={(next) => void setLevel(w, next)}
                           />

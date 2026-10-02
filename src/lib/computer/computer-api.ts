@@ -51,6 +51,7 @@ export async function setComputerToolsPreferences(preferences: {
   defaultDelivery?: ComputerDelivery
   launchEnabled?: boolean
   clipboardEnabled?: boolean
+  screenEnabled?: boolean
 }): Promise<ComputerToolsSettings> {
   return getTransport().call("set_computer_tools_preferences", preferences)
 }
@@ -131,6 +132,13 @@ export async function computerShareApp(
     appId: "appId" in app ? app.appId : null,
     level,
   })
+}
+
+/** Share the entire screen at `level`, or end its share at `none`. */
+export async function computerShareScreen(
+  level: GrantLevel
+): Promise<ComputerStatePayload> {
+  return getTransport().call("computer_share_screen", { level })
 }
 
 export async function computerRevokeAll(): Promise<void> {

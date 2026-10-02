@@ -35,6 +35,7 @@ pub mod hwnd;
 pub mod keystate;
 pub mod mcp;
 pub mod ops;
+pub mod screen;
 pub mod session;
 pub mod tree;
 #[cfg(all(target_os = "linux", feature = "computer-helper"))]
@@ -400,6 +401,26 @@ impl HelperState {
         }
     }
 
+    /// The driver running now, for a request codeg let through at Stop count
+    /// `stop` — never one started for it: none running, or one a Stop since
+    /// has ended, refuses the request, which codeg asks again about after
+    /// [`HelperOp::DriverReady`].
+    async fn running_driver(&self, stop: u64) -> Result<Arc<DriverProc>, HelperError> {
+        self.check_not_stopped(stop)?;
+        let slot = self.driver.lock().await;
+        self.check_not_stopped(stop)?;
+        let stopped = self.stopped.load(Ordering::Acquire);
+        slot.as_ref()
+            .filter(|d| d.stop >= stopped && d.proc.alive())
+            .map(|d| d.proc.clone())
+            .ok_or_else(|| {
+                HelperError::new(
+                    HelperErrorCode::ActionFailed,
+                    "The driver restarted just before the action, so nothing was sent; try again.",
+                )
+            })
+    }
+
     /// The running driver, for a request codeg let through at Stop count
     /// `stop` — starting one if there is none, if the one running started
     /// before a permission it now has (`driver_stale`), or if it started for
@@ -729,6 +750,19 @@ impl Delivery {
     }
 }
 
+/// The entire screen is offered on macOS and Windows; Linux has no one list
+/// of every window on it to judge them by (and Wayland no picture of it).
+fn screen_offered() -> Result<(), HelperError> {
+    if cfg!(any(target_os = "macos", windows)) {
+        Ok(())
+    } else {
+        Err(HelperError::new(
+            HelperErrorCode::ActionFailed,
+            "The entire screen is not offered on Linux: share windows or applications instead.",
+        ))
+    }
+}
+
 /// What a request cut off by the person's Stop is answered.
 fn stopped() -> HelperError {
     HelperError::new(
@@ -935,6 +969,52 @@ async fn handle_op(
                 clipboard: copied,
                 ..done
             })
+        }
+        HelperOp::CaptureScreen {
+            rules,
+            max_dimension,
+        } => {
+            state.require(OsPermission::ScreenRecording).await?;
+            screen_offered()?;
+            let driver = state.driver(stop).await?;
+            value(screen::capture(&driver, &rules, max_dimension).await?)
+        }
+        HelperOp::DriverReady => {
+            state.driver(stop).await?;
+            value(())
+        }
+        HelperOp::ActScreen {
+            rules,
+            action,
+            geometry,
+        } => {
+            for permission in act::permissions_for(&action) {
+                state.require(*permission).await?;
+            }
+            screen_offered()?;
+            let driver = state.running_driver(stop).await?;
+            // As for a window, minus the window: no Stop since, and a
+            // session that is unlocked — asked again just before it goes.
+            let stopped_now = state.stopped.clone();
+            let ready = move || {
+                if stopped_now.load(Ordering::Acquire) > stop {
+                    return Err(stopped());
+                }
+                match session::state() {
+                    session::SessionState::Unlocked => Ok(()),
+                    session::SessionState::Locked => Err(HelperError::new(
+                        HelperErrorCode::Paused,
+                        "The screen is locked, or another user's session is active.",
+                    )),
+                    session::SessionState::Unknown => Err(HelperError::new(
+                        HelperErrorCode::ActionFailed,
+                        "codeg cannot tell whether this desktop's session is locked, so it does \
+                         not act on the screen here.",
+                    )),
+                }
+            };
+            ready()?;
+            value(screen::act(&driver, &rules, &action, geometry, ready).await?)
         }
         HelperOp::ClipboardRead { expect } => {
             let driver = state.driver(stop).await?;

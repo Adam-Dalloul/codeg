@@ -107,12 +107,25 @@ pub struct AgentWindowSummary {
     /// are in reach too.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub whole_app: bool,
+    /// Shared with the entire screen: its application's menus, and the
+    /// desktop's own shortcuts but locking and logging out, are in reach too.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub whole_screen: bool,
     /// Present only from [`GrantLevel::Read`] upwards.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
     /// Why this window cannot be shared, when that is so.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
+}
+
+/// The entire screen in a listing, while the user shares it as a whole: a
+/// target of its own (`targets::SCREEN_TARGET_ID`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentScreen {
+    pub target_id: String,
+    pub level: GrantLevel,
 }
 
 /// A screenshot of one shared window.

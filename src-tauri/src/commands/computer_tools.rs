@@ -76,6 +76,11 @@ pub const KEY_COMPUTER_TOOLS_LAUNCH_ENABLED: &str = "computer_tools.launch_enabl
 /// there, `true` or `false`. Absent is `false`.
 pub const KEY_COMPUTER_TOOLS_CLIPBOARD_ENABLED: &str = "computer_tools.clipboard_enabled";
 
+/// Whether the entire screen is offered in the share picker, `true` or
+/// `false`. Absent is `false`: sharing the screen shares every window there
+/// is, the ones that come up later included.
+pub const KEY_COMPUTER_TOOLS_SCREEN_ENABLED: &str = "computer_tools.screen_enabled";
+
 /// The grant timeout when the user has chosen none.
 pub const DEFAULT_GRANT_TTL_MINUTES: u32 = 30;
 
@@ -116,6 +121,9 @@ pub struct ComputerToolsSettings {
     /// text there.
     #[serde(default)]
     pub clipboard_enabled: bool,
+    /// Whether the entire screen is offered in the share picker.
+    #[serde(default)]
+    pub screen_enabled: bool,
 }
 
 fn default_ttl() -> u32 {
@@ -148,6 +156,7 @@ impl Default for ComputerToolsSettings {
             default_delivery: ActDelivery::Background,
             launch_enabled: false,
             clipboard_enabled: false,
+            screen_enabled: false,
         }
     }
 }
@@ -166,6 +175,7 @@ impl ComputerToolsSettings {
             default_delivery: self.default_delivery,
             launch_enabled: self.launch_enabled,
             clipboard_enabled: self.clipboard_enabled,
+            screen_enabled: self.screen_enabled,
             // Kept by the runtime handle, not by the record.
             switched_off: 0,
         }
@@ -293,6 +303,12 @@ pub async fn load_computer_tools_settings(conn: &DatabaseConnection) -> Computer
     {
         settings.clipboard_enabled = v;
     }
+    if let Some(v) = get(KEY_COMPUTER_TOOLS_SCREEN_ENABLED)
+        .await
+        .and_then(|r| r.parse().ok())
+    {
+        settings.screen_enabled = v;
+    }
     settings
 }
 
@@ -356,6 +372,8 @@ pub struct ComputerToolsPreferences {
     pub launch_enabled: Option<bool>,
     #[serde(default)]
     pub clipboard_enabled: Option<bool>,
+    #[serde(default)]
+    pub screen_enabled: Option<bool>,
 }
 
 /// Move the grant timeout, the user's blocklist (their additions and the
@@ -383,6 +401,7 @@ pub async fn set_computer_tools_preferences_core(
         default_delivery,
         launch_enabled,
         clipboard_enabled,
+        screen_enabled,
     } = preferences;
     let blocklist = blocklist
         .map(|list| serde_json::to_string(&normalize_blocklist(list)))
@@ -406,6 +425,7 @@ pub async fn set_computer_tools_preferences_core(
         default_delivery.map(|d| (KEY_COMPUTER_TOOLS_DEFAULT_DELIVERY, d.as_str().to_string())),
         launch_enabled.map(|on| (KEY_COMPUTER_TOOLS_LAUNCH_ENABLED, on.to_string())),
         clipboard_enabled.map(|on| (KEY_COMPUTER_TOOLS_CLIPBOARD_ENABLED, on.to_string())),
+        screen_enabled.map(|on| (KEY_COMPUTER_TOOLS_SCREEN_ENABLED, on.to_string())),
     ]
     .into_iter()
     .flatten()
@@ -476,6 +496,10 @@ pub async fn set_computer_tools_settings_core(
         (
             KEY_COMPUTER_TOOLS_CLIPBOARD_ENABLED,
             desired.clipboard_enabled.to_string(),
+        ),
+        (
+            KEY_COMPUTER_TOOLS_SCREEN_ENABLED,
+            desired.screen_enabled.to_string(),
         ),
     ] {
         app_metadata_service::upsert_value(conn, key, &value)
@@ -558,6 +582,7 @@ pub async fn set_computer_tools_preferences(
     default_delivery: Option<ActDelivery>,
     launch_enabled: Option<bool>,
     clipboard_enabled: Option<bool>,
+    screen_enabled: Option<bool>,
 ) -> Result<ComputerToolsSettings, AppCommandError> {
     let preferences = ComputerToolsPreferences {
         grant_ttl_minutes,
@@ -569,6 +594,7 @@ pub async fn set_computer_tools_preferences(
         default_delivery,
         launch_enabled,
         clipboard_enabled,
+        screen_enabled,
     };
     #[cfg(feature = "tauri-runtime")]
     {
@@ -630,10 +656,12 @@ mod tests {
             default_delivery: ActDelivery::Foreground,
             launch_enabled: true,
             clipboard_enabled: true,
+            screen_enabled: true,
         }
         .into_runtime_config();
         assert!(cfg.launch_enabled);
         assert!(cfg.clipboard_enabled);
+        assert!(cfg.screen_enabled);
         assert_eq!(cfg.grant_ttl, None);
         assert_eq!(cfg.blocklist, vec!["com.example.Vault", "keepass.exe"]);
         // Only a default is taken off, and once.

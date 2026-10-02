@@ -27,8 +27,8 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 
 use crate::computer::types::{
-    ActDelivery, ActReport, AgentAppSummary, AgentWindowSummary, ComputerActRequest, VerifyOutcome,
-    VerifyRequest, WindowCapture, WindowSnapshot,
+    ActDelivery, ActReport, AgentAppSummary, AgentScreen, AgentWindowSummary, ComputerActRequest,
+    VerifyOutcome, VerifyRequest, WindowCapture, WindowSnapshot,
 };
 
 /// This build has no desktop to show (server mode), the user has switched
@@ -202,6 +202,9 @@ impl ComputerClipboardOutcome {
 #[serde(rename_all = "camelCase")]
 pub struct ComputerWindowsOutcome {
     pub windows: Vec<AgentWindowSummary>,
+    /// The entire screen, while the user shares it as a whole.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub screen: Option<AgentScreen>,
     /// How actions reach the windows, as the person has it set now.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub input: Option<InputPolicy>,
@@ -215,6 +218,7 @@ impl ComputerWindowsOutcome {
     pub fn refused(error: &str, note: impl Into<String>) -> Self {
         Self {
             windows: Vec::new(),
+            screen: None,
             input: None,
             error: Some(error.to_string()),
             note: Some(note.into()),
@@ -317,6 +321,59 @@ pub fn reshared_note(target_id: &str) -> String {
 pub const DESKTOP_CHORD_NOTE: &str = "That key is the desktop's own — it switches applications, \
      opens the launcher, takes a screenshot, locks the screen or the like — which not even an \
      application shared as a whole reaches, so it was not pressed; retrying will not change it.";
+
+/// Said when a key locks the screen, logs out, or shows every window at
+/// once.
+pub const SESSION_CHORD_NOTE: &str = "That key locks the screen, logs out, or shows every window \
+     at once (Mission Control, Task View) — which no sharing reaches, not even the entire \
+     screen's — so it was not pressed; retrying will not change it.";
+
+/// Said when the entire screen is asked for and it is not shared, or no
+/// longer is.
+pub const SCREEN_GRANT_REQUIRED_NOTE: &str =
+    "The entire screen (d1) is not shared with agents, or \
+     no longer is (that sharing ends after a while unused, or when the user takes it back or \
+     switches it off). Ask the user to share it: in codeg's status bar they open Computer use, \
+     press \"Share a window…\" and choose the entire screen — only they can, and it is offered \
+     only where they have switched it on in codeg's Computer use settings. Meanwhile, read the \
+     windows shared with you one by one.";
+
+/// Said when the entire screen is shared for reading and an action is asked.
+pub const SCREEN_CONTROL_REQUIRED_NOTE: &str = "The entire screen (d1) is shared with you for \
+     reading only. Ask the user to let you act on it: in codeg's Computer use panel they set the \
+     entire screen to \"Read and act\". Only they can; retrying will not change it.";
+
+/// Said when a point on the entire screen is not from its latest picture.
+pub const SCREEN_STALE_CAPTURE_NOTE: &str = "Those coordinates are not from the latest \
+     computer_screenshot of the entire screen (d1): a point means something only in the picture \
+     it was read off. Take a new computer_screenshot of d1 and use a point from it.";
+
+/// Said when the entire screen is asked for something other than its
+/// picture and points on it.
+pub const SCREEN_POINTER_ONLY_NOTE: &str = "The entire screen (d1) takes computer_screenshot, and \
+     computer_click, computer_drag and computer_scroll at points of its picture. For anything \
+     else — keys, typing, a value, a menu, the controls' tree — act on a window: every window the \
+     user can share is shared with you along with the screen (see computer_list_windows).";
+
+/// Said when an action on the entire screen is asked for and the person
+/// does not allow the front.
+pub const SCREEN_NEEDS_FRONT_NOTE: &str = "An action on the entire screen moves the user's own \
+     pointer and goes to whatever is in front at that point, and the user has switched off \
+     bringing windows to the front in codeg's Computer use settings (\"Let agents bring windows \
+     to the front\"), so nothing was sent. Act on a window in the background instead, or ask the \
+     user whether to switch it back on — only they can.";
+
+/// Said when an action on the entire screen is asked to go in the
+/// background.
+pub const SCREEN_NOT_BACKGROUND_NOTE: &str = "An action on the entire screen goes to the front, \
+     as the user's own pointer would — never in the background — so nothing was sent. Leave \
+     `delivery` out, or act on a window in the background instead.";
+
+/// Said when the never-share list grew while the entire screen was being
+/// captured.
+pub const SCREEN_RULES_CHANGED_NOTE: &str = "The user's never-share list changed while the entire \
+     screen was being captured, so the picture was not handed over. Take a new computer_screenshot \
+     of d1.";
 
 /// Said when something only an application shared as a whole allows is
 /// asked of a window shared on its own.
@@ -738,6 +795,9 @@ pub struct ComputerToolsConfig {
     /// text there. Off unless the person turned it on. (Pasting what it
     /// copied needs no switch: see `commands::computer`.)
     pub clipboard_enabled: bool,
+    /// Whether the person may share the entire screen at once. Off unless
+    /// they turned it on; turning it off ends the screen's share.
+    pub screen_enabled: bool,
     /// How many times the group has been switched off since codeg started.
     /// Kept by [`ComputerToolsRuntimeConfig::set`], never persisted: it is
     /// what lets a watcher that only sees the latest value — a quick off and
@@ -759,6 +819,7 @@ impl Default for ComputerToolsConfig {
             default_delivery: ActDelivery::Background,
             launch_enabled: false,
             clipboard_enabled: false,
+            screen_enabled: false,
             switched_off: 0,
         }
     }
@@ -925,10 +986,12 @@ mod tests {
                 minimized: None,
                 hidden: None,
                 whole_app: false,
+                whole_screen: false,
                 level: GrantLevel::None,
                 title: None,
                 note: None,
             }],
+            screen: None,
             input: Some(InputPolicy::of(&ComputerToolsConfig::default())),
             error: None,
             note: None,
@@ -1021,6 +1084,7 @@ mod tests {
             default_delivery: ActDelivery::Foreground,
             launch_enabled: true,
             clipboard_enabled: true,
+            screen_enabled: true,
             switched_off: 0,
         };
         cfg.set(on.clone()).await;

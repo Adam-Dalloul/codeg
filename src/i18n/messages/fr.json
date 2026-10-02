@@ -5190,6 +5190,8 @@
       "actMany": "Les agents peuvent agir sur {count, plural, one {# fenêtre} other {# fenêtres}}",
       "readOne": "Les agents peuvent voir {app}",
       "readMany": "Les agents peuvent voir {count, plural, one {# fenêtre} other {# fenêtres}}",
+      "readScreen": "Les agents peuvent voir l'écran entier",
+      "actScreen": "Les agents peuvent agir sur l'écran entier",
       "recent": "{action} dans {app}",
       "stop": "Arrêter le partage",
       "stopWithKey": "Arrêter le partage de toutes les fenêtres ({key})"
@@ -5219,7 +5221,9 @@
       "title": "{count, plural, =0 {Aucune fenêtre partagée} one {# fenêtre partagée} other {# fenêtres partagées}}",
       "empty": "Les agents peuvent lister vos fenêtres, mais n'en lire aucune tant que vous n'en partagez pas une.",
       "stop": "Arrêter",
-      "wholeApp": "Toute l'app · {count, plural, =0 {aucune fenêtre ouverte} one {# fenêtre} other {# fenêtres}}"
+      "wholeApp": "Toute l'app · {count, plural, =0 {aucune fenêtre ouverte} one {# fenêtre} other {# fenêtres}}",
+      "screen": "Écran entier",
+      "screenWindows": "{count, plural, =0 {aucune fenêtre pour l'instant} one {# fenêtre} other {# fenêtres}}"
     },
     "level": {
       "read": "Peut lire",
@@ -5284,6 +5288,10 @@
       "wholeAppHint": "Toutes les fenêtres de {app}, y compris celles ouvertes plus tard, ainsi que ses menus et raccourcis",
       "appLevelLabel": "Ce que les agents peuvent faire avec tout {app}",
       "viaApp": "Avec l'app",
+      "screenTitle": "Écran entier",
+      "screenHint": "Toutes les fenêtres que vous pouvez partager, y compris celles ouvertes plus tard, et les raccourcis propres au bureau. Les fenêtres de codeg et la liste des exclusions restent masquées.",
+      "screenLevelLabel": "Ce que les agents peuvent faire avec l'écran entier",
+      "viaScreen": "Avec l'écran",
       "shareAll": "Tout partager",
       "shareAllRead": "Laisser les agents toutes les lire",
       "shareAllControl": "Laisser les agents toutes les lire et agir dessus",
@@ -5400,6 +5408,10 @@
       "clipboard": {
         "label": "Autoriser les agents à utiliser le presse-papiers",
         "hint": "Avec cette option, un agent peut placer du texte dans le presse-papiers pour le coller, et relire ce qu'il a copié depuis une fenêtre que vous lui avez partagée. Ce que vous copiez vous-même n'est jamais lu pour un agent, et un agent ne peut coller que ce qu'il y a placé lui-même."
+      },
+      "screen": {
+        "label": "Proposer l'écran entier",
+        "hint": "Avec cette option, le sélecteur de partage propose l'écran entier : les agents en voient une seule image et peuvent cliquer n'importe où, et toutes les fenêtres que vous pouvez partager l'accompagnent, ainsi que les raccourcis propres au bureau. Les fenêtres de codeg et la liste des exclusions restent masquées. La désactiver met fin au partage de l'écran."
       },
       "boundary": "Sous macOS, les autorisations vont à codeg-computer-helper, que seul codeg peut utiliser : le shell des agents ne le peut pas. Windows et Linux n'ont pas cette séparation : là, ces réglages décident de ce que les agents obtiennent via codeg, pas de ce que les programmes de votre ordinateur peuvent faire.",
       "save": "Enregistrer",

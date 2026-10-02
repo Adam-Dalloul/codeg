@@ -37,6 +37,7 @@ import {
   CircleCheck,
   Monitor,
   RotateCw,
+  ScreenShare,
   Settings2,
   ShieldAlert,
   Square,
@@ -60,6 +61,7 @@ import { openSettingsWindow } from "@/lib/api"
 import { toErrorMessage } from "@/lib/app-error"
 import {
   computerShareApp,
+  computerShareScreen,
   computerShareWindow,
   computerSharedState,
   computerStop,
@@ -84,6 +86,10 @@ import { cn } from "@/lib/utils"
 
 const AGENT_MARK = "text-violet-600 dark:text-violet-400"
 
+/** What the entire screen goes by among targets (Rust
+ *  `targets::SCREEN_TARGET_ID`). */
+const SCREEN_TARGET_ID = "d1"
+
 /** How many activity lines the popover shows; the store keeps more. */
 const ACTIVITY_SHOWN = 8
 
@@ -94,23 +100,26 @@ function formatTime(at: number): string {
   })
 }
 
-/** One shared thing in the popover — a window, or an application shared as
- *  a whole — with what it is shared for, and a way to stop. */
+/** One shared thing in the popover — a window, an application shared as a
+ *  whole, or the entire screen — with what it is shared for, and a way to
+ *  stop. */
 function SharedRow({
   whole = false,
+  screen = false,
   name,
   detail,
   level,
   onLevel,
 }: {
   whole?: boolean
+  screen?: boolean
   name: string
   detail?: string
   level: GrantLevel
   onLevel: (level: GrantLevel) => void
 }) {
   const t = useTranslations("ComputerUse")
-  const Icon = whole ? AppWindow : Monitor
+  const Icon = screen ? ScreenShare : whole ? AppWindow : Monitor
   return (
     <div className="flex items-center gap-2 px-2 py-1.5">
       <Icon className={cn("size-3.5 shrink-0", AGENT_MARK)} />
@@ -163,11 +172,12 @@ export function StatusBarComputer() {
 
 function ComputerPopover() {
   const t = useTranslations("ComputerUse")
-  const { shared, sharedApps, backend, activity } = useComputerStore()
+  const { shared, sharedApps, sharedScreen, backend, activity } =
+    useComputerStore()
   // A window shared with its whole application is listed as the
-  // application, once.
-  const ownWindows = shared.filter((w) => !w.wholeApp)
-  const rows = sharedApps.length + ownWindows.length
+  // application, once; one shared with the entire screen, as the screen.
+  const ownWindows = shared.filter((w) => !w.wholeApp && !w.wholeScreen)
+  const rows = (sharedScreen ? 1 : 0) + sharedApps.length + ownWindows.length
   const anyShared = rows > 0
   const isMac = useIsMac()
   const stopKey = useComputerStopKey()
@@ -225,6 +235,15 @@ function ComputerPopover() {
     }
   }
 
+  const setScreenLevel = async (level: GrantLevel) => {
+    const mark = computerStoreMark()
+    try {
+      setComputerStateSince(await computerShareScreen(level), mark)
+    } catch (e) {
+      setError(toErrorMessage(e))
+    }
+  }
+
   // Stop answers once the backend has done it; the store follows from the
   // state event it sends, which is the one source of truth.
   const stopSharing = async () => {
@@ -254,8 +273,10 @@ function ComputerPopover() {
     : null
   const appNameOf = (line: ComputerActivityLine) =>
     line.app ??
-    shared.find((w) => w.targetId === line.targetId)?.appName ??
-    line.targetId
+    (line.targetId === SCREEN_TARGET_ID
+      ? t("shared.screen")
+      : (shared.find((w) => w.targetId === line.targetId)?.appName ??
+        line.targetId))
 
   return (
     <>
@@ -410,6 +431,17 @@ function ComputerPopover() {
               </p>
             ) : (
               <div className="divide-y border-t">
+                {sharedScreen && (
+                  <SharedRow
+                    screen
+                    name={t("shared.screen")}
+                    detail={t("shared.screenWindows", {
+                      count: sharedScreen.windows,
+                    })}
+                    level={sharedScreen.level}
+                    onLevel={(level) => void setScreenLevel(level)}
+                  />
+                )}
                 {sharedApps.map((a) => (
                   <SharedRow
                     key={a.appId}

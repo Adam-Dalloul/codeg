@@ -1886,6 +1886,7 @@ mod tauri_app {
                 crate::commands::computer::computer_share_window,
                 crate::commands::computer::computer_share_windows,
                 crate::commands::computer::computer_share_app,
+                crate::commands::computer::computer_share_screen,
                 crate::commands::computer::computer_revoke_all,
                 crate::commands::computer::computer_stop,
                 crate::commands::computer::computer_shared_state,

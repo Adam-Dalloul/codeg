@@ -50,11 +50,13 @@ import {
   Plus,
   RotateCcw,
   RotateCw,
+  ScreenShare,
   X,
 } from "lucide-react"
 import { toast } from "sonner"
 
 import { useIsMac } from "@/hooks/use-is-mac"
+import { usePlatform } from "@/hooks/use-platform"
 
 import {
   AlertDialog,
@@ -128,6 +130,7 @@ interface Values {
   defaultDelivery: ComputerDelivery
   launchEnabled: boolean
   clipboardEnabled: boolean
+  screenEnabled: boolean
 }
 
 const EMPTY: Values = {
@@ -140,6 +143,7 @@ const EMPTY: Values = {
   defaultDelivery: "background",
   launchEnabled: false,
   clipboardEnabled: false,
+  screenEnabled: false,
 }
 
 function fromSettings(settings: ComputerToolsSettings): Values {
@@ -153,6 +157,7 @@ function fromSettings(settings: ComputerToolsSettings): Values {
     defaultDelivery: settings.defaultDelivery,
     launchEnabled: settings.launchEnabled ?? false,
     clipboardEnabled: settings.clipboardEnabled ?? false,
+    screenEnabled: settings.screenEnabled ?? false,
   }
 }
 
@@ -189,6 +194,10 @@ function launchEnabledDirty(values: Values, baseline: Values): boolean {
 
 function clipboardEnabledDirty(values: Values, baseline: Values): boolean {
   return values.clipboardEnabled !== baseline.clipboardEnabled
+}
+
+function screenEnabledDirty(values: Values, baseline: Values): boolean {
+  return values.screenEnabled !== baseline.screenEnabled
 }
 
 function defaultDeliveryDirty(values: Values, baseline: Values): boolean {
@@ -306,6 +315,9 @@ export function ComputerSettingsSection() {
           clipboardEnabled: clipboardEnabledDirty(current, base)
             ? prev.clipboardEnabled
             : next.clipboardEnabled,
+          screenEnabled: screenEnabledDirty(current, base)
+            ? prev.screenEnabled
+            : next.screenEnabled,
         }))
         setBaseline(next)
         setEnabled(remote.enabled)
@@ -334,6 +346,7 @@ export function ComputerSettingsSection() {
   const dirtyDefaultDelivery = defaultDeliveryDirty(values, baseline)
   const dirtyLaunchEnabled = launchEnabledDirty(values, baseline)
   const dirtyClipboardEnabled = clipboardEnabledDirty(values, baseline)
+  const dirtyScreenEnabled = screenEnabledDirty(values, baseline)
   const dirty =
     dirtyTtl ||
     dirtyBlocklist ||
@@ -343,8 +356,12 @@ export function ComputerSettingsSection() {
     dirtyAllowForeground ||
     dirtyDefaultDelivery ||
     dirtyLaunchEnabled ||
-    dirtyClipboardEnabled
+    dirtyClipboardEnabled ||
+    dirtyScreenEnabled
   const editable = loaded && !saving
+  // The entire screen is offered on macOS and Windows: Linux has no one list
+  // of every window on it to judge them by.
+  const { isLinux } = usePlatform()
 
   const save = useCallback(async () => {
     setSaving(true)
@@ -366,6 +383,7 @@ export function ComputerSettingsSection() {
         clipboardEnabled: dirtyClipboardEnabled
           ? values.clipboardEnabled
           : undefined,
+        screenEnabled: dirtyScreenEnabled ? values.screenEnabled : undefined,
       })
       // The save's own broadcast, or another window's after it, may have
       // landed first; the last broadcast is then the newest record there is.
@@ -392,6 +410,7 @@ export function ComputerSettingsSection() {
     dirtyDefaultDelivery,
     dirtyLaunchEnabled,
     dirtyClipboardEnabled,
+    dirtyScreenEnabled,
     t,
   ])
 
@@ -586,6 +605,24 @@ export function ComputerSettingsSection() {
               />
             }
           />
+          {!isLinux && (
+            <SettingRow
+              icon={ScreenShare}
+              title={t("screen.label")}
+              description={t("screen.hint")}
+              htmlFor="computer-screen-enabled"
+              control={
+                <Switch
+                  id="computer-screen-enabled"
+                  checked={values.screenEnabled}
+                  onCheckedChange={(screenEnabled) =>
+                    setValues((prev) => ({ ...prev, screenEnabled }))
+                  }
+                  disabled={!editable}
+                />
+              }
+            />
+          )}
         </SettingCard>
       )}
 

@@ -5190,6 +5190,8 @@
       "actMany": "Los agentes pueden actuar en {count, plural, one {# ventana} other {# ventanas}}",
       "readOne": "Los agentes pueden ver {app}",
       "readMany": "Los agentes pueden ver {count, plural, one {# ventana} other {# ventanas}}",
+      "readScreen": "Los agentes pueden ver toda la pantalla",
+      "actScreen": "Los agentes pueden actuar en toda la pantalla",
       "recent": "{action} en {app}",
       "stop": "Dejar de compartir",
       "stopWithKey": "Dejar de compartir todas las ventanas ({key})"
@@ -5219,7 +5221,9 @@
       "title": "{count, plural, =0 {Ninguna ventana compartida} one {# ventana compartida} other {# ventanas compartidas}}",
       "empty": "Los agentes pueden listar tus ventanas, pero no leer ninguna hasta que compartas una.",
       "stop": "Detener",
-      "wholeApp": "Toda la app · {count, plural, =0 {ninguna ventana abierta} one {# ventana} other {# ventanas}}"
+      "wholeApp": "Toda la app · {count, plural, =0 {ninguna ventana abierta} one {# ventana} other {# ventanas}}",
+      "screen": "Toda la pantalla",
+      "screenWindows": "{count, plural, =0 {aún ninguna ventana} one {# ventana} other {# ventanas}}"
     },
     "level": {
       "read": "Puede leer",
@@ -5284,6 +5288,10 @@
       "wholeAppHint": "Todas las ventanas de {app}, también las que abra después, además de sus menús y atajos",
       "appLevelLabel": "Lo que los agentes pueden hacer con todo {app}",
       "viaApp": "Con la app",
+      "screenTitle": "Toda la pantalla",
+      "screenHint": "Todas las ventanas que puedes compartir, también las que se abran después, y los atajos propios del escritorio. Las ventanas de codeg y la lista de no compartir siguen tapadas.",
+      "screenLevelLabel": "Lo que los agentes pueden hacer con toda la pantalla",
+      "viaScreen": "Con la pantalla",
       "shareAll": "Compartir todas",
       "shareAllRead": "Permitir que los agentes las lean todas",
       "shareAllControl": "Permitir que los agentes las lean y actúen en todas",
@@ -5400,6 +5408,10 @@
       "clipboard": {
         "label": "Permitir que los agentes usen el portapapeles",
         "hint": "Con esto activado, un agente puede poner texto en el portapapeles para pegarlo y volver a leer lo que copió de una ventana que compartiste con él. Lo que copias tú nunca se lee para un agente, y un agente solo puede pegar lo que puso él mismo."
+      },
+      "screen": {
+        "label": "Ofrecer toda la pantalla",
+        "hint": "Con esto activado, el selector para compartir ofrece toda la pantalla: los agentes ven una sola imagen de toda ella y pueden hacer clic en cualquier parte, y con ella van todas las ventanas que puedes compartir y los atajos propios del escritorio. Las ventanas de codeg y la lista de no compartir siguen tapadas. Desactivarlo termina el uso compartido de la pantalla."
       },
       "boundary": "En macOS los permisos se conceden a codeg-computer-helper, que solo puede usar codeg, así que la shell de los agentes no puede. Windows y Linux no tienen esa separación: allí estos ajustes deciden lo que los agentes obtienen a través de codeg, no lo que pueden hacer los programas de tu equipo.",
       "save": "Guardar",

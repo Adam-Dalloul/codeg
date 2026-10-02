@@ -526,7 +526,7 @@ fn join_identified(windows: Vec<RawWindow>, stamps: Vec<Option<u64>>) -> Vec<Raw
 /// Unidentified (no bundle, no path, the window list's name) when it is no
 /// application, or when that cannot be told.
 #[cfg(target_os = "macos")]
-fn identified(pid: u32, started_at: Option<u64>, owner: &str) -> RawApp {
+pub(super) fn identified(pid: u32, started_at: Option<u64>, owner: &str) -> RawApp {
     let identity = started_at
         .and_then(|_| crate::computer::appident::identify(pid))
         .filter(|_| process_start(pid) == started_at);
@@ -567,7 +567,7 @@ fn identified(pid: u32, started_at: Option<u64>, owner: &str) -> RawApp {
 /// or when the process runs no application: a host other than the frame
 /// host, or one of the system's own agents.
 #[cfg(windows)]
-fn join_identified(windows: Vec<RawWindow>, stamps: Vec<Option<u64>>) -> Vec<RawWindow> {
+pub(super) fn join_identified(windows: Vec<RawWindow>, stamps: Vec<Option<u64>>) -> Vec<RawWindow> {
     use crate::computer::appident::{windows_application, windows_owner, WindowsApp, WindowsOwner};
     use crate::computer::protocol::ProcessRun;
 
@@ -882,18 +882,18 @@ pub async fn capture(
 
 /// A capture, shrunk to the size asked for.
 #[derive(Debug)]
-struct Shrunk {
-    png_base64: String,
-    width: u32,
-    height: u32,
-    native_width: u32,
-    native_height: u32,
+pub(super) struct Shrunk {
+    pub png_base64: String,
+    pub width: u32,
+    pub height: u32,
+    pub native_width: u32,
+    pub native_height: u32,
 }
 
 /// Decode `png_base64`, and if its long edge is over `max_dimension`, scale it
 /// down to that (aspect kept, never up) and encode it again. An image already
 /// within bounds goes back byte for byte.
-fn shrink_png(png_base64: &str, max_dimension: Option<u32>) -> Result<Shrunk, String> {
+pub(super) fn shrink_png(png_base64: &str, max_dimension: Option<u32>) -> Result<Shrunk, String> {
     use base64::{engine::general_purpose::STANDARD, Engine as _};
     use image::{imageops::FilterType, ImageFormat};
 

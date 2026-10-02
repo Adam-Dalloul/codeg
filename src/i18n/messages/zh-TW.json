@@ -5190,6 +5190,8 @@
       "actMany": "智慧體可操作 {count, plural, other {# 個視窗}}",
       "readOne": "智慧體可查看「{app}」",
       "readMany": "智慧體可查看 {count, plural, other {# 個視窗}}",
+      "readScreen": "智慧體可查看整個螢幕",
+      "actScreen": "智慧體可操作整個螢幕",
       "recent": "{app}：{action}",
       "stop": "停止分享",
       "stopWithKey": "停止分享所有視窗（{key}）"
@@ -5219,7 +5221,9 @@
       "title": "{count, plural, =0 {未分享視窗} other {已分享 # 個視窗}}",
       "empty": "智慧體能列出你的視窗，但在你分享之前讀不到任何一個。",
       "stop": "停止",
-      "wholeApp": "整個應用程式 · {count, plural, =0 {沒有開啟的視窗} other {# 個視窗}}"
+      "wholeApp": "整個應用程式 · {count, plural, =0 {沒有開啟的視窗} other {# 個視窗}}",
+      "screen": "整個螢幕",
+      "screenWindows": "{count, plural, =0 {尚無視窗} other {# 個視窗}}"
     },
     "level": {
       "read": "可讀取",
@@ -5284,6 +5288,10 @@
       "wholeAppHint": "{app} 的所有視窗（包括之後開啟的），以及它的選單和快速鍵",
       "appLevelLabel": "智慧體對整個 {app} 的權限",
       "viaApp": "隨應用程式分享",
+      "screenTitle": "整個螢幕",
+      "screenHint": "所有可分享的視窗（包括之後開啟的），以及桌面本身的快速鍵。codeg 自己的視窗和永不分享名單中的應用程式始終會被遮蓋。",
+      "screenLevelLabel": "智慧體對整個螢幕的權限",
+      "viaScreen": "隨螢幕分享",
       "shareAll": "全部分享",
       "shareAllRead": "全部允許讀取",
       "shareAllControl": "全部允許讀取並操作",
@@ -5400,6 +5408,10 @@
       "clipboard": {
         "label": "允許智慧體使用剪貼簿",
         "hint": "開啟後，智慧體可以把文字放到剪貼簿上再貼上，也可以讀回它自己從你分享的視窗中拷貝的內容。你自己拷貝的內容永遠不會讀給智慧體，智慧體也只能貼上它自己放到剪貼簿上的內容。"
+      },
+      "screen": {
+        "label": "允許分享整個螢幕",
+        "hint": "開啟後，分享選擇器中會出現「整個螢幕」：智慧體能看到整個螢幕的畫面並在任意位置點擊，所有可分享的視窗也隨之分享，連同桌面本身的快速鍵。codeg 自己的視窗和永不分享名單中的應用程式始終會被遮蓋。關閉此項會結束整個螢幕的分享。"
       },
       "boundary": "在 macOS 上，權限授予 codeg-computer-helper，只有 codeg 能使用，智慧體的命令列用不了。Windows 和 Linux 沒有這層隔離：這裡的設定決定的是智慧體透過 codeg 能拿到什麼，而不是電腦上的程式能做什麼。",
       "save": "儲存",

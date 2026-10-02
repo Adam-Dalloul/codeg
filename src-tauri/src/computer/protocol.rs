@@ -43,7 +43,7 @@ use super::types::{
 /// Bumped whenever a frame changes shape. The helper ships in the same bundle
 /// as codeg, so a mismatch means a broken install (a helper left behind by a
 /// partial update), and codeg refuses to talk to it rather than guess.
-pub const PROTOCOL_VERSION: u32 = 13;
+pub const PROTOCOL_VERSION: u32 = 14;
 
 /// A fingerprint of the sources the helper is built from, the same in codeg
 /// and the helper when both are built from one tree (see `build.rs`). The
@@ -172,6 +172,30 @@ pub enum HelperOp {
         /// What the action has to do with the clipboard.
         #[serde(default)]
         clipboard: ClipboardUse,
+    },
+    /// The entire screen, as one picture: every window whose application
+    /// may not be shared by `rules` painted over, whatever layer it is on.
+    #[serde(rename_all = "camelCase")]
+    CaptureScreen {
+        rules: ScreenRules,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        max_dimension: Option<u32>,
+    },
+    /// Have the driver running, starting it if it is not: what an action
+    /// on the entire screen waits for before it is asked about a last time
+    /// and sent ([`HelperOp::ActScreen`] starts none).
+    DriverReady,
+    /// A pointer action on the entire screen — a click, a drag, a scroll —
+    /// at points in its picture's own pixels, sent as real input at the
+    /// front. No point may be on what the picture paints over by `rules`,
+    /// and the screen must still be as the picture was taken (`geometry`).
+    /// Only on a driver already running ([`HelperOp::DriverReady`]): one
+    /// started now would take seconds no one is asked about again.
+    #[serde(rename_all = "camelCase")]
+    ActScreen {
+        rules: ScreenRules,
+        action: WindowAction,
+        geometry: ScreenGeometry,
     },
     /// Read the clipboard — only while it is still as `expect` names it:
     /// what an agent put there itself. Never a clipboard an application
@@ -406,6 +430,28 @@ pub struct RawAct {
     /// marked concealed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub clipboard: Option<u64>,
+}
+
+/// Who may never be seen or touched over the entire screen: codeg itself,
+/// and the applications on the blocklist — which the helper judges on its
+/// own there, window by window, as codeg judges a window it shares.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScreenRules {
+    pub me: super::agent::SelfIdentity,
+    pub blocklist: Vec<String>,
+}
+
+/// The screen as a picture of it was taken: what a point read off the
+/// picture means.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScreenGeometry {
+    /// The picture's own pixels to a desktop unit.
+    pub scale: f64,
+    /// The screen's size, in desktop units.
+    pub width: f64,
+    pub height: f64,
 }
 
 /// What an action has to do with the clipboard.

@@ -24,6 +24,13 @@
 //! one clock, which any of them being used keeps running. Ending the
 //! application's grant ends every window's share of it; a window's share
 //! cannot be changed on its own while the application is shared.
+//!
+//! **So can the entire screen** ([`ScreenShare`]), the same way one level up:
+//! every window the rules allow carries the screen's grant
+//! ([`GrantScope::Screen`]) and its clock, and the screen itself is a target
+//! of its own ([`SCREEN_TARGET_ID`]) — one picture of it, and pointer actions
+//! at points on it. Sharing the screen takes over whatever was shared before
+//! it; nothing else is shared or unshared while it is.
 
 use std::collections::{BTreeSet, HashMap};
 use std::sync::Mutex;
@@ -35,9 +42,10 @@ use super::agent::{
     generation, grantable, level_of, visible_title, Blocklist, ComputerGrant, ComputerGrantPayload,
     GrantChange, GrantLevel, GrantScope, NotGrantable, SelfIdentity,
 };
-use super::keys::{classify, classify_for_app, Chord, ChordClass, Platform};
+use super::keys::{classify, classify_for_app, classify_for_screen, Chord, ChordClass, Platform};
 use super::protocol::{
-    DriverTarget, ElementRef, ProcessRun, RawAct, RawApp, RawWindow, WindowAction, WindowPoint,
+    DriverTarget, ElementRef, ProcessRun, RawAct, RawApp, RawWindow, ScreenGeometry, WindowAction,
+    WindowPoint,
 };
 use super::types::{
     AgentAppRef, AgentTarget, AgentWindowSummary, ComputerActRequest, ElementTarget, PointTarget,
@@ -140,6 +148,10 @@ impl TargetEntry {
                 .grant
                 .as_ref()
                 .is_some_and(|g| g.scope == GrantScope::App),
+            whole_screen: self
+                .grant
+                .as_ref()
+                .is_some_and(|g| g.scope == GrantScope::Screen),
             title: visible_title(level, &self.title),
             note: grantable(&self.app, me, blocklist)
                 .err()
@@ -165,6 +177,9 @@ pub struct SharedWindow {
     /// The share of that application, when it is.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub app_id: Option<String>,
+    /// Shared with the entire screen ([`SharedScreen`]).
+    #[serde(default)]
+    pub whole_screen: bool,
 }
 
 /// Which application, exactly: the run of the process that owns its
@@ -222,6 +237,62 @@ pub struct SharedApp {
     pub last_used_at: i64,
     /// How many of its windows are shared with it now.
     pub windows: u32,
+}
+
+/// The id the entire screen goes by among targets: what an agent reads and
+/// points at while the person shares the screen as a whole.
+pub const SCREEN_TARGET_ID: &str = "d1";
+
+/// The entire screen, shared as a whole.
+#[derive(Debug, Clone)]
+pub struct ScreenShare {
+    /// Its clock is the screen's: the screen, or any window shared with it,
+    /// being used moves it.
+    pub grant: ComputerGrant,
+    /// See [`TargetEntry::epoch`]: a new one for every sharing of the
+    /// screen, so a picture read under one never names a point under the
+    /// next.
+    pub epoch: u64,
+    /// Pictures of the screen read under this sharing.
+    pub reads: u64,
+    /// The latest picture of the screen read under it: what a point on the
+    /// screen is read in.
+    pub capture_mark: Option<CaptureMark>,
+    /// The rules as they stood when the sharing last followed them — shared,
+    /// or swept: what a window a later listing finds is judged by before it
+    /// takes the screen's grant.
+    me: SelfIdentity,
+    blocklist: Blocklist,
+}
+
+/// The entire screen shared, for codeg's own UI.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SharedScreen {
+    pub level: GrantLevel,
+    pub granted_at: i64,
+    pub last_used_at: i64,
+    /// How many windows are shared with it now.
+    pub windows: u32,
+}
+
+/// Permission for one read of the entire screen, taken before the read and
+/// checked again after.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScreenReadTicket {
+    pub epoch: u64,
+}
+
+/// Permission for one action on the entire screen, with the action as the
+/// helper is to carry it out: every point resolved against the latest
+/// picture of the screen, as the agent was given it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ScreenActTicket {
+    /// The sharing the action was let through under.
+    pub epoch: u64,
+    pub action: WindowAction,
+    /// The screen as the picture the points were read off was taken.
+    pub geometry: ScreenGeometry,
 }
 
 /// The latest snapshot an agent read of a window: the generation that named
@@ -342,6 +413,13 @@ pub enum ActDenied {
     /// A frame no window can have: a side under the smallest, or a number
     /// out of range.
     BadFrame,
+    /// A key that locks the screen or logs out, which no sharing reaches —
+    /// not even the entire screen's.
+    SessionChord,
+    /// Asked of the entire screen, something other than a click, a drag or a
+    /// scroll at a point of its picture: keys, typing and the rest go to a
+    /// window.
+    ScreenPointerOnly,
 }
 
 /// How a ref or point is out of date.
@@ -436,10 +514,14 @@ pub enum ShareError {
     /// The window is shared with its whole application: what it is shared
     /// for is the application's, and changes with it.
     AppShared,
+    /// The entire screen is shared: what any window or application is shared
+    /// for is the screen's, and changes with it.
+    ScreenShared,
 }
 
-/// What sharing an application, or ending its share, changed: the windows
-/// whose share moved with it, and whether the application's own did.
+/// What sharing an application or the entire screen, or ending its share,
+/// changed: the windows whose share moved with it, and whether a share beyond
+/// the windows' own — an application's, or the screen's — did.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct AppChange {
     pub windows: Vec<ComputerGrantPayload>,
@@ -453,6 +535,9 @@ struct Inner {
     by_identity: HashMap<WindowIdentity, String>,
     next_app_id: u64,
     apps: HashMap<AppIdentity, AppShare>,
+    screen: Option<ScreenShare>,
+    /// Sharings of the screen so far: each one's epoch.
+    screen_epochs: u64,
 }
 
 /// See the module note.
@@ -552,9 +637,15 @@ impl TargetTable {
             }
         }
         // A window of an application shared as a whole is shared with it as
-        // soon as a listing finds it a window a person could mean.
+        // soon as a listing finds it a window a person could mean; with the
+        // entire screen shared, so is any window the rules allow.
         {
-            let Inner { entries, apps, .. } = &mut *inner;
+            let Inner {
+                entries,
+                apps,
+                screen,
+                ..
+            } = &mut *inner;
             for id in &seen {
                 let Some(entry) = entries.get_mut(id) else {
                     continue;
@@ -563,7 +654,11 @@ impl TargetTable {
                     continue;
                 }
                 if let Some(share) = AppIdentity::of(entry).and_then(|app| apps.get(&app)) {
-                    ended.extend(Self::grant_with_app(entry, share));
+                    ended.extend(Self::grant_with(entry, &share.grant));
+                } else if let Some(share) = screen.as_ref() {
+                    if grantable(&entry.app, &share.me, &share.blocklist).is_ok() {
+                        ended.extend(Self::grant_with(entry, &share.grant));
+                    }
                 }
             }
         }
@@ -623,7 +718,8 @@ impl TargetTable {
     /// `Ok(None)` when nothing changed — the window was already at that level
     /// — so the caller neither emits an event nor restarts the idle clock. A
     /// window shared with its whole application changes only with it
-    /// ([`ShareError::AppShared`]).
+    /// ([`ShareError::AppShared`]); every window, while the entire screen is
+    /// shared, only with the screen ([`ShareError::ScreenShared`]).
     pub fn share(
         &self,
         target_id: &str,
@@ -633,7 +729,15 @@ impl TargetTable {
         blocklist: &Blocklist,
     ) -> Result<Option<ComputerGrantPayload>, ShareError> {
         let mut inner = self.lock();
-        let Inner { entries, apps, .. } = &mut *inner;
+        let Inner {
+            entries,
+            apps,
+            screen,
+            ..
+        } = &mut *inner;
+        if screen.is_some() {
+            return Err(ShareError::ScreenShared);
+        }
         let entry = entries.get_mut(target_id).ok_or(ShareError::NoSuchTarget)?;
         let with_app = entry
             .grant
@@ -678,7 +782,8 @@ impl TargetTable {
     /// named and a person could mean takes the application's grant at its
     /// level, one shared on its own before included; the ones it opens later
     /// take it as listings find them. Ending it ends every window's share of
-    /// it.
+    /// it. Nothing changes while the entire screen is shared
+    /// ([`ShareError::ScreenShared`]).
     pub fn share_app(
         &self,
         target: AppTarget<'_>,
@@ -692,8 +797,12 @@ impl TargetTable {
             entries,
             apps,
             next_app_id,
+            screen,
             ..
         } = &mut *inner;
+        if screen.is_some() {
+            return Err(ShareError::ScreenShared);
+        }
         let (identity, app) = match target {
             AppTarget::Window(target_id) => {
                 let entry = entries.get(target_id).ok_or(ShareError::NoSuchTarget)?;
@@ -746,7 +855,7 @@ impl TargetTable {
             .values_mut()
             .filter(|e| !e.gone && (e.grant.is_some() || e.worth_listing()))
             .filter(|e| AppIdentity::of(e).as_ref() == Some(&identity))
-            .filter_map(|e| Self::grant_with_app(e, share))
+            .filter_map(|e| Self::grant_with(e, &share.grant))
             .collect();
         Ok(AppChange {
             windows,
@@ -754,19 +863,20 @@ impl TargetTable {
         })
     }
 
-    /// Give `entry` its share of the grant on its whole application, at that
-    /// grant's level and on its clock. A window already shared keeps the
-    /// reads made under its grant, as a change of level does.
-    fn grant_with_app(entry: &mut TargetEntry, share: &AppShare) -> Option<ComputerGrantPayload> {
-        let level = share.grant.level;
+    /// Give `entry` its share of a grant on more than itself — its whole
+    /// application's, or the entire screen's — at that grant's level, in its
+    /// scope and on its clock. A window already shared keeps the reads made
+    /// under its grant, as a change of level does.
+    fn grant_with(entry: &mut TargetEntry, shared: &ComputerGrant) -> Option<ComputerGrantPayload> {
+        let (level, scope) = (shared.level, shared.scope);
         match entry.grant.as_mut() {
-            Some(grant) if grant.scope == GrantScope::App && grant.level == level => return None,
+            Some(grant) if grant.scope == scope && grant.level == level => return None,
             Some(grant) => {
                 grant.level = level;
-                grant.scope = GrantScope::App;
+                grant.scope = scope;
             }
             None => {
-                entry.grant = Some(share.grant.clone());
+                entry.grant = Some(shared.clone());
                 entry.epoch += 1;
                 entry.reads = 0;
                 entry.snapshot_mark = None;
@@ -800,26 +910,129 @@ impl TargetTable {
         }
     }
 
+    /// Share the entire screen at `level`, or end its share at
+    /// [`GrantLevel::None`]. Every window codeg has named that a person could
+    /// mean and the rules allow takes the screen's grant at its level — one
+    /// shared on its own, or with its application, included: the
+    /// applications shared as a whole are shared with the screen from then
+    /// on, and their own shares end. The windows that come up later take it
+    /// as listings find them. Ending it ends every window's share of it.
+    pub fn share_screen(
+        &self,
+        level: GrantLevel,
+        now: i64,
+        me: &SelfIdentity,
+        blocklist: &Blocklist,
+    ) -> AppChange {
+        let mut inner = self.lock();
+        let Inner {
+            entries,
+            apps,
+            screen,
+            screen_epochs,
+            ..
+        } = &mut *inner;
+        if level == GrantLevel::None {
+            return Self::end_screen(entries, screen, GrantChange::Revoked);
+        }
+        let mut out = AppChange::default();
+        match screen.as_mut() {
+            Some(share) => {
+                // The same sharing at another level: its clock keeps running.
+                if share.grant.level != level {
+                    share.grant.level = level;
+                    out.app_changed = true;
+                }
+                share.me = me.clone();
+                share.blocklist = blocklist.clone();
+            }
+            None => {
+                *screen_epochs += 1;
+                *screen = Some(ScreenShare {
+                    grant: ComputerGrant::of_screen(level, now),
+                    epoch: *screen_epochs,
+                    reads: 0,
+                    capture_mark: None,
+                    me: me.clone(),
+                    blocklist: blocklist.clone(),
+                });
+                out.app_changed = true;
+            }
+        }
+        if !apps.is_empty() {
+            apps.clear();
+            out.app_changed = true;
+        }
+        let Some(share) = screen.as_ref() else {
+            return out;
+        };
+        for entry in entries.values_mut() {
+            let shareable = !entry.gone
+                && (entry.grant.is_some() || entry.worth_listing())
+                && grantable(&entry.app, me, blocklist).is_ok();
+            if shareable {
+                out.windows.extend(Self::grant_with(entry, &share.grant));
+            }
+        }
+        out
+    }
+
+    /// End the share of the entire screen, for `change` — the switch for it
+    /// turned off — and every window's share of it.
+    pub fn end_screen_share(&self, change: GrantChange) -> AppChange {
+        let mut inner = self.lock();
+        let Inner {
+            entries, screen, ..
+        } = &mut *inner;
+        Self::end_screen(entries, screen, change)
+    }
+
+    /// End the share of the entire screen, and every window's share of it.
+    fn end_screen(
+        entries: &mut HashMap<String, TargetEntry>,
+        screen: &mut Option<ScreenShare>,
+        change: GrantChange,
+    ) -> AppChange {
+        let app_changed = screen.take().is_some();
+        let windows = entries
+            .values_mut()
+            .filter(|e| {
+                e.grant
+                    .as_ref()
+                    .is_some_and(|g| g.scope == GrantScope::Screen)
+            })
+            .filter_map(|e| Self::revoke_entry(e, change))
+            .collect();
+        AppChange {
+            windows,
+            app_changed,
+        }
+    }
+
     /// End the grant `target_id` holds: its own, or — for a window shared
     /// with its whole application — the application's, with every window's
-    /// share of it.
+    /// share of it. A window shared with the entire screen loses its share of
+    /// it alone, unless the screen's own time is up (`Expired`), which ends
+    /// the screen's share.
     fn end_grant(
         entries: &mut HashMap<String, TargetEntry>,
         apps: &mut HashMap<AppIdentity, AppShare>,
+        screen: &mut Option<ScreenShare>,
         target_id: &str,
         change: GrantChange,
     ) -> Vec<ComputerGrantPayload> {
         let Some(entry) = entries.get_mut(target_id) else {
             return Vec::new();
         };
-        let app = entry
-            .grant
-            .as_ref()
-            .filter(|g| g.scope == GrantScope::App)
-            .and_then(|_| AppIdentity::of(entry));
-        match app {
-            Some(app) => Self::end_app(entries, apps, &app, change).windows,
-            None => Self::revoke_entry(entry, change).into_iter().collect(),
+        match entry.grant.as_ref().map(|g| g.scope) {
+            Some(GrantScope::App) => match AppIdentity::of(entry) {
+                Some(app) => Self::end_app(entries, apps, &app, change).windows,
+                None => Self::revoke_entry(entry, change).into_iter().collect(),
+            },
+            Some(GrantScope::Screen) if change == GrantChange::Expired => {
+                Self::end_screen(entries, screen, change).windows
+            }
+            _ => Self::revoke_entry(entry, change).into_iter().collect(),
         }
     }
 
@@ -836,12 +1049,14 @@ impl TargetTable {
     }
 
     /// End every grant, for one reason — the applications shared as a whole
-    /// with them. Used when the user switches computer use off, which is a
-    /// statement about every window at once, and for Stop.
+    /// and the entire screen with them. Used when the user switches computer
+    /// use off, which is a statement about every window at once, and for
+    /// Stop.
     pub fn revoke_all(&self, change: GrantChange) -> AppChange {
         let mut inner = self.lock();
-        let app_changed = !inner.apps.is_empty();
+        let app_changed = !inner.apps.is_empty() || inner.screen.is_some();
         inner.apps.clear();
+        inner.screen = None;
         let windows = inner
             .entries
             .values_mut()
@@ -865,7 +1080,8 @@ impl TargetTable {
     /// application joined the blocklist). Run before anything is listed, when
     /// the settings change and on a timer, so what an agent sees of a window
     /// never reflects a grant that has already ended. An application shared
-    /// as a whole goes on its own clock, which its windows share.
+    /// as a whole goes on its own clock, which its windows share; so does the
+    /// entire screen, which follows the rules as they are now from here on.
     pub fn sweep(
         &self,
         now: i64,
@@ -874,7 +1090,12 @@ impl TargetTable {
         blocklist: &Blocklist,
     ) -> AppChange {
         let mut inner = self.lock();
-        let Inner { entries, apps, .. } = &mut *inner;
+        let Inner {
+            entries,
+            apps,
+            screen,
+            ..
+        } = &mut *inner;
         let ending: Vec<(AppIdentity, GrantChange)> = apps
             .iter()
             .filter_map(|(identity, share)| {
@@ -891,6 +1112,12 @@ impl TargetTable {
         for (identity, change) in ending {
             out.absorb(Self::end_app(entries, apps, &identity, change));
         }
+        if screen.as_ref().is_some_and(|s| s.grant.lapsed(now, ttl)) {
+            out.absorb(Self::end_screen(entries, screen, GrantChange::Expired));
+        } else if let Some(share) = screen.as_mut() {
+            share.me = me.clone();
+            share.blocklist = blocklist.clone();
+        }
         for entry in entries.values_mut() {
             let Some(grant) = entry.grant.as_ref() else {
                 continue;
@@ -901,6 +1128,9 @@ impl TargetTable {
                 // A share left of an application whose own has ended.
                 let shared = AppIdentity::of(entry).is_some_and(|app| apps.contains_key(&app));
                 (!shared).then_some(GrantChange::Revoked)
+            } else if grant.scope == GrantScope::Screen {
+                // A share left of a screen whose own has ended.
+                screen.is_none().then_some(GrantChange::Revoked)
             } else if grant.lapsed(now, ttl) {
                 Some(GrantChange::Expired)
             } else {
@@ -943,11 +1173,13 @@ impl TargetTable {
     }
 
     /// Whether `entry`'s grant has lapsed: on its own clock, or — shared
-    /// with its whole application — on the application's (a share whose
-    /// application's own has ended has ended with it).
+    /// with its whole application, or the entire screen — on the
+    /// application's or the screen's (a share whose own has ended has ended
+    /// with it).
     fn lapsed(
         entry: &TargetEntry,
         apps: &HashMap<AppIdentity, AppShare>,
+        screen: &Option<ScreenShare>,
         now: i64,
         ttl: Option<Duration>,
     ) -> bool {
@@ -956,21 +1188,37 @@ impl TargetTable {
             Some(grant) if grant.scope == GrantScope::App => AppIdentity::of(entry)
                 .and_then(|app| apps.get(&app))
                 .is_none_or(|share| share.grant.lapsed(now, ttl)),
+            Some(grant) if grant.scope == GrantScope::Screen => screen
+                .as_ref()
+                .is_none_or(|share| share.grant.lapsed(now, ttl)),
             Some(grant) => grant.lapsed(now, ttl),
         }
     }
 
     /// A read or an action used `entry`'s grant now: its clock, and its
-    /// application's when it is shared with it, start again.
-    fn used(entry: &mut TargetEntry, apps: &mut HashMap<AppIdentity, AppShare>, now: i64) {
+    /// application's or the screen's when it is shared with it, start again.
+    fn used(
+        entry: &mut TargetEntry,
+        apps: &mut HashMap<AppIdentity, AppShare>,
+        screen: &mut Option<ScreenShare>,
+        now: i64,
+    ) {
         let Some(grant) = entry.grant.as_mut() else {
             return;
         };
         grant.last_used_at = now;
-        if grant.scope == GrantScope::App {
-            if let Some(share) = AppIdentity::of(entry).and_then(|app| apps.get_mut(&app)) {
-                share.grant.last_used_at = now;
+        match grant.scope {
+            GrantScope::App => {
+                if let Some(share) = AppIdentity::of(entry).and_then(|app| apps.get_mut(&app)) {
+                    share.grant.last_used_at = now;
+                }
             }
+            GrantScope::Screen => {
+                if let Some(share) = screen.as_mut() {
+                    share.grant.last_used_at = now;
+                }
+            }
+            GrantScope::Window => {}
         }
     }
 
@@ -987,22 +1235,27 @@ impl TargetTable {
         blocklist: &Blocklist,
     ) -> Result<ReadTicket, (ReadRefusal, Vec<ComputerGrantPayload>)> {
         let mut inner = self.lock();
-        let Inner { entries, apps, .. } = &mut *inner;
+        let Inner {
+            entries,
+            apps,
+            screen,
+            ..
+        } = &mut *inner;
         let Some(entry) = entries.get(target_id) else {
             return Err((ReadRefusal::NoSuchTarget, Vec::new()));
         };
         // Checked even for a window that holds a grant: the blocklist can grow
         // while a window is shared, and the list is what the user said last.
         if let Err(why) = grantable(&entry.app, me, blocklist) {
-            let ended = Self::end_grant(entries, apps, target_id, GrantChange::Revoked);
+            let ended = Self::end_grant(entries, apps, screen, target_id, GrantChange::Revoked);
             return Err((ReadRefusal::NotGrantable(why), ended));
         }
         let Some(grant) = entry.grant.as_ref() else {
             return Err((ReadRefusal::GrantRequired, Vec::new()));
         };
         let (level, scope) = (grant.level, grant.scope);
-        if Self::lapsed(entry, apps, now, ttl) {
-            let ended = Self::end_grant(entries, apps, target_id, GrantChange::Expired);
+        if Self::lapsed(entry, apps, screen, now, ttl) {
+            let ended = Self::end_grant(entries, apps, screen, target_id, GrantChange::Expired);
             return Err((ReadRefusal::GrantRequired, ended));
         }
         if !level.allows(GrantLevel::Read) {
@@ -1011,7 +1264,7 @@ impl TargetTable {
         let Some(entry) = entries.get_mut(target_id) else {
             return Err((ReadRefusal::NoSuchTarget, Vec::new()));
         };
-        Self::used(entry, apps, now);
+        Self::used(entry, apps, screen, now);
         Ok(ReadTicket {
             target_id: entry.target_id.clone(),
             identity: entry.identity,
@@ -1041,7 +1294,12 @@ impl TargetTable {
         mark: Option<ReadMark>,
     ) -> Result<String, (ReadRefusal, Vec<ComputerGrantPayload>)> {
         let mut inner = self.lock();
-        let Inner { entries, apps, .. } = &mut *inner;
+        let Inner {
+            entries,
+            apps,
+            screen,
+            ..
+        } = &mut *inner;
         let Some(entry) = entries.get(&ticket.target_id) else {
             return Err((ReadRefusal::GrantRequired, Vec::new()));
         };
@@ -1052,7 +1310,13 @@ impl TargetTable {
             return Err((ReadRefusal::GrantRequired, Vec::new()));
         }
         if let Err(why) = grantable(&entry.app, me, blocklist) {
-            let ended = Self::end_grant(entries, apps, &ticket.target_id, GrantChange::Revoked);
+            let ended = Self::end_grant(
+                entries,
+                apps,
+                screen,
+                &ticket.target_id,
+                GrantChange::Revoked,
+            );
             return Err((ReadRefusal::NotGrantable(why), ended));
         }
         let Some(entry) = entries.get_mut(&ticket.target_id) else {
@@ -1124,20 +1388,25 @@ impl TargetTable {
         paste_ok: bool,
     ) -> Result<ActTicket, (ActDenied, Vec<ComputerGrantPayload>)> {
         let mut inner = self.lock();
-        let Inner { entries, apps, .. } = &mut *inner;
+        let Inner {
+            entries,
+            apps,
+            screen,
+            ..
+        } = &mut *inner;
         let Some(entry) = entries.get(target_id) else {
             return Err((ActDenied::NoSuchTarget, Vec::new()));
         };
         if let Err(why) = grantable(&entry.app, me, blocklist) {
-            let ended = Self::end_grant(entries, apps, target_id, GrantChange::Revoked);
+            let ended = Self::end_grant(entries, apps, screen, target_id, GrantChange::Revoked);
             return Err((ActDenied::NotGrantable(why), ended));
         }
         let Some(grant) = entry.grant.as_ref() else {
             return Err((ActDenied::GrantRequired, Vec::new()));
         };
         let level = grant.level;
-        if Self::lapsed(entry, apps, now, ttl) {
-            let ended = Self::end_grant(entries, apps, target_id, GrantChange::Expired);
+        if Self::lapsed(entry, apps, screen, now, ttl) {
+            let ended = Self::end_grant(entries, apps, screen, target_id, GrantChange::Expired);
             return Err((ActDenied::GrantRequired, ended));
         }
         if !level.allows(GrantLevel::Read) {
@@ -1150,7 +1419,7 @@ impl TargetTable {
         let Some(entry) = entries.get_mut(target_id) else {
             return Err((ActDenied::NoSuchTarget, Vec::new()));
         };
-        Self::used(entry, apps, now);
+        Self::used(entry, apps, screen, now);
         Ok(ActTicket {
             target_id: entry.target_id.clone(),
             identity: entry.identity,
@@ -1183,6 +1452,7 @@ impl TargetTable {
                         .flatten()
                         .and_then(|app| inner.apps.get(&app))
                         .map(|share| share.app_id.clone()),
+                    whole_screen: grant.scope == GrantScope::Screen,
                 })
             })
             .collect();
@@ -1225,6 +1495,154 @@ impl TargetTable {
         out
     }
 
+    /// The entire screen, when it is shared.
+    pub fn shared_screen(&self) -> Option<SharedScreen> {
+        let inner = self.lock();
+        let share = inner.screen.as_ref()?;
+        Some(SharedScreen {
+            level: share.grant.level,
+            granted_at: share.grant.granted_at,
+            last_used_at: share.grant.last_used_at,
+            windows: inner
+                .entries
+                .values()
+                .filter(|e| {
+                    e.grant
+                        .as_ref()
+                        .is_some_and(|g| g.scope == GrantScope::Screen)
+                })
+                .count() as u32,
+        })
+    }
+
+    /// Check a read of the entire screen may start: it is shared, and its
+    /// grant has not lapsed. A lapsed one is ended here, what that ended
+    /// returned alongside the refusal. Counts as use of the grant.
+    pub fn begin_screen_read(
+        &self,
+        now: i64,
+        ttl: Option<Duration>,
+    ) -> Result<ScreenReadTicket, (ReadRefusal, AppChange)> {
+        let mut inner = self.lock();
+        let Inner {
+            entries, screen, ..
+        } = &mut *inner;
+        let Some(share) = screen.as_ref() else {
+            return Err((ReadRefusal::GrantRequired, AppChange::default()));
+        };
+        if share.grant.lapsed(now, ttl) {
+            let ended = Self::end_screen(entries, screen, GrantChange::Expired);
+            return Err((ReadRefusal::GrantRequired, ended));
+        }
+        let Some(share) = screen.as_mut() else {
+            return Err((ReadRefusal::GrantRequired, AppChange::default()));
+        };
+        if !share.grant.level.allows(GrantLevel::Read) {
+            return Err((ReadRefusal::GrantRequired, AppChange::default()));
+        }
+        share.grant.last_used_at = now;
+        Ok(ScreenReadTicket { epoch: share.epoch })
+    }
+
+    /// Check a read of the entire screen that has finished may be handed
+    /// over: the same sharing of it is still in force. Returns the
+    /// generation that names the read; `mark` becomes the screen's latest
+    /// picture under it — what later points on the screen are read in.
+    pub fn finish_screen_read(
+        &self,
+        ticket: &ScreenReadTicket,
+        mark: ReadMark,
+    ) -> Result<String, ReadRefusal> {
+        let mut inner = self.lock();
+        let Some(share) = inner
+            .screen
+            .as_mut()
+            .filter(|s| s.epoch == ticket.epoch && s.grant.level.allows(GrantLevel::Read))
+        else {
+            return Err(ReadRefusal::GrantRequired);
+        };
+        share.reads += 1;
+        let generation = generation(share.epoch, share.reads);
+        if let ReadMark::Capture {
+            width,
+            height,
+            native_width,
+            native_height,
+            full_size,
+            window_bounds,
+        } = mark
+        {
+            share.capture_mark = Some(CaptureMark {
+                generation: generation.clone(),
+                width,
+                height,
+                native_width,
+                native_height,
+                full_size,
+                window_bounds,
+            });
+        }
+        Ok(generation)
+    }
+
+    /// Check an action on the entire screen may go ahead, and resolve it for
+    /// the helper: the screen is shared for control, its grant has not
+    /// lapsed, and the action is a click, a drag or a scroll at points of its
+    /// latest picture as the agent was given it. Counts as use of the grant.
+    pub fn begin_screen_act(
+        &self,
+        now: i64,
+        ttl: Option<Duration>,
+        request: &ComputerActRequest,
+    ) -> Result<ScreenActTicket, (ActDenied, AppChange)> {
+        let mut inner = self.lock();
+        let Inner {
+            entries, screen, ..
+        } = &mut *inner;
+        let Some(share) = screen.as_ref() else {
+            return Err((ActDenied::GrantRequired, AppChange::default()));
+        };
+        if share.grant.lapsed(now, ttl) {
+            let ended = Self::end_screen(entries, screen, GrantChange::Expired);
+            return Err((ActDenied::GrantRequired, ended));
+        }
+        let Some(share) = screen.as_mut() else {
+            return Err((ActDenied::GrantRequired, AppChange::default()));
+        };
+        if !share.grant.level.allows(GrantLevel::Read) {
+            return Err((ActDenied::GrantRequired, AppChange::default()));
+        }
+        if !share.grant.level.allows(GrantLevel::Control) {
+            return Err((ActDenied::ControlRequired, AppChange::default()));
+        }
+        let mark = share.capture_mark.as_ref();
+        let action = resolve_on_screen(mark, request).map_err(|why| (why, AppChange::default()))?;
+        // A point resolved, so the picture it was read in is there.
+        let geometry = mark
+            .map(|m| ScreenGeometry {
+                scale: f64::from(m.native_width) / m.window_bounds.width,
+                width: m.window_bounds.width,
+                height: m.window_bounds.height,
+            })
+            .filter(|g| g.scale.is_finite() && g.scale > 0.0)
+            .ok_or((ActDenied::NoPointing, AppChange::default()))?;
+        share.grant.last_used_at = now;
+        Ok(ScreenActTicket {
+            epoch: share.epoch,
+            action,
+            geometry,
+        })
+    }
+
+    /// Whether the sharing of the entire screen an action was let through
+    /// under (`epoch`) is still in force, for control.
+    pub fn screen_controlled(&self, epoch: u64) -> bool {
+        self.lock()
+            .screen
+            .as_ref()
+            .is_some_and(|s| s.epoch == epoch && s.grant.level.allows(GrantLevel::Control))
+    }
+
     /// What `app` — as a listing of applications names it — is shared for as
     /// a whole; [`GrantLevel::None`] when it is not.
     pub fn app_level(&self, app: &RawApp) -> GrantLevel {
@@ -1254,7 +1672,7 @@ pub enum AppTarget<'a> {
 }
 
 impl AppChange {
-    fn absorb(&mut self, other: AppChange) {
+    pub fn absorb(&mut self, other: AppChange) {
         self.windows.extend(other.windows);
         self.app_changed |= other.app_changed;
     }
@@ -1360,7 +1778,7 @@ fn resolve(
         },
         ComputerActRequest::Restore => WindowAction::Restore,
         ComputerActRequest::InvokeMenu { path } => {
-            if scope != GrantScope::App {
+            if scope == GrantScope::Window {
                 return Err(ActDenied::AppGrantRequired);
             }
             if Platform::current() == Platform::Windows {
@@ -1422,9 +1840,69 @@ fn check_frame(
 /// own default.
 const DEFAULT_DRAG_MS: u32 = 500;
 
+/// An action on the entire screen as the helper carries it out: a click, a
+/// drag or a scroll, every point resolved against the screen's latest
+/// picture (`mark`) as the agent was given it. Anything else goes to a
+/// window.
+fn resolve_on_screen(
+    mark: Option<&CaptureMark>,
+    request: &ComputerActRequest,
+) -> Result<WindowAction, ActDenied> {
+    Ok(match request {
+        ComputerActRequest::Click {
+            target: AgentTarget::Point(point),
+            button,
+            count,
+            modifiers,
+        } => {
+            check_pointer_modifiers(*modifiers, GrantScope::Screen)?;
+            WindowAction::Click {
+                at: DriverTarget::Point(point_in(mark, point)?),
+                button: *button,
+                count: *count,
+                modifiers: *modifiers,
+            }
+        }
+        ComputerActRequest::Drag {
+            from,
+            to,
+            button,
+            modifiers,
+            duration_ms,
+        } => {
+            check_pointer_modifiers(*modifiers, GrantScope::Screen)?;
+            if !super::keys::drag_carries_modifiers(*modifiers, Platform::current()) {
+                return Err(ActDenied::DragModifiers);
+            }
+            WindowAction::Drag {
+                from: point_in(mark, from)?,
+                to: point_in(mark, to)?,
+                button: *button,
+                modifiers: *modifiers,
+                duration_ms: duration_ms
+                    .unwrap_or(DEFAULT_DRAG_MS)
+                    .min(super::types::MAX_DRAG_MS),
+            }
+        }
+        ComputerActRequest::Scroll {
+            target: Some(AgentTarget::Point(point)),
+            direction,
+            amount,
+            unit,
+        } => WindowAction::Scroll {
+            at: Some(DriverTarget::Point(point_in(mark, point)?)),
+            direction: *direction,
+            amount: *amount,
+            unit: *unit,
+        },
+        _ => return Err(ActDenied::ScreenPointerOnly),
+    })
+}
+
 /// Whether the grant reaches `modifiers` held over a click or a drag: a
-/// window's (see `keys::pointer_modifiers_allowed`), or a whole
-/// application's (`keys::pointer_modifiers_allowed_for_app`).
+/// window's (see `keys::pointer_modifiers_allowed`), a whole application's
+/// (`keys::pointer_modifiers_allowed_for_app`), or the entire screen's —
+/// which reaches every one.
 fn check_pointer_modifiers(
     modifiers: super::keys::Modifiers,
     scope: GrantScope,
@@ -1433,17 +1911,18 @@ fn check_pointer_modifiers(
     let allowed = match scope {
         GrantScope::Window => super::keys::pointer_modifiers_allowed(modifiers, platform),
         GrantScope::App => super::keys::pointer_modifiers_allowed_for_app(modifiers, platform),
+        GrantScope::Screen => true,
     };
     match (allowed, scope) {
         (true, _) => Ok(()),
         (false, GrantScope::Window) => Err(ActDenied::ChordBeyond),
-        (false, GrantScope::App) => Err(ActDenied::DesktopChord),
+        (false, _) => Err(ActDenied::DesktopChord),
     }
 }
 
-/// Whether the grant — a window's, or a whole application's — reaches
-/// `chord`, and, for a key that types a character, that it is aimed at a
-/// named element.
+/// Whether the grant — a window's, a whole application's, or the entire
+/// screen's — reaches `chord`, and, for a key that types a character, that
+/// it is aimed at a named element.
 fn check_chord(
     chord: &Chord,
     names_element: bool,
@@ -1454,10 +1933,12 @@ fn check_chord(
     let class = match scope {
         GrantScope::Window => classify(chord, platform),
         GrantScope::App => classify_for_app(chord, platform),
+        GrantScope::Screen => classify_for_screen(chord, platform),
     };
     match class {
+        ChordClass::Beyond if scope == GrantScope::Window => Err(ActDenied::ChordBeyond),
         ChordClass::Beyond if scope == GrantScope::App => Err(ActDenied::DesktopChord),
-        ChordClass::Beyond => Err(ActDenied::ChordBeyond),
+        ChordClass::Beyond => Err(ActDenied::SessionChord),
         ChordClass::Paste if paste_ok => Ok(()),
         ChordClass::Paste => Err(ActDenied::Paste),
         ChordClass::Window if chord.types_text() && !names_element => Err(ActDenied::NeedsElement),
@@ -1510,10 +1991,13 @@ fn resolve_element(
 /// A point, in the pixels of the window's latest screenshot, mapped back to
 /// the window's own pixels.
 fn resolve_point(entry: &TargetEntry, target: &PointTarget) -> Result<WindowPoint, ActDenied> {
-    let mark = entry
-        .capture_mark
-        .as_ref()
-        .ok_or(ActDenied::Stale(Staleness::NoCapture))?;
+    point_in(entry.capture_mark.as_ref(), target)
+}
+
+/// A point, in the pixels of the screenshot `mark` names, mapped back to the
+/// pixels it was shrunk from.
+fn point_in(mark: Option<&CaptureMark>, target: &PointTarget) -> Result<WindowPoint, ActDenied> {
+    let mark = mark.ok_or(ActDenied::Stale(Staleness::NoCapture))?;
     if mark.generation != target.generation {
         return Err(ActDenied::Stale(Staleness::OldCapture));
     }
@@ -2868,5 +3352,350 @@ mod tests {
             ended.iter().map(|p| p.change).collect::<Vec<_>>(),
             vec![GrantChange::Expired]
         );
+    }
+
+    // ── the entire screen ──────────────────────────────────────────────────
+
+    fn share_screen(table: &TargetTable, level: GrantLevel, now: i64) -> AppChange {
+        table.share_screen(level, now, &me(), &Blocklist::new(&[]))
+    }
+
+    /// A 1000×500 picture of a 2000×1000-pixel capture of a screen 1000×500
+    /// desktop units across, read under the screen's latest sharing.
+    fn screen_read(table: &TargetTable, now: i64) -> Result<String, ReadRefusal> {
+        let ticket = table.begin_screen_read(now, None).map_err(|(why, _)| why)?;
+        table.finish_screen_read(
+            &ticket,
+            ReadMark::Capture {
+                width: 1000,
+                height: 500,
+                native_width: 2000,
+                native_height: 1000,
+                full_size: true,
+                window_bounds: Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    width: 1000.0,
+                    height: 500.0,
+                },
+            },
+        )
+    }
+
+    fn screen_act(
+        table: &TargetTable,
+        request: &ComputerActRequest,
+    ) -> Result<ScreenActTicket, ActDenied> {
+        table
+            .begin_screen_act(3_000, None, request)
+            .map_err(|(why, _)| why)
+    }
+
+    /// Sharing the entire screen shares every window the rules allow — one
+    /// shared on its own, and an application shared as a whole, taken over —
+    /// and the ones later listings find; never one the rules forbid. Nothing
+    /// is shared or unshared on its own while it is, and ending it ends every
+    /// window's share of it.
+    #[test]
+    fn the_entire_screen_takes_every_window_the_rules_allow() {
+        let table = TargetTable::new();
+        let mut vault = window(30, 333, 9, "Vault");
+        vault.app = raw_app(30, 333, "com.1password.1password");
+        let (listed, _) = table.observe(
+            &[
+                window(10, 111, 5, "One"),
+                window(20, 222, 7, "Other"),
+                vault.clone(),
+            ],
+            None,
+        );
+        let ids: Vec<String> = listed.iter().map(|e| e.target_id.clone()).collect();
+        share(&table, &ids[0], GrantLevel::Control);
+        share_app(&table, AppTarget::Window(&ids[1]), GrantLevel::Control).unwrap();
+
+        let change = share_screen(&table, GrantLevel::Read, 1_000);
+        assert!(change.app_changed);
+        assert_eq!(change.windows.len(), 2);
+        assert!(table.shared_apps().is_empty());
+        let shared = table.shared();
+        assert_eq!(shared.len(), 2);
+        assert!(shared
+            .iter()
+            .all(|w| w.whole_screen && !w.whole_app && w.level == GrantLevel::Read));
+        assert_eq!(
+            table.shared_screen().map(|s| (s.level, s.windows)),
+            Some((GrantLevel::Read, 2))
+        );
+        let summary = table
+            .get(&ids[0])
+            .unwrap()
+            .agent_summary(&me(), &Blocklist::new(&[]));
+        assert!(summary.whole_screen);
+        // The vault stays out of it.
+        assert_eq!(table.get(&ids[2]).unwrap().grant, None);
+
+        // Nothing changes on its own while the screen is shared.
+        assert_eq!(
+            table.share(
+                &ids[0],
+                GrantLevel::None,
+                1_000,
+                &me(),
+                &Blocklist::new(&[])
+            ),
+            Err(ShareError::ScreenShared)
+        );
+        assert_eq!(
+            share_app(&table, AppTarget::Window(&ids[0]), GrantLevel::Read),
+            Err(ShareError::ScreenShared)
+        );
+
+        // A window that comes up later is shared with it; one of the vault's
+        // is not.
+        let mut vault_two = vault.clone();
+        vault_two.window_id = 10;
+        let (listed, granted) = table.observe(
+            &[
+                window(10, 111, 5, "One"),
+                window(20, 222, 7, "Other"),
+                vault,
+                vault_two,
+                window(40, 444, 11, "New"),
+            ],
+            None,
+        );
+        assert_eq!(granted.len(), 1);
+        assert_eq!(granted[0].target_id, listed[4].target_id);
+        assert_eq!(table.shared().len(), 3);
+
+        // The same sharing at another level keeps what its windows read.
+        let epoch = table.get(&ids[0]).unwrap().epoch;
+        let change = share_screen(&table, GrantLevel::Control, 2_000);
+        assert!(change.app_changed);
+        assert!(table
+            .shared()
+            .iter()
+            .all(|w| w.level == GrantLevel::Control));
+        assert_eq!(table.get(&ids[0]).unwrap().epoch, epoch);
+
+        let ended = share_screen(&table, GrantLevel::None, 3_000);
+        assert!(ended.app_changed);
+        assert_eq!(ended.windows.len(), 3);
+        assert!(ended
+            .windows
+            .iter()
+            .all(|p| p.change == GrantChange::Revoked));
+        assert!(table.shared().is_empty());
+        assert_eq!(table.shared_screen(), None);
+        // Each window may be shared on its own again.
+        assert!(table
+            .share(
+                &ids[0],
+                GrantLevel::Read,
+                4_000,
+                &me(),
+                &Blocklist::new(&[])
+            )
+            .is_ok());
+    }
+
+    /// The screen runs on one clock, which any window shared with it keeps
+    /// running; when it is up the screen's share ends, every window's with
+    /// it. A window the blocklist now forbids loses its share of the screen
+    /// alone, and later ones of its application are not shared.
+    #[test]
+    fn the_entire_screen_runs_on_one_clock_and_follows_the_rules() {
+        let ttl = Some(Duration::from_secs(10));
+        let table = TargetTable::new();
+        let (listed, _) = table.observe(
+            &[window(10, 111, 5, "One"), window(20, 222, 7, "Other")],
+            None,
+        );
+        let ids: Vec<String> = listed.iter().map(|e| e.target_id.clone()).collect();
+        share_screen(&table, GrantLevel::Read, 1_000);
+        table
+            .begin_read(&ids[0], 9_000, ttl, &me(), &Blocklist::new(&[]))
+            .unwrap();
+        assert_eq!(table.shared_screen().unwrap().last_used_at, 9_000);
+        // Another window is still on the screen's clock, kept running.
+        table
+            .begin_read(&ids[1], 15_000, ttl, &me(), &Blocklist::new(&[]))
+            .unwrap();
+
+        // The blocklist grows: those windows' shares of the screen end, the
+        // screen's does not.
+        let grown = Blocklist::new(&["com.apple.TextEdit".to_string()]);
+        let swept = table.sweep(16_000, ttl, &me(), &grown);
+        assert_eq!(swept.windows.len(), 2);
+        assert!(swept
+            .windows
+            .iter()
+            .all(|p| p.change == GrantChange::Revoked));
+        assert!(table.shared_screen().is_some());
+        // And a later window of the forbidden application is not shared.
+        let (_, granted) = table.observe(&[window(10, 111, 6, "Three")], Some(10));
+        assert!(granted.is_empty());
+
+        let swept = table.sweep(30_000, ttl, &me(), &Blocklist::new(&[]));
+        assert!(swept.app_changed);
+        assert_eq!(table.shared_screen(), None);
+    }
+
+    /// The screen is a target of its own: read for a picture under a
+    /// generation of its sharing, and acted on by points of its latest
+    /// picture — a click, a drag, a scroll, with any keys held — and nothing
+    /// else. A new sharing is new generations.
+    #[test]
+    fn the_entire_screen_is_read_and_pointed_at() {
+        let table = TargetTable::new();
+        assert_eq!(screen_read(&table, 1_000), Err(ReadRefusal::GrantRequired));
+        share_screen(&table, GrantLevel::Read, 1_000);
+        let picture = screen_read(&table, 2_000).unwrap();
+        assert_eq!(picture, "1.1");
+        let click = |generation: &str, x: f64, y: f64| ComputerActRequest::Click {
+            target: AgentTarget::Point(PointTarget {
+                generation: generation.into(),
+                x,
+                y,
+            }),
+            button: PointerButton::Left,
+            count: 1,
+            modifiers: Modifiers {
+                alt: true,
+                meta: true,
+                ..Modifiers::default()
+            },
+        };
+        assert_eq!(
+            screen_act(&table, &click(&picture, 10.0, 20.0)),
+            Err(ActDenied::ControlRequired)
+        );
+
+        share_screen(&table, GrantLevel::Control, 2_000);
+        let ticket = screen_act(&table, &click(&picture, 10.0, 20.0)).unwrap();
+        assert_eq!(
+            ticket.geometry,
+            ScreenGeometry {
+                scale: 2.0,
+                width: 1000.0,
+                height: 500.0,
+            }
+        );
+        assert!(table.screen_controlled(ticket.epoch));
+        match ticket.action {
+            WindowAction::Click {
+                at: DriverTarget::Point(p),
+                ..
+            } => assert_eq!((p.x, p.y), (20.0, 40.0)),
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(
+            screen_act(&table, &click(&picture, 1000.0, 20.0)),
+            Err(ActDenied::OutOfImage)
+        );
+        assert_eq!(
+            screen_act(&table, &click("1.0", 10.0, 20.0)),
+            Err(ActDenied::Stale(Staleness::OldCapture))
+        );
+        let key = ComputerActRequest::Key {
+            target: None,
+            chord: Chord {
+                key: Key::Return,
+                modifiers: Modifiers::default(),
+            },
+            repeat: 1,
+        };
+        assert_eq!(screen_act(&table, &key), Err(ActDenied::ScreenPointerOnly));
+        let focus_scroll = ComputerActRequest::Scroll {
+            target: None,
+            direction: ScrollDirection::Down,
+            amount: 3,
+            unit: ScrollUnit::Line,
+        };
+        assert_eq!(
+            screen_act(&table, &focus_scroll),
+            Err(ActDenied::ScreenPointerOnly)
+        );
+
+        // Lowered to reading, the sharing no longer lets that action go.
+        share_screen(&table, GrantLevel::Read, 3_000);
+        assert!(!table.screen_controlled(ticket.epoch));
+        // Shared anew: what was read under the last sharing names nothing.
+        share_screen(&table, GrantLevel::None, 3_000);
+        assert_eq!(
+            screen_act(&table, &click(&picture, 10.0, 20.0)),
+            Err(ActDenied::GrantRequired)
+        );
+        share_screen(&table, GrantLevel::Control, 3_000);
+        assert_eq!(
+            screen_act(&table, &click(&picture, 10.0, 20.0)),
+            Err(ActDenied::Stale(Staleness::NoCapture))
+        );
+        assert_eq!(screen_read(&table, 4_000).unwrap(), "2.1");
+        // Stop ends it with everything else.
+        assert!(table.revoke_all(GrantChange::Stopped).app_changed);
+        assert_eq!(table.shared_screen(), None);
+    }
+
+    /// A window shared with the screen takes the desktop's own keys, and its
+    /// application's menus — but never the keys that lock the screen or log
+    /// out.
+    #[test]
+    fn a_window_shared_with_the_screen_takes_the_desktops_keys() {
+        let table = TargetTable::new();
+        let (id, _, _) = shared_and_read(&table, GrantLevel::Read);
+        share(&table, &id, GrantLevel::None);
+        share_screen(&table, GrantLevel::Control, 2_000);
+        let platform = Platform::current();
+        let chord = |key: Key, modifiers: Modifiers| ComputerActRequest::Key {
+            target: None,
+            chord: Chord { key, modifiers },
+            repeat: 1,
+        };
+        let (switch, lock) = match platform {
+            Platform::Mac => (
+                chord(
+                    Key::Tab,
+                    Modifiers {
+                        meta: true,
+                        ..Modifiers::default()
+                    },
+                ),
+                chord(
+                    Key::Char('q'),
+                    Modifiers {
+                        meta: true,
+                        control: true,
+                        ..Modifiers::default()
+                    },
+                ),
+            ),
+            _ => (
+                chord(
+                    Key::Tab,
+                    Modifiers {
+                        alt: true,
+                        ..Modifiers::default()
+                    },
+                ),
+                chord(
+                    Key::Char('l'),
+                    Modifiers {
+                        meta: true,
+                        ..Modifiers::default()
+                    },
+                ),
+            ),
+        };
+        assert!(act(&table, &id, &switch).is_ok());
+        assert_eq!(act(&table, &id, &lock), Err(ActDenied::SessionChord));
+        let menu = ComputerActRequest::InvokeMenu {
+            path: vec!["File".into(), "Close".into()],
+        };
+        match act(&table, &id, &menu) {
+            Ok(WindowAction::InvokeMenu { .. }) => assert_ne!(platform, Platform::Windows),
+            Err(ActDenied::MenusUnavailable) => assert_eq!(platform, Platform::Windows),
+            other => panic!("{other:?}"),
+        }
     }
 }

@@ -5190,6 +5190,8 @@
       "actMany": "에이전트가 {count, plural, other {창 #개}}를 조작할 수 있음",
       "readOne": "에이전트가 {app}을(를) 볼 수 있음",
       "readMany": "에이전트가 {count, plural, other {창 #개}}를 볼 수 있음",
+      "readScreen": "에이전트가 전체 화면을 볼 수 있음",
+      "actScreen": "에이전트가 전체 화면을 조작할 수 있음",
       "recent": "{app}: {action}",
       "stop": "공유 중지",
       "stopWithKey": "모든 창의 공유 중지 ({key})"
@@ -5219,7 +5221,9 @@
       "title": "{count, plural, =0 {공유 중인 창 없음} other {창 #개 공유 중}}",
       "empty": "에이전트는 창 목록을 볼 수 있지만, 공유하기 전에는 어떤 창도 읽을 수 없습니다.",
       "stop": "중지",
-      "wholeApp": "앱 전체 · {count, plural, =0 {열린 창 없음} other {창 #개}}"
+      "wholeApp": "앱 전체 · {count, plural, =0 {열린 창 없음} other {창 #개}}",
+      "screen": "전체 화면",
+      "screenWindows": "{count, plural, =0 {아직 창 없음} other {창 #개}}"
     },
     "level": {
       "read": "읽기 가능",
@@ -5284,6 +5288,10 @@
       "wholeAppHint": "{app}의 모든 창(나중에 여는 창 포함)과 메뉴, 단축키",
       "appLevelLabel": "에이전트가 {app} 전체에서 할 수 있는 일",
       "viaApp": "앱과 함께 공유",
+      "screenTitle": "전체 화면",
+      "screenHint": "공유할 수 있는 모든 창(나중에 여는 창 포함)과 데스크톱 자체의 단축키. codeg의 창과 공유 금지 목록의 앱은 항상 가려집니다.",
+      "screenLevelLabel": "에이전트가 전체 화면에서 할 수 있는 일",
+      "viaScreen": "화면과 함께 공유",
       "shareAll": "모두 공유",
       "shareAllRead": "모두 에이전트가 읽도록 허용",
       "shareAllControl": "모두 에이전트가 읽고 조작하도록 허용",
@@ -5400,6 +5408,10 @@
       "clipboard": {
         "label": "에이전트가 클립보드를 사용하도록 허용",
         "hint": "켜면 에이전트가 텍스트를 클립보드에 넣어 붙여넣거나, 공유한 창에서 직접 복사한 내용을 다시 읽을 수 있습니다. 사용자가 직접 복사한 내용은 에이전트에게 읽히지 않으며, 에이전트는 자신이 넣은 내용만 붙여넣을 수 있습니다."
+      },
+      "screen": {
+        "label": "전체 화면 공유 허용",
+        "hint": "켜면 공유 선택기에 '전체 화면'이 나타납니다. 에이전트는 화면 전체를 한 장의 그림으로 보고 어디든 클릭할 수 있으며, 공유할 수 있는 모든 창과 데스크톱 자체의 단축키도 함께 공유됩니다. codeg의 창과 공유 금지 목록의 앱은 항상 가려집니다. 끄면 전체 화면 공유가 끝납니다."
       },
       "boundary": "macOS에서는 권한이 codeg-computer-helper에 부여되고 codeg만 사용할 수 있으므로, 에이전트의 셸은 사용할 수 없습니다. Windows와 Linux에는 이런 분리가 없습니다. 그곳에서 이 설정은 codeg를 통해 에이전트에게 무엇을 넘길지를 정할 뿐, 컴퓨터의 프로그램이 할 수 있는 일을 정하지는 않습니다.",
       "save": "저장",

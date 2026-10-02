@@ -95,6 +95,25 @@ describe("ComputerIndicator", () => {
     await waitFor(() => expect(api.computerStop).toHaveBeenCalled())
   })
 
+  /** The entire screen shared is all of it: the strip says so, whatever
+   * windows go with it, and Stop is there to end it. */
+  it("says when agents may act on the entire screen", async () => {
+    const viaScreen = {
+      ...window_("w1", "TextEdit", "control"),
+      wholeScreen: true,
+    }
+    api.computerSharedState.mockResolvedValue({
+      shared: [viaScreen, { ...viaScreen, targetId: "w2", appName: "Notes" }],
+      apps: [],
+      screen: { level: "control", grantedAt: 1, lastUsedAt: 1, windows: 2 },
+    })
+    mount()
+    expect(
+      await screen.findByText("Agents can act on the entire screen")
+    ).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: /Stop/ })).toBeEnabled()
+  })
+
   it("counts the windows agents may only see", async () => {
     api.computerSharedState.mockResolvedValue({
       shared: [

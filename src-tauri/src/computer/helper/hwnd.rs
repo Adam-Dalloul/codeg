@@ -27,11 +27,12 @@ use std::ffi::c_void;
 use std::ptr;
 
 use windows_sys::core::GUID;
-use windows_sys::Win32::Foundation::{BOOL, HWND};
+use windows_sys::Win32::Foundation::{BOOL, HWND, RECT};
 
 use crate::computer::appident::Com;
 use crate::computer::procinfo::{process_image, process_start_while};
 use crate::computer::protocol::ProcessRun;
+use crate::computer::types::Rect;
 
 /// The class of the window a packaged application draws in.
 const CORE_WINDOW_CLASS: &str = "Windows.UI.Core.CoreWindow";
@@ -79,7 +80,24 @@ extern "system" {
     fn FindWindowExW(parent: HWND, after: HWND, class: *const u16, title: *const u16) -> HWND;
     fn IsIconic(window: HWND) -> BOOL;
     fn ShowWindowAsync(window: HWND, command: i32) -> BOOL;
+    fn EnumWindows(callback: unsafe extern "system" fn(HWND, isize) -> BOOL, param: isize) -> BOOL;
+    fn IsWindowVisible(window: HWND) -> BOOL;
+    fn GetWindowLongW(window: HWND, index: i32) -> i32;
+    fn GetClassNameW(window: HWND, name: *mut u16, capacity: i32) -> i32;
 }
+
+/// `GWL_EXSTYLE`, and the two extended styles of a window every click
+/// passes through: layered and transparent to the pointer.
+const GWL_EXSTYLE: i32 = -20;
+const WS_EX_TRANSPARENT: u32 = 0x0000_0020;
+const WS_EX_LAYERED: u32 = 0x0008_0000;
+
+/// `DWMWA_EXTENDED_FRAME_BOUNDS`: a window's frame as the compositor draws
+/// it, in physical pixels whatever this process's own scaling.
+const DWMWA_EXTENDED_FRAME_BOUNDS: u32 = 9;
+
+/// The most top-level windows one walk of the screen takes in.
+const MAX_SCREEN_WINDOWS: usize = 8192;
 
 /// `SW_SHOWNOACTIVATE`: back to its most recent size and place, without
 /// being made the active window.
@@ -252,21 +270,7 @@ impl Desktop {
 
     /// Whether the compositor hides `window` (see the module note).
     pub fn cloaked(&self, window: u64) -> bool {
-        let Some(window) = handle(window) else {
-            return false;
-        };
-        let mut cloaked = 0u32;
-        // SAFETY: a 4-byte value for the attribute that fills one; a handle
-        // that names no window is answered with an error.
-        let status = unsafe {
-            DwmGetWindowAttribute(
-                window,
-                DWMWA_CLOAKED,
-                (&mut cloaked as *mut u32).cast(),
-                std::mem::size_of::<u32>() as u32,
-            )
-        };
-        status >= 0 && cloaked != 0
+        handle(window).is_some_and(cloaked)
     }
 
     /// Whether `window` is on the virtual desktop on the screen; `None` when
@@ -379,6 +383,113 @@ pub fn restore<E>(
     // helper: whether the window came back is read afterwards.
     unsafe { ShowWindowAsync(window, SW_SHOWNOACTIVATE) };
     Ok(Restore::Asked)
+}
+
+/// One top-level window on the screen, as [`screen_windows`] finds it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ScreenHwnd {
+    /// Its handle, as the driver's window id is.
+    pub id: u64,
+    pub pid: u32,
+    /// Its frame as the compositor draws it, in physical pixels — the units
+    /// the driver's picture of the screen is in.
+    pub frame: Rect,
+    pub class: String,
+    /// A layered overlay every click passes through.
+    pub passes_clicks: bool,
+}
+
+/// Every top-level window on the screen: shown, not minimized, and not
+/// hidden by the compositor.
+pub fn screen_windows() -> Vec<ScreenHwnd> {
+    unsafe extern "system" fn take(window: HWND, param: isize) -> BOOL {
+        // SAFETY: `param` is the vector below, which outlives the walk; the
+        // walk calls back on this thread alone.
+        let windows = unsafe { &mut *(param as *mut Vec<HWND>) };
+        windows.push(window);
+        BOOL::from(windows.len() < MAX_SCREEN_WINDOWS)
+    }
+    let mut windows: Vec<HWND> = Vec::new();
+    // SAFETY: a callback that only adds to the vector `param` points at.
+    unsafe { EnumWindows(take, &mut windows as *mut Vec<HWND> as isize) };
+    windows
+        .into_iter()
+        .filter_map(|window| {
+            // SAFETY: plain queries of a handle; one that has gone since is
+            // answered as no window.
+            let shown = unsafe { IsWindowVisible(window) } != 0 && unsafe { IsIconic(window) } == 0;
+            // SAFETY: as above.
+            let style = unsafe { GetWindowLongW(window, GWL_EXSTYLE) } as u32;
+            if !shown || cloaked(window) {
+                return None;
+            }
+            Some(ScreenHwnd {
+                id: window as usize as u64,
+                pid: owner(window)?,
+                frame: frame(window)?,
+                class: class_of(window),
+                passes_clicks: style & WS_EX_LAYERED != 0 && style & WS_EX_TRANSPARENT != 0,
+            })
+        })
+        .collect()
+}
+
+/// The class `window` was made with; empty when it cannot be read.
+fn class_of(window: HWND) -> String {
+    // A class name is at most 256 characters.
+    let mut name = [0u16; 257];
+    // SAFETY: a buffer of the length given; the answer is the number of
+    // units written without the NUL, 0 for a handle that names no window.
+    let len = unsafe { GetClassNameW(window, name.as_mut_ptr(), name.len() as i32) };
+    usize::try_from(len)
+        .ok()
+        .and_then(|len| name.get(..len))
+        .map(String::from_utf16_lossy)
+        .unwrap_or_default()
+}
+
+/// Whether the compositor hides `window` (see the module note).
+fn cloaked(window: HWND) -> bool {
+    let mut cloaked = 0u32;
+    // SAFETY: a 4-byte value for the attribute that fills one; a handle that
+    // names no window is answered with an error.
+    let status = unsafe {
+        DwmGetWindowAttribute(
+            window,
+            DWMWA_CLOAKED,
+            (&mut cloaked as *mut u32).cast(),
+            std::mem::size_of::<u32>() as u32,
+        )
+    };
+    status >= 0 && cloaked != 0
+}
+
+/// `window`'s frame as the compositor draws it, in physical pixels; `None`
+/// when it has none to draw, or has gone.
+fn frame(window: HWND) -> Option<Rect> {
+    let mut rect = RECT {
+        left: 0,
+        top: 0,
+        right: 0,
+        bottom: 0,
+    };
+    // SAFETY: a RECT for the attribute that fills one; a handle that names
+    // no window is answered with an error.
+    let status = unsafe {
+        DwmGetWindowAttribute(
+            window,
+            DWMWA_EXTENDED_FRAME_BOUNDS,
+            (&mut rect as *mut RECT).cast(),
+            std::mem::size_of::<RECT>() as u32,
+        )
+    };
+    let frame = Rect {
+        x: f64::from(rect.left),
+        y: f64::from(rect.top),
+        width: f64::from(rect.right) - f64::from(rect.left),
+        height: f64::from(rect.bottom) - f64::from(rect.top),
+    };
+    (status >= 0 && !frame.is_empty()).then_some(frame)
 }
 
 /// What a walk turned up: nothing, one (however often it turned up), or

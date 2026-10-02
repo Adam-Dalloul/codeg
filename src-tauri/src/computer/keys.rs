@@ -402,6 +402,50 @@ fn desktop_chord(chord: &Chord, platform: Platform) -> bool {
     }
 }
 
+/// Judge `chord` for the entire screen shared: every chord, the desktop's
+/// own included, except a paste and the few no sharing reaches
+/// ([`never_chord`]).
+pub fn classify_for_screen(chord: &Chord, platform: Platform) -> ChordClass {
+    if classify(chord, platform) == ChordClass::Paste {
+        ChordClass::Paste
+    } else if never_chord(chord, platform) {
+        ChordClass::Beyond
+    } else {
+        ChordClass::Window
+    }
+}
+
+/// The chords no sharing sends: the ones that lock the screen or log out,
+/// and the ones that show every window at once — never-shared ones included,
+/// drawn by the system itself where codeg cannot paint them over.
+fn never_chord(chord: &Chord, platform: Platform) -> bool {
+    let Chord { key, modifiers: m } = *chord;
+    match platform {
+        // Lock Screen (⌃⌘Q), log out (⇧⌘Q, ⌥⇧⌘Q at once); Mission Control
+        // (⌃↑) and the application's windows (⌃↓).
+        Platform::Mac => {
+            (m.meta && key == Key::Char('q') && (m.control || m.shift))
+                || (m.control && matches!(key, Key::Up | Key::Down))
+        }
+        // Lock (Win+L), the secure attention keys (Ctrl+Alt+Delete); Task
+        // View (Win+Tab) and the switcher that stays up (Ctrl+Alt+Tab).
+        Platform::Windows => {
+            (m.meta && matches!(key, Key::Char('l') | Key::Tab))
+                || (m.control
+                    && m.alt
+                    && matches!(key, Key::Delete | Key::Backspace | Key::Tab))
+        }
+        // Lock (Super+L, Ctrl+Alt+L), log out (Ctrl+Alt+Delete), ending the
+        // X server (Ctrl+Alt+Backspace).
+        Platform::Linux => {
+            (m.meta && key == Key::Char('l'))
+                || (m.control
+                    && m.alt
+                    && matches!(key, Key::Char('l') | Key::Delete | Key::Backspace))
+        }
+    }
+}
+
 /// [`pointer_modifiers_allowed`] for a grant on the whole application: Option
 /// too on a Mac — what it reaches beyond the window is the application's —
 /// and still never the Windows / Super key elsewhere.
@@ -660,6 +704,52 @@ mod tests {
             app("v", &["ctrl", "shift"], Platform::Linux),
             ChordClass::Paste
         );
+    }
+
+    /// The entire screen takes the desktop's own chords too — switching
+    /// applications, the launcher — but never locking the screen, logging
+    /// out or showing every window at once, nor a paste.
+    #[test]
+    fn the_entire_screen_takes_all_but_locking_logging_out_and_overviews() {
+        let screen = |key: &str, modifiers: &[&str], platform: Platform| {
+            classify_for_screen(&chord(key, modifiers), platform)
+        };
+        assert_eq!(screen("tab", &["cmd"], Platform::Mac), ChordClass::Window);
+        assert_eq!(screen("space", &["cmd"], Platform::Mac), ChordClass::Window);
+        assert_eq!(screen("q", &["cmd"], Platform::Mac), ChordClass::Window);
+        assert_eq!(
+            screen("q", &["cmd", "ctrl"], Platform::Mac),
+            ChordClass::Beyond
+        );
+        assert_eq!(
+            screen("q", &["cmd", "shift"], Platform::Mac),
+            ChordClass::Beyond
+        );
+        assert_eq!(screen("v", &["cmd"], Platform::Mac), ChordClass::Paste);
+        assert_eq!(screen("up", &["ctrl"], Platform::Mac), ChordClass::Beyond);
+        assert_eq!(screen("down", &["ctrl"], Platform::Mac), ChordClass::Beyond);
+        assert_eq!(screen("left", &["ctrl"], Platform::Mac), ChordClass::Window);
+        assert_eq!(screen("d", &["win"], Platform::Windows), ChordClass::Window);
+        assert_eq!(screen("tab", &["alt"], Platform::Windows), ChordClass::Window);
+        assert_eq!(screen("l", &["win"], Platform::Windows), ChordClass::Beyond);
+        assert_eq!(screen("tab", &["win"], Platform::Windows), ChordClass::Beyond);
+        assert_eq!(
+            screen("tab", &["ctrl", "alt"], Platform::Windows),
+            ChordClass::Beyond
+        );
+        assert_eq!(
+            screen("delete", &["ctrl", "alt"], Platform::Windows),
+            ChordClass::Beyond
+        );
+        assert_eq!(
+            screen("t", &["ctrl", "alt"], Platform::Linux),
+            ChordClass::Window
+        );
+        assert_eq!(
+            screen("l", &["ctrl", "alt"], Platform::Linux),
+            ChordClass::Beyond
+        );
+        assert_eq!(screen("l", &["super"], Platform::Linux), ChordClass::Beyond);
     }
 
     /// Option over the pointer reaches the application's other windows,

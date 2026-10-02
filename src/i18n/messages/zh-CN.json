@@ -5190,6 +5190,8 @@
       "actMany": "智能体可操作 {count, plural, other {# 个窗口}}",
       "readOne": "智能体可查看「{app}」",
       "readMany": "智能体可查看 {count, plural, other {# 个窗口}}",
+      "readScreen": "智能体可查看整个屏幕",
+      "actScreen": "智能体可操作整个屏幕",
       "recent": "{app}：{action}",
       "stop": "停止共享",
       "stopWithKey": "停止共享所有窗口（{key}）"
@@ -5219,7 +5221,9 @@
       "title": "{count, plural, =0 {未共享窗口} other {已共享 # 个窗口}}",
       "empty": "智能体能列出你的窗口，但在你共享之前读不到任何一个。",
       "stop": "停止",
-      "wholeApp": "整个应用 · {count, plural, =0 {没有打开的窗口} other {# 个窗口}}"
+      "wholeApp": "整个应用 · {count, plural, =0 {没有打开的窗口} other {# 个窗口}}",
+      "screen": "整个屏幕",
+      "screenWindows": "{count, plural, =0 {暂无窗口} other {# 个窗口}}"
     },
     "level": {
       "read": "可读取",
@@ -5284,6 +5288,10 @@
       "wholeAppHint": "{app} 的所有窗口（包括之后打开的），以及它的菜单和快捷键",
       "appLevelLabel": "智能体对整个 {app} 的权限",
       "viaApp": "随应用共享",
+      "screenTitle": "整个屏幕",
+      "screenHint": "所有可共享的窗口（包括之后打开的），以及桌面本身的快捷键。codeg 自己的窗口和永不共享名单中的应用始终会被遮盖。",
+      "screenLevelLabel": "智能体对整个屏幕的权限",
+      "viaScreen": "随屏幕共享",
       "shareAll": "全部共享",
       "shareAllRead": "全部允许读取",
       "shareAllControl": "全部允许读取并操作",
@@ -5400,6 +5408,10 @@
       "clipboard": {
         "label": "允许智能体使用剪贴板",
         "hint": "开启后，智能体可以把文本放到剪贴板上再粘贴，也可以读回它自己从你共享的窗口中复制的内容。你自己复制的内容永远不会读给智能体，智能体也只能粘贴它自己放到剪贴板上的内容。"
+      },
+      "screen": {
+        "label": "允许共享整个屏幕",
+        "hint": "开启后，共享选择器中会出现「整个屏幕」：智能体能看到整屏画面并在任意位置点击，所有可共享的窗口也随之共享，连同桌面本身的快捷键。codeg 自己的窗口和永不共享名单中的应用始终会被遮盖。关闭此项会结束整个屏幕的共享。"
       },
       "boundary": "在 macOS 上，权限授予 codeg-computer-helper，只有 codeg 能使用，智能体的命令行用不了。Windows 和 Linux 没有这层隔离：这里的设置决定的是智能体通过 codeg 能拿到什么，而不是电脑上的程序能做什么。",
       "save": "保存",

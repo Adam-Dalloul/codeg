@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use super::protocol::{
     ClipboardUse, HelperError, HelperErrorCode, InstalledApp, OsPermission, PeerCheck,
     PermissionAsked, PermissionReport, ProcessRun, RawAct, RawApp, RawCapture, RawClipboard,
-    RawLaunch, RawSnapshot, RawVerify, RawWindow, WindowAction,
+    RawLaunch, RawSnapshot, RawVerify, RawWindow, ScreenGeometry, ScreenRules, WindowAction,
 };
 use super::types::{ActDelivery, VerifyRequest};
 
@@ -40,6 +40,9 @@ pub enum ActRefusal {
     Paste,
     /// Past the application shared (`HelperErrorCode::BeyondApp`).
     Beyond,
+    /// What it was let through under ended before it went out: the sharing
+    /// was taken back or lowered, or the rules it was judged by changed.
+    Revoked,
 }
 
 /// Why a backend call did not produce an answer.
@@ -234,6 +237,26 @@ pub trait ComputerBackend: Send + Sync {
         delivery: ActDelivery,
         clipboard: ClipboardUse,
         stop: u64,
+    ) -> Result<RawAct, BackendError>;
+
+    /// The entire screen, every window `rules` do not allow painted over.
+    async fn capture_screen(
+        &self,
+        rules: ScreenRules,
+        max_dimension: Option<u32>,
+    ) -> Result<RawCapture, BackendError>;
+
+    /// A pointer action on the entire screen, at points in the pixels of
+    /// the picture `geometry` describes — sent once, as an action, held to
+    /// the Stop count `stop`, and only while `still` says what it was let
+    /// through under still holds, asked once the helper is in hand.
+    async fn act_screen(
+        &self,
+        rules: ScreenRules,
+        action: WindowAction,
+        geometry: ScreenGeometry,
+        stop: u64,
+        still: &(dyn Fn() -> bool + Send + Sync),
     ) -> Result<RawAct, BackendError>;
 
     /// The clipboard's text, while it is still as `expect` names it.

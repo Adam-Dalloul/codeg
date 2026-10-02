@@ -5190,6 +5190,8 @@
       "actMany": "Agenten können in {count, plural, one {# Fenster} other {# Fenstern}} handeln",
       "readOne": "Agenten können {app} sehen",
       "readMany": "Agenten können {count, plural, one {# Fenster} other {# Fenster}} sehen",
+      "readScreen": "Agenten können den ganzen Bildschirm sehen",
+      "actScreen": "Agenten können auf dem ganzen Bildschirm handeln",
       "recent": "{action} in {app}",
       "stop": "Freigabe beenden",
       "stopWithKey": "Freigabe aller Fenster beenden ({key})"
@@ -5219,7 +5221,9 @@
       "title": "{count, plural, =0 {Keine Fenster freigegeben} one {# Fenster freigegeben} other {# Fenster freigegeben}}",
       "empty": "Agenten können deine Fenster auflisten, aber keines lesen, bis du eines freigibst.",
       "stop": "Beenden",
-      "wholeApp": "Ganze App · {count, plural, =0 {kein Fenster offen} one {# Fenster} other {# Fenster}}"
+      "wholeApp": "Ganze App · {count, plural, =0 {kein Fenster offen} one {# Fenster} other {# Fenster}}",
+      "screen": "Ganzer Bildschirm",
+      "screenWindows": "{count, plural, =0 {noch kein Fenster} one {# Fenster} other {# Fenster}}"
     },
     "level": {
       "read": "Darf lesen",
@@ -5284,6 +5288,10 @@
       "wholeAppHint": "Alle Fenster von {app}, auch später geöffnete, dazu ihre Menüs und Tastenkürzel",
       "appLevelLabel": "Was Agenten mit ganz {app} dürfen",
       "viaApp": "Mit der App",
+      "screenTitle": "Ganzer Bildschirm",
+      "screenHint": "Alle Fenster, die du freigeben kannst, auch später geöffnete, und die Tastenkürzel des Desktops selbst. codegs Fenster und die Sperrliste bleiben übermalt.",
+      "screenLevelLabel": "Was Agenten mit dem ganzen Bildschirm dürfen",
+      "viaScreen": "Mit dem Bildschirm",
       "shareAll": "Alle freigeben",
       "shareAllRead": "Agenten alle lesen lassen",
       "shareAllControl": "Agenten alle lesen und darin handeln lassen",
@@ -5400,6 +5408,10 @@
       "clipboard": {
         "label": "Agenten die Zwischenablage nutzen lassen",
         "hint": "Ist dies aktiv, darf ein Agent Text in die Zwischenablage legen, um ihn einzusetzen, und zurücklesen, was er selbst aus einem für ihn freigegebenen Fenster kopiert hat. Was du selbst kopierst, wird nie für einen Agenten gelesen, und ein Agent kann nur einsetzen, was er selbst dort abgelegt hat."
+      },
+      "screen": {
+        "label": "Ganzen Bildschirm anbieten",
+        "hint": "Ist dies aktiv, bietet die Freigabeauswahl den ganzen Bildschirm an: Agenten sehen ein Bild des gesamten Bildschirms und können überall darauf klicken, und alle Fenster, die du freigeben kannst, gehen mit, ebenso die Tastenkürzel des Desktops selbst. codegs Fenster und die Sperrliste bleiben übermalt. Ausschalten beendet die Freigabe des Bildschirms."
       },
       "boundary": "Unter macOS gehen die Berechtigungen an codeg-computer-helper, den nur codeg nutzen kann – die Shells der Agenten können es nicht. Windows und Linux haben keine solche Trennung: Dort legen diese Einstellungen fest, was Agenten über codeg bekommen, nicht was Programme auf deinem Rechner tun können.",
       "save": "Speichern",

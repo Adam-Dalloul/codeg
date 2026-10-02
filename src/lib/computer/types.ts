@@ -66,6 +66,19 @@ export interface SharedWindow {
   wholeApp?: boolean
   /** That application's share, when it is. */
   appId?: string
+  /** Shared with the entire screen ({@link SharedScreen}). */
+  wholeScreen?: boolean
+}
+
+/** The entire screen shared as a whole: every window that may be shared,
+ *  the ones that open later too, and the desktop's own shortcuts — what is
+ *  never shared stays painted over. */
+export interface SharedScreen {
+  level: GrantLevel
+  grantedAt: number
+  lastUsedAt: number
+  /** How many windows are shared with it now. */
+  windows: number
 }
 
 /** An application shared as a whole: every window of it, the ones it opens
@@ -89,6 +102,9 @@ export interface ComputerStatus {
   permissions?: PermissionReport
   codeg?: CodegTccStatus
   shared: SharedWindow[]
+  /** Whether the share picker offers the entire screen: macOS and Windows,
+   *  with its switch on in Settings. */
+  screenOffered?: boolean
 }
 
 export interface Rect {
@@ -118,6 +134,8 @@ export interface PickerWindow {
   wholeApp?: boolean
   /** That application's share, when it is. */
   appId?: string
+  /** Shared with the entire screen. */
+  wholeScreen?: boolean
   notGrantable?: NotGrantable
 }
 
@@ -204,6 +222,9 @@ export interface ComputerToolsSettings {
   /** Whether an agent may read back what it put on the clipboard, and put
    *  text there. Off unless the person turned it on. */
   clipboardEnabled?: boolean
+  /** Whether the share picker offers the entire screen. Off unless the
+   *  person turned it on; turning it off ends the screen's sharing. */
+  screenEnabled?: boolean
   /** How an action goes when the agent does not say; `foreground` is in
    *  force only while `allowForeground` is on, and kept while it is off. */
   defaultDelivery: ComputerDelivery
@@ -268,6 +289,8 @@ export interface DriverInfo {
 export interface ComputerStatePayload {
   shared: SharedWindow[]
   apps?: SharedApp[]
+  /** The entire screen, when it is shared. */
+  screen?: SharedScreen
 }
 
 /** Every shared window, whenever any grant changes. Desktop only. */

@@ -5190,6 +5190,8 @@
       "actMany": "Agents can act on {count, plural, one {# window} other {# windows}}",
       "readOne": "Agents can see {app}",
       "readMany": "Agents can see {count, plural, one {# window} other {# windows}}",
+      "readScreen": "Agents can see the entire screen",
+      "actScreen": "Agents can act on the entire screen",
       "recent": "{action} in {app}",
       "stop": "Stop sharing",
       "stopWithKey": "Stop sharing every window ({key})"
@@ -5219,7 +5221,9 @@
       "title": "{count, plural, =0 {No windows shared} one {# window shared} other {# windows shared}}",
       "empty": "Agents can list your windows but read none of them until you share one.",
       "stop": "Stop",
-      "wholeApp": "Whole app · {count, plural, =0 {no windows open} one {# window} other {# windows}}"
+      "wholeApp": "Whole app · {count, plural, =0 {no windows open} one {# window} other {# windows}}",
+      "screen": "Entire screen",
+      "screenWindows": "{count, plural, =0 {no windows yet} one {# window} other {# windows}}"
     },
     "level": {
       "read": "Can read",
@@ -5284,6 +5288,10 @@
       "wholeAppHint": "Every window of {app}, including ones it opens later, plus its menus and its own shortcuts",
       "appLevelLabel": "What agents may do with all of {app}",
       "viaApp": "With the app",
+      "screenTitle": "Entire screen",
+      "screenHint": "Every window you can share, including ones that open later, and the desktop's own shortcuts. codeg's windows and the never-share list stay painted over.",
+      "screenLevelLabel": "What agents may do with the entire screen",
+      "viaScreen": "With the screen",
       "shareAll": "Share all",
       "shareAllRead": "Let agents read all of them",
       "shareAllControl": "Let agents read and act on all of them",
@@ -5400,6 +5408,10 @@
       "clipboard": {
         "label": "Let agents use the clipboard",
         "hint": "With this on, an agent may put text on the clipboard to paste it, and read back what it copied out of a window you shared with it. What you copied yourself is never read for an agent, and an agent can paste only what it put there itself."
+      },
+      "screen": {
+        "label": "Offer the entire screen",
+        "hint": "With this on, the share picker offers the entire screen: agents see one picture of all of it and can click anywhere on it, and every window you can share goes with it, along with the desktop's own shortcuts. codeg's windows and the never-share list stay painted over. Turning this off ends the screen's sharing."
       },
       "boundary": "On macOS the permissions go to codeg-computer-helper, which only codeg can use, so agents' shells can't. Windows and Linux have no such separation: there these settings decide what agents get through codeg, not what programs on your computer can do.",
       "save": "Save",

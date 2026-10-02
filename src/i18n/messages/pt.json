@@ -5190,6 +5190,8 @@
       "actMany": "Os agentes podem agir em {count, plural, one {# janela} other {# janelas}}",
       "readOne": "Os agentes podem ver {app}",
       "readMany": "Os agentes podem ver {count, plural, one {# janela} other {# janelas}}",
+      "readScreen": "Os agentes podem ver a tela inteira",
+      "actScreen": "Os agentes podem agir na tela inteira",
       "recent": "{action} em {app}",
       "stop": "Parar de compartilhar",
       "stopWithKey": "Parar de compartilhar todas as janelas ({key})"
@@ -5219,7 +5221,9 @@
       "title": "{count, plural, =0 {Nenhuma janela compartilhada} one {# janela compartilhada} other {# janelas compartilhadas}}",
       "empty": "Os agentes podem listar suas janelas, mas não ler nenhuma até você compartilhar uma.",
       "stop": "Parar",
-      "wholeApp": "App inteiro · {count, plural, =0 {nenhuma janela aberta} one {# janela} other {# janelas}}"
+      "wholeApp": "App inteiro · {count, plural, =0 {nenhuma janela aberta} one {# janela} other {# janelas}}",
+      "screen": "Tela inteira",
+      "screenWindows": "{count, plural, =0 {nenhuma janela ainda} one {# janela} other {# janelas}}"
     },
     "level": {
       "read": "Pode ler",
@@ -5284,6 +5288,10 @@
       "wholeAppHint": "Todas as janelas de {app}, inclusive as que abrir depois, além de seus menus e atalhos",
       "appLevelLabel": "O que os agentes podem fazer com todo o {app}",
       "viaApp": "Com o app",
+      "screenTitle": "Tela inteira",
+      "screenHint": "Todas as janelas que você pode compartilhar, inclusive as que abrirem depois, e os atalhos próprios da área de trabalho. As janelas do codeg e a lista de nunca compartilhar continuam cobertas.",
+      "screenLevelLabel": "O que os agentes podem fazer com a tela inteira",
+      "viaScreen": "Com a tela",
       "shareAll": "Compartilhar todas",
       "shareAllRead": "Deixar os agentes lerem todas",
       "shareAllControl": "Deixar os agentes lerem e agirem em todas",
@@ -5400,6 +5408,10 @@
       "clipboard": {
         "label": "Permitir que os agentes usem a área de transferência",
         "hint": "Com isto ativado, um agente pode colocar texto na área de transferência para colá-lo e reler o que copiou de uma janela que você compartilhou com ele. O que você mesmo copia nunca é lido para um agente, e um agente só pode colar o que ele mesmo colocou lá."
+      },
+      "screen": {
+        "label": "Oferecer a tela inteira",
+        "hint": "Com isto ativado, o seletor de compartilhamento oferece a tela inteira: os agentes veem uma única imagem dela e podem clicar em qualquer ponto, e todas as janelas que você pode compartilhar vão junto, além dos atalhos próprios da área de trabalho. As janelas do codeg e a lista de nunca compartilhar continuam cobertas. Desativar encerra o compartilhamento da tela."
       },
       "boundary": "No macOS, as permissões vão para o codeg-computer-helper, que só o codeg pode usar, então o shell dos agentes não pode. O Windows e o Linux não têm essa separação: lá, estes ajustes decidem o que os agentes recebem pelo codeg, não o que os programas do seu computador podem fazer.",
       "save": "Salvar",

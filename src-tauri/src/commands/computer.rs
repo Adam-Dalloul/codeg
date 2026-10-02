@@ -68,8 +68,10 @@ use crate::acp::computer_tools::{
     ERROR_OUT_OF_TARGET, ERROR_PAUSED, ERROR_PERMISSION_MISSING, ERROR_READ_FAILED,
     ERROR_STALE_REF, ERROR_STOPPED, ERROR_UNAVAILABLE, FOREGROUND_NOT_ALLOWED_NOTE, LAUNCHED_NOTE,
     LAUNCH_OFF_NOTE, MENUS_UNAVAILABLE_NOTE, MENU_NEEDS_FRONT_NOTE, NEEDS_ELEMENT_NOTE,
-    NO_DESKTOP_NOTE, OUT_OF_IMAGE_NOTE, PASTE_NOTE, RESTORE_NEEDS_FRONT_NOTE, SECRET_FIELD_NOTE,
-    STOPPED_NOTE,
+    NO_DESKTOP_NOTE, OUT_OF_IMAGE_NOTE, PASTE_NOTE, RESTORE_NEEDS_FRONT_NOTE,
+    SCREEN_CONTROL_REQUIRED_NOTE, SCREEN_GRANT_REQUIRED_NOTE, SCREEN_NEEDS_FRONT_NOTE,
+    SCREEN_NOT_BACKGROUND_NOTE, SCREEN_POINTER_ONLY_NOTE, SCREEN_RULES_CHANGED_NOTE,
+    SCREEN_STALE_CAPTURE_NOTE, SECRET_FIELD_NOTE, SESSION_CHORD_NOTE, STOPPED_NOTE,
 };
 use crate::app_error::AppCommandError;
 use crate::computer::agent::{
@@ -86,16 +88,16 @@ use crate::computer::local::LocalBackend;
 use crate::computer::marker::Marker;
 use crate::computer::procinfo::process_start;
 use crate::computer::protocol::{
-    ClipboardUse, OsPermission, PermissionAsked, PermissionReport, RawAct,
+    ClipboardUse, OsPermission, PermissionAsked, PermissionReport, RawAct, ScreenRules,
 };
 use crate::computer::stop_key::{StopKey, StopKeyStatus};
 use crate::computer::targets::{
     ActDenied, Aim, AppChange, AppTarget, ReadMark, ReadRefusal, ReadTicket, ShareError, SharedApp,
-    SharedWindow, Staleness, TargetTable, WindowIdentity,
+    SharedScreen, SharedWindow, Staleness, TargetTable, WindowIdentity, SCREEN_TARGET_ID,
 };
 use crate::computer::types::{
-    ActDelivery, ActReport, AgentAppRef, AgentAppSummary, ComputerActRequest, Rect, VerifyOutcome,
-    VerifyRequest, WindowCapture, WindowSnapshot, MAX_HOLD_MS, MAX_KEY_REPEAT,
+    ActDelivery, ActReport, AgentAppRef, AgentAppSummary, AgentScreen, ComputerActRequest, Rect,
+    VerifyOutcome, VerifyRequest, WindowCapture, WindowSnapshot, MAX_HOLD_MS, MAX_KEY_REPEAT,
 };
 
 /// How often lapsed grants are swept, so the panel shows a window as no
@@ -221,6 +223,7 @@ fn refused_act(kind: ActRefusal, words: String) -> Refusal {
         ActRefusal::Failed => Refusal::failed(ERROR_ACTION_FAILED, words),
         ActRefusal::Paste => Refusal::refused(ERROR_GRANT_REQUIRED, words),
         ActRefusal::Beyond => Refusal::refused(ERROR_CONTROL_REQUIRED, words),
+        ActRefusal::Revoked => Refusal::refused(ERROR_GRANT_REQUIRED, words),
     }
 }
 
@@ -349,6 +352,27 @@ fn denied(target_id: &str, why: ActDenied) -> Refusal {
             Refusal::failed(ERROR_ACTION_FAILED, MENUS_UNAVAILABLE_NOTE.into())
         }
         ActDenied::BadFrame => Refusal::failed(ERROR_ACTION_FAILED, BAD_FRAME_NOTE.into()),
+        ActDenied::SessionChord => {
+            Refusal::refused(ERROR_CONTROL_REQUIRED, SESSION_CHORD_NOTE.into())
+        }
+        ActDenied::ScreenPointerOnly => {
+            Refusal::failed(ERROR_ACTION_FAILED, SCREEN_POINTER_ONLY_NOTE.into())
+        }
+    }
+}
+
+/// An action on the entire screen refused before anything was sent, in
+/// words about the screen.
+fn screen_denied(why: ActDenied) -> Refusal {
+    match why {
+        ActDenied::GrantRequired | ActDenied::NoSuchTarget => {
+            Refusal::refused(ERROR_GRANT_REQUIRED, SCREEN_GRANT_REQUIRED_NOTE.into())
+        }
+        ActDenied::ControlRequired => {
+            Refusal::refused(ERROR_CONTROL_REQUIRED, SCREEN_CONTROL_REQUIRED_NOTE.into())
+        }
+        ActDenied::Stale(_) => Refusal::failed(ERROR_STALE_REF, SCREEN_STALE_CAPTURE_NOTE.into()),
+        other => denied(SCREEN_TARGET_ID, other),
     }
 }
 
@@ -357,6 +381,15 @@ fn permission_name(permission: OsPermission) -> &'static str {
         OsPermission::Accessibility => "Accessibility",
         OsPermission::ScreenRecording => "Screen Recording",
     }
+}
+
+/// A window or an application asked to change while the entire screen is
+/// shared.
+fn screen_shared_error() -> AppCommandError {
+    AppCommandError::configuration_invalid(
+        "the entire screen is shared, which every window is shared with; change the screen's \
+         sharing instead",
+    )
 }
 
 /// The blocklist the settings `config` make: the defaults less those taken
@@ -368,6 +401,8 @@ fn blocklist_of(config: &ComputerToolsConfig) -> Blocklist {
 /// What a share is decided by: see `ComputerService::policy`.
 struct SharingPolicy {
     enabled: bool,
+    /// The entire screen may be shared.
+    screen_enabled: bool,
     blocklist: Blocklist,
 }
 
@@ -375,6 +410,7 @@ impl SharingPolicy {
     fn of(config: &ComputerToolsConfig) -> Self {
         Self {
             enabled: config.enabled,
+            screen_enabled: config.screen_enabled,
             blocklist: blocklist_of(config),
         }
     }
@@ -462,6 +498,11 @@ fn may_paste(request: &ComputerActRequest) -> bool {
         _ => false,
     }
 }
+
+/// Applications that only show every window at once — never-shared ones
+/// included, drawn by the system where codeg cannot paint them over — which
+/// are never started for an agent: macOS's Mission Control.
+const SHOWS_EVERY_WINDOW: &[&str] = &["com.apple.exposelauncher"];
 
 /// The most text one `computer_clipboard_write` puts on the clipboard.
 const MAX_CLIPBOARD_WRITE_CHARS: usize = 100_000;
@@ -580,8 +621,14 @@ impl ComputerService {
             if before.enabled && !after.enabled {
                 self.targets.revoke_all(GrantChange::Disabled)
             } else {
-                self.targets
-                    .sweep(now_ms(), after.grant_ttl, &self.me, &blocklist_of(after))
+                let mut ended =
+                    self.targets
+                        .sweep(now_ms(), after.grant_ttl, &self.me, &blocklist_of(after));
+                // The entire screen is shared only while its switch is on.
+                if !after.screen_enabled {
+                    ended.absorb(self.targets.end_screen_share(GrantChange::Disabled));
+                }
+                ended
             }
         };
         self.announce_change(ended);
@@ -626,7 +673,9 @@ impl ComputerService {
     fn follow_strip(&self, wanted: bool) {
         let _told = self.state_gate.lock().unwrap_or_else(|p| p.into_inner());
         self.strip_wanted.store(wanted, Ordering::Release);
-        let shared = !self.targets.shared().is_empty() || !self.targets.shared_apps().is_empty();
+        let shared = !self.targets.shared().is_empty()
+            || !self.targets.shared_apps().is_empty()
+            || self.targets.shared_screen().is_some();
         self.indicator.set(Strip::of(shared, wanted));
     }
 
@@ -669,12 +718,22 @@ impl ComputerService {
         true
     }
 
-    /// What is shared now: every window, and the applications shared as a
-    /// whole.
+    /// What is shared now: every window, the applications shared as a
+    /// whole, and the entire screen when it is.
     fn shared_state(&self) -> SharedState {
         SharedState {
             shared: self.targets.shared(),
             apps: self.targets.shared_apps(),
+            screen: self.targets.shared_screen(),
+        }
+    }
+
+    /// The rules the helper judges every window on the screen by, as
+    /// `config` makes them.
+    fn screen_rules(&self, config: &ComputerToolsConfig) -> ScreenRules {
+        ScreenRules {
+            me: self.me.clone(),
+            blocklist: blocklist_of(config).entries().to_vec(),
         }
     }
 
@@ -722,14 +781,16 @@ impl ComputerService {
         let _told = self.state_gate.lock().unwrap_or_else(|p| p.into_inner());
         let shared = self.targets.shared();
         let apps = self.targets.shared_apps();
-        events::emit_state(&self.app, &shared, &apps);
+        let screen = self.targets.shared_screen();
+        events::emit_state(&self.app, &shared, &apps, screen.as_ref());
         self.indicator.set(Strip::of(
-            !shared.is_empty() || !apps.is_empty(),
+            !shared.is_empty() || !apps.is_empty() || screen.is_some(),
             self.strip_wanted.load(Ordering::Acquire),
         ));
         self.marker.arm(
             shared.iter().any(|w| w.level == GrantLevel::Control)
-                || apps.iter().any(|a| a.level == GrantLevel::Control),
+                || apps.iter().any(|a| a.level == GrantLevel::Control)
+                || screen.is_some_and(|s| s.level == GrantLevel::Control),
         );
     }
 
@@ -808,6 +869,7 @@ impl ComputerService {
                 "that window is shared with its whole application; change the application's \
                  sharing instead",
             )),
+            Err(ShareError::ScreenShared) => Err(screen_shared_error()),
         }
     }
 
@@ -843,7 +905,47 @@ impl ComputerService {
                     )
                 }
                 ShareError::NotGrantable(why) => AppCommandError::configuration_invalid(why.note()),
+                ShareError::ScreenShared => screen_shared_error(),
             })
+    }
+
+    /// Share the entire screen, or end its share — as
+    /// [`share_unless_stopped`](Self::share_unless_stopped) shares a window,
+    /// under the same lock and for the same reasons, and only where it is
+    /// offered: macOS and Windows, with its switch on.
+    fn share_screen_unless_stopped(
+        &self,
+        level: GrantLevel,
+        since: u64,
+    ) -> Result<AppChange, AppCommandError> {
+        let _gate = self.grant_gate.lock().unwrap_or_else(|p| p.into_inner());
+        let policy = self.policy.lock().unwrap_or_else(|p| p.into_inner());
+        if level != GrantLevel::None {
+            if !cfg!(any(target_os = "macos", windows)) {
+                return Err(AppCommandError::configuration_invalid(
+                    "the entire screen is not offered on Linux; share windows or applications \
+                     instead",
+                ));
+            }
+            if !policy.enabled {
+                return Err(AppCommandError::configuration_invalid(
+                    "computer use is switched off",
+                ));
+            }
+            if !policy.screen_enabled {
+                return Err(AppCommandError::configuration_invalid(
+                    "sharing the entire screen is switched off in Computer use settings",
+                ));
+            }
+            if self.stopped_since(since) {
+                return Err(AppCommandError::configuration_invalid(
+                    "Stop was pressed while this was being shared; share it again",
+                ));
+            }
+        }
+        Ok(self
+            .targets
+            .share_screen(level, now_ms(), &self.me, &policy.blocklist))
     }
 
     /// Whether a share begun at `since` may still land: computer use on,
@@ -1186,6 +1288,10 @@ impl ComputerService {
                         .filter(|e| e.worth_listing())
                         .map(|e| e.agent_summary(&self.me, &blocklist))
                         .collect(),
+                    screen: self.targets.shared_screen().map(|screen| AgentScreen {
+                        target_id: SCREEN_TARGET_ID.to_string(),
+                        level: screen.level,
+                    }),
                     input: Some(InputPolicy::of(&config)),
                     error: None,
                     note: None,
@@ -1203,6 +1309,9 @@ impl ComputerService {
         target_id: &str,
         max_dimension: Option<u32>,
     ) -> Result<WindowCapture, Refusal> {
+        if target_id == SCREEN_TARGET_ID {
+            return self.capture_screen(max_dimension).await;
+        }
         let _turn = self.turn.lock().await;
         let admitted = self.begin(target_id).await?;
         let ticket = &admitted.ticket;
@@ -1243,6 +1352,75 @@ impl ComputerService {
         })
     }
 
+    /// A picture of the entire screen, for an agent — read as a window is,
+    /// minus the window: the screen shared and its grant in force, then,
+    /// once the helper has taken it, no Stop since, the switch not off since,
+    /// the same sharing of the screen, and nothing added to the never-share
+    /// list while it was taken (the helper painted over what the list said
+    /// when it began).
+    async fn capture_screen(&self, max_dimension: Option<u32>) -> Result<WindowCapture, Refusal> {
+        let _turn = self.turn.lock().await;
+        let stop = self.stop_count();
+        let config = self.usable().await?;
+        let refused =
+            || Refusal::refused(ERROR_GRANT_REQUIRED, SCREEN_GRANT_REQUIRED_NOTE.to_string());
+        let ticket = match self.targets.begin_screen_read(now_ms(), config.grant_ttl) {
+            Ok(ticket) => ticket,
+            Err((_, ended)) => {
+                self.announce_change(ended);
+                return Err(refused());
+            }
+        };
+        let rules = self.screen_rules(&config);
+        let max = max_dimension
+            .unwrap_or(DEFAULT_MAX_DIMENSION)
+            .clamp(1, DEFAULT_MAX_DIMENSION);
+        let raw = self
+            .backend
+            .capture_screen(rules.clone(), Some(max))
+            .await
+            .map_err(|e| self.backend_read_refusal(None, e, stop))?;
+        if self.stopped_since(stop) {
+            return Err(stopped());
+        }
+        let now = self.usable().await?;
+        if now.switched_off != config.switched_off {
+            return Err(refused());
+        }
+        let grew = blocklist_of(&now)
+            .entries()
+            .iter()
+            .any(|entry| !rules.blocklist.contains(entry));
+        if grew {
+            return Err(Refusal::failed(
+                ERROR_READ_FAILED,
+                SCREEN_RULES_CHANGED_NOTE.to_string(),
+            ));
+        }
+        let mark = ReadMark::Capture {
+            width: raw.width,
+            height: raw.height,
+            native_width: raw.native_width,
+            native_height: raw.native_height,
+            full_size: raw.full_size && !raw.window_bounds.is_empty(),
+            window_bounds: raw.window_bounds,
+        };
+        let generation = self
+            .targets
+            .finish_screen_read(&ticket, mark)
+            .map_err(|_| refused())?;
+        Ok(WindowCapture {
+            target_id: SCREEN_TARGET_ID.to_string(),
+            generation,
+            mime: "image/png".to_string(),
+            data: raw.png_base64,
+            width: raw.width,
+            height: raw.height,
+            window_bounds: raw.window_bounds,
+            title: None,
+        })
+    }
+
     pub async fn agent_capture(
         &self,
         target_id: &str,
@@ -1265,6 +1443,12 @@ impl ComputerService {
         target_id: &str,
         request: SnapshotRequest,
     ) -> Result<WindowSnapshot, Refusal> {
+        if target_id == SCREEN_TARGET_ID {
+            return Err(Refusal::failed(
+                ERROR_ACTION_FAILED,
+                SCREEN_POINTER_ONLY_NOTE.to_string(),
+            ));
+        }
         let _turn = self.turn.lock().await;
         let admitted = self.begin(target_id).await?;
         let ticket = &admitted.ticket;
@@ -1277,7 +1461,7 @@ impl ComputerService {
                     max_depth: request.max_depth,
                     max_elements: request.max_elements,
                     query: request.query,
-                    app_menus: ticket.scope == GrantScope::App,
+                    app_menus: ticket.scope != GrantScope::Window,
                 },
             )
             .await
@@ -1344,6 +1528,12 @@ impl ComputerService {
         target_id: &str,
         request: VerifyRequest,
     ) -> Result<VerifyOutcome, Refusal> {
+        if target_id == SCREEN_TARGET_ID {
+            return Err(Refusal::failed(
+                ERROR_ACTION_FAILED,
+                SCREEN_POINTER_ONLY_NOTE.to_string(),
+            ));
+        }
         let _turn = self.turn.lock().await;
         let admitted = self.begin(target_id).await?;
         let ticket = &admitted.ticket;
@@ -1504,6 +1694,81 @@ impl ComputerService {
         })
     }
 
+    /// One action on the entire screen, for an agent: checked as one on a
+    /// window is, minus the window — the screen shared for control and its
+    /// grant in force, every point from its latest picture — and sent once,
+    /// at the front as real input, only where the person allows the front.
+    /// The helper refuses a point on what it painted over.
+    async fn act_on_screen(
+        &self,
+        request: &ComputerActRequest,
+        requested: Option<ActDelivery>,
+    ) -> Result<ActReport, Refusal> {
+        let _turn = self.turn.lock().await;
+        let stop = self.stop_count();
+        let config = self.usable().await?;
+        let ticket = match self
+            .targets
+            .begin_screen_act(now_ms(), config.grant_ttl, request)
+        {
+            Ok(ticket) => ticket,
+            Err((why, ended)) => {
+                self.announce_change(ended);
+                return Err(screen_denied(why));
+            }
+        };
+        if requested == Some(ActDelivery::Background) {
+            return Err(Refusal::failed(
+                ERROR_BACKGROUND_UNAVAILABLE,
+                SCREEN_NOT_BACKGROUND_NOTE.to_string(),
+            ));
+        }
+        if !config.allow_foreground {
+            return Err(Refusal::refused(
+                ERROR_FOREGROUND_NOT_ALLOWED,
+                SCREEN_NEEDS_FRONT_NOTE.to_string(),
+            ));
+        }
+        // The grant was looked at after `stop` was counted, so a Stop in
+        // between either ended it above or shows here.
+        if self.stopped_since(stop) {
+            return Err(stopped());
+        }
+        let rules = self.screen_rules(&config);
+        // Asked again with the helper in hand, just before it goes: the
+        // sharing it was let through under still in force for control, the
+        // switches still on, and nothing added to the never-share list the
+        // helper is to judge the screen by.
+        let epoch = ticket.epoch;
+        let judged_by = rules.blocklist.clone();
+        let still = move || {
+            let _gate = self.grant_gate.lock().unwrap_or_else(|p| p.into_inner());
+            let policy = self.policy.lock().unwrap_or_else(|p| p.into_inner());
+            policy.enabled
+                && policy.screen_enabled
+                && policy
+                    .blocklist
+                    .entries()
+                    .iter()
+                    .all(|entry| judged_by.contains(entry))
+                && self.targets.screen_controlled(epoch)
+        };
+        let raw = self
+            .backend
+            .act_screen(rules, ticket.action, ticket.geometry, stop, &still)
+            .await
+            .map_err(|e| self.backend_act_refusal(SCREEN_TARGET_ID, e, stop))?;
+        Ok(ActReport {
+            target_id: SCREEN_TARGET_ID.to_string(),
+            effect: raw.effect,
+            route: raw.route,
+            delivery: ActDelivery::Foreground,
+            presses: None,
+            submitted: None,
+            submit_note: None,
+        })
+    }
+
     /// Start an installed application for an agent — the one listed under
     /// `key`, or else `name` — in the background, where the person allows
     /// it. Never codeg, nor an application on the blocklist. Its windows are
@@ -1541,6 +1806,21 @@ impl ComputerService {
             None
         };
         let name = found.app.name.clone();
+        let overview = found
+            .app
+            .bundle_id
+            .as_deref()
+            .is_some_and(|id| SHOWS_EVERY_WINDOW.contains(&id));
+        if overview {
+            self.record_app(&name, ComputerAction::Launch, ActivityOutcome::Refused);
+            return ComputerLaunchOutcome::refused(
+                ERROR_BLOCKED,
+                format!(
+                    "{name} is not started for an agent: it shows every window at once, the ones \
+                     that are never shared included. Retrying will not change it."
+                ),
+            );
+        }
         if let Some(why) = blocked {
             self.record_app(&name, ComputerAction::Launch, ActivityOutcome::Refused);
             return ComputerLaunchOutcome::refused(
@@ -1707,6 +1987,18 @@ impl ComputerService {
         delivery: Option<ActDelivery>,
     ) -> ComputerActOutcome {
         let action = ComputerAction::of(&request);
+        if target_id == SCREEN_TARGET_ID {
+            return match self.act_on_screen(&request, delivery).await {
+                Ok(report) => {
+                    self.record(target_id, action, ActivityOutcome::Done);
+                    ComputerActOutcome::done(target_id, report)
+                }
+                Err(r) => {
+                    self.record(target_id, action, r.outcome);
+                    ComputerActOutcome::refused(target_id, r.slug, r.note)
+                }
+            };
+        }
         let presses = Presses::of(&request);
         let mark = |press: &Press| {
             if let Some(at) = press.aim.landing(&press.raw) {
@@ -1947,6 +2239,9 @@ pub struct ComputerStatus {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub codeg: Option<CodegTccStatus>,
     pub shared: Vec<SharedWindow>,
+    /// Whether the share picker offers the entire screen: macOS and
+    /// Windows, with its switch on.
+    pub screen_offered: bool,
 }
 
 /// One window, as the share picker shows it to the person — title and all:
@@ -1970,6 +2265,8 @@ pub struct PickerWindow {
     /// That application's share, when it is.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub app_id: Option<String>,
+    /// Shared with the entire screen.
+    pub whole_screen: bool,
     /// Why it can never be shared, when that is so.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub not_grantable: Option<NotGrantable>,
@@ -2015,6 +2312,7 @@ pub async fn computer_status(app: AppHandle) -> Result<ComputerStatus, AppComman
         permissions,
         codeg: codeg_tcc(),
         shared: service.targets.shared(),
+        screen_offered: cfg!(any(target_os = "macos", windows)) && config.screen_enabled,
     })
 }
 
@@ -2107,6 +2405,10 @@ pub async fn computer_list_shareable_windows(
             (e, whole_app)
         })
         .map(|(e, whole_app)| PickerWindow {
+            whole_screen: e
+                .grant
+                .as_ref()
+                .is_some_and(|g| g.scope == GrantScope::Screen),
             not_grantable: grantable(&e.app, &service.me, &blocklist).err(),
             level: e.grant.as_ref().map_or(GrantLevel::None, |g| g.level),
             app_id: whole_app
@@ -2235,6 +2537,23 @@ pub struct SharedState {
     pub shared: Vec<SharedWindow>,
     /// The applications shared as a whole.
     pub apps: Vec<SharedApp>,
+    /// The entire screen, when it is shared.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub screen: Option<SharedScreen>,
+}
+
+/// Share the entire screen at `level`, or end its share at `none`. Answers
+/// with what is shared now.
+#[tauri::command]
+pub async fn computer_share_screen(
+    app: AppHandle,
+    level: GrantLevel,
+) -> Result<SharedState, AppCommandError> {
+    let service = service(&app)?;
+    let since = service.stop_count();
+    let change = service.share_screen_unless_stopped(level, since)?;
+    service.announce_change(change);
+    Ok(service.shared_state())
 }
 
 /// Share an application as a whole at `level`, or end its share at `none`:

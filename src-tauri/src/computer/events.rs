@@ -16,7 +16,7 @@ use super::agent::{
 use super::backend::BackendStatus;
 use super::driver_admin::DriverInfo;
 use super::stop_key::StopKeyStatus;
-use super::targets::{SharedApp, SharedWindow};
+use super::targets::{SharedApp, SharedScreen, SharedWindow};
 
 /// Every window with a grant in force — the source of truth for the panel.
 pub const STATE_EVENT: &str = "computer://state";
@@ -35,10 +35,24 @@ pub const DRIVER_EVENT: &str = "computer://driver";
 struct StatePayload<'a> {
     shared: &'a [SharedWindow],
     apps: &'a [SharedApp],
+    #[serde(skip_serializing_if = "Option::is_none")]
+    screen: Option<&'a SharedScreen>,
 }
 
-pub fn emit_state(app: &AppHandle, shared: &[SharedWindow], apps: &[SharedApp]) {
-    let _ = app.emit(STATE_EVENT, StatePayload { shared, apps });
+pub fn emit_state(
+    app: &AppHandle,
+    shared: &[SharedWindow],
+    apps: &[SharedApp],
+    screen: Option<&SharedScreen>,
+) {
+    let _ = app.emit(
+        STATE_EVENT,
+        StatePayload {
+            shared,
+            apps,
+            screen,
+        },
+    );
 }
 
 pub fn emit_grant(app: &AppHandle, payload: &ComputerGrantPayload) {
