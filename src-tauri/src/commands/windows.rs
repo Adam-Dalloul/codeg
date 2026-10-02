@@ -381,6 +381,7 @@ fn resolve_settings_route(section: Option<&str>) -> &'static str {
         Some("office-tools") => "settings/office-tools",
         Some("collaboration") => "settings/collaboration",
         Some("browser") => "settings/browser",
+        Some("computer-use") => "settings/computer-use",
         Some("version-control") => "settings/version-control",
         Some("shortcuts") => "settings/shortcuts",
         Some("system") => "settings/system",
@@ -2701,6 +2702,7 @@ mod settings_route_tests {
     /// the fallback below it is Appearance, so a caller wanting the General
     /// page must be able to name it and land there. `collaboration` is where
     /// the codeg-mcp tool switches live in full, and it is what the status-bar
+    /// codeg-mcp popover links to; `computer-use` is what the Computer use
     /// popover links to.
     #[test]
     fn every_named_settings_section_resolves_to_its_own_route() {
@@ -2715,6 +2717,7 @@ mod settings_route_tests {
             "office-tools",
             "collaboration",
             "browser",
+            "computer-use",
             "version-control",
             "shortcuts",
             "system",
