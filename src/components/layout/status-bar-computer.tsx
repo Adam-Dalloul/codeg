@@ -253,7 +253,9 @@ function ComputerPopover() {
     ? stopShortcutLabel(stopKey.active, isMac)
     : null
   const appNameOf = (line: ComputerActivityLine) =>
-    shared.find((w) => w.targetId === line.targetId)?.appName ?? line.targetId
+    line.app ??
+    shared.find((w) => w.targetId === line.targetId)?.appName ??
+    line.targetId
 
   return (
     <>

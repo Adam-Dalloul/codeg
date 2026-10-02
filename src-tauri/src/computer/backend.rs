@@ -10,8 +10,9 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 use super::protocol::{
-    HelperError, HelperErrorCode, OsPermission, PeerCheck, PermissionAsked, PermissionReport,
-    ProcessRun, RawAct, RawApp, RawCapture, RawSnapshot, RawVerify, RawWindow, WindowAction,
+    HelperError, HelperErrorCode, InstalledApp, OsPermission, PeerCheck, PermissionAsked,
+    PermissionReport, ProcessRun, RawAct, RawApp, RawCapture, RawLaunch, RawSnapshot, RawVerify,
+    RawWindow, WindowAction,
 };
 use super::types::{ActDelivery, VerifyRequest};
 
@@ -173,6 +174,18 @@ pub trait ComputerBackend: Send + Sync {
     ) -> Result<PermissionAsked, BackendError>;
 
     async fn list_apps(&self) -> Result<Vec<RawApp>, BackendError>;
+
+    /// The installed application listed under `key`, or else `name`.
+    async fn find_app(
+        &self,
+        name: Option<String>,
+        key: Option<String>,
+    ) -> Result<InstalledApp, BackendError>;
+
+    /// Start `app`, as [`find_app`](Self::find_app) found it, in the
+    /// background — sent once, as an action is, and held to the Stop count
+    /// `stop`: a start cannot be recalled, and is never sent twice.
+    async fn launch_app(&self, app: InstalledApp, stop: u64) -> Result<RawLaunch, BackendError>;
 
     async fn list_windows(&self, pid: Option<u32>) -> Result<Vec<RawWindow>, BackendError>;
 

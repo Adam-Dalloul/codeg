@@ -102,6 +102,7 @@ beforeEach(() => {
       showIndicator: prefs.showIndicator ?? true,
       allowForeground: prefs.allowForeground ?? true,
       defaultDelivery: prefs.defaultDelivery ?? "background",
+      launchEnabled: prefs.launchEnabled ?? false,
     })
   )
   mockStopKey.mockResolvedValue({ active: DEFAULT_KEY })
@@ -518,6 +519,21 @@ describe("ComputerSettingsSection", () => {
     fireEvent.click(screen.getByRole("button", { name: "Save" }))
     await waitFor(() => expect(mockSet).toHaveBeenCalledTimes(1))
     expect(mockSet.mock.calls[0][0]).toEqual({ allowForeground: false })
+  })
+
+  /** Starting applications and moving windows is off until the person
+   *  turns it on; turning it on saves only that. */
+  it("lets agents open applications and move windows, saving only that", async () => {
+    mount()
+    const launch = await screen.findByRole("switch", {
+      name: "Let agents open applications and move windows",
+    })
+    await waitFor(() => expect(launch).not.toBeDisabled())
+    expect(launch).not.toBeChecked()
+    fireEvent.click(launch)
+    fireEvent.click(screen.getByRole("button", { name: "Save" }))
+    await waitFor(() => expect(mockSet).toHaveBeenCalledTimes(1))
+    expect(mockSet.mock.calls[0][0]).toEqual({ launchEnabled: true })
   })
 
   /** A default of the front chosen before shows as Background while the

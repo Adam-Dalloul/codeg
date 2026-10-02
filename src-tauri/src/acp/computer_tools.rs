@@ -141,6 +141,28 @@ impl ComputerAppsOutcome {
     }
 }
 
+/// What `computer_launch_app` answers: the application started, or why not.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ComputerLaunchOutcome {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub app: Option<crate::computer::types::AgentAppRef>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}
+
+impl ComputerLaunchOutcome {
+    pub fn refused(error: &str, note: impl Into<String>) -> Self {
+        Self {
+            app: None,
+            error: Some(error.to_string()),
+            note: Some(note.into()),
+        }
+    }
+}
+
 /// What `computer_list_windows` answers.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -282,6 +304,22 @@ pub const MENU_NEEDS_FRONT_NOTE: &str = "A menu command is chosen with its appli
      the front, and the user has switched that off in codeg's Computer use settings (\"Let agents \
      bring windows to the front\"), so nothing was sent. Ask the user whether to switch it back \
      on — only they can.";
+
+/// Said when starting an application, or moving a window, is asked for and
+/// the person has not switched it on.
+pub const LAUNCH_OFF_NOTE: &str = "Starting applications and moving or sizing windows is \
+     switched off in codeg's Computer use settings (\"Let agents open applications and move \
+     windows\"), so nothing was done. Ask the user whether to switch it on — only they can.";
+
+/// Said with an application started for an agent.
+pub const LAUNCHED_NOTE: &str = "It was started in the background. Its windows are not shared \
+     with you by this: find them with computer_list_windows, and ask the user to share the one \
+     you need — only they can.";
+
+/// Said for a frame no window can have.
+pub const BAD_FRAME_NOTE: &str = "That frame cannot be given to a window: every number must be a \
+     plain number, the width and the height at least 50, and nothing beyond 100000. Use \
+     desktop units, as computer_list_windows gives a window's bounds.";
 
 pub const PASTE_NOTE: &str = "Pasting is not available: the clipboard is the user's own, and \
      what is on it may not come from any window you may read. Type the text with computer_type \
@@ -554,6 +592,10 @@ pub trait ComputerToolAccess: Send + Sync {
         request: ComputerActRequest,
         delivery: Option<ActDelivery>,
     ) -> ComputerActOutcome;
+
+    /// Start an installed application — by its key, or by its name — in the
+    /// background. Its windows are not shared by it.
+    async fn launch_app(&self, name: Option<String>, key: Option<String>) -> ComputerLaunchOutcome;
 }
 
 /// The answer where there is no desktop: server mode, and the stub in every
@@ -594,6 +636,14 @@ impl ComputerToolAccess for NoComputerDesktop {
     ) -> ComputerActOutcome {
         ComputerActOutcome::refused(target_id, ERROR_UNAVAILABLE, NO_DESKTOP_NOTE)
     }
+
+    async fn launch_app(
+        &self,
+        _name: Option<String>,
+        _key: Option<String>,
+    ) -> ComputerLaunchOutcome {
+        ComputerLaunchOutcome::refused(ERROR_UNAVAILABLE, NO_DESKTOP_NOTE)
+    }
 }
 
 /// The computer-use settings as the tool surface reads them, at injection and
@@ -623,6 +673,9 @@ pub struct ComputerToolsConfig {
     /// it — in force only while they allow the front at all (see
     /// [`Self::default_delivery_in_force`]).
     pub default_delivery: ActDelivery,
+    /// Whether an agent may start applications and move or size a shared
+    /// window. Off unless the person turned it on.
+    pub launch_enabled: bool,
     /// How many times the group has been switched off since codeg started.
     /// Kept by [`ComputerToolsRuntimeConfig::set`], never persisted: it is
     /// what lets a watcher that only sees the latest value — a quick off and
@@ -642,6 +695,7 @@ impl Default for ComputerToolsConfig {
             show_indicator: true,
             allow_foreground: true,
             default_delivery: ActDelivery::Background,
+            launch_enabled: false,
             switched_off: 0,
         }
     }
@@ -733,6 +787,13 @@ impl ComputerToolsRuntimeConfig {
 
     pub async fn is_enabled(&self) -> bool {
         self.inner.read().await.enabled
+    }
+
+    /// Whether starting applications and moving windows is offered: computer
+    /// use on, and the person's own switch for it on.
+    pub async fn is_launch_enabled(&self) -> bool {
+        let config = self.inner.read().await;
+        config.enabled && config.launch_enabled
     }
 
     /// Every change from here on.
@@ -888,9 +949,11 @@ mod tests {
             show_indicator: false,
             allow_foreground: true,
             default_delivery: ActDelivery::Foreground,
+            launch_enabled: true,
             switched_off: 0,
         };
         cfg.set(on.clone()).await;
+        assert!(cfg.is_launch_enabled().await);
         assert!(cfg.is_enabled().await);
         assert_eq!(cfg.snapshot().await, on);
         watcher.changed().await.unwrap();

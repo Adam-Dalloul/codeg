@@ -43,7 +43,7 @@ use super::types::{
 /// Bumped whenever a frame changes shape. The helper ships in the same bundle
 /// as codeg, so a mismatch means a broken install (a helper left behind by a
 /// partial update), and codeg refuses to talk to it rather than guess.
-pub const PROTOCOL_VERSION: u32 = 11;
+pub const PROTOCOL_VERSION: u32 = 12;
 
 /// A fingerprint of the sources the helper is built from, the same in codeg
 /// and the helper when both are built from one tree (see `build.rs`). The
@@ -84,6 +84,23 @@ pub enum HelperOp {
     /// that — see [`REQUEST_PERMISSION_ARG`].)
     Permissions,
     ListApps,
+    /// The installed application listed under `key` — its bundle identifier
+    /// or path, as `list_apps` gives them — or else `name`, any case: the one
+    /// application, running or not, that goes by it.
+    #[serde(rename_all = "camelCase")]
+    FindApp {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        key: Option<String>,
+    },
+    /// Start an application [`HelperOp::FindApp`] found, in the background,
+    /// by what the driver listed it under — never by anything an agent
+    /// wrote.
+    #[serde(rename_all = "camelCase")]
+    LaunchApp {
+        app: InstalledApp,
+    },
     /// Every normal window, or only `pid`'s.
     #[serde(rename_all = "camelCase")]
     ListWindows {
@@ -273,6 +290,19 @@ pub enum WindowAction {
     /// for it (macOS and Linux).
     #[serde(rename_all = "camelCase")]
     InvokeMenu { path: Vec<String> },
+    /// Move and size the window, in desktop units: what is given put in
+    /// place of the window's frame as the helper finds it just before.
+    #[serde(rename_all = "camelCase")]
+    SetFrame {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        x: Option<f64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        y: Option<f64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        width: Option<f64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        height: Option<f64>,
+    },
 }
 
 impl WindowAction {
@@ -517,6 +547,28 @@ impl RawApp {
             .filter(|s| !s.is_empty())
             .or(self.path.as_deref().filter(|s| !s.is_empty()))
     }
+}
+
+/// An installed application as the driver lists it: who it is — its bundle
+/// identifier, or its executable — for codeg to judge by, and the command
+/// that starts it, which is not who it is: a launch command carries
+/// arguments, and on Linux may be a wrapper (`flatpak run …`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InstalledApp {
+    pub app: RawApp,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub launch_path: Option<String>,
+}
+
+/// An application started for an agent.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RawLaunch {
+    /// The process, when the driver said.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pid: Option<u32>,
+    pub name: String,
 }
 
 /// One run of a process: its pid, and the start stamp that tells it from a

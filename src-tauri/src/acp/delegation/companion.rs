@@ -48,22 +48,20 @@ use crate::acp::delegation::transport::{
     client_ask_round_trip, client_browser_act_round_trip, client_browser_capture_round_trip,
     client_browser_console_round_trip, client_browser_eval_round_trip,
     client_browser_snapshot_round_trip, client_browser_tab_op_round_trip,
-    client_browser_tabs_round_trip,
-    client_cancel, client_computer_act_round_trip, client_computer_apps_round_trip,
-    client_computer_capture_round_trip, client_computer_snapshot_round_trip,
-    client_computer_verify_round_trip,
-    client_computer_windows_round_trip, client_cancel_task_round_trip, client_commit_feedback,
-    client_create_automation_round_trip, client_create_work_task_round_trip,
-    client_feedback_round_trip, client_resume_task_round_trip, client_round_trip,
-    client_session_round_trip, client_status_round_trip, client_task_complete_round_trip,
-    client_task_progress_round_trip, BrokerAskRequest, BrokerBrowserActRequest, BrokerBrowserCaptureRequest, BrokerBrowserConsoleRequest,
+    client_browser_tabs_round_trip, client_cancel, client_cancel_task_round_trip,
+    client_commit_feedback, client_computer_act_round_trip, client_computer_apps_round_trip,
+    client_computer_capture_round_trip, client_computer_launch_round_trip,
+    client_computer_snapshot_round_trip, client_computer_verify_round_trip,
+    client_computer_windows_round_trip, client_create_automation_round_trip,
+    client_create_work_task_round_trip, client_feedback_round_trip, client_resume_task_round_trip,
+    client_round_trip, client_session_round_trip, client_status_round_trip,
+    client_task_complete_round_trip, client_task_progress_round_trip, BrokerAskRequest,
+    BrokerBrowserActRequest, BrokerBrowserCaptureRequest, BrokerBrowserConsoleRequest,
     BrokerBrowserEvalRequest, BrokerBrowserSnapshotRequest, BrokerBrowserTabOpRequest,
-    BrokerBrowserTabsRequest,
-    BrokerCancelRequest,
-    BrokerCancelTaskRequest, BrokerCommitFeedbackRequest, BrokerComputerActRequest,
-    BrokerComputerAppsRequest,
-    BrokerComputerCaptureRequest, BrokerComputerSnapshotRequest, BrokerComputerVerifyRequest,
-    BrokerComputerWindowsRequest, BrokerCreateAutomationRequest,
+    BrokerBrowserTabsRequest, BrokerCancelRequest, BrokerCancelTaskRequest,
+    BrokerCommitFeedbackRequest, BrokerComputerActRequest, BrokerComputerAppsRequest,
+    BrokerComputerCaptureRequest, BrokerComputerLaunchRequest, BrokerComputerSnapshotRequest,
+    BrokerComputerVerifyRequest, BrokerComputerWindowsRequest, BrokerCreateAutomationRequest,
     BrokerCreateWorkTaskRequest, BrokerFeedbackRequest, BrokerRequest, BrokerResponse,
     BrokerResumeTaskRequest, BrokerSessionRequest, BrokerStatusRequest,
     BrokerTaskCompleteRequest, BrokerTaskProgressRequest,
@@ -196,6 +194,11 @@ pub struct CompanionFeatures {
     /// the applications on the user's screen. Reading a window, and acting on
     /// it, is then gated per window by the person, behind this switch.
     pub computer: bool,
+    /// `computer_launch_app` / `computer_set_window_frame`: starting
+    /// applications and moving windows, on the person's own switch on top
+    /// of `computer`. Never on without it; the parent will not emit it, and
+    /// `allows_tool` requires both.
+    pub computer_launch: bool,
 }
 
 impl CompanionFeatures {
@@ -218,6 +221,7 @@ impl CompanionFeatures {
                 browser: false,
                 browser_eval: false,
                 computer: false,
+                computer_launch: false,
             };
         };
         let mut f = Self {
@@ -231,6 +235,7 @@ impl CompanionFeatures {
             browser: false,
             browser_eval: false,
             computer: false,
+            computer_launch: false,
         };
         for tok in s.split(',').map(str::trim).filter(|t| !t.is_empty()) {
             match tok {
@@ -244,6 +249,7 @@ impl CompanionFeatures {
                 "browser" => f.browser = true,
                 "browser_eval" => f.browser_eval = true,
                 "computer" => f.computer = true,
+                "computer_launch" => f.computer_launch = true,
                 _ => {}
             }
         }
@@ -281,6 +287,9 @@ impl CompanionFeatures {
             | "computer_set_value"
             | "computer_restore"
             | "computer_invoke_menu" => self.computer,
+            "computer_launch_app" | "computer_set_window_frame" => {
+                self.computer && self.computer_launch
+            }
             "delegate_to_agent"
             | "get_delegation_status"
             | "cancel_delegation"
@@ -886,6 +895,29 @@ async fn build_tools_call_spawn(
                 Box::pin(async move { client_browser_tab_op_round_trip(&socket, &req).await });
             register_and_spawn(inflight, id, None, round_trip, render_browser_tab_op_result).await
         }
+        "computer_launch_app" => {
+            let (name, key) = match computer_launch_arguments(&arguments) {
+                Ok(parsed) => parsed,
+                Err(msg) => return LineAction::Respond(err(id, -32602, msg)),
+            };
+            let req = BrokerComputerLaunchRequest {
+                token: ctx.token.clone(),
+                name,
+                key,
+            };
+            // No broker-side cancel: a started application cannot be
+            // recalled, and the line it leaves on the panel must be there.
+            let round_trip =
+                Box::pin(async move { client_computer_launch_round_trip(&socket, &req).await });
+            register_and_spawn(
+                inflight,
+                id,
+                None,
+                round_trip,
+                render_computer_launch_result,
+            )
+            .await
+        }
         "computer_list_apps" => {
             let req = BrokerComputerAppsRequest {
                 token: ctx.token.clone(),
@@ -969,7 +1001,8 @@ async fn build_tools_call_spawn(
         | "computer_hold_key"
         | "computer_set_value"
         | "computer_restore"
-        | "computer_invoke_menu" => {
+        | "computer_invoke_menu"
+        | "computer_set_window_frame" => {
             let (target_id, request, delivery) = match computer_act_request(&name, &arguments) {
                 Ok(parsed) => parsed,
                 Err(msg) => return LineAction::Respond(err(id, -32602, msg)),
@@ -3021,6 +3054,75 @@ fn computer_modifiers(
     }
 }
 
+/// The longest name or key `computer_launch_app` takes.
+const MAX_LAUNCH_NAME: usize = 512;
+
+/// What `computer_launch_app` names: an application's `key` (bundle
+/// identifier or path), or its `name` — at least one, each a non-empty
+/// string, nothing else taken.
+fn computer_launch_arguments(
+    arguments: &Value,
+) -> Result<(Option<String>, Option<String>), String> {
+    const TOOL: &str = "computer_launch_app";
+    if let Some(unknown) = arguments
+        .as_object()
+        .into_iter()
+        .flat_map(|o| o.keys())
+        .find(|k| !matches!(k.as_str(), "name" | "key"))
+    {
+        return Err(format!(
+            "{TOOL} takes no argument `{unknown}`; it takes `name` or `key`"
+        ));
+    }
+    let text = |key: &str| -> Result<Option<String>, String> {
+        match arguments.get(key) {
+            None | Some(Value::Null) => Ok(None),
+            Some(Value::String(v)) => {
+                let v = v.trim();
+                if v.is_empty() || v.chars().count() > MAX_LAUNCH_NAME {
+                    Err(format!(
+                        "{TOOL}: `{key}` must be a name of 1 to {MAX_LAUNCH_NAME} characters"
+                    ))
+                } else {
+                    Ok(Some(v.to_string()))
+                }
+            }
+            Some(_) => Err(format!("{TOOL}: `{key}` must be a string")),
+        }
+    };
+    let (name, key) = (text("name")?, text("key")?);
+    if name.is_none() && key.is_none() {
+        return Err(format!(
+            "{TOOL} requires `name` (as the system lists the application) or `key` (its bundle \
+             identifier or path)"
+        ));
+    }
+    Ok((name, key))
+}
+
+/// Map a `computer_launch_app` outcome into a `tools/call` result.
+pub fn render_computer_launch_result(outcome: &Value) -> Value {
+    let Some(app) = outcome.get("app").filter(|a| a.is_object()) else {
+        return computer_refusal(outcome, "Nothing was started.");
+    };
+    let s = |k: &str| app.get(k).and_then(Value::as_str).unwrap_or("");
+    let pid = app.get("pid").and_then(Value::as_u64).unwrap_or(0);
+    let mut text = if pid > 0 {
+        format!("Started {} (pid {pid}, {}).", s("name"), s("key"))
+    } else {
+        format!("Started {} ({}).", s("name"), s("key"))
+    };
+    if let Some(note) = outcome.get("note").and_then(Value::as_str) {
+        text.push(' ');
+        text.push_str(note);
+    }
+    json!({
+        "content": [{ "type": "text", "text": text }],
+        "isError": false,
+        "structuredContent": outcome.clone(),
+    })
+}
+
 /// The most titles a menu path may have: the drivers' own bound.
 const MAX_MENU_PATH: usize = 16;
 
@@ -3201,6 +3303,7 @@ fn computer_act_arguments(tool: &str) -> &'static [&'static str] {
         "computer_set_value" => &["targetId", "target_id", "ref", "generation", "value"],
         "computer_restore" => &["targetId", "target_id"],
         "computer_invoke_menu" => &["targetId", "target_id", "path"],
+        "computer_set_window_frame" => &["targetId", "target_id", "x", "y", "width", "height"],
         _ => &[],
     }
 }
@@ -3407,6 +3510,35 @@ pub fn computer_act_request(
         "computer_invoke_menu" => ComputerActRequest::InvokeMenu {
             path: computer_menu_path(arguments, tool)?,
         },
+        "computer_set_window_frame" => {
+            let number = |key: &str| -> Result<Option<f64>, String> {
+                match arguments.get(key) {
+                    None | Some(Value::Null) => Ok(None),
+                    Some(v) => v
+                        .as_f64()
+                        .filter(|n| n.is_finite())
+                        .map(Some)
+                        .ok_or_else(|| format!("{tool}: `{key}` must be a number")),
+                }
+            };
+            let (x, y, width, height) = (
+                number("x")?,
+                number("y")?,
+                number("width")?,
+                number("height")?,
+            );
+            if x.is_none() && y.is_none() && width.is_none() && height.is_none() {
+                return Err(format!(
+                    "{tool} requires at least one of `x`, `y`, `width`, `height`"
+                ));
+            }
+            ComputerActRequest::SetFrame {
+                x,
+                y,
+                width,
+                height,
+            }
+        }
         other => return Err(format!("unknown tool: {other}")),
     };
     // Only the tools that take it get this far with one (see
@@ -3691,6 +3823,7 @@ mod tests {
             browser: false,
             browser_eval: false,
             computer: false,
+            computer_launch: false,
         })
     }
 
@@ -4283,8 +4416,9 @@ mod tests {
         automations: false,
         taskboard: false,
         browser: false,
-    browser_eval: false,
-    computer: false,
+        browser_eval: false,
+        computer: false,
+        computer_launch: false,
     };
     const BOTH: CompanionFeatures = CompanionFeatures {
         delegation: true,
@@ -4295,8 +4429,9 @@ mod tests {
         automations: false,
         taskboard: false,
         browser: false,
-    browser_eval: false,
-    computer: false,
+        browser_eval: false,
+        computer: false,
+        computer_launch: false,
     };
     const ASK_ONLY: CompanionFeatures = CompanionFeatures {
         delegation: false,
@@ -4307,8 +4442,9 @@ mod tests {
         automations: false,
         taskboard: false,
         browser: false,
-    browser_eval: false,
-    computer: false,
+        browser_eval: false,
+        computer: false,
+        computer_launch: false,
     };
     const SESSIONS_ONLY: CompanionFeatures = CompanionFeatures {
         delegation: false,
@@ -4319,8 +4455,9 @@ mod tests {
         automations: false,
         taskboard: false,
         browser: false,
-    browser_eval: false,
-    computer: false,
+        browser_eval: false,
+        computer: false,
+        computer_launch: false,
     };
 
     fn list_tool_names(action: LineAction) -> Vec<String> {
@@ -4660,8 +4797,9 @@ mod tests {
         automations: true,
         taskboard: false,
         browser: false,
-    browser_eval: false,
-    computer: false,
+        browser_eval: false,
+        computer: false,
+        computer_launch: false,
     };
     const TASKBOARD_ONLY: CompanionFeatures = CompanionFeatures {
         delegation: false,
@@ -4672,8 +4810,9 @@ mod tests {
         automations: false,
         taskboard: true,
         browser: false,
-    browser_eval: false,
-    computer: false,
+        browser_eval: false,
+        computer: false,
+        computer_launch: false,
     };
 
     /// The two authoring groups gate independently: enabling one must not
@@ -5198,6 +5337,7 @@ mod tests {
         browser: true,
         browser_eval: false,
         computer: false,
+        computer_launch: false,
     };
 
     /// The browser group with `browser_eval` on top, which is the only way
@@ -6039,6 +6179,80 @@ mod tests {
         );
         assert!(CompanionFeatures::parse(Some("sessions,computer")).computer);
         assert!(!CompanionFeatures::parse(Some("browser")).computer);
+
+        // Starting applications and moving windows come with their own
+        // switch, and only with the group.
+        const WITH_LAUNCH: CompanionFeatures = CompanionFeatures {
+            computer_launch: true,
+            ..COMPUTER_ONLY
+        };
+        let names = computer_names(&list_tool_names(
+            dispatch_with_features(WITH_LAUNCH, list).await,
+        ));
+        assert!(names.contains(&"computer_launch_app".to_string()));
+        assert!(names.contains(&"computer_set_window_frame".to_string()));
+        const LAUNCH_WITHOUT_GROUP: CompanionFeatures = CompanionFeatures {
+            computer_launch: true,
+            ..SESSIONS_ONLY
+        };
+        assert!(computer_names(&list_tool_names(
+            dispatch_with_features(LAUNCH_WITHOUT_GROUP, list).await
+        ))
+        .is_empty());
+        assert!(CompanionFeatures::parse(Some("computer,computer_launch")).computer_launch);
+    }
+
+    /// `computer_launch_app` names an application by key or name, strictly;
+    /// `computer_set_window_frame` takes numbers, at least one.
+    #[test]
+    fn launching_and_framing_parse_strictly() {
+        use crate::computer::types::ComputerActRequest;
+        assert_eq!(
+            computer_launch_arguments(&json!({ "name": " Calculator " })),
+            Ok((Some("Calculator".to_string()), None))
+        );
+        assert_eq!(
+            computer_launch_arguments(&json!({ "key": "com.apple.calculator" })),
+            Ok((None, Some("com.apple.calculator".to_string())))
+        );
+        for (bad, says) in [
+            (json!({}), "requires `name`"),
+            (json!({ "name": "  " }), "1 to 512"),
+            (json!({ "name": 3 }), "must be a string"),
+            (json!({ "name": "X", "args": ["-x"] }), "takes no argument"),
+            (
+                json!({ "name": "X", "urls": ["file:///"] }),
+                "takes no argument",
+            ),
+        ] {
+            let e = computer_launch_arguments(&bad).unwrap_err();
+            assert!(e.contains(says), "{bad}: {e}");
+        }
+        let (_, frame, _) = computer_act_request(
+            "computer_set_window_frame",
+            &json!({ "targetId": "w1", "x": 10, "width": 800.5 }),
+        )
+        .unwrap();
+        assert_eq!(
+            frame,
+            ComputerActRequest::SetFrame {
+                x: Some(10.0),
+                y: None,
+                width: Some(800.5),
+                height: None,
+            }
+        );
+        for (bad, says) in [
+            (json!({ "targetId": "w1" }), "at least one"),
+            (json!({ "targetId": "w1", "x": "10" }), "must be a number"),
+            (
+                json!({ "targetId": "w1", "x": 1, "delivery": "foreground" }),
+                "takes no argument",
+            ),
+        ] {
+            let e = computer_act_request("computer_set_window_frame", &bad).unwrap_err();
+            assert!(e.contains(says), "{bad}: {e}");
+        }
     }
 
     /// A call to a computer tool with the group off is an unknown tool, like

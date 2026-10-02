@@ -339,6 +339,9 @@ pub enum ActDenied {
     AppGrantRequired,
     /// A menu command on a system whose driver cannot choose one (Windows).
     MenusUnavailable,
+    /// A frame no window can have: a side under the smallest, or a number
+    /// out of range.
+    BadFrame,
 }
 
 /// How a ref or point is out of date.
@@ -1363,7 +1366,46 @@ fn resolve(entry: &TargetEntry, request: &ComputerActRequest) -> Result<WindowAc
                 path: path.iter().map(|title| title.trim().to_string()).collect(),
             }
         }
+        ComputerActRequest::SetFrame {
+            x,
+            y,
+            width,
+            height,
+        } => {
+            check_frame(*x, *y, *width, *height)?;
+            WindowAction::SetFrame {
+                x: *x,
+                y: *y,
+                width: *width,
+                height: *height,
+            }
+        }
     })
+}
+
+/// Whether what is given of a window's frame could be one: every number
+/// finite, neither side under [`MIN_WINDOW_SIDE`], nothing beyond
+/// [`MAX_WINDOW_EXTENT`]. What is left out the helper takes from the window as
+/// it finds it just before, not from a listing that may be out of date.
+fn check_frame(
+    x: Option<f64>,
+    y: Option<f64>,
+    width: Option<f64>,
+    height: Option<f64>,
+) -> Result<(), ActDenied> {
+    use super::types::{MAX_WINDOW_EXTENT, MIN_WINDOW_SIDE};
+    let place = |n: f64| n.is_finite() && n.abs() <= MAX_WINDOW_EXTENT;
+    let side = |n: f64| n.is_finite() && (MIN_WINDOW_SIDE..=MAX_WINDOW_EXTENT).contains(&n);
+    let given = x.is_some() || y.is_some() || width.is_some() || height.is_some();
+    let fits = x.is_none_or(place)
+        && y.is_none_or(place)
+        && width.is_none_or(side)
+        && height.is_none_or(side);
+    if given && fits {
+        Ok(())
+    } else {
+        Err(ActDenied::BadFrame)
+    }
 }
 
 /// How long a drag's path takes when the agent does not say: the driver's
@@ -1880,6 +1922,39 @@ mod tests {
             .iter()
             .all(|p| p.change == GrantChange::Disabled));
         assert!(table.shared().is_empty());
+    }
+
+    /// What is given of a frame goes to the helper as it is — the rest it
+    /// takes from the window just before — and a frame no window can have is
+    /// refused before anything is sent.
+    #[test]
+    fn a_window_frame_keeps_what_is_not_given() {
+        let table = TargetTable::new();
+        let (id, _, _) = shared_and_read(&table, GrantLevel::Control);
+        let frame = |x, y, width, height| ComputerActRequest::SetFrame {
+            x,
+            y,
+            width,
+            height,
+        };
+        assert_eq!(
+            act(&table, &id, &frame(Some(40.0), None, Some(1024.0), None)),
+            Ok(WindowAction::SetFrame {
+                x: Some(40.0),
+                y: None,
+                width: Some(1024.0),
+                height: None,
+            })
+        );
+        for bad in [
+            frame(None, None, None, None),
+            frame(None, None, Some(10.0), None),
+            frame(Some(f64::NAN), None, None, None),
+            frame(None, Some(-200_000.0), None, None),
+            frame(None, None, None, Some(1e9)),
+        ] {
+            assert_eq!(act(&table, &id, &bad), Err(ActDenied::BadFrame), "{bad:?}");
+        }
     }
 
     // ── applications shared as a whole ─────────────────────────────────────

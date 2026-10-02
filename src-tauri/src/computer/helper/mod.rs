@@ -816,6 +816,14 @@ async fn handle_op(
             let driver = state.driver(stop).await?;
             value(state.list_apps(&driver).await?)
         }
+        HelperOp::FindApp { name, key } => {
+            let driver = state.driver(stop).await?;
+            value(ops::find_app(&driver, name.as_deref(), key.as_deref()).await?)
+        }
+        HelperOp::LaunchApp { app } => {
+            let driver = state.driver(stop).await?;
+            value(ops::launch_app(&driver, &app).await?)
+        }
         HelperOp::ListWindows { pid } => {
             let driver = state.driver(stop).await?;
             value(state.list_windows(&driver, pid).await?)

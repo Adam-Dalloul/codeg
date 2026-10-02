@@ -49,6 +49,7 @@ export async function setComputerToolsPreferences(preferences: {
   showIndicator?: boolean
   allowForeground?: boolean
   defaultDelivery?: ComputerDelivery
+  launchEnabled?: boolean
 }): Promise<ComputerToolsSettings> {
   return getTransport().call("set_computer_tools_preferences", preferences)
 }

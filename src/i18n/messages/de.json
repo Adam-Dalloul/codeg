@@ -5243,6 +5243,8 @@
       "set-value": "Wert setzen",
       "restore": "Wiederherstellen",
       "menu": "Menü",
+      "set-frame": "Fenster verschieben",
+      "launch": "Anwendung öffnen",
       "outcome": {
         "done": "erledigt",
         "refused": "abgelehnt",
@@ -5388,6 +5390,10 @@
         "hintOff": "Immer Hintergrund, solange Agenten keine Fenster nach vorn holen dürfen.",
         "background": "Hintergrund",
         "foreground": "Vordergrund"
+      },
+      "launch": {
+        "label": "Agenten Anwendungen öffnen und Fenster verschieben lassen",
+        "hint": "Ist dies aktiv, darf ein Agent eine installierte Anwendung im Hintergrund starten – nie codeg oder eine der nie freigegebenen – und ein Fenster, in dem er handeln darf, verschieben oder in der Größe ändern. Das Starten einer Anwendung gibt keines ihrer Fenster frei: Das entscheidest weiterhin du."
       },
       "boundary": "Unter macOS gehen die Berechtigungen an codeg-computer-helper, den nur codeg nutzen kann – die Shells der Agenten können es nicht. Windows und Linux haben keine solche Trennung: Dort legen diese Einstellungen fest, was Agenten über codeg bekommen, nicht was Programme auf deinem Rechner tun können.",
       "save": "Speichern",

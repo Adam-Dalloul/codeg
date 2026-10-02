@@ -426,6 +426,49 @@ impl Blocklist {
     }
 }
 
+/// The words of a launch command as a shell would split them: on white
+/// space, a double-quoted stretch kept whole (its quotes dropped). Enough to
+/// find the programs and the names a command carries — the executable, a
+/// wrapper's application id (`flatpak run org.keepassxc.KeePassXC`) — not to
+/// run it.
+pub fn command_words(command: &str) -> Vec<String> {
+    let mut words = Vec::new();
+    let mut word = String::new();
+    let mut quoted = false;
+    for c in command.chars() {
+        match c {
+            '"' => quoted = !quoted,
+            c if c.is_whitespace() && !quoted => {
+                if !word.is_empty() {
+                    words.push(std::mem::take(&mut word));
+                }
+            }
+            c => word.push(c),
+        }
+    }
+    if !word.is_empty() {
+        words.push(word);
+    }
+    words
+}
+
+impl Blocklist {
+    /// Whether any word of a launch command names an application on the
+    /// list — as a whole, or by the file name at the end of a path — the
+    /// executable, an argument, a wrapper's application id. Erring towards
+    /// refusing: a command that so much as mentions one is not started.
+    pub fn matches_command(&self, command: &str) -> bool {
+        command_words(command).iter().any(|word| {
+            let file = word.rsplit(['/', '\\']).find(|part| !part.is_empty());
+            [Some(word.as_str()), file]
+                .into_iter()
+                .flatten()
+                .map(str::to_lowercase)
+                .any(|name| self.entries.binary_search(&name).is_ok())
+        })
+    }
+}
+
 /// Enough about this codeg process to recognise its windows in a listing.
 #[derive(Debug, Clone, Default)]
 pub struct SelfIdentity {
@@ -483,6 +526,22 @@ impl SelfIdentity {
             .into_iter()
             .flatten()
             .any(|mine| same_path(mine, path))
+    }
+
+    /// Whether any word of a launch command is codeg: its bundle
+    /// identifier, an executable of its name, or this very executable or
+    /// bundle.
+    pub fn owns_command(&self, command: &str) -> bool {
+        command_words(command).iter().any(|word| {
+            self.owns(&RawApp {
+                pid: 0,
+                name: String::new(),
+                bundle_id: Some(word.clone()),
+                path: Some(word.clone()),
+                active: false,
+                started_at: None,
+            })
+        })
     }
 }
 
@@ -596,6 +655,10 @@ pub enum ComputerAction {
     Restore,
     /// Chose a command from the application's menus.
     Menu,
+    /// Moved or sized the window.
+    SetFrame,
+    /// Started an application.
+    Launch,
 }
 
 impl ComputerAction {
@@ -612,6 +675,7 @@ impl ComputerAction {
             R::SetValue { .. } => ComputerAction::SetValue,
             R::Restore => ComputerAction::Restore,
             R::InvokeMenu { .. } => ComputerAction::Menu,
+            R::SetFrame { .. } => ComputerAction::SetFrame,
         }
     }
 }
@@ -639,6 +703,10 @@ pub struct ComputerActivityPayload {
     pub outcome: ActivityOutcome,
     /// Unix milliseconds.
     pub at: i64,
+    /// The application, for what is done to one rather than to a window —
+    /// starting it — where `target_id` is empty.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app: Option<String>,
 }
 
 pub const AGENT_ACTIVITY_EVENT: &str = "computer://agent-activity";
@@ -646,6 +714,38 @@ pub const AGENT_ACTIVITY_EVENT: &str = "computer://agent-activity";
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A launch command is read word by word, quotes kept together, and any
+    /// word naming codeg or an application on the list is enough: the
+    /// executable, an argument, a wrapper's application id.
+    #[test]
+    fn a_launch_command_is_judged_by_every_word() {
+        assert_eq!(
+            command_words(r#""C:\Program Files\KeePass\KeePass.exe" C:\vault.kdbx"#),
+            vec![
+                r"C:\Program Files\KeePass\KeePass.exe".to_string(),
+                r"C:\vault.kdbx".to_string()
+            ]
+        );
+        let list = Blocklist::configured(&[], &[]);
+        for command in [
+            r#""C:\Program Files\KeePass\KeePass.exe" C:\vault.kdbx"#,
+            "flatpak run org.keepassxc.KeePassXC",
+            "/snap/bin/keepassxc --minimized",
+            "env FOO=1 bitwarden",
+        ] {
+            assert!(list.matches_command(command), "{command}");
+        }
+        assert!(!list.matches_command("/usr/bin/gnome-calculator"));
+        let me = SelfIdentity {
+            pid: 1,
+            exe: Some(PathBuf::from("/opt/codeg/codeg")),
+            bundle: None,
+        };
+        assert!(me.owns_command(r#""C:\Program Files\codeg\codeg.exe" --flag"#));
+        assert!(me.owns_command("/opt/codeg/codeg"));
+        assert!(!me.owns_command("/usr/bin/gnome-calculator"));
+    }
 
     fn app(pid: u32, bundle: Option<&str>, path: Option<&str>) -> RawApp {
         RawApp {

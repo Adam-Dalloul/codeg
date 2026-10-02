@@ -5243,6 +5243,8 @@
       "set-value": "Valor",
       "restore": "Restaurar",
       "menu": "Menú",
+      "set-frame": "Mover ventana",
+      "launch": "Abrir app",
       "outcome": {
         "done": "hecho",
         "refused": "rechazado",
@@ -5388,6 +5390,10 @@
         "hintOff": "Siempre Segundo plano mientras los agentes no puedan traer ventanas al frente.",
         "background": "Segundo plano",
         "foreground": "Primer plano"
+      },
+      "launch": {
+        "label": "Permitir que los agentes abran aplicaciones y muevan ventanas",
+        "hint": "Con esto activado, un agente puede iniciar en segundo plano una aplicación instalada —nunca codeg ni una de las que nunca se comparten— y mover o cambiar el tamaño de una ventana en la que le permites actuar. Iniciar una aplicación no comparte ninguna de sus ventanas: eso lo sigues decidiendo tú."
       },
       "boundary": "En macOS los permisos se conceden a codeg-computer-helper, que solo puede usar codeg, así que la shell de los agentes no puede. Windows y Linux no tienen esa separación: allí estos ajustes deciden lo que los agentes obtienen a través de codeg, no lo que pueden hacer los programas de tu equipo.",
       "save": "Guardar",

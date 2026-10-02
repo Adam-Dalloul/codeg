@@ -58,14 +58,15 @@ use crate::acp::computer_tools::{
     control_required_note, cut_away_note, grant_required_note, no_pointing_note, no_such_ref_note,
     no_such_target_note, not_actionable_note, permission_missing_note, reshared_note,
     stale_capture_note, stale_snapshot_note, ComputerActOutcome, ComputerAppsOutcome,
-    ComputerCaptureOutcome, ComputerSnapshotOutcome, ComputerToolAccess, ComputerToolsConfig,
-    ComputerToolsRuntimeConfig, ComputerVerifyOutcome, ComputerWindowsOutcome, InputPolicy,
-    SnapshotRequest, DEFAULT_MAX_DIMENSION, DEFAULT_SNAPSHOT_MAX_CHARS, DESKTOP_CHORD_NOTE,
-    DRAG_MODIFIERS_NOTE, ERROR_ACTION_FAILED, ERROR_BACKGROUND_UNAVAILABLE, ERROR_BLOCKED,
-    ERROR_CONTROL_REQUIRED, ERROR_FOREGROUND_NOT_ALLOWED, ERROR_GRANT_REQUIRED,
-    ERROR_NO_SUCH_TARGET, ERROR_OCCLUDED, ERROR_OUT_OF_TARGET, ERROR_PAUSED,
-    ERROR_PERMISSION_MISSING, ERROR_READ_FAILED, ERROR_STALE_REF, ERROR_STOPPED, ERROR_UNAVAILABLE,
-    FOREGROUND_NOT_ALLOWED_NOTE, MENUS_UNAVAILABLE_NOTE, MENU_NEEDS_FRONT_NOTE, NEEDS_ELEMENT_NOTE,
+    ComputerCaptureOutcome, ComputerLaunchOutcome, ComputerSnapshotOutcome, ComputerToolAccess,
+    ComputerToolsConfig, ComputerToolsRuntimeConfig, ComputerVerifyOutcome, ComputerWindowsOutcome,
+    InputPolicy, SnapshotRequest, BAD_FRAME_NOTE, DEFAULT_MAX_DIMENSION,
+    DEFAULT_SNAPSHOT_MAX_CHARS, DESKTOP_CHORD_NOTE, DRAG_MODIFIERS_NOTE, ERROR_ACTION_FAILED,
+    ERROR_BACKGROUND_UNAVAILABLE, ERROR_BLOCKED, ERROR_CONTROL_REQUIRED,
+    ERROR_FOREGROUND_NOT_ALLOWED, ERROR_GRANT_REQUIRED, ERROR_NO_SUCH_TARGET, ERROR_OCCLUDED,
+    ERROR_OUT_OF_TARGET, ERROR_PAUSED, ERROR_PERMISSION_MISSING, ERROR_READ_FAILED,
+    ERROR_STALE_REF, ERROR_STOPPED, ERROR_UNAVAILABLE, FOREGROUND_NOT_ALLOWED_NOTE, LAUNCHED_NOTE,
+    LAUNCH_OFF_NOTE, MENUS_UNAVAILABLE_NOTE, MENU_NEEDS_FRONT_NOTE, NEEDS_ELEMENT_NOTE,
     NO_DESKTOP_NOTE, OUT_OF_IMAGE_NOTE, PASTE_NOTE, RESTORE_NEEDS_FRONT_NOTE, SECRET_FIELD_NOTE,
     STOPPED_NOTE,
 };
@@ -344,6 +345,7 @@ fn denied(target_id: &str, why: ActDenied) -> Refusal {
         ActDenied::MenusUnavailable => {
             Refusal::failed(ERROR_ACTION_FAILED, MENUS_UNAVAILABLE_NOTE.into())
         }
+        ActDenied::BadFrame => Refusal::failed(ERROR_ACTION_FAILED, BAD_FRAME_NOTE.into()),
     }
 }
 
@@ -810,6 +812,21 @@ impl ComputerService {
                 action,
                 outcome,
                 at: now_ms(),
+                app: None,
+            },
+        );
+    }
+
+    /// What was done to an application rather than to a window of it.
+    fn record_app(&self, app: &str, action: ComputerAction, outcome: ActivityOutcome) {
+        events::emit_activity(
+            &self.app,
+            &ComputerActivityPayload {
+                target_id: String::new(),
+                action,
+                outcome,
+                at: now_ms(),
+                app: Some(app.to_string()),
             },
         );
     }
@@ -1296,6 +1313,12 @@ impl ComputerService {
             None => self.stop_count(),
         };
         let config = self.usable().await?;
+        if request.needs_launch_switch() && !config.launch_enabled {
+            return Err(Refusal::refused(
+                ERROR_UNAVAILABLE,
+                LAUNCH_OFF_NOTE.to_string(),
+            ));
+        }
         let blocklist = blocklist_of(&config);
         let ticket = match self.targets.begin_act(
             target_id,
@@ -1358,6 +1381,90 @@ impl ComputerService {
                     &config,
                 )
             })
+    }
+
+    /// Start an installed application for an agent — the one listed under
+    /// `key`, or else `name` — in the background, where the person allows
+    /// it. Never codeg, nor an application on the blocklist. Its windows are
+    /// not shared by it: the person shares them, as any other.
+    pub async fn agent_launch_app(
+        &self,
+        name: Option<String>,
+        key: Option<String>,
+    ) -> ComputerLaunchOutcome {
+        let _turn = self.turn.lock().await;
+        let stop = self.stop_count();
+        let config = match self.usable().await {
+            Ok(config) => config,
+            Err(r) => return ComputerLaunchOutcome::refused(r.slug, r.note),
+        };
+        if !config.launch_enabled {
+            return ComputerLaunchOutcome::refused(ERROR_UNAVAILABLE, LAUNCH_OFF_NOTE);
+        }
+        let found = match self.backend.find_app(name, key).await {
+            Ok(found) => found,
+            Err(e) => {
+                let r = self.backend_read_refusal(None, e, stop);
+                return ComputerLaunchOutcome::refused(r.slug, r.note);
+            }
+        };
+        // Judged by who the application is and by every word of the command
+        // that starts it: a command carries arguments, or a wrapper.
+        let blocklist = blocklist_of(&config);
+        let command = found.launch_path.as_deref().unwrap_or_default();
+        let blocked = if self.me.owns(&found.app) || self.me.owns_command(command) {
+            Some(NotGrantable::Codeg)
+        } else if blocklist.matches(&found.app) || blocklist.matches_command(command) {
+            Some(NotGrantable::Blocklisted)
+        } else {
+            None
+        };
+        let name = found.app.name.clone();
+        if let Some(why) = blocked {
+            self.record_app(&name, ComputerAction::Launch, ActivityOutcome::Refused);
+            return ComputerLaunchOutcome::refused(
+                ERROR_BLOCKED,
+                format!(
+                    "{name} is not started for an agent: {} Retrying will not change it.",
+                    why.note()
+                ),
+            );
+        }
+        if self.stopped_since(stop) {
+            return ComputerLaunchOutcome::refused(ERROR_STOPPED, STOPPED_NOTE);
+        }
+        let key = found
+            .app
+            .key()
+            .or(found.launch_path.as_deref())
+            .unwrap_or_default()
+            .to_string();
+        match self.backend.launch_app(found, stop).await {
+            Ok(raw) => {
+                self.record_app(&raw.name, ComputerAction::Launch, ActivityOutcome::Done);
+                ComputerLaunchOutcome {
+                    app: Some(AgentAppRef {
+                        key,
+                        name: raw.name,
+                        pid: raw.pid.unwrap_or(0),
+                    }),
+                    error: None,
+                    note: Some(LAUNCHED_NOTE.to_string()),
+                }
+            }
+            Err(e) => {
+                self.record_app(&name, ComputerAction::Launch, ActivityOutcome::Failed);
+                let r = if self.stopped_since(stop) {
+                    stopped()
+                } else {
+                    self.backend_refusal(None, e)
+                };
+                ComputerLaunchOutcome::refused(
+                    r.slug,
+                    format!("{} It may or may not have started.", r.note),
+                )
+            }
+        }
     }
 
     /// Act on a window shared for control, brought to the front for it or
@@ -1575,6 +1682,10 @@ impl ComputerToolAccess for McpComputerTools {
 
     async fn verify(&self, target_id: &str, request: VerifyRequest) -> ComputerVerifyOutcome {
         self.service.agent_verify(target_id, request).await
+    }
+
+    async fn launch_app(&self, name: Option<String>, key: Option<String>) -> ComputerLaunchOutcome {
+        self.service.agent_launch_app(name, key).await
     }
 
     async fn act(

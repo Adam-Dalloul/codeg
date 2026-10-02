@@ -339,6 +339,18 @@ pub struct BrokerComputerAppsRequest {
     pub token: String,
 }
 
+/// Start an installed application. Backs `computer_launch_app`. Token-scoped
+/// like the listing; whether it may be done at all is the person's switch,
+/// read on the codeg side.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BrokerComputerLaunchRequest {
+    pub token: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
+}
+
 /// List the normal windows, or one process's. Backs `computer_list_windows`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BrokerComputerWindowsRequest {
@@ -423,6 +435,7 @@ pub enum BrokerMessage {
     ComputerSnapshot(BrokerComputerSnapshotRequest),
     ComputerVerify(BrokerComputerVerifyRequest),
     ComputerAct(BrokerComputerActRequest),
+    ComputerLaunch(BrokerComputerLaunchRequest),
     /// Liveness probe. Unlike every other variant this one is NOT sent by a
     /// companion — it comes from codeg's own service-status check
     /// (`acp::delegation::service`), which is why it carries no `token`: a
@@ -694,6 +707,15 @@ pub async fn client_computer_apps_round_trip(
     req: &BrokerComputerAppsRequest,
 ) -> io::Result<BrokerResponse> {
     message_round_trip(socket_path, &BrokerMessage::ComputerApps(req.clone())).await
+}
+
+/// Dispatch a `computer_launch_app` request and read back the serialized
+/// [`crate::acp::computer_tools::ComputerLaunchOutcome`].
+pub async fn client_computer_launch_round_trip(
+    socket_path: &str,
+    req: &BrokerComputerLaunchRequest,
+) -> io::Result<BrokerResponse> {
+    message_round_trip(socket_path, &BrokerMessage::ComputerLaunch(req.clone())).await
 }
 
 /// Dispatch a `computer_list_windows` request and read back the serialized

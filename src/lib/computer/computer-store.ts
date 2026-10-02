@@ -34,6 +34,8 @@ import {
 
 export interface ComputerActivityLine {
   targetId: string
+  /** The application, for a line about one rather than a window of it. */
+  app?: string
   action: ComputerAction
   outcome: ActivityOutcome
   /** Unix milliseconds of the most recent one. */
@@ -137,6 +139,7 @@ export function recordComputerActivity(payload: ComputerActivityPayload): void {
   const activity =
     head &&
     head.targetId === payload.targetId &&
+    head.app === payload.app &&
     head.action === payload.action &&
     head.outcome === payload.outcome
       ? [

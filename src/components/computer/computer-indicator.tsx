@@ -54,6 +54,8 @@ const ACTIONS: ReadonlySet<ComputerAction> = new Set([
   "set-value",
   "restore",
   "menu",
+  "set-frame",
+  "launch",
 ])
 
 /** Painted before any script runs, so the window never flashes a
@@ -159,7 +161,7 @@ export function ComputerIndicator() {
       ),
     })
 
-  const recentApp = recent ? appOf(recent.targetId) : undefined
+  const recentApp = recent ? (recent.app ?? appOf(recent.targetId)) : undefined
   const shortcut = stopKey?.active
     ? stopShortcutLabel(stopKey.active, isMac)
     : null

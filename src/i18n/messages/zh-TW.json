@@ -5243,6 +5243,8 @@
       "set-value": "設值",
       "restore": "還原視窗",
       "menu": "選單",
+      "set-frame": "移動視窗",
+      "launch": "開啟應用程式",
       "outcome": {
         "done": "完成",
         "refused": "被拒",
@@ -5388,6 +5390,10 @@
         "hintOff": "不允許把視窗切到前景時，一律為背景。",
         "background": "背景",
         "foreground": "前景"
+      },
+      "launch": {
+        "label": "允許智慧體開啟應用程式和移動視窗",
+        "hint": "開啟後，智慧體可以在背景啟動已安裝的應用程式（codeg 和永不分享的應用程式除外），也可以移動你允許它操作的視窗或調整其大小。啟動應用程式不會分享它的任何視窗，是否分享仍由你決定。"
       },
       "boundary": "在 macOS 上，權限授予 codeg-computer-helper，只有 codeg 能使用，智慧體的命令列用不了。Windows 和 Linux 沒有這層隔離：這裡的設定決定的是智慧體透過 codeg 能拿到什麼，而不是電腦上的程式能做什麼。",
       "save": "儲存",

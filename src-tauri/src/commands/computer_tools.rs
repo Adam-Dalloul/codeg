@@ -67,6 +67,11 @@ pub const KEY_COMPUTER_TOOLS_ALLOW_FOREGROUND: &str = "computer_tools.allow_fore
 /// is allowed at all. Absent is `background`.
 pub const KEY_COMPUTER_TOOLS_DEFAULT_DELIVERY: &str = "computer_tools.default_delivery";
 
+/// Whether an agent may start applications and move or size a shared
+/// window, `true` or `false`. Absent is `false`: it changes the person's
+/// desktop beyond the windows they shared.
+pub const KEY_COMPUTER_TOOLS_LAUNCH_ENABLED: &str = "computer_tools.launch_enabled";
+
 /// The grant timeout when the user has chosen none.
 pub const DEFAULT_GRANT_TTL_MINUTES: u32 = 30;
 
@@ -99,6 +104,10 @@ pub struct ComputerToolsSettings {
     /// it is allowed, and kept as chosen while it is not.
     #[serde(default)]
     pub default_delivery: ActDelivery,
+    /// Whether an agent may start applications and move or size a shared
+    /// window.
+    #[serde(default)]
+    pub launch_enabled: bool,
 }
 
 fn default_ttl() -> u32 {
@@ -129,6 +138,7 @@ impl Default for ComputerToolsSettings {
             show_indicator: default_show_indicator(),
             allow_foreground: default_allow_foreground(),
             default_delivery: ActDelivery::Background,
+            launch_enabled: false,
         }
     }
 }
@@ -145,6 +155,7 @@ impl ComputerToolsSettings {
             show_indicator: self.show_indicator,
             allow_foreground: self.allow_foreground,
             default_delivery: self.default_delivery,
+            launch_enabled: self.launch_enabled,
             // Kept by the runtime handle, not by the record.
             switched_off: 0,
         }
@@ -260,6 +271,12 @@ pub async fn load_computer_tools_settings(conn: &DatabaseConnection) -> Computer
     {
         settings.default_delivery = v;
     }
+    if let Some(v) = get(KEY_COMPUTER_TOOLS_LAUNCH_ENABLED)
+        .await
+        .and_then(|r| r.parse().ok())
+    {
+        settings.launch_enabled = v;
+    }
     settings
 }
 
@@ -319,6 +336,8 @@ pub struct ComputerToolsPreferences {
     pub allow_foreground: Option<bool>,
     #[serde(default)]
     pub default_delivery: Option<ActDelivery>,
+    #[serde(default)]
+    pub launch_enabled: Option<bool>,
 }
 
 /// Move the grant timeout, the user's blocklist (their additions and the
@@ -344,6 +363,7 @@ pub async fn set_computer_tools_preferences_core(
         show_indicator,
         allow_foreground,
         default_delivery,
+        launch_enabled,
     } = preferences;
     let blocklist = blocklist
         .map(|list| serde_json::to_string(&normalize_blocklist(list)))
@@ -365,6 +385,7 @@ pub async fn set_computer_tools_preferences_core(
         show_indicator.map(|on| (KEY_COMPUTER_TOOLS_SHOW_INDICATOR, on.to_string())),
         allow_foreground.map(|on| (KEY_COMPUTER_TOOLS_ALLOW_FOREGROUND, on.to_string())),
         default_delivery.map(|d| (KEY_COMPUTER_TOOLS_DEFAULT_DELIVERY, d.as_str().to_string())),
+        launch_enabled.map(|on| (KEY_COMPUTER_TOOLS_LAUNCH_ENABLED, on.to_string())),
     ]
     .into_iter()
     .flatten()
@@ -427,6 +448,10 @@ pub async fn set_computer_tools_settings_core(
         (
             KEY_COMPUTER_TOOLS_DEFAULT_DELIVERY,
             desired.default_delivery.as_str().to_string(),
+        ),
+        (
+            KEY_COMPUTER_TOOLS_LAUNCH_ENABLED,
+            desired.launch_enabled.to_string(),
         ),
     ] {
         app_metadata_service::upsert_value(conn, key, &value)
@@ -507,6 +532,7 @@ pub async fn set_computer_tools_preferences(
     show_indicator: Option<bool>,
     allow_foreground: Option<bool>,
     default_delivery: Option<ActDelivery>,
+    launch_enabled: Option<bool>,
 ) -> Result<ComputerToolsSettings, AppCommandError> {
     let preferences = ComputerToolsPreferences {
         grant_ttl_minutes,
@@ -516,6 +542,7 @@ pub async fn set_computer_tools_preferences(
         show_indicator,
         allow_foreground,
         default_delivery,
+        launch_enabled,
     };
     #[cfg(feature = "tauri-runtime")]
     {
@@ -575,8 +602,10 @@ mod tests {
             show_indicator: false,
             allow_foreground: true,
             default_delivery: ActDelivery::Foreground,
+            launch_enabled: true,
         }
         .into_runtime_config();
+        assert!(cfg.launch_enabled);
         assert_eq!(cfg.grant_ttl, None);
         assert_eq!(cfg.blocklist, vec!["com.example.Vault", "keepass.exe"]);
         // Only a default is taken off, and once.

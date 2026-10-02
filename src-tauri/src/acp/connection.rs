@@ -5246,6 +5246,9 @@ struct CompanionFeatureFlags {
     /// by there being a desktop at all — the windows are the user's screen,
     /// which server mode does not have.
     computer: bool,
+    /// `computer_launch_app` / `computer_set_window_frame`, on the person's
+    /// own switch on top of `computer`.
+    computer_launch: bool,
 }
 
 /// The `--features` value for a companion launch, or `None` when no group is
@@ -5287,6 +5290,10 @@ fn companion_features_arg(flags: CompanionFeatureFlags) -> Option<String> {
     }
     if flags.computer {
         features.push("computer");
+    }
+    // Only ever alongside `computer`, as `browser_eval` with `browser`.
+    if flags.computer && flags.computer_launch {
+        features.push("computer_launch");
     }
     if features.is_empty() {
         return None;
@@ -5396,6 +5403,8 @@ where
         // `cfg!` for the same reason as the browser: the windows are the
         // desktop session's, and the server binary has none.
         computer: cfg!(feature = "tauri-runtime") && injection.computer.is_enabled().await,
+        computer_launch: cfg!(feature = "tauri-runtime")
+            && injection.computer.is_launch_enabled().await,
     };
     // `None` (no feature enabled) short-circuits BEFORE the binary lookup, the
     // token registration and the server append: there is no companion to launch,
@@ -29571,15 +29580,18 @@ mod tests {
                 browser: true,
                 browser_eval: true,
                 computer: true,
+                computer_launch: true,
             }),
             Some(
                 "delegation,feedback,ask,sessions,tasks,automations,taskboard,browser,browser_eval,\
-                 computer"
+                 computer,computer_launch"
                     .to_string()
             )
         );
         // Computer use alone still gets a companion.
         assert_eq!(only(|f| f.computer = true), Some("computer".to_string()));
+        // Its launch switch never travels on its own.
+        assert_eq!(only(|f| f.computer_launch = true), None);
         // `browser_eval` never travels on its own: the companion requires both
         // tokens, and a lone one in an agent's MCP config would read as if it
         // granted something.

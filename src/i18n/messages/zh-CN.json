@@ -5243,6 +5243,8 @@
       "set-value": "设值",
       "restore": "恢复窗口",
       "menu": "菜单",
+      "set-frame": "移动窗口",
+      "launch": "打开应用",
       "outcome": {
         "done": "完成",
         "refused": "被拒",
@@ -5388,6 +5390,10 @@
         "hintOff": "不允许把窗口切到前台时，始终为后台。",
         "background": "后台",
         "foreground": "前台"
+      },
+      "launch": {
+        "label": "允许智能体打开应用和移动窗口",
+        "hint": "开启后，智能体可以在后台启动已安装的应用（codeg 和永不共享的应用除外），也可以移动你允许它操作的窗口或调整其大小。启动应用不会共享它的任何窗口，是否共享仍由你决定。"
       },
       "boundary": "在 macOS 上，权限授予 codeg-computer-helper，只有 codeg 能使用，智能体的命令行用不了。Windows 和 Linux 没有这层隔离：这里的设置决定的是智能体通过 codeg 能拿到什么，而不是电脑上的程序能做什么。",
       "save": "保存",

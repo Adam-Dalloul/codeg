@@ -44,9 +44,9 @@ use super::backend::{
 use super::driver;
 use super::protocol::{
     read_frame, write_frame, HelperError, HelperErrorCode, HelperMessage, HelperOp, HelperReply,
-    HelperRequest, OsPermission, PeerCheck, PermissionAsked, PermissionReport, ProcessRun, RawAct,
-    RawApp, RawCapture, RawSnapshot, RawVerify, RawWindow, WindowAction, PROTOCOL_VERSION,
-    SOURCE_FINGERPRINT, STOP_ALL,
+    HelperRequest, InstalledApp, OsPermission, PeerCheck, PermissionAsked, PermissionReport,
+    ProcessRun, RawAct, RawApp, RawCapture, RawLaunch, RawSnapshot, RawVerify, RawWindow,
+    WindowAction, PROTOCOL_VERSION, SOURCE_FINGERPRINT, STOP_ALL,
 };
 use super::types::{ActDelivery, VerifyRequest};
 
@@ -691,6 +691,37 @@ impl ComputerBackend for LocalBackend {
 
     async fn list_apps(&self) -> Result<Vec<RawApp>, BackendError> {
         self.call(HelperOp::ListApps).await
+    }
+
+    async fn find_app(
+        &self,
+        name: Option<String>,
+        key: Option<String>,
+    ) -> Result<InstalledApp, BackendError> {
+        self.call(HelperOp::FindApp { name, key }).await
+    }
+
+    async fn launch_app(&self, app: InstalledApp, stop: u64) -> Result<RawLaunch, BackendError> {
+        let stopped = || {
+            BackendError::Refused(
+                ActRefusal::Stopped,
+                "The user pressed Stop in codeg's Computer use panel.".into(),
+            )
+        };
+        // As an action: checked before a helper is started for it and again
+        // with the helper in hand, and sent once — a start that may have
+        // happened is not started again.
+        if self.stopped.load(Ordering::Acquire) > stop {
+            return Err(stopped());
+        }
+        let connection = self.connection().await?;
+        if self.stopped.load(Ordering::Acquire) > stop {
+            return Err(stopped());
+        }
+        let reply = connection
+            .request(HelperOp::LaunchApp { app }, stop)
+            .await?;
+        self.decode(reply).await
     }
 
     async fn list_windows(&self, pid: Option<u32>) -> Result<Vec<RawWindow>, BackendError> {

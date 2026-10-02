@@ -668,6 +668,44 @@ pub async fn act(
             deliverable.check()?;
             one(driver, "invoke_menu", args, mode, ACT_TIMEOUT).await
         }
+        WindowAction::SetFrame {
+            x,
+            y,
+            width,
+            height,
+        } => {
+            // What is not given stays as the window is now — read just
+            // before, not taken from a listing an earlier move or the person
+            // has overtaken.
+            let now = listed(driver, pid, window_id)
+                .await?
+                .get("bounds")
+                .and_then(super::ops::rect)
+                .ok_or_else(|| {
+                    HelperError::new(
+                        HelperErrorCode::ActionFailed,
+                        "The window's frame could not be read, so it was not moved.",
+                    )
+                })?;
+            let frame = Rect {
+                x: x.unwrap_or(now.x),
+                y: y.unwrap_or(now.y),
+                width: width.unwrap_or(now.width),
+                height: height.unwrap_or(now.height),
+            };
+            // The driver takes the frame alone: no delivery mode — moving a
+            // window does not bring it forward.
+            let args = json!({
+                "pid": pid,
+                "window_id": window_id,
+                "x": frame.x,
+                "y": frame.y,
+                "width": frame.width,
+                "height": frame.height,
+            });
+            deliverable.check()?;
+            one(driver, "set_window_frame", args, mode, ACT_TIMEOUT).await
+        }
         WindowAction::Restore => {
             deliverable.check()?;
             restore(driver, pid, window_id, mode, deliverable).await

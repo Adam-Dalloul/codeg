@@ -149,6 +149,8 @@ export type ComputerAction =
   | "set-value"
   | "restore"
   | "menu"
+  | "set-frame"
+  | "launch"
 export type ActivityOutcome = "done" | "refused" | "failed"
 
 /** `computer://agent-activity` */
@@ -158,6 +160,9 @@ export interface ComputerActivityPayload {
   outcome: ActivityOutcome
   /** Unix milliseconds. */
   at: number
+  /** The application, for what is done to one rather than to a window —
+   *  starting it — where `targetId` is empty. */
+  app?: string
 }
 
 /** One entry of the default blocklist, as this platform names it. Mirror of
@@ -191,6 +196,9 @@ export interface ComputerToolsSettings {
   /** Whether an agent may have a window brought to the front for an action.
    *  On unless the person switched it off. */
   allowForeground: boolean
+  /** Whether an agent may start applications and move or size a shared
+   *  window. Off unless the person turned it on. */
+  launchEnabled?: boolean
   /** How an action goes when the agent does not say; `foreground` is in
    *  force only while `allowForeground` is on, and kept while it is off. */
   defaultDelivery: ComputerDelivery

@@ -30,7 +30,8 @@ use crate::acp::delegation::transport::{
     BrokerBrowserCaptureRequest, BrokerBrowserConsoleRequest, BrokerBrowserEvalRequest,
     BrokerBrowserSnapshotRequest, BrokerBrowserTabOpRequest, BrokerBrowserTabsRequest,
     BrokerCancelRequest, BrokerCancelTaskRequest, BrokerComputerActRequest,
-    BrokerComputerAppsRequest, BrokerComputerCaptureRequest, BrokerComputerSnapshotRequest,
+    BrokerComputerAppsRequest, BrokerComputerCaptureRequest, BrokerComputerLaunchRequest,
+    BrokerComputerSnapshotRequest,
     BrokerComputerVerifyRequest, BrokerComputerWindowsRequest, BrokerCommitFeedbackRequest,
     BrokerFeedbackRequest, BrokerMessage, BrokerRequest,
     BrokerCreateAutomationRequest, BrokerCreateWorkTaskRequest, BrokerResponse,
@@ -650,6 +651,11 @@ impl DelegationListener {
                 // list must not depend on whether the caller is still there.
                 computer_response(&self.process_computer_act(req).await)?
             }
+            BrokerMessage::ComputerLaunch(req) => {
+                // To its end, as an action: a started application cannot be
+                // recalled either.
+                computer_response(&self.process_computer_launch(req).await)?
+            }
             BrokerMessage::Cancel(cancel) => {
                 self.process_cancel(cancel).await;
                 // Empty ack — the companion only uses this to detect the
@@ -1080,6 +1086,21 @@ impl DelegationListener {
         self.computer
             .act(&req.target_id, req.request, req.delivery)
             .await
+    }
+
+    /// Validate the token and start the application. An invalid token hears
+    /// what a runtime with no desktop hears, and nothing is started.
+    async fn process_computer_launch(
+        &self,
+        req: BrokerComputerLaunchRequest,
+    ) -> crate::acp::computer_tools::ComputerLaunchOutcome {
+        if self.tokens.lookup(&req.token).await.is_none() {
+            return crate::acp::computer_tools::ComputerLaunchOutcome::refused(
+                crate::acp::computer_tools::ERROR_UNAVAILABLE,
+                crate::acp::computer_tools::NO_DESKTOP_NOTE,
+            );
+        }
+        self.computer.launch_app(req.name, req.key).await
     }
 
     /// Validate the token and hand the progress report to the task engine,
@@ -3792,6 +3813,21 @@ mod tests {
             ComputerActOutcome::refused(
                 target_id,
                 crate::acp::computer_tools::ERROR_CONTROL_REQUIRED,
+                "stub",
+            )
+        }
+
+        async fn launch_app(
+            &self,
+            name: Option<String>,
+            key: Option<String>,
+        ) -> crate::acp::computer_tools::ComputerLaunchOutcome {
+            self.calls
+                .lock()
+                .await
+                .push(format!("launch {name:?} {key:?}"));
+            crate::acp::computer_tools::ComputerLaunchOutcome::refused(
+                crate::acp::computer_tools::ERROR_UNAVAILABLE,
                 "stub",
             )
         }

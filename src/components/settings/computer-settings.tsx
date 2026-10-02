@@ -125,6 +125,7 @@ interface Values {
   allowForeground: boolean
   /** As chosen — in force only while `allowForeground` is on. */
   defaultDelivery: ComputerDelivery
+  launchEnabled: boolean
 }
 
 const EMPTY: Values = {
@@ -135,6 +136,7 @@ const EMPTY: Values = {
   showIndicator: true,
   allowForeground: true,
   defaultDelivery: "background",
+  launchEnabled: false,
 }
 
 function fromSettings(settings: ComputerToolsSettings): Values {
@@ -146,6 +148,7 @@ function fromSettings(settings: ComputerToolsSettings): Values {
     showIndicator: settings.showIndicator,
     allowForeground: settings.allowForeground,
     defaultDelivery: settings.defaultDelivery,
+    launchEnabled: settings.launchEnabled ?? false,
   }
 }
 
@@ -174,6 +177,10 @@ function showIndicatorDirty(values: Values, baseline: Values): boolean {
 
 function allowForegroundDirty(values: Values, baseline: Values): boolean {
   return values.allowForeground !== baseline.allowForeground
+}
+
+function launchEnabledDirty(values: Values, baseline: Values): boolean {
+  return values.launchEnabled !== baseline.launchEnabled
 }
 
 function defaultDeliveryDirty(values: Values, baseline: Values): boolean {
@@ -285,6 +292,9 @@ export function ComputerSettingsSection() {
           defaultDelivery: defaultDeliveryDirty(current, base)
             ? prev.defaultDelivery
             : next.defaultDelivery,
+          launchEnabled: launchEnabledDirty(current, base)
+            ? prev.launchEnabled
+            : next.launchEnabled,
         }))
         setBaseline(next)
         setEnabled(remote.enabled)
@@ -311,6 +321,7 @@ export function ComputerSettingsSection() {
   const dirtyShowIndicator = showIndicatorDirty(values, baseline)
   const dirtyAllowForeground = allowForegroundDirty(values, baseline)
   const dirtyDefaultDelivery = defaultDeliveryDirty(values, baseline)
+  const dirtyLaunchEnabled = launchEnabledDirty(values, baseline)
   const dirty =
     dirtyTtl ||
     dirtyBlocklist ||
@@ -318,7 +329,8 @@ export function ComputerSettingsSection() {
     dirtyStopShortcut ||
     dirtyShowIndicator ||
     dirtyAllowForeground ||
-    dirtyDefaultDelivery
+    dirtyDefaultDelivery ||
+    dirtyLaunchEnabled
   const editable = loaded && !saving
 
   const save = useCallback(async () => {
@@ -337,6 +349,7 @@ export function ComputerSettingsSection() {
         defaultDelivery: dirtyDefaultDelivery
           ? values.defaultDelivery
           : undefined,
+        launchEnabled: dirtyLaunchEnabled ? values.launchEnabled : undefined,
       })
       // The save's own broadcast, or another window's after it, may have
       // landed first; the last broadcast is then the newest record there is.
@@ -361,6 +374,7 @@ export function ComputerSettingsSection() {
     dirtyShowIndicator,
     dirtyAllowForeground,
     dirtyDefaultDelivery,
+    dirtyLaunchEnabled,
     t,
   ])
 
@@ -516,6 +530,27 @@ export function ComputerSettingsSection() {
                   </SelectItem>
                 </SelectContent>
               </Select>
+            }
+          />
+        </SettingCard>
+      )}
+
+      {computerAvailable() && (
+        <SettingCard>
+          <SettingRow
+            icon={AppWindow}
+            title={t("launch.label")}
+            description={t("launch.hint")}
+            htmlFor="computer-launch-enabled"
+            control={
+              <Switch
+                id="computer-launch-enabled"
+                checked={values.launchEnabled}
+                onCheckedChange={(launchEnabled) =>
+                  setValues((prev) => ({ ...prev, launchEnabled }))
+                }
+                disabled={!editable}
+              />
             }
           />
         </SettingCard>

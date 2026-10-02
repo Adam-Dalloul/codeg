@@ -449,9 +449,36 @@ pub enum ComputerActRequest {
     /// only for an application shared as a whole.
     #[serde(rename_all = "camelCase")]
     InvokeMenu { path: Vec<String> },
+    /// Move and size the window, in desktop units as listings give a
+    /// window's bounds; what is left out stays as it is.
+    #[serde(rename_all = "camelCase")]
+    SetFrame {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        x: Option<f64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        y: Option<f64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        width: Option<f64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        height: Option<f64>,
+    },
 }
 
+/// The smallest a window may be made, either way, in desktop units.
+pub const MIN_WINDOW_SIDE: f64 = 50.0;
+
+/// The largest a window may be made, either way, and the furthest from the
+/// desktop's origin it may be put.
+pub const MAX_WINDOW_EXTENT: f64 = 100_000.0;
+
 impl ComputerActRequest {
+    /// Whether the action is one the person allows only with "Let agents
+    /// open applications and move their windows" on: it changes where the
+    /// person's own windows are.
+    pub fn needs_launch_switch(&self) -> bool {
+        matches!(self, Self::SetFrame { .. })
+    }
+
     /// Whether the window can be brought to the front for this action
     /// ([`ActDelivery::Foreground`]). A value is set through the
     /// application's accessibility interface, which no window has to be in

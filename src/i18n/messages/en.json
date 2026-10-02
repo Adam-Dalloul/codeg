@@ -5243,6 +5243,8 @@
       "set-value": "Set value",
       "restore": "Restore",
       "menu": "Menu",
+      "set-frame": "Move window",
+      "launch": "Open app",
       "outcome": {
         "done": "done",
         "refused": "refused",
@@ -5388,6 +5390,10 @@
         "hintOff": "Always Background while agents may not bring windows to the front.",
         "background": "Background",
         "foreground": "Foreground"
+      },
+      "launch": {
+        "label": "Let agents open applications and move windows",
+        "hint": "With this on, an agent may start an installed application in the background — never codeg or one of the apps that are never shared — and move or resize a window you let it act on. Starting an application shares none of its windows: that is still yours to decide."
       },
       "boundary": "On macOS the permissions go to codeg-computer-helper, which only codeg can use, so agents' shells can't. Windows and Linux have no such separation: there these settings decide what agents get through codeg, not what programs on your computer can do.",
       "save": "Save",

@@ -5243,6 +5243,8 @@
       "set-value": "Valeur",
       "restore": "Restaurer",
       "menu": "Menu",
+      "set-frame": "Déplacer la fenêtre",
+      "launch": "Ouvrir l'application",
       "outcome": {
         "done": "fait",
         "refused": "refusé",
@@ -5388,6 +5390,10 @@
         "hintOff": "Toujours Arrière-plan tant que les agents ne peuvent pas mettre de fenêtres au premier plan.",
         "background": "Arrière-plan",
         "foreground": "Premier plan"
+      },
+      "launch": {
+        "label": "Autoriser les agents à ouvrir des applications et à déplacer des fenêtres",
+        "hint": "Avec cette option, un agent peut lancer en arrière-plan une application installée — jamais codeg ni une des applications jamais partagées — et déplacer ou redimensionner une fenêtre sur laquelle vous le laissez agir. Lancer une application ne partage aucune de ses fenêtres : cela reste votre décision."
       },
       "boundary": "Sous macOS, les autorisations vont à codeg-computer-helper, que seul codeg peut utiliser : le shell des agents ne le peut pas. Windows et Linux n'ont pas cette séparation : là, ces réglages décident de ce que les agents obtiennent via codeg, pas de ce que les programmes de votre ordinateur peuvent faire.",
       "save": "Enregistrer",
