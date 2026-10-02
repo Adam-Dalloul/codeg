@@ -384,6 +384,18 @@ async fn async_main() -> ExitCode {
             );
         }
     }
+    // A server an earlier install.ps1 put in %LOCALAPPDATA%\codeg shares that
+    // folder with the desktop app once it is installed there too: each
+    // install replaces the other's codeg-mcp.exe, codeg-computer-helper.exe
+    // and web\. install.ps1 moves the server out.
+    #[cfg(windows)]
+    if std::env::current_exe().is_ok_and(|exe| beside_the_desktop_app(&exe)) {
+        eprintln!(
+            "[SERVER] This codeg-server is in the codeg desktop app's folder, where each \
+             replaces the other's codeg-mcp.exe, codeg-computer-helper.exe and web\\. Re-run \
+             install.ps1 to move it to %LOCALAPPDATA%\\codeg-server."
+        );
+    }
     // Before accepting connections: keep ACP model terminal fallbacks aligned
     // with the same default-shell preference the built-in terminal uses, and
     // seed the command-color opt-in that every launch env is built from.
@@ -728,6 +740,13 @@ fn has_desktop_session() -> bool {
     }
 }
 
+/// Whether `exe` sits beside the desktop app's `codeg.exe`.
+#[cfg(any(windows, test))]
+fn beside_the_desktop_app(exe: &std::path::Path) -> bool {
+    exe.parent()
+        .is_some_and(|dir| dir.join("codeg.exe").is_file())
+}
+
 fn default_data_dir() -> PathBuf {
     dirs::data_dir()
         .map(|d| d.join("codeg"))
@@ -737,6 +756,20 @@ fn default_data_dir() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Only the desktop app's own executable beside the server counts.
+    #[test]
+    fn a_server_beside_the_desktop_app_is_told_apart() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join("codeg-server.exe");
+        std::fs::write(&exe, b"").unwrap();
+        assert!(!beside_the_desktop_app(&exe));
+        std::fs::write(dir.path().join("codeg-mcp.exe"), b"").unwrap();
+        std::fs::create_dir(dir.path().join("codeg")).unwrap();
+        assert!(!beside_the_desktop_app(&exe));
+        std::fs::write(dir.path().join("codeg.exe"), b"").unwrap();
+        assert!(beside_the_desktop_app(&exe));
+    }
 
     /// Computer use is offered only when the variable says so in words —
     /// anything else, unset included, is no.
