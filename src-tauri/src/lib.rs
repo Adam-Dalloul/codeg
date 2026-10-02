@@ -29,6 +29,7 @@ pub mod backgrounds;
 pub mod browser;
 pub mod chat_channel;
 pub mod commands;
+pub mod computer;
 pub mod db;
 pub mod deep_link;
 pub mod folder_links;
@@ -558,12 +559,20 @@ mod tauri_app {
             // by an older build would call `set_decorations(true)` after the
             // window is built and re-add the native title bar on top of the
             // app's own toolbar — the Linux "double title bar".
+            //
+            // Computer use's strip and action marker are placed by codeg each
+            // time they are made and must never come back where (or as
+            // visible as) a previous run left them.
             .plugin(
                 tauri_plugin_window_state::Builder::new()
                     .with_state_flags(
                         tauri_plugin_window_state::StateFlags::all()
                             & !tauri_plugin_window_state::StateFlags::DECORATIONS,
                     )
+                    .with_denylist(&[
+                        crate::computer::indicator::INDICATOR_LABEL,
+                        crate::computer::marker::MARKER_LABEL,
+                    ])
                     .build(),
             )
             .plugin(tauri_plugin_deep_link::init())
@@ -572,6 +581,9 @@ mod tauri_app {
             .plugin(tauri_plugin_updater::Builder::new().build())
             .plugin(tauri_plugin_process::init())
             .plugin(tauri_plugin_notification::init())
+            // Computer use's stop shortcut. Registered from Rust alone; no
+            // webview is granted the plugin's commands.
+            .plugin(tauri_plugin_global_shortcut::Builder::new().build())
             // "Launch at login". LaunchAgent rather than AppleScript on macOS:
             // writing `~/Library/LaunchAgents/codeg.plist` needs no Automation
             // consent prompt, where scripting System Events does. No extra
@@ -1036,6 +1048,7 @@ mod tauri_app {
                         session_info_config,
                         chat_authoring_config,
                         browser_tools_config,
+                        computer_tools_config,
                     ) = crate::app_state::build_delegation_stack(
                         &cm_state,
                         db_conn.clone(),
@@ -1048,6 +1061,11 @@ mod tauri_app {
                     app.manage(session_info_config.clone());
                     app.manage(chat_authoring_config.clone());
                     app.manage(browser_tools_config.clone());
+                    // The desktop app always serves computer use (its service
+                    // starts below): said now, before any session could be
+                    // started and ask whether to offer the tools.
+                    computer_tools_config.mark_served();
+                    app.manage(computer_tools_config.clone());
                     app.manage(crate::commands::delegation::DelegationSocketPath(
                         socket_path.clone(),
                     ));
@@ -1061,6 +1079,7 @@ mod tauri_app {
                     let session_info_for_init = session_info_config.clone();
                     let chat_authoring_for_init = chat_authoring_config.clone();
                     let browser_tools_for_init = browser_tools_config.clone();
+                    let computer_tools_for_init = computer_tools_config.clone();
                     tauri::async_runtime::block_on(async move {
                         delegation_commands::apply_persisted_config(
                             &db_for_init,
@@ -1092,7 +1111,23 @@ mod tauri_app {
                             &browser_tools_for_init,
                         )
                         .await;
+                        crate::commands::computer_tools::apply_persisted_computer_tools_config(
+                            &db_for_init,
+                            &computer_tools_for_init,
+                        )
+                        .await;
                     });
+
+                    // Computer use: the helper, the window table, and the two
+                    // background duties (end every grant when the group is
+                    // switched off; end grants that go unused). Started after
+                    // the persisted settings are applied, so the watcher's
+                    // first view of the switch is the stored one.
+                    let computer_service = crate::commands::computer::ComputerService::start(
+                        crate::commands::computer::ComputerHost::Desktop(app.handle().clone()),
+                        computer_tools_config.clone(),
+                    );
+                    app.manage(computer_service.clone());
 
                     let listener_broker = broker.clone();
                     let listener = crate::acp::delegation::listener::DelegationListener::new(
@@ -1138,6 +1173,9 @@ mod tauri_app {
                                 browser_tools_config.clone(),
                             ),
                         ),
+                        std::sync::Arc::new(crate::commands::computer::McpComputerTools::new(
+                            computer_service,
+                        )),
                     );
                     // Bind through the service handle rather than a bare
                     // `listener.run` spawn: it keeps the bind error and the
@@ -1839,6 +1877,28 @@ mod tauri_app {
                 chat_authoring_commands::set_chat_authoring_settings,
                 crate::commands::browser_tools::get_browser_tools_settings,
                 crate::commands::browser_tools::set_browser_tools_settings,
+                crate::commands::computer_tools::get_computer_tools_settings,
+                crate::commands::computer_tools::set_computer_tools_settings,
+                crate::commands::computer_tools::set_computer_tools_enabled,
+                crate::commands::computer_tools::set_computer_tools_preferences,
+                crate::commands::computer::computer_status,
+                crate::commands::computer::computer_request_permission,
+                crate::commands::computer::computer_open_permission_settings,
+                crate::commands::computer::computer_reveal_helper,
+                crate::commands::computer::computer_list_shareable_windows,
+                crate::commands::computer::computer_window_thumbnail,
+                crate::commands::computer::computer_share_window,
+                crate::commands::computer::computer_share_windows,
+                crate::commands::computer::computer_share_app,
+                crate::commands::computer::computer_share_screen,
+                crate::commands::computer::computer_revoke_all,
+                crate::commands::computer::computer_stop,
+                crate::commands::computer::computer_shared_state,
+                crate::commands::computer::computer_stop_key_status,
+                crate::commands::computer::computer_indicator_fit,
+                crate::commands::computer::computer_driver_info,
+                crate::commands::computer::computer_driver_install,
+                crate::commands::computer::computer_driver_uninstall,
                 version_control::detect_git,
                 version_control::test_git_path,
                 version_control::get_git_settings,

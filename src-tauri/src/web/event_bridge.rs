@@ -176,6 +176,13 @@ pub const SESSION_INFO_SETTINGS_CHANGED_EVENT: &str = "session-info-settings://c
 /// (`{ "enabled": bool }`).
 pub const BROWSER_TOOLS_SETTINGS_CHANGED_EVENT: &str = "browser-tools-settings://changed";
 
+/// Global side-channel announcing a change to the computer-use settings (the
+/// group switch, the grant timeout, the blocklist). Same cross-window
+/// rationale as [`SESSION_INFO_SETTINGS_CHANGED_EVENT`]. Payload:
+/// `ComputerToolsSettings`. Carries no window titles or anything else about
+/// the screen, so it is safe on the web broadcaster too.
+pub const COMPUTER_TOOLS_SETTINGS_CHANGED_EVENT: &str = "computer-tools-settings://changed";
+
 /// Global side-channel announcing a chat-authoring enable/disable
 /// (`create_automation` / `create_work_task`). Same cross-window rationale as
 /// [`SESSION_INFO_SETTINGS_CHANGED_EVENT`]. Payload: `ChatAuthoringSettings`
