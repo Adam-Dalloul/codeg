@@ -1159,8 +1159,10 @@ impl SessionState {
                 self.pending_permission = None;
                 // A blocked `ask_user_question` can't outlive its turn: if the
                 // turn ends (cancel / stop) the card is moot. The backend's
-                // answer one-shot is cleaned via the listener's peer-close race;
-                // this just keeps the snapshot honest.
+                // answer one-shot is declined by the connection loop right after
+                // this event (see the turn exit's question sweep) — usually the
+                // listener's peer-close got there first; this just keeps the
+                // snapshot honest.
                 self.pending_question = None;
                 // Likewise a blocked `exit_plan_mode` approval: the parked ext
                 // responder is drained by the connection's teardown/cancel path;

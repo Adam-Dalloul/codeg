@@ -8245,10 +8245,14 @@ fn config_option_rejects_value(option: &SessionConfigOption, value: &str) -> boo
 /// but codeg's screen runs first.
 ///
 /// Healed here, off the agent's answer, rather than rewritten in the saved
-/// preferences, because only the answer says which spelling is current: a
-/// gateway account (`ANTHROPIC_BASE_URL`) on 2.1.284 still lists `opus[1m]`
-/// and no plain `opus` row at all (measured), so rewriting the stored value
-/// would break it.
+/// preferences, because only the answer says which spelling is current — and
+/// it moves with the CLI the user runs. A gateway account (`ANTHROPIC_BASE_URL`)
+/// on 2.1.284 still lists `opus[1m]` next to `sonnet` and `sonnet[1m]`, with no
+/// plain `opus` row at all; on 2.1.285+ (claude-agent-acp 0.85.0), which gives a
+/// gateway session the 1M window of the models that have one, the same gateway
+/// lists only `opus`, `sonnet`, Fable and `haiku` (both measured), so a saved
+/// `sonnet[1m]` heals too. Rewriting the stored value would break whichever
+/// side the user is not on today.
 ///
 /// Deliberately narrow:
 ///
@@ -8258,7 +8262,7 @@ fn config_option_rejects_value(option: &SessionConfigOption, value: &str) -> boo
 ///   the twin is listed, so it inherits that function's refusals (a non-select
 ///   or an empty list proves nothing) and a pick the agent still offers is
 ///   never touched: where `sonnet` and `sonnet[1m]` are both listed, as on the
-///   gateway above, `sonnet[1m]` replays as it is.
+///   2.1.284 gateway above, `sonnet[1m]` replays as it is.
 /// * Only the direction the rename took; a saved plain pick is never moved
 ///   onto a `[1m]` row.
 ///
@@ -11210,6 +11214,27 @@ async fn run_conversation_loop(
                                 },
                             )
                             .await;
+                            // `TurnComplete` has just taken any
+                            // `ask_user_question` card off every client, so
+                            // decline a question still parked on this
+                            // connection: nothing can answer it now, and while
+                            // it holds the one-per-connection slot every later
+                            // ask is refused. Usually there is none — an agent
+                            // blocked in an ask cannot end its turn. Claude Code
+                            // 2.1.286 (claude-agent-acp 0.85.0) is what makes it
+                            // reachable: a foreground MCP call can move to the
+                            // background and keep running past the end of the
+                            // turn — after a steer (the Steer arm below declines
+                            // first), or after a timeout when the user's
+                            // environment sets `CLAUDE_AUTO_BACKGROUND_TASKS`.
+                            // Awaited inline, like the Cancel reclaim, so it is
+                            // scoped to the turn that just ended. Plan approvals
+                            // are not swept: each is a request the agent itself
+                            // blocks on, which no adapter moves to the
+                            // background.
+                            if let Some(inj) = delegation_injection {
+                                inj.questions.cancel_questions_by_parent(conn_id).await;
+                            }
                             // Cascade-cancel any pending delegations whenever
                             // the parent's turn ended for a reason other than
                             // clean `end_turn`. The `end_turn` path lets the
@@ -11373,6 +11398,26 @@ async fn run_conversation_loop(
                                     // commands, not session updates. A dead
                                     // receiver is fine — the reply is then
                                     // moot (teardown), nothing to unwind.
+                                    //
+                                    // A steer while an `ask_user_question` card
+                                    // is up answers it declined first. Through
+                                    // Claude Code 2.1.284 the steer interrupted
+                                    // the blocked MCP call; the CLI's
+                                    // `notifications/cancelled` made codeg-mcp
+                                    // abandon the ask and the card closed. From
+                                    // 2.1.286 (claude-agent-acp 0.85.0) the CLI
+                                    // moves the call to the background instead
+                                    // and nothing cancels it, so the card would
+                                    // stay up only until this turn ends (see
+                                    // the turn exit's reclaim) and every new ask
+                                    // until then would be refused, the slot
+                                    // still taken. Declining it here keeps the
+                                    // old meaning — redirecting the agent drops
+                                    // its question — and the agent reads the
+                                    // decline beside the steer.
+                                    if let Some(inj) = delegation_injection {
+                                        inj.questions.cancel_questions_by_parent(conn_id).await;
+                                    }
                                     let outcome = send_steer_request(&cx, &sid, &blocks).await;
                                     // A steered message still lands in the
                                     // agent's OWN transcript as a user record,
@@ -25309,6 +25354,40 @@ mod tests {
         );
     }
 
+    /// The model selector claude-agent-acp 0.85.0 answers `session/new` with
+    /// through an `ANTHROPIC_BASE_URL` gateway, verbatim (measured live). Claude
+    /// Code 2.1.285 gives a gateway session the 1M window of the models that
+    /// have one, so BOTH `[1m]` rows the same gateway listed on 0.84.0 are gone
+    /// and the recommendation moved from `opus[1m]` to plain `opus`.
+    #[test]
+    fn a_gateway_on_claude_code_2_1_285_heals_both_retired_context_lanes() {
+        let gateway: SessionConfigOption = serde_json::from_value(serde_json::json!({
+            "id": "model",
+            "name": "Model",
+            "description": "AI model to use",
+            "category": "model",
+            "type": "select",
+            "currentValue": "opus",
+            "_meta": {"jetbrains": {"air": {"version": 1, "recommendedValue": "opus"}}},
+            "options": [
+                {"value": "opus", "name": "Opus 5.5", "description": "Opus 5.5 · Best for everyday, complex tasks · $4/$20 per Mtok"},
+                {"value": "claude-fable-5-1", "name": "Fable 5.1", "description": "Fable 5.1 · Most capable for your hardest and longest-running tasks · $10/$50 per Mtok"},
+                {"value": "sonnet", "name": "Sonnet 5.5", "description": "Sonnet 5.5 · Efficient for routine tasks · $2/$10 per Mtok"},
+                {"value": "haiku", "name": "Haiku 4.5", "description": "Haiku 4.5 · Fastest for quick answers · $1/$5 per Mtok"},
+            ],
+        }))
+        .expect("parses");
+        assert_eq!(
+            heal_retired_context_lane_pick(&gateway, "opus[1m]").as_deref(),
+            Some("opus")
+        );
+        assert_eq!(
+            heal_retired_context_lane_pick(&gateway, "sonnet[1m]").as_deref(),
+            Some("sonnet")
+        );
+        assert_eq!(heal_retired_context_lane_pick(&gateway, "sonnet"), None);
+    }
+
     #[test]
     fn a_context_lane_pick_the_agent_still_lists_is_left_alone() {
         assert_eq!(
@@ -30859,8 +30938,9 @@ mod tests {
         drop(s);
         assert_eq!(
             grok.reclaimed_asks(),
-            (0, 0),
-            "a turn Grok ended itself is waiting on nothing"
+            (1, 0),
+            "only the launch prompt's turn end sweeps the questions; a turn Grok \
+             ended itself is waiting on nothing"
         );
         grok.shutdown().await;
     }
@@ -31057,6 +31137,287 @@ mod tests {
             "refused as busy, not attempted"
         );
         grok.shutdown().await;
+    }
+
+    /// `_session/steering` as the agent receives it, the raw params object.
+    #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, JsonRpcRequest)]
+    #[request(method = "_session/steering", response = serde_json::Value)]
+    #[serde(transparent)]
+    struct TestSteeringRequest(serde_json::Value);
+
+    /// A claude connection's conversation loop behind an agent that holds each
+    /// prompt response until told to answer and accepts every steer — for the
+    /// places a question parked by codeg's `ask_user_question` is swept.
+    struct AskSweepLoop {
+        state: Arc<RwLock<SessionState>>,
+        asks: Arc<RecordingAsks>,
+        cmd_tx: mpsc::Sender<ConnectionCommand>,
+        events: tokio::sync::broadcast::Receiver<Arc<crate::acp::types::EventEnvelope>>,
+        respond: Arc<tokio::sync::Notify>,
+        /// How many question sweeps had run when each steer reached the agent.
+        sweeps_at_steer: Arc<std::sync::Mutex<Vec<usize>>>,
+        client: tokio::task::JoinHandle<()>,
+        agent: tokio::task::JoinHandle<()>,
+    }
+
+    impl AskSweepLoop {
+        const CONN: &'static str = "conn-claude";
+
+        async fn start() -> Self {
+            use agent_client_protocol::schema::v1::PromptResponse;
+
+            let asks = Arc::new(RecordingAsks::default());
+            let respond = Arc::new(tokio::sync::Notify::new());
+            let sweeps_at_steer = Arc::new(std::sync::Mutex::new(Vec::new()));
+            let (client_end, agent_end) = agent_client_protocol::Channel::duplex();
+
+            let agent_respond = Arc::clone(&respond);
+            let agent_asks = Arc::clone(&asks);
+            let agent_sweeps = Arc::clone(&sweeps_at_steer);
+            let agent = tokio::spawn(async move {
+                let _ = Agent
+                    .builder()
+                    .on_receive_request(
+                        async |_req: NewSessionRequest,
+                               responder: Responder<NewSessionResponse>,
+                               _cx: ConnectionTo<Client>| {
+                            responder.respond(NewSessionResponse::new(SessionId::new("s1")))
+                        },
+                        on_receive_request!(),
+                    )
+                    .on_receive_request(
+                        async move |_req: PromptRequest,
+                                    responder: Responder<PromptResponse>,
+                                    _cx: ConnectionTo<Client>| {
+                            let respond = Arc::clone(&agent_respond);
+                            // Off the handler, so the held response doesn't hold
+                            // up the steer behind it.
+                            tokio::spawn(async move {
+                                respond.notified().await;
+                                responder.respond(PromptResponse::new(StopReason::EndTurn))
+                            });
+                            Ok(())
+                        },
+                        on_receive_request!(),
+                    )
+                    .on_receive_request(
+                        async move |_req: TestSteeringRequest,
+                                    responder: Responder<serde_json::Value>,
+                                    _cx: ConnectionTo<Client>| {
+                            let swept = agent_asks.questions.lock().unwrap().len();
+                            agent_sweeps.lock().unwrap().push(swept);
+                            responder.respond(serde_json::json!({"outcome": "injected"}))
+                        },
+                        on_receive_request!(),
+                    )
+                    .connect_with(agent_end, async |_cx: ConnectionTo<Client>| {
+                        std::future::pending::<Result<(), agent_client_protocol::Error>>().await
+                    })
+                    .await;
+            });
+
+            let state = Arc::new(RwLock::new(SessionState::new(
+                Self::CONN.to_string(),
+                AgentType::ClaudeCode,
+                None,
+                "win".to_string(),
+                None,
+            )));
+            let events = state.read().await.event_stream().subscribe();
+            let (cmd_tx, mut cmd_rx) = mpsc::channel(16);
+            let loop_state = Arc::clone(&state);
+            let injection = DelegationInjection {
+                questions: Arc::clone(&asks)
+                    as Arc<dyn crate::acp::question::SessionQuestionAccess>,
+                plan_approvals: Arc::clone(&asks)
+                    as Arc<dyn crate::acp::plan_approval::SessionPlanApprovalAccess>,
+                ..test_delegation_injection(
+                    Arc::new(TestAllAgentsAvailable) as Arc<dyn AgentAvailabilityLookup>
+                )
+            };
+            let client = tokio::spawn(async move {
+                let _ = Client
+                    .builder()
+                    .connect_with(client_end, async move |cx: ConnectionTo<Agent>| {
+                        let raw = cx
+                            .send_request_to(
+                                Agent,
+                                UntypedMessage::new("session/new", NewSessionRequest::new("/tmp"))?,
+                            )
+                            .block_task()
+                            .await?;
+                        let response: NewSessionResponse = serde_json::from_value(raw)
+                            .map_err(agent_client_protocol::Error::into_internal_error)?;
+                        let mut session = AgentSession::attach(&cx, response)?;
+                        let perms = PendingPermissions::default();
+                        let ledger = background_watch::PromptLedger::shared();
+                        let stderr_tail = Arc::new(StderrTail::new());
+                        run_conversation_loop(
+                            &mut session,
+                            Self::CONN,
+                            &EventEmitter::Noop,
+                            &loop_state,
+                            AgentType::ClaudeCode,
+                            &perms,
+                            &mut cmd_rx,
+                            Arc::new(TerminalRuntime::with_base_env(BTreeMap::new())),
+                            "/tmp",
+                            false,
+                            &ledger,
+                            Some(&injection),
+                            &stderr_tail,
+                        )
+                        .await?;
+                        Ok(())
+                    })
+                    .await;
+            });
+
+            Self {
+                state,
+                asks,
+                cmd_tx,
+                events,
+                respond,
+                sweeps_at_steer,
+                client,
+                agent,
+            }
+        }
+
+        /// Admit a prompt the way `send_prompt_inner` does, hand it over, and
+        /// wait until its turn is open.
+        async fn open_turn(&mut self, text: &str) {
+            self.state.write().await.turn_in_flight = true;
+            self.cmd_tx
+                .send(ConnectionCommand::Prompt {
+                    blocks: vec![PromptInputBlock::Text { text: text.into() }],
+                    user_message: None,
+                })
+                .await
+                .expect("the loop is running");
+            self.until("the turn opening", |e| {
+                matches!(
+                    e,
+                    AcpEvent::StatusChanged {
+                        status: ConnectionStatus::Prompting
+                    }
+                )
+            })
+            .await;
+        }
+
+        async fn steer(&self, text: &str) -> Result<SteerOutcome, AcpError> {
+            let (reply, outcome) = oneshot::channel();
+            self.cmd_tx
+                .send(ConnectionCommand::Steer {
+                    blocks: vec![PromptInputBlock::Text { text: text.into() }],
+                    reply,
+                })
+                .await
+                .expect("the loop is running");
+            outcome.await.expect("the loop answers")
+        }
+
+        /// How many times this connection's parked questions were swept.
+        fn question_sweeps(&self) -> usize {
+            self.asks
+                .questions
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|c| *c == Self::CONN)
+                .count()
+        }
+
+        /// Wait — bounded — until `count` question sweeps have run. The turn
+        /// end's sweep follows `TurnComplete`, so seeing that event does not
+        /// yet mean the sweep ran.
+        async fn until_question_sweeps(&self, count: usize) {
+            let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+            while self.question_sweeps() < count {
+                assert!(
+                    tokio::time::Instant::now() < deadline,
+                    "timed out waiting for {count} question sweeps; saw {}",
+                    self.question_sweeps()
+                );
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        }
+
+        async fn until(&mut self, what: &str, matches: impl Fn(&AcpEvent) -> bool) {
+            let deadline = std::time::Duration::from_secs(10);
+            loop {
+                let envelope = tokio::time::timeout(deadline, self.events.recv())
+                    .await
+                    .unwrap_or_else(|_| panic!("timed out waiting for {what}"))
+                    .expect("event stream");
+                if matches(&envelope.payload) {
+                    return;
+                }
+            }
+        }
+
+        async fn shutdown(self) {
+            let _ = self.cmd_tx.send(ConnectionCommand::Disconnect).await;
+            let _ = tokio::time::timeout(std::time::Duration::from_secs(5), self.client).await;
+            self.agent.abort();
+        }
+    }
+
+    /// A steer sweeps the questions parked on its connection BEFORE the steer
+    /// goes out. Claude Code 2.1.286 (claude-agent-acp 0.85.0) moves the blocked
+    /// MCP call of an `ask_user_question` to the background when a steer lands,
+    /// where 2.1.284 interrupted it and so cancelled the ask; sweeping first
+    /// keeps redirecting the agent meaning "drop the question". What the sweep
+    /// does to a parked entry — decline it, close its card — is the manager's,
+    /// and tested there (`cancel_questions_by_parent_*`).
+    #[tokio::test]
+    async fn a_steer_sweeps_the_parked_questions_before_it_reaches_the_agent() {
+        let mut claude = AskSweepLoop::start().await;
+        claude.open_turn("ask me which database to use").await;
+
+        let outcome = claude.steer("never mind, keep SQLite").await;
+        assert!(matches!(outcome, Ok(SteerOutcome::Injected)), "{outcome:?}");
+        assert_eq!(
+            *claude.sweeps_at_steer.lock().unwrap(),
+            vec![1],
+            "the question was declined before the steer reached the agent"
+        );
+
+        // The turn's own end sweeps again; with nothing parked, a no-op.
+        claude.respond.notify_one();
+        claude.until_question_sweeps(2).await;
+        claude.shutdown().await;
+    }
+
+    /// A turn that ends sweeps a question still parked on its connection:
+    /// `TurnComplete` took the card off every client, so nothing could answer it,
+    /// and while it stayed parked every later ask on the connection would be
+    /// refused. Reachable since Claude Code 2.1.286, whose MCP calls can move to
+    /// the background and outlive their turn.
+    #[tokio::test]
+    async fn a_turn_end_sweeps_the_questions_parked_on_its_connection() {
+        let mut claude = AskSweepLoop::start().await;
+        claude.open_turn("hello").await;
+        assert_eq!(
+            claude.question_sweeps(),
+            0,
+            "nothing is swept while the turn runs"
+        );
+
+        claude.respond.notify_one();
+        claude
+            .until("the turn end", |e| {
+                matches!(e, AcpEvent::TurnComplete { .. })
+            })
+            .await;
+        claude.until_question_sweeps(1).await;
+        assert!(
+            claude.sweeps_at_steer.lock().unwrap().is_empty(),
+            "no steer was sent"
+        );
+        claude.shutdown().await;
     }
 
     /// How the agent behind [`ForkTransition`] answers `session/close`.

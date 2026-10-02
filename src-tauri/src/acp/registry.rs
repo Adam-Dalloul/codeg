@@ -426,6 +426,13 @@ pub fn steering_prompt_required_min_version(agent_type: AgentType) -> Option<&'s
         // introduced the opt-in. Every 0.64.x — including 0.64.2, which only
         // reverted an unrelated ExitPlanMode change — still carries the bug and
         // is held to the pull channel by the runtime version gate.
+        //
+        // Claude Code 2.1.286 (claude-agent-acp 0.85.0) narrows the abort to
+        // generation: a steer that lands during a foreground TOOL call moves
+        // the tool to the background and may join the running cycle (one result
+        // naming both messages). The prompt still settles on the result that
+        // answers the steer — measured live; see the claude entry's (qq) for
+        // what moving the tool cost codeg.
         AgentType::ClaudeCode => Some("0.65.0"),
         _ => None,
     }
@@ -1560,9 +1567,95 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             // event; `conversation_reset` gains `trigger` / `user_message_uuid`
             // / `timestamp` and `system/init` gains `view_mode` — codeg reads
             // none of those frames.
+            //
+            // 0.85.0 is three upstream changes (#1208, #1210, #1211). The
+            // bundled `@anthropic-ai/claude-agent-sdk` goes 0.3.284 → 0.3.286,
+            // i.e. CLI 2.1.284 → **2.1.286**; the ACP SDK stays 1.5.1 and
+            // `engines.node` ">=22". As on 0.84.0, the adapter's own traffic did
+            // not move for codeg — its scenario harness (40 scenarios, mocked
+            // SDK) re-run on both tags with codeg's exact `clientCapabilities`
+            // is byte-identical, and so is `initialize` minus the version — but
+            // the CLI behind it did. (qq) and (rr) were measured live over stdio
+            // against a local fake Anthropic API (no model call), 0.84.0 and
+            // 0.85.0 side by side.
+            //
+            // (qq) **A steer no longer waits on a foreground tool** (CLI
+            // 2.1.286, #1211). codeg steers claude natively, and a
+            // `_session/steering` that lands while a foreground Bash, MCP or
+            // Agent call runs now moves that call to the background and lets the
+            // steer through. 2.1.284 held a Bash steer until the command
+            // finished, and interrupted an MCP call outright. Measured: a 10 s
+            // `sleep` steered after 1.5 s completes at once with "Command was
+            // moved to the background (ID: …) so that a message that arrived
+            // while it was running can reach you; it was not interrupted. …" and
+            // `_meta.jetbrains.air.asyncTasks.backgrounded`; an
+            // `async_task_spawned` (shell) takes over, the steer is answered and
+            // the prompt settles; when the command exits, the CLI runs a turn of
+            // its own on the task notification. Two consequences for codeg:
+            //   * The command card printed that notice as its output.
+            //     `parseBackgroundLaunch` (frontend) now knows all four wordings
+            //     the CLI acknowledges a background command with —
+            //     `run_in_background`, Ctrl+B, a steer, a timeout — so the card
+            //     shows its Background badge and one line instead, live and from
+            //     history alike.
+            //   * An MCP call moves the same way ("MCP tool "…" was moved to the
+            //     background as task …"), and codeg's own blocking
+            //     `ask_user_question` is one. Steering while its card was up left
+            //     the question parked past the turn: the card gone with the
+            //     turn, the one-per-connection slot held, every later ask on the
+            //     connection declined. The Steer arm of `run_conversation_loop`
+            //     now declines a parked question before the steer goes out —
+            //     what 2.1.284's interrupt amounted to — and every turn end sweeps
+            //     whatever is still parked. Only a main-thread MCP call moves,
+            //     never a subagent's, and in an SDK session only on a steer
+            //     unless the user's environment sets `CLAUDE_AUTO_BACKGROUND_TASKS`,
+            //     which adds a timer (120 s by default); all three read from the
+            //     2.1.286 binary.
+            //   A steered Agent call answers with the `async_launched` shape a
+            //   `run_in_background` agent always had (read from the binary).
+            //
+            // (rr) The gateway model picker loses its `[1m]` rows. CLI 2.1.285's
+            // changelog: sessions behind a custom `ANTHROPIC_BASE_URL` "use the
+            // 1M context window of models that have one (Opus 4.7+, Sonnet 5+,
+            // Fable)". Measured through one gateway: 0.84.0 lists `opus[1m]`,
+            // Fable, `sonnet`, `sonnet[1m]`, `haiku` and recommends `opus[1m]`;
+            // 0.85.0 lists `opus`, Fable, `sonnet`, `haiku` and recommends
+            // `opus`. `heal_retired_context_lane_pick` already replays a saved
+            // `[1m]` pick as its plain twin — the same model on the same 1M
+            // window now — and a test pins the measured list. The CLI's advice
+            // for a gateway that stops at 200K is `/autocompact 200k`.
+            //
+            // (ss) Inert here, each checked:
+            //   * #1208 hides other agents' and sessions' messages (`is_meta`
+            //     user records whose `origin.kind` is peer, channel, observer,
+            //     observer-activity or slack-ping) from `session/load` replay.
+            //     codeg never renders claude's replay (it resumes, and discards
+            //     a load's), and `parsers::claude` skips every `isMeta` record;
+            //     the 2.1.286 binary writes peer and channel messages with
+            //     `isMeta: true`.
+            //   * #1208's other half keeps a settings-enabled `ultracode` on
+            //     across the adapter's effort applies; codeg writes neither key.
+            //   * #1210 sends the root `_askUserQuestionCustomAnswer` marker to
+            //     AIR again. codeg advertises no elicitation to claude, so the
+            //     adapter disallows AskUserQuestion here.
+            //   * SDK 0.3.286: a `system/session_title_changed` raw frame (new
+            //     in the binary, not seen on the probes; no consumer, and
+            //     `_claude/sdkMessage` stays quiet), `usage.fallback_credit`
+            //     (usage is read by key), `provider_not_allowed` as a startup
+            //     failure (the managed-only `allowedProviders`), Artifact
+            //     pin/unpin (generic card). A background Bash now stops at its
+            //     `timeout` (30 min by default, 2 h at most), and the task
+            //     notification says it "stopped after reaching its background
+            //     time limit" (read from the binary).
+            //   * The hand-back header (w), `SDKAPIRetryMessage` and
+            //     `latest_per_family` are unchanged in 2.1.286.
+            // (oo) still holds: 0.85.0's background `getContextUsage()` still
+            // takes the default `detail` (15 `count_tokens` on a measured
+            // `session/new`, the same as 0.84.0), and the fix (#1201) is still
+            // open.
             distribution: AgentDistribution::Npx {
-                version: "0.84.0",
-                package: "@agentclientprotocol/claude-agent-acp@0.84.0",
+                version: "0.85.0",
+                package: "@agentclientprotocol/claude-agent-acp@0.85.0",
                 cmd: "claude-agent-acp",
                 args: &[],
                 env: &[],
@@ -3825,8 +3918,8 @@ mod tests {
     fn registry_pins_current_acp_agent_versions() {
         assert_npx_version(
             AgentType::ClaudeCode,
-            "0.84.0",
-            "@agentclientprotocol/claude-agent-acp@0.84.0",
+            "0.85.0",
+            "@agentclientprotocol/claude-agent-acp@0.85.0",
             Some("22.0.0"),
         );
         assert_npx_version(
