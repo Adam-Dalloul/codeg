@@ -43,10 +43,10 @@ use super::backend::{
 };
 use super::driver;
 use super::protocol::{
-    read_frame, write_frame, HelperError, HelperErrorCode, HelperMessage, HelperOp, HelperReply,
-    HelperRequest, InstalledApp, OsPermission, PeerCheck, PermissionAsked, PermissionReport,
-    ProcessRun, RawAct, RawApp, RawCapture, RawLaunch, RawSnapshot, RawVerify, RawWindow,
-    WindowAction, PROTOCOL_VERSION, SOURCE_FINGERPRINT, STOP_ALL,
+    read_frame, write_frame, ClipboardUse, HelperError, HelperErrorCode, HelperMessage, HelperOp,
+    HelperReply, HelperRequest, InstalledApp, OsPermission, PeerCheck, PermissionAsked,
+    PermissionReport, ProcessRun, RawAct, RawApp, RawCapture, RawClipboard, RawLaunch, RawSnapshot,
+    RawVerify, RawWindow, WindowAction, PROTOCOL_VERSION, SOURCE_FINGERPRINT, STOP_ALL,
 };
 use super::types::{ActDelivery, VerifyRequest};
 
@@ -787,6 +787,7 @@ impl ComputerBackend for LocalBackend {
         app_key: Option<String>,
         action: WindowAction,
         delivery: ActDelivery,
+        clipboard: ClipboardUse,
         stop: u64,
     ) -> Result<RawAct, BackendError> {
         let stopped = || {
@@ -816,9 +817,35 @@ impl ComputerBackend for LocalBackend {
                     app_key,
                     action,
                     delivery,
+                    clipboard,
                 },
                 stop,
             )
+            .await?;
+        self.decode(reply).await
+    }
+
+    async fn clipboard_read(&self, expect: u64) -> Result<RawClipboard, BackendError> {
+        self.call(HelperOp::ClipboardRead { expect }).await
+    }
+
+    async fn clipboard_write(&self, text: String, stop: u64) -> Result<u64, BackendError> {
+        let stopped = || {
+            BackendError::Refused(
+                ActRefusal::Stopped,
+                "The user pressed Stop in codeg's Computer use panel.".into(),
+            )
+        };
+        // As an action: the person's clipboard is changed by it, once.
+        if self.stopped.load(Ordering::Acquire) > stop {
+            return Err(stopped());
+        }
+        let connection = self.connection().await?;
+        if self.stopped.load(Ordering::Acquire) > stop {
+            return Err(stopped());
+        }
+        let reply = connection
+            .request(HelperOp::ClipboardWrite { text }, stop)
             .await?;
         self.decode(reply).await
     }
@@ -1330,7 +1357,17 @@ mod tests {
         };
         assert_eq!(
             backend
-                .act(1, 1, 1, None, None, act(), ActDelivery::Background, 0)
+                .act(
+                    1,
+                    1,
+                    1,
+                    None,
+                    None,
+                    act(),
+                    ActDelivery::Background,
+                    Default::default(),
+                    0
+                )
                 .await
                 .unwrap_err(),
             BackendError::Refused(
@@ -1345,7 +1382,17 @@ mod tests {
         backend.close().await;
         assert!(matches!(
             backend
-                .act(1, 1, 1, None, None, act(), ActDelivery::Background, 1)
+                .act(
+                    1,
+                    1,
+                    1,
+                    None,
+                    None,
+                    act(),
+                    ActDelivery::Background,
+                    Default::default(),
+                    1
+                )
                 .await
                 .unwrap_err(),
             BackendError::Unavailable(_)

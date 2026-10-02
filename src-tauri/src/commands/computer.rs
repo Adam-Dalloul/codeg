@@ -57,10 +57,11 @@ use crate::acp::computer_tools::{
     app_grant_required_note, background_next_step, blocked_note, chord_beyond_note,
     control_required_note, cut_away_note, grant_required_note, no_pointing_note, no_such_ref_note,
     no_such_target_note, not_actionable_note, permission_missing_note, reshared_note,
-    stale_capture_note, stale_snapshot_note, ComputerActOutcome, ComputerAppsOutcome,
-    ComputerCaptureOutcome, ComputerLaunchOutcome, ComputerSnapshotOutcome, ComputerToolAccess,
-    ComputerToolsConfig, ComputerToolsRuntimeConfig, ComputerVerifyOutcome, ComputerWindowsOutcome,
-    InputPolicy, SnapshotRequest, BAD_FRAME_NOTE, DEFAULT_MAX_DIMENSION,
+    stale_capture_note, stale_snapshot_note, ClipboardOp, ComputerActOutcome, ComputerAppsOutcome,
+    ComputerCaptureOutcome, ComputerClipboardOutcome, ComputerLaunchOutcome,
+    ComputerSnapshotOutcome, ComputerToolAccess, ComputerToolsConfig, ComputerToolsRuntimeConfig,
+    ComputerVerifyOutcome, ComputerWindowsOutcome, InputPolicy, SnapshotRequest, BAD_FRAME_NOTE,
+    CLIPBOARD_NOT_YOURS_NOTE, CLIPBOARD_OFF_NOTE, CLIPBOARD_WRITTEN_NOTE, DEFAULT_MAX_DIMENSION,
     DEFAULT_SNAPSHOT_MAX_CHARS, DESKTOP_CHORD_NOTE, DRAG_MODIFIERS_NOTE, ERROR_ACTION_FAILED,
     ERROR_BACKGROUND_UNAVAILABLE, ERROR_BLOCKED, ERROR_CONTROL_REQUIRED,
     ERROR_FOREGROUND_NOT_ALLOWED, ERROR_GRANT_REQUIRED, ERROR_NO_SUCH_TARGET, ERROR_OCCLUDED,
@@ -84,7 +85,9 @@ use crate::computer::indicator::{Indicator, Strip};
 use crate::computer::local::LocalBackend;
 use crate::computer::marker::Marker;
 use crate::computer::procinfo::process_start;
-use crate::computer::protocol::{OsPermission, PermissionAsked, PermissionReport, RawAct};
+use crate::computer::protocol::{
+    ClipboardUse, OsPermission, PermissionAsked, PermissionReport, RawAct,
+};
 use crate::computer::stop_key::{StopKey, StopKeyStatus};
 use crate::computer::targets::{
     ActDenied, Aim, AppChange, AppTarget, ReadMark, ReadRefusal, ReadTicket, ShareError, SharedApp,
@@ -426,6 +429,56 @@ pub struct ComputerService {
     state_gate: std::sync::Mutex<()>,
     /// The driver as Settings manages it.
     drivers: Arc<DriverAdmin>,
+    /// What an agent last put on the clipboard itself (see
+    /// [`OwnedClipboard`]); cleared by Stop.
+    clipboard: std::sync::Mutex<Option<OwnedClipboard>>,
+}
+
+/// What an agent last put on the clipboard itself, as the clipboard was
+/// stamped then: copied out of a window it may read (`source`, the window and
+/// the sharing it was copied under), or written with computer_clipboard_write
+/// (no source). It may be pasted, or read back, only while the clipboard is
+/// still that — and, for a copy, while its window is still shared so.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct OwnedClipboard {
+    stamp: u64,
+    source: Option<(String, u64)>,
+}
+
+/// Whether an action could paste, and so needs the clipboard checked: a
+/// paste key, a menu command, or a press of a named element — which may be
+/// a control that pastes.
+fn may_paste(request: &ComputerActRequest) -> bool {
+    use crate::computer::keys::{classify, ChordClass, Platform};
+    match request {
+        ComputerActRequest::Key { chord, target, .. }
+        | ComputerActRequest::HoldKey { chord, target, .. } => {
+            target.is_some() || classify(chord, Platform::current()) == ChordClass::Paste
+        }
+        ComputerActRequest::InvokeMenu { .. } => true,
+        ComputerActRequest::Click { target, .. } => {
+            matches!(target, crate::computer::types::AgentTarget::Element(_))
+        }
+        _ => false,
+    }
+}
+
+/// The most text one `computer_clipboard_write` puts on the clipboard.
+const MAX_CLIPBOARD_WRITE_CHARS: usize = 100_000;
+
+/// Whether an action copies: a key that copies or cuts, or a menu command
+/// named for it — whatever it puts on the clipboard comes from the window,
+/// or the application shared as a whole, it was done in.
+fn copies(request: &ComputerActRequest) -> bool {
+    match request {
+        ComputerActRequest::Key { chord, .. } | ComputerActRequest::HoldKey { chord, .. } => {
+            crate::computer::keys::copies(chord, crate::computer::keys::Platform::current())
+        }
+        ComputerActRequest::InvokeMenu { path } => path
+            .iter()
+            .any(|title| crate::computer::keys::names_copy(title)),
+        _ => false,
+    }
 }
 
 impl ComputerService {
@@ -467,6 +520,7 @@ impl ComputerService {
             marker,
             state_gate: std::sync::Mutex::new(()),
             drivers,
+            clipboard: std::sync::Mutex::new(None),
         });
 
         // What a change takes away is taken before the write that made it
@@ -580,6 +634,41 @@ impl ComputerService {
         self.stop_key.status()
     }
 
+    /// The stamp of what an agent last put on the clipboard itself, while
+    /// that may still be pasted or read back: written by an agent, or copied
+    /// out of a window still shared for reading under the sharing it was
+    /// copied under. Whether the clipboard still holds it the helper checks.
+    fn owned_clipboard(&self) -> Option<u64> {
+        let owned = self
+            .clipboard
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()?;
+        if let Some((target_id, epoch)) = &owned.source {
+            let entry = self.targets.get(target_id)?;
+            let readable = entry
+                .grant
+                .as_ref()
+                .is_some_and(|g| g.level.allows(GrantLevel::Read));
+            if entry.epoch != *epoch || !readable {
+                return None;
+            }
+        }
+        Some(owned.stamp)
+    }
+
+    /// Hold `owned` as what an agent put on the clipboard — unless a Stop
+    /// has come since `stop`: decided under the lock a Stop clears it under,
+    /// so a reply that lands after a Stop never brings back what it cleared.
+    fn own_clipboard(&self, owned: OwnedClipboard, stop: u64) -> bool {
+        let _gate = self.grant_gate.lock().unwrap_or_else(|p| p.into_inner());
+        if self.stopped_since(stop) {
+            return false;
+        }
+        *self.clipboard.lock().unwrap_or_else(|p| p.into_inner()) = Some(owned);
+        true
+    }
+
     /// What is shared now: every window, and the applications shared as a
     /// whole.
     fn shared_state(&self) -> SharedState {
@@ -656,6 +745,8 @@ impl ComputerService {
             // The backend holds actions to it from this moment, not from
             // when its `Halt` goes out below.
             self.backend.note_stop(stop);
+            // Nothing an agent copied before a Stop is pasted after it.
+            *self.clipboard.lock().unwrap_or_else(|p| p.into_inner()) = None;
             (self.targets.revoke_all(GrantChange::Stopped), stop)
         };
         for change in &ended.windows {
@@ -1320,6 +1411,9 @@ impl ComputerService {
             ));
         }
         let blocklist = blocklist_of(&config);
+        // What pastes may go only while the clipboard holds what an agent put
+        // there itself; the helper checks it is still so as the action goes.
+        let owned = self.owned_clipboard();
         let ticket = match self.targets.begin_act(
             target_id,
             now_ms(),
@@ -1327,6 +1421,7 @@ impl ComputerService {
             &self.me,
             &blocklist,
             request,
+            owned.is_some(),
         ) {
             Ok(ticket) => ticket,
             Err((why, ended)) => {
@@ -1353,8 +1448,15 @@ impl ComputerService {
         if self.stopped_since(stop) {
             return Err(stopped());
         }
+        let clipboard = ClipboardUse {
+            track: copies(request),
+            // Only for what could paste: the helper reads the clipboard's
+            // stamp for it, which an ordinary action has no need of.
+            paste: owned.filter(|_| may_paste(request)),
+        };
         let sent_at = tokio::time::Instant::now();
-        self.backend
+        let press = self
+            .backend
             .act(
                 ticket.identity.pid,
                 ticket.identity.window_id,
@@ -1363,6 +1465,7 @@ impl ComputerService {
                 ticket.app.key().map(str::to_string),
                 ticket.action,
                 delivery,
+                clipboard,
                 stop,
             )
             .await
@@ -1373,14 +1476,32 @@ impl ComputerService {
                 sent_at,
                 stop,
                 epoch,
-            })
-            .map_err(|e| {
-                with_next_step(
-                    self.backend_act_refusal(target_id, e, stop),
-                    request,
-                    &config,
-                )
-            })
+            });
+        // What the action put on the clipboard is the agent's own, out of a
+        // window it may read — for as long as that window is shared so.
+        if let Ok(Press {
+            raw: RawAct {
+                clipboard: Some(stamp),
+                ..
+            },
+            ..
+        }) = &press
+        {
+            self.own_clipboard(
+                OwnedClipboard {
+                    stamp: *stamp,
+                    source: Some((target_id.to_string(), epoch)),
+                },
+                stop,
+            );
+        }
+        press.map_err(|e| {
+            with_next_step(
+                self.backend_act_refusal(target_id, e, stop),
+                request,
+                &config,
+            )
+        })
     }
 
     /// Start an installed application for an agent — the one listed under
@@ -1463,6 +1584,110 @@ impl ComputerService {
                     r.slug,
                     format!("{} It may or may not have started.", r.note),
                 )
+            }
+        }
+    }
+
+    /// The clipboard for an agent, where the person allows it: read back
+    /// only what an agent put there itself, while the clipboard still holds
+    /// it (see [`OwnedClipboard`]); or put text there, which an agent may
+    /// then paste.
+    pub async fn agent_clipboard(&self, op: ClipboardOp) -> ComputerClipboardOutcome {
+        let _turn = self.turn.lock().await;
+        let stop = self.stop_count();
+        let config = match self.usable().await {
+            Ok(config) => config,
+            Err(r) => return ComputerClipboardOutcome::refused(r.slug, r.note),
+        };
+        if !config.clipboard_enabled {
+            return ComputerClipboardOutcome::refused(ERROR_UNAVAILABLE, CLIPBOARD_OFF_NOTE);
+        }
+        match op {
+            ClipboardOp::Read => {
+                let action = ComputerAction::ClipboardRead;
+                let Some(expect) = self.owned_clipboard() else {
+                    self.record("", action, ActivityOutcome::Refused);
+                    return ComputerClipboardOutcome::refused(
+                        ERROR_GRANT_REQUIRED,
+                        CLIPBOARD_NOT_YOURS_NOTE,
+                    );
+                };
+                let read = self.backend.clipboard_read(expect).await;
+                if self.stopped_since(stop) {
+                    return ComputerClipboardOutcome::refused(ERROR_STOPPED, STOPPED_NOTE);
+                }
+                // The window it was copied from may have been taken back, or
+                // shared again, while it was being read.
+                if read.is_ok() && self.owned_clipboard() != Some(expect) {
+                    self.record("", action, ActivityOutcome::Refused);
+                    return ComputerClipboardOutcome::refused(
+                        ERROR_GRANT_REQUIRED,
+                        CLIPBOARD_NOT_YOURS_NOTE,
+                    );
+                }
+                match read {
+                    Ok(raw) => {
+                        self.record("", action, ActivityOutcome::Done);
+                        ComputerClipboardOutcome {
+                            text: Some(raw.text.unwrap_or_default()),
+                            ..ComputerClipboardOutcome::default()
+                        }
+                    }
+                    Err(e) => {
+                        let r = self.backend_refusal(None, e);
+                        self.record("", action, r.outcome);
+                        ComputerClipboardOutcome::refused(r.slug, r.note)
+                    }
+                }
+            }
+            ClipboardOp::Write { text } => {
+                let action = ComputerAction::ClipboardWrite;
+                if text.chars().count() > MAX_CLIPBOARD_WRITE_CHARS {
+                    return ComputerClipboardOutcome::refused(
+                        ERROR_ACTION_FAILED,
+                        format!(
+                            "That is more than the {MAX_CLIPBOARD_WRITE_CHARS} characters one \
+                             write puts on the clipboard; nothing was written."
+                        ),
+                    );
+                }
+                if self.stopped_since(stop) {
+                    return ComputerClipboardOutcome::refused(ERROR_STOPPED, STOPPED_NOTE);
+                }
+                match self.backend.clipboard_write(text, stop).await {
+                    Ok(stamp) => {
+                        if !self.own_clipboard(
+                            OwnedClipboard {
+                                stamp,
+                                source: None,
+                            },
+                            stop,
+                        ) {
+                            return ComputerClipboardOutcome::refused(
+                                ERROR_STOPPED,
+                                format!(
+                                    "The user pressed Stop as the text went on the clipboard: \
+                                     nothing on it is held as yours. {STOPPED_NOTE}"
+                                ),
+                            );
+                        }
+                        self.record("", action, ActivityOutcome::Done);
+                        ComputerClipboardOutcome {
+                            written: true,
+                            note: Some(CLIPBOARD_WRITTEN_NOTE.to_string()),
+                            ..ComputerClipboardOutcome::default()
+                        }
+                    }
+                    Err(e) => {
+                        let r = if self.stopped_since(stop) {
+                            stopped()
+                        } else {
+                            self.backend_refusal(None, e)
+                        };
+                        self.record("", action, ActivityOutcome::Failed);
+                        ComputerClipboardOutcome::refused(r.slug, r.note)
+                    }
+                }
             }
         }
     }
@@ -1686,6 +1911,10 @@ impl ComputerToolAccess for McpComputerTools {
 
     async fn launch_app(&self, name: Option<String>, key: Option<String>) -> ComputerLaunchOutcome {
         self.service.agent_launch_app(name, key).await
+    }
+
+    async fn clipboard(&self, op: ClipboardOp) -> ComputerClipboardOutcome {
+        self.service.agent_clipboard(op).await
     }
 
     async fn act(

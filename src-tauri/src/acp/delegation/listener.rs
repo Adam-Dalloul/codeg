@@ -656,6 +656,10 @@ impl DelegationListener {
                 // recalled either.
                 computer_response(&self.process_computer_launch(req).await)?
             }
+            BrokerMessage::ComputerClipboard(req) => {
+                // To its end: a write cannot be recalled.
+                computer_response(&self.process_computer_clipboard(req).await)?
+            }
             BrokerMessage::Cancel(cancel) => {
                 self.process_cancel(cancel).await;
                 // Empty ack — the companion only uses this to detect the
@@ -1101,6 +1105,21 @@ impl DelegationListener {
             );
         }
         self.computer.launch_app(req.name, req.key).await
+    }
+
+    /// Validate the token and read or write the clipboard. An invalid token
+    /// hears what a runtime with no desktop hears, and nothing is done.
+    async fn process_computer_clipboard(
+        &self,
+        req: crate::acp::delegation::transport::BrokerComputerClipboardRequest,
+    ) -> crate::acp::computer_tools::ComputerClipboardOutcome {
+        if self.tokens.lookup(&req.token).await.is_none() {
+            return crate::acp::computer_tools::ComputerClipboardOutcome::refused(
+                crate::acp::computer_tools::ERROR_UNAVAILABLE,
+                crate::acp::computer_tools::NO_DESKTOP_NOTE,
+            );
+        }
+        self.computer.clipboard(req.op).await
     }
 
     /// Validate the token and hand the progress report to the task engine,
@@ -3827,6 +3846,17 @@ mod tests {
                 .await
                 .push(format!("launch {name:?} {key:?}"));
             crate::acp::computer_tools::ComputerLaunchOutcome::refused(
+                crate::acp::computer_tools::ERROR_UNAVAILABLE,
+                "stub",
+            )
+        }
+
+        async fn clipboard(
+            &self,
+            op: crate::acp::computer_tools::ClipboardOp,
+        ) -> crate::acp::computer_tools::ComputerClipboardOutcome {
+            self.calls.lock().await.push(format!("clipboard {op:?}"));
+            crate::acp::computer_tools::ComputerClipboardOutcome::refused(
                 crate::acp::computer_tools::ERROR_UNAVAILABLE,
                 "stub",
             )

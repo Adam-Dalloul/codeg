@@ -56,6 +56,7 @@ const ACTIONS: ReadonlySet<ComputerAction> = new Set([
   "menu",
   "set-frame",
   "launch",
+  "clipboard-write",
 ])
 
 /** Painted before any script runs, so the window never flashes a

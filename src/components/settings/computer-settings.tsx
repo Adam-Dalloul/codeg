@@ -41,6 +41,7 @@ import { useCallback, useEffect, useRef, useState } from "react"
 import { useTranslations } from "next-intl"
 import {
   AppWindow,
+  ClipboardList,
   Keyboard,
   Layers,
   Monitor,
@@ -126,6 +127,7 @@ interface Values {
   /** As chosen — in force only while `allowForeground` is on. */
   defaultDelivery: ComputerDelivery
   launchEnabled: boolean
+  clipboardEnabled: boolean
 }
 
 const EMPTY: Values = {
@@ -137,6 +139,7 @@ const EMPTY: Values = {
   allowForeground: true,
   defaultDelivery: "background",
   launchEnabled: false,
+  clipboardEnabled: false,
 }
 
 function fromSettings(settings: ComputerToolsSettings): Values {
@@ -149,6 +152,7 @@ function fromSettings(settings: ComputerToolsSettings): Values {
     allowForeground: settings.allowForeground,
     defaultDelivery: settings.defaultDelivery,
     launchEnabled: settings.launchEnabled ?? false,
+    clipboardEnabled: settings.clipboardEnabled ?? false,
   }
 }
 
@@ -181,6 +185,10 @@ function allowForegroundDirty(values: Values, baseline: Values): boolean {
 
 function launchEnabledDirty(values: Values, baseline: Values): boolean {
   return values.launchEnabled !== baseline.launchEnabled
+}
+
+function clipboardEnabledDirty(values: Values, baseline: Values): boolean {
+  return values.clipboardEnabled !== baseline.clipboardEnabled
 }
 
 function defaultDeliveryDirty(values: Values, baseline: Values): boolean {
@@ -295,6 +303,9 @@ export function ComputerSettingsSection() {
           launchEnabled: launchEnabledDirty(current, base)
             ? prev.launchEnabled
             : next.launchEnabled,
+          clipboardEnabled: clipboardEnabledDirty(current, base)
+            ? prev.clipboardEnabled
+            : next.clipboardEnabled,
         }))
         setBaseline(next)
         setEnabled(remote.enabled)
@@ -322,6 +333,7 @@ export function ComputerSettingsSection() {
   const dirtyAllowForeground = allowForegroundDirty(values, baseline)
   const dirtyDefaultDelivery = defaultDeliveryDirty(values, baseline)
   const dirtyLaunchEnabled = launchEnabledDirty(values, baseline)
+  const dirtyClipboardEnabled = clipboardEnabledDirty(values, baseline)
   const dirty =
     dirtyTtl ||
     dirtyBlocklist ||
@@ -330,7 +342,8 @@ export function ComputerSettingsSection() {
     dirtyShowIndicator ||
     dirtyAllowForeground ||
     dirtyDefaultDelivery ||
-    dirtyLaunchEnabled
+    dirtyLaunchEnabled ||
+    dirtyClipboardEnabled
   const editable = loaded && !saving
 
   const save = useCallback(async () => {
@@ -350,6 +363,9 @@ export function ComputerSettingsSection() {
           ? values.defaultDelivery
           : undefined,
         launchEnabled: dirtyLaunchEnabled ? values.launchEnabled : undefined,
+        clipboardEnabled: dirtyClipboardEnabled
+          ? values.clipboardEnabled
+          : undefined,
       })
       // The save's own broadcast, or another window's after it, may have
       // landed first; the last broadcast is then the newest record there is.
@@ -375,6 +391,7 @@ export function ComputerSettingsSection() {
     dirtyAllowForeground,
     dirtyDefaultDelivery,
     dirtyLaunchEnabled,
+    dirtyClipboardEnabled,
     t,
   ])
 
@@ -548,6 +565,22 @@ export function ComputerSettingsSection() {
                 checked={values.launchEnabled}
                 onCheckedChange={(launchEnabled) =>
                   setValues((prev) => ({ ...prev, launchEnabled }))
+                }
+                disabled={!editable}
+              />
+            }
+          />
+          <SettingRow
+            icon={ClipboardList}
+            title={t("clipboard.label")}
+            description={t("clipboard.hint")}
+            htmlFor="computer-clipboard-enabled"
+            control={
+              <Switch
+                id="computer-clipboard-enabled"
+                checked={values.clipboardEnabled}
+                onCheckedChange={(clipboardEnabled) =>
+                  setValues((prev) => ({ ...prev, clipboardEnabled }))
                 }
                 disabled={!editable}
               />

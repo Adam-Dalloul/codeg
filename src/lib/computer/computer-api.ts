@@ -50,6 +50,7 @@ export async function setComputerToolsPreferences(preferences: {
   allowForeground?: boolean
   defaultDelivery?: ComputerDelivery
   launchEnabled?: boolean
+  clipboardEnabled?: boolean
 }): Promise<ComputerToolsSettings> {
   return getTransport().call("set_computer_tools_preferences", preferences)
 }

@@ -455,7 +455,8 @@ function ComputerPopover() {
                   >
                     <span className="tabular-nums">{formatTime(line.at)}</span>
                     <span className="min-w-0 flex-1 truncate">
-                      {t(`activity.${line.action}`)} · {appNameOf(line)}
+                      {t(`activity.${line.action}`)}
+                      {appNameOf(line) ? ` · ${appNameOf(line)}` : ""}
                       {line.count > 1 ? ` ×${line.count}` : ""}
                     </span>
                     <span

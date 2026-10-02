@@ -50,17 +50,18 @@ use crate::acp::delegation::transport::{
     client_browser_snapshot_round_trip, client_browser_tab_op_round_trip,
     client_browser_tabs_round_trip, client_cancel, client_cancel_task_round_trip,
     client_commit_feedback, client_computer_act_round_trip, client_computer_apps_round_trip,
-    client_computer_capture_round_trip, client_computer_launch_round_trip,
-    client_computer_snapshot_round_trip, client_computer_verify_round_trip,
-    client_computer_windows_round_trip, client_create_automation_round_trip,
-    client_create_work_task_round_trip, client_feedback_round_trip, client_resume_task_round_trip,
-    client_round_trip, client_session_round_trip, client_status_round_trip,
-    client_task_complete_round_trip, client_task_progress_round_trip, BrokerAskRequest,
-    BrokerBrowserActRequest, BrokerBrowserCaptureRequest, BrokerBrowserConsoleRequest,
-    BrokerBrowserEvalRequest, BrokerBrowserSnapshotRequest, BrokerBrowserTabOpRequest,
-    BrokerBrowserTabsRequest, BrokerCancelRequest, BrokerCancelTaskRequest,
-    BrokerCommitFeedbackRequest, BrokerComputerActRequest, BrokerComputerAppsRequest,
-    BrokerComputerCaptureRequest, BrokerComputerLaunchRequest, BrokerComputerSnapshotRequest,
+    client_computer_capture_round_trip, client_computer_clipboard_round_trip,
+    client_computer_launch_round_trip, client_computer_snapshot_round_trip,
+    client_computer_verify_round_trip, client_computer_windows_round_trip,
+    client_create_automation_round_trip, client_create_work_task_round_trip,
+    client_feedback_round_trip, client_resume_task_round_trip, client_round_trip,
+    client_session_round_trip, client_status_round_trip, client_task_complete_round_trip,
+    client_task_progress_round_trip, BrokerAskRequest, BrokerBrowserActRequest,
+    BrokerBrowserCaptureRequest, BrokerBrowserConsoleRequest, BrokerBrowserEvalRequest,
+    BrokerBrowserSnapshotRequest, BrokerBrowserTabOpRequest, BrokerBrowserTabsRequest,
+    BrokerCancelRequest, BrokerCancelTaskRequest, BrokerCommitFeedbackRequest,
+    BrokerComputerActRequest, BrokerComputerAppsRequest, BrokerComputerCaptureRequest,
+    BrokerComputerClipboardRequest, BrokerComputerLaunchRequest, BrokerComputerSnapshotRequest,
     BrokerComputerVerifyRequest, BrokerComputerWindowsRequest, BrokerCreateAutomationRequest,
     BrokerCreateWorkTaskRequest, BrokerFeedbackRequest, BrokerRequest, BrokerResponse,
     BrokerResumeTaskRequest, BrokerSessionRequest, BrokerStatusRequest,
@@ -199,6 +200,9 @@ pub struct CompanionFeatures {
     /// of `computer`. Never on without it; the parent will not emit it, and
     /// `allows_tool` requires both.
     pub computer_launch: bool,
+    /// `computer_clipboard_read` / `computer_clipboard_write`, on the
+    /// person's own switch on top of `computer`, as `computer_launch` is.
+    pub computer_clipboard: bool,
 }
 
 impl CompanionFeatures {
@@ -222,6 +226,7 @@ impl CompanionFeatures {
                 browser_eval: false,
                 computer: false,
                 computer_launch: false,
+                computer_clipboard: false,
             };
         };
         let mut f = Self {
@@ -236,6 +241,7 @@ impl CompanionFeatures {
             browser_eval: false,
             computer: false,
             computer_launch: false,
+            computer_clipboard: false,
         };
         for tok in s.split(',').map(str::trim).filter(|t| !t.is_empty()) {
             match tok {
@@ -250,6 +256,7 @@ impl CompanionFeatures {
                 "browser_eval" => f.browser_eval = true,
                 "computer" => f.computer = true,
                 "computer_launch" => f.computer_launch = true,
+                "computer_clipboard" => f.computer_clipboard = true,
                 _ => {}
             }
         }
@@ -289,6 +296,9 @@ impl CompanionFeatures {
             | "computer_invoke_menu" => self.computer,
             "computer_launch_app" | "computer_set_window_frame" => {
                 self.computer && self.computer_launch
+            }
+            "computer_clipboard_read" | "computer_clipboard_write" => {
+                self.computer && self.computer_clipboard
             }
             "delegate_to_agent"
             | "get_delegation_status"
@@ -894,6 +904,26 @@ async fn build_tools_call_spawn(
             let round_trip =
                 Box::pin(async move { client_browser_tab_op_round_trip(&socket, &req).await });
             register_and_spawn(inflight, id, None, round_trip, render_browser_tab_op_result).await
+        }
+        "computer_clipboard_read" | "computer_clipboard_write" => {
+            let op = match computer_clipboard_op(&name, &arguments) {
+                Ok(op) => op,
+                Err(msg) => return LineAction::Respond(err(id, -32602, msg)),
+            };
+            let req = BrokerComputerClipboardRequest {
+                token: ctx.token.clone(),
+                op,
+            };
+            let round_trip =
+                Box::pin(async move { client_computer_clipboard_round_trip(&socket, &req).await });
+            register_and_spawn(
+                inflight,
+                id,
+                None,
+                round_trip,
+                render_computer_clipboard_result,
+            )
+            .await
         }
         "computer_launch_app" => {
             let (name, key) = match computer_launch_arguments(&arguments) {
@@ -3054,6 +3084,63 @@ fn computer_modifiers(
     }
 }
 
+/// The most text `computer_clipboard_write` takes.
+const MAX_CLIPBOARD_TEXT: usize = 100_000;
+
+/// What a clipboard tool asks: a read takes nothing; a write takes `text`,
+/// a string of at most [`MAX_CLIPBOARD_TEXT`] characters.
+fn computer_clipboard_op(
+    tool: &str,
+    arguments: &Value,
+) -> Result<crate::acp::computer_tools::ClipboardOp, String> {
+    use crate::acp::computer_tools::ClipboardOp;
+    let takes: &[&str] = if tool == "computer_clipboard_write" {
+        &["text"]
+    } else {
+        &[]
+    };
+    if let Some(unknown) = arguments
+        .as_object()
+        .into_iter()
+        .flat_map(|o| o.keys())
+        .find(|k| !takes.contains(&k.as_str()))
+    {
+        return Err(format!("{tool} takes no argument `{unknown}`"));
+    }
+    if tool != "computer_clipboard_write" {
+        return Ok(ClipboardOp::Read);
+    }
+    match arguments.get("text") {
+        Some(Value::String(text)) if text.chars().count() <= MAX_CLIPBOARD_TEXT => {
+            Ok(ClipboardOp::Write { text: text.clone() })
+        }
+        Some(Value::String(_)) => Err(format!(
+            "{tool}: `text` may be at most {MAX_CLIPBOARD_TEXT} characters"
+        )),
+        _ => Err(format!("{tool} requires `text`, a string")),
+    }
+}
+
+/// Map a clipboard tool's outcome into a `tools/call` result.
+pub fn render_computer_clipboard_result(outcome: &Value) -> Value {
+    let text = if let Some(read) = outcome.get("text").and_then(Value::as_str) {
+        read.to_string()
+    } else if outcome.get("written").and_then(Value::as_bool) == Some(true) {
+        outcome
+            .get("note")
+            .and_then(Value::as_str)
+            .unwrap_or("Written.")
+            .to_string()
+    } else {
+        return computer_refusal(outcome, "Nothing was done.");
+    };
+    json!({
+        "content": [{ "type": "text", "text": text }],
+        "isError": false,
+        "structuredContent": outcome.clone(),
+    })
+}
+
 /// The longest name or key `computer_launch_app` takes.
 const MAX_LAUNCH_NAME: usize = 512;
 
@@ -3824,6 +3911,7 @@ mod tests {
             browser_eval: false,
             computer: false,
             computer_launch: false,
+            computer_clipboard: false,
         })
     }
 
@@ -4419,6 +4507,7 @@ mod tests {
         browser_eval: false,
         computer: false,
         computer_launch: false,
+        computer_clipboard: false,
     };
     const BOTH: CompanionFeatures = CompanionFeatures {
         delegation: true,
@@ -4432,6 +4521,7 @@ mod tests {
         browser_eval: false,
         computer: false,
         computer_launch: false,
+        computer_clipboard: false,
     };
     const ASK_ONLY: CompanionFeatures = CompanionFeatures {
         delegation: false,
@@ -4445,6 +4535,7 @@ mod tests {
         browser_eval: false,
         computer: false,
         computer_launch: false,
+        computer_clipboard: false,
     };
     const SESSIONS_ONLY: CompanionFeatures = CompanionFeatures {
         delegation: false,
@@ -4458,6 +4549,7 @@ mod tests {
         browser_eval: false,
         computer: false,
         computer_launch: false,
+        computer_clipboard: false,
     };
 
     fn list_tool_names(action: LineAction) -> Vec<String> {
@@ -4800,6 +4892,7 @@ mod tests {
         browser_eval: false,
         computer: false,
         computer_launch: false,
+        computer_clipboard: false,
     };
     const TASKBOARD_ONLY: CompanionFeatures = CompanionFeatures {
         delegation: false,
@@ -4813,6 +4906,7 @@ mod tests {
         browser_eval: false,
         computer: false,
         computer_launch: false,
+        computer_clipboard: false,
     };
 
     /// The two authoring groups gate independently: enabling one must not
@@ -5338,6 +5432,7 @@ mod tests {
         browser_eval: false,
         computer: false,
         computer_launch: false,
+        computer_clipboard: false,
     };
 
     /// The browser group with `browser_eval` on top, which is the only way
@@ -6200,6 +6295,54 @@ mod tests {
         ))
         .is_empty());
         assert!(CompanionFeatures::parse(Some("computer,computer_launch")).computer_launch);
+
+        // The clipboard's two, the same way.
+        const WITH_CLIPBOARD: CompanionFeatures = CompanionFeatures {
+            computer_clipboard: true,
+            ..COMPUTER_ONLY
+        };
+        let names = computer_names(&list_tool_names(
+            dispatch_with_features(WITH_CLIPBOARD, list).await,
+        ));
+        assert!(names.contains(&"computer_clipboard_read".to_string()));
+        assert!(names.contains(&"computer_clipboard_write".to_string()));
+        assert!(!names.contains(&"computer_launch_app".to_string()));
+        assert!(CompanionFeatures::parse(Some("computer,computer_clipboard")).computer_clipboard);
+    }
+
+    /// A clipboard read takes nothing; a write takes its text, and only that.
+    #[test]
+    fn clipboard_tools_parse_strictly() {
+        use crate::acp::computer_tools::ClipboardOp;
+        assert_eq!(
+            computer_clipboard_op("computer_clipboard_read", &json!({})),
+            Ok(ClipboardOp::Read)
+        );
+        assert_eq!(
+            computer_clipboard_op("computer_clipboard_write", &json!({ "text": "hi" })),
+            Ok(ClipboardOp::Write { text: "hi".into() })
+        );
+        for (tool, bad, says) in [
+            (
+                "computer_clipboard_read",
+                json!({ "text": "x" }),
+                "takes no argument",
+            ),
+            ("computer_clipboard_write", json!({}), "requires `text`"),
+            (
+                "computer_clipboard_write",
+                json!({ "text": 3 }),
+                "requires `text`",
+            ),
+            (
+                "computer_clipboard_write",
+                json!({ "text": "x".repeat(100_001) }),
+                "at most",
+            ),
+        ] {
+            let e = computer_clipboard_op(tool, &bad).unwrap_err();
+            assert!(e.contains(says), "{tool} {bad}: {e}");
+        }
     }
 
     /// `computer_launch_app` names an application by key or name, strictly;

@@ -28,6 +28,7 @@
 pub mod act;
 #[cfg(target_os = "macos")]
 pub mod axwin;
+pub mod clipboard;
 pub mod driver_proc;
 #[cfg(windows)]
 pub mod hwnd;
@@ -884,6 +885,7 @@ async fn handle_op(
             app_key,
             action,
             delivery: mode,
+            clipboard: use_of,
         } => {
             // Asked first so a doomed action does not start a driver, and
             // again (inside `act`) just before each driver call goes out —
@@ -896,20 +898,51 @@ async fn handle_op(
                 state.require(*permission).await?;
             }
             let driver = state.driver(stop).await?;
+            // Whatever pastes goes only while the clipboard is still what the
+            // agent put there: asked as late as the helper can before it goes.
+            let paste_ok = match use_of.paste {
+                Some(expect) => {
+                    let now = clipboard::stamp(&driver).await?;
+                    now.value == expect && !now.concealed
+                }
+                None => false,
+            };
+            if !paste_ok && act::pastes(&action) {
+                return Err(act::paste_refused());
+            }
             let element_frame = {
                 let book = state.snapshots();
-                book.check(pid, window_id, &action, app_key.as_deref())?;
+                book.check(pid, window_id, &action, app_key.as_deref(), paste_ok)?;
                 action
                     .element()
                     .and_then(|element| book.frame(pid, window_id, element))
             };
             let window_frame = act::check_points(&driver, pid, window_id, &action.points()).await?;
-            let done = act::act(&driver, pid, window_id, &action, mode, &delivery).await?;
+            let before = if use_of.track {
+                Some(clipboard::stamp(&driver).await?)
+            } else {
+                None
+            };
+            let done =
+                act::act(&driver, pid, window_id, &action, mode, &delivery, paste_ok).await?;
+            let copied = match before {
+                Some(before) => clipboard::changed_since(&driver, before.value).await,
+                None => None,
+            };
             value(RawAct {
                 element_frame,
                 window_frame,
+                clipboard: copied,
                 ..done
             })
+        }
+        HelperOp::ClipboardRead { expect } => {
+            let driver = state.driver(stop).await?;
+            value(ops::clipboard_read(&driver, expect).await?)
+        }
+        HelperOp::ClipboardWrite { text } => {
+            let driver = state.driver(stop).await?;
+            value(ops::clipboard_write(&driver, &text).await?)
         }
         // The Stop was noted when its frame was read (see `serve`); what is
         // left is the driver.
@@ -1166,6 +1199,7 @@ mod tests {
                 },
             },
             delivery: Default::default(),
+            clipboard: Default::default(),
         };
         let (task, mut to_helper, mut from_helper) = start().await;
         let _ready: HelperMessage = read_frame(&mut from_helper).await.unwrap();
@@ -1276,6 +1310,7 @@ mod tests {
                         },
                     },
                     delivery: Default::default(),
+                    clipboard: Default::default(),
                 },
                 stop: 0,
             },

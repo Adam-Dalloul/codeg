@@ -5245,6 +5245,8 @@
       "menu": "Menu",
       "set-frame": "Déplacer la fenêtre",
       "launch": "Ouvrir l'application",
+      "clipboard-read": "Lire le presse-papiers",
+      "clipboard-write": "Écrire dans le presse-papiers",
       "outcome": {
         "done": "fait",
         "refused": "refusé",
@@ -5394,6 +5396,10 @@
       "launch": {
         "label": "Autoriser les agents à ouvrir des applications et à déplacer des fenêtres",
         "hint": "Avec cette option, un agent peut lancer en arrière-plan une application installée — jamais codeg ni une des applications jamais partagées — et déplacer ou redimensionner une fenêtre sur laquelle vous le laissez agir. Lancer une application ne partage aucune de ses fenêtres : cela reste votre décision."
+      },
+      "clipboard": {
+        "label": "Autoriser les agents à utiliser le presse-papiers",
+        "hint": "Avec cette option, un agent peut placer du texte dans le presse-papiers pour le coller, et relire ce qu'il a copié depuis une fenêtre que vous lui avez partagée. Ce que vous copiez vous-même n'est jamais lu pour un agent, et un agent ne peut coller que ce qu'il y a placé lui-même."
       },
       "boundary": "Sous macOS, les autorisations vont à codeg-computer-helper, que seul codeg peut utiliser : le shell des agents ne le peut pas. Windows et Linux n'ont pas cette séparation : là, ces réglages décident de ce que les agents obtiennent via codeg, pas de ce que les programmes de votre ordinateur peuvent faire.",
       "save": "Enregistrer",

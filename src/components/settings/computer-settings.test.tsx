@@ -103,6 +103,7 @@ beforeEach(() => {
       allowForeground: prefs.allowForeground ?? true,
       defaultDelivery: prefs.defaultDelivery ?? "background",
       launchEnabled: prefs.launchEnabled ?? false,
+      clipboardEnabled: prefs.clipboardEnabled ?? false,
     })
   )
   mockStopKey.mockResolvedValue({ active: DEFAULT_KEY })
@@ -534,6 +535,21 @@ describe("ComputerSettingsSection", () => {
     fireEvent.click(screen.getByRole("button", { name: "Save" }))
     await waitFor(() => expect(mockSet).toHaveBeenCalledTimes(1))
     expect(mockSet.mock.calls[0][0]).toEqual({ launchEnabled: true })
+  })
+
+  /** The clipboard tools are off until the person turns them on; turning
+   *  them on saves only that. */
+  it("lets agents use the clipboard, saving only that", async () => {
+    mount()
+    const clipboard = await screen.findByRole("switch", {
+      name: "Let agents use the clipboard",
+    })
+    await waitFor(() => expect(clipboard).not.toBeDisabled())
+    expect(clipboard).not.toBeChecked()
+    fireEvent.click(clipboard)
+    fireEvent.click(screen.getByRole("button", { name: "Save" }))
+    await waitFor(() => expect(mockSet).toHaveBeenCalledTimes(1))
+    expect(mockSet.mock.calls[0][0]).toEqual({ clipboardEnabled: true })
   })
 
   /** A default of the front chosen before shows as Background while the

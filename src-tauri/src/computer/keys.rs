@@ -409,6 +409,55 @@ pub fn pointer_modifiers_allowed_for_app(modifiers: Modifiers, platform: Platfor
     !modifiers.meta || platform == Platform::Mac
 }
 
+/// Whether `chord` copies or cuts: the platform's shortcut modifier with C
+/// or X — what is watched for a change of the clipboard.
+pub fn copies(chord: &Chord, platform: Platform) -> bool {
+    let primary = match platform {
+        Platform::Mac => chord.modifiers.meta,
+        Platform::Windows | Platform::Linux => chord.modifiers.control,
+    };
+    primary && matches!(chord.key, Key::Char('c' | 'x'))
+}
+
+/// Words a menu command's title uses for copying or cutting, in the
+/// languages applications commonly come in.
+const COPY_WORDS: &[&str] = &[
+    "copy",
+    "cut",
+    "复制",
+    "拷贝",
+    "剪切",
+    "複製",
+    "拷貝",
+    "剪下",
+    "コピー",
+    "カット",
+    "복사",
+    "잘라내기",
+    "copiar",
+    "cortar",
+    "recortar",
+    "kopieren",
+    "ausschneiden",
+    "copier",
+    "couper",
+    "copia",
+    "taglia",
+    "kopiëren",
+    "knippen",
+    "копировать",
+    "вырезать",
+    "نسخ",
+    "قص",
+];
+
+/// Whether a menu command is named for copying or cutting — whose change of
+/// the clipboard is then watched, as a copying key's is.
+pub fn names_copy(title: &str) -> bool {
+    let title = title.to_lowercase();
+    COPY_WORDS.iter().any(|word| title.contains(word))
+}
+
 /// Words a control's title uses for pasting, in the languages applications
 /// commonly come in. Matched anywhere in a title, case aside: "Paste and
 /// Match Style" is a paste too. Some of them also mean "insert" in their
@@ -634,6 +683,19 @@ mod tests {
             m(&["super"]),
             Platform::Linux
         ));
+    }
+
+    /// Copying and cutting are the shortcut modifier with C or X, on each
+    /// platform's own modifier; nothing else is watched.
+    #[test]
+    fn copying_is_the_shortcut_modifier_with_c_or_x() {
+        assert!(copies(&chord("c", &["cmd"]), Platform::Mac));
+        assert!(copies(&chord("x", &["cmd", "shift"]), Platform::Mac));
+        assert!(!copies(&chord("c", &["ctrl"]), Platform::Mac));
+        assert!(copies(&chord("c", &["ctrl"]), Platform::Windows));
+        assert!(copies(&chord("x", &["ctrl"]), Platform::Linux));
+        assert!(!copies(&chord("v", &["ctrl"]), Platform::Linux));
+        assert!(!copies(&chord("c", &[]), Platform::Windows));
     }
 
     /// A title is a paste's in any of the languages listed, wherever the

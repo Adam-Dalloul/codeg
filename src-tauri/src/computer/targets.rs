@@ -1110,6 +1110,9 @@ impl TargetTable {
     /// window than the agent was allowed to know.
     ///
     /// Counts as use of the grant, like a read.
+    // One argument per thing the decision reads, as `begin_read` takes them,
+    // and whether a paste may go (`resolve`).
+    #[allow(clippy::too_many_arguments)]
     pub fn begin_act(
         &self,
         target_id: &str,
@@ -1118,6 +1121,7 @@ impl TargetTable {
         me: &SelfIdentity,
         blocklist: &Blocklist,
         request: &ComputerActRequest,
+        paste_ok: bool,
     ) -> Result<ActTicket, (ActDenied, Vec<ComputerGrantPayload>)> {
         let mut inner = self.lock();
         let Inner { entries, apps, .. } = &mut *inner;
@@ -1142,7 +1146,7 @@ impl TargetTable {
         if !level.allows(GrantLevel::Control) {
             return Err((ActDenied::ControlRequired, Vec::new()));
         }
-        let action = resolve(entry, request).map_err(|why| (why, Vec::new()))?;
+        let action = resolve(entry, request, paste_ok).map_err(|why| (why, Vec::new()))?;
         let Some(entry) = entries.get_mut(target_id) else {
             return Err((ActDenied::NoSuchTarget, Vec::new()));
         };
@@ -1258,7 +1262,13 @@ impl AppChange {
 
 /// The action as the helper carries it out: keys judged for a window grant,
 /// refs and points resolved against what the agent last read of the window.
-fn resolve(entry: &TargetEntry, request: &ComputerActRequest) -> Result<WindowAction, ActDenied> {
+/// `paste_ok`: the clipboard holds what an agent put there itself, which a
+/// paste may then write into the window (see `commands::computer`).
+fn resolve(
+    entry: &TargetEntry,
+    request: &ComputerActRequest,
+    paste_ok: bool,
+) -> Result<WindowAction, ActDenied> {
     let scope = entry
         .grant
         .as_ref()
@@ -1323,7 +1333,7 @@ fn resolve(entry: &TargetEntry, request: &ComputerActRequest) -> Result<WindowAc
             submit: *submit,
         },
         ComputerActRequest::Key { target, chord, .. } => {
-            check_chord(chord, target.is_some(), scope)?;
+            check_chord(chord, target.is_some(), scope, paste_ok)?;
             WindowAction::Key {
                 element: target
                     .as_ref()
@@ -1335,7 +1345,7 @@ fn resolve(entry: &TargetEntry, request: &ComputerActRequest) -> Result<WindowAc
         // A held key is the key pressed, again and again: each press is an
         // action of its own (see `commands::computer`).
         ComputerActRequest::HoldKey { target, chord, .. } => {
-            check_chord(chord, target.is_some(), scope)?;
+            check_chord(chord, target.is_some(), scope, paste_ok)?;
             WindowAction::Key {
                 element: target
                     .as_ref()
@@ -1359,7 +1369,7 @@ fn resolve(entry: &TargetEntry, request: &ComputerActRequest) -> Result<WindowAc
             // A paste by its menu is a paste: it writes the person's
             // clipboard into the window ("Paste Special", "Unformatted Text"
             // included). The helper checks the command's own shortcut too.
-            if path.iter().any(|title| super::keys::names_paste(title)) {
+            if !paste_ok && path.iter().any(|title| super::keys::names_paste(title)) {
                 return Err(ActDenied::Paste);
             }
             WindowAction::InvokeMenu {
@@ -1434,7 +1444,12 @@ fn check_pointer_modifiers(
 /// Whether the grant — a window's, or a whole application's — reaches
 /// `chord`, and, for a key that types a character, that it is aimed at a
 /// named element.
-fn check_chord(chord: &Chord, names_element: bool, scope: GrantScope) -> Result<(), ActDenied> {
+fn check_chord(
+    chord: &Chord,
+    names_element: bool,
+    scope: GrantScope,
+    paste_ok: bool,
+) -> Result<(), ActDenied> {
     let platform = Platform::current();
     let class = match scope {
         GrantScope::Window => classify(chord, platform),
@@ -1443,6 +1458,7 @@ fn check_chord(chord: &Chord, names_element: bool, scope: GrantScope) -> Result<
     match class {
         ChordClass::Beyond if scope == GrantScope::App => Err(ActDenied::DesktopChord),
         ChordClass::Beyond => Err(ActDenied::ChordBeyond),
+        ChordClass::Paste if paste_ok => Ok(()),
         ChordClass::Paste => Err(ActDenied::Paste),
         ChordClass::Window if chord.types_text() && !names_element => Err(ActDenied::NeedsElement),
         ChordClass::Window => Ok(()),
@@ -1924,6 +1940,58 @@ mod tests {
         assert!(table.shared().is_empty());
     }
 
+    /// A paste goes through when the clipboard holds what an agent put there
+    /// itself (`paste_ok`) — by its key or by its menu — and is refused
+    /// otherwise.
+    #[test]
+    fn a_paste_goes_only_with_the_agents_own_clipboard() {
+        let table = TargetTable::new();
+        let (id, _, _) = shared_and_read(&table, GrantLevel::Control);
+        let platform = Platform::current();
+        let paste = ComputerActRequest::Key {
+            target: None,
+            chord: Chord {
+                key: Key::Char('v'),
+                modifiers: if platform == Platform::Mac {
+                    Modifiers {
+                        meta: true,
+                        ..Modifiers::default()
+                    }
+                } else {
+                    Modifiers {
+                        control: true,
+                        ..Modifiers::default()
+                    }
+                },
+            },
+            repeat: 1,
+        };
+        let with = |paste_ok: bool, request: &ComputerActRequest| {
+            table
+                .begin_act(
+                    &id,
+                    3_000,
+                    None,
+                    &me(),
+                    &Blocklist::new(&[]),
+                    request,
+                    paste_ok,
+                )
+                .map(|t| t.action)
+                .map_err(|(why, _)| why)
+        };
+        assert_eq!(with(false, &paste), Err(ActDenied::Paste));
+        assert!(with(true, &paste).is_ok());
+        if platform != Platform::Windows {
+            share_app(&table, AppTarget::Window(&id), GrantLevel::Control).unwrap();
+            let menu = ComputerActRequest::InvokeMenu {
+                path: vec!["Edit".into(), "Paste".into()],
+            };
+            assert_eq!(with(false, &menu), Err(ActDenied::Paste));
+            assert!(with(true, &menu).is_ok());
+        }
+    }
+
     /// What is given of a frame goes to the helper as it is — the rest it
     /// takes from the window just before — and a frame no window can have is
     /// refused before anything is sent.
@@ -2277,7 +2345,7 @@ mod tests {
         request: &ComputerActRequest,
     ) -> Result<WindowAction, ActDenied> {
         table
-            .begin_act(id, 3_000, None, &me(), &Blocklist::new(&[]), request)
+            .begin_act(id, 3_000, None, &me(), &Blocklist::new(&[]), request, false)
             .map(|t| t.action)
             .map_err(|(why, _)| why)
     }
@@ -2627,7 +2695,15 @@ mod tests {
         let (id, snapshot, capture) = shared_and_read(&table, GrantLevel::Control);
         let aim = |request: &ComputerActRequest| {
             table
-                .begin_act(&id, 3_000, None, &me(), &Blocklist::new(&[]), request)
+                .begin_act(
+                    &id,
+                    3_000,
+                    None,
+                    &me(),
+                    &Blocklist::new(&[]),
+                    request,
+                    false,
+                )
                 .unwrap()
                 .aim
         };
@@ -2644,6 +2720,7 @@ mod tests {
             submit_note: None,
             element_frame,
             window_frame,
+            clipboard: None,
         };
 
         // The screenshot is 1000×500 of a 1000×500-unit window drawn at
@@ -2764,11 +2841,27 @@ mod tests {
         let table = TargetTable::new();
         let (id, snapshot, _) = shared_and_read(&table, GrantLevel::Control);
         table
-            .begin_act(&id, 9_000, ttl, &me(), &Blocklist::new(&[]), &click_ref(&snapshot, 1))
+            .begin_act(
+                &id,
+                9_000,
+                ttl,
+                &me(),
+                &Blocklist::new(&[]),
+                &click_ref(&snapshot, 1),
+                false,
+            )
             .unwrap();
         assert_eq!(table.shared()[0].last_used_at, 9_000);
         let (why, ended) = table
-            .begin_act(&id, 30_000, ttl, &me(), &Blocklist::new(&[]), &click_ref(&snapshot, 1))
+            .begin_act(
+                &id,
+                30_000,
+                ttl,
+                &me(),
+                &Blocklist::new(&[]),
+                &click_ref(&snapshot, 1),
+                false,
+            )
             .unwrap_err();
         assert_eq!(why, ActDenied::GrantRequired);
         assert_eq!(

@@ -659,6 +659,10 @@ pub enum ComputerAction {
     SetFrame,
     /// Started an application.
     Launch,
+    /// Read back what an agent put on the clipboard.
+    ClipboardRead,
+    /// Put text on the clipboard.
+    ClipboardWrite,
 }
 
 impl ComputerAction {

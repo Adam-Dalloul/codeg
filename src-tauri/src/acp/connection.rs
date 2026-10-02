@@ -5249,6 +5249,8 @@ struct CompanionFeatureFlags {
     /// `computer_launch_app` / `computer_set_window_frame`, on the person's
     /// own switch on top of `computer`.
     computer_launch: bool,
+    /// `computer_clipboard_read` / `computer_clipboard_write`, the same.
+    computer_clipboard: bool,
 }
 
 /// The `--features` value for a companion launch, or `None` when no group is
@@ -5294,6 +5296,9 @@ fn companion_features_arg(flags: CompanionFeatureFlags) -> Option<String> {
     // Only ever alongside `computer`, as `browser_eval` with `browser`.
     if flags.computer && flags.computer_launch {
         features.push("computer_launch");
+    }
+    if flags.computer && flags.computer_clipboard {
+        features.push("computer_clipboard");
     }
     if features.is_empty() {
         return None;
@@ -5405,6 +5410,8 @@ where
         computer: cfg!(feature = "tauri-runtime") && injection.computer.is_enabled().await,
         computer_launch: cfg!(feature = "tauri-runtime")
             && injection.computer.is_launch_enabled().await,
+        computer_clipboard: cfg!(feature = "tauri-runtime")
+            && injection.computer.is_clipboard_enabled().await,
     };
     // `None` (no feature enabled) short-circuits BEFORE the binary lookup, the
     // token registration and the server append: there is no companion to launch,
@@ -29581,13 +29588,15 @@ mod tests {
                 browser_eval: true,
                 computer: true,
                 computer_launch: true,
+                computer_clipboard: true,
             }),
             Some(
                 "delegation,feedback,ask,sessions,tasks,automations,taskboard,browser,browser_eval,\
-                 computer,computer_launch"
+                 computer,computer_launch,computer_clipboard"
                     .to_string()
             )
         );
+        assert_eq!(only(|f| f.computer_clipboard = true), None);
         // Computer use alone still gets a companion.
         assert_eq!(only(|f| f.computer = true), Some("computer".to_string()));
         // Its launch switch never travels on its own.

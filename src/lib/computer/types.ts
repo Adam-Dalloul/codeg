@@ -151,6 +151,8 @@ export type ComputerAction =
   | "menu"
   | "set-frame"
   | "launch"
+  | "clipboard-read"
+  | "clipboard-write"
 export type ActivityOutcome = "done" | "refused" | "failed"
 
 /** `computer://agent-activity` */
@@ -199,6 +201,9 @@ export interface ComputerToolsSettings {
   /** Whether an agent may start applications and move or size a shared
    *  window. Off unless the person turned it on. */
   launchEnabled?: boolean
+  /** Whether an agent may read back what it put on the clipboard, and put
+   *  text there. Off unless the person turned it on. */
+  clipboardEnabled?: boolean
   /** How an action goes when the agent does not say; `foreground` is in
    *  force only while `allowForeground` is on, and kept while it is off. */
   defaultDelivery: ComputerDelivery

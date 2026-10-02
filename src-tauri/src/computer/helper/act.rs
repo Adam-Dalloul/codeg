@@ -163,12 +163,15 @@ impl SnapshotBook {
     /// Check `action`'s element against the latest snapshot of the window:
     /// it is from that snapshot, the snapshot has such an element, and the
     /// element may take what the action does to it.
+    /// `paste_ok`: the clipboard is still what the agent put there, and a
+    /// control that pastes may be pressed.
     pub fn check(
         &self,
         pid: u32,
         window_id: u64,
         action: &WindowAction,
         app_key: Option<&str>,
+        paste_ok: bool,
     ) -> Result<(), HelperError> {
         let Some(element) = action.element() else {
             return Ok(());
@@ -187,13 +190,10 @@ impl SnapshotBook {
             .ok_or_else(stale)?;
         let found = facts.elements.get(&element.index).ok_or_else(stale)?;
         // Pressing it pastes: the person's clipboard would land in the
-        // window. Scrolling over it does not.
-        if found.paste && !matches!(action, WindowAction::Scroll { .. }) {
-            return Err(HelperError::new(
-                HelperErrorCode::PasteRefused,
-                "That control pastes, and the clipboard is the user's own: what is on it may not \
-                 come from any window you may read. Type the text with computer_type instead.",
-            ));
+        // window, unless it holds what the agent put there. Scrolling over
+        // it does not.
+        if found.paste && !paste_ok && !matches!(action, WindowAction::Scroll { .. }) {
+            return Err(paste_refused());
         }
         if found.secret && action.writes_text() {
             return Err(HelperError::new(
@@ -329,6 +329,7 @@ async fn restore(
         submit_note: None,
         element_frame: None,
         window_frame: None,
+        clipboard: None,
     };
     if !ask_back(driver, pid, window_id, mode, deliverable).await? {
         return Ok(effect(ActEffect::Confirmed));
@@ -507,7 +508,11 @@ pub async fn act(
     action: &WindowAction,
     mode: ActDelivery,
     deliverable: &Delivery,
+    paste_ok: bool,
 ) -> Result<RawAct, HelperError> {
+    // Only macOS checks a menu command's own shortcut for a paste.
+    #[cfg(not(target_os = "macos"))]
+    let _ = paste_ok;
     let platform = Platform::current();
     let mut args = json!({
         "pid": pid,
@@ -663,7 +668,7 @@ pub async fn act(
                 ));
             }
             #[cfg(target_os = "macos")]
-            menu_in_reach(pid, path).await?;
+            menu_in_reach(pid, path, paste_ok).await?;
             let args = json!({ "pid": pid, "window_id": window_id, "path": path });
             deliverable.check()?;
             one(driver, "invoke_menu", args, mode, ACT_TIMEOUT).await
@@ -792,7 +797,7 @@ async fn front_of_its_app(
 /// missing or met twice, a menu that fills itself only once opened — is
 /// refused: what it is cannot be told before it is chosen.
 #[cfg(target_os = "macos")]
-async fn menu_in_reach(pid: u32, path: &[String]) -> Result<(), HelperError> {
+async fn menu_in_reach(pid: u32, path: &[String], paste_ok: bool) -> Result<(), HelperError> {
     use super::axwin::{menu_target, MENU_NO_COMMAND};
     let target = menu_target(pid, path.to_vec()).await;
     match target.bar_index {
@@ -819,7 +824,9 @@ async fn menu_in_reach(pid: u32, path: &[String]) -> Result<(), HelperError> {
              click it open and choose the item by ref.",
         )),
         Some(_) => match target.shortcut {
-            Some((key, mask)) if key.eq_ignore_ascii_case("v") && mask & MENU_NO_COMMAND == 0 => {
+            Some((key, mask))
+                if !paste_ok && key.eq_ignore_ascii_case("v") && mask & MENU_NO_COMMAND == 0 =>
+            {
                 Err(HelperError::new(
                     HelperErrorCode::PasteRefused,
                     "That command pastes (⌘V), and the clipboard is the user's own: what is on it \
@@ -830,6 +837,33 @@ async fn menu_in_reach(pid: u32, path: &[String]) -> Result<(), HelperError> {
             _ => Ok(()),
         },
     }
+}
+
+/// Whether `action` pastes by its key: ⌘V / Ctrl+V and the rest of its
+/// kind (`keys::classify`).
+pub fn pastes(action: &WindowAction) -> bool {
+    match action {
+        WindowAction::Key { chord, .. } => {
+            crate::computer::keys::classify(chord, Platform::current())
+                == crate::computer::keys::ChordClass::Paste
+        }
+        // A menu command named for pasting, on every platform; the one
+        // whose shortcut is ⌘V is caught on macOS by `menu_in_reach`.
+        WindowAction::InvokeMenu { path } => path
+            .iter()
+            .any(|title| crate::computer::keys::names_paste(title)),
+        _ => false,
+    }
+}
+
+/// A paste refused: the clipboard is not what the agent put there.
+pub fn paste_refused() -> HelperError {
+    HelperError::new(
+        HelperErrorCode::PasteRefused,
+        "That pastes, and the clipboard holds what the user put there, not what you copied from \
+         a window you may read or wrote with computer_clipboard_write. Type the text with \
+         computer_type instead, or copy it from a shared window first.",
+    )
 }
 
 /// The modifiers held over a pointer action, as `platform`'s driver spells
@@ -964,6 +998,7 @@ fn action_result(tool: &str, result: &ToolCallResult) -> Result<RawAct, HelperEr
         submit_note: None,
         element_frame: None,
         window_frame: None,
+        clipboard: None,
     })
 }
 
@@ -1240,7 +1275,7 @@ mod tests {
         };
         for pressed in [click, key] {
             assert_eq!(
-                book.check(1, 10, &pressed, None).unwrap_err().code,
+                book.check(1, 10, &pressed, None, false).unwrap_err().code,
                 HelperErrorCode::PasteRefused
             );
         }
@@ -1250,7 +1285,7 @@ mod tests {
             amount: 1,
             unit: crate::computer::types::ScrollUnit::Line,
         };
-        assert!(book.check(1, 10, &scroll, None).is_ok());
+        assert!(book.check(1, 10, &scroll, None, false).is_ok());
     }
 
     fn element(id: &str, index: u32) -> ElementRef {
@@ -1296,26 +1331,26 @@ mod tests {
             modifiers: Modifiers::default(),
         };
         assert!(book
-            .check(1, 10, &click(element("s00000001", 3)), None)
+            .check(1, 10, &click(element("s00000001", 3)), None, false)
             .is_ok());
         let code = |r: Result<(), HelperError>| r.unwrap_err().code;
         assert_eq!(
-            code(book.check(1, 10, &click(element("s00000001", 4)), None)),
+            code(book.check(1, 10, &click(element("s00000001", 4)), None, false)),
             HelperErrorCode::StaleRef
         );
         // The same id on another window is not that window's snapshot.
         assert_eq!(
-            code(book.check(1, 11, &click(element("s00000001", 3)), None)),
+            code(book.check(1, 11, &click(element("s00000001", 3)), None, false)),
             HelperErrorCode::StaleRef
         );
         book.record(1, 10, Some(facts("s00000002", &[(3, "AXButton", false)])));
         assert_eq!(
-            code(book.check(1, 10, &click(element("s00000001", 3)), None)),
+            code(book.check(1, 10, &click(element("s00000001", 3)), None, false)),
             HelperErrorCode::StaleRef
         );
         book.record(1, 10, None);
         assert_eq!(
-            code(book.check(1, 10, &click(element("s00000002", 3)), None)),
+            code(book.check(1, 10, &click(element("s00000002", 3)), None, false)),
             HelperErrorCode::StaleRef
         );
     }
@@ -1347,7 +1382,7 @@ mod tests {
             },
         ] {
             assert_eq!(
-                book.check(1, 10, &writes, None).unwrap_err().code,
+                book.check(1, 10, &writes, None, false).unwrap_err().code,
                 HelperErrorCode::SecretField,
                 "{writes:?}"
             );
@@ -1367,7 +1402,7 @@ mod tests {
                 },
             },
         ] {
-            assert!(book.check(1, 10, &fine, None).is_ok(), "{fine:?}");
+            assert!(book.check(1, 10, &fine, None, false).is_ok(), "{fine:?}");
         }
     }
 
@@ -1382,15 +1417,17 @@ mod tests {
             value: "Large".into(),
         };
         assert_eq!(
-            book.check(1, 10, &set, Some("com.apple.Safari"))
+            book.check(1, 10, &set, Some("com.apple.Safari"), false)
                 .unwrap_err()
                 .code,
             HelperErrorCode::ActionFailed
         );
-        assert!(book.check(1, 10, &set, Some("com.apple.TextEdit")).is_ok());
+        assert!(book
+            .check(1, 10, &set, Some("com.apple.TextEdit"), false)
+            .is_ok());
         // An application codeg cannot name could be Safari.
         assert_eq!(
-            book.check(1, 10, &set, None).unwrap_err().code,
+            book.check(1, 10, &set, None, false).unwrap_err().code,
             HelperErrorCode::ActionFailed
         );
     }

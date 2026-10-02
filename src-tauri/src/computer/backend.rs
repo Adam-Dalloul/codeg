@@ -10,9 +10,9 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 use super::protocol::{
-    HelperError, HelperErrorCode, InstalledApp, OsPermission, PeerCheck, PermissionAsked,
-    PermissionReport, ProcessRun, RawAct, RawApp, RawCapture, RawLaunch, RawSnapshot, RawVerify,
-    RawWindow, WindowAction,
+    ClipboardUse, HelperError, HelperErrorCode, InstalledApp, OsPermission, PeerCheck,
+    PermissionAsked, PermissionReport, ProcessRun, RawAct, RawApp, RawCapture, RawClipboard,
+    RawLaunch, RawSnapshot, RawVerify, RawWindow, WindowAction,
 };
 use super::types::{ActDelivery, VerifyRequest};
 
@@ -232,8 +232,16 @@ pub trait ComputerBackend: Send + Sync {
         app_key: Option<String>,
         action: WindowAction,
         delivery: ActDelivery,
+        clipboard: ClipboardUse,
         stop: u64,
     ) -> Result<RawAct, BackendError>;
+
+    /// The clipboard's text, while it is still as `expect` names it.
+    async fn clipboard_read(&self, expect: u64) -> Result<RawClipboard, BackendError>;
+
+    /// Put `text` on the clipboard — sent once, as an action, held to the
+    /// Stop count `stop` — and answer with the clipboard's stamp after.
+    async fn clipboard_write(&self, text: String, stop: u64) -> Result<u64, BackendError>;
 
     /// The person's `stop`-th Stop: whatever the executor is doing is
     /// abandoned, and no action let through before it goes out. What comes

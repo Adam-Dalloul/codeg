@@ -5245,6 +5245,8 @@
       "menu": "Menu",
       "set-frame": "Mover janela",
       "launch": "Abrir app",
+      "clipboard-read": "Ler área de transferência",
+      "clipboard-write": "Escrever na área de transferência",
       "outcome": {
         "done": "feito",
         "refused": "recusado",
@@ -5394,6 +5396,10 @@
       "launch": {
         "label": "Permitir que os agentes abram aplicativos e movam janelas",
         "hint": "Com isto ativado, um agente pode iniciar em segundo plano um aplicativo instalado — nunca o codeg nem um dos aplicativos nunca compartilhados — e mover ou redimensionar uma janela em que você o deixa agir. Iniciar um aplicativo não compartilha nenhuma das janelas dele: isso continua sendo decisão sua."
+      },
+      "clipboard": {
+        "label": "Permitir que os agentes usem a área de transferência",
+        "hint": "Com isto ativado, um agente pode colocar texto na área de transferência para colá-lo e reler o que copiou de uma janela que você compartilhou com ele. O que você mesmo copia nunca é lido para um agente, e um agente só pode colar o que ele mesmo colocou lá."
       },
       "boundary": "No macOS, as permissões vão para o codeg-computer-helper, que só o codeg pode usar, então o shell dos agentes não pode. O Windows e o Linux não têm essa separação: lá, estes ajustes decidem o que os agentes recebem pelo codeg, não o que os programas do seu computador podem fazer.",
       "save": "Salvar",

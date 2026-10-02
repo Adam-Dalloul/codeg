@@ -163,6 +163,40 @@ impl ComputerLaunchOutcome {
     }
 }
 
+/// What `computer_clipboard_read` / `computer_clipboard_write` ask.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum ClipboardOp {
+    Read,
+    Write { text: String },
+}
+
+/// What `computer_clipboard_read` / `computer_clipboard_write` answer.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ComputerClipboardOutcome {
+    /// What was read.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    /// The text was put on the clipboard.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub written: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}
+
+impl ComputerClipboardOutcome {
+    pub fn refused(error: &str, note: impl Into<String>) -> Self {
+        Self {
+            error: Some(error.to_string()),
+            note: Some(note.into()),
+            ..Self::default()
+        }
+    }
+}
+
 /// What `computer_list_windows` answers.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -311,6 +345,22 @@ pub const LAUNCH_OFF_NOTE: &str = "Starting applications and moving or sizing wi
      switched off in codeg's Computer use settings (\"Let agents open applications and move \
      windows\"), so nothing was done. Ask the user whether to switch it on — only they can.";
 
+/// Said when the clipboard tools are asked for and the person has not
+/// switched them on.
+pub const CLIPBOARD_OFF_NOTE: &str = "Reading and writing the clipboard is switched off in \
+     codeg's Computer use settings (\"Let agents use the clipboard\"), so nothing was done. Ask \
+     the user whether to switch it on — only they can.";
+
+/// Said when the clipboard does not hold what an agent put there.
+pub const CLIPBOARD_NOT_YOURS_NOTE: &str = "The clipboard holds what the user put there, not what \
+     you copied from a window you may read or wrote with computer_clipboard_write, so it is not \
+     read for you; retrying will not change it. Copy from a shared window first.";
+
+/// Said with text put on the clipboard for an agent.
+pub const CLIPBOARD_WRITTEN_NOTE: &str =
+    "The text is on the clipboard: a paste into a window shared \
+     with you for control now writes it there, until something else is copied.";
+
 /// Said with an application started for an agent.
 pub const LAUNCHED_NOTE: &str = "It was started in the background. Its windows are not shared \
      with you by this: find them with computer_list_windows, and ask the user to share the one \
@@ -321,9 +371,10 @@ pub const BAD_FRAME_NOTE: &str = "That frame cannot be given to a window: every 
      plain number, the width and the height at least 50, and nothing beyond 100000. Use \
      desktop units, as computer_list_windows gives a window's bounds.";
 
-pub const PASTE_NOTE: &str = "Pasting is not available: the clipboard is the user's own, and \
-     what is on it may not come from any window you may read. Type the text with computer_type \
-     instead.";
+pub const PASTE_NOTE: &str = "That pastes, and the clipboard holds what the user put there — not \
+     what you copied from a window you may read, or wrote with computer_clipboard_write — so it \
+     was not pressed. Type the text with computer_type instead, or copy it from a shared window \
+     first.";
 
 pub const NEEDS_ELEMENT_NOTE: &str = "A key that types a character goes only into an element you \
      name: pass its ref from computer_snapshot, or type the text with computer_type.";
@@ -596,6 +647,9 @@ pub trait ComputerToolAccess: Send + Sync {
     /// Start an installed application — by its key, or by its name — in the
     /// background. Its windows are not shared by it.
     async fn launch_app(&self, name: Option<String>, key: Option<String>) -> ComputerLaunchOutcome;
+
+    /// Read back what the agent put on the clipboard, or put text there.
+    async fn clipboard(&self, op: ClipboardOp) -> ComputerClipboardOutcome;
 }
 
 /// The answer where there is no desktop: server mode, and the stub in every
@@ -644,6 +698,10 @@ impl ComputerToolAccess for NoComputerDesktop {
     ) -> ComputerLaunchOutcome {
         ComputerLaunchOutcome::refused(ERROR_UNAVAILABLE, NO_DESKTOP_NOTE)
     }
+
+    async fn clipboard(&self, _op: ClipboardOp) -> ComputerClipboardOutcome {
+        ComputerClipboardOutcome::refused(ERROR_UNAVAILABLE, NO_DESKTOP_NOTE)
+    }
 }
 
 /// The computer-use settings as the tool surface reads them, at injection and
@@ -676,6 +734,10 @@ pub struct ComputerToolsConfig {
     /// Whether an agent may start applications and move or size a shared
     /// window. Off unless the person turned it on.
     pub launch_enabled: bool,
+    /// Whether an agent may read back what it put on the clipboard, and put
+    /// text there. Off unless the person turned it on. (Pasting what it
+    /// copied needs no switch: see `commands::computer`.)
+    pub clipboard_enabled: bool,
     /// How many times the group has been switched off since codeg started.
     /// Kept by [`ComputerToolsRuntimeConfig::set`], never persisted: it is
     /// what lets a watcher that only sees the latest value — a quick off and
@@ -696,6 +758,7 @@ impl Default for ComputerToolsConfig {
             allow_foreground: true,
             default_delivery: ActDelivery::Background,
             launch_enabled: false,
+            clipboard_enabled: false,
             switched_off: 0,
         }
     }
@@ -794,6 +857,13 @@ impl ComputerToolsRuntimeConfig {
     pub async fn is_launch_enabled(&self) -> bool {
         let config = self.inner.read().await;
         config.enabled && config.launch_enabled
+    }
+
+    /// Whether the clipboard tools are offered: computer use on, and the
+    /// person's own switch for them on.
+    pub async fn is_clipboard_enabled(&self) -> bool {
+        let config = self.inner.read().await;
+        config.enabled && config.clipboard_enabled
     }
 
     /// Every change from here on.
@@ -950,10 +1020,12 @@ mod tests {
             allow_foreground: true,
             default_delivery: ActDelivery::Foreground,
             launch_enabled: true,
+            clipboard_enabled: true,
             switched_off: 0,
         };
         cfg.set(on.clone()).await;
         assert!(cfg.is_launch_enabled().await);
+        assert!(cfg.is_clipboard_enabled().await);
         assert!(cfg.is_enabled().await);
         assert_eq!(cfg.snapshot().await, on);
         watcher.changed().await.unwrap();

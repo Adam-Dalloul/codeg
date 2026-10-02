@@ -43,7 +43,7 @@ use super::types::{
 /// Bumped whenever a frame changes shape. The helper ships in the same bundle
 /// as codeg, so a mismatch means a broken install (a helper left behind by a
 /// partial update), and codeg refuses to talk to it rather than guess.
-pub const PROTOCOL_VERSION: u32 = 12;
+pub const PROTOCOL_VERSION: u32 = 13;
 
 /// A fingerprint of the sources the helper is built from, the same in codeg
 /// and the helper when both are built from one tree (see `build.rs`). The
@@ -169,6 +169,21 @@ pub enum HelperOp {
         /// it.
         #[serde(default)]
         delivery: ActDelivery,
+        /// What the action has to do with the clipboard.
+        #[serde(default)]
+        clipboard: ClipboardUse,
+    },
+    /// Read the clipboard — only while it is still as `expect` names it:
+    /// what an agent put there itself. Never a clipboard an application
+    /// marked concealed.
+    #[serde(rename_all = "camelCase")]
+    ClipboardRead {
+        expect: u64,
+    },
+    /// Put text on the clipboard; answers with the clipboard's stamp after.
+    #[serde(rename_all = "camelCase")]
+    ClipboardWrite {
+        text: String,
     },
     /// The person pressed Stop — codeg's `stop`-th — or codeg is closing the
     /// helper ([`STOP_ALL`]): kill the driver started for a request from
@@ -385,6 +400,37 @@ pub struct RawAct {
     pub element_frame: Option<Rect>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub window_frame: Option<Rect>,
+    /// For an action that copies ([`ClipboardUse::track`]): the clipboard's
+    /// stamp once the action changed it — what the agent itself put there.
+    /// `None` when it did not change in time, or holds what an application
+    /// marked concealed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clipboard: Option<u64>,
+}
+
+/// What an action has to do with the clipboard.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClipboardUse {
+    /// The action copies or cuts, or may (a menu command): watch whether it
+    /// changes the clipboard, and say what to.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub track: bool,
+    /// The clipboard as the agent last put it there itself, when codeg holds
+    /// that it still may be pasted: an action that pastes — a paste key, a
+    /// menu command or a control that pastes — goes only while the clipboard
+    /// is still this. Without it, nothing that pastes goes at all.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub paste: Option<u64>,
+}
+
+/// What the clipboard holds, read for an agent.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RawClipboard {
+    /// Its text, when it has any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
 }
 
 /// helper → codeg.
@@ -814,6 +860,7 @@ mod tests {
             app_key: None,
             action: WindowAction::Restore,
             delivery: ActDelivery::Background,
+            clipboard: Default::default(),
         };
         let wire = serde_json::to_value(&restore).unwrap();
         assert_eq!(wire["action"], serde_json::json!({ "kind": "restore" }));
@@ -835,6 +882,7 @@ mod tests {
             app_key: None,
             action: WindowAction::Restore,
             delivery: ActDelivery::Foreground,
+            clipboard: Default::default(),
         };
         let wire = serde_json::to_value(&front).unwrap();
         assert_eq!(wire["delivery"], "foreground");

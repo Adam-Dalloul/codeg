@@ -351,6 +351,15 @@ pub struct BrokerComputerLaunchRequest {
     pub key: Option<String>,
 }
 
+/// Read back, or write, the clipboard. Backs `computer_clipboard_read` and
+/// `computer_clipboard_write`; the person's switch for them and whose the
+/// clipboard's content is are judged on the codeg side.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BrokerComputerClipboardRequest {
+    pub token: String,
+    pub op: crate::acp::computer_tools::ClipboardOp,
+}
+
 /// List the normal windows, or one process's. Backs `computer_list_windows`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BrokerComputerWindowsRequest {
@@ -436,6 +445,7 @@ pub enum BrokerMessage {
     ComputerVerify(BrokerComputerVerifyRequest),
     ComputerAct(BrokerComputerActRequest),
     ComputerLaunch(BrokerComputerLaunchRequest),
+    ComputerClipboard(BrokerComputerClipboardRequest),
     /// Liveness probe. Unlike every other variant this one is NOT sent by a
     /// companion — it comes from codeg's own service-status check
     /// (`acp::delegation::service`), which is why it carries no `token`: a
@@ -716,6 +726,15 @@ pub async fn client_computer_launch_round_trip(
     req: &BrokerComputerLaunchRequest,
 ) -> io::Result<BrokerResponse> {
     message_round_trip(socket_path, &BrokerMessage::ComputerLaunch(req.clone())).await
+}
+
+/// Dispatch a clipboard request and read back the serialized
+/// [`crate::acp::computer_tools::ComputerClipboardOutcome`].
+pub async fn client_computer_clipboard_round_trip(
+    socket_path: &str,
+    req: &BrokerComputerClipboardRequest,
+) -> io::Result<BrokerResponse> {
+    message_round_trip(socket_path, &BrokerMessage::ComputerClipboard(req.clone())).await
 }
 
 /// Dispatch a `computer_list_windows` request and read back the serialized

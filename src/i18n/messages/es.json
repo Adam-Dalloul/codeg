@@ -5245,6 +5245,8 @@
       "menu": "Menú",
       "set-frame": "Mover ventana",
       "launch": "Abrir app",
+      "clipboard-read": "Leer portapapeles",
+      "clipboard-write": "Escribir portapapeles",
       "outcome": {
         "done": "hecho",
         "refused": "rechazado",
@@ -5394,6 +5396,10 @@
       "launch": {
         "label": "Permitir que los agentes abran aplicaciones y muevan ventanas",
         "hint": "Con esto activado, un agente puede iniciar en segundo plano una aplicación instalada —nunca codeg ni una de las que nunca se comparten— y mover o cambiar el tamaño de una ventana en la que le permites actuar. Iniciar una aplicación no comparte ninguna de sus ventanas: eso lo sigues decidiendo tú."
+      },
+      "clipboard": {
+        "label": "Permitir que los agentes usen el portapapeles",
+        "hint": "Con esto activado, un agente puede poner texto en el portapapeles para pegarlo y volver a leer lo que copió de una ventana que compartiste con él. Lo que copias tú nunca se lee para un agente, y un agente solo puede pegar lo que puso él mismo."
       },
       "boundary": "En macOS los permisos se conceden a codeg-computer-helper, que solo puede usar codeg, así que la shell de los agentes no puede. Windows y Linux no tienen esa separación: allí estos ajustes deciden lo que los agentes obtienen a través de codeg, no lo que pueden hacer los programas de tu equipo.",
       "save": "Guardar",
