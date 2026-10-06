@@ -26,6 +26,7 @@ import {
   Server,
   Settings,
   SlidersHorizontal,
+  Tags,
 } from "lucide-react"
 import { useTranslations } from "next-intl"
 import { usePathname } from "next/navigation"
@@ -55,6 +56,7 @@ interface SettingsNavItem {
     | "collaboration"
     | "browser"
     | "computer_use"
+    | "conversation_tags"
     | "quick_messages"
     | "shortcuts"
     | "version_control"
@@ -105,6 +107,11 @@ const SETTINGS_NAV_ITEMS: SettingsNavItem[] = [
     href: "/settings/model-providers",
     labelKey: "model_providers",
     icon: Server,
+  },
+  {
+    href: "/settings/conversation-tags",
+    labelKey: "conversation_tags",
+    icon: Tags,
   },
   {
     href: "/settings/quick-messages",

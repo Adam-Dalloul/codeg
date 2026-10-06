@@ -68,6 +68,24 @@ pub struct DbConversationSummary {
     /// path (set when a removed task worktree's conversations were re-parented).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub origin_cwd: Option<String>,
+    /// Ids of the tags on this conversation, ascending. Not stored on the row —
+    /// backfilled from `conversation_tag_link` by one query over the returned
+    /// set (`fill_summary_extras`), the same way `child_count` is. Omitted from
+    /// the wire when empty, so the frontend reads an absent field as "no tags".
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub tag_ids: Vec<i32>,
+}
+
+/// A conversation tag as the UI sees it. `folder_id` is the scope: `None` for
+/// a global tag, otherwise the root folder whose conversations it is offered
+/// on. `color` is always a normalized `#rrggbb`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ConversationTagDetail {
+    pub id: i32,
+    pub folder_id: Option<i32>,
+    pub name: String,
+    pub color: String,
+    pub sort_order: i32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

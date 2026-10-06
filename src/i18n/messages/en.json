@@ -55,6 +55,7 @@
       "collaboration": "Collaboration",
       "browser": "Browser Use",
       "computer_use": "Computer Use",
+      "conversation_tags": "Conversation Tags",
       "quick_messages": "Quick Messages",
       "logs": "Runtime Logs"
     }
@@ -4548,6 +4549,97 @@
       "created": "Quick message created",
       "saved": "Quick message saved",
       "deleted": "Quick message deleted"
+    }
+  },
+  "ConversationTags": {
+    "tags": "Tags",
+    "moreTags": "{count, plural, one {# more tag} other {# more tags}}",
+    "addTags": "Add tags",
+    "editTags": "Edit tags",
+    "global": "Global",
+    "noTagsYet": "No tags yet",
+    "newTag": "New tag…",
+    "manageTags": "Manage tags…",
+    "manageFolderTags": "Folder tags…",
+    "picker": {
+      "searchPlaceholder": "Search or create a tag…",
+      "noResults": "No matching tags",
+      "empty": "No tags yet. Type a name to create one.",
+      "createGlobal": "Create global tag “{name}”",
+      "createInFolder": "Create “{name}” in {folder}",
+      "otherFolders": "Other folders"
+    },
+    "form": {
+      "createTitle": "New tag",
+      "editTitle": "Edit tag",
+      "name": "Name",
+      "namePlaceholder": "e.g. bug, review, idea",
+      "color": "Color",
+      "customColor": "Custom color",
+      "scope": "Available in",
+      "scopeGlobal": "Every conversation",
+      "scopeFolder": "{folder} only",
+      "create": "Create",
+      "save": "Save",
+      "cancel": "Cancel"
+    },
+    "editor": {
+      "empty": "No tags here yet.",
+      "add": "New tag",
+      "edit": "Edit tag “{name}”",
+      "delete": "Delete tag “{name}”",
+      "dragToReorder": "Drag to reorder “{name}”",
+      "deleteTitle": "Delete this tag?",
+      "deleteDescription": "“{name}” will be taken off every conversation that has it. This can't be undone.",
+      "deleteConfirm": "Delete",
+      "deleteCancel": "Cancel"
+    },
+    "settings": {
+      "title": "Conversation Tags",
+      "description": "Label conversations with colored tags, then filter the sidebar by them.",
+      "globalTitle": "Global tags",
+      "globalDescription": "Available on every conversation, chat mode included.",
+      "folderTitle": "Folder tags",
+      "folderDescription": "Available only on the chosen folder's conversations, its worktrees included.",
+      "folderPlaceholder": "Choose a folder",
+      "noFolders": "No folders yet. Open one in the workspace to give it its own tags.",
+      "loadFailed": "Couldn't load tags"
+    },
+    "folderDialog": {
+      "title": "Tags for {folder}",
+      "description": "These tags can only go on this folder's conversations, its worktrees included. Global tags are available everywhere and live in Settings.",
+      "globalTags": "Global tags…"
+    },
+    "filter": {
+      "button": "Filter by tags",
+      "searchPlaceholder": "Search tags…",
+      "match": "Match",
+      "matchAny": "Any",
+      "matchAll": "All",
+      "matchAnyHint": "Conversations with at least one of the selected tags",
+      "matchAllHint": "Conversations with every selected tag",
+      "modeAll": "Match all",
+      "modeAny": "Match any",
+      "clear": "Clear filter",
+      "noTags": "No tags yet. Add one from a conversation's menu.",
+      "noResults": "No matching tags",
+      "active": "Filtered by tags",
+      "noMatches": "No conversations with these tags",
+      "remove": "Remove “{name}” from the filter"
+    },
+    "toasts": {
+      "assignFailed": "Couldn't update the conversation's tags",
+      "createFailed": "Couldn't create the tag",
+      "deleteFailed": "Couldn't delete the tag",
+      "reorderFailed": "Couldn't save the tag order"
+    },
+    "errors": {
+      "emptyName": "Enter a tag name",
+      "duplicateName": "A tag named “{name}” already exists here",
+      "invalidColor": "Pick a valid color",
+      "folderNotTaggable": "This folder can't have its own tags",
+      "notApplicable": "That tag belongs to another folder",
+      "tagNotFound": "That tag no longer exists"
     }
   },
   "Pet": {

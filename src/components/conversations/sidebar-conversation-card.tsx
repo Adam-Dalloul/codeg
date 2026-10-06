@@ -67,7 +67,13 @@ import { Input } from "@/components/ui/input"
 import { ConversationStatusDot } from "./conversation-status-dot"
 import { SessionDetailsDialog } from "./session-details-dialog"
 import { SidebarConversationHoverDetails } from "./sidebar-conversation-hover-details"
+import { ConversationTagChips } from "./conversation-tag-chip"
+import {
+  ConversationTagContextSubmenu,
+  NewConversationTagDialog,
+} from "./conversation-tag-picker"
 import { AgentIcon } from "@/components/agent-icon"
+import { useResolvedTags } from "@/hooks/use-conversation-tags"
 
 /**
  * Horizontal indent added per delegation-nesting level. Chosen so a child's
@@ -131,6 +137,11 @@ function resolveAttachTabId(): string | null {
   if (!activeTab || activeTab.kind !== "conversation") return null
   return activeTab.id
 }
+
+/** Tag chips drawn inline before the rest fold into "+N". Two is what a
+ *  default-width sidebar can afford beside a still-readable title; the chips
+ *  shrink (and truncate) before the title gives up its minimum. */
+const CARD_TAG_LIMIT = 2
 
 /** How long the pointer must rest on a row before its details bubble opens.
  *  Long enough that sweeping the pointer down the list stays quiet. */
@@ -220,6 +231,10 @@ export const SidebarConversationCard = memo(function SidebarConversationCard({
   const [renameValue, setRenameValue] = useState("")
   const [attachTabId, setAttachTabId] = useState<string | null>(null)
   const [hoverOpen, setHoverOpen] = useState(false)
+  const [newTagOpen, setNewTagOpen] = useState(false)
+  // Subscribes to tag DEFINITIONS only (rare), and re-resolves only when this
+  // row's own `tag_ids` array changes — a status event elsewhere never lands.
+  const tags = useResolvedTags(conversation.tag_ids)
 
   const handleClick = useCallback(() => {
     onSelect(conversation.id, conversation.agent_type, conversation.folder_id)
@@ -424,12 +439,24 @@ export const SidebarConversationCard = memo(function SidebarConversationCard({
                     <span
                       className={cn(
                         "relative min-w-0 flex-1 truncate text-[0.875rem] font-normal",
+                        // With tags beside it the title keeps a floor, so the
+                        // chips — not the title — give way on a narrow sidebar.
+                        tags.length > 0 && "min-w-[3.5rem]",
                         isOpenInTab && "text-primary"
                       )}
                     >
                       {formatConversationTitle(conversation.title) ||
                         t("untitledConversation")}
                     </span>
+                    {/* Inline, inside the row's fixed 2rem height: the list's
+                    virtualizer and rail geometry assume one line per row. The
+                    full set is in the hover bubble. */}
+                    <ConversationTagChips
+                      tags={tags}
+                      max={CARD_TAG_LIMIT}
+                      size="xs"
+                      className="relative -ml-[0.25rem] shrink overflow-hidden"
+                    />
                     {/* Re-parented out of a removed worktree: history loads fine,
                     but "continue" may need a fresh session (the agent's files
                     were keyed to the old path). */}
@@ -671,6 +698,17 @@ export const SidebarConversationCard = memo(function SidebarConversationCard({
               {t("attachToCurrentSession")}
             </ContextMenuItem>
             <ContextMenuSeparator />
+            {/* Sub-sessions opt out like they do of pinning: a sub-agent run
+                is not a conversation the user files away, and the sidebar
+                filter only ever matches root rows. */}
+            {!isSubsession && (
+              <ConversationTagContextSubmenu
+                conversationId={conversation.id}
+                folderId={conversation.folder_id}
+                tagIds={conversation.tag_ids}
+                onNewTag={() => setNewTagOpen(true)}
+              />
+            )}
             <ContextMenuSub>
               <ContextMenuSubTrigger>
                 <Circle className="h-4 w-4" />
@@ -769,6 +807,18 @@ export const SidebarConversationCard = memo(function SidebarConversationCard({
           open
           onOpenChange={setDetailsOpen}
           summary={conversation}
+        />
+      )}
+
+      {/* A sibling of the menu, mounted only while open: the menu unmounts
+          its content on select, and one dormant dialog per sidebar row would
+          be all cost. */}
+      {newTagOpen && (
+        <NewConversationTagDialog
+          open
+          onOpenChange={setNewTagOpen}
+          conversationId={conversation.id}
+          folderId={conversation.folder_id}
         />
       )}
     </>

@@ -62,6 +62,8 @@ import {
   type ActiveSessionDetails,
 } from "./active-session-details"
 import { SessionDetailsDialog } from "./session-details-dialog"
+import { ConversationHeaderTags } from "./conversation-tag-picker"
+import { useIsMobile } from "@/hooks/use-mobile"
 
 interface ConversationDetailHeaderProps {
   tabId: string
@@ -126,6 +128,21 @@ export const ConversationDetailHeader = memo(function ConversationDetailHeader({
       (s.conversations.find((c) => c.id === conversationId)?.pinned_at ??
         null) != null
   )
+  // Tags: offered only on a ROOT conversation of the sidebar list — the same
+  // rows the sidebar lets you tag (a sub-session opened in a tab is not one).
+  // Both reads are narrow: a boolean, and the row's own `tag_ids` array, whose
+  // reference only changes when its tags do.
+  const taggable = useAppWorkspaceStore(
+    (s) =>
+      conversationId != null &&
+      s.conversations.some((c) => c.id === conversationId)
+  )
+  const tagIds = useAppWorkspaceStore((s) =>
+    conversationId == null
+      ? undefined
+      : s.conversations.find((c) => c.id === conversationId)?.tag_ids
+  )
+  const isMobile = useIsMobile()
 
   const [details, setDetails] = useState<ActiveSessionDetails | null>(null)
   // Snapshot the action target when a dialog OPENS. The header is a SINGLE
@@ -260,7 +277,17 @@ export const ConversationDetailHeader = memo(function ConversationDetailHeader({
           {displayTitle}
         </span>
       </div>
-      <div className="flex shrink-0 items-center">
+      {/* Capped at half the header so a long tag list squeezes its own chips
+          (they truncate) before it squeezes the title. */}
+      <div className="flex max-w-[50%] min-w-0 shrink items-center gap-0.5">
+        {taggable && conversationId != null ? (
+          <ConversationHeaderTags
+            conversationId={conversationId}
+            folderId={folderId}
+            tagIds={tagIds}
+            max={isMobile ? 1 : 3}
+          />
+        ) : null}
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <button

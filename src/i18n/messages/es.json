@@ -55,6 +55,7 @@
       "collaboration": "Colaboración",
       "browser": "Uso del navegador",
       "computer_use": "Uso del ordenador",
+      "conversation_tags": "Etiquetas de conversación",
       "quick_messages": "Mensajes rápidos",
       "logs": "Registros de ejecución"
     }
@@ -4528,6 +4529,97 @@
       "created": "Mensaje rápido creado",
       "saved": "Mensaje rápido guardado",
       "deleted": "Mensaje rápido eliminado"
+    }
+  },
+  "ConversationTags": {
+    "tags": "Etiquetas",
+    "moreTags": "{count, plural, one {# etiqueta más} other {# etiquetas más}}",
+    "addTags": "Añadir etiquetas",
+    "editTags": "Editar etiquetas",
+    "global": "Globales",
+    "noTagsYet": "Aún no hay etiquetas",
+    "newTag": "Nueva etiqueta…",
+    "manageTags": "Gestionar etiquetas…",
+    "manageFolderTags": "Etiquetas de la carpeta…",
+    "picker": {
+      "searchPlaceholder": "Busca o crea una etiqueta…",
+      "noResults": "No hay etiquetas que coincidan",
+      "empty": "Aún no hay etiquetas. Escribe un nombre para crear una.",
+      "createGlobal": "Crear la etiqueta global «{name}»",
+      "createInFolder": "Crear «{name}» en {folder}",
+      "otherFolders": "Otras carpetas"
+    },
+    "form": {
+      "createTitle": "Nueva etiqueta",
+      "editTitle": "Editar etiqueta",
+      "name": "Nombre",
+      "namePlaceholder": "p. ej. bug, revisión, idea",
+      "color": "Color",
+      "customColor": "Color personalizado",
+      "scope": "Disponible en",
+      "scopeGlobal": "Todas las conversaciones",
+      "scopeFolder": "Solo {folder}",
+      "create": "Crear",
+      "save": "Guardar",
+      "cancel": "Cancelar"
+    },
+    "editor": {
+      "empty": "Aún no hay etiquetas aquí.",
+      "add": "Nueva etiqueta",
+      "edit": "Editar la etiqueta «{name}»",
+      "delete": "Eliminar la etiqueta «{name}»",
+      "dragToReorder": "Arrastra para reordenar «{name}»",
+      "deleteTitle": "¿Eliminar esta etiqueta?",
+      "deleteDescription": "«{name}» se quitará de todas las conversaciones que la tengan. No se puede deshacer.",
+      "deleteConfirm": "Eliminar",
+      "deleteCancel": "Cancelar"
+    },
+    "settings": {
+      "title": "Etiquetas de conversación",
+      "description": "Marca las conversaciones con etiquetas de colores y filtra la barra lateral por ellas.",
+      "globalTitle": "Etiquetas globales",
+      "globalDescription": "Disponibles en todas las conversaciones, incluido el modo chat.",
+      "folderTitle": "Etiquetas de carpeta",
+      "folderDescription": "Disponibles solo en las conversaciones de la carpeta elegida, incluidos sus worktrees.",
+      "folderPlaceholder": "Elige una carpeta",
+      "noFolders": "Aún no hay carpetas. Abre una en el espacio de trabajo para darle sus propias etiquetas.",
+      "loadFailed": "No se pudieron cargar las etiquetas"
+    },
+    "folderDialog": {
+      "title": "Etiquetas de {folder}",
+      "description": "Estas etiquetas solo se pueden poner en las conversaciones de esta carpeta, incluidos sus worktrees. Las etiquetas globales sirven en todas partes y se gestionan en Ajustes.",
+      "globalTags": "Etiquetas globales…"
+    },
+    "filter": {
+      "button": "Filtrar por etiquetas",
+      "searchPlaceholder": "Buscar etiquetas…",
+      "match": "Coincidir",
+      "matchAny": "Alguna",
+      "matchAll": "Todas",
+      "matchAnyHint": "Conversaciones con al menos una de las etiquetas elegidas",
+      "matchAllHint": "Conversaciones con todas las etiquetas elegidas",
+      "modeAll": "Todas a la vez",
+      "modeAny": "Cualquiera",
+      "clear": "Quitar filtro",
+      "noTags": "Aún no hay etiquetas. Añade una desde el menú de una conversación.",
+      "noResults": "No hay etiquetas que coincidan",
+      "active": "Filtrado por etiquetas",
+      "noMatches": "No hay conversaciones con estas etiquetas",
+      "remove": "Quitar «{name}» del filtro"
+    },
+    "toasts": {
+      "assignFailed": "No se pudieron actualizar las etiquetas de la conversación",
+      "createFailed": "No se pudo crear la etiqueta",
+      "deleteFailed": "No se pudo eliminar la etiqueta",
+      "reorderFailed": "No se pudo guardar el orden de las etiquetas"
+    },
+    "errors": {
+      "emptyName": "Escribe un nombre para la etiqueta",
+      "duplicateName": "Ya existe aquí una etiqueta llamada «{name}»",
+      "invalidColor": "Elige un color válido",
+      "folderNotTaggable": "Esta carpeta no puede tener etiquetas propias",
+      "notApplicable": "Esa etiqueta pertenece a otra carpeta",
+      "tagNotFound": "Esa etiqueta ya no existe"
     }
   },
   "Pet": {

@@ -11,6 +11,10 @@ import {
 } from "@/stores/app-workspace-store"
 import { useTabStore, type TabItem } from "@/stores/tab-store"
 import {
+  resetConversationTagsStore,
+  useConversationTagsStore,
+} from "@/stores/conversation-tags-store"
+import {
   ATTACH_SESSION_TO_SESSION_EVENT,
   type AttachSessionToSessionDetail,
 } from "@/lib/session-attachment-events"
@@ -644,4 +648,57 @@ describe("SidebarConversationCard hover details bubble", () => {
   // jsdom ships no `PointerEvent`, so every synthetic pointer event arrives as a
   // `MouseEvent` with `pointerType: undefined` and the branch can't be reached.
   // Verify that one in a real browser, not here.
+})
+
+describe("SidebarConversationCard tag chips", () => {
+  beforeEach(() => {
+    resetConversationTagsStore()
+    probe.agentIconRenders = 0
+    const store = useConversationTagsStore.getState()
+    for (const [id, name] of [
+      [1, "bug"],
+      [2, "idea"],
+      [3, "ui"],
+    ] as const) {
+      store.applyChange({
+        kind: "upsert",
+        tag: { id, folder_id: null, name, color: "#cf222e", sort_order: id },
+      })
+    }
+  })
+
+  it("draws two chips, folds the rest into +N, and skips unknown tags", () => {
+    const tagged = { ...conv(1), tag_ids: [1, 2, 3, 99] }
+    renderWithIntl(<CardList conversations={[tagged]} now={NOW} />)
+    expect(screen.getByText("bug")).toBeTruthy()
+    expect(screen.getByText("idea")).toBeTruthy()
+    expect(screen.queryByText("ui")).toBeNull()
+    // 99 names no tag this client knows: it is neither drawn nor counted.
+    expect(screen.getByText("+1")).toBeTruthy()
+    expect(screen.getByTitle("ui")).toBeTruthy()
+  })
+
+  it("re-renders only the cards showing a tag whose definition changed", () => {
+    const list = [
+      { ...conv(1), tag_ids: [1] },
+      { ...conv(2), tag_ids: [2] },
+      conv(3),
+    ]
+    renderWithIntl(<CardList conversations={list} now={NOW} />)
+    probe.agentIconRenders = 0
+    act(() => {
+      useConversationTagsStore.getState().applyChange({
+        kind: "upsert",
+        tag: {
+          id: 1,
+          folder_id: null,
+          name: "Bug!",
+          color: "#cf222e",
+          sort_order: 1,
+        },
+      })
+    })
+    expect(screen.getByText("Bug!")).toBeTruthy()
+    expect(probe.agentIconRenders).toBe(1)
+  })
 })
