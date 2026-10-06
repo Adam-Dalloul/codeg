@@ -6562,7 +6562,13 @@
       "invalidUrl": "올바른 주소가 아닙니다",
       "profile": "프로필: {name}",
       "profileMenuLabel": "이 페이지를 다른 프로필에서 열기",
-      "profileDefault": "기본"
+      "profileDefault": "기본",
+      "device": "기기: {name}",
+      "deviceMenuLabel": "보기 기기",
+      "deviceDesktop": "데스크톱",
+      "deviceTablet": "태블릿",
+      "devicePhone": "휴대폰",
+      "deviceFill": "패널 전체"
     },
     "status": {
       "popupDenied": "팝업 차단됨: {host}",

@@ -6562,7 +6562,13 @@
       "invalidUrl": "Endereço inválido",
       "profile": "Perfil: {name}",
       "profileMenuLabel": "Abrir esta página em outro perfil",
-      "profileDefault": "Padrão"
+      "profileDefault": "Padrão",
+      "device": "Dispositivo: {name}",
+      "deviceMenuLabel": "Ver como",
+      "deviceDesktop": "Desktop",
+      "deviceTablet": "Tablet",
+      "devicePhone": "Celular",
+      "deviceFill": "Painel inteiro"
     },
     "status": {
       "popupDenied": "Pop-up bloqueado: {host}",

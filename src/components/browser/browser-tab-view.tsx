@@ -1,14 +1,18 @@
 "use client"
 
 import { useTranslations } from "next-intl"
-import { useState, type KeyboardEvent } from "react"
+import { useEffect, useState, type KeyboardEvent } from "react"
 
 import type { BrowserWorkspaceTab } from "@/contexts/workspace-context"
 import {
   toLocalizedErrorMessage,
   type AppErrorTranslator,
 } from "@/lib/app-error"
-import { browserSetVisible } from "@/lib/browser/browser-api"
+import {
+  browserSetVisible,
+  browserSetWindowViewport,
+} from "@/lib/browser/browser-api"
+import { browserTabDevice, deviceViewport } from "@/lib/browser/browser-device"
 import {
   remoteConnectionOfProfile,
   remoteHostDisplayName,
@@ -25,6 +29,7 @@ import { browserTabBackendId } from "@/lib/file-tab-id"
 import { getActiveRemoteConnectionId, isDesktop } from "@/lib/transport"
 
 import { BrowserBridgeView } from "./browser-bridge-view"
+import { BrowserDeviceStage } from "./browser-device-stage"
 import { BrowserFindBar } from "./browser-find-bar"
 import { BrowserRemoteTabView } from "./browser-remote-tab-view"
 import {
@@ -157,6 +162,20 @@ function NativeBrowserTabView({
   // Find searches the page, which is in the other window — worth offering
   // when that window answers, and not when the host has no hold on it.
   const canFind = !ownedWindow || (capabilities?.ownedWindowControls ?? false)
+  const device = browserTabDevice(tab.browser)
+
+  // A page in a window of its own is not fitted to this slot, so it cannot be
+  // framed here: the window itself takes the device's size instead (and its
+  // own size back on the desktop). Asked on every change and on every host
+  // that learns the page is in a window; the backend leaves alone a window
+  // that is already the size asked for, so a person who resized it by hand
+  // keeps what they made.
+  useEffect(() => {
+    if (!ownedWindow || !backendId) return
+    void browserSetWindowViewport(backendId, deviceViewport(device)).catch(
+      () => {}
+    )
+  }, [backendId, device, ownedWindow])
 
   return (
     <div className="flex h-full min-h-0 flex-col" onKeyDown={onKeyDown}>
@@ -180,15 +199,22 @@ function NativeBrowserTabView({
       <div className="relative min-h-0 flex-1">
         {/* Always mounted so the native surface keeps its bounds; the DOM
             layers below only show when the surface is hidden (error) or
-            never embedded (owned window). */}
-        <BrowserSurfaceHost
-          tab={tab}
-          hidden={error !== null}
-          className={error || ownedWindow ? "invisible" : undefined}
-          egress={egress}
-          showCreateError={showCreateError}
-          pendingLabel={pendingLabel}
-        />
+            never embedded (owned window). Framed as the tab's device; an
+            owned window is that device's size itself, so nothing here is. */}
+        <BrowserDeviceStage device={ownedWindow ? "desktop" : device}>
+          {(fit) => (
+            <BrowserSurfaceHost
+              tab={tab}
+              hidden={error !== null}
+              className={error || ownedWindow ? "invisible" : undefined}
+              egress={egress}
+              showCreateError={showCreateError}
+              pendingLabel={pendingLabel}
+              zoom={fit.zoom}
+              layoutKey={fit.layoutKey}
+            />
+          )}
+        </BrowserDeviceStage>
         {error ? (
           <div className="absolute inset-0 bg-background">
             <BrowserErrorPage tab={tab} error={error} url={url} />

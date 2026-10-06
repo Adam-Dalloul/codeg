@@ -6562,7 +6562,13 @@
       "invalidUrl": "有効なアドレスではありません",
       "profile": "プロファイル: {name}",
       "profileMenuLabel": "このページを別のプロファイルで開く",
-      "profileDefault": "デフォルト"
+      "profileDefault": "デフォルト",
+      "device": "デバイス: {name}",
+      "deviceMenuLabel": "表示デバイス",
+      "deviceDesktop": "デスクトップ",
+      "deviceTablet": "タブレット",
+      "devicePhone": "スマートフォン",
+      "deviceFill": "ペイン全体"
     },
     "status": {
       "popupDenied": "ポップアップをブロックしました: {host}",

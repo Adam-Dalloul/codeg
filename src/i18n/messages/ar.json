@@ -6562,7 +6562,13 @@
       "invalidUrl": "عنوان غير صالح",
       "profile": "الملف الشخصي: {name}",
       "profileMenuLabel": "فتح هذه الصفحة في ملف شخصي آخر",
-      "profileDefault": "الافتراضي"
+      "profileDefault": "الافتراضي",
+      "device": "الجهاز: {name}",
+      "deviceMenuLabel": "العرض كـ",
+      "deviceDesktop": "سطح المكتب",
+      "deviceTablet": "جهاز لوحي",
+      "devicePhone": "هاتف",
+      "deviceFill": "اللوحة بالكامل"
     },
     "status": {
       "popupDenied": "تم حظر نافذة منبثقة: {host}",

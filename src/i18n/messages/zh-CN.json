@@ -6562,7 +6562,13 @@
       "invalidUrl": "不是有效的地址",
       "profile": "配置文件：{name}",
       "profileMenuLabel": "在其他配置文件中打开此页",
-      "profileDefault": "默认"
+      "profileDefault": "默认",
+      "device": "设备：{name}",
+      "deviceMenuLabel": "设备类型",
+      "deviceDesktop": "桌面",
+      "deviceTablet": "平板",
+      "devicePhone": "手机",
+      "deviceFill": "铺满面板"
     },
     "status": {
       "popupDenied": "已拦截弹窗：{host}",

@@ -68,8 +68,10 @@ import { BrowserToolbar } from "./browser-toolbar"
 const toolbarMocks = vi.hoisted(() => ({
   remoteDesktop: false,
   openBrowserTab: vi.fn(() => "browser:new"),
+  setBrowserTabDevice: vi.fn(),
   workspaceActions: null as null | {
     openBrowserTab: (...a: unknown[]) => unknown
+    setBrowserTabDevice?: (...a: unknown[]) => unknown
   },
 }))
 
@@ -663,5 +665,85 @@ describe("BrowserToolbar in a remote workspace window", () => {
       "title",
       "Agents of a remote workspace run on its host and can't use this computer's browser"
     )
+  })
+})
+
+// ---------------------------------------------------------------------------
+// The device control
+// ---------------------------------------------------------------------------
+
+function renderToolbarAs(device?: "tablet" | "phone") {
+  const tab = tabIn("default")
+  return render(
+    <NextIntlClientProvider locale="en" messages={enMessages}>
+      <BrowserToolbar
+        tab={{
+          ...tab,
+          browser: { ...tab.browser, ...(device ? { device } : {}) },
+        }}
+        state={null}
+      />
+    </NextIntlClientProvider>
+  )
+}
+
+describe("BrowserToolbar device control", () => {
+  beforeEach(() => {
+    resetBrowserPrefsForTests()
+    resetBrowserTabStoreForTests()
+    toolbarMocks.setBrowserTabDevice.mockClear()
+    toolbarMocks.workspaceActions = {
+      openBrowserTab: toolbarMocks.openBrowserTab,
+      setBrowserTabDevice: toolbarMocks.setBrowserTabDevice,
+    }
+  })
+
+  it("sits right of the address field and starts on the desktop", () => {
+    renderToolbarAs()
+    const control = screen.getByRole("button", { name: "Device: Desktop" })
+    const field = screen.getByRole("textbox", { name: "Enter an address" })
+    // The field's pill, then this — nothing in between.
+    expect(field.parentElement?.nextElementSibling).toBe(control)
+  })
+
+  it("lists the three devices with their sizes and switches the tab to one", async () => {
+    renderToolbarAs()
+    await openMenu(screen.getByRole("button", { name: "Device: Desktop" }))
+    expect(screen.getByText("View as")).toBeVisible()
+    const items = screen.getAllByRole("menuitemradio")
+    expect(items.map((item) => item.textContent)).toEqual([
+      "DesktopFull pane",
+      "Tablet768 × 1024",
+      "Phone390 × 844",
+    ])
+    expect(items[0]).toHaveAttribute("aria-checked", "true")
+
+    await act(async () => {
+      fireEvent.click(items[2])
+    })
+    expect(toolbarMocks.setBrowserTabDevice).toHaveBeenCalledWith(
+      "browser:abc",
+      "phone"
+    )
+  })
+
+  it("names the device a tab emulates, and asks nothing when it is picked again", async () => {
+    renderToolbarAs("phone")
+    const control = screen.getByRole("button", { name: "Device: Phone" })
+    await openMenu(control)
+    const items = screen.getAllByRole("menuitemradio")
+    expect(items[2]).toHaveAttribute("aria-checked", "true")
+    await act(async () => {
+      fireEvent.click(items[2])
+    })
+    expect(toolbarMocks.setBrowserTabDevice).not.toHaveBeenCalled()
+  })
+
+  it("has nothing to switch outside a workspace", () => {
+    toolbarMocks.workspaceActions = null
+    renderToolbarAs()
+    expect(
+      screen.getByRole("button", { name: "Device: Desktop" })
+    ).toBeDisabled()
   })
 })

@@ -6562,7 +6562,13 @@
       "invalidUrl": "Not a valid address",
       "profile": "Profile: {name}",
       "profileMenuLabel": "Open this page in another profile",
-      "profileDefault": "Default"
+      "profileDefault": "Default",
+      "device": "Device: {name}",
+      "deviceMenuLabel": "View as",
+      "deviceDesktop": "Desktop",
+      "deviceTablet": "Tablet",
+      "devicePhone": "Phone",
+      "deviceFill": "Full pane"
     },
     "status": {
       "popupDenied": "Pop-up blocked: {host}",

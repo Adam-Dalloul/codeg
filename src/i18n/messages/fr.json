@@ -6562,7 +6562,13 @@
       "invalidUrl": "Adresse non valide",
       "profile": "Profil : {name}",
       "profileMenuLabel": "Ouvrir cette page dans un autre profil",
-      "profileDefault": "Par défaut"
+      "profileDefault": "Par défaut",
+      "device": "Appareil : {name}",
+      "deviceMenuLabel": "Afficher comme",
+      "deviceDesktop": "Ordinateur",
+      "deviceTablet": "Tablette",
+      "devicePhone": "Téléphone",
+      "deviceFill": "Tout le volet"
     },
     "status": {
       "popupDenied": "Fenêtre contextuelle bloquée : {host}",

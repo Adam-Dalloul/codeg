@@ -6562,7 +6562,13 @@
       "invalidUrl": "不是有效的網址",
       "profile": "設定檔：{name}",
       "profileMenuLabel": "在其他設定檔中開啟此頁",
-      "profileDefault": "預設"
+      "profileDefault": "預設",
+      "device": "裝置：{name}",
+      "deviceMenuLabel": "裝置類型",
+      "deviceDesktop": "桌面",
+      "deviceTablet": "平板",
+      "devicePhone": "手機",
+      "deviceFill": "填滿面板"
     },
     "status": {
       "popupDenied": "已攔截彈出視窗：{host}",

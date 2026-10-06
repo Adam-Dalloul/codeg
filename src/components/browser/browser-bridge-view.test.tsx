@@ -115,6 +115,41 @@ describe("BrowserBridgeView", () => {
     expect(screen.getByTitle("http://localhost:3000/docs?x=1")).toBeTruthy()
   })
 
+  // A phone's page in web mode: a frame element the phone's size is the
+  // phone's viewport, shrunk whole to fit the pane by a transform (which
+  // scales what is drawn, not the viewport the page inside sees).
+  it("lays a device's page out at the device's size and shrinks it to fit", async () => {
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({
+      x: 0,
+      y: 0,
+      left: 0,
+      top: 0,
+      width: 1000,
+      height: 600,
+      right: 1000,
+      bottom: 600,
+      toJSON: () => ({}),
+    })
+    try {
+      api.bridgeOpen.mockResolvedValue(grant)
+      const phone = tab()
+      phone.browser = { ...phone.browser, device: "phone" }
+      renderView(<BrowserBridgeView tab={phone} />)
+      const frame = (await screen.findByTitle(
+        "Dev server preview"
+      )) as HTMLIFrameElement
+      expect(frame.style.width).toBe("390px")
+      expect(frame.style.height).toBe("844px")
+      expect(frame.style.transform).toMatch(/^scale\(0\.6\d+, 0\.6\d+\)$/)
+      // The control sits right of the address.
+      expect(
+        screen.getByTitle("http://localhost:3000/docs?x=1").nextElementSibling
+      ).toBe(screen.getByRole("button", { name: "Device: Phone" }))
+    } finally {
+      vi.restoreAllMocks()
+    }
+  })
+
   it("opens the same entry in a new tab and copies the address", async () => {
     api.bridgeOpen.mockResolvedValue(grant)
     renderView(<BrowserBridgeView tab={tab()} />)

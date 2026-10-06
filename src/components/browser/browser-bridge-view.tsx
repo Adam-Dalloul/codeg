@@ -6,6 +6,7 @@ import { useTranslations } from "next-intl"
 import { toast } from "sonner"
 
 import type { BrowserWorkspaceTab } from "@/contexts/workspace-context"
+import { browserTabDevice } from "@/lib/browser/browser-device"
 import {
   bridgeClose,
   bridgeEntryUrl,
@@ -19,6 +20,8 @@ import { browserTabBackendId } from "@/lib/file-tab-id"
 import { openExternalTab } from "@/lib/link-open"
 import { copyTextToClipboard, randomUUID } from "@/lib/utils"
 
+import { BrowserDeviceMenu } from "./browser-device-menu"
+import { BrowserDeviceStage } from "./browser-device-stage"
 // The desktop toolbar's own button shape: this row stands in the same place,
 // under the same tab strip.
 import { ICON_BTN } from "./browser-toolbar-buttons"
@@ -130,6 +133,7 @@ export function BrowserBridgeView({ tab }: { tab: BrowserWorkspaceTab }) {
         >
           {url}
         </span>
+        <BrowserDeviceMenu tab={tab} />
         <button
           type="button"
           className={ICON_BTN}
@@ -172,14 +176,32 @@ export function BrowserBridgeView({ tab }: { tab: BrowserWorkspaceTab }) {
           </div>
         ) : null}
         {phase.kind === "ready" ? (
-          <iframe
-            key={phase.src}
-            title={t("frameTitle")}
-            src={phase.src}
-            sandbox={BRIDGE_FRAME_SANDBOX}
-            referrerPolicy="no-referrer"
-            className="absolute inset-0 h-full w-full border-0 bg-white"
-          />
+          <BrowserDeviceStage device={browserTabDevice(tab.browser)}>
+            {({ viewport, frame }) => (
+              <iframe
+                key={phase.src}
+                title={t("frameTitle")}
+                src={phase.src}
+                sandbox={BRIDGE_FRAME_SANDBOX}
+                referrerPolicy="no-referrer"
+                className="absolute top-0 left-0 h-full w-full border-0 bg-white"
+                // A device's page is laid out in the device's viewport — a
+                // frame element's own size — and shrunk whole to the frame
+                // around it: a transform scales what is drawn, not the
+                // viewport the document inside sees.
+                style={
+                  viewport && frame
+                    ? {
+                        width: viewport.width,
+                        height: viewport.height,
+                        transform: `scale(${frame.width / viewport.width}, ${frame.height / viewport.height})`,
+                        transformOrigin: "0 0",
+                      }
+                    : undefined
+                }
+              />
+            )}
+          </BrowserDeviceStage>
         ) : null}
         {phase.kind === "unreachable" ? (
           <Notice

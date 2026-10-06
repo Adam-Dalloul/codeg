@@ -86,6 +86,11 @@ import {
   subscribeBrowserPrefs,
 } from "@/lib/browser/browser-prefs"
 import {
+  isEmulatedBrowserDevice,
+  type BrowserDevice,
+  type EmulatedBrowserDevice,
+} from "@/lib/browser/browser-device"
+import {
   isRemoteHostAddress,
   remoteConnectionOfProfile,
 } from "@/lib/browser/remote-host"
@@ -131,6 +136,11 @@ export interface BrowserTabSeed {
    *  machine's `localhost`, not the one the address was printed on. Absent on
    *  every other tab. */
   remote?: true
+  /** The device the tab shows its page as (`lib/browser/browser-device`):
+   *  its page laid out in a tablet's or a phone's viewport. Absent on a tab
+   *  showing it as the desktop it is, which every tab does until someone
+   *  picks another — so records written before this existed read the same. */
+  device?: EmulatedBrowserDevice
 }
 
 interface FileWorkspaceTabBase {
@@ -325,6 +335,9 @@ interface WorkspaceActionsValue {
       index?: number
       profile?: string
       remote?: boolean
+      /** The device a NEW record shows its page as (a reopened tab's); a tab
+       *  already open on the page keeps its own. */
+      device?: EmulatedBrowserDevice
     }
   ) => string | null
   // Register a tab for a webview the BACKEND already created — a popup the
@@ -347,6 +360,10 @@ interface WorkspaceActionsValue {
   // time it is shown a fresh surface loads that page. No-op for a tab that
   // has no surface. Returns whether a surface was released.
   suspendBrowserTab: (tabId: string) => boolean
+  // Show a browser tab's page as `device` from now on: filling the pane (the
+  // desktop) or laid out in a tablet's or a phone's viewport. The tab keeps
+  // it through a suspend, a restart and a reopen. No-op for an unknown id.
+  setBrowserTabDevice: (tabId: string, device: BrowserDevice) => void
 }
 
 /** What a browser tab needs to come back after a restart (see
@@ -359,6 +376,8 @@ export interface RestorableBrowserTab {
   profile: string
   /** See `BrowserTabSeed.remote`. */
   remote?: boolean
+  /** See `BrowserTabSeed.device`. */
+  device?: EmulatedBrowserDevice
 }
 
 interface WorkspaceViewValue {
@@ -814,7 +833,8 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
       openerTabId: string | null,
       profile: string,
       title?: string | null,
-      remote?: boolean
+      remote?: boolean,
+      device?: EmulatedBrowserDevice
     ): BrowserWorkspaceTab => ({
       id: buildFileTabId({ kind: "browser", id: backendTabId }),
       kind: "browser",
@@ -837,6 +857,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
         openerTabId,
         profile,
         ...(remote ? { remote: true as const } : {}),
+        ...(isEmulatedBrowserDevice(device) ? { device } : {}),
       },
     }),
     []
@@ -852,6 +873,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
         index?: number
         profile?: string
         remote?: boolean
+        device?: EmulatedBrowserDevice
       }
     ) => {
       const normalized = normalizeUrlForDedupe(url)
@@ -921,7 +943,8 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
         opener?.id ?? null,
         profile,
         null,
-        remote
+        remote,
+        options?.device
       )
       const insert = (prev: FileWorkspaceTab[]) => {
         if (prev.some((tab) => tab.id === record.id)) return prev
@@ -1049,7 +1072,8 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
               null,
               profile,
               entry.title,
-              remote
+              remote,
+              entry.device
             )
           )
         }
@@ -1183,6 +1207,26 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
     releaseBrowserTab(tabId, { suspending: true })
     return true
   }, [])
+
+  const setBrowserTabDevice = useCallback(
+    (tabId: string, device: BrowserDevice) => {
+      setFileTabs((prev) => {
+        const tab = prev.find((t) => t.id === tabId)
+        if (!tab || tab.kind !== "browser") return prev
+        const current = tab.browser.device
+        const next = isEmulatedBrowserDevice(device) ? device : undefined
+        if (current === next) return prev
+        // The desktop is the key's absence, not a value of it: a record
+        // that never left the desktop and one that came back to it are the
+        // same record.
+        const browser: BrowserTabSeed = { ...tab.browser }
+        if (next) browser.device = next
+        else delete browser.device
+        return prev.map((t) => (t.id === tabId ? { ...tab, browser } : t))
+      })
+    },
+    []
+  )
 
   // Mark an existing tab as refreshing. Preserves content / originalContent /
   // modifiedContent / gitBaseContent / savedContent / etag / mtimeMs /
@@ -3186,6 +3230,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
       adoptBrowserTab,
       restoreBrowserTabs,
       suspendBrowserTab,
+      setBrowserTabDevice,
     }),
     [
       setActivePane,
@@ -3218,6 +3263,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
       adoptBrowserTab,
       restoreBrowserTabs,
       suspendBrowserTab,
+      setBrowserTabDevice,
     ]
   )
 
