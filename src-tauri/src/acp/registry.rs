@@ -1707,9 +1707,122 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             //
             // (oo) still holds on 0.85.1: 15 `count_tokens` per `session/new`,
             // and #1201 is still open.
+            //
+            // 0.86.0 moves the Claude SDK 0.3.286 → 0.3.287, i.e. CLI 2.1.286 →
+            // **2.1.287**, and the ACP SDK 1.6.0 → 1.7.0; `engines.node` stays
+            // ">=22". Most of its commits build the draft ACP v2 surface, which
+            // stays opt-in (see (ww)); the rest add `/mcp` (#1218) and fix the
+            // cancel, close and context-window paths. The scenario harness
+            // re-run on both tags with codeg's exact `clientCapabilities`
+            // differs in one frame, the same in all 40 scenarios:
+            // `available_commands_update` now ends with the adapter's own `mcp`
+            // entry. `initialize` is the same minus the version. The probes
+            // below ran live against the local fake Anthropic API (no model
+            // call), 0.85.1 and 0.86.0 side by side.
+            //
+            // (oo) is closed: #1258 has the background `getContextUsage` ask
+            // for `detail: "summary"`, and a measured `session/new` sends no
+            // `count_tokens` at all (15 on 0.85.1).
+            //
+            // (xx) **The Fable row is re-spelled `fable`** (CLI 2.1.287). Both
+            // of the CLI's model-row builders now value a Fable row by the
+            // family alias, as Opus, Sonnet and Haiku already were. Through a
+            // gateway the row goes from `claude-fable-5-1` to `fable` under the
+            // same name and description. A Fable pick codeg saved before is
+            // `claude-fable-5-1`, which the selector no longer lists, so every
+            // connect would have dropped it for the default model (Opus there).
+            // `heal_respelled_model_pick` replays it as the one row that names
+            // the same model, and a test pins the measured list.
+            //
+            // (yy) `/mcp` is answered in chat (#1218). The adapter advertises
+            // its own `mcp` command (hint `[reconnect|enable|disable
+            // [<server>|all]]`), replaces Claude Code's one-line summary with a
+            // server list, and runs a reconnect, enable or disable through the
+            // SDK control API, which 2.1.286 refused in an SDK session.
+            // Measured: `/mcp` lists the probe server with its tool count, and
+            // `/mcp reconnect probe` reconnects it. codeg's slash menu lists it
+            // like any other command, and the reply renders as Markdown. The
+            // transcript keeps only the command and Claude Code's own text, and
+            // `parsers::claude` hides a local command with its output, so a
+            // reload shows neither, as for `/usage`. A reconnect starts OAuth
+            // only for a client with URL elicitation, which codeg does not
+            // advertise.
+            //
+            // (zz) The main-thread `agent` option is back (#1250, undoing
+            // 0.77.0's #1112). With a custom agent defined (an `agents/*.md` of
+            // the user, the project or a plugin), `session/new` lists `agent`
+            // with `default` and each custom agent, and a pick applies that
+            // agent's prompt from the next turn (measured: the persona reaches
+            // the system prompt). codeg renders it as any other select and
+            // replays a saved pick through `config_option_rejects_value`, so an
+            // agent no longer defined is skipped. With no custom agent the
+            // option is absent, and an `agent` pick saved before 0.77.0 is still
+            // sent and refused ("Unknown config option: agent", logged).
+            //
+            // (aaa) A resume continues in the transcript's permission mode
+            // (#1218): the mode of the last prompt, unless a plan was exited
+            // after it. Measured: set `acceptEdits`, prompt, resume in a new
+            // process — 0.85.1 comes back in `default`, 0.86.0 in `acceptEdits`.
+            // codeg still sets the saved composer mode at connect when it
+            // differs (`apply_preferred_session_options`), so only a user who
+            // never picked a mode sees the transcript's.
+            //
+            // (bbb) Cancel and close (#1228, #1229, #1242, #1243). A cancel now
+            // drops the user messages it abandons from Claude Code's queue
+            // before the interrupt, so they no longer run after all. Measured
+            // with a prompt queued behind a slow turn: 0.85.1 still sent it to
+            // the model after the cancel, 0.86.0 did not. codeg never queues a
+            // prompt behind a running turn (the `turn_in_flight` gate), so what
+            // it gains is a steer the CLI still holds when the user stops (read
+            // from the source); a steer the CLI has already taken in runs on
+            // both, as measured. `session/close` now answers after the turns it
+            // cancels have ended (5 s at most); codeg's one close is for an idle
+            // fork parent and is never awaited. Read from the source: a held
+            // turn cancelled mid-follow-up now ends at its interrupt's idle,
+            // after the follow-up's flushed output, and a force-cancel that
+            // fires while an update is being sent no longer leaves the turn
+            // open.
+            //
+            // (ccc) Nothing to change in codeg, each checked:
+            //   * #1241 counts a subagent's permission request as the turn
+            //     waiting on the user. Over v1 that only makes a steer sent
+            //     while such a card is open non-interrupting, as the main
+            //     thread's cards already did.
+            //   * #1252 reports an exit code only when the result states one,
+            //     but an AIR client keeps the numbers it always got: 1 for a
+            //     failed or interrupted command, else the code, else 0.
+            //   * An AIR skill command now carries
+            //     `_meta.jetbrains.air.{kind: "skill", skillPath}`. Not adopted:
+            //     the adapter resolves SKILL.md only under the session cwd and
+            //     the home directory, so plugin and bundled skills never carry
+            //     it, and a marker in the slash menu would split codeg's skills
+            //     into two looks.
+            //   * Write/Edit diffs and permission titles change only for the v2
+            //     surface or a `diffPatch` client, and codeg is neither for
+            //     Claude.
+            //   * CLI 2.1.287 offers MCP servers on the 2025-11-25 protocol
+            //     `elicitation: {form, url}` where 2.1.286 sent `{}`. codeg-mcp
+            //     answers 2024-11-05 and reads no client capability, and a probe
+            //     server with the same handshake still lists its tools.
+            //   * A `context: fork` skill typed as `/<skill>` now streams its
+            //     fork, parented to a synthetic `forked-command-<skill>` id that
+            //     no tool call carries. codeg drops parented text whose parent
+            //     never arrived, and shows such tool calls as ordinary cards
+            //     (under an Agent card instead while one is still running, by
+            //     the positional fallback); the main thread's answer still
+            //     arrives once, and the transcript is unchanged.
+            //   * The changelog's "a message sent with priority now no longer
+            //     cancels a running web fetch or web search" does not reach a
+            //     `_session/steering`: on both CLIs a steer still cancels
+            //     WebFetch (`nonExecutionKind: "interrupted"`) and ends
+            //     WebSearch with no results.
+            //   * A 300 KB MCP result is persisted and reported in the same
+            //     `<persisted-output>` form as on 2.1.286.
+            //   * The hand-back header (w), `api_retry` and `latest_per_family`
+            //     are unchanged in 2.1.287.
             distribution: AgentDistribution::Npx {
-                version: "0.85.1",
-                package: "@agentclientprotocol/claude-agent-acp@0.85.1",
+                version: "0.86.0",
+                package: "@agentclientprotocol/claude-agent-acp@0.86.0",
                 cmd: "claude-agent-acp",
                 args: &[],
                 env: &[],
@@ -4027,8 +4140,8 @@ mod tests {
     fn registry_pins_current_acp_agent_versions() {
         assert_npx_version(
             AgentType::ClaudeCode,
-            "0.85.1",
-            "@agentclientprotocol/claude-agent-acp@0.85.1",
+            "0.86.0",
+            "@agentclientprotocol/claude-agent-acp@0.86.0",
             Some("22.0.0"),
         );
         assert_npx_version(
