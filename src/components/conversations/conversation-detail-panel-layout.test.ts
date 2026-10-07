@@ -444,6 +444,10 @@ describe("ConversationDetailPanel send-path hardening", () => {
     // without a second prompt or optimistic-message path in this callback.
     expect(steerHandler).toContain("() => mqMoveToFront(id)")
     expect(steerHandler).toContain("if (delivered) mqRemove(id)")
+    // …and still tells the user the row became the next turn, not an insert.
+    expect(steerHandler).toContain(
+      'else toast.info(tCmp("steerQueuedInstead"))'
+    )
     expect(steerHandler).not.toContain("acpPrompt(")
     expect(steerHandler).not.toContain("appendOptimisticTurn(")
   })

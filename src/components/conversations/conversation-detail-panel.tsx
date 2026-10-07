@@ -2205,7 +2205,10 @@ const ConversationTabView = memo(function ConversationTabView({
           () => feedbackSteer(payload.text, payload.blocks),
           () => mqMoveToFront(id)
         )
+        // Not delivered means the turn ended first, so the row goes out as the
+        // next turn instead; say so, as the composer's steer does.
         if (delivered) mqRemove(id)
+        else toast.info(tCmp("steerQueuedInstead"))
       } catch (err: unknown) {
         notify({
           level: "error",
