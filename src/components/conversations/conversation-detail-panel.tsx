@@ -81,6 +81,7 @@ import { isDesktop } from "@/lib/platform"
 import { leftChromeReserve, rightChromeReserve } from "@/lib/window-chrome"
 import {
   acpFork,
+  acpPrompt,
   acpStopAsyncTask,
   createChatConversation,
   createChatDir,
@@ -99,7 +100,8 @@ import {
   shouldQueueDirectSend,
   shouldRejectDuplicateCreate,
 } from "@/lib/queue-flush"
-import { TurnBusyError, isNoActiveTurnRejection } from "@/lib/turn-busy"
+import { TurnBusyError } from "@/lib/turn-busy"
+import { deliverQueuedSteer } from "@/lib/queued-steer"
 import { toErrorMessage } from "@/lib/app-error"
 import { notify } from "@/lib/notify"
 import {
@@ -2183,9 +2185,8 @@ const ConversationTabView = memo(function ConversationTabView({
   // over the same live-feedback channel the composer's mid-turn dropdown uses.
   // The block/text encoding is the shared `buildSteerPayload` — one call site,
   // no policy here beyond the row's own lifecycle: success removes the row;
-  // the turn-end race leaves it queued so the auto-flush sends it with the
-  // next turn — never lost. Any other failure keeps the row untouched and
-  // surfaces the error.
+  // a turn-end race sends it as a normal prompt on the same connection.
+  // Failures keep the row available for retry.
   const handleQueueSteer = useCallback(
     async (id: string) => {
       const item = msgQueue.find((m) => m.id === id)
@@ -2200,14 +2201,36 @@ const ConversationTabView = memo(function ConversationTabView({
       // when the turn-end edge lands mid-round-trip.
       setQueueSteerInFlight(true)
       try {
-        await feedbackSteer(payload.text, payload.blocks)
+        await deliverQueuedSteer(
+          () => feedbackSteer(payload.text, payload.blocks),
+          async () => {
+            if (!conn.connectionId)
+              throw new Error("connection is no longer available")
+            const optimisticTurn = buildOptimisticUserTurnFromDraft(
+              item.draft,
+              sharedT("attachedResources")
+            )
+            appendOptimisticTurn(
+              effectiveConversationId,
+              optimisticTurn,
+              optimisticTurn.id
+            )
+            try {
+              await acpPrompt(
+                conn.connectionId,
+                item.draft.blocks,
+                folderId,
+                dbConvIdRef.current,
+                optimisticTurn.id
+              )
+            } catch (error) {
+              removeOptimisticTurn(effectiveConversationId, optimisticTurn.id)
+              throw error
+            }
+          }
+        )
         mqRemove(id)
       } catch (err: unknown) {
-        if (isNoActiveTurnRejection(err)) {
-          // The turn ended mid-click — the queue flush will deliver it.
-          toast.info(tCmp("steerQueuedInstead"))
-          return
-        }
         notify({
           level: "error",
           key: `steer-failed:${tabId}`,
@@ -2220,7 +2243,20 @@ const ConversationTabView = memo(function ConversationTabView({
         setQueueSteerInFlight(false)
       }
     },
-    [msgQueue, feedbackSteer, mqRemove, feedback.channel, tabId, tCmp]
+    [
+      msgQueue,
+      feedbackSteer,
+      mqRemove,
+      feedback.channel,
+      tabId,
+      tCmp,
+      conn.connectionId,
+      sharedT,
+      appendOptimisticTurn,
+      effectiveConversationId,
+      folderId,
+      removeOptimisticTurn,
+    ]
   )
 
   return (

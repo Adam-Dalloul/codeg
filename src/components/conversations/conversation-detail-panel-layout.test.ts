@@ -432,11 +432,11 @@ describe("ConversationDetailPanel send-path hardening", () => {
     expect(steerStart).toBeGreaterThan(-1)
     const steerHandler = source.slice(
       steerStart,
-      source.indexOf("[msgQueue, feedbackSteer", steerStart)
+      source.indexOf("\n  return (", steerStart)
     )
     // Set BEFORE the first await, cleared in a finally.
     expect(steerHandler.indexOf("setQueueSteerInFlight(true)")).toBeLessThan(
-      steerHandler.indexOf("await feedbackSteer(")
+      steerHandler.indexOf("await deliverQueuedSteer(")
     )
     expect(steerHandler).toContain("finally {")
     expect(steerHandler).toContain("setQueueSteerInFlight(false)")
