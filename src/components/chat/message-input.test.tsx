@@ -1855,8 +1855,19 @@ describe("MessageInput mid-turn send (live-feedback channel)", () => {
         steerChannel === "native" ? MI.steerIntoTurn : MI.steerAsNote
       await user.click(screen.getByLabelText(label))
       await user.click(await screen.findByRole("menuitem", { name: label }))
+      // The steer really started, with the draft as it was at the click, and
+      // is still in flight while the user edits. Without this the edit below
+      // would survive trivially if the click never reached `onSteer`.
+      await waitFor(() =>
+        expect(onSteer).toHaveBeenCalledWith("original instruction", undefined)
+      )
+      expect(screen.getByTitle(MI.queueMessage)).toBeDisabled()
       typeDraft(editor, " additional instruction")
       await act(async () => finish())
+      // …and it settled: the handler's `finally` re-enables the split.
+      await waitFor(() =>
+        expect(screen.getByTitle(MI.queueMessage)).toBeEnabled()
+      )
       expect(serializeDocToText(editor.state.doc)).toContain(
         "additional instruction"
       )
