@@ -2,12 +2,12 @@ import { describe, expect, it, vi } from "vitest"
 import { deliverQueuedSteer } from "./queued-steer"
 
 describe("queued native insert", () => {
-  it("does not send the message again after native delivery", async () => {
+  it("reports delivery without reordering the row when the insert lands", async () => {
     const steer = vi.fn(async () => {})
-    const send = vi.fn(async () => {})
-    expect(await deliverQueuedSteer(steer, send)).toBe(true)
+    const prioritize = vi.fn()
+    expect(await deliverQueuedSteer(steer, prioritize)).toBe(true)
     expect(steer).toHaveBeenCalledOnce()
-    expect(send).not.toHaveBeenCalled()
+    expect(prioritize).not.toHaveBeenCalled()
   })
 
   it("prioritizes the queued row without sending when the turn ended before insertion", async () => {
@@ -19,15 +19,15 @@ describe("queued native insert", () => {
     expect(prioritize).toHaveBeenCalledOnce()
   })
 
-  it("keeps a failed insertion available for retry without resending it", async () => {
+  it("rethrows any other failure and leaves the row where it was", async () => {
     const failure = new Error("connection lost")
-    const send = vi.fn(async () => {})
+    const prioritize = vi.fn()
     await expect(
       deliverQueuedSteer(async () => {
         throw failure
-      }, send)
+      }, prioritize)
     ).rejects.toBe(failure)
-    expect(send).not.toHaveBeenCalled()
+    expect(prioritize).not.toHaveBeenCalled()
   })
 
   it("does not prioritize or report delivery when the turn is busy", async () => {
