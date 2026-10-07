@@ -6659,7 +6659,11 @@
       "deviceDesktop": "سطح المكتب",
       "deviceTablet": "جهاز لوحي",
       "devicePhone": "هاتف",
-      "deviceFill": "اللوحة بالكامل"
+      "deviceFill": "اللوحة بالكامل",
+      "deviceCustom": "مخصص",
+      "deviceWidth": "العرض",
+      "deviceHeight": "الارتفاع",
+      "deviceLaidOut": "اللوحة صغيرة جدًا: التخطيط بحجم {size}"
     },
     "status": {
       "popupDenied": "تم حظر نافذة منبثقة: {host}",

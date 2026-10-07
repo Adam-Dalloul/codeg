@@ -150,6 +150,40 @@ describe("BrowserBridgeView", () => {
     }
   })
 
+  // A transform has no least scale, unlike a native surface's page zoom: a
+  // custom device of any size is laid out at its own, however small the pane.
+  it("lays a custom device's page out at its own size, however large", async () => {
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({
+      x: 0,
+      y: 0,
+      left: 0,
+      top: 0,
+      width: 600,
+      height: 400,
+      right: 600,
+      bottom: 400,
+      toJSON: () => ({}),
+    })
+    try {
+      api.bridgeOpen.mockResolvedValue(grant)
+      const big = tab()
+      big.browser = { ...big.browser, device: { width: 3840, height: 2160 } }
+      const { container } = renderView(<BrowserBridgeView tab={big} />)
+      const frame = (await screen.findByTitle(
+        "Dev server preview"
+      )) as HTMLIFrameElement
+      expect(frame.style.width).toBe("3840px")
+      expect(frame.style.height).toBe("2160px")
+      expect(frame.style.transform).toMatch(/^scale\(0\.1\d+, 0\.1\d+\)$/)
+      expect(
+        container.querySelector("[data-browser-device-label]")
+      ).toHaveTextContent("3840 × 2160")
+      expect(container.querySelector("[data-browser-device-short]")).toBeNull()
+    } finally {
+      vi.restoreAllMocks()
+    }
+  })
+
   it("opens the same entry in a new tab and copies the address", async () => {
     api.bridgeOpen.mockResolvedValue(grant)
     renderView(<BrowserBridgeView tab={tab()} />)

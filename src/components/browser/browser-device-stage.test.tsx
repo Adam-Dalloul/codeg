@@ -1,10 +1,25 @@
-import { act, render } from "@testing-library/react"
-import { useEffect } from "react"
+import { act, fireEvent, render, screen } from "@testing-library/react"
+import { NextIntlClientProvider } from "next-intl"
+import { useEffect, type ReactNode } from "react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
-import type { BrowserDevice } from "@/lib/browser/browser-device"
+import enMessages from "@/i18n/messages/en.json"
+import type {
+  EmulatedBrowserDevice,
+  ViewportSize,
+} from "@/lib/browser/browser-device"
 
 import { BrowserDeviceStage, type DeviceStageFit } from "./browser-device-stage"
+
+type StageDevice = "desktop" | EmulatedBrowserDevice
+
+function intl(children: ReactNode) {
+  return (
+    <NextIntlClientProvider locale="en" messages={enMessages}>
+      {children}
+    </NextIntlClientProvider>
+  )
+}
 
 /** Give every element the stage measures this rect (jsdom has no layout). */
 function stageOf(width: number, height: number) {
@@ -21,15 +36,27 @@ function stageOf(width: number, height: number) {
   })
 }
 
-function renderStage(device: BrowserDevice) {
+function renderStage(
+  device: StageDevice,
+  options: {
+    onCustomSize?: (size: ViewportSize) => void
+    minZoom?: number
+  } = {}
+) {
   const seen: DeviceStageFit[] = []
   const result = render(
-    <BrowserDeviceStage device={device}>
-      {(fit) => {
-        seen.push(fit)
-        return <div data-testid="page" />
-      }}
-    </BrowserDeviceStage>
+    intl(
+      <BrowserDeviceStage
+        device={device}
+        onCustomSize={options.onCustomSize}
+        minZoom={options.minZoom}
+      >
+        {(fit) => {
+          seen.push(fit)
+          return <div data-testid="page" />
+        }}
+      </BrowserDeviceStage>
+    )
   )
   return { ...result, seen }
 }
@@ -118,12 +145,17 @@ describe("BrowserDeviceStage", () => {
       }, [])
       return null
     }
-    const stage = (device: BrowserDevice) => (
-      <BrowserDeviceStage device={device}>{() => <Page />}</BrowserDeviceStage>
-    )
+    const stage = (device: StageDevice) =>
+      intl(
+        <BrowserDeviceStage device={device}>
+          {() => <Page />}
+        </BrowserDeviceStage>
+      )
     const { rerender } = render(stage("desktop"))
     rerender(stage("phone"))
     rerender(stage("tablet"))
+    rerender(stage({ width: 1440, height: 900 }))
+    rerender(stage({ width: 1024, height: 768 }))
     rerender(stage("desktop"))
     // Rebuilt, a page's native surface would hide and come back every time.
     expect(mounts).toBe(1)
@@ -173,5 +205,132 @@ describe("BrowserDeviceStage", () => {
     expect(height).toBeLessThanOrEqual(440)
     expect(height).toBeGreaterThan(438)
     expect(last(seen)?.zoom).toBeLessThan(1)
+  })
+})
+
+describe("BrowserDeviceStage, custom device", () => {
+  const custom = { width: 800, height: 600 }
+
+  beforeEach(() => {
+    vi.stubGlobal("devicePixelRatio", 2)
+    // 968 × 916 to fit into: the custom device fits at its own size.
+    stageOf(1000, 980)
+  })
+  afterEach(() => {
+    vi.restoreAllMocks()
+    vi.unstubAllGlobals()
+  })
+
+  function fields() {
+    return {
+      width: screen.getByRole<HTMLInputElement>("textbox", { name: "Width" }),
+      height: screen.getByRole<HTMLInputElement>("textbox", { name: "Height" }),
+    }
+  }
+
+  it("frames it at its own size, with its size as two fields to change it", () => {
+    const onCustomSize = vi.fn()
+    const { container, seen } = renderStage(custom, { onCustomSize })
+    expect(frameOf(container).style.width).toBe("800px")
+    expect(frameOf(container).style.height).toBe("600px")
+    expect(last(seen)?.zoom).toBe(1)
+    const { width, height } = fields()
+    expect(width.value).toBe("800")
+    expect(height.value).toBe("600")
+    expect(labelOf(container)).toContainElement(width)
+
+    act(() => width.focus())
+    fireEvent.change(width, { target: { value: "640" } })
+    fireEvent.keyDown(width, { key: "Enter" })
+    expect(onCustomSize).toHaveBeenCalledWith({ width: 640, height: 600 })
+    expect(width).not.toHaveFocus()
+
+    // Leaving the field keeps what was typed, as Enter does.
+    act(() => height.focus())
+    fireEvent.change(height, { target: { value: "480" } })
+    act(() => height.blur())
+    expect(onCustomSize).toHaveBeenLastCalledWith({ width: 800, height: 480 })
+  })
+
+  it("puts a typed size back with Escape, drops what is not a number, and holds a size to the range", () => {
+    const onCustomSize = vi.fn()
+    renderStage(custom, { onCustomSize })
+    const { width, height } = fields()
+
+    act(() => height.focus())
+    fireEvent.change(height, { target: { value: "123" } })
+    expect(height.value).toBe("123")
+    fireEvent.keyDown(height, { key: "Escape" })
+    expect(height.value).toBe("600")
+    expect(height).not.toHaveFocus()
+
+    act(() => width.focus())
+    fireEvent.change(width, { target: { value: "wide" } })
+    expect(width.value).toBe("")
+    act(() => width.blur())
+    expect(width.value).toBe("800")
+    expect(onCustomSize).not.toHaveBeenCalled()
+
+    act(() => width.focus())
+    fireEvent.change(width, { target: { value: "99999" } })
+    fireEvent.keyDown(width, { key: "Enter" })
+    expect(onCustomSize).toHaveBeenLastCalledWith({ width: 8192, height: 600 })
+    act(() => height.focus())
+    fireEvent.change(height, { target: { value: "5" } })
+    fireEvent.keyDown(height, { key: "Enter" })
+    expect(onCustomSize).toHaveBeenLastCalledWith({ width: 800, height: 100 })
+  })
+
+  it("steps the size with the arrow keys, by ten with Shift, at once", () => {
+    const onCustomSize = vi.fn()
+    renderStage(custom, { onCustomSize })
+    const { width } = fields()
+    act(() => width.focus())
+    fireEvent.keyDown(width, { key: "ArrowUp" })
+    expect(onCustomSize).toHaveBeenLastCalledWith({ width: 801, height: 600 })
+    fireEvent.keyDown(width, { key: "ArrowDown", shiftKey: true })
+    expect(onCustomSize).toHaveBeenLastCalledWith({ width: 790, height: 600 })
+    // Stepping keeps the field: more steps can follow.
+    expect(width).toHaveFocus()
+  })
+
+  it("shows the size as text when there is nothing to change it with", () => {
+    const { container } = renderStage(custom)
+    expect(screen.queryByRole("textbox")).toBeNull()
+    expect(labelOf(container)).toHaveTextContent(/^800 × 600$/)
+  })
+
+  it("says at what size a device too large for the slot is laid out", () => {
+    // 468 × 340 to fit 3840 × 2160 into: less than a quarter of it.
+    stageOf(500, 400)
+    const big = { width: 3840, height: 2160 }
+    const { container, unmount } = renderStage(big)
+    const short = container.querySelector("[data-browser-device-short]")
+    const match = /laid out at \u2066?(\d+) × (\d+)\u2069?$/.exec(
+      short?.textContent ?? ""
+    )
+    expect(match).not.toBeNull()
+    const [laidOutWidth, laidOutHeight] = [
+      Number(match?.[1]),
+      Number(match?.[2]),
+    ]
+    expect(laidOutWidth).toBeLessThan(3840)
+    expect(laidOutWidth / laidOutHeight).toBeCloseTo(3840 / 2160, 1)
+    unmount()
+
+    // A frame element is scaled as far as it takes: nothing to say.
+    const scaled = renderStage(big, { minZoom: 0 })
+    expect(
+      scaled.container.querySelector("[data-browser-device-short]")
+    ).toBeNull()
+    scaled.unmount()
+
+    // Nor for a device the slot does show whole, shrunk or not.
+    stageOf(1200, 700)
+    expect(
+      renderStage("tablet").container.querySelector(
+        "[data-browser-device-short]"
+      )
+    ).toBeNull()
   })
 })

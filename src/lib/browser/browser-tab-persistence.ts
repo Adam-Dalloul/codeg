@@ -15,7 +15,8 @@
 import type { FileWorkspaceTab } from "@/contexts/workspace-context"
 
 import {
-  isEmulatedBrowserDevice,
+  parseEmulatedBrowserDevice,
+  sameBrowserDevice,
   type EmulatedBrowserDevice,
 } from "./browser-device"
 import { DEFAULT_BROWSER_PROFILE_ID, isBrowserProfileId } from "./browser-prefs"
@@ -37,7 +38,7 @@ export interface PersistedBrowserTab {
    *  only when set, so records of every other tab keep their old shape. */
   remote?: true
   /** The device the tab shows its page as (`BrowserTabSeed.device`). Written
-   *  only for a tablet or a phone, for the same reason. */
+   *  only for a tablet, a phone or a custom device, for the same reason. */
   device?: EmulatedBrowserDevice
 }
 
@@ -73,6 +74,9 @@ function sanitize(raw: unknown): PersistedBrowserTab | null {
     unknown
   >
   if (typeof url !== "string" || !isWebUrl(url)) return null
+  // A device this build does not know is a desktop: the page comes back,
+  // filling the pane.
+  const emulated = parseEmulatedBrowserDevice(device)
   return {
     url,
     title: typeof title === "string" ? title : "",
@@ -82,9 +86,7 @@ function sanitize(raw: unknown): PersistedBrowserTab | null {
         : null,
     profile: isBrowserProfileId(profile) ? profile : DEFAULT_BROWSER_PROFILE_ID,
     ...(remote === true ? { remote: true as const } : {}),
-    // A device this build does not know is a desktop: the page comes back,
-    // filling the pane.
-    ...(isEmulatedBrowserDevice(device) ? { device } : {}),
+    ...(emulated ? { device: emulated } : {}),
   }
 }
 
@@ -192,7 +194,7 @@ export function samePersistedBrowserTabs(
       a[i].folderId !== b[i].folderId ||
       a[i].profile !== b[i].profile ||
       a[i].remote !== b[i].remote ||
-      a[i].device !== b[i].device
+      !sameBrowserDevice(a[i].device, b[i].device)
     ) {
       return false
     }

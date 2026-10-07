@@ -6659,7 +6659,11 @@
       "deviceDesktop": "Desktop",
       "deviceTablet": "Tablet",
       "devicePhone": "Phone",
-      "deviceFill": "Full pane"
+      "deviceFill": "Full pane",
+      "deviceCustom": "Custom",
+      "deviceWidth": "Width",
+      "deviceHeight": "Height",
+      "deviceLaidOut": "Pane too small: laid out at {size}"
     },
     "status": {
       "popupDenied": "Pop-up blocked: {host}",

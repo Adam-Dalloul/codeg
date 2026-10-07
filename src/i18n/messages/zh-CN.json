@@ -6659,7 +6659,11 @@
       "deviceDesktop": "桌面",
       "deviceTablet": "平板",
       "devicePhone": "手机",
-      "deviceFill": "铺满面板"
+      "deviceFill": "铺满面板",
+      "deviceCustom": "自定义",
+      "deviceWidth": "宽度",
+      "deviceHeight": "高度",
+      "deviceLaidOut": "面板太小：按 {size} 排版"
     },
     "status": {
       "popupDenied": "已拦截弹窗：{host}",

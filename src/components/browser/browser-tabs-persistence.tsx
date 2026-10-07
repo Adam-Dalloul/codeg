@@ -7,6 +7,7 @@ import {
   useWorkspaceFileTabs,
 } from "@/contexts/workspace-context"
 import { browserCapabilities } from "@/lib/browser/browser-api"
+import { browserDeviceKey } from "@/lib/browser/browser-device"
 import {
   DEFAULT_BROWSER_PROFILE_ID,
   browserProfileExists,
@@ -99,7 +100,7 @@ export function BrowserTabsPersistence() {
         .filter((tab) => tab.kind === "browser")
         .map(
           (tab) =>
-            `${tab.id}\u0000${tab.browser.profile}\u0000${tab.browser.initialUrl}\u0000${tab.title}\u0000${tab.browser.device ?? ""}`
+            `${tab.id}\u0000${tab.browser.profile}\u0000${tab.browser.initialUrl}\u0000${tab.title}\u0000${browserDeviceKey(tab.browser.device)}`
         )
         .join("\u0001"),
     [fileTabs]

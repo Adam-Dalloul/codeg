@@ -1,19 +1,34 @@
-import { render } from "@testing-library/react"
+import { act, fireEvent, render, screen } from "@testing-library/react"
 import { NextIntlClientProvider } from "next-intl"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import type { BrowserWorkspaceTab } from "@/contexts/workspace-context"
 import enMessages from "@/i18n/messages/en.json"
 import type { EmulatedBrowserDevice } from "@/lib/browser/browser-device"
+import {
+  getBrowserPrefs,
+  resetBrowserPrefsForTests,
+} from "@/lib/browser/browser-prefs"
 
 type SurfaceHostProps = { zoom?: number | null; layoutKey?: string }
 
 const mocks = vi.hoisted(() => ({
-  state: null as null | { tabId: string; surface: "child" | "window" },
+  state: null as null | {
+    tabId: string
+    surface: "child" | "window"
+    error?: { kind: string }
+  },
   setWindowViewport: vi.fn(() => Promise.resolve()),
+  setBrowserTabDevice: vi.fn(),
   surfaceHost: vi.fn((props: SurfaceHostProps) => {
     void props
     return null
+  }),
+}))
+
+vi.mock("@/contexts/workspace-context", () => ({
+  useOptionalWorkspaceActions: () => ({
+    setBrowserTabDevice: mocks.setBrowserTabDevice,
   }),
 }))
 
@@ -40,6 +55,7 @@ vi.mock(import("./browser-status-layer"), async (importOriginal) => ({
   ...(await importOriginal()),
   BrowserNoticeBar: () => null,
   BrowserDownloadBar: () => null,
+  BrowserErrorPage: () => <p>The page failed</p>,
 }))
 vi.mock("./browser-surface-host", () => ({
   BrowserSurfaceHost: mocks.surfaceHost,
@@ -83,8 +99,10 @@ function lastHostProps(): SurfaceHostProps {
 
 describe("BrowserTabView devices", () => {
   beforeEach(() => {
+    resetBrowserPrefsForTests()
     mocks.state = { tabId: "abc", surface: "child" }
     mocks.setWindowViewport.mockClear()
+    mocks.setBrowserTabDevice.mockClear()
     mocks.surfaceHost.mockClear()
     // A slot of 1000 × 600 (jsdom has no layout).
     vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({
@@ -147,5 +165,75 @@ describe("BrowserTabView devices", () => {
   it("never asks an embedded page's window to resize", () => {
     render(view("phone"))
     expect(mocks.setWindowViewport).not.toHaveBeenCalled()
+  })
+
+  it("frames a custom device, and takes a new size for the tab from the line above the frame", () => {
+    const { container } = render(view({ width: 1280, height: 800 }))
+    const label = container.querySelector("[data-browser-device-label]")
+    const width = screen.getByRole<HTMLInputElement>("textbox", {
+      name: "Width",
+    })
+    expect(label).toContainElement(width)
+    expect(width.value).toBe("1280")
+    expect(lastHostProps().zoom).toBeLessThan(1)
+
+    act(() => width.focus())
+    fireEvent.change(width, { target: { value: "1024" } })
+    fireEvent.keyDown(width, { key: "Enter" })
+    expect(mocks.setBrowserTabDevice).toHaveBeenCalledWith("browser:abc", {
+      width: 1024,
+      height: 800,
+    })
+    // …and the next tab picked as "Custom" starts there.
+    expect(getBrowserPrefs().customDevice).toEqual({ width: 1024, height: 800 })
+  })
+
+  it("offers no size to change under a page that failed", () => {
+    mocks.state = { tabId: "abc", surface: "child", error: { kind: "load" } }
+    render(view({ width: 1280, height: 800 }))
+    expect(screen.getByText("The page failed")).toBeInTheDocument()
+    expect(screen.queryByRole("textbox", { name: "Width" })).toBeNull()
+  })
+
+  it("sizes an owned window to a custom device, and changes its size from the window's card", () => {
+    mocks.state = { tabId: "abc", surface: "window" }
+    const { container, rerender } = render(view({ width: 1280, height: 800 }))
+    expect(mocks.setWindowViewport).toHaveBeenLastCalledWith("abc", {
+      width: 1280,
+      height: 800,
+    })
+    expect(container.querySelector("[data-browser-device-label]")).toBeNull()
+    const card = container.querySelector("[data-browser-device-size]")
+    const width = screen.getByRole<HTMLInputElement>("textbox", {
+      name: "Width",
+    })
+    expect(card).toContainElement(width)
+
+    act(() => width.focus())
+    fireEvent.change(width, { target: { value: "1440" } })
+    act(() => width.blur())
+    expect(mocks.setBrowserTabDevice).toHaveBeenCalledWith("browser:abc", {
+      width: 1440,
+      height: 800,
+    })
+    // The record takes it; the window follows.
+    rerender(view({ width: 1440, height: 800 }))
+    expect(mocks.setWindowViewport).toHaveBeenLastCalledWith("abc", {
+      width: 1440,
+      height: 800,
+    })
+    // The same size again is no change to make.
+    const calls = mocks.setWindowViewport.mock.calls.length
+    rerender(view({ width: 1440, height: 800 }))
+    expect(mocks.setWindowViewport.mock.calls.length).toBe(calls)
+  })
+
+  it("says on an owned window's card which preset it is sized to, with nothing to edit", () => {
+    mocks.state = { tabId: "abc", surface: "window" }
+    const { container } = render(view("tablet"))
+    expect(
+      container.querySelector("[data-browser-device-size]")
+    ).toHaveTextContent("768 × 1024")
+    expect(screen.queryByRole("textbox", { name: "Width" })).toBeNull()
   })
 })

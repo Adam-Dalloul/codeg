@@ -6659,7 +6659,11 @@
       "deviceDesktop": "桌面",
       "deviceTablet": "平板",
       "devicePhone": "手機",
-      "deviceFill": "填滿面板"
+      "deviceFill": "填滿面板",
+      "deviceCustom": "自訂",
+      "deviceWidth": "寬度",
+      "deviceHeight": "高度",
+      "deviceLaidOut": "面板太小：以 {size} 排版"
     },
     "status": {
       "popupDenied": "已攔截彈出視窗：{host}",

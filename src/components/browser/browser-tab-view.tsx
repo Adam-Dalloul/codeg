@@ -12,7 +12,7 @@ import {
   browserSetVisible,
   browserSetWindowViewport,
 } from "@/lib/browser/browser-api"
-import { browserTabDevice, deviceViewport } from "@/lib/browser/browser-device"
+import { emulatedViewport } from "@/lib/browser/browser-device"
 import {
   remoteConnectionOfProfile,
   remoteHostDisplayName,
@@ -29,6 +29,10 @@ import { browserTabBackendId } from "@/lib/file-tab-id"
 import { getActiveRemoteConnectionId, isDesktop } from "@/lib/transport"
 
 import { BrowserBridgeView } from "./browser-bridge-view"
+import {
+  BrowserDeviceSize,
+  useBrowserTabCustomSize,
+} from "./browser-device-size"
 import { BrowserDeviceStage } from "./browser-device-stage"
 import { BrowserFindBar } from "./browser-find-bar"
 import { BrowserRemoteTabView } from "./browser-remote-tab-view"
@@ -162,7 +166,11 @@ function NativeBrowserTabView({
   // Find searches the page, which is in the other window — worth offering
   // when that window answers, and not when the host has no hold on it.
   const canFind = !ownedWindow || (capabilities?.ownedWindowControls ?? false)
-  const device = browserTabDevice(tab.browser)
+  const device = tab.browser.device
+  const viewport = emulatedViewport(device)
+  const viewportWidth = viewport?.width ?? null
+  const viewportHeight = viewport?.height ?? null
+  const setCustomSize = useBrowserTabCustomSize(tab.id)
 
   // A page in a window of its own is not fitted to this slot, so it cannot be
   // framed here: the window itself takes the device's size instead (and its
@@ -172,13 +180,22 @@ function NativeBrowserTabView({
   // keeps what they made.
   useEffect(() => {
     if (!ownedWindow || !backendId) return
-    void browserSetWindowViewport(backendId, deviceViewport(device)).catch(
-      () => {}
-    )
-  }, [backendId, device, ownedWindow])
+    void browserSetWindowViewport(
+      backendId,
+      viewportWidth !== null && viewportHeight !== null
+        ? { width: viewportWidth, height: viewportHeight }
+        : null
+    ).catch(() => {})
+  }, [backendId, viewportWidth, viewportHeight, ownedWindow])
 
   return (
-    <div className="flex h-full min-h-0 flex-col" onKeyDown={onKeyDown}>
+    // Marked for the device menu, which hands this view's custom size field
+    // the keyboard when "Custom" is picked.
+    <div
+      data-browser-tab-view=""
+      className="flex h-full min-h-0 flex-col"
+      onKeyDown={onKeyDown}
+    >
       <BrowserToolbar tab={tab} state={state} />
       <BrowserFindBar
         tab={tab}
@@ -200,8 +217,13 @@ function NativeBrowserTabView({
         {/* Always mounted so the native surface keeps its bounds; the DOM
             layers below only show when the surface is hidden (error) or
             never embedded (owned window). Framed as the tab's device; an
-            owned window is that device's size itself, so nothing here is. */}
-        <BrowserDeviceStage device={ownedWindow ? "desktop" : device}>
+            owned window is that device's size itself, so nothing here is.
+            Under an error page nothing on the stage can be seen, so there
+            is no size to edit there either. */}
+        <BrowserDeviceStage
+          device={ownedWindow ? "desktop" : (device ?? "desktop")}
+          onCustomSize={error ? undefined : setCustomSize}
+        >
           {(fit) => (
             <BrowserSurfaceHost
               tab={tab}
@@ -226,7 +248,23 @@ function NativeBrowserTabView({
               onShow={() =>
                 backendId && void browserSetVisible(backendId, true, false)
               }
-            />
+            >
+              {/* The device the window is sized to, and — for a custom
+                  one — where its size is changed: there is no frame here
+                  to carry that line. */}
+              {device && viewport ? (
+                <div
+                  dir="ltr"
+                  data-browser-device-size=""
+                  className="flex h-[20px] items-center gap-1.5 text-[11px] text-muted-foreground tabular-nums"
+                >
+                  <BrowserDeviceSize
+                    device={device}
+                    onCustomSize={setCustomSize}
+                  />
+                </div>
+              ) : null}
+            </BrowserOwnedWindowCard>
           </div>
         ) : null}
       </div>

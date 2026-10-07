@@ -319,12 +319,81 @@ describe("browser tab persistence", () => {
             device: "desktop",
           },
           { url: "http://localhost:3/", title: "", folderId: 1, device: 2 },
+          // A custom size no device can have.
+          {
+            url: "http://localhost:4/",
+            title: "",
+            folderId: 1,
+            device: { width: 40, height: 800 },
+          },
+          {
+            url: "http://localhost:5/",
+            title: "",
+            folderId: 1,
+            device: { width: "1280", height: 800 },
+          },
         ],
       })
     )
     const read = readPersistedBrowserTabs("main")
-    expect(read.map((t) => t.url)).toHaveLength(3)
-    expect(read.map((t) => "device" in t)).toEqual([false, false, false])
+    expect(read.map((t) => t.url)).toHaveLength(5)
+    expect(read.map((t) => "device" in t)).toEqual([
+      false,
+      false,
+      false,
+      false,
+      false,
+    ])
+  })
+
+  // A custom device is kept as its size, and comes back as that size.
+  it("keeps a custom device's size through a write, a read and a snapshot", () => {
+    writePersistedBrowserTabs(
+      [
+        {
+          url: "http://localhost:3000/",
+          title: "",
+          folderId: 1,
+          profile: "default",
+          device: { width: 1440, height: 900 },
+        },
+      ],
+      "main"
+    )
+    const stored = JSON.parse(localStorage.getItem(KEY) ?? "{}") as {
+      tabs: Array<Record<string, unknown>>
+    }
+    expect(stored.tabs[0].device).toEqual({ width: 1440, height: 900 })
+    expect(readPersistedBrowserTabs("main")[0].device).toEqual({
+      width: 1440,
+      height: 900,
+    })
+
+    const customTab = (width: number) =>
+      browserTab("c", "http://localhost:3000/", {
+        browser: {
+          initialUrl: "http://localhost:3000/",
+          openerTabId: null,
+          profile: "default",
+          device: { width, height: 900 },
+        },
+      } as Partial<FileWorkspaceTab>)
+    const snapshot = snapshotBrowserTabs([customTab(1440)], () => null)
+    expect(snapshot[0].device).toEqual({ width: 1440, height: 900 })
+    // The same size again, in another object, is no change to write…
+    expect(
+      samePersistedBrowserTabs(
+        snapshot,
+        snapshotBrowserTabs([customTab(1440)], () => null)
+      )
+    ).toBe(true)
+    // …another size is.
+    expect(
+      samePersistedBrowserTabs(
+        snapshot,
+        snapshotBrowserTabs([customTab(1280)], () => null)
+      )
+    ).toBe(false)
   })
 
   it("reads anything but a literal true as not remote", () => {

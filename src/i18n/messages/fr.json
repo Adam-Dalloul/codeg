@@ -6659,7 +6659,11 @@
       "deviceDesktop": "Ordinateur",
       "deviceTablet": "Tablette",
       "devicePhone": "Téléphone",
-      "deviceFill": "Tout le volet"
+      "deviceFill": "Tout le volet",
+      "deviceCustom": "Personnalisé",
+      "deviceWidth": "Largeur",
+      "deviceHeight": "Hauteur",
+      "deviceLaidOut": "Volet trop petit : mise en page en {size}"
     },
     "status": {
       "popupDenied": "Fenêtre contextuelle bloquée : {host}",

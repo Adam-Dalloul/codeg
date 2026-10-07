@@ -6,7 +6,6 @@ import { useTranslations } from "next-intl"
 import { toast } from "sonner"
 
 import type { BrowserWorkspaceTab } from "@/contexts/workspace-context"
-import { browserTabDevice } from "@/lib/browser/browser-device"
 import {
   bridgeClose,
   bridgeEntryUrl,
@@ -21,6 +20,7 @@ import { openExternalTab } from "@/lib/link-open"
 import { copyTextToClipboard, randomUUID } from "@/lib/utils"
 
 import { BrowserDeviceMenu } from "./browser-device-menu"
+import { useBrowserTabCustomSize } from "./browser-device-size"
 import { BrowserDeviceStage } from "./browser-device-stage"
 // The desktop toolbar's own button shape: this row stands in the same place,
 // under the same tab strip.
@@ -60,6 +60,7 @@ export function BrowserBridgeView({ tab }: { tab: BrowserWorkspaceTab }) {
   const t = useTranslations("Browser.bridge")
   const url = tab.browser.initialUrl
   const tabId = browserTabBackendId(tab.id) ?? tab.id
+  const setCustomSize = useBrowserTabCustomSize(tab.id)
   const [attempt, setAttempt] = useState(0)
   // The outcome is stamped with the attempt it belongs to; a new attempt
   // (a reload, another address) reads as "opening" until its own outcome
@@ -122,7 +123,8 @@ export function BrowserBridgeView({ tab }: { tab: BrowserWorkspaceTab }) {
   }
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
+    // Marked for the device menu, as the desktop view is.
+    <div data-browser-tab-view="" className="flex h-full min-h-0 flex-col">
       {/* Same shape as the desktop toolbar's row, and for the same reason:
           a browser tab has no title header above it, so this is the file
           column's top row (see `file-workspace-header.tsx`). */}
@@ -176,7 +178,13 @@ export function BrowserBridgeView({ tab }: { tab: BrowserWorkspaceTab }) {
           </div>
         ) : null}
         {phase.kind === "ready" ? (
-          <BrowserDeviceStage device={browserTabDevice(tab.browser)}>
+          <BrowserDeviceStage
+            device={tab.browser.device ?? "desktop"}
+            onCustomSize={setCustomSize}
+            // Scaled by a transform, which goes as small as it has to: the
+            // page is at the device's own size however small the frame.
+            minZoom={0}
+          >
             {({ viewport, frame }) => (
               <iframe
                 key={phase.src}

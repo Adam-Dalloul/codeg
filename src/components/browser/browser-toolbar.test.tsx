@@ -38,8 +38,9 @@ describe("normalizeTypedAddress", () => {
 // The profile chip and its menu
 // ---------------------------------------------------------------------------
 
-import { act, fireEvent, render, screen } from "@testing-library/react"
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { NextIntlClientProvider } from "next-intl"
+import type { ReactNode } from "react"
 import { afterEach, beforeEach, vi } from "vitest"
 
 import type { BrowserWorkspaceTab } from "@/contexts/workspace-context"
@@ -50,8 +51,10 @@ import {
   browserReload,
   browserStop,
 } from "@/lib/browser/browser-api"
+import type { EmulatedBrowserDevice } from "@/lib/browser/browser-device"
 import {
   resetBrowserPrefsForTests,
+  setBrowserCustomDevice,
   setBrowserDevtools,
   setBrowserProfiles,
 } from "@/lib/browser/browser-prefs"
@@ -672,19 +675,33 @@ describe("BrowserToolbar in a remote workspace window", () => {
 // The device control
 // ---------------------------------------------------------------------------
 
-function renderToolbarAs(device?: "tablet" | "phone") {
+function renderToolbarAs(
+  device?: EmulatedBrowserDevice,
+  /** What else the tab's view holds beside its toolbar. */
+  view?: ReactNode
+) {
   const tab = tabIn("default")
   return render(
     <NextIntlClientProvider locale="en" messages={enMessages}>
-      <BrowserToolbar
-        tab={{
-          ...tab,
-          browser: { ...tab.browser, ...(device ? { device } : {}) },
-        }}
-        state={null}
-      />
+      <div data-browser-tab-view="">
+        <BrowserToolbar
+          tab={{
+            ...tab,
+            browser: { ...tab.browser, ...(device ? { device } : {}) },
+          }}
+          state={null}
+        />
+        {view}
+      </div>
     </NextIntlClientProvider>
   )
+}
+
+async function pick(item: Element) {
+  await act(async () => {
+    fireEvent.click(item)
+    await new Promise((resolve) => setTimeout(resolve, 0))
+  })
 }
 
 describe("BrowserToolbar device control", () => {
@@ -706,7 +723,7 @@ describe("BrowserToolbar device control", () => {
     expect(field.parentElement?.nextElementSibling).toBe(control)
   })
 
-  it("lists the three devices with their sizes and switches the tab to one", async () => {
+  it("lists the devices with their sizes and switches the tab to one", async () => {
     renderToolbarAs()
     await openMenu(screen.getByRole("button", { name: "Device: Desktop" }))
     expect(screen.getByText("View as")).toBeVisible()
@@ -715,6 +732,7 @@ describe("BrowserToolbar device control", () => {
       "DesktopFull pane",
       "Tablet768 × 1024",
       "Phone390 × 844",
+      "Custom1280 × 800",
     ])
     expect(items[0]).toHaveAttribute("aria-checked", "true")
 
@@ -745,5 +763,57 @@ describe("BrowserToolbar device control", () => {
     expect(
       screen.getByRole("button", { name: "Device: Desktop" })
     ).toBeDisabled()
+  })
+
+  it("starts a custom device at the size typed last", async () => {
+    setBrowserCustomDevice({ width: 1440, height: 900 })
+    renderToolbarAs("phone")
+    await openMenu(screen.getByRole("button", { name: "Device: Phone" }))
+    const custom = screen.getAllByRole("menuitemradio")[3]
+    expect(custom).toHaveTextContent("Custom1440 × 900")
+    await pick(custom)
+    expect(toolbarMocks.setBrowserTabDevice).toHaveBeenCalledWith(
+      "browser:abc",
+      { width: 1440, height: 900 }
+    )
+  })
+
+  it("names a custom device and shows the tab's own size for it", async () => {
+    setBrowserCustomDevice({ width: 1440, height: 900 })
+    renderToolbarAs({ width: 1024, height: 600 })
+    const control = screen.getByRole("button", { name: "Device: Custom" })
+    expect(control).toHaveAttribute("data-browser-device", "custom")
+    await openMenu(control)
+    const items = screen.getAllByRole("menuitemradio")
+    expect(items[3]).toHaveTextContent("Custom1024 × 600")
+    expect(items[3]).toHaveAttribute("aria-checked", "true")
+  })
+
+  it("hands the keyboard to the width field of the tab's own view when Custom is picked, again too", async () => {
+    renderToolbarAs(
+      { width: 1024, height: 600 },
+      <input aria-label="Width" data-browser-device-width="" />
+    )
+    const control = screen.getByRole("button", { name: "Device: Custom" })
+    await openMenu(control)
+    await pick(screen.getAllByRole("menuitemradio")[3])
+    // Already custom: nothing to switch, only somewhere to type. The menu
+    // hands the keyboard on once it has gone, a moment after the pick.
+    expect(toolbarMocks.setBrowserTabDevice).not.toHaveBeenCalled()
+    await waitFor(() =>
+      expect(screen.getByRole("textbox", { name: "Width" })).toHaveFocus()
+    )
+  })
+
+  it("gives the keyboard back to the control when there is no field to type in", async () => {
+    renderToolbarAs()
+    const control = screen.getByRole("button", { name: "Device: Desktop" })
+    await openMenu(control)
+    await pick(screen.getAllByRole("menuitemradio")[3])
+    expect(toolbarMocks.setBrowserTabDevice).toHaveBeenCalledWith(
+      "browser:abc",
+      { width: 1280, height: 800 }
+    )
+    await waitFor(() => expect(control).toHaveFocus())
   })
 })

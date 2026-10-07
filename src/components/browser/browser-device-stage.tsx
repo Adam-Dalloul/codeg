@@ -1,17 +1,22 @@
 "use client"
 
+import { TriangleAlert } from "lucide-react"
+import { useTranslations } from "next-intl"
 import { useLayoutEffect, useRef, useState, type ReactNode } from "react"
 
 import {
-  deviceViewport,
+  MIN_PAGE_ZOOM,
+  browserDeviceKind,
+  emulatedViewport,
   fitDeviceFrame,
-  type BrowserDevice,
   type DeviceFrame,
+  type EmulatedBrowserDevice,
   type ViewportSize,
 } from "@/lib/browser/browser-device"
 import { cn } from "@/lib/utils"
 
-import { BROWSER_DEVICE_ICONS, viewportLabel } from "./browser-device-menu"
+import { viewportLabel } from "./browser-device-menu"
+import { BrowserDeviceSize } from "./browser-device-size"
 
 // The stage's insets in CSS pixels, mirrored by the classes below. Pixels,
 // not rems: the app zooms by its root font size, and the frame is fitted
@@ -46,12 +51,17 @@ interface StageMetrics {
  * The slot a browser tab shows its page in, as the device the tab emulates.
  *
  * The desktop is the slot itself: the page fills it, exactly as it did before
- * there were devices. A tablet or a phone is a frame of that device's
- * proportions centred in the slot, under a line saying its size (and how far
- * it is shrunk, when the slot is smaller than the device) — at the device's
- * own size where it fits, shrunk whole where it does not. The page inside is
- * laid out at the device's width either way: a native surface by the zoom
- * this hands it, a frame element by being that size and scaled.
+ * there were devices. A tablet, a phone or a custom device is a frame of that
+ * device's proportions centred in the slot, under a line saying its size (and
+ * how far it is shrunk, when the slot is smaller than the device) — at the
+ * device's own size where it fits, shrunk whole where it does not. The page
+ * inside is laid out at the device's width either way: a native surface by
+ * the zoom this hands it, a frame element by being that size and scaled. A
+ * native surface cannot be zoomed out without end (`minZoom`); a device too
+ * large for the slot even then lays its page out smaller, and the line says
+ * at what size.
+ *
+ * A custom device's size is edited on that line, given `onCustomSize`.
  *
  * The child is rendered at the same place in the tree whatever the device,
  * so switching devices resizes the page rather than building it again.
@@ -61,11 +71,18 @@ interface StageMetrics {
  */
 export function BrowserDeviceStage({
   device,
+  onCustomSize,
+  minZoom = MIN_PAGE_ZOOM,
   children,
 }: {
-  device: BrowserDevice
+  device: "desktop" | EmulatedBrowserDevice
+  onCustomSize?: (size: ViewportSize) => void
+  /** The least zoom the page can be shown at: an engine's for a native
+   *  surface (the default), none for a frame element scaled by a transform. */
+  minZoom?: number
   children: (fit: DeviceStageFit) => ReactNode
 }) {
+  const t = useTranslations("Browser.toolbar")
   const stageRef = useRef<HTMLDivElement | null>(null)
   const [metrics, setMetrics] = useState<StageMetrics | null>(null)
 
@@ -114,7 +131,9 @@ export function BrowserDeviceStage({
     }
   }, [])
 
-  const viewport = deviceViewport(device)
+  const emulated = device === "desktop" ? undefined : device
+  const kind = browserDeviceKind(emulated)
+  const viewport = emulatedViewport(emulated)
   const frame =
     viewport && metrics
       ? fitDeviceFrame(
@@ -127,7 +146,8 @@ export function BrowserDeviceStage({
               LABEL_HEIGHT_PX -
               LABEL_GAP_PX,
           },
-          metrics.devicePixelRatio
+          metrics.devicePixelRatio,
+          minZoom
         )
       : null
   const fit: DeviceStageFit = {
@@ -138,29 +158,54 @@ export function BrowserDeviceStage({
       ? `${Math.round(metrics.width)}x${Math.round(metrics.height)}:${frame?.width ?? 0}x${frame?.height ?? 0}`
       : "",
   }
-  const Icon = BROWSER_DEVICE_ICONS[device]
   const percent = frame ? Math.round(frame.scale * 100) : 100
+  // Laid out at a size other than the device's own: the slot is too small
+  // to show the device even at the least zoom there is.
+  const shortOf =
+    viewport &&
+    frame &&
+    frame.width > 0 &&
+    (frame.layout.width !== viewport.width ||
+      frame.layout.height !== viewport.height)
+      ? frame.layout
+      : null
 
   return (
     <div
       ref={stageRef}
-      data-browser-device-stage={device}
+      data-browser-device-stage={kind}
       className={cn(
         "absolute inset-0",
         viewport &&
           "flex flex-col items-center justify-center gap-[8px] overflow-hidden bg-muted/40 p-[16px]"
       )}
     >
-      {viewport ? (
+      {emulated && viewport ? (
         <div
           dir="ltr"
           data-browser-device-label=""
-          className="flex h-[20px] shrink-0 select-none items-center gap-1.5 text-[11px] text-muted-foreground tabular-nums"
+          className="flex h-[20px] max-w-full shrink-0 select-none items-center gap-1.5 text-[11px] text-muted-foreground tabular-nums"
         >
-          <Icon className="h-3 w-3" />
-          <span>{viewportLabel(viewport)}</span>
+          <BrowserDeviceSize device={emulated} onCustomSize={onCustomSize} />
           {frame && percent < 100 ? (
-            <span className="text-muted-foreground/70">· {percent}%</span>
+            <span className="shrink-0 text-muted-foreground/70">
+              · {percent}%
+            </span>
+          ) : null}
+          {shortOf ? (
+            <span
+              data-browser-device-short=""
+              className="flex min-w-0 items-center gap-1 text-amber-600 dark:text-amber-500"
+            >
+              <TriangleAlert className="h-3 w-3 shrink-0" />
+              {/* A sentence of the person's language, which may read right
+                  to left — with the size in it isolated left to right. */}
+              <span dir="auto" className="truncate">
+                {t("deviceLaidOut", {
+                  size: `\u2066${viewportLabel(shortOf)}\u2069`,
+                })}
+              </span>
+            </span>
           ) : null}
         </div>
       ) : null}

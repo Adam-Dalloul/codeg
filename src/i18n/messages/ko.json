@@ -6659,7 +6659,11 @@
       "deviceDesktop": "데스크톱",
       "deviceTablet": "태블릿",
       "devicePhone": "휴대폰",
-      "deviceFill": "패널 전체"
+      "deviceFill": "패널 전체",
+      "deviceCustom": "사용자 지정",
+      "deviceWidth": "너비",
+      "deviceHeight": "높이",
+      "deviceLaidOut": "패널이 너무 작음: {size} 크기로 배치"
     },
     "status": {
       "popupDenied": "팝업 차단됨: {host}",

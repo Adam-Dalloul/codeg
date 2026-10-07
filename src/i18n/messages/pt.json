@@ -6659,7 +6659,11 @@
       "deviceDesktop": "Desktop",
       "deviceTablet": "Tablet",
       "devicePhone": "Celular",
-      "deviceFill": "Painel inteiro"
+      "deviceFill": "Painel inteiro",
+      "deviceCustom": "Personalizado",
+      "deviceWidth": "Largura",
+      "deviceHeight": "Altura",
+      "deviceLaidOut": "Painel pequeno demais: layout em {size}"
     },
     "status": {
       "popupDenied": "Pop-up bloqueado: {host}",

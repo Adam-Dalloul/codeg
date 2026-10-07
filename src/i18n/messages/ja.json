@@ -6659,7 +6659,11 @@
       "deviceDesktop": "デスクトップ",
       "deviceTablet": "タブレット",
       "devicePhone": "スマートフォン",
-      "deviceFill": "ペイン全体"
+      "deviceFill": "ペイン全体",
+      "deviceCustom": "カスタム",
+      "deviceWidth": "幅",
+      "deviceHeight": "高さ",
+      "deviceLaidOut": "ペインが小さすぎます: {size} でレイアウト"
     },
     "status": {
       "popupDenied": "ポップアップをブロックしました: {host}",

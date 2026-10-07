@@ -6659,7 +6659,11 @@
       "deviceDesktop": "Escritorio",
       "deviceTablet": "Tableta",
       "devicePhone": "Teléfono",
-      "deviceFill": "Todo el panel"
+      "deviceFill": "Todo el panel",
+      "deviceCustom": "Personalizado",
+      "deviceWidth": "Ancho",
+      "deviceHeight": "Alto",
+      "deviceLaidOut": "Panel demasiado pequeño: diseño en {size}"
     },
     "status": {
       "popupDenied": "Ventana emergente bloqueada: {host}",
