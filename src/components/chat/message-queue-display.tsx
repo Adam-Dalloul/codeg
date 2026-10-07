@@ -156,8 +156,10 @@ export function MessageQueueDisplay({
   // both disables the clicked row and (via `steeringId !== null`) the others
   // — matching the composer's single-flight `steering` guard.
   const [steeringId, setSteeringId] = useState<string | null>(null)
-  // Latest steeringId for the click handler's re-entrancy check without
-  // re-binding it on every state commit.
+  // The click handler's re-entrancy lock. Taken in the click itself and
+  // released in `finally`, so a second click that lands before React commits
+  // the disabled buttons is still refused: the state above only drives
+  // rendering and lags a commit.
   const steeringIdRef = useRef<string | null>(null)
 
   const handleSteerStart = useCallback(
