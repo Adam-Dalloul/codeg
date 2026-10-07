@@ -55,7 +55,6 @@
       "collaboration": "Collaboration",
       "browser": "Browser Use",
       "computer_use": "Computer Use",
-      "conversation_tags": "Conversation Tags",
       "quick_messages": "Quick Messages",
       "logs": "Runtime Logs"
     }
@@ -4560,7 +4559,7 @@
     "noTagsYet": "No tags yet",
     "newTag": "New tag…",
     "manageTags": "Manage tags…",
-    "manageFolderTags": "Folder tags…",
+    "branchChip": "Branch: {branch}",
     "picker": {
       "searchPlaceholder": "Search or create a tag…",
       "noResults": "No matching tags",
@@ -4592,23 +4591,22 @@
       "deleteTitle": "Delete this tag?",
       "deleteDescription": "“{name}” will be taken off every conversation that has it. This can't be undone.",
       "deleteConfirm": "Delete",
-      "deleteCancel": "Cancel"
+      "deleteCancel": "Cancel",
+      "loadFailed": "Couldn't load tags"
     },
-    "settings": {
-      "title": "Conversation Tags",
+    "manager": {
+      "title": "Manage tags",
       "description": "Label conversations with colored tags, then filter the sidebar by them.",
+      "branchTitle": "Branch tag",
+      "branchDescription": "Show the git branch each conversation started on as a tag after its title.",
+      "branchShow": "Show",
+      "branchLoadFailed": "Couldn't load the branch tag setting",
       "globalTitle": "Global tags",
       "globalDescription": "Available on every conversation, chat mode included.",
       "folderTitle": "Folder tags",
       "folderDescription": "Available only on the chosen folder's conversations, its worktrees included.",
       "folderPlaceholder": "Choose a folder",
-      "noFolders": "No folders yet. Open one in the workspace to give it its own tags.",
-      "loadFailed": "Couldn't load tags"
-    },
-    "folderDialog": {
-      "title": "Tags for {folder}",
-      "description": "These tags can only go on this folder's conversations, its worktrees included. Global tags are available everywhere and live in Settings.",
-      "globalTags": "Global tags…"
+      "noFolders": "No folders yet. Open one in the workspace to give it its own tags."
     },
     "filter": {
       "button": "Filter by tags",
@@ -4631,7 +4629,8 @@
       "assignFailed": "Couldn't update the conversation's tags",
       "createFailed": "Couldn't create the tag",
       "deleteFailed": "Couldn't delete the tag",
-      "reorderFailed": "Couldn't save the tag order"
+      "reorderFailed": "Couldn't save the tag order",
+      "branchTagFailed": "Couldn't save the branch tag"
     },
     "errors": {
       "emptyName": "Enter a tag name",

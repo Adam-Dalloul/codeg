@@ -424,7 +424,6 @@ pub async fn open_settings_window(
         Some("collaboration") => "settings/collaboration",
         Some("browser") => "settings/browser",
         Some("computer-use") => "settings/computer-use",
-        Some("conversation-tags") => "settings/conversation-tags",
         Some("version-control") => "settings/version-control",
         Some("shortcuts") => "settings/shortcuts",
         Some("system") => "settings/system",

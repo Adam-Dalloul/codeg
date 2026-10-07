@@ -144,7 +144,7 @@ import { useSubsessionSync } from "@/hooks/use-subsession-sync"
 import { SidebarSectionHeader } from "./sidebar-section-header"
 import { SidebarFolderGroupHeader } from "./sidebar-folder-group-header"
 import { ConversationManageDialog } from "./conversation-manage-dialog"
-import { FolderTagsDialog } from "./folder-tags-dialog"
+import { openConversationTagsManager } from "./conversation-tags-manager"
 import {
   EMPTY_TAG_FILTER,
   isTagFilterActive,
@@ -275,7 +275,8 @@ const FolderHeader = memo(function FolderHeader({
   onImport: (folderId: number) => void
   onManageConversations: (folderId: number) => void
   onManageLinks: (folderId: number) => void
-  /** Open the folder's own-tags editor (the ROOT folder's, for a worktree). */
+  /** Open the tag manager on this folder's own tags (its repo's, for a
+   *  worktree). */
   onManageTags: (folderId: number) => void
   onChangeColor: (folderId: number, color: FolderThemeColor) => void
   onSetAlias: (folderId: number, alias: string | null) => void
@@ -652,7 +653,7 @@ const FolderHeader = memo(function FolderHeader({
           </ContextMenuItem>
           <ContextMenuItem onSelect={() => onManageTags(folderId)}>
             <Tags className="h-4 w-4" />
-            {tTags("manageFolderTags")}
+            {tTags("manageTags")}
           </ContextMenuItem>
           <ContextMenuSub>
             <ContextMenuSubTrigger>
@@ -1112,8 +1113,6 @@ export function SidebarConversationList({
   // Folder the "manage conversations" dialog opens on — its initial scope; the
   // dialog itself can then widen to the workspace or point at another folder.
   const [manageFolderId, setManageFolderId] = useState<number | null>(null)
-  // Folder whose own tags are being edited (context menu -> Manage tags).
-  const [tagsFolderId, setTagsFolderId] = useState<number | null>(null)
   const [cloneOpen, setCloneOpen] = useState(false)
   const [browserOpen, setBrowserOpen] = useState(false)
   const [remoteManageOpen, setRemoteManageOpen] = useState(false)
@@ -2051,7 +2050,7 @@ export function SidebarConversationList({
   }, [])
 
   const handleManageFolderTags = useCallback((folderId: number) => {
-    setTagsFolderId(folderId)
+    openConversationTagsManager({ folderId })
   }, [])
 
   const handleManageFolderLinks = useCallback(
@@ -3519,13 +3518,6 @@ export function SidebarConversationList({
           open
           onOpenChange={(o) => !o && setManageFolderId(null)}
           folderId={manageFolderId}
-        />
-      )}
-      {tagsFolderId != null && (
-        <FolderTagsDialog
-          open
-          onOpenChange={(o) => !o && setTagsFolderId(null)}
-          folderId={tagsFolderId}
         />
       )}
 

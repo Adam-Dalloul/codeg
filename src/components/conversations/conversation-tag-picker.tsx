@@ -8,7 +8,6 @@ import {
   toLocalizedErrorMessage,
   type AppErrorTranslator,
 } from "@/lib/app-error"
-import { openSettingsWindow } from "@/lib/api"
 import { changeConversationTags } from "@/lib/conversation-tag-assignment"
 import {
   MAX_TAG_NAME_LENGTH,
@@ -22,7 +21,7 @@ import type { ConversationTagDetail } from "@/lib/types"
 import { cn } from "@/lib/utils"
 import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
 import { useConversationTagsStore } from "@/stores/conversation-tags-store"
-import { useResolvedTags } from "@/hooks/use-conversation-tags"
+import { useBranchChip, useResolvedTags } from "@/hooks/use-conversation-tags"
 import {
   Command,
   CommandGroup,
@@ -44,6 +43,7 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover"
 import {
+  ConversationBranchChip,
   ConversationTagChip,
   ConversationTagChips,
 } from "./conversation-tag-chip"
@@ -51,6 +51,7 @@ import {
   ConversationTagFormDialog,
   type TagFormValues,
 } from "./conversation-tag-form-dialog"
+import { openConversationTagsManager } from "./conversation-tags-manager"
 
 const NO_IDS: readonly number[] = []
 
@@ -183,10 +184,13 @@ function ConversationTagPickerPanel({
   conversationId,
   folderId,
   assignedIds,
+  onManage,
 }: {
   conversationId: number
   folderId: number
   assignedIds: readonly number[] | undefined
+  /** "Manage tags…": the caller closes its popover and opens the manager. */
+  onManage: () => void
 }) {
   const t = useTranslations("ConversationTags")
   const [query, setQuery] = useState("")
@@ -315,9 +319,7 @@ function ConversationTagPickerPanel({
       <div className="border-t p-1">
         <button
           type="button"
-          onClick={() => {
-            void openSettingsWindow("conversation-tags")
-          }}
+          onClick={onManage}
           className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-sm text-muted-foreground outline-none hover:bg-accent hover:text-accent-foreground focus-visible:bg-accent"
         >
           <Settings2 className="size-4 shrink-0" />
@@ -331,58 +333,76 @@ function ConversationTagPickerPanel({
 /**
  * The conversation header's tag slot: the conversation's tags as chips (up to
  * `max`, then "+N"), or a quiet tag icon when it has none — either way the
- * trigger for the picker.
+ * trigger for the picker. The branch chip, when shown, comes first and counts
+ * toward `max`, but sits outside the trigger: the picker does not edit it.
  */
 export const ConversationHeaderTags = memo(function ConversationHeaderTags({
   conversationId,
   folderId,
   tagIds,
+  gitBranch,
   max,
 }: {
   conversationId: number
   folderId: number
   tagIds: readonly number[] | undefined
+  gitBranch: string | null
   max: number
 }) {
   const t = useTranslations("ConversationTags")
   const [open, setOpen] = useState(false)
   const tags = useResolvedTags(tagIds)
+  const branch = useBranchChip(gitBranch)
   const label = tags.length > 0 ? t("editTags") : t("addTags")
 
   return (
-    <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger asChild>
-        <button
-          type="button"
-          aria-label={label}
-          title={
-            tags.length > 0
-              ? `${label}: ${tags.map((tag) => tag.name).join(", ")}`
-              : label
-          }
-          className={cn(
-            "flex h-7 min-w-0 shrink items-center rounded-md outline-none transition-colors",
-            "focus-visible:ring-2 focus-visible:ring-ring",
-            tags.length > 0
-              ? "px-1 hover:bg-accent/60"
-              : "w-7 shrink-0 justify-center text-muted-foreground/60 hover:text-foreground"
-          )}
-        >
-          {tags.length > 0 ? (
-            <ConversationTagChips tags={tags} max={max} />
-          ) : (
-            <Tags className="size-4" />
-          )}
-        </button>
-      </PopoverTrigger>
-      <PopoverContent align="end" className="w-72 overflow-hidden p-0">
-        <ConversationTagPickerPanel
-          conversationId={conversationId}
-          folderId={folderId}
-          assignedIds={tagIds}
+    <>
+      {/* Wider than a tag chip: a branch name is routinely long, and the
+          header has the room (its slot is capped at half the row anyway). */}
+      {branch ? (
+        <ConversationBranchChip
+          branch={branch}
+          className="mr-0.5 max-w-[12rem]"
         />
-      </PopoverContent>
-    </Popover>
+      ) : null}
+      <Popover open={open} onOpenChange={setOpen}>
+        <PopoverTrigger asChild>
+          <button
+            type="button"
+            aria-label={label}
+            title={
+              tags.length > 0
+                ? `${label}: ${tags.map((tag) => tag.name).join(", ")}`
+                : label
+            }
+            className={cn(
+              "flex h-7 min-w-0 shrink items-center rounded-md outline-none transition-colors",
+              "focus-visible:ring-2 focus-visible:ring-ring",
+              tags.length > 0
+                ? "px-1 hover:bg-accent/60"
+                : "w-7 shrink-0 justify-center text-muted-foreground/60 hover:text-foreground"
+            )}
+          >
+            {tags.length > 0 ? (
+              <ConversationTagChips tags={tags} max={branch ? max - 1 : max} />
+            ) : (
+              <Tags className="size-4" />
+            )}
+          </button>
+        </PopoverTrigger>
+        <PopoverContent align="start" className="w-72 overflow-hidden p-0">
+          <ConversationTagPickerPanel
+            conversationId={conversationId}
+            folderId={folderId}
+            assignedIds={tagIds}
+            onManage={() => {
+              setOpen(false)
+              openConversationTagsManager({ folderId })
+            }}
+          />
+        </PopoverContent>
+      </Popover>
+    </>
   )
 })
 
@@ -468,9 +488,7 @@ export function ConversationTagContextSubmenu({
           {t("newTag")}
         </ContextMenuItem>
         <ContextMenuItem
-          onSelect={() => {
-            void openSettingsWindow("conversation-tags")
-          }}
+          onSelect={() => openConversationTagsManager({ folderId })}
         >
           <Settings2 className="h-4 w-4" />
           {t("manageTags")}

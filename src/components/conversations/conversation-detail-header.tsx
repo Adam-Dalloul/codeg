@@ -142,6 +142,12 @@ export const ConversationDetailHeader = memo(function ConversationDetailHeader({
       ? undefined
       : s.conversations.find((c) => c.id === conversationId)?.tag_ids
   )
+  const gitBranch = useAppWorkspaceStore((s) =>
+    conversationId == null
+      ? null
+      : (s.conversations.find((c) => c.id === conversationId)?.git_branch ??
+        null)
+  )
   const isMobile = useIsMobile()
 
   const [details, setDetails] = useState<ActiveSessionDetails | null>(null)
@@ -268,26 +274,30 @@ export const ConversationDetailHeader = memo(function ConversationDetailHeader({
           className="h-3.5 w-3.5 shrink-0 text-muted-foreground/50"
           aria-hidden
         />
-        {/* min-w-0 flex-1: the title absorbs the remaining width and takes the
-            ellipsis, so the folder crumb on the left stays fully visible. */}
+        {/* The title takes the ellipsis, so the folder crumb on the left stays
+            fully visible — but grows only as far as its own text
+            (`max-w-max`), so the tags follow it instead of the far edge. */}
         <span
-          className="min-w-0 flex-1 truncate text-sm text-foreground/90"
+          className="min-w-0 max-w-max flex-1 truncate text-sm text-foreground/90"
           title={title}
         >
           {displayTitle}
         </span>
-      </div>
-      {/* Capped at half the header so a long tag list squeezes its own chips
-          (they truncate) before it squeezes the title. */}
-      <div className="flex max-w-[50%] min-w-0 shrink items-center gap-0.5">
+        {/* Capped at half the row so a long tag list squeezes its own chips
+            (they truncate) before it squeezes the title. */}
         {taggable && conversationId != null ? (
-          <ConversationHeaderTags
-            conversationId={conversationId}
-            folderId={folderId}
-            tagIds={tagIds}
-            max={isMobile ? 1 : 3}
-          />
+          <div className="flex max-w-[50%] min-w-0 shrink items-center">
+            <ConversationHeaderTags
+              conversationId={conversationId}
+              folderId={folderId}
+              tagIds={tagIds}
+              gitBranch={gitBranch}
+              max={isMobile ? 1 : 3}
+            />
+          </div>
         ) : null}
+      </div>
+      <div className="flex shrink-0 items-center">
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <button

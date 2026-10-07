@@ -55,7 +55,6 @@
       "collaboration": "Zusammenarbeit",
       "browser": "Browsernutzung",
       "computer_use": "Computernutzung",
-      "conversation_tags": "Konversations-Tags",
       "quick_messages": "Schnellnachrichten",
       "logs": "Laufzeitprotokolle"
     }
@@ -4540,7 +4539,7 @@
     "noTagsYet": "Noch keine Tags",
     "newTag": "Neuer Tag…",
     "manageTags": "Tags verwalten…",
-    "manageFolderTags": "Ordner-Tags…",
+    "branchChip": "Branch: {branch}",
     "picker": {
       "searchPlaceholder": "Tag suchen oder erstellen…",
       "noResults": "Keine passenden Tags",
@@ -4572,23 +4571,22 @@
       "deleteTitle": "Diesen Tag löschen?",
       "deleteDescription": "„{name}“ wird von allen Konversationen entfernt, die ihn tragen. Das lässt sich nicht rückgängig machen.",
       "deleteConfirm": "Löschen",
-      "deleteCancel": "Abbrechen"
+      "deleteCancel": "Abbrechen",
+      "loadFailed": "Tags konnten nicht geladen werden"
     },
-    "settings": {
-      "title": "Konversations-Tags",
+    "manager": {
+      "title": "Tags verwalten",
       "description": "Versieh Konversationen mit farbigen Tags und filtere die Seitenleiste danach.",
+      "branchTitle": "Branch-Tag",
+      "branchDescription": "Zeigt den Git-Branch, auf dem jede Konversation begonnen hat, als Tag hinter ihrem Titel.",
+      "branchShow": "Anzeigen",
+      "branchLoadFailed": "Der Branch-Tag konnte nicht geladen werden",
       "globalTitle": "Globale Tags",
       "globalDescription": "In allen Konversationen verfügbar, auch im Chat-Modus.",
       "folderTitle": "Ordner-Tags",
       "folderDescription": "Nur in den Konversationen des gewählten Ordners verfügbar, einschließlich seiner Worktrees.",
       "folderPlaceholder": "Ordner wählen",
-      "noFolders": "Noch keine Ordner. Öffne einen im Arbeitsbereich, um ihm eigene Tags zu geben.",
-      "loadFailed": "Tags konnten nicht geladen werden"
-    },
-    "folderDialog": {
-      "title": "Tags für {folder}",
-      "description": "Diese Tags können nur an Konversationen dieses Ordners vergeben werden, einschließlich seiner Worktrees. Globale Tags gelten überall und werden in den Einstellungen verwaltet.",
-      "globalTags": "Globale Tags…"
+      "noFolders": "Noch keine Ordner. Öffne einen im Arbeitsbereich, um ihm eigene Tags zu geben."
     },
     "filter": {
       "button": "Nach Tags filtern",
@@ -4611,7 +4609,8 @@
       "assignFailed": "Die Tags der Konversation konnten nicht aktualisiert werden",
       "createFailed": "Der Tag konnte nicht erstellt werden",
       "deleteFailed": "Der Tag konnte nicht gelöscht werden",
-      "reorderFailed": "Die Reihenfolge der Tags konnte nicht gespeichert werden"
+      "reorderFailed": "Die Reihenfolge der Tags konnte nicht gespeichert werden",
+      "branchTagFailed": "Der Branch-Tag konnte nicht gespeichert werden"
     },
     "errors": {
       "emptyName": "Gib einen Namen für den Tag ein",

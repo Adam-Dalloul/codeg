@@ -55,7 +55,6 @@
       "collaboration": "协作",
       "browser": "浏览器操作",
       "computer_use": "电脑操作",
-      "conversation_tags": "会话标签",
       "quick_messages": "快捷消息",
       "logs": "运行日志"
     }
@@ -4560,7 +4559,7 @@
     "noTagsYet": "还没有标签",
     "newTag": "新建标签…",
     "manageTags": "管理标签…",
-    "manageFolderTags": "文件夹标签…",
+    "branchChip": "分支：{branch}",
     "picker": {
       "searchPlaceholder": "搜索或新建标签…",
       "noResults": "没有匹配的标签",
@@ -4592,23 +4591,22 @@
       "deleteTitle": "删除这个标签？",
       "deleteDescription": "“{name}”将从所有带有它的会话上移除，且无法撤销。",
       "deleteConfirm": "删除",
-      "deleteCancel": "取消"
+      "deleteCancel": "取消",
+      "loadFailed": "无法加载标签"
     },
-    "settings": {
-      "title": "会话标签",
+    "manager": {
+      "title": "管理标签",
       "description": "用彩色标签标记会话，再在侧边栏按标签筛选。",
+      "branchTitle": "分支标签",
+      "branchDescription": "把每个会话创建时所在的 git 分支作为标签，显示在会话标题后面。",
+      "branchShow": "显示",
+      "branchLoadFailed": "无法加载分支标签设置",
       "globalTitle": "全局标签",
       "globalDescription": "可用于所有会话，包括聊天模式。",
       "folderTitle": "文件夹标签",
       "folderDescription": "仅可用于所选文件夹的会话，包括其工作树中的会话。",
       "folderPlaceholder": "选择文件夹",
-      "noFolders": "还没有文件夹。在工作区中打开一个文件夹后即可为它设置专属标签。",
-      "loadFailed": "无法加载标签"
-    },
-    "folderDialog": {
-      "title": "{folder} 的标签",
-      "description": "这些标签只能用于此文件夹的会话，包括其工作树中的会话。全局标签适用于所有会话，请在设置中管理。",
-      "globalTags": "全局标签…"
+      "noFolders": "还没有文件夹。在工作区中打开一个文件夹后即可为它设置专属标签。"
     },
     "filter": {
       "button": "按标签筛选",
@@ -4631,7 +4629,8 @@
       "assignFailed": "无法更新会话的标签",
       "createFailed": "无法创建标签",
       "deleteFailed": "无法删除标签",
-      "reorderFailed": "无法保存标签顺序"
+      "reorderFailed": "无法保存标签顺序",
+      "branchTagFailed": "无法保存分支标签"
     },
     "errors": {
       "emptyName": "请输入标签名称",

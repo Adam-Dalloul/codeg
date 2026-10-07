@@ -94,6 +94,7 @@ import type {
   FolderHistoryEntry,
   FolderDetail,
   FolderGroupDetail,
+  ConversationBranchTag,
   ConversationTagDetail,
   SidebarLayoutEntry,
   FolderLinkDetail,
@@ -2295,6 +2296,22 @@ export async function reorderConversationTags(tagIds: number[]): Promise<void> {
   return getTransport().call("reorder_conversation_tags", { tagIds })
 }
 
+/** The branch tag setting: off, in its default colour, until first saved. */
+export async function getConversationBranchTag(): Promise<ConversationBranchTag> {
+  return getTransport().call("get_conversation_branch_tag", {})
+}
+
+/** Save the branch tag setting whole; resolves to it as stored (the colour
+ *  normalized). */
+export async function updateConversationBranchTag(
+  setting: ConversationBranchTag
+): Promise<ConversationBranchTag> {
+  return getTransport().call("update_conversation_branch_tag", {
+    enabled: setting.enabled,
+    color: setting.color,
+  })
+}
+
 /**
  * Put tags on / take tags off one conversation — a delta, so two windows
  * toggling different tags at once both land. Resolves to the conversation's
@@ -3309,7 +3326,6 @@ export type SettingsSection =
   | "collaboration"
   | "browser"
   | "computer-use"
-  | "conversation-tags"
   | "version-control"
   | "shortcuts"
   | "system"

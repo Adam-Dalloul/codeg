@@ -55,7 +55,6 @@
       "collaboration": "協作",
       "browser": "瀏覽器操作",
       "computer_use": "電腦操作",
-      "conversation_tags": "會話標籤",
       "quick_messages": "快捷訊息",
       "logs": "執行日誌"
     }
@@ -4540,7 +4539,7 @@
     "noTagsYet": "還沒有標籤",
     "newTag": "新增標籤…",
     "manageTags": "管理標籤…",
-    "manageFolderTags": "資料夾標籤…",
+    "branchChip": "分支：{branch}",
     "picker": {
       "searchPlaceholder": "搜尋或新增標籤…",
       "noResults": "沒有符合的標籤",
@@ -4572,23 +4571,22 @@
       "deleteTitle": "刪除這個標籤？",
       "deleteDescription": "「{name}」將從所有帶有它的會話上移除，且無法復原。",
       "deleteConfirm": "刪除",
-      "deleteCancel": "取消"
+      "deleteCancel": "取消",
+      "loadFailed": "無法載入標籤"
     },
-    "settings": {
-      "title": "會話標籤",
+    "manager": {
+      "title": "管理標籤",
       "description": "用彩色標籤標記會話，再在側邊欄依標籤篩選。",
+      "branchTitle": "分支標籤",
+      "branchDescription": "將每個會話建立時所在的 git 分支作為標籤，顯示在會話標題後面。",
+      "branchShow": "顯示",
+      "branchLoadFailed": "無法載入分支標籤設定",
       "globalTitle": "全域標籤",
       "globalDescription": "可用於所有會話，包括聊天模式。",
       "folderTitle": "資料夾標籤",
       "folderDescription": "僅可用於所選資料夾的會話，包括其工作樹中的會話。",
       "folderPlaceholder": "選擇資料夾",
-      "noFolders": "還沒有資料夾。在工作區中開啟一個資料夾後即可為它設定專屬標籤。",
-      "loadFailed": "無法載入標籤"
-    },
-    "folderDialog": {
-      "title": "{folder} 的標籤",
-      "description": "這些標籤只能用於此資料夾的會話，包括其工作樹中的會話。全域標籤適用於所有會話，請在設定中管理。",
-      "globalTags": "全域標籤…"
+      "noFolders": "還沒有資料夾。在工作區中開啟一個資料夾後即可為它設定專屬標籤。"
     },
     "filter": {
       "button": "依標籤篩選",
@@ -4611,7 +4609,8 @@
       "assignFailed": "無法更新會話的標籤",
       "createFailed": "無法建立標籤",
       "deleteFailed": "無法刪除標籤",
-      "reorderFailed": "無法儲存標籤順序"
+      "reorderFailed": "無法儲存標籤順序",
+      "branchTagFailed": "無法儲存分支標籤"
     },
     "errors": {
       "emptyName": "請輸入標籤名稱",

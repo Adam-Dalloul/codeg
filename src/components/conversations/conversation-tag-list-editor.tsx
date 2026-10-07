@@ -112,9 +112,8 @@ function TagRow({
 
 /**
  * Create, edit, reorder and delete the tags of ONE scope: the global list
- * (`scopeFolderId === null`) or one root folder's own. Shared by the settings
- * page and the folder's "Manage tags" dialog, and fed only by the tag store, so
- * it works in the settings window too (which has no workspace store).
+ * (`scopeFolderId === null`) or one root folder's own. The tag manager shows
+ * one for each, fed only by the tag store.
  */
 export function ConversationTagListEditor({
   scopeFolderId,
@@ -241,7 +240,7 @@ export function ConversationTagListEditor({
         loadError ? (
           // Never "no tags here" for a list that failed to load.
           <p role="alert" className="py-2 text-xs text-destructive">
-            {t("settings.loadFailed")}
+            {t("editor.loadFailed")}
           </p>
         ) : (
           <div className="flex items-center gap-2 py-3 text-xs text-muted-foreground">

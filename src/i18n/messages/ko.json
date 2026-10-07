@@ -55,7 +55,6 @@
       "collaboration": "협업",
       "browser": "브라우저 사용",
       "computer_use": "컴퓨터 사용",
-      "conversation_tags": "대화 태그",
       "quick_messages": "빠른 메시지",
       "logs": "실행 로그"
     }
@@ -4540,7 +4539,7 @@
     "noTagsYet": "아직 태그가 없습니다",
     "newTag": "새 태그…",
     "manageTags": "태그 관리…",
-    "manageFolderTags": "폴더 태그…",
+    "branchChip": "브랜치: {branch}",
     "picker": {
       "searchPlaceholder": "태그 검색 또는 만들기…",
       "noResults": "일치하는 태그가 없습니다",
@@ -4572,23 +4571,22 @@
       "deleteTitle": "이 태그를 삭제할까요?",
       "deleteDescription": "“{name}” 태그가 붙은 모든 대화에서 이 태그가 제거됩니다. 되돌릴 수 없습니다.",
       "deleteConfirm": "삭제",
-      "deleteCancel": "취소"
+      "deleteCancel": "취소",
+      "loadFailed": "태그를 불러오지 못했습니다"
     },
-    "settings": {
-      "title": "대화 태그",
+    "manager": {
+      "title": "태그 관리",
       "description": "대화에 색상 태그를 붙이고 사이드바를 태그로 필터링할 수 있습니다.",
+      "branchTitle": "브랜치 태그",
+      "branchDescription": "각 대화를 시작한 Git 브랜치를 제목 뒤에 태그로 표시합니다.",
+      "branchShow": "표시",
+      "branchLoadFailed": "브랜치 태그 설정을 불러오지 못했습니다",
       "globalTitle": "전역 태그",
       "globalDescription": "채팅 모드를 포함한 모든 대화에서 사용할 수 있습니다.",
       "folderTitle": "폴더 태그",
       "folderDescription": "선택한 폴더의 대화(워크트리 포함)에서만 사용할 수 있습니다.",
       "folderPlaceholder": "폴더 선택",
-      "noFolders": "아직 폴더가 없습니다. 작업 공간에서 폴더를 열면 전용 태그를 만들 수 있습니다.",
-      "loadFailed": "태그를 불러오지 못했습니다"
-    },
-    "folderDialog": {
-      "title": "{folder}의 태그",
-      "description": "이 태그는 이 폴더의 대화(워크트리 포함)에만 붙일 수 있습니다. 전역 태그는 모든 대화에서 사용할 수 있으며 설정에서 관리합니다.",
-      "globalTags": "전역 태그…"
+      "noFolders": "아직 폴더가 없습니다. 작업 공간에서 폴더를 열면 전용 태그를 만들 수 있습니다."
     },
     "filter": {
       "button": "태그로 필터링",
@@ -4611,7 +4609,8 @@
       "assignFailed": "대화의 태그를 업데이트하지 못했습니다",
       "createFailed": "태그를 만들지 못했습니다",
       "deleteFailed": "태그를 삭제하지 못했습니다",
-      "reorderFailed": "태그 순서를 저장하지 못했습니다"
+      "reorderFailed": "태그 순서를 저장하지 못했습니다",
+      "branchTagFailed": "브랜치 태그를 저장하지 못했습니다"
     },
     "errors": {
       "emptyName": "태그 이름을 입력하세요",

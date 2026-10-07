@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react"
+import { render, screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { NextIntlClientProvider } from "next-intl"
 import { beforeEach, describe, expect, it, vi } from "vitest"
@@ -18,6 +18,12 @@ import {
   useConversationTagsStore,
 } from "@/stores/conversation-tags-store"
 import { EMPTY_TAG_FILTER } from "@/lib/conversation-tags"
+
+const h = vi.hoisted(() => ({ openConversationTagsManager: vi.fn() }))
+vi.mock("./conversation-tags-manager", () => ({
+  openConversationTagsManager: h.openConversationTagsManager,
+}))
+
 import { SidebarTagFilterButton } from "./sidebar-tag-filter"
 
 function folder(
@@ -73,6 +79,7 @@ const tag = (
 })
 
 beforeEach(() => {
+  h.openConversationTagsManager.mockClear()
   resetAppWorkspaceStore()
   resetConversationTagsStore()
   const store = useConversationTagsStore.getState()
@@ -114,12 +121,12 @@ async function openPanel() {
     </NextIntlClientProvider>
   )
   await user.click(screen.getByRole("button", { name: "Filter by tags" }))
-  return screen.findByRole("dialog")
+  return { user, panel: await screen.findByRole("dialog") }
 }
 
 describe("SidebarTagFilterButton options", () => {
   it("offers the scopes the sidebar can show, named even when closed", async () => {
-    const panel = await openPanel()
+    const { panel } = await openPanel()
     // A closed repo's tag, because its open worktree's rows carry it.
     expect(within(panel).getByText("repo-tag")).toBeTruthy()
     expect(within(panel).getByText("repo")).toBeTruthy()
@@ -132,9 +139,32 @@ describe("SidebarTagFilterButton options", () => {
   })
 
   it("counts only conversations the sidebar can show", async () => {
-    const panel = await openPanel()
+    const { panel } = await openPanel()
     const bugRow = within(panel).getByText("bug").closest("[cmdk-item]")
     // conv 1 (open worktree) — not conv 3, whose folder is closed.
     expect(within(bugRow as HTMLElement).getByText("1")).toBeTruthy()
+  })
+})
+
+describe("SidebarTagFilterButton manage entry", () => {
+  it("leads to the tag manager, closing the filter on the way", async () => {
+    const { user, panel } = await openPanel()
+    await user.click(within(panel).getByText("Manage tags…"))
+
+    // No folder of its own: the manager opens on the conversation on screen's.
+    expect(h.openConversationTagsManager).toHaveBeenCalledWith()
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull())
+  })
+
+  it("is offered before there is any tag to filter by", async () => {
+    resetConversationTagsStore()
+    const { user, panel } = await openPanel()
+    expect(
+      within(panel).getByText(
+        "No tags yet. Add one from a conversation's menu."
+      )
+    ).toBeTruthy()
+    await user.click(within(panel).getByText("Manage tags…"))
+    expect(h.openConversationTagsManager).toHaveBeenCalledTimes(1)
   })
 })

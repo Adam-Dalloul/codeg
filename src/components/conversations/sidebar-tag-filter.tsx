@@ -1,7 +1,7 @@
 "use client"
 
 import { memo, useMemo, useState } from "react"
-import { Check, ListFilter, X } from "lucide-react"
+import { Check, ListFilter, Settings2, X } from "lucide-react"
 import { useTranslations } from "next-intl"
 import {
   isTagFilterActive,
@@ -29,6 +29,10 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover"
 import { ConversationTagChip } from "./conversation-tag-chip"
+import { openConversationTagsManager } from "./conversation-tags-manager"
+
+const FOOTER_ITEM_CLASS =
+  "flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-sm text-muted-foreground outline-none hover:bg-accent hover:text-accent-foreground focus-visible:bg-accent disabled:pointer-events-none disabled:opacity-50"
 
 function ModeToggle({
   mode,
@@ -77,14 +81,17 @@ function ModeToggle({
 /**
  * The popover body: every tag a conversation the sidebar can show could carry
  * — global ones first, then each folder scope in reach (see `groups`) — each
- * with how many of those conversations carry it.
+ * with how many of those conversations carry it. Its footer clears the filter
+ * and leads to the tag manager.
  */
 function TagFilterPanel({
   filter,
   onChange,
+  onManage,
 }: {
   filter: TagFilter
   onChange: (filter: TagFilter) => void
+  onManage: () => void
 }) {
   const t = useTranslations("ConversationTags")
   const [query, setQuery] = useState("")
@@ -165,11 +172,21 @@ function TagFilterPanel({
     .filter((group) => group.tags.length > 0)
   const selected = new Set(filter.tagIds)
 
+  const manageItem = (
+    <button type="button" onClick={onManage} className={FOOTER_ITEM_CLASS}>
+      <Settings2 className="size-4 shrink-0" />
+      {t("manageTags")}
+    </button>
+  )
+
   if (groups.length === 0) {
     return (
-      <p className="px-4 py-6 text-center text-xs text-muted-foreground">
-        {t("filter.noTags")}
-      </p>
+      <>
+        <p className="px-4 py-6 text-center text-xs text-muted-foreground">
+          {t("filter.noTags")}
+        </p>
+        <div className="border-t p-1">{manageItem}</div>
+      </>
     )
   }
 
@@ -231,11 +248,12 @@ function TagFilterPanel({
           type="button"
           disabled={!isTagFilterActive(filter)}
           onClick={() => onChange({ ...filter, tagIds: [] })}
-          className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-sm text-muted-foreground outline-none hover:bg-accent hover:text-accent-foreground focus-visible:bg-accent disabled:pointer-events-none disabled:opacity-50"
+          className={FOOTER_ITEM_CLASS}
         >
           <X className="size-4 shrink-0" />
           {t("filter.clear")}
         </button>
+        {manageItem}
       </div>
     </>
   )
@@ -255,9 +273,10 @@ export const SidebarTagFilterButton = memo(function SidebarTagFilterButton({
   onChange: (filter: TagFilter) => void
 }) {
   const t = useTranslations("ConversationTags.filter")
+  const [open, setOpen] = useState(false)
   const active = isTagFilterActive(filter)
   return (
-    <Popover>
+    <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
         <Button
           variant="ghost"
@@ -285,7 +304,14 @@ export const SidebarTagFilterButton = memo(function SidebarTagFilterButton({
         align="end"
         className="flex w-72 flex-col gap-0 overflow-hidden p-0"
       >
-        <TagFilterPanel filter={filter} onChange={onChange} />
+        <TagFilterPanel
+          filter={filter}
+          onChange={onChange}
+          onManage={() => {
+            setOpen(false)
+            openConversationTagsManager()
+          }}
+        />
       </PopoverContent>
     </Popover>
   )

@@ -22,6 +22,13 @@
 //! The races that opens are closed by the schema rather than by the read: a
 //! tag deleted mid-assignment trips the link's foreign key, and two writers
 //! creating the same name trip the scope/name unique index.
+//!
+//! ## The branch tag
+//!
+//! Not a tag row: one app-wide setting (in `app_metadata`) for whether every
+//! conversation's git branch is drawn as a chip beside its tags, and in which
+//! colour. Nothing is stored per conversation — the branch is the summary's
+//! own `git_branch`.
 
 use std::collections::HashMap;
 
@@ -35,7 +42,8 @@ use sea_orm::{
 use crate::db::entities::folder::FolderKind;
 use crate::db::entities::{conversation, conversation_tag, conversation_tag_link, folder};
 use crate::db::error::DbError;
-use crate::models::ConversationTagDetail;
+use crate::db::service::app_metadata_service;
+use crate::models::{ConversationBranchTag, ConversationTagDetail};
 
 /// Longest tag name kept, in characters. A tag renders as a small chip that
 /// truncates far sooner; this only stops a pasted paragraph from becoming one.
@@ -484,6 +492,53 @@ pub async fn tag_ids_by_conversation(
             .push(link.tag_id);
     }
     Ok(map)
+}
+
+/// `app_metadata` key of the branch tag setting, one JSON object.
+const BRANCH_TAG_KEY: &str = "conversation_branch_tag";
+
+/// The branch tag's colour until the user picks one: the gray preset, which no
+/// newly created tag starts on before eight others are taken.
+pub const DEFAULT_BRANCH_TAG_COLOR: &str = "#6e7781";
+
+fn default_branch_tag() -> ConversationBranchTag {
+    ConversationBranchTag {
+        enabled: false,
+        color: DEFAULT_BRANCH_TAG_COLOR.to_string(),
+    }
+}
+
+/// The branch tag setting; off, in the default colour, until first saved. A
+/// stored value that no longer reads (hand-edited, say) falls back the same
+/// way — the colour alone when only the colour is bad — rather than failing
+/// every window's load.
+pub async fn get_branch_tag(conn: &DatabaseConnection) -> Result<ConversationBranchTag, DbError> {
+    let stored = app_metadata_service::get_value(conn, BRANCH_TAG_KEY).await?;
+    Ok(stored
+        .and_then(|raw| serde_json::from_str::<ConversationBranchTag>(&raw).ok())
+        .map(|setting| ConversationBranchTag {
+            color: normalize_tag_color(&setting.color)
+                .unwrap_or_else(|_| DEFAULT_BRANCH_TAG_COLOR.to_string()),
+            ..setting
+        })
+        .unwrap_or_else(default_branch_tag))
+}
+
+/// Save the branch tag setting whole — one upsert, nothing read first — and
+/// return it as stored.
+pub async fn set_branch_tag(
+    conn: &DatabaseConnection,
+    enabled: bool,
+    color: &str,
+) -> Result<ConversationBranchTag, TagError> {
+    let setting = ConversationBranchTag {
+        enabled,
+        color: normalize_tag_color(color)?,
+    };
+    let encoded = serde_json::to_string(&setting)
+        .map_err(|e| DbError::Validation(format!("branch tag not serializable: {e}")))?;
+    app_metadata_service::upsert_value(conn, BRANCH_TAG_KEY, &encoded).await?;
+    Ok(setting)
 }
 
 /// Give `to` every tag `from` carries. For the rows that split a conversation
@@ -962,5 +1017,69 @@ mod tests {
             .expect("the outgoing session is preserved on its own row");
         assert_eq!(tag_ids(&db.conn, preserved).await, vec![tag.id]);
         assert_eq!(tag_ids(&db.conn, conv).await, vec![tag.id]);
+    }
+
+    fn branch_tag(enabled: bool, color: &str) -> ConversationBranchTag {
+        ConversationBranchTag {
+            enabled,
+            color: color.to_string(),
+        }
+    }
+
+    #[tokio::test]
+    async fn the_branch_tag_is_off_until_saved_then_reads_back_as_stored() {
+        let db = fresh_in_memory_db().await;
+        assert_eq!(
+            get_branch_tag(&db.conn).await.unwrap(),
+            branch_tag(false, DEFAULT_BRANCH_TAG_COLOR)
+        );
+
+        let saved = set_branch_tag(&db.conn, true, " #0A0 ").await.unwrap();
+        assert_eq!(saved, branch_tag(true, "#00aa00"));
+        assert_eq!(get_branch_tag(&db.conn).await.unwrap(), saved);
+
+        // Saved whole: switching it off keeps the colour it was given.
+        set_branch_tag(&db.conn, false, "#00aa00").await.unwrap();
+        assert_eq!(
+            get_branch_tag(&db.conn).await.unwrap(),
+            branch_tag(false, "#00aa00")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_bad_branch_tag_colour_is_refused_and_changes_nothing() {
+        let db = fresh_in_memory_db().await;
+        set_branch_tag(&db.conn, true, "#123456").await.unwrap();
+        let err = set_branch_tag(&db.conn, false, "blue").await.unwrap_err();
+        assert!(matches!(err, TagError::InvalidColor(_)), "{err:?}");
+        assert_eq!(
+            get_branch_tag(&db.conn).await.unwrap(),
+            branch_tag(true, "#123456")
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unreadable_stored_branch_tag_falls_back_instead_of_failing() {
+        let db = fresh_in_memory_db().await;
+        app_metadata_service::upsert_value(&db.conn, BRANCH_TAG_KEY, "not json")
+            .await
+            .unwrap();
+        assert_eq!(
+            get_branch_tag(&db.conn).await.unwrap(),
+            default_branch_tag()
+        );
+
+        // Only the colour is bad: the switch is still the user's.
+        app_metadata_service::upsert_value(
+            &db.conn,
+            BRANCH_TAG_KEY,
+            r#"{"enabled":true,"color":"red"}"#,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            get_branch_tag(&db.conn).await.unwrap(),
+            branch_tag(true, DEFAULT_BRANCH_TAG_COLOR)
+        );
     }
 }

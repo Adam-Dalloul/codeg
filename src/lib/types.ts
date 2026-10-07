@@ -473,15 +473,27 @@ export interface ConversationTagDetail {
 }
 
 /**
- * Payload for `conversation-tag://changed` — tag DEFINITIONS only. Which tags a
- * conversation carries rides on `conversation://changed` instead (the
- * summary's `tag_ids`). `reordered` carries nothing on purpose: re-read the
- * list. Mirrors the Rust `ConversationTagChange` (serde `tag = "kind"`).
+ * The branch tag: every conversation's `git_branch` drawn as a chip beside its
+ * tags — whether at all, and in which colour (normalized `#rrggbb`). One
+ * setting for the whole app. Mirrors the Rust `ConversationBranchTag`.
+ */
+export interface ConversationBranchTag {
+  enabled: boolean
+  color: string
+}
+
+/**
+ * Payload for `conversation-tag://changed` — tag DEFINITIONS, plus the branch
+ * tag setting. Which tags a conversation carries rides on
+ * `conversation://changed` instead (the summary's `tag_ids`). `reordered`
+ * carries nothing on purpose: re-read the list. Mirrors the Rust
+ * `ConversationTagChange` (serde `tag = "kind"`).
  */
 export type ConversationTagChange =
   | { kind: "upsert"; tag: ConversationTagDetail }
   | { kind: "deleted"; id: number }
   | { kind: "reordered" }
+  | { kind: "branch_tag"; setting: ConversationBranchTag }
 
 export const CONVERSATION_TAG_CHANGED_EVENT = "conversation-tag://changed"
 

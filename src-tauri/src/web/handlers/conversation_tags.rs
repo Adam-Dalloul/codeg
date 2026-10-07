@@ -6,7 +6,7 @@ use serde::Deserialize;
 use crate::app_error::AppCommandError;
 use crate::app_state::AppState;
 use crate::commands::conversation_tags as tag_commands;
-use crate::models::{ConversationTagDetail, DbConversationSummary};
+use crate::models::{ConversationBranchTag, ConversationTagDetail, DbConversationSummary};
 
 pub async fn list_conversation_tags(
     Extension(state): Extension<Arc<AppState>>,
@@ -118,6 +118,36 @@ pub async fn update_conversation_tags(
             params.conversation_id,
             params.add,
             params.remove,
+        )
+        .await?,
+    ))
+}
+
+pub async fn get_conversation_branch_tag(
+    Extension(state): Extension<Arc<AppState>>,
+) -> Result<Json<ConversationBranchTag>, AppCommandError> {
+    Ok(Json(
+        tag_commands::get_conversation_branch_tag_core(&state.db).await?,
+    ))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateConversationBranchTagParams {
+    pub enabled: bool,
+    pub color: String,
+}
+
+pub async fn update_conversation_branch_tag(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(params): Json<UpdateConversationBranchTagParams>,
+) -> Result<Json<ConversationBranchTag>, AppCommandError> {
+    Ok(Json(
+        tag_commands::update_conversation_branch_tag_core(
+            &state.emitter,
+            &state.db,
+            params.enabled,
+            params.color,
         )
         .await?,
     ))

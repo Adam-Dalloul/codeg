@@ -295,11 +295,12 @@ pub enum FolderGroupChange {
     Layout,
 }
 
-/// Global side-channel for conversation-tag DEFINITIONS (name, colour, order).
-/// Tags are defined in one window — often the separate settings window — but
-/// drawn on conversations in every client. Which tags a conversation carries
-/// travels on [`CONVERSATION_CHANGED_EVENT`] instead, inside the summary's
-/// `tag_ids`, so it shares that channel's ordering and reconnect refetch.
+/// Global side-channel for conversation-tag DEFINITIONS (name, colour, order),
+/// and for the branch tag setting that is drawn alongside them. Tags are
+/// defined in one window but drawn on conversations in every window and
+/// client. Which tags a conversation carries travels on
+/// [`CONVERSATION_CHANGED_EVENT`] instead, inside the summary's `tag_ids`, so
+/// it shares that channel's ordering and reconnect refetch.
 pub const CONVERSATION_TAG_CHANGED_EVENT: &str = "conversation-tag://changed";
 
 /// Payload for [`CONVERSATION_TAG_CHANGED_EVENT`].
@@ -317,6 +318,10 @@ pub enum ConversationTagChange {
     /// Positions changed across a whole scope; re-fetch the tag list. A nudge
     /// rather than N upserts for the same reason as [`FolderGroupChange::Layout`].
     Reordered,
+    /// The branch tag setting as just saved, whole.
+    BranchTag {
+        setting: crate::models::ConversationBranchTag,
+    },
 }
 
 /// Per-agent progress of the import picker's local-session scan. Emitted by
@@ -876,5 +881,21 @@ mod tests {
         let p = &*evt.payload;
         assert_eq!(p["kind"], "reordered");
         assert!(p["tag"].is_null(), "the reorder nudge carries no payload");
+
+        emit_event(
+            &emitter,
+            CONVERSATION_TAG_CHANGED_EVENT,
+            ConversationTagChange::BranchTag {
+                setting: crate::models::ConversationBranchTag {
+                    enabled: true,
+                    color: "#6e7781".to_string(),
+                },
+            },
+        );
+        let evt = rx.try_recv().expect("branch tag change should broadcast");
+        let p = &*evt.payload;
+        assert_eq!(p["kind"], "branch_tag");
+        assert_eq!(p["setting"]["enabled"], true);
+        assert_eq!(p["setting"]["color"], "#6e7781");
     }
 }

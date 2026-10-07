@@ -1663,6 +1663,8 @@ mod tauri_app {
                 conversation_tags::delete_conversation_tag,
                 conversation_tags::reorder_conversation_tags,
                 conversation_tags::update_conversation_tags,
+                conversation_tags::get_conversation_branch_tag,
+                conversation_tags::update_conversation_branch_tag,
                 conversations::delete_conversation,
                 folders::load_folder_history,
                 folders::get_folder,

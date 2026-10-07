@@ -702,3 +702,76 @@ describe("SidebarConversationCard tag chips", () => {
     expect(probe.agentIconRenders).toBe(1)
   })
 })
+
+describe("SidebarConversationCard branch chip", () => {
+  beforeEach(() => {
+    resetConversationTagsStore()
+    probe.agentIconRenders = 0
+    const store = useConversationTagsStore.getState()
+    for (const [id, name] of [
+      [1, "bug"],
+      [2, "idea"],
+    ] as const) {
+      store.applyChange({
+        kind: "upsert",
+        tag: { id, folder_id: null, name, color: "#cf222e", sort_order: id },
+      })
+    }
+  })
+
+  const setBranchTag = (enabled: boolean, color = "#0969da") =>
+    act(() => {
+      useConversationTagsStore
+        .getState()
+        .applyChange({ kind: "branch_tag", setting: { enabled, color } })
+    })
+
+  const follows = (a: Node, b: Node) =>
+    (a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0
+
+  it("comes first after the title, in the branch tag's colour, and counts toward the two chips", () => {
+    setBranchTag(true)
+    const row = { ...conv(1), git_branch: "feature/x", tag_ids: [1, 2] }
+    renderWithIntl(<CardList conversations={[row]} now={NOW} />)
+
+    const title = screen.getByText("conv-1")
+    const chip = screen.getByTitle("Branch: feature/x")
+    const bug = screen.getByText("bug")
+    expect(follows(title, chip)).toBe(true)
+    expect(follows(chip, bug)).toBe(true)
+    expect(chip.style.getPropertyValue("--fl-bg")).toBe("#0969da")
+    // Branch + one tag is the row's two chips; the other tag folds away.
+    expect(screen.queryByText("idea")).toBeNull()
+    expect(screen.getByText("+1")).toBeTruthy()
+    // The title grows only as far as its own text, so the chips follow it
+    // rather than the row's far end (layout itself is checked in a browser).
+    expect(title.className).toMatch(/(^|\s)max-w-max(\s|$)/)
+  })
+
+  it("follows the setting live, and skips rows without a branch and sub-sessions", () => {
+    const list = [
+      { ...conv(1), git_branch: "main" },
+      conv(2),
+      { ...conv(3), git_branch: "main", parent_id: 1 },
+    ]
+    renderWithIntl(<CardList conversations={list} now={NOW} />)
+    expect(screen.queryByTitle("Branch: main")).toBeNull()
+
+    setBranchTag(true)
+    // One chip, on the root row: conv(2) has no branch, conv(3) is a
+    // sub-session.
+    const rowOf = (id: number) =>
+      document.querySelector(`[data-conv-key="claude_code:${id}"]`)!
+    expect(screen.getAllByTitle("Branch: main")).toHaveLength(1)
+    expect(rowOf(1).contains(screen.getByTitle("Branch: main"))).toBe(true)
+    expect(rowOf(3).querySelector("[data-branch-chip]")).toBeNull()
+
+    setBranchTag(true, "#1a7f37")
+    expect(
+      screen.getByTitle("Branch: main").style.getPropertyValue("--fl-bg")
+    ).toBe("#1a7f37")
+
+    setBranchTag(false, "#1a7f37")
+    expect(screen.queryByTitle("Branch: main")).toBeNull()
+  })
+})

@@ -359,6 +359,14 @@ pub fn build_router(
             post(handlers::conversation_tags::update_conversation_tags),
         )
         .route(
+            "/get_conversation_branch_tag",
+            post(handlers::conversation_tags::get_conversation_branch_tag),
+        )
+        .route(
+            "/update_conversation_branch_tag",
+            post(handlers::conversation_tags::update_conversation_branch_tag),
+        )
+        .route(
             "/update_folder_color",
             post(handlers::folders::update_folder_color),
         )

@@ -382,7 +382,6 @@ fn resolve_settings_route(section: Option<&str>) -> &'static str {
         Some("collaboration") => "settings/collaboration",
         Some("browser") => "settings/browser",
         Some("computer-use") => "settings/computer-use",
-        Some("conversation-tags") => "settings/conversation-tags",
         Some("version-control") => "settings/version-control",
         Some("shortcuts") => "settings/shortcuts",
         Some("system") => "settings/system",
@@ -2704,8 +2703,7 @@ mod settings_route_tests {
     /// page must be able to name it and land there. `collaboration` is where
     /// the codeg-mcp tool switches live in full, and it is what the status-bar
     /// codeg-mcp popover links to; `computer-use` is what the Computer use
-    /// popover links to; `conversation-tags` is where a tag picker's "Manage
-    /// tags" leads.
+    /// popover links to.
     #[test]
     fn every_named_settings_section_resolves_to_its_own_route() {
         for section in [
@@ -2720,7 +2718,6 @@ mod settings_route_tests {
             "collaboration",
             "browser",
             "computer-use",
-            "conversation-tags",
             "version-control",
             "shortcuts",
             "system",

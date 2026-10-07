@@ -55,7 +55,6 @@
       "collaboration": "Collaboration",
       "browser": "Utilisation du navigateur",
       "computer_use": "Utilisation de l'ordinateur",
-      "conversation_tags": "Étiquettes de conversation",
       "quick_messages": "Messages rapides",
       "logs": "Journaux d'exécution"
     }
@@ -4540,7 +4539,7 @@
     "noTagsYet": "Aucune étiquette pour l’instant",
     "newTag": "Nouvelle étiquette…",
     "manageTags": "Gérer les étiquettes…",
-    "manageFolderTags": "Étiquettes du dossier…",
+    "branchChip": "Branche : {branch}",
     "picker": {
       "searchPlaceholder": "Rechercher ou créer une étiquette…",
       "noResults": "Aucune étiquette correspondante",
@@ -4572,23 +4571,22 @@
       "deleteTitle": "Supprimer cette étiquette ?",
       "deleteDescription": "« {name} » sera retirée de toutes les conversations qui la portent. Cette action est irréversible.",
       "deleteConfirm": "Supprimer",
-      "deleteCancel": "Annuler"
+      "deleteCancel": "Annuler",
+      "loadFailed": "Impossible de charger les étiquettes"
     },
-    "settings": {
-      "title": "Étiquettes de conversation",
+    "manager": {
+      "title": "Gérer les étiquettes",
       "description": "Marquez les conversations avec des étiquettes de couleur, puis filtrez la barre latérale par étiquette.",
+      "branchTitle": "Étiquette de branche",
+      "branchDescription": "Affiche la branche Git sur laquelle chaque conversation a commencé, sous forme d’étiquette après son titre.",
+      "branchShow": "Afficher",
+      "branchLoadFailed": "Impossible de charger l’étiquette de branche",
       "globalTitle": "Étiquettes globales",
       "globalDescription": "Disponibles dans toutes les conversations, mode discussion compris.",
       "folderTitle": "Étiquettes de dossier",
       "folderDescription": "Disponibles uniquement dans les conversations du dossier choisi, worktrees compris.",
       "folderPlaceholder": "Choisir un dossier",
-      "noFolders": "Aucun dossier pour l’instant. Ouvrez-en un dans l’espace de travail pour lui donner ses propres étiquettes.",
-      "loadFailed": "Impossible de charger les étiquettes"
-    },
-    "folderDialog": {
-      "title": "Étiquettes de {folder}",
-      "description": "Ces étiquettes ne peuvent être posées que sur les conversations de ce dossier, worktrees compris. Les étiquettes globales valent partout et se gèrent dans les Réglages.",
-      "globalTags": "Étiquettes globales…"
+      "noFolders": "Aucun dossier pour l’instant. Ouvrez-en un dans l’espace de travail pour lui donner ses propres étiquettes."
     },
     "filter": {
       "button": "Filtrer par étiquettes",
@@ -4611,7 +4609,8 @@
       "assignFailed": "Impossible de mettre à jour les étiquettes de la conversation",
       "createFailed": "Impossible de créer l’étiquette",
       "deleteFailed": "Impossible de supprimer l’étiquette",
-      "reorderFailed": "Impossible d’enregistrer l’ordre des étiquettes"
+      "reorderFailed": "Impossible d’enregistrer l’ordre des étiquettes",
+      "branchTagFailed": "Impossible d’enregistrer l’étiquette de branche"
     },
     "errors": {
       "emptyName": "Saisissez un nom d’étiquette",

@@ -55,7 +55,6 @@
       "collaboration": "التعاون",
       "browser": "استخدام المتصفح",
       "computer_use": "استخدام الحاسوب",
-      "conversation_tags": "وسوم المحادثات",
       "quick_messages": "رسائل سريعة",
       "logs": "سجلات التشغيل"
     }
@@ -4540,7 +4539,7 @@
     "noTagsYet": "لا توجد وسوم بعد",
     "newTag": "وسم جديد…",
     "manageTags": "إدارة الوسوم…",
-    "manageFolderTags": "وسوم المجلد…",
+    "branchChip": "الفرع: {branch}",
     "picker": {
       "searchPlaceholder": "ابحث عن وسم أو أنشئ وسمًا…",
       "noResults": "لا توجد وسوم مطابقة",
@@ -4572,23 +4571,22 @@
       "deleteTitle": "حذف هذا الوسم؟",
       "deleteDescription": "ستتم إزالة «{name}» من كل المحادثات التي تحمله. لا يمكن التراجع عن ذلك.",
       "deleteConfirm": "حذف",
-      "deleteCancel": "إلغاء"
+      "deleteCancel": "إلغاء",
+      "loadFailed": "تعذّر تحميل الوسوم"
     },
-    "settings": {
-      "title": "وسوم المحادثات",
+    "manager": {
+      "title": "إدارة الوسوم",
       "description": "ضع وسومًا ملونة على المحادثات، ثم صفِّ الشريط الجانبي بحسبها.",
+      "branchTitle": "وسم الفرع",
+      "branchDescription": "يعرض فرع Git الذي بدأت عليه كل محادثة كوسم بعد عنوانها.",
+      "branchShow": "إظهار",
+      "branchLoadFailed": "تعذّر تحميل إعداد وسم الفرع",
       "globalTitle": "الوسوم العامة",
       "globalDescription": "متاحة في كل المحادثات، بما فيها وضع الدردشة.",
       "folderTitle": "وسوم المجلد",
       "folderDescription": "متاحة فقط في محادثات المجلد المختار، بما فيها أشجار العمل التابعة له.",
       "folderPlaceholder": "اختر مجلدًا",
-      "noFolders": "لا توجد مجلدات بعد. افتح مجلدًا في مساحة العمل لتمنحه وسومه الخاصة.",
-      "loadFailed": "تعذّر تحميل الوسوم"
-    },
-    "folderDialog": {
-      "title": "وسوم {folder}",
-      "description": "لا يمكن وضع هذه الوسوم إلا على محادثات هذا المجلد، بما فيها أشجار العمل التابعة له. الوسوم العامة متاحة في كل مكان وتُدار من الإعدادات.",
-      "globalTags": "الوسوم العامة…"
+      "noFolders": "لا توجد مجلدات بعد. افتح مجلدًا في مساحة العمل لتمنحه وسومه الخاصة."
     },
     "filter": {
       "button": "تصفية حسب الوسوم",
@@ -4611,7 +4609,8 @@
       "assignFailed": "تعذّر تحديث وسوم المحادثة",
       "createFailed": "تعذّر إنشاء الوسم",
       "deleteFailed": "تعذّر حذف الوسم",
-      "reorderFailed": "تعذّر حفظ ترتيب الوسوم"
+      "reorderFailed": "تعذّر حفظ ترتيب الوسوم",
+      "branchTagFailed": "تعذّر حفظ وسم الفرع"
     },
     "errors": {
       "emptyName": "أدخل اسمًا للوسم",

@@ -58,6 +58,18 @@ export const TAG_COLOR_PRESETS = [
 /** How many presets make up the strong row (the rest are the soft row). */
 export const TAG_COLOR_STRONG_COUNT = 9
 
+/** The branch tag's colour until the user picks one — the backend's default
+ *  too (`DEFAULT_BRANCH_TAG_COLOR`): the gray preset, the last a new tag is
+ *  started on. */
+export const DEFAULT_BRANCH_TAG_COLOR = "#6e7781"
+
+/** A branch chip as drawn: the conversation's branch, in the branch tag's
+ *  colour. */
+export interface BranchChipView {
+  name: string
+  color: string
+}
+
 /**
  * The colour a NEW tag starts with: the first strong preset none of
  * `neighbours` — the tags it will be seen beside (the global ones plus, for a

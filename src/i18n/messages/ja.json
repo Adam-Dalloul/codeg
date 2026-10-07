@@ -55,7 +55,6 @@
       "collaboration": "コラボレーション",
       "browser": "ブラウザ操作",
       "computer_use": "コンピューター操作",
-      "conversation_tags": "会話タグ",
       "quick_messages": "クイックメッセージ",
       "logs": "実行ログ"
     }
@@ -4540,7 +4539,7 @@
     "noTagsYet": "タグはまだありません",
     "newTag": "新しいタグ…",
     "manageTags": "タグを管理…",
-    "manageFolderTags": "フォルダーのタグ…",
+    "branchChip": "ブランチ: {branch}",
     "picker": {
       "searchPlaceholder": "タグを検索または作成…",
       "noResults": "一致するタグはありません",
@@ -4572,23 +4571,22 @@
       "deleteTitle": "このタグを削除しますか？",
       "deleteDescription": "「{name}」はこのタグが付いているすべての会話から外されます。元に戻せません。",
       "deleteConfirm": "削除",
-      "deleteCancel": "キャンセル"
+      "deleteCancel": "キャンセル",
+      "loadFailed": "タグを読み込めませんでした"
     },
-    "settings": {
-      "title": "会話タグ",
+    "manager": {
+      "title": "タグを管理",
       "description": "会話に色付きのタグを付けて、サイドバーをタグで絞り込めます。",
+      "branchTitle": "ブランチタグ",
+      "branchDescription": "各会話を開始した Git ブランチを、タイトルの後ろにタグとして表示します。",
+      "branchShow": "表示",
+      "branchLoadFailed": "ブランチタグの設定を読み込めませんでした",
       "globalTitle": "グローバルタグ",
       "globalDescription": "チャットモードを含むすべての会話で使えます。",
       "folderTitle": "フォルダーのタグ",
       "folderDescription": "選んだフォルダーの会話（そのワークツリーを含む）でのみ使えます。",
       "folderPlaceholder": "フォルダーを選択",
-      "noFolders": "フォルダーがまだありません。ワークスペースでフォルダーを開くと、専用のタグを設定できます。",
-      "loadFailed": "タグを読み込めませんでした"
-    },
-    "folderDialog": {
-      "title": "{folder} のタグ",
-      "description": "これらのタグはこのフォルダーの会話（そのワークツリーを含む）にのみ付けられます。グローバルタグはすべての会話で使え、設定で管理します。",
-      "globalTags": "グローバルタグ…"
+      "noFolders": "フォルダーがまだありません。ワークスペースでフォルダーを開くと、専用のタグを設定できます。"
     },
     "filter": {
       "button": "タグで絞り込み",
@@ -4611,7 +4609,8 @@
       "assignFailed": "会話のタグを更新できませんでした",
       "createFailed": "タグを作成できませんでした",
       "deleteFailed": "タグを削除できませんでした",
-      "reorderFailed": "タグの順序を保存できませんでした"
+      "reorderFailed": "タグの順序を保存できませんでした",
+      "branchTagFailed": "ブランチタグを保存できませんでした"
     },
     "errors": {
       "emptyName": "タグ名を入力してください",

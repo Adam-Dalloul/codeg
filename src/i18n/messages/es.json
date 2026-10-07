@@ -55,7 +55,6 @@
       "collaboration": "Colaboración",
       "browser": "Uso del navegador",
       "computer_use": "Uso del ordenador",
-      "conversation_tags": "Etiquetas de conversación",
       "quick_messages": "Mensajes rápidos",
       "logs": "Registros de ejecución"
     }
@@ -4540,7 +4539,7 @@
     "noTagsYet": "Aún no hay etiquetas",
     "newTag": "Nueva etiqueta…",
     "manageTags": "Gestionar etiquetas…",
-    "manageFolderTags": "Etiquetas de la carpeta…",
+    "branchChip": "Rama: {branch}",
     "picker": {
       "searchPlaceholder": "Busca o crea una etiqueta…",
       "noResults": "No hay etiquetas que coincidan",
@@ -4572,23 +4571,22 @@
       "deleteTitle": "¿Eliminar esta etiqueta?",
       "deleteDescription": "«{name}» se quitará de todas las conversaciones que la tengan. No se puede deshacer.",
       "deleteConfirm": "Eliminar",
-      "deleteCancel": "Cancelar"
+      "deleteCancel": "Cancelar",
+      "loadFailed": "No se pudieron cargar las etiquetas"
     },
-    "settings": {
-      "title": "Etiquetas de conversación",
+    "manager": {
+      "title": "Gestionar etiquetas",
       "description": "Marca las conversaciones con etiquetas de colores y filtra la barra lateral por ellas.",
+      "branchTitle": "Etiqueta de rama",
+      "branchDescription": "Muestra la rama de Git en la que empezó cada conversación como una etiqueta tras su título.",
+      "branchShow": "Mostrar",
+      "branchLoadFailed": "No se pudo cargar la etiqueta de rama",
       "globalTitle": "Etiquetas globales",
       "globalDescription": "Disponibles en todas las conversaciones, incluido el modo chat.",
       "folderTitle": "Etiquetas de carpeta",
       "folderDescription": "Disponibles solo en las conversaciones de la carpeta elegida, incluidos sus worktrees.",
       "folderPlaceholder": "Elige una carpeta",
-      "noFolders": "Aún no hay carpetas. Abre una en el espacio de trabajo para darle sus propias etiquetas.",
-      "loadFailed": "No se pudieron cargar las etiquetas"
-    },
-    "folderDialog": {
-      "title": "Etiquetas de {folder}",
-      "description": "Estas etiquetas solo se pueden poner en las conversaciones de esta carpeta, incluidos sus worktrees. Las etiquetas globales sirven en todas partes y se gestionan en Ajustes.",
-      "globalTags": "Etiquetas globales…"
+      "noFolders": "Aún no hay carpetas. Abre una en el espacio de trabajo para darle sus propias etiquetas."
     },
     "filter": {
       "button": "Filtrar por etiquetas",
@@ -4611,7 +4609,8 @@
       "assignFailed": "No se pudieron actualizar las etiquetas de la conversación",
       "createFailed": "No se pudo crear la etiqueta",
       "deleteFailed": "No se pudo eliminar la etiqueta",
-      "reorderFailed": "No se pudo guardar el orden de las etiquetas"
+      "reorderFailed": "No se pudo guardar el orden de las etiquetas",
+      "branchTagFailed": "No se pudo guardar la etiqueta de rama"
     },
     "errors": {
       "emptyName": "Escribe un nombre para la etiqueta",

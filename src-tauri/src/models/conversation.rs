@@ -88,6 +88,15 @@ pub struct ConversationTagDetail {
     pub sort_order: i32,
 }
 
+/// The branch tag: every conversation's git branch (the one it started on)
+/// drawn as a chip beside its tags — whether at all, and in which colour. One
+/// setting for the whole app; `color` is a normalized `#rrggbb`, like a tag's.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConversationBranchTag {
+    pub enabled: bool,
+    pub color: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionStats {
     pub total_usage: Option<TurnUsage>,

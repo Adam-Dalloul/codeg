@@ -3,10 +3,11 @@
 //! rules.
 //!
 //! Two channels carry the results to every window and WebSocket client:
-//! definition changes go out on `conversation-tag://changed`, while a change to
-//! which tags a conversation carries goes out as an ordinary
-//! `conversation://changed` upsert — the summary's `tag_ids` is re-read by
-//! `get_by_id`, so it can never disagree with the rest of the row.
+//! definition changes (and the branch tag setting) go out on
+//! `conversation-tag://changed`, while a change to which tags a conversation
+//! carries goes out as an ordinary `conversation://changed` upsert — the
+//! summary's `tag_ids` is re-read by `get_by_id`, so it can never disagree with
+//! the rest of the row.
 
 use std::collections::BTreeMap;
 
@@ -17,7 +18,7 @@ use crate::app_error::AppCommandError;
 use crate::db::service::conversation_service;
 use crate::db::service::conversation_tag_service::{self, TagError};
 use crate::db::AppDatabase;
-use crate::models::{ConversationTagDetail, DbConversationSummary};
+use crate::models::{ConversationBranchTag, ConversationTagDetail, DbConversationSummary};
 use crate::web::event_bridge::{
     emit_event, ConversationChange, ConversationTagChange, EventEmitter,
     CONVERSATION_CHANGED_EVENT, CONVERSATION_TAG_CHANGED_EVENT,
@@ -157,6 +158,41 @@ pub async fn update_conversation_tags_core(
     Ok(summary)
 }
 
+/// Saves of the branch tag setting run one at a time, from the write through
+/// its broadcast. Unserialized, two saves could land A-then-B in the database
+/// but go out B-then-A — and since a client keeps the last broadcast it hears
+/// (and skips its own reply once one has arrived), every client would settle
+/// on A while B is stored, with nothing left to correct it.
+static BRANCH_TAG_SAVE_LOCK: std::sync::LazyLock<tokio::sync::Mutex<()>> =
+    std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
+
+pub async fn get_conversation_branch_tag_core(
+    db: &AppDatabase,
+) -> Result<ConversationBranchTag, AppCommandError> {
+    conversation_tag_service::get_branch_tag(&db.conn)
+        .await
+        .map_err(AppCommandError::from)
+}
+
+/// Save the branch tag setting — whether every conversation's git branch is
+/// drawn as a chip, and in which colour — and broadcast it as saved.
+pub async fn update_conversation_branch_tag_core(
+    emitter: &EventEmitter,
+    db: &AppDatabase,
+    enabled: bool,
+    color: String,
+) -> Result<ConversationBranchTag, AppCommandError> {
+    let _one_at_a_time = BRANCH_TAG_SAVE_LOCK.lock().await;
+    let setting = conversation_tag_service::set_branch_tag(&db.conn, enabled, &color).await?;
+    emit_tag_change(
+        emitter,
+        ConversationTagChange::BranchTag {
+            setting: setting.clone(),
+        },
+    );
+    Ok(setting)
+}
+
 #[cfg(feature = "tauri-runtime")]
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
 pub async fn list_conversation_tags(
@@ -220,4 +256,78 @@ pub async fn update_conversation_tags(
 ) -> Result<DbConversationSummary, AppCommandError> {
     update_conversation_tags_core(&EventEmitter::Tauri(app), &db, conversation_id, add, remove)
         .await
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn get_conversation_branch_tag(
+    db: State<'_, AppDatabase>,
+) -> Result<ConversationBranchTag, AppCommandError> {
+    get_conversation_branch_tag_core(&db).await
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn update_conversation_branch_tag(
+    app: tauri::AppHandle,
+    db: State<'_, AppDatabase>,
+    enabled: bool,
+    color: String,
+) -> Result<ConversationBranchTag, AppCommandError> {
+    update_conversation_branch_tag_core(&EventEmitter::Tauri(app), &db, enabled, color).await
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use super::*;
+    use crate::db::test_helpers::fresh_in_memory_db;
+    use crate::web::event_bridge::WebEventBroadcaster;
+
+    #[tokio::test]
+    async fn a_branch_tag_save_waits_for_the_one_in_flight_to_broadcast() {
+        let broadcaster = Arc::new(WebEventBroadcaster::new());
+        let mut rx = broadcaster.subscribe();
+        let emitter = EventEmitter::test_web_only(broadcaster.clone());
+        let db = fresh_in_memory_db().await;
+
+        // Another save is between its write and its broadcast.
+        let in_flight = BRANCH_TAG_SAVE_LOCK.lock().await;
+        let save = tokio::spawn(async move {
+            let saved =
+                update_conversation_branch_tag_core(&emitter, &db, true, "#0969da".to_string())
+                    .await;
+            (db, saved)
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(
+            !save.is_finished(),
+            "the save went ahead of the one in flight"
+        );
+        assert!(rx.try_recv().is_err(), "nothing may go out meanwhile");
+
+        drop(in_flight);
+        let (db, saved) = save.await.expect("save task");
+        let saved = saved.expect("save");
+        assert_eq!(
+            saved,
+            ConversationBranchTag {
+                enabled: true,
+                color: "#0969da".to_string(),
+            }
+        );
+        let evt = rx.try_recv().expect("broadcast once its turn came");
+        assert_eq!(evt.channel, CONVERSATION_TAG_CHANGED_EVENT);
+        let payload = &*evt.payload;
+        assert_eq!(payload["kind"], "branch_tag");
+        assert_eq!(payload["setting"]["color"], "#0969da");
+        assert_eq!(
+            get_conversation_branch_tag_core(&db)
+                .await
+                .expect("read back"),
+            saved
+        );
+    }
 }
