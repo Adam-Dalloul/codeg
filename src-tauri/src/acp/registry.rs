@@ -394,10 +394,14 @@ pub const PI_MIN_RUNTIME_VERSION: &str = "0.81.0";
 /// `SessionState.native_steering_available` at initialize; see
 /// `connection.rs::init_advertises_steering`).
 ///
-/// `None` means this adapter does not use the promptRequired policy, even if
-/// it advertises `_meta.steering.supported`. Most such adapters remain on pull.
-/// Codex is an exception: its native-steering version gate and thread-status
-/// tracking in `connection.rs` allow an adapter-started turn on the idle race.
+/// `None` means "never steer natively" even when the adapter advertises
+/// `_meta.steering.supported`: an adapter that ignores the opt-in falls back
+/// to `startedNewTurn` on the turn-end race — a detached turn no host request
+/// owns, which codeg's turn-scoped runtime must never trigger. codex-acp
+/// ships `_session/steering` but not `promptRequired` — re-verified against
+/// the published 1.3.0 tarball (zero hits, same as 1.1.9) — so it stays
+/// `None` until a release implements the opt-in — then this is a one-line
+/// flip plus tests.
 ///
 /// Honoring the opt-in is necessary but not sufficient: the ACTIVE path must
 /// also keep the owning `session/prompt` in flight across the steered work

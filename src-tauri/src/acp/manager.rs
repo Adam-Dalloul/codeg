@@ -3229,19 +3229,18 @@ impl ConnectionManager {
                     SteerOutcome::PromptRequired => return Err(AcpError::NoActiveTurn),
                     SteerOutcome::Injected => {}
                     SteerOutcome::StartedNewTurn => {
-                        // Codex tracks this expected fallback until thread status
-                        // is idle. The message was consumed and must not be resent.
-                        if state.read().await.agent_type != AgentType::Codex {
-                            // This adapter violated its idle contract. Content
-                            // was consumed, so record delivery without resending,
-                            // then downgrade future steers to the pull channel.
-                            tracing::warn!(
-                                "[ACP][feedback] _session/steering returned startedNewTurn \
-                                 (conn={conn_id_for_task}); downgrading native steering for \
-                                 this session"
-                            );
-                            state.write().await.native_steering_available = false;
-                        }
+                        // The adapter ignored the opt-in and detached a turn
+                        // (stale binary lying about its version?). The content
+                        // IS consumed — record it delivered, NEVER resend —
+                        // but this adapter can't be trusted with the idle race
+                        // again: downgrade to the MCP pull channel for the
+                        // rest of the session.
+                        tracing::warn!(
+                            "[ACP][feedback] _session/steering returned startedNewTurn \
+                             (conn={conn_id_for_task}); downgrading native steering for \
+                             this session"
+                        );
+                        state.write().await.native_steering_available = false;
                     }
                 }
                 let item = FeedbackItem::new_delivered(
@@ -8856,30 +8855,6 @@ mod tests {
         // channel stays native — the caller resubmits as a normal prompt.
         assert!(s.feedback.is_empty());
         assert!(s.native_steering_available);
-    }
-
-    #[tokio::test]
-    async fn codex_native_submit_started_new_turn_stays_native_and_never_requeues() {
-        let mgr = ConnectionManager::new();
-        let rx = mgr
-            .insert_test_connection_live("c1", AgentType::Codex, None, EventEmitter::Noop)
-            .await;
-        mark_native_steering_ready(&mgr, "c1").await;
-        set_feedback_tool_available(&mgr, "c1").await;
-        let fake_loop = answer_steer_n(rx, SteerOutcome::StartedNewTurn, 2);
-        for text in ["first instruction", "second instruction"] {
-            let item = mgr.submit_feedback("c1", text.into(), None).await.unwrap();
-            assert_eq!(item.status, FeedbackStatus::Delivered);
-            assert!(mgr
-                .get_state("c1")
-                .await
-                .unwrap()
-                .read()
-                .await
-                .native_steering_available);
-            assert!(mgr.read_pending_feedback("c1").await.is_empty());
-        }
-        fake_loop.await.unwrap();
     }
 
     #[tokio::test]

@@ -12,7 +12,7 @@ use agent_client_protocol::schema::v1::{
     KillTerminalRequest,
     KillTerminalResponse, LoadSessionRequest, NewSessionRequest,
     NewSessionResponse, NoticeCapabilities, PermissionOptionKind, Plan, PlanEntryPriority, PlanEntryStatus,
-    PromptRequest, PromptResponse, ReadTextFileRequest, ReadTextFileResponse,
+    PromptRequest, ReadTextFileRequest, ReadTextFileResponse,
     ReleaseTerminalRequest, ReleaseTerminalResponse, RequestPermissionOutcome,
     RequestPermissionRequest, RequestPermissionResponse, ResourceLink, ResumeSessionRequest,
     ResumeSessionResponse, SelectedPermissionOutcome, SessionConfigKind, SessionConfigOption,
@@ -40,7 +40,6 @@ use tokio::sync::{mpsc, oneshot, RwLock};
 
 use crate::acp::agent_mentions::append_agent_routes;
 use crate::acp::background_watch;
-use crate::acp::codex_steering::CodexSteeredTurn;
 use crate::acp::cursor_ext::{
     CursorAskQuestionRequest, CursorCreatePlanRequest, CursorGenerateImageRequest,
     CursorTaskRequest, CursorUpdateTodosRequest,
@@ -1166,9 +1165,9 @@ pub enum SteerOutcome {
     /// host-owned. The caller reroutes it through `session/prompt`.
     PromptRequired,
     /// The adapter ignored the opt-in (pre-0.64 claude adapter, codex-acp)
-    /// and started another turn — consumed. Codex tracks its completion
-    /// through thread active/idle updates.
-    /// Other adapters violating their idle contract are downgraded.
+    /// and spun up a detached turn no host request owns — consumed. The
+    /// manager records it delivered, warns, and downgrades
+    /// `native_steering_available` for the rest of the session.
     StartedNewTurn,
 }
 
@@ -4127,9 +4126,12 @@ fn build_grok_set_model_params(
 
 /// Send `_session/steering` (the ACP steering extension) to inject a message
 /// into the RUNNING turn. Untyped because it is an extension method the schema
-/// has no typed request for. Requests the `promptRequired` idle contract for
-/// adapters honoring it (Claude). Codex may return `startedNewTurn`; its owning
-/// loop then waits for the new turn's thread-status completion instead.
+/// has no typed request for. Always opts into the 0.64.0
+/// `promptRequired` idle contract; codeg only enables native steering for
+/// adapters proven to honor it AND to keep the owning prompt in flight across
+/// the steered work (claude-agent-acp 0.65.0 / #958 — see
+/// [`synthesize_native_steering`] and `registry::steering_prompt_required_min_version`),
+/// but the caller still handles every outcome in case the proof was wrong.
 async fn send_steer_request(
     cx: &ConnectionTo<Agent>,
     session_id: &SessionId,
@@ -6362,17 +6364,18 @@ async fn run_connection(
                 supports_close
             );
 
-            // Native live-feedback steering, synthesized ONCE
+            // Native live-feedback steering, synthesized ONCE from three gates
             // so every consumer (the submit split, the snapshot, the frontend)
             // reads a single authoritative bool: (1) the adapter advertises
-            // the extension (top-level `_meta`), (2) this agent's lifecycle is
-            // supported (Claude's idle contract or Codex's thread status), and (3) the
+            // the extension (top-level `_meta`), (2) the registry says this
+            // agent type honors the `promptRequired` idle opt-in, and (3) the
             // RUNNING binary proves it via `agent_info.version` — launch
             // prefers a PATH-resolved install over the pinned package, so (2)
             // alone can't vouch for the process on the other end of the pipe.
             // The raw advertisement is deliberately NOT stored: exposing it
             // would tempt the frontend to re-derive eligibility and show the
-            // instant channel for adapters whose turn lifecycle is unsupported.
+            // instant channel for adapters (codex) that advertise steering but
+            // would detach a turn on the idle race.
             let steering_advertised = init_advertises_steering(init_resp.meta.as_ref());
             let native_steering_available = synthesize_native_steering(
                 agent_type,
@@ -10974,8 +10977,6 @@ async fn run_conversation_loop(
                         .send_request_to(Agent, prompt_request)
                         .block_task(),
                 );
-                let mut codex_steered_turn = CodexSteeredTurn::default();
-                let mut codex_steer_end = None;
                 let mut tracked_terminal_tool_calls: HashMap<String, TrackedTerminalToolCall> =
                     HashMap::new();
                 let mut terminal_poll_interval = tokio::time::interval(
@@ -11066,11 +11067,6 @@ async fn run_conversation_loop(
                             let runtime = terminal_runtime.clone();
                             let session_id = sid.clone();
                             let cwd_opt = Some(cwd);
-                            if codex_thread_active(&dispatch, agent_type)
-                                .is_some_and(|active| codex_steered_turn.observe(active))
-                            {
-                                codex_steer_end = Some(PromptResponse::new(StopReason::EndTurn));
-                            }
                             // grok reports `/compact` results on ext methods
                             // that bypass the typed pipeline below and emit a
                             // compaction card/error from `.otherwise`. Count
@@ -11212,18 +11208,7 @@ async fn run_conversation_loop(
                                 log_dropped_update(&mut drop_log_throttle, "turn", &e);
                             }
                         }
-                        prompt_result = async {
-                            if let Some(response) = codex_steer_end.take() {
-                                Ok(response)
-                            } else if codex_steered_turn.waiting() {
-                                // The original prompt response ends only the old
-                                // turn. Continue pumping the adapter-started turn
-                                // until its ordered active → idle status arrives.
-                                std::future::pending().await
-                            } else {
-                                prompt_response.as_mut().await
-                            }
-                        } => {
+                        prompt_result = &mut prompt_response => {
                             // A rejected prompt is a TURN failure, not a dead
                             // connection: the agent answered, so it is still
                             // there, and the session it answered about is still
@@ -11677,12 +11662,6 @@ async fn run_conversation_loop(
                                         inj.questions.cancel_questions_by_parent(conn_id).await;
                                     }
                                     let outcome = send_steer_request(&cx, &sid, &blocks).await;
-                                    if agent_type == AgentType::Codex
-                                        && matches!(outcome, Ok(SteerOutcome::StartedNewTurn))
-                                    {
-                                        codex_steered_turn.start();
-                                        codex_steer_end = None;
-                                    }
                                     // A steered message still lands in the
                                     // agent's OWN transcript as a user record,
                                     // which `group_into_turns` reads as the
@@ -11696,19 +11675,16 @@ async fn run_conversation_loop(
                                     // renders it twice and reorders the
                                     // transcript as the upserts land.
                                     //
-                                    // `Injected` and tracked Codex continuations:
-                                    // `PromptRequired` leaves
+                                    // `Injected` ONLY: `PromptRequired` leaves
                                     // the content unconsumed (the caller
                                     // resends it as a real prompt, which
                                     // fingerprints itself, and a stale entry
                                     // would swallow a same-text out-of-turn
                                     // refire for the whole ledger TTL), and a
-                                    // Other adapters' `StartedNewTurn` still
-                                    // runs detached and uses the overlay.
-                                    if matches!(outcome, Ok(SteerOutcome::Injected))
-                                        || (agent_type == AgentType::Codex
-                                            && matches!(outcome, Ok(SteerOutcome::StartedNewTurn)))
-                                    {
+                                    // `StartedNewTurn` genuinely runs detached
+                                    // — the overlay is the only place its work
+                                    // can surface at all.
+                                    if matches!(outcome, Ok(SteerOutcome::Injected)) {
                                         prompt_ledger.record_prompt_blocks(&blocks);
                                     }
                                     let _ = reply.send(outcome);
@@ -14492,9 +14468,9 @@ fn steering_version_ok(agent_info: Option<&agent_client_protocol::schema::v1::Im
 }
 
 /// Synthesize `SessionState.native_steering_available` from an `initialize`
-/// response: extension advertised and a verified running adapter version.
-/// Claude requires the promptRequired contract; Codex may start a new turn,
-/// whose lifecycle the owning loop tracks through thread status updates.
+/// response: extension advertised (top-level `_meta`) AND registry policy says
+/// this agent type honors `promptRequired` AND the running binary's
+/// `agent_info.version` proves it. Pure so the full gate matrix is unit-tested;
 /// `run_connection` calls it once and everything downstream reads the stored
 /// bool.
 fn synthesize_native_steering(
@@ -14502,35 +14478,9 @@ fn synthesize_native_steering(
     meta: Option<&serde_json::Map<String, serde_json::Value>>,
     agent_info: Option<&agent_client_protocol::schema::v1::Implementation>,
 ) -> bool {
-    if agent_type == AgentType::Codex {
-        // This adapter forwards thread active/idle updates, which let the
-        // owning loop track startedNewTurn without an extra prompt request.
-        return init_advertises_steering(meta) && steering_version_ok(agent_info, "2.1.1");
-    }
     init_advertises_steering(meta)
         && registry::steering_prompt_required_min_version(agent_type)
             .is_some_and(|min| steering_version_ok(agent_info, min))
-}
-
-fn codex_thread_active(dispatch: &Dispatch, agent_type: AgentType) -> Option<bool> {
-    if agent_type != AgentType::Codex {
-        return None;
-    }
-    let Dispatch::Notification(message) = dispatch else {
-        return None;
-    };
-    if message.method() != "session/update" {
-        return None;
-    }
-    let update = message.params.get("update")?;
-    if update.get("sessionUpdate")?.as_str()? != "session_info_update" {
-        return None;
-    }
-    match update.pointer("/_meta/codex/threadStatus/type")?.as_str()? {
-        "active" => Some(true),
-        "idle" => Some(false),
-        _ => None,
-    }
 }
 
 /// codex-acp 1.12.0 swapped the question and the short tab header between a
@@ -19868,22 +19818,6 @@ mod tests {
     }
 
     #[test]
-    fn codex_native_steering_accepts_an_adapter_that_can_start_a_new_turn() {
-        use agent_client_protocol::schema::v1::Implementation;
-        let advertised = meta_map(serde_json::json!({"steering": {"supported": true}}));
-        let adapter = Implementation::new("codex-acp", "2.1.1");
-        assert!(synthesize_native_steering(
-            AgentType::Codex,
-            Some(&advertised),
-            Some(&adapter)
-        ));
-        assert!(!synthesize_native_steering(AgentType::Codex, None, Some(&adapter)));
-        assert!(!synthesize_native_steering(AgentType::Codex, Some(&advertised), None));
-        let older = Implementation::new("codex-acp", "2.1.0");
-        assert!(!synthesize_native_steering(AgentType::Codex, Some(&advertised), Some(&older)));
-    }
-
-    #[test]
     fn synthesize_native_steering_requires_all_three_gates() {
         use agent_client_protocol::schema::v1::Implementation;
         let advertised = meta_map(serde_json::json!({"steering": {"supported": true}}));
@@ -19896,7 +19830,8 @@ mod tests {
             Some(&advertised),
             Some(&proven)
         ));
-        // This is a Claude version, below Codex's verified adapter floor.
+        // Registry policy gate: codex advertises steering but has no
+        // promptRequired minimum — never native, whatever it reports.
         assert!(!synthesize_native_steering(
             AgentType::Codex,
             Some(&advertised),
@@ -32163,7 +32098,6 @@ mod tests {
         cmd_tx: mpsc::Sender<ConnectionCommand>,
         events: tokio::sync::broadcast::Receiver<Arc<crate::acp::types::EventEnvelope>>,
         respond: Arc<tokio::sync::Notify>,
-        finish_steered: Arc<tokio::sync::Notify>,
         /// How many question sweeps had run when each steer reached the agent.
         sweeps_at_steer: Arc<std::sync::Mutex<Vec<usize>>>,
         client: tokio::task::JoinHandle<()>,
@@ -32174,21 +32108,14 @@ mod tests {
         const CONN: &'static str = "conn-claude";
 
         async fn start() -> Self {
-            Self::start_with_agent(AgentType::ClaudeCode).await
-        }
-
-        async fn start_with_agent(agent_type: AgentType) -> Self {
             use agent_client_protocol::schema::v1::PromptResponse;
 
             let asks = Arc::new(RecordingAsks::default());
             let respond = Arc::new(tokio::sync::Notify::new());
-            let finish_steered = Arc::new(tokio::sync::Notify::new());
             let sweeps_at_steer = Arc::new(std::sync::Mutex::new(Vec::new()));
             let (client_end, agent_end) = agent_client_protocol::Channel::duplex();
 
             let agent_respond = Arc::clone(&respond);
-            let steer_respond = Arc::clone(&respond);
-            let agent_finish_steered = Arc::clone(&finish_steered);
             let agent_asks = Arc::clone(&asks);
             let agent_sweeps = Arc::clone(&sweeps_at_steer);
             let agent = tokio::spawn(async move {
@@ -32205,11 +32132,8 @@ mod tests {
                     .on_receive_request(
                         async move |_req: PromptRequest,
                                     responder: Responder<PromptResponse>,
-                                    cx: ConnectionTo<Client>| {
+                                    _cx: ConnectionTo<Client>| {
                             let respond = Arc::clone(&agent_respond);
-                            if agent_type == AgentType::Codex {
-                                send_grok_frames(&cx, &[codex_status_frame(true)])?;
-                            }
                             // Off the handler, so the held response doesn't hold
                             // up the steer behind it.
                             tokio::spawn(async move {
@@ -32223,24 +32147,9 @@ mod tests {
                     .on_receive_request(
                         async move |_req: TestSteeringRequest,
                                     responder: Responder<serde_json::Value>,
-                                    cx: ConnectionTo<Client>| {
+                                    _cx: ConnectionTo<Client>| {
                             let swept = agent_asks.questions.lock().unwrap().len();
                             agent_sweeps.lock().unwrap().push(swept);
-                            if agent_type == AgentType::Codex {
-                                send_grok_frames(&cx, &[
-                                    codex_status_frame(false),
-                                    codex_status_frame(true),
-                                    grok_chunk("agent_message_chunk", "steered reply", None),
-                                ])?;
-                                steer_respond.notify_one();
-                                responder.respond(serde_json::json!({"outcome": "startedNewTurn"}))?;
-                                let finish = Arc::clone(&agent_finish_steered);
-                                tokio::spawn(async move {
-                                    finish.notified().await;
-                                    send_grok_frames(&cx, &[codex_status_frame(false)])
-                                });
-                                return Ok(());
-                            }
                             responder.respond(serde_json::json!({"outcome": "injected"}))
                         },
                         on_receive_request!(),
@@ -32253,7 +32162,7 @@ mod tests {
 
             let state = Arc::new(RwLock::new(SessionState::new(
                 Self::CONN.to_string(),
-                agent_type,
+                AgentType::ClaudeCode,
                 None,
                 "win".to_string(),
                 None,
@@ -32292,7 +32201,7 @@ mod tests {
                             Self::CONN,
                             &EventEmitter::Noop,
                             &loop_state,
-                            agent_type,
+                            AgentType::ClaudeCode,
                             &perms,
                             &mut cmd_rx,
                             Arc::new(TerminalRuntime::with_base_env(BTreeMap::new())),
@@ -32314,7 +32223,6 @@ mod tests {
                 cmd_tx,
                 events,
                 respond,
-                finish_steered,
                 sweeps_at_steer,
                 client,
                 agent,
@@ -32399,35 +32307,6 @@ mod tests {
             let _ = tokio::time::timeout(std::time::Duration::from_secs(5), self.client).await;
             self.agent.abort();
         }
-    }
-
-    fn codex_status_frame(active: bool) -> GrokFrame {
-        grok_frame("session/update", serde_json::json!({
-            "sessionUpdate": "session_info_update",
-            "_meta": {"codex": {"threadStatus": {"type": if active {"active"} else {"idle"}}}}
-        }), serde_json::json!({}))
-    }
-
-    #[tokio::test]
-    async fn codex_started_new_turn_streams_until_its_own_idle_status() {
-        let mut codex = AskSweepLoop::start_with_agent(AgentType::Codex).await;
-        codex.open_turn("initial prompt").await;
-        let outcome = codex.steer("new instruction").await;
-        assert_eq!(outcome.unwrap(), SteerOutcome::StartedNewTurn);
-        codex.until("the steered reply", |event| {
-            matches!(event, AcpEvent::ContentDelta { text, .. } if text == "steered reply")
-        }).await;
-        {
-            let state = codex.state.read().await;
-            assert!(state.turn_in_flight, "the old prompt response must not close the steered turn");
-            assert_eq!(state.status, ConnectionStatus::Prompting);
-        }
-        codex.finish_steered.notify_one();
-        codex.until("the new turn completion", |event| {
-            matches!(event, AcpEvent::TurnComplete { stop_reason, .. } if stop_reason == "end_turn")
-        }).await;
-        assert!(!codex.state.read().await.turn_in_flight);
-        codex.shutdown().await;
     }
 
     /// A steer sweeps the questions parked on its connection BEFORE the steer

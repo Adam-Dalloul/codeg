@@ -5,18 +5,18 @@ describe("queued native insert", () => {
   it("does not send the message again after native delivery", async () => {
     const steer = vi.fn(async () => {})
     const send = vi.fn(async () => {})
-    await deliverQueuedSteer(steer, send)
+    expect(await deliverQueuedSteer(steer, send)).toBe(true)
     expect(steer).toHaveBeenCalledOnce()
     expect(send).not.toHaveBeenCalled()
   })
 
-  it("sends a normal prompt when the turn ended before insertion", async () => {
+  it("prioritizes the queued row without sending when the turn ended before insertion", async () => {
     const steer = vi.fn(async () => {
       throw new Error("no active turn for feedback")
     })
-    const send = vi.fn(async () => {})
-    await deliverQueuedSteer(steer, send)
-    expect(send).toHaveBeenCalledOnce()
+    const prioritize = vi.fn()
+    expect(await deliverQueuedSteer(steer, prioritize)).toBe(false)
+    expect(prioritize).toHaveBeenCalledOnce()
   })
 
   it("keeps a failed insertion available for retry without resending it", async () => {
@@ -30,17 +30,14 @@ describe("queued native insert", () => {
     expect(send).not.toHaveBeenCalled()
   })
 
-  it("does not report delivery when the normal prompt fails", async () => {
+  it("does not prioritize or report delivery when the turn is busy", async () => {
     const failure = new Error("turn already in progress")
+    const prioritize = vi.fn()
     await expect(
-      deliverQueuedSteer(
-        async () => {
-          throw "no active turn"
-        },
-        async () => {
-          throw failure
-        }
-      )
+      deliverQueuedSteer(async () => {
+        throw failure
+      }, prioritize)
     ).rejects.toBe(failure)
+    expect(prioritize).not.toHaveBeenCalled()
   })
 })

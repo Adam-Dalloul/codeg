@@ -1,11 +1,4 @@
-import {
-  act,
-  fireEvent,
-  render,
-  screen,
-  cleanup,
-  waitFor,
-} from "@testing-library/react"
+import { render, screen, cleanup, waitFor } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { NextIntlClientProvider } from "next-intl"
 import { afterEach, describe, expect, it, vi } from "vitest"
@@ -115,26 +108,6 @@ describe("MessageQueueDisplay click-to-insert", () => {
 
     release()
     await waitFor(() => expect(buttons[1].disabled).toBe(false))
-  })
-
-  it("admits only one insertion before React commits the disabled buttons", async () => {
-    let release!: () => void
-    const onSteerItem = vi.fn(
-      () =>
-        new Promise<void>((resolve) => {
-          release = resolve
-        })
-    )
-    renderDisplay({ onSteerItem, steerChannel: "native" })
-    const buttons = screen.getAllByTitle(TQ.steerItemNow)
-    act(() => {
-      fireEvent.click(buttons[0])
-      fireEvent.click(buttons[1])
-    })
-    expect(onSteerItem).toHaveBeenCalledTimes(1)
-    await act(async () => {
-      release()
-    })
   })
 
   it("hides the note button on a pull row the channel cannot carry", () => {

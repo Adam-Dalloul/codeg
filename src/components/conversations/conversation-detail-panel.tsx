@@ -81,7 +81,6 @@ import { isDesktop } from "@/lib/platform"
 import { leftChromeReserve, rightChromeReserve } from "@/lib/window-chrome"
 import {
   acpFork,
-  acpPrompt,
   acpStopAsyncTask,
   createChatConversation,
   createChatDir,
@@ -657,6 +656,7 @@ const ConversationTabView = memo(function ConversationTabView({
     dequeue: mqDequeue,
     remove: mqRemove,
     reorder: mqReorder,
+    moveToFront: mqMoveToFront,
     updateItem: mqUpdateItem,
     editingItemId: mqEditingItemId,
     startEditing: mqStartEditing,
@@ -2185,7 +2185,7 @@ const ConversationTabView = memo(function ConversationTabView({
   // over the same live-feedback channel the composer's mid-turn dropdown uses.
   // The block/text encoding is the shared `buildSteerPayload` — one call site,
   // no policy here beyond the row's own lifecycle: success removes the row;
-  // a turn-end race sends it as a normal prompt on the same connection.
+  // a turn-end race prioritizes the row for the existing queue auto-flush.
   // Failures keep the row available for retry.
   const handleQueueSteer = useCallback(
     async (id: string) => {
@@ -2201,35 +2201,11 @@ const ConversationTabView = memo(function ConversationTabView({
       // when the turn-end edge lands mid-round-trip.
       setQueueSteerInFlight(true)
       try {
-        await deliverQueuedSteer(
+        const delivered = await deliverQueuedSteer(
           () => feedbackSteer(payload.text, payload.blocks),
-          async () => {
-            if (!conn.connectionId)
-              throw new Error("connection is no longer available")
-            const optimisticTurn = buildOptimisticUserTurnFromDraft(
-              item.draft,
-              sharedT("attachedResources")
-            )
-            appendOptimisticTurn(
-              effectiveConversationId,
-              optimisticTurn,
-              optimisticTurn.id
-            )
-            try {
-              await acpPrompt(
-                conn.connectionId,
-                item.draft.blocks,
-                folderId,
-                dbConvIdRef.current,
-                optimisticTurn.id
-              )
-            } catch (error) {
-              removeOptimisticTurn(effectiveConversationId, optimisticTurn.id)
-              throw error
-            }
-          }
+          () => mqMoveToFront(id)
         )
-        mqRemove(id)
+        if (delivered) mqRemove(id)
       } catch (err: unknown) {
         notify({
           level: "error",
@@ -2250,12 +2226,7 @@ const ConversationTabView = memo(function ConversationTabView({
       feedback.channel,
       tabId,
       tCmp,
-      conn.connectionId,
-      sharedT,
-      appendOptimisticTurn,
-      effectiveConversationId,
-      folderId,
-      removeOptimisticTurn,
+      mqMoveToFront,
     ]
   )
 

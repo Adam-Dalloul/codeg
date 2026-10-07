@@ -440,6 +440,12 @@ describe("ConversationDetailPanel send-path hardening", () => {
     )
     expect(steerHandler).toContain("finally {")
     expect(steerHandler).toContain("setQueueSteerInFlight(false)")
+    // A turn-end fallback must use the existing mode/readiness/busy handling,
+    // without a second prompt or optimistic-message path in this callback.
+    expect(steerHandler).toContain("() => mqMoveToFront(id)")
+    expect(steerHandler).toContain("if (delivered) mqRemove(id)")
+    expect(steerHandler).not.toContain("acpPrompt(")
+    expect(steerHandler).not.toContain("appendOptimisticTurn(")
   })
 
   it("disables the welcome composer while connected-but-not-ready", () => {

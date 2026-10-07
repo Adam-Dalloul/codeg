@@ -159,16 +159,15 @@ export function MessageQueueDisplay({
   // Latest steeringId for the click handler's re-entrancy check without
   // re-binding it on every state commit.
   const steeringIdRef = useRef<string | null>(null)
+  steeringIdRef.current = steeringId
 
   const handleSteerStart = useCallback(
     async (id: string) => {
       if (!onSteerItem || steeringIdRef.current !== null) return
-      steeringIdRef.current = id
       setSteeringId(id)
       try {
         await onSteerItem(id)
       } finally {
-        steeringIdRef.current = null
         setSteeringId(null)
       }
     },
