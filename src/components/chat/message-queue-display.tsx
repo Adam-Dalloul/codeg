@@ -64,8 +64,8 @@ function QueueItem({
   //   editing for the same reason.)
   // * A draft carrying attachments on a pull-tool session. The pull channel
   //   delivers text, so the backend rejects blocks there — every click would
-  //   land on the turn-end fallback, which for an already-queued row is a
-  //   no-op. It still goes out whole with the next turn, via the queue.
+  //   land on the turn-end fallback, which only moves the row to the front
+  //   and never inserts it. It still goes out whole with the next turn.
   const canSteer =
     Boolean(onSteerItem) &&
     !isEditing &&
