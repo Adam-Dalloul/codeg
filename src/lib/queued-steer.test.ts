@@ -16,6 +16,7 @@ describe("queued native insert", () => {
     })
     const prioritize = vi.fn()
     expect(await deliverQueuedSteer(steer, prioritize)).toBe(false)
+    expect(steer).toHaveBeenCalledOnce()
     expect(prioritize).toHaveBeenCalledOnce()
   })
 

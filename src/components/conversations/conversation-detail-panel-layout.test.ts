@@ -434,10 +434,12 @@ describe("ConversationDetailPanel send-path hardening", () => {
       steerStart,
       source.indexOf("\n  return (", steerStart)
     )
-    // Set BEFORE the first await, cleared in a finally.
-    expect(steerHandler.indexOf("setQueueSteerInFlight(true)")).toBeLessThan(
-      steerHandler.indexOf("await deliverQueuedSteer(")
-    )
+    // Set BEFORE the first await, cleared in a finally. Both must be found: a
+    // missing setter's -1 would otherwise pass the ordering check.
+    const holdAt = steerHandler.indexOf("setQueueSteerInFlight(true)")
+    const awaitAt = steerHandler.indexOf("await deliverQueuedSteer(")
+    expect(holdAt).toBeGreaterThan(-1)
+    expect(holdAt).toBeLessThan(awaitAt)
     expect(steerHandler).toContain("finally {")
     expect(steerHandler).toContain("setQueueSteerInFlight(false)")
     // A turn-end fallback must use the existing mode/readiness/busy handling,
