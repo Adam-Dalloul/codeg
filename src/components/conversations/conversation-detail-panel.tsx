@@ -66,6 +66,7 @@ import { WelcomeHero, WelcomeTip } from "@/components/chat/welcome-hero"
 import { QuickActions } from "@/components/chat/quick-actions"
 import type { ComposerInjectContent } from "@/components/chat/message-input"
 import { TileScrollContainer } from "@/components/conversations/tile-scroll-container"
+import { stableTabViewOrder } from "@/lib/tab-view-order"
 import { GroupSplitHandle } from "@/components/conversations/group-split-handle"
 import { OverlayHostHiddenProvider } from "@/components/ui/overlay-host-hidden"
 import { ScrollArea } from "@/components/ui/scroll-area"
@@ -2914,6 +2915,7 @@ export function ConversationDetailPanel() {
             tileTabRefs.current.delete(tab.id)
           }
         }}
+        style={canTileG ? { order: indexInGroup } : undefined}
         className={cn(
           canTileG
             ? cn(
@@ -3027,8 +3029,12 @@ export function ConversationDetailPanel() {
                 canTileG && "flex min-w-full flex-row"
               )}
             >
-              {groupTabs.map((tab, indexInGroup) =>
-                renderTabWrapper(tab, indexInGroup, groupId, canTileG)
+              {/* Strip order reaches the screen only through CSS `order`:
+                  a reorder that moved these nodes would reset each moved
+                  transcript's scroll offset and blank it (see
+                  stableTabViewOrder). */}
+              {stableTabViewOrder(groupTabs).map(({ tab, visualIndex }) =>
+                renderTabWrapper(tab, visualIndex, groupId, canTileG)
               )}
             </div>
           </TileScrollContainer>
