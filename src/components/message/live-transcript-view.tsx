@@ -348,6 +348,7 @@ export function LiveTranscriptView({
           // live connection keeps that lookup as the fallback.
           imageRoot={conn?.workingDir ?? undefined}
           agentType={agentType ?? "claude_code"}
+          availableCommands={conn?.availableCommands}
           connStatus={connStatus}
           isActive={false}
           detailLoading={detailLoading}

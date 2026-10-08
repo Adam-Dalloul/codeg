@@ -33,6 +33,7 @@ import {
 import { TurnStats } from "./turn-stats"
 import { LiveTurnStats } from "./live-turn-stats"
 import { ModelLabelProvider } from "./model-label-context"
+import { KnownInvocationsProvider } from "./known-invocations-context"
 import { ReplyArtifacts } from "./reply-artifacts"
 import { UserResourceLinks } from "./user-resource-links"
 import { UserImageAttachments } from "./user-image-attachments"
@@ -71,7 +72,12 @@ import {
   buildPlanKey,
   extractLatestPlanEntriesFromMessages,
 } from "@/lib/agent-plan"
-import type { AgentType, ConnectionStatus, MessageTurn } from "@/lib/types"
+import type {
+  AgentType,
+  AvailableCommandInfo,
+  ConnectionStatus,
+  MessageTurn,
+} from "@/lib/types"
 import { copyTextToClipboard } from "@/lib/utils"
 import { VirtualizedMessageThread } from "@/components/message/virtualized-message-thread"
 import { SelectionActionBubble } from "@/components/message/selection-action-bubble"
@@ -82,6 +88,8 @@ import {
 import type { MessageScrollContextValue } from "@/components/message/message-scroll-context"
 import { extractSessionFilesGrouped } from "@/lib/session-files"
 import { useModelLabels } from "@/hooks/use-model-labels"
+import { useAgentSkills } from "@/hooks/use-agent-skills"
+import { buildKnownInvocations } from "@/components/chat/composer/invocation-reference"
 import { usePageHandoffName } from "@/lib/browser/use-page-handoff-name"
 import { unescapeComposerText } from "@/lib/composer-copy-text"
 import { useStickToBottomContext } from "use-stick-to-bottom"
@@ -93,6 +101,13 @@ interface MessageListViewProps {
   /** This transcript's working directory, including new-chat drafts. */
   imageRoot?: string | null
   agentType: AgentType
+  /**
+   * The slash commands this transcript's agent advertises right now (the same
+   * list behind the composer's `/` menu). A bare `/word` in a sent user message
+   * is shown as a command badge only when it names one of these (or, for Codex,
+   * one of its `$` skills); with none known, nothing is badged.
+   */
+  availableCommands?: readonly AvailableCommandInfo[] | null
   connStatus?: ConnectionStatus | null
   isActive?: boolean
   sendSignal?: number
@@ -1063,6 +1078,7 @@ export function MessageListView({
   conversationId,
   imageRoot,
   agentType,
+  availableCommands = null,
   connStatus,
   isActive = true,
   sendSignal = 0,
@@ -1105,6 +1121,25 @@ export function MessageListView({
   const storedImageRoot = useAppWorkspaceStore(
     (s) =>
       s.allFolders.find((folder) => folder.id === imageFolderId)?.path ?? null
+  )
+  const resolvedImageRoot =
+    imageRoot === undefined ? storedImageRoot : imageRoot
+  // What a bare `/word`·`$word` in a user bubble has to be on to render as a
+  // command badge: exactly what the composer's menu offers this agent, so the
+  // bubble never claims a command for a path or a word in prose. Codex's `$`
+  // skills come from disk (shared cache with the composer's own scan).
+  const transcriptSkills = useAgentSkills(
+    agentType === "codex" ? "codex" : null,
+    resolvedImageRoot
+  )
+  const knownInvocations = useMemo(
+    () =>
+      buildKnownInvocations(
+        availableCommands,
+        transcriptSkills,
+        agentType === "codex" ? "$" : "/"
+      ),
+    [availableCommands, transcriptSkills, agentType]
   )
   const hasOlderTurns = isWindowedDetail(detail) && detail.turns_offset > 0
   const loadingOlderTurns = session?.loadingOlderTurns ?? false
@@ -1738,10 +1773,12 @@ export function MessageListView({
   )
 
   return (
-    <MarkdownImageProvider
-      rootPath={imageRoot === undefined ? storedImageRoot : imageRoot}
-    >
-      <ModelLabelProvider value={modelLabel}>{thread}</ModelLabelProvider>
+    <MarkdownImageProvider rootPath={resolvedImageRoot}>
+      <ModelLabelProvider value={modelLabel}>
+        <KnownInvocationsProvider value={knownInvocations}>
+          {thread}
+        </KnownInvocationsProvider>
+      </ModelLabelProvider>
     </MarkdownImageProvider>
   )
 }
