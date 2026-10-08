@@ -2,12 +2,19 @@ import type { ReactNode } from "react"
 import { act, render, screen } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
-// A stand-in for the slice of `StickToBottomContext` the viewport sticker uses,
-// so a test can drive `isAtBottom` / inspect `resizeDifference` directly.
+// A stand-in for the slice of `StickToBottomContext` the viewport sticker and
+// the escape listener use, so a test can drive `isAtBottom` / inspect
+// `resizeDifference` directly.
 const testState = vi.hoisted(() => ({
   scrollRef: { current: null as HTMLDivElement | null },
   scrollToBottom: vi.fn(),
-  state: { isAtBottom: true, resizeDifference: 0 },
+  stopScroll: vi.fn(),
+  state: {
+    isAtBottom: true,
+    escapedFromLock: false,
+    resizeDifference: 0,
+    animation: undefined as { ignoreEscapes: boolean } | undefined,
+  },
 }))
 
 vi.mock("use-stick-to-bottom", () => ({
@@ -61,8 +68,11 @@ beforeEach(() => {
   disconnects = 0
   testState.scrollRef.current = document.createElement("div")
   testState.scrollToBottom.mockReset()
+  testState.stopScroll.mockReset()
   testState.state.isAtBottom = true
+  testState.state.escapedFromLock = false
   testState.state.resizeDifference = 0
+  testState.state.animation = undefined
   vi.stubGlobal(
     "ResizeObserver",
     class {
@@ -160,5 +170,165 @@ describe("MessageThread viewport resize", () => {
     unmount()
 
     expect(disconnects).toBe(1)
+  })
+})
+
+describe("MessageThread escape on user scroll", () => {
+  /** Give an element a scrollable box, which jsdom never lays out. */
+  const makeScrollable = (
+    el: HTMLElement,
+    { scrollHeight = 2000, clientHeight = 400, scrollTop = 1600 } = {}
+  ) => {
+    Object.defineProperty(el, "scrollHeight", {
+      configurable: true,
+      value: scrollHeight,
+    })
+    Object.defineProperty(el, "clientHeight", {
+      configurable: true,
+      value: clientHeight,
+    })
+    el.scrollTop = scrollTop
+  }
+
+  const viewport = () => testState.scrollRef.current as HTMLDivElement
+
+  /** Mount with a scrollable viewport and a plain row inside it. */
+  const mountScrollable = () => {
+    makeScrollable(viewport())
+    const row = document.createElement("div")
+    viewport().appendChild(row)
+    mountThreadAt(400)
+    return row
+  }
+
+  const wheel = (target: Element, deltaY: number) =>
+    target.dispatchEvent(new WheelEvent("wheel", { deltaY, bubbles: true }))
+
+  const touch = (target: Element, type: string, clientY: number) => {
+    const event = new Event(type, { bubbles: true })
+    Object.defineProperty(event, "touches", {
+      value: type === "touchend" ? [] : [{ clientY }],
+    })
+    target.dispatchEvent(event)
+  }
+
+  // The reported bug, desktop: the library only escapes a wheel whose nearest
+  // `overflow: auto` ancestor is the viewport, so wheeling up over a code
+  // block (overflow-auto, nothing to scroll vertically) kept the lock.
+  it("escapes on an upward wheel over a nested horizontal scroller", () => {
+    mountScrollable()
+    const code = document.createElement("pre")
+    code.style.overflow = "auto"
+    viewport().appendChild(code)
+
+    wheel(code, -40)
+
+    expect(testState.stopScroll).toHaveBeenCalledTimes(1)
+  })
+
+  it("leaves the lock alone on a downward wheel", () => {
+    const row = mountScrollable()
+
+    wheel(row, 40)
+
+    expect(testState.stopScroll).not.toHaveBeenCalled()
+  })
+
+  it("lets a nested vertical scroller that can still scroll up take the wheel", () => {
+    mountScrollable()
+    const output = document.createElement("div")
+    output.style.overflowY = "auto"
+    makeScrollable(output, {
+      scrollHeight: 600,
+      clientHeight: 200,
+      scrollTop: 50,
+    })
+    viewport().appendChild(output)
+
+    wheel(output, -40)
+
+    expect(testState.stopScroll).not.toHaveBeenCalled()
+  })
+
+  // The reported bug, mobile: touch scrolls only reach the library as scroll
+  // events, which it discards while any content resize is in flight.
+  it("escapes when a finger drags the transcript down, even mid-resize", () => {
+    const row = mountScrollable()
+    testState.state.resizeDifference = 24
+
+    touch(row, "touchstart", 300)
+    touch(row, "touchmove", 302)
+    expect(testState.stopScroll).not.toHaveBeenCalled()
+
+    touch(row, "touchmove", 320)
+    expect(testState.stopScroll).toHaveBeenCalledTimes(1)
+  })
+
+  it("does not escape when a finger drags the transcript up", () => {
+    const row = mountScrollable()
+
+    touch(row, "touchstart", 300)
+    touch(row, "touchmove", 200)
+    touch(row, "touchend", 200)
+
+    expect(testState.stopScroll).not.toHaveBeenCalled()
+  })
+
+  it("escapes on keyboard scrolling up but not from an editable field", () => {
+    const row = mountScrollable()
+    const input = document.createElement("textarea")
+    viewport().appendChild(input)
+
+    input.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "PageUp", bubbles: true })
+    )
+    expect(testState.stopScroll).not.toHaveBeenCalled()
+
+    row.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "PageUp", bubbles: true })
+    )
+    expect(testState.stopScroll).toHaveBeenCalledTimes(1)
+  })
+
+  it("does nothing once the lock is already released", () => {
+    const row = mountScrollable()
+    testState.state.isAtBottom = false
+    testState.state.escapedFromLock = true
+
+    wheel(row, -40)
+
+    expect(testState.stopScroll).not.toHaveBeenCalled()
+  })
+
+  it("keeps the lock during an ignoreEscapes scroll", () => {
+    const row = mountScrollable()
+    testState.state.animation = { ignoreEscapes: true }
+
+    wheel(row, -40)
+
+    expect(testState.stopScroll).not.toHaveBeenCalled()
+  })
+
+  it("does nothing when the transcript fits without scrolling", () => {
+    makeScrollable(viewport(), { scrollHeight: 400, clientHeight: 400 })
+    const row = document.createElement("div")
+    viewport().appendChild(row)
+    mountThreadAt(400)
+
+    wheel(row, -40)
+
+    expect(testState.stopScroll).not.toHaveBeenCalled()
+  })
+
+  it("stops listening when the thread unmounts", () => {
+    makeScrollable(viewport())
+    const row = document.createElement("div")
+    viewport().appendChild(row)
+    const { unmount } = mountThreadAt(400)
+
+    unmount()
+    wheel(row, -40)
+
+    expect(testState.stopScroll).not.toHaveBeenCalled()
   })
 })

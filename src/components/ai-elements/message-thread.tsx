@@ -84,6 +84,163 @@ const StickThroughViewportResize = () => {
   return null
 }
 
+/** Keys that scroll a focused viewport towards the top of the transcript. */
+const SCROLL_UP_KEYS = new Set(["ArrowUp", "PageUp", "Home"])
+
+/** A finger has to travel this far down before the drag counts as intent. */
+const TOUCH_ESCAPE_SLOP_PX = 6
+
+/**
+ * Whether something between `target` and the viewport scrolls vertically and
+ * can still move up, so it — not the transcript — takes the upward gesture.
+ */
+const nestedScrollerTakesUpward = (
+  target: EventTarget | null,
+  viewport: HTMLElement
+): boolean => {
+  let element = target instanceof Element ? target : null
+  while (element && element !== viewport) {
+    if (
+      element instanceof HTMLElement &&
+      element.scrollTop > 0 &&
+      element.scrollHeight > element.clientHeight
+    ) {
+      const { overflowY } = getComputedStyle(element)
+      if (overflowY === "auto" || overflowY === "scroll") return true
+    }
+    element = element.parentElement
+  }
+  return false
+}
+
+const isEditableTarget = (target: EventTarget | null): boolean =>
+  target instanceof HTMLElement &&
+  (target.isContentEditable || target.closest("input,textarea,select") !== null)
+
+/**
+ * Releases the bottom lock the moment the user starts scrolling towards older
+ * messages. Renders nothing; mounted by `MessageThread` beside the viewport
+ * sticker.
+ *
+ * `use-stick-to-bottom` only learns about an escape in two ways, and neither
+ * holds up under a virtualized, streaming transcript:
+ *
+ * - Its wheel listener walks up from the event target to the first element
+ *   whose computed `overflow` is `auto`/`scroll` and escapes only when that is
+ *   the viewport. Code blocks, tables and tool output are `overflow-auto`, so a
+ *   wheel over any of them never escapes.
+ * - Its scroll listener discards every scroll event that lands while a content
+ *   resize is in flight (`resizeDifference`). Streaming grows the content every
+ *   flush, and virtua re-measures rows as they mount, so touch, scrollbar and
+ *   keyboard scrolls are discarded nearly every time.
+ *
+ * The lock then stays engaged while the user reads history, and the next
+ * content growth (a streamed token, a freshly measured row) or viewport resize
+ * scrolls them back to the bottom. This reads the user's intent from the input
+ * itself, which no resize can disguise, and escapes on it.
+ */
+const EscapeLockOnUserScroll = () => {
+  const { scrollRef, stopScroll, state } = useStickToBottomContext()
+
+  useEffect(() => {
+    const viewport = scrollRef.current
+    if (!viewport) return
+
+    const escape = () => {
+      if (state.escapedFromLock && !state.isAtBottom) return
+      // A deliberate `ignoreEscapes` scroll keeps its lock, as in the library.
+      if (state.animation?.ignoreEscapes) return
+      if (viewport.scrollHeight <= viewport.clientHeight) return
+      stopScroll()
+    }
+
+    const onWheel = (event: WheelEvent) => {
+      if (event.deltaY >= 0 || event.ctrlKey) return
+      if (nestedScrollerTakesUpward(event.target, viewport)) return
+      escape()
+    }
+
+    let touchY: number | null = null
+    const onTouchStart = (event: TouchEvent) => {
+      touchY = event.touches.length === 1 ? event.touches[0].clientY : null
+    }
+    const onTouchMove = (event: TouchEvent) => {
+      if (touchY === null || event.touches.length !== 1) return
+      // Finger moving down drags the content down: scrolling towards the top.
+      // Measured from the lowest point so far, so an up-then-down drag counts.
+      const y = event.touches[0].clientY
+      if (y < touchY) {
+        touchY = y
+        return
+      }
+      if (y - touchY < TOUCH_ESCAPE_SLOP_PX) return
+      touchY = null
+      if (nestedScrollerTakesUpward(event.target, viewport)) return
+      escape()
+    }
+    const onTouchEnd = () => {
+      touchY = null
+    }
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.altKey || event.ctrlKey) return
+      if (event.metaKey && event.key !== "ArrowUp") return
+      const upward =
+        SCROLL_UP_KEYS.has(event.key) || (event.key === " " && event.shiftKey)
+      if (!upward || isEditableTarget(event.target)) return
+      if (nestedScrollerTakesUpward(event.target, viewport)) return
+      escape()
+    }
+
+    // Dragging the native scrollbar: a press on the viewport outside its
+    // client box, then any upward scroll until the press ends.
+    let draggingScrollbar = false
+    let lastScrollTop = viewport.scrollTop
+    const onPointerDown = (event: PointerEvent) => {
+      if (event.target !== viewport || event.button !== 0) return
+      const rect = viewport.getBoundingClientRect()
+      const clientStart = rect.left + viewport.clientLeft
+      const x = event.clientX
+      draggingScrollbar =
+        x < clientStart || x > clientStart + viewport.clientWidth
+      lastScrollTop = viewport.scrollTop
+    }
+    const onPointerEnd = () => {
+      draggingScrollbar = false
+    }
+    const onScroll = () => {
+      const { scrollTop } = viewport
+      if (draggingScrollbar && scrollTop < lastScrollTop) escape()
+      lastScrollTop = scrollTop
+    }
+
+    viewport.addEventListener("wheel", onWheel, { passive: true })
+    viewport.addEventListener("touchstart", onTouchStart, { passive: true })
+    viewport.addEventListener("touchmove", onTouchMove, { passive: true })
+    viewport.addEventListener("touchend", onTouchEnd, { passive: true })
+    viewport.addEventListener("touchcancel", onTouchEnd, { passive: true })
+    viewport.addEventListener("keydown", onKeyDown)
+    viewport.addEventListener("pointerdown", onPointerDown)
+    viewport.addEventListener("scroll", onScroll, { passive: true })
+    window.addEventListener("pointerup", onPointerEnd)
+    window.addEventListener("pointercancel", onPointerEnd)
+    return () => {
+      viewport.removeEventListener("wheel", onWheel)
+      viewport.removeEventListener("touchstart", onTouchStart)
+      viewport.removeEventListener("touchmove", onTouchMove)
+      viewport.removeEventListener("touchend", onTouchEnd)
+      viewport.removeEventListener("touchcancel", onTouchEnd)
+      viewport.removeEventListener("keydown", onKeyDown)
+      viewport.removeEventListener("pointerdown", onPointerDown)
+      viewport.removeEventListener("scroll", onScroll)
+      window.removeEventListener("pointerup", onPointerEnd)
+      window.removeEventListener("pointercancel", onPointerEnd)
+    }
+  }, [scrollRef, stopScroll, state])
+
+  return null
+}
+
 export type MessageThreadProps = ComponentProps<typeof StickToBottom>
 
 export const MessageThread = ({
@@ -101,6 +258,7 @@ export const MessageThread = ({
     {(context) => (
       <>
         <StickThroughViewportResize />
+        <EscapeLockOnUserScroll />
         {typeof children === "function" ? children(context) : children}
       </>
     )}
