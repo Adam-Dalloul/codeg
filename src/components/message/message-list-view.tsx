@@ -104,7 +104,12 @@ interface MessageListViewProps {
    * The slash commands this transcript's agent advertises right now (the same
    * list behind the composer's `/` menu). A bare `/word` in a sent user message
    * is shown as a command badge only when it names one of these (or, for Codex,
-   * one of its `$` skills); with none known, nothing is badged.
+   * one of its `$` skills).
+   *
+   * `null`/`undefined` while the agent has not advertised (no connection, or
+   * one still coming up): the transcript then badges what this agent last
+   * advertised in this folder, and nothing if it never has. `[]` is an answer,
+   * not that gap: the agent offers nothing, so nothing is badged.
    *
    * Required, though it may be null: a surface that left it out would never
    * badge a real command, so every surface mounting a transcript must decide.
@@ -1127,7 +1132,8 @@ export function MessageListView({
   const resolvedImageRoot =
     imageRoot === undefined ? storedImageRoot : imageRoot
   // What a bare `/word`·`$word` in a user bubble has to be on to render as a
-  // command badge: exactly what the composer's menu offers this agent, so the
+  // command badge: what the composer's menu offers this agent (or, until its
+  // connection advertises, what it last advertised in this folder), so the
   // bubble never claims a command for a path or a word in prose.
   const knownInvocations = useTranscriptKnownInvocations(
     agentType,

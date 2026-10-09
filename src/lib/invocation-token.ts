@@ -28,11 +28,15 @@ export const INVOCATION_TOKEN_RE =
  * a real command (`/rev` for `/review`) is not that command, and names are
  * case-sensitive because that is how the agent CLI reads them.
  *
- * Before the connection advertises anything, only what is known without it can
- * badge: Codex's disk skills, and for any other agent nothing. A surface with no
- * agent behind it knows nothing at all. That is also the safe direction: text
- * that stays text is still editable, sends byte for byte the way it was written,
- * and in the transcript shows exactly what was sent.
+ * Before the connection advertises anything, the composer knows only what it
+ * can without one: Codex's disk skills, and for any other agent nothing. The
+ * transcript also knows what the agent last advertised in that folder
+ * (`advertised-commands-store`), so its badges hold steady across a reconnect
+ * or a restart; in a folder the agent never advertised in, it knows no more
+ * than the composer. A surface with no agent behind it knows nothing at all.
+ * Knowing too little is the safe direction: text that stays text is still
+ * editable, sends byte for byte the way it was written, and in the transcript
+ * shows exactly what was sent.
  */
 export type KnownInvocations = ReadonlySet<string>
 

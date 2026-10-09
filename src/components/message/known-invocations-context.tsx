@@ -8,11 +8,12 @@ import {
 } from "@/lib/invocation-token"
 
 /**
- * The invocations (`/review`, `$deploy`) the transcript's agent offers right now
- * (see `useTranscriptKnownInvocations`), provided once by `MessageListView` and
- * read by the user-message renderer so a bare `/word` in a sent message becomes
- * a command badge only when the agent really has that command, the same rule
- * the composer applies.
+ * The invocations (`/review`, `$deploy`) the transcript's agent offers, as
+ * `useTranscriptKnownInvocations` works them out (including before its
+ * connection advertises), provided once by `MessageListView` and read by the
+ * user-message renderer so a bare `/word` in a sent message becomes a command
+ * badge only when the agent really has that command, the same rule the
+ * composer applies.
  *
  * A context rather than a prop for the same reason as `ModelLabelContext`: the
  * memoized message groups between the two never read it themselves.
