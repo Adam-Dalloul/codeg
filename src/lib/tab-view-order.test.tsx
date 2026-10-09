@@ -31,10 +31,11 @@ describe("stableTabViewOrder", () => {
 /**
  * The behaviour the order exists for. A keyed list rendered in strip order is
  * reconciled by MOVING DOM nodes on a reorder, and a moved node loses its
- * scroll offset (Chromium resets scrollTop to 0 on reinsertion and fires no
- * scroll event, which strands the virtualized transcript on rows the viewport
- * no longer shows). jsdom keeps scrollTop, so the test watches for the move
- * itself: a reorder must not remove any existing view node from the tree.
+ * scroll offset (Chromium and WebKit both reset scrollTop to 0 on reinsertion
+ * and fire no scroll event, which strands the virtualized transcript on rows
+ * the viewport no longer shows). jsdom keeps scrollTop, so the test watches for
+ * the move itself: a reorder must not remove any existing view node from the
+ * tree.
  */
 function Views({ order, tiled }: { order: string[]; tiled: boolean }) {
   return (
@@ -129,8 +130,11 @@ describe("conversation views across a strip reorder", () => {
       ),
       "utf8"
     )
+    // The wrapper's index is the tab's STRIP position: it becomes the tile's
+    // CSS `order` and decides which tile goes without a left border, so the
+    // view's position in the id-sorted list must never reach it.
     expect(panel).toMatch(
-      /stableTabViewOrder\(groupTabs\)\.map\(\(\{ tab, visualIndex \}\) =>/
+      /stableTabViewOrder\(groupTabs\)\.map\(\(\{ tab, visualIndex \}\) =>\s*renderTabWrapper\(tab, visualIndex, groupId, canTileG\)/
     )
     expect(panel).toMatch(/style=\{canTileG \? \{ order: indexInGroup \}/)
   })
