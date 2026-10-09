@@ -11,6 +11,14 @@ import type { AgentSkillItem, AgentType } from "@/lib/types"
 const cache = new Map<string, AgentSkillItem[]>()
 const inflight = new Map<string, Promise<AgentSkillItem[]>>()
 
+// The keys a given window `focus` event has already invalidated. One focus
+// reaches every mounted instance's listener with the same Event, and several
+// instances can share a key (a Codex tab's composer and its transcript both read
+// the same folder's skills). Only the first listener per key drops the cached
+// list and the in-flight request; the others join the refetch it starts, so a
+// focus costs one scan per key rather than one per instance.
+const invalidatedByFocus = new WeakMap<Event, Set<string>>()
+
 const EMPTY: AgentSkillItem[] = []
 
 function makeKey(agentType: AgentType, workspacePath: string | null): string {
@@ -78,12 +86,21 @@ export function useAgentSkills(
   // Re-fetch when window regains focus (covers cross-window cache
   // invalidation — e.g. settings window creates/removes skills while the
   // conversation window stays mounted). Only invalidate the current key to
-  // avoid clobbering caches for other folders.
+  // avoid clobbering caches for other folders, and only once per focus event
+  // (see `invalidatedByFocus`), so instances sharing the key share one refetch.
   useEffect(() => {
-    const onFocus = () => {
+    const onFocus = (event: Event) => {
       if (!cacheKey) return
-      cache.delete(cacheKey)
-      inflight.delete(cacheKey)
+      let invalidated = invalidatedByFocus.get(event)
+      if (!invalidated) {
+        invalidated = new Set()
+        invalidatedByFocus.set(event, invalidated)
+      }
+      if (!invalidated.has(cacheKey)) {
+        invalidated.add(cacheKey)
+        cache.delete(cacheKey)
+        inflight.delete(cacheKey)
+      }
       doFetch()
     }
     window.addEventListener("focus", onFocus)
