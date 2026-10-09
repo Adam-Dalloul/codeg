@@ -1,15 +1,24 @@
 import { act, renderHook } from "@testing-library/react"
-import { beforeEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import type { AvailableCommandInfo } from "@/lib/types"
 
-const STORAGE_KEY = "codeg:advertised-commands"
+const PREFIX = "codeg:advertised-commands:"
+const keyOf = (agentType: string, folder: string) =>
+  PREFIX + JSON.stringify([agentType, folder])
 
 // The store reads localStorage once and caches at module scope, so every test
-// gets a module that has not read it yet.
+// gets a module that has not read it yet. A clock that ticks per read keeps the
+// "advertised least recently" order deterministic.
 beforeEach(() => {
   vi.resetModules()
   localStorage.clear()
+  let clock = 1_000
+  vi.spyOn(Date, "now").mockImplementation(() => (clock += 1))
+})
+
+afterEach(() => {
+  vi.restoreAllMocks()
 })
 
 async function load() {
@@ -24,15 +33,32 @@ const command = (name: string, description = ""): AvailableCommandInfo => ({
 const names = (commands: readonly { name: string }[] | null) =>
   commands ? commands.map((c) => c.name) : null
 
-function stored(): unknown {
-  return JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "null")
+/** Every entry in storage, as `agent:folder → names`. */
+function stored(): Record<string, string[]> {
+  const out: Record<string, string[]> = {}
+  for (let index = 0; index < localStorage.length; index += 1) {
+    const key = localStorage.key(index)!
+    if (!key.startsWith(PREFIX)) continue
+    const [agentType, folder] = JSON.parse(key.slice(PREFIX.length))
+    out[`${agentType}:${folder}`] = JSON.parse(
+      localStorage.getItem(key)!
+    ).commands
+  }
+  return out
 }
 
-/** What another window of the app does: write the record, then the browser
- *  tells every other window through a `storage` event. */
-function writeFromAnotherWindow(value: unknown) {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(value))
-  window.dispatchEvent(new StorageEvent("storage", { key: STORAGE_KEY }))
+/** What another window of the app does: write an entry, after which the
+ *  browser tells every other window through a `storage` event. */
+function writeFromAnotherWindow(
+  agentType: string,
+  folder: string,
+  value: { at: number; commands: string[] } | null
+) {
+  const key = keyOf(agentType, folder)
+  const newValue = value ? JSON.stringify(value) : null
+  if (newValue) localStorage.setItem(key, newValue)
+  else localStorage.removeItem(key)
+  window.dispatchEvent(new StorageEvent("storage", { key, newValue }))
 }
 
 describe("rememberAdvertisedCommands", () => {
@@ -55,7 +81,7 @@ describe("rememberAdvertisedCommands", () => {
     const store = await load()
     store.rememberAdvertisedCommands("claude_code", null, [command("review")])
     store.rememberAdvertisedCommands("claude_code", "", [command("review")])
-    expect(localStorage.getItem(STORAGE_KEY)).toBeNull()
+    expect(stored()).toEqual({})
   })
 
   it("replaces what the agent advertised there before rather than merging", async () => {
@@ -71,6 +97,7 @@ describe("rememberAdvertisedCommands", () => {
     // An empty list is an answer too: the agent offers nothing there now.
     store.rememberAdvertisedCommands("claude_code", "/a", [])
     expect(store.getLastAdvertisedCommands("claude_code", "/a")).toEqual([])
+    expect(stored()).toEqual({ "claude_code:/a": [] })
   })
 
   it("is still there after a restart", async () => {
@@ -111,11 +138,10 @@ describe("rememberAdvertisedCommands", () => {
 
     store.rememberAdvertisedCommands("claude_code", "/a", [command("review")])
     expect(listener).toHaveBeenCalledTimes(1)
-    const write = vi.spyOn(Storage.prototype, "setItem")
+    // A repeat still re-stamps the entry, which is what keeps a folder in use
+    // from being the one dropped, but it changes nothing anyone reads.
     store.rememberAdvertisedCommands("claude_code", "/a", [command("review")])
     expect(listener).toHaveBeenCalledTimes(1)
-    expect(write).not.toHaveBeenCalled()
-    write.mockRestore()
 
     unsubscribe()
     store.rememberAdvertisedCommands("claude_code", "/a", [command("init")])
@@ -124,28 +150,38 @@ describe("rememberAdvertisedCommands", () => {
 
   it("drops the folder advertised least recently once the record is full", async () => {
     const store = await load()
-    // Three folders whose lists each take a little over a third of the record:
-    // every name is 7 characters, stored as `"a000000",`.
+    // Three lists that each take a little over a third of the cap: every name
+    // is 7 characters, stored as `"a000000",`.
     const third = Math.ceil(store.MAX_STORED_CHARS / 3 / 10) + 1
     const big = (prefix: string) =>
       Array.from({ length: third }, (_, i) =>
         command(`${prefix}${String(i).padStart(6, "0")}`)
       )
+    const listener = vi.fn()
     store.rememberAdvertisedCommands("claude_code", "/a", big("a"))
     store.rememberAdvertisedCommands("claude_code", "/b", big("b"))
     // `/a` advertises again, so `/b` is now the one advertised least recently.
     store.rememberAdvertisedCommands("claude_code", "/a", big("a"))
+    store.subscribeLastAdvertisedCommands(listener)
     store.rememberAdvertisedCommands("claude_code", "/c", big("c"))
 
     expect(store.getLastAdvertisedCommands("claude_code", "/b")).toBeNull()
     expect(store.getLastAdvertisedCommands("claude_code", "/a")).not.toBeNull()
     expect(store.getLastAdvertisedCommands("claude_code", "/c")).not.toBeNull()
-    expect(localStorage.getItem(STORAGE_KEY)!.length).toBeLessThanOrEqual(
-      store.MAX_STORED_CHARS
-    )
-    expect(
-      (stored() as { folder: string }[]).map((entry) => entry.folder)
-    ).toEqual(["/a", "/c"])
+    expect(Object.keys(stored()).sort()).toEqual([
+      "claude_code:/a",
+      "claude_code:/c",
+    ])
+    let total = 0
+    for (let index = 0; index < localStorage.length; index += 1) {
+      const key = localStorage.key(index)!
+      if (key.startsWith(PREFIX)) {
+        total += key.length + localStorage.getItem(key)!.length
+      }
+    }
+    expect(total).toBeLessThanOrEqual(store.MAX_STORED_CHARS)
+    // `/b`'s readers lost their list, so they are told.
+    expect(listener).toHaveBeenCalledTimes(1)
   })
 
   it("forgets a list too long to keep at all, without pushing out the others", async () => {
@@ -162,28 +198,106 @@ describe("rememberAdvertisedCommands", () => {
     )
     // Not kept in its old form either: that list is no longer what /b offers.
     expect(store.getLastAdvertisedCommands("claude_code", "/b")).toBeNull()
-    expect(stored()).toEqual([
-      { agentType: "claude_code", folder: "/a", commands: ["review"] },
-    ])
+    expect(stored()).toEqual({ "claude_code:/a": ["review"] })
   })
 
-  it("does not write over a newer entry another window stored meanwhile", async () => {
-    const store = await load()
-    store.rememberAdvertisedCommands("claude_code", "/a", [command("review")])
-    // Another window records /b, and this window has not heard of it yet.
+  it("drops an entry too big to ever fit before any older one that does", async () => {
+    // Left by some other build of the app: one value over the cap by itself,
+    // and newer than everything else.
     localStorage.setItem(
-      STORAGE_KEY,
-      JSON.stringify([
-        { agentType: "claude_code", folder: "/a", commands: ["review"] },
-        { agentType: "codex", folder: "/b", commands: ["$ship"] },
-      ])
+      keyOf("claude_code", "/old"),
+      JSON.stringify({ at: 1, commands: ["review"] })
     )
-    store.rememberAdvertisedCommands("claude_code", "/c", [command("init")])
-    expect(stored()).toEqual([
-      { agentType: "claude_code", folder: "/a", commands: ["review"] },
-      { agentType: "codex", folder: "/b", commands: ["$ship"] },
-      { agentType: "claude_code", folder: "/c", commands: ["init"] },
-    ])
+    localStorage.setItem(
+      keyOf("claude_code", "/huge"),
+      JSON.stringify({ at: 9_999_999, commands: ["x".repeat(70_000)] })
+    )
+    const store = await load()
+    store.rememberAdvertisedCommands("claude_code", "/a", [command("init")])
+    expect(stored()).toEqual({
+      "claude_code:/old": ["review"],
+      "claude_code:/a": ["init"],
+    })
+  })
+
+  it("holds storage to the cap even with entries this window has not heard of", async () => {
+    const store = await load()
+    store.getLastAdvertisedCommands("claude_code", "/a")
+    // Another window stores two lists of a little over a third of the cap each,
+    // and this window has not had their `storage` events yet.
+    const third = Math.ceil(store.MAX_STORED_CHARS / 3 / 10) + 1
+    const big = (prefix: string) =>
+      Array.from(
+        { length: third },
+        (_, i) => `${prefix}${String(i).padStart(6, "0")}`
+      )
+    localStorage.setItem(
+      keyOf("codex", "/x"),
+      JSON.stringify({ at: 10, commands: big("x") })
+    )
+    localStorage.setItem(
+      keyOf("codex", "/y"),
+      JSON.stringify({ at: 20, commands: big("y") })
+    )
+    store.rememberAdvertisedCommands(
+      "claude_code",
+      "/a",
+      big("a").map((name) => command(name))
+    )
+    expect(Object.keys(stored()).sort()).toEqual(["claude_code:/a", "codex:/y"])
+  })
+
+  it("writes only its own entry, so a window that missed another's write cannot undo it", async () => {
+    // Two windows, each holding its copy before either writes.
+    const first = await load()
+    first.getLastAdvertisedCommands("claude_code", "/a")
+    vi.resetModules()
+    const second = await load()
+    second.getLastAdvertisedCommands("claude_code", "/a")
+
+    first.rememberAdvertisedCommands("claude_code", "/a", [command("review")])
+    // The second window records another folder without having heard of /a.
+    const write = vi.spyOn(Storage.prototype, "setItem")
+    const remove = vi.spyOn(Storage.prototype, "removeItem")
+    second.rememberAdvertisedCommands("codex", "/b", [command("$ship")])
+    expect(write.mock.calls.map(([key]) => key)).toEqual([keyOf("codex", "/b")])
+    expect(remove).not.toHaveBeenCalled()
+    expect(stored()).toEqual({
+      "claude_code:/a": ["review"],
+      "codex:/b": ["$ship"],
+    })
+  })
+
+  it("keeps what it could not store for as long as this window lives", async () => {
+    localStorage.setItem(
+      keyOf("claude_code", "/a"),
+      JSON.stringify({ at: 1, commands: ["review"] })
+    )
+    const store = await load()
+    const write = vi
+      .spyOn(Storage.prototype, "setItem")
+      .mockImplementation(() => {
+        throw new DOMException("full", "QuotaExceededError")
+      })
+    store.rememberAdvertisedCommands("claude_code", "/b", [command("init")])
+    store.rememberAdvertisedCommands("claude_code", "/c", [command("plan")])
+    expect(names(store.getLastAdvertisedCommands("claude_code", "/b"))).toEqual(
+      ["init"]
+    )
+    expect(names(store.getLastAdvertisedCommands("claude_code", "/c"))).toEqual(
+      ["plan"]
+    )
+    // A list that failed to store does not leave the old one standing either.
+    store.rememberAdvertisedCommands("claude_code", "/a", [command("init")])
+    expect(names(store.getLastAdvertisedCommands("claude_code", "/a"))).toEqual(
+      ["init"]
+    )
+    write.mockRestore()
+    store.rememberAdvertisedCommands("claude_code", "/a", [command("review")])
+    expect(names(store.getLastAdvertisedCommands("claude_code", "/a"))).toEqual(
+      ["review"]
+    )
+    expect(stored()["claude_code:/a"]).toEqual(["review"])
   })
 })
 
@@ -195,68 +309,62 @@ describe("getLastAdvertisedCommands", () => {
     const listener = vi.fn()
     store.subscribeLastAdvertisedCommands(listener)
 
-    writeFromAnotherWindow([
-      { agentType: "claude_code", folder: "/a", commands: ["review"] },
-      { agentType: "codex", folder: "/b", commands: ["$ship", "review"] },
-    ])
+    writeFromAnotherWindow("codex", "/b", {
+      at: 5_000,
+      commands: ["$ship", "review"],
+    })
     expect(listener).toHaveBeenCalledTimes(1)
     expect(names(store.getLastAdvertisedCommands("codex", "/b"))).toEqual([
       "$ship",
       "review",
     ])
-    // Unchanged entries keep their reference, so their readers do not re-render.
+    // Another window re-stamping /a with the same names changes nothing here.
+    writeFromAnotherWindow("claude_code", "/a", {
+      at: 6_000,
+      commands: ["review"],
+    })
+    expect(listener).toHaveBeenCalledTimes(1)
     expect(store.getLastAdvertisedCommands("claude_code", "/a")).toBe(kept)
 
     // Some other key is none of its business.
     window.dispatchEvent(new StorageEvent("storage", { key: "codeg:other" }))
     expect(listener).toHaveBeenCalledTimes(1)
 
-    // Storage cleared in another window clears this record as well.
+    // Another window dropped /b to stay under the cap.
+    writeFromAnotherWindow("codex", "/b", null)
+    expect(listener).toHaveBeenCalledTimes(2)
+    expect(store.getLastAdvertisedCommands("codex", "/b")).toBeNull()
+
+    // Storage cleared in another window clears this copy as well.
     localStorage.clear()
     window.dispatchEvent(new StorageEvent("storage", { key: null }))
+    expect(listener).toHaveBeenCalledTimes(3)
     expect(store.getLastAdvertisedCommands("claude_code", "/a")).toBeNull()
   })
 
-  it("reads a damaged record as nothing remembered, keeping what is well-formed", async () => {
-    localStorage.setItem(STORAGE_KEY, "{not json")
-    expect(
-      (await load()).getLastAdvertisedCommands("claude_code", "/a")
-    ).toBeNull()
-
-    vi.resetModules()
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({ "/a": ["review"] }))
-    expect(
-      (await load()).getLastAdvertisedCommands("claude_code", "/a")
-    ).toBeNull()
-
-    vi.resetModules()
-    localStorage.setItem(
-      STORAGE_KEY,
-      JSON.stringify([
-        null,
-        "claude_code",
-        { agentType: "claude_code", folder: "/a", commands: "review" },
-        { agentType: 7, folder: "/b", commands: ["review"] },
-        { agentType: "claude_code", folder: "", commands: ["review"] },
-        {
-          agentType: "claude_code",
-          folder: "/c",
-          commands: ["review", 3, "", { name: "x" }, "review", "init"],
-        },
-        { agentType: "codex", folder: "/d", commands: ["old"] },
-        { agentType: "codex", folder: "/d", commands: ["new"] },
-      ])
+  it("reads a damaged entry as nothing remembered, keeping what is well-formed", async () => {
+    const put = (folder: string, value: string) =>
+      localStorage.setItem(keyOf("claude_code", folder), value)
+    put("/a", "{not json")
+    put("/b", JSON.stringify(["review"]))
+    put("/c", JSON.stringify({ commands: ["review"] }))
+    put("/d", JSON.stringify({ at: "1", commands: ["review"] }))
+    put("/e", JSON.stringify({ at: 1, commands: "review" }))
+    put(
+      "/f",
+      JSON.stringify({
+        at: 1,
+        commands: ["review", 3, "", { name: "x" }, "review", "init"],
+      })
     )
+    localStorage.setItem(`${PREFIX}not json`, JSON.stringify({ at: 1 }))
     const store = await load()
-    expect(store.getLastAdvertisedCommands("claude_code", "/a")).toBeNull()
-    expect(store.getLastAdvertisedCommands("claude_code", "/b")).toBeNull()
-    expect(names(store.getLastAdvertisedCommands("claude_code", "/c"))).toEqual(
+    for (const folder of ["/a", "/b", "/c", "/d", "/e"]) {
+      expect(store.getLastAdvertisedCommands("claude_code", folder)).toBeNull()
+    }
+    expect(names(store.getLastAdvertisedCommands("claude_code", "/f"))).toEqual(
       ["review", "init"]
     )
-    // A pair stored twice reads as its later list.
-    expect(names(store.getLastAdvertisedCommands("codex", "/d"))).toEqual([
-      "new",
-    ])
   })
 
   it("is what a transcript badges before its connection advertises", async () => {

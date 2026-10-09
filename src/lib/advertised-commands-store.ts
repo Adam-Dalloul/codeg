@@ -23,11 +23,13 @@
  * offers the command now, so a command it stopped advertising should stop
  * being one. Only names are kept, because a badge checks nothing else.
  *
- * Persisted, because a restart is the case that needs it most, and shared by
- * every window of the app through the one localStorage. A write re-reads what
- * is stored first, so one window cannot write a stale copy back over another's
- * newer entry, and a `storage` event brings the other windows up to date. The
- * record is capped in size, dropping the folder advertised least recently
+ * Persisted, because a restart is the case that needs it most, as one
+ * localStorage key per agent and folder. Every window of the app shares that
+ * storage, and a single record that each window read, changed and wrote back
+ * would let two windows recording different folders at once drop one of them;
+ * with a key per entry they never write the same key unless they are recording
+ * the same thing. A `storage` event brings the other windows' copies up to
+ * date. The total is capped, dropping the folder advertised least recently
  * first: it shares the origin's quota with every draft.
  *
  * `Map`, not a plain object, for the reason `model-label-store` gives: agent
@@ -36,12 +38,13 @@
 
 import type { AvailableCommandInfo } from "@/lib/types"
 
-const STORAGE_KEY = "codeg:advertised-commands"
+/** Each entry's key: this prefix, then `[agentType, folder]` as JSON. */
+const KEY_PREFIX = "codeg:advertised-commands:"
 
 /**
- * At most this many characters of stored JSON: room for the lists of dozens of
- * folders, and a small share of the origin's quota, which every draft also
- * draws on.
+ * At most this many characters across every entry's key and value: room for
+ * the lists of dozens of folders, and a small share of the origin's quota,
+ * which every draft also draws on.
  */
 export const MAX_STORED_CHARS = 64 * 1024
 
@@ -49,27 +52,18 @@ export const MAX_STORED_CHARS = 64 * 1024
 export type AdvertisedCommands = readonly Pick<AvailableCommandInfo, "name">[]
 
 interface Entry {
-  readonly agentType: string
-  readonly folder: string
   readonly commands: AdvertisedCommands
+  /** When it was last advertised (ms since the epoch); orders eviction. */
+  readonly at: number
 }
 
-/** Oldest first: a folder that advertises again moves to the end. */
-type Entries = Map<string, Entry>
-
-let entries: Entries | null = null
+/** This window's copy, by storage key. */
+let entries: Map<string, Entry> | null = null
 const listeners = new Set<() => void>()
 let windowBound = false
 
-function keyOf(agentType: string, folder: string): string {
-  // NUL appears in no agent type and in no path, so no two pairs collide.
-  return `${agentType}\u0000${folder}`
-}
-
-function newestKey(all: Entries): string | undefined {
-  let newest: string | undefined
-  for (const key of all.keys()) newest = key
-  return newest
+function storageKeyOf(agentType: string, folder: string): string {
+  return KEY_PREFIX + JSON.stringify([agentType, folder])
 }
 
 function sameNames(a: AdvertisedCommands, b: AdvertisedCommands): boolean {
@@ -90,73 +84,136 @@ function namesOf(names: readonly unknown[]): AdvertisedCommands {
 }
 
 /**
- * Keep only well-formed entries of `[{agentType, folder, commands: [name]}]`.
+ * One stored value, or null when it is not `{at, commands: [name]}`.
  *
  * localStorage is shared with every other codeg instance on this machine and
- * survives downgrades, so the stored value is untrusted input: anything else
- * degrades to "nothing remembered" for that entry instead of reaching the
- * parser of a sent message.
+ * survives downgrades, so a stored value is untrusted input: anything else
+ * reads as "nothing remembered" instead of reaching the parser of a sent
+ * message.
  *
- * `previous` lends its lists to entries whose names did not change, so a re-read
- * (another window wrote) hands every unaffected reader the same snapshot and
+ * `previous` lends its list when the names did not change, so re-reading an
+ * entry (another window re-stamped it) hands its readers the same snapshot and
  * re-renders nothing.
  */
-function parse(raw: string | null, previous: Entries | null): Entries {
-  const out: Entries = new Map()
-  let stored: unknown
+function parseValue(raw: string | null, previous: Entry | undefined) {
+  if (!raw) return null
+  let value: unknown
   try {
-    stored = raw ? JSON.parse(raw) : []
+    value = JSON.parse(raw)
   } catch {
-    return out
+    return null
   }
-  if (!Array.isArray(stored)) return out
-  for (const item of stored) {
-    if (!item || typeof item !== "object") continue
-    const { agentType, folder, commands } = item as Record<string, unknown>
-    if (typeof agentType !== "string" || !agentType) continue
-    if (typeof folder !== "string" || !folder) continue
-    if (!Array.isArray(commands)) continue
-    const key = keyOf(agentType, folder)
-    const names = namesOf(commands)
-    const kept = previous?.get(key)?.commands
-    // A repeated pair keeps its last list, in the last one's place.
-    out.delete(key)
-    out.set(key, {
-      agentType,
-      folder,
-      commands: kept && sameNames(kept, names) ? kept : names,
-    })
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null
+  const { at, commands } = value as Record<string, unknown>
+  if (typeof at !== "number" || !Number.isFinite(at)) return null
+  if (!Array.isArray(commands)) return null
+  const names = namesOf(commands)
+  const entry: Entry = {
+    at,
+    commands:
+      previous && sameNames(previous.commands, names)
+        ? previous.commands
+        : names,
   }
-  return out
+  return entry
 }
 
-/** The stored JSON, or `undefined` when storage cannot be read at all. */
-function readStored(): string | null | undefined {
+function storedValue(entry: Entry): string {
+  return JSON.stringify({
+    at: entry.at,
+    commands: entry.commands.map((command) => command.name),
+  })
+}
+
+/** Every key this module may have written, or `undefined` when storage
+ *  cannot be read at all. */
+function storedKeys(): string[] | undefined {
   try {
-    return localStorage.getItem(STORAGE_KEY)
+    const keys: string[] = []
+    for (let index = 0; index < localStorage.length; index += 1) {
+      const key = localStorage.key(index)
+      if (key?.startsWith(KEY_PREFIX)) keys.push(key)
+    }
+    return keys
   } catch {
     return undefined
   }
+}
+
+function readStored(key: string): string | null {
+  try {
+    return localStorage.getItem(key)
+  } catch {
+    return null
+  }
+}
+
+function writeStored(key: string, value: string): void {
+  try {
+    localStorage.setItem(key, value)
+  } catch {
+    /* quota / private mode — this window's copy still serves it */
+  }
+}
+
+function removeStored(key: string): void {
+  try {
+    localStorage.removeItem(key)
+  } catch {
+    /* nothing to do: the entry simply stays */
+  }
+}
+
+/** Every stored entry, or `undefined` when storage cannot be read. */
+function readAll(previous: Map<string, Entry> | null) {
+  const keys = storedKeys()
+  if (!keys) return undefined
+  const out = new Map<string, Entry>()
+  for (const key of keys) {
+    const entry = parseValue(readStored(key), previous?.get(key))
+    if (entry) out.set(key, entry)
+  }
+  return out
 }
 
 function notify() {
   for (const listener of listeners) listener()
 }
 
+function sameCopy(a: Map<string, Entry>, b: Map<string, Entry>): boolean {
+  if (a.size !== b.size) return false
+  for (const [key, entry] of a) {
+    if (b.get(key)?.commands !== entry.commands) return false
+  }
+  return true
+}
+
 function bindWindow(): void {
   if (windowBound || typeof window === "undefined") return
   windowBound = true
   window.addEventListener("storage", (event) => {
-    // Another window wrote this record (a null key: it cleared storage). Only a
-    // window that has read the record holds a copy to bring up to date.
-    if (event.key !== null && event.key !== STORAGE_KEY) return
-    if (!entries) return
-    entries = parse(readStored() ?? null, entries)
-    notify()
+    // Only a window that has read the record holds a copy to bring up to date.
+    const copy = entries
+    if (!copy) return
+    if (event.key === null) {
+      // Another window cleared storage altogether.
+      const reread = readAll(copy)
+      if (!reread) return
+      entries = reread
+      if (!sameCopy(copy, reread)) notify()
+      return
+    }
+    if (!event.key.startsWith(KEY_PREFIX)) return
+    const previous = copy.get(event.key)
+    const next = parseValue(event.newValue, previous)
+    if (next) copy.set(event.key, next)
+    else copy.delete(event.key)
+    // The same names advertised again only re-stamp the entry: nobody wakes.
+    if (next?.commands !== previous?.commands) notify()
   })
 }
 
-function load(): Entries {
+function load(): Map<string, Entry> {
   if (typeof window === "undefined") {
     // Deliberately NOT cached: this module outlives a server render, and
     // caching an empty record here would make the first client read skip
@@ -164,47 +221,52 @@ function load(): Entries {
     return new Map()
   }
   bindWindow()
-  entries ??= parse(readStored() ?? null, null)
+  entries ??= readAll(null) ?? new Map()
   return entries
 }
 
-function storedForm({ agentType, folder, commands }: Entry) {
-  return {
-    agentType,
-    folder,
-    commands: commands.map((command) => command.name),
+/**
+ * Hold the stored entries to {@link MAX_STORED_CHARS}, measured on storage
+ * itself (other windows write there too) and never dropping `keep`, which fits
+ * on its own. An entry over the cap by itself can never fit, so it goes first;
+ * after that, the one advertised least recently. Returns whether this window's
+ * copy lost an entry.
+ */
+function trimToCap(keep: string): boolean {
+  const keys = storedKeys()
+  if (!keys) return false
+  const sized = keys.map((key) => {
+    const raw = readStored(key) ?? ""
+    return { key, raw, size: key.length + raw.length }
+  })
+  let total = sized.reduce((sum, item) => sum + item.size, 0)
+  if (total <= MAX_STORED_CHARS) return false
+  // A value nothing can read is as good as gone: it sorts before any entry.
+  const ranked = sized.map((item) => ({
+    ...item,
+    oversized: item.size > MAX_STORED_CHARS,
+    at: parseValue(item.raw, undefined)?.at ?? Number.NEGATIVE_INFINITY,
+  }))
+  ranked.sort((a, b) => {
+    if (a.oversized !== b.oversized) return a.oversized ? -1 : 1
+    return a.at === b.at ? 0 : a.at < b.at ? -1 : 1
+  })
+  let dropped = false
+  for (const item of ranked) {
+    if (total <= MAX_STORED_CHARS) break
+    if (item.key === keep) continue
+    removeStored(item.key)
+    total -= item.size
+    if (entries?.delete(item.key)) dropped = true
   }
-}
-
-/** Whether this one entry would fit the record even with nothing else in it. */
-function fitsAlone(entry: Entry): boolean {
-  return JSON.stringify([storedForm(entry)]).length <= MAX_STORED_CHARS
-}
-
-function persist(next: Entries): void {
-  const stored = [...next.values()].map(storedForm)
-  let json = JSON.stringify(stored)
-  // Oldest first, so this drops the folder advertised least recently. Never
-  // the newest, which `rememberAdvertisedCommands` only adds when it fits.
-  while (json.length > MAX_STORED_CHARS && stored.length > 1) {
-    const dropped = stored.shift()
-    if (!dropped) break
-    next.delete(keyOf(dropped.agentType, dropped.folder))
-    json = JSON.stringify(stored)
-  }
-  entries = next
-  try {
-    localStorage.setItem(STORAGE_KEY, json)
-  } catch {
-    /* quota / private mode — the in-memory record still serves this window */
-  }
-  notify()
+  return dropped
 }
 
 /**
  * Record the list an agent just advertised in a folder, replacing what it
- * advertised there before. A connection with no folder (a delegation child)
- * has nothing to file it under, and no transcript would look it up there.
+ * advertised there before and stamping the folder as the one advertised most
+ * recently. A connection with no folder (a delegation child) has nothing to
+ * file it under, and no transcript would look it up there.
  */
 export function rememberAdvertisedCommands(
   agentType: string,
@@ -212,31 +274,29 @@ export function rememberAdvertisedCommands(
   commands: readonly Pick<AvailableCommandInfo, "name">[]
 ): void {
   if (!folder || typeof window === "undefined") return
-  bindWindow()
-  // Built on what is stored NOW, not on this window's copy, which another
-  // window may have written past since it was read.
-  const raw = readStored()
-  const current = raw === undefined ? load() : parse(raw, entries)
-  const key = keyOf(agentType, folder)
+  const copy = load()
+  const key = storageKeyOf(agentType, folder)
+  const previous = copy.get(key)
   const names = namesOf(commands.map((command) => command.name))
-  const existing = current.get(key)?.commands
-  const unchanged = existing !== undefined && sameNames(existing, names)
-  // Already the newest entry, with exactly this list: the usual reconnect,
-  // which should neither write nor wake a reader. (Whatever else another
-  // window changed reaches this one through its `storage` event.)
-  if (unchanged && newestKey(current) === key) return
-  const next = new Map(current)
-  next.delete(key)
   const entry: Entry = {
-    agentType,
-    folder,
-    commands: unchanged ? existing : names,
+    at: Date.now(),
+    commands:
+      previous && sameNames(previous.commands, names)
+        ? previous.commands
+        : names,
   }
-  // A list too long to keep even on its own is forgotten rather than kept in
-  // its stale form, and does not push every other folder out on its way.
-  if (fitsAlone(entry)) next.set(key, entry)
-  else if (existing === undefined) return
-  persist(next)
+  const value = storedValue(entry)
+  if (key.length + value.length > MAX_STORED_CHARS) {
+    // A list too long to keep even on its own is forgotten rather than kept
+    // in its stale form, and pushes no other folder out on its way.
+    if (copy.delete(key)) notify()
+    removeStored(key)
+    return
+  }
+  copy.set(key, entry)
+  writeStored(key, value)
+  const trimmed = trimToCap(key)
+  if (entry.commands !== previous?.commands || trimmed) notify()
 }
 
 /**
@@ -249,7 +309,7 @@ export function getLastAdvertisedCommands(
   folder: string | null | undefined
 ): AdvertisedCommands | null {
   if (!folder) return null
-  return load().get(keyOf(agentType, folder))?.commands ?? null
+  return load().get(storageKeyOf(agentType, folder))?.commands ?? null
 }
 
 export function subscribeLastAdvertisedCommands(
