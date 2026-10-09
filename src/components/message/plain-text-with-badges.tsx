@@ -13,8 +13,8 @@ import { parseUserMessageSegments } from "./user-message-segments"
 /**
  * One prose run: literal text with the five built-in reference kinds (file /
  * agent / session / commit / skill) resolved into inline colored badges. A bare
- * `/word`·`$word` is a skill badge only when the transcript's agent advertises
- * it ({@link useKnownInvocations}); a path or any other slash word stays text.
+ * `/word`·`$word` is a skill badge only when the transcript's agent offers it
+ * ({@link useKnownInvocations}); a path or any other slash word stays text.
  *
  * A fragment, not a wrapping element, so adjacent text and badges share one
  * inline flow and the caller's `whitespace-pre-wrap` collapses nothing.

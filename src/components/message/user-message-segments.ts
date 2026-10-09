@@ -32,8 +32,8 @@ const REFERENCE_SCHEME = /^(?:file:|codeg:)/i
  * sent invocation token renders identically to the composer's inline badge,
  * which shows the bare command/skill name.
  *
- * `known`, when given, is the list of invocations the agent actually advertises,
- * and a token outside it stays literal text.
+ * `known`, when given, is the list of invocations the agent actually offers, and
+ * a token outside it stays literal text.
  */
 function pushProseSegments(
   value: string,
@@ -74,7 +74,7 @@ function pushProseSegments(
 
 export interface UserMessageSegmentOptions {
   /**
-   * Restrict pass 2 below to the invocations an agent really advertises. Both
+   * Restrict pass 2 below to the invocations an agent really offers. Both
    * the composer (so seeded/pasted text cannot invent a command) and the sent
    * message bubble (so `/tmp` or `/etc` in prose is not shown as one) pass it.
    * Omitting it falls back to the bare shape test alone, which badges any
