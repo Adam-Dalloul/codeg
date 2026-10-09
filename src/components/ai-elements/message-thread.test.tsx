@@ -192,24 +192,49 @@ describe("MessageThread escape on user scroll", () => {
 
   const viewport = () => testState.scrollRef.current as HTMLDivElement
 
+  /** Where a classic scrollbar sits: just right of the 600px client box. */
+  const SCROLLBAR_X = 605
+
   /** Mount with a scrollable viewport and a plain row inside it. */
   const mountScrollable = () => {
     makeScrollable(viewport())
+    Object.defineProperty(viewport(), "clientWidth", {
+      configurable: true,
+      value: 600,
+    })
     const row = document.createElement("div")
     viewport().appendChild(row)
     mountThreadAt(400)
     return row
   }
 
-  const wheel = (target: Element, deltaY: number) =>
-    target.dispatchEvent(new WheelEvent("wheel", { deltaY, bubbles: true }))
+  const wheel = (target: Element, deltaY: number, deltaX = 0) =>
+    target.dispatchEvent(
+      new WheelEvent("wheel", { deltaX, deltaY, bubbles: true })
+    )
 
-  const touch = (target: Element, type: string, clientY: number) => {
+  const touch = (
+    target: Element,
+    type: string,
+    clientY: number,
+    clientX = 100
+  ) => {
     const event = new Event(type, { bubbles: true })
     Object.defineProperty(event, "touches", {
-      value: type === "touchend" ? [] : [{ clientY }],
+      value: type === "touchend" ? [] : [{ clientX, clientY }],
     })
     target.dispatchEvent(event)
+  }
+
+  // jsdom has no PointerEvent; the listener only reads `button`.
+  const press = (target: Element, clientX = 0) =>
+    target.dispatchEvent(
+      new MouseEvent("pointerdown", { button: 0, clientX, bubbles: true })
+    )
+  const release = () => window.dispatchEvent(new MouseEvent("pointerup"))
+  const scrollViewportTo = (scrollTop: number) => {
+    viewport().scrollTop = scrollTop
+    viewport().dispatchEvent(new Event("scroll"))
   }
 
   // The reported bug, desktop: the library only escapes a wheel whose nearest
@@ -264,6 +289,42 @@ describe("MessageThread escape on user scroll", () => {
     expect(testState.stopScroll).toHaveBeenCalledTimes(1)
   })
 
+  // A trackpad swipe along a wide code block drifts a little up, but the code
+  // block takes it sideways and the transcript never moves.
+  it("leaves the lock alone on a sideways wheel that drifts up", () => {
+    mountScrollable()
+    const code = document.createElement("pre")
+    code.style.overflow = "auto"
+    viewport().appendChild(code)
+
+    wheel(code, -4, 120)
+
+    expect(testState.stopScroll).not.toHaveBeenCalled()
+  })
+
+  // Same on touch: panning a code block sideways drifts down a few pixels.
+  // The axis is settled once per touch, so a later downward drag in the same
+  // touch does not reopen the question.
+  it("leaves the lock alone on a sideways pan that drifts down", () => {
+    const row = mountScrollable()
+
+    touch(row, "touchstart", 300, 200)
+    touch(row, "touchmove", 304, 150)
+    touch(row, "touchmove", 310, 60)
+    touch(row, "touchmove", 400, 60)
+
+    expect(testState.stopScroll).not.toHaveBeenCalled()
+  })
+
+  it("escapes on a diagonal drag that is mostly downward", () => {
+    const row = mountScrollable()
+
+    touch(row, "touchstart", 300, 200)
+    touch(row, "touchmove", 320, 210)
+
+    expect(testState.stopScroll).toHaveBeenCalledTimes(1)
+  })
+
   it("does not escape when a finger drags the transcript up", () => {
     const row = mountScrollable()
 
@@ -288,6 +349,68 @@ describe("MessageThread escape on user scroll", () => {
       new KeyboardEvent("keydown", { key: "PageUp", bubbles: true })
     )
     expect(testState.stopScroll).toHaveBeenCalledTimes(1)
+  })
+
+  // The reported bug, scrollbar: a drag reaches the library only as scroll
+  // events, which it discards while a content resize is in flight.
+  it("escapes when the scrollbar is dragged up, even mid-resize", () => {
+    mountScrollable()
+    testState.state.resizeDifference = 24
+
+    press(viewport(), SCROLLBAR_X)
+    // While the thumb is held, the stream grows the content and the library
+    // follows it down to the new bottom: a downward scroll, not an escape.
+    Object.defineProperty(viewport(), "scrollHeight", {
+      configurable: true,
+      value: 2100,
+    })
+    scrollViewportTo(1700)
+    expect(testState.stopScroll).not.toHaveBeenCalled()
+
+    scrollViewportTo(1500)
+    expect(testState.stopScroll).toHaveBeenCalledTimes(1)
+  })
+
+  // An overlay scrollbar (the macOS default) takes no layout space, so the
+  // press lands inside the client box. It still targets the viewport itself.
+  it("recognises a press on an overlay scrollbar drawn inside the client box", () => {
+    mountScrollable()
+
+    press(viewport(), 590)
+    scrollViewportTo(1500)
+
+    expect(testState.stopScroll).toHaveBeenCalledTimes(1)
+  })
+
+  it("leaves the lock alone when a press on the transcript precedes an upward scroll", () => {
+    const row = mountScrollable()
+
+    press(row)
+    scrollViewportTo(1500)
+
+    expect(testState.stopScroll).not.toHaveBeenCalled()
+  })
+
+  it("stops reading upward scrolls as a scrollbar drag once the press ends", () => {
+    mountScrollable()
+
+    press(viewport(), SCROLLBAR_X)
+    release()
+    scrollViewportTo(1500)
+
+    expect(testState.stopScroll).not.toHaveBeenCalled()
+  })
+
+  // If the release never reaches the page, the next press on the transcript
+  // still ends the drag rather than leaving it armed.
+  it("ends a scrollbar drag on the next press on the transcript", () => {
+    const row = mountScrollable()
+
+    press(viewport(), SCROLLBAR_X)
+    press(row)
+    scrollViewportTo(1500)
+
+    expect(testState.stopScroll).not.toHaveBeenCalled()
   })
 
   it("does nothing once the lock is already released", () => {

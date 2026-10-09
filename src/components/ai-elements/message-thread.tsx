@@ -156,30 +156,43 @@ const EscapeLockOnUserScroll = () => {
 
     const onWheel = (event: WheelEvent) => {
       if (event.deltaY >= 0 || event.ctrlKey) return
+      // A mostly sideways wheel (a trackpad swipe along a wide code block or
+      // table) drifts a little up or down, but it is not a scroll towards older
+      // messages: when a horizontal scroller takes it the transcript never
+      // moves, so it must not release the lock either.
+      if (Math.abs(event.deltaX) > Math.abs(event.deltaY)) return
       if (nestedScrollerTakesUpward(event.target, viewport)) return
       escape()
     }
 
-    let touchY: number | null = null
+    // Where the finger was at the top of its travel so far, so an up-then-down
+    // drag is measured from where it turned.
+    let touchFrom: { x: number; y: number } | null = null
     const onTouchStart = (event: TouchEvent) => {
-      touchY = event.touches.length === 1 ? event.touches[0].clientY : null
+      const touch = event.touches.length === 1 ? event.touches[0] : null
+      touchFrom = touch ? { x: touch.clientX, y: touch.clientY } : null
     }
     const onTouchMove = (event: TouchEvent) => {
-      if (touchY === null || event.touches.length !== 1) return
+      if (touchFrom === null || event.touches.length !== 1) return
       // Finger moving down drags the content down: scrolling towards the top.
-      // Measured from the lowest point so far, so an up-then-down drag counts.
-      const y = event.touches[0].clientY
-      if (y < touchY) {
-        touchY = y
+      const { clientX: x, clientY: y } = event.touches[0]
+      if (y < touchFrom.y) {
+        touchFrom = { x, y }
         return
       }
-      if (y - touchY < TOUCH_ESCAPE_SLOP_PX) return
-      touchY = null
+      const travel = y - touchFrom.y
+      if (travel < TOUCH_ESCAPE_SLOP_PX) return
+      // Decided once per touch, the way the browser settles a pan's axis. A
+      // sideways pan (across a code block or table) that drifts down is not a
+      // drag of the transcript, so it leaves the lock alone.
+      const sideways = Math.abs(x - touchFrom.x) > travel
+      touchFrom = null
+      if (sideways) return
       if (nestedScrollerTakesUpward(event.target, viewport)) return
       escape()
     }
     const onTouchEnd = () => {
-      touchY = null
+      touchFrom = null
     }
 
     const onKeyDown = (event: KeyboardEvent) => {
@@ -192,17 +205,16 @@ const EscapeLockOnUserScroll = () => {
       escape()
     }
 
-    // Dragging the native scrollbar: a press on the viewport outside its
-    // client box, then any upward scroll until the press ends.
+    // Dragging the native scrollbar: a primary press on the viewport element
+    // itself, then any upward scroll until the press ends. A press on the
+    // transcript targets the content inside the viewport, so a press whose
+    // target is the viewport landed on its scrollbar or gutter. That is checked
+    // by target rather than position because an overlay scrollbar (the macOS
+    // default) takes no layout space: it is drawn inside the client box.
     let draggingScrollbar = false
     let lastScrollTop = viewport.scrollTop
     const onPointerDown = (event: PointerEvent) => {
-      if (event.target !== viewport || event.button !== 0) return
-      const rect = viewport.getBoundingClientRect()
-      const clientStart = rect.left + viewport.clientLeft
-      const x = event.clientX
-      draggingScrollbar =
-        x < clientStart || x > clientStart + viewport.clientWidth
+      draggingScrollbar = event.target === viewport && event.button === 0
       lastScrollTop = viewport.scrollTop
     }
     const onPointerEnd = () => {
