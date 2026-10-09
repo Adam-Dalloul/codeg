@@ -106,8 +106,11 @@ interface MessageListViewProps {
    * list behind the composer's `/` menu). A bare `/word` in a sent user message
    * is shown as a command badge only when it names one of these (or, for Codex,
    * one of its `$` skills); with none known, nothing is badged.
+   *
+   * Required, though it may be null: a surface that left it out would never
+   * badge a real command, so every surface mounting a transcript must decide.
    */
-  availableCommands?: readonly AvailableCommandInfo[] | null
+  availableCommands: readonly AvailableCommandInfo[] | null | undefined
   connStatus?: ConnectionStatus | null
   isActive?: boolean
   sendSignal?: number
@@ -1078,7 +1081,7 @@ export function MessageListView({
   conversationId,
   imageRoot,
   agentType,
-  availableCommands = null,
+  availableCommands,
   connStatus,
   isActive = true,
   sendSignal = 0,
