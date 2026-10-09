@@ -34,6 +34,7 @@ import { TurnStats } from "./turn-stats"
 import { LiveTurnStats } from "./live-turn-stats"
 import { ModelLabelProvider } from "./model-label-context"
 import { KnownInvocationsProvider } from "./known-invocations-context"
+import { useTranscriptKnownInvocations } from "./use-transcript-known-invocations"
 import { ReplyArtifacts } from "./reply-artifacts"
 import { UserResourceLinks } from "./user-resource-links"
 import { UserImageAttachments } from "./user-image-attachments"
@@ -88,8 +89,6 @@ import {
 import type { MessageScrollContextValue } from "@/components/message/message-scroll-context"
 import { extractSessionFilesGrouped } from "@/lib/session-files"
 import { useModelLabels } from "@/hooks/use-model-labels"
-import { useAgentSkills } from "@/hooks/use-agent-skills"
-import { buildKnownInvocations } from "@/components/chat/composer/invocation-reference"
 import { usePageHandoffName } from "@/lib/browser/use-page-handoff-name"
 import { unescapeComposerText } from "@/lib/composer-copy-text"
 import { useStickToBottomContext } from "use-stick-to-bottom"
@@ -1129,20 +1128,11 @@ export function MessageListView({
     imageRoot === undefined ? storedImageRoot : imageRoot
   // What a bare `/word`·`$word` in a user bubble has to be on to render as a
   // command badge: exactly what the composer's menu offers this agent, so the
-  // bubble never claims a command for a path or a word in prose. Codex's `$`
-  // skills come from disk (shared cache with the composer's own scan).
-  const transcriptSkills = useAgentSkills(
-    agentType === "codex" ? "codex" : null,
+  // bubble never claims a command for a path or a word in prose.
+  const knownInvocations = useTranscriptKnownInvocations(
+    agentType,
+    availableCommands,
     resolvedImageRoot
-  )
-  const knownInvocations = useMemo(
-    () =>
-      buildKnownInvocations(
-        availableCommands,
-        transcriptSkills,
-        agentType === "codex" ? "$" : "/"
-      ),
-    [availableCommands, transcriptSkills, agentType]
   )
   const hasOlderTurns = isWindowedDetail(detail) && detail.turns_offset > 0
   const loadingOlderTurns = session?.loadingOlderTurns ?? false
