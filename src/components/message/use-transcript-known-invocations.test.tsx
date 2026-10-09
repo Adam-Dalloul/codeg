@@ -159,8 +159,12 @@ describe("useTranscriptKnownInvocations", () => {
   })
 
   it("follows a newer record while the list is unknown, and ignores it once known", () => {
+    let renders = 0
     const { result, rerender } = renderHook(
-      ({ list }) => useTranscriptKnownInvocations("claude_code", list, "/ws"),
+      ({ list }) => {
+        renders += 1
+        return useTranscriptKnownInvocations("claude_code", list, "/ws")
+      },
       {
         initialProps: {
           list: null as readonly AvailableCommandInfo[] | null,
@@ -175,7 +179,11 @@ describe("useTranscriptKnownInvocations", () => {
     const commands = [command("init")]
     rerender({ list: commands })
     const live = result.current
+    const rendersWithLiveList = renders
+    // A newer record no longer concerns this transcript: it does not even
+    // re-render, let alone change what it badges.
     remember("claude_code", "/ws", ["review", "deploy"])
+    expect(renders).toBe(rendersWithLiveList)
     expect(result.current).toBe(live)
     expect(sorted(result.current)).toEqual(["/init"])
   })
@@ -281,9 +289,11 @@ describe("MessageListView", () => {
     expect(
       commandsPassedBy("src/components/canvas/canvas-conversation-surface.tsx")
     ).toBe("conn.availableCommands")
+    // Except with no agent known at all: then nothing it remembered applies,
+    // and `[]` is the deliberate answer.
     expect(
       commandsPassedBy("src/components/message/live-transcript-view.tsx")
-    ).toBe("conn?.availableCommands")
+    ).toBe("transcriptAgent ? conn?.availableCommands : []")
     const detailPanel =
       "src/components/conversations/conversation-detail-panel.tsx"
     expect(commandsPassedBy(detailPanel)).toBe("connectionCommands")

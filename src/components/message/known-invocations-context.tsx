@@ -11,9 +11,8 @@ import {
  * The invocations (`/review`, `$deploy`) the transcript's agent offers, as
  * `useTranscriptKnownInvocations` works them out (including before its
  * connection advertises), provided once by `MessageListView` and read by the
- * user-message renderer so a bare `/word` in a sent message becomes a command
- * badge only when the agent really has that command, the same rule the
- * composer applies.
+ * user-message renderer: a bare `/word` in a sent message becomes a command
+ * badge only when it is on that list, the rule the composer applies to its own.
  *
  * A context rather than a prop for the same reason as `ModelLabelContext`: the
  * memoized message groups between the two never read it themselves.

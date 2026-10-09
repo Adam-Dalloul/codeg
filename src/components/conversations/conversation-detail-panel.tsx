@@ -732,9 +732,9 @@ const ConversationTabView = memo(function ConversationTabView({
   )
   // `null` until this tab's agent has advertised (no connection, one still
   // coming up, or one still bound to another agent), never `[]`, which is an
-  // answer: the agent offers nothing. The composers read the two alike; the
-  // transcript tells them apart, badging from what this agent last advertised
-  // in this folder while the list is unknown.
+  // answer: the agent offers no commands. The composers read the two alike;
+  // the transcript tells them apart, badging from what this agent last
+  // advertised in this folder while the list is unknown.
   const connectionCommands = connIsForOtherAgent ? null : conn.availableCommands
   const selectedModeId = useMemo(() => {
     if (connectionModes.length === 0) return null

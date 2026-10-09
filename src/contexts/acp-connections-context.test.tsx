@@ -6873,4 +6873,44 @@ describe("AcpConnectionsProvider remembers advertised commands", () => {
       [REVIEW]
     )
   })
+
+  it("files the list a stale snapshot fills in, when the connection had none", async () => {
+    const handlers = await connectOwner()
+    // A later event moves the cursor past the snapshot's seq, so the hydrate
+    // takes the stale branch, which still fills a list the connection lacks.
+    emitAcpEvent(handlers, {
+      seq: 6,
+      connection_id: "spawned-conn",
+      type: "usage_update",
+      used: 10,
+      size: 100,
+    })
+    h.denormalizeSnapshot.mockReturnValue({
+      ...snapshotBase(),
+      availableCommands: [INIT],
+      eventSeq: 5,
+    })
+    hydrateSnapshot(handlers, {
+      event_seq: 5,
+    } as unknown as LiveSessionSnapshot)
+    expect(h.store!.getConnection(TAB)!.availableCommands).toEqual([INIT])
+    expect(h.rememberAdvertisedCommands).toHaveBeenCalledTimes(1)
+    expect(h.rememberAdvertisedCommands).toHaveBeenCalledWith(
+      "claude_code",
+      "/tmp/x",
+      [INIT]
+    )
+
+    // A stale snapshot never replaces a list the connection already has.
+    h.denormalizeSnapshot.mockReturnValue({
+      ...snapshotBase(),
+      availableCommands: [REVIEW],
+      eventSeq: 5,
+    })
+    hydrateSnapshot(handlers, {
+      event_seq: 5,
+    } as unknown as LiveSessionSnapshot)
+    expect(h.store!.getConnection(TAB)!.availableCommands).toEqual([INIT])
+    expect(h.rememberAdvertisedCommands).toHaveBeenCalledTimes(1)
+  })
 })

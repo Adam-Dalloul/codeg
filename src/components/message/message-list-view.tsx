@@ -108,11 +108,13 @@ interface MessageListViewProps {
    *
    * `null`/`undefined` while the agent has not advertised (no connection, or
    * one still coming up): the transcript then badges what this agent last
-   * advertised in this folder, and nothing if it never has. `[]` is an answer,
-   * not that gap: the agent offers nothing, so nothing is badged.
+   * advertised in this folder, and no command if it never has. `[]` is an
+   * answer, not that gap: the agent offers no commands, so only Codex's disk
+   * skills can badge.
    *
-   * Required, though it may be null: a surface that left it out would never
-   * badge a real command, so every surface mounting a transcript must decide.
+   * Required, though it may be null: a surface that left it out would badge
+   * only what the agent advertised on some earlier connection, never what it
+   * offers now, so every surface mounting a transcript must decide.
    */
   availableCommands: readonly AvailableCommandInfo[] | null | undefined
   connStatus?: ConnectionStatus | null
