@@ -140,11 +140,12 @@ function storedKeys(): string[] | undefined {
   }
 }
 
-function readStored(key: string): string | null {
+/** One stored value, or `undefined` when storage cannot be read. */
+function readStored(key: string): string | null | undefined {
   try {
     return localStorage.getItem(key)
   } catch {
-    return null
+    return undefined
   }
 }
 
@@ -164,13 +165,16 @@ function removeStored(key: string): void {
   }
 }
 
-/** Every stored entry, or `undefined` when storage cannot be read. */
+/** Every stored entry, or `undefined` when storage cannot be read in full:
+ *  a copy missing what it failed to read would pass for one where it is gone. */
 function readAll(previous: Map<string, Entry> | null) {
   const keys = storedKeys()
   if (!keys) return undefined
   const out = new Map<string, Entry>()
   for (const key of keys) {
-    const entry = parseValue(readStored(key), previous?.get(key))
+    const raw = readStored(key)
+    if (raw === undefined) return undefined
+    const entry = parseValue(raw, previous?.get(key))
     if (entry) out.set(key, entry)
   }
   return out
@@ -204,8 +208,14 @@ function bindWindow(): void {
       return
     }
     if (!event.key.startsWith(KEY_PREFIX)) return
+    // What is stored now, not the event's `newValue`: events queue, and one
+    // sent before this window's own newer write would put the older list back.
+    const raw = readStored(event.key)
+    if (raw === undefined) return
     const previous = copy.get(event.key)
-    const next = parseValue(event.newValue, previous)
+    const next = parseValue(raw, previous)
+    // Nor may an older list replace a newer one this window could not store.
+    if (next && previous && next.at < previous.at) return
     if (next) copy.set(event.key, next)
     else copy.delete(event.key)
     // The same names advertised again only re-stamp the entry: nobody wakes.

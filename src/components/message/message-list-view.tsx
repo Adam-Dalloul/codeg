@@ -113,8 +113,9 @@ interface MessageListViewProps {
    * skills can badge.
    *
    * Required, though it may be null: a surface that left it out would badge
-   * only what the agent advertised on some earlier connection, never what it
-   * offers now, so every surface mounting a transcript must decide.
+   * from whatever this agent last advertised in the folder, on any
+   * connection, instead of from its own connection's list, so every surface
+   * mounting a transcript must decide.
    */
   availableCommands: readonly AvailableCommandInfo[] | null | undefined
   connStatus?: ConnectionStatus | null

@@ -342,6 +342,61 @@ describe("getLastAdvertisedCommands", () => {
     expect(store.getLastAdvertisedCommands("claude_code", "/a")).toBeNull()
   })
 
+  it("does not let a queued event from an older write put that list back", async () => {
+    const store = await load()
+    store.rememberAdvertisedCommands("claude_code", "/a", [command("new")])
+    const listener = vi.fn()
+    store.subscribeLastAdvertisedCommands(listener)
+    // Another window stored `old` just before this one stored `new`, and its
+    // event only arrives now, with storage already holding the later write.
+    window.dispatchEvent(
+      new StorageEvent("storage", {
+        key: keyOf("claude_code", "/a"),
+        newValue: JSON.stringify({ at: 1, commands: ["old"] }),
+      })
+    )
+    expect(names(store.getLastAdvertisedCommands("claude_code", "/a"))).toEqual(
+      ["new"]
+    )
+    expect(listener).not.toHaveBeenCalled()
+  })
+
+  it("keeps a newer list it could not store over an older one in storage", async () => {
+    const stale = JSON.stringify({ at: 1, commands: ["old"] })
+    localStorage.setItem(keyOf("claude_code", "/a"), stale)
+    const store = await load()
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new DOMException("full", "QuotaExceededError")
+    })
+    store.rememberAdvertisedCommands("claude_code", "/a", [command("new")])
+    // The event for another window's earlier write of that older list.
+    window.dispatchEvent(
+      new StorageEvent("storage", {
+        key: keyOf("claude_code", "/a"),
+        newValue: stale,
+      })
+    )
+    expect(names(store.getLastAdvertisedCommands("claude_code", "/a"))).toEqual(
+      ["new"]
+    )
+  })
+
+  it("keeps its copy when storage cannot be read back", async () => {
+    const store = await load()
+    store.rememberAdvertisedCommands("claude_code", "/a", [command("review")])
+    vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
+      throw new DOMException("denied", "SecurityError")
+    })
+    // Unreadable is not the same as gone, for one entry or for all of them.
+    window.dispatchEvent(
+      new StorageEvent("storage", { key: keyOf("claude_code", "/a") })
+    )
+    window.dispatchEvent(new StorageEvent("storage", { key: null }))
+    expect(names(store.getLastAdvertisedCommands("claude_code", "/a"))).toEqual(
+      ["review"]
+    )
+  })
+
   it("reads a damaged entry as nothing remembered, keeping what is well-formed", async () => {
     const put = (folder: string, value: string) =>
       localStorage.setItem(keyOf("claude_code", folder), value)
