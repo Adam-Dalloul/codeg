@@ -2011,6 +2011,15 @@ const ConversationTabView = memo(function ConversationTabView({
           conversationId: result.conversationId,
           accountId: result.agentAccountId,
         })
+        await acpActions.adoptOwnedConnection({
+          contextKey: tabId,
+          connectionId: result.connectionId,
+          agentType: selectedAgent,
+          agentAccountId: result.agentAccountId,
+          workingDir: workingDirForConnection,
+          sessionId: result.externalId,
+          conversationId: result.conversationId,
+        })
         setDraftAccounts((previous) => ({
           ...previous,
           [selectedAgent]: result.agentAccountId,
@@ -2031,6 +2040,7 @@ const ConversationTabView = memo(function ConversationTabView({
       dbConversationId,
       selectedAccountId,
       selectedAgent,
+      workingDirForConnection,
       acpActions,
       tabId,
       effectiveConversationId,

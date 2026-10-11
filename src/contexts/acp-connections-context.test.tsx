@@ -173,6 +173,31 @@ async function mountProvider() {
   await act(async () => {})
 }
 
+it("owns the connection returned by an account switch without spawning it again", async () => {
+  await mountProvider()
+  await act(async () => {
+    await h.actions!.adoptOwnedConnection({
+      contextKey: "account-switch-tab",
+      connectionId: "verified-target",
+      agentType: "claude_code",
+      agentAccountId: "work",
+      workingDir: "/tmp/project",
+      sessionId: "same-session",
+      conversationId: 42,
+    })
+  })
+  const connection = h.store!.getConnection("account-switch-tab")!
+  expect(connection.connectionId).toBe("verified-target")
+  expect(connection.agentAccountId).toBe("work")
+  expect(connection.isViewer).toBe(false)
+  expect(h.acpConnect).not.toHaveBeenCalled()
+  expect(h.acpFindConnectionForConversation).not.toHaveBeenCalled()
+  await act(async () => {
+    await h.actions!.disconnect("account-switch-tab")
+  })
+  expect(h.acpDisconnect).toHaveBeenCalledWith("verified-target")
+})
+
 const TAB = "conv-1-claude_code-42"
 
 beforeEach(() => {

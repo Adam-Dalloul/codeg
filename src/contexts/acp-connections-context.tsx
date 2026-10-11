@@ -3139,6 +3139,17 @@ export type LiveMessageSink = (
 ) => void
 
 export interface AcpActionsValue {
+  /** Attach the connection created for this client by an explicit account
+   * switch as its owner, retaining controls and normal teardown behavior. */
+  adoptOwnedConnection(args: {
+    contextKey: string
+    connectionId: string
+    agentType: AgentType
+    agentAccountId: string | null
+    workingDir?: string
+    sessionId: string
+    conversationId: number
+  }): Promise<void>
   connect(
     contextKey: string,
     agentType: AgentType,
@@ -6481,13 +6492,14 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
   // Returns `false` when the connection turned out to be already gone, so the
   // caller can fall through and spawn/own one instead of leaving a viewer
   // attached to nothing.
-  const connectAsViewer = useCallback(
+  const attachExistingConnection = useCallback(
     async (
       contextKey: string,
       connectionId: string,
       agentType: AgentType,
       workingDir: string | null,
-      agentAccountId?: string | null
+      agentAccountId?: string | null,
+      owned = false
     ): Promise<boolean> => {
       dispatch({
         type: "CONNECTION_CREATED",
@@ -6495,7 +6507,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
         connectionId,
         agentType,
         workingDir,
-        isViewer: true,
+        isViewer: !owned,
         agentAccountId,
       })
       lastActivityRef.current.set(contextKey, Date.now())
@@ -6582,6 +6594,24 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
       seedDelegationsFromSnapshot,
       setupAttachSubscription,
     ]
+  )
+
+  const adoptOwnedConnection = useCallback(
+    async (args: Parameters<AcpActionsValue["adoptOwnedConnection"]>[0]) => {
+      const { contextKey, connectionId, ...identity } = args
+      lastConnectParamsRef.current.set(contextKey, identity)
+      setConnectError(contextKey, null)
+      await waitForListenerReady()
+      await attachExistingConnection(
+        contextKey,
+        connectionId,
+        args.agentType,
+        args.workingDir ?? null,
+        args.agentAccountId,
+        true
+      )
+    },
+    [attachExistingConnection, setConnectError, waitForListenerReady]
   )
 
   const connect = useCallback(
@@ -6909,7 +6939,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
             ? localOwnerKeyOf(discovered.connection_id)
             : null
           if (discovered && localOwnerKey !== contextKey) {
-            const attached = await connectAsViewer(
+            const attached = await attachExistingConnection(
               contextKey,
               discovered.connection_id,
               agentType,
@@ -7148,7 +7178,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
       applyMappedEnvelope,
       bindConnectionRoute,
       captureIdentityBeforeRemoval,
-      connectAsViewer,
+      attachExistingConnection,
       consumeBufferedEvents,
       dispatch,
       flushStreamingQueue,
@@ -7826,6 +7856,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
 
   const actions = useMemo<AcpActionsValue>(
     () => ({
+      adoptOwnedConnection,
       connect,
       disconnect,
       disconnectIfIdle,
@@ -7854,6 +7885,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
       registerSessionFailureActions,
     }),
     [
+      adoptOwnedConnection,
       connect,
       disconnect,
       disconnectIfIdle,
