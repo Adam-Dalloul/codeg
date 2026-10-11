@@ -232,13 +232,13 @@ impl Source {
         })
     }
     fn token(&self) -> Option<String> {
-        let env_key = match self.account.family.as_str() {
-            "claude" => "CLAUDE_CODE_OAUTH_TOKEN",
-            "cursor" => "CURSOR_API_KEY",
-            "opencode" => "OPENCODE_GO_API_KEY",
-            _ => "",
+        let env_keys: &[&str] = match self.account.family.as_str() {
+            "claude" => &["CLAUDE_CODE_OAUTH_TOKEN"],
+            "cursor" => &["CURSOR_API_KEY", "CURSOR_AUTH_TOKEN"],
+            "opencode" => &["OPENCODE_GO_API_KEY", "OPENCODE_API_KEY"],
+            _ => &[],
         };
-        if let Some(value) = self.value(env_key) {
+        if let Some(value) = env_keys.iter().find_map(|key| self.value(key)) {
             return Some(value);
         }
         let text = std::fs::read_to_string(self.credential_path()?).ok()?;
@@ -539,6 +539,28 @@ pub async fn subscription_quota_read(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn configured_key_aliases_are_preserved_without_inheriting_default_credentials() {
+        for (agent, key) in [
+            (AgentType::OpenCode, "OPENCODE_API_KEY"),
+            (AgentType::Cursor, "CURSOR_AUTH_TOKEN"),
+        ] {
+            let mut source = Source {
+                account: QuotaAccount {
+                    agent_type: agent,
+                    agent_account_id: None,
+                    family: family(agent).unwrap().into(),
+                    name: None,
+                },
+                env: BTreeMap::from([(key.into(), "own-fixture-key".into())]),
+                isolated: true,
+            };
+            assert_eq!(source.token().as_deref(), Some("own-fixture-key"));
+            source.env.clear();
+            assert!(source.token().is_none());
+            assert!(agent_accounts::credential_env_keys(agent).contains(&key));
+        }
+    }
     #[test]
     fn response_only_contains_allowlisted_usage() {
         let v = public_payload(
