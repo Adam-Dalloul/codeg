@@ -210,9 +210,8 @@ impl CodexParser {
         Self { base_dir }
     }
 
-    /// Test-only constructor that lets callers point the parser at a fixture
+    /// Explicit-root constructor for an account or fixture
     /// directory instead of `~/.codex/sessions`.
-    #[cfg(any(test, feature = "test-utils"))]
     pub fn with_base_dir(base_dir: PathBuf) -> Self {
         Self { base_dir }
     }

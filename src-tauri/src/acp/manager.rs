@@ -286,6 +286,7 @@ fn delegation_child_title_seed(blocks: &[PromptInputBlock]) -> Option<String> {
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 struct SpawnDedupKey {
     agent_type: AgentType,
+    storage_key: Option<String>,
     working_dir: Option<PathBuf>,
     session_id: String,
 }
@@ -712,10 +713,13 @@ impl ConnectionManager {
         // is None (fresh sessions can't dedup — by design — since the
         // agent assigns the id).
         let session_id_for_log = session_id.clone();
+        let account_id = runtime_env.get(crate::acp::agent_accounts::ACCOUNT_ENV).cloned();
+        let storage = crate::acp::agent_accounts::storage_identity(agent_type, &runtime_env);
         let dedup_lock = if let Some(sid) = session_id.as_deref() {
             let key = SpawnDedupKey {
-                agent_type,
-                working_dir: working_dir_path.clone(),
+                agent_type: storage.as_ref().map(|(agent, _)| *agent).unwrap_or(agent_type),
+                storage_key: storage.as_ref().map(|(_, path)| crate::parsers::normalize_path_for_matching(&path.canonicalize().unwrap_or_else(|_| path.clone()).to_string_lossy())),
+                working_dir: if storage.is_some() { None } else { working_dir_path.clone() },
                 session_id: sid.to_string(),
             };
             let mu = {
@@ -730,8 +734,9 @@ impl ConnectionManager {
             None
         };
 
+        self.ensure_account_session_available(agent_type, account_id.as_deref(), storage.as_ref(), session_id.as_deref()).await?;
         if let Some(existing) = self
-            .find_connection_for_reuse(agent_type, working_dir_path.as_ref(), session_id.as_deref())
+            .find_connection_for_account(agent_type, working_dir_path.as_ref(), session_id.as_deref(), account_id.as_deref())
             .await
         {
             tracing::info!(
@@ -895,12 +900,26 @@ impl ConnectionManager {
         fresh: &HashMap<AgentType, String>,
         kind: ConfigStaleKind,
     ) -> usize {
+        let mut by_connection = HashMap::new();
+        for connection in self.list_connections().await {
+            let Some(state) = self.get_state(&connection.id).await else { continue; };
+            if state.read().await.agent_account_id.is_some() { continue; }
+            if let Some(fp) = fresh.get(&connection.agent_type) { by_connection.insert(connection.id, fp.clone()); }
+        }
+        self.refresh_connection_staleness_by_connection(&by_connection, kind).await
+    }
+
+    pub async fn refresh_connection_staleness_by_connection(
+        &self,
+        fresh: &HashMap<String, String>,
+        kind: ConfigStaleKind,
+    ) -> usize {
         let mut targets = Vec::new();
         let mut stale_count = 0usize;
         {
             let mut connections = self.connections.lock().await;
-            for conn in connections.values_mut() {
-                let Some(current) = fresh.get(&conn.agent_type) else {
+            for (id, conn) in connections.iter_mut() {
+                let Some(current) = fresh.get(id) else {
                     continue;
                 };
                 let stale = *current != conn.config_fingerprint;
@@ -936,11 +955,22 @@ impl ConnectionManager {
     /// for an imperceptible latency win. The connections-map mutex is held
     /// across the awaits — fine because no path takes `state.write()` while
     /// holding the connections mutex (no lock-cycle).
+    #[cfg(test)]
     pub(crate) async fn find_connection_for_reuse(
         &self,
         agent_type: AgentType,
         working_dir: Option<&PathBuf>,
         session_id: Option<&str>,
+    ) -> Option<String> {
+        self.find_connection_for_account(agent_type, working_dir, session_id, None).await
+    }
+
+    pub(crate) async fn find_connection_for_account(
+        &self,
+        agent_type: AgentType,
+        working_dir: Option<&PathBuf>,
+        session_id: Option<&str>,
+        account_id: Option<&str>,
     ) -> Option<String> {
         // No session_id → caller is opening a fresh session; never dedup.
         let session_id = session_id?;
@@ -950,6 +980,9 @@ impl ConnectionManager {
                 continue;
             }
             let state = conn.state.read().await;
+            if state.agent_account_id.as_deref() != account_id {
+                continue;
+            }
             if state.external_id.as_deref() != Some(session_id) {
                 continue;
             }
@@ -965,6 +998,31 @@ impl ConnectionManager {
             return Some(id.clone());
         }
         None
+    }
+
+    async fn ensure_account_session_available(
+        &self,
+        agent: AgentType,
+        account_id: Option<&str>,
+        storage: Option<&(AgentType, PathBuf)>,
+        session_id: Option<&str>,
+    ) -> Result<(), AcpError> {
+        let (Some(storage), Some(session_id)) = (storage, session_id) else { return Ok(()); };
+        let connections = self.connections.lock().await;
+        for connection in connections.values() {
+            let state = connection.state.read().await;
+            if matches!(state.status, ConnectionStatus::Disconnected | ConnectionStatus::Error) { continue; }
+            if connection.agent_type == agent && state.agent_account_id.as_deref() == account_id { continue; }
+            if state.external_id.as_deref().or(state.requested_session_id.as_deref()) != Some(session_id) { continue; }
+            if let Some(other) = &state.storage_identity {
+                let same = crate::parsers::path_eq_for_matching(&storage.1.to_string_lossy(), &other.1.to_string_lossy())
+                    || matches!((storage.1.canonicalize(), other.1.canonicalize()), (Ok(a), Ok(b)) if a == b);
+                if storage.0 == other.0 && same {
+                    return Err(AcpError::protocol("Disconnect the existing session before resuming it through another account."));
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Forwards a prompt to the connection's command channel without
@@ -1190,6 +1248,23 @@ impl ConnectionManager {
             )
         };
 
+        let (account_id, bound_conversation_id) = {
+            let state = state_arc.read().await;
+            (state.agent_account_id.clone(), state.conversation_id)
+        };
+        if let Some(id) = account_id.as_deref() {
+            crate::db::service::agent_account_service::resolve(&db.conn, agent_type, id)
+                .await.map_err(|e| AcpError::protocol(e.to_string()))?;
+        }
+        if let Some(id) = conversation_id.or(bound_conversation_id) {
+            let expected = crate::db::service::agent_account_service::connection_account(
+                &db.conn, agent_type, account_id.clone(), Some(id),
+            ).await.map_err(|e| AcpError::protocol(e.to_string()))?;
+            if expected != account_id {
+                return Err(AcpError::protocol("Reconnect using this conversation's saved account."));
+            }
+        }
+
         // Reject a concurrent prompt while a turn is already in flight, BEFORE
         // any side effects (row creation, InProgress emit, user-message
         // broadcast). `send_prompt_inner` re-checks and sets the flag
@@ -1308,13 +1383,14 @@ impl ConnectionManager {
                             let parent_tool_use_id_for_event = task_delegation
                                 .as_ref()
                                 .map(|d| d.parent_tool_use_id.clone());
-                            let row = conversation_service::create_with_delegation(
+                            let row = conversation_service::create_with_delegation_for_account(
                                 &db_conn,
                                 folder_id,
                                 agent_type,
                                 seed_title,
                                 None,
                                 task_delegation,
+                                account_id,
                             )
                             .await
                             .map_err(|e| AcpError::protocol(e.to_string()))?;
@@ -1945,6 +2021,26 @@ impl ConnectionManager {
         let prompt_lock = self.clone_prompt_lock(conn_id).await?;
         let prompt_guard = prompt_lock.lock_owned().await;
 
+        // Account bindings apply to fork-send before the first prompt too.
+        // Refuse a stale caller before linking or asking the CLI to fork.
+        let (agent, account_id, bound_id) = {
+            let state = state_arc.read().await;
+            (state.agent_type, state.agent_account_id.clone(), state.conversation_id)
+        };
+        if let Some(id) = account_id.as_deref() {
+            crate::db::service::agent_account_service::resolve(&db.conn, agent, id)
+                .await.map_err(|e| AcpError::protocol(e.to_string()))?;
+        }
+        if let Some(cid) = bound_id.or(link_conversation_id) {
+            if let Some(row) = conversation::Entity::find_by_id(cid).one(&db.conn).await
+                .map_err(|e| AcpError::protocol(e.to_string()))? {
+                if (account_id.is_some() || row.agent_account_id.is_some())
+                    && (row.agent_account_id != account_id || row.agent_type != agent.as_wire()) {
+                    return Err(AcpError::protocol("This conversation belongs to a different agent account."));
+                }
+            }
+        }
+
         // Link the conversation row on demand, under the prompt lock so it
         // can't race a concurrent first prompt. A conversation opened from
         // history resumes via `session_id`, but its row is bound to the
@@ -2231,6 +2327,7 @@ impl ConnectionManager {
 
                     let folder_id = current.folder_id;
                     let agent_type_str = current.agent_type.clone();
+                    let account_id = current.agent_account_id.clone();
                     let git_branch = current.git_branch.clone();
                     // The lock rides along with the title it protects: the
                     // sibling holds the pre-fork history of the very row the
@@ -2297,6 +2394,7 @@ impl ConnectionManager {
                     if let Some(existing) = conversation::Entity::find()
                         .filter(conversation::Column::ExternalId.eq(original_session_id.clone()))
                         .filter(conversation::Column::AgentType.eq(agent_type_str.clone()))
+                        .filter(conversation_service::account_condition(account_id.as_deref()))
                         .filter(conversation::Column::Id.ne(conversation_id))
                         .filter(conversation::Column::DeletedAt.is_null())
                         .one(txn)
@@ -2313,6 +2411,7 @@ impl ConnectionManager {
                         title: Set(clean_title),
                         title_locked: Set(title_locked),
                         agent_type: Set(agent_type_str),
+                        agent_account_id: Set(account_id),
                         status: Set(ConversationStatus::PendingReview),
                         kind: Set(sibling_kind),
                         model: Set(None),
@@ -3812,13 +3911,22 @@ impl ConnectionManager {
         external_id: &str,
         agent_type: AgentType,
     ) -> Option<String> {
+        self.find_connection_by_external_id_for_account(external_id, agent_type, None).await
+    }
+
+    pub async fn find_connection_by_external_id_for_account(
+        &self,
+        external_id: &str,
+        agent_type: AgentType,
+        account_id: Option<&str>,
+    ) -> Option<String> {
         let connections = self.connections.lock().await;
         for (id, conn) in connections.iter() {
             if conn.agent_type != agent_type {
                 continue;
             }
             let state = conn.state.read().await;
-            if state.external_id.as_deref() == Some(external_id) {
+            if state.external_id.as_deref() == Some(external_id) && state.agent_account_id.as_deref() == account_id {
                 return Some(id.clone());
             }
         }
@@ -3859,7 +3967,7 @@ impl crate::acp::delegation::spawner::ConnectionSpawner for ConnectionManagerSpa
         // owner_window. Falling back is not safe: a child whose emitter is
         // wired to a different broadcaster would emit events the frontend
         // never sees.
-        let (emitter, owner_window, parent_working_dir) = {
+        let (emitter, owner_window, parent_working_dir, account_id) = {
             let conns = self.manager.connections.lock().await;
             let parent = conns.get(parent_connection_id).ok_or_else(|| {
                 SpawnerError::Spawn(format!(
@@ -3876,6 +3984,11 @@ impl crate::acp::delegation::spawner::ConnectionSpawner for ConnectionManagerSpa
                 parent.emitter.clone(),
                 parent.owner_window_label.clone(),
                 pwd,
+                if parent.agent_type == agent_type {
+                    parent.state.read().await.agent_account_id.clone()
+                } else {
+                    None
+                },
             )
         };
         let effective_working_dir = working_dir.or(parent_working_dir);
@@ -3884,11 +3997,12 @@ impl crate::acp::delegation::spawner::ConnectionSpawner for ConnectionManagerSpa
         // user-initiated session — disabled check, settings overrides,
         // model provider creds, git helper. Without this, delegated
         // subagents would skip the user's configuration entirely.
-        let runtime_env = crate::commands::acp::build_session_runtime_env(
+        let runtime_env = crate::commands::acp::build_account_session_runtime_env(
             &self.db,
             agent_type,
             None,
             self.data_dir.as_path(),
+            account_id.as_deref(),
         )
         .await
         .map_err(|e| SpawnerError::Spawn(e.to_string()))?;
@@ -3978,7 +4092,7 @@ impl crate::acp::delegation::spawner::ConnectionSpawner for ConnectionManagerSpa
         use crate::acp::delegation::spawner::{ResumedSpawn, SpawnerError};
         // Same parent inheritance as `spawn` — a resumed child whose emitter is
         // wired to a different broadcaster would stream to nobody.
-        let (emitter, owner_window, parent_working_dir) = {
+        let (emitter, owner_window, parent_working_dir, account_id) = {
             let conns = self.manager.connections.lock().await;
             let parent = conns.get(parent_connection_id).ok_or_else(|| {
                 SpawnerError::Spawn(format!(
@@ -3995,15 +4109,17 @@ impl crate::acp::delegation::spawner::ConnectionSpawner for ConnectionManagerSpa
                 parent.emitter.clone(),
                 parent.owner_window_label.clone(),
                 pwd,
+                if parent.agent_type == agent_type { parent.state.read().await.agent_account_id.clone() } else { None },
             )
         };
         let effective_working_dir = working_dir.or(parent_working_dir);
 
-        let runtime_env = crate::commands::acp::build_session_runtime_env(
+        let runtime_env = crate::commands::acp::build_account_session_runtime_env(
             &self.db,
             agent_type,
             None,
             self.data_dir.as_path(),
+            account_id.as_deref(),
         )
         .await
         .map_err(|e| SpawnerError::Spawn(e.to_string()))?;
@@ -4020,10 +4136,11 @@ impl crate::acp::delegation::spawner::ConnectionSpawner for ConnectionManagerSpa
         let working_dir_path = effective_working_dir.as_ref().map(std::path::PathBuf::from);
         let pre_existing = self
             .manager
-            .find_connection_for_reuse(
+            .find_connection_for_account(
                 agent_type,
                 working_dir_path.as_ref(),
                 Some(external_session_id),
+                account_id.as_deref(),
             )
             .await;
 
@@ -7262,6 +7379,7 @@ mod tests {
         // observe via the other.
         let key = SpawnDedupKey {
             agent_type: AgentType::ClaudeCode,
+            storage_key: None,
             working_dir: Some(PathBuf::from("/tmp/dedup-test")),
             session_id: "ext-shared".into(),
         };
@@ -7276,6 +7394,56 @@ mod tests {
             cloned_locks.contains_key(&key),
             "spawn_locks must be shared between original and clone_ref"
         );
+    }
+
+    #[tokio::test]
+    async fn native_account_resume_cannot_double_open_the_same_physical_session() {
+        let mgr = ConnectionManager::new();
+        let home = tempfile::tempdir().unwrap();
+        let other_home = tempfile::tempdir().unwrap();
+        insert_fake_connection(&mgr, "live", AgentType::Codex, None, EventEmitter::Noop).await;
+        let state = mgr.get_state("live").await.unwrap();
+        {
+            let mut state = state.write().await;
+            state.agent_account_id = Some("old-account".into());
+            state.storage_identity = Some((AgentType::Codex, home.path().into()));
+            state.requested_session_id = Some("shared-session".into());
+        }
+        let storage = (AgentType::Codex, home.path().to_path_buf());
+        assert!(mgr.ensure_account_session_available(AgentType::Codex, Some("readded-account"), Some(&storage), Some("shared-session")).await.is_err());
+        assert!(mgr.ensure_account_session_available(AgentType::Codex, Some("old-account"), Some(&storage), Some("shared-session")).await.is_ok());
+        let other = (AgentType::Codex, other_home.path().to_path_buf());
+        assert!(mgr.ensure_account_session_available(AgentType::Codex, Some("other-account"), Some(&other), Some("shared-session")).await.is_ok());
+        assert!(mgr.ensure_account_session_available(AgentType::Codex, Some("readded-account"), Some(&storage), Some("another-session")).await.is_ok());
+        state.write().await.status = ConnectionStatus::Disconnected;
+        assert!(mgr.ensure_account_session_available(AgentType::Codex, Some("readded-account"), Some(&storage), Some("shared-session")).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn native_account_fork_preserves_binding_and_rejects_a_different_account() {
+        use crate::db::{test_helpers, service::agent_account_service};
+        let db = test_helpers::fresh_in_memory_db().await;
+        let data = tempfile::tempdir().unwrap();
+        let folder = test_helpers::seed_folder(&db, "/tmp/account-fork").await;
+        let a = agent_account_service::create(&db.conn, data.path(), AgentType::Codex, "A", None).await.unwrap();
+        let b = agent_account_service::create(&db.conn, data.path(), AgentType::Codex, "B", None).await.unwrap();
+        let first = conversation_service::create_inner(&db.conn, folder, AgentType::Codex, None, None, None, ConversationKind::Regular, Some(a.id.clone())).await.unwrap();
+        let other = conversation_service::create_inner(&db.conn, folder, AgentType::Codex, None, None, None, ConversationKind::Regular, Some(b.id)).await.unwrap();
+        for row in [&first, &other] { conversation_service::bind_external_id(&db.conn, row.id, "session-S1", &[]).await.unwrap(); }
+        let sibling_id = ConnectionManager::persist_fork_outcome(&db.conn, first.id, "session-S2".into(), "session-S1".into()).await.unwrap();
+        assert_ne!(sibling_id, other.id);
+        let sibling = conversation::Entity::find_by_id(sibling_id).one(&db.conn).await.unwrap().unwrap();
+        assert_eq!(sibling.agent_account_id.as_deref(), Some(a.id.as_str()));
+        assert_eq!(sibling.external_id.as_deref(), Some("session-S1"));
+        let unchanged = conversation::Entity::find_by_id(other.id).one(&db.conn).await.unwrap().unwrap();
+        assert_eq!(unchanged.external_id.as_deref(), Some("session-S1"));
+        let mgr = ConnectionManager::new();
+        insert_fake_connection(&mgr, "account-fork", AgentType::Codex, None, EventEmitter::Noop).await;
+        let state = mgr.get_state("account-fork").await.unwrap();
+        state.write().await.agent_account_id = Some(a.id);
+        let error = mgr.fork_session(&db, "account-fork", Some(other.id), Some(folder), None).await.unwrap_err();
+        assert!(error.to_string().contains("different agent account"));
+        assert!(state.read().await.conversation_id.is_none());
     }
 
     /// Two concurrent `send_prompt_linked` calls on the SAME connection

@@ -154,7 +154,7 @@ pub fn extra_homes_for_family(family: IsolatorFamily, defs: &[CustomAgentDef]) -
     homes
 }
 
-fn distribution_env(dist: &AgentDistribution) -> BTreeMap<String, String> {
+pub(crate) fn distribution_env(dist: &AgentDistribution) -> BTreeMap<String, String> {
     let pairs = match dist {
         AgentDistribution::Npx { env, .. }
         | AgentDistribution::Binary { env, .. }
@@ -249,19 +249,37 @@ pub fn shell_export_and_login(plan: &ExtraSlotLogin) -> Result<String, String> {
 }
 
 fn login_command_for_platform(plan: &ExtraSlotLogin, windows: bool) -> Result<String, String> {
-    if plan.env.values().any(|s| s.contains(['\n', '\r', '\0'])) || plan.home.to_string_lossy().contains(['\n', '\r', '\0']) {
+    if plan.home.to_string_lossy().contains(['\n', '\r', '\0']) {
         return Err("isolator home must not contain newlines".into());
+    }
+    command_for_platform(&plan.env, plan.args, windows)
+}
+
+pub fn shell_command_with_env(env: &BTreeMap<String, String>, args: &[&str]) -> Result<String, String> {
+    command_for_platform(env, args, cfg!(windows))
+}
+
+fn command_for_platform(env: &BTreeMap<String, String>, args: &[&str], windows: bool) -> Result<String, String> {
+    if args.is_empty() || env.iter().any(|(key, value)| key.is_empty() || !key.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_') || key.as_bytes()[0].is_ascii_digit() || value.contains(['\n', '\r', '\0'])) || args.iter().any(|arg| arg.contains(['\n', '\r', '\0'])) {
+        return Err("Invalid login command or account environment".into());
     }
     if windows {
         use base64::Engine;
-        let mut script = plan.env.iter().map(|(key, value)| format!("$env:{key} = '{}'; ", value.replace('\'', "''"))).collect::<String>();
+        let mut script = env.iter().map(|(key, value)| {
+            if value.is_empty() { format!("$env:{key} = $null; ") } else { format!("$env:{key} = '{}'; ", value.replace('\'', "''")) }
+        }).collect::<String>();
         script.push_str("& ");
-        script.push_str(&plan.args.iter().map(|arg| format!("'{}'", arg.replace('\'', "''"))).collect::<Vec<_>>().join(" "));
+        script.push_str(&args.iter().map(|arg| format!("'{}'", arg.replace('\'', "''"))).collect::<Vec<_>>().join(" "));
         let bytes: Vec<u8> = script.encode_utf16().flat_map(u16::to_le_bytes).collect();
         Ok(format!("powershell.exe -NoProfile -EncodedCommand {}", base64::engine::general_purpose::STANDARD.encode(bytes)))
     } else {
-        let exports = plan.env.iter().map(|(key, value)| format!("export {key}={}", shell_single_quote(value))).collect::<Vec<_>>().join(" && ");
-        Ok(format!("{exports} && {}", plan.args.join(" ")))
+        let exports = env.iter().map(|(key, value)| {
+            if value.is_empty() { format!("unset {key}") } else { format!("export {key}={}", shell_single_quote(value)) }
+        }).collect::<Vec<_>>().join(" && ");
+        let command = args.iter().map(|arg| {
+            if !arg.is_empty() && arg.bytes().all(|c| c.is_ascii_alphanumeric() || b"_./:-".contains(&c)) { (*arg).to_owned() } else { shell_single_quote(arg) }
+        }).collect::<Vec<_>>().join(" ");
+        Ok(if exports.is_empty() { command } else { format!("{exports} && {command}") })
     }
 }
 

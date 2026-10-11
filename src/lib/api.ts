@@ -195,12 +195,16 @@ import type {
 } from "./types"
 
 export async function listConversations(params?: {
+  agent_account_id?: string | null
   agent_type?: AgentType | null
   search?: string | null
   sort_by?: string | null
   folder_path?: string | null
 }): Promise<ConversationSummary[]> {
   return getTransport().call("list_conversations", {
+    ...(params?.agent_account_id
+      ? { agentAccountId: params.agent_account_id }
+      : {}),
     agentType: params?.agent_type ?? null,
     search: params?.search ?? null,
     sortBy: params?.sort_by ?? null,
@@ -210,9 +214,14 @@ export async function listConversations(params?: {
 
 export async function getConversation(
   agentType: AgentType,
-  conversationId: string
+  conversationId: string,
+  agentAccountId?: string
 ): Promise<ConversationDetail> {
-  return getTransport().call("get_conversation", { agentType, conversationId })
+  return getTransport().call("get_conversation", {
+    agentType,
+    conversationId,
+    ...(agentAccountId ? { agentAccountId } : {}),
+  })
 }
 
 export async function listFolders(): Promise<FolderInfo[]> {
@@ -234,7 +243,9 @@ export async function acpConnect(
   workingDir?: string,
   sessionId?: string,
   preferredModeId?: string | null,
-  preferredConfigValues?: Record<string, string> | null
+  preferredConfigValues?: Record<string, string> | null,
+  agentAccountId?: string | null,
+  conversationId?: number
 ): Promise<string> {
   return getTransport().call("acp_connect", {
     agentType,
@@ -242,6 +253,8 @@ export async function acpConnect(
     sessionId: sessionId ?? null,
     preferredModeId: preferredModeId ?? null,
     preferredConfigValues: preferredConfigValues ?? null,
+    agentAccountId: agentAccountId ?? null,
+    conversationId: conversationId ?? null,
   })
 }
 
@@ -1036,7 +1049,8 @@ export type AntigravityLoginOutcome = {
  * happen in whatever browser the user does have.
  */
 export async function acpAntigravityLoginStart(
-  methodId: string
+  methodId: string,
+  accountId?: string
 ): Promise<AntigravityLoginStart> {
   // The backend spawns the agent and waits for it: up to 60s for `initialize`
   // (CPython inside a PAR, unpacked on first run) plus 90s for the printed
@@ -1045,7 +1059,7 @@ export async function acpAntigravityLoginStart(
   // starting, so the ceiling has to clear the backend's own with a margin.
   return getTransport().call(
     "acp_antigravity_login_start",
-    { methodId },
+    { methodId, ...(accountId ? { accountId } : {}) },
     { timeoutMs: 180_000 }
   )
 }
@@ -3501,12 +3515,14 @@ export async function createHyperframesProject(params: {
 export async function createConversation(
   folderId: number,
   agentType: AgentType,
-  title?: string
+  title?: string,
+  agentAccountId?: string | null
 ): Promise<number> {
   return getTransport().call("create_conversation", {
     folderId,
     agentType,
     title: title ?? null,
+    agentAccountId: agentAccountId ?? null,
   })
 }
 
@@ -3521,12 +3537,14 @@ export async function createChatConversation(
   title?: string,
   // Reuse a scratch dir already minted by `createChatDir` (eager connect) so the
   // ACP cwd never moves across the first send; omit to let the backend mint one.
-  existingDir?: string
+  existingDir?: string,
+  agentAccountId?: string | null
 ): Promise<CreateChatConversationResult> {
   return getTransport().call("create_chat_conversation", {
     agentType,
     title: title ?? null,
     existingDir: existingDir ?? null,
+    agentAccountId: agentAccountId ?? null,
   })
 }
 

@@ -397,6 +397,33 @@ pub fn build_agent_parser(agent_type: AgentType) -> Box<dyn AgentParser> {
     Box::new(RouteSanitized(inner))
 }
 
+/// Select an account's native transcript store without mutating process-wide
+/// environment variables. Two accounts can be read concurrently.
+pub fn build_account_parser(agent: AgentType, home: Option<&std::path::Path>) -> Result<Box<dyn AgentParser>, ParseError> {
+    let Some(home) = home else { return Ok(build_agent_parser(agent)); };
+    let spec = crate::acp::agent_accounts::layout(agent)
+        .ok_or_else(|| ParseError::InvalidData(format!("{agent} does not support isolated accounts")))?;
+    let base = spec.transcript_dir(home);
+    let inner: Box<dyn AgentParser> = match agent {
+        AgentType::ClaudeCode => Box::new(claude::ClaudeParser::with_base_dir(base)),
+        AgentType::Codex => Box::new(codex::CodexParser::with_base_dir(base)),
+        AgentType::Grok => Box::new(grok::GrokParser::with_base_dir(base)),
+        AgentType::Gemini => Box::new(gemini::GeminiParser::with_base_dir(base)),
+        AgentType::OpenCode => Box::new(opencode::OpenCodeParser::with_account_home(home)),
+        AgentType::Hermes => Box::new(hermes::HermesParser::with_base_dir(base)),
+        AgentType::CodeBuddy => Box::new(codebuddy::CodeBuddyParser::with_base_dir(base)),
+        AgentType::Cline => Box::new(cline::ClineParser::with_base_dir(base)),
+        AgentType::KimiCode => Box::new(kimi_code::KimiCodeParser::with_base_dir(base)),
+        AgentType::Pi => Box::new(pi::PiParser::with_base_dir(base)),
+        AgentType::DeepSeek => Box::new(deepseek::DeepSeekParser::with_account_home(home)),
+        AgentType::Qoder => Box::new(qoder::QoderParser::with_base_dir(base)),
+        AgentType::Antigravity => Box::new(antigravity::AntigravityParser::with_base_dir(base)),
+        AgentType::Cursor => Box::new(cursor::CursorParser::with_base_dir(base)),
+        _ => return Err(ParseError::InvalidData("Unsupported account parser".into())),
+    };
+    Ok(Box::new(RouteSanitized(inner)))
+}
+
 /// Removes Codeg's internal `@agent` routing frame from whatever a parser read
 /// back out of an agent's own transcript.
 ///

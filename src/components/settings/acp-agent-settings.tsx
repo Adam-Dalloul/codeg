@@ -49,6 +49,7 @@ import { AddCustomAgentDialog } from "@/components/settings/add-custom-agent-dia
 import { SettingCard, SettingRow } from "@/components/shared/setting-card"
 import { ExtraAgentSignIn } from "@/components/settings/extra-agent-sign-in"
 import { CustomAgentMcpToggle } from "@/components/settings/custom-agent-mcp-toggle"
+import { AgentAccounts } from "@/components/settings/agent-accounts"
 import { CustomAgentSkillsToggle } from "@/components/settings/custom-agent-skills-toggle"
 import {
   AlertDialog,
@@ -8289,6 +8290,12 @@ export function AcpAgentSettings() {
               />
 
               <div className="flex-1 overflow-y-auto p-4 space-y-4">
+                {!isCustomAgentType(selectedAgent.agent_type) && (
+                  <AgentAccounts
+                    key={selectedAgent.agent_type}
+                    agentType={selectedAgent.agent_type}
+                  />
+                )}
                 <div className="space-y-2">
                   {selectedCurrent?.error && (
                     <div className="rounded-md border border-red-500/30 bg-red-500/5 px-3 py-2 text-xs text-red-400 flex items-start gap-2">

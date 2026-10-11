@@ -1,5 +1,7 @@
 "use client"
 
+import { agentAccountKey } from "@/lib/agent-accounts"
+
 import {
   createContext,
   useCallback,
@@ -289,6 +291,7 @@ export interface LiveMessage {
 // ── Per-connection state ──
 
 export interface ConnectionState {
+  agentAccountId?: string | null
   connectionId: string
   contextKey: string
   agentType: AgentType
@@ -463,6 +466,7 @@ export interface ConnectionState {
 
 type ConnectRequest = {
   agentType: AgentType
+  agentAccountId?: string | null
   workingDir?: string
   sessionId?: string
   // Persisted conversation id (when known) — drives the cross-client viewer
@@ -475,6 +479,7 @@ type ConnectRequest = {
 function sameConnectRequest(a: ConnectRequest, b: ConnectRequest) {
   return (
     a.agentType === b.agentType &&
+    (a.agentAccountId ?? null) === (b.agentAccountId ?? null) &&
     (a.workingDir ?? null) === (b.workingDir ?? null) &&
     (a.sessionId ?? null) === (b.sessionId ?? null)
   )
@@ -485,6 +490,7 @@ function sameConnectRequest(a: ConnectRequest, b: ConnectRequest) {
 type Action =
   | {
       type: "CONNECTION_CREATED"
+      agentAccountId?: string | null
       contextKey: string
       connectionId: string
       agentType: AgentType
@@ -1707,6 +1713,9 @@ function connectionsReducer(
         connectionId: action.connectionId,
         contextKey: action.contextKey,
         agentType: action.agentType,
+        ...(action.agentAccountId
+          ? { agentAccountId: action.agentAccountId }
+          : {}),
         workingDir: action.workingDir,
         status: "connecting",
         promptCapabilities: {
@@ -2751,7 +2760,8 @@ function connectionsReducer(
       if (!conn) return state
       const options =
         conn.configOptions ??
-        selectorsCache.get(conn.agentType)?.configOptions ??
+        selectorsCache.get(agentAccountKey(conn.agentType, conn.agentAccountId))
+          ?.configOptions ??
         null
       if (!options) return state
       const idx = options.findIndex((o) => o.id === action.configId)
@@ -3134,7 +3144,8 @@ export interface AcpActionsValue {
     agentType: AgentType,
     workingDir?: string,
     sessionId?: string,
-    conversationId?: number
+    conversationId?: number,
+    agentAccountId?: string | null
   ): Promise<void>
   /**
    * Release the connection for `contextKey`. The LOCAL entry always goes away
@@ -5133,12 +5144,17 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
           })
           const modeConn = storeRef.current.connections.get(contextKey)
           if (modeConn) {
-            const entry = selectorsCache.get(modeConn.agentType) ?? {
+            const entry = selectorsCache.get(
+              agentAccountKey(modeConn.agentType, modeConn.agentAccountId)
+            ) ?? {
               modes: null,
               configOptions: null,
             }
             entry.modes = e.modes
-            selectorsCache.set(modeConn.agentType, entry)
+            selectorsCache.set(
+              agentAccountKey(modeConn.agentType, modeConn.agentAccountId),
+              entry
+            )
           }
           break
         }
@@ -5153,12 +5169,17 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
           })
           const cfgConn = storeRef.current.connections.get(contextKey)
           if (cfgConn) {
-            const entry = selectorsCache.get(cfgConn.agentType) ?? {
+            const entry = selectorsCache.get(
+              agentAccountKey(cfgConn.agentType, cfgConn.agentAccountId)
+            ) ?? {
               modes: null,
               configOptions: null,
             }
             entry.configOptions = e.config_options
-            selectorsCache.set(cfgConn.agentType, entry)
+            selectorsCache.set(
+              agentAccountKey(cfgConn.agentType, cfgConn.agentAccountId),
+              entry
+            )
             // This is the only place a model's DISPLAY name and its id are seen
             // together. Transcripts record the id alone, so without capturing
             // the pair here an agent with opaque ids (qoder's `qfmodel`) can
@@ -5204,11 +5225,18 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
           // session_config_options at all (no selectors).
           const rdyConn = storeRef.current.connections.get(contextKey)
           if (rdyConn) {
-            if (!selectorsCache.has(rdyConn.agentType)) {
-              selectorsCache.set(rdyConn.agentType, {
-                modes: rdyConn.modes,
-                configOptions: rdyConn.configOptions,
-              })
+            if (
+              !selectorsCache.has(
+                agentAccountKey(rdyConn.agentType, rdyConn.agentAccountId)
+              )
+            ) {
+              selectorsCache.set(
+                agentAccountKey(rdyConn.agentType, rdyConn.agentAccountId),
+                {
+                  modes: rdyConn.modes,
+                  configOptions: rdyConn.configOptions,
+                }
+              )
             }
             // Also covers the replay path, where the options were restored onto
             // the connection without a fresh `session_config_options` event.
@@ -6458,7 +6486,8 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
       contextKey: string,
       connectionId: string,
       agentType: AgentType,
-      workingDir: string | null
+      workingDir: string | null,
+      agentAccountId?: string | null
     ): Promise<boolean> => {
       dispatch({
         type: "CONNECTION_CREATED",
@@ -6467,6 +6496,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
         agentType,
         workingDir,
         isViewer: true,
+        agentAccountId,
       })
       lastActivityRef.current.set(contextKey, Date.now())
 
@@ -6560,10 +6590,12 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
       agentType: AgentType,
       workingDir?: string,
       sessionId?: string,
-      conversationId?: number
+      conversationId?: number,
+      agentAccountId?: string | null
     ) => {
       const request: ConnectRequest = {
         agentType,
+        agentAccountId,
         workingDir,
         sessionId,
         conversationId,
@@ -6716,6 +6748,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
         if (existing) {
           if (
             existing.agentType === agentType &&
+            (existing.agentAccountId ?? null) === (agentAccountId ?? null) &&
             existing.workingDir === nextWorkingDir &&
             existing.status !== "disconnected" &&
             existing.status !== "error"
@@ -6765,6 +6798,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
               conn.sessionId === sessionId &&
               conn.agentType === agentType &&
               conn.workingDir === nextWorkingDir &&
+              (conn.agentAccountId ?? null) === (agentAccountId ?? null) &&
               conn.status !== "disconnected" &&
               conn.status !== "error"
             ) {
@@ -6879,7 +6913,8 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
               contextKey,
               discovered.connection_id,
               agentType,
-              nextWorkingDir
+              nextWorkingDir,
+              agentAccountId
             )
             // Attached (or superseded) — done. Otherwise the connection died
             // between discovery and the attach, so fall through and spawn one
@@ -6906,13 +6941,17 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
         // regressed when the snapshot path replaced the event path on tab
         // re-open (the snapshot frame doesn't carry a `session_modes` event,
         // so the apply-on-event hook never fired).
-        const savedPrefs = getSavedPrefsForConnect(agentType)
+        const savedPrefs = getSavedPrefsForConnect(
+          agentAccountKey(agentType, agentAccountId)
+        )
         const connectionId = await acpConnect(
           agentType,
           workingDir,
           sessionId,
           savedPrefs.modeId,
-          savedPrefs.configValues
+          savedPrefs.configValues,
+          agentAccountId,
+          conversationId
         )
 
         // If disconnect was requested while connect was in flight, tear down
@@ -6946,6 +6985,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
           connectionId,
           agentType,
           workingDir: nextWorkingDir,
+          agentAccountId,
         })
 
         // Subscribe-with-Snapshot path. When the active transport supports
@@ -7095,7 +7135,8 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
                   pendingRequest.agentType,
                   pendingRequest.workingDir,
                   pendingRequest.sessionId,
-                  pendingRequest.conversationId
+                  pendingRequest.conversationId,
+                  pendingRequest.agentAccountId
                 )
                 .catch(() => {})
             })
@@ -7246,13 +7287,17 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
       if (!conn || conn.isViewer || conn.isDelegationChild) return false
       // Capture identity BEFORE teardown. `sessionId` is what makes the new
       // process resume this conversation (session/load) rather than start fresh.
-      const { agentType, workingDir, sessionId } = conn
+      const { agentType, workingDir, sessionId, agentAccountId } = conn
+      const conversationId =
+        lastConnectParamsRef.current.get(contextKey)?.conversationId
       const tornDown = await disconnect(contextKey)
       await connect(
         contextKey,
         agentType,
         workingDir ?? undefined,
-        sessionId ?? undefined
+        sessionId ?? undefined,
+        conversationId,
+        agentAccountId
       )
       // Reconnect regardless — the user is left with a working connection
       // either way — but an unconfirmed teardown means the old process may
@@ -7280,6 +7325,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
       if (!agentType) return null
       return {
         agentType,
+        agentAccountId: conn?.agentAccountId ?? remembered?.agentAccountId,
         workingDir: conn?.workingDir ?? remembered?.workingDir ?? undefined,
         sessionId: conn?.sessionId ?? remembered?.sessionId ?? undefined,
         conversationId: remembered?.conversationId,
@@ -7378,7 +7424,8 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
         request.agentType,
         request.workingDir,
         request.sessionId,
-        request.conversationId
+        request.conversationId,
+        request.agentAccountId
       )
       return true
     },
@@ -7487,9 +7534,12 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
     if (!conn) return
     // Persist user's mode selection to localStorage
     const modes =
-      conn.modes ?? selectorsCache.get(conn.agentType)?.modes ?? null
+      conn.modes ??
+      selectorsCache.get(agentAccountKey(conn.agentType, conn.agentAccountId))
+        ?.modes ??
+      null
     if (modes) {
-      saveModePreference(conn.agentType, {
+      saveModePreference(agentAccountKey(conn.agentType, conn.agentAccountId), {
         ...modes,
         current_mode_id: modeId,
       })
@@ -7510,7 +7560,11 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
       })
       // Persist user selection to localStorage so the next `acp_connect`
       // can ship it back to the backend as a preferred config value.
-      saveConfigPreference(conn.agentType, configId, valueId)
+      saveConfigPreference(
+        agentAccountKey(conn.agentType, conn.agentAccountId),
+        configId,
+        valueId
+      )
       lastActivityRef.current.set(contextKey, Date.now())
       await acpSetConfigOption(conn.connectionId, configId, valueId)
     },

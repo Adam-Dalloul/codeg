@@ -1,0 +1,416 @@
+use std::path::{Path, PathBuf};
+
+use chrono::Utc;
+use sea_orm::{
+    ActiveModelTrait, ColumnTrait, ConnectionTrait, EntityTrait, IntoActiveModel, QueryFilter,
+    QueryOrder, Set,
+};
+
+use crate::acp::agent_accounts::layout;
+use crate::db::entities::agent_account::{self, Entity};
+use crate::db::error::DbError;
+use crate::models::AgentType;
+
+pub async fn list(
+    conn: &impl ConnectionTrait,
+    agent: AgentType,
+) -> Result<Vec<agent_account::Model>, DbError> {
+    Ok(Entity::find()
+        .filter(agent_account::Column::AgentType.eq(agent.as_wire().as_ref()))
+        .filter(agent_account::Column::Removed.eq(false))
+        .order_by_asc(agent_account::Column::CreatedAt)
+        .all(conn)
+        .await?)
+}
+
+pub async fn list_all(conn: &impl ConnectionTrait) -> Result<Vec<agent_account::Model>, DbError> {
+    Ok(Entity::find()
+        .filter(agent_account::Column::Removed.eq(false))
+        .order_by_asc(agent_account::Column::CreatedAt)
+        .all(conn)
+        .await?)
+}
+
+pub async fn list_for_display(
+    conn: &impl ConnectionTrait,
+    agent: AgentType,
+) -> Result<Vec<agent_account::Model>, DbError> {
+    Ok(Entity::find()
+        .filter(agent_account::Column::AgentType.eq(agent.as_wire().as_ref()))
+        .order_by_asc(agent_account::Column::CreatedAt)
+        .all(conn)
+        .await?)
+}
+
+pub async fn get(conn: &impl ConnectionTrait, id: &str) -> Result<agent_account::Model, DbError> {
+    Entity::find_by_id(id).one(conn).await?.ok_or_else(|| {
+        DbError::NotFound(
+            "This agent account is no longer available. Add it again in Settings > Agents.".into(),
+        )
+    })
+}
+
+pub async fn resolve(
+    conn: &impl ConnectionTrait,
+    agent: AgentType,
+    id: &str,
+) -> Result<agent_account::Model, DbError> {
+    let account = get(conn, id).await?;
+    if account.agent_type != agent.as_wire() {
+        return Err(DbError::Validation(
+            "Choose an account for the selected agent.".into(),
+        ));
+    }
+    if account.removed {
+        return Err(DbError::Validation("This account was removed. Add it again in Settings > Agents and start a new conversation.".into()));
+    }
+    if !Path::new(&account.home_dir).is_dir() {
+        return Err(DbError::Validation(
+            "The account folder is missing. Restore it before resuming this conversation.".into(),
+        ));
+    }
+    Ok(account)
+}
+
+/// A persisted conversation, including a removed-account binding, is the
+/// authority on reconnect. A stale client cannot switch its subscription.
+pub async fn connection_account(
+    conn: &impl ConnectionTrait,
+    agent: AgentType,
+    requested: Option<String>,
+    conversation_id: Option<i32>,
+) -> Result<Option<String>, DbError> {
+    let Some(id) = conversation_id else {
+        return Ok(requested);
+    };
+    let row = crate::db::entities::conversation::Entity::find_by_id(id)
+        .one(conn)
+        .await?
+        .ok_or_else(|| DbError::NotFound("Conversation not found".into()))?;
+    if row.agent_type != agent.as_wire()
+        || requested
+            .as_ref()
+            .is_some_and(|id| row.agent_account_id.as_ref() != Some(id))
+    {
+        return Err(DbError::Validation(
+            "This conversation belongs to a different agent account.".into(),
+        ));
+    }
+    Ok(row.agent_account_id)
+}
+
+fn checked_name(name: &str) -> Result<String, DbError> {
+    let name = name.trim();
+    if name.is_empty() || name.chars().count() > 80 || name.chars().any(char::is_control) {
+        return Err(DbError::Validation(
+            "Use an account name between 1 and 80 characters.".into(),
+        ));
+    }
+    Ok(name.to_owned())
+}
+
+pub async fn create(
+    conn: &impl ConnectionTrait,
+    data_dir: &Path,
+    agent: AgentType,
+    name: &str,
+    existing_home: Option<&str>,
+) -> Result<agent_account::Model, DbError> {
+    let spec = layout(agent).ok_or_else(|| {
+        DbError::Validation("This agent does not support isolated accounts.".into())
+    })?;
+    let name = checked_name(name)?;
+    let accounts = list(conn, agent).await?;
+    if accounts
+        .iter()
+        .any(|a| a.name.to_lowercase() == name.to_lowercase())
+    {
+        return Err(DbError::Validation(
+            "An account with this name already exists.".into(),
+        ));
+    }
+    let id = uuid::Uuid::new_v4().to_string();
+    let home = match existing_home {
+        Some(raw) => {
+            let home = PathBuf::from(raw.trim());
+            if !home.is_absolute() || !home.is_dir() {
+                return Err(DbError::Validation(
+                    "Choose an existing account folder using its absolute path.".into(),
+                ));
+            }
+            home.canonicalize()?
+        }
+        None => {
+            let home = data_dir.join("agent-accounts").join(&id);
+            std::fs::create_dir_all(spec.config_dir(&home))?;
+            home.canonicalize()?
+        }
+    };
+    if accounts
+        .iter()
+        .any(|a| Path::new(&a.home_dir).canonicalize().ok().as_ref() == Some(&home))
+    {
+        return Err(DbError::Validation(
+            "This folder is already used by another account.".into(),
+        ));
+    }
+    let setting = super::agent_setting_service::get_by_agent_type(conn, agent).await?;
+    let native = crate::commands::acp::load_agent_local_config_json(agent);
+    let default_env = crate::commands::acp::build_runtime_env_from_setting(
+        agent,
+        setting.as_ref(),
+        native.as_deref(),
+    );
+    if crate::acp::agent_accounts::aliases_default_account(agent, &home, &default_env) {
+        return Err(DbError::Validation(
+            "This folder belongs to the default account. Choose a separate account folder.".into(),
+        ));
+    }
+    #[cfg(unix)]
+    if existing_home.is_none() {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o700))?;
+    }
+    // Windows verbatim prefixes are valid Rust paths but several native CLIs
+    // cannot open them. Persist the normalized, ordinary absolute spelling.
+    let home_dir = ordinary_path(&home);
+    let now = Utc::now();
+    Ok(agent_account::ActiveModel {
+        id: Set(id),
+        agent_type: Set(agent.as_wire().into_owned()),
+        name: Set(name),
+        home_dir: Set(home_dir),
+        removed: Set(false),
+        created_at: Set(now),
+        updated_at: Set(now),
+    }
+    .insert(conn)
+    .await?)
+}
+
+pub async fn rename(conn: &impl ConnectionTrait, id: &str, name: &str) -> Result<(), DbError> {
+    let account = get(conn, id).await?;
+    if account.removed {
+        return Err(DbError::Validation("This account was removed.".into()));
+    }
+    let name = checked_name(name)?;
+    let agent = AgentType::from_wire(&account.agent_type)
+        .ok_or_else(|| DbError::Validation("Unknown agent.".into()))?;
+    if list(conn, agent)
+        .await?
+        .iter()
+        .any(|a| a.id != id && a.name.to_lowercase() == name.to_lowercase())
+    {
+        return Err(DbError::Validation(
+            "An account with this name already exists.".into(),
+        ));
+    }
+    let mut model = account.into_active_model();
+    model.name = Set(name);
+    model.updated_at = Set(Utc::now());
+    model.update(conn).await?;
+    Ok(())
+}
+
+/// Removing an account never deletes files or reassigns its conversations.
+pub async fn remove(conn: &impl ConnectionTrait, id: &str) -> Result<(), DbError> {
+    let mut model = get(conn, id).await?.into_active_model();
+    model.removed = Set(true);
+    model.updated_at = Set(Utc::now());
+    model.update(conn).await?;
+    Ok(())
+}
+
+fn ordinary_path(path: &Path) -> String {
+    let value = path.to_string_lossy();
+    #[cfg(windows)]
+    {
+        if let Some(unc) = value.strip_prefix(r"\\?\UNC\") {
+            return format!(r"\\{unc}");
+        }
+        if let Some(drive) = value.strip_prefix(r"\\?\") {
+            return drive.to_owned();
+        }
+    }
+    value.into_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::test_helpers::fresh_in_memory_db;
+
+    #[tokio::test]
+    async fn crud_keeps_homes_and_refuses_removed_or_wrong_family_accounts() {
+        let db = fresh_in_memory_db().await;
+        let dir = tempfile::tempdir().unwrap();
+        let account = create(&db.conn, dir.path(), AgentType::Codex, "Work", None)
+            .await
+            .unwrap();
+        assert_eq!(list(&db.conn, AgentType::Codex).await.unwrap().len(), 1);
+        assert!(create(&db.conn, dir.path(), AgentType::Codex, "work", None)
+            .await
+            .is_err());
+        assert!(create(
+            &db.conn,
+            dir.path(),
+            AgentType::Codex,
+            "Other",
+            Some(&account.home_dir)
+        )
+        .await
+        .is_err());
+        assert!(resolve(&db.conn, AgentType::ClaudeCode, &account.id)
+            .await
+            .is_err());
+        rename(&db.conn, &account.id, "Personal").await.unwrap();
+        assert_eq!(get(&db.conn, &account.id).await.unwrap().name, "Personal");
+        remove(&db.conn, &account.id).await.unwrap();
+        assert!(list(&db.conn, AgentType::Codex).await.unwrap().is_empty());
+        assert!(Path::new(&account.home_dir).is_dir());
+        assert!(resolve(&db.conn, AgentType::Codex, &account.id)
+            .await
+            .is_err());
+        assert!(get(&db.conn, &account.id).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn missing_home_never_falls_back_to_default() {
+        let db = fresh_in_memory_db().await;
+        let dir = tempfile::tempdir().unwrap();
+        let account = create(&db.conn, dir.path(), AgentType::Codex, "Work", None)
+            .await
+            .unwrap();
+        std::fs::remove_dir(&account.home_dir).unwrap();
+        assert!(resolve(&db.conn, AgentType::Codex, &account.id)
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn saved_bindings_survive_removal_and_reject_account_switches() {
+        use crate::db::entities::conversation::ConversationKind;
+        use crate::db::service::conversation_service;
+        let db = fresh_in_memory_db().await;
+        let dir = tempfile::tempdir().unwrap();
+        let folder =
+            crate::db::test_helpers::seed_folder(&db, &dir.path().display().to_string()).await;
+        let a = create(&db.conn, dir.path(), AgentType::Codex, "A", None)
+            .await
+            .unwrap();
+        let b = create(&db.conn, dir.path(), AgentType::Codex, "B", None)
+            .await
+            .unwrap();
+        let row = conversation_service::create_inner(
+            &db.conn,
+            folder,
+            AgentType::Codex,
+            None,
+            None,
+            None,
+            ConversationKind::Regular,
+            Some(a.id.clone()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            connection_account(&db.conn, AgentType::Codex, None, Some(row.id))
+                .await
+                .unwrap(),
+            Some(a.id.clone())
+        );
+        assert!(
+            connection_account(&db.conn, AgentType::Codex, Some(b.id.clone()), Some(row.id))
+                .await
+                .is_err()
+        );
+        assert!(
+            connection_account(&db.conn, AgentType::ClaudeCode, None, Some(row.id))
+                .await
+                .is_err()
+        );
+        remove(&db.conn, &a.id).await.unwrap();
+        assert_eq!(
+            connection_account(&db.conn, AgentType::Codex, None, Some(row.id))
+                .await
+                .unwrap(),
+            Some(a.id.clone())
+        );
+        assert!(resolve(&db.conn, AgentType::Codex, &a.id).await.is_err());
+        assert!(list_for_display(&db.conn, AgentType::Codex)
+            .await
+            .unwrap()
+            .iter()
+            .any(|account| account.id == a.id && account.removed));
+    }
+
+    #[tokio::test]
+    async fn migration_preserves_existing_rows_and_scopes_session_identity() {
+        use crate::db::entities::conversation;
+        use crate::db::migration::Migrator;
+        use crate::db::service::{conversation_service, folder_service};
+        use sea_orm::{Database, DbBackend, Statement};
+        use sea_orm_migration::MigratorTrait;
+        let conn = Database::connect("sqlite::memory:").await.unwrap();
+        Migrator::up(&conn, Some((Migrator::migrations().len() - 1) as u32))
+            .await
+            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let folder = folder_service::add_folder(&conn, &dir.path().display().to_string())
+            .await
+            .unwrap();
+        conn.execute(Statement::from_sql_and_values(DbBackend::Sqlite,
+            "INSERT INTO conversation (folder_id, agent_type, status, kind, title_locked, external_id, message_count, created_at, updated_at) VALUES (?, 'codex', 'pending_review', 'regular', 0, 'shared-session', 0, '2026-10-11T00:00:00Z', '2026-10-11T00:00:00Z')",
+            [folder.id.into()])).await.unwrap();
+        Migrator::up(&conn, None).await.unwrap();
+        let old = conversation::Entity::find()
+            .one(&conn)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(old.agent_account_id.is_none());
+        let account = create(&conn, dir.path(), AgentType::Codex, "Work", None)
+            .await
+            .unwrap();
+        let named = conversation_service::create_inner(
+            &conn,
+            folder.id,
+            AgentType::Codex,
+            None,
+            None,
+            None,
+            conversation::ConversationKind::Regular,
+            Some(account.id.clone()),
+        )
+        .await
+        .unwrap();
+        conversation_service::bind_external_id(&conn, named.id, "shared-session", &[])
+            .await
+            .unwrap();
+        assert_eq!(
+            conversation::Entity::find().all(&conn).await.unwrap().len(),
+            2
+        );
+        assert!(
+            conversation_service::find_live_by_session_ref(&conn, "shared-session")
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            conversation_service::find_live_by_session_ref(&conn, &named.id.to_string())
+                .await
+                .unwrap()
+                .unwrap()
+                .agent_account_id,
+            Some(account.id)
+        );
+        assert!(Migrator::down(&conn, Some(1)).await.is_err());
+        assert!(conversation::Entity::find_by_id(named.id)
+            .one(&conn)
+            .await
+            .unwrap()
+            .unwrap()
+            .agent_account_id
+            .is_some());
+    }
+}

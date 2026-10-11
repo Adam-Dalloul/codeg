@@ -26,6 +26,21 @@ impl Default for OpenCodeParser {
 }
 
 impl OpenCodeParser {
+    pub fn with_account_home(home: &Path) -> Self {
+        Self {
+            base_dir: home.join("data/opencode"),
+            model_limits: ModelLimitSources {
+                config_dir: Some(home.join("config/opencode")),
+                config_dir_env: Some(home.join("config/opencode")),
+                catalog_file: Some(home.join("cache/opencode/models.json")),
+                home_dir: Some(home.to_path_buf()),
+                project_config: true,
+                bundled_catalog: true,
+                ..Default::default()
+            },
+        }
+    }
+
     pub fn new() -> Self {
         let base_dir = resolve_opencode_base_dir();
         Self {
@@ -34,7 +49,7 @@ impl OpenCodeParser {
         }
     }
 
-    /// Test-only constructor that lets callers point the parser at a fixture
+    /// Explicit-root constructor for an account or fixture
     /// directory containing an `opencode.db` SQLite file.
     ///
     /// It reads nothing else: no OpenCode config or catalog from the machine

@@ -68,6 +68,8 @@ pub async fn acp_env_diagnostics(
 #[serde(rename_all = "camelCase")]
 pub struct AcpConnectParams {
     pub agent_type: AgentType,
+    pub agent_account_id: Option<String>,
+    pub conversation_id: Option<i32>,
     pub working_dir: Option<String>,
     pub session_id: Option<String>,
     #[serde(default)]
@@ -83,11 +85,15 @@ pub async fn acp_connect(
     let db = &state.db;
     let manager = &state.connection_manager;
 
-    let runtime_env = acp_commands::build_session_runtime_env(
+    let account_id = crate::db::service::agent_account_service::connection_account(
+        &db.conn, params.agent_type, params.agent_account_id, params.conversation_id,
+    ).await.map_err(AppCommandError::from)?;
+    let runtime_env = acp_commands::build_account_session_runtime_env(
         db,
         params.agent_type,
         params.session_id.as_deref(),
         &state.data_dir,
+        account_id.as_deref(),
     )
     .await
     .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
@@ -627,11 +633,15 @@ pub async fn acp_find_connection_for_conversation(
     Extension(state): Extension<Arc<AppState>>,
     Json(params): Json<AcpFindConnectionForConversationParams>,
 ) -> Result<Json<Option<crate::acp::ConversationConnectionInfo>>, AppCommandError> {
-    let info = acp_commands::acp_find_connection_for_conversation_core(
+    let account_id = crate::db::service::agent_account_service::connection_account(
+        &state.db.conn, params.agent_type, None, Some(params.conversation_id),
+    ).await.map_err(AppCommandError::from)?;
+    let info = acp_commands::acp_find_connection_for_account_core(
         &state.connection_manager,
         params.conversation_id,
         params.session_id.as_deref(),
         params.agent_type,
+        account_id.as_deref(),
     )
     .await
     .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
@@ -1015,13 +1025,14 @@ pub async fn acp_sync_antigravity_settings(
 #[serde(rename_all = "camelCase")]
 pub struct AcpAntigravityLoginStartParams {
     pub method_id: String,
+    pub account_id: Option<String>,
 }
 
 pub async fn acp_antigravity_login_start(
     Extension(state): Extension<Arc<AppState>>,
     Json(params): Json<AcpAntigravityLoginStartParams>,
 ) -> Result<Json<crate::acp::antigravity_login::AntigravityLoginStart>, AppCommandError> {
-    let result = acp_commands::acp_antigravity_login_start_core(&state.db, params.method_id)
+    let result = acp_commands::acp_antigravity_account_login_start_core(&state.db, params.method_id, params.account_id)
         .await
         .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
     Ok(Json(result))

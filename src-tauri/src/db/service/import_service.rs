@@ -32,6 +32,22 @@ fn build_parser(agent_type: AgentType) -> Box<dyn AgentParser> {
     build_agent_parser(agent_type)
 }
 
+pub(crate) async fn collect_account_summaries(
+    conn: &DatabaseConnection,
+    id: &str,
+) -> Result<Vec<(AgentType, ConversationSummary)>, DbError> {
+    let account = super::agent_account_service::get(conn, id).await?;
+    let agent = AgentType::from_wire(&account.agent_type)
+        .ok_or_else(|| DbError::Validation("Unknown account agent".into()))?;
+    super::agent_account_service::resolve(conn, agent, id).await?;
+    let home = std::path::PathBuf::from(account.home_dir);
+    tokio::task::spawn_blocking(move || {
+        crate::parsers::build_account_parser(agent, Some(&home))?.list_conversations()
+    }).await.map_err(|e| DbError::Validation(e.to_string()))?
+        .map(|sessions| sessions.into_iter().filter(|s| s.parent_id.is_none()).map(|s| (agent, s)).collect())
+        .map_err(|e| DbError::Validation(e.to_string()))
+}
+
 /// List every local agent's sessions — one `spawn_blocking` per parser so the
 /// filesystem walks run concurrently (each closure captures only the Copy
 /// `AgentType` and constructs its parser inside, since `dyn AgentParser` is
@@ -165,11 +181,22 @@ pub(crate) async fn import_summaries(
 /// their (already-created) folder unbroadcast, and imports are idempotent so a
 /// re-run finishes the rest — rolling good rows back would be worse. Callers
 /// surface the `failed` count in their own structured result.
+#[cfg(test)]
 pub(crate) async fn import_summaries_resilient(
     conn: &DatabaseConnection,
     folder_id: i32,
     items: &[(AgentType, ConversationSummary)],
     deleted: DeletedPolicy,
+) -> (ImportResult, Vec<i32>, u32) {
+    import_summaries_resilient_for_account(conn, folder_id, items, deleted, None).await
+}
+
+pub(crate) async fn import_summaries_resilient_for_account(
+    conn: &DatabaseConnection,
+    folder_id: i32,
+    items: &[(AgentType, ConversationSummary)],
+    deleted: DeletedPolicy,
+    account_id: Option<&str>,
 ) -> (ImportResult, Vec<i32>, u32) {
     let mut imported = 0u32;
     let mut updated = 0u32;
@@ -179,7 +206,7 @@ pub(crate) async fn import_summaries_resilient(
     let mut updated_ids: Vec<i32> = Vec::new();
 
     for (agent_type, summary) in items {
-        match import_one(conn, folder_id, agent_type, summary, deleted).await {
+        match import_one_for_account(conn, folder_id, agent_type, summary, deleted, account_id).await {
             Ok(ImportOutcome::Imported) => imported += 1,
             Ok(ImportOutcome::Updated(id)) => {
                 updated += 1;
@@ -393,11 +420,26 @@ async fn import_one(
     summary: &ConversationSummary,
     deleted: DeletedPolicy,
 ) -> Result<ImportOutcome, DbError> {
+    import_one_for_account(conn, folder_id, agent_type, summary, deleted, None).await
+}
+
+async fn import_one_for_account(
+    conn: &DatabaseConnection,
+    folder_id: i32,
+    agent_type: &AgentType,
+    summary: &ConversationSummary,
+    deleted: DeletedPolicy,
+    account_id: Option<&str>,
+) -> Result<ImportOutcome, DbError> {
+    if let Some(id) = account_id {
+        super::agent_account_service::resolve(conn, *agent_type, id).await?;
+    }
     let at_str = agent_type_db_str(agent_type);
 
     let exists = conversation::Entity::find()
         .filter(conversation::Column::ExternalId.eq(&summary.id))
         .filter(conversation::Column::AgentType.eq(&at_str))
+        .filter(conversation_service::account_condition(account_id))
         .one(conn)
         .await?;
 
@@ -481,6 +523,7 @@ async fn import_one(
         title: Set(summary.title.clone()),
         title_locked: Set(false),
         agent_type: Set(at_str),
+        agent_account_id: Set(account_id.map(str::to_owned)),
         // Imported sessions land as `PendingReview` ("待审查"), not `Completed`:
         // they are surfaced for the user to review and stay visible even when
         // the sidebar's "show completed" filter is off (now its default).
@@ -930,6 +973,7 @@ mod tests {
         conversation::ActiveModel {
             id: NotSet,
             folder_id: Set(folder),
+            agent_account_id: Set(None),
             title: Set(Some("child".to_string())),
             title_locked: Set(false),
             agent_type: Set(agent_type_db_str(&at)),
@@ -1217,6 +1261,7 @@ mod tests {
         conversation::ActiveModel {
             id: NotSet,
             folder_id: Set(folder),
+            agent_account_id: Set(None),
             title: Set(Some("child original".to_string())),
             title_locked: Set(false),
             agent_type: Set(at_str),

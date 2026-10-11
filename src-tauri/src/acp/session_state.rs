@@ -245,6 +245,10 @@ pub struct PendingUserMessage {
 /// 已完成的 turn 不存在这里——它们由 parser 从 agent JSONL 读。
 #[derive(Debug)]
 pub struct SessionState {
+    pub storage_identity: Option<(AgentType, PathBuf)>,
+    pub requested_session_id: Option<String>,
+    pub agent_account_id: Option<String>,
+    pub account_home: Option<PathBuf>,
     // 身份
     pub connection_id: String,
     pub conversation_id: Option<i32>,
@@ -710,6 +714,10 @@ impl SessionState {
     ) -> Self {
         Self {
             connection_id,
+            agent_account_id: None,
+            storage_identity: None,
+            requested_session_id: None,
+            account_home: None,
             conversation_id: None,
             external_id: None,
             external_id_changed_at: None,

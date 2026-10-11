@@ -1,4 +1,5 @@
 use sea_orm_migration::prelude::*;
+mod m20261011_000001_agent_account;
 
 mod m20260211_000001_init;
 mod m20260219_000001_folder_command;
@@ -102,6 +103,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20260929_000001_canvas_board::Migration),
             Box::new(m20260930_000001_agent_setting_drop_adapter_channel::Migration),
             Box::new(m20261006_000001_conversation_tag::Migration),
+            Box::new(m20261011_000001_agent_account::Migration),
         ]
     }
 }

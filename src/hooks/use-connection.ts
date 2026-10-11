@@ -111,7 +111,8 @@ export interface UseConnectionReturn {
     agentType: AgentType,
     workingDir?: string,
     sessionId?: string,
-    conversationId?: number
+    conversationId?: number,
+    agentAccountId?: string | null
   ) => Promise<void>
   disconnect: () => Promise<void>
   /** Restart the session (disconnect + resume same sessionId) so it picks up
@@ -278,14 +279,16 @@ export function useConnection(contextKey: string): UseConnectionReturn {
       agentType: AgentType,
       workingDir?: string,
       sessionId?: string,
-      conversationId?: number
+      conversationId?: number,
+      agentAccountId?: string | null
     ) =>
       actions.connect(
         contextKey,
         agentType,
         workingDir,
         sessionId,
-        conversationId
+        conversationId,
+        agentAccountId
       ),
     [actions, contextKey]
   )

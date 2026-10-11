@@ -1920,7 +1920,7 @@ async fn build_agent(
             // `grok_launch_permission_mode` below) so the policy helper stays a
             // pure function over the env list.
             let codex_initial_mode = if agent_type == AgentType::Codex {
-                crate::commands::acp::codex_launch_initial_agent_mode()
+                crate::commands::acp::codex_launch_initial_agent_mode(runtime_env)
             } else {
                 None
             };
@@ -1966,7 +1966,7 @@ async fn build_agent(
             //    launch flag, not a live `session/set_mode`, is the control point.)
             if agent_type == AgentType::Grok {
                 parts.push("--no-auto-update".into());
-                if let Some(mode) = crate::commands::acp::grok_launch_permission_mode() {
+                if let Some(mode) = crate::commands::acp::grok_launch_permission_mode(runtime_env) {
                     parts.push("--permission-mode".into());
                     parts.push(mode);
                 }
@@ -2316,7 +2316,7 @@ pub async fn spawn_agent_connection(
     agent_type: AgentType,
     working_dir: Option<String>,
     session_id: Option<String>,
-    runtime_env: BTreeMap<String, String>,
+    mut runtime_env: BTreeMap<String, String>,
     owner_window_label: String,
     emitter: EventEmitter,
     connections: Arc<tokio::sync::Mutex<HashMap<String, AgentConnection>>>,
@@ -2335,6 +2335,11 @@ pub async fn spawn_agent_connection(
         owner_window_label.clone(),
         None, // folder_id 由后续 prompt handler 在首次 send 时绑定 (Phase 2)
     );
+    initial_state.storage_identity = crate::acp::agent_accounts::storage_identity(agent_type, &runtime_env);
+    initial_state.requested_session_id = session_id.clone();
+    initial_state.agent_account_id = runtime_env.remove(crate::acp::agent_accounts::ACCOUNT_ENV);
+    let account_home = runtime_env.remove(crate::acp::agent_accounts::ACCOUNT_HOME_ENV).map(PathBuf::from);
+    initial_state.account_home = account_home.clone();
 
     // Install the SessionStarted dedup signal BEFORE wrapping into Arc so the
     // first event (StatusChanged{Connecting} below) doesn't race with the
@@ -2487,7 +2492,7 @@ pub async fn spawn_agent_connection(
     // volatile keys) plus the agent's native config file content, so a later
     // settings save can be compared against it to detect a stale running session.
     let config_fingerprint =
-        crate::commands::acp::fingerprint_config(agent_type, &runtime_env);
+        crate::commands::acp::fingerprint_account_config(agent_type, &runtime_env, account_home.as_deref());
 
     // Insert the entry BEFORE spawning the background task so that a
     // fast-failing `run_connection` can never remove it before it was
@@ -4342,7 +4347,7 @@ async fn current_grok_model_id(state: &Arc<RwLock<SessionState>>) -> Option<Stri
 /// and every heuristic family at once. [`grok_window_change_usage`] is what
 /// keeps that from stranding a previous model's window on screen.
 async fn grok_current_model_context_window(state: &Arc<RwLock<SessionState>>) -> Option<u64> {
-    let (model, reported) = {
+    let (model, reported, account_home) = {
         let st = state.read().await;
         let model = current_grok_model_id_from_opts(st.config_options.as_deref()?)?;
         let reported = st
@@ -4350,11 +4355,11 @@ async fn grok_current_model_context_window(state: &Arc<RwLock<SessionState>>) ->
             .as_ref()
             .and_then(|specs| specs.get(&model))
             .and_then(|spec| spec.context_window);
-        (model, reported)
+        (model, reported, st.account_home.clone())
     };
     // Lock released: the catalog lookup below touches the filesystem.
     reported.or_else(|| {
-        grok_offline_context_window(&model, &crate::parsers::grok::resolve_grok_home_dir())
+        grok_offline_context_window(&model, &account_home.unwrap_or_else(crate::parsers::grok::resolve_grok_home_dir))
     })
 }
 

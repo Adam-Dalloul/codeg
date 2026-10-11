@@ -61,6 +61,13 @@ import { AgentDiagnosticsDialog } from "@/components/settings/agent-diagnostics-
 import { useFeedbackEnabled } from "@/hooks/use-feedback-enabled"
 import { useSessionFeedback } from "@/hooks/use-session-feedback"
 import { AgentSelector } from "@/components/chat/agent-selector"
+import { AgentAccountSelector } from "@/components/chat/agent-account-selector"
+import { useAgentAccounts } from "@/hooks/use-agent-accounts"
+import {
+  agentAccountKey,
+  readSelectedAccount,
+  saveSelectedAccount,
+} from "@/lib/agent-accounts"
 import { ChatInput } from "@/components/chat/chat-input"
 import { WelcomeHero, WelcomeTip } from "@/components/chat/welcome-hero"
 import { QuickActions } from "@/components/chat/quick-actions"
@@ -275,6 +282,7 @@ const ConversationTabView = memo(function ConversationTabView({
   const tCmp = useTranslations("Folder.chat.messageInput")
   const tWelcome = useTranslations("Folder.chat.welcomeInputPanel")
   const tDiag = useTranslations("DiagnosticsSettings")
+  const tAccounts = useTranslations("AgentAccounts")
   const sharedT = useTranslations("Folder.chat.shared")
   const tMessageList = useTranslations("Folder.chat.messageList")
   const tAsyncTasks = useTranslations("Folder.chat.asyncTasks")
@@ -355,6 +363,23 @@ const ConversationTabView = memo(function ConversationTabView({
   const dbConversationId = conversationId ?? createdConversationId
   const [draftAgentType, setDraftAgentType] = useState<AgentType>(agentType)
   const selectedAgent = conversationId != null ? agentType : draftAgentType
+  const [draftAccounts, setDraftAccounts] = useState<
+    Record<string, string | null>
+  >(() => ({ [agentType]: readSelectedAccount(agentType) }))
+  const draftAccountId = Object.prototype.hasOwnProperty.call(
+    draftAccounts,
+    selectedAgent
+  )
+    ? draftAccounts[selectedAgent]
+    : readSelectedAccount(selectedAgent)
+  const accountState = useAgentAccounts(selectedAgent)
+  const changeAccount = useCallback(
+    (id: string | null) => {
+      saveSelectedAccount(selectedAgent, id)
+      setDraftAccounts((previous) => ({ ...previous, [selectedAgent]: id }))
+    },
+    [selectedAgent]
+  )
   // Seed from localStorage so the React state reflects the user's saved
   // mode for this agent immediately on mount. Without this seed, a reuse-
   // path connect (idle window after a refresh, before the agent is GC'd)
@@ -539,6 +564,24 @@ const ConversationTabView = memo(function ConversationTabView({
     enabled: isVisible || isActive || heldDetail,
   })
   if (detail != null && !heldDetail) setHeldDetail(true)
+  const selectedAccountId = detail
+    ? (detail.summary.agent_account_id ?? null)
+    : conversationId != null
+      ? null
+      : draftAccountId
+  const accountPreferenceKey = agentAccountKey(selectedAgent, selectedAccountId)
+  useEffect(() => {
+    setModeId(getSavedModeId(accountPreferenceKey))
+  }, [accountPreferenceKey])
+  const awaitingAccountBinding =
+    hasPersistedConversation && !detail && !detailError
+  const draftAccountUnavailable =
+    !hasPersistedConversation &&
+    selectedAccountId !== null &&
+    (accountState.loading ||
+      !accountState.accounts.some(
+        (account) => account.id === selectedAccountId && !account.removed
+      ))
 
   // Subscribe to only the fields this panel actually reads from its runtime
   // session — NOT the whole session object. The live-message sink rewrites the
@@ -628,6 +671,8 @@ const ConversationTabView = memo(function ConversationTabView({
     [acpAgents, selectedAgent]
   )
   const canAutoConnect =
+    !awaitingAccountBinding &&
+    !draftAccountUnavailable &&
     (hasPersistedConversation || (agentsLoaded && usableAgentCount > 0)) &&
     !awaitingHistoricalSessionId &&
     // Skip the doomed auto-connect for a not-installed agent ONLY in the draft
@@ -672,6 +717,7 @@ const ConversationTabView = memo(function ConversationTabView({
   } = useConnectionLifecycle({
     contextKey: tabId,
     agentType: selectedAgent,
+    agentAccountId: selectedAccountId,
     isActive: isActive && canAutoConnect,
     workingDir: workingDirForConnection,
     sessionId:
@@ -731,10 +777,10 @@ const ConversationTabView = memo(function ConversationTabView({
   const connIsForOtherAgent =
     conn.agentType != null && conn.agentType !== selectedAgent
   const effectiveModes = connIsForOtherAgent
-    ? (getCachedSelectors(selectedAgent)?.modes ?? null)
+    ? (getCachedSelectors(accountPreferenceKey)?.modes ?? null)
     : conn.modes
   const effectiveConfigOptions = connIsForOtherAgent
-    ? (getCachedSelectors(selectedAgent)?.configOptions ?? null)
+    ? (getCachedSelectors(accountPreferenceKey)?.configOptions ?? null)
     : conn.configOptions
   // The live connection is ready for THIS tab only when it's connected AND its
   // cwd matches the tab's intended working dir. A just-retargeted chat draft (or
@@ -810,7 +856,9 @@ const ConversationTabView = memo(function ConversationTabView({
           : "agentNotInstalled",
         { agent: getAgentLabel(selectedAgent) }
       )
-    : (autoConnectError ?? agentConnectError)
+    : draftAccountUnavailable && !accountState.loading
+      ? tAccounts("choose")
+      : (autoConnectError ?? agentConnectError)
 
   useEffect(() => {
     if (connSessionId) {
@@ -1279,7 +1327,8 @@ const ConversationTabView = memo(function ConversationTabView({
             const res = await createChatConversation(
               selectedAgent,
               title,
-              chatExistingDir
+              chatExistingDir,
+              selectedAccountId
             )
             newConversationId = res.conversationId
             sendFolderId = res.folderId
@@ -1313,7 +1362,8 @@ const ConversationTabView = memo(function ConversationTabView({
             newConversationId = await createConversation(
               folderId,
               selectedAgent,
-              title
+              title,
+              selectedAccountId
             )
             dbConvIdRef.current = newConversationId
             // Set external ID on the stable virtual session (no migration needed —
@@ -1397,6 +1447,7 @@ const ConversationTabView = memo(function ConversationTabView({
       pinTab,
       refreshConversations,
       selectedAgent,
+      selectedAccountId,
       setDbConversationId,
       setExternalId,
       setPendingCleanup,
@@ -1570,7 +1621,11 @@ const ConversationTabView = memo(function ConversationTabView({
       if (dbConvIdRef.current) return
 
       setDraftAgentType(nextAgentType)
-      setModeId(getSavedModeId(nextAgentType))
+      setModeId(
+        getSavedModeId(
+          agentAccountKey(nextAgentType, readSelectedAccount(nextAgentType))
+        )
+      )
       setAgentConnectError(null)
       // Real user click — clear the provisional flag so TabProvider's
       // correction effect leaves this tab alone.
@@ -1591,7 +1646,11 @@ const ConversationTabView = memo(function ConversationTabView({
       if (dbConvIdRef.current) return
 
       setDraftAgentType(nextAgentType)
-      setModeId(getSavedModeId(nextAgentType))
+      setModeId(
+        getSavedModeId(
+          agentAccountKey(nextAgentType, readSelectedAccount(nextAgentType))
+        )
+      )
       setAgentConnectError(null)
       setDraftAgentFromFallback(tabId, nextAgentType)
     },
@@ -1606,13 +1665,13 @@ const ConversationTabView = memo(function ConversationTabView({
       // mode change made during a cross-agent switch window can't save the
       // previous agent's mode shape under the selected agent.
       if (effectiveModes) {
-        saveModePreference(selectedAgent, {
+        saveModePreference(accountPreferenceKey, {
           ...effectiveModes,
           current_mode_id: newModeId,
         })
       }
     },
-    [effectiveModes, selectedAgent]
+    [effectiveModes, accountPreferenceKey]
   )
 
   const handleAnswerQuestion = useCallback(
@@ -2290,6 +2349,16 @@ const ConversationTabView = memo(function ConversationTabView({
       getSentHistory={getSentHistory}
       topBanner={
         <>
+          {dbConversationId != null && selectedAccountId && (
+            <div className="px-4 py-1.5">
+              <AgentAccountSelector
+                accounts={accountState.accounts}
+                value={selectedAccountId}
+                onChange={changeAccount}
+                persisted
+              />
+            </div>
+          )}
           <SessionConfigStaleBanner contextKey={tabId} />
           <PiProjectTrustBanner
             contextKey={tabId}
@@ -2409,7 +2478,7 @@ const ConversationTabView = memo(function ConversationTabView({
                 onSelect={handleQuickAction}
                 agentType={selectedAgent}
               />
-              <div className="flex justify-center">
+              <div className="flex flex-col items-center justify-center">
                 <AgentSelector
                   // The selector spans the row it is given (it has to measure
                   // how much room it has), so the centring lives inside it now
@@ -2428,6 +2497,15 @@ const ConversationTabView = memo(function ConversationTabView({
                   onOpenAgentsSettings={handleOpenAgentsSettings}
                   disabled={isConnecting || dbConversationId != null}
                 />
+                <div className="mt-2 flex justify-center">
+                  <AgentAccountSelector
+                    accounts={accountState.accounts}
+                    value={selectedAccountId}
+                    onChange={changeAccount}
+                    disabled={isConnecting}
+                    persisted={dbConversationId != null}
+                  />
+                </div>
               </div>
               {composerBlockedMessage ? (
                 <div className="flex w-full items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive">
@@ -2508,6 +2586,15 @@ const ConversationTabView = memo(function ConversationTabView({
               onOpenAgentsSettings={handleOpenAgentsSettings}
               disabled={isConnecting || dbConversationId != null}
             />
+            <div className="mt-2 flex justify-center">
+              <AgentAccountSelector
+                accounts={accountState.accounts}
+                value={selectedAccountId}
+                onChange={changeAccount}
+                disabled={isConnecting}
+                persisted={dbConversationId != null}
+              />
+            </div>
             {composerBlockedMessage ? (
               <div className="mt-2 flex w-full items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive">
                 <button

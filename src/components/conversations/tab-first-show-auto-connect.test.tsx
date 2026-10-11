@@ -85,7 +85,11 @@ const STORED_SESSION = "sess-stored"
 
 const storedDetail = (): DbConversationDetail =>
   ({
-    summary: { id: CID, external_id: STORED_SESSION },
+    summary: {
+      id: CID,
+      external_id: STORED_SESSION,
+      agent_account_id: "account-work",
+    },
     turns: [],
   }) as unknown as DbConversationDetail
 
@@ -131,6 +135,7 @@ function TabViewGate({
     workingDir: "/repo",
     sessionId: externalId,
     conversationId: CID,
+    agentAccountId: detail?.summary.agent_account_id,
     preparing: active && awaitingHistoricalSessionId,
   })
   return null
@@ -178,7 +183,8 @@ describe("a hidden tab's first show", () => {
       "claude_code",
       "/repo",
       STORED_SESSION,
-      CID
+      CID,
+      "account-work"
     )
   })
 
@@ -210,7 +216,8 @@ describe("a hidden tab's first show", () => {
       "claude_code",
       "/repo",
       STORED_SESSION,
-      CID
+      CID,
+      "account-work"
     )
   })
 })
