@@ -1123,9 +1123,13 @@ export async function acpAntigravitySignOut(): Promise<AntigravitySyncReport> {
  * decision already covers it. Read-only.
  */
 export async function acpPiProjectTrustState(
-  workspace: string
+  workspace: string,
+  agentAccountId?: string | null
 ): Promise<PiProjectTrustState> {
-  return getTransport().call("acp_pi_project_trust_state", { workspace })
+  return getTransport().call("acp_pi_project_trust_state", {
+    workspace,
+    ...(agentAccountId ? { agentAccountId } : {}),
+  })
 }
 
 /**
@@ -1137,9 +1141,14 @@ export async function acpPiProjectTrustState(
  */
 export async function acpPiSetProjectTrust(
   workspace: string,
-  trusted: boolean | null
+  trusted: boolean | null,
+  agentAccountId?: string | null
 ): Promise<void> {
-  return getTransport().call("acp_pi_set_project_trust", { workspace, trusted })
+  return getTransport().call("acp_pi_set_project_trust", {
+    workspace,
+    trusted,
+    ...(agentAccountId ? { agentAccountId } : {}),
+  })
 }
 
 /** One decision recorded in pi's `trust.json`. */
@@ -1154,9 +1163,13 @@ export type PiTrustEntry = {
  * grant itself isn't changing, only codeg's record that it was confirmed.
  */
 export async function acpPiAcknowledgeProjectTrust(
-  workspace: string
+  workspace: string,
+  agentAccountId?: string | null
 ): Promise<void> {
-  return getTransport().call("acp_pi_acknowledge_project_trust", { workspace })
+  return getTransport().call("acp_pi_acknowledge_project_trust", {
+    workspace,
+    ...(agentAccountId ? { agentAccountId } : {}),
+  })
 }
 
 /** Every decision in pi's `trust.json`, for review and revocation. */

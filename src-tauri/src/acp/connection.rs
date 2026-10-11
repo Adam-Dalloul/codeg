@@ -1864,6 +1864,7 @@ async fn build_agent(
     cwd: &Path,
     stderr_tail: &Arc<StderrTail>,
     scratch: Option<&Path>,
+    account_home: Option<&Path>,
 ) -> Result<AcpAgent, AcpError> {
     // A conversation can outlive the custom-agent definition it was started
     // with (the user deleted it in settings). `get_agent_meta` cannot report
@@ -1911,7 +1912,7 @@ async fn build_agent(
                 // a notice shown once the connection is up comes after the code it
                 // warns about has already run.
                 if let Some(message) =
-                    crate::commands::acp::pi_project_trust_launch_block(cwd, runtime_env)
+                    crate::commands::acp::pi_project_trust_launch_block(cwd, runtime_env, account_home)
                 {
                     return Err(AcpError::PiProjectTrustRequired(message));
                 }
@@ -2400,6 +2401,7 @@ pub async fn spawn_agent_connection(
         &launch_cwd,
         &stderr_tail,
         scratch.as_ref().map(|s| s.path()),
+        account_home.as_deref(),
     )
     .await
     {

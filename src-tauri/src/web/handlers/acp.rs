@@ -1082,13 +1082,14 @@ pub async fn acp_antigravity_sign_out(
 #[serde(rename_all = "camelCase")]
 pub struct AcpPiProjectTrustStateParams {
     pub workspace: String,
+    pub agent_account_id: Option<String>,
 }
 
 pub async fn acp_pi_project_trust_state(
     Extension(state): Extension<Arc<AppState>>,
     Json(params): Json<AcpPiProjectTrustStateParams>,
 ) -> Result<Json<acp_commands::PiProjectTrustState>, AppCommandError> {
-    let result = acp_commands::acp_pi_project_trust_state_core(&state.db, params.workspace)
+    let result = acp_commands::acp_pi_project_trust_state_core(&state.db, params.workspace, params.agent_account_id)
         .await
         .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
     Ok(Json(result))
@@ -1098,6 +1099,7 @@ pub async fn acp_pi_project_trust_state(
 #[serde(rename_all = "camelCase")]
 pub struct AcpPiSetProjectTrustParams {
     pub workspace: String,
+    pub agent_account_id: Option<String>,
     /// `null` clears codeg's entry for this exact folder (revoke), rather than
     /// recording a verdict — matching the command's `Option<bool>`.
     #[serde(default)]
@@ -1108,7 +1110,7 @@ pub async fn acp_pi_set_project_trust(
     Extension(state): Extension<Arc<AppState>>,
     Json(params): Json<AcpPiSetProjectTrustParams>,
 ) -> Result<Json<()>, AppCommandError> {
-    acp_commands::acp_pi_set_project_trust_core(&state.db, params.workspace, params.trusted)
+    acp_commands::acp_pi_set_project_trust_core(&state.db, params.workspace, params.trusted, params.agent_account_id)
         .await
         .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
     Ok(Json(()))
@@ -1118,12 +1120,14 @@ pub async fn acp_pi_set_project_trust(
 #[serde(rename_all = "camelCase")]
 pub struct AcpPiAcknowledgeProjectTrustParams {
     pub workspace: String,
+    pub agent_account_id: Option<String>,
 }
 
 pub async fn acp_pi_acknowledge_project_trust(
+    Extension(state): Extension<Arc<AppState>>,
     Json(params): Json<AcpPiAcknowledgeProjectTrustParams>,
 ) -> Result<Json<()>, AppCommandError> {
-    acp_commands::acp_pi_acknowledge_project_trust_core(params.workspace)
+    acp_commands::acp_pi_acknowledge_project_trust_core(&state.db, params.workspace, params.agent_account_id)
         .await
         .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
     Ok(Json(()))

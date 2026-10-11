@@ -6301,9 +6301,10 @@ fn pi_project_trust_state_at(
 pub(crate) fn pi_project_trust_launch_block(
     cwd: &Path,
     runtime_env: &BTreeMap<String, String>,
+    account_home: Option<&Path>,
 ) -> Option<String> {
     let trust_file = pi_agent_dir_in_workspace(runtime_env, cwd).join("trust.json");
-    let state = pi_project_trust_state_at(&trust_file, &pi_trust_ack_path(), cwd);
+    let state = pi_project_trust_state_at(&trust_file, &pi_account_trust_ack_path(account_home), cwd);
     if state.resources.is_empty() || state.decision != Some(true) || state.acknowledged {
         return None;
     }
@@ -6513,19 +6514,33 @@ pub(crate) async fn acp_antigravity_sign_out_core(
     ))
 }
 
+fn pi_account_trust_ack_path(home: Option<&Path>) -> PathBuf {
+    home.map(|home| home.join(".codeg-project-trust.json")).unwrap_or_else(pi_trust_ack_path)
+}
+
+async fn pi_trust_paths_for_account(db: &AppDatabase, workspace: &str, account_id: Option<&str>) -> Result<(PathBuf, PathBuf), AcpError> {
+    if let Some(id) = account_id {
+        let account = crate::db::service::agent_account_service::resolve(&db.conn, AgentType::Pi, id)
+            .await.map_err(|e| AcpError::protocol(e.to_string()))?;
+        let home = Path::new(&account.home_dir);
+        return Ok((home.join("trust.json"), pi_account_trust_ack_path(Some(home))));
+    }
+    Ok((pi_agent_dir_in_workspace(&pi_runtime_env_from_db(db).await?, Path::new(workspace)).join("trust.json"), pi_trust_ack_path()))
+}
+
 pub(crate) async fn acp_pi_project_trust_state_core(
     db: &AppDatabase,
     workspace: String,
+    agent_account_id: Option<String>,
 ) -> Result<PiProjectTrustState, AcpError> {
     // Not trimmed, for the same reason as the write path: a directory name may
     // legitimately start or end with a space, and the state must describe the
     // exact folder the caller named.
     let cwd = Path::new(&workspace);
-    let trust_file =
-        pi_agent_dir_in_workspace(&pi_runtime_env_from_db(db).await?, cwd).join("trust.json");
+    let (trust_file, ack_file) = pi_trust_paths_for_account(db, &workspace, agent_account_id.as_deref()).await?;
     Ok(pi_project_trust_state_at(
         &trust_file,
-        &pi_trust_ack_path(),
+        &ack_file,
         cwd,
     ))
 }
@@ -6533,9 +6548,10 @@ pub(crate) async fn acp_pi_project_trust_state_core(
 /// Record that the user has seen and kept an existing trust grant, so the launch
 /// gate stops blocking this folder. Writes only codeg's own record — pi's
 /// `trust.json` is untouched, because the grant itself is not changing.
-pub(crate) async fn acp_pi_acknowledge_project_trust_core(workspace: String) -> Result<(), AcpError> {
+pub(crate) async fn acp_pi_acknowledge_project_trust_core(db: &AppDatabase, workspace: String, agent_account_id: Option<String>) -> Result<(), AcpError> {
+    let (_, ack_file) = pi_trust_paths_for_account(db, &workspace, agent_account_id.as_deref()).await?;
     tokio::task::spawn_blocking(move || {
-        pi_set_trust_acknowledged_at(&pi_trust_ack_path(), Path::new(&workspace), true)
+        pi_set_trust_acknowledged_at(&ack_file, Path::new(&workspace), true)
     })
     .await
     .map_err(|e| AcpError::protocol(format!("trust acknowledgement task failed: {e}")))?
@@ -6560,11 +6576,11 @@ pub(crate) async fn acp_pi_set_project_trust_core(
     db: &AppDatabase,
     workspace: String,
     trusted: Option<bool>,
+    agent_account_id: Option<String>,
 ) -> Result<(), AcpError> {
     // The same file the launch gate reads for this workspace — anchored in it
     // when the agent dir is relative (see `pi_agent_dir_in_workspace`).
-    let path = pi_agent_dir_in_workspace(&pi_runtime_env_from_db(db).await?, Path::new(&workspace))
-        .join("trust.json");
+    let (path, ack_file) = pi_trust_paths_for_account(db, &workspace, agent_account_id.as_deref()).await?;
     // The write takes pi's file lock and can sleep on contention, so keep it off
     // the async worker. NOTE: `workspace` is NOT trimmed — leading/trailing
     // spaces are legal in a directory name, and silently trimming them would key
@@ -6576,7 +6592,7 @@ pub(crate) async fn acp_pi_set_project_trust_core(
         // acknowledged by construction and must not re-block the launch. A
         // declined or revoked one drops the record, so a future grant gets
         // disclosed again instead of riding on a stale "already seen".
-        pi_set_trust_acknowledged_at(&pi_trust_ack_path(), cwd, trusted == Some(true))
+        pi_set_trust_acknowledged_at(&ack_file, cwd, trusted == Some(true))
     })
     .await
     .map_err(|e| AcpError::protocol(format!("trust write task failed: {e}")))?
@@ -11061,6 +11077,37 @@ mod native_account_launch_tests {
     use super::*;
 
     #[tokio::test]
+    async fn native_pi_accounts_keep_trust_decisions_and_acknowledgements_separate() {
+        let db = crate::db::test_helpers::fresh_in_memory_db().await;
+        let data = tempfile::tempdir().unwrap();
+        let workspace = data.path().join("project");
+        fs::create_dir_all(workspace.join(".pi/extensions")).unwrap();
+        fs::write(workspace.join(".pi/extensions/fixture.js"), "// fixture, never executed").unwrap();
+        let a = crate::db::service::agent_account_service::create(&db.conn, data.path(), AgentType::Pi, "A", None).await.unwrap();
+        let b = crate::db::service::agent_account_service::create(&db.conn, data.path(), AgentType::Pi, "B", None).await.unwrap();
+        let a_home = Path::new(&a.home_dir);
+        let b_home = Path::new(&b.home_dir);
+        pi_write_trust_decision_at(&b_home.join("trust.json"), &workspace, Some(true)).unwrap();
+        let old_b = fs::read(b_home.join("trust.json")).unwrap();
+        let cwd = workspace.to_string_lossy().into_owned();
+        acp_pi_set_project_trust_core(&db, cwd.clone(), Some(true), Some(a.id.clone())).await.unwrap();
+        let a_state = acp_pi_project_trust_state_core(&db, cwd.clone(), Some(a.id.clone())).await.unwrap();
+        let b_state = acp_pi_project_trust_state_core(&db, cwd.clone(), Some(b.id.clone())).await.unwrap();
+        assert!(a_state.acknowledged);
+        assert!(!b_state.acknowledged);
+        assert_eq!(a_state.decision, Some(true));
+        let a_env = crate::acp::agent_accounts::isolation_env(AgentType::Pi, a_home).unwrap();
+        let b_env = crate::acp::agent_accounts::isolation_env(AgentType::Pi, b_home).unwrap();
+        assert!(pi_project_trust_launch_block(&workspace, &a_env, Some(a_home)).is_none());
+        assert!(pi_project_trust_launch_block(&workspace, &b_env, Some(b_home)).is_some());
+        acp_pi_acknowledge_project_trust_core(&db, cwd.clone(), Some(b.id)).await.unwrap();
+        assert_eq!(fs::read(b_home.join("trust.json")).unwrap(), old_b);
+        assert!(pi_project_trust_launch_block(&workspace, &b_env, Some(b_home)).is_none());
+        crate::db::service::agent_account_service::remove(&db.conn, &a.id).await.unwrap();
+        assert!(acp_pi_project_trust_state_core(&db, cwd, Some(a.id)).await.is_err());
+    }
+
+    #[tokio::test]
     async fn native_accounts_scrub_default_provider_keys_but_read_their_own_config() {
         use crate::db::service::agent_setting_service::{AgentDefaultInput, AgentSettingsUpdate};
         let db = crate::db::test_helpers::fresh_in_memory_db().await;
@@ -12988,8 +13035,9 @@ pub async fn acp_validate_pi_command(command: String) -> Result<PiCommandValidat
 pub async fn acp_pi_project_trust_state(
     db: tauri::State<'_, AppDatabase>,
     workspace: String,
+    agent_account_id: Option<String>,
 ) -> Result<PiProjectTrustState, AcpError> {
-    acp_pi_project_trust_state_core(&db, workspace).await
+    acp_pi_project_trust_state_core(&db, workspace, agent_account_id).await
 }
 
 /// Project the saved Antigravity auth choice into the server's settings file,
@@ -13049,16 +13097,17 @@ pub async fn acp_pi_set_project_trust(
     db: tauri::State<'_, AppDatabase>,
     workspace: String,
     trusted: Option<bool>,
+    agent_account_id: Option<String>,
 ) -> Result<(), AcpError> {
-    acp_pi_set_project_trust_core(&db, workspace, trusted).await
+    acp_pi_set_project_trust_core(&db, workspace, trusted, agent_account_id).await
 }
 
 /// Record that the user reviewed an existing grant and chose to keep it, which
 /// clears the launch gate for that folder. Does not change pi's trust store.
 #[cfg(feature = "tauri-runtime")]
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
-pub async fn acp_pi_acknowledge_project_trust(workspace: String) -> Result<(), AcpError> {
-    acp_pi_acknowledge_project_trust_core(workspace).await
+pub async fn acp_pi_acknowledge_project_trust(db: tauri::State<'_, AppDatabase>, workspace: String, agent_account_id: Option<String>) -> Result<(), AcpError> {
+    acp_pi_acknowledge_project_trust_core(&db, workspace, agent_account_id).await
 }
 
 /// List every decision in pi's `trust.json` so the settings page can review and
@@ -15936,7 +15985,7 @@ base_url = \"https://example.test/v1\"
         temp_env::with_var(
             "CODEG_HOME",
             Some(codeg_home.to_string_lossy().to_string()),
-            || pi_project_trust_launch_block(cwd, &pi_env_for(agent_dir)),
+            || pi_project_trust_launch_block(cwd, &pi_env_for(agent_dir), None),
         )
     }
 
@@ -16345,12 +16394,12 @@ base_url = \"https://example.test/v1\"
         );
         lookup_failed(acp_pi_list_trust_entries_core(&db).await.unwrap_err());
         lookup_failed(
-            acp_pi_set_project_trust_core(&db, "/tmp/pi-db-error".into(), Some(true))
+            acp_pi_set_project_trust_core(&db, "/tmp/pi-db-error".into(), Some(true), None)
                 .await
                 .unwrap_err(),
         );
         lookup_failed(
-            acp_pi_project_trust_state_core(&db, "/tmp/pi-db-error".into())
+            acp_pi_project_trust_state_core(&db, "/tmp/pi-db-error".into(), None)
                 .await
                 .unwrap_err(),
         );
@@ -16523,7 +16572,7 @@ base_url = \"https://example.test/v1\"
         let blocked = temp_env::with_var(
             "CODEG_HOME",
             Some(tmp.path().join("codeg-home").to_string_lossy().to_string()),
-            || pi_project_trust_launch_block(&ws, &env),
+            || pi_project_trust_launch_block(&ws, &env, None),
         );
         assert!(
             blocked.is_some(),

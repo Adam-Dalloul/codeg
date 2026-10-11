@@ -2364,6 +2364,9 @@ const ConversationTabView = memo(function ConversationTabView({
             contextKey={tabId}
             agentType={selectedAgent}
             workingDir={workingDirForConnection}
+            agentAccountId={selectedAccountId}
+            conversationId={dbConversationId ?? undefined}
+            sessionId={dbConversationId != null ? externalId : undefined}
           />
         </>
       }
