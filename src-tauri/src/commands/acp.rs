@@ -11436,6 +11436,7 @@ pub async fn acp_connect(
         .app_data_dir()
         .map(|p| crate::paths::resolve_effective_data_dir(&p))
         .unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let connect_barrier = manager.lock_for_connect().await;
     let account_id = crate::db::service::agent_account_service::connection_account(
         &db.conn, agent_type, agent_account_id, conversation_id,
     ).await.map_err(|e| AcpError::protocol(e.to_string()))?;
@@ -11450,7 +11451,8 @@ pub async fn acp_connect(
 
     let emitter = EventEmitter::Tauri(app_handle);
     manager
-        .spawn_agent(
+        .spawn_agent_with_connect_barrier(
+            &connect_barrier,
             agent_type,
             working_dir,
             session_id,

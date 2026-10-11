@@ -85,6 +85,7 @@ pub async fn acp_connect(
     let db = &state.db;
     let manager = &state.connection_manager;
 
+    let connect_barrier = manager.lock_for_connect().await;
     let account_id = crate::db::service::agent_account_service::connection_account(
         &db.conn, params.agent_type, params.agent_account_id, params.conversation_id,
     ).await.map_err(AppCommandError::from)?;
@@ -107,7 +108,8 @@ pub async fn acp_connect(
 
     let emitter = state.emitter.clone();
     let connection_id = manager
-        .spawn_agent(
+        .spawn_agent_with_connect_barrier(
+            &connect_barrier,
             params.agent_type,
             params.working_dir,
             params.session_id,

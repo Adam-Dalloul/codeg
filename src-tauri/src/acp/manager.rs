@@ -378,6 +378,8 @@ struct DrainingChild {
     /// `on_exit` zeroes it on a real reap.
     pid: Arc<std::sync::atomic::AtomicU32>,
     parked_at: std::time::Instant,
+    session_identity: Option<(AgentType, PathBuf, String)>,
+    spawn_pending: bool,
 }
 
 type DrainingChildren = Vec<DrainingChild>;
@@ -694,6 +696,92 @@ impl ConnectionManager {
         // empty connection list and then have one appear underneath it. Not
         // re-entrant: nothing reachable from here calls `spawn_agent` again.
         let _restore_guard = self.external_restore_lock.read().await;
+
+        self.spawn_agent_inner(
+            agent_type,
+            working_dir,
+            session_id,
+            runtime_env,
+            owner_window_label,
+            emitter,
+            preferred_mode_id,
+            preferred_config_values,
+        )
+        .await
+    }
+
+    /// Account transfer already owns the write side of the restore barrier.
+    /// Re-entering `spawn_agent` there would deadlock. Keep the required guard
+    /// explicit so this bypass cannot accidentally become an ordinary connect.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn spawn_agent_during_account_switch(
+        &self,
+        _barrier: &tokio::sync::OwnedRwLockWriteGuard<()>,
+        working_dir: String,
+        session_id: String,
+        runtime_env: BTreeMap<String, String>,
+        owner_window_label: String,
+        emitter: EventEmitter,
+        preferred_mode_id: Option<String>,
+        preferred_config_values: BTreeMap<String, String>,
+    ) -> Result<String, AcpError> {
+        self.spawn_agent_inner(
+            AgentType::ClaudeCode,
+            Some(working_dir),
+            Some(session_id),
+            runtime_env,
+            owner_window_label,
+            emitter,
+            preferred_mode_id,
+            preferred_config_values,
+        )
+        .await
+    }
+
+    pub(crate) async fn lock_for_connect(&self) -> tokio::sync::OwnedRwLockReadGuard<()> {
+        self.external_restore_lock.clone().read_owned().await
+    }
+
+    /// Saved-account validation must happen under this same barrier. Otherwise
+    /// a connect that waited for a switch could reopen its stale source account.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn spawn_agent_with_connect_barrier(
+        &self,
+        _barrier: &tokio::sync::OwnedRwLockReadGuard<()>,
+        agent_type: AgentType,
+        working_dir: Option<String>,
+        session_id: Option<String>,
+        runtime_env: BTreeMap<String, String>,
+        owner_window_label: String,
+        emitter: EventEmitter,
+        preferred_mode_id: Option<String>,
+        preferred_config_values: BTreeMap<String, String>,
+    ) -> Result<String, AcpError> {
+        self.spawn_agent_inner(
+            agent_type,
+            working_dir,
+            session_id,
+            runtime_env,
+            owner_window_label,
+            emitter,
+            preferred_mode_id,
+            preferred_config_values,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn spawn_agent_inner(
+        &self,
+        agent_type: AgentType,
+        working_dir: Option<String>,
+        session_id: Option<String>,
+        runtime_env: BTreeMap<String, String>,
+        owner_window_label: String,
+        emitter: EventEmitter,
+        preferred_mode_id: Option<String>,
+        preferred_config_values: BTreeMap<String, String>,
+    ) -> Result<String, AcpError> {
 
         // Connection dedup: when resuming an agent session (session_id is
         // Some), look for a live AgentConnection that already represents
@@ -2466,15 +2554,143 @@ impl ConnectionManager {
         }
     }
 
+    /// With new connects excluded, serialize against prompts/forks, refuse
+    /// ongoing work, and wait for the old writer to exit before copying it.
+    pub(crate) async fn quiesce_account_session(
+        &self,
+        _barrier: &tokio::sync::OwnedRwLockWriteGuard<()>,
+        source: &std::path::Path,
+        target: &std::path::Path,
+        sid: &str,
+    ) -> Result<Vec<tokio::sync::OwnedMutexGuard<()>>, AcpError> {
+        {
+            let mut draining = self.draining.lock().await;
+            prune_reaped(&mut draining);
+            if draining.iter().any(|child| {
+                let Some((family, root, session)) = &child.session_identity else { return false; };
+                let same = |path: &std::path::Path| {
+                    crate::parsers::path_eq_for_matching(&root.to_string_lossy(), &path.to_string_lossy())
+                        || matches!((root.canonicalize(), path.canonicalize()), (Ok(a), Ok(b)) if a == b)
+                };
+                *family == AgentType::ClaudeCode && session == sid && (same(source) || same(target))
+                    && (child.pid.load(std::sync::atomic::Ordering::SeqCst) != 0 || child.spawn_pending)
+            }) {
+                return Err(AcpError::protocol("An agent is still stopping. Wait before switching accounts."));
+            }
+        }
+        let mut sources = Vec::new();
+        {
+            let connections = self.connections.lock().await;
+            for (id, connection) in connections.iter() {
+                let state = connection.state.read().await;
+                if state
+                    .external_id
+                    .as_deref()
+                    .or(state.requested_session_id.as_deref())
+                    != Some(sid)
+                {
+                    continue;
+                }
+                let Some((family, root)) = &state.storage_identity else {
+                    continue;
+                };
+                if *family != AgentType::ClaudeCode {
+                    continue;
+                }
+                let same = |other: &std::path::Path| {
+                    crate::parsers::path_eq_for_matching(
+                        &root.to_string_lossy(),
+                        &other.to_string_lossy(),
+                    ) || matches!((root.canonicalize(), other.canonicalize()), (Ok(a), Ok(b)) if a == b)
+                };
+                if same(target) {
+                    return Err(AcpError::protocol(
+                        "Close the target account's copy of this session before switching.",
+                    ));
+                }
+                if same(source) {
+                    sources.push((id.clone(), connection.prompt_lock.clone()));
+                }
+            }
+        }
+        let mut guards = Vec::new();
+        for (id, lock) in &sources {
+            guards.push(lock.clone().lock_owned().await);
+            if let Some(state) = self.get_state(id).await {
+                let state = state.read().await;
+                if state.turn_in_flight
+                    || state.goal_active
+                    || state.pending_permission.is_some()
+                    || state.has_active_background_work(chrono::Utc::now())
+                    || !matches!(
+                        state.status,
+                        ConnectionStatus::Connected
+                            | ConnectionStatus::Error
+                            | ConnectionStatus::Disconnected
+                    )
+                {
+                    return Err(AcpError::TurnInProgress);
+                }
+            }
+        }
+        for (id, _) in sources {
+            self.disconnect_and_wait_for_account_switch(&id).await?;
+        }
+        Ok(guards)
+    }
+
+    pub(crate) async fn disconnect_and_wait_for_account_switch(
+        &self,
+        id: &str,
+    ) -> Result<(), AcpError> {
+        let (state, pid) = {
+            let connections = self.connections.lock().await;
+            let Some(connection) = connections.get(id) else {
+                return Ok(());
+            };
+            (connection.state.clone(), connection.child_pid.clone())
+        };
+        self.disconnect(id).await?;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+        loop {
+            let stopped = matches!(
+                state.read().await.status,
+                ConnectionStatus::Disconnected | ConnectionStatus::Error
+            );
+            if stopped && pid.load(std::sync::atomic::Ordering::SeqCst) == 0 {
+                // This exact child is confirmed stopped, unlike a generic
+                // zero-pid drainer which might still be in its spawn window.
+                self.draining
+                    .lock()
+                    .await
+                    .retain(|child| !Arc::ptr_eq(&child.pid, &pid));
+                return Ok(());
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(AcpError::protocol(
+                    "The previous agent is still stopping. Wait before switching accounts again.",
+                ));
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+
     /// Remember a connection's child until it is provably finished. Call while
     /// holding the connections lock, immediately after removing the entry.
     async fn park_draining(&self, conn: &AgentConnection) {
         let mut draining = self.draining.lock().await;
         prune_reaped(&mut draining);
+        let state = conn.state.read().await;
+        let session_identity = state.storage_identity.as_ref().and_then(|(family, root)| {
+            state.external_id.as_ref().or(state.requested_session_id.as_ref())
+                .map(|sid| (*family, root.clone(), sid.clone()))
+        });
         draining.push(DrainingChild {
             agent: conn.agent_type,
             pid: conn.child_pid.clone(),
             parked_at: std::time::Instant::now(),
+            session_identity,
+            spawn_pending: state.status == ConnectionStatus::Connecting,
         });
     }
 
@@ -7444,6 +7660,34 @@ mod tests {
         let error = mgr.fork_session(&db, "account-fork", Some(other.id), Some(folder), None).await.unwrap_err();
         assert!(error.to_string().contains("different agent account"));
         assert!(state.read().await.conversation_id.is_none());
+    }
+
+    #[tokio::test]
+    async fn account_switch_refuses_active_turns_goals_and_open_targets() {
+        let mgr = ConnectionManager::new();
+        let a = tempfile::tempdir().unwrap();
+        let b = tempfile::tempdir().unwrap();
+        insert_fake_connection(&mgr, "switch-source", AgentType::ClaudeCode, None, EventEmitter::Noop).await;
+        let state = mgr.get_state("switch-source").await.unwrap();
+        {
+            let mut state = state.write().await;
+            state.storage_identity = Some((AgentType::ClaudeCode, a.path().into()));
+            state.external_id = Some("sid".into());
+            state.turn_in_flight = true;
+        }
+        let barrier = mgr.lock_out_new_connections().await;
+        assert!(matches!(mgr.quiesce_account_session(&barrier, a.path(), b.path(), "sid").await, Err(AcpError::TurnInProgress)));
+        assert!(mgr.get_state("switch-source").await.is_some());
+        {
+            let mut state = state.write().await;
+            state.turn_in_flight = false;
+            state.goal_active = true;
+        }
+        assert!(matches!(mgr.quiesce_account_session(&barrier, a.path(), b.path(), "sid").await, Err(AcpError::TurnInProgress)));
+        state.write().await.goal_active = false;
+        let error = mgr.quiesce_account_session(&barrier, b.path(), a.path(), "sid").await.unwrap_err();
+        assert!(error.to_string().contains("target account"));
+        assert!(mgr.get_state("switch-source").await.is_some());
     }
 
     /// Two concurrent `send_prompt_linked` calls on the SAME connection

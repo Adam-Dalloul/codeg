@@ -1,5 +1,9 @@
 {
   "AgentAccounts": {
+    "switchAccount": "Cambiar de cuenta",
+    "switchHint": "Continúa esta conversación con otra cuenta de Claude. Se conserva todo el historial.",
+    "switching": "Cambiando de cuenta…",
+    "switched": "Cuenta cambiada. Se ha conservado el historial.",
     "homeLayout": "Selecciona la carpeta principal que contiene {path}.",
     "gatewayAccount": "Las sesiones usan la cuenta configurada en tu gateway de OpenClaw.",
     "account": "Cuenta",

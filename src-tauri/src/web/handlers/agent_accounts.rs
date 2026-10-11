@@ -36,6 +36,21 @@ fn error(e: crate::acp::error::AcpError) -> AppCommandError {
     AppCommandError::task_execution_failed(e.to_string())
 }
 
+#[derive(Deserialize)]
+pub struct SwitchParams {
+    request: crate::commands::account_switch::SwitchAccountRequest,
+}
+
+pub async fn switch_conversation(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(p): Json<SwitchParams>,
+) -> Result<Json<crate::commands::account_switch::SwitchAccountResult>, AppCommandError> {
+    crate::commands::account_switch::switch_core(
+        &state.db, &state.connection_manager, &state.emitter, &state.data_dir,
+        "web".into(), p.request,
+    ).await.map(Json).map_err(error)
+}
+
 pub async fn list(
     Extension(state): Extension<Arc<AppState>>,
     Json(p): Json<AgentParams>,

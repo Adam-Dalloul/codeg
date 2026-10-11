@@ -1,5 +1,9 @@
 {
   "AgentAccounts": {
+    "switchAccount": "アカウントを切り替える",
+    "switchHint": "別の Claude アカウントでこの会話を続けます。履歴はすべて保持されます。",
+    "switching": "アカウントを切り替え中…",
+    "switched": "アカウントを切り替えました。会話履歴は保持されています。",
     "homeLayout": "{path} を含む親フォルダーを選択してください。",
     "gatewayAccount": "セッションは OpenClaw ゲートウェイに設定されたアカウントを使用します。",
     "account": "アカウント",

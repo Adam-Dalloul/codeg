@@ -22,6 +22,42 @@ const accounts = [
 ]
 
 describe("account picker", () => {
+  it("switches a persisted Default conversation without creating a new chat", async () => {
+    const changed = vi.fn()
+    render(
+      <NextIntlClientProvider locale="en" messages={messages}>
+        <AgentAccountSelector
+          accounts={accounts}
+          value={null}
+          onChange={changed}
+          persisted
+          canSwitch
+        />
+      </NextIntlClientProvider>
+    )
+    fireEvent.click(screen.getByRole("combobox", { name: "Switch account" }))
+    fireEvent.click(await screen.findByRole("option", { name: "Personal" }))
+    expect(changed).toHaveBeenCalledWith("a")
+  })
+
+  it("keeps the current selection and disables repeat clicks while switching", () => {
+    render(
+      <NextIntlClientProvider locale="en" messages={messages}>
+        <AgentAccountSelector
+          accounts={accounts}
+          value="a"
+          onChange={vi.fn()}
+          persisted
+          canSwitch
+          switching
+        />
+      </NextIntlClientProvider>
+    )
+    const picker = screen.getByRole("combobox", { name: "Switch account" })
+    expect(picker).toBeDisabled()
+    expect(picker).toHaveAttribute("aria-busy", "true")
+    expect(picker).toHaveTextContent("Switching account")
+  })
   it("keeps a removed persisted account visible without offering a switch", () => {
     render(
       <NextIntlClientProvider locale="en" messages={messages}>

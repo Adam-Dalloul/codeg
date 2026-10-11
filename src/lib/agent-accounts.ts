@@ -16,6 +16,7 @@ export interface AgentAccountCapability {
   reason: string | null
   loginKind: "terminal" | "browser" | null
   configSubdir?: string | null
+  canSwitchConversation?: boolean
 }
 
 export interface AgentAccountsResult {
@@ -56,6 +57,25 @@ export function loginAgentAccount(
   accountId: string
 ): Promise<ExtraSlotLoginResult> {
   return getTransport().call("acp_login_agent_account", { accountId })
+}
+
+export function switchConversationAccount(request: {
+  conversationId: number
+  sourceAccountId: string | null
+  targetAccountId: string | null
+  preferredModeId?: string
+  preferredConfigValues?: Record<string, string>
+}): Promise<{
+  conversationId: number
+  agentAccountId: string | null
+  connectionId: string
+  externalId: string
+}> {
+  return getTransport().call(
+    "acp_switch_conversation_account",
+    { request },
+    { timeoutMs: 120_000 }
+  )
 }
 
 export function agentAccountKey(

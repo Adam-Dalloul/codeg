@@ -2020,6 +2020,7 @@ mod tauri_app {
                 crate::commands::agent_accounts::acp_rename_agent_account,
                 crate::commands::agent_accounts::acp_remove_agent_account,
                 crate::commands::agent_accounts::acp_login_agent_account,
+                crate::commands::account_switch::acp_switch_conversation_account,
                 crate::commands::custom_agents::acp_save_custom_agent,
                 crate::commands::custom_agents::acp_delete_custom_agent,
                 crate::commands::custom_agents::acp_fetch_registry_catalog,

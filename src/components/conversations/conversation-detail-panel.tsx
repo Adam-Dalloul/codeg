@@ -67,7 +67,9 @@ import {
   agentAccountKey,
   readSelectedAccount,
   saveSelectedAccount,
+  switchConversationAccount,
 } from "@/lib/agent-accounts"
+import { getSavedPrefsForConnect } from "@/lib/selector-prefs-storage"
 import { ChatInput } from "@/components/chat/chat-input"
 import { WelcomeHero, WelcomeTip } from "@/components/chat/welcome-hero"
 import { QuickActions } from "@/components/chat/quick-actions"
@@ -373,6 +375,12 @@ const ConversationTabView = memo(function ConversationTabView({
     ? draftAccounts[selectedAgent]
     : readSelectedAccount(selectedAgent)
   const accountState = useAgentAccounts(selectedAgent)
+  const [accountSwitching, setAccountSwitching] = useState(false)
+  const accountSwitchPending = useRef(false)
+  const [switchedAccount, setSwitchedAccount] = useState<{
+    conversationId: number
+    accountId: string | null
+  } | null>(null)
   const changeAccount = useCallback(
     (id: string | null) => {
       saveSelectedAccount(selectedAgent, id)
@@ -564,11 +572,23 @@ const ConversationTabView = memo(function ConversationTabView({
     enabled: isVisible || isActive || heldDetail,
   })
   if (detail != null && !heldDetail) setHeldDetail(true)
-  const selectedAccountId = detail
-    ? (detail.summary.agent_account_id ?? null)
-    : conversationId != null
-      ? null
-      : draftAccountId
+  const selectedAccountId =
+    switchedAccount && switchedAccount.conversationId === dbConversationId
+      ? switchedAccount.accountId
+      : detail
+        ? (detail.summary.agent_account_id ?? null)
+        : conversationId != null
+          ? null
+          : draftAccountId
+  useEffect(() => {
+    if (
+      switchedAccount &&
+      detail?.summary.id === switchedAccount.conversationId &&
+      (detail.summary.agent_account_id ?? null) === switchedAccount.accountId
+    ) {
+      setSwitchedAccount(null)
+    }
+  }, [detail, switchedAccount])
   const accountPreferenceKey = agentAccountKey(selectedAgent, selectedAccountId)
   useEffect(() => {
     setModeId(getSavedModeId(accountPreferenceKey))
@@ -671,6 +691,7 @@ const ConversationTabView = memo(function ConversationTabView({
     [acpAgents, selectedAgent]
   )
   const canAutoConnect =
+    !accountSwitching &&
     !awaitingAccountBinding &&
     !draftAccountUnavailable &&
     (hasPersistedConversation || (agentsLoaded && usableAgentCount > 0)) &&
@@ -790,13 +811,15 @@ const ConversationTabView = memo(function ConversationTabView({
   // No-op for normal conversations, whose connected cwd always equals intended.
   // A connection still bound to a different agent is never "ready" for the
   // selected one — it would otherwise let a send reach the previous agent.
-  const connectionReady = isConnectionReady(
-    connStatus,
-    conn.connectedWorkingDir,
-    workingDirForConnection,
-    conn.agentType,
-    selectedAgent
-  )
+  const connectionReady =
+    !accountSwitching &&
+    isConnectionReady(
+      connStatus,
+      conn.connectedWorkingDir,
+      workingDirForConnection,
+      conn.agentType,
+      selectedAgent
+    )
   // Read by the queue auto-flush's deferred timer, which must not act on a
   // readiness reading captured a tick ago.
   const connectionReadyRef = useRef(connectionReady)
@@ -1192,6 +1215,7 @@ const ConversationTabView = memo(function ConversationTabView({
       // re-queues at the TAIL.
       opts?: { fromQueueFlush?: boolean }
     ) => {
+      if (accountSwitchPending.current) return
       // Capture the tab's chat-draft state + eager scratch dir synchronously,
       // before any await. A folderless chat draft is NOT special-cased here:
       // its first send takes the exact same gated, inline path as a normal new
@@ -1957,6 +1981,64 @@ const ConversationTabView = memo(function ConversationTabView({
     }
     refetchDetail(dbConversationId)
   }, [acpActions, acpLoadError, dbConversationId, refetchDetail, tabId])
+
+  const handleSwitchAccount = useCallback(
+    async (targetAccountId: string | null) => {
+      if (
+        dbConversationId == null ||
+        targetAccountId === selectedAccountId ||
+        accountSwitchPending.current
+      )
+        return
+      accountSwitchPending.current = true
+      setAccountSwitching(true)
+      try {
+        const prefs = getSavedPrefsForConnect(
+          agentAccountKey(selectedAgent, targetAccountId)
+        )
+        const result = await switchConversationAccount({
+          conversationId: dbConversationId,
+          sourceAccountId: selectedAccountId,
+          targetAccountId,
+          preferredModeId: prefs.modeId ?? undefined,
+          preferredConfigValues: prefs.configValues ?? undefined,
+        })
+        // The backend has stopped the old writer. Release only this client's
+        // old attachment; discovery attaches the same tab to the verified load.
+        await acpActions.disconnect(tabId)
+        acpActions.clearAcpLoadError(tabId)
+        setSwitchedAccount({
+          conversationId: result.conversationId,
+          accountId: result.agentAccountId,
+        })
+        setDraftAccounts((previous) => ({
+          ...previous,
+          [selectedAgent]: result.agentAccountId,
+        }))
+        saveSelectedAccount(selectedAgent, result.agentAccountId)
+        refetchDetail(effectiveConversationId, { preserveLive: true })
+        refreshConversations()
+        toast.success(tAccounts("switched"))
+      } catch (error) {
+        toast.error(toErrorMessage(error))
+        refetchDetail(effectiveConversationId, { preserveLive: true })
+      } finally {
+        accountSwitchPending.current = false
+        setAccountSwitching(false)
+      }
+    },
+    [
+      dbConversationId,
+      selectedAccountId,
+      selectedAgent,
+      acpActions,
+      tabId,
+      effectiveConversationId,
+      refetchDetail,
+      refreshConversations,
+      tAccounts,
+    ]
+  )
   // Open (or re-activate) the singleton draft tab BEFORE closing the failing
   // tab. closeTab auto-creates a replacement draft when it removes the last
   // tab, and `openNewConversationTab` reads `rawTabsRef.current` which
@@ -2349,13 +2431,22 @@ const ConversationTabView = memo(function ConversationTabView({
       getSentHistory={getSentHistory}
       topBanner={
         <>
-          {dbConversationId != null && selectedAccountId && (
+          {dbConversationId != null && (
             <div className="px-4 py-1.5">
               <AgentAccountSelector
                 accounts={accountState.accounts}
                 value={selectedAccountId}
-                onChange={changeAccount}
+                onChange={handleSwitchAccount}
                 persisted
+                canSwitch={accountState.capability?.canSwitchConversation}
+                switching={accountSwitching}
+                disabled={
+                  isConnecting ||
+                  connStatus === "prompting" ||
+                  msgQueue.length > 0 ||
+                  conn.isViewer ||
+                  !externalId
+                }
               />
             </div>
           )}
@@ -2370,7 +2461,7 @@ const ConversationTabView = memo(function ConversationTabView({
           />
         </>
       }
-      status={connStatus}
+      status={accountSwitching ? "connecting" : connStatus}
       promptCapabilities={conn.promptCapabilities}
       defaultPath={workingDirForConnection}
       agentName={getAgentLabel(selectedAgent)}

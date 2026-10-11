@@ -17,18 +17,22 @@ export function AgentAccountSelector({
   onChange,
   disabled = false,
   persisted = false,
+  canSwitch = false,
+  switching = false,
 }: {
   accounts: AgentAccount[]
   value: string | null
   onChange: (value: string | null) => void
   disabled?: boolean
   persisted?: boolean
+  canSwitch?: boolean
+  switching?: boolean
 }) {
   const t = useTranslations("AgentAccounts")
   const available = accounts.filter((account) => !account.removed)
   if (!value && available.length === 0) return null
   const selected = accounts.find((a) => a.id === value)
-  if (persisted) {
+  if (persisted && !canSwitch) {
     if (!value) return null
     return (
       <span
@@ -46,15 +50,20 @@ export function AgentAccountSelector({
   return (
     <Select
       value={value ?? "default"}
-      onValueChange={(id) => onChange(id === "default" ? null : id)}
-      disabled={disabled}
+      onValueChange={(id) => {
+        const next = id === "default" ? null : id
+        if (next !== value) onChange(next)
+      }}
+      disabled={disabled || switching}
     >
       <SelectTrigger
         className="h-8 w-auto min-w-28 max-w-full"
-        aria-label={t("account")}
+        aria-label={persisted ? t("switchAccount") : t("account")}
+        aria-busy={switching}
+        title={persisted ? t("switchHint") : undefined}
       >
         <UserRound className="size-3.5 shrink-0" />
-        <SelectValue />
+        {switching ? t("switching") : <SelectValue />}
       </SelectTrigger>
       <SelectContent>
         <SelectItem value="default">{t("default")}</SelectItem>

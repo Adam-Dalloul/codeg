@@ -1,5 +1,9 @@
 {
   "AgentAccounts": {
+    "switchAccount": "Changer de compte",
+    "switchHint": "Poursuivez cette conversation avec un autre compte Claude. Tout l’historique est conservé.",
+    "switching": "Changement de compte…",
+    "switched": "Compte changé. Historique de conversation conservé.",
     "homeLayout": "Sélectionnez le dossier parent contenant {path}.",
     "gatewayAccount": "Les sessions utilisent le compte configuré sur votre passerelle OpenClaw.",
     "account": "Compte",

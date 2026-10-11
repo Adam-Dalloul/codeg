@@ -71,3 +71,4 @@ pub mod workspace_state;
 #[cfg(feature = "tauri-runtime")]
 pub mod workspace_windows;
 pub mod agent_accounts;
+pub mod account_switch;

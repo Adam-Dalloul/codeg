@@ -76,6 +76,7 @@ pub struct AccountCapability {
     pub reason: Option<&'static str>,
     pub login_kind: Option<&'static str>,
     pub config_subdir: Option<&'static str>,
+    pub can_switch_conversation: bool,
 }
 
 pub fn capabilities() -> Vec<AccountCapability> {
@@ -83,6 +84,7 @@ pub fn capabilities() -> Vec<AccountCapability> {
         .iter()
         .map(|&agent_type| AccountCapability {
             agent_type,
+            can_switch_conversation: agent_type == AgentType::ClaudeCode,
             supported: layout(agent_type).is_some(),
             config_subdir: layout(agent_type)
                 .and_then(|spec| (!spec.config_suffix.is_empty()).then_some(spec.config_suffix)),
