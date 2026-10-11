@@ -21,6 +21,10 @@ const h = vi.hoisted(() => ({
   openNewConversationTab: vi.fn(),
   updateConversationLocal: vi.fn(),
   refreshConversations: vi.fn(),
+  runtime: new Map<
+    number,
+    { detail: { summary: { agent_account_id: string | null } } }
+  >(),
 }))
 
 vi.mock("@/lib/api", () => ({
@@ -47,6 +51,9 @@ vi.mock("@/stores/app-workspace-store", () => {
 })
 vi.mock("@/stores/conversation-runtime-store", () => ({
   getRuntimeSession: () => null,
+  useConversationRuntimeStore: (
+    selector: (s: { byConversationId: typeof h.runtime }) => unknown
+  ) => selector({ byConversationId: h.runtime }),
 }))
 vi.mock("./session-details-dialog", () => ({
   SessionDetailsDialog: () => null,
@@ -57,7 +64,11 @@ vi.mock("@/components/chat/conversation-context-bar", () => ({
   ConversationHeaderFolderPicker: () => null,
 }))
 vi.mock("./session-quota-chip", () => ({
-  SessionQuotaChip: () => null,
+  SessionQuotaChip: ({
+    agentAccountId,
+  }: {
+    agentAccountId?: string | null
+  }) => <span data-testid="quota-account">{agentAccountId ?? "default"}</span>,
 }))
 
 import { ConversationDetailHeader } from "./conversation-detail-header"
@@ -92,6 +103,19 @@ function withIntl(ui: ReactElement) {
 describe("ConversationDetailHeader dialog target snapshot", () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    h.runtime.clear()
+  })
+
+  it("follows a child conversation's refreshed account outside the sidebar list", () => {
+    const props = { ...A, conversationId: 77, runtimeConversationId: -5 }
+    h.runtime.set(-5, { detail: { summary: { agent_account_id: "personal" } } })
+    const view = render(withIntl(<ConversationDetailHeader {...props} />))
+    expect(view.getByTestId("quota-account")).toHaveTextContent("personal")
+    h.runtime.set(-5, { detail: { summary: { agent_account_id: "work" } } })
+    view.rerender(
+      withIntl(<ConversationDetailHeader {...props} title="Updated" />)
+    )
+    expect(view.getByTestId("quota-account")).toHaveTextContent("work")
   })
 
   it("deletes the conversation the dialog was opened for, even after the active tab switches", async () => {

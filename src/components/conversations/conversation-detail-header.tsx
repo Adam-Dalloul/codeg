@@ -24,7 +24,10 @@ import { formatConversationTitle } from "@/lib/conversation-title"
 import { ConversationHeaderFolderPicker } from "@/components/chat/conversation-context-bar"
 import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
 import { useTabActions } from "@/contexts/tab-context"
-import { getRuntimeSession } from "@/stores/conversation-runtime-store"
+import {
+  getRuntimeSession,
+  useConversationRuntimeStore,
+} from "@/stores/conversation-runtime-store"
 import type { ConversationStatus } from "@/lib/types"
 import { STATUS_ORDER } from "@/lib/types"
 import { ConversationStatusDot } from "@/components/conversations/conversation-status-dot"
@@ -152,11 +155,21 @@ export const ConversationDetailHeader = memo(function ConversationDetailHeader({
       : (s.conversations.find((c) => c.id === conversationId)?.git_branch ??
         null)
   )
-  const quotaAccountId = useAppWorkspaceStore(
-    (s) =>
-      s.conversations.find((c) => c.id === conversationId)?.agent_account_id ??
-      null
-  )
+  const listedQuotaAccountId = useAppWorkspaceStore((s) => {
+    const row = s.conversations.find((c) => c.id === conversationId)
+    return row ? (row.agent_account_id ?? null) : undefined
+  })
+  // Sub-sessions need not appear in the sidebar's root-conversation list.
+  // Their refreshed detail still carries the authoritative saved account.
+  const runtimeQuotaAccountId = useConversationRuntimeStore((s) => {
+    const detail =
+      runtimeId == null ? undefined : s.byConversationId.get(runtimeId)?.detail
+    return detail ? (detail.summary.agent_account_id ?? null) : undefined
+  })
+  const quotaAccountId =
+    listedQuotaAccountId !== undefined
+      ? listedQuotaAccountId
+      : (runtimeQuotaAccountId ?? null)
   const isMobile = useIsMobile()
 
   const [details, setDetails] = useState<ActiveSessionDetails | null>(null)

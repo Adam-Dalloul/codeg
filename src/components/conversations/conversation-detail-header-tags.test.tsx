@@ -53,6 +53,9 @@ vi.mock("@/stores/app-workspace-store", () => {
 })
 vi.mock("@/stores/conversation-runtime-store", () => ({
   getRuntimeSession: () => null,
+  useConversationRuntimeStore: (
+    selector: (s: { byConversationId: Map<number, never> }) => unknown
+  ) => selector({ byConversationId: new Map<number, never>() }),
 }))
 vi.mock("./session-details-dialog", () => ({
   SessionDetailsDialog: () => null,
