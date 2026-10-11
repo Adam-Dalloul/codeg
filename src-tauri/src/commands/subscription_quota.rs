@@ -598,9 +598,13 @@ mod tests {
             conversation_id: None,
         };
         let source = resolve_source(&db, req.clone()).await.unwrap();
+        let credential = source.credential_path().unwrap();
+        assert_eq!(credential.file_name().unwrap(), ".credentials.json");
+        // Windows TEMP can use an 8.3 spelling (RUNNER~1), while account
+        // creation stores the canonical long name. Compare the actual folder.
         assert_eq!(
-            source.credential_path(),
-            Some(home.join(".credentials.json"))
+            std::fs::canonicalize(credential.parent().unwrap()).unwrap(),
+            std::fs::canonicalize(&home).unwrap()
         );
         assert!(source.value("OPENAI_API_KEY").is_none());
         assert!(resolve_source(
