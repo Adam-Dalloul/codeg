@@ -240,7 +240,8 @@ async fn commit_binding(
             DbBackend::Sqlite,
             "UPDATE conversation SET agent_account_id = ?, updated_at = ? \
          WHERE id = ? AND agent_type = ? AND external_id = ? \
-         AND agent_account_id IS ? AND deleted_at IS NULL \
+         AND agent_account_id IS ? AND deleted_at IS NULL AND folder_id = ? AND origin_cwd IS ? \
+         AND NOT EXISTS (SELECT 1 FROM conversation child WHERE child.parent_id = conversation.id AND child.status = 'in_progress') \
          AND (? IS NULL OR EXISTS (SELECT 1 FROM agent_account \
              WHERE id = ? AND removed = 0 AND agent_type = ?))",
             vec![
@@ -249,7 +250,9 @@ async fn commit_binding(
                 source.id.into(),
                 source.agent_type.clone().into(),
                 source.external_id.clone().into(),
-                source.agent_account_id.clone().into(),
+            source.agent_account_id.clone().into(),
+            source.folder_id.into(),
+            source.origin_cwd.clone().into(),
                 target.map(str::to_owned).into(),
                 target.map(str::to_owned).into(),
                 source.agent_type.clone().into(),
