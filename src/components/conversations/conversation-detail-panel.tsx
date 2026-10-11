@@ -2481,7 +2481,7 @@ const ConversationTabView = memo(function ConversationTabView({
                 onSelect={handleQuickAction}
                 agentType={selectedAgent}
               />
-              <div className="flex flex-col items-center justify-center">
+              <div className="flex w-full flex-col items-stretch justify-center">
                 <AgentSelector
                   // The selector spans the row it is given (it has to measure
                   // how much room it has), so the centring lives inside it now
