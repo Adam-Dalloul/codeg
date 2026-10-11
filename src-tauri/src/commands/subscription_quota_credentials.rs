@@ -35,23 +35,6 @@ pub fn grok_cli_bearer_from_auth_json(text: &str) -> Option<String> {
     preferred.or(fallback)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn does_not_send_other_issuers_tokens_to_grok() {
-        assert!(grok_cli_bearer_from_auth_json(
-            r#"{"https://auth.x.ai.example.com":{"key":"private"}}"#
-        )
-        .is_none());
-        assert_eq!(
-            grok_cli_bearer_from_auth_json(r#"{"https://auth.x.ai::account":{"key":"own"}}"#)
-                .as_deref(),
-            Some("own")
-        );
-    }
-}
-
 pub fn cursor_access_token_from_auth_json(text: &str) -> Option<String> {
     let value: Value = serde_json::from_str(text).ok()?;
     value
@@ -86,4 +69,21 @@ pub fn opencode_go_key_from_auth_json(text: &str) -> Option<String> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn does_not_send_other_issuers_tokens_to_grok() {
+        assert!(grok_cli_bearer_from_auth_json(
+            r#"{"https://auth.x.ai.example.com":{"key":"private"}}"#
+        )
+        .is_none());
+        assert_eq!(
+            grok_cli_bearer_from_auth_json(r#"{"https://auth.x.ai::account":{"key":"own"}}"#)
+                .as_deref(),
+            Some("own")
+        );
+    }
 }
