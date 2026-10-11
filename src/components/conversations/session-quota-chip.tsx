@@ -58,9 +58,11 @@ function QuotaChip(props: QuotaRequest) {
       >
         <div>
           <p className="text-sm font-semibold">{t("quotaTitle")}</p>
-          <p className="mt-1 break-words text-xs text-muted-foreground">
-            {data?.name ?? accounts("default")}
-          </p>
+          {data && (
+            <p className="mt-1 break-words text-xs text-muted-foreground">
+              {data.name ?? accounts("default")}
+            </p>
+          )}
         </div>
         <QuotaDetails
           data={data}
