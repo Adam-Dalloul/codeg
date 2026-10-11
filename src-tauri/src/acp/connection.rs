@@ -6622,6 +6622,7 @@ async fn run_connection(
                     );
                     match send_resume_session(&cx, resume_req).await {
                         Ok((resume_resp, grok_models_raw)) => {
+                            state.write().await.restored_session_id = Some(sid.clone());
                             let initial_config_options = resume_resp.config_options.clone();
                             let new_resp = NewSessionResponse::new(SessionId::new(sid.clone()))
                                 .modes(resume_resp.modes)
@@ -6762,6 +6763,7 @@ async fn run_connection(
 
                 match load_result {
                     Ok(load_resp) => {
+                        state.write().await.restored_session_id = Some(sid.clone());
                         let initial_config_options = load_resp.config_options.clone();
                         let new_resp = NewSessionResponse::new(SessionId::new(sid.clone()))
                             .modes(load_resp.modes)

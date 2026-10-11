@@ -7,7 +7,6 @@ use std::path::Path;
 use sea_orm::{ColumnTrait, ConnectionTrait, DbBackend, EntityTrait, QueryFilter, Statement};
 use serde::{Deserialize, Serialize};
 
-use crate::acp::types::ConnectionStatus;
 use crate::acp::{account_transfer, agent_accounts, error::AcpError, manager::ConnectionManager};
 use crate::db::{
     entities::conversation,
@@ -195,9 +194,7 @@ async fn switch_inner(
     };
     let loaded = if let Some(state) = manager.get_state(&connection_id).await {
         let state = state.read().await;
-        state.external_id.as_deref() == Some(&sid)
-            && state.status == ConnectionStatus::Connected
-            && state.agent_account_id == request.target_account_id
+        state.has_restored_session(&sid) && state.agent_account_id == request.target_account_id
     } else {
         false
     };
