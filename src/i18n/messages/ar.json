@@ -6426,7 +6426,21 @@
     "truncatedNotice": "هذا النطاق واسع جدًا — الأرقام تغطي أحدث جزء منه فقط.",
     "apiListEstimate": "≈ {amount} قائمة API",
     "apiListEstimatePartial": "≈ {amount} قائمة API · {percent}٪ من الرموز",
-    "apiListEstimateHint": "أسعار قائمة API الأساسية العامة من models.dev، وتشمل قراءة وكتابة الذاكرة المؤقتة دون رسوم السياق الطويل أو الاستدلال الإضافية. خطط الاشتراك تُحاسب بشكل مختلف."
+    "apiListEstimateHint": "أسعار قائمة API الأساسية العامة من models.dev، وتشمل قراءة وكتابة الذاكرة المؤقتة دون رسوم السياق الطويل أو الاستدلال الإضافية. خطط الاشتراك تُحاسب بشكل مختلف.",
+    "quotaTitle": "الاستخدام المتبقي",
+    "quotaHint": "الاستخدام المتبقي لكل حساب.",
+    "quotaRemaining": "متبقٍ {remaining}%",
+    "quotaProviderLink": "صفحة استخدام المزوّد",
+    "quotaLoading": "جارٍ التحقق من الاستخدام…",
+    "quotaResets": "يُعاد التعيين {when}",
+    "quotaExtraRemaining": "{name}: متبقٍ {remaining}",
+    "quotaUnavailable": "الاستخدام غير متاح",
+    "quotaRefresh": "تحديث",
+    "quotaFiveHour": "5 ساعات",
+    "quotaWeekly": "أسبوعي",
+    "quotaMonthly": "شهري",
+    "quotaChecked": "تم التحقق {when}",
+    "quotaOtherCapacity": "تتوفر حصص استخدام أو أرصدة أخرى."
   },
   "Forge": {
     "title": "لوحة المستودع",

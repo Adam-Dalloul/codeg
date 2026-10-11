@@ -6426,7 +6426,21 @@
     "truncatedNotice": "This range is very large — the numbers cover only the most recent slice of it.",
     "apiListEstimate": "≈ {amount} API list",
     "apiListEstimatePartial": "≈ {amount} API list · {percent}% of tokens",
-    "apiListEstimateHint": "Base API list rates from models.dev, including cache reads and writes but not long-context or reasoning surcharges. Subscription plans bill differently."
+    "apiListEstimateHint": "Base API list rates from models.dev, including cache reads and writes but not long-context or reasoning surcharges. Subscription plans bill differently.",
+    "quotaTitle": "Usage remaining",
+    "quotaHint": "Remaining usage for each account.",
+    "quotaRemaining": "{remaining}% left",
+    "quotaProviderLink": "Provider usage page",
+    "quotaLoading": "Checking usage…",
+    "quotaResets": "Resets {when}",
+    "quotaExtraRemaining": "{name}: {remaining} remaining",
+    "quotaUnavailable": "Usage unavailable",
+    "quotaRefresh": "Refresh",
+    "quotaFiveHour": "5-hour",
+    "quotaWeekly": "Weekly",
+    "quotaMonthly": "Monthly",
+    "quotaChecked": "Checked {when}",
+    "quotaOtherCapacity": "Other usage allowances or credits remain."
   },
   "Forge": {
     "title": "Repository panel",

@@ -1647,6 +1647,8 @@ pub fn build_router(
             post(handlers::automation::automation_cancel_run),
         )
         // ─── Token usage dashboard ───
+        .route("/subscription_quota_read", post(handlers::subscription_quota::read))
+        .route("/subscription_quota_accounts", post(handlers::subscription_quota::accounts))
         .route(
             "/token_usage_report",
             post(handlers::token_usage::token_usage_report),

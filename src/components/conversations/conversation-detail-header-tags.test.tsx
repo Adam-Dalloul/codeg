@@ -5,6 +5,8 @@ import { NextIntlClientProvider } from "next-intl"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
 import enMessages from "@/i18n/messages/en.json"
+
+vi.mock("./session-quota-chip", () => ({ SessionQuotaChip: () => null }))
 import type {
   ConversationTagDetail,
   DbConversationSummary,
@@ -88,6 +90,7 @@ const tag = (
 function header(conversationId: number | null, folderId = 1) {
   return withIntl(
     <ConversationDetailHeader
+      agentType="claude_code"
       tabId="tab-1"
       conversationId={conversationId}
       runtimeConversationId={null}

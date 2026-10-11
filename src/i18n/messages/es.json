@@ -6426,7 +6426,21 @@
     "truncatedNotice": "Este periodo es muy amplio: las cifras cubren solo su tramo más reciente.",
     "apiListEstimate": "≈ {amount} tarifa API",
     "apiListEstimatePartial": "≈ {amount} tarifa API · {percent}% de tokens",
-    "apiListEstimateHint": "Tarifas base públicas de API de models.dev, con lecturas y escrituras de caché pero sin recargos por contexto largo ni por razonamiento. Los planes de suscripción facturan distinto."
+    "apiListEstimateHint": "Tarifas base públicas de API de models.dev, con lecturas y escrituras de caché pero sin recargos por contexto largo ni por razonamiento. Los planes de suscripción facturan distinto.",
+    "quotaTitle": "Uso restante",
+    "quotaHint": "Uso restante de cada cuenta.",
+    "quotaRemaining": "Queda {remaining}%",
+    "quotaProviderLink": "Página de uso del proveedor",
+    "quotaLoading": "Consultando uso…",
+    "quotaResets": "Se restablece {when}",
+    "quotaExtraRemaining": "{name}: {remaining} restantes",
+    "quotaUnavailable": "Uso no disponible",
+    "quotaRefresh": "Actualizar",
+    "quotaFiveHour": "5 horas",
+    "quotaWeekly": "Semanal",
+    "quotaMonthly": "Mensual",
+    "quotaChecked": "Consultado {when}",
+    "quotaOtherCapacity": "Quedan otras cuotas de uso o créditos."
   },
   "Forge": {
     "title": "Panel del repositorio",

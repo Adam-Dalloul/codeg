@@ -6426,7 +6426,21 @@
     "truncatedNotice": "此範圍過大 —— 下面的數字只涵蓋其中最近的一段。",
     "apiListEstimate": "≈ {amount} API 標價",
     "apiListEstimatePartial": "≈ {amount} API 標價 · {percent}% 的 token",
-    "apiListEstimateHint": "來自 models.dev 的公開 API 基礎標價，含快取讀寫，不含長上下文和推理加價。訂閱方案的計費方式不同。"
+    "apiListEstimateHint": "來自 models.dev 的公開 API 基礎標價，含快取讀寫，不含長上下文和推理加價。訂閱方案的計費方式不同。",
+    "quotaTitle": "剩餘額度",
+    "quotaHint": "各帳號的剩餘使用額度。",
+    "quotaRemaining": "剩餘 {remaining}%",
+    "quotaProviderLink": "供應商用量頁",
+    "quotaLoading": "正在查詢額度…",
+    "quotaResets": "{when} 重置",
+    "quotaExtraRemaining": "{name}：剩餘 {remaining}",
+    "quotaUnavailable": "暫時無法取得額度",
+    "quotaRefresh": "重新整理",
+    "quotaFiveHour": "5 小時",
+    "quotaWeekly": "每週",
+    "quotaMonthly": "每月",
+    "quotaChecked": "查詢時間：{when}",
+    "quotaOtherCapacity": "還有其他可用額度或餘額。"
   },
   "Forge": {
     "title": "儲存庫面板",

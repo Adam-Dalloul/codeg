@@ -6426,7 +6426,21 @@
     "truncatedNotice": "Dieser Zeitraum ist sehr groß — die Zahlen decken nur seinen jüngsten Abschnitt ab.",
     "apiListEstimate": "≈ {amount} API-Liste",
     "apiListEstimatePartial": "≈ {amount} API-Liste · {percent}% der Tokens",
-    "apiListEstimateHint": "Öffentliche API-Basislistenpreise von models.dev, inklusive Cache-Lesen und -Schreiben, ohne Aufschläge für lange Kontexte oder Reasoning. Abo-Tarife rechnen anders ab."
+    "apiListEstimateHint": "Öffentliche API-Basislistenpreise von models.dev, inklusive Cache-Lesen und -Schreiben, ohne Aufschläge für lange Kontexte oder Reasoning. Abo-Tarife rechnen anders ab.",
+    "quotaTitle": "Verbleibendes Kontingent",
+    "quotaHint": "Verbleibende Nutzung für jedes Konto.",
+    "quotaRemaining": "{remaining}% übrig",
+    "quotaProviderLink": "Anbieter-Nutzungsseite",
+    "quotaLoading": "Nutzung wird geprüft…",
+    "quotaResets": "Zurückgesetzt {when}",
+    "quotaExtraRemaining": "{name}: {remaining} übrig",
+    "quotaUnavailable": "Nutzung nicht verfügbar",
+    "quotaRefresh": "Aktualisieren",
+    "quotaFiveHour": "5 Stunden",
+    "quotaWeekly": "Wöchentlich",
+    "quotaMonthly": "Monatlich",
+    "quotaChecked": "Geprüft {when}",
+    "quotaOtherCapacity": "Weitere Kontingente oder Guthaben sind verfügbar."
   },
   "Forge": {
     "title": "Repository-Panel",

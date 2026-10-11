@@ -64,6 +64,8 @@ import {
 import { SessionDetailsDialog } from "./session-details-dialog"
 import { ConversationHeaderTags } from "./conversation-tag-picker"
 import { useIsMobile } from "@/hooks/use-mobile"
+import { SessionQuotaChip } from "./session-quota-chip"
+import type { AgentType } from "@/lib/types"
 
 interface ConversationDetailHeaderProps {
   tabId: string
@@ -77,6 +79,7 @@ interface ConversationDetailHeaderProps {
   folderPath: string | undefined
   title: string
   status: ConversationStatus | undefined
+  agentType: AgentType
 }
 
 /**
@@ -101,6 +104,7 @@ export const ConversationDetailHeader = memo(function ConversationDetailHeader({
   folderPath,
   title,
   status,
+  agentType,
 }: ConversationDetailHeaderProps) {
   const t = useTranslations("Folder.conversationCard")
   const ime = useImeGuard()
@@ -147,6 +151,11 @@ export const ConversationDetailHeader = memo(function ConversationDetailHeader({
       ? null
       : (s.conversations.find((c) => c.id === conversationId)?.git_branch ??
         null)
+  )
+  const quotaAccountId = useAppWorkspaceStore(
+    (s) =>
+      s.conversations.find((c) => c.id === conversationId)?.agent_account_id ??
+      null
   )
   const isMobile = useIsMobile()
 
@@ -297,7 +306,14 @@ export const ConversationDetailHeader = memo(function ConversationDetailHeader({
           </div>
         ) : null}
       </div>
-      <div className="flex shrink-0 items-center">
+      <div className="flex shrink-0 items-center gap-0.5">
+        {conversationId != null && (
+          <SessionQuotaChip
+            agentType={agentType}
+            agentAccountId={quotaAccountId}
+            conversationId={conversationId}
+          />
+        )}
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <button

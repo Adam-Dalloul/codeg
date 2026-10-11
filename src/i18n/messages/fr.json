@@ -6426,7 +6426,21 @@
     "truncatedNotice": "Cette période est très large — les chiffres ne couvrent que sa portion la plus récente.",
     "apiListEstimate": "≈ {amount} tarif API",
     "apiListEstimatePartial": "≈ {amount} tarif API · {percent}% des jetons",
-    "apiListEstimateHint": "Tarifs de base publics API issus de models.dev, lectures et écritures de cache comprises, hors majorations pour contexte long ou raisonnement. Les abonnements facturent autrement."
+    "apiListEstimateHint": "Tarifs de base publics API issus de models.dev, lectures et écritures de cache comprises, hors majorations pour contexte long ou raisonnement. Les abonnements facturent autrement.",
+    "quotaTitle": "Utilisation restante",
+    "quotaHint": "Utilisation restante pour chaque compte.",
+    "quotaRemaining": "{remaining}% restant",
+    "quotaProviderLink": "Page d’usage du fournisseur",
+    "quotaLoading": "Vérification…",
+    "quotaResets": "Réinitialisation {when}",
+    "quotaExtraRemaining": "{name} : {remaining} restants",
+    "quotaUnavailable": "Utilisation indisponible",
+    "quotaRefresh": "Actualiser",
+    "quotaFiveHour": "5 heures",
+    "quotaWeekly": "Hebdomadaire",
+    "quotaMonthly": "Mensuel",
+    "quotaChecked": "Vérifié à {when}",
+    "quotaOtherCapacity": "D’autres quotas ou crédits restent disponibles."
   },
   "Forge": {
     "title": "Panneau du dépôt",

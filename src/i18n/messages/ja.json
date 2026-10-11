@@ -6426,7 +6426,21 @@
     "truncatedNotice": "期間が非常に長いため、表示中の数値は直近の一部のみを対象としています。",
     "apiListEstimate": "≈ {amount} APIリスト",
     "apiListEstimatePartial": "≈ {amount} APIリスト · トークンの {percent}%",
-    "apiListEstimateHint": "models.dev の公開 API 基本リスト料金です。キャッシュの読み書きを含み、長いコンテキストや推論の割増料金は含みません。サブスクリプションの課金とは異なります。"
+    "apiListEstimateHint": "models.dev の公開 API 基本リスト料金です。キャッシュの読み書きを含み、長いコンテキストや推論の割増料金は含みません。サブスクリプションの課金とは異なります。",
+    "quotaTitle": "利用残量",
+    "quotaHint": "アカウントごとの利用残量。",
+    "quotaRemaining": "残り{remaining}%",
+    "quotaProviderLink": "プロバイダーの使用量ページ",
+    "quotaLoading": "使用状況を確認中…",
+    "quotaResets": "{when} にリセット",
+    "quotaExtraRemaining": "{name}: 残り {remaining}",
+    "quotaUnavailable": "使用状況を取得できません",
+    "quotaRefresh": "更新",
+    "quotaFiveHour": "5時間",
+    "quotaWeekly": "週間",
+    "quotaMonthly": "月間",
+    "quotaChecked": "確認時刻: {when}",
+    "quotaOtherCapacity": "他の利用枠またはクレジットが残っています。"
   },
   "Forge": {
     "title": "リポジトリパネル",
