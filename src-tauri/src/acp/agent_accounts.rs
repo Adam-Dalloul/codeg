@@ -139,6 +139,8 @@ pub fn credential_env_keys(agent: AgentType) -> Vec<&'static str> {
         AgentType::DeepSeek => &["DEEPSEEK_API_KEY"],
         AgentType::Cursor => &["CURSOR_API_KEY", "CURSOR_AUTH_TOKEN", "CURSOR_API_BASE_URL"],
         AgentType::OpenCode | AgentType::Pi | AgentType::Hermes => &[
+            "OPENCODE_API_KEY",
+            "OPENCODE_GO_API_KEY",
             "ANTHROPIC_API_KEY",
             "OPENAI_API_KEY",
             "OPENROUTER_API_KEY",
