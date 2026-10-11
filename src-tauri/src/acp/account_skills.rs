@@ -93,7 +93,10 @@ fn same_path(a: &Path, b: &Path) -> bool {
 fn remove_link(path: &Path) -> std::io::Result<()> {
     #[cfg(windows)]
     {
-        junction::delete(path)
+        // RemoveDirectory removes the directory link itself without following
+        // its target. junction::delete only clears the reparse point and
+        // leaves an empty directory, which would mask future shared skills.
+        fs::remove_dir(path)
     }
     #[cfg(not(windows))]
     {
@@ -353,5 +356,26 @@ mod tests {
         create_link(&outside, &home.join("config")).unwrap();
         sync_roots(&home, &[(source, home.join("config/skills"))]).unwrap();
         assert!(!outside.join("skills").exists());
+    }
+
+    #[test]
+    fn removing_an_owned_link_keeps_the_shared_directory_and_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("account");
+        let source = dir.path().join("shared");
+        fs::create_dir_all(&home).unwrap();
+        fs::create_dir_all(&source).unwrap();
+        fs::write(source.join("SKILL.md"), "keep shared content").unwrap();
+        sync_roots(&home, &[(source.clone(), home.join("skills"))]).unwrap();
+        sync_roots(&home, &[(source.clone(), home.join("other-skills"))]).unwrap();
+        assert!(fs::symlink_metadata(home.join("skills")).is_err());
+        assert_eq!(
+            fs::read_to_string(source.join("SKILL.md")).unwrap(),
+            "keep shared content"
+        );
+        assert_eq!(
+            fs::read_to_string(home.join("other-skills/SKILL.md")).unwrap(),
+            "keep shared content"
+        );
     }
 }

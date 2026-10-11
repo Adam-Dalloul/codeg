@@ -633,15 +633,12 @@ pub async fn acp_find_connection_for_conversation(
     Extension(state): Extension<Arc<AppState>>,
     Json(params): Json<AcpFindConnectionForConversationParams>,
 ) -> Result<Json<Option<crate::acp::ConversationConnectionInfo>>, AppCommandError> {
-    let account_id = crate::db::service::agent_account_service::connection_account(
-        &state.db.conn, params.agent_type, None, Some(params.conversation_id),
-    ).await.map_err(AppCommandError::from)?;
-    let info = acp_commands::acp_find_connection_for_account_core(
+    let info = acp_commands::acp_find_connection_for_saved_conversation_core(
         &state.connection_manager,
+        &state.db,
         params.conversation_id,
         params.session_id.as_deref(),
         params.agent_type,
-        account_id.as_deref(),
     )
     .await
     .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;

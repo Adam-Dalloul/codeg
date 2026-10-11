@@ -11077,6 +11077,17 @@ mod native_account_launch_tests {
     use super::*;
 
     #[tokio::test]
+    async fn native_account_discovery_does_not_guess_default_when_the_row_is_gone() {
+        let db = crate::db::test_helpers::fresh_in_memory_db().await;
+        let manager = ConnectionManager::new();
+        manager.insert_test_connection("default-owner", AgentType::Codex, None, EventEmitter::Noop).await;
+        let state = manager.get_state("default-owner").await.unwrap();
+        state.write().await.external_id = Some("shared-native-session".into());
+        assert!(acp_find_connection_for_account_core(&manager, 999, Some("shared-native-session"), AgentType::Codex, None).await.unwrap().is_some());
+        assert!(acp_find_connection_for_saved_conversation_core(&manager, &db, 999, Some("shared-native-session"), AgentType::Codex).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
     async fn native_pi_accounts_keep_trust_decisions_and_acknowledgements_separate() {
         let db = crate::db::test_helpers::fresh_in_memory_db().await;
         let data = tempfile::tempdir().unwrap();
@@ -11810,6 +11821,25 @@ pub(crate) async fn acp_find_connection_for_account_core(
     }))
 }
 
+pub(crate) async fn acp_find_connection_for_saved_conversation_core(
+    manager: &ConnectionManager,
+    db: &AppDatabase,
+    conversation_id: i32,
+    session_id: Option<&str>,
+    agent_type: AgentType,
+) -> Result<Option<crate::acp::ConversationConnectionInfo>, AcpError> {
+    let account_id = match crate::db::service::agent_account_service::connection_account(
+        &db.conn, agent_type, None, Some(conversation_id),
+    ).await {
+        Ok(account_id) => account_id,
+        // Discovery is read-only and historically returns null for a missing
+        // conversation. Do not turn a missing binding into a Default lookup.
+        Err(crate::db::error::DbError::NotFound(_)) => return Ok(None),
+        Err(error) => return Err(AcpError::protocol(error.to_string())),
+    };
+    acp_find_connection_for_account_core(manager, conversation_id, session_id, agent_type, account_id.as_deref()).await
+}
+
 #[cfg(feature = "tauri-runtime")]
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
 pub async fn acp_find_connection_for_conversation(
@@ -11819,15 +11849,12 @@ pub async fn acp_find_connection_for_conversation(
     manager: State<'_, ConnectionManager>,
     db: State<'_, AppDatabase>,
 ) -> Result<Option<crate::acp::ConversationConnectionInfo>, AcpError> {
-    let account_id = crate::db::service::agent_account_service::connection_account(
-        &db.conn, agent_type, None, Some(conversation_id),
-    ).await.map_err(|e| AcpError::protocol(e.to_string()))?;
-    acp_find_connection_for_account_core(
+    acp_find_connection_for_saved_conversation_core(
         &manager,
+        &db,
         conversation_id,
         session_id.as_deref(),
         agent_type,
-        account_id.as_deref(),
     )
     .await
 }
