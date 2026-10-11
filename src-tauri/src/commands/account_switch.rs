@@ -7,6 +7,7 @@ use std::path::Path;
 use sea_orm::{ColumnTrait, ConnectionTrait, DbBackend, EntityTrait, QueryFilter, Statement};
 use serde::{Deserialize, Serialize};
 
+use crate::acp::types::AcpEvent;
 use crate::acp::{account_transfer, agent_accounts, error::AcpError, manager::ConnectionManager};
 use crate::db::{
     entities::conversation,
@@ -14,7 +15,7 @@ use crate::db::{
     AppDatabase,
 };
 use crate::models::AgentType;
-use crate::web::event_bridge::EventEmitter;
+use crate::web::event_bridge::{emit_with_state, EventEmitter};
 
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -217,9 +218,19 @@ async fn switch_inner(
         return Err(e);
     }
     if let Some(state) = manager.get_state(&connection_id).await {
-        let mut state = state.write().await;
-        state.conversation_id = Some(row.id);
-        state.folder_id = Some(row.folder_id);
+        // Use the shared link event: assigning ids alone bypasses lifecycle
+        // caching and the other subscribers that track a bound conversation.
+        emit_with_state(
+            &state,
+            emitter,
+            AcpEvent::ConversationLinked {
+                conversation_id: row.id,
+                folder_id: row.folder_id,
+                parent_conversation_id: None,
+                parent_tool_use_id: None,
+            },
+        )
+        .await;
     }
     super::conversations::emit_conversation_upsert(emitter, &db.conn, row.id).await;
     Ok(SwitchAccountResult {
