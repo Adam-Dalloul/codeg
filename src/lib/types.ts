@@ -3451,6 +3451,8 @@ export interface ConversationConnectionInfo {
 // ACP agent info returned by acp_list_agents
 export interface AcpAgentInfo {
   agent_type: AgentType
+  /** Active named accounts, with no credential or filesystem details. */
+  named_accounts?: Array<{ id: string; name: string }>
   /**
    * Whether this agent has a codeg-known skill store — every built-in, and
    * custom agents that declared the shared `.agents/skills` store. Gates the
