@@ -1358,20 +1358,76 @@ fn tag_mcp_suspect(
 struct ConnectionCleanupGuard {
     connections: Arc<tokio::sync::Mutex<HashMap<String, AgentConnection>>>,
     connection_id: String,
+    /// The manager's list of children that may still be running. An entry
+    /// still mapped here means the connection ended on its own (every explicit
+    /// teardown removes it first and parks the child itself), so it is parked
+    /// the same way: the process is only signalled as the task ends and can
+    /// keep writing its transcript until it is reaped.
+    draining: Arc<tokio::sync::Mutex<crate::acp::manager::DrainingChildren>>,
+    /// The runtime the connection was spawned on. The guard drops on the
+    /// connection's own thread after `block_on` has returned — outside any
+    /// runtime context, where `tokio::spawn` would panic — so the deferred
+    /// cleanup is spawned through this handle.
+    runtime: tokio::runtime::Handle,
 }
 
 impl Drop for ConnectionCleanupGuard {
     fn drop(&mut self) {
+        // The map lock is held across the handoff into `draining`, as every
+        // other teardown does, so no observer can find the child in neither.
         if let Ok(mut guard) = self.connections.try_lock() {
-            guard.remove(&self.connection_id);
-            return;
+            let parked = match guard.get(&self.connection_id) {
+                None => return,
+                Some(connection) => {
+                    match (self.draining.try_lock(), connection.state.try_read()) {
+                        (Ok(mut draining), Ok(state)) => {
+                            crate::acp::manager::park_ended_child(
+                                &mut draining,
+                                connection,
+                                &state,
+                            );
+                            true
+                        }
+                        _ => false,
+                    }
+                }
+            };
+            if parked {
+                guard.remove(&self.connection_id);
+                return;
+            }
         }
         let connections = self.connections.clone();
+        let draining = self.draining.clone();
         let connection_id = std::mem::take(&mut self.connection_id);
-        tokio::spawn(async move {
-            connections.lock().await.remove(&connection_id);
+        self.runtime.spawn(async move {
+            let mut guard = connections.lock().await;
+            let Some(connection) = guard.get(&connection_id) else {
+                return;
+            };
+            let mut draining = draining.lock().await;
+            let state = connection.state.read().await;
+            crate::acp::manager::park_ended_child(&mut draining, connection, &state);
+            drop(state);
+            guard.remove(&connection_id);
         });
     }
+}
+
+/// Drop the cleanup guard a connection task holds, as its end does.
+#[cfg(test)]
+pub(crate) fn end_connection_task_for_test(
+    connections: Arc<tokio::sync::Mutex<HashMap<String, AgentConnection>>>,
+    connection_id: &str,
+    draining: Arc<tokio::sync::Mutex<crate::acp::manager::DrainingChildren>>,
+    runtime: tokio::runtime::Handle,
+) {
+    drop(ConnectionCleanupGuard {
+        connections,
+        connection_id: connection_id.to_string(),
+        draining,
+        runtime,
+    });
 }
 
 /// Represents a single active ACP agent connection.
@@ -2312,7 +2368,7 @@ const ACP_CONNECTION_STACK_SIZE: usize = 8 * 1024 * 1024;
 /// exits (timeout, error, or clean disconnect), so the manager never
 /// leaks stale entries after a connection tears down.
 #[allow(clippy::too_many_arguments)]
-pub async fn spawn_agent_connection(
+pub(crate) async fn spawn_agent_connection(
     connection_id: String,
     agent_type: AgentType,
     working_dir: Option<String>,
@@ -2321,6 +2377,7 @@ pub async fn spawn_agent_connection(
     owner_window_label: String,
     emitter: EventEmitter,
     connections: Arc<tokio::sync::Mutex<HashMap<String, AgentConnection>>>,
+    draining: Arc<tokio::sync::Mutex<crate::acp::manager::DrainingChildren>>,
     preferred_mode_id: Option<String>,
     preferred_config_values: BTreeMap<String, String>,
     delegation_injection: Option<DelegationInjection>,
@@ -2533,6 +2590,8 @@ pub async fn spawn_agent_connection(
     let cleanup_guard = ConnectionCleanupGuard {
         connections: cleanup_connections,
         connection_id: cleanup_connection_id,
+        draining,
+        runtime: connection_rt.clone(),
     };
     let connection_thread = std::thread::Builder::new()
         .name(format!("acp-conn-{conn_id}"))

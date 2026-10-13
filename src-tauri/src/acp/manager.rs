@@ -372,7 +372,7 @@ async fn wait_for_session_started(
 }
 
 /// A connection that has left the map while its process may still be running.
-struct DrainingChild {
+pub(crate) struct DrainingChild {
     agent: AgentType,
     /// The connection's live pid cell. `on_spawn` publishes the pid and
     /// `on_exit` zeroes it on a real reap.
@@ -380,9 +380,77 @@ struct DrainingChild {
     parked_at: std::time::Instant,
     session_identity: Option<(AgentType, PathBuf, String)>,
     spawn_pending: bool,
+    /// Parked after its connection's task finished, so no pid can be
+    /// published any more: zero means reaped (or never started), not
+    /// "maybe still spawning", and needs no grace.
+    settled: bool,
 }
 
-type DrainingChildren = Vec<DrainingChild>;
+pub(crate) type DrainingChildren = Vec<DrainingChild>;
+
+impl DrainingChild {
+    fn of(
+        conn: &AgentConnection,
+        state: &crate::acp::session_state::SessionState,
+        spawn_pending: bool,
+    ) -> Self {
+        let session_identity = state.storage_identity.as_ref().and_then(|(family, root)| {
+            state
+                .external_id
+                .as_ref()
+                .or(state.requested_session_id.as_ref())
+                .map(|sid| (*family, root.clone(), sid.clone()))
+        });
+        Self {
+            agent: conn.agent_type,
+            pid: conn.child_pid.clone(),
+            parked_at: std::time::Instant::now(),
+            session_identity,
+            spawn_pending,
+            settled: false,
+        }
+    }
+
+    /// Whether this child may still be writing native session `sid` stored
+    /// under `root`.
+    fn may_write(&self, root: &std::path::Path, sid: &str) -> bool {
+        let Some((family, child_root, session)) = &self.session_identity else {
+            return false;
+        };
+        *family == AgentType::ClaudeCode
+            && session == sid
+            && same_storage_root(child_root, root)
+            && (self.pid.load(std::sync::atomic::Ordering::SeqCst) != 0 || self.spawn_pending)
+    }
+}
+
+fn same_storage_root(a: &std::path::Path, b: &std::path::Path) -> bool {
+    crate::parsers::path_eq_for_matching(&a.to_string_lossy(), &b.to_string_lossy())
+        || matches!((a.canonicalize(), b.canonicalize()), (Ok(a), Ok(b)) if a == b)
+}
+
+/// Park the child of a connection that ended on its own: its task finished
+/// while the entry was still mapped (the agent exited or failed to start or
+/// load, or the task panicked). The process is signalled as the task ends but
+/// reaped asynchronously, and until then it can still append to its
+/// transcript, so it must stay as visible as an explicitly torn-down one. Its
+/// spawn is over, so a zero pid means it never started or is already reaped,
+/// and nothing is parked. Call while holding the connections lock, right
+/// after removing the entry, like `park_draining`.
+pub(crate) fn park_ended_child(
+    draining: &mut DrainingChildren,
+    conn: &AgentConnection,
+    state: &crate::acp::session_state::SessionState,
+) {
+    prune_reaped(draining);
+    if conn.child_pid.load(std::sync::atomic::Ordering::SeqCst) == 0 {
+        return;
+    }
+    draining.push(DrainingChild {
+        settled: true,
+        ..DrainingChild::of(conn, state, false)
+    });
+}
 
 /// How long a child whose pid reads zero is still treated as possibly running.
 ///
@@ -393,12 +461,12 @@ type DrainingChildren = Vec<DrainingChild>;
 /// location, while a false negative unlinks a file an agent is writing.
 const DRAIN_GRACE: std::time::Duration = std::time::Duration::from_secs(30);
 
-/// Drop entries that are provably finished: pid back to zero and long enough
-/// ago that it cannot be a spawn still in flight.
+/// Drop entries that are provably finished: pid back to zero and either
+/// settled or long enough ago that it cannot be a spawn still in flight.
 fn prune_reaped(draining: &mut DrainingChildren) {
     draining.retain(|c| {
         c.pid.load(std::sync::atomic::Ordering::SeqCst) != 0
-            || c.parked_at.elapsed() < DRAIN_GRACE
+            || (!c.settled && c.parked_at.elapsed() < DRAIN_GRACE)
     });
 }
 
@@ -854,6 +922,7 @@ impl ConnectionManager {
             owner_window_label,
             emitter,
             self.connections.clone(),
+            self.draining.clone(),
             preferred_mode_id,
             preferred_config_values,
             self.delegation_snapshot(),
@@ -2636,6 +2705,12 @@ impl ConnectionManager {
         for (id, _) in sources {
             self.disconnect_and_wait_for_account_switch(&id).await?;
         }
+        // A connection that ended on its own after the checks above is out of
+        // the map but its process may still be appending to the transcript
+        // that is about to be copied (source) or replaced (target).
+        for root in [source, target] {
+            self.wait_for_account_session_writers(root, sid).await?;
+        }
         Ok(guards)
     }
 
@@ -2675,23 +2750,58 @@ impl ConnectionManager {
         }
     }
 
+    /// Wait until nothing can still be writing Claude session `sid` stored
+    /// under `root`: no mapped connection holds it and no draining child —
+    /// including one whose connection ended on its own — is still alive.
+    /// A missing map entry alone proves nothing: the process outlives it.
+    pub(crate) async fn wait_for_account_session_writers(
+        &self,
+        root: &std::path::Path,
+        sid: &str,
+    ) -> Result<(), AcpError> {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+        loop {
+            if !self.account_session_has_writer(root, sid).await {
+                return Ok(());
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(AcpError::protocol(
+                    "An agent is still stopping. Wait before switching accounts again.",
+                ));
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+
+    async fn account_session_has_writer(&self, root: &std::path::Path, sid: &str) -> bool {
+        // Same order as `park_draining`'s callers: connections, then draining.
+        let connections = self.connections.lock().await;
+        for connection in connections.values() {
+            let state = connection.state.read().await;
+            if state.external_id.as_deref().or(state.requested_session_id.as_deref())
+                != Some(sid)
+            {
+                continue;
+            }
+            if let Some((family, child_root)) = &state.storage_identity {
+                if *family == AgentType::ClaudeCode && same_storage_root(child_root, root) {
+                    return true;
+                }
+            }
+        }
+        let mut draining = self.draining.lock().await;
+        prune_reaped(&mut draining);
+        draining.iter().any(|child| child.may_write(root, sid))
+    }
+
     /// Remember a connection's child until it is provably finished. Call while
     /// holding the connections lock, immediately after removing the entry.
     async fn park_draining(&self, conn: &AgentConnection) {
         let mut draining = self.draining.lock().await;
         prune_reaped(&mut draining);
         let state = conn.state.read().await;
-        let session_identity = state.storage_identity.as_ref().and_then(|(family, root)| {
-            state.external_id.as_ref().or(state.requested_session_id.as_ref())
-                .map(|sid| (*family, root.clone(), sid.clone()))
-        });
-        draining.push(DrainingChild {
-            agent: conn.agent_type,
-            pid: conn.child_pid.clone(),
-            parked_at: std::time::Instant::now(),
-            session_identity,
-            spawn_pending: state.status == ConnectionStatus::Connecting,
-        });
+        let spawn_pending = state.status == ConnectionStatus::Connecting;
+        draining.push(DrainingChild::of(conn, &state, spawn_pending));
     }
 
     /// Every agent that could still be writing to its own files: connected or
@@ -7688,6 +7798,117 @@ mod tests {
         let error = mgr.quiesce_account_session(&barrier, b.path(), a.path(), "sid").await.unwrap_err();
         assert!(error.to_string().contains("target account"));
         assert!(mgr.get_state("switch-source").await.is_some());
+    }
+
+    /// A connection whose task ends on its own (the agent failed to load, or
+    /// exited) leaves the map while its process is only signalled, not yet
+    /// reaped. An account switch must not read that as "stopped": rolling a
+    /// target back, or copying a source, while the process can still append to
+    /// the transcript would corrupt the copy that survives.
+    #[tokio::test]
+    async fn a_connection_that_ends_on_its_own_stays_a_writer_until_reaped() {
+        use std::sync::atomic::Ordering::SeqCst;
+        let mgr = ConnectionManager::new();
+        let root = tempfile::tempdir().unwrap();
+        let other = tempfile::tempdir().unwrap();
+        insert_fake_connection(&mgr, "ended", AgentType::ClaudeCode, None, EventEmitter::Noop).await;
+        {
+            let state = mgr.get_state("ended").await.unwrap();
+            let mut state = state.write().await;
+            state.storage_identity = Some((AgentType::ClaudeCode, root.path().into()));
+            state.external_id = Some("sid".into());
+        }
+        let pid = mgr.connections.lock().await.get("ended").unwrap().child_pid.clone();
+        pid.store(4242, SeqCst);
+
+        crate::acp::connection::end_connection_task_for_test(
+            mgr.connections.clone(),
+            "ended",
+            mgr.draining.clone(),
+            tokio::runtime::Handle::current(),
+        );
+        assert!(mgr.list_connections().await.is_empty());
+        assert_eq!(mgr.live_or_draining_agent_names().await, vec!["Claude Code".to_string()]);
+        assert!(mgr.account_session_has_writer(root.path(), "sid").await);
+        assert!(!mgr.account_session_has_writer(other.path(), "sid").await);
+        assert!(!mgr.account_session_has_writer(root.path(), "another").await);
+
+        let reaper = tokio::spawn({
+            let pid = pid.clone();
+            async move {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                pid.store(0, SeqCst);
+            }
+        });
+        mgr.wait_for_account_session_writers(root.path(), "sid").await.unwrap();
+        reaper.await.unwrap();
+        // Its spawn was over, so a zero pid is a reap, not a spawn in flight:
+        // it leaves at once instead of after the grace an explicit teardown gets.
+        assert!(mgr.live_or_draining_agent_names().await.is_empty());
+    }
+
+    /// The guard drops on the connection's own thread after `block_on` has
+    /// returned, outside any runtime context. With the map lock taken there,
+    /// the cleanup is deferred, and deferring it with `tokio::spawn` panicked
+    /// that thread and leaked the entry.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_task_end_under_contention_cleans_up_from_outside_the_runtime() {
+        use std::sync::atomic::Ordering::SeqCst;
+        let mgr = ConnectionManager::new();
+        insert_fake_connection(&mgr, "busy", AgentType::Codex, None, EventEmitter::Noop).await;
+        mgr.connections.lock().await.get("busy").unwrap().child_pid.store(99, SeqCst);
+        let held = mgr.connections.lock().await;
+        let (connections, draining) = (mgr.connections.clone(), mgr.draining.clone());
+        let runtime = tokio::runtime::Handle::current();
+        std::thread::spawn(move || {
+            crate::acp::connection::end_connection_task_for_test(
+                connections,
+                "busy",
+                draining,
+                runtime,
+            );
+        })
+        .join()
+        .expect("dropping the guard off the runtime must not panic");
+        drop(held);
+        for _ in 0..200 {
+            if mgr.list_connections().await.is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(mgr.list_connections().await.is_empty());
+        assert_eq!(mgr.live_or_draining_agent_names().await, vec!["Codex CLI".to_string()]);
+    }
+
+    /// An entry an explicit teardown already removed is not parked a second
+    /// time when the task's guard runs, and a child that never published a pid
+    /// is not parked at all.
+    #[tokio::test]
+    async fn a_task_end_parks_only_a_still_mapped_live_child() {
+        use std::sync::atomic::Ordering::SeqCst;
+        let mgr = ConnectionManager::new();
+        insert_fake_connection(&mgr, "torn", AgentType::Codex, None, EventEmitter::Noop).await;
+        let pid = mgr.connections.lock().await.get("torn").unwrap().child_pid.clone();
+        pid.store(7, SeqCst);
+        mgr.disconnect("torn").await.unwrap();
+        crate::acp::connection::end_connection_task_for_test(
+            mgr.connections.clone(),
+            "torn",
+            mgr.draining.clone(),
+            tokio::runtime::Handle::current(),
+        );
+        assert_eq!(mgr.draining.lock().await.len(), 1);
+
+        insert_fake_connection(&mgr, "unspawned", AgentType::Codex, None, EventEmitter::Noop).await;
+        crate::acp::connection::end_connection_task_for_test(
+            mgr.connections.clone(),
+            "unspawned",
+            mgr.draining.clone(),
+            tokio::runtime::Handle::current(),
+        );
+        assert!(mgr.get_state("unspawned").await.is_none());
+        assert_eq!(mgr.draining.lock().await.len(), 1);
     }
 
     /// Two concurrent `send_prompt_linked` calls on the SAME connection

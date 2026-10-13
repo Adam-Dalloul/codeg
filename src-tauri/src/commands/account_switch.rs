@@ -189,7 +189,7 @@ async fn switch_inner(
     {
         Ok(id) => id,
         Err(e) => {
-            transfer.rollback().map_err(failure)?;
+            roll_back_target(manager, &transfer, &target, &sid).await?;
             return Err(e);
         }
     };
@@ -203,7 +203,7 @@ async fn switch_inner(
         manager
             .disconnect_and_wait_for_account_switch(&connection_id)
             .await?;
-        transfer.rollback().map_err(failure)?;
+        roll_back_target(manager, &transfer, &target, &sid).await?;
         return Err(failure("The selected account could not load this conversation. The original account and history were kept."));
     }
     // One conditional write changes only the binding, preserving title, pin,
@@ -214,9 +214,12 @@ async fn switch_inner(
         manager
             .disconnect_and_wait_for_account_switch(&connection_id)
             .await?;
-        transfer.rollback().map_err(failure)?;
+        roll_back_target(manager, &transfer, &target, &sid).await?;
         return Err(e);
     }
+    // Committed: the staged previous copies can no longer be needed. Removing
+    // them is best effort and never turns a completed switch into an error.
+    transfer.discard_staging();
     if let Some(state) = manager.get_state(&connection_id).await {
         // Use the shared link event: assigning ids alone bypasses lifecycle
         // caching and the other subscribers that track a bound conversation.
@@ -239,6 +242,23 @@ async fn switch_inner(
         connection_id,
         external_id: sid,
     })
+}
+
+/// Put the destination account's previous copy back once nothing can still
+/// write the session there. A target agent whose connection already ended can
+/// still be exiting, so a missing connection is not proof it stopped. If it
+/// outlives the wait, the installed copy stays and the staging copies are kept
+/// for recovery; the binding still names the source account, which is intact.
+async fn roll_back_target(
+    manager: &ConnectionManager,
+    transfer: &account_transfer::ClaudeTransfer,
+    target: &Path,
+    sid: &str,
+) -> Result<(), AcpError> {
+    manager.wait_for_account_session_writers(target, sid).await?;
+    transfer.rollback().map_err(failure)?;
+    transfer.discard_staging();
+    Ok(())
 }
 
 async fn commit_binding(

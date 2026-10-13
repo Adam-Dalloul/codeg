@@ -113,6 +113,10 @@ struct Entry {
 #[derive(Debug)]
 pub struct ClaudeTransfer {
     entries: Vec<Entry>,
+    /// This switch's private staging directory: the destination's previous
+    /// copies (`old-*`) and any new copy not yet moved into place. It is only
+    /// needed until the switch is committed or fully rolled back.
+    stage: PathBuf,
 }
 
 impl ClaudeTransfer {
@@ -129,6 +133,48 @@ impl ClaudeTransfer {
         }
         Ok(())
     }
+
+    /// Delete the staging copies once nothing can need them: the switch was
+    /// committed, or `rollback` completed. Never call it after a failed
+    /// rollback, when they are the only recovery copy. Best effort: a leftover
+    /// directory costs disk space, never history.
+    pub fn discard_staging(&self) {
+        discard_stage(&self.stage);
+    }
+}
+
+fn discard_stage(stage: &Path) {
+    if let Err(e) = fs::remove_dir_all(stage) {
+        if e.kind() != io::ErrorKind::NotFound {
+            tracing::warn!(
+                "[account-switch] could not remove staging copies at {}: {e}",
+                stage.display()
+            );
+        }
+    }
+    // The recovery folder holds nothing but staging directories. Remove it once
+    // empty; another switch's retained recovery copy keeps it in place.
+    if let Some(recovery) = stage.parent() {
+        let _ = fs::remove_dir(recovery);
+    }
+}
+
+/// Copy every source path (and the destination's previous copy) into `stage`.
+/// No destination is touched here, so a failure leaves only staging copies.
+fn stage_copies(pairs: &[(PathBuf, PathBuf)], stage: &Path) -> io::Result<()> {
+    for (i, (from, to)) in pairs.iter().enumerate() {
+        if to.symlink_metadata().is_ok() && !tree_is_older(to, from)? {
+            return Err(invalid(
+                "The target account has different session files. Both copies were kept.",
+            ));
+        }
+        copy_tree(from, &stage.join(format!("new-{i}")))?;
+        if to.symlink_metadata().is_ok() {
+            copy_tree(to, &stage.join(format!("old-{i}")))?;
+        }
+        ensure_dir(to.parent().unwrap())?;
+    }
+    Ok(())
 }
 
 pub fn copy_claude_session(source: &Path, target: &Path, sid: &str) -> io::Result<ClaudeTransfer> {
@@ -206,20 +252,13 @@ pub fn copy_claude_session(source: &Path, target: &Path, sid: &str) -> io::Resul
     fs::create_dir(&stage)?;
     // Finish every read/copy (including symlink checks) before replacing any
     // destination. Only session-specific paths enter this staging directory.
-    for (i, (from, to)) in pairs.iter().enumerate() {
-        if to.symlink_metadata().is_ok() && !tree_is_older(to, from)? {
-            return Err(invalid(
-                "The target account has different session files. Both copies were kept.",
-            ));
-        }
-        copy_tree(from, &stage.join(format!("new-{i}")))?;
-        if to.symlink_metadata().is_ok() {
-            copy_tree(to, &stage.join(format!("old-{i}")))?;
-        }
-        ensure_dir(to.parent().unwrap())?;
+    if let Err(e) = stage_copies(&pairs, &stage) {
+        discard_stage(&stage);
+        return Err(e);
     }
     let mut transfer = ClaudeTransfer {
         entries: Vec::new(),
+        stage: stage.clone(),
     };
     for (i, (_, to)) in pairs.iter().enumerate() {
         let old = stage.join(format!("old-{i}"));
@@ -234,7 +273,9 @@ pub fn copy_claude_session(source: &Path, target: &Path, sid: &str) -> io::Resul
             fs::rename(stage.join(format!("new-{i}")), to)
         })();
         if let Err(e) = install {
+            // A failed rollback returns here with the staging copies intact.
             transfer.rollback()?;
+            transfer.discard_staging();
             return Err(e);
         }
     }
@@ -303,5 +344,51 @@ mod tests {
         std::os::unix::fs::symlink("/etc", a.path().join("projects/project/sid/link")).unwrap();
         assert!(copy_claude_session(a.path(), b.path(), "sid").is_err());
         assert!(!b.path().join("projects/project/sid.jsonl").exists());
+        assert!(!b.path().join(".codeg-account-switch").exists());
+    }
+
+    /// Every switch stages full copies of the transcript and of whatever the
+    /// destination held before. Once the switch is committed, or a rollback has
+    /// put the previous copy back, those copies are dead weight; keeping them
+    /// grew the account folders by a whole transcript on every round trip.
+    #[test]
+    fn finished_switches_leave_no_staging_copies() {
+        let a = tempfile::tempdir().unwrap();
+        let b = tempfile::tempdir().unwrap();
+        fixture(a.path(), "first\n");
+        copy_claude_session(a.path(), b.path(), "sid")
+            .unwrap()
+            .discard_staging();
+        assert!(!b.path().join(".codeg-account-switch").exists());
+
+        // Back to A, where an older copy is staged as the rollback source.
+        let newer = fixture(b.path(), "first\nsecond\n");
+        let back = copy_claude_session(b.path(), a.path(), "sid").unwrap();
+        back.rollback().unwrap();
+        back.discard_staging();
+        assert!(!a.path().join(".codeg-account-switch").exists());
+        assert_eq!(
+            fs::read_to_string(a.path().join("projects/project/sid.jsonl")).unwrap(),
+            "first\n"
+        );
+        assert_eq!(fs::read_to_string(newer).unwrap(), "first\nsecond\n");
+    }
+
+    /// A refusal found while staging (here a sidecar that differs at the
+    /// destination) happens before any destination changed, so its partial
+    /// copies are discarded with it.
+    #[test]
+    fn a_refused_switch_leaves_no_staging_copies() {
+        let a = tempfile::tempdir().unwrap();
+        let b = tempfile::tempdir().unwrap();
+        fixture(a.path(), "first\nsecond\n");
+        fixture(b.path(), "first\n");
+        fs::write(b.path().join("projects/project/sid/tool.txt"), "changed here").unwrap();
+        assert!(copy_claude_session(a.path(), b.path(), "sid").is_err());
+        assert!(!b.path().join(".codeg-account-switch").exists());
+        assert_eq!(
+            fs::read_to_string(b.path().join("projects/project/sid/tool.txt")).unwrap(),
+            "changed here"
+        );
     }
 }
