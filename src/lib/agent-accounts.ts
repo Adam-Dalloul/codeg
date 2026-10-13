@@ -78,6 +78,45 @@ export function switchConversationAccount(request: {
   )
 }
 
+/** One copy of a conversation row's account binding. */
+export interface AccountBindingSnapshot {
+  accountId: string | null
+  /** The row's `updated_at` when this copy was read. */
+  updatedAt: string
+}
+
+/**
+ * The account a conversation tab's connection must use, or `undefined` while
+ * it is not known yet. A draft uses the account picked in its welcome view. A
+ * persisted conversation uses its saved binding: first the one this view set
+ * itself (creating the conversation or switching its account), then the newer
+ * of the two copies it can read — the workspace conversation list and the
+ * fetched detail. `null` is a known Default binding.
+ *
+ * The detail alone is not enough: a tab that started as a draft keeps a
+ * virtual runtime key for its whole life, so its detail is never fetched. Nor
+ * is the list alone: a list refresh can land a copy older than the detail.
+ * The account only changes in a write that also moves `updated_at`, so the
+ * later copy holds the current binding; a tie keeps the detail.
+ */
+export function resolveConversationAccount(sources: {
+  persisted: boolean
+  draft: string | null
+  local?: string | null
+  listed?: AccountBindingSnapshot
+  detail?: AccountBindingSnapshot
+}): string | null | undefined {
+  if (!sources.persisted) return sources.draft
+  if (sources.local !== undefined) return sources.local
+  const { listed, detail } = sources
+  if (listed && detail) {
+    return Date.parse(listed.updatedAt) > Date.parse(detail.updatedAt)
+      ? listed.accountId
+      : detail.accountId
+  }
+  return (listed ?? detail)?.accountId
+}
+
 export function agentAccountKey(
   agentType: string,
   accountId?: string | null

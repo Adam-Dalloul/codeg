@@ -66,6 +66,7 @@ import { useAgentAccounts } from "@/hooks/use-agent-accounts"
 import {
   agentAccountKey,
   readSelectedAccount,
+  resolveConversationAccount,
   saveSelectedAccount,
   switchConversationAccount,
 } from "@/lib/agent-accounts"
@@ -377,7 +378,10 @@ const ConversationTabView = memo(function ConversationTabView({
   const accountState = useAgentAccounts(selectedAgent)
   const [accountSwitching, setAccountSwitching] = useState(false)
   const accountSwitchPending = useRef(false)
-  const [switchedAccount, setSwitchedAccount] = useState<{
+  // The binding this view established itself — by creating the conversation
+  // or switching its account — until the workspace list or the detail
+  // catches up with it.
+  const [localBinding, setLocalBinding] = useState<{
     conversationId: number
     accountId: string | null
   } | null>(null)
@@ -572,29 +576,65 @@ const ConversationTabView = memo(function ConversationTabView({
     enabled: isVisible || isActive || heldDetail,
   })
   if (detail != null && !heldDetail) setHeldDetail(true)
-  const selectedAccountId =
-    switchedAccount && switchedAccount.conversationId === dbConversationId
-      ? switchedAccount.accountId
-      : detail
-        ? (detail.summary.agent_account_id ?? null)
-        : conversationId != null
-          ? null
-          : draftAccountId
+  // A tab that started as a draft keeps its virtual runtime key, so its detail
+  // is never fetched: the workspace list (kept current by conversation upserts)
+  // is what knows the saved account of every top-level conversation. Both
+  // copies carry the row's `updated_at`, which the resolver orders them by.
+  const listedAccountId = useAppWorkspaceStore((s) => {
+    if (dbConversationId == null) return undefined
+    const row = s.conversations.find((c) => c.id === dbConversationId)
+    return row === undefined ? undefined : (row.agent_account_id ?? null)
+  })
+  const listedUpdatedAt = useAppWorkspaceStore((s) =>
+    dbConversationId == null
+      ? undefined
+      : s.conversations.find((c) => c.id === dbConversationId)?.updated_at
+  )
+  const detailAccountId = detail
+    ? (detail.summary.agent_account_id ?? null)
+    : undefined
+  const detailUpdatedAt = detail?.summary.updated_at
+  const listedBinding =
+    listedAccountId !== undefined && listedUpdatedAt !== undefined
+      ? { accountId: listedAccountId, updatedAt: listedUpdatedAt }
+      : undefined
+  const detailBinding =
+    detailAccountId !== undefined && detailUpdatedAt !== undefined
+      ? { accountId: detailAccountId, updatedAt: detailUpdatedAt }
+      : undefined
+  const conversationAccountId = resolveConversationAccount({
+    persisted: hasPersistedConversation,
+    draft: draftAccountId,
+    local:
+      localBinding && localBinding.conversationId === dbConversationId
+        ? localBinding.accountId
+        : undefined,
+    listed: listedBinding,
+    detail: detailBinding,
+  })
+  const selectedAccountId = conversationAccountId ?? null
+  // What the shared copies alone say. Once they agree with the binding this
+  // view set itself, that local binding is retired, so a later switch made
+  // elsewhere shows up here.
+  const sharedAccountId = resolveConversationAccount({
+    persisted: true,
+    draft: null,
+    listed: listedBinding,
+    detail: detailBinding,
+  })
   useEffect(() => {
-    if (
-      switchedAccount &&
-      detail?.summary.id === switchedAccount.conversationId &&
-      (detail.summary.agent_account_id ?? null) === switchedAccount.accountId
-    ) {
-      setSwitchedAccount(null)
+    if (!localBinding || localBinding.conversationId !== dbConversationId) {
+      return
     }
-  }, [detail, switchedAccount])
+    if (sharedAccountId === localBinding.accountId) setLocalBinding(null)
+  }, [localBinding, dbConversationId, sharedAccountId])
   const accountPreferenceKey = agentAccountKey(selectedAgent, selectedAccountId)
   useEffect(() => {
     setModeId(getSavedModeId(accountPreferenceKey))
   }, [accountPreferenceKey])
+  // Only a persisted conversation whose binding no source knows yet waits.
   const awaitingAccountBinding =
-    hasPersistedConversation && !detail && !detailError
+    conversationAccountId === undefined && !detailError
   const draftAccountUnavailable =
     !hasPersistedConversation &&
     selectedAccountId !== null &&
@@ -1372,6 +1412,12 @@ const ConversationTabView = memo(function ConversationTabView({
             // reuses the eager scratch dir as workingDir, so the connection's
             // cwd does not move and no reconnect is triggered.
             upsertFolder(res.folder)
+            // The row now carries this draft's account; keep reading it from
+            // here until the workspace list has the row (see localBinding).
+            setLocalBinding({
+              conversationId: newConversationId,
+              accountId: selectedAccountId,
+            })
             setCreatedConversationId(newConversationId)
             bindConversationTab(
               tabId,
@@ -1404,6 +1450,10 @@ const ConversationTabView = memo(function ConversationTabView({
               refreshConversations()
               return
             }
+            setLocalBinding({
+              conversationId: newConversationId,
+              accountId: selectedAccountId,
+            })
             setCreatedConversationId(newConversationId)
             bindConversationTab(
               tabId,
@@ -2007,7 +2057,7 @@ const ConversationTabView = memo(function ConversationTabView({
         // old attachment; discovery attaches the same tab to the verified load.
         await acpActions.disconnect(tabId)
         acpActions.clearAcpLoadError(tabId)
-        setSwitchedAccount({
+        setLocalBinding({
           conversationId: result.conversationId,
           accountId: result.agentAccountId,
         })
@@ -2451,6 +2501,7 @@ const ConversationTabView = memo(function ConversationTabView({
                 canSwitch={accountState.capability?.canSwitchConversation}
                 switching={accountSwitching}
                 disabled={
+                  awaitingAccountBinding ||
                   isConnecting ||
                   connStatus === "prompting" ||
                   msgQueue.length > 0 ||

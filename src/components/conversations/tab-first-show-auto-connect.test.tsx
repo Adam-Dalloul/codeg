@@ -308,4 +308,19 @@ describe("TabViewGate mirrors ConversationTabView", () => {
     expect(panel).toContain("!awaitingHistoricalSessionId &&")
     expect(panel).toContain("isActive: isActive && canAutoConnect,")
   })
+
+  // A tab that started as a draft never fetches a detail (its runtime key stays
+  // virtual). Waiting on the detail for its account held its reconnects for
+  // good after the first send, and read its account as Default.
+  it("waits for an account binding only while no source knows it", () => {
+    expect(panel).toContain(
+      "const conversationAccountId = resolveConversationAccount({"
+    )
+    expect(panel).toContain("listed: listedBinding,")
+    expect(panel).toContain("detail: detailBinding,")
+    expect(panel).toMatch(
+      /const awaitingAccountBinding =\s+conversationAccountId === undefined && !detailError/
+    )
+    expect(panel).toContain("!awaitingAccountBinding &&")
+  })
 })
