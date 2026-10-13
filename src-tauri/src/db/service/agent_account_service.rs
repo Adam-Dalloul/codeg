@@ -62,7 +62,10 @@ pub async fn resolve(
         ));
     }
     if account.removed {
-        return Err(DbError::Validation("This account was removed. Add it again in Settings > Agents and start a new conversation.".into()));
+        return Err(DbError::Validation(format!(
+            "This account was removed. To continue, add its folder {} again in Settings > Agents.",
+            account.home_dir
+        )));
     }
     if !Path::new(&account.home_dir).is_dir() {
         return Err(DbError::Validation(
@@ -170,6 +173,15 @@ pub async fn create(
             "This folder belongs to the default account. Choose a separate account folder.".into(),
         ));
     }
+    if existing_home.is_some() {
+        if let Some(removed) = removed_account_at(conn, agent, &home).await? {
+            let mut model = removed.into_active_model();
+            model.name = Set(name);
+            model.removed = Set(false);
+            model.updated_at = Set(Utc::now());
+            return Ok(model.update(conn).await?);
+        }
+    }
     #[cfg(unix)]
     if existing_home.is_none() {
         use std::os::unix::fs::PermissionsExt;
@@ -214,6 +226,24 @@ pub async fn rename(conn: &impl ConnectionTrait, id: &str, name: &str) -> Result
     model.updated_at = Set(Utc::now());
     model.update(conn).await?;
     Ok(())
+}
+
+/// A removed account of `agent` kept in `home` (canonical). Adding that folder
+/// again brings the account back under its own id: its saved conversations are
+/// bound to that id, so a new one would leave them unable to continue.
+async fn removed_account_at(
+    conn: &impl ConnectionTrait,
+    agent: AgentType,
+    home: &Path,
+) -> Result<Option<agent_account::Model>, DbError> {
+    Ok(Entity::find()
+        .filter(agent_account::Column::AgentType.eq(agent.as_wire().as_ref()))
+        .filter(agent_account::Column::Removed.eq(true))
+        .order_by_desc(agent_account::Column::UpdatedAt)
+        .all(conn)
+        .await?
+        .into_iter()
+        .find(|a| Path::new(&a.home_dir).canonicalize().ok().as_deref() == Some(home)))
 }
 
 /// Removing an account never deletes files or reassigns its conversations.
@@ -276,6 +306,89 @@ mod tests {
             .await
             .is_err());
         assert!(get(&db.conn, &account.id).await.is_ok());
+    }
+
+    /// Removal keeps the folder and the conversations bound to the account.
+    /// Adding that folder again must bring back the same account; a new id
+    /// left those conversations bound to a removed one, unable to continue.
+    #[tokio::test]
+    async fn re_adding_a_removed_folder_restores_its_account() {
+        use crate::db::entities::conversation::ConversationKind;
+        use crate::db::service::conversation_service;
+        let db = fresh_in_memory_db().await;
+        let dir = tempfile::tempdir().unwrap();
+        let folder =
+            crate::db::test_helpers::seed_folder(&db, &dir.path().display().to_string()).await;
+        let account = create(&db.conn, dir.path(), AgentType::Codex, "Work", None)
+            .await
+            .unwrap();
+        let row = conversation_service::create_inner(
+            &db.conn,
+            folder,
+            AgentType::Codex,
+            None,
+            None,
+            None,
+            ConversationKind::Regular,
+            Some(account.id.clone()),
+        )
+        .await
+        .unwrap();
+        remove(&db.conn, &account.id).await.unwrap();
+        let refused = resolve(&db.conn, AgentType::Codex, &account.id)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(refused.contains(&account.home_dir), "{refused}");
+
+        // Another agent's account in the same folder is its own account.
+        let claude = create(
+            &db.conn,
+            dir.path(),
+            AgentType::ClaudeCode,
+            "Claude",
+            Some(&account.home_dir),
+        )
+        .await
+        .unwrap();
+        assert_ne!(claude.id, account.id);
+
+        let restored = create(
+            &db.conn,
+            dir.path(),
+            AgentType::Codex,
+            "Work again",
+            Some(&format!("{}/", account.home_dir)),
+        )
+        .await
+        .unwrap();
+        assert_eq!(restored.id, account.id);
+        assert_eq!(restored.name, "Work again");
+        assert!(!restored.removed);
+        assert_eq!(list(&db.conn, AgentType::Codex).await.unwrap().len(), 1);
+        resolve(&db.conn, AgentType::Codex, &account.id)
+            .await
+            .unwrap();
+        assert_eq!(
+            connection_account(&db.conn, AgentType::Codex, None, Some(row.id))
+                .await
+                .unwrap(),
+            Some(account.id.clone())
+        );
+        assert!(create(
+            &db.conn,
+            dir.path(),
+            AgentType::Codex,
+            "Twice",
+            Some(&account.home_dir)
+        )
+        .await
+        .is_err());
+        // A new folder is a new account.
+        let fresh = create(&db.conn, dir.path(), AgentType::Codex, "Fresh", None)
+            .await
+            .unwrap();
+        assert_ne!(fresh.id, account.id);
     }
 
     #[tokio::test]

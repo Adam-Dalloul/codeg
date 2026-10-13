@@ -19,7 +19,7 @@
     "rename": "Renommer {name}",
     "remove": "Retirer {name}",
     "removeTitle": "Retirer {name} ?",
-    "removeDescription": "Le dossier et l’historique des conversations sont conservés. Les conversations de ce compte ne pourront plus démarrer de nouveaux tours après son retrait.",
+    "removeDescription": "Le dossier {path} et l’historique de ses conversations sont conservés. Pour reprendre plus tard les conversations de ce compte, ajoutez de nouveau ce dossier comme dossier de compte existant.",
     "removeAction": "Retirer le compte",
     "unavailable": "Compte indisponible",
     "loadFailed": "Impossible de charger les comptes",

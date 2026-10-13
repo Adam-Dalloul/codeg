@@ -344,8 +344,8 @@ export function AgentAccounts({ agentType }: { agentType: AgentType }) {
             <AlertDialogTitle>
               {t("removeTitle", { name: removing?.name ?? "" })}
             </AlertDialogTitle>
-            <AlertDialogDescription>
-              {t("removeDescription")}
+            <AlertDialogDescription className="break-words">
+              {t("removeDescription", { path: removing?.homeDir ?? "" })}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

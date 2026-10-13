@@ -19,7 +19,7 @@
     "rename": "Rename {name}",
     "remove": "Remove {name}",
     "removeTitle": "Remove {name}?",
-    "removeDescription": "The folder and conversation history are kept. This account's conversations cannot start new turns after removal.",
+    "removeDescription": "The folder {path} and its conversation history are kept. To continue this account's conversations later, add this folder again as an existing account folder.",
     "removeAction": "Remove account",
     "unavailable": "Unavailable account",
     "loadFailed": "Could not load accounts",

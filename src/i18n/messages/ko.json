@@ -19,7 +19,7 @@
     "rename": "{name} 이름 변경",
     "remove": "{name} 제거",
     "removeTitle": "{name} 계정을 제거할까요?",
-    "removeDescription": "폴더와 대화 기록은 유지됩니다. 제거한 뒤에는 이 계정의 대화에서 새 턴을 시작할 수 없습니다.",
+    "removeDescription": "{path} 폴더와 대화 기록은 유지됩니다. 나중에 이 계정의 대화를 이어가려면 이 폴더를 기존 계정 폴더로 다시 추가하세요.",
     "removeAction": "계정 제거",
     "unavailable": "사용할 수 없는 계정",
     "loadFailed": "계정을 불러오지 못했습니다",

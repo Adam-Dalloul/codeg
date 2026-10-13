@@ -19,7 +19,7 @@
     "rename": "{name} umbenennen",
     "remove": "{name} entfernen",
     "removeTitle": "{name} entfernen?",
-    "removeDescription": "Ordner und Gesprächsverlauf bleiben erhalten. Nach dem Entfernen können die Gespräche dieses Kontos keine neuen Antworten starten.",
+    "removeDescription": "Der Ordner {path} und sein Gesprächsverlauf bleiben erhalten. Um die Gespräche dieses Kontos später fortzusetzen, füge diesen Ordner erneut als vorhandenen Kontoordner hinzu.",
     "removeAction": "Konto entfernen",
     "unavailable": "Konto nicht verfügbar",
     "loadFailed": "Konten konnten nicht geladen werden",

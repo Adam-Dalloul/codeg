@@ -19,7 +19,7 @@
     "rename": "重新命名 {name}",
     "remove": "移除 {name}",
     "removeTitle": "移除 {name}？",
-    "removeDescription": "資料夾與對話記錄將保留。移除後，此帳戶的對話將無法開始新的回合。",
+    "removeDescription": "資料夾 {path} 與對話記錄將保留。之後若要繼續此帳戶的對話，請將此資料夾再次新增為現有帳戶資料夾。",
     "removeAction": "移除帳戶",
     "unavailable": "帳戶無法使用",
     "loadFailed": "無法載入帳戶",

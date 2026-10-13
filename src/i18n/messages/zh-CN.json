@@ -19,7 +19,7 @@
     "rename": "重命名 {name}",
     "remove": "移除 {name}",
     "removeTitle": "移除 {name}？",
-    "removeDescription": "文件夹和对话历史将保留。移除后，此账户的对话无法开始新的轮次。",
+    "removeDescription": "文件夹 {path} 和对话历史将保留。之后如需继续此账户的对话，请将此文件夹再次添加为现有账户文件夹。",
     "removeAction": "移除账户",
     "unavailable": "账户不可用",
     "loadFailed": "无法加载账户",

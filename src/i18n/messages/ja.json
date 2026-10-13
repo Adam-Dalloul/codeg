@@ -19,7 +19,7 @@
     "rename": "{name} の名前を変更",
     "remove": "{name} を削除",
     "removeTitle": "{name} を削除しますか？",
-    "removeDescription": "フォルダーと会話履歴は保持されます。削除後、このアカウントの会話では新しいターンを開始できません。",
+    "removeDescription": "フォルダー {path} と会話履歴は保持されます。後でこのアカウントの会話を続けるには、このフォルダーを既存のアカウントフォルダーとして再度追加してください。",
     "removeAction": "アカウントを削除",
     "unavailable": "利用できないアカウント",
     "loadFailed": "アカウントを読み込めませんでした",

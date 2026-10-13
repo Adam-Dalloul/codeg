@@ -19,7 +19,7 @@
     "rename": "Renombrar {name}",
     "remove": "Quitar {name}",
     "removeTitle": "¿Quitar {name}?",
-    "removeDescription": "Se conservan la carpeta y el historial de conversaciones. Las conversaciones de esta cuenta no podrán iniciar nuevos turnos después de quitarla.",
+    "removeDescription": "Se conservan la carpeta {path} y su historial de conversaciones. Para continuar más tarde las conversaciones de esta cuenta, vuelve a añadir esta carpeta como carpeta de cuenta existente.",
     "removeAction": "Quitar cuenta",
     "unavailable": "Cuenta no disponible",
     "loadFailed": "No se pudieron cargar las cuentas",

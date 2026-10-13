@@ -118,6 +118,18 @@ describe("native account settings", () => {
     expect(removeAgentAccount).toHaveBeenCalledWith("work-id")
   })
 
+  // Adding the same folder again restores the removed account, and with it the
+  // conversations bound to it, so the confirmation names that folder.
+  it("names the folder that brings a removed account back", async () => {
+    panel()
+    fireEvent.click(screen.getByRole("button", { name: "Remove Work" }))
+    const dialog = await screen.findByRole("alertdialog")
+    expect(dialog).toHaveTextContent(
+      "The folder /profiles/work and its conversation history are kept."
+    )
+    expect(dialog).toHaveTextContent("add this folder again")
+  })
+
   it("copies the server's account-specific sign-in command", async () => {
     const command = "export CODEX_HOME='/profiles/work'; codex login"
     vi.mocked(loginAgentAccount).mockResolvedValue({

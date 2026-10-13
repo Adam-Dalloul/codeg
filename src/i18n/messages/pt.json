@@ -19,7 +19,7 @@
     "rename": "Renomear {name}",
     "remove": "Remover {name}",
     "removeTitle": "Remover {name}?",
-    "removeDescription": "A pasta e o histórico de conversas são mantidos. As conversas desta conta não poderão iniciar novos turnos após a remoção.",
+    "removeDescription": "A pasta {path} e o histórico de conversas são mantidos. Para continuar as conversas desta conta mais tarde, adicione esta pasta novamente como pasta de conta existente.",
     "removeAction": "Remover conta",
     "unavailable": "Conta indisponível",
     "loadFailed": "Não foi possível carregar as contas",
