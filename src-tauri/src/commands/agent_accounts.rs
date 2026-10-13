@@ -1,4 +1,5 @@
 use serde::Serialize;
+use std::collections::BTreeMap;
 use std::path::Path;
 #[cfg(feature = "tauri-runtime")]
 use tauri::{Manager, State};
@@ -78,10 +79,32 @@ pub async fn login_core(
         .map_err(|e| AcpError::protocol(e.to_string()))?;
     let spec = agent_accounts::layout(agent)
         .ok_or_else(|| AcpError::protocol("This agent does not support isolated sign-in"))?;
-    let mut env = agent_accounts::isolation_env(agent, Path::new(&account.home_dir))
+    let env = agent_accounts::isolation_env(agent, Path::new(&account.home_dir))
         .map_err(AcpError::protocol)?;
+    let command = isolated_login_command(agent, env).await?;
+    Ok(crate::commands::custom_agents::ExtraSlotLoginResult {
+        family: account.agent_type,
+        isolator_key: spec.env_key.into(),
+        home: account.home_dir,
+        command,
+        launched: false,
+    })
+}
+
+/// The official sign-in command for `agent`, run with `env` pointing it at an
+/// isolated home: a native account's, or a custom agent's extra slot. Shared
+/// so the two cannot drift apart.
+pub(crate) async fn isolated_login_command(
+    agent: AgentType,
+    mut env: BTreeMap<String, String>,
+) -> Result<String, AcpError> {
+    let spec = agent_accounts::layout(agent)
+        .ok_or_else(|| AcpError::protocol("This agent does not support isolated sign-in"))?;
+    // Credentials inherited from the terminal would sign in, or be used,
+    // instead of the isolated home's own login. A value `env` sets itself is
+    // the caller's choice and stays.
     for key in agent_accounts::credential_env_keys(agent) {
-        env.insert(key.into(), String::new());
+        env.entry(key.into()).or_default();
     }
     let cli = spec
         .login
@@ -107,15 +130,7 @@ pub async fn login_core(
         .unwrap_or_else(|| (*cli).into());
     let mut argv = vec![executable.as_str()];
     argv.extend_from_slice(&spec.login[1..]);
-    let command = crate::acp::family_isolator::shell_command_with_env(&env, &argv)
-        .map_err(AcpError::protocol)?;
-    Ok(crate::commands::custom_agents::ExtraSlotLoginResult {
-        family: account.agent_type,
-        isolator_key: spec.env_key.into(),
-        home: account.home_dir,
-        command,
-        launched: false,
-    })
+    crate::acp::family_isolator::shell_command_with_env(&env, &argv).map_err(AcpError::protocol)
 }
 
 #[cfg(feature = "tauri-runtime")]

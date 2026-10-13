@@ -76,4 +76,44 @@ describe("isolated account sign-in", () => {
     await screen.findByRole("button", { name: "Copy login command" })
     expect(screen.queryByRole("alert")).not.toBeInTheDocument()
   })
+
+  // A built-in agent's own accounts do what this slot does and keep that
+  // agent's features, so the slot points there, naming the folder to adopt.
+  it("points to the built-in agent's accounts with the folder to choose", () => {
+    render(
+      <NextIntlClientProvider locale="en" messages={messages}>
+        <ExtraAgentSignIn
+          registryId="claude-work"
+          family="Claude"
+          builtinAgent="claude_code"
+          home="/profiles/claude-work"
+        />
+      </NextIntlClientProvider>
+    )
+    expect(screen.getByText("Use a Claude Code account instead")).toBeVisible()
+    expect(
+      screen.getByText(/with the existing folder \/profiles\/claude-work\./)
+    ).toBeVisible()
+  })
+
+  // OpenCode's slot names only its config folder; an account folder holds
+  // config, data and state together, so there is no folder to adopt.
+  it("names no folder for an OpenCode slot", () => {
+    render(
+      <NextIntlClientProvider locale="en" messages={messages}>
+        <ExtraAgentSignIn
+          registryId="opencode-work"
+          family="OpenCode"
+          builtinAgent="open_code"
+          home="/profiles/opencode/config"
+        />
+      </NextIntlClientProvider>
+    )
+    expect(
+      screen.getByText(
+        "Accounts added under OpenCode keep its built-in features. Add one in OpenCode's settings and sign in there."
+      )
+    ).toBeVisible()
+    expect(screen.queryByText(/\/profiles\/opencode/)).not.toBeInTheDocument()
+  })
 })

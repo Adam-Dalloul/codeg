@@ -599,8 +599,9 @@ pub struct ExtraSlotLoginResult {
     pub launched: bool,
 }
 
-/// Resolve the official family login for a custom extra slot. Never reads or
-/// writes `auth.json` / `.credentials.json`.
+/// Resolve the official family login for a custom extra slot: the sign-in a
+/// native account of that agent runs, pointed at the slot's own home. Never
+/// reads or writes `auth.json` / `.credentials.json`.
 pub async fn acp_login_extra_agent_core(
     registry_id: &str,
     db: &AppDatabase,
@@ -626,8 +627,11 @@ pub async fn acp_login_extra_agent_core(
             plan.home.display()
         ))
     })?;
-    let command = family_isolator::shell_export_and_login(&plan)
-        .map_err(AcpError::protocol)?;
+    let command = crate::commands::agent_accounts::isolated_login_command(
+        plan.family.agent_type(),
+        plan.env.clone(),
+    )
+    .await?;
     Ok(ExtraSlotLoginResult {
         family: plan.family.as_str().to_string(),
         isolator_key: plan.isolator_key.to_string(),
@@ -809,8 +813,12 @@ mod tests {
         if cfg!(windows) {
             assert!(result.command.starts_with("powershell.exe -NoProfile -EncodedCommand "));
         } else {
-            assert!(result.command.contains("codex login"));
+            // The vendor CLI may resolve to a quoted absolute path.
+            assert!(result.command.ends_with(" login"), "{}", result.command);
             assert!(result.command.contains("CODEX_HOME"));
+            // Like a native account's sign-in, an inherited key must not stand
+            // in for the slot's own login.
+            assert!(result.command.contains("unset OPENAI_API_KEY"), "{}", result.command);
         }
         assert!(!result.launched, "unit tests must not spawn a terminal");
         assert_eq!(std::fs::read(&extra_auth).unwrap(), b"slot-2\n");

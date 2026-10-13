@@ -119,6 +119,7 @@ import type {
   AdapterInfo,
   AgentLatestRelease,
   AgentType,
+  BuiltinAgentType,
   CheckStatus,
   CodexGranularApproval,
   CodexSandboxStructuredConfig,
@@ -155,16 +156,6 @@ import {
   type OpenCodeModelOptionGroup,
 } from "@/lib/opencode-connect"
 import { toErrorMessage } from "@/lib/app-error"
-
-function familyLabelFromIsolator(key: string): string {
-  if (key.startsWith("CLAUDE")) return "Claude"
-  if (key.startsWith("CODEX")) return "Codex"
-  if (key.startsWith("GROK")) return "Grok"
-  if (key.startsWith("GEMINI")) return "Gemini"
-  if (key.startsWith("OPENCODE")) return "OpenCode"
-  return key
-}
-
 import { getInstallErrorHintKey } from "@/lib/agent-install-error"
 import { useAgentInstallStream } from "@/hooks/use-agent-install-stream"
 import { OpencodePluginsModal } from "./opencode-plugins-modal"
@@ -182,6 +173,25 @@ import { DeepSeekModelListEditor } from "./deepseek-model-list-editor"
 import { KimiCodeConfigPanel } from "./kimi-code-config-panel"
 import { PiConfigPanel } from "./pi-config-panel"
 import { QoderConfigPanel } from "./qoder-config-panel"
+
+function familyLabelFromIsolator(key: string): string {
+  if (key.startsWith("CLAUDE")) return "Claude"
+  if (key.startsWith("CODEX")) return "Codex"
+  if (key.startsWith("GROK")) return "Grok"
+  if (key.startsWith("GEMINI")) return "Gemini"
+  if (key.startsWith("OPENCODE")) return "OpenCode"
+  return key
+}
+
+/** The built-in agent an extra slot's home variable belongs to. */
+function builtinAgentFromIsolator(key: string): BuiltinAgentType | null {
+  if (key.startsWith("CLAUDE")) return "claude_code"
+  if (key.startsWith("CODEX")) return "codex"
+  if (key.startsWith("GROK")) return "grok"
+  if (key.startsWith("GEMINI")) return "gemini"
+  if (key.startsWith("OPENCODE")) return "open_code"
+  return null
+}
 
 interface AgentCheckState {
   result?: PreflightResult
@@ -11718,6 +11728,10 @@ supports_websockets = true`}
                         key={selectedAgent.agent_type}
                         registryId={customAgentId(selectedAgent.agent_type)!}
                         family={familyLabelFromIsolator(extraSlotIsolator.key)}
+                        builtinAgent={builtinAgentFromIsolator(
+                          extraSlotIsolator.key
+                        )}
+                        home={extraSlotIsolator.home}
                       />
                     ) : null}
                     <SettingCard>

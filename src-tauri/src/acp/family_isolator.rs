@@ -47,14 +47,15 @@ impl IsolatorFamily {
         }
     }
 
-    /// Official login argv for this family. Used by extra-slot Sign in.
-    pub fn login_args(self) -> &'static [&'static str] {
+    /// The built-in agent whose CLI an extra slot runs. Sign-in goes through
+    /// that agent's native account login (`agent_accounts::layout`).
+    pub fn agent_type(self) -> AgentType {
         match self {
-            Self::Claude => &["claude", "auth", "login"],
-            Self::Codex => &["codex", "login"],
-            Self::Grok => &["grok", "login"],
-            Self::Gemini => &["gemini"],
-            Self::OpenCode => &["opencode", "auth", "login"],
+            Self::Claude => AgentType::ClaudeCode,
+            Self::Codex => AgentType::Codex,
+            Self::Grok => AgentType::Grok,
+            Self::Gemini => AgentType::Gemini,
+            Self::OpenCode => AgentType::OpenCode,
         }
     }
 
@@ -195,7 +196,6 @@ pub struct ExtraSlotLogin {
     pub family: IsolatorFamily,
     pub isolator_key: &'static str,
     pub home: PathBuf,
-    pub args: &'static [&'static str],
     pub env: BTreeMap<String, String>,
 }
 
@@ -227,7 +227,6 @@ pub fn login_plan_from_env(env: &BTreeMap<String, String>) -> Option<ExtraSlotLo
         family,
         isolator_key: family.isolator_key(),
         home,
-        args: family.login_args(),
         env: login_env,
     })
 }
@@ -242,19 +241,9 @@ pub fn login_plan_from_def(def: &CustomAgentDef) -> Option<ExtraSlotLogin> {
     login_plan_from_env(env)
 }
 
-/// Build the command line `open_external_terminal_impl` will run.
-/// Rejects newlines in the home path (same rule as the terminal opener).
-pub fn shell_export_and_login(plan: &ExtraSlotLogin) -> Result<String, String> {
-    login_command_for_platform(plan, cfg!(windows))
-}
-
-fn login_command_for_platform(plan: &ExtraSlotLogin, windows: bool) -> Result<String, String> {
-    if plan.home.to_string_lossy().contains(['\n', '\r', '\0']) {
-        return Err("isolator home must not contain newlines".into());
-    }
-    command_for_platform(&plan.env, plan.args, windows)
-}
-
+/// Build the command line `open_external_terminal_impl` will run. Rejects
+/// newlines in any value (same rule as the terminal opener), the isolated
+/// home included.
 pub fn shell_command_with_env(env: &BTreeMap<String, String>, args: &[&str]) -> Result<String, String> {
     command_for_platform(env, args, cfg!(windows))
 }
@@ -385,8 +374,12 @@ mod tests {
         assert_eq!(plan.family, IsolatorFamily::Codex);
         assert_eq!(plan.isolator_key, "CODEX_HOME");
         assert_eq!(plan.home, PathBuf::from("/tmp/c2"));
-        assert_eq!(plan.args, &["codex", "login"]);
-        let cmd = shell_export_and_login(&plan).expect("cmd");
+        // The slot signs in with its family's native account login.
+        let login = crate::acp::agent_accounts::layout(plan.family.agent_type())
+            .unwrap()
+            .login;
+        assert_eq!(login, &["codex", "login"]);
+        let cmd = shell_command_with_env(&plan.env, login).expect("cmd");
         if cfg!(windows) {
             assert!(cmd.starts_with("powershell.exe -NoProfile -EncodedCommand "));
         } else {
@@ -398,14 +391,8 @@ mod tests {
 
     #[test]
     fn shell_export_rejects_newlines_in_home() {
-        let plan = ExtraSlotLogin {
-            family: IsolatorFamily::Claude,
-            isolator_key: "CLAUDE_CONFIG_DIR",
-            home: PathBuf::from("/tmp/bad\nhome"),
-            args: IsolatorFamily::Claude.login_args(),
-            env: BTreeMap::new(),
-        };
-        assert!(shell_export_and_login(&plan).is_err());
+        let env = BTreeMap::from([("CLAUDE_CONFIG_DIR".into(), "/tmp/bad\nhome".into())]);
+        assert!(shell_command_with_env(&env, &["claude", "auth", "login"]).is_err());
     }
 
     #[test]
@@ -429,7 +416,7 @@ mod tests {
         env.insert("XDG_DATA_HOME".into(), root.path().join("data").display().to_string());
         let plan = login_plan_from_env(&env).unwrap();
         assert_eq!(plan.env.get("XDG_DATA_HOME"), env.get("XDG_DATA_HOME"));
-        assert!(login_command_for_platform(&plan, false).unwrap().contains("XDG_DATA_HOME"));
+        assert!(command_for_platform(&plan.env, &["opencode", "auth", "login"], false).unwrap().contains("XDG_DATA_HOME"));
     }
 
     #[test]
@@ -448,7 +435,7 @@ mod tests {
         let (_, config) = isolator_from_env(&env).unwrap();
         let plan = login_plan_from_env(&env).unwrap();
         assert_eq!(config, plan.home.join(".gemini"));
-        assert_eq!(plan.args, &["gemini"]);
+        assert_eq!(plan.family.agent_type(), AgentType::Gemini);
     }
 
     #[test]
@@ -456,7 +443,7 @@ mod tests {
         use base64::Engine;
         let value = "C:\\profiles\\a & echo bad %PATH% !bang! 'quoted'";
         let env = BTreeMap::from([("CODEX_HOME".into(), value.into())]);
-        let command = login_command_for_platform(&login_plan_from_env(&env).unwrap(), true).unwrap();
+        let command = command_for_platform(&login_plan_from_env(&env).unwrap().env, &["codex", "login"], true).unwrap();
         let encoded = command.strip_prefix("powershell.exe -NoProfile -EncodedCommand ").unwrap();
         let bytes = base64::engine::general_purpose::STANDARD.decode(encoded).unwrap();
         let words: Vec<u16> = bytes.as_chunks::<2>().0.iter().copied().map(u16::from_le_bytes).collect();
