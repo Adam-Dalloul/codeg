@@ -859,7 +859,30 @@ fn read_json_file(path: &Path) -> Result<Value, AppCommandError> {
         .map_err(|e| mcp_configuration_invalid(format!("invalid JSON at {}: {e}", path.display())))
 }
 
+/// Whether `path` already parses to exactly `value`.
+fn json_file_holds(path: &Path, value: &Value) -> bool {
+    fs::read_to_string(path)
+        .ok()
+        .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
+        .is_some_and(|current| current == *value)
+}
+
+/// Whether `path` already parses to exactly `value`.
+fn toml_file_holds(path: &Path, value: &toml::Value) -> bool {
+    fs::read_to_string(path)
+        .ok()
+        .and_then(|raw| raw.parse::<toml::Value>().ok())
+        .is_some_and(|current| current == *value)
+}
+
 fn write_json_file(path: &Path, value: &Value) -> Result<(), AppCommandError> {
+    // A rewrite that changes nothing leaves the file alone. Named accounts
+    // re-apply the shared servers on every launch, into config files their
+    // own running CLIs rewrite too (`.claude.json` constantly); rewriting an
+    // unchanged file would only race those writers and risk their updates.
+    if json_file_holds(path, value) {
+        return Ok(());
+    }
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(AppCommandError::io)?;
     }
@@ -895,6 +918,10 @@ fn read_codex_root_toml_at(path: &Path) -> Result<toml::Value, AppCommandError> 
 }
 
 fn write_codex_root_toml_at(path: &Path, root: &toml::Value) -> Result<(), AppCommandError> {
+    // See `write_json_file`: an unchanged config is not rewritten.
+    if toml_file_holds(path, root) {
+        return Ok(());
+    }
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(AppCommandError::io)?;
     }
@@ -2536,6 +2563,10 @@ fn deepseek_mcp_json_path() -> PathBuf {
 /// The parent is created `0700` when it does not exist yet, matching what the
 /// harness itself does with `$DSH_HOME`.
 fn write_deepseek_json_file(path: &Path, value: &Value) -> Result<(), AppCommandError> {
+    // See `write_json_file`: an unchanged config is not rewritten.
+    if json_file_holds(path, value) {
+        return Ok(());
+    }
     if let Some(parent) = path.parent() {
         if !parent.exists() {
             #[cfg(unix)]
@@ -3416,8 +3447,22 @@ fn write_native_account_mcp(
 
 pub(crate) fn sync_native_account_mcp(agent: crate::models::AgentType, home: &Path) -> Result<(), AppCommandError> {
     let _guard = MCP_CONFIG_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let servers = read_servers_for_agent_type(agent)?;
+    let servers = shared_servers_for_account(agent)?;
     sync_native_account_mcp_from(agent, home, &servers)
+}
+
+/// The servers assigned to `agent`, as its own config store holds them — the
+/// set a named account mirrors. `read_servers_for_agent_type` answers what to
+/// forward over ACP instead, which for pi is always nothing (pi-acp drops
+/// wire MCP); syncing to that would remove every server fanned into a pi
+/// account on each launch.
+pub(crate) fn shared_servers_for_account(
+    agent: crate::models::AgentType,
+) -> Result<BTreeMap<String, Value>, AppCommandError> {
+    match agent {
+        crate::models::AgentType::Pi => read_pi_servers(),
+        _ => read_servers_for_agent_type(agent),
+    }
 }
 
 fn sync_native_account_mcp_from(agent: crate::models::AgentType, home: &Path, servers: &BTreeMap<String, Value>) -> Result<(), AppCommandError> {
@@ -3433,12 +3478,22 @@ fn sync_native_account_mcp_from(agent: crate::models::AgentType, home: &Path, se
     write_json_file(&manifest_path, &serde_json::json!(servers.keys().collect::<Vec<_>>()))
 }
 
+/// The homes a shared MCP change is fanned into. An account whose folder is
+/// missing is skipped rather than blocking every MCP change: it cannot launch
+/// until the folder is back, and its next launch re-applies the full shared
+/// set (`sync_native_account_mcp`), so nothing is lost by skipping it here.
 async fn native_account_homes(db: &crate::db::AppDatabase) -> Result<Vec<(crate::models::AgentType, PathBuf)>, AppCommandError> {
     let mut result = Vec::new();
     for account in crate::db::service::agent_account_service::list_all(&db.conn).await.map_err(AppCommandError::from)? {
-        let agent = crate::models::AgentType::from_wire(&account.agent_type).ok_or_else(|| mcp_configuration_invalid("Unknown account agent"))?;
+        let Some(agent) = crate::models::AgentType::from_wire(&account.agent_type) else {
+            tracing::warn!("[MCP] skipping account {} with unknown agent {}", account.id, account.agent_type);
+            continue;
+        };
         let home = PathBuf::from(account.home_dir);
-        if !home.is_absolute() || !home.is_dir() { return Err(mcp_configuration_invalid(format!("Restore the folder for account {} before changing MCP settings.", account.name))); }
+        if !home.is_absolute() || !home.is_dir() {
+            tracing::warn!("[MCP] skipping account {} until its folder {} is restored", account.name, home.display());
+            continue;
+        }
         result.push((agent, home));
     }
     Ok(result)
@@ -3923,6 +3978,10 @@ fn read_grok_root_toml_at(path: &Path) -> Result<toml::Value, AppCommandError> {
 }
 
 fn write_grok_root_toml_at(path: &Path, root: &toml::Value) -> Result<(), AppCommandError> {
+    // See `write_json_file`: an unchanged config is not rewritten.
+    if toml_file_holds(path, root) {
+        return Ok(());
+    }
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(AppCommandError::io)?;
     }
@@ -4550,7 +4609,12 @@ fn upsert_hermes_server_at(path: &Path, id: &str, spec: &Value) -> Result<(), Ap
         .get_mut(&servers_key)
         .and_then(Yaml::as_mapping_mut)
         .ok_or_else(|| mcp_configuration_invalid("hermes mcp_servers must be a mapping"))?;
-    servers.insert(Yaml::String(id.to_string()), entry);
+    let key = Yaml::String(id.to_string());
+    // See `write_json_file`: an unchanged config is not rewritten.
+    if servers.get(&key) == Some(&entry) {
+        return Ok(());
+    }
+    servers.insert(key, entry);
 
     let yaml = serde_yaml::to_string(&root).map_err(|e| {
         mcp_configuration_invalid(format!("serialize hermes config.yaml failed: {e}"))
@@ -6437,6 +6501,95 @@ mod tests {
             }
             assert_eq!(fs::read_to_string(home.join("auth.json")).unwrap(), "account-auth-sentinel");
         }
+    }
+
+    /// Every launch of a named account re-applies the shared servers to files
+    /// that account's own CLI rewrites too (`.claude.json` on every start). When
+    /// nothing changed they must not be rewritten: here the CLI's own
+    /// formatting and a user's TOML comment survive, while a real change still
+    /// lands.
+    #[test]
+    fn an_unchanged_account_sync_leaves_the_cli_files_untouched() {
+        use crate::models::AgentType;
+        let shared = BTreeMap::from([(
+            "shared".to_string(),
+            json!({"type": "stdio", "command": "shared-command"}),
+        )]);
+
+        let claude = tempfile::tempdir().unwrap();
+        sync_native_account_mcp_from(AgentType::ClaudeCode, claude.path(), &shared).unwrap();
+        let config = claude.path().join(".claude.json");
+        let mut value: Value = serde_json::from_str(&fs::read_to_string(&config).unwrap()).unwrap();
+        value["oauthAccount"] = json!({"emailAddress": "fixture@example.test"});
+        let cli_written = serde_json::to_string(&value).unwrap();
+        fs::write(&config, &cli_written).unwrap();
+        sync_native_account_mcp_from(AgentType::ClaudeCode, claude.path(), &shared).unwrap();
+        assert_eq!(fs::read_to_string(&config).unwrap(), cli_written);
+
+        let codex = tempfile::tempdir().unwrap();
+        sync_native_account_mcp_from(AgentType::Codex, codex.path(), &shared).unwrap();
+        let toml_path = codex.path().join("config.toml");
+        let with_comment = format!(
+            "# kept by the user\n{}",
+            fs::read_to_string(&toml_path).unwrap()
+        );
+        fs::write(&toml_path, &with_comment).unwrap();
+        sync_native_account_mcp_from(AgentType::Codex, codex.path(), &shared).unwrap();
+        assert_eq!(fs::read_to_string(&toml_path).unwrap(), with_comment);
+
+        let changed = BTreeMap::from([(
+            "shared".to_string(),
+            json!({"type": "stdio", "command": "changed-command"}),
+        )]);
+        sync_native_account_mcp_from(AgentType::Codex, codex.path(), &changed).unwrap();
+        assert!(fs::read_to_string(&toml_path)
+            .unwrap()
+            .contains("changed-command"));
+    }
+
+    /// A pi account mirrors pi's own server list. The ACP forwarding view is
+    /// empty for pi by design, and syncing to it removed every server fanned
+    /// into the account again on its next launch.
+    #[test]
+    fn a_pi_account_launch_keeps_the_servers_pi_is_assigned() {
+        use crate::models::AgentType;
+        let default_dir = tempfile::tempdir().unwrap();
+        let account = tempfile::tempdir().unwrap();
+        fs::write(
+            default_dir.path().join("mcp.json"),
+            json!({"mcpServers": {"shared": {"command": "pi-shared"}}}).to_string(),
+        )
+        .unwrap();
+        temp_env::with_var("PI_CODING_AGENT_DIR", Some(default_dir.path()), || {
+            assert!(read_servers_for_agent_type(AgentType::Pi).unwrap().is_empty());
+            for _ in 0..2 {
+                sync_native_account_mcp(AgentType::Pi, account.path()).unwrap();
+                let synced = read_pi_servers_at(&account.path().join("mcp.json")).unwrap();
+                assert!(synced.contains_key("shared"));
+            }
+        });
+    }
+
+    /// One account folder that went missing must not block every MCP change:
+    /// that account cannot launch until it is restored, and its next launch
+    /// re-applies the whole shared set anyway.
+    #[tokio::test]
+    async fn a_missing_account_folder_does_not_block_mcp_changes() {
+        use crate::db::service::agent_account_service;
+        use crate::models::AgentType;
+        let db = crate::db::test_helpers::fresh_in_memory_db().await;
+        let data = tempfile::tempdir().unwrap();
+        let kept = agent_account_service::create(&db.conn, data.path(), AgentType::Codex, "Kept", None)
+            .await
+            .unwrap();
+        let gone = agent_account_service::create(&db.conn, data.path(), AgentType::Codex, "Gone", None)
+            .await
+            .unwrap();
+        fs::remove_dir_all(&gone.home_dir).unwrap();
+        assert_eq!(
+            native_account_homes(&db).await.unwrap(),
+            vec![(AgentType::Codex, PathBuf::from(&kept.home_dir))]
+        );
     }
 
     fn test_claude_servers() -> Result<BTreeMap<String, Value>, AppCommandError> {

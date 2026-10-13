@@ -11056,15 +11056,32 @@ pub(crate) async fn build_account_session_runtime_env(
     data_dir: &Path,
     account_id: Option<&str>,
 ) -> Result<BTreeMap<String, String>, AcpError> {
+    account_runtime_env(db, agent_type, session_id, data_dir, account_id, true).await
+}
+
+/// The launch environment for `account_id` (Default when `None`). Only a launch
+/// passes `sync_home`: bringing the account's MCP servers and skills in line
+/// with the shared ones writes into the folder its running CLIs also write, so
+/// a mere comparison (the staleness check) must leave the folder alone.
+async fn account_runtime_env(
+    db: &AppDatabase,
+    agent_type: AgentType,
+    session_id: Option<&str>,
+    data_dir: &Path,
+    account_id: Option<&str>,
+    sync_home: bool,
+) -> Result<BTreeMap<String, String>, AcpError> {
     let Some(id) = account_id else {
         return build_session_runtime_env(db, agent_type, session_id, data_dir).await;
     };
     let account = crate::db::service::agent_account_service::resolve(&db.conn, agent_type, id)
         .await.map_err(|e| AcpError::protocol(e.to_string()))?;
     let home = Path::new(&account.home_dir);
-    crate::commands::mcp::sync_native_account_mcp(agent_type, home)
-        .map_err(|e| AcpError::protocol(e.to_string()))?;
-    crate::acp::account_skills::sync(agent_type, home).map_err(AcpError::protocol)?;
+    if sync_home {
+        crate::commands::mcp::sync_native_account_mcp(agent_type, home)
+            .map_err(|e| AcpError::protocol(e.to_string()))?;
+        crate::acp::account_skills::sync(agent_type, home).map_err(AcpError::protocol)?;
+    }
     let mut env = build_runtime_env_for_agent(db, agent_type, session_id, data_dir, false, Some(home)).await?;
     env.extend(crate::acp::agent_accounts::isolation_env(agent_type, home).map_err(AcpError::protocol)?);
     env.insert(crate::acp::agent_accounts::ACCOUNT_ENV.into(), account.id);
@@ -11273,7 +11290,7 @@ pub(crate) fn fingerprint_account_config(
                 }
             }
         }
-        if let Ok(mcp) = crate::commands::mcp::read_servers_for_agent_type(agent_type) {
+        if let Ok(mcp) = crate::commands::mcp::shared_servers_for_account(agent_type) {
             if let Ok(raw) = serde_json::to_vec(&mcp) { hasher.update(raw); }
         }
         return format!("{:x}", hasher.finalize());
@@ -11347,7 +11364,7 @@ pub(crate) async fn refresh_config_staleness(
             let computed = if id.is_none() {
                 compute_session_config_fingerprint(db, connection.agent_type, data_dir).await
             } else {
-                build_account_session_runtime_env(db, connection.agent_type, None, data_dir, id.as_deref()).await
+                account_runtime_env(db, connection.agent_type, None, data_dir, id.as_deref(), false).await
                     .map(|env| fingerprint_account_config(connection.agent_type, &env, home.as_deref()))
             };
             if let Ok(fp) = computed { profiles.insert(key.clone(), fp); }

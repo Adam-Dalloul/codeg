@@ -784,7 +784,16 @@ pub async fn scan_importable_sessions_core(
 
     let mut result = scan_importable_sessions_from_summaries(conn, emitter, chat_channel_manager, summaries).await?;
     for account in crate::db::service::agent_account_service::list_all(conn).await.map_err(AppCommandError::from)? {
-        let summaries = import_service::collect_account_summaries(conn, &account.id).await.map_err(AppCommandError::from)?;
+        // One unavailable account folder must not hide every other account's
+        // sessions, the Default ones included. Importing from that account
+        // still fails explicitly until the folder is restored.
+        let summaries = match import_service::collect_account_summaries(conn, &account.id).await {
+            Ok(summaries) => summaries,
+            Err(e) => {
+                tracing::warn!("[import] skipping account {} ({}): {e}", account.name, account.id);
+                continue;
+            }
+        };
         let mut additional = scan_importable_account_summaries(conn, emitter, chat_channel_manager, summaries, Some(&account.id)).await?;
         result.no_folder_count += additional.no_folder_count;
         result.total_sessions += additional.total_sessions;
