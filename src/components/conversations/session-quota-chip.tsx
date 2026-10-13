@@ -29,6 +29,9 @@ function QuotaChip(props: QuotaRequest) {
   const { data, loading, refresh } = useSubscriptionQuota(props)
   const row = quotaRow(data)
   const family = data?.family ?? familyFromAgentType(props.agentType)
+  // Custom agents only advertise usage once their saved configuration resolves
+  // to a supported family. An arbitrary ACP agent need not have a quota API.
+  if (!family) return null
   const label =
     row?.kind === "remaining-subscription" &&
     !(row.remaining === 0 && row.hasOtherCapacity)

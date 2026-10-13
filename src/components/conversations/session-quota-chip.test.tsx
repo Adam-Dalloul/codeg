@@ -19,6 +19,32 @@ beforeEach(() => {
   state.data = null
 })
 
+it("does not advertise quota for an unsupported custom agent", () => {
+  render(
+    <NextIntlClientProvider locale="en" messages={en}>
+      <SessionQuotaChip agentType="custom:offline-tool" />
+    </NextIntlClientProvider>
+  )
+  expect(screen.queryByRole("button")).not.toBeInTheDocument()
+})
+
+it("shows quota for a custom slot resolved from its saved configuration", () => {
+  state.data = {
+    agentType: "custom:personal-cli",
+    agentAccountId: null,
+    family: "claude",
+    name: "Personal CLI",
+    checkedAt: 1780000000,
+    payload: { five_hour: { utilization: 20 } },
+  }
+  render(
+    <NextIntlClientProvider locale="en" messages={en}>
+      <SessionQuotaChip agentType="custom:personal-cli" />
+    </NextIntlClientProvider>
+  )
+  expect(screen.getByRole("button", { name: "80% left" })).toBeVisible()
+})
+
 it("does not label a failed named-account read as Default", async () => {
   render(
     <NextIntlClientProvider locale="en" messages={en}>

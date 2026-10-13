@@ -22,6 +22,21 @@ const accounts = [
 ]
 
 describe("account picker", () => {
+  it("identifies Default in a saved chat when other accounts are available", () => {
+    render(
+      <NextIntlClientProvider locale="en" messages={messages}>
+        <AgentAccountSelector
+          accounts={accounts}
+          value={null}
+          onChange={vi.fn()}
+          persisted
+        />
+      </NextIntlClientProvider>
+    )
+    expect(screen.getByText("Default")).toBeVisible()
+    expect(screen.queryByRole("combobox")).not.toBeInTheDocument()
+  })
+
   it("switches a persisted Default conversation without creating a new chat", async () => {
     const changed = vi.fn()
     render(

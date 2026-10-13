@@ -69,6 +69,7 @@ import { ConversationHeaderTags } from "./conversation-tag-picker"
 import { useIsMobile } from "@/hooks/use-mobile"
 import { SessionQuotaChip } from "./session-quota-chip"
 import type { AgentType } from "@/lib/types"
+import { resolveConversationAccount } from "@/lib/agent-accounts"
 
 interface ConversationDetailHeaderProps {
   tabId: string
@@ -159,6 +160,9 @@ export const ConversationDetailHeader = memo(function ConversationDetailHeader({
     const row = s.conversations.find((c) => c.id === conversationId)
     return row ? (row.agent_account_id ?? null) : undefined
   })
+  const listedQuotaUpdatedAt = useAppWorkspaceStore(
+    (s) => s.conversations.find((c) => c.id === conversationId)?.updated_at
+  )
   // Sub-sessions need not appear in the sidebar's root-conversation list.
   // Their refreshed detail still carries the authoritative saved account.
   const runtimeQuotaAccountId = useConversationRuntimeStore((s) => {
@@ -166,10 +170,24 @@ export const ConversationDetailHeader = memo(function ConversationDetailHeader({
       runtimeId == null ? undefined : s.byConversationId.get(runtimeId)?.detail
     return detail ? (detail.summary.agent_account_id ?? null) : undefined
   })
-  const quotaAccountId =
-    listedQuotaAccountId !== undefined
-      ? listedQuotaAccountId
-      : (runtimeQuotaAccountId ?? null)
+  const runtimeQuotaUpdatedAt = useConversationRuntimeStore((s) =>
+    runtimeId == null
+      ? undefined
+      : s.byConversationId.get(runtimeId)?.detail?.summary.updated_at
+  )
+  // Use the same newest-binding rule as the chat connection and account picker.
+  const quotaAccountId = resolveConversationAccount({
+    persisted: conversationId != null,
+    draft: null,
+    listed:
+      listedQuotaAccountId !== undefined && listedQuotaUpdatedAt !== undefined
+        ? { accountId: listedQuotaAccountId, updatedAt: listedQuotaUpdatedAt }
+        : undefined,
+    detail:
+      runtimeQuotaAccountId !== undefined && runtimeQuotaUpdatedAt !== undefined
+        ? { accountId: runtimeQuotaAccountId, updatedAt: runtimeQuotaUpdatedAt }
+        : undefined,
+  })
   const isMobile = useIsMobile()
 
   const [details, setDetails] = useState<ActiveSessionDetails | null>(null)

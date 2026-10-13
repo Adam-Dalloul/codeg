@@ -2491,26 +2491,28 @@ const ConversationTabView = memo(function ConversationTabView({
       getSentHistory={getSentHistory}
       topBanner={
         <>
-          {dbConversationId != null && (
-            <div className="px-4 py-1.5">
-              <AgentAccountSelector
-                accounts={accountState.accounts}
-                value={selectedAccountId}
-                onChange={handleSwitchAccount}
-                persisted
-                canSwitch={accountState.capability?.canSwitchConversation}
-                switching={accountSwitching}
-                disabled={
-                  awaitingAccountBinding ||
-                  isConnecting ||
-                  connStatus === "prompting" ||
-                  msgQueue.length > 0 ||
-                  conn.isViewer ||
-                  !externalId
-                }
-              />
-            </div>
-          )}
+          {dbConversationId != null &&
+            (selectedAccountId !== null ||
+              accountState.accounts.some((account) => !account.removed)) && (
+              <div className="px-4 py-1.5">
+                <AgentAccountSelector
+                  accounts={accountState.accounts}
+                  value={selectedAccountId}
+                  onChange={handleSwitchAccount}
+                  persisted
+                  canSwitch={accountState.capability?.canSwitchConversation}
+                  switching={accountSwitching}
+                  disabled={
+                    awaitingAccountBinding ||
+                    isConnecting ||
+                    connStatus === "prompting" ||
+                    msgQueue.length > 0 ||
+                    conn.isViewer ||
+                    !externalId
+                  }
+                />
+              </div>
+            )}
           <SessionConfigStaleBanner contextKey={tabId} />
           <PiProjectTrustBanner
             contextKey={tabId}

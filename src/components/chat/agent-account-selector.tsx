@@ -33,15 +33,15 @@ export function AgentAccountSelector({
   if (!value && available.length === 0) return null
   const selected = accounts.find((a) => a.id === value)
   if (persisted && !canSwitch) {
-    if (!value) return null
+    const label = value ? (selected?.name ?? t("unavailable")) : t("default")
     return (
       <span
         className="inline-flex max-w-full items-center gap-1.5 text-xs text-muted-foreground"
-        title={selected?.name ?? t("unavailable")}
+        title={label}
       >
         <UserRound className="size-3.5 shrink-0" />
         <span className="truncate">
-          {selected?.name ?? t("unavailable")}
+          {label}
           {selected?.removed ? ` (${t("unavailable")})` : ""}
         </span>
       </span>
