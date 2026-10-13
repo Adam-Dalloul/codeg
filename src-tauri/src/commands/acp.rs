@@ -11962,6 +11962,9 @@ pub async fn acp_get_agent_status(
 pub(crate) async fn acp_list_agents_core(db: &AppDatabase) -> Result<Vec<AcpAgentInfo>, AcpError> {
     let platform = registry::current_platform();
     let agent_types = registry::all_acp_agents();
+    let named_accounts = crate::db::service::agent_account_service::list_all(&db.conn)
+        .await
+        .map_err(|e| AcpError::protocol(e.to_string()))?;
 
     let defaults = agent_types
         .iter()
@@ -12153,6 +12156,14 @@ pub(crate) async fn acp_list_agents_core(db: &AppDatabase) -> Result<Vec<AcpAgen
         };
         agents.push(AcpAgentInfo {
             agent_type,
+            named_accounts: named_accounts
+                .iter()
+                .filter(|account| account.agent_type == agent_type.as_wire())
+                .map(|account| crate::acp::types::AcpAgentAccountInfo {
+                    id: account.id.clone(),
+                    name: account.name.clone(),
+                })
+                .collect(),
             registry_id: registry::registry_id_for(agent_type).to_string(),
             registry_version: meta.registry_version().map(ToString::to_string),
             supports_custom_version: meta.supports_custom_version(),

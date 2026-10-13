@@ -4288,6 +4288,7 @@ impl crate::acp::delegation::spawner::ConnectionSpawner for ConnectionManagerSpa
         &self,
         parent_connection_id: &str,
         agent_type: AgentType,
+        agent_account_id: Option<String>,
         working_dir: Option<String>,
         preferred_mode_id: Option<String>,
         preferred_config_values: BTreeMap<String, String>,
@@ -4322,6 +4323,11 @@ impl crate::acp::delegation::spawner::ConnectionSpawner for ConnectionManagerSpa
             )
         };
         let effective_working_dir = working_dir.or(parent_working_dir);
+        let account_id = match agent_account_id.as_deref() {
+            Some("default") => None,
+            Some(_) => agent_account_id,
+            None => account_id,
+        };
 
         // Build the same runtime env `acp_connect` would build for a
         // user-initiated session — disabled check, settings overrides,
@@ -4413,6 +4419,7 @@ impl crate::acp::delegation::spawner::ConnectionSpawner for ConnectionManagerSpa
         &self,
         parent_connection_id: &str,
         agent_type: AgentType,
+        agent_account_id: Option<String>,
         working_dir: Option<String>,
         external_session_id: &str,
         preferred_mode_id: Option<String>,
@@ -4422,7 +4429,7 @@ impl crate::acp::delegation::spawner::ConnectionSpawner for ConnectionManagerSpa
         use crate::acp::delegation::spawner::{ResumedSpawn, SpawnerError};
         // Same parent inheritance as `spawn` — a resumed child whose emitter is
         // wired to a different broadcaster would stream to nobody.
-        let (emitter, owner_window, parent_working_dir, account_id) = {
+        let (emitter, owner_window, parent_working_dir) = {
             let conns = self.manager.connections.lock().await;
             let parent = conns.get(parent_connection_id).ok_or_else(|| {
                 SpawnerError::Spawn(format!(
@@ -4439,10 +4446,11 @@ impl crate::acp::delegation::spawner::ConnectionSpawner for ConnectionManagerSpa
                 parent.emitter.clone(),
                 parent.owner_window_label.clone(),
                 pwd,
-                if parent.agent_type == agent_type { parent.state.read().await.agent_account_id.clone() } else { None },
             )
         };
         let effective_working_dir = working_dir.or(parent_working_dir);
+        // Resume the child's saved account even after the parent switches.
+        let account_id = agent_account_id;
 
         let runtime_env = crate::commands::acp::build_account_session_runtime_env(
             &self.db,

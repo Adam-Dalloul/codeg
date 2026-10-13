@@ -712,6 +712,10 @@ fn extract_delegation_match_key(raw_input: Option<&str>) -> Option<DelegationMat
         .map(|s| s.to_string());
     Some(DelegationMatchKey {
         agent_type,
+        agent_account_id: args
+            .get("agent_account_id")
+            .and_then(|v| v.as_str())
+            .map(str::to_owned),
         task,
         working_dir,
     })
@@ -911,6 +915,18 @@ mod delegation_title_tests {
         let raw = r#"{"agent_type":"codex","task":"smoke test"}"#;
         let key = extract_delegation_match_key(Some(raw)).expect("key parses");
         assert!(key.working_dir.is_none());
+    }
+
+    #[test]
+    fn extract_match_key_keeps_explicit_accounts_and_default_distinct() {
+        let omitted = extract_delegation_match_key(Some(r#"{"agent_type":"claude_code","task":"review"}"#)).unwrap();
+        assert_eq!(omitted.agent_account_id, None);
+        for id in ["default", "work-account"] {
+            let raw = serde_json::json!({"arguments":{"agent_type":"claude_code", "task":"review", "agent_account_id":id}}).to_string();
+            let key = extract_delegation_match_key(Some(&raw)).unwrap();
+            assert_eq!(key.agent_account_id.as_deref(), Some(id));
+            assert_ne!(key, omitted);
+        }
     }
 
     #[test]
@@ -1116,6 +1132,7 @@ mod delegation_registration_tests {
     fn codex_key(task: &str) -> DelegationMatchKey {
         DelegationMatchKey {
             agent_type: AgentType::Codex,
+            agent_account_id: None,
             task: task.to_string(),
             working_dir: None,
         }
@@ -3002,6 +3019,7 @@ mod tests {
             parent_conversation_id: 1,
             parent_tool_use_id: format!("tu-{child_conn_id}"),
             agent_type: AgentType::ClaudeCode,
+            agent_account_id: None,
             task: "do x".into(),
             working_dir: None,
             requested_working_dir: None,
