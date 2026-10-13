@@ -3632,6 +3632,9 @@
         "agentEffortLabel": "Aufwand",
         "agentRunning": "Läuft...",
         "agentLiveTranscript": "Live-Aktivität",
+        "agentProcessCount": "{count, plural, one {Subagent-Aktivität · # Schritt} other {Subagent-Aktivität · # Schritte}}",
+        "agentProcessDuration": "Subagent-Aktivität · {duration}",
+        "agentRecoveredNote": "Der Sub-Agent wurde tatsächlich fertig; sein Ergebnis wurde nie zugestellt, weil der Turn abbrach:",
         "agentProgressTools": "{count} Tool-Aufrufe",
         "agentProgressTurns": "{count} Runden",
         "agentProgressContext": "Kontext {pct}%",
@@ -3797,6 +3800,8 @@
       "messageNav": {
         "title": "Nachrichtennavigation",
         "collapse": "Nachrichtennavigation ausblenden",
+        "loadingEarlier": "Frühere Nachrichten werden geladen…",
+        "loadEarlier": "Frühere Nachrichten laden",
         "collapsedSummary": "Nachrichten {count}",
         "fileCount": "{count, plural, one {# Datei} other {# Dateien}}",
         "remove": "Entfernen",
@@ -6418,7 +6423,10 @@
     "emptyHint": "Codeg liest die Token-Zahlen direkt aus dem Protokoll jedes Agenten. Aktualisiere, um zu zählen, was schon auf diesem Rechner liegt.",
     "emptyAction": "Meine Sitzungen zählen",
     "loadFailed": "Verbrauch konnte nicht geladen werden",
-    "truncatedNotice": "Dieser Zeitraum ist sehr groß — die Zahlen decken nur seinen jüngsten Abschnitt ab."
+    "truncatedNotice": "Dieser Zeitraum ist sehr groß — die Zahlen decken nur seinen jüngsten Abschnitt ab.",
+    "apiListEstimate": "≈ {amount} API-Liste",
+    "apiListEstimatePartial": "≈ {amount} API-Liste · {percent}% der Tokens",
+    "apiListEstimateHint": "Öffentliche API-Basislistenpreise von models.dev, inklusive Cache-Lesen und -Schreiben, ohne Aufschläge für lange Kontexte oder Reasoning. Abo-Tarife rechnen anders ab."
   },
   "Forge": {
     "title": "Repository-Panel",
