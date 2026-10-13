@@ -87,10 +87,14 @@ pub async fn connection_account(
         .one(conn)
         .await?
         .ok_or_else(|| DbError::NotFound("Conversation not found".into()))?;
-    if row.agent_type != agent.as_wire()
-        || requested
-            .as_ref()
-            .is_some_and(|id| row.agent_account_id.as_ref() != Some(id))
+    if row.agent_type != agent.as_wire() {
+        return Err(DbError::Validation(
+            "This conversation belongs to a different agent.".into(),
+        ));
+    }
+    if requested
+        .as_ref()
+        .is_some_and(|id| row.agent_account_id.as_ref() != Some(id))
     {
         return Err(DbError::Validation(
             "This conversation belongs to a different agent account.".into(),
@@ -319,15 +323,23 @@ mod tests {
                 .unwrap(),
             Some(a.id.clone())
         );
-        assert!(
+        let other_account =
             connection_account(&db.conn, AgentType::Codex, Some(b.id.clone()), Some(row.id))
                 .await
-                .is_err()
-        );
+                .unwrap_err()
+                .to_string();
         assert!(
-            connection_account(&db.conn, AgentType::ClaudeCode, None, Some(row.id))
-                .await
-                .is_err()
+            other_account.contains("belongs to a different agent account."),
+            "{other_account}"
+        );
+        // Another agent is not another account of this one: say which it is.
+        let other_agent = connection_account(&db.conn, AgentType::ClaudeCode, None, Some(row.id))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            other_agent.contains("belongs to a different agent."),
+            "{other_agent}"
         );
         remove(&db.conn, &a.id).await.unwrap();
         assert_eq!(

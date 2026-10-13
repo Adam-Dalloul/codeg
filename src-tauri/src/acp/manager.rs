@@ -2191,9 +2191,13 @@ impl ConnectionManager {
         if let Some(cid) = bound_id.or(link_conversation_id) {
             if let Some(row) = conversation::Entity::find_by_id(cid).one(&db.conn).await
                 .map_err(|e| AcpError::protocol(e.to_string()))? {
-                if (account_id.is_some() || row.agent_account_id.is_some())
-                    && (row.agent_account_id != account_id || row.agent_type != agent.as_wire()) {
-                    return Err(AcpError::protocol("This conversation belongs to a different agent account."));
+                if account_id.is_some() || row.agent_account_id.is_some() {
+                    if row.agent_type != agent.as_wire() {
+                        return Err(AcpError::protocol("This conversation belongs to a different agent."));
+                    }
+                    if row.agent_account_id != account_id {
+                        return Err(AcpError::protocol("This conversation belongs to a different agent account."));
+                    }
                 }
             }
         }
@@ -7769,6 +7773,13 @@ mod tests {
         state.write().await.agent_account_id = Some(a.id);
         let error = mgr.fork_session(&db, "account-fork", Some(other.id), Some(folder), None).await.unwrap_err();
         assert!(error.to_string().contains("different agent account"));
+        assert!(state.read().await.conversation_id.is_none());
+        // Another agent's conversation is refused as such, not as another
+        // account of this agent.
+        let claude = agent_account_service::create(&db.conn, data.path(), AgentType::ClaudeCode, "C", None).await.unwrap();
+        let foreign = conversation_service::create_inner(&db.conn, folder, AgentType::ClaudeCode, None, None, None, ConversationKind::Regular, Some(claude.id)).await.unwrap();
+        let error = mgr.fork_session(&db, "account-fork", Some(foreign.id), Some(folder), None).await.unwrap_err();
+        assert!(error.to_string().contains("belongs to a different agent."), "{error}");
         assert!(state.read().await.conversation_id.is_none());
     }
 
