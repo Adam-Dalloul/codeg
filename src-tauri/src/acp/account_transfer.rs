@@ -43,7 +43,7 @@ fn ensure_dir(path: &Path) -> io::Result<()> {
 }
 
 /// Compare incrementally: a long conversation need not fit in memory twice.
-fn is_prefix(older: &Path, newer: &Path) -> io::Result<bool> {
+pub(crate) fn is_prefix(older: &Path, newer: &Path) -> io::Result<bool> {
     if !plain(older)?.is_file() || !plain(newer)?.is_file() {
         return Ok(false);
     }
@@ -78,7 +78,7 @@ fn copy_tree(src: &Path, dst: &Path) -> io::Result<()> {
     Ok(())
 }
 
-fn tree_is_older(older: &Path, newer: &Path) -> io::Result<bool> {
+pub(crate) fn tree_is_older(older: &Path, newer: &Path) -> io::Result<bool> {
     if plain(older)?.is_dir() {
         if !plain(newer)?.is_dir() {
             return Ok(false);

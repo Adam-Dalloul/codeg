@@ -854,6 +854,24 @@ async fn scan_importable_account_summaries(
             .or_insert(live);
         *entry = *entry || live;
     }
+    // What a switch left behind in the account it moved a conversation out of
+    // is that conversation, already in codeg under its new account.
+    match import_service::superseded_claude_copies(
+        conn,
+        account_id,
+        &summaries,
+        &import_service::default_claude_projects(),
+    )
+    .await
+    {
+        Ok(superseded) => {
+            let claude = agent_type_db_str(&AgentType::ClaudeCode);
+            for sid in superseded {
+                imported_index.entry((claude.clone(), sid)).or_insert(true);
+            }
+        }
+        Err(e) => tracing::warn!("[import] could not check for switched-away session copies: {e}"),
+    }
 
     // Refresh the already-imported rows in place before answering, then
     // broadcast each one so open sidebars re-sort without a refetch. The
@@ -904,6 +922,18 @@ async fn import_selected_from_account_summaries(
 ) -> Result<ImportSelectedResult, AppCommandError> {
     const MAX_ERRORS: usize = 10;
 
+    // A switch's leftover copy is a conversation codeg already has under
+    // another account (the picker shows it as imported). Skip it rather than
+    // add a duplicate that would also block switching the conversation back.
+    let superseded = import_service::superseded_claude_copies(
+        conn,
+        account_id,
+        &summaries,
+        &import_service::default_claude_projects(),
+    )
+    .await
+    .map_err(AppCommandError::from)?;
+
     // Defense-in-depth mirror of collect_local_summaries' child filter: a
     // delegation child must never import as a root row, so a selection key
     // pointing at one resolves to not_found.
@@ -918,6 +948,7 @@ async fn import_selected_from_account_summaries(
     // resolves — vanished from disk since the scan, cwd-less, or bogus — counts
     // as not_found.
     let mut not_found = 0u32;
+    let mut superseded_skipped = 0u32;
     let mut groups: HashMap<String, Vec<(AgentType, ConversationSummary)>> = HashMap::new();
     let mut seen_keys: HashSet<(AgentType, String)> = HashSet::new();
     for key in selections {
@@ -928,6 +959,10 @@ async fn import_selected_from_account_summaries(
             not_found += 1;
             continue;
         };
+        if at == AgentType::ClaudeCode && superseded.contains(&summary.id) {
+            superseded_skipped += 1;
+            continue;
+        }
         let raw_path = match summary.folder_path.as_deref().map(str::trim) {
             Some(p) if !p.is_empty() => p.to_string(),
             _ => {
@@ -947,7 +982,7 @@ async fn import_selected_from_account_summaries(
     let mut result = ImportSelectedResult {
         imported: 0,
         updated: 0,
-        skipped: 0,
+        skipped: superseded_skipped,
         restored: 0,
         not_found,
         failed: 0,
@@ -5801,6 +5836,77 @@ mod tests {
             assert_eq!(row.title.as_deref(), Some(title));
             assert_eq!(row.external_id.as_deref(), Some("same-native-id"));
         }
+    }
+
+    /// A Claude switch copies the transcript into the target account and
+    /// leaves the source's copy behind. That copy is the switched
+    /// conversation, older: the source account's scan must not offer it, and
+    /// importing it must not add a duplicate, whose row would also block
+    /// switching the conversation back.
+    #[tokio::test]
+    async fn a_switched_conversation_is_not_offered_again_from_the_account_it_left() {
+        use crate::db::entities::conversation::ConversationKind;
+        use crate::db::service::agent_account_service;
+        use sea_orm::EntityTrait;
+        let db = fresh_in_memory_db().await;
+        let data = tempfile::tempdir().unwrap();
+        let cwd = data.path().display().to_string();
+        let folder = seed_folder(&db, &cwd).await;
+        let a = agent_account_service::create(&db.conn, data.path(), AgentType::ClaudeCode, "A", None)
+            .await
+            .unwrap();
+        let b = agent_account_service::create(&db.conn, data.path(), AgentType::ClaudeCode, "B", None)
+            .await
+            .unwrap();
+        let row = conversation_service::create_inner(
+            &db.conn,
+            folder,
+            AgentType::ClaudeCode,
+            None,
+            None,
+            None,
+            ConversationKind::Regular,
+            Some(b.id.clone()),
+        )
+        .await
+        .unwrap();
+        conversation_service::bind_external_id(&db.conn, row.id, "switched", &[])
+            .await
+            .unwrap();
+        let transcript = |home: &str, text: &str| {
+            let dir = std::path::Path::new(home).join("projects/project");
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("switched.jsonl"), text).unwrap();
+        };
+        // Switched from A to B, then continued on B.
+        transcript(&a.home_dir, "first\n");
+        transcript(&b.home_dir, "first\nsecond\n");
+        let found = || vec![scan_summary("switched", AgentType::ClaudeCode, Some(&cwd), at(0))];
+        let manager = crate::chat_channel::manager::ChatChannelManager::new();
+        let mut key = key_of(AgentType::ClaudeCode, "switched");
+        key.agent_account_id = Some(a.id.clone());
+
+        let scan = scan_importable_account_summaries(&db.conn, &EventEmitter::Noop, &manager, found(), Some(&a.id))
+            .await
+            .unwrap();
+        assert_eq!(scan.importable_count, 0);
+        assert_eq!(scan.folders[0].sessions[0].status, ScanSessionStatus::Imported);
+        let result = import_selected_from_account_summaries(&db.conn, &EventEmitter::Noop, found(), vec![key.clone()], Some(&a.id))
+            .await
+            .unwrap();
+        assert_eq!((result.imported, result.skipped), (0, 1));
+        assert_eq!(conversation::Entity::find().all(&db.conn).await.unwrap().len(), 1);
+
+        // Continued in A's own CLI, the copy holds turns codeg does not have.
+        transcript(&a.home_dir, "first\nmine\n");
+        let scan = scan_importable_account_summaries(&db.conn, &EventEmitter::Noop, &manager, found(), Some(&a.id))
+            .await
+            .unwrap();
+        assert_eq!(scan.folders[0].sessions[0].status, ScanSessionStatus::New);
+        let result = import_selected_from_account_summaries(&db.conn, &EventEmitter::Noop, found(), vec![key], Some(&a.id))
+            .await
+            .unwrap();
+        assert_eq!(result.imported, 1);
     }
 
     #[test]
