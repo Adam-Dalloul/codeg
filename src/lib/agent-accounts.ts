@@ -17,6 +17,7 @@ export interface AgentAccountCapability {
   loginKind: "terminal" | "browser" | null
   configSubdir?: string | null
   canSwitchConversation?: boolean
+  isolatesToolSettings?: boolean
 }
 
 export interface AgentAccountsResult {

@@ -295,6 +295,7 @@ describe("subscription quota inventory", () => {
       ],
     })
     expect(row?.remaining).toBe(80)
+    expect(row?.hasModelLimits).toBe(true)
     expect(row?.extras).toContainEqual(
       expect.objectContaining({ label: "model-a · weekly", remaining: 0 })
     )

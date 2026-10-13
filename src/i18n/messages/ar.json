@@ -27,7 +27,9 @@
     "signIn": "تسجيل الدخول",
     "copyCommand": "نسخ أمر تسجيل الدخول",
     "copied": "تم نسخ أمر تسجيل الدخول",
-    "choose": "اختر حسابًا للمتابعة."
+    "choose": "اختر حسابًا للمتابعة.",
+    "loading": "جارٍ تحميل الحسابات...",
+    "toolSettingsHint": "تتطلب بعض أدوات سطر الأوامر إعداد الإعدادات أو تسجيل الدخول بشكل منفصل لكل حساب."
   },
   "Language": {
     "followSystem": "اتباع النظام",
@@ -6425,8 +6427,8 @@
     "loadFailed": "تعذّر تحميل بيانات الاستهلاك",
     "truncatedNotice": "هذا النطاق واسع جدًا — الأرقام تغطي أحدث جزء منه فقط.",
     "apiListEstimate": "≈ {amount} قائمة API",
-    "apiListEstimatePartial": "≈ {amount} قائمة API · {percent}٪ من الرموز",
-    "apiListEstimateHint": "أسعار قائمة API الأساسية العامة من models.dev، وتشمل قراءة وكتابة الذاكرة المؤقتة دون رسوم السياق الطويل أو الاستدلال الإضافية. خطط الاشتراك تُحاسب بشكل مختلف.",
+    "apiListEstimatePartial": "≈ {amount} سعر API المعلن · تم تسعير {percent}% من الرموز",
+    "apiListEstimateHint": "أسعار API الأساسية المعلنة من models.dev. تستخدم كتابة ذاكرة التخزين المؤقت المدة القياسية (5 دقائق لدى Anthropic). لا تشمل تعديلات المدد الأطول للتخزين المؤقت أو السياق الطويل أو الاستدلال. تختلف رسوم الاشتراك.",
     "quotaTitle": "الاستخدام المتبقي",
     "quotaHint": "الاستخدام المتبقي لكل حساب.",
     "quotaRemaining": "متبقٍ {remaining}%",
@@ -6440,7 +6442,9 @@
     "quotaWeekly": "أسبوعي",
     "quotaMonthly": "شهري",
     "quotaChecked": "تم التحقق {when}",
-    "quotaOtherCapacity": "تتوفر حصص استخدام أو أرصدة أخرى."
+    "quotaOtherCapacity": "تتوفر حصص استخدام أو أرصدة أخرى.",
+    "quotaModelLimits": "حدود النماذج",
+    "apiListUnpriced": "السعر المعلن غير متاح"
   },
   "Forge": {
     "title": "لوحة المستودع",

@@ -27,7 +27,9 @@
     "signIn": "ログイン",
     "copyCommand": "ログインコマンドをコピー",
     "copied": "ログインコマンドをコピーしました",
-    "choose": "続行するアカウントを選択してください。"
+    "choose": "続行するアカウントを選択してください。",
+    "loading": "アカウントを読み込み中...",
+    "toolSettingsHint": "一部のコマンドラインツールは、アカウントごとに設定やサインインを個別に行う必要があります。"
   },
   "Language": {
     "followSystem": "システムに従う",
@@ -6425,8 +6427,8 @@
     "loadFailed": "使用量を読み込めませんでした",
     "truncatedNotice": "期間が非常に長いため、表示中の数値は直近の一部のみを対象としています。",
     "apiListEstimate": "≈ {amount} APIリスト",
-    "apiListEstimatePartial": "≈ {amount} APIリスト · トークンの {percent}%",
-    "apiListEstimateHint": "models.dev の公開 API 基本リスト料金です。キャッシュの読み書きを含み、長いコンテキストや推論の割増料金は含みません。サブスクリプションの課金とは異なります。",
+    "apiListEstimatePartial": "≈ {amount} API定価 · トークンの{percent}%を価格計算済み",
+    "apiListEstimateHint": "models.devの基本API定価を使用します。キャッシュ書き込みは標準の有効期間（Anthropicは5分）で計算します。より長いキャッシュ期間、長いコンテキスト、推論に関する料金調整は含みません。サブスクリプションの請求額とは異なります。",
     "quotaTitle": "利用残量",
     "quotaHint": "アカウントごとの利用残量。",
     "quotaRemaining": "残り{remaining}%",
@@ -6440,7 +6442,9 @@
     "quotaWeekly": "週間",
     "quotaMonthly": "月間",
     "quotaChecked": "確認時刻: {when}",
-    "quotaOtherCapacity": "他の利用枠またはクレジットが残っています。"
+    "quotaOtherCapacity": "他の利用枠またはクレジットが残っています。",
+    "quotaModelLimits": "モデルの上限",
+    "apiListUnpriced": "定価を取得できません"
   },
   "Forge": {
     "title": "リポジトリパネル",

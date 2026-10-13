@@ -27,7 +27,9 @@
     "signIn": "Anmelden",
     "copyCommand": "Anmeldebefehl kopieren",
     "copied": "Anmeldebefehl kopiert",
-    "choose": "Wähle ein Konto, um fortzufahren."
+    "choose": "Wähle ein Konto, um fortzufahren.",
+    "loading": "Konten werden geladen...",
+    "toolSettingsHint": "Bei einigen Befehlszeilentools müssen Einstellungen oder Anmeldung für jedes Konto separat eingerichtet werden."
   },
   "Language": {
     "followSystem": "Systemsprache verwenden",
@@ -6425,8 +6427,8 @@
     "loadFailed": "Verbrauch konnte nicht geladen werden",
     "truncatedNotice": "Dieser Zeitraum ist sehr groß — die Zahlen decken nur seinen jüngsten Abschnitt ab.",
     "apiListEstimate": "≈ {amount} API-Liste",
-    "apiListEstimatePartial": "≈ {amount} API-Liste · {percent}% der Tokens",
-    "apiListEstimateHint": "Öffentliche API-Basislistenpreise von models.dev, inklusive Cache-Lesen und -Schreiben, ohne Aufschläge für lange Kontexte oder Reasoning. Abo-Tarife rechnen anders ab.",
+    "apiListEstimatePartial": "≈ {amount} API-Listenpreis · {percent}% der Tokens bepreist",
+    "apiListEstimateHint": "API-Basislistenpreise von models.dev. Cache-Schreibvorgänge verwenden die Standarddauer (5 Minuten bei Anthropic). Anpassungen für längere Cache-Dauer, lange Kontexte und Reasoning sind nicht enthalten. Abonnements werden anders abgerechnet.",
     "quotaTitle": "Verbleibendes Kontingent",
     "quotaHint": "Verbleibende Nutzung für jedes Konto.",
     "quotaRemaining": "{remaining}% übrig",
@@ -6440,7 +6442,9 @@
     "quotaWeekly": "Wöchentlich",
     "quotaMonthly": "Monatlich",
     "quotaChecked": "Geprüft {when}",
-    "quotaOtherCapacity": "Weitere Kontingente oder Guthaben sind verfügbar."
+    "quotaOtherCapacity": "Weitere Kontingente oder Guthaben sind verfügbar.",
+    "quotaModelLimits": "Modelllimits",
+    "apiListUnpriced": "Listenpreis nicht verfügbar"
   },
   "Forge": {
     "title": "Repository-Panel",

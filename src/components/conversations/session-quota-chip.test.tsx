@@ -51,9 +51,41 @@ it("does not label a failed named-account read as Default", async () => {
       <SessionQuotaChip agentType="claude_code" agentAccountId="work" />
     </NextIntlClientProvider>
   )
-  await userEvent.click(screen.getByRole("button", { name: "Usage remaining" }))
-  expect(screen.getByText("Usage unavailable")).toBeVisible()
+  await userEvent.click(
+    screen.getByRole("button", { name: "Usage unavailable" })
+  )
+  expect(screen.getAllByText("Usage unavailable").length).toBeGreaterThan(0)
   expect(screen.queryByText("Default")).not.toBeInTheDocument()
+})
+
+it("surfaces tighter model caps without claiming the whole account is exhausted", async () => {
+  state.data = {
+    agentType: "claude_code",
+    agentAccountId: null,
+    family: "claude",
+    name: null,
+    checkedAt: 1780000000,
+    payload: {
+      limits: [
+        { kind: "session", percent: 20 },
+        { kind: "weekly_all", percent: 30 },
+        {
+          kind: "weekly_scoped",
+          percent: 100,
+          scope: { model: { display_name: "Example model" } },
+        },
+      ],
+    },
+  }
+  render(
+    <NextIntlClientProvider locale="en" messages={en}>
+      <SessionQuotaChip agentType="claude_code" />
+    </NextIntlClientProvider>
+  )
+  await userEvent.click(screen.getByRole("button", { name: "Model limits" }))
+  expect(screen.getByText("Example model · weekly")).toBeVisible()
+  expect(screen.getByText("0% left")).toBeVisible()
+  expect(screen.getByText("70% left")).toBeVisible()
 })
 
 it("labels a confirmed Default read and shows its remaining percentage", async () => {

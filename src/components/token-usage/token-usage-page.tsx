@@ -18,6 +18,7 @@ import {
   Cpu,
   DatabaseBackup,
   Folder,
+  Info,
   MoreHorizontal,
   RefreshCw,
   RotateCcw,
@@ -40,6 +41,11 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import { Progress } from "@/components/ui/progress"
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { WorkbenchPageTitle } from "@/components/workbench/workbench-page-title"
 import { SubscriptionQuotaPanel } from "@/components/token-usage/subscription-quota-panel"
@@ -744,6 +750,8 @@ export function TokenUsagePage() {
                 })
               : t("apiListEstimate", { amount: formatUsd(cost.usd) })
           hint = `${sessions} · ${estimate}`
+        } else {
+          hint = `${sessions} · ${t("apiListUnpriced")}`
         }
       }
       return {
@@ -1172,19 +1180,42 @@ export function TokenUsagePage() {
                             </div>
                             {apiEstimate && (
                               <div className="mt-2 text-sm text-muted-foreground">
-                                <span title={t("apiListEstimateHint")}>
-                                  {apiEstimate.unpricedTokens > 0
-                                    ? t("apiListEstimatePartial", {
-                                        amount: formatUsd(apiEstimate.usd),
-                                        percent: coveragePercent(
-                                          apiEstimate.pricedTokens,
-                                          apiEstimate.unpricedTokens
-                                        ),
-                                      })
-                                    : t("apiListEstimate", {
-                                        amount: formatUsd(apiEstimate.usd),
-                                      })}
-                                </span>
+                                <Popover>
+                                  <PopoverTrigger asChild>
+                                    <button
+                                      type="button"
+                                      className="inline-flex min-h-8 max-w-full items-center gap-1.5 rounded text-left hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                                    >
+                                      <span>
+                                        {apiEstimate.unpricedTokens > 0
+                                          ? t("apiListEstimatePartial", {
+                                              amount: formatUsd(
+                                                apiEstimate.usd
+                                              ),
+                                              percent: coveragePercent(
+                                                apiEstimate.pricedTokens,
+                                                apiEstimate.unpricedTokens
+                                              ),
+                                            })
+                                          : t("apiListEstimate", {
+                                              amount: formatUsd(
+                                                apiEstimate.usd
+                                              ),
+                                            })}
+                                      </span>
+                                      <Info
+                                        className="size-3.5 shrink-0"
+                                        aria-hidden
+                                      />
+                                    </button>
+                                  </PopoverTrigger>
+                                  <PopoverContent
+                                    align="start"
+                                    className="w-80 max-w-[calc(100vw-2rem)] text-xs leading-relaxed"
+                                  >
+                                    {t("apiListEstimateHint")}
+                                  </PopoverContent>
+                                </Popover>
                               </div>
                             )}
                             {archetype && totals.total_tokens > 0 && (

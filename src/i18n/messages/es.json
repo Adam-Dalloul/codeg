@@ -27,7 +27,9 @@
     "signIn": "Iniciar sesión",
     "copyCommand": "Copiar comando de inicio de sesión",
     "copied": "Comando de inicio de sesión copiado",
-    "choose": "Elige una cuenta para continuar."
+    "choose": "Elige una cuenta para continuar.",
+    "loading": "Cargando cuentas...",
+    "toolSettingsHint": "Algunas herramientas de línea de comandos requieren configurar sus ajustes o inicio de sesión por separado para cada cuenta."
   },
   "Language": {
     "followSystem": "Seguir el sistema",
@@ -6425,8 +6427,8 @@
     "loadFailed": "No se pudo cargar el uso",
     "truncatedNotice": "Este periodo es muy amplio: las cifras cubren solo su tramo más reciente.",
     "apiListEstimate": "≈ {amount} tarifa API",
-    "apiListEstimatePartial": "≈ {amount} tarifa API · {percent}% de tokens",
-    "apiListEstimateHint": "Tarifas base públicas de API de models.dev, con lecturas y escrituras de caché pero sin recargos por contexto largo ni por razonamiento. Los planes de suscripción facturan distinto.",
+    "apiListEstimatePartial": "≈ {amount} tarifa API · {percent}% de tokens valorados",
+    "apiListEstimateHint": "Tarifas base de API de models.dev. Las escrituras de caché usan la duración estándar (5 minutos para Anthropic). No se incluyen ajustes por caché de mayor duración, contexto largo ni razonamiento. Los cargos de suscripción son distintos.",
     "quotaTitle": "Uso restante",
     "quotaHint": "Uso restante de cada cuenta.",
     "quotaRemaining": "Queda {remaining}%",
@@ -6440,7 +6442,9 @@
     "quotaWeekly": "Semanal",
     "quotaMonthly": "Mensual",
     "quotaChecked": "Consultado {when}",
-    "quotaOtherCapacity": "Quedan otras cuotas de uso o créditos."
+    "quotaOtherCapacity": "Quedan otras cuotas de uso o créditos.",
+    "quotaModelLimits": "Límites de modelos",
+    "apiListUnpriced": "Tarifa no disponible"
   },
   "Forge": {
     "title": "Panel del repositorio",

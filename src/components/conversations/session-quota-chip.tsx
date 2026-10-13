@@ -32,16 +32,20 @@ function QuotaChip(props: QuotaRequest) {
   // Custom agents only advertise usage once their saved configuration resolves
   // to a supported family. An arbitrary ACP agent need not have a quota API.
   if (!family) return null
+  const remainingLabel =
+    row?.kind === "remaining-subscription" && row.hasModelLimits
+      ? t("quotaModelLimits")
+      : row?.kind === "remaining-subscription" &&
+          !(row.remaining === 0 && row.hasOtherCapacity)
+        ? t("quotaRemaining", {
+            remaining: Math.round(row.remaining),
+            limit: 100,
+          })
+        : loading
+          ? t("quotaLoading")
+          : t("quotaUnavailable")
   const label =
-    row?.kind === "remaining-subscription" &&
-    !(row.remaining === 0 && row.hasOtherCapacity)
-      ? t("quotaRemaining", {
-          remaining: Math.round(row.remaining),
-          limit: 100,
-        })
-      : loading
-        ? t("quotaLoading")
-        : t("quotaTitle")
+    family === "opencode" ? `${remainingLabel} · Go` : remainingLabel
   return (
     <Popover>
       <PopoverTrigger asChild>

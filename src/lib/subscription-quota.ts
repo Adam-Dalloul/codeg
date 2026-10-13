@@ -72,6 +72,7 @@ export type FamilyQuota =
       kind: "remaining-subscription"
       label?: string
       hasOtherCapacity?: boolean
+      hasModelLimits?: boolean
       remaining: number
       limit: number
       source: string
@@ -95,7 +96,7 @@ export type FamilyQuota =
 
 export const PROVIDER_USAGE_URLS: Record<IsolatableFamily, string> = {
   claude: "https://claude.ai/settings/usage",
-  codex: "https://chatgpt.com/#settings",
+  codex: "https://chatgpt.com/codex/settings/usage",
   grok: "https://accounts.x.ai/",
   cursor: "https://cursor.com/dashboard/spending",
   gemini: "https://aistudio.google.com/",
@@ -304,6 +305,9 @@ export function remainingFromClaudeUsageHud(
     remaining: primary.remaining,
     limit: 100,
     source: "claude /api/oauth/usage",
+    hasModelLimits: scoped.some(
+      (window) => window.remaining < primary.remaining
+    ),
     hasOtherCapacity: extra != null && extra.remaining > 0,
     label: primary.label,
     extras: extras.length ? extras : undefined,
@@ -318,6 +322,7 @@ export function remainingFromClaudeUsageHud(
 export type OfficialRemaining = {
   label?: string
   hasOtherCapacity?: boolean
+  hasModelLimits?: boolean
   remaining: number
   limit: number
   source: string

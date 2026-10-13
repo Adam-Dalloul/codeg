@@ -19,6 +19,9 @@ export function AgentAccountSelector({
   persisted = false,
   canSwitch = false,
   switching = false,
+  loading = false,
+  loadError = false,
+  onRetry,
 }: {
   accounts: AgentAccount[]
   value: string | null
@@ -27,11 +30,34 @@ export function AgentAccountSelector({
   persisted?: boolean
   canSwitch?: boolean
   switching?: boolean
+  loading?: boolean
+  loadError?: boolean
+  onRetry?: () => void
 }) {
   const t = useTranslations("AgentAccounts")
   const available = accounts.filter((account) => !account.removed)
   if (!value && available.length === 0) return null
   const selected = accounts.find((a) => a.id === value)
+  if (value && !selected && (loading || loadError)) {
+    return (
+      <div
+        className="flex min-h-8 items-center gap-2 text-xs text-muted-foreground"
+        role="status"
+      >
+        <UserRound className="size-3.5 shrink-0" aria-hidden />
+        <span>{loading ? t("loading") : t("loadFailed")}</span>
+        {loadError && onRetry && (
+          <button
+            type="button"
+            className="min-h-8 underline underline-offset-2"
+            onClick={onRetry}
+          >
+            {t("retry")}
+          </button>
+        )}
+      </div>
+    )
+  }
   if (persisted && !canSwitch) {
     const label = value ? (selected?.name ?? t("unavailable")) : t("default")
     return (
@@ -57,9 +83,11 @@ export function AgentAccountSelector({
       disabled={disabled || switching}
     >
       <SelectTrigger
+        size="sm"
         className="h-8 w-auto min-w-28 max-w-full"
         aria-label={persisted ? t("switchAccount") : t("account")}
         aria-busy={switching}
+        aria-description={selected?.name ?? t("default")}
         title={persisted ? t("switchHint") : undefined}
       >
         <UserRound className="size-3.5 shrink-0" />

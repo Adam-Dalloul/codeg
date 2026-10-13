@@ -70,7 +70,11 @@ import {
   saveSelectedAccount,
   switchConversationAccount,
 } from "@/lib/agent-accounts"
-import { getSavedPrefsForConnect } from "@/lib/selector-prefs-storage"
+import {
+  accountSwitchPreferences,
+  getSavedPrefsForConnect,
+  savePrefsForConnect,
+} from "@/lib/selector-prefs-storage"
 import { ChatInput } from "@/components/chat/chat-input"
 import { WelcomeHero, WelcomeTip } from "@/components/chat/welcome-hero"
 import { QuickActions } from "@/components/chat/quick-actions"
@@ -590,6 +594,17 @@ const ConversationTabView = memo(function ConversationTabView({
       ? undefined
       : s.conversations.find((c) => c.id === dbConversationId)?.updated_at
   )
+  const listedParentId = useAppWorkspaceStore((s) => {
+    const row = s.conversations.find((c) => c.id === dbConversationId)
+    return row ? (row.parent_id ?? null) : undefined
+  })
+  const savedParentId =
+    listedParentId !== undefined
+      ? listedParentId
+      : detail
+        ? (detail.summary.parent_id ?? null)
+        : undefined
+  const isTopLevelConversation = savedParentId === null
   const detailAccountId = detail
     ? (detail.summary.agent_account_id ?? null)
     : undefined
@@ -2043,8 +2058,20 @@ const ConversationTabView = memo(function ConversationTabView({
       accountSwitchPending.current = true
       setAccountSwitching(true)
       try {
-        const prefs = getSavedPrefsForConnect(
-          agentAccountKey(selectedAgent, targetAccountId)
+        const prefs = accountSwitchPreferences(
+          getSavedPrefsForConnect(
+            agentAccountKey(selectedAgent, targetAccountId),
+            false
+          ),
+          {
+            modeId: selectedModeId,
+            configValues: Object.fromEntries(
+              connectionConfigOptions.map((option) => [
+                option.id,
+                String(option.kind.current_value),
+              ])
+            ),
+          }
         )
         const result = await switchConversationAccount({
           conversationId: dbConversationId,
@@ -2053,6 +2080,10 @@ const ConversationTabView = memo(function ConversationTabView({
           preferredModeId: prefs.modeId ?? undefined,
           preferredConfigValues: prefs.configValues ?? undefined,
         })
+        savePrefsForConnect(
+          agentAccountKey(selectedAgent, result.agentAccountId),
+          prefs
+        )
         // The backend has stopped the old writer. Release only this client's
         // old attachment; discovery attaches the same tab to the verified load.
         await acpActions.disconnect(tabId)
@@ -2090,6 +2121,8 @@ const ConversationTabView = memo(function ConversationTabView({
       dbConversationId,
       selectedAccountId,
       selectedAgent,
+      selectedModeId,
+      connectionConfigOptions,
       workingDirForConnection,
       acpActions,
       tabId,
@@ -2495,22 +2528,30 @@ const ConversationTabView = memo(function ConversationTabView({
             (selectedAccountId !== null ||
               accountState.accounts.some((account) => !account.removed)) && (
               <div className="px-4 py-1.5">
-                <AgentAccountSelector
-                  accounts={accountState.accounts}
-                  value={selectedAccountId}
-                  onChange={handleSwitchAccount}
-                  persisted
-                  canSwitch={accountState.capability?.canSwitchConversation}
-                  switching={accountSwitching}
-                  disabled={
-                    awaitingAccountBinding ||
-                    isConnecting ||
-                    connStatus === "prompting" ||
-                    msgQueue.length > 0 ||
-                    conn.isViewer ||
-                    !externalId
-                  }
-                />
+                <div className="mx-auto w-full chat-content-w">
+                  <AgentAccountSelector
+                    accounts={accountState.accounts}
+                    value={selectedAccountId}
+                    onChange={handleSwitchAccount}
+                    persisted
+                    canSwitch={
+                      accountState.capability?.canSwitchConversation &&
+                      isTopLevelConversation
+                    }
+                    switching={accountSwitching}
+                    loading={accountState.loading}
+                    loadError={accountState.error}
+                    onRetry={accountState.refresh}
+                    disabled={
+                      awaitingAccountBinding ||
+                      isConnecting ||
+                      connStatus === "prompting" ||
+                      msgQueue.length > 0 ||
+                      conn.isViewer ||
+                      !externalId
+                    }
+                  />
+                </div>
               </div>
             )}
           <SessionConfigStaleBanner contextKey={tabId} />
@@ -2661,6 +2702,9 @@ const ConversationTabView = memo(function ConversationTabView({
                     onChange={changeAccount}
                     disabled={isConnecting}
                     persisted={dbConversationId != null}
+                    loading={accountState.loading}
+                    loadError={accountState.error}
+                    onRetry={accountState.refresh}
                   />
                 </div>
               </div>
@@ -2750,6 +2794,9 @@ const ConversationTabView = memo(function ConversationTabView({
                 onChange={changeAccount}
                 disabled={isConnecting}
                 persisted={dbConversationId != null}
+                loading={accountState.loading}
+                loadError={accountState.error}
+                onRetry={accountState.refresh}
               />
             </div>
             {composerBlockedMessage ? (

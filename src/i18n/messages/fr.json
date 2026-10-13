@@ -27,7 +27,9 @@
     "signIn": "Se connecter",
     "copyCommand": "Copier la commande de connexion",
     "copied": "Commande de connexion copiée",
-    "choose": "Choisissez un compte pour continuer."
+    "choose": "Choisissez un compte pour continuer.",
+    "loading": "Chargement des comptes...",
+    "toolSettingsHint": "Certains outils en ligne de commande nécessitent de configurer leurs paramètres ou leur connexion séparément pour chaque compte."
   },
   "Language": {
     "followSystem": "Suivre le système",
@@ -6425,8 +6427,8 @@
     "loadFailed": "Impossible de charger la consommation",
     "truncatedNotice": "Cette période est très large — les chiffres ne couvrent que sa portion la plus récente.",
     "apiListEstimate": "≈ {amount} tarif API",
-    "apiListEstimatePartial": "≈ {amount} tarif API · {percent}% des jetons",
-    "apiListEstimateHint": "Tarifs de base publics API issus de models.dev, lectures et écritures de cache comprises, hors majorations pour contexte long ou raisonnement. Les abonnements facturent autrement.",
+    "apiListEstimatePartial": "≈ {amount} tarif API · {percent}% des tokens chiffrés",
+    "apiListEstimateHint": "Tarifs API de base de models.dev. Les écritures en cache utilisent la durée standard (5 minutes pour Anthropic). Les ajustements pour un cache plus long, un contexte long et le raisonnement ne sont pas inclus. La facturation des abonnements diffère.",
     "quotaTitle": "Utilisation restante",
     "quotaHint": "Utilisation restante pour chaque compte.",
     "quotaRemaining": "{remaining}% restant",
@@ -6440,7 +6442,9 @@
     "quotaWeekly": "Hebdomadaire",
     "quotaMonthly": "Mensuel",
     "quotaChecked": "Vérifié à {when}",
-    "quotaOtherCapacity": "D’autres quotas ou crédits restent disponibles."
+    "quotaOtherCapacity": "D’autres quotas ou crédits restent disponibles.",
+    "quotaModelLimits": "Limites des modèles",
+    "apiListUnpriced": "Tarif indisponible"
   },
   "Forge": {
     "title": "Panneau du dépôt",

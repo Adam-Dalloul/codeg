@@ -66,6 +66,7 @@ struct Source {
     account: QuotaAccount,
     env: BTreeMap<String, String>,
     isolated: bool,
+    provider_override: bool,
 }
 fn error(message: impl Into<String>) -> AppCommandError {
     AppCommandError::task_execution_failed(message.into())
@@ -165,21 +166,23 @@ async fn resolve_source(
             },
             env,
             isolated: true,
+            provider_override: false,
         });
     }
     let family = family(agent).ok_or_else(|| error("Usage is unavailable for this agent"))?;
-    let (name, env, isolated) = if let Some(id) = id.as_deref() {
+    let (name, env, isolated, provider_override) = if let Some(id) = id.as_deref() {
         let account = agent_account_service::resolve(&db.conn, agent, id).await?;
         let env =
             agent_accounts::isolation_env(agent, Path::new(&account.home_dir)).map_err(error)?;
-        (Some(account.name), env, true)
+        (Some(account.name), env, true, false)
     } else {
         let setting = agent_setting_service::get_by_agent_type(&db.conn, agent).await?;
+        let provider_override = setting.as_ref().and_then(|s| s.model_provider_id).is_some();
         let local = super::acp::load_agent_local_config_json(agent);
         let mut env =
             super::acp::build_runtime_env_from_setting(agent, setting.as_ref(), local.as_deref());
         super::acp::apply_model_provider_env(agent, setting.as_ref(), &mut env, &db.conn).await;
-        (None, env, false)
+        (None, env, false, provider_override)
     };
     Ok(Source {
         account: QuotaAccount {
@@ -190,10 +193,48 @@ async fn resolve_source(
         },
         env,
         isolated,
+        provider_override,
     })
 }
 
 impl Source {
+    fn uses_api_provider(&self) -> bool {
+        if self.provider_override {
+            return true;
+        }
+        let keys: &[&str] = match self.account.family.as_str() {
+            "claude" => &["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"],
+            "codex" => &["OPENAI_API_KEY", "CODEX_API_KEY"],
+            "grok" => &["XAI_API_KEY", "GROK_API_KEY"],
+            _ => &[],
+        };
+        if keys.iter().any(|key| self.value(key).is_some()) {
+            return true;
+        }
+        if self.account.family == "claude" {
+            if self.value("ANTHROPIC_BASE_URL").is_some_and(|base| {
+                reqwest::Url::parse(&base)
+                    .ok()
+                    .and_then(|url| url.host_str().map(str::to_owned))
+                    .as_deref()
+                    != Some("api.anthropic.com")
+            }) {
+                return true;
+            }
+            return [
+                "CLAUDE_CODE_USE_BEDROCK",
+                "CLAUDE_CODE_USE_VERTEX",
+                "CLAUDE_CODE_USE_FOUNDRY",
+            ]
+            .iter()
+            .any(|key| {
+                self.value(key)
+                    .is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            });
+        }
+        false
+    }
+
     fn value(&self, key: &str) -> Option<String> {
         self.env
             .get(key)
@@ -269,6 +310,7 @@ pub async fn read_core(
     source.account.agent_type.hash(&mut hasher);
     source.account.agent_account_id.hash(&mut hasher);
     source.env.hash(&mut hasher);
+    source.provider_override.hash(&mut hasher);
     source.credential_path().hash(&mut hasher);
     let key = hasher.finish();
     let entry = {
@@ -296,6 +338,10 @@ pub async fn read_core(
 }
 
 async fn read_official(source: &Source) -> Option<Value> {
+    // A stored subscription login does not describe an API/provider override.
+    if source.uses_api_provider() {
+        return None;
+    }
     if source.account.family == "codex" {
         return read_codex(source).await;
     }
@@ -554,6 +600,7 @@ mod tests {
                 },
                 env: BTreeMap::from([(key.into(), "own-fixture-key".into())]),
                 isolated: true,
+                provider_override: false,
             };
             assert_eq!(source.token().as_deref(), Some("own-fixture-key"));
             source.env.clear();
@@ -634,6 +681,7 @@ mod tests {
                 },
                 env: agent_accounts::isolation_env(agent, temp.path()).unwrap(),
                 isolated: true,
+                provider_override: false,
             };
             let expected = if agent == AgentType::OpenCode {
                 "data/opencode/auth.json"
@@ -655,7 +703,36 @@ mod tests {
             },
             env: BTreeMap::from([("CURSOR_CONFIG_DIR".into(), "/profile".into())]),
             isolated: true,
+            provider_override: false,
         };
         assert!(source.credential_path().is_none());
+    }
+
+    #[tokio::test]
+    async fn api_overrides_do_not_probe_a_stored_subscription_login() {
+        for (agent, key) in [
+            (AgentType::ClaudeCode, "ANTHROPIC_API_KEY"),
+            (AgentType::Codex, "OPENAI_API_KEY"),
+            (AgentType::Grok, "XAI_API_KEY"),
+        ] {
+            let mut source = Source {
+                account: QuotaAccount {
+                    agent_type: agent,
+                    agent_account_id: None,
+                    family: family(agent).unwrap().into(),
+                    name: None,
+                },
+                env: BTreeMap::new(),
+                isolated: true,
+                provider_override: false,
+            };
+            assert!(!source.uses_api_provider());
+            source.env.insert(key.into(), "fixture-api-key".into());
+            assert!(source.uses_api_provider());
+            assert!(read_official(&source).await.is_none());
+            source.env.clear();
+            source.provider_override = true;
+            assert!(read_official(&source).await.is_none());
+        }
     }
 }

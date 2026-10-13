@@ -27,7 +27,9 @@
     "signIn": "登入",
     "copyCommand": "複製登入指令",
     "copied": "登入指令已複製",
-    "choose": "請選擇帳戶以繼續。"
+    "choose": "請選擇帳戶以繼續。",
+    "loading": "正在載入帳戶...",
+    "toolSettingsHint": "部分命令列工具需要為每個帳戶個別設定或登入。"
   },
   "Language": {
     "followSystem": "跟隨系統",
@@ -6425,8 +6427,8 @@
     "loadFailed": "用量載入失敗",
     "truncatedNotice": "此範圍過大 —— 下面的數字只涵蓋其中最近的一段。",
     "apiListEstimate": "≈ {amount} API 標價",
-    "apiListEstimatePartial": "≈ {amount} API 標價 · {percent}% 的 token",
-    "apiListEstimateHint": "來自 models.dev 的公開 API 基礎標價，含快取讀寫，不含長上下文和推理加價。訂閱方案的計費方式不同。",
+    "apiListEstimatePartial": "≈ {amount} API 標價 · 已計價 {percent}% 的 token",
+    "apiListEstimateHint": "採用 models.dev 的基礎 API 標價。快取寫入按標準時長計算（Anthropic 為 5 分鐘）。不包含較長快取時長、長上下文和推理的費用調整。訂閱費用另行計算。",
     "quotaTitle": "剩餘額度",
     "quotaHint": "各帳號的剩餘使用額度。",
     "quotaRemaining": "剩餘 {remaining}%",
@@ -6440,7 +6442,9 @@
     "quotaWeekly": "每週",
     "quotaMonthly": "每月",
     "quotaChecked": "查詢時間：{when}",
-    "quotaOtherCapacity": "還有其他可用額度或餘額。"
+    "quotaOtherCapacity": "還有其他可用額度或餘額。",
+    "quotaModelLimits": "模型限額",
+    "apiListUnpriced": "暫無標價"
   },
   "Forge": {
     "title": "儲存庫面板",

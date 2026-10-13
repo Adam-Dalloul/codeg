@@ -77,6 +77,7 @@ pub struct AccountCapability {
     pub login_kind: Option<&'static str>,
     pub config_subdir: Option<&'static str>,
     pub can_switch_conversation: bool,
+    pub isolates_tool_settings: bool,
 }
 
 pub fn capabilities() -> Vec<AccountCapability> {
@@ -85,6 +86,7 @@ pub fn capabilities() -> Vec<AccountCapability> {
         .map(|&agent_type| AccountCapability {
             agent_type,
             can_switch_conversation: agent_type == AgentType::ClaudeCode,
+            isolates_tool_settings: matches!(agent_type, AgentType::OpenCode | AgentType::Cursor),
             supported: layout(agent_type).is_some(),
             config_subdir: layout(agent_type)
                 .and_then(|spec| (!spec.config_suffix.is_empty()).then_some(spec.config_suffix)),
@@ -190,8 +192,8 @@ pub fn isolation_env(agent: AgentType, home: &Path) -> Result<BTreeMap<String, S
         ] {
             env.insert(key.into(), home.join(suffix).to_string_lossy().into_owned());
         }
-        env.insert("HOME".into(), home.to_string_lossy().into_owned());
-        env.insert("USERPROFILE".into(), home.to_string_lossy().into_owned());
+        // XDG roots isolate OpenCode's auth, state and config. Keep the user's
+        // home for shell tools such as git, cargo and npm launched by the agent.
         env.insert("OPENCODE_CONFIG".into(), String::new());
         env.insert("OPENCODE_CONFIG_CONTENT".into(), String::new());
         env.insert("OPENCODE_MODELS_PATH".into(), String::new());
@@ -398,6 +400,8 @@ mod tests {
     fn opencode_isolates_credentials_as_well_as_configuration() {
         let dir = tempfile::tempdir().unwrap();
         let env = isolation_env(AgentType::OpenCode, dir.path()).unwrap();
+        assert!(!env.contains_key("HOME"));
+        assert!(!env.contains_key("USERPROFILE"));
         assert_eq!(
             PathBuf::from(&env["XDG_DATA_HOME"]),
             dir.path().join("data")

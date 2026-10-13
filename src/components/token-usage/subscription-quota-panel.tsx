@@ -9,6 +9,7 @@ import {
   type QuotaAccount,
 } from "@/hooks/use-subscription-quota"
 import { subscribe } from "@/lib/platform"
+import { getAgentLabel } from "@/lib/custom-agents"
 import { QuotaDetails, quotaRow } from "./quota-details"
 
 export function SubscriptionQuotaPanel() {
@@ -20,7 +21,14 @@ export function SubscriptionQuotaPanel() {
     const reload = () => {
       void listQuotaAccounts()
         .then((rows) => {
-          if (active) setAccounts(rows)
+          if (active)
+            setAccounts(
+              [...rows].sort(
+                (a, b) =>
+                  a.family.localeCompare(b.family) ||
+                  (a.name ?? "").localeCompare(b.name ?? "")
+              )
+            )
         })
         .catch(() => {
           if (active) setAccounts([])
@@ -73,25 +81,37 @@ function AccountRow({ account }: { account: QuotaAccount }) {
   const a = useTranslations("AgentAccounts")
   const { data, loading, refresh } = useSubscriptionQuota(account)
   const row = quotaRow(data)
+  const familyAgent =
+    account.family === "claude"
+      ? "claude_code"
+      : account.family === "opencode"
+        ? "open_code"
+        : account.family
   return (
     <details className="group py-2">
       <summary className="flex min-h-8 cursor-pointer list-none items-center justify-between gap-3 text-xs [&::-webkit-details-marker]:hidden">
         <span className="min-w-0 break-words">
-          <span className="capitalize">{account.family}</span>
+          <span>
+            {account.family === "opencode"
+              ? "OpenCode Go"
+              : getAgentLabel(familyAgent)}
+          </span>
           <span className="text-muted-foreground">
             {" "}
             · {account.name ?? a("default")}
           </span>
         </span>
         <span className="flex shrink-0 items-center gap-2 text-right tabular-nums">
-          {row?.kind === "remaining-subscription"
-            ? t("quotaRemaining", {
-                remaining: Math.round(row.remaining),
-                limit: 100,
-              })
-            : loading
-              ? t("quotaLoading")
-              : t("quotaUnavailable")}
+          {row?.kind === "remaining-subscription" && row.hasModelLimits
+            ? t("quotaModelLimits")
+            : row?.kind === "remaining-subscription"
+              ? t("quotaRemaining", {
+                  remaining: Math.round(row.remaining),
+                  limit: 100,
+                })
+              : loading
+                ? t("quotaLoading")
+                : t("quotaUnavailable")}
           <ChevronDown
             className="size-3 transition-transform group-open:rotate-180"
             aria-hidden
