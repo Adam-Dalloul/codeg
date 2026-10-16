@@ -6,7 +6,9 @@ use tauri::Manager;
 use crate::app_error::AppCommandError;
 use crate::db::entities::conversation;
 use crate::db::entities::folder::FolderKind;
-use crate::db::service::{conversation_service, folder_service, import_service, tab_service};
+use crate::db::service::{
+    agent_setting_service, conversation_service, folder_service, import_service, tab_service,
+};
 #[cfg(feature = "tauri-runtime")]
 use crate::db::AppDatabase;
 use crate::models::*;
@@ -16,7 +18,7 @@ use crate::models::*;
 use crate::parsers::codex::CodexParser;
 use crate::parsers::{
     build_agent_parser, folder_name_from_path, normalize_path_for_matching, path_eq_for_matching,
-    AgentParser, ParseError,
+    AgentEnvs, AgentParser, ParseError,
 };
 use crate::web::event_bridge::{
     emit_event, ConversationChange, ConversationsBulkChanged, EventEmitter, ImportScanProgress,
@@ -50,8 +52,9 @@ pub(crate) async fn list_all_conversations_core(
         }
     }
     drop(notify_conversation_title_updates(conn, emitter, chat_channel_manager, updated_accounts).await);
-    let codex_titles = match tokio::task::spawn_blocking(|| {
-        CodexParser::new().load_thread_name_index()
+    let codex_env = agent_setting_service::load_agent_env(conn, AgentType::Codex).await;
+    let codex_titles = match tokio::task::spawn_blocking(move || {
+        CodexParser::for_env(&codex_env).load_thread_name_index()
     })
     .await
     {
@@ -226,6 +229,7 @@ pub async fn save_opened_tabs(
 
 /// Synchronous implementation shared by list_conversations, list_folders, and get_stats.
 fn list_conversations_sync(
+    envs: &AgentEnvs,
     agent_type: Option<AgentType>,
     search: Option<String>,
     sort_by: Option<String>,
@@ -240,12 +244,12 @@ fn list_conversations_sync(
     let mut parsers: Vec<(AgentType, Box<dyn AgentParser>)> =
         crate::models::agent::BUILTIN_AGENT_TYPES
             .iter()
-            .map(|&at| (at, build_agent_parser(at)))
+            .map(|&at| (at, build_agent_parser(at, &envs.get(at))))
             .collect();
     // Registered custom agents read back from codeg's own ACP transcripts, so
     // their sessions participate in folder grouping and stats like any other.
     for custom in crate::acp::custom_registry::all() {
-        parsers.push((custom, build_agent_parser(custom)));
+        parsers.push((custom, build_agent_parser(custom, &envs.get(custom))));
     }
 
     for (at, parser) in &parsers {
@@ -333,7 +337,7 @@ pub async fn list_conversations_core(
         if agent_type.is_some_and(|selected| selected != agent) { return Err(AppCommandError::invalid_input("The account belongs to a different agent.")); }
         let home = std::path::PathBuf::from(account.home_dir);
         return tokio::task::spawn_blocking(move || {
-            let mut sessions = crate::parsers::build_account_parser(agent, Some(&home)).and_then(|p| p.list_conversations()).map_err(parse_error_to_app_error)?;
+            let mut sessions = crate::parsers::build_account_parser(agent, Some(&home), &crate::parsers::AgentEnv::inherited()).and_then(|p| p.list_conversations()).map_err(parse_error_to_app_error)?;
             if let Some(query) = search.as_ref().map(|s| s.to_lowercase()) {
                 sessions.retain(|s| [&s.title, &s.folder_name, &s.folder_path, &s.git_branch, &s.model].iter().any(|v| v.as_ref().is_some_and(|v| v.to_lowercase().contains(&query))));
             }
@@ -346,8 +350,9 @@ pub async fn list_conversations_core(
             Ok(sessions)
         }).await.map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
     }
+    let envs = agent_setting_service::load_agent_envs(conn).await;
     tokio::task::spawn_blocking(move || {
-        list_conversations_sync(agent_type, search, sort_by, folder_path)
+        list_conversations_sync(&envs, agent_type, search, sort_by, folder_path)
     })
     .await
     .map_err(|e| {
@@ -362,13 +367,14 @@ pub async fn get_conversation_core(
     agent_type: AgentType,
     conversation_id: String,
 ) -> Result<ConversationDetail, AppCommandError> {
+    let env = agent_setting_service::load_agent_env(conn, agent_type).await;
     let home = if let Some(id) = agent_account_id {
         let account = crate::db::service::agent_account_service::get(conn, &id).await.map_err(AppCommandError::from)?;
         if account.agent_type != agent_type.as_wire() { return Err(AppCommandError::invalid_input("The account belongs to a different agent.")); }
         Some(std::path::PathBuf::from(account.home_dir))
     } else { None };
     tokio::task::spawn_blocking(move || -> Result<ConversationDetail, AppCommandError> {
-        crate::parsers::build_account_parser(agent_type, home.as_deref()).map_err(parse_error_to_app_error)?
+        crate::parsers::build_account_parser(agent_type, home.as_deref(), &env).map_err(parse_error_to_app_error)?
             .get_conversation(&conversation_id)
             .map_err(parse_error_to_app_error)
     })
@@ -401,46 +407,67 @@ pub async fn get_conversation(
     conversation_id: String,
 ) -> Result<ConversationDetail, AppCommandError> {
     get_conversation_core(&db.conn, agent_account_id, agent_type, conversation_id).await
+
 }
 
-#[cfg_attr(feature = "tauri-runtime", tauri::command)]
-pub async fn list_folders() -> Result<Vec<FolderInfo>, AppCommandError> {
-    tokio::task::spawn_blocking(move || -> Result<Vec<FolderInfo>, AppCommandError> {
-        let all_conversations = list_conversations_sync(None, None, None, None);
-        Ok(compute_folders(&all_conversations))
-    })
-    .await
-    .map_err(|e| {
-        AppCommandError::task_execution_failed("Failed to list folders").with_detail(e.to_string())
-    })?
+/// Every parsable session on this machine, read in one blocking pass with
+/// each agent's launch environment — shared by the folder/stats/sidebar
+/// aggregates below.
+async fn list_all_local_conversations(
+    conn: &sea_orm::DatabaseConnection,
+    what: &'static str,
+) -> Result<Vec<ConversationSummary>, AppCommandError> {
+    let envs = agent_setting_service::load_agent_envs(conn).await;
+    tokio::task::spawn_blocking(move || list_conversations_sync(&envs, None, None, None, None))
+        .await
+        .map_err(|e| AppCommandError::task_execution_failed(what).with_detail(e.to_string()))
 }
 
-#[cfg_attr(feature = "tauri-runtime", tauri::command)]
-pub async fn get_stats() -> Result<AgentStats, AppCommandError> {
-    tokio::task::spawn_blocking(move || -> Result<AgentStats, AppCommandError> {
-        let all_conversations = list_conversations_sync(None, None, None, None);
-        Ok(compute_stats(&all_conversations))
-    })
-    .await
-    .map_err(|e| {
-        AppCommandError::task_execution_failed("Failed to compute conversation stats")
-            .with_detail(e.to_string())
-    })?
+pub async fn list_folders_core(
+    conn: &sea_orm::DatabaseConnection,
+) -> Result<Vec<FolderInfo>, AppCommandError> {
+    let all_conversations = list_all_local_conversations(conn, "Failed to list folders").await?;
+    Ok(compute_folders(&all_conversations))
 }
 
-#[cfg_attr(feature = "tauri-runtime", tauri::command)]
-pub async fn get_sidebar_data() -> Result<SidebarData, AppCommandError> {
-    tokio::task::spawn_blocking(move || -> Result<SidebarData, AppCommandError> {
-        let all_conversations = list_conversations_sync(None, None, None, None);
-        let folders = compute_folders(&all_conversations);
-        let stats = compute_stats(&all_conversations);
-        Ok(SidebarData { folders, stats })
-    })
-    .await
-    .map_err(|e| {
-        AppCommandError::task_execution_failed("Failed to build sidebar data")
-            .with_detail(e.to_string())
-    })?
+#[cfg(feature = "tauri-runtime")]
+#[tauri::command]
+pub async fn list_folders(
+    db: tauri::State<'_, AppDatabase>,
+) -> Result<Vec<FolderInfo>, AppCommandError> {
+    list_folders_core(&db.conn).await
+}
+
+pub async fn get_stats_core(
+    conn: &sea_orm::DatabaseConnection,
+) -> Result<AgentStats, AppCommandError> {
+    let all_conversations =
+        list_all_local_conversations(conn, "Failed to compute conversation stats").await?;
+    Ok(compute_stats(&all_conversations))
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[tauri::command]
+pub async fn get_stats(db: tauri::State<'_, AppDatabase>) -> Result<AgentStats, AppCommandError> {
+    get_stats_core(&db.conn).await
+}
+
+pub async fn get_sidebar_data_core(
+    conn: &sea_orm::DatabaseConnection,
+) -> Result<SidebarData, AppCommandError> {
+    let all_conversations =
+        list_all_local_conversations(conn, "Failed to build sidebar data").await?;
+    let folders = compute_folders(&all_conversations);
+    let stats = compute_stats(&all_conversations);
+    Ok(SidebarData { folders, stats })
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[tauri::command]
+pub async fn get_sidebar_data(
+    db: tauri::State<'_, AppDatabase>,
+) -> Result<SidebarData, AppCommandError> {
+    get_sidebar_data_core(&db.conn).await
 }
 
 fn compute_folders(all_conversations: &[ConversationSummary]) -> Vec<FolderInfo> {
@@ -767,8 +794,10 @@ pub async fn scan_importable_sessions_core(
     chat_channel_manager: &crate::chat_channel::manager::ChatChannelManager,
 ) -> Result<ScanResult, AppCommandError> {
     let progress_emitter = emitter.clone();
-    let summaries =
-        import_service::collect_local_summaries(move |agent_type, done, total, session_count| {
+    let envs = agent_setting_service::load_agent_envs(conn).await;
+    let summaries = import_service::collect_local_summaries(
+        &envs,
+        move |agent_type, done, total, session_count| {
             emit_event(
                 &progress_emitter,
                 IMPORT_SCAN_PROGRESS_EVENT,
@@ -779,8 +808,9 @@ pub async fn scan_importable_sessions_core(
                     session_count,
                 },
             );
-        })
-        .await;
+        },
+    )
+    .await;
 
     let mut result = scan_importable_sessions_from_summaries(conn, emitter, chat_channel_manager, summaries).await?;
     for account in crate::db::service::agent_account_service::list_all(conn).await.map_err(AppCommandError::from)? {
@@ -860,7 +890,7 @@ async fn scan_importable_account_summaries(
         conn,
         account_id,
         &summaries,
-        &import_service::default_claude_projects(),
+        &import_service::default_claude_projects(conn).await,
     )
     .await
     {
@@ -929,7 +959,7 @@ async fn import_selected_from_account_summaries(
         conn,
         account_id,
         &summaries,
-        &import_service::default_claude_projects(),
+        &import_service::default_claude_projects(conn).await,
     )
     .await
     .map_err(AppCommandError::from)?;
@@ -1236,6 +1266,7 @@ pub async fn import_selected_sessions_core(
         .try_lock()
         .map_err(|_| AppCommandError::invalid_input("An import is already in progress"))?;
 
+    let envs = agent_setting_service::load_agent_envs(conn).await;
     let mut groups: std::collections::BTreeMap<Option<String>, Vec<SelectedSessionKey>> = std::collections::BTreeMap::new();
     for selection in selections {
         groups.entry(selection.agent_account_id.clone()).or_default().push(selection);
@@ -1250,7 +1281,7 @@ pub async fn import_selected_sessions_core(
                 }
                 import_service::collect_account_summaries(conn, id).await.map_err(AppCommandError::from)?
             }
-            None => import_service::collect_local_summaries(|_, _, _, _| {}).await,
+            None => import_service::collect_local_summaries(&envs, |_, _, _, _| {}).await,
         };
         let part = import_selected_from_account_summaries(conn, emitter, summaries, selections, account_id.as_deref()).await?;
         result.imported += part.imported;
@@ -1342,6 +1373,20 @@ fn build_historical_delegation_meta(child: &DbConversationSummary) -> serde_json
             "task_preview".into(),
             serde_json::Value::String(title.into()),
         );
+    }
+    // The assistant the child ran as, off its row: the reloaded card draws it
+    // even when no live binding or tool result remains.
+    if let Some(assistant_id) = child.assistant_id {
+        obj.insert(
+            "assistant_id".into(),
+            serde_json::Value::Number(assistant_id.into()),
+        );
+        if let Some(name) = child.assistant_name.as_deref() {
+            obj.insert(
+                "assistant_name".into(),
+                serde_json::Value::String(name.into()),
+            );
+        }
     }
     serde_json::Value::Object(obj)
 }
@@ -1570,8 +1615,12 @@ pub async fn get_folder_conversation_core(
                 .flatten()
                 .map(|f| f.path),
         };
+        // The session file is wherever the agent's launch environment put it:
+        // a `CLAUDE_CONFIG_DIR`/`CODEX_HOME`/… in its settings moves it out of
+        // the default directory codeg's own environment names.
+        let agent_env = agent_setting_service::load_agent_env(conn, at).await;
         tokio::task::spawn_blocking(move || -> Result<_, AppCommandError> {
-            let parser = crate::parsers::build_account_parser(at, account_home.as_deref()).map_err(parse_error_to_app_error)?;
+            let parser = crate::parsers::build_account_parser(at, account_home.as_deref(), &agent_env).map_err(parse_error_to_app_error)?;
             match parser.get_conversation(&eid) {
                 Ok(d) => {
                     // Claude `/clear` (and similar on-disk id changes) make
@@ -3105,6 +3154,8 @@ mod tests {
             parent_tool_use_id: Some(parent_tool_use_id.into()),
             delegation_call_id: Some("call-1".into()),
             origin_cwd: None,
+            assistant_id: None,
+            assistant_name: None,
             tag_ids: Vec::new(),
         }
     }
@@ -3596,6 +3647,38 @@ mod tests {
         );
     }
 
+    /// A reloaded card of an assistant delegation draws the assistant from the
+    /// child row: its id, and its name as the task started.
+    #[test]
+    fn inject_delegation_meta_carries_the_assistant_off_the_child_row() {
+        let mut turns = vec![tool_use_turn(
+            Some("tu-a"),
+            "mcp__codeg-mcp__delegate_to_agent",
+        )];
+        let mut child = summary_child(43, "tu-a", "completed");
+        child.assistant_id = Some(3);
+        child.assistant_name = Some("Reviewer".into());
+        inject_delegation_meta(&mut turns, &[child]);
+        let inner = first_block_meta(&turns[0])
+            .and_then(|m| m.get("codeg.delegation").cloned())
+            .expect("meta should be set");
+        assert_eq!(inner["assistant_id"], 3);
+        assert_eq!(inner["assistant_name"], "Reviewer");
+        assert_eq!(inner["agent_type"], "codex");
+
+        // An agent delegation's meta carries no assistant keys at all.
+        let mut turns = vec![tool_use_turn(
+            Some("tu-b"),
+            "mcp__codeg-mcp__delegate_to_agent",
+        )];
+        inject_delegation_meta(&mut turns, &[summary_child(44, "tu-b", "completed")]);
+        let inner = first_block_meta(&turns[0])
+            .and_then(|m| m.get("codeg.delegation").cloned())
+            .unwrap();
+        assert!(inner.get("assistant_id").is_none());
+        assert!(inner.get("assistant_name").is_none());
+    }
+
     fn tool_result_turn(tool_use_id: &str, output: &str) -> MessageTurn {
         MessageTurn {
             id: "t2".into(),
@@ -3923,6 +4006,7 @@ mod tests {
             parent_conversation_id: parent_id,
             parent_tool_use_id: "tu-historical".into(),
             delegation_call_id: "call-historical".into(),
+            assistant: None,
         };
         conversation_service::create_with_delegation(
             &db.conn,
@@ -4421,6 +4505,88 @@ mod tests {
         assert!(all
             .iter()
             .any(|f| f.id == chat_id && f.kind == FolderKind::Chat));
+    }
+
+    /// Save `env_json` for `agent_type` the way the settings page does.
+    async fn save_agent_env_json(
+        db: &crate::db::AppDatabase,
+        agent_type: AgentType,
+        env_json: &str,
+    ) {
+        agent_setting_service::ensure_defaults(
+            &db.conn,
+            &[agent_setting_service::AgentDefaultInput {
+                agent_type,
+                registry_id: agent_type.to_string(),
+                default_sort_order: 0,
+            }],
+        )
+        .await
+        .expect("seed agent setting");
+        agent_setting_service::update(
+            &db.conn,
+            agent_type,
+            agent_setting_service::AgentSettingsUpdate {
+                enabled: true,
+                env_json: Some(env_json.to_string()),
+                model_provider_id: None,
+            },
+        )
+        .await
+        .expect("save env_json");
+    }
+
+    /// #948: `CLAUDE_CONFIG_DIR` set only in the agent's settings moves the
+    /// transcript out of the directory codeg's own environment names. Opening
+    /// the conversation must read it from where the agent wrote it, not come
+    /// back empty ("no messages"). Hermetic: the relocated dir is a tempdir,
+    /// so nothing here reads the real `~/.claude`.
+    #[tokio::test]
+    async fn a_conversation_is_read_from_the_config_dir_its_agent_settings_name() {
+        let config_dir = tempfile::tempdir().expect("tempdir");
+        let project = config_dir.path().join("projects").join("-relocated-proj");
+        std::fs::create_dir_all(&project).expect("project dir");
+        let session_id = "0e5f6a10-9b1c-4c2d-8e3f-4a5b6c7d8e9f";
+        std::fs::write(
+            project.join(format!("{session_id}.jsonl")),
+            [
+                r#"{"type":"user","timestamp":"2026-10-14T01:00:00.000Z","uuid":"u1","cwd":"/tmp/codeg-948-proj","message":{"role":"user","content":[{"type":"text","text":"hello"}]}}"#,
+                r#"{"type":"assistant","timestamp":"2026-10-14T01:00:05.000Z","uuid":"a1","parentUuid":"u1","message":{"id":"msg_01","role":"assistant","model":"claude-opus-5","content":[{"type":"text","text":"hi"}]}}"#,
+            ]
+            .join("\n"),
+        )
+        .expect("write transcript");
+
+        let db = fresh_in_memory_db().await;
+        save_agent_env_json(
+            &db,
+            AgentType::ClaudeCode,
+            &serde_json::json!({ "CLAUDE_CONFIG_DIR": config_dir.path() }).to_string(),
+        )
+        .await;
+        let folder_id = seed_folder(&db, "/tmp/codeg-948-proj").await;
+        let conversation_id = create_conversation_core(
+            &db.conn,
+            folder_id,
+            AgentType::ClaudeCode,
+            Some("relocated".into()),
+        )
+        .await
+        .expect("create conversation");
+        conversation_service::bind_external_id(&db.conn, conversation_id, session_id, &[])
+            .await
+            .expect("bind session");
+
+        let (detail, _) = get_folder_conversation_core(&db.conn, conversation_id)
+            .await
+            .expect("open conversation");
+        assert_eq!(detail.turns.len(), 2, "turns: {:?}", detail.turns);
+
+        // The sub-agent transcript viewer reads by session id the same way.
+        let by_id = get_conversation_core(&db.conn, None, AgentType::ClaudeCode, session_id.to_string())
+            .await
+            .expect("read by session id");
+        assert_eq!(by_id.turns.len(), 2);
     }
 
     #[tokio::test]
@@ -5372,6 +5538,7 @@ mod tests {
                 parent_conversation_id: parent_id,
                 parent_tool_use_id: (*tool_use).into(),
                 delegation_call_id: format!("call-{i}"),
+                assistant: None,
             };
             let child = conversation_service::create_with_delegation(
                 &db.conn,
@@ -5730,6 +5897,7 @@ mod tests {
                 parent_conversation_id: parent_id,
                 parent_tool_use_id: "tu-1".into(),
                 delegation_call_id: "call-1".into(),
+                assistant: None,
             }),
         )
         .await
@@ -5774,6 +5942,7 @@ mod tests {
                 parent_conversation_id: parent_id,
                 parent_tool_use_id: "tu-1".into(),
                 delegation_call_id: "call-1".into(),
+                assistant: None,
             }),
         )
         .await
@@ -7006,6 +7175,8 @@ mod tests {
                 parent_tool_use_id: None,
                 delegation_call_id: None,
                 origin_cwd: None,
+                assistant_id: None,
+                assistant_name: None,
                 tag_ids: Vec::new(),
             },
             turns,

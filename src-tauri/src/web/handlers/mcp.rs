@@ -49,6 +49,9 @@ pub struct UpsertLocalServerParams {
     pub server_id: String,
     pub spec: Value,
     pub apps: Vec<McpAppType>,
+    /// The spec the editor loaded before the edit; absent for a new server.
+    #[serde(default)]
+    pub shown_spec: Option<Value>,
 }
 
 #[derive(Deserialize)]
@@ -118,7 +121,7 @@ pub async fn mcp_upsert_local_server(
     Json(params): Json<UpsertLocalServerParams>,
 ) -> Result<Json<LocalMcpServer>, AppCommandError> {
     let result =
-        mcp_commands::mcp_upsert_local_server_core(&state.db, params.server_id, params.spec, params.apps).await?;
+        mcp_commands::mcp_upsert_local_server_core(&state.db, params.server_id, params.spec, params.apps, params.shown_spec).await?;
     Ok(Json(result))
 }
 

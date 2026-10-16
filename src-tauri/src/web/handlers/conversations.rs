@@ -203,18 +203,24 @@ pub async fn get_folder_conversation_outline(
     Ok(Json(result))
 }
 
-pub async fn list_folders() -> Result<Json<Vec<FolderInfo>>, AppCommandError> {
-    let result = conv_commands::list_folders().await?;
+pub async fn list_folders(
+    Extension(state): Extension<Arc<AppState>>,
+) -> Result<Json<Vec<FolderInfo>>, AppCommandError> {
+    let result = conv_commands::list_folders_core(&state.db.conn).await?;
     Ok(Json(result))
 }
 
-pub async fn get_stats() -> Result<Json<AgentStats>, AppCommandError> {
-    let result = conv_commands::get_stats().await?;
+pub async fn get_stats(
+    Extension(state): Extension<Arc<AppState>>,
+) -> Result<Json<AgentStats>, AppCommandError> {
+    let result = conv_commands::get_stats_core(&state.db.conn).await?;
     Ok(Json(result))
 }
 
-pub async fn get_sidebar_data() -> Result<Json<SidebarData>, AppCommandError> {
-    let result = conv_commands::get_sidebar_data().await?;
+pub async fn get_sidebar_data(
+    Extension(state): Extension<Arc<AppState>>,
+) -> Result<Json<SidebarData>, AppCommandError> {
+    let result = conv_commands::get_sidebar_data_core(&state.db.conn).await?;
     Ok(Json(result))
 }
 

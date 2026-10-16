@@ -339,6 +339,26 @@ pub fn build_router(
             post(handlers::folders::set_folder_group),
         )
         .route(
+            "/assistant_list",
+            post(handlers::assistants::assistant_list),
+        )
+        .route(
+            "/assistant_create",
+            post(handlers::assistants::assistant_create),
+        )
+        .route(
+            "/assistant_update",
+            post(handlers::assistants::assistant_update),
+        )
+        .route(
+            "/assistant_delete",
+            post(handlers::assistants::assistant_delete),
+        )
+        .route(
+            "/assistant_reorder",
+            post(handlers::assistants::assistant_reorder),
+        )
+        .route(
             "/list_conversation_tags",
             post(handlers::conversation_tags::list_conversation_tags),
         )
@@ -1127,6 +1147,10 @@ pub fn build_router(
             post(handlers::acp::acp_download_agent_binary),
         )
         .route(
+            "/acp_update_system_agent",
+            post(handlers::acp::acp_update_system_agent),
+        )
+        .route(
             "/acp_install_uv_tool",
             post(handlers::acp::acp_install_uv_tool),
         )
@@ -1160,6 +1184,10 @@ pub fn build_router(
         .route("/acp_remove_agent_account", post(handlers::agent_accounts::remove))
         .route("/acp_login_agent_account", post(handlers::agent_accounts::login))
         .route("/acp_switch_conversation_account", post(handlers::agent_accounts::switch_conversation))
+        .route(
+            "/acp_login_extra_agent",
+            post(handlers::acp::acp_login_extra_agent),
+        )
         .route(
             "/acp_login_extra_agent",
             post(handlers::acp::acp_login_extra_agent),
@@ -1412,6 +1440,10 @@ pub fn build_router(
         .route(
             "/stop_office_watch",
             post(handlers::office_tools::stop_office_watch),
+        )
+        .route(
+            "/renew_office_watch",
+            post(handlers::office_tools::renew_office_watch),
         )
         // ─── Project boot ───
         .route(
@@ -1782,6 +1814,14 @@ pub fn build_router(
             post(handlers::forge::forge_settings_set),
         )
         .route(
+            "/forge_auto_status",
+            post(handlers::forge::forge_auto_status),
+        )
+        .route(
+            "/forge_auto_scan_now",
+            post(handlers::forge::forge_auto_scan_now),
+        )
+        .route(
             "/work_task_deliver_pr",
             post(handlers::work_task::work_task_deliver_pr),
         )
@@ -1804,6 +1844,10 @@ pub fn build_router(
         .route(
             "/work_task_archive",
             post(handlers::work_task::work_task_archive),
+        )
+        .route(
+            "/work_task_defer",
+            post(handlers::work_task::work_task_defer),
         )
         .route(
             "/work_task_cleanup",
@@ -1953,6 +1997,17 @@ pub fn build_router(
         .route(
             "/get_system_language_settings",
             post(handlers::system_settings::get_system_language_settings),
+        )
+        // Forge webhooks for the repository panel's auto-processing. No forge
+        // can send codeg's bearer token, so the delivery authenticates itself:
+        // its HMAC signature (GitHub / Gitea) or secret token (GitLab) is
+        // checked against the folders' webhook secrets before anything else
+        // happens. See `handlers::forge::forge_webhook`.
+        .route(
+            "/forge_webhook",
+            post(handlers::forge::forge_webhook).layer(DefaultBodyLimit::max(
+                handlers::forge::WEBHOOK_BODY_LIMIT,
+            )),
         )
         .route(
             "/workspace_download/{ticket}",

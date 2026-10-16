@@ -32,6 +32,7 @@ export function useComposerMentionLabels(): ComposerMentionLabels {
       defaultAccount: tAccounts("default"),
       file: t("mentionGroupFile"),
       agent: t("mentionGroupAgent"),
+      assistant: t("mentionGroupAssistant"),
       session: t("mentionGroupSession"),
       commit: t("mentionGroupCommit"),
       skill: t("mentionGroupSkill"),
