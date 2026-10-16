@@ -58,7 +58,7 @@ pub fn layout(agent: AgentType) -> Option<AccountLayout> {
             ".cursor/chats",
             &["cursor-agent", "login"],
         ),
-        AgentType::OpenClaw | AgentType::Custom(_) => return None,
+        AgentType::OpenClaw | AgentType::Kiro | AgentType::ZCode | AgentType::Custom(_) => return None,
     };
     Some(AccountLayout {
         env_key,
@@ -98,6 +98,9 @@ pub fn capabilities() -> Vec<AccountCapability> {
             reason: match agent_type {
                 AgentType::OpenClaw => {
                     Some("Sessions use the configured OpenClaw gateway's account.")
+                }
+                AgentType::Kiro | AgentType::ZCode => {
+                    Some("Named accounts are not yet supported for this agent.")
                 }
                 _ => None,
             },
@@ -520,7 +523,7 @@ mod tests {
                     (&a, "alpha account", "beta account"),
                     (&b, "beta account", "alpha account"),
                 ] {
-                    let detail = crate::parsers::build_account_parser(agent, Some(home))
+                    let detail = crate::parsers::build_account_parser(agent, Some(home), &crate::parsers::AgentEnv::inherited())
                         .unwrap()
                         .get_conversation(&session)
                         .unwrap();
@@ -528,7 +531,7 @@ mod tests {
                     assert!(text.contains(wanted), "{agent}");
                     assert!(!text.contains(other), "{agent}");
                 }
-                assert!(crate::parsers::build_account_parser(agent, Some(&empty))
+                assert!(crate::parsers::build_account_parser(agent, Some(&empty), &crate::parsers::AgentEnv::inherited())
                     .unwrap()
                     .get_conversation(&session)
                     .is_err());
@@ -554,14 +557,14 @@ mod tests {
         )
         .unwrap();
         assert!(
-            !crate::parsers::build_account_parser(AgentType::Antigravity, Some(&home))
+            !crate::parsers::build_account_parser(AgentType::Antigravity, Some(&home), &crate::parsers::AgentEnv::inherited())
                 .unwrap()
                 .list_conversations()
                 .unwrap()
                 .is_empty()
         );
         assert!(
-            crate::parsers::build_account_parser(AgentType::Antigravity, Some(&other))
+            crate::parsers::build_account_parser(AgentType::Antigravity, Some(&other), &crate::parsers::AgentEnv::inherited())
                 .unwrap()
                 .list_conversations()
                 .unwrap()
