@@ -148,6 +148,7 @@ fn distribution_env(dist: &AgentDistribution) -> BTreeMap<String, String> {
     let pairs = match dist {
         AgentDistribution::Npx { env, .. }
         | AgentDistribution::Binary { env, .. }
+        | AgentDistribution::System { env, .. }
         | AgentDistribution::Uvx { env, .. } => *env,
     };
     pairs
