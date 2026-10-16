@@ -475,9 +475,13 @@ mod tests {
         use crate::db::migration::Migrator;
         use crate::db::service::{conversation_service, folder_service};
         use sea_orm::{Database, DbBackend, Statement};
-        use sea_orm_migration::MigratorTrait;
+        use sea_orm_migration::{MigratorTrait, SchemaManager};
         let conn = Database::connect("sqlite::memory:").await.unwrap();
-        Migrator::up(&conn, Some((Migrator::migrations().len() - 1) as u32))
+        let migrations = Migrator::migrations();
+        let account_migration = migrations.iter().position(|migration| {
+            migration.name() == "m20261011_000001_agent_account"
+        }).expect("native account migration is registered");
+        Migrator::up(&conn, Some(account_migration as u32))
             .await
             .unwrap();
         let dir = tempfile::tempdir().unwrap();
@@ -529,7 +533,12 @@ mod tests {
                 .agent_account_id,
             Some(account.id)
         );
-        assert!(Migrator::down(&conn, Some(1)).await.is_err());
+        // Later migrations must not change which rollback guard this tests.
+        let error = migrations[account_migration]
+            .down(&SchemaManager::new(&conn))
+            .await
+            .expect_err("bound accounts must prevent their migration's rollback");
+        assert!(error.to_string().contains("Cannot remove account bindings"));
         assert!(conversation::Entity::find_by_id(named.id)
             .one(&conn)
             .await
