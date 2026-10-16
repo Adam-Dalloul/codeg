@@ -547,4 +547,40 @@ mod tests {
             .agent_account_id
             .is_some());
     }
+
+    #[tokio::test]
+    async fn account_migration_can_follow_newer_release_migrations() {
+        use crate::db::migration::Migrator;
+        use sea_orm::{Database, DbBackend, Statement};
+        use sea_orm_migration::{MigrationTrait, MigratorTrait, SchemaManager};
+
+        // A released app already has the newer assistant columns, but has
+        // never applied the account migration from this pending PR.
+        struct ReleasedSchema;
+        #[async_trait::async_trait]
+        impl MigratorTrait for ReleasedSchema {
+            fn migrations() -> Vec<Box<dyn MigrationTrait>> {
+                Migrator::migrations().into_iter().filter(|migration| {
+                    migration.name() != "m20261011_000001_agent_account"
+                }).collect()
+            }
+        }
+
+        let conn = Database::connect("sqlite::memory:").await.unwrap();
+        ReleasedSchema::up(&conn, None).await.unwrap();
+        let folder = crate::db::service::folder_service::add_folder(&conn, "/released-project")
+            .await.unwrap();
+        conn.execute(Statement::from_sql_and_values(DbBackend::Sqlite,
+            "INSERT INTO conversation (folder_id, agent_type, status, kind, title_locked, external_id, message_count, created_at, updated_at) VALUES (?, 'codex', 'pending_review', 'regular', 0, 'released-session', 0, '2026-10-16T00:00:00Z', '2026-10-16T00:00:00Z')",
+            [folder.id.into()])).await.unwrap();
+
+        Migrator::up(&conn, None).await.unwrap();
+        let schema = SchemaManager::new(&conn);
+        assert!(schema.has_column("conversation", "assistant_id").await.unwrap());
+        assert!(schema.has_column("conversation", "agent_account_id").await.unwrap());
+        let saved = crate::db::entities::conversation::Entity::find()
+            .one(&conn).await.unwrap().unwrap();
+        assert_eq!(saved.external_id.as_deref(), Some("released-session"));
+        assert!(saved.agent_account_id.is_none());
+    }
 }
