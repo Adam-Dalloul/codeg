@@ -817,6 +817,7 @@ const ConversationTabView = memo(function ConversationTabView({
     ),
   })
   const { status: connStatus, sessionId: connSessionId } = conn
+  const isConnecting = connStatus === "connecting"
   const messageQueue = useMessageQueue()
   const {
     queue: msgQueue,
