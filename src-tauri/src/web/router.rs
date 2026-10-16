@@ -1189,10 +1189,6 @@ pub fn build_router(
             post(handlers::acp::acp_login_extra_agent),
         )
         .route(
-            "/acp_login_extra_agent",
-            post(handlers::acp::acp_login_extra_agent),
-        )
-        .route(
             "/acp_save_custom_agent",
             post(handlers::acp::acp_save_custom_agent),
         )
