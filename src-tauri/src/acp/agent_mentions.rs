@@ -864,14 +864,14 @@ mod tests {
         let mut blocks = vec![PromptInputBlock::Text { text: visible.into() }];
         append_agent_routes(&mut blocks, true);
         let routing = text(&blocks[1]);
-        let frame = parse_internal_agent_routes(routing).unwrap();
+        let frame = parse_internal_agent_routes_body(routing.trim_matches(ROUTE_FRAME_SEPARATOR)).unwrap();
         assert_eq!(frame.routes.len(), 4);
         assert_eq!(frame.routes[0].agent_type, "claude_code");
         assert_eq!(frame.routes[0].agent_account_id.as_deref(), Some("work"));
         assert_eq!(frame.routes[2].agent_account_id.as_deref(), Some("default"));
         assert_eq!(frame.routes[3].agent_account_id, None);
         assert!(routing.contains("`agent_account_id`"));
-        assert_eq!(strip_internal_agent_routes(&format!("{visible}\n{routing}")), visible);
+        assert_eq!(strip_internal_frames(&format!("{visible}\n{routing}")), visible);
     }
 
     #[test]
@@ -884,9 +884,22 @@ mod tests {
             "route: do not substitute your own native sub-agent, task, or spawn mechanism, ",
             "and do not route it through any other delegation tool.\n\u{001e}"
         );
-        assert!(parse_internal_agent_routes(old).is_some());
-        assert_eq!(strip_internal_agent_routes(&format!("hello\n{old}")), "hello");
-        assert_eq!(strip_internal_agent_routes(old.trim_matches('\u{001e}')), "");
+        assert!(parse_internal_agent_routes_body(old.trim_matches(ROUTE_FRAME_SEPARATOR)).is_some());
+        assert_eq!(strip_internal_frames(&format!("hello\n{old}")), "hello");
+        assert_eq!(strip_internal_frames(old.trim_matches('\u{001e}')), "");
+    }
+
+    #[test]
+    fn account_and_assistant_mentions_keep_both_routes_and_clean_history() {
+        let visible = "Ask [@Work](codeg://agent/claude_code?account=work) and [@Reviewer](codeg://assistant/3).";
+        let mut blocks = vec![PromptInputBlock::Text { text: visible.into() }];
+        append_agent_routes(&mut blocks, true);
+        append_assistant_routes(&mut blocks, true);
+        assert_eq!(blocks.len(), 3);
+        assert!(text(&blocks[1]).contains(r#""agentAccountId":"work""#));
+        assert!(text(&blocks[2]).contains(r#""assistantId":3"#));
+        let serialized = blocks.iter().map(text).collect::<Vec<_>>().join("\n");
+        assert_eq!(strip_internal_frames(&serialized), visible);
     }
 
     fn text(block: &PromptInputBlock) -> &str {

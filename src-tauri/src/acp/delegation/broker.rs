@@ -10288,7 +10288,9 @@ mod tests {
             })
             .await;
 
-        let ack = broker.start_delegation(assistant_request(1, "pt-a")).await;
+        let mut request = assistant_request(1, "pt-a");
+        request.agent_account_id = Some("work-account".into());
+        let ack = broker.start_delegation(request).await;
         assert_eq!(ack.status, TaskStatus::Running);
         assert_eq!(ack.assistant_id, Some(3));
         assert_eq!(ack.assistant_name.as_deref(), Some("Reviewer"));
@@ -10296,6 +10298,7 @@ mod tests {
 
         let spawn = mock.spawn_args.lock().await[0].clone();
         assert_eq!(spawn.agent_type, AgentType::Codex);
+        assert_eq!(spawn.agent_account_id.as_deref(), Some("work-account"));
         assert_eq!(spawn.preferred_mode_id.as_deref(), Some("read-only"));
         assert_eq!(
             spawn.preferred_config_values,
@@ -10421,6 +10424,7 @@ mod tests {
     async fn resuming_an_assistant_child_replays_its_snapshot() {
         let ctx = ChildResumeContext {
             agent_type: AgentType::Codex,
+            agent_account_id: Some("saved-work-account".into()),
             assistant: ResumeAssistant::Snapshot(reviewer()),
             ..resume_ctx(TaskStatus::Canceled)
         };
@@ -10442,6 +10446,7 @@ mod tests {
 
         let spawn = mock.resume_spawn_args.lock().await[0].clone();
         assert_eq!(spawn.agent_type, AgentType::Codex);
+        assert_eq!(spawn.agent_account_id.as_deref(), Some("saved-work-account"));
         assert_eq!(spawn.preferred_mode_id.as_deref(), Some("read-only"));
         assert_eq!(
             spawn.preferred_config_values,
