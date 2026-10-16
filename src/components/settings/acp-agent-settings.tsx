@@ -157,16 +157,6 @@ import {
   type OpenCodeModelOptionGroup,
 } from "@/lib/opencode-connect"
 import { toErrorMessage } from "@/lib/app-error"
-
-function familyLabelFromIsolator(key: string): string {
-  if (key.startsWith("CLAUDE")) return "Claude"
-  if (key.startsWith("CODEX")) return "Codex"
-  if (key.startsWith("GROK")) return "Grok"
-  if (key.startsWith("GEMINI")) return "Gemini"
-  if (key.startsWith("OPENCODE")) return "OpenCode"
-  return key
-}
-
 import { getInstallErrorHintKey } from "@/lib/agent-install-error"
 import { useAgentInstallStream } from "@/hooks/use-agent-install-stream"
 import { OpencodePluginsModal } from "./opencode-plugins-modal"
