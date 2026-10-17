@@ -64,7 +64,8 @@
     "done": "Done",
     "signedInWith": "Sign-in found: {method}",
     "accountAuth": "{provider} account",
-    "nativeAuth": "Native sign-in"
+    "nativeAuth": "Native sign-in",
+    "loading": "Loading accounts..."
   },
   "Language": {
     "followSystem": "Follow System",

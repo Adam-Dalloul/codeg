@@ -64,7 +64,8 @@
     "done": "完了",
     "signedInWith": "ログイン情報：{method}",
     "accountAuth": "{provider} アカウント",
-    "nativeAuth": "標準のログイン"
+    "nativeAuth": "標準のログイン",
+    "loading": "アカウントを読み込み中..."
   },
   "Language": {
     "followSystem": "システムに従う",

@@ -64,7 +64,8 @@
     "done": "완료",
     "signedInWith": "확인된 로그인: {method}",
     "accountAuth": "{provider} 계정",
-    "nativeAuth": "기본 로그인"
+    "nativeAuth": "기본 로그인",
+    "loading": "계정을 불러오는 중..."
   },
   "Language": {
     "followSystem": "시스템 설정 따름",

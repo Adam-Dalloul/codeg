@@ -56,6 +56,53 @@ describe("account picker", () => {
     expect(picker).toBeEnabled()
   })
 
+  it("shows loading and retry states without declaring a saved account unavailable", () => {
+    const retry = vi.fn()
+    const view = render(
+      <NextIntlClientProvider locale="en" messages={messages}>
+        <AgentAccountSelector
+          accounts={[]}
+          value="a"
+          onChange={vi.fn()}
+          persisted
+          loading
+        />
+      </NextIntlClientProvider>
+    )
+    expect(screen.getByText("Loading accounts...")).toBeVisible()
+    expect(screen.queryByText("Unavailable account")).not.toBeInTheDocument()
+    view.rerender(
+      <NextIntlClientProvider locale="en" messages={messages}>
+        <AgentAccountSelector
+          accounts={[]}
+          value="a"
+          onChange={vi.fn()}
+          persisted
+          loadError
+          onRetry={retry}
+        />
+      </NextIntlClientProvider>
+    )
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }))
+    expect(retry).toHaveBeenCalledOnce()
+    expect(screen.queryByText("Unavailable account")).not.toBeInTheDocument()
+  })
+
+  it("identifies Default in a saved chat when other accounts are available", () => {
+    render(
+      <NextIntlClientProvider locale="en" messages={messages}>
+        <AgentAccountSelector
+          accounts={accounts}
+          value={null}
+          onChange={vi.fn()}
+          persisted
+        />
+      </NextIntlClientProvider>
+    )
+    expect(screen.getByText("Default")).toBeVisible()
+    expect(screen.queryByRole("combobox")).not.toBeInTheDocument()
+  })
+
   it("switches a persisted Default conversation without creating a new chat", async () => {
     const changed = vi.fn()
     render(

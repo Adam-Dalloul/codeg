@@ -64,7 +64,8 @@
     "done": "Fertig",
     "signedInWith": "Anmeldung gefunden: {method}",
     "accountAuth": "{provider}-Konto",
-    "nativeAuth": "Native Anmeldung"
+    "nativeAuth": "Native Anmeldung",
+    "loading": "Konten werden geladen..."
   },
   "Language": {
     "followSystem": "Systemsprache verwenden",

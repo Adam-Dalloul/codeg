@@ -64,7 +64,8 @@
     "done": "完成",
     "signedInWith": "已检测到登录：{method}",
     "accountAuth": "{provider} 账号",
-    "nativeAuth": "原生登录"
+    "nativeAuth": "原生登录",
+    "loading": "正在加载账户..."
   },
   "Language": {
     "followSystem": "跟随系统",
