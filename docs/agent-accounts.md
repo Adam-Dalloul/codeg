@@ -15,8 +15,8 @@ folder and history. Add the same folder again to restore the account binding.
 Named accounts are available for Claude Code, Codex, Gemini, OpenCode, Grok,
 Hermes, CodeBuddy, Cline, Kimi Code, Pi, DeepSeek, Qoder and Antigravity. Cursor
 supports named accounts on Windows and Linux; use Default on macOS. Kiro and
-ZCode do not yet support named accounts. OpenClaw uses its configured gateway's
-account.
+ZCode, TRAE CLI and Command Code do not yet support named accounts. OpenClaw
+uses its configured gateway's account.
 
 OpenCode and Cursor keep the usual home folder and GitHub CLI configuration.
 Other command-line tools that use their separate configuration folders may
