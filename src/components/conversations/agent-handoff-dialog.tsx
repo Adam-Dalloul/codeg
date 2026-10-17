@@ -56,7 +56,10 @@ export function AgentHandoffDialog({
   const [account, setAccount] = useState<string | null>(() =>
     initialAccountId !== undefined
       ? initialAccountId
-      : readSelectedAccount(sourceAgentType)
+      : (useAppWorkspaceStore
+          .getState()
+          .conversations?.find((c) => c.id === conversationId)
+          ?.agent_account_id ?? null)
   )
   const accounts = useAgentAccounts(target)
   const [manage, setManage] = useState<AgentType | null>(null)
@@ -66,6 +69,7 @@ export function AgentHandoffDialog({
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const pending = useRef(false)
+  const destinationChosen = useRef(initialAccountId !== undefined)
   const [retry, setRetry] = useState(0)
 
   useEffect(() => {
@@ -76,7 +80,16 @@ export function AgentHandoffDialog({
     setError(null)
     acpHandoffPlan(conversationId, target, account)
       .then((next) => {
-        if (current) setPlan(next)
+        if (!current) return
+        if (
+          !destinationChosen.current &&
+          target === sourceAgentType &&
+          next.sourceAccountId !== account
+        ) {
+          setAccount(next.sourceAccountId)
+          return
+        }
+        setPlan(next)
       })
       .catch((err: unknown) => {
         if (current) setError(toErrorMessage(err))
@@ -87,10 +100,11 @@ export function AgentHandoffDialog({
     return () => {
       current = false
     }
-  }, [open, conversationId, target, account, retry])
+  }, [open, conversationId, target, account, retry, sourceAgentType])
 
   function selectAgent(next: AgentType) {
     if (next === target) return
+    destinationChosen.current = true
     setTarget(next)
     setAccount(readSelectedAccount(next))
     setPlan(null)
@@ -249,6 +263,7 @@ export function AgentHandoffDialog({
                 accounts={accounts.accounts}
                 value={account}
                 onChange={(next) => {
+                  destinationChosen.current = true
                   setAccount(next)
                   setPlan(null)
                 }}

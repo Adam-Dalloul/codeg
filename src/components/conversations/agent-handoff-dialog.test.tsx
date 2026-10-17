@@ -147,7 +147,7 @@ function result(overrides: Partial<HandoffResult> = {}): HandoffResult {
     ...overrides,
   }
 }
-function mount() {
+function mount(initialAccountId?: string | null) {
   return render(
     <NextIntlClientProvider locale="en" messages={messages}>
       <AgentHandoffDialog
@@ -157,6 +157,7 @@ function mount() {
         folderId={1}
         sourceAgentType="claude_code"
         title="Work"
+        initialAccountId={initialAccountId}
       />
     </NextIntlClientProvider>
   )
@@ -185,6 +186,34 @@ beforeEach(() => {
   h.handoff.mockResolvedValue(result())
 })
 describe("account-aware conversation handoff", () => {
+  it("opens on this conversation's account rather than the new-chat preference", async () => {
+    h.plan.mockImplementation(
+      async (_id: number, target: string, account: string | null) =>
+        plan({
+          sourceAccountId: "personal",
+          targetAgentType: target as HandoffPlan["targetAgentType"],
+          targetAccountId: account,
+          blocked: account === "personal" ? "same_agent" : undefined,
+        })
+    )
+    mount()
+    await waitFor(() =>
+      expect(h.plan).toHaveBeenLastCalledWith(10, "claude_code", "personal")
+    )
+    expect(screen.getByRole("combobox", { name: "Account" })).toHaveTextContent(
+      "Personal"
+    )
+    expect(confirm()).toBeDisabled()
+  })
+
+  it("keeps an explicit Default destination chosen in the chat picker", async () => {
+    mount(null)
+    await waitFor(() => expect(confirm()).toBeEnabled())
+    expect(h.plan).toHaveBeenLastCalledWith(10, "claude_code", null)
+    expect(screen.getByRole("combobox", { name: "Account" })).toHaveTextContent(
+      "Default"
+    )
+  })
   it("keeps the existing tab and adopts the verified target as owner", async () => {
     mount()
     await chooseCodex()
