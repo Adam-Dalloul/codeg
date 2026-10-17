@@ -6,6 +6,7 @@
     "switched": "账号已切换，对话历史已保留。",
     "homeLayout": "请选择包含 {path} 的父文件夹。",
     "gatewayAccount": "会话使用 OpenClaw 网关上配置的账号。",
+    "notSupported": "该智能体暂不支持添加账户。",
     "account": "账户",
     "title": "账户",
     "default": "默认",

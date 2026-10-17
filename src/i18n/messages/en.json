@@ -6,6 +6,7 @@
     "switched": "Account switched. Conversation history kept.",
     "homeLayout": "Select the parent folder containing {path}.",
     "gatewayAccount": "Sessions use the account configured on your OpenClaw gateway.",
+    "notSupported": "Adding accounts is not supported for this agent yet.",
     "account": "Account",
     "title": "Accounts",
     "default": "Default",

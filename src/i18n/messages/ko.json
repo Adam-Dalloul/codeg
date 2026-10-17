@@ -6,6 +6,7 @@
     "switched": "계정이 전환되었습니다. 대화 기록은 유지됩니다.",
     "homeLayout": "{path}를 포함하는 상위 폴더를 선택하세요.",
     "gatewayAccount": "세션은 OpenClaw 게이트웨이에 설정된 계정을 사용합니다.",
+    "notSupported": "이 에이전트는 아직 계정 추가를 지원하지 않습니다.",
     "account": "계정",
     "title": "계정",
     "default": "기본값",

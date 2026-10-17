@@ -6,6 +6,7 @@
     "switched": "Conta alterada. Histórico da conversa mantido.",
     "homeLayout": "Selecione a pasta principal que contém {path}.",
     "gatewayAccount": "As sessões usam a conta configurada no seu gateway OpenClaw.",
+    "notSupported": "Este agente ainda não permite adicionar contas.",
     "account": "Conta",
     "title": "Contas",
     "default": "Padrão",

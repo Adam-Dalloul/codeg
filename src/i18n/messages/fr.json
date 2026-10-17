@@ -6,6 +6,7 @@
     "switched": "Compte changé. Historique de conversation conservé.",
     "homeLayout": "Sélectionnez le dossier parent contenant {path}.",
     "gatewayAccount": "Les sessions utilisent le compte configuré sur votre passerelle OpenClaw.",
+    "notSupported": "Cet agent ne permet pas encore d’ajouter des comptes.",
     "account": "Compte",
     "title": "Comptes",
     "default": "Par défaut",

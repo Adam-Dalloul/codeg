@@ -6,6 +6,7 @@
     "switched": "帳號已切換，對話歷史已保留。",
     "homeLayout": "請選擇包含 {path} 的父資料夾。",
     "gatewayAccount": "對話使用 OpenClaw 閘道上設定的帳號。",
+    "notSupported": "此代理程式暫不支援新增帳戶。",
     "account": "帳戶",
     "title": "帳戶",
     "default": "預設",

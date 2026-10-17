@@ -6,6 +6,7 @@
     "switched": "Cuenta cambiada. Se ha conservado el historial.",
     "homeLayout": "Selecciona la carpeta principal que contiene {path}.",
     "gatewayAccount": "Las sesiones usan la cuenta configurada en tu gateway de OpenClaw.",
+    "notSupported": "Este agente aún no permite añadir cuentas.",
     "account": "Cuenta",
     "title": "Cuentas",
     "default": "Predeterminada",
