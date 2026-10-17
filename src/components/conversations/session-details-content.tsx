@@ -20,8 +20,12 @@ import {
 } from "@/lib/context-window"
 import { getFolderConversation } from "@/lib/api"
 import { useCopiedFlag } from "@/hooks/use-copied-flag"
+import { useModelLabels } from "@/hooks/use-model-labels"
 import { pickModelFromTurns } from "./active-session-details"
 import { AgentIcon } from "@/components/agent-icon"
+import { AssistantAvatar } from "@/components/assistants/assistant-avatar"
+import { useDelegationIdentityLabel } from "@/components/message/delegation-identity"
+import { useAssistant } from "@/stores/assistants-store"
 import { ConversationStatusDot } from "./conversation-status-dot"
 
 interface SessionDetailsContentProps {
@@ -77,10 +81,13 @@ export function SessionIdentityChips({
   agentType: AgentType
   /** Omit to drop the status chip. */
   status?: string | null
-  /** Omit (or pass empty) to drop the model chip. */
+  /** Omit (or pass empty) to drop the model chip. The RAW id as recorded — the
+   *  chip renders whatever the agent calls it when that is known. */
   model?: string | null
 }) {
   const tStatus = useTranslations("Folder.statusLabels")
+  const modelLabel = useModelLabels(agentType)
+  const displayModel = modelLabel(model)
   return (
     <div className="flex flex-wrap items-center gap-x-1 gap-y-1 text-xs text-muted-foreground">
       <span className="inline-flex items-center gap-1.5">
@@ -92,7 +99,7 @@ export function SessionIdentityChips({
         </span>
         {getAgentLabel(agentType)}
       </span>
-      {model && (
+      {displayModel && (
         // The separator rides INSIDE the model chip, with the row's own gap
         // repeated around it so it sits evenly between the two names, and so
         // the two are one flex item: a dot of its own would be left on the line
@@ -103,7 +110,7 @@ export function SessionIdentityChips({
         <span className="inline-flex min-w-0 items-center gap-x-1">
           <span aria-hidden="true">·</span>
           <span dir="ltr" className="wrap-anywhere min-w-0 font-mono">
-            {model}
+            {displayModel}
           </span>
         </span>
       )}
@@ -169,6 +176,39 @@ function resolveSessionDurationMs(
  * (`sidebar-conversation-hover-details.tsx`) renders its fields in the exact
  * same shape as this view rather than growing a near-copy.
  */
+/** The assistant a delegation sub-session ran as: its avatar and name, by
+ *  the same fallback order the delegation cards use. */
+function AssistantInline({
+  id,
+  snapshotName,
+}: {
+  id: number
+  snapshotName: string | null
+}) {
+  const t = useTranslations("Folder.chat.delegation")
+  const assistant = useAssistant(id)
+  const { name, deleted } = useDelegationIdentityLabel({
+    agentType: null,
+    assistantId: id,
+    assistantName: snapshotName,
+  })
+  return (
+    <span className="inline-flex min-w-0 items-center gap-1.5">
+      <AssistantAvatar
+        avatar={assistant?.avatar ?? null}
+        name={name}
+        size={16}
+      />
+      <span className="min-w-0 truncate">{name}</span>
+      {deleted ? (
+        <span className="shrink-0 text-muted-foreground">
+          {t("deletedAssistant")}
+        </span>
+      ) : null}
+    </span>
+  )
+}
+
 export function InfoItem({
   label,
   children,
@@ -309,7 +349,12 @@ export function SessionDetailsContent({
   // use what the fetch derived, then fall back to the (usually empty) summary.
   const resolvedModel =
     modelProp !== undefined ? modelProp : result?.ok ? result.model : null
-  const displayModel = resolvedModel ?? summary.model ?? null
+  const rawModel = resolvedModel ?? summary.model ?? null
+  // Every source above yields the id the transcript recorded. Some agents name
+  // their models with an account-internal key, so show what the agent's own
+  // picker calls it (unknown ids fall through unchanged).
+  const modelLabel = useModelLabels(summary.agent_type)
+  const displayModel = modelLabel(rawModel)
 
   const dateFormatter = useMemo(
     () =>
@@ -401,6 +446,14 @@ export function SessionDetailsContent({
         {summary.parent_id != null && (
           <InfoItem label={t("parentId")} valueClassName={numeric}>
             {summary.parent_id}
+          </InfoItem>
+        )}
+        {summary.assistant_id != null && (
+          <InfoItem label={t("assistant")}>
+            <AssistantInline
+              id={summary.assistant_id}
+              snapshotName={summary.assistant_name ?? null}
+            />
           </InfoItem>
         )}
         <InfoItem label={t("externalId")} className="@[20rem]:col-span-2">

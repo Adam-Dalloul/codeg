@@ -1,11 +1,13 @@
 "use client"
 
 import { useCallback, useMemo, useRef, useSyncExternalStore } from "react"
+import { agentAccountKey } from "@/lib/agent-accounts"
 import {
   useAcpActions,
   useConnectionStore,
   getCachedSelectors,
   type ClaudeApiRetryState,
+  type ConnectErrorInfo,
   type ConnectionState,
   type PendingPermission,
   type PendingUserMessage,
@@ -20,6 +22,7 @@ import type {
   PendingQuestionState,
   PromptCapabilitiesInfo,
   QuestionAnswer,
+  RemoteControlInfo,
   SessionConfigOptionInfo,
   AsyncTaskRecord,
   SessionFailureRecord,
@@ -56,6 +59,12 @@ export interface UseConnectionReturn {
    */
   isViewer: boolean
   status: ConnectionStatus | null
+  /** Why the last `connect()` for this contextKey failed, as the provider
+   *  published it (the toast and the status chip read the same record), or
+   *  null. Covers requests whose own promise never reported it: a request
+   *  parked behind another in-flight connect resolves at once and is run, and
+   *  can fail, later. */
+  connectError: ConnectErrorInfo | null
   promptCapabilities: PromptCapabilitiesInfo
   supportsFork: boolean
   selectorsReady: boolean
@@ -68,6 +77,13 @@ export interface UseConnectionReturn {
   modes: SessionModeStateInfo | null
   configOptions: SessionConfigOptionInfo[] | null
   availableCommands: AvailableCommandInfo[] | null
+  /** The prompt the agent predicts the user will send next, offered by the
+   *  empty composer (Tab fills it in), or `null`. See
+   *  `ConnectionState.promptSuggestion`. */
+  promptSuggestion: string | null
+  /** Claude Code's Remote Control while it is on, or `null`. See
+   *  `ConnectionState.remoteControl`. */
+  remoteControl: RemoteControlInfo | null
   pendingPermission: PendingPermission | null
   pendingUserMessage: PendingUserMessage | null
   /** Feedback-note ids this turn's live message adopted as mid-turn user turns
@@ -111,7 +127,8 @@ export interface UseConnectionReturn {
     agentType: AgentType,
     workingDir?: string,
     sessionId?: string,
-    conversationId?: number
+    conversationId?: number,
+    agentAccountId?: string | null
   ) => Promise<void>
   disconnect: () => Promise<void>
   /** Restart the session (disconnect + resume same sessionId) so it picks up
@@ -155,6 +172,9 @@ const CONN_NON_RENDER_KEYS = new Set<keyof ConnectionState>([
   // enrichment); no useConnection consumer renders it, and it can churn per
   // background tool event.
   "outOfTurnToolCalls",
+  // A stopped turn with its late reports folded in: handed to the runtime
+  // store by the connection dispatch, never rendered from here.
+  "cancelledTurn",
 ])
 
 // Shallow-equal two connection snapshots for RENDER purposes: equal iff every
@@ -217,18 +237,48 @@ export function useConnection(contextKey: string): UseConnectionReturn {
     return raw
   }, [store, contextKey])
   const connection = useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
+  // A `connect()` that has started but not yet produced an entry. Rides the
+  // same per-key listener set, so one subscription covers both.
+  const getPendingSnapshot = useCallback(
+    () => store.getConnectPending(contextKey),
+    [store, contextKey]
+  )
+  const connectPending = useSyncExternalStore(
+    subscribe,
+    getPendingSnapshot,
+    getPendingSnapshot
+  )
 
   const connectionId = connection?.connectionId ?? null
   const agentType = connection?.agentType ?? null
   const isViewer = connection?.isViewer ?? false
-  const status = connection?.status ?? null
+  // An in-flight `connect()` IS "connecting", even though the store has no
+  // entry for it yet: the backend call that creates one only returns after the
+  // agent has spawned, handshaken and resumed the session, so reporting `null`
+  // for that whole stretch told every consumer "idle, nothing in flight" —
+  // which is how opening a historical conversation ended up with no composer
+  // placeholder, no loading cue and no status-bar task. A real entry always
+  // wins: once it exists, its own status is the more specific truth.
+  const status = connection?.status ?? (connectPending ? "connecting" : null)
+  const getConnectErrorSnapshot = useCallback(
+    () => store.getConnectError(contextKey),
+    [store, contextKey]
+  )
+  const connectError =
+    useSyncExternalStore(
+      subscribe,
+      getConnectErrorSnapshot,
+      getConnectErrorSnapshot
+    ) ?? null
   const promptCapabilities =
     connection?.promptCapabilities ?? DEFAULT_PROMPT_CAPABILITIES
   const supportsFork = connection?.supportsFork ?? false
   const selectorsReady = connection?.selectorsReady ?? false
   const sessionId = connection?.sessionId ?? null
   const cached = connection?.agentType
-    ? getCachedSelectors(connection.agentType)
+    ? getCachedSelectors(
+        agentAccountKey(connection.agentType, connection.agentAccountId)
+      )
     : null
   const hasCachedSelectors = cached !== null
   const connectedWorkingDir = connection?.workingDir ?? null
@@ -236,6 +286,8 @@ export function useConnection(contextKey: string): UseConnectionReturn {
   const configOptions =
     connection?.configOptions ?? cached?.configOptions ?? null
   const availableCommands = connection?.availableCommands ?? null
+  const promptSuggestion = connection?.promptSuggestion ?? null
+  const remoteControl = connection?.remoteControl ?? null
   const pendingPermission = connection?.pendingPermission ?? null
   const pendingUserMessage = connection?.pendingUserMessage ?? null
   const steeredMessageIds =
@@ -260,14 +312,16 @@ export function useConnection(contextKey: string): UseConnectionReturn {
       agentType: AgentType,
       workingDir?: string,
       sessionId?: string,
-      conversationId?: number
+      conversationId?: number,
+      agentAccountId?: string | null
     ) =>
       actions.connect(
         contextKey,
         agentType,
         workingDir,
         sessionId,
-        conversationId
+        conversationId,
+        agentAccountId
       ),
     [actions, contextKey]
   )
@@ -335,6 +389,7 @@ export function useConnection(contextKey: string): UseConnectionReturn {
       agentType,
       isViewer,
       status,
+      connectError,
       promptCapabilities,
       supportsFork,
       selectorsReady,
@@ -344,6 +399,8 @@ export function useConnection(contextKey: string): UseConnectionReturn {
       modes,
       configOptions,
       availableCommands,
+      promptSuggestion,
+      remoteControl,
       pendingPermission,
       pendingUserMessage,
       steeredMessageIds,
@@ -377,6 +434,7 @@ export function useConnection(contextKey: string): UseConnectionReturn {
       agentType,
       isViewer,
       status,
+      connectError,
       promptCapabilities,
       supportsFork,
       selectorsReady,
@@ -386,6 +444,8 @@ export function useConnection(contextKey: string): UseConnectionReturn {
       modes,
       configOptions,
       availableCommands,
+      promptSuggestion,
+      remoteControl,
       pendingPermission,
       pendingUserMessage,
       steeredMessageIds,

@@ -9,7 +9,15 @@ use sea_orm::{
 use crate::db::entities::conversation::ConversationKind;
 use crate::db::entities::{conversation, folder};
 use crate::db::error::DbError;
-use crate::models::{AgentType, DbConversationSummary};
+use crate::db::service::conversation_tag_service;
+use crate::models::{AgentType, AssistantRunSnapshot, DbConversationSummary};
+
+pub fn account_condition(id: Option<&str>) -> sea_orm::sea_query::SimpleExpr {
+    match id {
+        Some(id) => conversation::Column::AgentAccountId.eq(id),
+        None => conversation::Column::AgentAccountId.is_null(),
+    }
+}
 
 pub async fn create(
     conn: &DatabaseConnection,
@@ -26,6 +34,7 @@ pub async fn create(
         git_branch,
         None,
         ConversationKind::Regular,
+        None,
     )
     .await
 }
@@ -49,6 +58,7 @@ pub async fn create_chat(
         git_branch,
         None,
         ConversationKind::Chat,
+        None,
     )
     .await
 }
@@ -73,12 +83,13 @@ pub async fn create_with_delegation(
         ConversationKind::Regular
     };
     create_inner(
-        conn, folder_id, agent_type, title, git_branch, delegation, kind,
+        conn, folder_id, agent_type, title, git_branch, delegation, kind, None,
     )
     .await
 }
 
-async fn create_inner(
+#[allow(clippy::too_many_arguments)]
+pub async fn create_inner(
     conn: &DatabaseConnection,
     folder_id: i32,
     agent_type: AgentType,
@@ -86,19 +97,34 @@ async fn create_inner(
     git_branch: Option<String>,
     delegation: Option<crate::acp::delegation::spawner::DelegationLink>,
     kind: ConversationKind,
+    account_id: Option<String>,
 ) -> Result<conversation::Model, DbError> {
+    if let Some(id) = account_id.as_deref() {
+        super::agent_account_service::resolve(conn, agent_type, id).await?;
+    }
     let at_str = serde_json::to_value(agent_type)
         .ok()
         .and_then(|v| v.as_str().map(String::from))
         .unwrap_or_default();
     let now = Utc::now();
-    let (parent_id, parent_tool_use_id, delegation_call_id) = match delegation {
+    let (parent_id, parent_tool_use_id, delegation_call_id, assistant) = match delegation {
         Some(link) => (
             Some(link.parent_conversation_id),
             Some(link.parent_tool_use_id),
             Some(link.delegation_call_id),
+            link.assistant,
         ),
-        None => (None, None, None),
+        None => (None, None, None, None),
+    };
+    let (assistant_id, assistant_snapshot) = match assistant {
+        Some(a) => (
+            Some(a.id),
+            Some(
+                serde_json::to_string(&a.snapshot)
+                    .map_err(|e| DbError::Migration(format!("assistant snapshot: {e}")))?,
+            ),
+        ),
+        None => (None, None),
     };
     let model = conversation::ActiveModel {
         id: NotSet,
@@ -106,6 +132,7 @@ async fn create_inner(
         title: Set(title),
         title_locked: Set(false),
         agent_type: Set(at_str),
+        agent_account_id: Set(account_id),
         status: Set(conversation::ConversationStatus::InProgress),
         kind: Set(kind),
         model: Set(None),
@@ -120,8 +147,24 @@ async fn create_inner(
         deleted_at: Set(None),
         pinned_at: Set(None),
         origin_cwd: Set(None),
+        assistant_id: Set(assistant_id),
+        assistant_snapshot: Set(assistant_snapshot),
     };
     Ok(model.insert(conn).await?)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn create_with_delegation_for_account(
+    conn: &DatabaseConnection,
+    folder_id: i32,
+    agent_type: AgentType,
+    title: Option<String>,
+    git_branch: Option<String>,
+    delegation: Option<crate::acp::delegation::spawner::DelegationLink>,
+    account_id: Option<String>,
+) -> Result<conversation::Model, DbError> {
+    let kind = if delegation.is_some() { ConversationKind::Delegate } else { ConversationKind::Regular };
+    create_inner(conn, folder_id, agent_type, title, git_branch, delegation, kind, account_id).await
 }
 
 pub async fn update_status(
@@ -428,6 +471,14 @@ pub(crate) async fn refresh_codex_auto_titles(
     conn: &DatabaseConnection,
     titles: &HashMap<String, String>,
 ) -> Vec<i32> {
+    refresh_codex_account_titles(conn, titles, None).await
+}
+
+pub(crate) async fn refresh_codex_account_titles(
+    conn: &DatabaseConnection,
+    titles: &HashMap<String, String>,
+    account_id: Option<&str>,
+) -> Vec<i32> {
     if titles.is_empty() {
         return Vec::new();
     }
@@ -442,6 +493,7 @@ pub(crate) async fn refresh_codex_auto_titles(
 
     for external_id_chunk in external_ids.chunks(SQLITE_TITLE_QUERY_CHUNK_SIZE) {
         let candidates = match conversation::Entity::find()
+            .filter(account_condition(account_id))
             .filter(conversation::Column::AgentType.eq(AgentType::Codex.as_wire().into_owned()))
             .filter(conversation::Column::ExternalId.is_in(external_id_chunk.iter().cloned()))
             .filter(conversation::Column::DeletedAt.is_null())
@@ -724,6 +776,7 @@ pub async fn bind_external_id(
                     let holder = conversation::Entity::find()
                         .filter(conversation::Column::ExternalId.eq(external_id.clone()))
                         .filter(conversation::Column::AgentType.eq(current.agent_type.clone()))
+                        .filter(account_condition(current.agent_account_id.as_deref()))
                         .filter(conversation::Column::Id.ne(conversation_id))
                         .one(txn)
                         .await?;
@@ -786,6 +839,7 @@ pub async fn bind_external_id(
                 let already_preserved = conversation::Entity::find()
                     .filter(conversation::Column::ExternalId.eq(previous.clone()))
                     .filter(conversation::Column::AgentType.eq(current.agent_type.clone()))
+                    .filter(account_condition(current.agent_account_id.as_deref()))
                     .filter(conversation::Column::Id.ne(conversation_id))
                     .filter(conversation::Column::DeletedAt.is_null())
                     .one(txn)
@@ -822,6 +876,10 @@ pub async fn bind_external_id(
 
                 let agent_type = carried.agent_type.clone();
                 let preserved = carried.into_active_model(previous.clone()).insert(txn).await?;
+                // The preserving row IS the old conversation as far as the user
+                // can tell, so it keeps the tags they put on it.
+                conversation_tag_service::copy_conversation_tags(txn, conversation_id, preserved.id)
+                    .await?;
                 // The one signal that this happened at all. Deliberately WARN:
                 // every occurrence means a connection bound to a row while
                 // holding a session unrelated to that row's history, which is
@@ -865,97 +923,6 @@ pub async fn bind_external_id(
     }
 }
 
-/// Move a conversation to a different agent AND session in one write, for an
-/// in-place handoff (`acp::handoff`).
-///
-/// This is deliberately not [`bind_external_id`]: that primitive keeps the
-/// outgoing session reachable by splitting it onto a fresh row, because for it
-/// a session change means "unrelated session landed here". A handoff is the
-/// opposite promise. The previous `(agent_type, external_id)` pair is recorded
-/// in `conversation_handoff` BEFORE this runs, so the earlier history stays
-/// reachable through the same row and a split would produce exactly the
-/// duplicate conversation the chain exists to avoid.
-///
-/// Refuses with [`DbError::Conflict`] when another row (live or soft-deleted;
-/// the unique index counts both) already holds the incoming pair. Nothing is
-/// written then, so the caller's session stays where it is. `model` is
-/// cleared for the same reason `bind_external_id` clears it: it described the
-/// previous agent's session and `seed_model_if_empty` would never correct it.
-pub async fn rebind_for_handoff(
-    conn: &DatabaseConnection,
-    conversation_id: i32,
-    agent_type: AgentType,
-    external_id: &str,
-) -> Result<(), DbError> {
-    use sea_orm::sea_query::Expr;
-    use sea_orm::TransactionTrait;
-
-    let agent_type_str = agent_type.as_wire().into_owned();
-    let external_id = external_id.to_string();
-    let requested = (agent_type_str.clone(), external_id.clone());
-    let outcome = conn
-        .transaction::<_, Option<i32>, sea_orm::DbErr>(|txn| {
-            Box::pin(async move {
-                // Write first, as in `bind_external_id`: a self-assignment takes
-                // the SQLite writer lock without a deferred read snapshot.
-                let claimed = conversation::Entity::update_many()
-                    .col_expr(
-                        conversation::Column::UpdatedAt,
-                        Expr::col(conversation::Column::UpdatedAt).into(),
-                    )
-                    .filter(conversation::Column::Id.eq(conversation_id))
-                    .filter(conversation::Column::DeletedAt.is_null())
-                    .exec(txn)
-                    .await?;
-                if claimed.rows_affected == 0 {
-                    return Err(sea_orm::DbErr::RecordNotFound(format!(
-                        "conversation {conversation_id} not found"
-                    )));
-                }
-                let holder = conversation::Entity::find()
-                    .filter(conversation::Column::ExternalId.eq(external_id.clone()))
-                    .filter(conversation::Column::AgentType.eq(agent_type_str.clone()))
-                    .filter(conversation::Column::Id.ne(conversation_id))
-                    .one(txn)
-                    .await?;
-                if let Some(holder) = holder {
-                    return Ok(Some(holder.id));
-                }
-                let current = conversation::Entity::find_by_id(conversation_id)
-                    .one(txn)
-                    .await?
-                    .ok_or_else(|| {
-                        sea_orm::DbErr::RecordNotFound(format!(
-                            "conversation {conversation_id} not found"
-                        ))
-                    })?;
-                let mut active: conversation::ActiveModel = current.into();
-                active.agent_type = Set(agent_type_str);
-                active.external_id = Set(Some(external_id));
-                active.model = Set(None);
-                active.updated_at = Set(Utc::now());
-                active.update(txn).await?;
-                Ok(None)
-            })
-        })
-        .await
-        .map_err(|e| match e {
-            sea_orm::TransactionError::Connection(sea_orm::DbErr::RecordNotFound(msg))
-            | sea_orm::TransactionError::Transaction(sea_orm::DbErr::RecordNotFound(msg)) => {
-                DbError::NotFound(msg)
-            }
-            sea_orm::TransactionError::Connection(e)
-            | sea_orm::TransactionError::Transaction(e) => DbError::Database(e),
-        })?;
-    match outcome {
-        None => Ok(()),
-        Some(holder_row_id) => Err(DbError::Conflict(format!(
-            "agent session {} is already bound to conversation {holder_row_id} for {}; \
-             refusing to hand conversation {conversation_id} off onto it",
-            requested.1, requested.0
-        ))),
-    }
-}
 
 /// What [`bind_external_id`]'s transaction concluded.
 ///
@@ -980,6 +947,7 @@ enum BindTxOutcome {
 /// Snapshotted before the re-point because turning the model into an
 /// `ActiveModel` consumes it.
 struct CarriedOverRow {
+    agent_account_id: Option<String>,
     folder_id: i32,
     title: Option<String>,
     title_locked: bool,
@@ -993,11 +961,14 @@ struct CarriedOverRow {
     created_at: chrono::DateTime<Utc>,
     updated_at: chrono::DateTime<Utc>,
     origin_cwd: Option<String>,
+    assistant_id: Option<i32>,
+    assistant_snapshot: Option<String>,
 }
 
 impl CarriedOverRow {
     fn from(row: &conversation::Model) -> Self {
         Self {
+            agent_account_id: row.agent_account_id.clone(),
             folder_id: row.folder_id,
             title: row.title.clone(),
             title_locked: row.title_locked,
@@ -1031,6 +1002,10 @@ impl CarriedOverRow {
             // `origin_cwd ?? folder.path`, so dropping this would break
             // history lookup for a re-parented conversation.
             origin_cwd: row.origin_cwd.clone(),
+            // Carried: the preserved history is what ran as that assistant,
+            // so it keeps drawing as it.
+            assistant_id: row.assistant_id,
+            assistant_snapshot: row.assistant_snapshot.clone(),
         }
     }
 
@@ -1041,6 +1016,7 @@ impl CarriedOverRow {
             title: Set(self.title),
             title_locked: Set(self.title_locked),
             agent_type: Set(self.agent_type),
+            agent_account_id: Set(self.agent_account_id),
             status: Set(self.status),
             kind: Set(self.kind),
             model: Set(self.model),
@@ -1060,6 +1036,8 @@ impl CarriedOverRow {
             // not to the history.
             pinned_at: Set(None),
             origin_cwd: Set(self.origin_cwd),
+            assistant_id: Set(self.assistant_id),
+            assistant_snapshot: Set(self.assistant_snapshot),
         }
     }
 }
@@ -1219,6 +1197,7 @@ fn conv_to_summary(r: conversation::Model) -> DbConversationSummary {
         title: r.title,
         title_locked: r.title_locked,
         agent_type: parse_agent_type(&r.agent_type),
+        agent_account_id: r.agent_account_id,
         status,
         kind: r.kind.clone(),
         model: r.model,
@@ -1235,6 +1214,13 @@ fn conv_to_summary(r: conversation::Model) -> DbConversationSummary {
         parent_tool_use_id: r.parent_tool_use_id,
         delegation_call_id: r.delegation_call_id,
         origin_cwd: r.origin_cwd,
+        assistant_name: r
+            .assistant_snapshot
+            .as_deref()
+            .and_then(AssistantRunSnapshot::name_from_json),
+        assistant_id: r.assistant_id,
+        // Backfilled by `fill_summary_extras`, like `child_count`.
+        tag_ids: Vec::new(),
     }
 }
 
@@ -1275,6 +1261,27 @@ async fn fill_child_counts(
     Ok(())
 }
 
+/// Backfill what a summary carries but its row does not: `child_count` and
+/// `tag_ids`, each with ONE query over the whole set. Every summary that leaves
+/// this module for the UI goes through here — the sidebar replaces a row
+/// wholesale on each `conversation://changed` upsert, so a path that skipped the
+/// tags would wipe them from the sidebar until the next full refresh.
+async fn fill_summary_extras(
+    conn: &DatabaseConnection,
+    summaries: &mut [DbConversationSummary],
+) -> Result<(), DbError> {
+    fill_child_counts(conn, summaries).await?;
+    if summaries.is_empty() {
+        return Ok(());
+    }
+    let ids: Vec<i32> = summaries.iter().map(|s| s.id).collect();
+    let mut tags = conversation_tag_service::tag_ids_by_conversation(conn, &ids).await?;
+    for s in summaries.iter_mut() {
+        s.tag_ids = tags.remove(&s.id).unwrap_or_default();
+    }
+    Ok(())
+}
+
 pub async fn get_by_id(
     conn: &DatabaseConnection,
     conversation_id: i32,
@@ -1286,8 +1293,64 @@ pub async fn get_by_id(
         .ok_or_else(|| DbError::Migration(format!("Conversation not found: {conversation_id}")))?;
 
     let mut summary = conv_to_summary(conv);
-    fill_child_counts(conn, std::slice::from_mut(&mut summary)).await?;
+    fill_summary_extras(conn, std::slice::from_mut(&mut summary)).await?;
     Ok(summary)
+}
+
+/// Resolve a `codeg://session/<ref>` path to a live (non-deleted) conversation.
+///
+/// `session_ref` is either Codeg's numeric primary key (what MCP and the
+/// `codeg://session/<id>` markdown mentions use) or the agent's own session
+/// id stored as `external_id` (a Grok UUID, a Codex thread id, …). Several
+/// rows can share an `external_id` across agents; the most recently updated
+/// live default-account row wins. An id shared with another account needs a
+/// numeric Codeg conversation link instead. Missing rows return `Ok(None)` — a stale deep link is not
+/// an error.
+///
+/// A numeric ref is tried as a primary key *first* and as an `external_id`
+/// only if no live row carries that id: nothing stops an agent from handing
+/// out all-digit session ids, and silently resolving one to an unrelated
+/// conversation that happens to own that PK is worse than a second query.
+pub async fn find_live_by_session_ref(
+    conn: &DatabaseConnection,
+    session_ref: &str,
+) -> Result<Option<DbConversationSummary>, DbError> {
+    let session_ref = session_ref.trim();
+    if session_ref.is_empty() {
+        return Ok(None);
+    }
+    let by_pk = match session_ref.parse::<i32>() {
+        Ok(id) if id > 0 => {
+            conversation::Entity::find_by_id(id)
+                .filter(conversation::Column::DeletedAt.is_null())
+                .one(conn)
+                .await?
+        }
+        _ => None,
+    };
+    let conv = match by_pk {
+        Some(conv) => Some(conv),
+        None => {
+            let rows = conversation::Entity::find()
+                .filter(conversation::Column::ExternalId.eq(session_ref))
+                .filter(conversation::Column::DeletedAt.is_null())
+                .order_by_desc(conversation::Column::UpdatedAt)
+                .all(conn)
+                .await?;
+            if rows.len() > 1 && rows.iter().any(|row| row.agent_account_id.is_some()) {
+                return Err(DbError::Validation("This session id belongs to multiple accounts. Use the conversation link from Codeg.".into()));
+            }
+            rows.into_iter().next()
+        }
+    };
+    match conv {
+        Some(conv) => {
+            let mut summary = conv_to_summary(conv);
+            fill_summary_extras(conn, std::slice::from_mut(&mut summary)).await?;
+            Ok(Some(summary))
+        }
+        None => Ok(None),
+    }
 }
 
 /// Look up a child conversation by its `delegation_call_id` (the broker's
@@ -1306,6 +1369,36 @@ pub async fn get_by_delegation_call_id(
         .one(conn)
         .await?;
     Ok(conv.map(conv_to_summary))
+}
+
+/// The assistant a delegation child ran as, with the snapshot its row was
+/// written with. `None` for any row that is not an assistant child (or no
+/// row); `Some((id, None))` for an assistant child whose snapshot is missing or
+/// no longer parses — the caller must not mistake that for "no options".
+pub async fn get_assistant_run(
+    conn: &DatabaseConnection,
+    conversation_id: i32,
+) -> Result<Option<(i32, Option<AssistantRunSnapshot>)>, DbError> {
+    let Some(row) = conversation::Entity::find_by_id(conversation_id)
+        .one(conn)
+        .await?
+    else {
+        return Ok(None);
+    };
+    let Some(assistant_id) = row.assistant_id else {
+        return Ok(None);
+    };
+    let snapshot = row.assistant_snapshot.as_deref().and_then(|raw| {
+        serde_json::from_str::<AssistantRunSnapshot>(raw)
+            .map_err(|e| {
+                tracing::warn!(
+                    "[conversation_service] conversation {conversation_id}: unreadable \
+                     assistant snapshot: {e}"
+                );
+            })
+            .ok()
+    });
+    Ok(Some((assistant_id, snapshot)))
 }
 
 pub async fn list_by_folder(
@@ -1354,7 +1447,7 @@ pub async fn list_by_folder(
     let rows = query.all(conn).await?;
 
     let mut summaries: Vec<DbConversationSummary> = rows.into_iter().map(conv_to_summary).collect();
-    fill_child_counts(conn, &mut summaries).await?;
+    fill_summary_extras(conn, &mut summaries).await?;
 
     Ok(summaries)
 }
@@ -1436,7 +1529,7 @@ pub async fn list_all(
 
     let rows = query.all(conn).await?;
     let mut summaries: Vec<DbConversationSummary> = rows.into_iter().map(conv_to_summary).collect();
-    fill_child_counts(conn, &mut summaries).await?;
+    fill_summary_extras(conn, &mut summaries).await?;
     Ok(summaries)
 }
 
@@ -1462,7 +1555,7 @@ pub async fn list_children(
         .all(conn)
         .await?;
     let mut summaries: Vec<DbConversationSummary> = rows.into_iter().map(conv_to_summary).collect();
-    fill_child_counts(conn, &mut summaries).await?;
+    fill_summary_extras(conn, &mut summaries).await?;
     Ok(summaries)
 }
 
@@ -1487,6 +1580,7 @@ mod tests {
             parent_conversation_id: parent.id,
             parent_tool_use_id: "tu-1".into(),
             delegation_call_id: "call-1".into(),
+            assistant: None,
         };
         let child = create_with_delegation(
             conn,
@@ -1578,6 +1672,7 @@ mod tests {
                 parent_conversation_id: parent.id,
                 parent_tool_use_id: "tu-1".into(),
                 delegation_call_id: "call-1".into(),
+                assistant: None,
             }),
         )
         .await
@@ -1592,6 +1687,7 @@ mod tests {
                 parent_conversation_id: parent.id,
                 parent_tool_use_id: "tu-2".into(),
                 delegation_call_id: "call-2".into(),
+                assistant: None,
             }),
         )
         .await
@@ -1640,6 +1736,7 @@ mod tests {
             parent_conversation_id: child,
             parent_tool_use_id: "tu-2".into(),
             delegation_call_id: "call-2".into(),
+            assistant: None,
         };
         create_with_delegation(
             &db.conn,
@@ -1886,132 +1983,8 @@ mod tests {
             .expect("query by external_id")
     }
 
-    #[tokio::test]
-    async fn rebind_for_handoff_moves_agent_and_session_in_place() {
-        // A handoff moves the SAME row to a new agent and session: no sibling
-        // row, no split, the model cleared for the new session to seed.
-        let db = fresh_in_memory_db().await;
-        let folder = seed_folder(&db, "/tmp/codeg-handoff-rebind").await;
-        let row = create(
-            &db.conn,
-            folder,
-            AgentType::ClaudeCode,
-            Some("Retry loop".into()),
-            Some("main".into()),
-        )
-        .await
-        .expect("create");
-        bind_external_id(&db.conn, row.id, "S1", &[])
-            .await
-            .expect("bind S1");
-        seed_model_if_empty(&db.conn, row.id, "claude-sonnet")
-            .await
-            .expect("seed model");
 
-        rebind_for_handoff(&db.conn, row.id, AgentType::Codex, "S2")
-            .await
-            .expect("rebind");
 
-        let current = raw_row(&db.conn, row.id).await;
-        assert_eq!(current.agent_type, "codex");
-        assert_eq!(current.external_id.as_deref(), Some("S2"));
-        assert!(
-            current.model.is_none(),
-            "the model described the Claude session and must not survive onto Codex"
-        );
-        assert_eq!(
-            current.title.as_deref(),
-            Some("Retry loop"),
-            "the row keeps its identity"
-        );
-        assert_eq!(current.git_branch.as_deref(), Some("main"));
-        let rows = conversation::Entity::find()
-            .filter(conversation::Column::DeletedAt.is_null())
-            .all(&db.conn)
-            .await
-            .expect("list");
-        assert_eq!(rows.len(), 1, "a handoff never splits a conversation");
-        assert!(
-            rows_holding(&db.conn, "S1").await.is_empty(),
-            "the outgoing pair is reachable through conversation_handoff, not a row"
-        );
-
-        // A native transfer keeps the session id and only changes the agent.
-        rebind_for_handoff(
-            &db.conn,
-            row.id,
-            AgentType::custom("codex-2").unwrap(),
-            "S2",
-        )
-        .await
-        .expect("same-session rebind");
-        let current = raw_row(&db.conn, row.id).await;
-        assert_eq!(current.agent_type, "custom:codex-2");
-        assert_eq!(current.external_id.as_deref(), Some("S2"));
-    }
-
-    #[tokio::test]
-    async fn rebind_for_handoff_refuses_a_pair_another_row_holds() {
-        // The unique index is over (external_id, agent_type). Taking a pair
-        // another row holds would orphan THAT row's history, so the handoff is
-        // refused and the row left exactly as it was.
-        let db = fresh_in_memory_db().await;
-        let folder = seed_folder(&db, "/tmp/codeg-handoff-conflict").await;
-        let holder = create(&db.conn, folder, AgentType::Codex, None, None)
-            .await
-            .expect("holder");
-        bind_external_id(&db.conn, holder.id, "S2", &[])
-            .await
-            .expect("bind holder");
-        let row = create(&db.conn, folder, AgentType::ClaudeCode, None, None)
-            .await
-            .expect("row");
-        bind_external_id(&db.conn, row.id, "S1", &[])
-            .await
-            .expect("bind row");
-        let before = raw_row(&db.conn, row.id).await;
-
-        let err = rebind_for_handoff(&db.conn, row.id, AgentType::Codex, "S2")
-            .await
-            .expect_err("must refuse");
-        assert!(matches!(err, DbError::Conflict(_)), "got {err:?}");
-        let after = raw_row(&db.conn, row.id).await;
-        assert_eq!(after.agent_type, before.agent_type);
-        assert_eq!(after.external_id, before.external_id);
-        assert_eq!(after.updated_at, before.updated_at);
-
-        // The same pair on a DIFFERENT agent is free: the index is per agent.
-        rebind_for_handoff(&db.conn, row.id, AgentType::Grok, "S2")
-            .await
-            .expect("different agent, same id");
-        assert_eq!(raw_row(&db.conn, row.id).await.agent_type, "grok");
-    }
-
-    #[tokio::test]
-    async fn rebind_for_handoff_ignores_deleted_and_missing_rows() {
-        let db = fresh_in_memory_db().await;
-        let folder = seed_folder(&db, "/tmp/codeg-handoff-deleted").await;
-        let row = create(&db.conn, folder, AgentType::ClaudeCode, None, None)
-            .await
-            .expect("row");
-        bind_external_id(&db.conn, row.id, "S1", &[])
-            .await
-            .expect("bind");
-        soft_delete(&db.conn, row.id).await.expect("delete");
-
-        let err = rebind_for_handoff(&db.conn, row.id, AgentType::Codex, "S2")
-            .await
-            .expect_err("a deleted row is not a handoff target");
-        assert!(matches!(err, DbError::NotFound(_)), "got {err:?}");
-        let after = raw_row(&db.conn, row.id).await;
-        assert_eq!(after.agent_type, "claude_code");
-        assert_eq!(after.external_id.as_deref(), Some("S1"));
-
-        let err = rebind_for_handoff(&db.conn, 999_999, AgentType::Codex, "S3")
-            .await
-            .expect_err("unknown row");
-        assert!(matches!(err, DbError::NotFound(_)), "got {err:?}");
-    }
 
     #[tokio::test]
     async fn bind_external_id_preserves_the_outgoing_session_on_a_new_row() {
@@ -3452,6 +3425,7 @@ mod tests {
                 parent_conversation_id: parent.id,
                 parent_tool_use_id: "tu-activity".into(),
                 delegation_call_id: "call-activity".into(),
+                assistant: None,
             }),
         )
         .await
@@ -3512,6 +3486,7 @@ mod tests {
                 parent_conversation_id: regular.id,
                 parent_tool_use_id: "tu-kind".into(),
                 delegation_call_id: "call-kind".into(),
+                assistant: None,
             }),
         )
         .await

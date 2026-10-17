@@ -183,6 +183,18 @@ async fn main() -> ExitCode {
     // concurrent mcp processes share no log file. No hub/buffer/emitter.
     let _log_guard = codeg_lib::logging::init::init_mcp();
 
+    if std::env::args().nth(1).as_deref() == Some("--conversation-context") {
+        let directory = std::env::args().nth(2).map(std::path::PathBuf::from);
+        let parent = std::env::args().nth(3).and_then(|p| p.parse::<u32>().ok()).filter(|p| *p > 0);
+        return match (directory, parent) {
+            (Some(directory), Some(parent)) => match codeg_lib::acp::handoff_context_mcp::serve(directory, parent).await {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(_) => ExitCode::from(1),
+            },
+            _ => ExitCode::from(2),
+        };
+    }
+
     let args = match parse_args() {
         Ok(a) => a,
         Err(e) => {
@@ -197,6 +209,7 @@ async fn main() -> ExitCode {
         features: CompanionFeatures::parse(args.features.as_deref()),
         custom_agents: parse_csv(args.custom_agents.as_deref()),
         disabled_agents: parse_csv(args.disabled_agents.as_deref()),
+        assistant_support: Default::default(),
     };
 
     let stdin = tokio::io::stdin();

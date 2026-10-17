@@ -25,8 +25,11 @@ import { formatConversationTitle } from "@/lib/conversation-title"
 import { ConversationHeaderFolderPicker } from "@/components/chat/conversation-context-bar"
 import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
 import { useTabActions } from "@/contexts/tab-context"
-import { getRuntimeSession } from "@/stores/conversation-runtime-store"
-import type { AgentType, ConversationStatus } from "@/lib/types"
+import {
+  getRuntimeSession,
+  useConversationRuntimeStore,
+} from "@/stores/conversation-runtime-store"
+import type { ConversationStatus } from "@/lib/types"
 import { STATUS_ORDER } from "@/lib/types"
 import { ConversationStatusDot } from "@/components/conversations/conversation-status-dot"
 import {
@@ -64,6 +67,11 @@ import {
 } from "./active-session-details"
 import { SessionDetailsDialog } from "./session-details-dialog"
 import { AgentHandoffDialog } from "./agent-handoff-dialog"
+import { ConversationHeaderTags } from "./conversation-tag-picker"
+import { useIsMobile } from "@/hooks/use-mobile"
+import { SessionQuotaChip } from "./session-quota-chip"
+import type { AgentType } from "@/lib/types"
+import { resolveConversationAccount } from "@/lib/agent-accounts"
 
 interface ConversationDetailHeaderProps {
   tabId: string
@@ -77,9 +85,7 @@ interface ConversationDetailHeaderProps {
   folderPath: string | undefined
   title: string
   status: ConversationStatus | undefined
-  /** The agent this tab runs on; names the source of a handoff. Absent on
-   *  surfaces that do not know it, which simply hides that entry. */
-  agentType?: AgentType | null
+  agentType: AgentType
 }
 
 /**
@@ -133,6 +139,59 @@ export const ConversationDetailHeader = memo(function ConversationDetailHeader({
       (s.conversations.find((c) => c.id === conversationId)?.pinned_at ??
         null) != null
   )
+  // Tags: offered only on a ROOT conversation of the sidebar list — the same
+  // rows the sidebar lets you tag (a sub-session opened in a tab is not one).
+  // Both reads are narrow: a boolean, and the row's own `tag_ids` array, whose
+  // reference only changes when its tags do.
+  const taggable = useAppWorkspaceStore(
+    (s) =>
+      conversationId != null &&
+      s.conversations.some((c) => c.id === conversationId)
+  )
+  const tagIds = useAppWorkspaceStore((s) =>
+    conversationId == null
+      ? undefined
+      : s.conversations.find((c) => c.id === conversationId)?.tag_ids
+  )
+  const gitBranch = useAppWorkspaceStore((s) =>
+    conversationId == null
+      ? null
+      : (s.conversations.find((c) => c.id === conversationId)?.git_branch ??
+        null)
+  )
+  const listedQuotaAccountId = useAppWorkspaceStore((s) => {
+    const row = s.conversations.find((c) => c.id === conversationId)
+    return row ? (row.agent_account_id ?? null) : undefined
+  })
+  const listedQuotaUpdatedAt = useAppWorkspaceStore(
+    (s) => s.conversations.find((c) => c.id === conversationId)?.updated_at
+  )
+  // Sub-sessions need not appear in the sidebar's root-conversation list.
+  // Their refreshed detail still carries the authoritative saved account.
+  const runtimeQuotaAccountId = useConversationRuntimeStore((s) => {
+    const detail =
+      runtimeId == null ? undefined : s.byConversationId.get(runtimeId)?.detail
+    return detail ? (detail.summary.agent_account_id ?? null) : undefined
+  })
+  const runtimeQuotaUpdatedAt = useConversationRuntimeStore((s) =>
+    runtimeId == null
+      ? undefined
+      : s.byConversationId.get(runtimeId)?.detail?.summary.updated_at
+  )
+  // Use the same newest-binding rule as the chat connection and account picker.
+  const quotaAccountId = resolveConversationAccount({
+    persisted: conversationId != null,
+    draft: null,
+    listed:
+      listedQuotaAccountId !== undefined && listedQuotaUpdatedAt !== undefined
+        ? { accountId: listedQuotaAccountId, updatedAt: listedQuotaUpdatedAt }
+        : undefined,
+    detail:
+      runtimeQuotaAccountId !== undefined && runtimeQuotaUpdatedAt !== undefined
+        ? { accountId: runtimeQuotaAccountId, updatedAt: runtimeQuotaUpdatedAt }
+        : undefined,
+  })
+  const isMobile = useIsMobile()
 
   const [details, setDetails] = useState<ActiveSessionDetails | null>(null)
   // Snapshot the action target when a dialog OPENS. The header is a SINGLE
@@ -260,16 +319,37 @@ export const ConversationDetailHeader = memo(function ConversationDetailHeader({
           className="h-3.5 w-3.5 shrink-0 text-muted-foreground/50"
           aria-hidden
         />
-        {/* min-w-0 flex-1: the title absorbs the remaining width and takes the
-            ellipsis, so the folder crumb on the left stays fully visible. */}
+        {/* The title takes the ellipsis, so the folder crumb on the left stays
+            fully visible — but grows only as far as its own text
+            (`max-w-max`), so the tags follow it instead of the far edge. */}
         <span
-          className="min-w-0 flex-1 truncate text-sm text-foreground/90"
+          className="min-w-0 max-w-max flex-1 truncate text-sm text-foreground/90"
           title={title}
         >
           {displayTitle}
         </span>
+        {/* Capped at half the row so a long tag list squeezes its own chips
+            (they truncate) before it squeezes the title. */}
+        {taggable && conversationId != null ? (
+          <div className="flex max-w-[50%] min-w-0 shrink items-center">
+            <ConversationHeaderTags
+              conversationId={conversationId}
+              folderId={folderId}
+              tagIds={tagIds}
+              gitBranch={gitBranch}
+              max={isMobile ? 1 : 3}
+            />
+          </div>
+        ) : null}
       </div>
-      <div className="flex shrink-0 items-center">
+      <div className="flex shrink-0 items-center gap-0.5">
+        {conversationId != null && (
+          <SessionQuotaChip
+            agentType={agentType}
+            agentAccountId={quotaAccountId}
+            conversationId={conversationId}
+          />
+        )}
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <button

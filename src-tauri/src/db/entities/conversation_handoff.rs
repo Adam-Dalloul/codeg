@@ -43,6 +43,14 @@ pub struct Model {
     /// The briefing had to drop earlier turns to fit the prompt budget.
     pub truncated: bool,
     pub created_at: DateTimeUtc,
+    pub from_account_id: Option<String>,
+    pub to_account_id: Option<String>,
+    #[sea_orm(column_type = "Text", nullable)]
+    pub history_json: Option<String>,
+    pub context_id: Option<String>,
+    pub context_pending: bool,
+    pub source_stats_json: Option<String>,
+    pub source_model: Option<String>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

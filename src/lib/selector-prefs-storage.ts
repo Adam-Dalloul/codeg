@@ -47,12 +47,29 @@ function writeAll(all: AllPrefs) {
   }
 }
 
+/**
+ * Built-in agent types that took over a custom agent, mapped to the custom
+ * agent's id. The database migration that retired it
+ * (`m20261015_000001_kiro_builtin_agent`) cannot reach this device-local
+ * store, so until the built-in has picks of its own it starts from the custom
+ * agent's: both ran the same `kiro-cli acp`, so its saved agent (the mode) is
+ * one the built-in offers too.
+ */
+const RETIRED_CUSTOM_AGENTS = new Map([["kiro", "custom:kiro-cli"]])
+
+function prefsOf(all: AllPrefs, agentType: string): SelectorPrefs | undefined {
+  const own = all[agentType]
+  if (own) return own
+  const retired = RETIRED_CUSTOM_AGENTS.get(agentType)
+  return retired ? all[retired] : undefined
+}
+
 function updatePrefs(
   agentType: string,
   fn: (prefs: SelectorPrefs) => SelectorPrefs
 ) {
   const all = readAll()
-  const existing = all[agentType]
+  const existing = prefsOf(all, agentType)
   // Re-project onto the current schema so legacy fields (`modesHash` /
   // `configHash` from before the backend took ownership of preference
   // application) don't survive across writes. Without this an upgrade
@@ -127,8 +144,7 @@ function healLegacyValues(
 
 /** Read saved mode id for an agent (no validation, just the raw value). */
 export function getSavedModeId(agentType: string): string | null {
-  const all = readAll()
-  return all[agentType]?.modeId ?? null
+  return getSavedPrefsForConnect(agentType).modeId
 }
 
 /**
@@ -141,12 +157,24 @@ export function getSavedModeId(agentType: string): string | null {
  * `session_modes` / `session_config_options` event is emitted, so the
  * frontend never needs to "intercept event and overwrite, then sync back".
  */
-export function getSavedPrefsForConnect(agentType: string): {
+export function getSavedPrefsForConnect(
+  agentType: string,
+  fallbackToFamily = true
+): {
   modeId: string | null
   configValues: Record<string, string> | null
 } {
   const all = readAll()
-  const prefs = all[agentType]
+  const family = agentType.split(":account:")[0]
+  const local = prefsOf(all, agentType)
+  const defaults = fallbackToFamily ? prefsOf(all, family) : undefined
+  const prefs =
+    local || defaults
+      ? {
+          modeId: local?.modeId ?? defaults?.modeId,
+          configValues: { ...defaults?.configValues, ...local?.configValues },
+        }
+      : undefined
   if (!prefs) return { modeId: null, configValues: null }
   const configValues =
     prefs.configValues && Object.keys(prefs.configValues).length > 0
@@ -158,7 +186,30 @@ export function getSavedPrefsForConnect(agentType: string): {
   }
 }
 
+/** Keep the current chat's choices when the target has no explicit choice. */
+export function accountSwitchPreferences(
+  target: ReturnType<typeof getSavedPrefsForConnect>,
+  current: ReturnType<typeof getSavedPrefsForConnect>
+): ReturnType<typeof getSavedPrefsForConnect> {
+  const configValues = { ...current.configValues, ...target.configValues }
+  return {
+    modeId: target.modeId ?? current.modeId,
+    configValues: Object.keys(configValues).length ? configValues : null,
+  }
+}
+
 // ── Save (user actions only) ──
+
+/** Persist the choices accepted by an explicit account switch as one update. */
+export function savePrefsForConnect(
+  agentType: string,
+  prefs: ReturnType<typeof getSavedPrefsForConnect>
+) {
+  updatePrefs(agentType, () => ({
+    modeId: prefs.modeId ?? undefined,
+    configValues: prefs.configValues ?? undefined,
+  }))
+}
 
 export function saveModePreference(
   agentType: string,

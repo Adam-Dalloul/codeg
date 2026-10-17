@@ -13,11 +13,18 @@ describe("classifyToolKind", () => {
     ["grep", "search"],
     ["GLOB", "search"],
     ["list_files", "search"],
+    // pi's built-in set is bash/edit/find/grep/ls/powershell/read/write; `ls`
+    // and `powershell` used to fall through to "other".
+    ["find", "search"],
+    ["ls", "search"],
+    ["powershell", "command"],
     ["bash", "command"],
     ["execute_command", "command"],
     ["read", "read"],
     ["Read File", "read"],
     ["view", "read"],
+    // codex's image viewer, by its raw rollout name.
+    ["view_image", "read"],
     ["edit", "edit"],
     ["NotebookEdit", "edit"],
     ["replace_in_file", "edit"],

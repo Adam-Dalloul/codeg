@@ -39,6 +39,36 @@ export function isContextCompactionMeta(meta: unknown): boolean {
 }
 
 /**
+ * `_meta` key with which the backend claims a compaction call's output IS its
+ * retained summary. The Rust twin (`COMPACTION_SUMMARY_META_KEY` in
+ * `parsers/mod.rs`) is stamped by the reader that translates the ACP
+ * `compaction_update` / `compaction_summary_chunk` lifecycle, whose summary
+ * streams on the call's `raw_output`, and by the history parsers that recover
+ * the summary from the transcript onto the divider's result (claude's
+ * continuation record, codex's `compacted` record).
+ */
+export const COMPACTION_SUMMARY_META_KEY = "codeg.compactionSummary"
+
+/**
+ * The retained summary a compaction call carries, or `null`.
+ *
+ * Requires the backend's explicit claim rather than trusting any output: the
+ * LEGACY compaction call puts other things on the same channel (claude's parks
+ * its `{trigger, preTokens, …}` metadata object there), and a history divider
+ * whose transcript kept no summary has none to claim.
+ */
+export function contextCompactionSummary(
+  meta: unknown,
+  output: string | null | undefined
+): string | null {
+  if (!isContextCompactionMeta(meta)) return null
+  if ((meta as Record<string, unknown>)[COMPACTION_SUMMARY_META_KEY] !== true) {
+    return null
+  }
+  return typeof output === "string" && output.trim().length > 0 ? output : null
+}
+
+/**
  * The versioned `_meta.contextCompaction` payload (codex-acp 1.3.0+), or
  * `null` for the boolean-marker shape and for non-compaction meta. Callers
  * read individual fields leniently — the schema only reserves them, and every

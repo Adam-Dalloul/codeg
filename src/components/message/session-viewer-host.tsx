@@ -27,6 +27,7 @@
 
 import * as React from "react"
 
+import { BrowserViewerDrawer } from "@/components/browser/browser-viewer-drawer"
 import { FileViewerDrawer } from "@/components/files/file-viewer-drawer"
 import {
   SessionViewerHostContext,
@@ -100,6 +101,15 @@ export function SessionViewerHost({ children }: { children: React.ReactNode }) {
           onOpenChange={setOpen}
         />
       )}
+      {request?.kind === "browser" && (
+        <BrowserViewerDrawer
+          key={`${request.remote ? "remote:" : ""}${request.url}`}
+          url={request.url}
+          remote={request.remote === true}
+          open={open}
+          onOpenChange={setOpen}
+        />
+      )}
     </SessionViewerHostContext.Provider>
   )
 }
@@ -125,7 +135,7 @@ function DelegationViewer({
   open: boolean
   onOpenChange: (open: boolean) => void
 }) {
-  const { agentType, task, childConversationId, childConnectionId } =
+  const { identity, task, childConversationId, childConnectionId } =
     useDelegationCardModel(source)
 
   if (childConversationId == null) return null
@@ -136,7 +146,7 @@ function DelegationViewer({
       onOpenChange={onOpenChange}
       childConversationId={childConversationId}
       childConnectionId={childConnectionId}
-      agentType={agentType}
+      identity={identity}
       kickoffTask={task}
     />
   )

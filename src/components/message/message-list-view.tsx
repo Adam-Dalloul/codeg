@@ -12,8 +12,10 @@ import { CompletedTurnContent } from "./completed-turn-content"
 import { ContextCompactionCard } from "./context-compaction-card"
 import { CollapsibleUserMessage } from "./collapsible-user-message"
 import { CollapsibleSystemMessage } from "./collapsible-system-message"
+import { ContentPartsRenderer } from "./content-parts-renderer"
 import {
   contextCompactionPayload,
+  contextCompactionSummary,
   isContextCompactionMeta,
 } from "@/lib/context-compaction"
 import { AgentHandoffCard } from "./agent-handoff-card"
@@ -27,11 +29,15 @@ import {
   type AdaptedContentPart,
   type AdaptedMessage,
   type MessageTurnAdapter,
+  type ToolCallState,
   type UserImageDisplay,
   type UserResourceDisplay,
 } from "@/lib/adapters/ai-elements-adapter"
 import { TurnStats } from "./turn-stats"
 import { LiveTurnStats } from "./live-turn-stats"
+import { ModelLabelProvider } from "./model-label-context"
+import { KnownInvocationsProvider } from "./known-invocations-context"
+import { useTranscriptKnownInvocations } from "./use-transcript-known-invocations"
 import { ReplyArtifacts } from "./reply-artifacts"
 import { UserResourceLinks } from "./user-resource-links"
 import { UserImageAttachments } from "./user-image-attachments"
@@ -70,7 +76,12 @@ import {
   buildPlanKey,
   extractLatestPlanEntriesFromMessages,
 } from "@/lib/agent-plan"
-import type { AgentType, ConnectionStatus, MessageTurn } from "@/lib/types"
+import type {
+  AgentType,
+  AvailableCommandInfo,
+  ConnectionStatus,
+  MessageTurn,
+} from "@/lib/types"
 import { copyTextToClipboard } from "@/lib/utils"
 import { VirtualizedMessageThread } from "@/components/message/virtualized-message-thread"
 import { SelectionActionBubble } from "@/components/message/selection-action-bubble"
@@ -79,13 +90,40 @@ import {
   type MessageNavEntry,
 } from "@/components/message/conversation-message-nav"
 import type { MessageScrollContextValue } from "@/components/message/message-scroll-context"
-import { extractSessionFilesGrouped } from "@/lib/session-files"
+import { buildMessageNavEntries } from "@/components/message/message-nav-entries"
+import { useMessageNavJump } from "@/components/message/use-message-nav-jump"
+import { useConversationOutline } from "@/hooks/use-conversation-outline"
+import { useModelLabels } from "@/hooks/use-model-labels"
+import { useChatAnimationsEnabled } from "@/hooks/use-appearance"
+import { usePageHandoffName } from "@/lib/browser/use-page-handoff-name"
 import { unescapeComposerText } from "@/lib/composer-copy-text"
 import { useStickToBottomContext } from "use-stick-to-bottom"
+import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
+import { MarkdownImageProvider } from "@/components/ai-elements/markdown-local-image"
 
 interface MessageListViewProps {
   conversationId: number
+  /** This transcript's working directory, including new-chat drafts. */
+  imageRoot?: string | null
   agentType: AgentType
+  /**
+   * The slash commands this transcript's agent advertises right now (the same
+   * list behind the composer's `/` menu). A bare `/word` in a sent user message
+   * is shown as a command badge only when it names one of these (or, for Codex,
+   * one of its `$` skills).
+   *
+   * `null`/`undefined` while the agent has not advertised (no connection, or
+   * one still coming up): the transcript then badges what this agent last
+   * advertised in this folder, and no command if it never has. `[]` is an
+   * answer, not that gap: the agent offers no commands, so only Codex's disk
+   * skills can badge.
+   *
+   * Required, though it may be null: a surface that left it out would badge
+   * from whatever this agent last advertised in the folder, on any
+   * connection, instead of from its own connection's list, so every surface
+   * mounting a transcript must decide.
+   */
+  availableCommands: readonly AvailableCommandInfo[] | null | undefined
   connStatus?: ConnectionStatus | null
   isActive?: boolean
   sendSignal?: number
@@ -206,6 +244,15 @@ export type ThreadRenderItem =
       key: string
       kind: "compaction"
       meta: Record<string, unknown> | null
+      /** The retained summary, when the backend claimed one for this call
+       *  (see `contextCompactionSummary`). */
+      summary?: string | null
+      /** The call's lifecycle, so a `/compact` still running reads as
+       *  compacting and its summary streams. */
+      state?: ToolCallState
+      /** The compaction call's id — the event's own name wherever the live
+       *  and history channels agree on one (see `dedupeCompactionItems`). */
+      callId?: string
     }
   | {
       // The seam where a conversation was handed to a different agent
@@ -490,8 +537,11 @@ type AssistantTurnItem = Extract<ThreadRenderItem, { kind: "turn" }>
  * Cache entry for one merged assistant run, keyed on the run's FIRST member
  * group. Valid only while every member's group reference and item key still
  * match: group identity flows through the per-turn adapter + group caches, so
- * member-group equality implies unchanged content AND sourceTurns, while the
- * keys embed phase/id/index so ordering or phase drift invalidates too. A run
+ * member-group equality implies unchanged content AND sourceTurns — the merged
+ * item FREEZES its members' `sourceTurns`, so any turn field the adapter's
+ * cache ignores would be stale here forever (`source_turn_id`, which the fork
+ * affordance reads, is in that tuple for exactly this reason). The keys embed
+ * phase/id/index so ordering or phase drift invalidates too. A run
  * containing the streaming turn misses every batch by construction (the
  * streaming turn re-adapts per batch) — that residual rebuild is the point;
  * purely historical runs hit and keep their group/parts/sourceTurns
@@ -517,18 +567,32 @@ function isEmptyTurnItem(item: ThreadRenderItem): boolean {
   return true
 }
 
+/** A `system` group that is nothing but a failed turn's line
+ *  (`TurnErrorPart`): the parsers write one per failed round, and so does the
+ *  live stream. */
+export function isTurnErrorGroup(group: ResolvedMessageGroup): boolean {
+  return (
+    group.parts.length > 0 &&
+    group.parts.every((part) => part.type === "turn-error")
+  )
+}
+
 /**
  * When a resolved group's ONLY meaningful content is a single context-compaction
- * tool-call part, return that part's `_meta` (so the caller can hoist it to a
- * standalone `"compaction"` divider item); otherwise `null`. Empty text parts are
- * ignored so a bare compaction turn still qualifies. Scoped to assistant groups
- * with no user resources/images. A compaction part always carries a truthy
- * `_meta` (`contextCompaction` as the boolean marker or the 1.3.0+ versioned
- * object), so a non-null return is unambiguous.
+ * tool-call part, return that part's `_meta`, retained summary and call id (so
+ * the caller can hoist it to a standalone `"compaction"` divider item);
+ * otherwise `null`. Empty text parts are ignored so a bare compaction turn
+ * still qualifies. Scoped to assistant groups with no user resources/images. A
+ * compaction part always carries a truthy `_meta` (`contextCompaction` as the
+ * boolean marker or the 1.3.0+ versioned object), so a non-null return is
+ * unambiguous.
  */
-function compactionOnlyMeta(
-  group: ResolvedMessageGroup
-): Record<string, unknown> | null {
+export function compactionOnlyPart(group: ResolvedMessageGroup): {
+  meta: Record<string, unknown> | null
+  summary: string | null
+  state: ToolCallState
+  callId: string
+} | null {
   if (group.role !== "assistant") return null
   if (group.resources.length > 0 || group.images.length > 0) return null
   const meaningful = group.parts.filter(
@@ -539,7 +603,12 @@ function compactionOnlyMeta(
   if (only.type !== "tool-call" || !isContextCompactionMeta(only.meta)) {
     return null
   }
-  return only.meta ?? null
+  return {
+    meta: only.meta ?? null,
+    summary: contextCompactionSummary(only.meta, only.output),
+    state: only.state,
+    callId: only.toolCallId,
+  }
 }
 
 /**
@@ -567,17 +636,24 @@ function compactionEventKey(
 /**
  * Drop repeat renderings of one compaction, keeping the first.
  *
- * A compaction reaches the timeline through two independent channels that no
- * id-keyed dedup can join: the live ACP `tool_call` (a `live-…` turn) and the
- * agent's own transcript, which `parsers::claude` turns into a divider under a
- * parser id. Mid-turn both are in hand at once — and unlike an ordinary
- * partial reply, the usual suppressor cannot help here, because the `/compact`
- * prompt is not persisted until AFTER the boundary, so the backend has no
+ * A compaction reaches the timeline through two independent channels: the live
+ * ACP `tool_call` (a `live-…` turn) and the agent's own transcript, which the
+ * history parsers turn into a divider under a parser turn id. Mid-turn both can
+ * be in hand at once — and unlike an ordinary partial reply, the usual
+ * suppressor cannot help here, because the `/compact` prompt is not persisted
+ * until AFTER the boundary (claude), or ever (codex), so the backend has no
  * in-flight user turn to anchor on (`apply_in_flight_message_id`).
  *
- * Content is therefore the only usable identity; see [`compactionEventKey`]
- * for why it is safe. Returns the input array when nothing is dropped, so the
- * common path allocates nothing.
+ * Two identities, either one enough:
+ * - the call id, where both channels name the event alike — codex-acp's live
+ *   `compactionId` is the app-server item id `parsers::codex` names its divider
+ *   by, and codex sends no counters for the content key to use;
+ * - the content, where they do not — claude's live id is its `compacting`
+ *   status message and its transcript's is the boundary record; see
+ *   [`compactionEventKey`] for why the content key is safe.
+ *
+ * Returns the input array when nothing is dropped, so the common path
+ * allocates nothing.
  */
 export function dedupeCompactionItems(
   items: ThreadRenderItem[]
@@ -586,14 +662,16 @@ export function dedupeCompactionItems(
   let dropped = false
   const kept = items.filter((item) => {
     if (item.kind !== "compaction") return true
-    const key = compactionEventKey(item.meta)
-    if (key === null) return true
-    if (seen.has(key)) {
-      dropped = true
-      return false
-    }
-    seen.add(key)
-    return true
+    const keys = [
+      compactionEventKey(item.meta),
+      item.callId ? `call:${item.callId}` : null,
+    ].filter((key): key is string => key !== null)
+    const repeat = keys.some((key) => seen.has(key))
+    // A repeat's other identity names the same event too, so it is recorded
+    // even though the item itself goes.
+    for (const key of keys) seen.add(key)
+    if (repeat) dropped = true
+    return !repeat
   })
   return dropped ? kept : items
 }
@@ -869,6 +947,10 @@ export function markThreadTail(items: ThreadRenderItem[]): void {
   for (let idx = items.length - 1; idx >= 0; idx--) {
     const item = items[idx]
     if (item.kind === "turn" && isEmptyTurnItem(item)) continue
+    // Nor is a failed round's closing line where a fork lands: a tail fork
+    // keeps everything up to the reply before it — the failure is nothing the
+    // agent carries on from — so that reply is still the thread's tail.
+    if (item.kind === "turn" && isTurnErrorGroup(item.group)) continue
     if (item.kind === "turn") item.isThreadTail = true
     break
   }
@@ -933,6 +1015,11 @@ const HistoricalMessageGroup = memo(function HistoricalMessageGroup({
   isThreadTail?: boolean
 }) {
   if (group.role === "system") {
+    // A failed turn's line is the agent's account of the failure, not a
+    // message the system sent: it closes the round in place, unboxed.
+    if (isTurnErrorGroup(group)) {
+      return <ContentPartsRenderer parts={group.parts} role="system" />
+    }
     return <CollapsibleSystemMessage parts={group.parts} />
   }
 
@@ -1034,27 +1121,33 @@ const AutoScrollOnSend = memo(function AutoScrollOnSend({
   signal: number
 }) {
   const { scrollToBottom } = useStickToBottomContext()
+  const chatAnimations = useChatAnimationsEnabled()
   const lastSignalRef = useRef(signal)
 
   useEffect(() => {
     if (signal === lastSignalRef.current) return
     lastSignalRef.current = signal
 
-    scrollToBottom()
+    const options = chatAnimations
+      ? undefined
+      : { animation: "instant" as const }
+    scrollToBottom(options)
     const rafId = requestAnimationFrame(() => {
-      scrollToBottom()
+      scrollToBottom(options)
     })
     return () => {
       cancelAnimationFrame(rafId)
     }
-  }, [scrollToBottom, signal])
+  }, [scrollToBottom, signal, chatAnimations])
 
   return null
 })
 
 export function MessageListView({
   conversationId,
+  imageRoot,
   agentType,
+  availableCommands,
   connStatus,
   isActive = true,
   sendSignal = 0,
@@ -1073,6 +1166,10 @@ export function MessageListView({
 }: MessageListViewProps) {
   const t = useTranslations("Folder.chat.messageList")
   const sharedT = useTranslations("Folder.chat.shared")
+  const pageHandoffName = usePageHandoffName()
+  // Resolved once for the whole thread rather than per reply: the labels are a
+  // property of the agent, not of any one turn.
+  const modelLabel = useModelLabels(agentType)
   // Subscribe to only this conversation's session + derived timeline. Another
   // conversation's streaming token no longer re-renders this view; the timeline
   // selector returns a reference-stable array (memoized per session object) so
@@ -1089,13 +1186,44 @@ export function MessageListView({
   // (windowed detail with a non-zero offset). Legacy full responses never
   // report an offset, so the loader row and near-top trigger stay off.
   const detail = session?.detail ?? null
+  const imageFolderId = detail?.summary.folder_id
+  const storedImageRoot = useAppWorkspaceStore(
+    (s) =>
+      s.allFolders.find((folder) => folder.id === imageFolderId)?.path ?? null
+  )
+  const resolvedImageRoot =
+    imageRoot === undefined ? storedImageRoot : imageRoot
+  // What a bare `/word`·`$word` in a user bubble has to be on to render as a
+  // command badge: what the composer's menu offers this agent (or, until its
+  // connection advertises, what it last advertised in this folder), so the
+  // bubble never claims a command for a path or a word in prose.
+  const knownInvocations = useTranscriptKnownInvocations(
+    agentType,
+    availableCommands,
+    resolvedImageRoot
+  )
   const hasOlderTurns = isWindowedDetail(detail) && detail.turns_offset > 0
   const loadingOlderTurns = session?.loadingOlderTurns ?? false
-  const { loadOlderTurns } = useConversationRuntimeActions()
+  const { loadOlderTurns, loadOlderTurnsThrough, refetchDetail } =
+    useConversationRuntimeActions()
   const handleLoadOlder = useCallback(() => {
     loadOlderTurns(conversationId)
   }, [loadOlderTurns, conversationId])
 
+  // The agent ran a turn on its own and the wire content was dropped unrendered
+  // (see `pendingOutOfTurnContent`). Offer a re-read rather than doing one on a
+  // timer: the transcript's last write races the wire by single-digit
+  // milliseconds — the race that got the refetch-on-turn-complete patch
+  // reverted, see `completeTurn` in conversation-runtime-store — and a click
+  // lands far outside that window. `preserveLive` so a turn the user started in
+  // the meantime keeps streaming underneath. The flag clears on the response,
+  // so the pill doubles as its own progress indicator via `detailLoading`.
+  const pendingOutOfTurnContent = session?.pendingOutOfTurnContent ?? false
+  const handleLoadOutOfTurnContent = useCallback(() => {
+    refetchDetail(conversationId, { preserveLive: true })
+  }, [refetchDetail, conversationId])
+
+  const chatAnimations = useChatAnimationsEnabled()
   const shouldUseSmoothResize = !(
     isActive &&
     !detailLoading &&
@@ -1106,8 +1234,9 @@ export function MessageListView({
     () => ({
       attachedResources: sharedT("attachedResources"),
       toolCallFailed: sharedT("toolCallFailed"),
+      pageHandoffName,
     }),
-    [sharedT]
+    [sharedT, pageHandoffName]
   )
 
   const sessionSyncState = session?.syncState ?? "idle"
@@ -1191,9 +1320,16 @@ export function MessageListView({
       // Hoist a compaction-only turn to its own standalone divider item so it
       // renders BETWEEN turns instead of being merged into (and wedged inside)
       // the preceding assistant reply by `mergeConsecutiveAssistantTurns`.
-      const compactionMeta = compactionOnlyMeta(group)
-      if (compactionMeta !== null) {
-        return { key, kind: "compaction" as const, meta: compactionMeta }
+      const compaction = compactionOnlyPart(group)
+      if (compaction !== null) {
+        return {
+          key,
+          kind: "compaction" as const,
+          meta: compaction.meta,
+          summary: compaction.summary,
+          state: compaction.state,
+          callId: compaction.callId,
+        }
       }
       const handoffMeta = handoffOnlyMeta(group)
       if (handoffMeta !== null) {
@@ -1385,7 +1521,11 @@ export function MessageListView({
           // Chrome-less centered divider between turns (no avatar / stats footer).
           return (
             <div className="px-1 py-2">
-              <ContextCompactionCard meta={item.meta} />
+              <ContextCompactionCard
+                state={item.state}
+                meta={item.meta}
+                summary={item.summary}
+              />
             </div>
           )
         case "handoff":
@@ -1472,63 +1612,74 @@ export function MessageListView({
   // never overlaps the composer or the tab strip.
   const selectionBoxRef = useRef<HTMLDivElement | null>(null)
 
-  // Cheap user-message tally for the collapsed chip — counts user turns without
-  // parsing any file diffs.
-  const userMessageCount = useMemo(() => {
-    if (!showMessageNav) return 0
+  // The loaded user messages: how many, and where each renders. Cheap — no
+  // diff parsing — so the collapsed chip and the jumps can use it while
+  // streaming.
+  const loadedUserMessages = useMemo(() => {
+    const threadIndexByTurnId = new Map<string, number>()
     let count = 0
-    for (const item of threadItems) {
-      if (item.kind === "turn" && item.group.role === "user") count += 1
-    }
-    return count
-  }, [showMessageNav, threadItems])
-
-  // One entry per user message — including ones with no edits (placeholders).
-  // Computed lazily: only while the panel is expanded, since
-  // `extractSessionFilesGrouped` parses every turn's diffs. Collapsed (the
-  // default) it stays EMPTY, keeping the streaming hot path free of diff parsing.
-  //
-  // Windowed loading caveat (accepted degradation): counts, ordinals and file
-  // summaries cover only the LOADED window — paging in older history extends
-  // them. Nav targets are recomputed with the items on every prepend, so the
-  // indices themselves never go stale.
-  const navEntries = useMemo<MessageNavEntry[]>(() => {
-    if (!showMessageNav || !navExpanded) return EMPTY_NAV_ENTRIES
-    const turns = timelineTurns.map((item) => item.turn)
-    const groups = extractSessionFilesGrouped(turns, { includeEmpty: true })
-    if (groups.length === 0) return EMPTY_NAV_ENTRIES
-
-    const indexByTurnId = new Map<string, number>()
+    if (!showMessageNav) return { count, threadIndexByTurnId }
     for (let i = 0; i < threadItems.length; i++) {
       const item = threadItems[i]
       if (item.kind === "turn" && item.group.role === "user") {
-        indexByTurnId.set(item.group.id, i)
+        count += 1
+        threadIndexByTurnId.set(item.group.id, i)
       }
     }
+    return { count, threadIndexByTurnId }
+  }, [showMessageNav, threadItems])
 
-    const entries: MessageNavEntry[] = []
-    for (const group of groups) {
-      const threadIndex = indexByTurnId.get(group.userTurnId)
-      if (threadIndex == null) continue
-      let additions = 0
-      let deletions = 0
-      for (const file of group.files) {
-        additions += file.additions
-        deletions += file.deletions
-      }
-      entries.push({
-        threadIndex,
-        turnId: group.userTurnId,
-        ordinal: entries.length + 1,
-        label: group.userMessage,
-        additions,
-        deletions,
-        files: group.files,
-        hasChanges: group.files.length > 0,
-      })
-    }
+  // A long conversation is loaded a window at a time (reverse infinite
+  // scroll), but the navigator covers all of it: the window reports how many
+  // user messages lie above it, and their outline is fetched while the panel
+  // is open. A server that doesn't report the count predates the outline too;
+  // the navigator then covers the loaded window only.
+  const windowedDetail = isWindowedDetail(detail) ? detail : null
+  const earlierUserCount = showMessageNav
+    ? (windowedDetail?.user_turns_before_offset ?? 0)
+    : 0
+  const userMessageCount = earlierUserCount + loadedUserMessages.count
+  const earlierOutline = useConversationOutline({
+    fetchId: session?.dbConversationId ?? conversationId,
+    offset: windowedDetail?.turns_offset ?? 0,
+    prefixHash: windowedDetail?.prefix_hash ?? null,
+    enabled: navExpanded && earlierUserCount > 0,
+  })
+  const earlierOutlineState = earlierOutline.state
+
+  // One entry per user message — including ones with no edits (placeholders).
+  // Computed lazily: only while the panel is expanded, since grouping parses
+  // every turn's diffs. Collapsed (the default) it stays EMPTY, keeping the
+  // streaming hot path free of diff parsing. Thread indices are recomputed
+  // with the items on every prepend, so the jump targets never go stale.
+  const navEntries = useMemo<MessageNavEntry[]>(() => {
+    if (!showMessageNav || !navExpanded) return EMPTY_NAV_ENTRIES
+    const entries = buildMessageNavEntries({
+      earlierTurns:
+        earlierOutlineState.status === "ready"
+          ? earlierOutlineState.turns
+          : null,
+      earlierUserCount,
+      loadedTurns: timelineTurns.map((item) => item.turn),
+      threadIndexByTurnId: loadedUserMessages.threadIndexByTurnId,
+    })
     return entries.length > 0 ? entries : EMPTY_NAV_ENTRIES
-  }, [showMessageNav, navExpanded, timelineTurns, threadItems])
+  }, [
+    showMessageNav,
+    navExpanded,
+    earlierOutlineState,
+    earlierUserCount,
+    timelineTurns,
+    loadedUserMessages,
+  ])
+
+  const navJump = useMessageNavJump({
+    conversationId,
+    threadIndexByTurnId: loadedUserMessages.threadIndexByTurnId,
+    scrollApiRef,
+    smooth: chatAnimations,
+    loadOlderTurnsThrough,
+  })
 
   const hasRenderableContent = threadItems.length > 0 || Boolean(liveMessage)
 
@@ -1602,7 +1753,7 @@ export function MessageListView({
     )
   }
 
-  return (
+  const thread = (
     // The "查看会话" drawers are hosted HERE, not in the cards that offer them:
     // those live in virtua's rows and take their drawer down with them when
     // they scroll out of the buffer. This is the nearest ancestor that owns
@@ -1611,11 +1762,17 @@ export function MessageListView({
     <SessionViewerHost>
       <div
         ref={selectionBoxRef}
-        className="relative flex h-full min-h-0 flex-col"
+        className="chat-motion-scope relative flex h-full min-h-0 flex-col"
       >
         <MessageThread
           className="flex-1 min-h-0"
-          resize={shouldUseSmoothResize ? "smooth" : undefined}
+          resize={
+            !chatAnimations
+              ? "instant"
+              : shouldUseSmoothResize
+                ? "smooth"
+                : undefined
+          }
         >
           <AutoScrollOnSend signal={sendSignal} />
           <VirtualizedMessageThread
@@ -1632,7 +1789,28 @@ export function MessageListView({
             prependEpoch={session?.olderTurnsPrependEpoch ?? 0}
             prependScopeKey={conversationId}
           />
-          <MessageThreadScrollButton />
+          {/* Stacked, not overlapping: both pin to the thread's bottom centre,
+          so the scroll button steps up while the pill is showing. */}
+          <MessageThreadScrollButton
+            className={pendingOutOfTurnContent ? "bottom-16" : undefined}
+          />
+          {pendingOutOfTurnContent && (
+            <Button
+              className="absolute bottom-4 left-[50%] translate-x-[-50%] gap-1.5 rounded-full bg-background/90 shadow-sm hover:bg-muted/90"
+              disabled={detailLoading}
+              onClick={handleLoadOutOfTurnContent}
+              size="sm"
+              type="button"
+              variant="outline"
+            >
+              {detailLoading ? (
+                <Loader2 className="size-3.5 animate-spin" />
+              ) : (
+                <RefreshCw className="size-3.5" />
+              )}
+              {t("loadBackgroundActivity")}
+            </Button>
+          )}
         </MessageThread>
         {liveMessage && connStatus === "prompting" && (
           <LiveTurnStats
@@ -1642,14 +1820,14 @@ export function MessageListView({
           />
         )}
         {/* Shared overlay stack pinned to the inline-start edge (top-left in LTR,
-          top-right in RTL). A flex column keeps the order stable regardless of
-          each panel's expand/collapse height: the message navigator first, then
-          the plan panel, then the sub-agent panel. Empty panels render null and
-          collapse out. Positioning lives here (not in the child overlays); the
-          chips are "bullets" — flat on the start side (flush to the pinned
-          edge), rounded on the end side — that expand toward the inline-end on
-          hover. Logical `start-0` + `items-start` keep the anchor and the bullet
-          on the same side, so the whole stack mirrors cleanly in RTL. */}
+        top-right in RTL). A flex column keeps the order stable regardless of
+        each panel's expand/collapse height: the message navigator first, then
+        the plan panel, then the sub-agent panel. Empty panels render null and
+        collapse out. Positioning lives here (not in the child overlays); the
+        chips are "bullets" — flat on the start side (flush to the pinned
+        edge), rounded on the end side — that expand toward the inline-end on
+        hover. Logical `start-0` + `items-start` keep the anchor and the bullet
+        on the same side, so the whole stack mirrors cleanly in RTL. */}
         <div className="pointer-events-none absolute start-0 top-4 z-20 flex max-w-[min(22rem,calc(100%-2rem))] flex-col items-start gap-2">
           {showMessageNav && userMessageCount > 0 && (
             <ConversationMessageNav
@@ -1657,7 +1835,15 @@ export function MessageListView({
               expanded={navExpanded}
               onToggle={setNavExpanded}
               entries={navEntries}
-              scrollApiRef={scrollApiRef}
+              onSelect={navJump.select}
+              revealingTurnId={navJump.revealingTurnId}
+              earlier={
+                earlierOutlineState.status === "loading" ||
+                earlierOutlineState.status === "error"
+                  ? earlierOutlineState.status
+                  : null
+              }
+              onRetryEarlier={earlierOutline.retry}
             />
           )}
           <AgentPlanOverlay
@@ -1682,5 +1868,15 @@ export function MessageListView({
         />
       </div>
     </SessionViewerHost>
+  )
+
+  return (
+    <MarkdownImageProvider rootPath={resolvedImageRoot}>
+      <ModelLabelProvider value={modelLabel}>
+        <KnownInvocationsProvider value={knownInvocations}>
+          {thread}
+        </KnownInvocationsProvider>
+      </ModelLabelProvider>
+    </MarkdownImageProvider>
   )
 }

@@ -6,18 +6,37 @@ import type { ConnectionState } from "@/contexts/acp-connections-context"
 // hook subscribes to. `setConn` mutates and notifies (like a dispatch would).
 const fake = vi.hoisted(() => {
   let conn: ConnectionState | undefined
+  // The in-flight-connect() marker, which lives beside the connections map and
+  // rides the same per-key listeners.
+  let pending: { agentType: string; workingDir: string | null } | undefined
   const listeners = new Set<() => void>()
+  const cachedSelectors = new Map<
+    string,
+    {
+      modes: ConnectionState["modes"]
+      configOptions: ConnectionState["configOptions"]
+    }
+  >()
   return {
+    cachedSelectors,
     reset() {
       conn = undefined
+      pending = undefined
       listeners.clear()
+      cachedSelectors.clear()
     },
-    setConn(next: ConnectionState) {
+    setConn(next: ConnectionState | undefined) {
       conn = next
+      for (const l of listeners) l()
+    },
+    setPending(next: { agentType: string; workingDir: string | null } | null) {
+      pending = next ?? undefined
       for (const l of listeners) l()
     },
     store: {
       getConnection: () => conn,
+      getConnectPending: () => pending,
+      getConnectError: () => undefined,
       getActiveKey: () => null,
       subscribeKey: (_key: string, cb: () => void) => {
         listeners.add(cb)
@@ -48,7 +67,7 @@ vi.mock("@/contexts/acp-connections-context", () => {
   return {
     useConnectionStore: () => fake.store,
     useAcpActions: () => actions,
-    getCachedSelectors: () => null,
+    getCachedSelectors: (key: string) => fake.cachedSelectors.get(key) ?? null,
   }
 })
 
@@ -171,5 +190,67 @@ describe("useConnection snapshot stability", () => {
     })
     expect(probe.renders).toBe(mounted + 1)
     expect(probe.result.current.status).toBe("connected")
+  })
+})
+
+describe("useConnection in-flight connect", () => {
+  it("shows the connecting account's cached selectors and updates when its account changes", () => {
+    fake.reset()
+    const personal = {
+      modes: { current_mode_id: "default", available_modes: [] },
+      configOptions: [],
+    }
+    const work = {
+      modes: { current_mode_id: "plan", available_modes: [] },
+      configOptions: [],
+    }
+    fake.cachedSelectors.set("claude_code", personal)
+    fake.cachedSelectors.set("claude_code:account:work", work)
+    fake.setConn(makeConn({ status: "connecting", agentAccountId: "work" }))
+    const { result } = renderHook(() => useConnection("k"))
+    expect(result.current.modes).toBe(work.modes)
+    expect(result.current.configOptions).toBe(work.configOptions)
+    act(() =>
+      fake.setConn(makeConn({ status: "connecting", agentAccountId: null }))
+    )
+    expect(result.current.modes).toBe(personal.modes)
+    expect(result.current.configOptions).toBe(personal.configOptions)
+    act(() =>
+      fake.setConn(makeConn({ status: "connecting", agentAccountId: "new" }))
+    )
+    expect(result.current.modes).toBeNull()
+    expect(result.current.hasCachedSelectors).toBe(false)
+  })
+
+  it("reports `connecting` while a connect() is in flight with no entry yet", () => {
+    fake.reset()
+    const { result } = renderHook(() => useConnection("k"))
+    // No entry, no in-flight connect — nothing is happening.
+    expect(result.current.status).toBeNull()
+
+    // `connect()` published its marker BEFORE the (slow) backend call that
+    // eventually creates the entry. That whole stretch has to read as
+    // connecting, or the composer and status bar see an idle session.
+    act(() => fake.setPending({ agentType: "claude_code", workingDir: "/w" }))
+    expect(result.current.status).toBe("connecting")
+
+    // The entry lands: its own status is the more specific truth from here on,
+    // including once the marker is cleared in connect()'s finally.
+    act(() => fake.setConn(makeConn({ status: "connected" })))
+    expect(result.current.status).toBe("connected")
+    act(() => fake.setPending(null))
+    expect(result.current.status).toBe("connected")
+  })
+
+  it("falls back to null once a failed connect clears its marker", () => {
+    fake.reset()
+    fake.setPending({ agentType: "codex", workingDir: null })
+    const { result } = renderHook(() => useConnection("k"))
+    expect(result.current.status).toBe("connecting")
+
+    // A connect that threw (agent not installed, spawn failure) leaves no
+    // entry behind, so the key goes back to reporting nothing in flight.
+    act(() => fake.setPending(null))
+    expect(result.current.status).toBeNull()
   })
 })

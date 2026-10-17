@@ -106,6 +106,101 @@ pub fn build_router(
             post(handlers::session_info::set_session_info_settings),
         )
         .route(
+            "/get_browser_tools_settings",
+            post(handlers::browser_tools::get_browser_tools_settings),
+        )
+        .route(
+            "/set_browser_tools_settings",
+            post(handlers::browser_tools::set_browser_tools_settings),
+        )
+        .route(
+            "/get_computer_tools_settings",
+            post(handlers::computer_tools::get_computer_tools_settings),
+        )
+        .route(
+            "/set_computer_tools_settings",
+            post(handlers::computer_tools::set_computer_tools_settings),
+        )
+        .route(
+            "/set_computer_tools_enabled",
+            post(handlers::computer_tools::set_computer_tools_enabled),
+        )
+        .route(
+            "/set_computer_tools_preferences",
+            post(handlers::computer_tools::set_computer_tools_preferences),
+        )
+        // Computer use itself: answered only by a codeg-server let share the
+        // screen it runs on (see `handlers::computer`).
+        .route(
+            "/computer_available",
+            post(handlers::computer::computer_available),
+        )
+        .route(
+            "/computer_status",
+            post(handlers::computer::computer_status),
+        )
+        .route(
+            "/computer_request_permission",
+            post(handlers::computer::computer_request_permission),
+        )
+        .route(
+            "/computer_open_permission_settings",
+            post(handlers::computer::computer_open_permission_settings),
+        )
+        .route(
+            "/computer_reveal_helper",
+            post(handlers::computer::computer_reveal_helper),
+        )
+        .route(
+            "/computer_list_shareable_windows",
+            post(handlers::computer::computer_list_shareable_windows),
+        )
+        .route(
+            "/computer_window_thumbnail",
+            post(handlers::computer::computer_window_thumbnail),
+        )
+        .route(
+            "/computer_share_window",
+            post(handlers::computer::computer_share_window),
+        )
+        .route(
+            "/computer_share_windows",
+            post(handlers::computer::computer_share_windows),
+        )
+        .route(
+            "/computer_shared_state",
+            post(handlers::computer::computer_shared_state),
+        )
+        .route(
+            "/computer_share_app",
+            post(handlers::computer::computer_share_app),
+        )
+        .route(
+            "/computer_share_screen",
+            post(handlers::computer::computer_share_screen),
+        )
+        .route(
+            "/computer_revoke_all",
+            post(handlers::computer::computer_revoke_all),
+        )
+        .route("/computer_stop", post(handlers::computer::computer_stop))
+        .route(
+            "/computer_stop_key_status",
+            post(handlers::computer::computer_stop_key_status),
+        )
+        .route(
+            "/computer_driver_info",
+            post(handlers::computer::computer_driver_info),
+        )
+        .route(
+            "/computer_driver_install",
+            post(handlers::computer::computer_driver_install),
+        )
+        .route(
+            "/computer_driver_uninstall",
+            post(handlers::computer::computer_driver_uninstall),
+        )
+        .route(
             "/get_chat_authoring_settings",
             post(handlers::chat_authoring::get_chat_authoring_settings),
         )
@@ -120,6 +215,10 @@ pub fn build_router(
         .route(
             "/get_folder_conversation_turns",
             post(handlers::conversations::get_folder_conversation_turns),
+        )
+        .route(
+            "/get_folder_conversation_outline",
+            post(handlers::conversations::get_folder_conversation_outline),
         )
         .route(
             "/list_opened_tabs",
@@ -240,6 +339,58 @@ pub fn build_router(
             post(handlers::folders::set_folder_group),
         )
         .route(
+            "/assistant_list",
+            post(handlers::assistants::assistant_list),
+        )
+        .route(
+            "/assistant_create",
+            post(handlers::assistants::assistant_create),
+        )
+        .route(
+            "/assistant_update",
+            post(handlers::assistants::assistant_update),
+        )
+        .route(
+            "/assistant_delete",
+            post(handlers::assistants::assistant_delete),
+        )
+        .route(
+            "/assistant_reorder",
+            post(handlers::assistants::assistant_reorder),
+        )
+        .route(
+            "/list_conversation_tags",
+            post(handlers::conversation_tags::list_conversation_tags),
+        )
+        .route(
+            "/create_conversation_tag",
+            post(handlers::conversation_tags::create_conversation_tag),
+        )
+        .route(
+            "/update_conversation_tag",
+            post(handlers::conversation_tags::update_conversation_tag),
+        )
+        .route(
+            "/delete_conversation_tag",
+            post(handlers::conversation_tags::delete_conversation_tag),
+        )
+        .route(
+            "/reorder_conversation_tags",
+            post(handlers::conversation_tags::reorder_conversation_tags),
+        )
+        .route(
+            "/update_conversation_tags",
+            post(handlers::conversation_tags::update_conversation_tags),
+        )
+        .route(
+            "/get_conversation_branch_tag",
+            post(handlers::conversation_tags::get_conversation_branch_tag),
+        )
+        .route(
+            "/update_conversation_branch_tag",
+            post(handlers::conversation_tags::update_conversation_branch_tag),
+        )
+        .route(
             "/update_folder_color",
             post(handlers::folders::update_folder_color),
         )
@@ -276,6 +427,22 @@ pub fn build_router(
             post(handlers::folder_links::remove_folder_link),
         )
         // ─── Canvas ───
+        .route(
+            "/canvas_list_boards",
+            post(handlers::canvas::canvas_list_boards),
+        )
+        .route(
+            "/canvas_create_board",
+            post(handlers::canvas::canvas_create_board),
+        )
+        .route(
+            "/canvas_update_board",
+            post(handlers::canvas::canvas_update_board),
+        )
+        .route(
+            "/canvas_delete_board",
+            post(handlers::canvas::canvas_delete_board),
+        )
         .route(
             "/canvas_list_nodes",
             post(handlers::canvas::canvas_list_nodes),
@@ -329,6 +496,10 @@ pub fn build_router(
         .route(
             "/list_directory_entries",
             post(handlers::folders::list_directory_entries),
+        )
+        .route(
+            "/create_directory",
+            post(handlers::folders::create_directory),
         )
         .route(
             "/list_directory_with_files",
@@ -589,6 +760,60 @@ pub fn build_router(
             "/backup_discard_pending",
             post(handlers::backup::backup_discard_pending),
         )
+        // ─── Configuration sync ───
+        //
+        // The WebDAV half is runtime-agnostic. Local file transfer is the
+        // by-content pair: a browser has no path to name, and the payload is
+        // tens of KB, so it travels in the JSON body rather than through the
+        // upload-staging machinery above.
+        .route(
+            "/config_sync_get_settings",
+            post(handlers::config_sync::config_sync_get_settings),
+        )
+        .route(
+            "/config_sync_update_settings",
+            post(handlers::config_sync::config_sync_update_settings),
+        )
+        .route(
+            "/config_sync_get_state",
+            post(handlers::config_sync::config_sync_get_state),
+        )
+        .route(
+            "/config_sync_test_connection",
+            post(handlers::config_sync::config_sync_test_connection),
+        )
+        .route(
+            "/config_sync_upload_now",
+            post(handlers::config_sync::config_sync_upload_now),
+        )
+        .route(
+            "/config_sync_peek_remote",
+            post(handlers::config_sync::config_sync_peek_remote),
+        )
+        .route(
+            "/config_sync_download_apply",
+            post(handlers::config_sync::config_sync_download_apply),
+        )
+        .route(
+            "/config_sync_export_content",
+            post(handlers::config_sync::config_sync_export_content),
+        )
+        .route(
+            "/config_sync_peek_content",
+            post(handlers::config_sync::config_sync_peek_content),
+        )
+        .route(
+            "/config_sync_import_content",
+            post(handlers::config_sync::config_sync_import_content),
+        )
+        .route(
+            "/config_sync_list_rollbacks",
+            post(handlers::config_sync::config_sync_list_rollbacks),
+        )
+        .route(
+            "/config_sync_apply_rollback",
+            post(handlers::config_sync::config_sync_apply_rollback),
+        )
         .route(
             "/download_workspace_file",
             post(handlers::workspace_files::download_workspace_file),
@@ -811,6 +1036,14 @@ pub fn build_router(
             post(handlers::acp::acp_clear_binary_cache),
         )
         .route(
+            "/acp_scan_leaked_temp",
+            post(handlers::acp::acp_scan_leaked_temp),
+        )
+        .route(
+            "/acp_reclaim_leaked_temp",
+            post(handlers::acp::acp_reclaim_leaked_temp),
+        )
+        .route(
             "/acp_update_agent_preferences",
             post(handlers::acp::acp_update_agent_preferences),
         )
@@ -855,6 +1088,18 @@ pub fn build_router(
             post(handlers::acp::acp_load_pi_config),
         )
         .route(
+            "/acp_list_pi_model_capabilities",
+            post(handlers::acp::acp_list_pi_model_capabilities),
+        )
+        .route(
+            "/acp_load_deepseek_model_catalog",
+            post(handlers::acp::acp_load_deepseek_model_catalog),
+        )
+        .route(
+            "/acp_update_deepseek_model_catalog",
+            post(handlers::acp::acp_update_deepseek_model_catalog),
+        )
+        .route(
             "/acp_validate_pi_command",
             post(handlers::acp::acp_validate_pi_command),
         )
@@ -873,6 +1118,10 @@ pub fn build_router(
         .route(
             "/acp_antigravity_login_cancel",
             post(handlers::acp::acp_antigravity_login_cancel),
+        )
+        .route(
+            "/acp_antigravity_sign_out",
+            post(handlers::acp::acp_antigravity_sign_out),
         )
         .route(
             "/acp_pi_project_trust_state",
@@ -903,12 +1152,20 @@ pub fn build_router(
             post(handlers::acp::acp_download_agent_binary),
         )
         .route(
+            "/acp_update_system_agent",
+            post(handlers::acp::acp_update_system_agent),
+        )
+        .route(
             "/acp_install_uv_tool",
             post(handlers::acp::acp_install_uv_tool),
         )
         .route(
             "/acp_detect_agent_local_version",
             post(handlers::acp::acp_detect_agent_local_version),
+        )
+        .route(
+            "/acp_fetch_agent_latest_release",
+            post(handlers::acp::acp_fetch_agent_latest_release),
         )
         .route(
             "/acp_prepare_npx_agent",
@@ -925,6 +1182,18 @@ pub fn build_router(
         .route(
             "/acp_list_custom_agents",
             post(handlers::acp::acp_list_custom_agents),
+        )
+        .route("/acp_list_agent_accounts", post(handlers::agent_accounts::list))
+        .route("/acp_create_agent_account", post(handlers::agent_accounts::create))
+        .route("/acp_rename_agent_account", post(handlers::agent_accounts::rename))
+        .route("/acp_remove_agent_account", post(handlers::agent_accounts::remove))
+        .route("/acp_login_agent_account", post(handlers::agent_accounts::login))
+        .route("/acp_set_agent_account_api_key", post(handlers::agent_accounts::set_api_key))
+        .route("/acp_check_agent_account_auth", post(handlers::agent_accounts::check_auth))
+        .route("/acp_switch_conversation_account", post(handlers::agent_accounts::switch_conversation))
+        .route(
+            "/acp_login_extra_agent",
+            post(handlers::acp::acp_login_extra_agent),
         )
         .route(
             "/acp_save_custom_agent",
@@ -1020,6 +1289,23 @@ pub fn build_router(
             "/experts_open_central_dir",
             post(handlers::experts::experts_open_central_dir),
         )
+        // ─── Generative UI (the ui-render skill) ───
+        .route(
+            "/generative_ui_skill_info",
+            post(handlers::generative_ui::generative_ui_skill_info),
+        )
+        .route(
+            "/generative_ui_list_all_install_statuses",
+            post(handlers::generative_ui::generative_ui_list_all_install_statuses),
+        )
+        .route(
+            "/generative_ui_apply_links",
+            post(handlers::generative_ui::generative_ui_apply_links),
+        )
+        .route(
+            "/generative_ui_read_content",
+            post(handlers::generative_ui::generative_ui_read_content),
+        )
         // ─── Science ───
         .route("/science_list", post(handlers::science::science_list))
         .route(
@@ -1089,6 +1375,19 @@ pub fn build_router(
             post(handlers::custom_skills::custom_delete_skills),
         )
         // ─── Office tools ───
+        // ─── Web-mode port bridge (dev servers on the host, shown in an iframe) ───
+        .route(
+            "/browser_bridge_status",
+            post(handlers::browser_bridge::browser_bridge_status),
+        )
+        .route(
+            "/browser_bridge_open",
+            post(handlers::browser_bridge::browser_bridge_open),
+        )
+        .route(
+            "/browser_bridge_close",
+            post(handlers::browser_bridge::browser_bridge_close),
+        )
         .route(
             "/officecli_detect",
             post(handlers::office_tools::officecli_detect),
@@ -1144,6 +1443,10 @@ pub fn build_router(
         .route(
             "/stop_office_watch",
             post(handlers::office_tools::stop_office_watch),
+        )
+        .route(
+            "/renew_office_watch",
+            post(handlers::office_tools::renew_office_watch),
         )
         // ─── Project boot ───
         .route(
@@ -1379,6 +1682,8 @@ pub fn build_router(
             post(handlers::automation::automation_cancel_run),
         )
         // ─── Token usage dashboard ───
+        .route("/subscription_quota_read", post(handlers::subscription_quota::read))
+        .route("/subscription_quota_accounts", post(handlers::subscription_quota::accounts))
         .route(
             "/token_usage_report",
             post(handlers::token_usage::token_usage_report),
@@ -1512,6 +1817,14 @@ pub fn build_router(
             post(handlers::forge::forge_settings_set),
         )
         .route(
+            "/forge_auto_status",
+            post(handlers::forge::forge_auto_status),
+        )
+        .route(
+            "/forge_auto_scan_now",
+            post(handlers::forge::forge_auto_scan_now),
+        )
+        .route(
             "/work_task_deliver_pr",
             post(handlers::work_task::work_task_deliver_pr),
         )
@@ -1534,6 +1847,10 @@ pub fn build_router(
         .route(
             "/work_task_archive",
             post(handlers::work_task::work_task_archive),
+        )
+        .route(
+            "/work_task_defer",
+            post(handlers::work_task::work_task_defer),
         )
         .route(
             "/work_task_cleanup",
@@ -1684,6 +2001,17 @@ pub fn build_router(
             "/get_system_language_settings",
             post(handlers::system_settings::get_system_language_settings),
         )
+        // Forge webhooks for the repository panel's auto-processing. No forge
+        // can send codeg's bearer token, so the delivery authenticates itself:
+        // its HMAC signature (GitHub / Gitea) or secret token (GitLab) is
+        // checked against the folders' webhook secrets before anything else
+        // happens. See `handlers::forge::forge_webhook`.
+        .route(
+            "/forge_webhook",
+            post(handlers::forge::forge_webhook).layer(DefaultBodyLimit::max(
+                handlers::forge::WEBHOOK_BODY_LIMIT,
+            )),
+        )
         .route(
             "/workspace_download/{ticket}",
             get(handlers::workspace_files::consume_download_ticket),
@@ -1730,9 +2058,13 @@ pub fn build_router(
         },
     ));
 
-    // WebSocket route (auth via Sec-WebSocket-Protocol)
+    // WebSocket routes (auth via Sec-WebSocket-Protocol)
     let ws_route = Router::new()
         .route("/ws/events", get(ws::ws_handler))
+        .route(
+            crate::web::browser_tunnel::frame::TUNNEL_PATH,
+            get(crate::web::browser_tunnel::ws_handler),
+        )
         .layer(middleware::from_fn(move |req, next| {
             auth::require_token(req, next, token_for_ws.clone())
         }));
@@ -1783,11 +2115,20 @@ pub fn build_router(
         .layer(cors)
         .layer(Extension(state))
         .layer(Extension(shutdown_signal))
-        // Outermost: compress API JSON and static text assets. Allowlist
-        // predicate — binary downloads keep their exact Content-Length (the
-        // remote proxy's progress source) and SSE stays unbuffered; see
+        // Compress API JSON and static text assets. Allowlist predicate —
+        // binary downloads keep their exact Content-Length (the remote
+        // proxy's progress source) and SSE stays unbuffered; see
         // `web::compression`.
         .layer(crate::web::compression::compression_layer())
+        // Outermost, and outside everything above on purpose: a request
+        // addressed to a bridge hostname is a dev server's, not codeg's, and
+        // is answered by the bridge exactly as a listener of its own would —
+        // no CORS, no compression, no body limit, no static fallback. Only
+        // when `CODEG_BRIDGE_HOST_PATTERN` is set; every other request goes
+        // straight through. See `web::browser_bridge`.
+        .layer(middleware::from_fn(
+            crate::web::browser_bridge::route_by_host,
+        ))
 }
 
 async fn health_check() -> impl IntoResponse {

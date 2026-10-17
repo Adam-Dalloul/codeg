@@ -104,7 +104,44 @@ const TOP_CONVERSATIONS: usize = 8;
 ///   counted via cumulative-counter deltas; Claude `Task` sub-agent transcripts
 ///   counted against the session that launched them; and facts anchored at the
 ///   turn's own timestamp instead of its last tool result.
-const FACT_SCHEMA_VERSION: &str = "2";
+/// * `3` — Qoder's cached prefix counted once instead of twice. Its transcripts
+///   carry Anthropic FIELD NAMES over OpenAI SEMANTICS, so `input_tokens` is
+///   the whole prompt and `cache_read_input_tokens` is a subset of it; summing
+///   the two (which every shared helper does, because for Claude they are
+///   disjoint) inflated input and total by the cached amount. See
+///   `parsers::qoder::qoder_turn_usage`.
+/// * `4` — Codex cache writes split out of input. Codex's `input_tokens` is
+///   the whole prompt: besides the cache read it includes
+///   `cache_write_input_tokens`, which some providers and gateways report
+///   (codeg's own bound provider among them) and OpenAI's API leaves at 0.
+///   Only the read was split out, so every write counted as fresh input and
+///   the cache-write column stayed 0. Totals are unchanged; the columns are
+///   not.
+///   See `parsers::codex::codex_usage_counters`.
+/// * `5` — Qoder sub-agent spend counted. Each delegated run writes its own
+///   transcript (`<sessionId>/subagents/agent-*.jsonl`) and nothing read it,
+///   so a session that delegated work was short by everything its
+///   sub-agents spent. Now each call is deduped by `message.id`, has its
+///   cached prefix split out, and lands on the turn current at its own
+///   timestamp — totals grow for unchanged transcripts. The same release
+///   made a Qoder session's model its LAST one instead of its first, which
+///   is what a turn naming no model falls back to. See
+///   `parsers::qoder::attribute_subagent_usage`.
+///
+/// Only the accounting stored in `token_usage_turn` counts: the four token
+/// counters, the duration and the timestamp. A conversation's context WINDOW is
+/// not stored here (nor anywhere else — `SessionStats` is recomputed by the
+/// parser on every read), so changing how a window is inferred needs no bump;
+/// it reaches every existing session the moment it ships.
+///
+/// Nor does a change to the DATA a transcript carries: shipping Qoder's
+/// `QODER_EXPOSE_TOKEN_USAGE` launch env only affects turns recorded after it,
+/// which are new rows either way. `3` is here because the same release also
+/// changed how an UNCHANGED transcript is read — and Qoder sessions with real
+/// counters predate it, since a custom/BYO model has always exposed them and
+/// the parser reads every session under `~/.qoder/projects`, not just the ones
+/// codeg launched.
+const FACT_SCHEMA_VERSION: &str = "5";
 
 const FACT_SCHEMA_VERSION_KEY: &str = "token_usage_fact_schema_version";
 
@@ -230,13 +267,34 @@ pub(crate) fn facts_from_detail(
     detail: &DbConversationDetail,
     fallback_at: DateTime<Utc>,
 ) -> Vec<UsageFact> {
-    let session_model = detail.summary.model.as_deref();
-    let per_turn = facts_from_turns(&detail.turns, session_model);
+    let mut facts = Vec::new();
+    let mut start = 0;
+    for (index, turn) in detail.turns.iter().enumerate() {
+        let marker = turn.blocks.iter().find_map(|block| match block {
+            crate::models::ContentBlock::ToolUse { meta: Some(meta), .. } => meta.get(crate::acp::handoff::HANDOFF_META_KEY),
+            _ => None,
+        });
+        let Some(marker) = marker.filter(|m| m.get("carried").and_then(|v| v.as_bool()) == Some(false)) else { continue; };
+        let stats = marker.get("sourceStats").cloned().and_then(|v| serde_json::from_value::<crate::models::SessionStats>(v).ok());
+        let model = marker.get("sourceModel").and_then(|v| v.as_str());
+        let mut segment = facts_from_segment(&detail.turns[start..index], model, stats.as_ref(), turn.timestamp);
+        for fact in &mut segment {
+            if fact.turn_key == SESSION_TOTAL_TURN_KEY { fact.turn_key = format!("handoff-usage-{index}:{}", fact.turn_key); }
+        }
+        facts.extend(segment);
+        start = index + 1;
+    }
+    facts.extend(facts_from_segment(&detail.turns[start..], detail.summary.model.as_deref(), detail.session_stats.as_ref(), fallback_at));
+    facts
+}
+
+fn facts_from_segment(turns: &[MessageTurn], session_model: Option<&str>, stats: Option<&crate::models::SessionStats>, fallback_at: DateTime<Utc>) -> Vec<UsageFact> {
+    let per_turn = facts_from_turns(turns, session_model);
     if !per_turn.is_empty() {
         return per_turn;
     }
 
-    let Some(stats) = detail.session_stats.as_ref() else {
+    let Some(stats) = stats else {
         return Vec::new();
     };
     let Some(usage) = stats.total_usage.as_ref() else {
@@ -253,8 +311,7 @@ pub(crate) fn facts_from_detail(
     // The end of the conversation is the least-wrong single instant for a
     // session-wide total; `fallback_at` (the row's `updated_at`) covers a
     // conversation whose transcript has stats but no turns at all.
-    let occurred_at = detail
-        .turns
+    let occurred_at = turns
         .last()
         .map(|t| t.completed_at.unwrap_or(t.timestamp))
         .unwrap_or(fallback_at);
@@ -262,10 +319,7 @@ pub(crate) fn facts_from_detail(
     vec![UsageFact {
         turn_key: SESSION_TOTAL_TURN_KEY.to_string(),
         occurred_at,
-        model: detail
-            .summary
-            .model
-            .as_ref()
+        model: session_model
             .map(|m| m.trim().to_string())
             .filter(|m| !m.is_empty()),
         input_tokens: input,
@@ -1319,6 +1373,7 @@ mod tests {
     fn detail(turns: Vec<MessageTurn>, stats: Option<SessionStats>) -> DbConversationDetail {
         DbConversationDetail {
             summary: DbConversationSummary {
+                agent_account_id: None,
                 id: 1,
                 folder_id: 1,
                 title: None,
@@ -1338,6 +1393,9 @@ mod tests {
                 parent_tool_use_id: None,
                 delegation_call_id: None,
                 origin_cwd: None,
+                assistant_id: None,
+                assistant_name: None,
+                tag_ids: Vec::new(),
             },
             turns,
             session_stats: stats,
@@ -1346,6 +1404,7 @@ mod tests {
             turns_offset: None,
             turns_total: None,
             assistant_turns_before_offset: None,
+            user_turns_before_offset: None,
             prefix_hash: None,
             uncovered_prefix_max_ts: None,
         }
@@ -1360,6 +1419,28 @@ mod tests {
             context_window_max_tokens: None,
             context_window_usage_percent: None,
         }
+    }
+
+    #[test]
+    fn handoff_keeps_source_session_totals_and_each_segments_model() {
+        use crate::acp::handoff::{divider_turn, HandoffLink, HandoffPath};
+        use crate::models::AgentType;
+        let boundary = divider_turn(&HandoffLink {
+            from_agent_type: AgentType::Hermes, from_external_id: Some("old".into()),
+            to_agent_type: AgentType::ClaudeCode, to_external_id: "new".into(),
+            path: HandoffPath::Context, carried: false, user_turns_before: 1,
+            note: None, briefing: None, truncated: false, at: ts("2026-08-01T10:30:00Z"),
+            context_id: None, source_stats: Some(serde_json::to_value(session_stats(500,100)).unwrap()),
+            source_model: Some("original-model".into()),
+        },0);
+        let old = turn("old", None, "2026-08-01T10:00:00Z");
+        let new = turn("new", Some(usage(10,5,0,0)), "2026-08-01T11:00:00Z");
+        let facts = facts_from_detail(&detail(vec![old,boundary,new],Some(session_stats(999,999))),ts("2026-08-01T12:00:00Z"));
+        assert_eq!(facts.len(),2);
+        assert_eq!(facts.iter().map(UsageFact::total_tokens).sum::<i64>(),615);
+        assert_eq!(facts[0].model.as_deref(),Some("original-model"));
+        assert_eq!(facts[1].model.as_deref(),Some("claude-opus-5"));
+        assert_ne!(facts[0].turn_key,facts[1].turn_key);
     }
 
     #[test]

@@ -1,4 +1,12 @@
-import { beforeEach, describe, expect, it, vi } from "vitest"
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+  type MockInstance,
+} from "vitest"
 import {
   resetAppWorkspaceStore,
   useAppWorkspaceStore,
@@ -23,12 +31,20 @@ vi.mock("@/lib/api", () => ({
   setFolderGroup: vi.fn(),
 }))
 
-const { getFolder, getGitHead, listAllFolderDetails, listOpenFolderDetails } =
-  await import("@/lib/api")
+const {
+  getFolder,
+  getGitHead,
+  listAllConversations,
+  listAllFolderDetails,
+  listOpenFolderDetails,
+  listFolderGroups: readFolderGroups,
+} = await import("@/lib/api")
+const mockListConversations = vi.mocked(listAllConversations)
 const mockGetFolder = vi.mocked(getFolder)
 const mockGetGitHead = vi.mocked(getGitHead)
 const mockListAllFolders = vi.mocked(listAllFolderDetails)
 const mockListOpenFolders = vi.mocked(listOpenFolderDetails)
+const mockListFolderGroups = vi.mocked(readFolderGroups)
 
 function makeSummary(
   overrides: Partial<DbConversationSummary> & { id: number }
@@ -145,6 +161,82 @@ function makeFolder(
     ...overrides,
   }
 }
+
+describe("fetchFolders — offline hydration safety", () => {
+  let errors: MockInstance
+
+  beforeEach(() => {
+    mockListOpenFolders.mockReset().mockResolvedValue([])
+    mockListAllFolders.mockReset().mockResolvedValue([])
+    mockListFolderGroups.mockReset().mockResolvedValue([])
+    errors = vi.spyOn(console, "error").mockImplementation(() => {})
+  })
+
+  afterEach(() => errors.mockRestore())
+
+  it.each(["open", "all", "groups"] as const)(
+    "keeps folders unknown when the initial %s read fails, then hydrates on recovery",
+    async (failedRead) => {
+      const reads = {
+        open: mockListOpenFolders,
+        all: mockListAllFolders,
+        groups: mockListFolderGroups,
+      }
+      reads[failedRead].mockRejectedValueOnce(new Error("remote offline"))
+
+      await useAppWorkspaceStore.getState().fetchFolders()
+
+      // TabProvider gates orphan-draft pruning on foldersHydrated. A failed
+      // snapshot must keep that gate closed, even though loading has settled.
+      expect(useAppWorkspaceStore.getState()).toMatchObject({
+        foldersLoading: false,
+        foldersHydrated: false,
+        allFolders: [],
+      })
+
+      const folder = makeFolder({ id: 1 })
+      mockListOpenFolders.mockResolvedValueOnce([folder])
+      mockListAllFolders.mockResolvedValueOnce([folder])
+      await useAppWorkspaceStore.getState().fetchFolders()
+
+      expect(useAppWorkspaceStore.getState()).toMatchObject({
+        foldersLoading: false,
+        foldersHydrated: true,
+        folders: [folder],
+        allFolders: [folder],
+      })
+    }
+  )
+
+  it("keeps the last authoritative snapshot hydrated when a refresh fails", async () => {
+    const folder = makeFolder({ id: 1 })
+    mockListOpenFolders.mockResolvedValueOnce([folder])
+    mockListAllFolders.mockResolvedValueOnce([folder])
+    await useAppWorkspaceStore.getState().fetchFolders()
+    const before = useAppWorkspaceStore.getState()
+
+    mockListAllFolders.mockRejectedValueOnce(new Error("remote offline"))
+    await useAppWorkspaceStore.getState().fetchFolders()
+
+    const after = useAppWorkspaceStore.getState()
+    expect(after.foldersLoading).toBe(false)
+    expect(after.foldersHydrated).toBe(true)
+    expect(after.folders).toBe(before.folders)
+    expect(after.allFolders).toBe(before.allFolders)
+    expect(after.folderGroups).toBe(before.folderGroups)
+  })
+
+  it("accepts a successful empty snapshot as authoritative", async () => {
+    await useAppWorkspaceStore.getState().fetchFolders()
+
+    expect(useAppWorkspaceStore.getState()).toMatchObject({
+      foldersLoading: false,
+      foldersHydrated: true,
+      folders: [],
+      allFolders: [],
+    })
+  })
+})
 
 describe("refreshFolder — branch null-guard", () => {
   it("keeps the poll-resolved branch when the refreshed row's git_branch is null", async () => {
@@ -788,6 +880,78 @@ describe("ensureGitHead — HEAD for a folder the poll doesn't cover", () => {
     await Promise.resolve()
     expect(useAppWorkspaceStore.getState().gitHeads.get(9)?.branch).toBe(
       "task/new"
+    )
+  })
+})
+
+// `refreshConversations` replaces the rows wholesale. A list read just before an
+// account switch committed, answered just after the switch's upsert, used to put
+// the old account back on the row — and a tab resolving its account from the
+// list then tore down the switched session to reconnect on the old account.
+describe("refreshConversations — in-flight snapshot ordering", () => {
+  function gated<T>(value: T) {
+    let release: () => void = () => {}
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    return {
+      release,
+      run: async () => {
+        await gate
+        return value
+      },
+    }
+  }
+
+  it("keeps an upsert that landed while a snapshot was in flight", async () => {
+    const before = makeSummary({ id: 1, agent_account_id: "old" })
+    const switched = makeSummary({
+      id: 1,
+      agent_account_id: "new",
+      updated_at: "2026-01-01T00:05:00.000Z",
+    })
+    const created = makeSummary({ id: 2, title: "Created meanwhile" })
+    const stale = gated([before])
+    mockListConversations.mockImplementationOnce(stale.run)
+
+    const refresh = useAppWorkspaceStore.getState().refreshConversations()
+    useAppWorkspaceStore.getState().applyConversationUpsert(switched)
+    useAppWorkspaceStore.getState().applyConversationUpsert(created)
+    stale.release()
+    await refresh
+
+    const rows = useAppWorkspaceStore.getState().conversations
+    expect(rows.find((c) => c.id === 1)?.agent_account_id).toBe("new")
+    expect(rows.find((c) => c.id === 2)?.title).toBe("Created meanwhile")
+  })
+
+  it("lets a snapshot requested after the upsert speak for the row", async () => {
+    useAppWorkspaceStore
+      .getState()
+      .applyConversationUpsert(makeSummary({ id: 1, agent_account_id: "new" }))
+    mockListConversations.mockImplementationOnce(async () => [
+      makeSummary({ id: 1, agent_account_id: "newer" }),
+    ])
+    await useAppWorkspaceStore.getState().refreshConversations()
+    expect(
+      useAppWorkspaceStore.getState().conversations[0]?.agent_account_id
+    ).toBe("newer")
+  })
+
+  it("discards a snapshot older than one already applied", async () => {
+    const older = gated([makeSummary({ id: 1, title: "Older" })])
+    mockListConversations
+      .mockImplementationOnce(older.run)
+      .mockImplementationOnce(async () => [
+        makeSummary({ id: 1, title: "Newer" }),
+      ])
+
+    const first = useAppWorkspaceStore.getState().refreshConversations()
+    await useAppWorkspaceStore.getState().refreshConversations()
+    older.release()
+    await first
+    expect(useAppWorkspaceStore.getState().conversations[0]?.title).toBe(
+      "Newer"
     )
   })
 })

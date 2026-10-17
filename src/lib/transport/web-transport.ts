@@ -8,6 +8,7 @@ import type {
   UnsubscribeFn,
 } from "./types"
 import { buildCodegWebSocketProtocols } from "./ws-auth"
+import { parseJsonOrThrow } from "../json-parse-error"
 import { getCodegToken } from "./web-auth"
 
 // 60s covers the worst-case ACP probe path: some agents (Gemini in
@@ -69,6 +70,7 @@ export class WebTransport implements Transport {
   // may have desynced during the disconnect window.
   private hasReadiedOnce = false
   private reconnectCallbacks = new Set<() => void>()
+  private readyCallbacks = new Set<() => void>()
   // Latched in `destroy()`. The async `onclose` fired by `ws.close()` inside
   // `destroy()`/`teardownWs()` would otherwise flip the state machine to
   // "reconnecting" and schedule a fresh backoff on a transport the caller
@@ -188,7 +190,14 @@ export class WebTransport implements Transport {
       }))
       throw error
     }
-    return res.json()
+    // Read the body as text and parse it here rather than calling
+    // `res.json()`. Identical on the happy path, but a truncated or malformed
+    // body otherwise throws a bare engine message — `Unterminated string in
+    // JSON at position 80865` — that names neither the endpoint nor anything
+    // else a user could report. Exactly that error was reported against the
+    // Agents settings page (#736) and could not be traced to a source.
+    const body = await res.text()
+    return parseJsonOrThrow<T>(body, `API ${command}`)
   }
 
   async subscribe<T>(
@@ -230,6 +239,13 @@ export class WebTransport implements Transport {
     this.reconnectCallbacks.add(callback)
     return () => {
       this.reconnectCallbacks.delete(callback)
+    }
+  }
+
+  onReady(callback: () => void): UnsubscribeFn {
+    this.readyCallbacks.add(callback)
+    return () => {
+      this.readyCallbacks.delete(callback)
     }
   }
 
@@ -399,6 +415,13 @@ export class WebTransport implements Transport {
           // keeps growing its backoff instead of restarting from 1s.
           this.wsFailCount = 0
           this.setConnState("connected")
+          for (const cb of this.readyCallbacks) {
+            try {
+              cb()
+            } catch (err) {
+              console.error("[WebTransport] ready callback threw:", err)
+            }
+          }
           if (this.hasReadiedOnce) {
             // Reconnect path: server-side receiver_count was 0 during the
             // disconnect window, so any event fired in that gap was dropped.
@@ -565,6 +588,7 @@ export class WebTransport implements Transport {
     this.teardownWs()
     this.handlers.clear()
     this.reconnectCallbacks.clear()
+    this.readyCallbacks.clear()
     this.wsReadyCallbacks.clear()
     this.connListeners.clear()
     this.eventStreamInstance?.destroy()

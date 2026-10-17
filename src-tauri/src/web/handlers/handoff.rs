@@ -16,6 +16,7 @@ use crate::models::AgentType;
 pub struct AcpHandoffPlanParams {
     pub conversation_id: i32,
     pub target_agent_type: AgentType,
+    pub target_account_id: Option<String>,
 }
 
 pub async fn acp_handoff_plan(
@@ -28,6 +29,7 @@ pub async fn acp_handoff_plan(
             &state.data_dir,
             params.conversation_id,
             params.target_agent_type,
+            params.target_account_id.as_deref(),
         )
         .await?,
     ))
@@ -38,6 +40,10 @@ pub async fn acp_handoff_plan(
 pub struct AcpHandoffParams {
     pub conversation_id: i32,
     pub target_agent_type: AgentType,
+    pub target_account_id: Option<String>,
+    pub source_agent_type: AgentType,
+    pub source_account_id: Option<String>,
+    pub source_external_id: String,
     #[serde(default)]
     pub note: Option<String>,
     #[serde(default)]
@@ -60,6 +66,10 @@ pub async fn acp_handoff(
             HandoffRequest {
                 conversation_id: params.conversation_id,
                 target_agent_type: params.target_agent_type,
+                target_account_id: params.target_account_id,
+                source_agent_type: params.source_agent_type,
+                source_account_id: params.source_account_id,
+                source_external_id: params.source_external_id,
                 note: params.note,
                 preferred_mode_id: params.preferred_mode_id,
                 preferred_config_values: params.preferred_config_values.unwrap_or_default(),

@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use sacp::schema::{
+use agent_client_protocol::schema::v1::{
     ReadTextFileRequest, ReadTextFileResponse, WriteTextFileRequest, WriteTextFileResponse,
 };
 use tokio::sync::Semaphore;
@@ -28,10 +28,10 @@ pub enum FileSystemRuntimeError {
 }
 
 impl FileSystemRuntimeError {
-    pub fn into_rpc_error(self) -> sacp::Error {
+    pub fn into_rpc_error(self) -> agent_client_protocol::Error {
         match self {
-            Self::InvalidParams(message) => sacp::Error::invalid_params().data(message),
-            Self::Internal(message) => sacp::util::internal_error(message),
+            Self::InvalidParams(message) => agent_client_protocol::Error::invalid_params().data(message),
+            Self::Internal(message) => agent_client_protocol::util::internal_error(message),
         }
     }
 }
@@ -270,7 +270,7 @@ fn temp_roots() -> Vec<PathBuf> {
 /// `runtime_env` wins over codeg's process env — a per-agent `GROK_HOME` in
 /// `env_json` moves the agent's state, so it must move the allowed root too.
 /// Same shape as `commands::acp::pi_agent_dir_for_env`.
-fn agent_data_roots(agent_type: AgentType, runtime_env: &BTreeMap<String, String>) -> Vec<PathBuf> {
+pub(crate) fn agent_data_roots(agent_type: AgentType, runtime_env: &BTreeMap<String, String>) -> Vec<PathBuf> {
     agent_root_slots(agent_type)
         .iter()
         .filter_map(|slot| resolve_root_slot(slot, runtime_env))
@@ -526,9 +526,9 @@ pub(crate) fn child_home_dir(runtime_env: &BTreeMap<String, String>) -> Option<P
 ///
 /// * non-blank in `runtime_env` — `merge_agent_env` gives `runtime_env` the
 ///   highest precedence, so this REPLACES the parent's value in the child.
-/// * blank in `runtime_env` — the vendored spawn layer treats an empty value as
-///   `env_remove` ("an empty value means ensure this var is ABSENT from the
-///   child", `vendor/sacp-tokio/src/acp_agent.rs`). The child therefore does NOT
+/// * blank in `runtime_env` — the spawn layer (`acp::agent_process`) treats an
+///   empty value as `env_remove` ("an empty value means ensure this var is
+///   ABSENT from the child"). The child therefore does NOT
 ///   inherit our value; the agent falls back to its own default. Reading through
 ///   to our process env here would point the root at a profile the child never
 ///   opens, re-breaking the writes this change exists to allow.
@@ -598,6 +598,15 @@ fn agent_root_slots(agent_type: AgentType) -> &'static [RootSlot] {
             candidates: &[("GEMINI_HOME", "", EXPANDS_TILDE)],
             trims: false,
             default_rel: &[".gemini"],
+        }],
+        // `KIRO_HOME` names the `.kiro` directory ITSELF (agents, prompts,
+        // skills, steering, settings and sessions all hang off it), the same
+        // shape `GEMINI_HOME` has for Antigravity — see
+        // `parsers::kiro::resolve_kiro_home_dir`.
+        AgentType::Kiro => &[RootSlot {
+            candidates: &[("KIRO_HOME", "", VERBATIM)],
+            trims: false,
+            default_rel: &[".kiro"],
         }],
         AgentType::ClaudeCode => &[RootSlot {
             candidates: &[("CLAUDE_CONFIG_DIR", "", VERBATIM)],
@@ -697,7 +706,12 @@ fn agent_root_slots(agent_type: AgentType) -> &'static [RootSlot] {
         // A custom ACP agent has no codeg-known private directory layout —
         // codeg never reads its store (history comes from codeg's own ACP
         // transcript), so there is nothing to widen the sandbox roots for.
-        AgentType::Custom(_) => &[],
+        // TRAE CLI's history is codeg's transcript too, and it reads and
+        // writes files itself rather than through `fs/*` (verified against
+        // 0.209.1), so its `~/.trae` never needs to be a write root either.
+        // Command Code is the same case: codeg's transcript is its history,
+        // and its tools never go through `fs/*` (verified against 1.84.0).
+        AgentType::Custom(_) | AgentType::ZCode | AgentType::Trae | AgentType::CommandCode => &[],
     }
 }
 
@@ -1761,10 +1775,11 @@ mod tests {
         agent_data_roots(agent_type, &blanked)
     }
 
-    /// A BLANK value in `env_json` is not "unset, use ours" — the vendored spawn
-    /// layer `env_remove`s it, so the child falls back to its OWN default. Reading
-    /// through to codeg's process env would aim the root at a profile the child
-    /// never opens, re-breaking the writes this change exists to allow.
+    /// A BLANK value in `env_json` is not "unset, use ours" — the spawn layer
+    /// (`acp::agent_process`) `env_remove`s it, so the child falls back to its
+    /// OWN default. Reading through to codeg's process env would aim the root
+    /// at a profile the child never opens, re-breaking the writes this change
+    /// exists to allow.
     #[test]
     fn blank_runtime_value_falls_back_to_the_agents_default_not_our_env() {
         let home = dirs::home_dir().expect("home dir");
@@ -2113,8 +2128,9 @@ mod tests {
     fn root_slots_match_parser_resolvers() {
         use crate::parsers;
 
-        let expected: [(AgentType, PathBuf); 12] = [
+        let expected: [(AgentType, PathBuf); 13] = [
             (AgentType::Grok, parsers::grok::resolve_grok_home_dir()),
+            (AgentType::Kiro, parsers::kiro::resolve_kiro_home_dir()),
             (
                 AgentType::ClaudeCode,
                 parsers::claude::resolve_claude_config_dir(),
@@ -2167,6 +2183,175 @@ mod tests {
                 "{agent_type:?}: slot default {roots:?} drifted from resolver {}",
                 resolver_root.display()
             );
+        }
+    }
+
+    /// The history parsers must look where the slot table says the LAUNCHED
+    /// agent lives once its settings relocate it. They used to read codeg's
+    /// own environment only, so a `CLAUDE_CONFIG_DIR` in `env_json` moved the
+    /// agent and its write root but left its history unreadable (#948).
+    ///
+    /// Each candidate wins in turn — the higher-precedence ones blanked
+    /// (removed for the child), the lower ones relocated elsewhere — so a
+    /// resolver reading the wrong key, or the right keys in the wrong order,
+    /// fails. Every value names a directory that does not exist under a fresh
+    /// tempdir, so nothing on the machine can change the answer (pi looks for
+    /// a `settings.json` under its agent dir); no skip is needed for variables
+    /// set in this process, because every candidate is overridden one way or
+    /// the other.
+    #[test]
+    fn parser_resolvers_follow_a_relocation_in_the_launch_env() {
+        use crate::parsers::{self, AgentEnv};
+
+        let base = tempfile::tempdir().expect("tempdir");
+
+        type Resolver = fn(&AgentEnv) -> PathBuf;
+        // `(agent, resolver its history parser is built from, slot index,
+        // where under that slot's root the resolver points)`.
+        let cases: [(AgentType, Resolver, usize, &[&str]); 17] = [
+            (
+                AgentType::Grok,
+                parsers::grok::resolve_grok_home_dir_for_env,
+                0,
+                &[],
+            ),
+            (
+                AgentType::Qoder,
+                parsers::qoder::resolve_qoder_config_dir_for_env,
+                0,
+                &[],
+            ),
+            (
+                AgentType::Antigravity,
+                parsers::antigravity::resolve_antigravity_sessions_dir_for_env,
+                0,
+                &["antigravity-acp", "conversations"],
+            ),
+            (
+                AgentType::Kiro,
+                parsers::kiro::resolve_kiro_home_dir_for_env,
+                0,
+                &[],
+            ),
+            (
+                AgentType::ClaudeCode,
+                parsers::claude::resolve_claude_config_dir_for_env,
+                0,
+                &[],
+            ),
+            (
+                AgentType::Codex,
+                parsers::codex::resolve_codex_home_dir_for_env,
+                0,
+                &[],
+            ),
+            (
+                AgentType::Gemini,
+                parsers::gemini::resolve_gemini_base_dir_for_env,
+                0,
+                &[],
+            ),
+            (
+                AgentType::CodeBuddy,
+                parsers::codebuddy::resolve_codebuddy_config_dir_for_env,
+                0,
+                &[],
+            ),
+            (
+                AgentType::KimiCode,
+                parsers::kimi_code::resolve_kimi_code_home_dir_for_env,
+                0,
+                &[],
+            ),
+            (
+                AgentType::Cursor,
+                parsers::cursor::resolve_cursor_config_dir_for_env,
+                0,
+                &[],
+            ),
+            (
+                AgentType::Hermes,
+                parsers::hermes::resolve_hermes_home_dir_for_env,
+                0,
+                &[],
+            ),
+            (
+                AgentType::OpenCode,
+                parsers::opencode::resolve_opencode_base_dir_for_env,
+                0,
+                &[],
+            ),
+            (
+                AgentType::Cline,
+                parsers::cline::cline_data_dir_for_env,
+                0,
+                &[],
+            ),
+            (
+                AgentType::Pi,
+                parsers::pi::resolve_pi_agent_dir_for_env,
+                0,
+                &[],
+            ),
+            (
+                AgentType::Pi,
+                parsers::pi::resolve_pi_sessions_dir_for_env,
+                1,
+                &[],
+            ),
+            (
+                AgentType::DeepSeek,
+                parsers::deepseek::resolve_deepseek_sessions_root_for_env,
+                1,
+                &[],
+            ),
+            (
+                AgentType::DeepSeek,
+                parsers::deepseek::resolve_deepseek_attachments_root_for_env,
+                0,
+                &["attachments", "v1"],
+            ),
+        ];
+
+        for (agent_type, resolve, slot_index, under_root) in cases {
+            let slot = &agent_root_slots(agent_type)[slot_index];
+            for winner in 0..slot.candidates.len() {
+                let runtime_env: BTreeMap<String, String> = slot
+                    .candidates
+                    .iter()
+                    .enumerate()
+                    .map(|(index, (key, _, _))| {
+                        let value = match index.cmp(&winner) {
+                            std::cmp::Ordering::Less => String::new(),
+                            std::cmp::Ordering::Equal => base
+                                .path()
+                                .join("relocated")
+                                .join(key)
+                                .to_string_lossy()
+                                .into_owned(),
+                            std::cmp::Ordering::Greater => base
+                                .path()
+                                .join("unused")
+                                .join(key)
+                                .to_string_lossy()
+                                .into_owned(),
+                        };
+                        ((*key).to_string(), value)
+                    })
+                    .collect();
+                let key = slot.candidates[winner].0;
+
+                let root = resolve_root_slot(slot, &runtime_env)
+                    .expect("an absolute relocation resolves to a root");
+                let expected = under_root
+                    .iter()
+                    .fold(root, |path, segment| path.join(segment));
+                assert_eq!(
+                    resolve(&AgentEnv::from_overrides(runtime_env)),
+                    expected,
+                    "{agent_type:?} with {key} winning"
+                );
+            }
         }
     }
 

@@ -3,8 +3,15 @@ import type { JSONContent } from "@tiptap/core"
 import { createRef } from "react"
 import { describe, expect, it, vi } from "vitest"
 
+import {
+  resetMentionPanelPrefs,
+  saveMentionPanelPrefs,
+} from "@/lib/mention-panel-prefs"
+
 import { RichComposer, type RichComposerHandle } from "./rich-composer"
 import type { ReferenceSearch } from "./suggestion/types"
+import { agentToSuggestion } from "./suggestion/adapters"
+import type { AcpAgentInfo } from "@/lib/types"
 
 const search: ReferenceSearch = () => [
   {
@@ -34,10 +41,14 @@ function findReference(doc: JSONContent): JSONContent | undefined {
   return undefined
 }
 
-async function mount(onSubmit?: () => void) {
+async function mount(onSubmit?: () => void, referenceSearch = search) {
   const ref = createRef<RichComposerHandle>()
   render(
-    <RichComposer ref={ref} referenceSearch={search} onSubmit={onSubmit} />
+    <RichComposer
+      ref={ref}
+      referenceSearch={referenceSearch}
+      onSubmit={onSubmit}
+    />
   )
   await waitFor(() => expect(ref.current?.getEditor()).not.toBeNull(), {
     timeout: 5000,
@@ -48,6 +59,38 @@ async function mount(onSubmit?: () => void) {
 }
 
 describe("RichComposer @ mention integration", () => {
+  it("inserts a specific native account and retains it through draft restore", async () => {
+    const account = agentToSuggestion(
+      {
+        agent_type: "claude_code",
+        name: "Claude Code",
+        available: true,
+      } as AcpAgentInfo,
+      { id: "work-account", name: "Work" }
+    )
+    const { ref, editor } = await mount(undefined, () => [
+      { kind: "agent", label: "Agents", items: [account] },
+    ])
+    act(() => {
+      editor.commands.insertContent("@Work")
+    })
+    const row = await screen.findByText("Claude Code · Work")
+    act(() => {
+      row.dispatchEvent(
+        new MouseEvent("mousedown", { bubbles: true, cancelable: true })
+      )
+    })
+    const serialized =
+      "[@Claude Code · Work](codeg://agent/claude_code?account=work-account)"
+    await waitFor(() => expect(ref.current?.getText().trim()).toBe(serialized))
+    act(() => {
+      ref.current?.setText(serialized)
+    })
+    expect(findReference(editor.getJSON())?.attrs?.meta).toMatchObject({
+      agentType: "claude_code",
+      agentAccountId: "work-account",
+    })
+  })
   it("opens the panel on @ and inserts the chosen reference", async () => {
     const { editor } = await mount()
     act(() => {
@@ -106,6 +149,48 @@ describe("RichComposer @ mention integration", () => {
       expect(dom.hasAttribute("aria-autocomplete")).toBe(false)
       expect(dom.hasAttribute("aria-activedescendant")).toBe(false)
     })
+  })
+
+  // Settings → General decides which tabs the panel shows and in what order;
+  // every composer reads it, and an open panel follows a change made in
+  // another window.
+  it("lays the tabs out from the saved preference, live", async () => {
+    saveMentionPanelPrefs({
+      tabs: [
+        { kind: "file", visible: true },
+        { kind: "commit", visible: true },
+        { kind: "agent", visible: false },
+        { kind: "assistant", visible: false },
+        { kind: "session", visible: true },
+      ],
+    })
+    try {
+      const { editor } = await mount()
+      act(() => {
+        editor.commands.insertContent("@app")
+      })
+      await screen.findByText("app.ts", {}, { timeout: 5000 })
+      const tabNames = () =>
+        screen
+          .getAllByRole("tab")
+          .map((tab) => tab.textContent?.replace(/\d+$/, ""))
+      expect(tabNames()).toEqual(["Files", "Commits", "Sessions"])
+
+      act(() => {
+        saveMentionPanelPrefs({
+          tabs: [
+            { kind: "agent", visible: true },
+            { kind: "assistant", visible: false },
+            { kind: "file", visible: true },
+            { kind: "session", visible: false },
+            { kind: "commit", visible: false },
+          ],
+        })
+      })
+      await waitFor(() => expect(tabNames()).toEqual(["Agents", "Files"]))
+    } finally {
+      act(() => resetMentionPanelPrefs())
+    }
   })
 
   it("does not submit on Enter while the panel is open", async () => {

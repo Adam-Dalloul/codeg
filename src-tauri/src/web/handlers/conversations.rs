@@ -92,6 +92,7 @@ pub async fn save_opened_tabs(
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ListConversationsParams {
+    pub agent_account_id: Option<String>,
     pub agent_type: Option<AgentType>,
     pub search: Option<String>,
     pub sort_by: Option<String>,
@@ -99,9 +100,12 @@ pub struct ListConversationsParams {
 }
 
 pub async fn list_conversations(
+    Extension(state): Extension<Arc<AppState>>,
     Json(params): Json<ListConversationsParams>,
 ) -> Result<Json<Vec<ConversationSummary>>, AppCommandError> {
-    let result = conv_commands::list_conversations(
+    let result = conv_commands::list_conversations_core(
+        &state.db.conn,
+        params.agent_account_id,
         params.agent_type,
         params.search,
         params.sort_by,
@@ -114,14 +118,16 @@ pub async fn list_conversations(
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GetConversationParams {
+    pub agent_account_id: Option<String>,
     pub agent_type: AgentType,
     pub conversation_id: String,
 }
 
 pub async fn get_conversation(
+    Extension(state): Extension<Arc<AppState>>,
     Json(params): Json<GetConversationParams>,
 ) -> Result<Json<ConversationDetail>, AppCommandError> {
-    let result = conv_commands::get_conversation(params.agent_type, params.conversation_id).await?;
+    let result = conv_commands::get_conversation_core(&state.db.conn, params.agent_account_id, params.agent_type, params.conversation_id).await?;
     Ok(Json(result))
 }
 
@@ -177,18 +183,44 @@ pub async fn get_folder_conversation_turns(
     Ok(Json(result))
 }
 
-pub async fn list_folders() -> Result<Json<Vec<FolderInfo>>, AppCommandError> {
-    let result = conv_commands::list_folders().await?;
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetFolderConversationOutlineParams {
+    pub conversation_id: i32,
+    pub before_index: usize,
+}
+
+pub async fn get_folder_conversation_outline(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(params): Json<GetFolderConversationOutlineParams>,
+) -> Result<Json<ConversationOutline>, AppCommandError> {
+    let result = conv_commands::get_folder_conversation_outline_core(
+        &state.db.conn,
+        params.conversation_id,
+        params.before_index,
+    )
+    .await?;
     Ok(Json(result))
 }
 
-pub async fn get_stats() -> Result<Json<AgentStats>, AppCommandError> {
-    let result = conv_commands::get_stats().await?;
+pub async fn list_folders(
+    Extension(state): Extension<Arc<AppState>>,
+) -> Result<Json<Vec<FolderInfo>>, AppCommandError> {
+    let result = conv_commands::list_folders_core(&state.db.conn).await?;
     Ok(Json(result))
 }
 
-pub async fn get_sidebar_data() -> Result<Json<SidebarData>, AppCommandError> {
-    let result = conv_commands::get_sidebar_data().await?;
+pub async fn get_stats(
+    Extension(state): Extension<Arc<AppState>>,
+) -> Result<Json<AgentStats>, AppCommandError> {
+    let result = conv_commands::get_stats_core(&state.db.conn).await?;
+    Ok(Json(result))
+}
+
+pub async fn get_sidebar_data(
+    Extension(state): Extension<Arc<AppState>>,
+) -> Result<Json<SidebarData>, AppCommandError> {
+    let result = conv_commands::get_sidebar_data_core(&state.db.conn).await?;
     Ok(Json(result))
 }
 
@@ -249,6 +281,7 @@ pub async fn import_selected_sessions(
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateConversationParams {
+    pub agent_account_id: Option<String>,
     pub folder_id: i32,
     pub agent_type: AgentType,
     pub title: Option<String>,
@@ -259,11 +292,12 @@ pub async fn create_conversation(
     Json(params): Json<CreateConversationParams>,
 ) -> Result<Json<i32>, AppCommandError> {
     let db = &state.db;
-    let result = conv_commands::create_conversation_core(
+    let result = conv_commands::create_conversation_for_account_core(
         &db.conn,
         params.folder_id,
         params.agent_type,
         params.title,
+        params.agent_account_id,
     )
     .await?;
     conv_commands::emit_conversation_upsert(&state.emitter, &db.conn, result).await;
@@ -273,6 +307,7 @@ pub async fn create_conversation(
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateChatConversationParams {
+    pub agent_account_id: Option<String>,
     pub agent_type: AgentType,
     pub title: Option<String>,
     /// Reuse an eagerly-created scratch dir (from `create_chat_dir`) instead of
@@ -284,12 +319,13 @@ pub async fn create_chat_conversation(
     Extension(state): Extension<Arc<AppState>>,
     Json(params): Json<CreateChatConversationParams>,
 ) -> Result<Json<conv_commands::CreateChatConversationResult>, AppCommandError> {
-    let result = conv_commands::create_chat_conversation_core(
+    let result = conv_commands::create_chat_conversation_for_account_core(
         &state.db.conn,
         &state.data_dir,
         params.agent_type,
         params.title,
         params.existing_dir.as_deref(),
+        params.agent_account_id,
     )
     .await?;
     conv_commands::emit_conversation_upsert(&state.emitter, &state.db.conn, result.conversation_id)

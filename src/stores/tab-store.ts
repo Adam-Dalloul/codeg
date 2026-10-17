@@ -502,6 +502,44 @@ function moveTabToSlot(
   return insertTab(without, tabs[from], index)
 }
 
+/**
+ * `raw` with the tabs sitting at `slots` rearranged into the order a reorder
+ * callback asked for, or `null` when that list is not a permutation of exactly
+ * those slots (and so must be ignored).
+ *
+ * A reorder callback is a request to MOVE tabs, never a new tab set. The
+ * distinction matters because `Reorder.Group` emits the order it has measured
+ * since its own last render and then drops, by reference, whatever is missing
+ * from its current `values` — so mid-drag it can legitimately hand back a list
+ * that is short, repeats an id, or carries a tab object from an earlier derive.
+ * Resolving every entry back to the live `rawTabs` item by id keeps a drag
+ * unable to close a tab, resurrect a closed one, or write a stale copy of a
+ * tab's fields over the current one (a draft that bound to a conversation
+ * mid-drag would otherwise go back to being an unbound draft).
+ */
+function permuteSlots(
+  raw: TabItemInternal[],
+  slots: number[],
+  orderedTabs: TabItem[]
+): TabItemInternal[] | null {
+  if (orderedTabs.length !== slots.length) return null
+  const slotIds = new Set(slots.map((i) => raw[i].id))
+  const seen = new Set<string>()
+  const ordered: TabItemInternal[] = []
+  for (const tab of orderedTabs) {
+    if (!slotIds.has(tab.id) || seen.has(tab.id)) return null
+    seen.add(tab.id)
+    const item = raw.find((t) => t.id === tab.id)
+    if (!item) return null
+    ordered.push(item)
+  }
+  const next = [...raw]
+  slots.forEach((slot, k) => {
+    next[slot] = ordered[k]
+  })
+  return next.every((tab, i) => tab === raw[i]) ? null : next
+}
+
 /** Field-wise equality for derived tab items. Backs the cross-derive reuse in
  *  the `tabs` derivation: an item whose every field matches the previous derive
  *  keeps its old reference, so downstream `Object.is` gates (consumers' memos)
@@ -583,6 +621,57 @@ export function isReparentUnmount(
 ): boolean {
   if (!state.rawTabs.some((tab) => tab.id === tabId)) return false
   return groupOfTab(state.groupOf, state.groupLayout, tabId) !== renderedGroupId
+}
+
+/** The conversation view each tab has mounted: the group it rendered under and
+ *  the runtime session key it mounted on. Module scope rather than store state
+ *  because it tracks React mounts, which nothing renders from. */
+const mountedConversationViews = new Map<
+  string,
+  { groupId: string; runtimeConversationId: number }
+>()
+
+/** Record the conversation view `tabId` just mounted. The returned release
+ *  drops only its own entry, so it can never unregister a successor. */
+export function trackConversationView(
+  tabId: string,
+  groupId: string,
+  runtimeConversationId: number
+): () => void {
+  const entry = { groupId, runtimeConversationId }
+  mountedConversationViews.set(tabId, entry)
+  return () => {
+    if (mountedConversationViews.get(tabId) === entry) {
+      mountedConversationViews.delete(tabId)
+    }
+  }
+}
+
+/**
+ * Mount-side counterpart of `isReparentUnmount`: the runtime session key a
+ * conversation view arriving for `tabId` must inherit from the view it
+ * replaces, or null when a fresh key is right.
+ *
+ * React renders the arriving view BEFORE the departing one's cleanup runs, so
+ * at this view's first render its predecessor is still registered, and that
+ * cleanup is about to ask `isReparentUnmount` about its own group. This asks the
+ * same question first. Yes means the session is kept, and the arriving view has
+ * to carry on with it rather than key itself by the tab's row id — a tab that
+ * started as a draft keeps its transcript under a virtual key for good. No
+ * means the session is about to be removed (the desktop/mobile layout swap
+ * remounts every view in one commit without moving any), so inheriting it
+ * would strand the view on a key with nothing behind it; a virtual key never
+ * fetches.
+ */
+export function reparentedViewRuntimeConversationId(
+  state: Pick<TabStoreState, "rawTabs" | "groupOf" | "groupLayout">,
+  tabId: string
+): number | null {
+  const predecessor = mountedConversationViews.get(tabId)
+  if (!predecessor) return null
+  return isReparentUnmount(state, tabId, predecessor.groupId)
+    ? predecessor.runtimeConversationId
+    : null
 }
 
 /** Where a new tab should land: the explicit target when it's a live group,
@@ -988,22 +1077,30 @@ function recomputeTabs() {
   } else {
     const conversationMap = new Map<string, (typeof conversations)[number]>()
     for (const c of conversations) {
-      conversationMap.set(`${c.folder_id}-${c.agent_type}-${c.id}`, c)
+      conversationMap.set(`${c.folder_id}-${c.id}`, c)
     }
     const prevById = prev.length ? new Map(prev.map((d) => [d.id, d])) : null
     next = rawTabs.map((tab) => {
       if (tab.conversationId != null) {
         const conv =
-          conversationMap.get(
-            `${tab.folderId}-${tab.agentType}-${tab.conversationId}`
-          ) ?? childSummaries.get(tab.conversationId)
+          conversationMap.get(`${tab.folderId}-${tab.conversationId}`) ??
+          childSummaries.get(tab.conversationId)
         if (conv) {
           const newTitle =
             formatConversationTitle(conv.title) ||
             runtime.labels.untitledConversation
           const newStatus = conv.status as ConversationStatus | undefined
-          if (tab.title !== newTitle || tab.status !== newStatus) {
-            const derived = { ...tab, title: newTitle, status: newStatus }
+          if (
+            tab.title !== newTitle ||
+            tab.status !== newStatus ||
+            tab.agentType !== conv.agent_type
+          ) {
+            const derived = {
+              ...tab,
+              title: newTitle,
+              status: newStatus,
+              agentType: conv.agent_type,
+            }
             const prevItem = prevById?.get(tab.id)
             return prevItem && sameDerivedTab(prevItem, derived)
               ? prevItem
@@ -1024,7 +1121,19 @@ function recomputeTabs() {
     applyGroupInvariants()
     return
   }
-  useTabStore.setState({ tabs: next })
+  const byId = new Map(next.map((tab) => [tab.id, tab]))
+  const rebound = rawTabs.map((tab) => {
+    const derived = byId.get(tab.id)
+    return derived && derived.agentType !== tab.agentType
+      ? { ...tab, agentType: derived.agentType }
+      : tab
+  })
+  useTabStore.setState({
+    tabs: next,
+    ...(rebound.some((tab, i) => tab !== rawTabs[i])
+      ? { rawTabs: rebound }
+      : {}),
+  })
   applyGroupInvariants()
 }
 
@@ -1628,24 +1737,10 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
         slots.push(i)
       }
     })
-    if (orderedTabs.length !== slots.length) return
-    const slotIds = new Set(slots.map((i) => raw[i].id))
-    const seen = new Set<string>()
-    const ordered: TabItemInternal[] = []
-    for (const tab of orderedTabs) {
-      if (!slotIds.has(tab.id) || seen.has(tab.id)) return
-      seen.add(tab.id)
-      const item = raw.find((t) => t.id === tab.id)
-      if (!item) return
-      ordered.push(item)
-    }
     // Partition permutation: only this group's slots move, so the other
     // groups' persisted positions stay byte-stable.
-    const next = [...raw]
-    slots.forEach((slot, k) => {
-      next[slot] = ordered[k]
-    })
-    if (next.every((tab, i) => tab === raw[i])) return
+    const next = permuteSlots(raw, slots, orderedTabs)
+    if (!next) return
     set({ rawTabs: next })
     recomputeTabs()
   },
@@ -1664,7 +1759,16 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
   },
 
   reorderTabs: (reorderedTabs) => {
-    set({ rawTabs: reorderedTabs })
+    // The unsplit strip shows every tab, so its slots are the whole array —
+    // otherwise identical to a group reorder, guards included.
+    const raw = get().rawTabs
+    const next = permuteSlots(
+      raw,
+      raw.map((_, i) => i),
+      reorderedTabs
+    )
+    if (!next) return
+    set({ rawTabs: next })
     recomputeTabs()
   },
 
@@ -2293,7 +2397,15 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
       if (childSummaryInFlight.has(id)) continue
       childSummaryInFlight.add(id)
       const epoch = seedEpoch
-      void getFolderConversation(id)
+      // Only the SUMMARY is used below, so ask for the smallest window the
+      // backend accepts instead of the legacy full detail. Without a window the
+      // response carries every turn of the child session — for a long child
+      // that is megabytes of transcript transferred and re-parsed purely to
+      // read `detail.summary`. `tailTurns: 1` is the smallest window the
+      // backend accepts (it still widens back to the last user turn). The
+      // summary describes the whole transcript whatever the window, and it is
+      // all the tab label and status read.
+      void getFolderConversation(id, { tailTurns: 1 })
         .then((detail) => {
           if (seedEpoch !== epoch) return
           const buffered = childSeedBuffer.get(id)

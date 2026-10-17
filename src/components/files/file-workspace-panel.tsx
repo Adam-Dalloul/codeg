@@ -26,11 +26,16 @@ import {
   useWorkspaceFileTabs,
   type FileWorkspaceTab,
 } from "@/contexts/workspace-context"
+import { BrowserTabView } from "@/components/browser/browser-tab-view"
 import { ImagePreview } from "@/components/files/image-preview"
 import { HtmlPreview } from "@/components/files/html-preview"
 import { MarkdownDocumentPreview } from "@/components/files/markdown-document-preview"
-import { OfficePreview } from "@/components/files/office-preview"
-import { isHtmlPreviewable, isOfficePreviewable } from "@/lib/language-detect"
+import {
+  KeptOfficePreviews,
+  isOfficeFileTab,
+} from "@/components/files/kept-office-previews"
+import { PdfPreview } from "@/components/files/pdf-preview"
+import { isHtmlPreviewable } from "@/lib/language-detect"
 import { DiffViewer } from "@/components/diff/diff-viewer"
 import { ImageDiffView } from "@/components/diff/image-diff-view"
 import { UnifiedDiffPreview } from "@/components/diff/unified-diff-preview"
@@ -116,10 +121,12 @@ function createAddToChatPill(
   dom.className =
     "codeg-add-to-chat-pill rounded-md border border-border bg-popover px-2 py-0.5 text-xs font-medium text-popover-foreground shadow-md cursor-pointer select-none hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
   // Hand-written SVG (lucide "message-square-plus"): raw DOM can't host a React
-  // lucide component. `currentColor` + the blue text class echoes the file badge.
+  // lucide component. `currentColor` + the blue text class echoes the file badge;
+  // the `lucide` class gives it the same stroke weight as the React-rendered
+  // icons (the default-stroke rule in globals.css keys on it).
   dom.innerHTML =
     '<span class="inline-flex items-center gap-1">' +
-    '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" class="text-blue-600 dark:text-blue-400"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/><path d="M9 10h6"/><path d="M12 7v6"/></svg>' +
+    '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" class="lucide text-blue-600 dark:text-blue-400"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/><path d="M9 10h6"/><path d="M12 7v6"/></svg>' +
     '<span class="codeg-add-to-chat-label"></span>' +
     "</span>"
   const labelSpan = dom.querySelector(".codeg-add-to-chat-label")
@@ -203,6 +210,8 @@ function createAddToChatPill(
 // matching VS Code / IntelliJ "non-destructive refresh" behaviour. Only
 // a true cold load (no content yet) falls back to the full-pane placeholder.
 function hasTabContent(tab: FileWorkspaceTab): boolean {
+  // A browser tab has no text content; its page lives in a native surface.
+  if (tab.kind === "browser") return true
   if (tab.kind === "rich-diff") {
     return (
       tab.originalContent !== undefined ||
@@ -755,7 +764,21 @@ function DiffFileList({
   )
 }
 
+/**
+ * The file column's content: the active tab's view (the body below), plus the
+ * office previews `KeptOfficePreviews` keeps mounted over the same box so that
+ * switching tabs never restarts one.
+ */
 export function FileWorkspacePanel() {
+  return (
+    <div className="relative h-full min-h-0">
+      <FileWorkspacePanelBody />
+      <KeptOfficePreviews />
+    </div>
+  )
+}
+
+function FileWorkspacePanelBody() {
   const t = useTranslations("Folder.fileWorkspacePanel")
   const { activeFileTab, fileTabs, pendingFileReveal, previewFileTabIds } =
     useWorkspaceFileTabs()
@@ -1710,6 +1733,12 @@ export function FileWorkspacePanel() {
     )
   }
 
+  if (activeFileTab.kind === "browser") {
+    // Keyed by tab so switching between two browser tabs remounts the surface
+    // host (which hides the old webview and shows the new one).
+    return <BrowserTabView key={activeFileTab.id} tab={activeFileTab} />
+  }
+
   if (activeFileTab.kind === "rich-diff") {
     const richDiffParts = parseFileTabId(activeFileTab.id)
     const isCommitDiff = richDiffParts?.kind === "diff-commit"
@@ -1894,17 +1923,19 @@ export function FileWorkspacePanel() {
     return <ImagePreview key={activeFileTab.id} tab={activeFileTab} />
   }
 
-  // Office preview (.docx/.xlsx/.pptx → OfficeCLI HTML → sandboxed iframe).
+  // PDF preview (PDF.js). Preview-only like an image: the bytes are binary,
+  // there is no source view to toggle to.
+  if (isFileTab && activeFileTab && activeFileTab.language === "pdf") {
+    return <PdfPreview key={activeFileTab.id} tab={activeFileTab} />
+  }
+
+  // Office preview (.docx/.xlsx/.pptx → OfficeCLI watch → sandboxed iframe).
   // Preview-only: these are binary OpenXML files with no text editor view, so
-  // it renders unconditionally (not gated on the editor/preview toggle).
-  if (isFileTab && activeFileTab && isOfficePreviewable(activeFileTab.path)) {
-    return (
-      <OfficePreview
-        key={activeFileTab.id}
-        rootPath={activeIo?.rootPath ?? null}
-        relPath={activeIo?.ioPath ?? null}
-      />
-    )
+  // it renders unconditionally (not gated on the editor/preview toggle). It is
+  // not rendered here: `KeptOfficePreviews`, beside this body, shows it and
+  // keeps it mounted while other tabs are in front.
+  if (isOfficeFileTab(activeFileTab)) {
+    return null
   }
 
   // HTML preview (sandboxed iframe)
@@ -1919,6 +1950,10 @@ export function FileWorkspacePanel() {
         key={activeFileTab.id}
         tab={activeFileTab}
         rootPath={previewRoot}
+        // The file column already has a header of its own (FileWorkspaceHeader,
+        // directly above this panel): the preview's controls go there rather
+        // than into a second strip under it.
+        chrome="hoisted"
       />
     )
   }

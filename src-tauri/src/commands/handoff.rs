@@ -1,55 +1,52 @@
-//! Mid-conversation agent handoff commands (`acp_handoff_plan`,
-//! `acp_handoff`). The pure halves (path decision, transcript copy, briefing,
-//! divider splice) live in `acp::handoff`; this module is the choreography:
-//! stop the source, move or brief, spawn the target, verify it took the
-//! session, and only then move the conversation row.
-
-use std::collections::BTreeMap;
-use std::path::Path;
-use std::time::Duration;
-
-use serde::Serialize;
-#[cfg(feature = "tauri-runtime")]
-use tauri::{Manager, State};
-
-use crate::acp::handoff::{
-    self, build_briefing, BriefingInput, HandoffPath, DEFAULT_BRIEFING_BUDGET,
+//! Account-aware, cancellation-shielded handoffs. Native Claude transfers use
+//! the account picker's verified copy/load path. Other agents receive a saved
+//! context archive, with a durable retry if their first prompt fails.
+use super::{
+    acp::{account_runtime_env, build_account_session_runtime_env, verify_agent_installed},
+    conversations::{emit_conversation_upsert, get_folder_conversation_core},
 };
-use crate::acp::manager::ConnectionManager;
-use crate::acp::types::{ConnectionStatus, PromptInputBlock};
-use crate::app_error::{AppCommandError, AppErrorCode};
-use crate::commands::acp::{build_session_runtime_env, verify_agent_installed};
-use crate::commands::conversations::{emit_conversation_upsert, get_folder_conversation_core};
-use crate::db::service::{conversation_service, folder_service, handoff_service};
-use crate::db::AppDatabase;
-use crate::models::{AgentType, DbConversationSummary, MessageTurn};
-use crate::web::event_bridge::EventEmitter;
+use crate::{
+    acp::{
+        account_transfer, agent_accounts,
+        handoff::{self, HandoffPath},
+        handoff_context,
+        manager::ConnectionManager,
+        types::{AcpEvent, ConnectionStatus, PromptInputBlock},
+    },
+    app_error::AppCommandError,
+    db::{
+        entities::conversation,
+        service::{agent_account_service, conversation_service, folder_service, handoff_service},
+        AppDatabase,
+    },
+    models::{AgentType, DbConversationSummary, MessageTurn},
+    web::event_bridge::{emit_with_state, EventEmitter},
+};
+use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
+use serde::Serialize;
+use std::{
+    collections::BTreeMap,
+    path::{Path, PathBuf},
+    time::Duration,
+};
 
-/// How long the target gets to report its session (a `session/load` replay of
-/// a long transcript, or a cold `session/new`). Generous on purpose: a slow
-/// load is not a failure, an unrelated session id is.
-const TARGET_SESSION_TIMEOUT: Duration = Duration::from_secs(120);
-const TARGET_POLL_INTERVAL: Duration = Duration::from_millis(100);
+fn failure(e: impl std::fmt::Display) -> AppCommandError {
+    AppCommandError::task_execution_failed(e.to_string())
+}
 
-/// What the dialog shows before the user confirms.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HandoffPlan {
     pub source_agent_type: AgentType,
+    pub source_account_id: Option<String>,
+    pub source_external_id: Option<String>,
     pub target_agent_type: AgentType,
+    pub target_account_id: Option<String>,
     pub path: HandoffPath,
-    /// Set when the same-family path was possible in principle but had to be
-    /// demoted to a summary (`"transcript_missing"`).
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub native_reason: Option<&'static str>,
-    /// Stable code the frontend localizes when the handoff cannot run:
-    /// `same_agent`, `no_session`, `not_installed`, `disabled`.
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub blocked: Option<&'static str>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub blocked_message: Option<String>,
     pub turn_count: usize,
-    /// Summary path only: what the briefing would carry.
     pub briefing_chars: usize,
     pub briefing_truncated: bool,
     pub verbatim_turns: usize,
@@ -62,21 +59,24 @@ pub struct HandoffResult {
     pub folder_id: i32,
     pub from_agent_type: AgentType,
     pub to_agent_type: AgentType,
-    /// The session the conversation is bound to now.
+    pub agent_account_id: Option<String>,
     pub external_id: String,
     pub path: HandoffPath,
     pub connection_id: String,
     pub briefing_truncated: bool,
+    pub response_started: bool,
+    pub working_dir: String,
 }
 
 #[derive(Debug, Clone)]
 pub struct HandoffRequest {
     pub conversation_id: i32,
     pub target_agent_type: AgentType,
+    pub target_account_id: Option<String>,
+    pub source_agent_type: AgentType,
+    pub source_account_id: Option<String>,
+    pub source_external_id: String,
     pub note: Option<String>,
-    /// The target agent's own saved selector preferences (mode / model), read
-    /// by the frontend from the same store a normal connect uses, so the
-    /// handoff never carries the source agent's model over.
     pub preferred_mode_id: Option<String>,
     pub preferred_config_values: BTreeMap<String, String>,
 }
@@ -85,33 +85,33 @@ struct Prepared {
     summary: DbConversationSummary,
     working_dir: String,
     plan: HandoffPlan,
+    source_storage: Option<(AgentType, PathBuf)>,
     target_env: BTreeMap<String, String>,
     turns: Vec<MessageTurn>,
+    source_stats: Option<crate::models::SessionStats>,
 }
 
 async fn prepare(
     db: &AppDatabase,
     data_dir: &Path,
-    conversation_id: i32,
+    id: i32,
     target: AgentType,
+    target_account: Option<&str>,
 ) -> Result<Prepared, AppCommandError> {
-    let summary = conversation_service::get_by_id(&db.conn, conversation_id)
-        .await
-        .map_err(AppCommandError::from)?;
-    let source = summary.agent_type;
-    let folder = folder_service::get_folder_by_id(&db.conn, summary.folder_id)
-        .await
-        .map_err(AppCommandError::from)?;
-    let working_dir = summary
+    let summary = conversation_service::get_by_id(&db.conn, id).await?;
+    let folder = folder_service::get_folder_by_id(&db.conn, summary.folder_id).await?;
+    let cwd = summary
         .origin_cwd
         .clone()
         .or_else(|| folder.map(|f| f.path))
-        .ok_or_else(|| AppCommandError::not_found("conversation folder not found"))?;
-
+        .ok_or_else(|| AppCommandError::not_found("Conversation folder not found."))?;
     let mut plan = HandoffPlan {
-        source_agent_type: source,
+        source_agent_type: summary.agent_type,
+        source_account_id: summary.agent_account_id.clone(),
+        source_external_id: summary.external_id.clone(),
         target_agent_type: target,
-        path: HandoffPath::Summary,
+        target_account_id: target_account.map(str::to_string),
+        path: handoff::plan_path(summary.agent_type, target),
         native_reason: None,
         blocked: None,
         blocked_message: None,
@@ -120,505 +120,576 @@ async fn prepare(
         briefing_truncated: false,
         verbatim_turns: 0,
     };
-
-    let mut target_env = BTreeMap::new();
-    if target == source {
+    if plan.path == HandoffPath::Summary {
+        plan.path = HandoffPath::Context;
+    }
+    if summary.agent_type == target && summary.agent_account_id.as_deref() == target_account {
         plan.blocked = Some("same_agent");
+    } else if summary.parent_id.is_some() {
+        plan.blocked = Some("child_session");
     } else if summary.external_id.as_deref().unwrap_or("").is_empty() {
         plan.blocked = Some("no_session");
-    } else {
-        match build_session_runtime_env(db, target, None, data_dir).await {
-            Ok(env) => target_env = env,
-            Err(e) => {
+    } else if target == AgentType::OpenClaw {
+        plan.blocked = Some("remote_context");
+    }
+    let target_env =
+        match account_runtime_env(db, target, None, data_dir, target_account, false).await {
+            Ok(env) => env,
+            Err(error) => {
                 plan.blocked = Some("disabled");
-                plan.blocked_message = Some(e.to_string());
+                plan.blocked_message = Some(error.to_string());
+                BTreeMap::new()
             }
-        }
-        if plan.blocked.is_none() {
-            if let Err(e) = verify_agent_installed(target).await {
-                plan.blocked = Some("not_installed");
-                plan.blocked_message = Some(e.to_string());
-            }
-        }
-    }
-
-    let (detail, _) = get_folder_conversation_core(&db.conn, conversation_id).await?;
-    // Earlier handoffs already sit in this timeline as dividers; they are
-    // bookkeeping, not something the next agent needs to read.
-    let turns: Vec<MessageTurn> = detail
-        .turns
-        .into_iter()
-        .filter(|t| !handoff::is_divider_turn(t))
-        .collect();
-    plan.turn_count = turns.len();
-
+        };
     if plan.blocked.is_none() {
-        plan.path = handoff::plan_path(source, target);
-        if plan.path == HandoffPath::Native {
-            // The move is only lossless when the source's own store still has
-            // the transcript. A row whose session file is gone (pruned, or an
-            // external id that never matched a file) gets the summary instead
-            // of a native transfer that would come up empty.
-            let source_env = build_session_runtime_env(db, source, None, data_dir)
-                .await
-                .unwrap_or_default();
-            let source_home = handoff::claude_config_dir_for(source, &source_env);
-            let session_id = summary.external_id.as_deref().unwrap_or("");
-            let present = crate::parsers::claude::find_session_file_in(
-                &source_home.join("projects"),
-                session_id,
-            )
-            .is_some();
-            if !present {
-                plan.path = HandoffPath::Summary;
-                plan.native_reason = Some("transcript_missing");
-            }
-        }
-        if plan.path == HandoffPath::Summary {
-            let briefing = build_briefing(&BriefingInput {
-                source_label: &source.to_string(),
-                target_label: &target.to_string(),
-                working_dir: Some(&working_dir),
-                title: summary.title.as_deref(),
-                turns: &turns,
-                note: None,
-                budget: DEFAULT_BRIEFING_BUDGET,
-            });
-            plan.briefing_chars = briefing.text.chars().count();
-            plan.briefing_truncated = briefing.truncated;
-            plan.verbatim_turns = briefing.verbatim_turns;
+        if let Err(error) = verify_agent_installed(target).await {
+            plan.blocked = Some("not_installed");
+            plan.blocked_message = Some(error.to_string());
         }
     }
-
+    let source_env = if let Some(account) = summary.agent_account_id.as_deref() {
+        let account = agent_account_service::get(&db.conn, account).await?;
+        if account.agent_type != summary.agent_type.as_wire() {
+            return Err(failure("Invalid source account."));
+        }
+        agent_accounts::isolation_env(summary.agent_type, Path::new(&account.home_dir))
+            .map_err(failure)?
+    } else {
+        account_runtime_env(
+            db,
+            summary.agent_type,
+            summary.external_id.as_deref(),
+            data_dir,
+            None,
+            false,
+        )
+        .await
+        .map_err(failure)?
+    };
+    let source_storage = agent_accounts::storage_identity(summary.agent_type, &source_env);
+    let detail = get_folder_conversation_core(&db.conn, id).await?.0;
+    let summary = detail.summary;
+    plan.source_agent_type = summary.agent_type;
+    plan.source_account_id = summary.agent_account_id.clone();
+    plan.source_external_id = summary.external_id.clone();
+    let source_stats = detail.session_stats;
+    let turns = detail.turns;
+    plan.turn_count = turns
+        .iter()
+        .filter(|t| !handoff::is_divider_turn(t))
+        .count();
+    if plan.blocked.is_none() && plan.turn_count == 0 {
+        plan.blocked = Some("empty_history");
+    }
+    if plan.blocked.is_none() && plan.path == HandoffPath::Native {
+        let target_storage = agent_accounts::storage_identity(target, &target_env);
+        match (&source_storage, &target_storage) {
+            (Some((AgentType::ClaudeCode, source)), Some((AgentType::ClaudeCode, dest))) => {
+                if let Err(error) = account_transfer::ensure_session_task_lists(
+                    source,
+                    dest,
+                    Path::new(&cwd),
+                    summary.external_id.as_deref().unwrap_or(""),
+                    &[&source_env, &target_env],
+                ) {
+                    plan.blocked = Some("custom_task_list");
+                    plan.blocked_message = Some(error.to_string());
+                }
+                if source == dest
+                    || matches!((source.canonicalize(), dest.canonicalize()), (Ok(a), Ok(b)) if a == b)
+                {
+                    plan.blocked = Some("same_store");
+                }
+                if crate::parsers::claude::find_session_file_in(
+                    &source.join("projects"),
+                    summary.external_id.as_deref().unwrap_or(""),
+                )
+                .is_none()
+                {
+                    plan.blocked = Some("empty_history");
+                }
+            }
+            _ => {
+                plan.blocked = Some("empty_history");
+            }
+        }
+    }
     Ok(Prepared {
         summary,
-        working_dir,
+        working_dir: cwd,
         plan,
+        source_storage,
         target_env,
         turns,
+        source_stats,
     })
 }
 
 pub async fn handoff_plan_core(
     db: &AppDatabase,
     data_dir: &Path,
-    conversation_id: i32,
+    id: i32,
     target: AgentType,
+    account: Option<&str>,
 ) -> Result<HandoffPlan, AppCommandError> {
-    Ok(prepare(db, data_dir, conversation_id, target).await?.plan)
+    Ok(prepare(db, data_dir, id, target, account).await?.plan)
 }
 
-/// The live connection currently serving this conversation, if any.
-async fn source_connection(
-    manager: &ConnectionManager,
-    summary: &DbConversationSummary,
-) -> Option<String> {
-    if let Some(id) = manager
-        .find_connection_by_conversation_id(summary.id)
-        .await
-    {
-        return Some(id);
-    }
-    let sid = summary.external_id.as_deref()?;
-    manager
-        .find_connection_by_external_id(sid, summary.agent_type)
-        .await
-}
-
-/// Wait for the freshly spawned target to name its session. Returns the id
-/// it reported and the status it settled on; `None` means it never did.
-async fn wait_for_target_session(
-    manager: &ConnectionManager,
-    connection_id: &str,
-) -> (Option<String>, ConnectionStatus) {
-    let deadline = tokio::time::Instant::now() + TARGET_SESSION_TIMEOUT;
-    loop {
-        let Some(state) = manager.get_state(connection_id).await else {
-            return (None, ConnectionStatus::Disconnected);
-        };
-        let (external_id, status) = {
-            let s = state.read().await;
-            (s.external_id.clone(), s.status.clone())
-        };
-        if external_id.is_some()
-            || matches!(status, ConnectionStatus::Error | ConnectionStatus::Disconnected)
-        {
-            return (external_id, status);
-        }
-        if tokio::time::Instant::now() >= deadline {
-            return (external_id, status);
-        }
-        tokio::time::sleep(TARGET_POLL_INTERVAL).await;
-    }
-}
-
-/// Where codeg keeps its own transcript for a custom agent's session. A stale
-/// copy from an earlier visit of the same session would stop the load replay
-/// from re-hydrating it (`has_recorded_history` gate), so it is set aside
-/// before the target loads and put back if the load fails.
-fn custom_transcript_path(agent_type: AgentType, session_id: &str) -> Option<std::path::PathBuf> {
-    agent_type.custom_id()?;
-    let dir = crate::acp::registry::registry_id_for(agent_type);
-    crate::acp_transcript::transcript_path_in(
-        &crate::paths::codeg_acp_transcripts_root(),
-        dir,
-        session_id,
-    )
-    .filter(|p| p.exists())
-}
-
-fn set_aside(path: &Path) -> Option<std::path::PathBuf> {
-    let aside = path.with_extension(format!(
-        "jsonl.superseded-{}",
-        crate::acp_transcript::now_epoch_ms()
-    ));
-    std::fs::rename(path, &aside).ok().map(|_| aside)
-}
-
-#[allow(clippy::too_many_arguments)]
 pub async fn handoff_core(
     db: &AppDatabase,
     manager: &ConnectionManager,
     emitter: &EventEmitter,
     data_dir: &Path,
-    owner_window_label: String,
+    owner: String,
     request: HandoffRequest,
 ) -> Result<HandoffResult, AppCommandError> {
+    let db = AppDatabase {
+        conn: db.conn.clone(),
+    };
+    let manager = manager.clone_ref();
+    let emitter = emitter.clone();
+    let data = data_dir.to_path_buf();
+    tokio::spawn(async move { handoff_inner(&db, &manager, &emitter, &data, owner, request).await })
+        .await
+        .map_err(failure)?
+}
+
+async fn handoff_inner(
+    db: &AppDatabase,
+    manager: &ConnectionManager,
+    emitter: &EventEmitter,
+    data_dir: &Path,
+    owner: String,
+    request: HandoffRequest,
+) -> Result<HandoffResult, AppCommandError> {
+    let barrier = manager.lock_out_new_connections().await;
     let target = request.target_agent_type;
-    let prepared = prepare(db, data_dir, request.conversation_id, target).await?;
+    let mut prepared = prepare(
+        db,
+        data_dir,
+        request.conversation_id,
+        target,
+        request.target_account_id.as_deref(),
+    )
+    .await?;
     if let Some(code) = prepared.plan.blocked {
-        let message = prepared
-            .plan
-            .blocked_message
-            .clone()
-            .unwrap_or_else(|| format!("handoff blocked: {code}"));
-        return Err(AppCommandError::invalid_input(message).with_detail(code));
+        return Err(AppCommandError::invalid_input(
+            prepared
+                .plan
+                .blocked_message
+                .clone()
+                .unwrap_or_else(|| format!("Cannot switch this conversation: {code}.")),
+        )
+        .with_detail(code));
     }
-    let summary = prepared.summary;
-    let source = summary.agent_type;
-    let conversation_id = summary.id;
-    let session_id = summary
-        .external_id
-        .clone()
-        .ok_or_else(|| AppCommandError::invalid_input("conversation has no session yet"))?;
-
-    // A turn in flight would keep writing into the source session after the
-    // row moved. Refuse rather than race it; the frontend re-queues on this
-    // code the way it does for a fork.
-    let source_conn = source_connection(manager, &summary).await;
-    if let Some(conn_id) = &source_conn {
-        if let Some(state) = manager.get_state(conn_id).await {
-            if state.read().await.turn_in_flight {
-                // Wording carries the `turn already in progress` marker the
-                // frontend's `isTurnInProgressRejection` matches on the Tauri
-                // transport, where only the Display string reaches it.
-                return Err(AppCommandError::new(
-                    AppErrorCode::TurnInProgress,
-                    "turn already in progress: stop it or wait for it to finish before handing off",
-                ));
-            }
+    let source = prepared.summary.agent_type;
+    let sid = prepared.summary.external_id.clone().unwrap();
+    if source != request.source_agent_type
+        || prepared.summary.agent_account_id != request.source_account_id
+        || sid != request.source_external_id
+    {
+        return Err(failure(
+            "The conversation changed. Reopen the switch dialog and try again.",
+        ));
+    }
+    if conversation::Entity::find()
+        .filter(conversation::Column::ParentId.eq(prepared.summary.id))
+        .filter(conversation::Column::Status.eq(conversation::ConversationStatus::InProgress))
+        .one(&db.conn)
+        .await
+        .map_err(failure)?
+        .is_some()
+    {
+        return Err(failure(
+            "Wait for the delegated work to finish before switching agents.",
+        ));
+    }
+    let target_storage = agent_accounts::storage_identity(target, &prepared.target_env);
+    let native = prepared.plan.path == HandoffPath::Native;
+    let guards = if native {
+        let source_root = &prepared.source_storage.as_ref().unwrap().1;
+        let target_root = &target_storage.as_ref().unwrap().1;
+        let mut conflict = conversation::Entity::find()
+            .filter(conversation::Column::AgentType.eq(target.as_wire().into_owned()))
+            .filter(conversation::Column::ExternalId.eq(sid.clone()))
+            .filter(conversation::Column::Id.ne(request.conversation_id));
+        conflict = match request.target_account_id.as_deref() {
+            Some(id) => conflict.filter(conversation::Column::AgentAccountId.eq(id)),
+            None => conflict.filter(conversation::Column::AgentAccountId.is_null()),
+        };
+        if conflict.one(&db.conn).await.map_err(failure)?.is_some() {
+            return Err(failure(
+                "The selected account already has this conversation. Open its existing chat.",
+            ));
         }
+        manager
+            .quiesce_account_session(&barrier, source_root, target_root, &sid)
+            .await
+            .map_err(failure)?
+    } else {
+        manager
+            .quiesce_handoff_source(
+                &barrier,
+                request.conversation_id,
+                source,
+                request.source_account_id.as_deref(),
+                &sid,
+                prepared.source_storage.as_ref(),
+            )
+            .await
+            .map_err(failure)?
+    };
+    // Capture after every source writer stopped, including queued prompts.
+    let stopped = get_folder_conversation_core(&db.conn, request.conversation_id)
+        .await?
+        .0;
+    prepared.turns = stopped.turns;
+    prepared.source_stats = stopped.session_stats;
+    prepared.summary.model = stopped.summary.model;
+    let segment =
+        handoff_service::native_turns(&db.conn, source, &sid, request.source_account_id.as_deref())
+            .await?;
+    let links: Vec<_> = handoff_service::list_for_conversation(&db.conn, request.conversation_id)
+        .await?
+        .iter()
+        .filter_map(handoff::HandoffLink::from_row)
+        .collect();
+    let segment = handoff::clean_seeded_turns(segment, &links);
+    if segment.is_empty() && links.is_empty() {
+        return Err(failure(
+            "The saved conversation is empty. Restore its history before switching agents.",
+        ));
     }
-
-    let user_turns_before = handoff::count_user_turns(&prepared.turns);
+    let history_json = serde_json::to_string(&segment).map_err(failure)?;
     let note = request
         .note
         .as_deref()
         .map(str::trim)
         .filter(|n| !n.is_empty())
         .map(str::to_string);
-
-    match prepared.plan.path {
-        HandoffPath::Native => {
-            let source_env = build_session_runtime_env(db, source, None, data_dir)
-                .await
-                .unwrap_or_default();
-            let source_home = handoff::claude_config_dir_for(source, &source_env);
-            let target_home = handoff::claude_config_dir_for(target, &prepared.target_env);
-            if source_home == target_home {
-                return Err(AppCommandError::invalid_input(
-                    "both agents use the same Claude config directory; there is nothing to move",
-                ));
-            }
-
-            // The source connection is done with this session; disconnect it
-            // so nothing appends to the file while it is copied.
-            if let Some(conn_id) = &source_conn {
-                let _ = manager.disconnect(conn_id).await;
-            }
-
-            let copied = handoff::copy_claude_session(&source_home, &target_home, &session_id)
-                .map_err(|e| AppCommandError::io_error(e.to_string()))?;
-            let set_aside_transcript = custom_transcript_path(target, &session_id)
-                .and_then(|p| set_aside(&p).map(|aside| (p, aside)));
-
-            let rollback = |copied: &handoff::CopiedSession| {
-                handoff::remove_copied_session(copied);
-                if let Some((original, aside)) = &set_aside_transcript {
-                    let _ = std::fs::rename(aside, original);
-                }
-            };
-
-            let connection_id = match manager
-                .spawn_agent(
-                    target,
-                    Some(prepared.working_dir.clone()),
-                    Some(session_id.clone()),
-                    prepared.target_env.clone(),
-                    owner_window_label,
-                    emitter.clone(),
-                    request.preferred_mode_id.clone(),
-                    request.preferred_config_values.clone(),
+    let mut archive = if native {
+        None
+    } else {
+        let turns = prepared.turns.clone();
+        let note = note.clone();
+        Some(
+            tokio::task::spawn_blocking(move || {
+                handoff_context::write_archive(
+                    &crate::paths::codeg_conversation_context_root(),
+                    &turns,
+                    &source.to_string(),
+                    &target.to_string(),
+                    note.as_deref(),
                 )
-                .await
-            {
-                Ok(id) => id,
-                Err(e) => {
-                    rollback(&copied);
-                    return Err(AppCommandError::task_execution_failed(e.to_string()));
-                }
-            };
-
-            // The target must have loaded THIS session. A custom Claude slot
-            // that cannot load a session quietly opens a fresh one instead
-            // (`recovers_load_failure_locally`), and a built-in that cannot
-            // ends in `Error`; both leave the copy where it is and the row
-            // untouched.
-            let (reported, status) = wait_for_target_session(manager, &connection_id).await;
-            let loaded = reported.as_deref() == Some(session_id.as_str())
-                && !matches!(status, ConnectionStatus::Error | ConnectionStatus::Disconnected);
-            if !loaded {
-                let _ = manager.disconnect(&connection_id).await;
-                if let Some(stray) = reported.filter(|r| r != &session_id) {
-                    // The fallback session's header-only transcript would list
-                    // as an empty conversation of the target; drop it.
-                    if let Some(path) = custom_transcript_path(target, &stray) {
-                        let dir = crate::acp::registry::registry_id_for(target);
-                        if !crate::acp_transcript::has_entries_in(
-                            &crate::paths::codeg_acp_transcripts_root(),
-                            dir,
-                            &stray,
-                        ) {
-                            let _ = std::fs::remove_file(path);
-                        }
-                    }
-                }
-                rollback(&copied);
-                return Err(AppCommandError::task_execution_failed(format!(
-                    "{target} could not load the copied transcript (session {session_id}); \
-                     the conversation was left on {source}"
-                )));
-            }
-
-            if let Err(e) =
-                conversation_service::rebind_for_handoff(&db.conn, conversation_id, target, &session_id)
-                    .await
-            {
-                let _ = manager.disconnect(&connection_id).await;
-                rollback(&copied);
-                return Err(AppCommandError::from(e));
-            }
-            handoff_service::record(
-                &db.conn,
-                handoff_service::NewHandoff {
-                    conversation_id,
-                    from_agent_type: source,
-                    from_external_id: Some(session_id.clone()),
-                    to_agent_type: target,
-                    to_external_id: session_id.clone(),
-                    path: HandoffPath::Native.as_str(),
-                    carried: true,
-                    user_turns_before: u32::try_from(user_turns_before).unwrap_or(u32::MAX),
-                    note,
-                    briefing: None,
-                    truncated: false,
-                },
-            )
-            .await
-            .map_err(AppCommandError::from)?;
-            emit_conversation_upsert(emitter, &db.conn, conversation_id).await;
-            tracing::info!(
-                conversation_id,
-                from = %source,
-                to = %target,
-                session_id = %session_id,
-                "[handoff] native transfer complete"
-            );
-            Ok(HandoffResult {
-                conversation_id,
-                folder_id: summary.folder_id,
-                from_agent_type: source,
-                to_agent_type: target,
-                external_id: session_id,
-                path: HandoffPath::Native,
-                connection_id,
-                briefing_truncated: false,
             })
-        }
-        HandoffPath::Summary => {
-            let briefing = build_briefing(&BriefingInput {
-                source_label: &source.to_string(),
-                target_label: &target.to_string(),
-                working_dir: Some(&prepared.working_dir),
-                title: summary.title.as_deref(),
-                turns: &prepared.turns,
-                note: note.as_deref(),
-                budget: DEFAULT_BRIEFING_BUDGET,
-            });
-
-            if let Some(conn_id) = &source_conn {
-                let _ = manager.disconnect(conn_id).await;
-            }
-
-            let connection_id = manager
-                .spawn_agent(
-                    target,
-                    Some(prepared.working_dir.clone()),
-                    None,
-                    prepared.target_env.clone(),
-                    owner_window_label,
-                    emitter.clone(),
-                    request.preferred_mode_id.clone(),
-                    request.preferred_config_values.clone(),
-                )
-                .await
-                .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
-
-            let (reported, status) = wait_for_target_session(manager, &connection_id).await;
-            let new_session_id = match reported {
-                Some(id)
-                    if !matches!(status, ConnectionStatus::Error | ConnectionStatus::Disconnected) =>
-                {
-                    id
-                }
-                _ => {
-                    let _ = manager.disconnect(&connection_id).await;
-                    return Err(AppCommandError::task_execution_failed(format!(
-                        "{target} did not open a session; the conversation was left on {source}"
-                    )));
-                }
-            };
-
-            if let Err(e) = conversation_service::rebind_for_handoff(
-                &db.conn,
-                conversation_id,
-                target,
-                &new_session_id,
-            )
             .await
-            {
-                let _ = manager.disconnect(&connection_id).await;
-                return Err(AppCommandError::from(e));
-            }
-            handoff_service::record(
-                &db.conn,
-                handoff_service::NewHandoff {
-                    conversation_id,
-                    from_agent_type: source,
-                    from_external_id: Some(session_id.clone()),
-                    to_agent_type: target,
-                    to_external_id: new_session_id.clone(),
-                    path: HandoffPath::Summary.as_str(),
-                    carried: false,
-                    user_turns_before: u32::try_from(user_turns_before).unwrap_or(u32::MAX),
-                    note,
-                    briefing: Some(briefing.text.clone()),
-                    truncated: briefing.truncated,
-                },
+            .map_err(failure)?
+            .map_err(failure)?,
+        )
+    };
+    let mut transfer = None;
+    let mut aside = None;
+    if native {
+        transfer = Some(
+            account_transfer::copy_claude_session(
+                &prepared.source_storage.as_ref().unwrap().1,
+                &target_storage.as_ref().unwrap().1,
+                &sid,
             )
-            .await
-            .map_err(AppCommandError::from)?;
-            emit_conversation_upsert(emitter, &db.conn, conversation_id).await;
-
-            // The row already holds the new session, so this bind is the
-            // ordinary "row already holds the id" case in `bind_external_id`:
-            // nothing splits. The briefing is the target's first prompt.
-            manager
-                .send_prompt_linked(
-                    db,
-                    &connection_id,
-                    vec![PromptInputBlock::Text {
-                        text: briefing.text,
-                    }],
-                    Some(summary.folder_id),
-                    Some(conversation_id),
-                    None,
-                )
-                .await
-                .map_err(|e| {
-                    AppCommandError::task_execution_failed(format!(
-                        "the conversation now belongs to {target}, but the briefing could not be \
-                         sent: {e}. Send a message to continue."
-                    ))
-                })?;
-            tracing::info!(
-                conversation_id,
-                from = %source,
-                to = %target,
-                session_id = %new_session_id,
-                truncated = briefing.truncated,
-                "[handoff] summary handoff complete"
+            .map_err(failure)?,
+        );
+        if target.custom_id().is_some() {
+            let path = crate::acp_transcript::transcript_path_in(
+                &crate::paths::codeg_acp_transcripts_root(),
+                crate::acp::registry::registry_id_for(target),
+                &sid,
             );
-            Ok(HandoffResult {
-                conversation_id,
-                folder_id: summary.folder_id,
-                from_agent_type: source,
-                to_agent_type: target,
-                external_id: new_session_id,
-                path: HandoffPath::Summary,
-                connection_id,
-                briefing_truncated: briefing.truncated,
-            })
+            if let Some(path) = path.filter(|p| p.exists()) {
+                let backup = path.with_extension(format!("jsonl.handoff-{}", uuid::Uuid::new_v4()));
+                if let Err(e) = std::fs::rename(&path, &backup) {
+                    transfer.as_ref().unwrap().rollback().map_err(failure)?;
+                    return Err(failure(e));
+                }
+                aside = Some((path, backup));
+            }
         }
     }
+    let mut env = build_account_session_runtime_env(
+        db,
+        target,
+        native.then_some(sid.as_str()),
+        data_dir,
+        request.target_account_id.as_deref(),
+    )
+    .await;
+    if let (Ok(env), Some(archive)) = (&mut env, &archive) {
+        env.insert(
+            handoff_context::CONTEXT_ENV.into(),
+            archive
+                .directory
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned(),
+        );
+    }
+    if native {
+        if let (Ok(env), Some(id)) = (
+            &mut env,
+            handoff_service::context_for_conversation(&db.conn, request.conversation_id).await?,
+        ) {
+            env.insert(handoff_context::CONTEXT_ENV.into(), id);
+        }
+    }
+    let requested_config = request.preferred_config_values.clone();
+    let startup = async {
+        let connection = manager.spawn_agent_during_handoff(&barrier, target, prepared.working_dir.clone(), native.then_some(sid.clone()), env.map_err(failure)?, owner, emitter.clone(), request.preferred_mode_id, request.preferred_config_values).await.map_err(failure)?;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(120);
+        loop {
+            let state = manager.get_state(&connection).await.ok_or_else(|| failure("The selected agent stopped before the conversation was ready."))?;
+            let state = state.read().await;
+            if state.status == ConnectionStatus::Connected && state.selectors_ready {
+                if let Some(session) = &state.external_id {
+                    if (!native || state.has_restored_session(&sid)) && state.agent_account_id == request.target_account_id
+                        && (!native || super::account_switch::requested_model_applied(&requested_config, state.config_options.as_deref())) {
+                        return Ok((connection.clone(), session.clone()));
+                    }
+                }
+            }
+            let failed = matches!(state.status, ConnectionStatus::Error | ConnectionStatus::Disconnected)
+                || (state.status == ConnectionStatus::Connected && state.selectors_ready) || tokio::time::Instant::now() >= deadline;
+            drop(state);
+            if failed {
+                manager.disconnect_and_wait_for_account_switch(&connection).await.map_err(failure)?;
+                return Err(failure("The selected agent could not restore the conversation. The original account and history were kept."));
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }.await;
+    let (connection_id, external_id) = match startup {
+        Ok(result) => result,
+        Err(error) => {
+            rollback(
+                manager,
+                transfer.as_ref(),
+                target_storage.as_ref().map(|s| s.1.as_path()),
+                &sid,
+                aside.as_ref(),
+            )
+            .await?;
+            return Err(error);
+        }
+    };
+    // Historical @mentions are context, not a new routing request. The seed
+    // body goes through the internal suffix path; only the user's new note
+    // participates in the normal mention-routing rules.
+    let native_note = if native {
+        note.as_ref().map(|note| {
+            format!(
+                "{}\nNative switch note {}:\n{}",
+                handoff::BRIEFING_MARKER,
+                uuid::Uuid::new_v4(),
+                note
+            )
+        })
+    } else {
+        None
+    };
+    let seed_prompt = if archive.is_some() {
+        Some(format!(
+            "{}\nContinue this conversation with the saved context.{}",
+            handoff::BRIEFING_MARKER,
+            note.as_ref().map(|n| format!("\n{n}")).unwrap_or_default()
+        ))
+    } else {
+        native_note.clone()
+    };
+    let committed = handoff_service::commit(
+        &db.conn,
+        &prepared.summary,
+        handoff_service::NewHandoff {
+            conversation_id: request.conversation_id,
+            from_agent_type: source,
+            from_external_id: Some(sid.clone()),
+            to_agent_type: target,
+            to_external_id: external_id.clone(),
+            path: prepared.plan.path.as_str(),
+            carried: native,
+            user_turns_before: u32::try_from(handoff::count_user_turns(&prepared.turns))
+                .unwrap_or(u32::MAX),
+            note: note.clone(),
+            briefing: archive.as_ref().map(|a| a.prompt.clone()).or(native_note),
+            truncated: false,
+            from_account_id: request.source_account_id,
+            to_account_id: request.target_account_id.clone(),
+            history_json: Some(history_json),
+            context_id: archive
+                .as_ref()
+                .and_then(|a| a.directory.file_name())
+                .map(|s| s.to_string_lossy().into_owned()),
+            context_pending: !native || note.is_some(),
+            source_stats_json: prepared
+                .source_stats
+                .as_ref()
+                .map(serde_json::to_string)
+                .transpose()
+                .map_err(failure)?,
+            source_model: prepared.summary.model.clone(),
+        },
+    )
+    .await;
+    if let Err(error) = committed {
+        manager
+            .disconnect_and_wait_for_account_switch(&connection_id)
+            .await
+            .map_err(failure)?;
+        rollback(
+            manager,
+            transfer.as_ref(),
+            target_storage.as_ref().map(|s| s.1.as_path()),
+            &sid,
+            aside.as_ref(),
+        )
+        .await?;
+        return Err(error.into());
+    }
+    if let Some(archive) = &mut archive {
+        archive.persist();
+    }
+    if let Some(transfer) = transfer {
+        transfer.discard_staging();
+    }
+    if let Some((_, backup)) = aside {
+        let _ = std::fs::remove_file(backup);
+    }
+    if let Some(state) = manager.get_state(&connection_id).await {
+        emit_with_state(
+            &state,
+            emitter,
+            AcpEvent::ConversationLinked {
+                conversation_id: request.conversation_id,
+                folder_id: prepared.summary.folder_id,
+                parent_conversation_id: None,
+                parent_tool_use_id: None,
+            },
+        )
+        .await;
+    }
+    emit_conversation_upsert(emitter, &db.conn, request.conversation_id).await;
+    drop(guards);
+    drop(barrier);
+    let response_started = if let Some(text) = seed_prompt {
+        manager
+            .send_prompt_linked(
+                db,
+                &connection_id,
+                vec![PromptInputBlock::Text { text }],
+                Some(prepared.summary.folder_id),
+                Some(request.conversation_id),
+                None,
+            )
+            .await
+            .is_ok()
+    } else {
+        false
+    };
+    Ok(HandoffResult {
+        conversation_id: request.conversation_id,
+        folder_id: prepared.summary.folder_id,
+        from_agent_type: source,
+        to_agent_type: target,
+        agent_account_id: request.target_account_id,
+        external_id,
+        path: prepared.plan.path,
+        connection_id,
+        briefing_truncated: false,
+        response_started,
+        working_dir: prepared.working_dir,
+    })
+}
+
+async fn rollback(
+    manager: &ConnectionManager,
+    transfer: Option<&account_transfer::ClaudeTransfer>,
+    target: Option<&Path>,
+    sid: &str,
+    aside: Option<&(PathBuf, PathBuf)>,
+) -> Result<(), AppCommandError> {
+    if let Some(transfer) = transfer {
+        manager
+            .wait_for_account_session_writers(target.unwrap(), sid)
+            .await
+            .map_err(failure)?;
+        transfer.rollback().map_err(failure)?;
+        transfer.discard_staging();
+    }
+    if let Some((original, backup)) = aside {
+        if original.exists() {
+            std::fs::remove_file(original).map_err(failure)?;
+        }
+        std::fs::rename(backup, original).map_err(failure)?;
+    }
+    Ok(())
 }
 
 #[cfg(feature = "tauri-runtime")]
-fn effective_data_dir(app_handle: &tauri::AppHandle) -> std::path::PathBuf {
-    app_handle
-        .path()
+fn effective_data_dir(app: &tauri::AppHandle) -> PathBuf {
+    use tauri::Manager;
+    app.path()
         .app_data_dir()
         .map(|p| crate::paths::resolve_effective_data_dir(&p))
-        .unwrap_or_else(|_| std::path::PathBuf::from("."))
+        .unwrap_or_else(|_| crate::paths::codeg_home_dir())
 }
-
 #[cfg(feature = "tauri-runtime")]
-#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+#[tauri::command]
 pub async fn acp_handoff_plan(
     conversation_id: i32,
     target_agent_type: AgentType,
-    db: State<'_, AppDatabase>,
-    app_handle: tauri::AppHandle,
+    target_account_id: Option<String>,
+    db: tauri::State<'_, AppDatabase>,
+    app: tauri::AppHandle,
 ) -> Result<HandoffPlan, AppCommandError> {
-    let data_dir = effective_data_dir(&app_handle);
-    handoff_plan_core(&db, &data_dir, conversation_id, target_agent_type).await
+    handoff_plan_core(
+        &db,
+        &effective_data_dir(&app),
+        conversation_id,
+        target_agent_type,
+        target_account_id.as_deref(),
+    )
+    .await
 }
-
 #[cfg(feature = "tauri-runtime")]
-#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+#[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub async fn acp_handoff(
     conversation_id: i32,
     target_agent_type: AgentType,
+    target_account_id: Option<String>,
+    source_agent_type: AgentType,
+    source_account_id: Option<String>,
+    source_external_id: String,
     note: Option<String>,
     preferred_mode_id: Option<String>,
     preferred_config_values: Option<BTreeMap<String, String>>,
-    db: State<'_, AppDatabase>,
-    manager: State<'_, ConnectionManager>,
-    app_handle: tauri::AppHandle,
+    db: tauri::State<'_, AppDatabase>,
+    manager: tauri::State<'_, ConnectionManager>,
+    app: tauri::AppHandle,
     window: tauri::WebviewWindow,
 ) -> Result<HandoffResult, AppCommandError> {
-    let data_dir = effective_data_dir(&app_handle);
-    let emitter = EventEmitter::Tauri(app_handle.clone());
+    let data = effective_data_dir(&app);
     handoff_core(
         &db,
         &manager,
-        &emitter,
-        &data_dir,
-        window.label().to_string(),
+        &EventEmitter::Tauri(app),
+        &data,
+        window.label().into(),
         HandoffRequest {
             conversation_id,
             target_agent_type,
+            target_account_id,
+            source_agent_type,
+            source_account_id,
+            source_external_id,
             note,
             preferred_mode_id,
             preferred_config_values: preferred_config_values.unwrap_or_default(),

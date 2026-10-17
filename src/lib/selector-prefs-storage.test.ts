@@ -3,6 +3,8 @@ import { beforeEach, describe, expect, it } from "vitest"
 import {
   getSavedModeId,
   getSavedPrefsForConnect,
+  accountSwitchPreferences,
+  savePrefsForConnect,
   saveConfigPreference,
   saveModePreference,
 } from "./selector-prefs-storage"
@@ -15,6 +17,53 @@ function seed(prefs: Record<string, unknown>) {
 
 describe("selector-prefs-storage", () => {
   beforeEach(() => localStorage.clear())
+
+  it("inherits family preferences for a new account without overwriting its own choices", () => {
+    seed({
+      claude_code: {
+        modeId: "plan",
+        configValues: { model: "opus", effort: "high" },
+      },
+      "claude_code:account:work": { configValues: { model: "sonnet" } },
+    })
+    expect(getSavedPrefsForConnect("claude_code:account:new")).toEqual({
+      modeId: "plan",
+      configValues: { model: "opus", effort: "high" },
+    })
+    expect(getSavedPrefsForConnect("claude_code:account:work")).toEqual({
+      modeId: "plan",
+      configValues: { model: "sonnet", effort: "high" },
+    })
+    expect(getSavedModeId("claude_code:account:work")).toBe("plan")
+  })
+
+  it("keeps the live chat model and mode when switching to an unused account", () => {
+    seed({
+      claude_code: { modeId: "default", configValues: { model: "sonnet" } },
+    })
+    const current = {
+      modeId: "plan",
+      configValues: { model: "opus", effort: "high" },
+    }
+    expect(
+      accountSwitchPreferences(
+        getSavedPrefsForConnect("claude_code:account:new", false),
+        current
+      )
+    ).toEqual(current)
+    savePrefsForConnect("claude_code:account:new", current)
+    expect(getSavedPrefsForConnect("claude_code:account:new")).toEqual(current)
+    expect(getSavedModeId("claude_code:account:new")).toBe("plan")
+    expect(
+      accountSwitchPreferences(
+        { modeId: null, configValues: { model: "sonnet" } },
+        current
+      )
+    ).toEqual({
+      modeId: "plan",
+      configValues: { model: "sonnet", effort: "high" },
+    })
+  })
 
   it("round-trips a mode and config picks", () => {
     saveModePreference("codex", {
@@ -147,6 +196,45 @@ describe("selector-prefs-storage", () => {
     })
     expect(getSavedPrefsForConnect("other-cursor").configValues).toEqual({
       model: "claude-opus-5",
+    })
+  })
+
+  it("starts the built-in Kiro from the retired custom agent's picks", () => {
+    // The migration that turned `custom:kiro-cli` into `kiro` never sees this
+    // device-local store, so a user's chosen Kiro agent would silently reset.
+    seed({ "custom:kiro-cli": { modeId: "reviewer" } })
+    expect(getSavedModeId("kiro")).toBe("reviewer")
+    expect(getSavedPrefsForConnect("kiro")).toEqual({
+      modeId: "reviewer",
+      configValues: null,
+    })
+
+    // The built-in's first pick keeps the inherited one beside it…
+    saveConfigPreference("kiro", "model", "claude-sonnet-5")
+    expect(getSavedPrefsForConnect("kiro")).toEqual({
+      modeId: "reviewer",
+      configValues: { model: "claude-sonnet-5" },
+    })
+    // …and from then on its own entry is the one that counts.
+    saveModePreference("kiro", {
+      current_mode_id: "kiro_planner",
+      available_modes: [],
+    })
+    expect(getSavedModeId("kiro")).toBe("kiro_planner")
+    // The custom agent's entry is never rewritten.
+    expect(
+      JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "{}")["custom:kiro-cli"]
+    ).toEqual({ modeId: "reviewer" })
+  })
+
+  it("prefers the built-in Kiro's own picks over the retired agent's", () => {
+    seed({
+      "custom:kiro-cli": { modeId: "reviewer" },
+      kiro: { configValues: { model: "claude-sonnet-5" } },
+    })
+    expect(getSavedPrefsForConnect("kiro")).toEqual({
+      modeId: null,
+      configValues: { model: "claude-sonnet-5" },
     })
   })
 })

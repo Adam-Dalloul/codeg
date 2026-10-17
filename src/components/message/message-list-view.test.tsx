@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest"
 
 import {
   advanceReplyFold,
+  compactionOnlyPart,
   dedupeCompactionItems,
   extractDelegationSources,
   handoffOnlyMeta,
@@ -786,6 +787,18 @@ describe("markThreadTail", () => {
     expect(tailFlags(items)).toEqual([false, null])
   })
 
+  it("steps over a failed round's closing line", () => {
+    // A tail fork keeps everything up to the reply before the line, so the
+    // partial reply a failed turn left is still where "fork from here" lands.
+    const failure = assistantItem("err", {
+      role: "system",
+      parts: [{ type: "turn-error", message: "API Error: 503" }],
+    })
+    const items = [assistantItem("partial"), failure]
+    markThreadTail(items)
+    expect(tailFlags(items)).toEqual([true, false])
+  })
+
   it("steps over a trailing turn that renders nothing", () => {
     const items = [assistantItem("a"), assistantItem("empty", { parts: [] })]
     markThreadTail(items)
@@ -802,11 +815,13 @@ describe("markThreadTail", () => {
 describe("dedupeCompactionItems", () => {
   const divider = (
     key: string,
-    payload: Record<string, unknown>
+    payload: Record<string, unknown>,
+    callId?: string
   ): ThreadItem => ({
     key,
     kind: "compaction",
     meta: { contextCompaction: { version: 1, ...payload } },
+    callId,
   })
   const full = { preTokens: 108716, postTokens: 4462, durationMs: 92728 }
   const keys = (items: ThreadItem[]) => items.map((i) => i.key)
@@ -862,5 +877,92 @@ describe("dedupeCompactionItems", () => {
   it("returns the input array when nothing is dropped", () => {
     const items = [assistantItem("a"), divider("c1", full)]
     expect(dedupeCompactionItems(items)).toBe(items)
+  })
+
+  // codex names the live divider by the app-server item id, and its history
+  // parser names the persisted one by the same id — the only identity a bare
+  // `{version: 1}` payload has.
+  it("folds two renderings that name the same call", () => {
+    const named = (key: string, callId: string) => divider(key, {}, callId)
+    expect(
+      keys(
+        dedupeCompactionItems([
+          named("persisted-c", "01a0eaed-d00a"),
+          assistantItem("b"),
+          named("live-c", "01a0eaed-d00a"),
+        ])
+      )
+    ).toEqual(["persisted-c", "persisted-b"])
+    // …while distinct calls stay distinct.
+    expect(
+      dedupeCompactionItems([named("c1", "item-1"), named("c2", "item-2")])
+    ).toHaveLength(2)
+  })
+
+  // Either identity is enough: claude's live and history copies share their
+  // counters but not their ids.
+  it("still folds on content when the ids differ", () => {
+    const items = [
+      divider("persisted-c", full, "boundary-uuid"),
+      divider("live-c", full, "compacting-uuid"),
+    ]
+    expect(keys(dedupeCompactionItems(items))).toEqual(["persisted-c"])
+  })
+
+  // Identity is transitive: a repeat folded on one identity still lends its
+  // other one to the event, so a third copy matching only that one folds too.
+  it("remembers the other identity of a copy it drops", () => {
+    const other = { preTokens: 1, postTokens: 2, durationMs: 3 }
+    const items = [
+      divider("c-first", full, "call-a"),
+      divider("c-same-call", other, "call-a"),
+      divider("c-same-counters", other, "call-b"),
+    ]
+    expect(keys(dedupeCompactionItems(items))).toEqual(["c-first"])
+  })
+})
+
+describe("compactionOnlyPart", () => {
+  function compactionGroup(
+    state: "input-available" | "output-available"
+  ): ResolvedMessageGroup {
+    return {
+      id: "live-1",
+      role: "assistant",
+      parts: [
+        {
+          type: "tool-call",
+          toolCallId: "cmp_1",
+          toolName: "Context compaction",
+          input: null,
+          state,
+          output: "We kept the parser notes.",
+          meta: {
+            contextCompaction: { version: 1 },
+            "codeg.compactionSummary": true,
+          },
+        },
+      ],
+      resources: [],
+      images: [],
+    }
+  }
+
+  // A `/compact` still running is a compaction-only live turn, hoisted like a
+  // finished one — so the hoisted item has to keep the lifecycle, or it reads
+  // "compacted" (and its summary renders settled) while it is still going.
+  it("carries the call's state and claimed summary onto the hoisted item", () => {
+    expect(compactionOnlyPart(compactionGroup("input-available"))).toEqual({
+      meta: {
+        contextCompaction: { version: 1 },
+        "codeg.compactionSummary": true,
+      },
+      summary: "We kept the parser notes.",
+      state: "input-available",
+      callId: "cmp_1",
+    })
+    expect(compactionOnlyPart(compactionGroup("output-available"))?.state).toBe(
+      "output-available"
+    )
   })
 })

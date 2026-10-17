@@ -28,16 +28,17 @@ use crate::db::entities::conversation::ConversationStatus;
 use crate::db::error::DbError;
 use crate::db::service::conversation_service;
 use crate::logging::throttle::{LagLogThrottle, LAG_LOG_WINDOW};
-use crate::models::AgentType;
 use crate::web::event_bridge::{emit_with_state, EventEmitter};
 use tokio::sync::RwLock;
 
 /// Per-connection worker queue depth. Sized for the **filtered** event set
 /// only (see `is_lifecycle_relevant`) — high-frequency events (ContentDelta,
 /// ToolCall*, PermissionRequest) are dropped at the dispatcher and never
-/// enter the queue. The remaining 6 event types arrive at most a handful
+/// enter the queue. The remaining 7 event types arrive at most a handful
 /// of times per turn, so 64 slots is comfortable headroom for a sustained
 /// SQLite stall without forcing the dispatcher to block on `send`.
+/// (SessionStarted, TurnComplete, ConversationLinked, NativeSessionTitle,
+/// TranscriptRolledOver, Disconnected, Error.)
 const WORKER_QUEUE_CAPACITY: usize = 64;
 
 /// Whether an event needs to reach the per-connection worker. Mirrors the
@@ -66,6 +67,7 @@ fn is_lifecycle_relevant(event: &AcpEvent) -> bool {
             | AcpEvent::TurnComplete { .. }
             | AcpEvent::ConversationLinked { .. }
             | AcpEvent::NativeSessionTitle { .. }
+            | AcpEvent::TranscriptRolledOver { .. }
             | AcpEvent::StatusChanged {
                 status: ConnectionStatus::Disconnected
             }
@@ -246,16 +248,18 @@ pub(crate) async fn handle_event(
             //
             // The target status depends on the stop reason: `end_turn` is the
             // only success case and goes to `PendingReview`. `refusal`,
-            // `max_tokens`, `max_turn_requests`, `unknown`, `empty`, and
-            // `auth_required` indicate the turn failed (often a backend/gateway
-            // error masquerading as `Refusal` per the ACP spec gap, or — common
-            // with OpenCode — a silent EndTurn that produced no output), so
-            // we flip to `Cancelled` and pair the transition with an
+            // `max_tokens`, `max_turn_requests`, `unknown`, `empty`,
+            // `auth_required` and `rejected` indicate the turn failed (often a
+            // backend/gateway error masquerading as `Refusal` per the ACP spec
+            // gap, or — common with OpenCode — a silent EndTurn that produced no
+            // output), so we flip to `Cancelled` and pair the transition with an
             // `AcpEvent::Error` toast emitted upstream by `connection.rs`.
-            // `auth_required` is the one whose CONNECTION survives (the agent
-            // refused the prompt with ACP's -32000 and wants the user to sign
-            // in), but the turn is just as dead as the others — leaving the row
-            // out of this arm would strand it at InProgress for good.
+            // `auth_required` and `rejected` are the ones whose CONNECTION
+            // survives (the agent rejected the prompt — with ACP's -32000 when
+            // it wants the user to sign in, with anything else when it simply
+            // would not run this one), but their turn is just as dead as the
+            // others — leaving those rows out of this arm would strand them at
+            // InProgress for good.
             // `cancelled` is already written by `manager.cancel()` (eager
             // CAS InProgress → Cancelled at the user-cancel entry point), so
             // we leave it alone here. `completed` transitions remain
@@ -263,7 +267,7 @@ pub(crate) async fn handle_event(
             let target_status = match stop_reason.as_str() {
                 "end_turn" => Some(ConversationStatus::PendingReview),
                 "refusal" | "max_tokens" | "max_turn_requests" | "unknown" | "empty"
-                | "auth_required" => Some(ConversationStatus::Cancelled),
+                | "auth_required" | "rejected" => Some(ConversationStatus::Cancelled),
                 // `cancelled` and any future reason: don't write here.
                 _ => None,
             };
@@ -350,6 +354,43 @@ pub(crate) async fn handle_event(
             }
             Ok(())
         }
+        AcpEvent::TranscriptRolledOver { transcript_id } => {
+            // Claude `/clear` wrote a new transcript uuid. The ACP session id
+            // on SessionState is unchanged and must stay that way (prompts
+            // still use it). Re-point the conversation row in place — the
+            // outgoing id is this conversation's previous transcript, so it
+            // is passed as `continues` to avoid a sidebar split.
+            let Some((state_arc, emitter)) =
+                manager.get_state_and_emitter(&envelope.connection_id).await
+            else {
+                return Ok(());
+            };
+            let conversation_id = { state_arc.read().await.conversation_id };
+            if let Some(cid) = conversation_id {
+                // Continues is the row's current pointer (the file we are
+                // leaving), not SessionState.external_id — after the first
+                // `/clear` those diverge, and using the ACP id would split
+                // on a second rollover.
+                let Ok(current) = conversation_service::get_by_id(db_conn, cid).await else {
+                    return Ok(());
+                };
+                let continues: Vec<String> = current.external_id.into_iter().collect();
+                let preserved = conversation_service::bind_external_id(
+                    db_conn,
+                    cid,
+                    transcript_id,
+                    &continues,
+                )
+                .await?;
+                crate::commands::conversations::emit_conversation_upsert(&emitter, db_conn, cid)
+                    .await;
+                crate::commands::conversations::emit_preserved_conversation(
+                    &emitter, db_conn, preserved,
+                )
+                .await;
+            }
+            Ok(())
+        }
         // Other events don't need cross-connection DB persistence today; extend
         // this dispatcher with new arms as the lifecycle scope grows.
         _ => Ok(()),
@@ -425,6 +466,9 @@ async fn forward_turn_complete_to_broker(
         "empty" => DelegationOutcome::from_err(DelegationError::ChildEmpty, Some(conversation_id)),
         "auth_required" => {
             DelegationOutcome::from_err(DelegationError::ChildAuthRequired, Some(conversation_id))
+        }
+        "rejected" => {
+            DelegationOutcome::from_err(DelegationError::ChildRejected, Some(conversation_id))
         }
         other => DelegationOutcome::from_err(
             DelegationError::ChildUnknown(other.to_string()),
@@ -580,9 +624,13 @@ fn find_delegation_args(
     }
     let obj = value.as_object()?;
     // Direct hit: this object declares a delegation field at its top level.
+    // `assistant_id` counts whether a host sent it as a number or a string.
     if obj.get("task").and_then(|v| v.as_str()).is_some()
         || obj.get("agent_type").and_then(|v| v.as_str()).is_some()
         || obj.get("working_dir").and_then(|v| v.as_str()).is_some()
+        || obj
+            .get("assistant_id")
+            .is_some_and(|v| v.is_number() || v.is_string())
     {
         return Some(obj.clone());
     }
@@ -615,11 +663,11 @@ pub(crate) const CURSOR_IDENTITYLESS_MCP_TITLE: &str = "MCP: tool";
 ///   rephrase it (`Delegate to codex`). We match by substring so any
 ///   form containing `delegate_to_agent` is captured.
 /// * `raw_input` is the JSON arg blob the agent sent to the MCP server. The
-///   `delegate_to_agent` schema requires `agent_type` AND `task`; presence
-///   of both — after peeling any wrapper layers via [`find_delegation_args`] —
-///   is a near-zero false-positive shape check that catches any host that
-///   mangles the title beyond recognition, including ones that wrap their
-///   tool-call args.
+///   `delegate_to_agent` schema requires `task` plus a target — `agent_type`,
+///   or `assistant_id` for an assistant; `task` with either — after peeling
+///   any wrapper layers via [`find_delegation_args`] — is a near-zero
+///   false-positive shape check that catches any host that mangles the title
+///   beyond recognition, including ones that wrap their tool-call args.
 fn is_delegation_invocation(title: &str, raw_input: Option<&str>) -> bool {
     let normalized_title = title.to_ascii_lowercase().replace([' ', '-'], "_");
     if normalized_title.contains("delegate_to_agent") {
@@ -630,7 +678,10 @@ fn is_delegation_invocation(title: &str, raw_input: Option<&str>) -> bool {
             if let Some(args) = find_delegation_args(&v, 0) {
                 let has_task = args.get("task").and_then(|t| t.as_str()).is_some();
                 let has_agent_type = args.get("agent_type").and_then(|a| a.as_str()).is_some();
-                if has_task && has_agent_type {
+                let has_assistant_id = args
+                    .get("assistant_id")
+                    .is_some_and(|v| v.is_number() || v.is_string());
+                if has_task && (has_agent_type || has_assistant_id) {
                     return true;
                 }
             }
@@ -658,15 +709,20 @@ fn extract_delegation_match_key(raw_input: Option<&str>) -> Option<DelegationMat
     let parsed: serde_json::Value = serde_json::from_str(raw).ok()?;
     let args = find_delegation_args(&parsed, 0)?;
     let task = args.get("task").and_then(|v| v.as_str())?.to_string();
-    // Parse `agent_type` through the same serde path the MCP listener uses,
-    // so the stored enum equals `DelegationRequest::agent_type`.
-    let agent_type: AgentType = serde_json::from_value(args.get("agent_type")?.clone()).ok()?;
     let working_dir = args
         .get("working_dir")
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
+    let args = serde_json::Value::Object(args);
+    // The same parser the MCP listener dispatches the call with, so the
+    // target here equals `DelegationRequest::target()` for the same arguments.
+    let target = crate::acp::delegation::types::delegation_target_from_args(&args).ok()?;
     Some(DelegationMatchKey {
-        agent_type,
+        target,
+        agent_account_id: args
+            .get("agent_account_id")
+            .and_then(|v| v.as_str())
+            .map(str::to_owned),
         task,
         working_dir,
     })
@@ -853,9 +909,48 @@ mod delegation_title_tests {
     fn extract_match_key_pulls_agent_task_and_dir() {
         let raw = r#"{"agent_type":"codex","task":"smoke test","working_dir":"/tmp"}"#;
         let key = extract_delegation_match_key(Some(raw)).expect("key parses");
-        assert_eq!(key.agent_type, AgentType::Codex);
+        assert_eq!(
+            key.target,
+            crate::acp::delegation::types::DelegationTarget::Agent(AgentType::Codex)
+        );
         assert_eq!(key.task, "smoke test");
         assert_eq!(key.working_dir.as_deref(), Some("/tmp"));
+    }
+
+    #[test]
+    fn an_assistant_call_is_keyed_by_its_assistant_never_its_agent_type() {
+        use crate::acp::delegation::types::DelegationTarget;
+        // The host may fill `agent_type` with anything when it names an
+        // assistant: the broker keys the call by the assistant, so must we.
+        for raw in [
+            r#"{"assistant_id":3,"task":"review"}"#,
+            r#"{"assistant_id":"3","agent_type":"codex","task":"review"}"#,
+            r#"{"params":{"input":{"assistant_id":3,"agent_type":"garbage","task":"review"}}}"#,
+        ] {
+            let key = extract_delegation_match_key(Some(raw)).expect("assistant key parses");
+            assert_eq!(key.target, DelegationTarget::Assistant(3), "{raw}");
+            assert_eq!(key.task, "review");
+        }
+        // An invalid id is no key at all (the listener refuses the call).
+        assert!(
+            extract_delegation_match_key(Some(r#"{"assistant_id":0,"task":"x"}"#)).is_none()
+        );
+    }
+
+    #[test]
+    fn an_assistant_call_is_recognized_by_its_shape() {
+        assert!(is_delegation_invocation(
+            "some host title",
+            Some(r#"{"assistant_id":3,"task":"review"}"#)
+        ));
+        assert!(is_delegation_invocation(
+            "some host title",
+            Some(r#"{"arguments":{"assistant_id":"3","task":"review"}}"#)
+        ));
+        assert!(!is_delegation_invocation(
+            "some host title",
+            Some(r#"{"assistant_id":3}"#)
+        ));
     }
 
     #[test]
@@ -866,6 +961,18 @@ mod delegation_title_tests {
         let raw = r#"{"agent_type":"codex","task":"smoke test"}"#;
         let key = extract_delegation_match_key(Some(raw)).expect("key parses");
         assert!(key.working_dir.is_none());
+    }
+
+    #[test]
+    fn extract_match_key_keeps_explicit_accounts_and_default_distinct() {
+        let omitted = extract_delegation_match_key(Some(r#"{"agent_type":"claude_code","task":"review"}"#)).unwrap();
+        assert_eq!(omitted.agent_account_id, None);
+        for id in ["default", "work-account"] {
+            let raw = serde_json::json!({"arguments":{"agent_type":"claude_code", "task":"review", "agent_account_id":id}}).to_string();
+            let key = extract_delegation_match_key(Some(&raw)).unwrap();
+            assert_eq!(key.agent_account_id.as_deref(), Some(id));
+            assert_ne!(key, omitted);
+        }
     }
 
     #[test]
@@ -889,7 +996,10 @@ mod delegation_title_tests {
         // `findDelegationArgs` walker in delegated-sub-thread.tsx).
         let nested = r#"{"params":{"input":{"agent_type":"codex","task":"t","working_dir":"/w"}}}"#;
         let key = extract_delegation_match_key(Some(nested)).expect("nested key parses");
-        assert_eq!(key.agent_type, AgentType::Codex);
+        assert_eq!(
+            key.target,
+            crate::acp::delegation::types::DelegationTarget::Agent(AgentType::Codex)
+        );
         assert_eq!(key.task, "t");
         assert_eq!(key.working_dir.as_deref(), Some("/w"));
 
@@ -914,7 +1024,10 @@ mod delegation_title_tests {
         let inner = r#"{"agent_type":"codex","task":"double"}"#;
         let double = serde_json::Value::String(inner.to_string()).to_string();
         let key = extract_delegation_match_key(Some(&double)).expect("double-encoded parses");
-        assert_eq!(key.agent_type, AgentType::Codex);
+        assert_eq!(
+            key.target,
+            crate::acp::delegation::types::DelegationTarget::Agent(AgentType::Codex)
+        );
         assert_eq!(key.task, "double");
     }
 
@@ -1070,7 +1183,8 @@ mod delegation_registration_tests {
 
     fn codex_key(task: &str) -> DelegationMatchKey {
         DelegationMatchKey {
-            agent_type: AgentType::Codex,
+            target: crate::acp::delegation::types::DelegationTarget::Agent(AgentType::Codex),
+            agent_account_id: None,
             task: task.to_string(),
             working_dir: None,
         }
@@ -1570,7 +1684,7 @@ async fn connection_worker_loop(
 /// connections, workers run independently so a slow SQLite write on one
 /// connection doesn't backpressure the others.
 ///
-/// All forwarded events (the 6 types in `is_lifecycle_relevant`) use
+/// All forwarded events (the 7 types in `is_lifecycle_relevant`) use
 /// blocking `send().await` to guarantee delivery even when the worker
 /// mailbox is full — `SessionStarted` (writes external_id) and
 /// `TurnComplete` (writes terminal status) are correctness-critical and
@@ -1749,6 +1863,7 @@ mod tests {
             status: crate::acp::types::ConnectionStatus::Connected,
             owner_window_label: "test-window".to_string(),
             cmd_tx: tx,
+            handshake: tokio_util::sync::CancellationToken::new(),
             state: Arc::new(RwLock::new(state)),
             emitter: EventEmitter::Noop,
             prompt_lock: Arc::new(tokio::sync::Mutex::new(())),
@@ -1786,6 +1901,52 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(reloaded.external_id.as_deref(), Some("ext-99"));
+    }
+
+    #[tokio::test]
+    async fn handle_event_clear_rollover_repoints_external_id_in_place() {
+        let db = test_helpers::fresh_in_memory_db().await;
+        let folder_id = test_helpers::seed_folder(&db, "/tmp/test-clear-rollover").await;
+        let conv =
+            conversation_service::create(&db.conn, folder_id, AgentType::ClaudeCode, None, None)
+                .await
+                .unwrap();
+        conversation_service::bind_external_id(&db.conn, conv.id, "old-sess", &[])
+            .await
+            .unwrap();
+        let mgr = ConnectionManager::new();
+        {
+            let mut map = mgr.connections.lock().await;
+            let conn = fake_connection_with_state("c1", Some(conv.id));
+            conn.state.write().await.external_id = Some("old-sess".into());
+            map.insert("c1".to_string(), conn);
+        }
+        let env = EventEnvelope {
+            seq: 1,
+            connection_id: "c1".to_string(),
+            payload: AcpEvent::TranscriptRolledOver {
+                transcript_id: "new-sess".into(),
+            },
+        };
+        handle_event(&db.conn, &mgr, &env, None).await.unwrap();
+        let reloaded = conversation_service::get_by_id(&db.conn, conv.id)
+            .await
+            .unwrap();
+        assert_eq!(reloaded.external_id.as_deref(), Some("new-sess"));
+
+        // A second rollover must also stay in place (ACP id still old-sess).
+        let env2 = EventEnvelope {
+            seq: 2,
+            connection_id: "c1".to_string(),
+            payload: AcpEvent::TranscriptRolledOver {
+                transcript_id: "newer-sess".into(),
+            },
+        };
+        handle_event(&db.conn, &mgr, &env2, None).await.unwrap();
+        let reloaded = conversation_service::get_by_id(&db.conn, conv.id)
+            .await
+            .unwrap();
+        assert_eq!(reloaded.external_id.as_deref(), Some("newer-sess"));
     }
 
     #[tokio::test]
@@ -2500,6 +2661,9 @@ mod tests {
         assert!(is_lifecycle_relevant(&AcpEvent::NativeSessionTitle {
             title: "Fix login".into(),
         }));
+        assert!(is_lifecycle_relevant(&AcpEvent::TranscriptRolledOver {
+            transcript_id: "new-sess".into(),
+        }));
         assert!(is_lifecycle_relevant(&AcpEvent::StatusChanged {
             status: ConnectionStatus::Disconnected,
         }));
@@ -2908,10 +3072,12 @@ mod tests {
             parent_conversation_id: 1,
             parent_tool_use_id: format!("tu-{child_conn_id}"),
             agent_type: AgentType::ClaudeCode,
+            agent_account_id: None,
             task: "do x".into(),
             working_dir: None,
             requested_working_dir: None,
             external_handle: None,
+            assistant: None,
         }
     }
 

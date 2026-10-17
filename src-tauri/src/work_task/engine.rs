@@ -32,9 +32,9 @@ use crate::acp::types::{
 };
 use crate::acp::work_task_tools::{TaskReportAck, WorkTaskToolAccess};
 use crate::acp::InternalEventBus;
-use crate::commands::acp::{build_session_runtime_env, verify_agent_installed};
+use crate::commands::acp::{build_account_session_runtime_env, verify_agent_installed};
 use crate::commands::conversations::{
-    create_conversation_core, emit_conversation_upsert, get_folder_conversation_core,
+    create_conversation_for_account_core, emit_conversation_upsert, get_folder_conversation_core,
 };
 use crate::commands::folders::{
     emit_folder_deleted, emit_folder_upsert, get_folder_core, git_worktree_add,
@@ -72,6 +72,12 @@ const SCHEDULE_INTERVAL_SECS: u64 = 15;
 
 /// Cap on the preflight output tail persisted with a red light.
 const PREFLIGHT_TAIL_CHARS: usize = 4000;
+
+/// Cap on an agent-reported error kept for a failed turn's `last_error` — the
+/// same budget as the init and preflight output tails. A failed tool call can
+/// carry a whole command log, and the row is rebroadcast on every upsert; the
+/// tail is where such a log usually says what went wrong.
+const TURN_ERROR_TAIL_CHARS: usize = PREFLIGHT_TAIL_CHARS;
 
 /// How often a waiting pre-prompt compaction re-checks that its connection is
 /// still alive. NOT a deadline on the turn — see `await_compaction_turn`, which
@@ -174,6 +180,21 @@ pub fn engine() -> Option<Arc<TaskEngine>> {
     ENGINE.get().cloned()
 }
 
+/// One live task turn, keyed by its connection id and dropped with it.
+///
+/// `baselined` is false when the entry exists only to remember an error.
+/// Unit tests seed `index` directly and never launch, so they have no
+/// prompt-time diff; "no change" then means the settle-time snapshot is
+/// empty. A real launch stores the snapshot from before the prompt, so a
+/// later round on a worktree that already has edits still counts as empty
+/// when this round added nothing (#538).
+#[derive(Default)]
+struct TurnSignal {
+    error: Option<String>,
+    baselined: bool,
+    baseline: Option<(i32, i32, i32)>,
+}
+
 pub struct TaskEngine {
     db: AppDatabase,
     manager: ConnectionManager,
@@ -237,6 +258,9 @@ pub struct TaskEngine {
     /// under the state write lock in `emit_with_state_gated`), so it names one
     /// exact envelope rather than "a turn on this connection".
     compaction_turns: Arc<Mutex<HashMap<String, u64>>>,
+    /// Agent error and prompt-time diff for the connection's current turn.
+    /// See [`TurnSignal`].
+    turn_signals: Arc<Mutex<HashMap<String, TurnSignal>>>,
     /// Tasks whose merge/delivery is executing in THIS process — the reconcile
     /// tick must not run crash recovery against them. A merge only needs it
     /// for the dispatch window (a live agent connection covers the rest); a
@@ -309,6 +333,7 @@ pub fn build_task_engine(
         setup_children: Arc::new(Mutex::new(HashMap::new())),
         compacting: Arc::new(Mutex::new(HashMap::new())),
         compaction_turns: Arc::new(Mutex::new(HashMap::new())),
+        turn_signals: Arc::new(Mutex::new(HashMap::new())),
         merging: Arc::new(Mutex::new(HashMap::new())),
         in_flight_token: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         forge: Arc::new(crate::forge::deliver::ForgeDelivery),
@@ -370,6 +395,7 @@ fn test_engine_full(
         setup_children: Arc::new(Mutex::new(HashMap::new())),
         compacting: Arc::new(Mutex::new(HashMap::new())),
         compaction_turns: Arc::new(Mutex::new(HashMap::new())),
+        turn_signals: Arc::new(Mutex::new(HashMap::new())),
         merging: Arc::new(Mutex::new(HashMap::new())),
         in_flight_token: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         forge,
@@ -642,6 +668,86 @@ impl LaunchMode {
                 ..
             }
         )
+    }
+}
+
+/// Text of an agent-reported failure on this event, if it is one.
+///
+/// ACP `Error`, a terminal AIR `SessionFailure` (severity `error` — the
+/// shape Codex and Claude use for an upstream 400 that still ends
+/// `end_turn`; severity `warning` is a retry), plus a tool call (or
+/// update) whose status is `failed`. The message is the error string, the
+/// failure title / details, or the tool's content / raw output — whichever
+/// is non-empty. Anything else is not a turn failure by itself, and neither
+/// is an error the turn then moves on from (see [`is_turn_progress`]): only
+/// what a turn ENDED in can fail it.
+fn reported_agent_error(payload: &AcpEvent) -> Option<String> {
+    match payload {
+        AcpEvent::Error { message, .. } => first_nonempty([Some(message.as_str())]),
+        AcpEvent::SessionFailure { record }
+            if record.severity == "error" && !record.resolved =>
+        {
+            first_nonempty([Some(record.title.as_str()), record.details.as_deref()])
+        }
+        AcpEvent::ToolCall {
+            status,
+            content,
+            raw_output,
+            ..
+        } if status == "failed" => first_nonempty([content.as_deref(), raw_output.as_deref()]),
+        AcpEvent::ToolCallUpdate {
+            status,
+            content,
+            raw_output,
+            ..
+        } if status.as_deref() == Some("failed") => {
+            first_nonempty([content.as_deref(), raw_output.as_deref()])
+        }
+        _ => None,
+    }
+}
+
+/// Whether the agent moved on in this event: new text, new thinking, or a new
+/// tool call — the edge `SessionState` settles an AIR retry incident on. An
+/// error noted before it was recovered from (a failed edit retried, a failed
+/// lookup followed by the answer), so it is not what the turn ended in. A
+/// failed tool call is an error, not progress: `on_event` asks
+/// [`reported_agent_error`] first.
+fn is_turn_progress(payload: &AcpEvent) -> bool {
+    matches!(
+        payload,
+        AcpEvent::ContentDelta { .. } | AcpEvent::Thinking { .. } | AcpEvent::ToolCall { .. }
+    )
+}
+
+fn first_nonempty<'a>(parts: impl IntoIterator<Item = Option<&'a str>>) -> Option<String> {
+    parts
+        .into_iter()
+        .flatten()
+        .map(str::trim)
+        .find(|text| !text.is_empty())
+        .map(str::to_string)
+}
+
+/// Whether this turn added no diff the engine can prove.
+///
+/// Unbaselined (unit tests, which never launch) means the settle-time
+/// snapshot is empty or missing. Baselined means the two triples are equal.
+/// A missing side on a baselined turn is an unreadable git snapshot, not
+/// evidence of a new diff, so a recorded error is not dropped (#538).
+///
+/// The triples are counts, so an edit that leaves all three unchanged (a line
+/// already changed, changed again) reads as no diff. That can only fail a turn
+/// that ENDED in the error it reported — one it moved on from is cleared (see
+/// [`is_turn_progress`]) — and failing such a turn with that error, its edits
+/// still in the worktree, is the truthful outcome anyway.
+fn turn_added_no_diff(signal: Option<&TurnSignal>, after: Option<(i32, i32, i32)>) -> bool {
+    let Some(signal) = signal.filter(|signal| signal.baselined) else {
+        return after.unwrap_or((0, 0, 0)) == (0, 0, 0);
+    };
+    match (signal.baseline, after) {
+        (Some(before), Some(now)) => before == now,
+        _ => true,
     }
 }
 
@@ -1209,8 +1315,12 @@ impl TaskEngine {
         }
 
         // Resume the previous session for retry/return/merge when we have one.
-        let resume_session_id = match mode {
-            LaunchMode::Fresh => None,
+        // Its conversation may since have been moved to another account (the
+        // chat's account switch): the session now lives in that account's
+        // folder, so the relaunch, and a fresh row should the resume fail, use
+        // the conversation's saved account, never the Default one.
+        let (resume_session_id, resume_account_id) = match mode {
+            LaunchMode::Fresh => (None, None),
             LaunchMode::Retry | LaunchMode::Return { .. } | LaunchMode::Merge { .. } => {
                 match task.conversation_id {
                     Some(conv_id) => conversation::Entity::find_by_id(conv_id)
@@ -1218,16 +1328,22 @@ impl TaskEngine {
                         .await
                         .ok()
                         .flatten()
-                        .and_then(|c| c.external_id),
-                    None => None,
+                        .map(|c| (c.external_id, c.agent_account_id))
+                        .unwrap_or_default(),
+                    None => (None, None),
                 }
             }
         };
 
-        let runtime_env =
-            build_session_runtime_env(&self.db, agent_type, resume_session_id.as_deref(), &self.data_dir)
-                .await
-                .map_err(|e| e.to_string())?;
+        let runtime_env = build_account_session_runtime_env(
+            &self.db,
+            agent_type,
+            resume_session_id.as_deref(),
+            &self.data_dir,
+            resume_account_id.as_deref(),
+        )
+        .await
+        .map_err(|e| e.to_string())?;
         verify_agent_installed(agent_type)
             .await
             .map_err(|e| e.to_string())?;
@@ -1290,11 +1406,12 @@ impl TaskEngine {
             task.conversation_id.expect("resumed implies conversation")
         } else {
             let title = conversation_title_for_task(&task.title);
-            let id = match create_conversation_core(
+            let id = match create_conversation_for_account_core(
                 &self.db.conn,
                 wt.folder_id,
                 agent_type,
                 Some(title),
+                resume_account_id.clone(),
             )
             .await
             {
@@ -1431,6 +1548,20 @@ impl TaskEngine {
             }
         }
 
+        // Measured BEFORE the connection is indexed, so a turn that ends
+        // the moment the prompt is sent already has something to compare
+        // against. See [`TurnSignal`]. Replacing the entry also drops any
+        // error latched before this prompt: the work turn starts clean.
+        let baseline = self.snapshot_diff_stats(task_id).await;
+        self.turn_signals.lock().await.insert(
+            conn_id.clone(),
+            TurnSignal {
+                error: None,
+                baselined: true,
+                baseline,
+            },
+        );
+
         // Register for completion correlation BEFORE prompting so a fast
         // TurnComplete can't race ahead of the index entry.
         self.index
@@ -1563,20 +1694,45 @@ impl TaskEngine {
 
         // Where the task's branch starts, and what its diff is measured
         // against. Normally both are the project folder's current HEAD; a task
-        // that IS a pull request starts at that pull request's head instead,
+        // created FOR a particular branch starts at that branch's tip instead,
+        // and a task that IS a pull request starts at that pull request's head
         // and measures against the merge base (see `pr_checkout_point`).
         let (base_branch, base_sha, start_at) = match self.pr_checkout_point(task, root).await? {
             Some(point) => point,
-            None => {
-                let head = resolve_git_head(&root.path).await.map_err(|e| e.to_string())?;
-                let base_branch = head.branch.ok_or_else(|| {
-                    "project folder is not on a branch (detached HEAD?)".to_string()
-                })?;
-                let base_sha = task_git::rev_parse(&root.path, "HEAD")
-                    .await
-                    .map_err(|e| e.to_string())?;
-                (base_branch, base_sha.clone(), base_sha)
-            }
+            None => match chosen_base_branch(task) {
+                Some(branch) => {
+                    // A branch that is gone by the time the task is claimed
+                    // FAILS the setup: the choice exists so the work lands
+                    // somewhere specific, and quietly branching from the
+                    // checkout instead would be the wrong answer delivered
+                    // without a word. The LOCAL branch specifically — the
+                    // merge lands into the project checkout, which can only be
+                    // on a local branch — and looking it up this way is also
+                    // what keeps an arbitrary string out of the git commands
+                    // (and out of the merge prompt) downstream: only a name
+                    // git itself resolved under `refs/heads/` gets through.
+                    let tip = task_git::local_branch_tip(&root.path, &branch)
+                        .await
+                        .map_err(|e| e.to_string())?
+                        .ok_or_else(|| {
+                            format!(
+                                "the task's base branch '{branch}' does not exist in the \
+                                 project folder"
+                            )
+                        })?;
+                    (branch, tip.clone(), tip)
+                }
+                None => {
+                    let head = resolve_git_head(&root.path).await.map_err(|e| e.to_string())?;
+                    let base_branch = head.branch.ok_or_else(|| {
+                        "project folder is not on a branch (detached HEAD?)".to_string()
+                    })?;
+                    let base_sha = task_git::rev_parse(&root.path, "HEAD")
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    (base_branch, base_sha.clone(), base_sha)
+                }
+            },
         };
 
         let branch = format!("task/{}", task.id);
@@ -2260,6 +2416,26 @@ impl TaskEngine {
                         return match stop_reason.as_str() {
                             "cancelled" | "canceled" => CompactOutcome::new("canceled", None),
                             "end_turn" | "" => CompactOutcome::new("ok", None),
+                            // The agent REFUSED to run the compaction prompt —
+                            // nothing was compacted, so this is not an "ok" with
+                            // a footnote. It reaches this arm at all only because
+                            // a prompt rejection stopped tearing the connection
+                            // down (it used to arrive as the terminal `Error`
+                            // below, and settled as `failed`); mapping it
+                            // anywhere else would silently promote a failed
+                            // compaction to a successful one.
+                            "rejected" => CompactOutcome::new(
+                                "failed",
+                                Some("the agent rejected the compaction prompt".into()),
+                            ),
+                            // The agent REFUSED to run the compaction prompt —
+                            // nothing was compacted, so this is not an "ok" with
+                            // a footnote. It reaches this arm at all only because
+                            // a prompt rejection stopped tearing the connection
+                            // down (it used to arrive as the terminal `Error`
+                            // below, and settled as `failed`); mapping it
+                            // anywhere else would silently promote a failed
+                            // compaction to a successful one.
                             other => CompactOutcome::new("ok", Some(other.to_string())),
                         };
                     }
@@ -2371,15 +2547,25 @@ impl TaskEngine {
     /// through and retires the mark. A connection that never completes another
     /// turn is cleared by `retire_connection` / `forget_connection`.
     async fn claim_compaction_turn(&self, conn_id: &str, seq: u64) -> bool {
-        let mut marks = self.compaction_turns.lock().await;
-        match marks.get(conn_id).copied() {
-            Some(marked) if marked >= seq => true,
-            Some(_) => {
-                marks.remove(conn_id);
-                false
+        let claimed = {
+            let mut marks = self.compaction_turns.lock().await;
+            match marks.get(conn_id).copied() {
+                Some(marked) if marked >= seq => true,
+                Some(_) => {
+                    marks.remove(conn_id);
+                    false
+                }
+                None => false,
             }
-            None => false,
+        };
+        if claimed {
+            // A compaction error can be noted only after launch has indexed
+            // this connection. It is not the work turn's error (#538).
+            if let Some(signal) = self.turn_signals.lock().await.get_mut(conn_id) {
+                signal.error = None;
+            }
         }
+        claimed
     }
 
     /// Drop the in-memory traces of a connection this engine is done with: its
@@ -2389,6 +2575,7 @@ impl TaskEngine {
     async fn forget_connection(&self, conn_id: &str) {
         self.index.lock().await.remove(conn_id);
         self.compaction_turns.lock().await.remove(conn_id);
+        self.turn_signals.lock().await.remove(conn_id);
     }
 
     /// Abort a pre-prompt compaction this task's launch is waiting on. Called
@@ -2548,8 +2735,65 @@ impl TaskEngine {
 
     // ── event settlement ────────────────────────────────────────────────────
 
+    /// Remember an agent-reported failure for this task connection's turn.
+    ///
+    /// Chat sessions are not in `index`, so their errors never accumulate.
+    /// Pre-prompt compaction uses this same connection. Its watermark is set
+    /// before the connection is indexed, and this loop can dequeue the
+    /// compaction's `Error` only afterwards — events at or below that
+    /// watermark are the compaction's, not the work turn's (#538).
+    async fn note_turn_agent_error(&self, conn_id: &str, seq: u64, message: String) {
+        if !self.index.lock().await.contains_key(conn_id) {
+            return;
+        }
+        if self
+            .compaction_turns
+            .lock()
+            .await
+            .get(conn_id)
+            .is_some_and(|marked| *marked >= seq)
+        {
+            return;
+        }
+        self.turn_signals
+            .lock()
+            .await
+            .entry(conn_id.to_string())
+            .or_default()
+            .error = Some(tail_chars(&message, TURN_ERROR_TAIL_CHARS));
+    }
+
+    /// Forget the error noted for this connection's turn, keeping its
+    /// baseline. Two edges call it, so that the error left at `TurnComplete`
+    /// is one the turn ended in (#538):
+    ///
+    /// - `Prompting`, where `SessionState` and the live reducer open a new
+    ///   error scope too. The connection emits it before anything of the
+    ///   prompt's turn, so an error noted earlier came from before the work
+    ///   prompt — a `session/load` that fell back to a new session, say, which
+    ///   this loop can dequeue only after the launch has indexed the connection
+    ///   (it awaits git and the database per event, so it can run well behind
+    ///   the bus).
+    /// - turn progress ([`is_turn_progress`]): the agent recovered from it.
+    async fn clear_turn_agent_error(&self, conn_id: &str) {
+        if let Some(signal) = self.turn_signals.lock().await.get_mut(conn_id) {
+            signal.error = None;
+        }
+    }
+
     async fn on_event(self: &Arc<Self>, env: &EventEnvelope) {
+        if let Some(message) = reported_agent_error(&env.payload) {
+            self.note_turn_agent_error(&env.connection_id, env.seq, message)
+                .await;
+        } else if is_turn_progress(&env.payload) {
+            self.clear_turn_agent_error(&env.connection_id).await;
+        }
         match &env.payload {
+            AcpEvent::StatusChanged {
+                status: ConnectionStatus::Prompting,
+            } => {
+                self.clear_turn_agent_error(&env.connection_id).await;
+            }
             AcpEvent::TurnComplete { stop_reason, .. } => {
                 // A pre-prompt compaction's completion is the LAUNCH's signal,
                 // never the round's — see `compaction_turns` for why the index
@@ -2741,6 +2985,7 @@ impl TaskEngine {
         // the process. (`claim_compaction_turn` clears every marker whose
         // connection does complete one.)
         self.compaction_turns.lock().await.remove(conn_id);
+        self.turn_signals.lock().await.remove(conn_id);
 
         // Unmap this run's delegation children FIRST: the purge below needs
         // their ids, and a child that is already detached can no longer publish
@@ -2872,6 +3117,8 @@ impl TaskEngine {
         };
 
         let summary = self.capture_summary(conn_id).await;
+        // Taken before retire, which drops the same entry.
+        let signal = self.turn_signals.lock().await.remove(conn_id);
         self.retire_connection(conn_id, task_id).await;
         let _ = self.manager.disconnect(conn_id).await;
 
@@ -2926,19 +3173,43 @@ impl TaskEngine {
                         None
                     };
                     let stats = self.snapshot_diff_stats(task_id).await;
-                    let settled = work_task_service::settle_review(
-                        &self.db.conn,
-                        task_id,
-                        run_seq,
-                        own_summary.or(summary),
-                        stats,
-                    )
-                    .await
-                    .unwrap_or(false);
-                    if settled {
-                        self.spawn_post_review(task_id, run_seq);
+                    // #538: Codex still ends with `end_turn` after an upstream
+                    // 400. No assistant text and no diff added this turn, but
+                    // the agent already reported an error — fail with that
+                    // message instead of settling into a silent review. A
+                    // verdict (other than `blocked`, handled above) is the
+                    // agent closing the task on purpose, so it still reviews.
+                    let empty_error = verdict.is_none()
+                        && summary.is_none()
+                        && turn_added_no_diff(signal.as_ref(), stats)
+                        && signal.as_ref().is_some_and(|s| s.error.is_some());
+                    if empty_error {
+                        let error = signal.and_then(|s| s.error);
+                        work_task_service::fail(
+                            &self.db.conn,
+                            task_id,
+                            &[WorkTaskStatus::Running, WorkTaskStatus::AwaitingInput],
+                            Some(run_seq),
+                            "agent_error",
+                            error,
+                        )
+                        .await
+                        .unwrap_or(false)
+                    } else {
+                        let settled = work_task_service::settle_review(
+                            &self.db.conn,
+                            task_id,
+                            run_seq,
+                            own_summary.or(summary),
+                            stats,
+                        )
+                        .await
+                        .unwrap_or(false);
+                        if settled {
+                            self.spawn_post_review(task_id, run_seq);
+                        }
+                        settled
                     }
-                    settled
                 }
             }
             "cancelled" => {
@@ -2949,13 +3220,20 @@ impl TaskEngine {
                     .await
                     .unwrap_or(false)
             }
+            // What the agent reported for this turn (a rejected prompt's own
+            // message, codeg's reading of an empty turn) says more than the
+            // bare stop reason, which is all a turn that reported nothing has.
             other => work_task_service::fail(
                 &self.db.conn,
                 task_id,
                 &[WorkTaskStatus::Running, WorkTaskStatus::AwaitingInput],
                 Some(run_seq),
                 "agent_error",
-                Some(format!("agent stopped: {other}")),
+                Some(
+                    signal
+                        .and_then(|s| s.error)
+                        .unwrap_or_else(|| format!("agent stopped: {other}")),
+                ),
             )
             .await
             .unwrap_or(false),
@@ -3315,9 +3593,11 @@ impl TaskEngine {
         }
         self.emit_upsert(task_id);
         // The third settlement gets a comment too: the setting promises one
-        // whenever a forge task finishes, and "accepted, nothing to land" is
-        // an outcome the issue's readers want as much as the other two. The
-        // CAS above is what makes it one comment and not one per attempt.
+        // whenever a forge task finishes, and a task that landed nothing is an
+        // outcome the thread's readers want as much as the other two — told as
+        // what did not happen to their item, never as "accepted" (see
+        // `writeback_comment_body`). The CAS above is what makes it one comment
+        // and not one per attempt.
         self.spawn_forge_writeback(task_id, WritebackOutcome::Accepted { nothing_to_land });
 
         if live_wt.is_none() {
@@ -3602,8 +3882,12 @@ impl TaskEngine {
         }
         let head = resolve_git_head(&root.path).await.map_err(|e| e.to_string())?;
         if head.branch.as_deref() != Some(base_branch.as_str()) {
+            // Not necessarily a branch the user wandered off: a task created
+            // FOR another branch has a base the project folder may never have
+            // been on. So the ask is "put it there", not "put it back".
             return Err(format!(
-                "project folder is on '{}', expected '{base_branch}' — switch back to merge",
+                "project folder is on '{}', expected '{base_branch}' — switch it to \
+                 '{base_branch}' to merge",
                 head.branch.as_deref().unwrap_or("detached HEAD")
             ));
         }
@@ -4776,7 +5060,9 @@ impl TaskEngine {
                 nothing_to_land: *nothing_to_land,
             },
         };
-        let body = writeback_comment_body(task_id, &outcome, stats);
+        // Where it is posted shapes what it may say: a pull request's thread
+        // hears what happened to that pull request, in its forge's own noun.
+        let body = writeback_comment_body(task_id, meta.provider, item_kind, &outcome, stats);
 
         let ctx = DeliveryCtx {
             conn: &self.db.conn,
@@ -6011,6 +6297,13 @@ fn auto_merge_candidate(
     if task.pending_merge.is_some() {
         return false;
     }
+    // Put aside to handle later: the user postponed exactly the decision an
+    // unattended landing would make for them. Same "column present" predicate
+    // as `begin_merge`'s authoritative `DeferredAt IS NULL`, for the same
+    // reason as the queue check above.
+    if task.deferred_at.is_some() {
+        return false;
+    }
     if task.files_changed == Some(0) {
         return false;
     }
@@ -6166,14 +6459,33 @@ fn pull_push_repo(meta: &ForgeSourceMeta) -> Result<String, String> {
 }
 
 /// Pick the launch mode for a pump-driven launch from the task's history: a
-/// task with a prior conversation continues (retry semantics); a pristine one
-/// starts fresh. Explicit returns launch directly with `LaunchMode::Return`.
+/// task with a prior conversation continues (retry semantics); one with no
+/// session to continue starts fresh. Explicit returns launch directly with
+/// `LaunchMode::Return`.
+///
+/// The bound session IS the whole criterion, which is what lets a transition
+/// decide how the next start behaves: `retry` (failed → queued) keeps the link
+/// and therefore continues, while `requeue_canceled` drops it so a task the
+/// user put back on the board runs from the top. `compose_prompt` must not
+/// read `Fresh` as "this task has no history" — see its doc.
 fn launch_mode_for(task: &crate::db::entities::work_task::Model) -> LaunchMode {
     if task.conversation_id.is_some() {
         LaunchMode::Retry
     } else {
         LaunchMode::Fresh
     }
+}
+
+/// The branch the task was created FOR, if its config names one. A blank
+/// choice is no choice: the editor writes the empty string for "the project
+/// folder's current branch", which is also what every task predating the
+/// field carries.
+fn chosen_base_branch(task: &crate::db::entities::work_task::Model) -> Option<String> {
+    serde_json::from_str::<WorkTaskConfig>(&task.config)
+        .ok()?
+        .base_branch
+        .map(|b| b.trim().to_string())
+        .filter(|b| !b.is_empty())
 }
 
 /// Layered agent config: task override wins wholesale; else the folder's task
@@ -6214,6 +6526,11 @@ fn effective_agent_config(
 /// already carries the task context, while a fresh fallback session needs the
 /// full original description again. Every prompt ends with the worktree guard,
 /// then with whatever the folder's settings add for this stage.
+///
+/// "Fresh" is a mode, NOT a promise that the task is pristine: `requeue_canceled`
+/// drops the session link so a re-queued task starts over, which sends a task
+/// that already ran — worktree, branch and all — back through the fresh arm. Both
+/// replaying arms therefore read the instruction log rather than the mode.
 async fn compose_prompt(
     cfg: &WorkTaskConfig,
     task: &crate::db::entities::work_task::Model,
@@ -6236,29 +6553,43 @@ async fn compose_prompt(
     // changes on its original order, but a returned "now apply the fix" turn
     // is precisely a change order and must get the normal write licence.
     let mut original_work_order = false;
-    // A retry standing in for an unanswered question: its replay already says
-    // "do not change any files for it", so the guard must not hand back the
-    // commit grant three blocks later.
-    let mut retried_question = false;
+    // A replay standing in for an unanswered question: it already says "do not
+    // change any files for it", so the guard must not hand back the commit
+    // grant three blocks later.
+    let mut replayed_question = false;
 
     match mode {
         LaunchMode::Fresh => {
-            original_work_order = true;
             if original.is_empty() {
                 return Err("prompt is empty".to_string());
             }
-            blocks.extend(original);
-            // A task can reach a fresh launch carrying a restart note: it was
-            // canceled (or failed during setup) before it ever had a session,
-            // and the user attached a note when re-queueing it. Review feedback
-            // cannot exist here — that needs a session — but match on the kind
-            // rather than assume it.
-            if let Some(outstanding) = outstanding_instruction(conn, task.id).await {
-                if matches!(outstanding.kind, OutstandingKind::Restart) {
-                    blocks.push(restart_note_block(&outstanding.text));
-                    blocks.extend(attachment_blocks(&outstanding.attachments, task.id));
-                }
+            // Read the log, not the mode. A fresh launch used to mean a task
+            // with no history at all; since a requeue drops the session link it
+            // also means "run this again from the top", and that task may owe
+            // the user an instruction its stopped generation never answered —
+            // a returned "rework this" is silently lost otherwise, and a
+            // returned question comes back as a work order with a full commit
+            // grant. Same two reads as the retry arm, for the same reasons.
+            let scan = instruction_scan(conn, task.id).await;
+            original_work_order = scan.interrupted.is_none();
+            replayed_question = matches!(scan.interrupted, Some(FollowUpIntent::Question));
+            // Only when a generation actually got as far as its own turn
+            // (`started_at` is written by `mark_running` and never cleared): a
+            // task canceled during setup has nothing in its worktree to warn
+            // about, and its prompt stays byte-identical to a first run's.
+            if task.started_at.is_some() {
+                blocks.push(PromptInputBlock::Text {
+                    text: "You are running this task again from the top: an earlier run was \
+                           stopped and the task was put back on the board, so this session \
+                           carries none of that run's context. Its worktree may still hold \
+                           that run's work — check the current state first and build on \
+                           whatever is already there instead of redoing it. The original task \
+                           was:"
+                        .to_string(),
+                });
             }
+            blocks.extend(original);
+            push_replay(&mut blocks, &scan, resumed, task.id);
         }
         LaunchMode::Retry => {
             blocks.push(PromptInputBlock::Text {
@@ -6283,26 +6614,8 @@ async fn compose_prompt(
             // no unsettled follow-up underneath, this is the original order
             // again.
             original_work_order = scan.interrupted.is_none();
-            retried_question = matches!(scan.interrupted, Some(FollowUpIntent::Question));
-            if let Some(outstanding) = scan.outstanding {
-                blocks.push(match outstanding.kind {
-                    OutstandingKind::Restart => restart_note_block(&outstanding.text),
-                    OutstandingKind::Review(FollowUpIntent::Question) => PromptInputBlock::Text {
-                        text: format!(
-                            "The user asked this question before the interruption and never \
-                             got an answer. Answer it, and do not change any files for it:\
-                             \n\n{}",
-                            outstanding.text
-                        ),
-                    },
-                    OutstandingKind::Review(_) => PromptInputBlock::Text {
-                        text: format!("Latest review feedback to address:\n{}", outstanding.text),
-                    },
-                });
-                // Whatever the user attached to that instruction follows it, so
-                // the replay carries the screenshot as well as the sentence.
-                blocks.extend(attachment_blocks(&outstanding.attachments, task.id));
-            }
+            replayed_question = matches!(scan.interrupted, Some(FollowUpIntent::Question));
+            push_replay(&mut blocks, &scan, resumed, task.id);
         }
         LaunchMode::Return {
             intent,
@@ -6409,7 +6722,7 @@ async fn compose_prompt(
             .as_deref()
             .map(|b| format!(" (`{b}`)"))
             .unwrap_or_default();
-        let licence = if mode.is_read_only() || retried_question {
+        let licence = if mode.is_read_only() || replayed_question {
             format!(
                 "This turn is a question, not a work order: answer it in your reply and do NOT \
                  create, edit, delete or commit any file, and do not merge into, rebase onto, or \
@@ -6669,6 +6982,17 @@ struct InstructionScan {
     /// The unsettled `return` intent beneath any retry/requeue notes; `None`
     /// when the generation was (re)doing the task's original order.
     interrupted: Option<FollowUpIntent>,
+    /// That same `return` as an INSTRUCTION, and only when a newer
+    /// retry/requeue note took the `outstanding` slot away from it.
+    ///
+    /// A resumed session already has those words in its transcript, so the
+    /// note alone is the right replay there — that is what "a note refines the
+    /// turn it interrupts" means. A session with no context (a re-queued
+    /// task's fresh launch, a resume that failed over) has nothing: replaying
+    /// only the note hands the agent "take this into account" with no account
+    /// to take it into, and for a question it pairs a read-only licence with a
+    /// question the agent was never shown.
+    interrupted_instruction: Option<Outstanding>,
 }
 
 async fn instruction_scan(
@@ -6691,6 +7015,7 @@ async fn instruction_scan(
     let mut scan = InstructionScan {
         outstanding: None,
         interrupted: None,
+        interrupted_instruction: None,
     };
     for event in events {
         match event.kind.as_str() {
@@ -6721,16 +7046,23 @@ async fn instruction_scan(
                             payload.get("intent").and_then(|v| v.as_str()),
                         )
                         .unwrap_or_default();
+                        let returned =
+                            payload.get("feedback").and_then(|v| v.as_str()).map(|text| {
+                                Outstanding {
+                                    kind: OutstandingKind::Review(intent),
+                                    text: text.to_string(),
+                                    attachments: payload_blocks(&payload),
+                                }
+                            });
                         if scan.outstanding.is_none() {
-                            let Some(text) = payload.get("feedback").and_then(|v| v.as_str())
-                            else {
+                            let Some(returned) = returned else {
                                 break;
                             };
-                            scan.outstanding = Some(Outstanding {
-                                kind: OutstandingKind::Review(intent),
-                                text: text.to_string(),
-                                attachments: payload_blocks(&payload),
-                            });
+                            scan.outstanding = Some(returned);
+                        } else {
+                            // A retry/requeue note already claimed the newest
+                            // slot. Keep the returned words too — see the field.
+                            scan.interrupted_instruction = returned;
                         }
                         // The newest unsettled return IS the interrupted turn
                         // (a second return needs another review in between,
@@ -6763,14 +7095,54 @@ async fn instruction_scan(
     scan
 }
 
-/// The newest instruction a launch still owes the user — the replay half of
-/// [`instruction_scan`], for callers that do not pick a licence (Fresh only
-/// ever replays restart notes).
-async fn outstanding_instruction(
-    conn: &sea_orm::DatabaseConnection,
+/// Replay everything the launch still owes the user, oldest first, with each
+/// instruction's own attachments right behind the sentence that framed it.
+///
+/// `resumed` is the whole difference. A resumed session carries the interrupted
+/// turn in its transcript, so the newest instruction is the entire replay — a
+/// retry/requeue note refines a turn the agent can still read. A session with
+/// no context has to be given that turn as well, or the note lands on nothing:
+/// see [`InstructionScan::interrupted_instruction`].
+///
+/// Shared by both replaying arms — a re-queued task reaches `Fresh` with
+/// exactly the same debt to the user as an interrupted one reaching `Retry`,
+/// so the two must not drift apart in what they replay or how they word it.
+fn push_replay(
+    blocks: &mut Vec<PromptInputBlock>,
+    scan: &InstructionScan,
+    resumed: bool,
     task_id: i32,
-) -> Option<Outstanding> {
-    instruction_scan(conn, task_id).await.outstanding
+) {
+    let mut push = |instruction: &Outstanding| {
+        blocks.push(outstanding_block(instruction));
+        blocks.extend(attachment_blocks(&instruction.attachments, task_id));
+    };
+    if !resumed {
+        if let Some(interrupted) = &scan.interrupted_instruction {
+            push(interrupted);
+        }
+    }
+    if let Some(outstanding) = &scan.outstanding {
+        push(outstanding);
+    }
+}
+
+/// The block that replays one outstanding instruction, framed the way the user
+/// meant it: an unanswered question must not come back as a work order.
+fn outstanding_block(outstanding: &Outstanding) -> PromptInputBlock {
+    match outstanding.kind {
+        OutstandingKind::Restart => restart_note_block(&outstanding.text),
+        OutstandingKind::Review(FollowUpIntent::Question) => PromptInputBlock::Text {
+            text: format!(
+                "The user asked this question before the interruption and never got an \
+                 answer. Answer it, and do not change any files for it:\n\n{}",
+                outstanding.text
+            ),
+        },
+        OutstandingKind::Review(_) => PromptInputBlock::Text {
+            text: format!("Latest review feedback to address:\n{}", outstanding.text),
+        },
+    }
 }
 
 /// One-shot sink for the generation a launch actually operated on. The launch
@@ -6780,12 +7152,18 @@ async fn outstanding_instruction(
 struct LaunchSeq(std::sync::Mutex<Option<i32>>);
 
 impl LaunchSeq {
+    // Poison-tolerant, matching the locks in `office_watch` and
+    // `background_watch`. The guarded value is a plain `Option<i32>` that
+    // cannot be left half-written, so a panic elsewhere in the launch has
+    // nothing to corrupt here, while `expect` would turn that unrelated panic
+    // into a permanent failure of every later launch. The schedule tick reaches
+    // this with nobody at the keyboard.
     fn set(&self, run_seq: i32) {
-        *self.0.lock().expect("launch seq mutex") = Some(run_seq);
+        *self.0.lock().unwrap_or_else(|p| p.into_inner()) = Some(run_seq);
     }
 
     fn get(&self) -> Option<i32> {
-        *self.0.lock().expect("launch seq mutex")
+        *self.0.lock().unwrap_or_else(|p| p.into_inner())
     }
 }
 
@@ -6808,7 +7186,11 @@ impl DispatchSignal {
     }
 
     fn fire(&self, result: Result<(), String>) {
-        let sender = self.0.lock().expect("dispatch signal mutex").take();
+        // Poison-tolerant for the same reason as `LaunchSeq`: the fire-once
+        // guarantee is the `take()`, not the lock's poison flag, and refusing
+        // to fire after an unrelated panic would leave the caller waiting on a
+        // oneshot that is never sent.
+        let sender = self.0.lock().unwrap_or_else(|p| p.into_inner()).take();
         if let Some(sender) = sender {
             let _ = sender.send(result);
         }
@@ -7399,6 +7781,21 @@ mod tests {
         assert_eq!(prompt_head(&[]), "");
     }
 
+    /// #649: the pump reads nothing but the conversation link to decide
+    /// whether a launch continues or starts over, so a row that still points
+    /// at an earlier run is dispatched as `Retry` no matter how it got back to
+    /// the queue. `requeue_canceled` clears the link precisely so a task the
+    /// user put back on the board comes through here as `Fresh`.
+    #[test]
+    fn launch_mode_follows_the_conversation_link() {
+        let mut task = task_row();
+        task.conversation_id = None;
+        assert!(matches!(launch_mode_for(&task), LaunchMode::Fresh));
+
+        task.conversation_id = Some(41);
+        assert!(matches!(launch_mode_for(&task), LaunchMode::Retry));
+    }
+
     /// The sweep's row-level gate: exactly the tasks whose merge button the
     /// board would show — and whose light is green — land unattended.
     #[test]
@@ -7456,6 +7853,14 @@ mod tests {
         task.pending_merge = Some(r#"{"legacy":true}"#.into());
         assert!(!auto_merge_candidate(&task, &settings));
         task.pending_merge = None;
+
+        // Put aside to handle later: the user postponed this very decision.
+        // Flipping only the mark (the row is a candidate on every other gate)
+        // proves it is what blocks, and clearing it that nothing else does.
+        task.deferred_at = Some(chrono::Utc::now());
+        assert!(!auto_merge_candidate(&task, &settings));
+        task.deferred_at = None;
+        assert!(auto_merge_candidate(&task, &settings));
 
         // Only review is mergeable.
         task.status = WorkTaskStatus::Running;
@@ -7517,7 +7922,7 @@ mod tests {
             "another task of this project is already merging — wait for it"
         ));
         assert!(!is_benign_merge_race(
-            "project folder is on 'feature', expected 'main' — switch back to merge"
+            "project folder is on 'feature', expected 'main' — switch it to 'main' to merge"
         ));
         assert!(!is_benign_merge_race(
             "the task worktree no longer exists on disk"
@@ -7586,6 +7991,7 @@ mod tests {
             preflight: None,
             archived_at: None,
             scheduled_at: None,
+            deferred_at: None,
             source_kind: None,
             source_key: None,
             source_meta: None,
@@ -7681,6 +8087,15 @@ mod tests {
         )
         .await
         .expect("record settle");
+    }
+
+    /// The replay half of [`instruction_scan`], for the cases that assert on
+    /// the instruction alone and not on the licence it implies.
+    async fn outstanding_instruction(
+        conn: &sea_orm::DatabaseConnection,
+        task_id: i32,
+    ) -> Option<Outstanding> {
+        instruction_scan(conn, task_id).await.outstanding
     }
 
     /// Each scenario reframes the SAME user text — that is the whole point of
@@ -8129,6 +8544,245 @@ mod tests {
         // The task's own brief still opens the prompt, so the transcript's
         // phase divider keeps matching on it.
         assert_eq!(prompt_head(&blocks), "Fix the login flow and add tests.");
+        // Nothing ever ran (`started_at` is unset), so nothing warns about a
+        // worktree that cannot hold an earlier run's work.
+        assert!(!joined.contains("running this task again from the top"));
+    }
+
+    /// A requeue drops the session link, so the run the user put back on the
+    /// board comes through `Fresh` — in the SAME worktree, carrying whatever
+    /// the stopped generation left there. The prompt has to say so: read as a
+    /// first run it would have the agent redo work that is already committed on
+    /// the branch.
+    #[tokio::test]
+    async fn a_requeued_run_says_its_worktree_is_not_empty() {
+        let db = crate::db::test_helpers::fresh_in_memory_db().await;
+        let id = seeded_task(&db.conn).await;
+
+        let mut row = task_row();
+        row.id = id;
+        row.started_at = Some(chrono::Utc::now());
+        let blocks = compose_prompt(
+            &task_config(),
+            &row,
+            &LaunchMode::Fresh,
+            &WorkTaskFolderSettings::default(),
+            false,
+            &db.conn,
+        )
+        .await
+        .expect("compose");
+        let joined = texts(&blocks).join("\n");
+        assert!(
+            joined.contains("Its worktree may still hold that run's work"),
+            "a re-run must not read as a first run: {joined}"
+        );
+        // The brief itself still reaches the agent — the framing precedes it,
+        // exactly as the retry / return arms do when their session is new.
+        assert!(joined.contains("Fix the login flow and add tests."));
+        // The original order is still an order: the licence stays the working
+        // one (nothing was returned, so there is no follow-up underneath).
+        assert!(joined.contains("Commit to the current branch as you like"));
+    }
+
+    /// #649's requeue lands on `Fresh`, and a task can be sitting on a
+    /// follow-up when the user stops it: review → "rework this" → cancel →
+    /// requeue. The feedback is the whole point of that generation, so the
+    /// arm that replaces it must replay it — dropping it sends the agent back
+    /// to the original order in a worktree where that order is already done.
+    #[tokio::test]
+    async fn a_requeued_run_replays_the_follow_up_it_interrupted() {
+        let db = crate::db::test_helpers::fresh_in_memory_db().await;
+        let id = seeded_task(&db.conn).await;
+        user_action(
+            &db.conn,
+            id,
+            serde_json::json!({
+                "action": "return",
+                "intent": "revise",
+                "feedback": "the empty-state copy is still wrong",
+            }),
+        )
+        .await;
+        // A requeue with neither note nor attachment records no action at all
+        // (`requeue_canceled` writes one only when the user wrote something),
+        // so the returned feedback is still the newest instruction.
+
+        let mut row = task_row();
+        row.id = id;
+        row.started_at = Some(chrono::Utc::now());
+        let blocks = compose_prompt(
+            &task_config(),
+            &row,
+            &LaunchMode::Fresh,
+            &WorkTaskFolderSettings::default(),
+            false,
+            &db.conn,
+        )
+        .await
+        .expect("compose");
+        let joined = texts(&blocks).join("\n");
+        assert!(
+            joined.contains("the empty-state copy is still wrong"),
+            "the returned feedback must survive the requeue: {joined}"
+        );
+        assert!(joined.contains("Latest review feedback to address"));
+    }
+
+    /// And the licence follows that same turn. A question the user asked before
+    /// stopping the run is still a question after the requeue: the guard's
+    /// "commit as you like" is the last thing the agent reads, so it has to be
+    /// withdrawn here just as the retry arm withdraws it.
+    #[tokio::test]
+    async fn a_requeued_question_keeps_its_read_only_licence() {
+        let db = crate::db::test_helpers::fresh_in_memory_db().await;
+        let id = seeded_task(&db.conn).await;
+        user_action(
+            &db.conn,
+            id,
+            serde_json::json!({
+                "action": "return",
+                "intent": "question",
+                "feedback": "why did you pick a map here?",
+            }),
+        )
+        .await;
+
+        let mut row = task_row();
+        row.id = id;
+        row.started_at = Some(chrono::Utc::now());
+        let blocks = compose_prompt(
+            &task_config(),
+            &row,
+            &LaunchMode::Fresh,
+            &WorkTaskFolderSettings::default(),
+            false,
+            &db.conn,
+        )
+        .await
+        .expect("compose");
+        let guard = texts(&blocks)
+            .into_iter()
+            .find(|t| t.starts_with("—— Work task context ——"))
+            .expect("guard block");
+        assert!(!guard.contains("Commit to the current branch as you like"));
+        assert!(guard.contains("do NOT create, edit, delete or commit any file"));
+    }
+
+    /// …and the note the user types INTO the requeue box must not bury it. The
+    /// scan stops at the newest instruction, so a note takes the `outstanding`
+    /// slot and only the returned turn's *intent* survives — fine for a resumed
+    /// session, which still has the words, and useless for the session a
+    /// requeue now starts, which would get a read-only licence for a question
+    /// it was never shown, or "take this note into account" with no account.
+    #[tokio::test]
+    async fn a_requeue_note_does_not_bury_the_turn_it_refines() {
+        let db = crate::db::test_helpers::fresh_in_memory_db().await;
+        let id = seeded_task(&db.conn).await;
+        user_action(
+            &db.conn,
+            id,
+            serde_json::json!({
+                "action": "return",
+                "intent": "question",
+                "feedback": "why did you pick a map here?",
+            }),
+        )
+        .await;
+        user_action(
+            &db.conn,
+            id,
+            serde_json::json!({ "action": "requeue", "note": "check the logs first" }),
+        )
+        .await;
+
+        let mut row = task_row();
+        row.id = id;
+        row.started_at = Some(chrono::Utc::now());
+        let blocks = compose_prompt(
+            &task_config(),
+            &row,
+            &LaunchMode::Fresh,
+            &WorkTaskFolderSettings::default(),
+            false,
+            &db.conn,
+        )
+        .await
+        .expect("compose");
+        let joined = texts(&blocks).join("\n");
+        assert!(
+            joined.contains("why did you pick a map here?"),
+            "the question the note refines has to reach a context-less session: {joined}"
+        );
+        assert!(joined.contains("check the logs first"));
+        // Oldest first: the turn, then the note that refines it.
+        let question = joined.find("why did you pick a map here?").expect("question");
+        let note = joined.find("check the logs first").expect("note");
+        assert!(question < note, "the note refines the turn, so it follows it");
+        // And it is still a question, so the licence stays read-only.
+        let guard = texts(&blocks)
+            .into_iter()
+            .find(|t| t.starts_with("—— Work task context ——"))
+            .expect("guard block");
+        assert!(guard.contains("do NOT create, edit, delete or commit any file"));
+    }
+
+    /// The mirror image, and the reason the extra replay is gated on `resumed`:
+    /// a session that really did resume already holds the returned turn, and
+    /// replaying it a second time would re-ask a question the transcript above
+    /// already shows being asked.
+    #[tokio::test]
+    async fn a_resumed_retry_replays_only_the_newest_instruction() {
+        let db = crate::db::test_helpers::fresh_in_memory_db().await;
+        let id = seeded_task(&db.conn).await;
+        user_action(
+            &db.conn,
+            id,
+            serde_json::json!({
+                "action": "return", "intent": "revise", "feedback": "rename the column",
+            }),
+        )
+        .await;
+        user_action(
+            &db.conn,
+            id,
+            serde_json::json!({ "action": "retry", "note": "install deps first" }),
+        )
+        .await;
+
+        let mut row = task_row();
+        row.id = id;
+        let resumed = compose_prompt(
+            &task_config(),
+            &row,
+            &LaunchMode::Retry,
+            &WorkTaskFolderSettings::default(),
+            true,
+            &db.conn,
+        )
+        .await
+        .expect("compose");
+        let joined = texts(&resumed).join("\n");
+        assert!(joined.contains("install deps first"));
+        assert!(
+            !joined.contains("rename the column"),
+            "the resumed transcript already carries it: {joined}"
+        );
+
+        // …while the fallback session that never resumed needs both.
+        let fell_back = compose_prompt(
+            &task_config(),
+            &row,
+            &LaunchMode::Retry,
+            &WorkTaskFolderSettings::default(),
+            false,
+            &db.conn,
+        )
+        .await
+        .expect("compose");
+        let joined = texts(&fell_back).join("\n");
+        assert!(joined.contains("rename the column"));
+        assert!(joined.contains("install deps first"));
     }
 
     /// A screenshot pasted into the follow-up box has to reach the agent as an
@@ -8785,6 +9439,881 @@ mod tests {
             .status
     }
 
+    /// #538: Codex still ends the turn with `end_turn` after an upstream 400.
+    /// A turn with no assistant text and no diff must fail with the message
+    /// the agent reported, instead of settling silently into review.
+    #[tokio::test]
+    async fn an_empty_end_turn_with_an_agent_error_fails_with_that_message() {
+        const MESSAGE: &str = "unexpected status 502 Bad Gateway: [400] Assistant tool call \
+             function.arguments must be valid JSON.";
+        for label in ["acp error", "failed tool call", "failed tool update"] {
+            let (engine, task_id) = running_task().await;
+            let event = match label {
+                "acp error" => env(
+                    PARENT_CONN,
+                    AcpEvent::Error {
+                        message: MESSAGE.into(),
+                        agent_type: "codex".into(),
+                        code: None,
+                        details: None,
+                        terminal: false,
+                    },
+                ),
+                "failed tool call" => env(
+                    PARENT_CONN,
+                    AcpEvent::ToolCall {
+                        tool_call_id: "tc-parse".into(),
+                        title: "shell_command".into(),
+                        kind: "execute".into(),
+                        status: "failed".into(),
+                        content: Some(MESSAGE.into()),
+                        raw_input: None,
+                        raw_output: None,
+                        locations: None,
+                        meta: None,
+                        images: None,
+                    },
+                ),
+                "failed tool update" => env(
+                    PARENT_CONN,
+                    AcpEvent::ToolCallUpdate {
+                        tool_call_id: "tc-parse".into(),
+                        title: None,
+                        status: Some("failed".into()),
+                        content: None,
+                        raw_input: None,
+                        raw_output: Some(MESSAGE.into()),
+                        raw_output_append: None,
+                        locations: None,
+                        meta: None,
+                        images: None,
+                    },
+                ),
+                _ => unreachable!(),
+            };
+            engine.on_event(&event).await;
+            engine.on_turn_complete(PARENT_CONN, "end_turn").await;
+
+            let task = work_task_service::get_model(&engine.db.conn, task_id)
+                .await
+                .expect("task row");
+            assert_eq!(task.status, WorkTaskStatus::Failed, "{label}");
+            assert_eq!(
+                task.failure_reason.as_deref(),
+                Some("agent_error"),
+                "{label}"
+            );
+            let shown = task.last_error.as_deref().unwrap_or_default();
+            assert!(
+                shown.contains("function.arguments must be valid JSON"),
+                "{label}: card must show the upstream error, got {shown:?}"
+            );
+        }
+    }
+
+    /// #538: Codex and Claude report an upstream 400 as an AIR
+    /// `SessionFailure` (severity `error`) and then `end_turn`. No
+    /// `AcpEvent::Error` is synthesized for that stop reason. The title is
+    /// the upstream message, and an empty turn must fail with it.
+    #[tokio::test]
+    async fn a_session_failure_then_end_turn_fails_with_the_upstream_message() {
+        const MESSAGE: &str =
+            "Assistant tool call function.arguments must be valid JSON.";
+        let (engine, task_id) = running_task().await;
+        engine
+            .on_event(&env(
+                PARENT_CONN,
+                session_failure("error", MESSAGE, false),
+            ))
+            .await;
+        engine
+            .on_event(&turn_complete_envelope(PARENT_CONN, 1, "end_turn"))
+            .await;
+
+        let task = work_task_service::get_model(&engine.db.conn, task_id)
+            .await
+            .expect("task row");
+        assert_eq!(task.status, WorkTaskStatus::Failed);
+        assert_eq!(task.failure_reason.as_deref(), Some("agent_error"));
+        let shown = task.last_error.as_deref().unwrap_or_default();
+        assert!(
+            shown.contains("function.arguments must be valid JSON"),
+            "card must show the upstream error, got {shown:?}"
+        );
+    }
+
+    /// A severity-`warning` record is the retry banner, and a resolved
+    /// record is already over. Neither fails an otherwise empty `end_turn`.
+    #[tokio::test]
+    async fn a_non_terminal_session_failure_does_not_fail_an_empty_end_turn() {
+        for (severity, resolved) in [("warning", false), ("error", true)] {
+            let (engine, task_id) = running_task().await;
+            engine
+                .on_event(&env(
+                    PARENT_CONN,
+                    session_failure(severity, "Reconnecting to the model", resolved),
+                ))
+                .await;
+            engine
+                .on_event(&turn_complete_envelope(PARENT_CONN, 1, "end_turn"))
+                .await;
+            let task = work_task_service::get_model(&engine.db.conn, task_id)
+                .await
+                .expect("task row");
+            assert_eq!(
+                task.status,
+                WorkTaskStatus::Review,
+                "{severity} resolved={resolved}"
+            );
+            assert!(task.failure_reason.is_none(), "{severity}");
+            assert!(
+                task.last_error.is_none(),
+                "{severity}: {:?}",
+                task.last_error
+            );
+        }
+    }
+
+    /// #538: pre-prompt compaction runs on the same connection the work turn
+    /// then uses. Its `TurnComplete` is fenced, but a lagging `Error` (or a
+    /// failed compaction tool call) is dequeued only after launch has indexed
+    /// that connection. That error belongs to the compaction, not to an empty
+    /// work `end_turn`.
+    #[tokio::test]
+    async fn a_lagging_compaction_error_does_not_fail_the_work_turn() {
+        let (engine, task_id) = running_task().await;
+        // The launch has baselined the work turn and indexed the connection.
+        // The compaction watermark was set before either of those.
+        engine.turn_signals.lock().await.insert(
+            PARENT_CONN.into(),
+            TurnSignal {
+                error: None,
+                baselined: true,
+                baseline: Some((0, 0, 0)),
+            },
+        );
+        engine.mark_compaction_turn(PARENT_CONN, 4).await;
+
+        engine
+            .on_event(&EventEnvelope {
+                seq: 3,
+                connection_id: PARENT_CONN.into(),
+                payload: AcpEvent::Error {
+                    message: "Context compaction failed: model overloaded".into(),
+                    agent_type: "codex".into(),
+                    code: Some("compaction_failed".into()),
+                    details: None,
+                    terminal: false,
+                },
+            })
+            .await;
+        engine
+            .on_event(&turn_complete_envelope(PARENT_CONN, 4, "end_turn"))
+            .await;
+        assert_eq!(
+            status_of(&engine, task_id).await,
+            WorkTaskStatus::Running,
+            "the compaction completion must not settle the work turn"
+        );
+
+        engine
+            .on_event(&turn_complete_envelope(PARENT_CONN, 8, "end_turn"))
+            .await;
+        let task = work_task_service::get_model(&engine.db.conn, task_id)
+            .await
+            .expect("task row");
+        assert_eq!(task.status, WorkTaskStatus::Review);
+        assert!(task.failure_reason.is_none(), "{:?}", task.failure_reason);
+        assert!(
+            task.last_error.is_none(),
+            "compaction error must not become last_error, got {:?}",
+            task.last_error
+        );
+    }
+
+    /// An error that arrives after the compaction fence is the work turn's
+    /// own, and an empty `end_turn` still fails with that message.
+    #[tokio::test]
+    async fn a_work_turn_error_after_compaction_still_fails_the_task() {
+        const MESSAGE: &str =
+            "Assistant tool call function.arguments must be valid JSON.";
+        let (engine, task_id) = running_task().await;
+        engine.turn_signals.lock().await.insert(
+            PARENT_CONN.into(),
+            TurnSignal {
+                error: None,
+                baselined: true,
+                baseline: Some((0, 0, 0)),
+            },
+        );
+        engine.mark_compaction_turn(PARENT_CONN, 4).await;
+        engine
+            .on_event(&EventEnvelope {
+                seq: 3,
+                connection_id: PARENT_CONN.into(),
+                payload: AcpEvent::Error {
+                    message: "Context compaction failed: model overloaded".into(),
+                    agent_type: "codex".into(),
+                    code: Some("compaction_failed".into()),
+                    details: None,
+                    terminal: false,
+                },
+            })
+            .await;
+        engine
+            .on_event(&turn_complete_envelope(PARENT_CONN, 4, "end_turn"))
+            .await;
+
+        // Above the compaction watermark, so this is the work turn's failure.
+        engine
+            .on_event(&EventEnvelope {
+                seq: 7,
+                connection_id: PARENT_CONN.into(),
+                payload: session_failure("error", MESSAGE, false),
+            })
+            .await;
+        engine
+            .on_event(&turn_complete_envelope(PARENT_CONN, 8, "end_turn"))
+            .await;
+
+        let task = work_task_service::get_model(&engine.db.conn, task_id)
+            .await
+            .expect("task row");
+        assert_eq!(task.status, WorkTaskStatus::Failed);
+        assert_eq!(task.failure_reason.as_deref(), Some("agent_error"));
+        let shown = task.last_error.as_deref().unwrap_or_default();
+        assert!(
+            shown.contains("function.arguments must be valid JSON"),
+            "got {shown:?}"
+        );
+        assert!(
+            !shown.contains("Context compaction failed"),
+            "got {shown:?}"
+        );
+    }
+
+    /// #538: a baselined turn whose settle-time snapshot cannot be read (no
+    /// worktree, git failed) must not treat that as "a diff was added" and
+    /// drop the recorded error.
+    #[tokio::test]
+    async fn recorded_agent_error_survives_a_missing_settle_snapshot() {
+        const MESSAGE: &str =
+            "Assistant tool call function.arguments must be valid JSON.";
+        let (engine, task_id) = running_task().await;
+        assert!(
+            engine.snapshot_diff_stats(task_id).await.is_none(),
+            "this task has no worktree, so settle cannot read a diff"
+        );
+        engine.turn_signals.lock().await.insert(
+            PARENT_CONN.into(),
+            TurnSignal {
+                error: None,
+                baselined: true,
+                baseline: Some((3, 10, 1)),
+            },
+        );
+        engine
+            .on_event(&env(PARENT_CONN, session_failure("error", MESSAGE, false)))
+            .await;
+        engine
+            .on_event(&turn_complete_envelope(PARENT_CONN, 2, "end_turn"))
+            .await;
+
+        let task = work_task_service::get_model(&engine.db.conn, task_id)
+            .await
+            .expect("task row");
+        assert_eq!(task.status, WorkTaskStatus::Failed);
+        assert_eq!(task.failure_reason.as_deref(), Some("agent_error"));
+        let shown = task.last_error.as_deref().unwrap_or_default();
+        assert!(
+            shown.contains("function.arguments must be valid JSON"),
+            "got {shown:?}"
+        );
+    }
+
+    /// The other unreadable side: the prompt-time snapshot is missing and the
+    /// settle-time snapshot is a real non-zero diff. Still not proof this
+    /// turn added that diff, so the recorded error is kept.
+    #[tokio::test]
+    async fn recorded_agent_error_survives_a_missing_prompt_snapshot() {
+        const MESSAGE: &str =
+            "Assistant tool call function.arguments must be valid JSON.";
+        let (engine, task_id) = running_task().await;
+        let repo = tiny_repo().await;
+        attach_worktree(&engine, task_id, &repo).await;
+        std::fs::write(repo.path.join("b.txt"), "two\n").expect("dirty");
+        let after = engine.snapshot_diff_stats(task_id).await;
+        assert!(
+            after.is_some_and(|stats| stats != (0, 0, 0)),
+            "settle must see a non-zero diff, got {after:?}"
+        );
+        engine.turn_signals.lock().await.insert(
+            PARENT_CONN.into(),
+            TurnSignal {
+                error: None,
+                baselined: true,
+                baseline: None,
+            },
+        );
+        engine
+            .on_event(&env(PARENT_CONN, session_failure("error", MESSAGE, false)))
+            .await;
+        engine
+            .on_event(&turn_complete_envelope(PARENT_CONN, 2, "end_turn"))
+            .await;
+
+        let task = work_task_service::get_model(&engine.db.conn, task_id)
+            .await
+            .expect("task row");
+        assert_eq!(task.status, WorkTaskStatus::Failed);
+        assert_eq!(task.failure_reason.as_deref(), Some("agent_error"));
+        let shown = task.last_error.as_deref().unwrap_or_default();
+        assert!(
+            shown.contains("function.arguments must be valid JSON"),
+            "got {shown:?}"
+        );
+    }
+
+    struct TinyRepo {
+        _dir: tempfile::TempDir,
+        path: std::path::PathBuf,
+        sha: String,
+    }
+
+    async fn tiny_repo() -> TinyRepo {
+        let dir = tempfile::tempdir().expect("tempdir");
+        git_run(dir.path(), &["init", "-q", "-b", "main"]);
+        std::fs::write(dir.path().join("a.txt"), "one\n").expect("write");
+        git_run(dir.path(), &["add", "-A"]);
+        git_run(dir.path(), &["commit", "-q", "-m", "base"]);
+        let sha = task_git::rev_parse(dir.path().to_str().expect("utf8"), "HEAD")
+            .await
+            .expect("sha");
+        TinyRepo {
+            path: dir.path().to_path_buf(),
+            sha,
+            _dir: dir,
+        }
+    }
+
+    async fn attach_worktree(engine: &TaskEngine, task_id: i32, repo: &TinyRepo) {
+        let wt_id = crate::db::test_helpers::seed_folder(
+            &engine.db,
+            repo.path.to_str().expect("utf8"),
+        )
+        .await;
+        let mut update: crate::db::entities::work_task::ActiveModel =
+            work_task_service::get_model(&engine.db.conn, task_id)
+                .await
+                .expect("task")
+                .into();
+        update.worktree_folder_id = sea_orm::Set(Some(wt_id));
+        update.base_sha = sea_orm::Set(Some(repo.sha.clone()));
+        sea_orm::ActiveModelTrait::update(update, &engine.db.conn)
+            .await
+            .expect("attach worktree");
+    }
+
+    const UPSTREAM_400: &str =
+        "Assistant tool call function.arguments must be valid JSON.";
+
+    async fn fail_turn_with_upstream_error(engine: &Arc<TaskEngine>) {
+        engine
+            .on_event(&env(
+                PARENT_CONN,
+                session_failure("error", UPSTREAM_400, false),
+            ))
+            .await;
+        engine
+            .on_event(&turn_complete_envelope(PARENT_CONN, 2, "end_turn"))
+            .await;
+    }
+
+    /// A baselined turn whose diff did not change still fails with the
+    /// recorded error. A turn that added a diff still reviews.
+    #[tokio::test]
+    async fn a_baselined_diff_stat_decides_whether_an_agent_error_fails() {
+        // Equal snapshots: nothing new this turn.
+        {
+            let (engine, task_id) = running_task().await;
+            let repo = tiny_repo().await;
+            attach_worktree(&engine, task_id, &repo).await;
+            let stats = engine.snapshot_diff_stats(task_id).await;
+            assert_eq!(stats, Some((0, 0, 0)), "clean worktree, got {stats:?}");
+            engine.turn_signals.lock().await.insert(
+                PARENT_CONN.into(),
+                TurnSignal {
+                    error: None,
+                    baselined: true,
+                    baseline: stats,
+                },
+            );
+            fail_turn_with_upstream_error(&engine).await;
+            let task = work_task_service::get_model(&engine.db.conn, task_id)
+                .await
+                .expect("task row");
+            assert_eq!(task.status, WorkTaskStatus::Failed);
+            assert_eq!(task.failure_reason.as_deref(), Some("agent_error"));
+            assert!(
+                task.last_error
+                    .as_deref()
+                    .unwrap_or_default()
+                    .contains("function.arguments must be valid JSON")
+            );
+        }
+
+        // Changed snapshot: the turn produced a diff, so the error does not
+        // replace review.
+        {
+            let (engine, task_id) = running_task().await;
+            let repo = tiny_repo().await;
+            attach_worktree(&engine, task_id, &repo).await;
+            std::fs::write(repo.path.join("b.txt"), "two\n").expect("dirty");
+            let stats = engine.snapshot_diff_stats(task_id).await;
+            assert!(
+                stats.is_some_and(|s| s != (0, 0, 0)),
+                "got {stats:?}"
+            );
+            engine.turn_signals.lock().await.insert(
+                PARENT_CONN.into(),
+                TurnSignal {
+                    error: None,
+                    baselined: true,
+                    baseline: Some((0, 0, 0)),
+                },
+            );
+            fail_turn_with_upstream_error(&engine).await;
+            let task = work_task_service::get_model(&engine.db.conn, task_id)
+                .await
+                .expect("task row");
+            assert_eq!(task.status, WorkTaskStatus::Review);
+            assert!(task.failure_reason.is_none());
+            assert!(task.last_error.is_none(), "{:?}", task.last_error);
+            assert!(
+                task.files_changed.unwrap_or(0) > 0,
+                "the new diff must be what kept this in review, got {:?}",
+                task.files_changed
+            );
+        }
+    }
+
+    /// Assistant text is the existing summary. Beside a recorded error it
+    /// still settles to review with that text.
+    #[tokio::test]
+    async fn assistant_text_beside_an_agent_error_still_reviews() {
+        let (engine, task_id) = running_task().await;
+        let _rx = engine
+            .manager
+            .insert_test_connection_live(
+                PARENT_CONN,
+                AgentType::ClaudeCode,
+                None,
+                EventEmitter::Noop,
+            )
+            .await;
+        let state = engine
+            .manager
+            .get_state(PARENT_CONN)
+            .await
+            .expect("state");
+        state.write().await.last_assistant_text = Some("landed the fix".into());
+        engine.turn_signals.lock().await.insert(
+            PARENT_CONN.into(),
+            TurnSignal {
+                error: None,
+                baselined: true,
+                baseline: Some((0, 0, 0)),
+            },
+        );
+        fail_turn_with_upstream_error(&engine).await;
+        let task = work_task_service::get_model(&engine.db.conn, task_id)
+            .await
+            .expect("task row");
+        assert_eq!(task.status, WorkTaskStatus::Review);
+        assert_eq!(task.result_summary.as_deref(), Some("landed the fix"));
+        assert!(task.failure_reason.is_none());
+        assert!(task.last_error.is_none(), "{:?}", task.last_error);
+    }
+
+    /// A blocked verdict is decided before the empty-error branch.
+    #[tokio::test]
+    async fn a_blocked_verdict_beside_an_agent_error_stays_verdict_blocked() {
+        let (engine, task_id) = running_task().await;
+        let run_seq = work_task_service::get_model(&engine.db.conn, task_id)
+            .await
+            .expect("task row")
+            .run_seq;
+        assert!(
+            work_task_service::set_verdict(
+                &engine.db.conn,
+                task_id,
+                run_seq,
+                "blocked",
+                Some("gave up"),
+            )
+            .await
+            .expect("set verdict")
+        );
+        fail_turn_with_upstream_error(&engine).await;
+        let task = work_task_service::get_model(&engine.db.conn, task_id)
+            .await
+            .expect("task row");
+        assert_eq!(task.status, WorkTaskStatus::Failed);
+        assert_eq!(task.failure_reason.as_deref(), Some("verdict_blocked"));
+        assert_eq!(task.last_error.as_deref(), Some("gave up"));
+    }
+
+    fn session_failure(severity: &str, title: &str, resolved: bool) -> AcpEvent {
+        AcpEvent::SessionFailure {
+            record: crate::acp::types::SessionFailureRecord {
+                id: "sf-400".into(),
+                revision: 1,
+                category: "request".into(),
+                severity: severity.into(),
+                title: title.into(),
+                details: None,
+                actions: Vec::new(),
+                resolved,
+            },
+        }
+    }
+
+    fn envelope_at(conn_id: &str, seq: u64, payload: AcpEvent) -> EventEnvelope {
+        EventEnvelope {
+            seq,
+            connection_id: conn_id.to_string(),
+            payload,
+        }
+    }
+
+    fn prompting() -> AcpEvent {
+        AcpEvent::StatusChanged {
+            status: ConnectionStatus::Prompting,
+        }
+    }
+
+    const SESSION_LOAD_FALLBACK: &str =
+        "Failed to load session, starting new: Resource not found: session";
+
+    /// Launch the way `launch` leaves a resumed round whose `session/load`
+    /// fell back: the work turn is baselined and indexed, and the fallback's
+    /// `Error` (emitted while the session was being established) is still
+    /// queued for the engine, which reads it only now.
+    async fn task_with_a_lagging_setup_error() -> (Arc<TaskEngine>, i32) {
+        let (engine, task_id) = running_task().await;
+        engine.turn_signals.lock().await.insert(
+            PARENT_CONN.into(),
+            TurnSignal {
+                error: None,
+                baselined: true,
+                baseline: Some((0, 0, 0)),
+            },
+        );
+        engine
+            .on_event(&envelope_at(
+                PARENT_CONN,
+                2,
+                AcpEvent::Error {
+                    message: SESSION_LOAD_FALLBACK.into(),
+                    agent_type: "codex".into(),
+                    code: Some("session_load_fallback".into()),
+                    details: None,
+                    terminal: false,
+                },
+            ))
+            .await;
+        (engine, task_id)
+    }
+
+    /// #538: an error from before the work prompt started is not the turn's.
+    /// The prompt's `Prompting` edge opens the turn's own error scope, so an
+    /// empty `end_turn` that reported nothing itself still settles to review.
+    #[tokio::test]
+    async fn an_error_from_before_the_work_prompt_does_not_fail_the_turn() {
+        let (engine, task_id) = task_with_a_lagging_setup_error().await;
+        engine
+            .on_event(&envelope_at(PARENT_CONN, 3, prompting()))
+            .await;
+        {
+            // Only the error goes: the turn's baseline is what decides
+            // whether a later error of its own fails it.
+            let signals = engine.turn_signals.lock().await;
+            let signal = signals.get(PARENT_CONN).expect("the turn keeps its signal");
+            assert!(signal.error.is_none());
+            assert!(signal.baselined);
+            assert_eq!(signal.baseline, Some((0, 0, 0)));
+        }
+        engine
+            .on_event(&turn_complete_envelope(PARENT_CONN, 6, "end_turn"))
+            .await;
+
+        let task = work_task_service::get_model(&engine.db.conn, task_id)
+            .await
+            .expect("task row");
+        assert_eq!(task.status, WorkTaskStatus::Review);
+        assert!(task.failure_reason.is_none(), "{:?}", task.failure_reason);
+        assert!(
+            task.last_error.is_none(),
+            "a setup error must not become the turn's failure, got {:?}",
+            task.last_error
+        );
+    }
+
+    /// The other half of the same edge: an error AFTER `Prompting` is the work
+    /// turn's, and it is the one the card shows.
+    #[tokio::test]
+    async fn an_error_after_the_work_prompt_starts_still_fails_the_turn() {
+        let (engine, task_id) = task_with_a_lagging_setup_error().await;
+        engine
+            .on_event(&envelope_at(PARENT_CONN, 3, prompting()))
+            .await;
+        engine
+            .on_event(&envelope_at(
+                PARENT_CONN,
+                5,
+                session_failure("error", UPSTREAM_400, false),
+            ))
+            .await;
+        engine
+            .on_event(&turn_complete_envelope(PARENT_CONN, 6, "end_turn"))
+            .await;
+
+        let task = work_task_service::get_model(&engine.db.conn, task_id)
+            .await
+            .expect("task row");
+        assert_eq!(task.status, WorkTaskStatus::Failed);
+        assert_eq!(task.failure_reason.as_deref(), Some("agent_error"));
+        assert_eq!(task.last_error.as_deref(), Some(UPSTREAM_400));
+    }
+
+    fn tool_call(id: &str, kind: &str, status: &str, content: Option<&str>) -> AcpEvent {
+        AcpEvent::ToolCall {
+            tool_call_id: id.into(),
+            title: id.into(),
+            kind: kind.into(),
+            status: status.into(),
+            content: content.map(str::to_string),
+            raw_input: None,
+            raw_output: None,
+            locations: None,
+            meta: None,
+            images: None,
+        }
+    }
+
+    /// #538: only an error the turn ENDED in can fail it. One it moved on from
+    /// — a failed edit retried, a failed lookup followed by the answer, a
+    /// failure the model thought past — was recovered, even when the round
+    /// then ends on a tool call (no concluding text) with no diff proven.
+    #[tokio::test]
+    async fn an_error_the_turn_moved_on_from_does_not_fail_it() {
+        let answer = AcpEvent::ContentDelta {
+            text: "The timeout is set in config.rs, line 12.".into(),
+            parent_tool_use_id: None,
+        };
+        let thinking = AcpEvent::Thinking {
+            text: "That path does not exist; try the other one.".into(),
+            parent_tool_use_id: None,
+        };
+        let cases = [
+            (
+                "a failed edit retried",
+                vec![
+                    tool_call("edit-1", "edit", "failed", Some("patch did not apply")),
+                    tool_call("edit-2", "edit", "in_progress", None),
+                ],
+            ),
+            (
+                "an answer after a failed lookup",
+                vec![
+                    tool_call("grep-1", "search", "in_progress", None),
+                    AcpEvent::ToolCallUpdate {
+                        tool_call_id: "grep-1".into(),
+                        title: None,
+                        status: Some("failed".into()),
+                        content: Some("rg: no matches".into()),
+                        raw_input: None,
+                        raw_output: None,
+                        raw_output_append: None,
+                        locations: None,
+                        meta: None,
+                        images: None,
+                    },
+                    answer,
+                    tool_call("read-1", "read", "completed", None),
+                ],
+            ),
+            (
+                "a failure the model thought past",
+                vec![
+                    tool_call("cat-1", "read", "failed", Some("No such file")),
+                    thinking,
+                ],
+            ),
+            (
+                "a failure the model answered past",
+                vec![
+                    tool_call("ls-1", "read", "failed", Some("No such file")),
+                    AcpEvent::ContentDelta {
+                        text: "That directory is gone; nothing to change.".into(),
+                        parent_tool_use_id: None,
+                    },
+                ],
+            ),
+        ];
+        for (label, events) in cases {
+            let (engine, task_id) = running_task().await;
+            engine.turn_signals.lock().await.insert(
+                PARENT_CONN.into(),
+                TurnSignal {
+                    error: None,
+                    baselined: true,
+                    baseline: Some((1, 1, 1)),
+                },
+            );
+            engine
+                .on_event(&envelope_at(PARENT_CONN, 1, prompting()))
+                .await;
+            for (i, event) in events.into_iter().enumerate() {
+                engine
+                    .on_event(&envelope_at(PARENT_CONN, 2 + i as u64, event))
+                    .await;
+            }
+            engine
+                .on_event(&turn_complete_envelope(PARENT_CONN, 9, "end_turn"))
+                .await;
+
+            let task = work_task_service::get_model(&engine.db.conn, task_id)
+                .await
+                .expect("task row");
+            assert_eq!(task.status, WorkTaskStatus::Review, "{label}");
+            assert!(task.failure_reason.is_none(), "{label}");
+            assert!(task.last_error.is_none(), "{label}: {:?}", task.last_error);
+        }
+    }
+
+    /// The other side of that edge: progress BEFORE the error does not clear
+    /// it. A turn that worked, then ended in an upstream failure, fails.
+    #[tokio::test]
+    async fn an_error_after_the_last_progress_still_fails_the_turn() {
+        let (engine, task_id) = running_task().await;
+        let events = [
+            prompting(),
+            AcpEvent::Thinking {
+                text: "Run the tests first.".into(),
+                parent_tool_use_id: None,
+            },
+            tool_call("test-1", "execute", "completed", None),
+            session_failure("error", UPSTREAM_400, false),
+        ];
+        for (i, event) in events.into_iter().enumerate() {
+            engine
+                .on_event(&envelope_at(PARENT_CONN, 1 + i as u64, event))
+                .await;
+        }
+        engine
+            .on_event(&turn_complete_envelope(PARENT_CONN, 9, "end_turn"))
+            .await;
+
+        let task = work_task_service::get_model(&engine.db.conn, task_id)
+            .await
+            .expect("task row");
+        assert_eq!(task.status, WorkTaskStatus::Failed);
+        assert_eq!(task.failure_reason.as_deref(), Some("agent_error"));
+        assert_eq!(task.last_error.as_deref(), Some(UPSTREAM_400));
+    }
+
+    /// A failed tool call can carry a whole command log. The card keeps its
+    /// tail, capped like the init and preflight output.
+    #[tokio::test]
+    async fn a_failed_tool_log_is_kept_as_its_capped_tail() {
+        const LAST_LINE: &str = "错误：最后一行说明出了什么问题";
+        let (engine, task_id) = running_task().await;
+        let log = format!("{}\n{LAST_LINE}", "噪声 noise ".repeat(5_000));
+        let expected: String = {
+            let chars: Vec<char> = log.chars().collect();
+            chars[chars.len() - TURN_ERROR_TAIL_CHARS..]
+                .iter()
+                .collect()
+        };
+        engine
+            .on_event(&env(
+                PARENT_CONN,
+                AcpEvent::ToolCallUpdate {
+                    tool_call_id: "tc-log".into(),
+                    title: None,
+                    status: Some("failed".into()),
+                    content: Some(log),
+                    raw_input: None,
+                    raw_output: None,
+                    raw_output_append: None,
+                    locations: None,
+                    meta: None,
+                    images: None,
+                },
+            ))
+            .await;
+        engine
+            .on_event(&turn_complete_envelope(PARENT_CONN, 2, "end_turn"))
+            .await;
+
+        let task = work_task_service::get_model(&engine.db.conn, task_id)
+            .await
+            .expect("task row");
+        assert_eq!(task.status, WorkTaskStatus::Failed);
+        let shown = task.last_error.unwrap_or_default();
+        assert!(shown.ends_with(LAST_LINE), "kept the head, not the tail");
+        assert_eq!(shown, expected, "the tail is cut by characters, not bytes");
+    }
+
+    /// #538 for a turn that ends on a failed stop reason: a rejected prompt's
+    /// own message is what the card shows, not just "agent stopped: rejected".
+    /// A turn that reported nothing keeps that stop-reason line.
+    #[tokio::test]
+    async fn a_failed_stop_reason_shows_what_the_turn_reported() {
+        const REJECTION: &str = "ACP protocol error: Internal error: [400] Assistant tool call \
+             function.arguments must be valid JSON.";
+        {
+            let (engine, task_id) = running_task().await;
+            engine
+                .on_event(&envelope_at(PARENT_CONN, 1, prompting()))
+                .await;
+            engine
+                .on_event(&envelope_at(
+                    PARENT_CONN,
+                    2,
+                    AcpEvent::Error {
+                        message: REJECTION.into(),
+                        agent_type: "gemini".into(),
+                        code: None,
+                        details: None,
+                        terminal: false,
+                    },
+                ))
+                .await;
+            engine
+                .on_event(&turn_complete_envelope(PARENT_CONN, 3, "rejected"))
+                .await;
+            let task = work_task_service::get_model(&engine.db.conn, task_id)
+                .await
+                .expect("task row");
+            assert_eq!(task.status, WorkTaskStatus::Failed);
+            assert_eq!(task.failure_reason.as_deref(), Some("agent_error"));
+            assert_eq!(task.last_error.as_deref(), Some(REJECTION));
+        }
+        {
+            let (engine, task_id) = running_task().await;
+            engine
+                .on_event(&turn_complete_envelope(PARENT_CONN, 3, "rejected"))
+                .await;
+            let task = work_task_service::get_model(&engine.db.conn, task_id)
+                .await
+                .expect("task row");
+            assert_eq!(task.status, WorkTaskStatus::Failed);
+            assert_eq!(task.last_error.as_deref(), Some("agent stopped: rejected"));
+        }
+    }
+
     #[tokio::test]
     async fn a_late_cancelled_event_does_not_cancel_a_task_in_review() {
         let (engine, task_id) = running_task().await;
@@ -9009,6 +10538,8 @@ mod tests {
                 agent_type: AgentType::Codex,
                 task_preview: "run the tests".into(),
                 task_id: "task-1".into(),
+                assistant_id: None,
+                assistant_name: None,
             },
         )
     }
@@ -9026,6 +10557,8 @@ mod tests {
                     duration_ms: 0,
                     text_preview: None,
                 },
+                assistant_id: None,
+                assistant_name: None,
             },
         )
     }
@@ -10186,6 +11719,40 @@ mod tests {
         );
     }
 
+    /// Completing a pull-request task that pushed nothing — a review-only
+    /// report, or a review that stopped at an unsound approach — must not tell
+    /// the pull request's thread it was "accepted". That is codeg's word for
+    /// signing off on the TASK; on a pull request it reads as approval of the
+    /// change, which may be the opposite of what the review found. The thread
+    /// hears what happened to its pull request: nothing was pushed to it.
+    #[tokio::test]
+    async fn completing_a_pull_request_task_tells_its_thread_nothing_was_pushed() {
+        let f = delivery_fixture(FakeForge::default()).await;
+        // The pull request's head IS the task branch's head: the task made no
+        // changes of its own, which is when the board offers "complete".
+        let pr = open_pull(&f.head, "feature", "acme/app");
+        as_pull_request_task(&f, pr).await;
+        enable_writeback(&f).await;
+
+        f.engine
+            .complete_task(f.task_id, false)
+            .await
+            .expect("completed with nothing to push");
+
+        let forge = f.forge.clone();
+        wait_for("the write-back", move || {
+            let forge = forge.clone();
+            async move { !forge.comments.lock().await.is_empty() }
+        })
+        .await;
+        let comments = f.forge.comments.lock().await.clone();
+        assert_eq!(comments.len(), 1, "one settle, one comment");
+        let (kind, number, body) = &comments[0];
+        assert_eq!((*kind, *number), (ForgeItemKind::Change, 7));
+        assert!(body.contains("nothing was pushed to this pull request"), "{body}");
+        assert!(!body.to_lowercase().contains("accept"), "reads as an approval: {body}");
+    }
+
     /// The comment is a fact sheet: the link and the counters. Nothing the
     /// agent wrote may reach a thread other people are reading.
     #[tokio::test]
@@ -11132,6 +12699,131 @@ mod tests {
             head_repo: head_repo.into(),
             base_ref: "main".into(),
         }
+    }
+
+    /// A repository on `main` that also carries a `feature` branch the project
+    /// checkout is NOT on. Returns `(engine, task id, home, feature tip, main
+    /// tip)`; the task's config is whatever the caller passes.
+    async fn branch_choice_fixture(
+        config: serde_json::Value,
+    ) -> (Arc<TaskEngine>, i32, tempfile::TempDir, String, String) {
+        use sea_orm::{ActiveModelTrait, Set};
+
+        let home = tempfile::tempdir().expect("tempdir");
+        let root = home.path().join("repo");
+        std::fs::create_dir_all(&root).expect("mkdir");
+        git_run(&root, &["init", "-q", "-b", "main"]);
+        std::fs::write(root.join("a.txt"), "one\n").expect("write");
+        git_run(&root, &["add", "-A"]);
+        git_run(&root, &["commit", "-q", "-m", "base"]);
+        // The branch the user wants this task to work on…
+        git_run(&root, &["checkout", "-q", "-b", "feature"]);
+        std::fs::write(root.join("feature.txt"), "the feature\n").expect("write");
+        git_run(&root, &["add", "-A"]);
+        git_run(&root, &["commit", "-q", "-m", "the feature so far"]);
+        let feature_tip = task_git::rev_parse(root.to_str().unwrap(), "HEAD")
+            .await
+            .expect("feature tip");
+        // …and the branch the project folder happens to be sitting on.
+        git_run(&root, &["checkout", "-q", "main"]);
+        std::fs::write(root.join("b.txt"), "meanwhile\n").expect("write");
+        git_run(&root, &["add", "-A"]);
+        git_run(&root, &["commit", "-q", "-m", "main moves on"]);
+        let main_tip = task_git::rev_parse(root.to_str().unwrap(), "HEAD")
+            .await
+            .expect("main tip");
+
+        let db = crate::db::test_helpers::fresh_in_memory_db().await;
+        let folder_id = crate::db::test_helpers::seed_folder(&db, root.to_str().unwrap()).await;
+        let now = chrono::Utc::now();
+        let task = crate::db::entities::work_task::ActiveModel {
+            folder_id: Set(folder_id),
+            title: Set("Polish the feature".to_string()),
+            config: Set(config.to_string()),
+            status: Set(WorkTaskStatus::Todo),
+            run_seq: Set(1),
+            sort_order: Set(0),
+            created_at: Set(now),
+            updated_at: Set(now),
+            ..Default::default()
+        }
+        .insert(&db.conn)
+        .await
+        .expect("insert task");
+
+        (test_engine(db), task.id, home, feature_tip, main_tip)
+    }
+
+    /// The task says which branch it is for, and that is where it starts and
+    /// what it lands back onto — whatever the project folder happens to be
+    /// checked out on when the task is claimed.
+    #[tokio::test]
+    async fn a_task_starts_on_the_base_branch_it_was_created_for() {
+        let (engine, task_id, home, feature_tip, _main_tip) =
+            branch_choice_fixture(serde_json::json!({ "base_branch": "feature" })).await;
+        let task = row(&engine, task_id).await;
+        let root = get_folder_core(&engine.db, task.folder_id).await.expect("root");
+
+        let wt = engine
+            .ensure_worktree(&task, &root, &WorkTaskFolderSettings::default())
+            .await
+            .expect("worktree");
+
+        assert_eq!(
+            task_git::rev_parse(&wt.path, "HEAD").await.expect("head"),
+            feature_tip,
+            "the worktree starts at the chosen branch's tip"
+        );
+        let after = row(&engine, task_id).await;
+        assert_eq!(
+            after.base_branch.as_deref(),
+            Some("feature"),
+            "the merge lands back onto the branch the task was created for"
+        );
+        assert_eq!(after.base_sha.as_deref(), Some(feature_tip.as_str()));
+        drop(home);
+    }
+
+    /// No choice recorded — every task created before this existed, and every
+    /// task of a user who does not care — keeps branching from the project
+    /// folder's current checkout.
+    #[tokio::test]
+    async fn a_task_without_a_chosen_branch_still_follows_the_checkout() {
+        let (engine, task_id, home, _feature_tip, main_tip) =
+            branch_choice_fixture(serde_json::json!({})).await;
+        let task = row(&engine, task_id).await;
+        let root = get_folder_core(&engine.db, task.folder_id).await.expect("root");
+
+        engine
+            .ensure_worktree(&task, &root, &WorkTaskFolderSettings::default())
+            .await
+            .expect("worktree");
+
+        let after = row(&engine, task_id).await;
+        assert_eq!(after.base_branch.as_deref(), Some("main"));
+        assert_eq!(after.base_sha.as_deref(), Some(main_tip.as_str()));
+        drop(home);
+    }
+
+    /// A branch that is gone by the time the task is claimed must not quietly
+    /// fall back to the checkout: the whole point of the choice is that the
+    /// work lands somewhere specific, and starting from `main` instead would
+    /// be a wrong answer delivered silently.
+    #[tokio::test]
+    async fn a_chosen_branch_that_disappeared_refuses_instead_of_falling_back() {
+        let (engine, task_id, home, _feature_tip, _main_tip) =
+            branch_choice_fixture(serde_json::json!({ "base_branch": "gone" })).await;
+        let task = row(&engine, task_id).await;
+        let root = get_folder_core(&engine.db, task.folder_id).await.expect("root");
+
+        let err = engine
+            .ensure_worktree(&task, &root, &WorkTaskFolderSettings::default())
+            .await
+            .err()
+            .expect("must refuse");
+        assert!(err.contains("gone"), "{err}");
+        assert!(row(&engine, task_id).await.worktree_folder_id.is_none());
+        drop(home);
     }
 
     /// A repository that HAS a proposed change: `origin` carries `main` (moved
@@ -12133,6 +13825,28 @@ mod tests {
         assert_eq!(events[1]["command"], "/compact");
         // The slot the canceller reaches through must not outlive the turn.
         assert!(f.engine.compacting.lock().await.is_empty());
+    }
+
+    /// A compaction the agent REFUSED is a failure, not an "ok" with a
+    /// footnote. `rejected` reaches the `TurnComplete` arm at all only because
+    /// a prompt rejection stopped tearing the connection down (issue #797); it
+    /// used to arrive as the terminal `Error` the waiter settles as `failed`,
+    /// and the catch-all below it would otherwise have promoted a compaction
+    /// that never ran to a successful one.
+    #[tokio::test]
+    async fn a_rejected_compaction_prompt_is_recorded_as_a_failure() {
+        let mut f = compact_fixture(Some((90_000, 100_000))).await;
+
+        let sent = run_compaction(&mut f, compact_settings(80, None), "rejected").await;
+
+        assert_eq!(sent.as_deref(), Some("/compact"));
+        let events = compact_events(&f.engine, f.task_id).await;
+        assert_eq!(events.len(), 2, "{events:?}");
+        assert_eq!(events[1]["status"], "failed");
+        assert_eq!(
+            events[1]["detail"], "the agent rejected the compaction prompt",
+            "{events:?}"
+        );
     }
 
     /// Below the threshold nothing is sent and nothing is written — the

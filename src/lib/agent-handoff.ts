@@ -21,7 +21,7 @@ export const HANDOFF_META_KEY = "codeg.handoff"
  */
 export const HANDOFF_BRIEFING_MARKER = "<!-- codeg:handoff-briefing -->"
 
-export type AgentHandoffPath = "native" | "summary"
+export type AgentHandoffPath = "native" | "context" | "summary"
 
 export interface AgentHandoffPayload {
   version: number
@@ -69,7 +69,12 @@ export function agentHandoffPayload(meta: unknown): AgentHandoffPayload | null {
     version: marker.version as number,
     from: readString(marker, "from") ?? "",
     to: readString(marker, "to") ?? "",
-    path: marker.path === "native" ? "native" : "summary",
+    path:
+      marker.path === "native"
+        ? "native"
+        : marker.path === "context"
+          ? "context"
+          : "summary",
     carried: marker.carried === true,
     truncated: marker.truncated === true,
     at: readString(marker, "at"),

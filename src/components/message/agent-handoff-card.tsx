@@ -40,9 +40,11 @@ export function AgentHandoffCard({ meta }: Props) {
   const detail =
     payload.path === "native"
       ? t("cardNative")
-      : payload.truncated
-        ? t("cardTruncated")
-        : t("cardSummary")
+      : payload.path === "context"
+        ? t("cardContext")
+        : payload.truncated
+          ? t("cardTruncated")
+          : t("cardSummary")
 
   return (
     <div
@@ -51,7 +53,10 @@ export function AgentHandoffCard({ meta }: Props) {
     >
       <div className="flex w-full items-center gap-3">
         <div className="h-px flex-1 bg-gradient-to-r from-transparent to-border/70" />
-        <div className="flex shrink-0 items-center gap-1.5" title={detail}>
+        <div
+          className="flex min-w-0 flex-wrap items-center justify-center gap-1.5 text-center"
+          title={detail}
+        >
           {payload.from ? (
             <AgentIcon agentType={payload.from} className="size-3.5" />
           ) : null}
@@ -69,13 +74,13 @@ export function AgentHandoffCard({ meta }: Props) {
           {t("cardNote", { note: payload.note })}
         </div>
       ) : null}
-      {payload.briefing ? (
+      {payload.path !== "native" && payload.briefing ? (
         <div className="flex w-full max-w-prose flex-col items-center">
           <button
             type="button"
             onClick={() => setBriefingOpen((open) => !open)}
             aria-expanded={briefingOpen}
-            className="inline-flex cursor-pointer items-center gap-1 rounded px-1.5 py-0.5 text-muted-foreground/70 transition-colors hover:bg-muted hover:text-foreground"
+            className="inline-flex max-sm:min-h-11 cursor-pointer items-center gap-1 rounded px-1.5 py-0.5 text-muted-foreground/70 transition-colors hover:bg-muted hover:text-foreground"
           >
             {briefingOpen ? (
               <ChevronDown className="size-3" aria-hidden />

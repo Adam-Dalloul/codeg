@@ -32,6 +32,7 @@ import { Loader2 } from "lucide-react"
 
 import { AgentIcon } from "@/components/agent-icon"
 import { ContentPartsRenderer } from "@/components/message/content-parts-renderer"
+import { useHistoryBackDismiss } from "@/hooks/use-history-back-dismiss"
 import {
   Drawer,
   DrawerContent,
@@ -44,6 +45,7 @@ import {
   type AdaptedMessage,
 } from "@/lib/adapters/ai-elements-adapter"
 import { getConversation } from "@/lib/api"
+import { usePageHandoffName } from "@/lib/browser/use-page-handoff-name"
 import { toolStatusUnsettled } from "@/lib/tool-call-lifecycle"
 import type { AgentType, MessageTurn } from "@/lib/types"
 import { cn } from "@/lib/utils"
@@ -115,6 +117,10 @@ export function SubagentSessionDialog({
 }: Props) {
   const t = useTranslations("Folder.chat.contentParts")
   const sharedT = useTranslations("Folder.chat.shared")
+  // The dialog is a state toggle, not a route: without a history entry behind
+  // it, the back gesture unloads the whole page instead of closing the dialog.
+  useHistoryBackDismiss(open, () => onOpenChange(false))
+  const pageHandoffName = usePageHandoffName()
   const [messages, setMessages] = useState<AdaptedMessage[] | null>(null)
   const [error, setError] = useState<string | null>(null)
   // Only the FIRST load blanks the body: a refresh that lands mid-read must not
@@ -152,6 +158,7 @@ export function SubagentSessionDialog({
             {
               attachedResources: sharedT("attachedResources"),
               toolCallFailed: sharedT("toolCallFailed"),
+              pageHandoffName,
             },
             undefined,
             live ? inProgressToolCallsByTurn(detail.turns) : undefined
@@ -171,7 +178,7 @@ export function SubagentSessionDialog({
         if (mountedRef.current && initial) setLoading(false)
       }
     },
-    [agentType, sessionId, sharedT, live]
+    [agentType, sessionId, sharedT, pageHandoffName, live]
   )
 
   useEffect(() => {

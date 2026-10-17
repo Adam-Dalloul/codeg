@@ -46,6 +46,17 @@ mod m20260830_000001_canvas_node;
 mod m20260831_000001_canvas_node_group_grid;
 mod m20260906_000001_conversation_handoff;
 mod m20260907_000001_canvas_node_path;
+mod m20260929_000001_canvas_board;
+mod m20260930_000001_agent_setting_drop_adapter_channel;
+mod m20261006_000001_conversation_tag;
+mod m20261015_000001_kiro_builtin_agent;
+mod m20261015_000001_work_task_deferred_at;
+mod m20261016_000001_assistant;
+mod m20261016_000002_conversation_assistant;
+mod m20261017_000001_agent_account;
+mod m20261017_000002_handoff_context;
+mod m20261017_000003_handoff_usage;
+
 pub struct Migrator;
 
 #[async_trait::async_trait]
@@ -98,6 +109,16 @@ impl MigratorTrait for Migrator {
             Box::new(m20260831_000001_canvas_node_group_grid::Migration),
             Box::new(m20260906_000001_conversation_handoff::Migration),
             Box::new(m20260907_000001_canvas_node_path::Migration),
+            Box::new(m20260929_000001_canvas_board::Migration),
+            Box::new(m20260930_000001_agent_setting_drop_adapter_channel::Migration),
+            Box::new(m20261006_000001_conversation_tag::Migration),
+            Box::new(m20261015_000001_kiro_builtin_agent::Migration),
+            Box::new(m20261015_000001_work_task_deferred_at::Migration),
+            Box::new(m20261016_000001_assistant::Migration),
+            Box::new(m20261016_000002_conversation_assistant::Migration),
+            Box::new(m20261017_000001_agent_account::Migration),
+            Box::new(m20261017_000002_handoff_context::Migration),
+            Box::new(m20261017_000003_handoff_usage::Migration),
         ]
     }
 }

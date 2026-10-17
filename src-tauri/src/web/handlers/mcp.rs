@@ -1,3 +1,6 @@
+use std::sync::Arc;
+use axum::extract::Extension;
+use crate::app_state::AppState;
 use axum::Json;
 use serde::Deserialize;
 use serde_json::Value;
@@ -46,6 +49,9 @@ pub struct UpsertLocalServerParams {
     pub server_id: String,
     pub spec: Value,
     pub apps: Vec<McpAppType>,
+    /// The spec the editor loaded before the edit; absent for a new server.
+    #[serde(default)]
+    pub shown_spec: Option<Value>,
 }
 
 #[derive(Deserialize)]
@@ -94,9 +100,10 @@ pub async fn mcp_get_marketplace_server_detail(
 }
 
 pub async fn mcp_install_from_marketplace(
+    Extension(state): Extension<Arc<AppState>>,
     Json(params): Json<InstallFromMarketplaceParams>,
 ) -> Result<Json<LocalMcpServer>, AppCommandError> {
-    let result = mcp_commands::mcp_install_from_marketplace(
+    let result = mcp_commands::mcp_install_from_marketplace_core(&state.db,
         params.provider_id,
         params.server_id,
         params.apps,
@@ -110,23 +117,26 @@ pub async fn mcp_install_from_marketplace(
 }
 
 pub async fn mcp_upsert_local_server(
+    Extension(state): Extension<Arc<AppState>>,
     Json(params): Json<UpsertLocalServerParams>,
 ) -> Result<Json<LocalMcpServer>, AppCommandError> {
     let result =
-        mcp_commands::mcp_upsert_local_server(params.server_id, params.spec, params.apps).await?;
+        mcp_commands::mcp_upsert_local_server_core(&state.db, params.server_id, params.spec, params.apps, params.shown_spec).await?;
     Ok(Json(result))
 }
 
 pub async fn mcp_set_server_apps(
+    Extension(state): Extension<Arc<AppState>>,
     Json(params): Json<SetServerAppsParams>,
 ) -> Result<Json<Option<LocalMcpServer>>, AppCommandError> {
-    let result = mcp_commands::mcp_set_server_apps(params.server_id, params.apps).await?;
+    let result = mcp_commands::mcp_set_server_apps_core(&state.db, params.server_id, params.apps).await?;
     Ok(Json(result))
 }
 
 pub async fn mcp_remove_server(
+    Extension(state): Extension<Arc<AppState>>,
     Json(params): Json<RemoveServerParams>,
 ) -> Result<Json<bool>, AppCommandError> {
-    let result = mcp_commands::mcp_remove_server(params.server_id, params.apps).await?;
+    let result = mcp_commands::mcp_remove_server_core(&state.db, params.server_id, params.apps).await?;
     Ok(Json(result))
 }

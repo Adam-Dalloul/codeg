@@ -52,6 +52,8 @@ export interface AppWorkspaceStoreState {
    * group hasn't arrived — would render a half-built sidebar.
    */
   folderGroups: FolderGroupDetail[]
+  /** True only after a successful folder snapshot, so an offline start cannot
+   * mistake an unknown folder list for deleted folders and prune drafts. */
   foldersHydrated: boolean
   foldersLoading: boolean
 
@@ -95,7 +97,7 @@ export interface AppWorkspaceStoreState {
   updateConversationLocal: (
     id: number,
     patch: Partial<
-      Pick<DbConversationSummary, "status" | "title" | "pinned_at">
+      Pick<DbConversationSummary, "status" | "title" | "pinned_at" | "tag_ids">
     >
   ) => void
   applyConversationUpsert: (summary: DbConversationSummary) => void
@@ -284,6 +286,40 @@ function forgetDeletedGroup(groupId: number): void {
 let folderFetchSeq = 0
 let lastAppliedFolderFetch = 0
 
+// The same ordering for the conversation list. `refreshConversations` replaces
+// the rows wholesale, so a snapshot requested before an upsert but answered
+// after it put the older row back: a list read just before an account switch
+// committed restored the old account on the row the switch had just moved.
+// An older snapshot is thrown away, and a row an upsert changed after the
+// snapshot was requested keeps the upsert's copy.
+let conversationFetchSeq = 0
+let lastAppliedConversationFetch = 0
+let conversationEventSeq = 0
+const conversationEventAt = new Map<number, number>()
+
+/** `list`, with every row an upsert changed after `seqAtRequest` taken from
+ *  `current` instead. Stamps the snapshot already covers are dropped. */
+function withNewerUpserts(
+  list: DbConversationSummary[],
+  current: DbConversationSummary[],
+  seqAtRequest: number
+): DbConversationSummary[] {
+  for (const [id, at] of conversationEventAt) {
+    if (at <= seqAtRequest) conversationEventAt.delete(id)
+  }
+  if (conversationEventAt.size === 0) return list
+  const newer = new Map(
+    current
+      .filter((row) => conversationEventAt.has(row.id))
+      .map((row) => [row.id, row])
+  )
+  if (newer.size === 0) return list
+  const merged = list.map((row) => newer.get(row.id) ?? row)
+  const listed = new Set(list.map((row) => row.id))
+  const created = [...newer.values()].filter((row) => !listed.has(row.id))
+  return created.length > 0 ? [...created, ...merged] : merged
+}
+
 /**
  * Folders whose on-demand HEAD read is in flight (see `ensureGitHead`), each
  * stamped with a token identifying the read that owns the slot. A canvas board
@@ -388,19 +424,30 @@ export const useAppWorkspaceStore = create<AppWorkspaceStoreState>()(
           allFolders: allList,
           folderGroups: groupList,
           branches,
+          foldersHydrated: true,
         })
       } catch (err) {
         console.error("[AppWorkspace] fetchFolders failed:", err)
       } finally {
-        set({ foldersLoading: false, foldersHydrated: true })
+        set({ foldersLoading: false })
       }
     },
 
     refreshConversations: async () => {
       set({ conversationsLoading: true })
+      // Stamped BEFORE the request goes out, like `fetchFolders`.
+      const seqAtRequest = conversationEventSeq
+      const fetchId = ++conversationFetchSeq
       try {
         const list = await listAllConversations()
-        set({ ...withConversations(list), conversationsError: null })
+        if (fetchId < lastAppliedConversationFetch) return
+        lastAppliedConversationFetch = fetchId
+        set({
+          ...withConversations(
+            withNewerUpserts(list, get().conversations, seqAtRequest)
+          ),
+          conversationsError: null,
+        })
       } catch (err) {
         set({ conversationsError: toErrorMessage(err) })
       } finally {
@@ -420,8 +467,10 @@ export const useAppWorkspaceStore = create<AppWorkspaceStoreState>()(
       const next = prev.slice()
       // A pin toggle is a view preference, not activity — mirror the backend
       // (`update_pin`) and leave `updated_at` untouched so an updated-sorted
-      // folder doesn't briefly float the row. Status/title patches still bump.
-      const bumpUpdatedAt = !("pinned_at" in patch)
+      // folder doesn't briefly float the row. Tagging is the same kind of
+      // edit (the backend never touches the row for it). Status/title patches
+      // still bump.
+      const bumpUpdatedAt = !("pinned_at" in patch) && !("tag_ids" in patch)
       next[idx] = {
         ...next[idx],
         ...patch,
@@ -429,8 +478,9 @@ export const useAppWorkspaceStore = create<AppWorkspaceStoreState>()(
       }
       // `stats` (computeStats) depends ONLY on the conversation count and each
       // row's agent_type/message_count. This path replaces a row IN PLACE (count
-      // never changes), and the patch type is restricted to status/title/pinned_at
-      // — none of which is a stat input — so a patch here can never move a stat.
+      // never changes), and the patch type is restricted to status/title/
+      // pinned_at/tag_ids — none of which is a stat input — so a patch here can
+      // never move a stat.
       // Reuse the existing `stats` reference instead of recomputing O(n) and
       // minting a fresh object: otherwise every turn-boundary
       // `conversation_status_changed` tick (one per turn start/stop, per running
@@ -452,6 +502,7 @@ export const useAppWorkspaceStore = create<AppWorkspaceStoreState>()(
     applyConversationUpsert: (summary) => {
       if (summary.parent_id != null) return
       if (deletedIds.has(summary.id)) return
+      conversationEventAt.set(summary.id, ++conversationEventSeq)
       const prev = get().conversations
       const idx = prev.findIndex((c) => c.id === summary.id)
       if (idx < 0) {
@@ -912,6 +963,10 @@ export function resetAppWorkspaceStore() {
   folderMutationSeq = 0
   folderFetchSeq = 0
   lastAppliedFolderFetch = 0
+  conversationFetchSeq = 0
+  lastAppliedConversationFetch = 0
+  conversationEventSeq = 0
+  conversationEventAt.clear()
   useAppWorkspaceStore.setState(useAppWorkspaceStore.getInitialState(), true)
 }
 

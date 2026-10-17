@@ -68,7 +68,7 @@ struct EnumSpec {
 
 // Authoritative value sets + nullability, extracted from the codex binary itself
 // by feeding it candidate catalogs and reading the full `unknown variant …,
-// expected …` / `invalid type: null, expected …` errors (re-probed on 0.153.4,
+// expected …` / `invalid type: null, expected …` errors (re-probed on 0.159.2,
 // unchanged since 0.147 — treat these as version-specific and re-probe when
 // codex moves).
 fn enum_spec_for(key: &str) -> Option<EnumSpec> {
@@ -98,6 +98,49 @@ fn enum_spec_for(key: &str) -> Option<EnumSpec> {
 /// `supports_parallel_tool_calls` is kept although 0.153.4 dropped the field
 /// (it now parses as an ignored unknown key): guarding it still costs nothing
 /// and keeps a stored override honest for anyone pinned to an older codex.
+///
+/// `supports_experimental_context` is the only `ModelInfo` field 0.154.0 added
+/// (codex-acp 1.12.0 moves `@openai/codex` ^0.153.4 → ^0.154.0). It is strict:
+/// `supports_experimental_context = "yes"` earns `invalid type: string "yes",
+/// expected a boolean` and takes the WHOLE catalog down with it — probed
+/// against the 0.154.0 binary, same as the rest of this list.
+///
+/// `node_repl_auto_review_required` / `node_repl_disabled` ship as booleans on
+/// every entry and are just as strict: a string earns the same `expected a
+/// boolean` rejection, and so does a `null` — probed against the 0.155.1
+/// binary, which also re-confirmed every other entry here. The editor offers
+/// no control for either, so only an imported or hand-edited override can
+/// carry one, which is exactly the input this list exists to catch.
+///
+/// `supports_reasoning_effort_updates` is the only boolean 0.156.1 added
+/// (codex-acp 1.13.1 moves `@openai/codex` ^0.155.1 → ^0.156.1). It ships on
+/// every entry and is as strict as the rest: `"yes"` earns `expected a
+/// boolean`, and so does `null` — probed against the 0.156.1 binary, which
+/// also re-confirmed every other entry here and every enum set above. The one
+/// other key the 0.156.1 snapshot newly carries, `default_service_tier`
+/// (`"priority"` on GPT-6 Sol and Luna), is an optional string rather than an
+/// enum — an unknown tier name parses and only a non-string is refused — so
+/// it needs no entry in either list.
+///
+/// 0.158.0 (codex-acp 2.0.0 moves `@openai/codex` ^0.156.1 → ^0.158.0) adds no
+/// `ModelInfo` field at all; it deletes the hidden `gpt-5.4` stub outright
+/// (10 slugs). Re-probed against the 0.158.0 binary: `"yes"` and `null` in a
+/// boolean still take the catalog down, and so does an unknown `shell_type`.
+///
+/// 0.159.x (codex-acp 2.0.1 moves `@openai/codex` ^0.158.0 → ^0.159.1) adds
+/// GPT-6.1 Sol (11 slugs) and still no `ModelInfo` field: no key is new to the
+/// catalog, and every existing entry keeps its previous key set (GPT-6.1 Sol
+/// sets the optional `multi_agent_reasoning_effort` and omits
+/// `default_service_tier`, which GPT-6 Sol does the other way round). Re-probed
+/// against the 0.159.2 binary: each field below rejects both `"yes"` and `null`
+/// (bar the ignored `supports_parallel_tool_calls`), no boolean-typed key sits
+/// outside this list, and every enum set above is unchanged.
+///
+/// 0.160.1 (codex-acp 2.2.1 moves `@openai/codex` ^0.159.1 → ^0.160.1) ships
+/// the bundled catalog byte for byte as 0.159.3 did and adds no `ModelInfo`
+/// field. Re-probed against the 0.160.1 binary: every field here and every
+/// enum set above behaves as on 0.159.3. Its one new key is nested — see
+/// [`model_messages_override_is_safe`].
 const BOOL_FIELDS: &[&str] = &[
     "use_responses_lite",
     "supported_in_api",
@@ -106,9 +149,13 @@ const BOOL_FIELDS: &[&str] = &[
     "supports_search_tool",
     "supports_image_detail_original",
     "supports_reasoning_summary_parameter",
+    "supports_experimental_context",
     "include_apps_usage_instructions",
     "include_plugin_usage_instructions",
     "include_skills_usage_instructions",
+    "node_repl_auto_review_required",
+    "node_repl_disabled",
+    "supports_reasoning_effort_updates",
 ];
 
 /// Whether a custom `overrides` entry is safe to write. A single value codex
@@ -119,8 +166,13 @@ const BOOL_FIELDS: &[&str] = &[
 /// - `default_reasoning_level` must name one of the clone base's supported
 ///   efforts (codex 0.147 accepts it leniently, but older codex is strict and
 ///   the meaningful values are per-model anyway);
+/// - `model_messages` must be an object (or `null`) whose plain-text members
+///   are strings (see [`model_messages_override_is_safe`]);
 /// - every other field passes through (unknown keys are ignored by codex).
 fn sanitized_override(key: &str, value: &Value, base: Option<&Map<String, Value>>) -> bool {
+    if key == "model_messages" {
+        return model_messages_override_is_safe(value);
+    }
     if let Some(spec) = enum_spec_for(key) {
         if value.is_null() {
             return spec.nullable;
@@ -151,6 +203,41 @@ fn sanitized_override(key: &str, value: &Value, base: Option<&Map<String, Value>
             .unwrap_or(false);
     }
     true
+}
+
+/// The `ModelMessages` members that hold plain text. codex parses each as an
+/// optional string, so `null` is fine and anything else is not.
+const MODEL_MESSAGES_TEXT_FIELDS: &[&str] = &[
+    "content_filter_guidance",
+    "persistent_instructions",
+    "instructions_template",
+];
+
+/// Whether a `model_messages` override is safe to write: `null`, or an object
+/// whose plain-text members are strings.
+///
+/// codex parses the whole `model_messages` object strictly, and 0.160 added a
+/// member to it: `content_filter_guidance`, the developer note it sends after
+/// a content filter blocks a response. 0.159.3 ignored the key; 0.160.1 takes
+/// a number there for `invalid type: integer 42, expected a string` and
+/// rejects the WHOLE catalog, every model with it (probed with a temporary
+/// `model_catalog_json`; a string and `null` both load). The other two
+/// members, and the object itself, were already that strict: a number in
+/// `persistent_instructions` or `instructions_template`, or a string for
+/// `model_messages`, rejects the catalog on 0.159.3 as on 0.160.1. The editor
+/// offers no control for any of this, so only an imported or hand-edited
+/// override can carry one, which is the input these checks exist for. The
+/// nested message tables beyond those members pass through as before.
+fn model_messages_override_is_safe(value: &Value) -> bool {
+    match value {
+        Value::Null => true,
+        Value::Object(members) => MODEL_MESSAGES_TEXT_FIELDS.iter().all(|field| {
+            members
+                .get(*field)
+                .is_none_or(|text| text.is_null() || text.is_string())
+        }),
+        _ => false,
+    }
 }
 
 /// One user-configured **custom** codex model, stored compactly. Heavy
@@ -198,15 +285,40 @@ pub struct CatalogInjection {
 }
 
 /// Parse the compiled-in offline snapshot into its `models` array (opaque
-/// `Value`s). Only used as a fallback when the runtime catalog is unavailable.
+/// `Value`s), in codex's picker order (see [`sort_by_priority`]). Only used as
+/// a fallback when the runtime catalog is unavailable.
 pub fn bundled_snapshot_models() -> Vec<Value> {
-    serde_json::from_str::<Value>(BUNDLED_SNAPSHOT)
+    let mut models = serde_json::from_str::<Value>(BUNDLED_SNAPSHOT)
         .ok()
         .as_ref()
         .and_then(|v| v.get("models"))
         .and_then(Value::as_array)
         .cloned()
-        .unwrap_or_default()
+        .unwrap_or_default();
+    sort_by_priority(&mut models);
+    models
+}
+
+/// A catalog entry's `priority`: codex's picker position, ascending. An entry
+/// without one sorts last.
+fn priority_of(model: &Value) -> i64 {
+    model
+        .get("priority")
+        .and_then(Value::as_i64)
+        .unwrap_or(i64::MAX)
+}
+
+/// Put a catalog in the order codex itself presents it: ascending `priority`,
+/// ties kept in catalog order (codex's `build_available_models` does a stable
+/// `sort_by_key` on the same field, then marks the first visible entry the
+/// default).
+///
+/// `codex debug models --bundled` prints entries in FILE order, and since
+/// codex 0.159.1 that is no longer priority order: GPT-6.1 Sol was inserted
+/// second, at priority 1, behind GPT-6 Astra's 2. Anything that reads "the
+/// first entry" as "codex's first choice" has to sort first.
+pub fn sort_by_priority(models: &mut [Value]) {
+    models.sort_by_key(priority_of);
 }
 
 /// The safest default clone base: the highest-priority (lowest `priority`)
@@ -215,7 +327,7 @@ pub fn bundled_snapshot_models() -> Vec<Value> {
 pub fn fallback_base_slug(snapshot: &[Value]) -> Option<String> {
     snapshot
         .iter()
-        .min_by_key(|m| m.get("priority").and_then(Value::as_i64).unwrap_or(i64::MAX))
+        .min_by_key(|m| priority_of(m))
         .and_then(|m| m.get("slug").and_then(Value::as_str))
         .map(str::to_owned)
 }
@@ -236,9 +348,11 @@ fn is_listable(model: &Value) -> bool {
 /// user's custom entries. Custom entries clone their `base` snapshot ModelInfo
 /// (falling back to the highest-priority entry when `base` is unknown), apply
 /// **sanitized** overrides, and are forced `visibility:"list"` +
-/// `supported_in_api:true`. Priority is renumbered by final order (customs
-/// first) so the picker ordering is deterministic without colliding official
-/// priorities.
+/// `supported_in_api:true`. Priority is renumbered by final order — customs
+/// first, then the officials in codex's own priority order, whatever order the
+/// snapshot arrived in — so the picker ordering is deterministic without
+/// colliding official priorities, and the officials keep the order (and the
+/// default) codex would give them without the takeover.
 pub fn expand_to_catalog(config: &CodexModelConfig, snapshot: &[Value]) -> Value {
     let excluded: HashSet<&str> = config
         .excluded_officials
@@ -288,7 +402,14 @@ pub fn expand_to_catalog(config: &CodexModelConfig, snapshot: &[Value]) -> Value
     // flipping it to `hide` while keeping it around as a migration stub (its
     // `upgrade` block) or for internal use (`codex-auto-review`), and dropping
     // those breaks codex rather than tidying the picker.
-    for m in snapshot {
+    //
+    // Walked in priority order, not snapshot order: the renumbering below turns
+    // position into priority, so a snapshot in file order (see
+    // `sort_by_priority`) would otherwise hand GPT-6 Astra the slot — and the
+    // default — codex gives GPT-6.1 Sol.
+    let mut officials: Vec<&Value> = snapshot.iter().collect();
+    officials.sort_by_key(|m| priority_of(m));
+    for m in officials {
         if let Some(slug) = slug_of(m) {
             if excluded.contains(slug) && is_listable(m) {
                 continue;
@@ -308,8 +429,9 @@ pub fn expand_to_catalog(config: &CodexModelConfig, snapshot: &[Value]) -> Value
 }
 
 /// The default model slug written as codex's root `model`: the explicit
-/// `default` when it names a listed model, else the first custom, else the first
-/// non-excluded listable official, else `None`.
+/// `default` when it names a listed model, else the first custom, else the
+/// non-excluded listable official codex itself ranks first (lowest `priority`),
+/// else `None`.
 pub fn default_slug(config: &CodexModelConfig, snapshot: &[Value]) -> Option<String> {
     let excluded: HashSet<&str> = config
         .excluded_officials
@@ -330,11 +452,11 @@ pub fn default_slug(config: &CodexModelConfig, snapshot: &[Value]) -> Option<Str
     if let Some(c) = config.customs.first() {
         return Some(c.slug.clone());
     }
+    // `min_by_key` keeps the first of equal keys, matching codex's stable sort.
     snapshot
         .iter()
-        .find(|m| {
-            slug_of(m).map(|s| !excluded.contains(s)).unwrap_or(false) && is_listable(m)
-        })
+        .filter(|m| slug_of(m).map(|s| !excluded.contains(s)).unwrap_or(false) && is_listable(m))
+        .min_by_key(|m| priority_of(m))
         .and_then(|m| slug_of(m).map(str::to_owned))
 }
 
@@ -625,9 +747,20 @@ mod tests {
         assert_eq!(
             models.len(),
             11,
-            "snapshot should carry codex 0.153.4's catalog"
+            "snapshot should carry the catalog codex 0.159.2–0.160.1 ships"
         );
+        // 0.158.0 deleted gpt-5.4 outright (it had shipped hidden, as a
+        // retirement stub) rather than hiding it any further.
+        assert!(models.iter().all(|m| slug_of(m) != Some("gpt-5.4")));
         assert!(models.iter().any(|m| slug_of(m) == Some("gpt-6-astra")));
+        // 0.156.1 adds GPT-6 Sol and Luna, 0.159.1 GPT-6.1 Sol; all listed.
+        for added in ["gpt-6-sol", "gpt-6-luna", "gpt-6.1-sol"] {
+            let m = models
+                .iter()
+                .find(|m| slug_of(m) == Some(added))
+                .unwrap_or_else(|| panic!("{added} missing — regenerate the snapshot"));
+            assert!(is_listable(m), "{added} should be listed");
+        }
         assert!(models.iter().any(|m| slug_of(m) == Some("gpt-5.6-sol")));
         assert!(models.iter().any(|m| slug_of(m) == Some("gpt-5.5")));
         // codex-auto-review ships hidden.
@@ -668,7 +801,64 @@ mod tests {
                 "codex dropped {gone} — regenerate the snapshot"
             );
         }
-        assert_eq!(fallback_base_slug(&models).as_deref(), Some("gpt-6-astra"));
+        // 0.159.1 made GPT-6.1 Sol codex's default (priority 1), and the loader
+        // hands the catalog out in that order.
+        assert_eq!(fallback_base_slug(&models).as_deref(), Some("gpt-6.1-sol"));
+        assert_eq!(slug_of(&models[0]), Some("gpt-6.1-sol"));
+    }
+
+    /// The snapshot file is `codex debug models --bundled` verbatim, so it is in
+    /// FILE order, and 0.159.1 stopped keeping that in priority order. Anything
+    /// that turns position into rank must see codex's order instead — or the
+    /// generated catalog puts GPT-6 Astra where codex puts GPT-6.1 Sol, and
+    /// makes it the default.
+    #[test]
+    fn readers_rank_by_priority_not_snapshot_order() {
+        let raw: Vec<Value> = serde_json::from_str::<Value>(BUNDLED_SNAPSHOT)
+            .expect("snapshot parses")["models"]
+            .as_array()
+            .expect("models array")
+            .clone();
+        // The precondition this test exists for: GPT-6 Astra (priority 2) is
+        // listed ahead of GPT-6.1 Sol (priority 1) in the file itself.
+        assert_eq!(slug_of(&raw[0]), Some("gpt-6-astra"));
+        assert_eq!(slug_of(&raw[1]), Some("gpt-6.1-sol"));
+        assert!(priority_of(&raw[1]) < priority_of(&raw[0]));
+
+        // The loader sorts.
+        let loaded: Vec<i64> = snap().iter().map(priority_of).collect();
+        assert!(loaded.windows(2).all(|w| w[0] <= w[1]), "{loaded:?}");
+
+        // Handed the raw file order, expansion still lists the officials in
+        // codex's order: 6.1 Sol, then 6 Astra, then the rest.
+        let removal = excluding(&["gpt-5.5"]);
+        let cat = expand_to_catalog(&removal, &raw);
+        let out = slugs(&cat);
+        assert_eq!(out[..3], ["gpt-6.1-sol", "gpt-6-astra", "gpt-6-sol"]);
+        // …and renumbering keeps it that way, so codex marks 6.1 Sol default.
+        let min = cat["models"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .min_by_key(|m| priority_of(m))
+            .unwrap();
+        assert_eq!(slug_of(min), Some("gpt-6.1-sol"));
+        // The root `model` codeg writes for that config agrees.
+        assert_eq!(default_slug(&removal, &raw).as_deref(), Some("gpt-6.1-sol"));
+
+        // A custom still leads, ahead of every official.
+        let with_custom = CodexModelConfig {
+            customs: vec![CodexCustomEntry {
+                slug: "gw/x".into(),
+                display_name: None,
+                context_window: None,
+                base: "gpt-5.6-sol".into(),
+                overrides: Map::new(),
+            }],
+            ..Default::default()
+        };
+        let out = slugs(&expand_to_catalog(&with_custom, &raw));
+        assert_eq!(out[..3], ["gw/x", "gpt-6.1-sol", "gpt-6-astra"]);
     }
 
     #[test]
@@ -693,6 +883,17 @@ mod tests {
         assert_eq!(c.get("supported_in_api").unwrap(), &Value::Bool(true));
         assert_eq!(c.get("priority").unwrap().as_i64(), Some(0));
         assert!(c.get("base_instructions").and_then(Value::as_str).is_some());
+        // codex 0.156.1 points gpt-5.6-sol at gpt-6-sol through an `upgrade`
+        // block, which codex's TUI raises as a model-migration prompt. A custom
+        // that clones it must not inherit a migration offer for a model it is
+        // not, so the base's block is cleared — the official itself keeps it
+        // verbatim.
+        assert_eq!(c.get("upgrade"), Some(&Value::Null));
+        let official = find(&cat, "gpt-5.6-sol").expect("official present");
+        assert_eq!(
+            official.pointer("/upgrade/model").and_then(Value::as_str),
+            Some("gpt-6-sol")
+        );
         // Official preserved VERBATIM — hidden stays hidden.
         let review = find(&cat, "codex-auto-review").expect("official present");
         assert_eq!(review.get("visibility").unwrap(), "hide");
@@ -708,10 +909,10 @@ mod tests {
 
     #[test]
     fn expand_excludes_removed_officials_and_empty_is_off() {
-        let config = excluding(&["gpt-5.2"]);
+        let config = excluding(&["gpt-5.5"]);
         let cat = expand_to_catalog(&config, &snap());
         let s = slugs(&cat);
-        assert!(!s.iter().any(|x| x == "gpt-5.2"));
+        assert!(!s.iter().any(|x| x == "gpt-5.5"));
         assert!(s.iter().any(|x| x == "gpt-5.6-sol"));
         // Empty config = feature off.
         assert!(is_effectively_empty(&CodexModelConfig::default(), &snap()));
@@ -724,18 +925,25 @@ mod tests {
     #[test]
     fn expand_keeps_hidden_officials_even_when_excluded() {
         let s = snap();
-        // gpt-5.4 / gpt-5.4-mini are hidden in 0.147; codex-auto-review always is.
-        for slug in ["gpt-5.4", "gpt-5.4-mini", "codex-auto-review"] {
+        // The two daybreak builds ship hidden; codex-auto-review always is.
+        for slug in [
+            "gpt-daybreak-blue-latest",
+            "gpt-daybreak-red-latest",
+            "codex-auto-review",
+        ] {
             let hidden = s
                 .iter()
                 .find(|m| slug_of(m) == Some(slug))
                 .expect("in snapshot");
             assert_eq!(hidden.get("visibility").unwrap(), "hide", "{slug}");
         }
-        let cat = expand_to_catalog(&excluding(&["gpt-5.4", "gpt-5.4-mini"]), &s);
+        let cat = expand_to_catalog(
+            &excluding(&["gpt-daybreak-red-latest", "gpt-daybreak-blue-latest"]),
+            &s,
+        );
         let out = slugs(&cat);
-        assert!(out.iter().any(|x| x == "gpt-5.4"));
-        assert!(out.iter().any(|x| x == "gpt-5.4-mini"));
+        assert!(out.iter().any(|x| x == "gpt-daybreak-red-latest"));
+        assert!(out.iter().any(|x| x == "gpt-daybreak-blue-latest"));
         assert_eq!(out.len(), s.len(), "nothing dropped");
     }
 
@@ -744,13 +952,21 @@ mod tests {
         let s = snap();
         // Only stale removals of now-hidden officials → hand control back.
         assert!(is_effectively_empty(
-            &excluding(&["gpt-5.4", "gpt-5.4-mini"]),
+            &excluding(&["gpt-5.4", "gpt-daybreak-blue-latest"]),
             &s
         ));
         // A removal that still applies keeps the takeover.
-        assert!(!is_effectively_empty(&excluding(&["gpt-5.2"]), &s));
+        assert!(!is_effectively_empty(&excluding(&["gpt-5.5"]), &s));
         // Mixed: the live one wins.
-        assert!(!is_effectively_empty(&excluding(&["gpt-5.4", "gpt-5.2"]), &s));
+        assert!(!is_effectively_empty(&excluding(&["gpt-5.4", "gpt-5.5"]), &s));
+        // codex 0.155.1 DELETED gpt-5.2 and gpt-5.4-mini outright rather than
+        // hiding them, which is the other way a stored exclusion goes stale. A
+        // slug that is not in the catalog at all cannot be listable either, so
+        // it reads as a ghost by the same rule and control goes back to codex.
+        assert!(is_effectively_empty(
+            &excluding(&["gpt-5.2", "gpt-5.4-mini"]),
+            &s
+        ));
         // A custom always counts.
         let with_custom = CodexModelConfig {
             customs: vec![CodexCustomEntry {
@@ -904,6 +1120,12 @@ mod tests {
                         "supports_reasoning_summary_parameter".into(),
                         Value::Bool(false),
                     ),
+                    ("node_repl_disabled".into(), Value::String("true".into())),
+                    ("node_repl_auto_review_required".into(), Value::Null),
+                    (
+                        "supports_reasoning_effort_updates".into(),
+                        Value::String("yes".into()),
+                    ),
                 ]),
             }],
             ..Default::default()
@@ -912,11 +1134,84 @@ mod tests {
         let x = find(&cat, "gw/b").expect("present");
         assert_eq!(x.get("use_responses_lite").unwrap(), &Value::Bool(true));
         assert_eq!(x.get("supports_search_tool").unwrap(), &Value::Bool(true));
+        // The node_repl pair keeps gpt-5.6-sol's own `false`s.
+        assert_eq!(x.get("node_repl_disabled").unwrap(), &Value::Bool(false));
+        assert_eq!(
+            x.get("node_repl_auto_review_required").unwrap(),
+            &Value::Bool(false)
+        );
+        // So does 0.156.1's `supports_reasoning_effort_updates`.
+        assert_eq!(
+            x.get("supports_reasoning_effort_updates").unwrap(),
+            &Value::Bool(false)
+        );
         // A real boolean still lands.
         assert_eq!(
             x.get("supports_reasoning_summary_parameter").unwrap(),
             &Value::Bool(false)
         );
+    }
+
+    /// codex parses `model_messages` strictly: 0.160.1 rejects the whole
+    /// catalog for a number in its new `content_filter_guidance`, and a number
+    /// in `persistent_instructions` / `instructions_template` or a string for
+    /// the object itself already did on 0.159.3 (probed on both binaries). Such
+    /// an override is dropped and the clone keeps its base's messages; a
+    /// well-typed one, or `null`, still lands.
+    #[test]
+    fn expand_drops_a_model_messages_override_codex_would_reject() {
+        let custom = |slug: &str, messages: Value| CodexCustomEntry {
+            slug: slug.into(),
+            display_name: None,
+            context_window: None,
+            base: "gpt-5.6-sol".into(),
+            overrides: Map::from_iter([("model_messages".into(), messages)]),
+        };
+        let config = CodexModelConfig {
+            customs: vec![
+                custom(
+                    "gw/guidance-number",
+                    serde_json::json!({ "content_filter_guidance": 42 }),
+                ),
+                custom(
+                    "gw/instructions-number",
+                    serde_json::json!({ "persistent_instructions": 42 }),
+                ),
+                custom("gw/messages-string", Value::String("x".into())),
+                custom(
+                    "gw/guidance-text",
+                    serde_json::json!({
+                        "content_filter_guidance": "Explain the block briefly.",
+                        "persistent_instructions": null
+                    }),
+                ),
+                custom("gw/messages-null", Value::Null),
+            ],
+            ..Default::default()
+        };
+        let snapshot = snap();
+        let base_messages = snapshot
+            .iter()
+            .find(|m| m.get("slug").and_then(Value::as_str) == Some("gpt-5.6-sol"))
+            .and_then(|m| m.get("model_messages"))
+            .cloned()
+            .expect("gpt-5.6-sol ships model_messages");
+        let cat = expand_to_catalog(&config, &snapshot);
+        for slug in [
+            "gw/guidance-number",
+            "gw/instructions-number",
+            "gw/messages-string",
+        ] {
+            let x = find(&cat, slug).expect("present");
+            assert_eq!(x.get("model_messages"), Some(&base_messages), "{slug}");
+        }
+        let x = find(&cat, "gw/guidance-text").expect("present");
+        assert_eq!(
+            x["model_messages"]["content_filter_guidance"],
+            Value::String("Explain the block briefly.".into())
+        );
+        let x = find(&cat, "gw/messages-null").expect("present");
+        assert_eq!(x.get("model_messages"), Some(&Value::Null));
     }
 
     #[test]
@@ -940,9 +1235,10 @@ mod tests {
             ..cfg.clone()
         };
         assert_eq!(default_slug(&cfg2, &s).as_deref(), Some("mine"));
-        // No custom, no default → first listable official (not hidden).
+        // No custom, no default → codex's own first listable official (not
+        // hidden): GPT-6.1 Sol since 0.159.1.
         let cfg3 = CodexModelConfig::default();
-        assert_eq!(default_slug(&cfg3, &s).as_deref(), Some("gpt-6-astra"));
+        assert_eq!(default_slug(&cfg3, &s).as_deref(), Some("gpt-6.1-sol"));
     }
 
     #[test]
@@ -1033,7 +1329,7 @@ mod tests {
         assert!(find(&cat, "gpt-5.2").is_none());
         // …while hidden ones survive: they were never inferred-excluded, and
         // expansion would keep them regardless (they back codex internals).
-        assert!(find(&cat, "gpt-5.4").is_some());
+        assert!(find(&cat, "gpt-daybreak-blue-latest").is_some());
         assert!(find(&cat, "codex-auto-review").is_some());
     }
 

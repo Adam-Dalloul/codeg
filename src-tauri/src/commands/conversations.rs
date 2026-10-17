@@ -8,7 +8,7 @@ use crate::app_error::AppCommandError;
 use crate::db::entities::conversation;
 use crate::db::entities::folder::FolderKind;
 use crate::db::service::{
-    conversation_service, folder_service, handoff_service, import_service, tab_service,
+    agent_setting_service, conversation_service, folder_service, handoff_service, import_service, tab_service,
 };
 #[cfg(feature = "tauri-runtime")]
 use crate::db::AppDatabase;
@@ -19,7 +19,7 @@ use crate::models::*;
 use crate::parsers::codex::CodexParser;
 use crate::parsers::{
     build_agent_parser, folder_name_from_path, normalize_path_for_matching, path_eq_for_matching,
-    AgentParser, ParseError,
+    AgentEnvs, AgentParser, ParseError,
 };
 use crate::web::event_bridge::{
     emit_event, ConversationChange, ConversationsBulkChanged, EventEmitter, ImportScanProgress,
@@ -43,8 +43,19 @@ pub(crate) async fn list_all_conversations_core(
     chat_channel_manager: &crate::chat_channel::manager::ChatChannelManager,
     options: ListAllConversationsOptions,
 ) -> Result<Vec<DbConversationSummary>, AppCommandError> {
-    let codex_titles = match tokio::task::spawn_blocking(|| {
-        CodexParser::new().load_thread_name_index()
+    // Account indexes are independent even when two homes contain the same
+    // native session id. Refresh only the rows bound to the index being read.
+    let mut updated_accounts = Vec::new();
+    for account in crate::db::service::agent_account_service::list(conn, AgentType::Codex).await.map_err(AppCommandError::from)? {
+        let base = std::path::PathBuf::from(&account.home_dir).join("sessions");
+        if let Ok(titles) = tokio::task::spawn_blocking(move || CodexParser::with_base_dir(base).load_thread_name_index()).await {
+            updated_accounts.extend(conversation_service::refresh_codex_account_titles(conn, &titles, Some(&account.id)).await);
+        }
+    }
+    drop(notify_conversation_title_updates(conn, emitter, chat_channel_manager, updated_accounts).await);
+    let codex_env = agent_setting_service::load_agent_env(conn, AgentType::Codex).await;
+    let codex_titles = match tokio::task::spawn_blocking(move || {
+        CodexParser::for_env(&codex_env).load_thread_name_index()
     })
     .await
     {
@@ -219,6 +230,7 @@ pub async fn save_opened_tabs(
 
 /// Synchronous implementation shared by list_conversations, list_folders, and get_stats.
 fn list_conversations_sync(
+    envs: &AgentEnvs,
     agent_type: Option<AgentType>,
     search: Option<String>,
     sort_by: Option<String>,
@@ -233,12 +245,12 @@ fn list_conversations_sync(
     let mut parsers: Vec<(AgentType, Box<dyn AgentParser>)> =
         crate::models::agent::BUILTIN_AGENT_TYPES
             .iter()
-            .map(|&at| (at, build_agent_parser(at)))
+            .map(|&at| (at, build_agent_parser(at, &envs.get(at))))
             .collect();
     // Registered custom agents read back from codeg's own ACP transcripts, so
     // their sessions participate in folder grouping and stats like any other.
     for custom in crate::acp::custom_registry::all() {
-        parsers.push((custom, build_agent_parser(custom)));
+        parsers.push((custom, build_agent_parser(custom, &envs.get(custom))));
     }
 
     for (at, parser) in &parsers {
@@ -312,15 +324,36 @@ fn list_conversations_sync(
     all_conversations
 }
 
-#[cfg_attr(feature = "tauri-runtime", tauri::command)]
-pub async fn list_conversations(
+pub async fn list_conversations_core(
+    conn: &sea_orm::DatabaseConnection,
+    agent_account_id: Option<String>,
     agent_type: Option<AgentType>,
     search: Option<String>,
     sort_by: Option<String>,
     folder_path: Option<String>,
 ) -> Result<Vec<ConversationSummary>, AppCommandError> {
+    if let Some(id) = agent_account_id {
+        let account = crate::db::service::agent_account_service::get(conn, &id).await.map_err(AppCommandError::from)?;
+        let agent = AgentType::from_wire(&account.agent_type).ok_or_else(|| AppCommandError::invalid_input("Unknown account agent"))?;
+        if agent_type.is_some_and(|selected| selected != agent) { return Err(AppCommandError::invalid_input("The account belongs to a different agent.")); }
+        let home = std::path::PathBuf::from(account.home_dir);
+        return tokio::task::spawn_blocking(move || {
+            let mut sessions = crate::parsers::build_account_parser(agent, Some(&home), &crate::parsers::AgentEnv::inherited()).and_then(|p| p.list_conversations()).map_err(parse_error_to_app_error)?;
+            if let Some(query) = search.as_ref().map(|s| s.to_lowercase()) {
+                sessions.retain(|s| [&s.title, &s.folder_name, &s.folder_path, &s.git_branch, &s.model].iter().any(|v| v.as_ref().is_some_and(|v| v.to_lowercase().contains(&query))));
+            }
+            if let Some(path) = folder_path { sessions.retain(|s| s.folder_path.as_deref().is_some_and(|p| path_eq_for_matching(p, &path))); }
+            match sort_by.as_deref() {
+                Some("oldest") => sessions.sort_by_key(|s| s.started_at),
+                Some("messages") => sessions.sort_by_key(|s| std::cmp::Reverse(s.message_count)),
+                _ => sessions.sort_by_key(|s| std::cmp::Reverse(s.started_at)),
+            }
+            Ok(sessions)
+        }).await.map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+    }
+    let envs = agent_setting_service::load_agent_envs(conn).await;
     tokio::task::spawn_blocking(move || {
-        list_conversations_sync(agent_type, search, sort_by, folder_path)
+        list_conversations_sync(&envs, agent_type, search, sort_by, folder_path)
     })
     .await
     .map_err(|e| {
@@ -329,13 +362,20 @@ pub async fn list_conversations(
     })
 }
 
-#[cfg_attr(feature = "tauri-runtime", tauri::command)]
-pub async fn get_conversation(
+pub async fn get_conversation_core(
+    conn: &sea_orm::DatabaseConnection,
+    agent_account_id: Option<String>,
     agent_type: AgentType,
     conversation_id: String,
 ) -> Result<ConversationDetail, AppCommandError> {
+    let env = agent_setting_service::load_agent_env(conn, agent_type).await;
+    let home = if let Some(id) = agent_account_id {
+        let account = crate::db::service::agent_account_service::get(conn, &id).await.map_err(AppCommandError::from)?;
+        if account.agent_type != agent_type.as_wire() { return Err(AppCommandError::invalid_input("The account belongs to a different agent.")); }
+        Some(std::path::PathBuf::from(account.home_dir))
+    } else { None };
     tokio::task::spawn_blocking(move || -> Result<ConversationDetail, AppCommandError> {
-        build_agent_parser(agent_type)
+        crate::parsers::build_account_parser(agent_type, home.as_deref(), &env).map_err(parse_error_to_app_error)?
             .get_conversation(&conversation_id)
             .map_err(parse_error_to_app_error)
     })
@@ -346,44 +386,89 @@ pub async fn get_conversation(
     })?
 }
 
-#[cfg_attr(feature = "tauri-runtime", tauri::command)]
-pub async fn list_folders() -> Result<Vec<FolderInfo>, AppCommandError> {
-    tokio::task::spawn_blocking(move || -> Result<Vec<FolderInfo>, AppCommandError> {
-        let all_conversations = list_conversations_sync(None, None, None, None);
-        Ok(compute_folders(&all_conversations))
-    })
-    .await
-    .map_err(|e| {
-        AppCommandError::task_execution_failed("Failed to list folders").with_detail(e.to_string())
-    })?
+#[cfg(feature = "tauri-runtime")]
+#[tauri::command]
+pub async fn list_conversations(
+    db: tauri::State<'_, AppDatabase>,
+    agent_account_id: Option<String>,
+    agent_type: Option<AgentType>,
+    search: Option<String>,
+    sort_by: Option<String>,
+    folder_path: Option<String>,
+) -> Result<Vec<ConversationSummary>, AppCommandError> {
+    list_conversations_core(&db.conn, agent_account_id, agent_type, search, sort_by, folder_path).await
 }
 
-#[cfg_attr(feature = "tauri-runtime", tauri::command)]
-pub async fn get_stats() -> Result<AgentStats, AppCommandError> {
-    tokio::task::spawn_blocking(move || -> Result<AgentStats, AppCommandError> {
-        let all_conversations = list_conversations_sync(None, None, None, None);
-        Ok(compute_stats(&all_conversations))
-    })
-    .await
-    .map_err(|e| {
-        AppCommandError::task_execution_failed("Failed to compute conversation stats")
-            .with_detail(e.to_string())
-    })?
+#[cfg(feature = "tauri-runtime")]
+#[tauri::command]
+pub async fn get_conversation(
+    db: tauri::State<'_, AppDatabase>,
+    agent_account_id: Option<String>,
+    agent_type: AgentType,
+    conversation_id: String,
+) -> Result<ConversationDetail, AppCommandError> {
+    get_conversation_core(&db.conn, agent_account_id, agent_type, conversation_id).await
+
 }
 
-#[cfg_attr(feature = "tauri-runtime", tauri::command)]
-pub async fn get_sidebar_data() -> Result<SidebarData, AppCommandError> {
-    tokio::task::spawn_blocking(move || -> Result<SidebarData, AppCommandError> {
-        let all_conversations = list_conversations_sync(None, None, None, None);
-        let folders = compute_folders(&all_conversations);
-        let stats = compute_stats(&all_conversations);
-        Ok(SidebarData { folders, stats })
-    })
-    .await
-    .map_err(|e| {
-        AppCommandError::task_execution_failed("Failed to build sidebar data")
-            .with_detail(e.to_string())
-    })?
+/// Every parsable session on this machine, read in one blocking pass with
+/// each agent's launch environment — shared by the folder/stats/sidebar
+/// aggregates below.
+async fn list_all_local_conversations(
+    conn: &sea_orm::DatabaseConnection,
+    what: &'static str,
+) -> Result<Vec<ConversationSummary>, AppCommandError> {
+    let envs = agent_setting_service::load_agent_envs(conn).await;
+    tokio::task::spawn_blocking(move || list_conversations_sync(&envs, None, None, None, None))
+        .await
+        .map_err(|e| AppCommandError::task_execution_failed(what).with_detail(e.to_string()))
+}
+
+pub async fn list_folders_core(
+    conn: &sea_orm::DatabaseConnection,
+) -> Result<Vec<FolderInfo>, AppCommandError> {
+    let all_conversations = list_all_local_conversations(conn, "Failed to list folders").await?;
+    Ok(compute_folders(&all_conversations))
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[tauri::command]
+pub async fn list_folders(
+    db: tauri::State<'_, AppDatabase>,
+) -> Result<Vec<FolderInfo>, AppCommandError> {
+    list_folders_core(&db.conn).await
+}
+
+pub async fn get_stats_core(
+    conn: &sea_orm::DatabaseConnection,
+) -> Result<AgentStats, AppCommandError> {
+    let all_conversations =
+        list_all_local_conversations(conn, "Failed to compute conversation stats").await?;
+    Ok(compute_stats(&all_conversations))
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[tauri::command]
+pub async fn get_stats(db: tauri::State<'_, AppDatabase>) -> Result<AgentStats, AppCommandError> {
+    get_stats_core(&db.conn).await
+}
+
+pub async fn get_sidebar_data_core(
+    conn: &sea_orm::DatabaseConnection,
+) -> Result<SidebarData, AppCommandError> {
+    let all_conversations =
+        list_all_local_conversations(conn, "Failed to build sidebar data").await?;
+    let folders = compute_folders(&all_conversations);
+    let stats = compute_stats(&all_conversations);
+    Ok(SidebarData { folders, stats })
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[tauri::command]
+pub async fn get_sidebar_data(
+    db: tauri::State<'_, AppDatabase>,
+) -> Result<SidebarData, AppCommandError> {
+    get_sidebar_data_core(&db.conn).await
 }
 
 fn compute_folders(all_conversations: &[ConversationSummary]) -> Vec<FolderInfo> {
@@ -499,6 +584,10 @@ struct ScanFolderRow {
     path: String,
     name: String,
     deleted: bool,
+    /// The root folder this row was registered under, when it is a worktree
+    /// child. Import reconciliation uses it to flatten and validate new parent
+    /// relationships.
+    parent_id: Option<i32>,
 }
 
 async fn load_folder_rows(
@@ -517,6 +606,7 @@ async fn load_folder_rows(
             path: f.path,
             name: f.name,
             deleted: f.deleted_at.is_some(),
+            parent_id: f.parent_id,
         })
         .collect())
 }
@@ -533,6 +623,47 @@ fn index_folder_rows(rows: &[ScanFolderRow]) -> HashMap<String, &ScanFolderRow> 
         }
     }
     index
+}
+
+/// The main working tree an imported session's cwd belongs to, as a
+/// [`normalize_path_for_matching`] key — `None` when the cwd is not a linked git
+/// worktree (a plain repo, a submodule, a directory that is gone), which is
+/// top-level by definition.
+///
+/// Resolving the ROOT rather than a folder id keeps the "is this a worktree"
+/// question separate from "is that repo a folder codeg has", which the importer
+/// answers later and against folders it may not have created yet.
+fn worktree_root_key(path: &str) -> Option<String> {
+    let root = crate::git_repo::main_worktree_root(std::path::Path::new(path))?;
+    let key = normalize_path_for_matching(&root.to_string_lossy());
+    // Nothing may be its own parent: the sidebar drops a self-parented folder
+    // from the top level and then renders it under itself, i.e. nowhere. Only a
+    // corrupt `commondir` can land here, and the guard costs one compare.
+    (key != normalize_path_for_matching(path)).then_some(key)
+}
+
+/// Normalized path → the candidate root folder id a linked worktree of that
+/// path should hang off. Seeded from the folder rows on disk; the importer adds
+/// the folders it creates as it goes. The write side separately verifies that
+/// the candidate is still a live top-level row.
+///
+/// The id is FLATTENED the way `open_worktree_folder_core` flattens: a repo
+/// folder that is itself recorded as somebody's worktree child hands down its
+/// own root. A two-level chain would be worse than no grouping at all — the
+/// sidebar's worktree merge is single-level, so a grandchild's conversations
+/// bucket under a folder that is itself merged away and stop rendering.
+///
+/// Soft-deleted rows are left out: a deleted repo renders nowhere, and a child
+/// of it would render nowhere either, which is worse than the top-level folder
+/// the user gets today.
+fn worktree_parent_folder_ids(
+    folder_index: &HashMap<String, &ScanFolderRow>,
+) -> HashMap<String, i32> {
+    folder_index
+        .iter()
+        .filter(|(_, row)| !row.deleted)
+        .map(|(key, row)| (key.clone(), row.parent_id.unwrap_or(row.id)))
+        .collect()
 }
 
 /// Pure grouping/reconciliation for the import-picker scan.
@@ -591,6 +722,8 @@ fn build_scan_result(
             Some(false) => ScanSessionStatus::Deleted,
         };
         entry.sessions.push(ScanSession {
+            agent_account_id: None,
+            agent_account_name: None,
             external_id: summary.id,
             agent_type: at,
             title: summary.title,
@@ -662,8 +795,10 @@ pub async fn scan_importable_sessions_core(
     chat_channel_manager: &crate::chat_channel::manager::ChatChannelManager,
 ) -> Result<ScanResult, AppCommandError> {
     let progress_emitter = emitter.clone();
-    let summaries =
-        import_service::collect_local_summaries(move |agent_type, done, total, session_count| {
+    let envs = agent_setting_service::load_agent_envs(conn).await;
+    let summaries = import_service::collect_local_summaries(
+        &envs,
+        move |agent_type, done, total, session_count| {
             emit_event(
                 &progress_emitter,
                 IMPORT_SCAN_PROGRESS_EVENT,
@@ -674,10 +809,41 @@ pub async fn scan_importable_sessions_core(
                     session_count,
                 },
             );
-        })
-        .await;
+        },
+    )
+    .await;
 
-    scan_importable_sessions_from_summaries(conn, emitter, chat_channel_manager, summaries).await
+    let mut result = scan_importable_sessions_from_summaries(conn, emitter, chat_channel_manager, summaries).await?;
+    for account in crate::db::service::agent_account_service::list_all(conn).await.map_err(AppCommandError::from)? {
+        // One unavailable account folder must not hide every other account's
+        // sessions, the Default ones included. Importing from that account
+        // still fails explicitly until the folder is restored.
+        let summaries = match import_service::collect_account_summaries(conn, &account.id).await {
+            Ok(summaries) => summaries,
+            Err(e) => {
+                tracing::warn!("[import] skipping account {} ({}): {e}", account.name, account.id);
+                continue;
+            }
+        };
+        let mut additional = scan_importable_account_summaries(conn, emitter, chat_channel_manager, summaries, Some(&account.id)).await?;
+        result.no_folder_count += additional.no_folder_count;
+        result.total_sessions += additional.total_sessions;
+        result.importable_count += additional.importable_count;
+        for folder in &mut additional.folders {
+            for session in &mut folder.sessions {
+                session.agent_account_id = Some(account.id.clone());
+                session.agent_account_name = Some(account.name.clone());
+            }
+        }
+        for folder in additional.folders {
+            if let Some(existing) = result.folders.iter_mut().find(|f| path_eq_for_matching(&f.path, &folder.path)) {
+                existing.sessions.extend(folder.sessions);
+                existing.sessions.sort_by_key(|s| std::cmp::Reverse(s.started_at));
+                for agent in folder.agent_types { if !existing.agent_types.contains(&agent) { existing.agent_types.push(agent); } }
+            } else { result.folders.push(folder); }
+        }
+    }
+    Ok(result)
 }
 
 /// Reconcile summaries already collected by the filesystem scan. Keeping this
@@ -689,9 +855,20 @@ async fn scan_importable_sessions_from_summaries(
     chat_channel_manager: &crate::chat_channel::manager::ChatChannelManager,
     summaries: Vec<(AgentType, ConversationSummary)>,
 ) -> Result<ScanResult, AppCommandError> {
+    scan_importable_account_summaries(conn, emitter, chat_channel_manager, summaries, None).await
+}
+
+async fn scan_importable_account_summaries(
+    conn: &sea_orm::DatabaseConnection,
+    emitter: &EventEmitter,
+    chat_channel_manager: &crate::chat_channel::manager::ChatChannelManager,
+    summaries: Vec<(AgentType, ConversationSummary)>,
+    account_id: Option<&str>,
+) -> Result<ScanResult, AppCommandError> {
     use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
 
     let conv_rows = conversation::Entity::find()
+        .filter(conversation_service::account_condition(account_id))
         .filter(conversation::Column::ExternalId.is_not_null())
         .all(conn)
         .await
@@ -708,10 +885,31 @@ async fn scan_importable_sessions_from_summaries(
             .or_insert(live);
         *entry = *entry || live;
     }
+    // What a switch left behind in the account it moved a conversation out of
+    // is that conversation, already in codeg under its new account.
+    match import_service::superseded_claude_copies(
+        conn,
+        account_id,
+        &summaries,
+        &import_service::default_claude_projects(conn).await,
+    )
+    .await
+    {
+        Ok(superseded) => {
+            let claude = agent_type_db_str(&AgentType::ClaudeCode);
+            for sid in superseded {
+                imported_index.entry((claude.clone(), sid)).or_insert(true);
+            }
+        }
+        Err(e) => tracing::warn!("[import] could not check for switched-away session copies: {e}"),
+    }
 
     // Refresh the already-imported rows in place before answering, then
     // broadcast each one so open sidebars re-sort without a refetch. The
     // chat-channel half runs detached so the scan never waits on Telegram.
+    for (agent, sid) in handoff_service::archived_sources(conn, account_id, &summaries).await.map_err(AppCommandError::from)? {
+        imported_index.entry((agent.as_wire().into_owned(), sid)).or_insert(true);
+    }
     drop(
         notify_conversation_title_updates(
             conn,
@@ -739,13 +937,36 @@ pub async fn scan_importable_sessions(
 /// Batch-import the selected sessions, creating (or reopening) each target
 /// folder as needed. Test seam for [`import_selected_sessions_core`]: takes the
 /// scanned summaries as input instead of walking the filesystem.
+#[cfg(test)]
 pub(crate) async fn import_selected_from_summaries(
     conn: &sea_orm::DatabaseConnection,
     emitter: &EventEmitter,
     summaries: Vec<(AgentType, ConversationSummary)>,
     selections: Vec<SelectedSessionKey>,
 ) -> Result<ImportSelectedResult, AppCommandError> {
+    import_selected_from_account_summaries(conn, emitter, summaries, selections, None).await
+}
+
+async fn import_selected_from_account_summaries(
+    conn: &sea_orm::DatabaseConnection,
+    emitter: &EventEmitter,
+    summaries: Vec<(AgentType, ConversationSummary)>,
+    selections: Vec<SelectedSessionKey>,
+    account_id: Option<&str>,
+) -> Result<ImportSelectedResult, AppCommandError> {
     const MAX_ERRORS: usize = 10;
+
+    // A switch's leftover copy is a conversation codeg already has under
+    // another account (the picker shows it as imported). Skip it rather than
+    // add a duplicate that would also block switching the conversation back.
+    let superseded = import_service::superseded_claude_copies(
+        conn,
+        account_id,
+        &summaries,
+        &import_service::default_claude_projects(conn).await,
+    )
+    .await
+    .map_err(AppCommandError::from)?;
 
     // Defense-in-depth mirror of collect_local_summaries' child filter: a
     // delegation child must never import as a root row, so a selection key
@@ -761,6 +982,7 @@ pub(crate) async fn import_selected_from_summaries(
     // resolves — vanished from disk since the scan, cwd-less, or bogus — counts
     // as not_found.
     let mut not_found = 0u32;
+    let mut superseded_skipped = 0u32;
     let mut groups: HashMap<String, Vec<(AgentType, ConversationSummary)>> = HashMap::new();
     let mut seen_keys: HashSet<(AgentType, String)> = HashSet::new();
     for key in selections {
@@ -771,6 +993,10 @@ pub(crate) async fn import_selected_from_summaries(
             not_found += 1;
             continue;
         };
+        if at == AgentType::ClaudeCode && superseded.contains(&summary.id) {
+            superseded_skipped += 1;
+            continue;
+        }
         let raw_path = match summary.folder_path.as_deref().map(str::trim) {
             Some(p) if !p.is_empty() => p.to_string(),
             _ => {
@@ -790,7 +1016,7 @@ pub(crate) async fn import_selected_from_summaries(
     let mut result = ImportSelectedResult {
         imported: 0,
         updated: 0,
-        skipped: 0,
+        skipped: superseded_skipped,
         restored: 0,
         not_found,
         failed: 0,
@@ -800,48 +1026,169 @@ pub(crate) async fn import_selected_from_summaries(
     };
     let mut touched_folder_ids: Vec<i32> = Vec::new();
 
-    // Deterministic folder order (normalized path) so results and tests are
-    // stable regardless of HashMap iteration.
-    let mut ordered: Vec<(String, Vec<(AgentType, ConversationSummary)>)> =
-        groups.into_iter().collect();
-    ordered.sort_by(|a, b| a.0.cmp(&b.0));
+    // Resolve every group's target path and worktree root BEFORE importing any
+    // of them, so the order they are imported in can depend on it.
+    struct PendingImport {
+        norm_key: String,
+        target_path: String,
+        created: bool,
+        /// The main working tree of this cwd, when it is a linked worktree —
+        /// a normalized path, not yet a folder id (see [`worktree_root_key`]).
+        root_key: Option<String>,
+        items: Vec<(AgentType, ConversationSummary)>,
+    }
 
-    for (norm_key, items) in ordered {
-        let row = folder_index.get(&norm_key).copied();
-        // Import into the stored row's exact path when one normalize-matches
-        // (see build_scan_result); otherwise the parser cwd creates the folder.
-        let target_path = row.map(|r| r.path.clone()).unwrap_or_else(|| {
-            items[0]
-                .1
-                .folder_path
-                .as_deref()
-                .map(str::trim)
-                .unwrap_or_default()
-                .to_string()
-        });
-        let created = row.map(|r| r.deleted).unwrap_or(true);
+    let mut ordered: Vec<PendingImport> = groups
+        .into_iter()
+        .map(|(norm_key, items)| {
+            let row = folder_index.get(&norm_key).copied();
+            // Import into the stored row's exact path when one normalize-matches
+            // (see build_scan_result); otherwise the parser cwd creates the folder.
+            let target_path = row.map(|r| r.path.clone()).unwrap_or_else(|| {
+                items[0]
+                    .1
+                    .folder_path
+                    .as_deref()
+                    .map(str::trim)
+                    .unwrap_or_default()
+                    .to_string()
+            });
+            PendingImport {
+                created: row.map(|r| r.deleted).unwrap_or(true),
+                root_key: worktree_root_key(&target_path),
+                norm_key,
+                target_path,
+                items,
+            }
+        })
+        .collect();
+
+    // Deterministic folder order (normalized path) so results and tests are
+    // stable regardless of HashMap iteration — but every plain folder is
+    // imported BEFORE any linked worktree, so a repo and a worktree of it
+    // selected in the same run still group. One pass suffices, no topological
+    // sort: a main working tree is never itself a linked worktree, so a repo can
+    // never be waiting on another group. Without the split, whether the two end
+    // up grouped would come down to which of their paths sorts first.
+    ordered.sort_by(|a, b| {
+        a.root_key
+            .is_some()
+            .cmp(&b.root_key.is_some())
+            .then_with(|| a.norm_key.cmp(&b.norm_key))
+    });
+    let mut worktree_parents = worktree_parent_folder_ids(&folder_index);
+    // Parent ids are not protected by a foreign key. Restrict new writes to
+    // live top-level rows so a stale/dangling id or a pre-existing parent chain
+    // cannot turn this import into a chain or cycle of its own. Plain folders
+    // selected in this batch join the set after `add_folder` revives them.
+    let mut top_level_parent_ids: HashSet<i32> = folder_rows
+        .iter()
+        .filter(|row| !row.deleted && row.parent_id.is_none())
+        .map(|row| row.id)
+        .collect();
+    // Reparenting a folder that already owns children would make those rows
+    // grandchildren. Track counts through this batch so that operation falls
+    // back to Preserve as well.
+    let mut folder_child_counts: HashMap<i32, usize> = HashMap::new();
+    for row in &folder_rows {
+        if let Some(parent_id) = row.parent_id {
+            *folder_child_counts.entry(parent_id).or_default() += 1;
+        }
+    }
+
+    for pending in ordered {
+        let PendingImport {
+            norm_key,
+            target_path,
+            created,
+            root_key,
+            items,
+        } = pending;
 
         // `add_folder` is the only fallible step here — `import_summaries` is
         // resilient (per-row failures are counted, never aborting the group), so
         // a partial failure still commits and reports its good rows and still
         // broadcasts the folder it created.
-        match folder_service::add_folder(conn, &target_path)
-            .await
-            .map_err(AppCommandError::from)
-        {
+        //
+        // A cwd that is a linked worktree of a repo codeg has goes in as a CHILD
+        // of that repo, the way `open_worktree_folder_core` records one. Plain
+        // `add_folder` leaves `parent_id` NULL, which is exactly the sidebar's
+        // test for "top-level folder", so the same worktree lands beside its
+        // repo instead of under it (and the branch-label backfill, which selects
+        // on `parent_id IS NOT NULL`, never reaches it). Falling back to
+        // `add_folder` when nothing resolves keeps `ParentWrite::Preserve` for
+        // every other case, so a reopen can never demote a folder that a
+        // worktree open already parented. See issue #552.
+        let target_row = folder_index.get(&norm_key).copied();
+        let target_folder_id = target_row.map(|row| row.id);
+        let existing_parent_id = target_row.and_then(|row| row.parent_id);
+        let target_has_children = target_folder_id.is_some_and(|folder_id| {
+            folder_child_counts.get(&folder_id).copied().unwrap_or(0) > 0
+        });
+        let parent_id = root_key
+            .as_ref()
+            .and_then(|key| worktree_parents.get(key).copied())
+            // A historical top-level worktree can have its main-tree row
+            // recorded underneath it. Flattening through that row points back
+            // at the worktree's own folder id even though their PATHS differ,
+            // so the path-level guard in `worktree_root_key` cannot catch it.
+            .filter(|parent_id| Some(*parent_id) != target_folder_id)
+            .filter(|parent_id| top_level_parent_ids.contains(parent_id))
+            // Moving an existing parent under the repo would strand its current
+            // children one level deeper. Rewriting the same established edge is
+            // harmless; any new edge requires a childless target.
+            .filter(|parent_id| existing_parent_id == Some(*parent_id) || !target_has_children);
+        let add = match parent_id {
+            Some(parent_id) => {
+                folder_service::add_folder_with_parent(conn, &target_path, Some(parent_id)).await
+            }
+            None => folder_service::add_folder(conn, &target_path).await,
+        };
+        match add.map_err(AppCommandError::from) {
             Ok(entry) => {
                 let folder_id = entry.id;
+                // `add_folder_with_parent` sets the resolved parent; the
+                // fallback `add_folder` preserves an existing row's parent and
+                // inserts a new row at the top level. Keep the safety set in
+                // step with that exact persisted state.
+                let persisted_parent_id = parent_id.or(existing_parent_id);
+                if persisted_parent_id != existing_parent_id {
+                    if let Some(old_parent_id) = existing_parent_id {
+                        if let Some(count) = folder_child_counts.get_mut(&old_parent_id) {
+                            *count = count.saturating_sub(1);
+                        }
+                    }
+                    if let Some(new_parent_id) = persisted_parent_id {
+                        *folder_child_counts.entry(new_parent_id).or_default() += 1;
+                    }
+                }
+                if persisted_parent_id.is_none() {
+                    top_level_parent_ids.insert(folder_id);
+                } else {
+                    top_level_parent_ids.remove(&folder_id);
+                }
+                // This folder can now be the repo a LATER group's worktree hangs
+                // off — the sort above put every plain folder ahead of every
+                // worktree precisely so this lands in time. Only plain folders
+                // are recorded: a linked worktree is never anyone's main working
+                // tree. The candidate is flattened by the seed's rule, off the
+                // parent this row actually ended up with.
+                if root_key.is_none() {
+                    let root = persisted_parent_id.unwrap_or(folder_id);
+                    worktree_parents.insert(norm_key, root);
+                }
                 // `DeletedPolicy::Restore`: every item here is a session the
                 // user explicitly checked in the picker, which badges a
                 // soft-deleted row as such — so a deleted one in this list is a
                 // deliberate "bring it back", not a sweep. (The whole-folder
                 // import and the scan's drive-by refresh both stay on `Skip`.)
                 let (tally, _updated_ids, failed_in_group) =
-                    import_service::import_summaries_resilient(
+                    import_service::import_summaries_resilient_for_account(
                         conn,
                         folder_id,
                         &items,
                         import_service::DeletedPolicy::Restore,
+                        account_id,
                     )
                     .await;
                 result.imported += tally.imported;
@@ -923,8 +1270,44 @@ pub async fn import_selected_sessions_core(
         .try_lock()
         .map_err(|_| AppCommandError::invalid_input("An import is already in progress"))?;
 
-    let summaries = import_service::collect_local_summaries(|_, _, _, _| {}).await;
-    import_selected_from_summaries(conn, emitter, summaries, selections).await
+    let envs = agent_setting_service::load_agent_envs(conn).await;
+    let mut groups: std::collections::BTreeMap<Option<String>, Vec<SelectedSessionKey>> = std::collections::BTreeMap::new();
+    for selection in selections {
+        groups.entry(selection.agent_account_id.clone()).or_default().push(selection);
+    }
+    let mut result = ImportSelectedResult::default();
+    for (account_id, selections) in groups {
+        let summaries = match account_id.as_deref() {
+            Some(id) => {
+                let account = crate::db::service::agent_account_service::get(conn, id).await.map_err(AppCommandError::from)?;
+                if selections.iter().any(|s| s.agent_type.as_wire() != account.agent_type) {
+                    return Err(AppCommandError::invalid_input("Choose sessions from the selected agent account."));
+                }
+                import_service::collect_account_summaries(conn, id).await.map_err(AppCommandError::from)?
+            }
+            None => import_service::collect_local_summaries(&envs, |_, _, _, _| {}).await,
+        };
+        let part = import_selected_from_account_summaries(conn, emitter, summaries, selections, account_id.as_deref()).await?;
+        result.imported += part.imported;
+        result.updated += part.updated;
+        result.skipped += part.skipped;
+        result.restored += part.restored;
+        result.not_found += part.not_found;
+        result.failed += part.failed;
+        result.created_folders += part.created_folders;
+        result.errors.extend(part.errors);
+        result.errors.truncate(10);
+        for folder in part.folders {
+            if let Some(existing) = result.folders.iter_mut().find(|f| f.folder_id == folder.folder_id) {
+                existing.imported += folder.imported;
+                existing.updated += folder.updated;
+                existing.skipped += folder.skipped;
+                existing.restored += folder.restored;
+                existing.created |= folder.created;
+            } else { result.folders.push(folder); }
+        }
+    }
+    Ok(result)
 }
 
 #[cfg(feature = "tauri-runtime")]
@@ -994,6 +1377,20 @@ fn build_historical_delegation_meta(child: &DbConversationSummary) -> serde_json
             "task_preview".into(),
             serde_json::Value::String(title.into()),
         );
+    }
+    // The assistant the child ran as, off its row: the reloaded card draws it
+    // even when no live binding or tool result remains.
+    if let Some(assistant_id) = child.assistant_id {
+        obj.insert(
+            "assistant_id".into(),
+            serde_json::Value::Number(assistant_id.into()),
+        );
+        if let Some(name) = child.assistant_name.as_deref() {
+            obj.insert(
+                "assistant_name".into(),
+                serde_json::Value::String(name.into()),
+            );
+        }
     }
     serde_json::Value::Object(obj)
 }
@@ -1198,6 +1595,13 @@ pub async fn get_folder_conversation_core(
         .await
         .map_err(AppCommandError::from)?;
 
+    let account_home = match summary.agent_account_id.as_deref() {
+        Some(id) => Some(std::path::PathBuf::from(
+            crate::db::service::agent_account_service::get(conn, id).await.map_err(AppCommandError::from)?.home_dir
+        )),
+        None => None,
+    };
+
     let (mut turns, session_stats, resolved_ext_id, parsed_title, parsed_model, transcript_watermark) =
         if let Some(ref ext_id) = summary.external_id {
         let at = summary.agent_type;
@@ -1215,17 +1619,27 @@ pub async fn get_folder_conversation_core(
                 .flatten()
                 .map(|f| f.path),
         };
+        // The session file is wherever the agent's launch environment put it:
+        // a `CLAUDE_CONFIG_DIR`/`CODEX_HOME`/… in its settings moves it out of
+        // the default directory codeg's own environment names.
+        let agent_env = agent_setting_service::load_agent_env(conn, at).await;
         tokio::task::spawn_blocking(move || -> Result<_, AppCommandError> {
-            let parser = build_agent_parser(at);
+            let parser = crate::parsers::build_account_parser(at, account_home.as_deref(), &agent_env).map_err(parse_error_to_app_error)?;
             match parser.get_conversation(&eid) {
-                Ok(d) => Ok((
-                    d.turns,
-                    d.session_stats,
-                    None,
-                    d.summary.title,
-                    d.summary.model,
-                    d.transcript_watermark,
-                )),
+                Ok(d) => {
+                    // Claude `/clear` (and similar on-disk id changes) make
+                    // the parser resolve a different uuid than we asked for.
+                    // Persist that so reopen/reconnect follow the live file.
+                    let resolved = (d.summary.id != eid).then(|| d.summary.id.clone());
+                    Ok((
+                        d.turns,
+                        d.session_stats,
+                        resolved,
+                        d.summary.title,
+                        d.summary.model,
+                        d.transcript_watermark,
+                    ))
+                }
                 Err(crate::parsers::ParseError::ConversationNotFound(_)) => {
                     // The external_id may no longer match any local file —
                     // e.g. an ACP session UUID (OpenClaw, Cline) or a stale
@@ -1286,63 +1700,69 @@ pub async fn get_folder_conversation_core(
         (vec![], None, None, None, None, None)
     };
 
-    // If we resolved a different external_id (e.g. ACP UUID → parser branch ID),
-    // update the database so future lookups are direct.
+    // If we resolved a different external_id (e.g. ACP UUID → parser branch ID,
+    // or a Claude `/clear` transcript rollover), update the database so future
+    // lookups are direct. Also patch the summary this call returns so the
+    // caller reconnects with the id that actually has the turns.
     //
-    // This is an ALIAS normalization — both ids denote the same session — so it
-    // uses the narrow CAS rather than `bind_external_id`, whose history-split
-    // would manufacture a phantom conversation for the old spelling. The
-    // expected-old value is the exact id this parse ran against, so a
-    // `SessionStarted` that rebound the row while we were parsing leaves this
-    // write matching nothing instead of clobbering the newer binding.
+    // Gemini/Cline is an ALIAS normalization — both ids denote the same
+    // session — so it uses the narrow CAS rather than `bind_external_id`,
+    // whose history-split would manufacture a phantom conversation for the
+    // old spelling. Claude `/clear` is a real new transcript file of the
+    // SAME conversation; passing the outgoing id as `continues` advances
+    // in place instead of splitting a sidebar clone.
+    let mut summary = summary;
     if let Some(new_ext_id) = resolved_ext_id {
-        let _ = conversation_service::renormalize_external_id_alias(
-            conn,
-            conversation_id,
-            summary.external_id.as_deref(),
-            new_ext_id,
-        )
-        .await;
+        if matches!(summary.agent_type, AgentType::ClaudeCode) {
+            let continues: Vec<String> = summary.external_id.iter().cloned().collect();
+            // Refused when another row already holds the successor — the
+            // rollover's own file can have been imported as its own
+            // conversation. The summary must then keep the id this row
+            // actually owns: handing the caller an id it does not hold is
+            // what sends the next prompt into the HOLDER's transcript while
+            // every event names this row (see `bind_external_id`).
+            match conversation_service::bind_external_id(
+                conn,
+                conversation_id,
+                &new_ext_id,
+                &continues,
+            )
+            .await
+            {
+                Ok(_) => summary.external_id = Some(new_ext_id),
+                Err(e) => {
+                    tracing::warn!(
+                        conversation_id,
+                        to_session = %new_ext_id,
+                        error = %e,
+                        "[conversations] could not follow the transcript rollover; \
+                         keeping the id this row holds"
+                    );
+                }
+            }
+        } else {
+            let _ = conversation_service::renormalize_external_id_alias(
+                conn,
+                conversation_id,
+                summary.external_id.as_deref(),
+                new_ext_id.clone(),
+            )
+            .await;
+            summary.external_id = Some(new_ext_id);
+        }
     }
-
-    // A conversation that was handed off to another agent keeps its earlier
-    // segments reachable through `conversation_handoff`. Each uncarried
-    // segment is read from the agent that ran it (its own store, its own
-    // parser) and spliced in front of the current session behind a divider;
-    // a carried segment already lives in the current session's store and only
-    // gets the divider. A segment whose store is gone renders as nothing
-    // rather than failing the whole detail: the current session still loads.
     let handoffs = handoff_service::list_for_conversation(conn, conversation_id)
         .await
-        .unwrap_or_default();
+        .map_err(AppCommandError::from)?;
     if !handoffs.is_empty() {
         let links: Vec<HandoffLink> = handoffs.iter().filter_map(HandoffLink::from_row).collect();
-        let mut segments: Vec<Vec<MessageTurn>> = Vec::with_capacity(links.len());
-        for link in &links {
-            if link.carried {
-                segments.push(Vec::new());
-                continue;
-            }
-            let Some(eid) = link.from_external_id.clone() else {
-                segments.push(Vec::new());
-                continue;
-            };
-            let at = link.from_agent_type;
-            let segment = tokio::task::spawn_blocking(move || {
-                build_agent_parser(at)
-                    .get_conversation(&eid)
-                    .map(|d| d.turns)
-                    .unwrap_or_default()
-            })
-            .await
-            .unwrap_or_default();
-            segments.push(segment);
+        let mut segments = Vec::with_capacity(handoffs.len());
+        for row in &handoffs {
+            segments.push(handoff_service::read_segment(conn, row).await.map_err(AppCommandError::from)?);
         }
         turns = handoff::splice_handoffs(&links, segments, turns);
     }
-
-    let mut summary = summary;
-    summary.message_count = turns.len() as u32;
+    summary.message_count = crate::parsers::message_turn_count(&turns);
     // The transcript is the richer source for the session's model. Codex is
     // the concrete case: an ACP-driven row is created before any
     // `turn_context` names a model, so the DB column can stay NULL forever
@@ -1380,6 +1800,7 @@ pub async fn get_folder_conversation_core(
             turns_offset: None,
             turns_total: None,
             assistant_turns_before_offset: None,
+            user_turns_before_offset: None,
             prefix_hash: None,
             uncovered_prefix_max_ts: None,
         },
@@ -1438,6 +1859,21 @@ fn sig_from_turn_blocks(blocks: &[ContentBlock]) -> Option<Vec<UserContentSig>> 
     Some(sig)
 }
 
+/// How many USER turns [`apply_in_flight_message_id`]'s walk will compare
+/// before giving up.
+///
+/// A cost bound, not a correctness one — the ambiguity check inside the walk is
+/// what keeps it from stamping an earlier round's prompt. `sig_from_turn_blocks`
+/// copies each candidate's text and image bytes, and the walk runs on every
+/// detail fetch, so a transcript whose timestamps are all parse instants (see
+/// the walk) must not turn that into a scan of every prompt ever sent.
+///
+/// Counts USER turns only, deliberately. Counting turns would count the length
+/// of the reply, which is unrelated to the hazard and routinely in the
+/// hundreds: a real window holds the prompt and whatever the user sent
+/// mid-turn, so 32 is never reached by a turn with usable timestamps.
+const MAX_IN_FLIGHT_WALK_USER_TURNS: usize = 32;
+
 /// Stamp the persisted in-flight user turn with the broadcast `message_id`.
 ///
 /// A cross-client viewer renders the in-flight prompt from two sources that use
@@ -1447,12 +1883,23 @@ fn sig_from_turn_blocks(blocks: &[ContentBlock]) -> Option<Vec<UserContentSig>> 
 /// frontend's id-dedup collapse the two into one instead of showing the prompt
 /// twice.
 ///
-/// The in-flight prompt is located tail-bounded:
-///   - the trailing user turn (Claude/Codex write the assistant turn only on
-///     completion, so mid-stream the transcript ends exactly at the prompt); or
-///   - the user turn immediately before a *single* trailing assistant turn
-///     (OpenCode and Gemini persist a partial assistant turn mid-stream, so the
-///     transcript tail is `[.., user X, partial assistant Y]`).
+/// The in-flight prompt is located by walking back from the transcript tail
+/// over the turns this turn produced — those persisted at/after `started_at`,
+/// comparing at most [`MAX_IN_FLIGHT_WALK_USER_TURNS`] user turns of them — and
+/// keeping the EARLIEST user turn whose content matches. The tail itself is the
+/// prompt only for Claude/Codex, which write the assistant turn on completion;
+/// OpenCode and Gemini persist a partial reply mid-stream (which a parser may
+/// split), and a message the user sends mid-turn is written after the prompt as
+/// a user turn of its own. Earliest, because the agent writes the prompt before
+/// anything it produces in reply, so a mid-turn message repeating the prompt's
+/// own words cannot take the stamp from it.
+///
+/// That "earliest" only orders the round's own turns, which presumes the walk
+/// stopped at the round's start. It does when the gate below fires. When it
+/// never fires — every turn in hand is at/after `started_at`, which a parser
+/// stamping parse instants makes routine — the walk saw the whole transcript
+/// and earliest means nothing, so a second matching copy leaves it unable to
+/// say which round it is in: it then stamps nothing rather than guess.
 ///
 /// A recency check then disambiguates: the in-flight prompt was persisted by the
 /// agent CLI at/after `started_at` (the agent — a local subprocess sharing this
@@ -1496,14 +1943,39 @@ fn apply_in_flight_message_id(
         return None;
     }
     let started_at = started_at?;
-    let target_idx = match turns[n - 1].role {
-        TurnRole::User => n - 1,
-        TurnRole::Assistant if n >= 2 && matches!(turns[n - 2].role, TurnRole::User) => n - 2,
-        _ => return None,
-    };
-    // Recency gate. `started_at` is recorded when the backend broadcasts the
-    // `UserMessage` event, which happens *before* the agent request is issued
-    // (see `connection.rs`), so the agent — a local subprocess on this machine's
+    let want = sig_from_user_message_blocks(&pending.blocks);
+
+    // Walk back over the turns THIS turn produced and keep the EARLIEST user
+    // turn whose content is the pending prompt's.
+    //
+    // A walk, not the tail. The prompt is the last turn only while the agent
+    // has written nothing else, and what trails it is not bounded to one
+    // assistant turn:
+    //
+    //   * a message the user sends MID-TURN (`/steering`) is written into the
+    //     transcript as a USER turn after the prompt, so the tail becomes that
+    //     message, whose content is not the prompt's;
+    //   * OpenCode and Gemini persist the reply as it goes, and a parser that
+    //     splits it leaves two or more assistant turns behind the prompt.
+    //
+    // Anchoring on the last one or two turns lost the stamp in the middle of
+    // exactly those turns, and every consumer reads a missing stamp as "this
+    // detail is settled, the turn is over": `computeTimelinePrefix` stops
+    // hiding the persisted half of the reply the live stream is re-showing (so
+    // the first half renders twice), the runtime store's `detailIsInFlight`
+    // lets a mid-turn refetch clear `liveMessage` / `localTurns` /
+    // `optimisticTurns`, and `collectInFlightPersistedToolCalls` stops marking
+    // the round's unfinished tool calls, which then paint as completed.
+    //
+    // EARLIEST, not last: the agent writes the prompt before anything it
+    // produces in reply, so within one turn the first copy of those words is
+    // the prompt itself. That is what keeps a mid-turn message repeating the
+    // prompt's own text ("continue" twice) from taking the stamp off it.
+    //
+    // Recency gate, which is both what makes the walk safe and what bounds it.
+    // `started_at` is recorded when the backend broadcasts the `UserMessage`
+    // event, which happens *before* the agent request is issued (see
+    // `connection.rs`), so the agent — a local subprocess on this machine's
     // clock — necessarily persists the in-flight prompt at a wall-clock instant
     // at or after `started_at`. A *prior* identical prompt was persisted during
     // an earlier turn and is therefore strictly older. We allow no backward
@@ -1512,29 +1984,85 @@ fn apply_in_flight_message_id(
     // second), and stamping it would HIDE the genuinely new prompt via the
     // frontend's keep-first user dedup. Erring the other way only ever yields a
     // recoverable visible duplicate, so the strict bound is the safe one.
-    if turns[target_idx].timestamp < started_at {
-        return None;
-    }
-    let want = sig_from_user_message_blocks(&pending.blocks);
-    if sig_from_turn_blocks(&turns[target_idx].blocks) == Some(want) {
-        // Never create a duplicate id. The broadcast id is normally disjoint from
-        // parser `turn-N` ids (and `is_reserved_turn_id` in the manager rejects a
-        // client id of that shape), but defend the invariant here too: if the id
-        // already exists on another turn, stamping would make two turns share an
-        // id and the frontend's id-keyed dedup could hide one. Leave the turn
-        // under its parser id — a recoverable visible duplicate, never a hidden
-        // prompt — and report nothing.
-        let collides = turns
-            .iter()
-            .enumerate()
-            .any(|(i, t)| i != target_idx && t.id == pending.message_id);
-        if collides {
+    //
+    // Turns are in transcript order, so the first one older than the start ends
+    // the search — the walk never reads past the running turn, and an
+    // out-of-order timestamp can only cut it short, which stamps nothing.
+    //
+    // …unless the timestamps are not the agent's at all. Two shipping parsers
+    // fall back to the PARSE INSTANT when a record carries no usable time:
+    // `cline.rs` seeds `last_ts` from `Utc::now()` when the manifest has no
+    // `started_at` and hands it to every message with `ts` missing or 0, and
+    // `antigravity.rs` writes `ts.unwrap_or_else(Utc::now)` per step. A parse
+    // instant is by construction at/after `started_at`, so there the gate never
+    // fires, the "window" is the whole transcript, and "earliest match" could
+    // reach an identical prompt from an earlier round — stamping THAT makes
+    // `visiblePersistedTurns` hide every assistant turn after it.
+    //
+    // `gate_fired` is what distinguishes the two. It is false in exactly two
+    // shapes: the transcript holds nothing older than this turn (a first turn —
+    // there is no earlier round to confuse anything with), or the timestamps are
+    // parse instants (there may be). Both are covered by asking whether the
+    // decision was AMBIGUOUS: one matching user turn in the whole transcript is
+    // the prompt whatever the clocks say, because the text is then unique to it.
+    // Two or more, with nothing proving where this turn began, is a guess — and
+    // guessing wrong here hides turns, so it refuses instead.
+    //
+    // NOT a cap on turns walked. The obvious bound — stop after N turns — counts
+    // the LENGTH OF THE REPLY, which is the one quantity that has nothing to do
+    // with the hazard: every mid-turn-persisting parser emits one assistant turn
+    // per assistant record (`claude.rs`, `opencode.rs`, `gemini.rs` all keep
+    // turns small for virtualization), so a measured Claude round runs to a
+    // median of 44 and a p90 of 317. Any N small enough to bound the hazard
+    // voids the stamp part-way through most ordinary rounds, mid-turn, which is
+    // the exact failure this walk exists to remove.
+    let mut target_idx: Option<usize> = None;
+    let mut matched = 0usize;
+    let mut user_turns_seen = 0usize;
+    let mut gate_fired = false;
+    for i in (0..n).rev() {
+        if turns[i].timestamp < started_at {
+            gate_fired = true;
+            break;
+        }
+        if !matches!(turns[i].role, TurnRole::User) {
+            continue;
+        }
+        // A cost bound, not a correctness one — `sig_from_turn_blocks` copies
+        // each turn's text and image bytes, and this runs on every detail
+        // fetch. Only reachable when the gate never fires (a real window holds
+        // the prompt plus the handful of messages sent mid-turn), and refusing
+        // there is the same safe direction as the ambiguity check below.
+        user_turns_seen += 1;
+        if user_turns_seen > MAX_IN_FLIGHT_WALK_USER_TURNS {
             return None;
         }
-        turns[target_idx].id = pending.message_id.clone();
-        return Some(pending.message_id.clone());
+        if sig_from_turn_blocks(&turns[i].blocks).as_ref() == Some(&want) {
+            matched += 1;
+            target_idx = Some(i);
+        }
     }
-    None
+    if !gate_fired && matched > 1 {
+        return None;
+    }
+    let target_idx = target_idx?;
+
+    // Never create a duplicate id. The broadcast id is normally disjoint from
+    // parser `turn-N` ids (and `is_reserved_turn_id` in the manager rejects a
+    // client id of that shape), but defend the invariant here too: if the id
+    // already exists on another turn, stamping would make two turns share an
+    // id and the frontend's id-keyed dedup could hide one. Leave the turn
+    // under its parser id — a recoverable visible duplicate, never a hidden
+    // prompt — and report nothing.
+    let collides = turns
+        .iter()
+        .enumerate()
+        .any(|(i, t)| i != target_idx && t.id == pending.message_id);
+    if collides {
+        return None;
+    }
+    turns[target_idx].id = pending.message_id.clone();
+    Some(pending.message_id.clone())
 }
 
 /// Resolve the raw `tailTurns` / `fromIndex` request fields into a window
@@ -1571,6 +2099,7 @@ fn apply_turn_window(
     detail.turns_offset = Some(meta.offset);
     detail.turns_total = Some(meta.total);
     detail.assistant_turns_before_offset = Some(meta.assistant_before);
+    detail.user_turns_before_offset = Some(meta.user_before);
     detail.prefix_hash = Some(meta.prefix_hash);
     detail.uncovered_prefix_max_ts = meta.uncovered_prefix_max_ts;
 }
@@ -1686,9 +2215,32 @@ pub async fn get_folder_conversation_turns_core(
         turns_offset: meta.offset,
         turns_total: meta.total,
         assistant_turns_before_offset: meta.assistant_before,
+        user_turns_before_offset: meta.user_before,
         prefix_hash: meta.prefix_hash,
         prefix_hash_before_index: seam.prefix_hash,
         uncovered_prefix_max_ts: meta.uncovered_prefix_max_ts,
+    })
+}
+
+/// The message navigator's outline of the history above a loaded window:
+/// `full[0..min(before_index, total))`, each turn reduced by
+/// [`turn_window::nav_outline_turns`](crate::commands::turn_window::nav_outline_turns)
+/// to what the navigator reads. Same light path as the history page (full
+/// parse + delegation meta, no live correlation or sidebar events), so its
+/// turn ids are the ones a page of the same history carries.
+pub async fn get_folder_conversation_outline_core(
+    conn: &sea_orm::DatabaseConnection,
+    conversation_id: i32,
+    before_index: usize,
+) -> Result<ConversationOutline, AppCommandError> {
+    use crate::commands::turn_window;
+    let (detail, _parsed_title) = get_folder_conversation_core(conn, conversation_id).await?;
+    let turns = detail.turns;
+    let end = before_index.min(turns.len());
+    Ok(ConversationOutline {
+        turns: turn_window::nav_outline_turns(&turns[..end]),
+        turns_total: turns.len(),
+        prefix_hash: turn_window::prefix_fingerprint(&turns[..end]),
     })
 }
 
@@ -1724,6 +2276,16 @@ pub async fn get_folder_conversation_turns(
     limit: usize,
 ) -> Result<ConversationTurnsPage, AppCommandError> {
     get_folder_conversation_turns_core(&db.conn, conversation_id, before_index, limit).await
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn get_folder_conversation_outline(
+    db: tauri::State<'_, AppDatabase>,
+    conversation_id: i32,
+    before_index: usize,
+) -> Result<ConversationOutline, AppCommandError> {
+    get_folder_conversation_outline_core(&db.conn, conversation_id, before_index).await
 }
 
 /// Emit a `conversation://changed` Upsert for `conversation_id` so every
@@ -1970,6 +2532,16 @@ pub async fn create_conversation_core(
     agent_type: AgentType,
     title: Option<String>,
 ) -> Result<i32, AppCommandError> {
+    create_conversation_for_account_core(conn, folder_id, agent_type, title, None).await
+}
+
+pub async fn create_conversation_for_account_core(
+    conn: &sea_orm::DatabaseConnection,
+    folder_id: i32,
+    agent_type: AgentType,
+    title: Option<String>,
+    account_id: Option<String>,
+) -> Result<i32, AppCommandError> {
     let git_branch = if let Some(folder) = folder_service::get_folder_by_id(conn, folder_id)
         .await
         .map_err(AppCommandError::from)?
@@ -1979,7 +2551,7 @@ pub async fn create_conversation_core(
         None
     };
 
-    let model = conversation_service::create(conn, folder_id, agent_type, title, git_branch)
+    let model = conversation_service::create_inner(conn, folder_id, agent_type, title, git_branch, None, conversation::ConversationKind::Regular, account_id)
         .await
         .map_err(AppCommandError::from)?;
     Ok(model.id)
@@ -1993,8 +2565,9 @@ pub async fn create_conversation(
     folder_id: i32,
     agent_type: AgentType,
     title: Option<String>,
+    agent_account_id: Option<String>,
 ) -> Result<i32, AppCommandError> {
-    let id = create_conversation_core(&db.conn, folder_id, agent_type, title).await?;
+    let id = create_conversation_for_account_core(&db.conn, folder_id, agent_type, title, agent_account_id).await?;
     emit_conversation_upsert(&EventEmitter::Tauri(app), &db.conn, id).await;
     Ok(id)
 }
@@ -2197,6 +2770,17 @@ pub async fn create_chat_conversation_core(
     title: Option<String>,
     existing_dir: Option<&str>,
 ) -> Result<CreateChatConversationResult, AppCommandError> {
+    create_chat_conversation_for_account_core(conn, data_dir, agent_type, title, existing_dir, None).await
+}
+
+pub async fn create_chat_conversation_for_account_core(
+    conn: &sea_orm::DatabaseConnection,
+    data_dir: &std::path::Path,
+    agent_type: AgentType,
+    title: Option<String>,
+    existing_dir: Option<&str>,
+    account_id: Option<String>,
+) -> Result<CreateChatConversationResult, AppCommandError> {
     let path = match existing_dir {
         Some(dir) => {
             std::fs::create_dir_all(dir).map_err(AppCommandError::io)?;
@@ -2217,7 +2801,7 @@ pub async fn create_chat_conversation_core(
     // an orphan (active, conversation-less, never reached by the delete path) and
     // pollute the active-folder scope.
     let model =
-        match conversation_service::create_chat(conn, folder.id, agent_type, title, None).await {
+        match conversation_service::create_inner(conn, folder.id, agent_type, title, None, None, conversation::ConversationKind::Chat, account_id).await {
             Ok(model) => model,
             Err(create_err) => {
                 if let Err(cleanup_err) = folder_service::remove_folder(conn, &folder.path).await {
@@ -2245,6 +2829,7 @@ pub async fn create_chat_conversation(
     agent_type: AgentType,
     title: Option<String>,
     existing_dir: Option<String>,
+    agent_account_id: Option<String>,
 ) -> Result<CreateChatConversationResult, AppCommandError> {
     use tauri::Manager;
     let data_dir = app
@@ -2252,12 +2837,13 @@ pub async fn create_chat_conversation(
         .app_data_dir()
         .map(|p| crate::paths::resolve_effective_data_dir(&p))
         .unwrap_or_else(|_| std::path::PathBuf::from("."));
-    let result = create_chat_conversation_core(
+    let result = create_chat_conversation_for_account_core(
         &db.conn,
         &data_dir,
         agent_type,
         title,
         existing_dir.as_deref(),
+        agent_account_id,
     )
     .await?;
     emit_conversation_upsert(&EventEmitter::Tauri(app), &db.conn, result.conversation_id).await;
@@ -2564,6 +3150,7 @@ mod tests {
         let now = chrono::Utc::now();
         DbConversationSummary {
             id,
+            agent_account_id: None,
             folder_id: 1,
             title: None,
             title_locked: false,
@@ -2582,6 +3169,9 @@ mod tests {
             parent_tool_use_id: Some(parent_tool_use_id.into()),
             delegation_call_id: Some("call-1".into()),
             origin_cwd: None,
+            assistant_id: None,
+            assistant_name: None,
+            tag_ids: Vec::new(),
         }
     }
 
@@ -2753,32 +3343,195 @@ mod tests {
     }
 
     #[test]
-    fn does_not_reach_back_past_the_last_two_turns() {
+    fn does_not_reach_back_into_an_earlier_round() {
         // The matching prompt sits buried before another full user/assistant
-        // round; only the trailing user turn or the user-before-trailing-
-        // assistant are eligible, so it is never stamped.
+        // round. The walk is bounded by the recency gate, not by a turn count:
+        // it stops at the first turn older than this turn's start, which is the
+        // completed reply above — so the identical prompt behind it is out of
+        // reach however short the transcript is.
         let mut turns = vec![
             user_text_turn("turn-0", "hello", at(-30)),
             assistant_text_turn("turn-1", "a", at(-29), true),
             user_text_turn("turn-2", "ok", at(1)),
             assistant_text_turn("turn-3", "b", at(2), false),
         ];
-        apply_in_flight_message_id(&mut turns, &pending_text("msg-live", "hello"), Some(turn_started()));
+        let stamped =
+            apply_in_flight_message_id(&mut turns, &pending_text("msg-live", "hello"), Some(turn_started()));
+        assert_eq!(stamped, None, "nothing in the running turn matches");
         assert_eq!(turns[0].id, "turn-0");
         assert_eq!(turns[2].id, "turn-2", "non-matching tail user turn untouched");
     }
 
     #[test]
-    fn does_not_stamp_with_two_trailing_assistant_turns() {
-        // Bounded to a single trailing assistant: a deeper assistant tail means
-        // we can't be sure the user prompt is the in-flight one, so bail.
+    fn stamps_nothing_when_the_clocks_cannot_say_which_continue_this_is() {
+        // `cline.rs` and `antigravity.rs` fall back to the PARSE INSTANT when a
+        // record carries no usable time, and a parse instant is by construction
+        // at or after `started_at` — so for those the recency gate never fires
+        // and NOTHING here says where this turn began. Two rounds of "continue"
+        // are then indistinguishable from one round the user steered with the
+        // same word, and stamping the older one would make
+        // `visiblePersistedTurns` hide every assistant turn after it.
+        let parsed_at = at(1);
+        let mut turns = vec![
+            user_text_turn("turn-0", "continue", parsed_at),
+            assistant_text_turn("turn-1", "done", parsed_at, true),
+            user_text_turn("turn-2", "continue", parsed_at),
+        ];
+        let stamped = apply_in_flight_message_id(
+            &mut turns,
+            &pending_text("msg-live", "continue"),
+            Some(turn_started()),
+        );
+        assert_eq!(stamped, None, "ambiguous and unprovable → stamp nothing");
+        assert_eq!(turns[0].id, "turn-0", "untouched");
+        assert_eq!(turns[2].id, "turn-2", "untouched");
+    }
+
+    #[test]
+    fn stamps_an_unambiguous_match_even_with_no_proof_of_where_the_turn_began() {
+        // Same parse-instant transcript, but the prompt's text occurs once. A
+        // single candidate in the WHOLE transcript cannot be an earlier round's
+        // prompt confused with this one — the text is unique to it — so the
+        // clocks have nothing left to disambiguate and the stamp is safe.
+        //
+        // This is also the ordinary first turn of a conversation, where there is
+        // simply nothing older than `started_at` for the gate to find.
+        let parsed_at = at(1);
+        let mut turns = vec![
+            user_text_turn("turn-0", "run the tests", parsed_at),
+            assistant_text_turn("turn-1", "first half", parsed_at, false),
+            user_text_turn("turn-2", "also lint", parsed_at),
+        ];
+        let stamped = apply_in_flight_message_id(
+            &mut turns,
+            &pending_text("msg-live", "run the tests"),
+            Some(turn_started()),
+        );
+        assert_eq!(stamped.as_deref(), Some("msg-live"));
+        assert_eq!(turns[0].id, "msg-live");
+    }
+
+    #[test]
+    fn a_long_reply_never_costs_the_stamp() {
+        // The bound counts USER turns, not turns. Every mid-turn-persisting
+        // parser emits one assistant turn per assistant record, so a real
+        // Claude round runs to a median of 44 of them and a p90 of 317 — a
+        // bound on turns walked would void the stamp part-way through most
+        // ordinary rounds, mid-turn, which is the failure this walk removes.
+        let mut turns = vec![
+            user_text_turn("old", "earlier", at(-30)),
+            assistant_text_turn("old-a", "done", at(-29), true),
+            user_text_turn("turn-0", "hello", at(1)),
+        ];
+        for i in 0..400 {
+            turns.push(assistant_text_turn(
+                &format!("a-{i}"),
+                "step",
+                at(2),
+                false,
+            ));
+        }
+        let stamped =
+            apply_in_flight_message_id(&mut turns, &pending_text("msg-live", "hello"), Some(turn_started()));
+        assert_eq!(stamped.as_deref(), Some("msg-live"));
+        assert_eq!(turns[2].id, "msg-live");
+    }
+
+    #[test]
+    fn stops_comparing_prompts_once_the_walk_is_plainly_not_in_one_turn() {
+        // The cost bound. Only reachable when the gate never fires, since a real
+        // window holds the prompt plus whatever was sent mid-turn; here every
+        // turn is a user turn with a parse instant, so the walk would otherwise
+        // rebuild a content signature for every prompt ever sent, on every
+        // detail fetch. Refusing is the same safe direction as ambiguity.
+        let parsed_at = at(1);
+        let mut turns = vec![user_text_turn("wanted", "hello", parsed_at)];
+        for i in 0..MAX_IN_FLIGHT_WALK_USER_TURNS {
+            turns.push(user_text_turn(&format!("u-{i}"), "filler", parsed_at));
+        }
+        let stamped =
+            apply_in_flight_message_id(&mut turns, &pending_text("msg-live", "hello"), Some(turn_started()));
+        assert_eq!(stamped, None, "past the cost bound, stamp nothing");
+        assert_eq!(turns[0].id, "wanted", "untouched");
+
+        // One fewer and the same transcript is inside the bound, so it is the
+        // bound that refused above and not some other gate.
+        turns.pop();
+        let stamped =
+            apply_in_flight_message_id(&mut turns, &pending_text("msg-live", "hello"), Some(turn_started()));
+        assert_eq!(stamped.as_deref(), Some("msg-live"));
+    }
+
+    #[test]
+    fn stamps_the_prompt_behind_a_reply_the_parser_split() {
+        // Previously refused: the rule was "the tail, or the user before a
+        // SINGLE trailing assistant", so a deeper assistant tail bailed.
+        //
+        // That bound predates the recency gate and is redundant beside it. A
+        // user turn at or after this turn's start was persisted DURING it, and
+        // its content is the pending prompt's — there is nothing else it could
+        // be, whatever the agent has written since. Refusing here instead cost
+        // the stamp for the whole of every OpenCode/Gemini turn whose partial
+        // reply the parser split in two, which is exactly the shape the
+        // frontend's partial suppression exists for.
         let mut turns = vec![
             user_text_turn("turn-0", "hello", at(1)),
             assistant_text_turn("turn-1", "a", at(2), false),
             assistant_text_turn("turn-2", "b", at(3), false),
         ];
-        apply_in_flight_message_id(&mut turns, &pending_text("msg-live", "hello"), Some(turn_started()));
-        assert_eq!(turns[0].id, "turn-0", "left untouched");
+        let stamped =
+            apply_in_flight_message_id(&mut turns, &pending_text("msg-live", "hello"), Some(turn_started()));
+        assert_eq!(stamped.as_deref(), Some("msg-live"));
+        assert_eq!(turns[0].id, "msg-live");
+    }
+
+    #[test]
+    fn stamps_the_prompt_behind_a_message_sent_mid_turn() {
+        // The steering shape. The agent writes a message the user sent DURING
+        // the turn into its own transcript, so the tail is that message and its
+        // content is not the prompt's. The old tail rule reported nothing here,
+        // in the middle of the turn, and every consumer reads that as "settled".
+        let mut turns = vec![
+            user_text_turn("turn-0", "hello", at(1)),
+            assistant_text_turn("turn-1", "first half", at(2), false),
+            user_text_turn("turn-2", "also check the tests", at(3)),
+        ];
+        let stamped =
+            apply_in_flight_message_id(&mut turns, &pending_text("msg-live", "hello"), Some(turn_started()));
+        assert_eq!(stamped.as_deref(), Some("msg-live"));
+        assert_eq!(turns[0].id, "msg-live", "the prompt keeps the stamp");
+        assert_eq!(turns[2].id, "turn-2", "the mid-turn message is untouched");
+    }
+
+    #[test]
+    fn stamps_the_prompt_not_a_mid_turn_message_repeating_its_words() {
+        // "continue" is the most repeatable thing a person steers with, and the
+        // prompt itself may have been the same word. Both copies match by
+        // content and both are inside the turn, so recency cannot separate
+        // them — ORDER does: the agent writes the prompt before anything it
+        // produces, so the earliest copy in the turn is the prompt. Stamping
+        // the later one would move the anchor past the reply's first half and
+        // leave it beside the live copy of itself.
+        //
+        // An earlier round sits in front, which is what lets the recency gate
+        // fire and prove where this turn begins; without that proof the two
+        // copies are ambiguous and the walk refuses instead (see below).
+        let mut turns = vec![
+            user_text_turn("old", "hello", at(-30)),
+            assistant_text_turn("old-a", "hi", at(-29), true),
+            user_text_turn("turn-0", "continue", at(1)),
+            assistant_text_turn("turn-1", "working", at(2), false),
+            user_text_turn("turn-2", "continue", at(3)),
+        ];
+        let stamped = apply_in_flight_message_id(
+            &mut turns,
+            &pending_text("msg-live", "continue"),
+            Some(turn_started()),
+        );
+        assert_eq!(stamped.as_deref(), Some("msg-live"));
+        assert_eq!(turns[2].id, "msg-live", "the earliest copy is the prompt");
+        assert_eq!(turns[4].id, "turn-2", "the mid-turn repeat is untouched");
+        assert_eq!(turns[0].id, "old", "the earlier round is untouched");
     }
 
     #[test]
@@ -2907,6 +3660,38 @@ mod tests {
             inner.get("error_code").is_none(),
             "completed has no error_code"
         );
+    }
+
+    /// A reloaded card of an assistant delegation draws the assistant from the
+    /// child row: its id, and its name as the task started.
+    #[test]
+    fn inject_delegation_meta_carries_the_assistant_off_the_child_row() {
+        let mut turns = vec![tool_use_turn(
+            Some("tu-a"),
+            "mcp__codeg-mcp__delegate_to_agent",
+        )];
+        let mut child = summary_child(43, "tu-a", "completed");
+        child.assistant_id = Some(3);
+        child.assistant_name = Some("Reviewer".into());
+        inject_delegation_meta(&mut turns, &[child]);
+        let inner = first_block_meta(&turns[0])
+            .and_then(|m| m.get("codeg.delegation").cloned())
+            .expect("meta should be set");
+        assert_eq!(inner["assistant_id"], 3);
+        assert_eq!(inner["assistant_name"], "Reviewer");
+        assert_eq!(inner["agent_type"], "codex");
+
+        // An agent delegation's meta carries no assistant keys at all.
+        let mut turns = vec![tool_use_turn(
+            Some("tu-b"),
+            "mcp__codeg-mcp__delegate_to_agent",
+        )];
+        inject_delegation_meta(&mut turns, &[summary_child(44, "tu-b", "completed")]);
+        let inner = first_block_meta(&turns[0])
+            .and_then(|m| m.get("codeg.delegation").cloned())
+            .unwrap();
+        assert!(inner.get("assistant_id").is_none());
+        assert!(inner.get("assistant_name").is_none());
     }
 
     fn tool_result_turn(tool_use_id: &str, output: &str) -> MessageTurn {
@@ -3236,6 +4021,7 @@ mod tests {
             parent_conversation_id: parent_id,
             parent_tool_use_id: "tu-historical".into(),
             delegation_call_id: "call-historical".into(),
+            assistant: None,
         };
         conversation_service::create_with_delegation(
             &db.conn,
@@ -3734,6 +4520,88 @@ mod tests {
         assert!(all
             .iter()
             .any(|f| f.id == chat_id && f.kind == FolderKind::Chat));
+    }
+
+    /// Save `env_json` for `agent_type` the way the settings page does.
+    async fn save_agent_env_json(
+        db: &crate::db::AppDatabase,
+        agent_type: AgentType,
+        env_json: &str,
+    ) {
+        agent_setting_service::ensure_defaults(
+            &db.conn,
+            &[agent_setting_service::AgentDefaultInput {
+                agent_type,
+                registry_id: agent_type.to_string(),
+                default_sort_order: 0,
+            }],
+        )
+        .await
+        .expect("seed agent setting");
+        agent_setting_service::update(
+            &db.conn,
+            agent_type,
+            agent_setting_service::AgentSettingsUpdate {
+                enabled: true,
+                env_json: Some(env_json.to_string()),
+                model_provider_id: None,
+            },
+        )
+        .await
+        .expect("save env_json");
+    }
+
+    /// #948: `CLAUDE_CONFIG_DIR` set only in the agent's settings moves the
+    /// transcript out of the directory codeg's own environment names. Opening
+    /// the conversation must read it from where the agent wrote it, not come
+    /// back empty ("no messages"). Hermetic: the relocated dir is a tempdir,
+    /// so nothing here reads the real `~/.claude`.
+    #[tokio::test]
+    async fn a_conversation_is_read_from_the_config_dir_its_agent_settings_name() {
+        let config_dir = tempfile::tempdir().expect("tempdir");
+        let project = config_dir.path().join("projects").join("-relocated-proj");
+        std::fs::create_dir_all(&project).expect("project dir");
+        let session_id = "0e5f6a10-9b1c-4c2d-8e3f-4a5b6c7d8e9f";
+        std::fs::write(
+            project.join(format!("{session_id}.jsonl")),
+            [
+                r#"{"type":"user","timestamp":"2026-10-14T01:00:00.000Z","uuid":"u1","cwd":"/tmp/codeg-948-proj","message":{"role":"user","content":[{"type":"text","text":"hello"}]}}"#,
+                r#"{"type":"assistant","timestamp":"2026-10-14T01:00:05.000Z","uuid":"a1","parentUuid":"u1","message":{"id":"msg_01","role":"assistant","model":"claude-opus-5","content":[{"type":"text","text":"hi"}]}}"#,
+            ]
+            .join("\n"),
+        )
+        .expect("write transcript");
+
+        let db = fresh_in_memory_db().await;
+        save_agent_env_json(
+            &db,
+            AgentType::ClaudeCode,
+            &serde_json::json!({ "CLAUDE_CONFIG_DIR": config_dir.path() }).to_string(),
+        )
+        .await;
+        let folder_id = seed_folder(&db, "/tmp/codeg-948-proj").await;
+        let conversation_id = create_conversation_core(
+            &db.conn,
+            folder_id,
+            AgentType::ClaudeCode,
+            Some("relocated".into()),
+        )
+        .await
+        .expect("create conversation");
+        conversation_service::bind_external_id(&db.conn, conversation_id, session_id, &[])
+            .await
+            .expect("bind session");
+
+        let (detail, _) = get_folder_conversation_core(&db.conn, conversation_id)
+            .await
+            .expect("open conversation");
+        assert_eq!(detail.turns.len(), 2, "turns: {:?}", detail.turns);
+
+        // The sub-agent transcript viewer reads by session id the same way.
+        let by_id = get_conversation_core(&db.conn, None, AgentType::ClaudeCode, session_id.to_string())
+            .await
+            .expect("read by session id");
+        assert_eq!(by_id.turns.len(), 2);
     }
 
     #[tokio::test]
@@ -4685,6 +5553,7 @@ mod tests {
                 parent_conversation_id: parent_id,
                 parent_tool_use_id: (*tool_use).into(),
                 delegation_call_id: format!("call-{i}"),
+                assistant: None,
             };
             let child = conversation_service::create_with_delegation(
                 &db.conn,
@@ -5043,6 +5912,7 @@ mod tests {
                 parent_conversation_id: parent_id,
                 parent_tool_use_id: "tu-1".into(),
                 delegation_call_id: "call-1".into(),
+                assistant: None,
             }),
         )
         .await
@@ -5087,6 +5957,7 @@ mod tests {
                 parent_conversation_id: parent_id,
                 parent_tool_use_id: "tu-1".into(),
                 delegation_call_id: "call-1".into(),
+                assistant: None,
             }),
         )
         .await
@@ -5154,9 +6025,107 @@ mod tests {
 
     fn key_of(agent: AgentType, id: &str) -> SelectedSessionKey {
         SelectedSessionKey {
+            agent_account_id: None,
             agent_type: agent,
             external_id: id.into(),
         }
+    }
+
+    #[tokio::test]
+    async fn native_account_import_keeps_identical_session_ids_separate() {
+        use crate::db::service::agent_account_service;
+        use sea_orm::EntityTrait;
+        let db = fresh_in_memory_db().await;
+        let data = tempfile::tempdir().unwrap();
+        let cwd = data.path().display().to_string();
+        let a = agent_account_service::create(&db.conn, data.path(), AgentType::Codex, "A", None).await.unwrap();
+        let b = agent_account_service::create(&db.conn, data.path(), AgentType::Codex, "B", None).await.unwrap();
+        for (account, title) in [(None, "Default"), (Some(a.id.as_str()), "A"), (Some(b.id.as_str()), "B")] {
+            let mut item = scan_summary("same-native-id", AgentType::Codex, Some(&cwd), at(0));
+            item.1.title = Some(title.into());
+            let mut key = key_of(AgentType::Codex, "same-native-id");
+            key.agent_account_id = account.map(String::from);
+            let result = import_selected_from_account_summaries(&db.conn, &EventEmitter::Noop, vec![item], vec![key], account).await.unwrap();
+            assert_eq!(result.imported, 1, "{title}");
+        }
+        let rows = conversation::Entity::find().all(&db.conn).await.unwrap();
+        assert_eq!(rows.len(), 3);
+        for (account, title) in [(None, "Default"), (Some(a.id.as_str()), "A"), (Some(b.id.as_str()), "B")] {
+            let row = rows.iter().find(|row| row.agent_account_id.as_deref() == account).unwrap();
+            assert_eq!(row.title.as_deref(), Some(title));
+            assert_eq!(row.external_id.as_deref(), Some("same-native-id"));
+        }
+    }
+
+    /// A Claude switch copies the transcript into the target account and
+    /// leaves the source's copy behind. That copy is the switched
+    /// conversation, older: the source account's scan must not offer it, and
+    /// importing it must not add a duplicate, whose row would also block
+    /// switching the conversation back.
+    #[tokio::test]
+    async fn a_switched_conversation_is_not_offered_again_from_the_account_it_left() {
+        use crate::db::entities::conversation::ConversationKind;
+        use crate::db::service::agent_account_service;
+        use sea_orm::EntityTrait;
+        let db = fresh_in_memory_db().await;
+        let data = tempfile::tempdir().unwrap();
+        let cwd = data.path().display().to_string();
+        let folder = seed_folder(&db, &cwd).await;
+        let a = agent_account_service::create(&db.conn, data.path(), AgentType::ClaudeCode, "A", None)
+            .await
+            .unwrap();
+        let b = agent_account_service::create(&db.conn, data.path(), AgentType::ClaudeCode, "B", None)
+            .await
+            .unwrap();
+        let row = conversation_service::create_inner(
+            &db.conn,
+            folder,
+            AgentType::ClaudeCode,
+            None,
+            None,
+            None,
+            ConversationKind::Regular,
+            Some(b.id.clone()),
+        )
+        .await
+        .unwrap();
+        conversation_service::bind_external_id(&db.conn, row.id, "switched", &[])
+            .await
+            .unwrap();
+        let transcript = |home: &str, text: &str| {
+            let dir = std::path::Path::new(home).join("projects/project");
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("switched.jsonl"), text).unwrap();
+        };
+        // Switched from A to B, then continued on B.
+        transcript(&a.home_dir, "first\n");
+        transcript(&b.home_dir, "first\nsecond\n");
+        let found = || vec![scan_summary("switched", AgentType::ClaudeCode, Some(&cwd), at(0))];
+        let manager = crate::chat_channel::manager::ChatChannelManager::new();
+        let mut key = key_of(AgentType::ClaudeCode, "switched");
+        key.agent_account_id = Some(a.id.clone());
+
+        let scan = scan_importable_account_summaries(&db.conn, &EventEmitter::Noop, &manager, found(), Some(&a.id))
+            .await
+            .unwrap();
+        assert_eq!(scan.importable_count, 0);
+        assert_eq!(scan.folders[0].sessions[0].status, ScanSessionStatus::Imported);
+        let result = import_selected_from_account_summaries(&db.conn, &EventEmitter::Noop, found(), vec![key.clone()], Some(&a.id))
+            .await
+            .unwrap();
+        assert_eq!((result.imported, result.skipped), (0, 1));
+        assert_eq!(conversation::Entity::find().all(&db.conn).await.unwrap().len(), 1);
+
+        // Continued in A's own CLI, the copy holds turns codeg does not have.
+        transcript(&a.home_dir, "first\nmine\n");
+        let scan = scan_importable_account_summaries(&db.conn, &EventEmitter::Noop, &manager, found(), Some(&a.id))
+            .await
+            .unwrap();
+        assert_eq!(scan.folders[0].sessions[0].status, ScanSessionStatus::New);
+        let result = import_selected_from_account_summaries(&db.conn, &EventEmitter::Noop, found(), vec![key], Some(&a.id))
+            .await
+            .unwrap();
+        assert_eq!(result.imported, 1);
     }
 
     #[test]
@@ -5236,12 +6205,14 @@ mod tests {
                 path: "/tmp/proj/".into(),
                 name: "proj-deleted".into(),
                 deleted: true,
+                parent_id: None,
             },
             ScanFolderRow {
                 id: 2,
                 path: "/tmp/proj".into(),
                 name: "proj".into(),
                 deleted: false,
+                parent_id: None,
             },
         ];
         let summaries = vec![scan_summary(
@@ -5266,6 +6237,7 @@ mod tests {
             path: "/tmp/gone".into(),
             name: "gone".into(),
             deleted: true,
+            parent_id: None,
         }];
         let summaries = vec![scan_summary(
             "s1",
@@ -5336,6 +6308,444 @@ mod tests {
         let convs = conversation::Entity::find().all(&db.conn).await.unwrap();
         assert_eq!(convs.len(), 2);
         assert!(convs.iter().all(|c| c.folder_id == folder_rows[0].id));
+    }
+
+    // A session whose cwd is a linked git worktree of an open repo belongs
+    // UNDER that repo. `parent_id` is exactly the sidebar's test for "worktree
+    // of" versus "one more top-level folder", and the branch-label backfill
+    // selects on it too, so leaving it NULL strands the folder twice. #552.
+    #[tokio::test]
+    async fn batch_import_nests_a_worktree_cwd_under_its_repo() {
+        use sea_orm::EntityTrait;
+        let db = fresh_in_memory_db().await;
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = std::fs::canonicalize(temp.path()).expect("canonicalize root");
+        let (repo, worktree) = crate::git_repo::fixture_linked_worktree(&root);
+        let repo_id = seed_folder(&db, &repo.to_string_lossy()).await;
+
+        let summaries = vec![scan_summary(
+            "s1",
+            AgentType::Codex,
+            Some(&worktree.to_string_lossy()),
+            at(0),
+        )];
+        let result = import_selected_from_summaries(
+            &db.conn,
+            &EventEmitter::Noop,
+            summaries,
+            vec![key_of(AgentType::Codex, "s1")],
+        )
+        .await
+        .expect("batch import");
+
+        assert_eq!(result.imported, 1);
+        let rows = crate::db::entities::folder::Entity::find()
+            .all(&db.conn)
+            .await
+            .unwrap();
+        let worktree_row = rows
+            .iter()
+            .find(|r| r.id != repo_id)
+            .expect("worktree folder row");
+        assert_eq!(
+            worktree_row.parent_id,
+            Some(repo_id),
+            "imported worktree must group under the repo it belongs to"
+        );
+    }
+
+    // Selecting a repo's sessions and one of its worktrees' in the SAME import
+    // is the first-time-import shape, and the repo folder it needs exists by the
+    // time the worktree is written — as long as the two are not imported in
+    // whatever order their paths happen to sort in.
+    #[tokio::test]
+    async fn batch_import_nests_a_worktree_under_a_repo_created_in_the_same_run() {
+        use sea_orm::EntityTrait;
+        let db = fresh_in_memory_db().await;
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = std::fs::canonicalize(temp.path()).expect("canonicalize root");
+        let (repo, worktree) = crate::git_repo::fixture_linked_worktree(&root);
+
+        let summaries = vec![
+            scan_summary("s0", AgentType::Codex, Some(&repo.to_string_lossy()), at(0)),
+            scan_summary(
+                "s1",
+                AgentType::Codex,
+                Some(&worktree.to_string_lossy()),
+                at(1),
+            ),
+        ];
+        import_selected_from_summaries(
+            &db.conn,
+            &EventEmitter::Noop,
+            summaries,
+            vec![
+                key_of(AgentType::Codex, "s0"),
+                key_of(AgentType::Codex, "s1"),
+            ],
+        )
+        .await
+        .expect("batch import");
+
+        let rows = crate::db::entities::folder::Entity::find()
+            .all(&db.conn)
+            .await
+            .unwrap();
+        let repo_row = rows
+            .iter()
+            .find(|r| path_eq_for_matching(&r.path, &repo.to_string_lossy()))
+            .expect("repo folder row");
+        let worktree_row = rows
+            .iter()
+            .find(|r| path_eq_for_matching(&r.path, &worktree.to_string_lossy()))
+            .expect("worktree folder row");
+        assert_eq!(repo_row.parent_id, None);
+        assert_eq!(
+            worktree_row.parent_id,
+            Some(repo_row.id),
+            "a repo created earlier in the same run is still the worktree's repo"
+        );
+    }
+
+    // The repo folder a worktree resolves to can itself be recorded as somebody
+    // else's worktree child (`open_worktree_folder_core` writes that whenever the
+    // branch switcher adopts an unregistered checkout). Hanging off it directly
+    // would build a two-level chain, and the sidebar's merge is single-level: the
+    // grandchild's conversations would bucket under a folder that is itself
+    // merged away, and render nowhere. Flatten, exactly as the worktree open does.
+    #[tokio::test]
+    async fn batch_import_flattens_onto_the_repos_own_root() {
+        use sea_orm::EntityTrait;
+        let db = fresh_in_memory_db().await;
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = std::fs::canonicalize(temp.path()).expect("canonicalize root");
+        let (repo, worktree) = crate::git_repo::fixture_linked_worktree(&root);
+        let outer_id = seed_folder(&db, "/tmp/outer-root").await;
+        let repo_id = folder_service::add_folder_with_parent(
+            &db.conn,
+            &repo.to_string_lossy(),
+            Some(outer_id),
+        )
+        .await
+        .expect("seed repo folder")
+        .id;
+
+        let summaries = vec![scan_summary(
+            "s1",
+            AgentType::Codex,
+            Some(&worktree.to_string_lossy()),
+            at(0),
+        )];
+        import_selected_from_summaries(
+            &db.conn,
+            &EventEmitter::Noop,
+            summaries,
+            vec![key_of(AgentType::Codex, "s1")],
+        )
+        .await
+        .expect("batch import");
+
+        let rows = crate::db::entities::folder::Entity::find()
+            .all(&db.conn)
+            .await
+            .unwrap();
+        let worktree_row = rows
+            .iter()
+            .find(|r| r.id != outer_id && r.id != repo_id)
+            .expect("worktree folder row");
+        assert_eq!(worktree_row.parent_id, Some(outer_id));
+    }
+
+    // Before imported worktrees were grouped, one could exist as a top-level
+    // folder while its main working tree was still unregistered. Navigating
+    // from that worktree to a branch checked out in the main tree then recorded
+    // the main-tree row under the worktree. Flattening through that row points
+    // straight back at the import target's own id; refuse it or the sidebar
+    // filters the self-parented folder out completely.
+    #[tokio::test]
+    async fn batch_import_refuses_a_parent_that_flattens_to_the_target() {
+        use sea_orm::EntityTrait;
+        let db = fresh_in_memory_db().await;
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = std::fs::canonicalize(temp.path()).expect("canonicalize root");
+        let (repo, worktree) = crate::git_repo::fixture_linked_worktree(&root);
+        let worktree_id = seed_folder(&db, &worktree.to_string_lossy()).await;
+        let repo_id = folder_service::add_folder_with_parent(
+            &db.conn,
+            &repo.to_string_lossy(),
+            Some(worktree_id),
+        )
+        .await
+        .expect("seed inverted main-tree folder")
+        .id;
+
+        let summaries = vec![scan_summary(
+            "s1",
+            AgentType::Codex,
+            Some(&worktree.to_string_lossy()),
+            at(0),
+        )];
+        let result = import_selected_from_summaries(
+            &db.conn,
+            &EventEmitter::Noop,
+            summaries,
+            vec![key_of(AgentType::Codex, "s1")],
+        )
+        .await
+        .expect("batch import");
+
+        assert_eq!(result.imported, 1);
+        let worktree_row = crate::db::entities::folder::Entity::find_by_id(worktree_id)
+            .one(&db.conn)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(worktree_row.parent_id, None);
+        let repo_row = crate::db::entities::folder::Entity::find_by_id(repo_id)
+            .one(&db.conn)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(repo_row.parent_id, Some(worktree_id));
+    }
+
+    // Historical top-level worktrees can also leave a longer inverted chain.
+    // If the main-tree row points at a folder whose own parent is the import
+    // target, using that one-hop "root" would create a two-node cycle. Only an
+    // actual live top-level row is safe to write as a new parent.
+    #[tokio::test]
+    async fn batch_import_refuses_a_flattened_parent_that_is_itself_a_child() {
+        use sea_orm::EntityTrait;
+        let db = fresh_in_memory_db().await;
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = std::fs::canonicalize(temp.path()).expect("canonicalize root");
+        let (repo, worktree) = crate::git_repo::fixture_linked_worktree(&root);
+        let worktree_id = seed_folder(&db, &worktree.to_string_lossy()).await;
+        let middle_id = folder_service::add_folder_with_parent(
+            &db.conn,
+            &root.join("middle").to_string_lossy(),
+            Some(worktree_id),
+        )
+        .await
+        .expect("seed middle folder")
+        .id;
+        let repo_id = folder_service::add_folder_with_parent(
+            &db.conn,
+            &repo.to_string_lossy(),
+            Some(middle_id),
+        )
+        .await
+        .expect("seed chained main-tree folder")
+        .id;
+
+        let summaries = vec![scan_summary(
+            "s1",
+            AgentType::Codex,
+            Some(&worktree.to_string_lossy()),
+            at(0),
+        )];
+        import_selected_from_summaries(
+            &db.conn,
+            &EventEmitter::Noop,
+            summaries,
+            vec![key_of(AgentType::Codex, "s1")],
+        )
+        .await
+        .expect("batch import");
+
+        let worktree_row = crate::db::entities::folder::Entity::find_by_id(worktree_id)
+            .one(&db.conn)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(worktree_row.parent_id, None);
+        let middle_row = crate::db::entities::folder::Entity::find_by_id(middle_id)
+            .one(&db.conn)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(middle_row.parent_id, Some(worktree_id));
+        let repo_row = crate::db::entities::folder::Entity::find_by_id(repo_id)
+            .one(&db.conn)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(repo_row.parent_id, Some(middle_id));
+    }
+
+    // A worktree imported before grouping existed may already be acting as the
+    // root for worktrees created from it. Moving that row under the real repo
+    // without moving its children would create a two-level chain and hide the
+    // children's conversations in the single-level sidebar merge.
+    #[tokio::test]
+    async fn batch_import_does_not_reparent_a_folder_that_already_has_children() {
+        use sea_orm::EntityTrait;
+        let db = fresh_in_memory_db().await;
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = std::fs::canonicalize(temp.path()).expect("canonicalize root");
+        let (repo, worktree) = crate::git_repo::fixture_linked_worktree(&root);
+        let repo_id = seed_folder(&db, &repo.to_string_lossy()).await;
+        let worktree_id = seed_folder(&db, &worktree.to_string_lossy()).await;
+        let child_id = folder_service::add_folder_with_parent(
+            &db.conn,
+            &root.join("child").to_string_lossy(),
+            Some(worktree_id),
+        )
+        .await
+        .expect("seed existing child")
+        .id;
+
+        let summaries = vec![scan_summary(
+            "s1",
+            AgentType::Codex,
+            Some(&worktree.to_string_lossy()),
+            at(0),
+        )];
+        import_selected_from_summaries(
+            &db.conn,
+            &EventEmitter::Noop,
+            summaries,
+            vec![key_of(AgentType::Codex, "s1")],
+        )
+        .await
+        .expect("batch import");
+
+        let worktree_row = crate::db::entities::folder::Entity::find_by_id(worktree_id)
+            .one(&db.conn)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(worktree_row.parent_id, None);
+        let child_row = crate::db::entities::folder::Entity::find_by_id(child_id)
+            .one(&db.conn)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(child_row.parent_id, Some(worktree_id));
+        let repo_row = crate::db::entities::folder::Entity::find_by_id(repo_id)
+            .one(&db.conn)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(repo_row.parent_id, None);
+    }
+
+    // Grouping under a repo codeg has never opened would invent a workspace row
+    // the user did not ask for, so an unknown repo leaves the folder top-level.
+    #[tokio::test]
+    async fn batch_import_leaves_a_worktree_top_level_when_its_repo_is_unopened() {
+        use sea_orm::EntityTrait;
+        let db = fresh_in_memory_db().await;
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = std::fs::canonicalize(temp.path()).expect("canonicalize root");
+        let (_repo, worktree) = crate::git_repo::fixture_linked_worktree(&root);
+
+        let summaries = vec![scan_summary(
+            "s1",
+            AgentType::Codex,
+            Some(&worktree.to_string_lossy()),
+            at(0),
+        )];
+        import_selected_from_summaries(
+            &db.conn,
+            &EventEmitter::Noop,
+            summaries,
+            vec![key_of(AgentType::Codex, "s1")],
+        )
+        .await
+        .expect("batch import");
+
+        let rows = crate::db::entities::folder::Entity::find()
+            .all(&db.conn)
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].parent_id, None);
+    }
+
+    // A soft-deleted repo renders nowhere, so a child of it would render
+    // nowhere either. Top-level is the better of the two.
+    #[tokio::test]
+    async fn batch_import_leaves_a_worktree_top_level_when_its_repo_is_deleted() {
+        use sea_orm::{ActiveModelTrait, EntityTrait, IntoActiveModel, Set};
+        let db = fresh_in_memory_db().await;
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = std::fs::canonicalize(temp.path()).expect("canonicalize root");
+        let (repo, worktree) = crate::git_repo::fixture_linked_worktree(&root);
+        let repo_id = seed_folder(&db, &repo.to_string_lossy()).await;
+
+        let row = crate::db::entities::folder::Entity::find_by_id(repo_id)
+            .one(&db.conn)
+            .await
+            .unwrap()
+            .unwrap();
+        let mut active = row.into_active_model();
+        active.deleted_at = Set(Some(chrono::Utc::now()));
+        active.is_open = Set(false);
+        active.update(&db.conn).await.unwrap();
+
+        let summaries = vec![scan_summary(
+            "s1",
+            AgentType::Codex,
+            Some(&worktree.to_string_lossy()),
+            at(0),
+        )];
+        import_selected_from_summaries(
+            &db.conn,
+            &EventEmitter::Noop,
+            summaries,
+            vec![key_of(AgentType::Codex, "s1")],
+        )
+        .await
+        .expect("batch import");
+
+        let rows = crate::db::entities::folder::Entity::find()
+            .all(&db.conn)
+            .await
+            .unwrap();
+        let worktree_row = rows
+            .iter()
+            .find(|r| r.id != repo_id)
+            .expect("worktree folder row");
+        assert_eq!(worktree_row.parent_id, None);
+    }
+
+    // The fallback stays on `add_folder`'s Preserve semantics, so re-importing
+    // into a folder a worktree open already parented cannot demote it, not even
+    // when the directory is gone from disk and resolves to nothing.
+    #[tokio::test]
+    async fn batch_import_preserves_a_recorded_worktree_parent() {
+        use sea_orm::EntityTrait;
+        let db = fresh_in_memory_db().await;
+        let repo_id = seed_folder(&db, "/tmp/proj-repo").await;
+        folder_service::add_folder_with_parent(&db.conn, "/tmp/proj-wt", Some(repo_id))
+            .await
+            .expect("seed worktree folder");
+
+        let summaries = vec![scan_summary(
+            "s1",
+            AgentType::Codex,
+            Some("/tmp/proj-wt"),
+            at(0),
+        )];
+        import_selected_from_summaries(
+            &db.conn,
+            &EventEmitter::Noop,
+            summaries,
+            vec![key_of(AgentType::Codex, "s1")],
+        )
+        .await
+        .expect("batch import");
+
+        let rows = crate::db::entities::folder::Entity::find()
+            .all(&db.conn)
+            .await
+            .unwrap();
+        let worktree_row = rows
+            .iter()
+            .find(|r| r.path == "/tmp/proj-wt")
+            .expect("worktree folder row");
+        assert_eq!(worktree_row.parent_id, Some(repo_id));
     }
 
     #[tokio::test]
@@ -5760,6 +7170,7 @@ mod tests {
     fn windowless_detail(turns: Vec<MessageTurn>) -> DbConversationDetail {
         DbConversationDetail {
             summary: DbConversationSummary {
+                agent_account_id: None,
                 id: 1,
                 folder_id: 1,
                 title: None,
@@ -5779,6 +7190,9 @@ mod tests {
                 parent_tool_use_id: None,
                 delegation_call_id: None,
                 origin_cwd: None,
+                assistant_id: None,
+                assistant_name: None,
+                tag_ids: Vec::new(),
             },
             turns,
             session_stats: None,
@@ -5787,6 +7201,7 @@ mod tests {
             turns_offset: None,
             turns_total: None,
             assistant_turns_before_offset: None,
+            user_turns_before_offset: None,
             prefix_hash: None,
             uncovered_prefix_max_ts: None,
         }
@@ -5822,6 +7237,7 @@ mod tests {
         assert_eq!(detail.turns_offset, Some(2));
         assert_eq!(detail.turns_total, Some(4));
         assert_eq!(detail.assistant_turns_before_offset, Some(1));
+        assert_eq!(detail.user_turns_before_offset, Some(1));
         assert_eq!(
             detail.turns.iter().map(|t| t.id.as_str()).collect::<Vec<_>>(),
             vec!["turn-2", "turn-3"]
@@ -5897,6 +7313,7 @@ mod tests {
             page.prefix_hash, page.prefix_hash_before_index,
             "empty transcript: both fingerprints are the seed"
         );
+        assert_eq!(page.user_turns_before_offset, 0);
 
         // Seam-proof shape on a synthetic list: the page [start..before) must
         // report H(0..start) as its own fingerprint and H(0..before) as the
@@ -5911,6 +7328,28 @@ mod tests {
         assert_eq!(
             seam.prefix_hash,
             crate::commands::turn_window::prefix_fingerprint(&turns[..2])
+        );
+    }
+
+    #[tokio::test]
+    async fn outline_core_cuts_the_prefix_at_before_index() {
+        // A conversation without an external_id parses to zero turns: the
+        // outline is empty, `before_index` clamps to the total, and the
+        // fingerprint is the seed — the same value a windowed detail of this
+        // transcript reports as its prefix hash.
+        let db = fresh_in_memory_db().await;
+        let folder_id = seed_folder(&db, "/tmp/outline").await;
+        let conv_id = create_conversation_core(&db.conn, folder_id, AgentType::ClaudeCode, None)
+            .await
+            .expect("create conversation");
+        let outline = get_folder_conversation_outline_core(&db.conn, conv_id, 10)
+            .await
+            .expect("outline fetch");
+        assert!(outline.turns.is_empty());
+        assert_eq!(outline.turns_total, 0);
+        assert_eq!(
+            outline.prefix_hash,
+            crate::commands::turn_window::prefix_fingerprint(&[])
         );
     }
 }

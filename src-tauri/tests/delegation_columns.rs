@@ -20,6 +20,7 @@ async fn delegation_columns_round_trip() {
     let now = chrono::Utc::now();
     let active = conversation::ActiveModel {
         id: NotSet,
+        agent_account_id: Set(None),
         folder_id: Set(folder_id),
         title: Set(Some("delegation child".to_string())),
         title_locked: Set(false),
@@ -38,6 +39,8 @@ async fn delegation_columns_round_trip() {
         deleted_at: Set(None),
         pinned_at: Set(None),
         origin_cwd: Set(None),
+        assistant_id: Set(None),
+        assistant_snapshot: Set(None),
     };
     let inserted = active.insert(&db.conn).await.expect("insert");
     let id = inserted.id;
