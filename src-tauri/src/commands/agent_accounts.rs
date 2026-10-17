@@ -4,7 +4,7 @@ use std::path::Path;
 #[cfg(feature = "tauri-runtime")]
 use tauri::{Manager, State};
 
-use crate::acp::{agent_accounts, error::AcpError};
+use crate::acp::{account_auth, agent_accounts, error::AcpError, manager::ConnectionManager};
 use crate::db::{entities::agent_account, service::agent_account_service as service, AppDatabase};
 use crate::models::AgentType;
 use crate::web::event_bridge::EventEmitter;
@@ -91,6 +91,138 @@ pub async fn login_core(
     })
 }
 
+async fn resolved_account(
+    db: &AppDatabase,
+    id: &str,
+) -> Result<(AgentType, agent_account::Model), AcpError> {
+    let account = service::get(&db.conn, id)
+        .await
+        .map_err(|e| AcpError::protocol(e.to_string()))?;
+    let agent = AgentType::from_wire(&account.agent_type)
+        .ok_or_else(|| AcpError::protocol("Unknown agent account"))?;
+    let account = service::resolve(&db.conn, agent, id)
+        .await
+        .map_err(|e| AcpError::protocol(e.to_string()))?;
+    if let Some(reason) = agent_accounts::unsupported_reason(agent) {
+        return Err(AcpError::protocol(reason));
+    }
+    Ok((agent, account))
+}
+
+fn check_account_write_paths(
+    agent: AgentType,
+    account: &agent_account::Model,
+) -> Result<(), AcpError> {
+    let home = Path::new(&account.home_dir);
+    let canonical = home
+        .canonicalize()
+        .map_err(|_| AcpError::protocol("Restore the account folder before changing sign-in."))?;
+    if !crate::parsers::path_eq_for_matching(&canonical.to_string_lossy(), &home.to_string_lossy())
+    {
+        return Err(AcpError::protocol(
+            "The account folder has moved. Restore it before changing sign-in.",
+        ));
+    }
+    account_auth::check_paths(agent, Path::new(&account.home_dir))?;
+    Ok(())
+}
+
+async fn require_closed(manager: &ConnectionManager, id: &str) -> Result<(), AcpError> {
+    if manager.account_has_running_process(id).await {
+        return Err(AcpError::protocol(
+            "Close this account's chats and wait for the agent to stop before changing sign-in.",
+        ));
+    }
+    Ok(())
+}
+
+pub async fn login_method_core(
+    db: &AppDatabase,
+    manager: &ConnectionManager,
+    id: &str,
+    method: Option<account_auth::AccountAuthMethod>,
+    emitter: &EventEmitter,
+) -> Result<crate::commands::custom_agents::ExtraSlotLoginResult, AcpError> {
+    let (agent, account) = resolved_account(db, id).await?;
+    if let Some(method) = method {
+        if !account_auth::methods(agent).contains(&method)
+            || method == account_auth::AccountAuthMethod::ApiKey
+        {
+            return Err(AcpError::protocol(
+                "Choose one of this agent's supported sign-in methods.",
+            ));
+        }
+    }
+    if agent == AgentType::ClaudeCode && method == Some(account_auth::AccountAuthMethod::SignIn) {
+        let _guard = manager.lock_out_new_connections().await;
+        require_closed(manager, id).await?;
+        check_account_write_paths(agent, &account)?;
+        account_auth::set_claude_key(Path::new(&account.home_dir), None)?;
+        account_auth::changed();
+        crate::commands::acp::emit_acp_agents_updated(emitter, "account_auth_updated", Some(agent));
+    }
+    login_core(db, id).await
+}
+
+pub async fn set_api_key_core(
+    db: &AppDatabase,
+    manager: &ConnectionManager,
+    data_dir: &Path,
+    id: &str,
+    key: &str,
+    emitter: &EventEmitter,
+) -> Result<(), AcpError> {
+    account_auth::validate_key(key)?;
+    let _guard = manager.lock_out_new_connections().await;
+    let (agent, account) = resolved_account(db, id).await?;
+    if !account_auth::methods(agent).contains(&account_auth::AccountAuthMethod::ApiKey) {
+        return Err(AcpError::protocol(
+            "Use this agent's own setup to configure its sign-in.",
+        ));
+    }
+    require_closed(manager, id).await?;
+    check_account_write_paths(agent, &account)?;
+    let home = Path::new(&account.home_dir);
+    match agent {
+        AgentType::ClaudeCode => account_auth::set_claude_key(home, Some(key))?,
+        AgentType::Codex => {
+            let executable = login_executable(agent).await.ok_or_else(|| {
+                AcpError::protocol("Install Codex in Settings > Agents before adding its API key.")
+            })?;
+            let env = account_auth::runtime_env(db, &account, data_dir).await?;
+            account_auth::save_codex_key(&executable, home, &env, key).await?;
+        }
+        _ => unreachable!("supported API-key methods checked above"),
+    }
+    account_auth::changed();
+    crate::commands::acp::emit_acp_agents_updated(emitter, "account_auth_updated", Some(agent));
+    Ok(())
+}
+
+pub async fn check_auth_core(
+    db: &AppDatabase,
+    data_dir: &Path,
+    id: &str,
+    emitter: &EventEmitter,
+) -> Result<account_auth::AccountAuthStatus, AcpError> {
+    let (agent, account) = resolved_account(db, id).await?;
+    if !matches!(agent, AgentType::ClaudeCode | AgentType::Codex) {
+        return Ok(account_auth::AccountAuthStatus {
+            state: account_auth::AuthState::Unavailable,
+            method: None,
+        });
+    }
+    let executable = login_executable(agent).await.ok_or_else(|| {
+        AcpError::protocol("Install the agent in Settings > Agents before checking sign-in.")
+    })?;
+    let env = account_auth::runtime_env(db, &account, data_dir).await?;
+    let status =
+        account_auth::check(agent, &executable, Path::new(&account.home_dir), &env).await?;
+    account_auth::changed();
+    crate::commands::acp::emit_acp_agents_updated(emitter, "account_auth_checked", Some(agent));
+    Ok(status)
+}
+
 /// The official sign-in command for `agent`, run with `env` pointing it at an
 /// isolated home: a native account's, or a custom agent's extra slot. Shared
 /// so the two cannot drift apart.
@@ -110,11 +242,22 @@ pub(crate) async fn isolated_login_command(
         .login
         .first()
         .ok_or_else(|| AcpError::protocol("Use browser sign-in for this account"))?;
+    let executable = login_executable(agent)
+        .await
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|| (*cli).into());
+    let mut argv = vec![executable.as_str()];
+    argv.extend_from_slice(&spec.login[1..]);
+    crate::acp::family_isolator::shell_command_with_env(&env, &argv).map_err(AcpError::protocol)
+}
+
+pub(crate) async fn login_executable(agent: AgentType) -> Option<std::path::PathBuf> {
+    let cli = *agent_accounts::layout(agent)?.login.first()?;
     // Managed binaries and npm prefixes need not be on a terminal's PATH.
     // Resolve the vendor CLI, never the adapter's ACP entry point.
     use crate::acp::{binary_cache, registry};
     let meta = registry::get_agent_meta(agent);
-    let binary = if let registry::AgentDistribution::Binary { cmd, .. } = &meta.distribution {
+    if let registry::AgentDistribution::Binary { cmd, .. } = &meta.distribution {
         binary_cache::find_best_cached_binary_for_agent(agent, cmd)
             .ok()
             .flatten()
@@ -124,13 +267,7 @@ pub(crate) async fn isolated_login_command(
         crate::commands::acp::resolve_vendor_cli(cli, relation.extra_dirs).await
     } else {
         crate::commands::acp::resolve_npx_command(cli).await
-    };
-    let executable = binary
-        .map(|p| p.to_string_lossy().into_owned())
-        .unwrap_or_else(|| (*cli).into());
-    let mut argv = vec![executable.as_str()];
-    argv.extend_from_slice(&spec.login[1..]);
-    crate::acp::family_isolator::shell_command_with_env(&env, &argv).map_err(AcpError::protocol)
+    }
 }
 
 #[cfg(feature = "tauri-runtime")]
@@ -192,9 +329,19 @@ pub async fn acp_remove_agent_account(
 #[tauri::command]
 pub async fn acp_login_agent_account(
     account_id: String,
+    method: Option<account_auth::AccountAuthMethod>,
     db: State<'_, AppDatabase>,
+    manager: State<'_, ConnectionManager>,
+    app: tauri::AppHandle,
 ) -> Result<crate::commands::custom_agents::ExtraSlotLoginResult, AcpError> {
-    let result = login_core(&db, &account_id).await?;
+    let result = login_method_core(
+        &db,
+        &manager,
+        &account_id,
+        method,
+        &EventEmitter::Tauri(app),
+    )
+    .await?;
     #[cfg(not(test))]
     let result = {
         let mut result = result;
@@ -204,4 +351,44 @@ pub async fn acp_login_agent_account(
         result
     };
     Ok(result)
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[tauri::command]
+pub async fn acp_set_agent_account_api_key(
+    account_id: String,
+    api_key: String,
+    db: State<'_, AppDatabase>,
+    manager: State<'_, ConnectionManager>,
+    app: tauri::AppHandle,
+) -> Result<(), AcpError> {
+    let data = app
+        .path()
+        .app_data_dir()
+        .map(|p| crate::paths::resolve_effective_data_dir(&p))
+        .map_err(|_| AcpError::protocol("Could not open account settings."))?;
+    set_api_key_core(
+        &db,
+        &manager,
+        &data,
+        &account_id,
+        &api_key,
+        &EventEmitter::Tauri(app),
+    )
+    .await
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[tauri::command]
+pub async fn acp_check_agent_account_auth(
+    account_id: String,
+    db: State<'_, AppDatabase>,
+    app: tauri::AppHandle,
+) -> Result<account_auth::AccountAuthStatus, AcpError> {
+    let data = app
+        .path()
+        .app_data_dir()
+        .map(|p| crate::paths::resolve_effective_data_dir(&p))
+        .map_err(|_| AcpError::protocol("Could not open account settings."))?;
+    check_auth_core(&db, &data, &account_id, &EventEmitter::Tauri(app)).await
 }

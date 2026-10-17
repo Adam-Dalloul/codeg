@@ -374,6 +374,7 @@ async fn wait_for_session_started(
 /// A connection that has left the map while its process may still be running.
 pub(crate) struct DrainingChild {
     agent: AgentType,
+    account_id: Option<String>,
     /// The connection's live pid cell. `on_spawn` publishes the pid and
     /// `on_exit` zeroes it on a real reap.
     pid: Arc<std::sync::atomic::AtomicU32>,
@@ -403,6 +404,7 @@ impl DrainingChild {
         });
         Self {
             agent: conn.agent_type,
+            account_id: state.agent_account_id.clone(),
             pid: conn.child_pid.clone(),
             parked_at: std::time::Instant::now(),
             session_identity,
@@ -3404,6 +3406,23 @@ impl ConnectionManager {
     pub async fn list_connections(&self) -> Vec<ConnectionInfo> {
         let connections = self.connections.lock().await;
         connections.values().map(|c| c.info()).collect()
+    }
+
+    /// Called under the connection barrier before replacing account credentials.
+    /// A removed connection can still own a process that is writing its login.
+    pub async fn account_has_running_process(&self, account_id: &str) -> bool {
+        let connections = self.connections.lock().await;
+        for connection in connections.values() {
+            if connection.state.read().await.agent_account_id.as_deref() == Some(account_id) {
+                return true;
+            }
+        }
+        let mut draining = self.draining.lock().await;
+        prune_reaped(&mut draining);
+        draining.iter().any(|child| {
+            child.account_id.as_deref() == Some(account_id)
+                && (child.pid.load(std::sync::atomic::Ordering::SeqCst) != 0 || child.spawn_pending)
+        })
     }
 
     /// Raw per-connection rows for the pet panel's active-session list.
@@ -8465,6 +8484,28 @@ mod tests {
         assert!(mgr.ensure_account_session_available(AgentType::Codex, Some("readded-account"), Some(&storage), Some("another-session")).await.is_ok());
         state.write().await.status = ConnectionStatus::Disconnected;
         assert!(mgr.ensure_account_session_available(AgentType::Codex, Some("readded-account"), Some(&storage), Some("shared-session")).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn account_auth_changes_wait_for_active_and_draining_children() {
+        let mgr = ConnectionManager::new();
+        insert_fake_connection(&mgr, "auth-guard", AgentType::ClaudeCode, None, EventEmitter::Noop).await;
+        mgr.get_state("auth-guard").await.unwrap().write().await.agent_account_id = Some("work".into());
+        assert!(mgr.account_has_running_process("work").await);
+        assert!(!mgr.account_has_running_process("personal").await);
+        let pid = {
+            let mut connections = mgr.connections.lock().await;
+            let connection = connections.remove("auth-guard").unwrap();
+            let state = connection.state.read().await;
+            // No real process is created or signalled by this test.
+            connection.child_pid.store(12345, std::sync::atomic::Ordering::SeqCst);
+            park_ended_child(&mut *mgr.draining.lock().await, &connection, &state);
+            connection.child_pid.clone()
+        };
+        assert!(mgr.account_has_running_process("work").await);
+        assert!(!mgr.account_has_running_process("personal").await);
+        pid.store(0, std::sync::atomic::Ordering::SeqCst);
+        assert!(!mgr.account_has_running_process("work").await);
     }
 
     #[tokio::test]

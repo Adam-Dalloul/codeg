@@ -32,6 +32,20 @@ pub struct IdParams {
     account_id: String,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LoginParams {
+    account_id: String,
+    method: Option<crate::acp::account_auth::AccountAuthMethod>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ApiKeyParams {
+    account_id: String,
+    api_key: String,
+}
+
 fn error(e: crate::acp::error::AcpError) -> AppCommandError {
     AppCommandError::task_execution_failed(e.to_string())
 }
@@ -97,12 +111,26 @@ pub async fn remove(
 
 pub async fn login(
     Extension(state): Extension<Arc<AppState>>,
-    Json(p): Json<IdParams>,
+    Json(p): Json<LoginParams>,
 ) -> Result<Json<crate::commands::custom_agents::ExtraSlotLoginResult>, AppCommandError> {
-    commands::login_core(&state.db, &p.account_id)
+    commands::login_method_core(&state.db, &state.connection_manager, &p.account_id, p.method, &state.emitter)
         .await
         .map(Json)
         .map_err(error)
+}
+
+pub async fn set_api_key(
+    Extension(state): Extension<Arc<AppState>>, Json(p): Json<ApiKeyParams>,
+) -> Result<Json<()>, AppCommandError> {
+    commands::set_api_key_core(&state.db, &state.connection_manager, &state.data_dir, &p.account_id, &p.api_key, &state.emitter)
+        .await.map(Json).map_err(error)
+}
+
+pub async fn check_auth(
+    Extension(state): Extension<Arc<AppState>>, Json(p): Json<IdParams>,
+) -> Result<Json<crate::acp::account_auth::AccountAuthStatus>, AppCommandError> {
+    commands::check_auth_core(&state.db, &state.data_dir, &p.account_id, &state.emitter)
+        .await.map(Json).map_err(error)
 }
 
 #[cfg(test)]
@@ -110,6 +138,46 @@ mod tests {
     use super::*;
     use axum_test::TestServer;
     use serde_json::{json, Value};
+
+    #[tokio::test]
+    async fn native_account_http_auth_is_scoped_private_and_refuses_live_or_removed_accounts() {
+        let data = tempfile::tempdir().unwrap();
+        let static_dir = tempfile::tempdir().unwrap();
+        let db = crate::db::test_helpers::fresh_in_memory_db().await;
+        let state = Arc::new(AppState::new_for_test(db, data.path().into()));
+        let server = TestServer::new(crate::web::router::build_router(state.clone(), "account-test-token".into(), static_dir.path().into(), Arc::new(crate::web::shutdown::ShutdownSignal::new()))).unwrap();
+        for endpoint in ["acp_set_agent_account_api_key", "acp_check_agent_account_auth"] {
+            server.post(&format!("/api/{endpoint}")).json(&json!({"accountId":"missing", "apiKey":"fixture-key"})).await.assert_status_unauthorized();
+        }
+        let mut accounts = Vec::new();
+        for name in ["A", "B"] {
+            accounts.push(crate::db::service::agent_account_service::create(&state.db.conn, data.path(), AgentType::ClaudeCode, name, None).await.unwrap());
+        }
+        let a = &accounts[0];
+        let b = &accounts[1];
+        std::fs::write(std::path::Path::new(&b.home_dir).join("settings.json"), "{}").unwrap();
+        let response = server.post("/api/acp_set_agent_account_api_key").add_header("authorization", "Bearer account-test-token").json(&json!({"accountId":a.id, "apiKey":"fixture-key"})).await;
+        response.assert_status_ok();
+        assert_eq!(response.json::<Value>(), Value::Null);
+        let a_path = std::path::Path::new(&a.home_dir).join("settings.json");
+        let saved = std::fs::read(&a_path).unwrap();
+        assert_eq!(serde_json::from_slice::<Value>(&saved).unwrap()["env"]["ANTHROPIC_API_KEY"], "fixture-key");
+        assert_eq!(std::fs::read_to_string(std::path::Path::new(&b.home_dir).join("settings.json")).unwrap(), "{}");
+        state.connection_manager.insert_test_connection("auth-http", AgentType::ClaudeCode, None, crate::web::event_bridge::EventEmitter::Noop).await;
+        state.connection_manager.get_state("auth-http").await.unwrap().write().await.agent_account_id = Some(a.id.clone());
+        let refused = server.post("/api/acp_set_agent_account_api_key").add_header("authorization", "Bearer account-test-token").json(&json!({"accountId":a.id, "apiKey":"replacement-key"})).await;
+        assert!(!refused.status_code().is_success());
+        assert!(!refused.text().contains("replacement-key"));
+        assert_eq!(std::fs::read(&a_path).unwrap(), saved);
+        // Merely obtaining the native command does not edit credentials and
+        // remains available while a chat is open (including older clients).
+        server.post("/api/acp_login_agent_account").add_header("authorization", "Bearer account-test-token").json(&json!({"accountId":a.id})).await.assert_status_ok();
+        assert_eq!(std::fs::read(&a_path).unwrap(), saved);
+        crate::db::service::agent_account_service::remove(&state.db.conn, &a.id).await.unwrap();
+        let refused = server.post("/api/acp_set_agent_account_api_key").add_header("authorization", "Bearer account-test-token").json(&json!({"accountId":a.id, "apiKey":"replacement-key"})).await;
+        assert!(!refused.status_code().is_success());
+        assert_eq!(std::fs::read(a_path).unwrap(), saved);
+    }
 
     #[tokio::test]
     async fn native_account_http_lifecycle_preserves_the_conversation_binding_and_files() {

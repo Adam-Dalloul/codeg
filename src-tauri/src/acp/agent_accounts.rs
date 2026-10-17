@@ -11,6 +11,28 @@ use crate::models::agent::{AgentType, BUILTIN_AGENT_TYPES};
 pub const ACCOUNT_ENV: &str = "CODEG_AGENT_ACCOUNT_ID";
 pub const ACCOUNT_HOME_ENV: &str = "CODEG_AGENT_ACCOUNT_HOME";
 
+/// Authentication selectors must not carry Default into a named account.
+/// Model preferences are handled separately, so family-wide model discovery
+/// still works when it was not installed by a Model Provider binding.
+pub(crate) const CLAUDE_AUTH_ENV_KEYS: &[&str] = &[
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN",
+    "ANTHROPIC_BASE_URL",
+    "CLAUDE_CODE_OAUTH_TOKEN",
+    "CLAUDE_CODE_USE_BEDROCK",
+    "CLAUDE_CODE_USE_VERTEX",
+    "CLAUDE_CODE_USE_FOUNDRY",
+    "ANTHROPIC_PROFILE",
+    "ANTHROPIC_CONFIG_DIR",
+    "ANTHROPIC_FEDERATION_RULE_ID",
+    "ANTHROPIC_ORGANIZATION_ID",
+    "ANTHROPIC_SERVICE_ACCOUNT_ID",
+    "ANTHROPIC_WORKSPACE_ID",
+    "ANTHROPIC_IDENTITY_TOKEN",
+    "ANTHROPIC_IDENTITY_TOKEN_FILE",
+    "AWS_BEARER_TOKEN_BEDROCK",
+];
+
 #[derive(Clone, Copy)]
 pub struct AccountLayout {
     pub env_key: &'static str,
@@ -83,6 +105,8 @@ pub struct AccountCapability {
     pub config_subdir: Option<&'static str>,
     pub can_switch_conversation: bool,
     pub isolates_tool_settings: bool,
+    pub auth_methods: Vec<crate::acp::account_auth::AccountAuthMethod>,
+    pub can_check_auth: bool,
 }
 
 /// Keep storage layouts available for reading older conversations even when
@@ -105,6 +129,12 @@ pub fn capabilities() -> Vec<AccountCapability> {
         .iter()
         .map(|&agent_type| AccountCapability {
             agent_type,
+            auth_methods: if unsupported_reason(agent_type).is_none() {
+                crate::acp::account_auth::methods(agent_type).to_vec()
+            } else {
+                Vec::new()
+            },
+            can_check_auth: matches!(agent_type, AgentType::ClaudeCode | AgentType::Codex),
             can_switch_conversation: agent_type == AgentType::ClaudeCode,
             isolates_tool_settings: matches!(agent_type, AgentType::OpenCode | AgentType::Cursor),
             supported: unsupported_reason(agent_type).is_none(),
@@ -126,12 +156,7 @@ pub fn capabilities() -> Vec<AccountCapability> {
 
 pub fn credential_env_keys(agent: AgentType) -> Vec<&'static str> {
     let extra: &[&str] = match agent {
-        AgentType::ClaudeCode => &[
-            "ANTHROPIC_API_KEY",
-            "ANTHROPIC_AUTH_TOKEN",
-            "ANTHROPIC_BASE_URL",
-            "CLAUDE_CODE_OAUTH_TOKEN",
-        ],
+        AgentType::ClaudeCode => CLAUDE_AUTH_ENV_KEYS,
         AgentType::Codex => &["OPENAI_API_KEY", "OPENAI_BASE_URL", "CODEX_API_KEY"],
         AgentType::Grok => &["XAI_API_KEY", "XAI_BASE_URL", "GROK_API_KEY"],
         AgentType::Gemini => &[
@@ -216,6 +241,14 @@ pub fn isolation_env_with_base(
         layout.env_key.to_owned(),
         home.to_string_lossy().into_owned(),
     )]);
+    if agent == AgentType::ClaudeCode {
+        // Anthropic profiles live outside CLAUDE_CONFIG_DIR unless this is
+        // explicit. An ambient active federation profile can outrank /login.
+        env.insert(
+            "ANTHROPIC_CONFIG_DIR".into(),
+            home.join("anthropic").to_string_lossy().into_owned(),
+        );
+    }
     if agent == AgentType::OpenCode {
         for (key, suffix) in [
             ("XDG_CONFIG_HOME", "config"),

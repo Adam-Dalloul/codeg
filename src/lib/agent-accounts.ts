@@ -18,6 +18,14 @@ export interface AgentAccountCapability {
   configSubdir?: string | null
   canSwitchConversation?: boolean
   isolatesToolSettings?: boolean
+  authMethods?: AccountAuthMethod[]
+  canCheckAuth?: boolean
+}
+
+export type AccountAuthMethod = "sign_in" | "api_key" | "native"
+export interface AccountAuthStatus {
+  state: "signed_in" | "signed_out" | "unavailable"
+  method: AccountAuthMethod | null
 }
 
 export interface AgentAccountsResult {
@@ -55,9 +63,26 @@ export function removeAgentAccount(accountId: string): Promise<void> {
 }
 
 export function loginAgentAccount(
-  accountId: string
+  accountId: string,
+  method?: AccountAuthMethod
 ): Promise<ExtraSlotLoginResult> {
-  return getTransport().call("acp_login_agent_account", { accountId })
+  return getTransport().call("acp_login_agent_account", { accountId, method })
+}
+
+export function setAgentAccountApiKey(
+  accountId: string,
+  apiKey: string
+): Promise<void> {
+  return getTransport().call("acp_set_agent_account_api_key", {
+    accountId,
+    apiKey,
+  })
+}
+
+export function checkAgentAccountAuth(
+  accountId: string
+): Promise<AccountAuthStatus> {
+  return getTransport().call("acp_check_agent_account_auth", { accountId })
 }
 
 export function switchConversationAccount(request: {

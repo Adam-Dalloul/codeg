@@ -5,10 +5,26 @@ Each account has its own folder and official sign-in. **Default** uses the
 agent's existing account. Adding a named account keeps the built-in agent's
 controls and conversation history.
 
-You can create a new folder or select an existing account folder. Sign in with
-the account's **Sign in** action. In the web interface, copy the displayed
-command and run it on the computer hosting Codeg. Removing an account keeps its
-folder and history. Add the same folder again to restore the account binding.
+Choose **Add account**, give it a name, and choose a connection method. Claude
+Code and Codex offer account sign-in or an API key. API usage is billed
+separately from subscriptions. Other supported agents use their own setup;
+Antigravity offers its personal and business sign-in flows.
+
+Choose **Continue** to save the account and start setup. Desktop opens the
+agent's official sign-in. In the web interface, copy the displayed command and
+run it on the computer hosting Codeg. **Check sign-in** checks Claude Code or
+Codex after you finish. Opening sign-in does not mean it has completed.
+Then choose the named account in a chat's account menu.
+
+Use **Set up** to reconnect an existing account or change its connection
+method. Close its chats before replacing an API key or changing Claude to
+account sign-in. The connection settings below the Accounts card configure
+**Default**; each named account keeps its own connection settings.
+
+To reuse an account folder, expand **Advanced: use an existing account folder** while
+adding an account. This keeps its existing sign-in and history. Removing an
+account keeps its folder and history. Add the same folder again to restore
+the account binding.
 
 ## Supported agents
 

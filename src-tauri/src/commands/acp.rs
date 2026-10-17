@@ -11324,12 +11324,32 @@ mod native_account_launch_tests {
             }
         }
     }
+
+    #[tokio::test]
+    async fn native_account_models_do_not_inherit_a_default_provider_binding() {
+        use crate::db::service::agent_setting_service::{AgentDefaultInput, AgentSettingsUpdate};
+        let db = crate::db::test_helpers::fresh_in_memory_db().await;
+        let dir = tempfile::tempdir().unwrap();
+        let agent = AgentType::ClaudeCode;
+        agent_setting_service::ensure_defaults(&db.conn, &[AgentDefaultInput { agent_type: agent, registry_id: "claude".into(), default_sort_order: 0 }]).await.unwrap();
+        let provider = crate::db::service::model_provider_service::create(&db.conn, "Fixture".into(), "https://api.example.test".into(), "fixture-provider-key".into(), "claude_code".into(), None).await.unwrap();
+        let env_json = r#"{"ANTHROPIC_DEFAULT_SONNET_MODEL":"family-model", "ANTHROPIC_PROFILE":"ambient-profile"}"#;
+        for binding in [None, Some(provider.id)] {
+            agent_setting_service::update(&db.conn, agent, AgentSettingsUpdate { enabled: true, env_json: Some(env_json.into()), model_provider_id: binding }).await.unwrap();
+            let env = build_runtime_env_for_agent(&db, agent, None, dir.path(), false, Some(dir.path())).await.unwrap();
+            assert_eq!(env.get("ANTHROPIC_DEFAULT_SONNET_MODEL").map(String::as_str), Some(if binding.is_some() { "" } else { "family-model" }));
+            assert_eq!(env.get("ANTHROPIC_PROFILE").map(String::as_str), Some(""));
+        }
+        std::fs::write(dir.path().join("settings.json"), r#"{"env":{"ANTHROPIC_DEFAULT_SONNET_MODEL":"own-model"}}"#).unwrap();
+        let env = build_runtime_env_for_agent(&db, agent, None, dir.path(), false, Some(dir.path())).await.unwrap();
+        assert_eq!(env.get("ANTHROPIC_DEFAULT_SONNET_MODEL").map(String::as_str), Some("own-model"));
+    }
 }
 
 /// Settings may inspect Pi's local model catalog while the agent is disabled.
 /// Reuse the exact launch environment, bypassing only the connection permission
 /// gate; this path starts no ACP session and sends no prompt.
-async fn build_runtime_env_for_agent(
+pub(crate) async fn build_runtime_env_for_agent(
     db: &AppDatabase,
     agent_type: AgentType,
     session_id: Option<&str>,
@@ -11368,6 +11388,13 @@ async fn build_runtime_env_for_agent(
         // account's own native sign-in, including inherited shell variables.
         for key in crate::acp::agent_accounts::credential_env_keys(agent_type) {
             runtime_env.insert(key.into(), String::new());
+        }
+        if setting.as_ref().and_then(|s| s.model_provider_id).is_some() {
+            // A provider's model aliases belong to that provider. Preserve
+            // ordinary family preferences when no provider supplied them.
+            for key in parse_provider_model(agent_type, None).into_keys() {
+                runtime_env.insert(key, String::new());
+            }
         }
         runtime_env.extend(build_runtime_env_from_setting(agent_type, None, local_config_json.as_deref()));
         if let Some(home) = account_home {
