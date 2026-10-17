@@ -2,6 +2,7 @@
   "AgentAccounts": {
     "switchAccount": "Switch account",
     "switchHint": "Continue this conversation with another Claude account. Full history is kept.",
+    "remoteControlHint": "Turn off Remote Control before switching accounts.",
     "switching": "Switching account…",
     "switched": "Account switched. Conversation history kept.",
     "homeLayout": "Select the parent folder containing {path}.",

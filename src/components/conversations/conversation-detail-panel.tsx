@@ -70,7 +70,11 @@ import {
   saveSelectedAccount,
   switchConversationAccount,
 } from "@/lib/agent-accounts"
-import { getSavedPrefsForConnect } from "@/lib/selector-prefs-storage"
+import {
+  accountSwitchPreferences,
+  getSavedPrefsForConnect,
+  savePrefsForConnect,
+} from "@/lib/selector-prefs-storage"
 import { ChatInput } from "@/components/chat/chat-input"
 import { WelcomeHero, WelcomeTip } from "@/components/chat/welcome-hero"
 import { QuickActions } from "@/components/chat/quick-actions"
@@ -2053,8 +2057,20 @@ const ConversationTabView = memo(function ConversationTabView({
       accountSwitchPending.current = true
       setAccountSwitching(true)
       try {
-        const prefs = getSavedPrefsForConnect(
-          agentAccountKey(selectedAgent, targetAccountId)
+        const prefs = accountSwitchPreferences(
+          getSavedPrefsForConnect(
+            agentAccountKey(selectedAgent, targetAccountId),
+            false
+          ),
+          {
+            modeId: selectedModeId,
+            configValues: Object.fromEntries(
+              connectionConfigOptions.map((option) => [
+                option.id,
+                String(option.kind.current_value),
+              ])
+            ),
+          }
         )
         const result = await switchConversationAccount({
           conversationId: dbConversationId,
@@ -2063,6 +2079,10 @@ const ConversationTabView = memo(function ConversationTabView({
           preferredModeId: prefs.modeId ?? undefined,
           preferredConfigValues: prefs.configValues ?? undefined,
         })
+        savePrefsForConnect(
+          agentAccountKey(selectedAgent, result.agentAccountId),
+          prefs
+        )
         // The backend has stopped the old writer. Release only this client's
         // old attachment; discovery attaches the same tab to the verified load.
         await acpActions.disconnect(tabId)
@@ -2100,6 +2120,8 @@ const ConversationTabView = memo(function ConversationTabView({
       dbConversationId,
       selectedAccountId,
       selectedAgent,
+      selectedModeId,
+      connectionConfigOptions,
       workingDirForConnection,
       acpActions,
       tabId,
@@ -2510,6 +2532,9 @@ const ConversationTabView = memo(function ConversationTabView({
                 persisted
                 canSwitch={accountState.capability?.canSwitchConversation}
                 switching={accountSwitching}
+                remoteControlActive={
+                  !connIsForOtherAgent && conn.remoteControl != null
+                }
                 disabled={
                   awaitingAccountBinding ||
                   isConnecting ||

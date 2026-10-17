@@ -22,6 +22,40 @@ const accounts = [
 ]
 
 describe("account picker", () => {
+  it("keeps the account selected while Remote Control is active", () => {
+    const view = render(
+      <NextIntlClientProvider locale="en" messages={messages}>
+        <AgentAccountSelector
+          accounts={accounts}
+          value="a"
+          onChange={vi.fn()}
+          persisted
+          canSwitch
+          remoteControlActive
+        />
+      </NextIntlClientProvider>
+    )
+    const picker = screen.getByRole("combobox", { name: "Switch account" })
+    expect(picker).toBeDisabled()
+    expect(picker).toHaveTextContent("Personal")
+    expect(picker).toHaveAttribute(
+      "title",
+      messages.AgentAccounts.remoteControlHint
+    )
+    view.rerender(
+      <NextIntlClientProvider locale="en" messages={messages}>
+        <AgentAccountSelector
+          accounts={accounts}
+          value="a"
+          onChange={vi.fn()}
+          persisted
+          canSwitch
+        />
+      </NextIntlClientProvider>
+    )
+    expect(picker).toBeEnabled()
+  })
+
   it("switches a persisted Default conversation without creating a new chat", async () => {
     const changed = vi.fn()
     render(

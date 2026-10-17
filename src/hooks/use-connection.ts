@@ -1,6 +1,7 @@
 "use client"
 
 import { useCallback, useMemo, useRef, useSyncExternalStore } from "react"
+import { agentAccountKey } from "@/lib/agent-accounts"
 import {
   useAcpActions,
   useConnectionStore,
@@ -275,7 +276,9 @@ export function useConnection(contextKey: string): UseConnectionReturn {
   const selectorsReady = connection?.selectorsReady ?? false
   const sessionId = connection?.sessionId ?? null
   const cached = connection?.agentType
-    ? getCachedSelectors(connection.agentType)
+    ? getCachedSelectors(
+        agentAccountKey(connection.agentType, connection.agentAccountId)
+      )
     : null
   const hasCachedSelectors = cached !== null
   const connectedWorkingDir = connection?.workingDir ?? null
