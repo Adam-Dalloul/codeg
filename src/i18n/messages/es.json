@@ -1,7 +1,7 @@
 {
   "AgentAccounts": {
     "switchAccount": "Cambiar de cuenta",
-    "switchHint": "Continúa esta conversación con otra cuenta de Claude. Se conserva todo el historial.",
+    "switchHint": "Conserva esta conversación y su transcripción nativa. Se aplican la configuración y la memoria de la cuenta elegida.",
     "remoteControlHint": "Desactiva el control remoto antes de cambiar de cuenta.",
     "switching": "Cambiando de cuenta…",
     "switched": "Cuenta cambiada. Se ha conservado el historial.",

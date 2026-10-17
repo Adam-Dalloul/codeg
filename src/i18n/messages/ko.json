@@ -1,7 +1,7 @@
 {
   "AgentAccounts": {
     "switchAccount": "계정 전환",
-    "switchHint": "다른 Claude 계정으로 이 대화를 계속합니다. 전체 기록이 유지됩니다.",
+    "switchHint": "이 대화와 기본 기록을 유지합니다. 선택한 계정의 설정과 메모리가 적용됩니다.",
     "remoteControlHint": "계정을 전환하기 전에 원격 제어를 끄세요.",
     "switching": "계정 전환 중…",
     "switched": "계정이 전환되었습니다. 대화 기록은 유지됩니다.",

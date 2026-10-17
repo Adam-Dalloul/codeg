@@ -169,11 +169,20 @@ async fn switch_inner(
     {
         return Err(AcpError::TurnInProgress);
     }
+    account_transfer::ensure_session_task_lists(
+        &source,
+        &target,
+        Path::new(&cwd),
+        &sid,
+        &[&source_env, &target_env],
+    )
+    .map_err(failure)?;
     let _prompt_guards = manager
         .quiesce_account_session(&barrier, &source, &target, &sid)
         .await?;
     let transfer =
         account_transfer::copy_claude_session(&source, &target, &sid).map_err(failure)?;
+    let requested_config = request.preferred_config_values.clone();
     let connection_id = match manager
         .spawn_agent_during_account_switch(
             &barrier,
@@ -193,18 +202,20 @@ async fn switch_inner(
             return Err(e);
         }
     };
-    let loaded = if let Some(state) = manager.get_state(&connection_id).await {
-        let state = state.read().await;
-        state.has_restored_session(&sid) && state.agent_account_id == request.target_account_id
-    } else {
-        false
-    };
+    let loaded = wait_for_restored_options(
+        manager,
+        &connection_id,
+        &sid,
+        request.target_account_id.as_deref(),
+        &requested_config,
+    )
+    .await;
     if !loaded {
         manager
             .disconnect_and_wait_for_account_switch(&connection_id)
             .await?;
         roll_back_target(manager, &transfer, &target, &sid).await?;
-        return Err(failure("The selected account could not load this conversation. The original account and history were kept."));
+        return Err(failure("The selected account could not restore this conversation with the selected model. Choose a supported model or another account. The original account and history were kept."));
     }
     // One conditional write changes only the binding, preserving title, pin,
     // tags, folder and history. A stale client, deletion, account removal or
@@ -244,6 +255,55 @@ async fn switch_inner(
     })
 }
 
+/// Connect normally skips retired preferences. A native session transfer must
+/// not silently fall back to a different model and context window.
+pub(crate) fn requested_model_applied(
+    requested: &BTreeMap<String, String>,
+    options: Option<&[crate::acp::types::SessionConfigOptionInfo]>,
+) -> bool {
+    let options = options.unwrap_or_default();
+    requested.iter().all(|(id, value)| {
+        let option = options.iter().find(|o| &o.id == id);
+        if id != "model" && !option.is_some_and(|o| o.category.as_deref() == Some("model")) {
+            return true;
+        }
+        option.is_some_and(|o| matches!(&o.kind, crate::acp::types::SessionConfigKindInfo::Select(s) if &s.current_value == value))
+    })
+}
+
+async fn wait_for_restored_options(
+    manager: &ConnectionManager,
+    connection_id: &str,
+    sid: &str,
+    account_id: Option<&str>,
+    requested: &BTreeMap<String, String>,
+) -> bool {
+    use crate::acp::types::ConnectionStatus;
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(120);
+    loop {
+        let Some(state) = manager.get_state(connection_id).await else {
+            return false;
+        };
+        let state = state.read().await;
+        // SessionStarted precedes preference replay. Wait for the same ready
+        // signal the composer uses before comparing the selected model.
+        if state.selectors_ready && state.status == ConnectionStatus::Connected {
+            return state.has_restored_session(sid)
+                && state.agent_account_id.as_deref() == account_id
+                && requested_model_applied(requested, state.config_options.as_deref());
+        }
+        if matches!(
+            state.status,
+            ConnectionStatus::Error | ConnectionStatus::Disconnected
+        ) || tokio::time::Instant::now() >= deadline
+        {
+            return false;
+        }
+        drop(state);
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+}
+
 /// Put the destination account's previous copy back once nothing can still
 /// write the session there. A target agent whose connection already ended can
 /// still be exiting, so a missing connection is not proof it stopped. If it
@@ -255,7 +315,9 @@ async fn roll_back_target(
     target: &Path,
     sid: &str,
 ) -> Result<(), AcpError> {
-    manager.wait_for_account_session_writers(target, sid).await?;
+    manager
+        .wait_for_account_session_writers(target, sid)
+        .await?;
     transfer.rollback().map_err(failure)?;
     transfer.discard_staging();
     Ok(())
@@ -329,6 +391,36 @@ pub async fn acp_switch_conversation_account(
 mod tests {
     use super::*;
     use crate::db::{service::conversation_service, test_helpers};
+
+    #[test]
+    fn model_fallback_is_not_a_successful_native_transfer() {
+        use crate::acp::types::{
+            SessionConfigKindInfo, SessionConfigOptionInfo, SessionConfigSelectInfo,
+        };
+        let requested = BTreeMap::from([("model".into(), "long-context-model".into())]);
+        let option = |value: &str| SessionConfigOptionInfo {
+            id: "model".into(),
+            name: "Model".into(),
+            description: None,
+            category: Some("model".into()),
+            recommended_value: None,
+            kind: SessionConfigKindInfo::Select(SessionConfigSelectInfo {
+                current_value: value.into(),
+                options: vec![],
+                groups: vec![],
+            }),
+        };
+        assert!(!requested_model_applied(&requested, None));
+        assert!(!requested_model_applied(
+            &requested,
+            Some(&[option("smaller-default")])
+        ));
+        assert!(requested_model_applied(
+            &requested,
+            Some(&[option("long-context-model")])
+        ));
+        assert!(requested_model_applied(&BTreeMap::new(), None));
+    }
 
     #[tokio::test]
     async fn binding_commit_preserves_identity_and_rejects_stale_or_removed_targets() {
