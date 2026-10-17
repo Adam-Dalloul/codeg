@@ -1,5 +1,5 @@
 //! Read official plan usage for one saved account, without changing its login.
-use crate::acp::{agent_accounts, family_isolator};
+use crate::acp::{account_auth, agent_accounts, family_isolator};
 use crate::{
     app_error::AppCommandError,
     db::{
@@ -135,6 +135,7 @@ pub async fn accounts_core(db: &AppDatabase) -> Result<Vec<QuotaAccount>, AppCom
 
 async fn resolve_source(
     db: &AppDatabase,
+    data_dir: &Path,
     request: QuotaRequest,
 ) -> Result<Source, AppCommandError> {
     let agent = request.agent_type;
@@ -172,8 +173,10 @@ async fn resolve_source(
     let family = family(agent).ok_or_else(|| error("Usage is unavailable for this agent"))?;
     let (name, env, isolated, provider_override) = if let Some(id) = id.as_deref() {
         let account = agent_account_service::resolve(&db.conn, agent, id).await?;
-        let env =
-            agent_accounts::isolation_env(agent, Path::new(&account.home_dir)).map_err(error)?;
+        // Match the account's actual launch settings, including its own API
+        // key, without starting a session or synchronizing MCP/skills files.
+        let env = account_auth::runtime_env(db, &account, data_dir)
+            .await.map_err(|e| error(e.to_string()))?;
         (Some(account.name), env, true, false)
     } else {
         let setting = agent_setting_service::get_by_agent_type(&db.conn, agent).await?;
@@ -297,14 +300,7 @@ type CacheEntry = Arc<Mutex<Option<(Instant, Option<Value>)>>>;
 type Cache = Mutex<HashMap<u64, CacheEntry>>;
 static CACHE: OnceLock<Cache> = OnceLock::new();
 
-pub async fn read_core(
-    db: &AppDatabase,
-    namespace: &Path,
-    request: QuotaRequest,
-) -> Result<OfficialQuotaRead, AppCommandError> {
-    // Revalidate before the cache: removed accounts cannot retrieve old data,
-    // and persisted conversations always own the selected account binding.
-    let source = resolve_source(db, request).await?;
+fn cache_key(namespace: &Path, source: &Source) -> u64 {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     namespace.hash(&mut hasher);
     source.account.agent_type.hash(&mut hasher);
@@ -312,7 +308,19 @@ pub async fn read_core(
     source.env.hash(&mut hasher);
     source.provider_override.hash(&mut hasher);
     source.credential_path().hash(&mut hasher);
-    let key = hasher.finish();
+    account_auth::revision().hash(&mut hasher);
+    hasher.finish()
+}
+
+pub async fn read_core(
+    db: &AppDatabase,
+    namespace: &Path,
+    request: QuotaRequest,
+) -> Result<OfficialQuotaRead, AppCommandError> {
+    // Revalidate before the cache: removed accounts cannot retrieve old data,
+    // and persisted conversations always own the selected account binding.
+    let source = resolve_source(db, namespace, request).await?;
+    let key = cache_key(namespace, &source);
     let entry = {
         let mut entries = CACHE.get_or_init(Default::default).lock().await;
         if entries.len() >= 256 {
@@ -644,7 +652,7 @@ mod tests {
             agent_account_id: Some(a.id.clone()),
             conversation_id: None,
         };
-        let source = resolve_source(&db, req.clone()).await.unwrap();
+        let source = resolve_source(&db, temp.path(), req.clone()).await.unwrap();
         let credential = source.credential_path().unwrap();
         assert_eq!(credential.file_name().unwrap(), ".credentials.json");
         // Windows TEMP can use an 8.3 spelling (RUNNER~1), while account
@@ -656,6 +664,7 @@ mod tests {
         assert!(source.value("OPENAI_API_KEY").is_none());
         assert!(resolve_source(
             &db,
+            temp.path(),
             QuotaRequest {
                 agent_type: AgentType::Codex,
                 ..req.clone()
@@ -666,7 +675,28 @@ mod tests {
         agent_account_service::remove(&db.conn, &a.id)
             .await
             .unwrap();
-        assert!(resolve_source(&db, req).await.is_err());
+        assert!(resolve_source(&db, temp.path(), req).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn account_auth_updates_invalidate_quota_and_api_accounts_skip_subscription_probes() {
+        let db = crate::db::test_helpers::fresh_in_memory_db().await;
+        let temp = tempfile::tempdir().unwrap();
+        let a = agent_account_service::create(&db.conn, temp.path(), AgentType::ClaudeCode, "Work", None).await.unwrap();
+        let req = QuotaRequest { agent_type: AgentType::ClaudeCode, agent_account_id: Some(a.id.clone()), conversation_id: None };
+        let source = resolve_source(&db, temp.path(), req.clone()).await.unwrap();
+        let old_key = cache_key(temp.path(), &source);
+        CACHE.get_or_init(Default::default).lock().await.insert(old_key, Arc::new(Mutex::new(Some((Instant::now(), Some(json!({"five_hour":{"utilization":42}})))))));
+        account_auth::changed();
+        assert_ne!(old_key, cache_key(temp.path(), &source));
+        // No credentials means no network request. The pre-change cached
+        // subscription result must not survive a sign-in/status refresh.
+        assert!(read_core(&db, temp.path(), req.clone()).await.unwrap().payload.is_none());
+        account_auth::set_claude_key(Path::new(&a.home_dir), Some("fixture-only-key")).unwrap();
+        let source = resolve_source(&db, temp.path(), req.clone()).await.unwrap();
+        assert!(source.uses_api_provider());
+        assert!(read_core(&db, temp.path(), req).await.unwrap().payload.is_none());
+        assert!(std::fs::read_to_string(Path::new(&a.home_dir).join("settings.json")).unwrap().contains("fixture-only-key"));
     }
     #[test]
     fn profile_credentials_follow_native_runtime_layouts() {
