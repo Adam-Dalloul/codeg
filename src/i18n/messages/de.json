@@ -2,6 +2,7 @@
   "AgentAccounts": {
     "switchAccount": "Konto wechseln",
     "switchHint": "Diese Unterhaltung mit einem anderen Claude-Konto fortsetzen. Der gesamte Verlauf bleibt erhalten.",
+    "remoteControlHint": "Deaktiviere die Fernsteuerung, bevor du das Konto wechselst.",
     "switching": "Konto wird gewechselt…",
     "switched": "Konto gewechselt. Der Gesprächsverlauf bleibt erhalten.",
     "homeLayout": "Wähle den übergeordneten Ordner, der {path} enthält.",

@@ -14,7 +14,7 @@ folder and history. Add the same folder again to restore the account binding.
 
 Named accounts are available for Claude Code, Codex, Gemini, OpenCode, Grok,
 Hermes, CodeBuddy, Cline, Kimi Code, Pi, DeepSeek, Qoder and Antigravity. Cursor
-supports named accounts on Windows and Linux; use Default on macOS. Kiro and
+supports named accounts on Windows and Linux; use Default on macOS. Kiro,
 ZCode, TRAE CLI and Command Code do not yet support named accounts. OpenClaw
 uses its configured gateway's account.
 
@@ -31,7 +31,9 @@ falls back to Default.
 
 Claude Code conversations can switch accounts from their account picker when
 no turn or background task is running. The conversation and transcript are
-retained. Other agents keep their original account.
+retained. The current model and mode carry over unless the target account has
+its own saved choices. Turn off Claude Remote Control before switching accounts.
+Other agents keep their original account.
 
 ## Backups and moving computers
 

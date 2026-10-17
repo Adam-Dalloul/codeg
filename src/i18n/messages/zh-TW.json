@@ -2,6 +2,7 @@
   "AgentAccounts": {
     "switchAccount": "切換帳號",
     "switchHint": "使用另一個 Claude 帳號繼續此對話，保留完整歷史記錄。",
+    "remoteControlHint": "切換帳號前，請先關閉遠端控制。",
     "switching": "正在切換帳號…",
     "switched": "帳號已切換，對話歷史已保留。",
     "homeLayout": "請選擇包含 {path} 的父資料夾。",

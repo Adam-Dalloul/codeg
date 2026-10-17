@@ -2,6 +2,7 @@
   "AgentAccounts": {
     "switchAccount": "Trocar de conta",
     "switchHint": "Continue esta conversa com outra conta do Claude. Todo o histórico é mantido.",
+    "remoteControlHint": "Desative o controle remoto antes de trocar de conta.",
     "switching": "Trocando de conta…",
     "switched": "Conta alterada. Histórico da conversa mantido.",
     "homeLayout": "Selecione a pasta principal que contém {path}.",

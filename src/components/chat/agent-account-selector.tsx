@@ -19,6 +19,7 @@ export function AgentAccountSelector({
   persisted = false,
   canSwitch = false,
   switching = false,
+  remoteControlActive = false,
   loading = false,
   loadError = false,
   onRetry,
@@ -30,6 +31,7 @@ export function AgentAccountSelector({
   persisted?: boolean
   canSwitch?: boolean
   switching?: boolean
+  remoteControlActive?: boolean
   loading?: boolean
   loadError?: boolean
   onRetry?: () => void
@@ -80,15 +82,25 @@ export function AgentAccountSelector({
         const next = id === "default" ? null : id
         if (next !== value) onChange(next)
       }}
-      disabled={disabled || switching}
+      disabled={disabled || switching || remoteControlActive}
     >
       <SelectTrigger
         size="sm"
         className="h-8 w-auto min-w-28 max-w-full"
         aria-label={persisted ? t("switchAccount") : t("account")}
         aria-busy={switching}
-        aria-description={selected?.name ?? t("default")}
-        title={persisted ? t("switchHint") : undefined}
+        aria-description={
+          remoteControlActive
+            ? t("remoteControlHint")
+            : (selected?.name ?? t("default"))
+        }
+        title={
+          remoteControlActive
+            ? t("remoteControlHint")
+            : persisted
+              ? t("switchHint")
+              : undefined
+        }
       >
         <UserRound className="size-3.5 shrink-0" />
         {switching ? t("switching") : <SelectValue />}

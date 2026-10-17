@@ -2764,6 +2764,11 @@ impl ConnectionManager {
             guards.push(lock.clone().lock_owned().await);
             if let Some(state) = self.get_state(id).await {
                 let state = state.read().await;
+                if state.remote_control.is_some() {
+                    return Err(AcpError::protocol(
+                        "Turn off Remote Control before switching accounts.",
+                    ));
+                }
                 if state.turn_in_flight
                     || state.goal_active
                     || state.pending_permission.is_some()
@@ -8522,6 +8527,39 @@ mod tests {
         let error = mgr.quiesce_account_session(&barrier, b.path(), a.path(), "sid").await.unwrap_err();
         assert!(error.to_string().contains("target account"));
         assert!(mgr.get_state("switch-source").await.is_some());
+    }
+
+    #[tokio::test]
+    async fn account_switch_keeps_remote_control_alive_until_it_is_turned_off() {
+        let mgr = ConnectionManager::new();
+        let source = tempfile::tempdir().unwrap();
+        let target = tempfile::tempdir().unwrap();
+        insert_fake_connection(&mgr, "remote-switch", AgentType::ClaudeCode, None, EventEmitter::Noop).await;
+        let state = mgr.get_state("remote-switch").await.unwrap();
+        {
+            let mut state = state.write().await;
+            state.storage_identity = Some((AgentType::ClaudeCode, source.path().into()));
+            state.external_id = Some("remote-session".into());
+            state.apply_event(&crate::acp::types::AcpEvent::RemoteControl {
+                remote_control: Some(crate::acp::types::RemoteControlInfo { session_url: None }),
+            });
+        }
+        let barrier = mgr.lock_out_new_connections().await;
+        let error = mgr
+            .quiesce_account_session(&barrier, source.path(), target.path(), "remote-session")
+            .await
+            .unwrap_err();
+        assert!(matches!(&error, AcpError::Protocol(_)));
+        assert!(error.to_string().contains("Turn off Remote Control"));
+        assert!(mgr.get_state("remote-switch").await.is_some());
+        assert!(state.read().await.remote_control.is_some());
+        state.write().await.apply_event(&crate::acp::types::AcpEvent::RemoteControl {
+            remote_control: None,
+        });
+        mgr.quiesce_account_session(&barrier, source.path(), target.path(), "remote-session")
+            .await
+            .unwrap();
+        assert!(mgr.get_state("remote-switch").await.is_none());
     }
 
     /// A connection whose task ends on its own (the agent failed to load, or

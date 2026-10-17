@@ -2549,6 +2549,9 @@ const ConversationTabView = memo(function ConversationTabView({
                       isTopLevelConversation
                     }
                     switching={accountSwitching}
+                    remoteControlActive={
+                      !connIsForOtherAgent && conn.remoteControl != null
+                    }
                     loading={accountState.loading}
                     loadError={accountState.error}
                     onRetry={accountState.refresh}
