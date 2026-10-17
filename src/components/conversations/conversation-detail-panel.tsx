@@ -2560,7 +2560,6 @@ const ConversationTabView = memo(function ConversationTabView({
                       isConnecting ||
                       connStatus === "prompting" ||
                       msgQueue.length > 0 ||
-                      conn.isViewer ||
                       !externalId
                     }
                   />
