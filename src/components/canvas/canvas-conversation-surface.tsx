@@ -762,6 +762,16 @@ export function CanvasConversationSurface({
     [conn.connectionId, tAsyncTasks]
   )
 
+  /** Turn Claude Code's Remote Control off the way the user would: by sending
+   *  `/remote-control off`, which the adapter answers itself. */
+  const handleRemoteControlOff = useCallback(() => {
+    const command = "/remote-control off"
+    handleSend({
+      blocks: [{ type: "text", text: command }],
+      displayText: command,
+    })
+  }, [handleSend])
+
   const connectionModes = useMemo(
     () => effectiveModes?.available_modes ?? [],
     [effectiveModes]
@@ -808,6 +818,12 @@ export function CanvasConversationSurface({
           onSessionFailureDismiss={handleSessionFailureDismiss}
           asyncTasks={conn.asyncTasks}
           onStopAsyncTask={handleStopAsyncTask}
+          remoteControl={connIsForOtherAgent ? null : conn.remoteControl}
+          onRemoteControlOff={
+            conn.connectionId !== null && !conn.isViewer
+              ? handleRemoteControlOff
+              : undefined
+          }
           pendingPermission={conn.pendingPermission}
           pendingQuestion={conn.pendingQuestion}
           pendingAskQuestion={conn.pendingAskQuestion}
@@ -829,6 +845,7 @@ export function CanvasConversationSurface({
           onConfigOptionChange={handleSetConfigOption}
           agentType={agentType}
           availableCommands={connectionCommands ?? []}
+          promptSuggestion={connIsForOtherAgent ? null : conn.promptSuggestion}
           draftStorageKey={`canvas-draft:${contextKey}`}
           getSentHistory={getSentHistory}
           // The card's own connection key doubles as its composer scope: the
