@@ -121,7 +121,7 @@ export function AgentAccounts({ agentType }: { agentType: AgentType }) {
           icon={Users}
           title={t("title")}
           description={
-            agentType === "openclaw" ? t("gatewayAccount") : capability.reason
+            agentType === "openclaw" ? t("gatewayAccount") : t("notSupported")
           }
         />
       </SettingCard>

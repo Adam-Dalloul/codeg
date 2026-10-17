@@ -672,6 +672,10 @@ mod tests {
     fn profile_credentials_follow_native_runtime_layouts() {
         let temp = tempfile::tempdir().unwrap();
         for agent in [AgentType::Cursor, AgentType::OpenCode] {
+            if agent_accounts::unsupported_reason(agent).is_some() {
+                assert!(agent_accounts::isolation_env(agent, temp.path()).is_err());
+                continue;
+            }
             let source = Source {
                 account: QuotaAccount {
                     agent_type: agent,

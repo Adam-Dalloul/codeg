@@ -2,6 +2,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { NextIntlClientProvider } from "next-intl"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import messages from "@/i18n/messages/en.json"
+import zhMessages from "@/i18n/messages/zh-CN.json"
 import { AgentAccounts } from "./agent-accounts"
 import { useAgentAccounts } from "@/hooks/use-agent-accounts"
 import {
@@ -128,6 +129,32 @@ describe("native account settings", () => {
       "The folder /profiles/work and its conversation history are kept."
     )
     expect(dialog).toHaveTextContent("add this folder again")
+  })
+
+  // The server explains an unsupported agent in English, so the card says it
+  // in the user's language instead.
+  it("says in the user's language that an agent has no accounts", () => {
+    vi.mocked(useAgentAccounts).mockReturnValue({
+      accounts: [],
+      capability: {
+        agentType: "kiro",
+        supported: false,
+        reason: "Named accounts are not yet supported for this agent.",
+        loginKind: null,
+      },
+      loading: false,
+      error: false,
+      refresh,
+    })
+    render(
+      <NextIntlClientProvider locale="zh-CN" messages={zhMessages}>
+        <AgentAccounts agentType="kiro" />
+      </NextIntlClientProvider>
+    )
+    expect(
+      screen.getByText(zhMessages.AgentAccounts.notSupported)
+    ).toBeVisible()
+    expect(screen.queryByText(/Named accounts/)).not.toBeInTheDocument()
   })
 
   it("copies the server's account-specific sign-in command", async () => {

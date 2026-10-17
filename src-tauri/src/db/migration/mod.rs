@@ -1,5 +1,4 @@
 use sea_orm_migration::prelude::*;
-mod m20261011_000001_agent_account;
 
 mod m20260211_000001_init;
 mod m20260219_000001_folder_command;
@@ -53,6 +52,7 @@ mod m20261015_000001_kiro_builtin_agent;
 mod m20261015_000001_work_task_deferred_at;
 mod m20261016_000001_assistant;
 mod m20261016_000002_conversation_assistant;
+mod m20261017_000001_agent_account;
 pub struct Migrator;
 
 #[async_trait::async_trait]
@@ -107,11 +107,11 @@ impl MigratorTrait for Migrator {
             Box::new(m20260929_000001_canvas_board::Migration),
             Box::new(m20260930_000001_agent_setting_drop_adapter_channel::Migration),
             Box::new(m20261006_000001_conversation_tag::Migration),
-            Box::new(m20261011_000001_agent_account::Migration),
             Box::new(m20261015_000001_kiro_builtin_agent::Migration),
             Box::new(m20261015_000001_work_task_deferred_at::Migration),
             Box::new(m20261016_000001_assistant::Migration),
             Box::new(m20261016_000002_conversation_assistant::Migration),
+            Box::new(m20261017_000001_agent_account::Migration),
         ]
     }
 }

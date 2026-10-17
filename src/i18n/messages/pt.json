@@ -6,10 +6,12 @@
     "switched": "Conta alterada. Histórico da conversa mantido.",
     "homeLayout": "Selecione a pasta principal que contém {path}.",
     "gatewayAccount": "As sessões usam a conta configurada no seu gateway OpenClaw.",
+    "notSupported": "Este agente ainda não permite adicionar contas.",
     "account": "Conta",
     "title": "Contas",
     "default": "Padrão",
     "defaultDescription": "Usa seu login atual do agente.",
+    "toolSettingsHint": "Algumas ferramentas de linha de comando precisam ter as configurações ou o login definidos separadamente para cada conta.",
     "add": "Adicionar conta",
     "name": "Nome da conta",
     "home": "Pasta de conta existente (opcional)",
@@ -28,8 +30,7 @@
     "copyCommand": "Copiar comando de login",
     "copied": "Comando de login copiado",
     "choose": "Escolha uma conta para continuar.",
-    "loading": "Carregando contas...",
-    "toolSettingsHint": "Algumas ferramentas de linha de comando precisam ter as configurações ou o login definidos separadamente para cada conta."
+    "loading": "Carregando contas..."
   },
   "Language": {
     "followSystem": "Seguir o sistema",
@@ -1131,6 +1132,19 @@
       "tempReclaimConfirmAction": "Excluir",
       "tempReclaimCancel": "Cancelar"
     },
+    "kiro": {
+      "configManagement": "Configuração",
+      "configDescription": "O Kiro CLI guarda o login, os agentes e os servidores MCP em ~/.kiro. Modelo, agente, raciocínio e esforço não ficam aqui: o Kiro os informa via ACP, então os seletores do compositor os gerenciam por sessão.",
+      "permissionsTitle": "Permissões",
+      "permissionModeLabel": "Modo de permissão",
+      "permissionModeAsk": "Perguntar antes de executar ferramentas (padrão)",
+      "permissionModeTrustAll": "Confiar em todas as ferramentas (--trust-all-tools)",
+      "permissionModeAskHint": "O Kiro envia a você primeiro cada chamada que precisa de aprovação (comandos, gravação de arquivos, …). Ferramentas somente leitura rodam sem perguntar.",
+      "permissionModeTrustAllHint": "As sessões iniciam com --trust-all-tools: toda chamada de ferramenta roda sem confirmação, inclusive comandos e gravação de arquivos. Vale para novas sessões.",
+      "apiKeyLabel": "Chave de API (opcional)",
+      "apiKeyHint": "Passada à CLI como KIRO_API_KEY. Deixe vazia para usar a conta conectada via kiro-cli login; só é necessária onde não há login pelo navegador (servidores, Docker).",
+      "saveConfig": "Salvar configuração do Kiro"
+    },
     "deepseek": {
       "configManagement": "Configuração do DeepSeek Harness",
       "configDescription": "O endpoint e a chave são variáveis de ambiente que o deepseek-acp lê ao iniciar. O modelo e o nível de raciocínio são seletores por sessão — escolha-os no campo de mensagem.",
@@ -1628,6 +1642,9 @@
       "saveKiroFailed": "Falha ao salvar a configuração do Kiro",
       "systemAgentAlreadyLatest": "{name} já está atualizado ({version})"
     },
+    "distribution": {
+      "system": "instalador oficial"
+    },
     "version": {
       "statusLabel": "Status da versão",
       "notInstalled": "Não instalado",
@@ -1822,22 +1839,6 @@
     "customAgentRemoved": "{name} removido",
     "customAgentBadge": "Personalizado",
     "customAgentNotLaunchable": "Este agente não pode ser iniciado aqui: {reason}",
-    "kiro": {
-      "configManagement": "Configuração",
-      "configDescription": "O Kiro CLI guarda o login, os agentes e os servidores MCP em ~/.kiro. Modelo, agente, raciocínio e esforço não ficam aqui: o Kiro os informa via ACP, então os seletores do compositor os gerenciam por sessão.",
-      "permissionsTitle": "Permissões",
-      "permissionModeLabel": "Modo de permissão",
-      "permissionModeAsk": "Perguntar antes de executar ferramentas (padrão)",
-      "permissionModeTrustAll": "Confiar em todas as ferramentas (--trust-all-tools)",
-      "permissionModeAskHint": "O Kiro envia a você primeiro cada chamada que precisa de aprovação (comandos, gravação de arquivos, …). Ferramentas somente leitura rodam sem perguntar.",
-      "permissionModeTrustAllHint": "As sessões iniciam com --trust-all-tools: toda chamada de ferramenta roda sem confirmação, inclusive comandos e gravação de arquivos. Vale para novas sessões.",
-      "apiKeyLabel": "Chave de API (opcional)",
-      "apiKeyHint": "Passada à CLI como KIRO_API_KEY. Deixe vazia para usar a conta conectada via kiro-cli login; só é necessária onde não há login pelo navegador (servidores, Docker).",
-      "saveConfig": "Salvar configuração do Kiro"
-    },
-    "distribution": {
-      "system": "instalador oficial"
-    },
     "zcode": {
       "adapterInfo": "O Codeg executa {adapterPackage} como ponte ACP. Instale o ZCode e entre na sua conta primeiro; são usados o ambiente e a configuração existentes.",
       "runtimeHint": "Instale o ZCode e entre na sua conta primeiro. O Codeg instala apenas a ponte ACP. Se a detecção falhar, indique a entrada CLI com ZCODE_BIN e o Node.js com ZCODE_NODE. Gerencie modelos e credenciais no ZCode."
@@ -1923,6 +1924,15 @@
     "restartNow": "Reiniciar agora",
     "restartFailed": "Falha ao reiniciar: {message}",
     "loadFailed": "Falha ao carregar: {message}"
+  },
+  "MentionPanelSettings": {
+    "title": "Painel de menções",
+    "description": "Escolha quais abas o painel @ do campo de entrada mostra e arraste-as para a ordem que preferir. O painel abre na primeira aba com resultados. A aba Arquivos é sempre exibida.",
+    "tabsLabel": "Abas do painel de menções",
+    "reset": "Redefinir",
+    "alwaysShown": "Sempre exibida",
+    "moveTab": "Mover “{name}”: arraste ou pressione as setas para cima e para baixo",
+    "showTab": "Mostrar a aba “{name}”"
   },
   "CollaborationSettings": {
     "sectionTitle": "Colaboração",
@@ -5069,7 +5079,7 @@
     "export": {
       "description": "Empacota os dados do codeg desta máquina — banco de dados e arquivos enviados — em um único arquivo.",
       "includeExternal": "Incluir o conteúdo das conversas",
-      "includeExternalHint": "Também arquiva as transcrições das CLIs (Claude, Codex, Gemini, …). Aumenta o tamanho.",
+      "includeExternalHint": "Inclui as conversas das pastas padrão das CLIs. As pastas de contas nomeadas não estão incluídas. Faça uma cópia delas separadamente.",
       "passphrase": "Senha (opcional)",
       "passphrasePlaceholder": "Deixe em branco para um arquivo sem criptografia",
       "passphraseConfirm": "Confirmar a senha",
@@ -5417,6 +5427,19 @@
     "eventsHint": "Desligue os eventos que não devem interromper você. Repetições do mesmo evento em poucos segundos são agrupadas em uma notificação. Solicitações de permissão incluem aprovações de plano.",
     "eventBackgroundTask": "Tarefa em segundo plano",
     "eventWorkTask": "Tarefa de trabalho"
+  },
+  "WindowAttentionSettings": {
+    "title": "Alertas na barra de tarefas e no Dock",
+    "descriptionMac": "Faz o ícone do Dock saltar quando um agente precisa de você enquanto você está em outro app.",
+    "descriptionWindows": "Faz o botão da janela piscar na barra de tarefas quando um agente precisa de você e a janela não está em foco.",
+    "descriptionLinux": "Marca a janela como urgente quando um agente precisa de você e ela não está em foco. A aparência depende do seu ambiente de desktop.",
+    "eventsTitle": "Eventos",
+    "eventsHintMac": "“Brevemente” faz o ícone saltar uma vez. “Até você voltar” o mantém saltando até você voltar ao Codeg. Solicitações de permissão incluem aprovações de plano.",
+    "eventsHintWindows": "“Brevemente” faz o botão piscar algumas vezes e o deixa destacado. “Até você voltar” o mantém piscando até você voltar à janela. Solicitações de permissão incluem aprovações de plano.",
+    "eventsHintLinux": "O Linux tem uma única marca de urgência, então os dois níveis mantêm a janela marcada até você voltar a ela. Solicitações de permissão incluem aprovações de plano.",
+    "levelOff": "Desligado",
+    "levelInformational": "Brevemente",
+    "levelCritical": "Até você voltar"
   },
   "NotificationSoundSettings": {
     "title": "Sons de notificação",
@@ -7309,27 +7332,5 @@
         "probeFailed": "O navegador integrado não conseguiu confirmar que alcança o host remoto pelo túnel. Tente novamente em instantes."
       }
     }
-  },
-  "MentionPanelSettings": {
-    "title": "Painel de menções",
-    "description": "Escolha quais abas o painel @ do campo de entrada mostra e arraste-as para a ordem que preferir. O painel abre na primeira aba com resultados. A aba Arquivos é sempre exibida.",
-    "tabsLabel": "Abas do painel de menções",
-    "reset": "Redefinir",
-    "alwaysShown": "Sempre exibida",
-    "moveTab": "Mover “{name}”: arraste ou pressione as setas para cima e para baixo",
-    "showTab": "Mostrar a aba “{name}”"
-  },
-  "WindowAttentionSettings": {
-    "title": "Alertas na barra de tarefas e no Dock",
-    "descriptionMac": "Faz o ícone do Dock saltar quando um agente precisa de você enquanto você está em outro app.",
-    "descriptionWindows": "Faz o botão da janela piscar na barra de tarefas quando um agente precisa de você e a janela não está em foco.",
-    "descriptionLinux": "Marca a janela como urgente quando um agente precisa de você e ela não está em foco. A aparência depende do seu ambiente de desktop.",
-    "eventsTitle": "Eventos",
-    "eventsHintMac": "“Brevemente” faz o ícone saltar uma vez. “Até você voltar” o mantém saltando até você voltar ao Codeg. Solicitações de permissão incluem aprovações de plano.",
-    "eventsHintWindows": "“Brevemente” faz o botão piscar algumas vezes e o deixa destacado. “Até você voltar” o mantém piscando até você voltar à janela. Solicitações de permissão incluem aprovações de plano.",
-    "eventsHintLinux": "O Linux tem uma única marca de urgência, então os dois níveis mantêm a janela marcada até você voltar a ela. Solicitações de permissão incluem aprovações de plano.",
-    "levelOff": "Desligado",
-    "levelInformational": "Brevemente",
-    "levelCritical": "Até você voltar"
   }
 }

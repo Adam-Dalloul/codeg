@@ -6,10 +6,12 @@
     "switched": "Konto gewechselt. Der Gesprächsverlauf bleibt erhalten.",
     "homeLayout": "Wähle den übergeordneten Ordner, der {path} enthält.",
     "gatewayAccount": "Sitzungen verwenden das auf deinem OpenClaw-Gateway konfigurierte Konto.",
+    "notSupported": "Für diesen Agenten lassen sich noch keine Konten hinzufügen.",
     "account": "Konto",
     "title": "Konten",
     "default": "Standard",
     "defaultDescription": "Verwendet deine bestehende Agent-Anmeldung.",
+    "toolSettingsHint": "Bei einigen Befehlszeilentools müssen Einstellungen oder Anmeldung für jedes Konto separat eingerichtet werden.",
     "add": "Konto hinzufügen",
     "name": "Kontoname",
     "home": "Vorhandener Kontoordner (optional)",
@@ -28,8 +30,7 @@
     "copyCommand": "Anmeldebefehl kopieren",
     "copied": "Anmeldebefehl kopiert",
     "choose": "Wähle ein Konto, um fortzufahren.",
-    "loading": "Konten werden geladen...",
-    "toolSettingsHint": "Bei einigen Befehlszeilentools müssen Einstellungen oder Anmeldung für jedes Konto separat eingerichtet werden."
+    "loading": "Konten werden geladen..."
   },
   "Language": {
     "followSystem": "Systemsprache verwenden",
@@ -1131,6 +1132,19 @@
       "tempReclaimConfirmAction": "Löschen",
       "tempReclaimCancel": "Abbrechen"
     },
+    "kiro": {
+      "configManagement": "Konfiguration",
+      "configDescription": "Kiro CLI speichert Anmeldung, Agenten und MCP-Server in ~/.kiro. Modell, Agent, Thinking und Aufwand stehen nicht hier: Kiro meldet sie über ACP, daher verwalten die Auswahlfelder des Eingabebereichs sie pro Sitzung.",
+      "permissionsTitle": "Berechtigungen",
+      "permissionModeLabel": "Berechtigungsmodus",
+      "permissionModeAsk": "Vor dem Ausführen von Tools fragen (Standard)",
+      "permissionModeTrustAll": "Allen Tools vertrauen (--trust-all-tools)",
+      "permissionModeAskHint": "Kiro legt dir jeden genehmigungspflichtigen Tool-Aufruf (Befehle, Dateischreibzugriffe, …) zuerst vor. Nur-Lese-Tools laufen ohne Nachfrage.",
+      "permissionModeTrustAllHint": "Sitzungen starten mit --trust-all-tools: Jeder Tool-Aufruf läuft ohne Bestätigung, auch Befehle und Dateischreibzugriffe. Gilt für neue Sitzungen.",
+      "apiKeyLabel": "API-Schlüssel (optional)",
+      "apiKeyHint": "Wird der CLI als KIRO_API_KEY übergeben. Leer lassen, um das per kiro-cli login angemeldete Konto zu nutzen; nur nötig, wo keine Browser-Anmeldung möglich ist (Server, Docker).",
+      "saveConfig": "Kiro-Konfiguration speichern"
+    },
     "deepseek": {
       "configManagement": "DeepSeek-Harness-Konfiguration",
       "configDescription": "Endpunkt und Schlüssel sind Umgebungsvariablen, die deepseek-acp beim Start liest. Modell und Denkstufe sind Auswahlfelder pro Sitzung — sie werden im Eingabefeld gewählt.",
@@ -1628,6 +1642,9 @@
       "saveKiroFailed": "Kiro-Konfiguration konnte nicht gespeichert werden",
       "systemAgentAlreadyLatest": "{name} ist bereits aktuell ({version})"
     },
+    "distribution": {
+      "system": "offizieller Installer"
+    },
     "version": {
       "statusLabel": "Versionsstatus",
       "notInstalled": "Nicht installiert",
@@ -1822,22 +1839,6 @@
     "customAgentRemoved": "{name} entfernt",
     "customAgentBadge": "Eigen",
     "customAgentNotLaunchable": "Dieser Agent kann hier nicht gestartet werden: {reason}",
-    "kiro": {
-      "configManagement": "Konfiguration",
-      "configDescription": "Kiro CLI speichert Anmeldung, Agenten und MCP-Server in ~/.kiro. Modell, Agent, Thinking und Aufwand stehen nicht hier: Kiro meldet sie über ACP, daher verwalten die Auswahlfelder des Eingabebereichs sie pro Sitzung.",
-      "permissionsTitle": "Berechtigungen",
-      "permissionModeLabel": "Berechtigungsmodus",
-      "permissionModeAsk": "Vor dem Ausführen von Tools fragen (Standard)",
-      "permissionModeTrustAll": "Allen Tools vertrauen (--trust-all-tools)",
-      "permissionModeAskHint": "Kiro legt dir jeden genehmigungspflichtigen Tool-Aufruf (Befehle, Dateischreibzugriffe, …) zuerst vor. Nur-Lese-Tools laufen ohne Nachfrage.",
-      "permissionModeTrustAllHint": "Sitzungen starten mit --trust-all-tools: Jeder Tool-Aufruf läuft ohne Bestätigung, auch Befehle und Dateischreibzugriffe. Gilt für neue Sitzungen.",
-      "apiKeyLabel": "API-Schlüssel (optional)",
-      "apiKeyHint": "Wird der CLI als KIRO_API_KEY übergeben. Leer lassen, um das per kiro-cli login angemeldete Konto zu nutzen; nur nötig, wo keine Browser-Anmeldung möglich ist (Server, Docker).",
-      "saveConfig": "Kiro-Konfiguration speichern"
-    },
-    "distribution": {
-      "system": "offizieller Installer"
-    },
     "zcode": {
       "adapterInfo": "Codeg startet {adapterPackage} als ACP-Brücke. Installiere zuerst ZCode und melde dich an; die vorhandene Laufzeit und Konfiguration werden verwendet.",
       "runtimeHint": "Installiere zuerst ZCode und melde dich an. Codeg installiert nur die ACP-Brücke. Bei Erkennungsproblemen gib mit ZCODE_BIN den CLI-Einstieg und mit ZCODE_NODE Node.js an. Modelle und Zugangsdaten werden in ZCode verwaltet."
@@ -1923,6 +1924,15 @@
     "restartNow": "Jetzt neu starten",
     "restartFailed": "Neustart fehlgeschlagen: {message}",
     "loadFailed": "Laden fehlgeschlagen: {message}"
+  },
+  "MentionPanelSettings": {
+    "title": "Erwähnungspanel",
+    "description": "Lege fest, welche Tabs das @-Panel im Eingabefeld anzeigt, und ziehe sie in die gewünschte Reihenfolge. Das Panel öffnet sich auf dem ersten Tab mit Treffern. Der Tab „Dateien“ wird immer angezeigt.",
+    "tabsLabel": "Tabs des Erwähnungspanels",
+    "reset": "Zurücksetzen",
+    "alwaysShown": "Immer sichtbar",
+    "moveTab": "„{name}“ verschieben: ziehen oder die Pfeiltasten nach oben und unten drücken",
+    "showTab": "Tab „{name}“ anzeigen"
   },
   "CollaborationSettings": {
     "sectionTitle": "Zusammenarbeit",
@@ -5069,7 +5079,7 @@
     "export": {
       "description": "Packt die codeg-Daten dieses Geräts – Datenbank und hochgeladene Dateien – in ein Archiv.",
       "includeExternal": "Gesprächsinhalte einschließen",
-      "includeExternalHint": "Archiviert auch die CLI-Transkripte (Claude, Codex, Gemini, …). Erhöht die Größe.",
+      "includeExternalHint": "Enthält Gesprächsverläufe aus den Standardordnern der CLIs. Ordner benannter Konten sind nicht enthalten. Sichere diese separat.",
       "passphrase": "Passphrase (optional)",
       "passphrasePlaceholder": "Leer lassen für ein unverschlüsseltes Archiv",
       "passphraseConfirm": "Passphrase bestätigen",
@@ -5417,6 +5427,19 @@
     "eventsHint": "Schalte Ereignisse ab, die dich nicht unterbrechen sollen. Wiederholungen desselben Ereignisses innerhalb weniger Sekunden werden zu einer Benachrichtigung zusammengefasst. Berechtigungsanfragen umfassen auch Plan-Genehmigungen.",
     "eventBackgroundTask": "Hintergrundaufgabe",
     "eventWorkTask": "Arbeitsaufgabe"
+  },
+  "WindowAttentionSettings": {
+    "title": "Taskleisten- und Dock-Hinweise",
+    "descriptionMac": "Lässt das Dock-Symbol hüpfen, wenn ein Agent dich braucht, während du in einer anderen App bist.",
+    "descriptionWindows": "Lässt die Taskleisten-Schaltfläche des Fensters blinken, wenn ein Agent dich braucht und das Fenster nicht fokussiert ist.",
+    "descriptionLinux": "Markiert das Fenster als dringend, wenn ein Agent dich braucht und es nicht fokussiert ist. Wie das aussieht, hängt von deiner Desktop-Umgebung ab.",
+    "eventsTitle": "Ereignisse",
+    "eventsHintMac": "„Kurz“ lässt das Symbol einmal hüpfen. „Bis du zurück bist“ lässt es hüpfen, bis du zu Codeg zurückwechselst. Berechtigungsanfragen umfassen auch Plan-Genehmigungen.",
+    "eventsHintWindows": "„Kurz“ lässt die Schaltfläche ein paar Mal blinken und hebt sie danach hervor. „Bis du zurück bist“ lässt sie blinken, bis du zum Fenster zurückwechselst. Berechtigungsanfragen umfassen auch Plan-Genehmigungen.",
+    "eventsHintLinux": "Linux kennt nur eine Dringlichkeitsmarkierung, daher bleibt das Fenster bei beiden Stufen markiert, bis du zu ihm zurückwechselst. Berechtigungsanfragen umfassen auch Plan-Genehmigungen.",
+    "levelOff": "Aus",
+    "levelInformational": "Kurz",
+    "levelCritical": "Bis du zurück bist"
   },
   "NotificationSoundSettings": {
     "title": "Benachrichtigungstöne",
@@ -7309,27 +7332,5 @@
         "probeFailed": "Der integrierte Browser konnte nicht bestätigen, dass er den entfernten Host über den Tunnel erreicht. Versuche es gleich noch einmal."
       }
     }
-  },
-  "MentionPanelSettings": {
-    "title": "Erwähnungspanel",
-    "description": "Lege fest, welche Tabs das @-Panel im Eingabefeld anzeigt, und ziehe sie in die gewünschte Reihenfolge. Das Panel öffnet sich auf dem ersten Tab mit Treffern. Der Tab „Dateien“ wird immer angezeigt.",
-    "tabsLabel": "Tabs des Erwähnungspanels",
-    "reset": "Zurücksetzen",
-    "alwaysShown": "Immer sichtbar",
-    "moveTab": "„{name}“ verschieben: ziehen oder die Pfeiltasten nach oben und unten drücken",
-    "showTab": "Tab „{name}“ anzeigen"
-  },
-  "WindowAttentionSettings": {
-    "title": "Taskleisten- und Dock-Hinweise",
-    "descriptionMac": "Lässt das Dock-Symbol hüpfen, wenn ein Agent dich braucht, während du in einer anderen App bist.",
-    "descriptionWindows": "Lässt die Taskleisten-Schaltfläche des Fensters blinken, wenn ein Agent dich braucht und das Fenster nicht fokussiert ist.",
-    "descriptionLinux": "Markiert das Fenster als dringend, wenn ein Agent dich braucht und es nicht fokussiert ist. Wie das aussieht, hängt von deiner Desktop-Umgebung ab.",
-    "eventsTitle": "Ereignisse",
-    "eventsHintMac": "„Kurz“ lässt das Symbol einmal hüpfen. „Bis du zurück bist“ lässt es hüpfen, bis du zu Codeg zurückwechselst. Berechtigungsanfragen umfassen auch Plan-Genehmigungen.",
-    "eventsHintWindows": "„Kurz“ lässt die Schaltfläche ein paar Mal blinken und hebt sie danach hervor. „Bis du zurück bist“ lässt sie blinken, bis du zum Fenster zurückwechselst. Berechtigungsanfragen umfassen auch Plan-Genehmigungen.",
-    "eventsHintLinux": "Linux kennt nur eine Dringlichkeitsmarkierung, daher bleibt das Fenster bei beiden Stufen markiert, bis du zu ihm zurückwechselst. Berechtigungsanfragen umfassen auch Plan-Genehmigungen.",
-    "levelOff": "Aus",
-    "levelInformational": "Kurz",
-    "levelCritical": "Bis du zurück bist"
   }
 }
