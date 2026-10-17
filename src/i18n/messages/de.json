@@ -4213,7 +4213,7 @@
         "blockedSameStore": "Diese Optionen verwenden denselben Kontoordner. Wähle ein anderes Konto.",
         "blockedRemoteContext": "Wähle einen lokalen Agenten, um den gespeicherten Verlauf zu übertragen.",
         "planNativeContext": "Setze dieselbe Claude-Sitzung mit {target} fort. Einstellungen und Erinnerungen des gewählten Kontos gelten.",
-        "planPortableContext": "{target} startet eine neue Sitzung mit Zugriff auf den gesamten gespeicherten Chat, Werkzeugaufzeichnungen und eingebettete Bilder. Lange Verläufe bleiben als Transkript verfügbar.",
+        "planPortableContext": "{target} startet eine neue Sitzung mit Zugriff auf den gesamten gespeicherten Chat, Werkzeugaufzeichnungen und eingebettete Bilder.",
         "continueAfterRetry": "Die Unterhaltung wurde übertragen. Sende eine Nachricht, um mit dem gespeicherten Kontext fortzufahren.",
         "reconnectAfterSwitch": "Die Unterhaltung wurde übertragen, aber dieses Fenster konnte sich nicht neu verbinden. Öffne den Chat erneut.",
         "retry": "Erneut versuchen",

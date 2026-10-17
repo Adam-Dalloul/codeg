@@ -4213,7 +4213,7 @@
         "blockedSameStore": "These choices use the same account folder. Choose another account.",
         "blockedRemoteContext": "Choose a local agent to carry this chat’s saved history.",
         "planNativeContext": "Resume the same Claude session with {target}. The selected account’s settings and memory apply.",
-        "planPortableContext": "{target} starts a new session with access to the complete saved chat, tool records and embedded images. Long histories remain available in a transcript.",
+        "planPortableContext": "{target} starts a new session with access to the complete saved chat, tool records and embedded images.",
         "continueAfterRetry": "The conversation switched. Send a message to continue with the saved context.",
         "reconnectAfterSwitch": "The conversation switched, but this window could not reconnect. Reopen the chat to continue.",
         "retry": "Try again",

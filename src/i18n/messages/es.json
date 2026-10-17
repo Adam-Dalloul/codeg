@@ -4213,7 +4213,7 @@
         "blockedSameStore": "Estas opciones usan la misma carpeta de cuenta. Elige otra cuenta.",
         "blockedRemoteContext": "Elige un agente local para transferir el historial guardado.",
         "planNativeContext": "Reanuda la misma sesión de Claude con {target}. Se aplican la configuración y la memoria de la cuenta elegida.",
-        "planPortableContext": "{target} inicia una sesión con acceso a toda la conversación guardada, los registros de herramientas y las imágenes incorporadas. Los historiales largos siguen disponibles en una transcripción.",
+        "planPortableContext": "{target} inicia una sesión con acceso a toda la conversación guardada, los registros de herramientas y las imágenes incorporadas.",
         "continueAfterRetry": "La conversación se transfirió. Envía un mensaje para continuar con el contexto guardado.",
         "reconnectAfterSwitch": "La conversación se transfirió, pero esta ventana no pudo reconectarse. Vuelve a abrir el chat.",
         "retry": "Reintentar",

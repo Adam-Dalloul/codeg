@@ -4213,7 +4213,7 @@
         "blockedSameStore": "这些选项使用同一账户文件夹。请选择其他账户。",
         "blockedRemoteContext": "请选择本地智能体以传递已保存的对话记录。",
         "planNativeContext": "使用 {target} 恢复同一 Claude 会话。将应用所选账户的设置和记忆。",
-        "planPortableContext": "{target} 将启动新会话，可访问全部已保存的聊天、工具记录和嵌入图片。较长的历史记录仍可通过记录文件读取。",
+        "planPortableContext": "{target} 将启动新会话，可访问全部已保存的聊天、工具记录和嵌入图片。",
         "continueAfterRetry": "对话已切换。发送消息即可使用已保存的上下文继续。",
         "reconnectAfterSwitch": "对话已切换，但此窗口无法重新连接。请重新打开聊天。",
         "retry": "重试",

@@ -4213,7 +4213,7 @@
         "blockedSameStore": "這些選項使用相同的帳戶資料夾。請選擇其他帳戶。",
         "blockedRemoteContext": "請選擇本機智慧體以傳遞已儲存的對話記錄。",
         "planNativeContext": "使用 {target} 恢復同一 Claude 工作階段。將套用所選帳戶的設定和記憶。",
-        "planPortableContext": "{target} 將啟動新工作階段，可存取全部已儲存的聊天、工具記錄和內嵌圖片。較長的歷史記錄仍可透過記錄檔讀取。",
+        "planPortableContext": "{target} 將啟動新工作階段，可存取全部已儲存的聊天、工具記錄和內嵌圖片。",
         "continueAfterRetry": "對話已切換。傳送訊息即可使用已儲存的上下文繼續。",
         "reconnectAfterSwitch": "對話已切換，但此視窗無法重新連線。請重新開啟聊天。",
         "retry": "重試",

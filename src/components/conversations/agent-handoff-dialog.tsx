@@ -245,7 +245,7 @@ export function AgentHandoffDialog({
           if (!pending.current) onOpenChange(next)
         }}
       >
-        <DialogContent className="max-h-[85dvh] overflow-y-auto sm:max-w-lg max-sm:[&_button]:min-h-11">
+        <DialogContent className="max-h-[calc(100dvh-2rem)] overflow-y-auto sm:max-w-lg max-sm:[&_button]:min-h-11">
           <DialogHeader>
             <DialogTitle>{t("dialogTitle")}</DialogTitle>
             <DialogDescription>{t("dialogDescription")}</DialogDescription>

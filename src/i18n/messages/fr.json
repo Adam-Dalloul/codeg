@@ -4213,7 +4213,7 @@
         "blockedSameStore": "Ces choix utilisent le même dossier de compte. Choisissez un autre compte.",
         "blockedRemoteContext": "Choisissez un agent local pour transmettre l’historique enregistré.",
         "planNativeContext": "Reprenez la même session Claude avec {target}. Les paramètres et la mémoire du compte choisi s’appliquent.",
-        "planPortableContext": "{target} démarre une nouvelle session avec accès à tout l’historique enregistré, aux résultats des outils et aux images intégrées. Les longs historiques restent accessibles dans une transcription.",
+        "planPortableContext": "{target} démarre une nouvelle session avec accès à tout l’historique enregistré, aux résultats des outils et aux images intégrées.",
         "continueAfterRetry": "La conversation a changé d’agent. Envoyez un message pour continuer avec le contexte enregistré.",
         "reconnectAfterSwitch": "La conversation a été transférée, mais cette fenêtre n’a pas pu se reconnecter. Rouvrez la conversation.",
         "retry": "Réessayer",
