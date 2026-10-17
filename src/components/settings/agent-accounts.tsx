@@ -80,7 +80,7 @@ export function AgentAccounts({ agentType }: { agentType: AgentType }) {
 
   return (
     <>
-      <SettingCard>
+      <SettingCard className="max-sm:[&_button]:min-h-11 max-sm:[&_button]:min-w-11 max-sm:[&_input]:min-h-11">
         <SettingRow
           icon={Users}
           title={t("title")}

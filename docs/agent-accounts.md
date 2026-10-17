@@ -14,7 +14,7 @@ Choose **Continue** to save the account and start setup. Desktop opens the
 agent's official sign-in. In the web interface, copy the displayed command and
 run it on the computer hosting Codeg. **Check sign-in** checks Claude Code or
 Codex after you finish. Opening sign-in does not mean it has completed.
-Then choose the named account in a chat's account menu or mention it with `@`.
+Then choose the named account in a chat's account menu.
 
 Use **Set up** to reconnect an existing account or change its connection
 method. Close its chats before replacing an API key or changing Claude to

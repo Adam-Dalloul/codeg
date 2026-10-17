@@ -233,6 +233,7 @@ export function AccountSetup({
               >
                 <SelectTrigger
                   id={`account-method-${agentType}`}
+                  autoFocus={Boolean(account)}
                   className="w-full"
                   aria-label={t("connectionMethod")}
                 >
@@ -429,6 +430,7 @@ export function AccountSetup({
         {!started && (
           <Button
             type="submit"
+            autoFocus={Boolean(account) && methods.length === 1}
             size="sm"
             disabled={
               busy ||
