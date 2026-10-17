@@ -479,7 +479,7 @@ mod tests {
         let conn = Database::connect("sqlite::memory:").await.unwrap();
         let migrations = Migrator::migrations();
         let account_migration = migrations.iter().position(|migration| {
-            migration.name() == "m20261011_000001_agent_account"
+            migration.name() == "m20261017_000001_agent_account"
         }).expect("native account migration is registered");
         Migrator::up(&conn, Some(account_migration as u32))
             .await
@@ -548,6 +548,27 @@ mod tests {
             .is_some());
     }
 
+    #[test]
+    fn account_migration_runs_after_every_released_migration() {
+        use crate::db::migration::Migrator;
+        use sea_orm_migration::MigratorTrait;
+
+        // A backup records only the last registered migration, and a release
+        // restores any backup whose last migration it knows. If this migration
+        // came before one that v0.36.0 shipped, v0.36.0 would restore this
+        // build's backups and then fail to start: it has no file for it.
+        let names: Vec<String> = Migrator::migrations()
+            .iter()
+            .map(|migration| migration.name().to_string())
+            .collect();
+        let position = |name: &str| names.iter().position(|n| n == name).expect(name);
+        // The newest migration in v0.36.0.
+        assert!(
+            position("m20261017_000001_agent_account")
+                > position("m20261016_000002_conversation_assistant")
+        );
+    }
+
     #[tokio::test]
     async fn account_migration_can_follow_newer_release_migrations() {
         use crate::db::migration::Migrator;
@@ -561,7 +582,7 @@ mod tests {
         impl MigratorTrait for ReleasedSchema {
             fn migrations() -> Vec<Box<dyn MigrationTrait>> {
                 Migrator::migrations().into_iter().filter(|migration| {
-                    migration.name() != "m20261011_000001_agent_account"
+                    migration.name() != "m20261017_000001_agent_account"
                 }).collect()
             }
         }
