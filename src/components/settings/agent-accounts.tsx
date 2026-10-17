@@ -2,24 +2,11 @@
 
 import { useState } from "react"
 import { useTranslations } from "next-intl"
-import { Copy, LogIn, Pencil, Plus, Trash2, Users } from "lucide-react"
-import { toast } from "sonner"
+import { LogIn, Pencil, Plus, Trash2, Users } from "lucide-react"
 import { SettingCard, SettingRow } from "@/components/shared/setting-card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select"
-import {
-  HeadlessSignIn,
-  type AntigravityAuthMethod,
-} from "./antigravity-config-panel"
-import { copyTextToClipboard } from "@/lib/utils"
 import {
   AlertDialog,
   AlertDialogAction,
@@ -32,18 +19,16 @@ import {
 } from "@/components/ui/alert-dialog"
 import { useAgentAccounts } from "@/hooks/use-agent-accounts"
 import {
-  createAgentAccount,
-  renameAgentAccount,
   removeAgentAccount,
-  loginAgentAccount,
+  renameAgentAccount,
   type AgentAccount,
 } from "@/lib/agent-accounts"
 import { toErrorMessage } from "@/lib/app-error"
 import type { AgentType } from "@/lib/types"
+import { AccountSetup } from "./account-setup"
 
 export function AgentAccounts({ agentType }: { agentType: AgentType }) {
   const t = useTranslations("AgentAccounts")
-  const agentText = useTranslations("AcpAgentSettings")
   const {
     accounts,
     capability,
@@ -51,51 +36,17 @@ export function AgentAccounts({ agentType }: { agentType: AgentType }) {
     error: loadError,
     refresh,
   } = useAgentAccounts(agentType)
-  const [editing, setEditing] = useState<AgentAccount | "new" | null>(null)
+  const [setup, setSetup] = useState<AgentAccount | "new" | null>(null)
+  const [renaming, setRenaming] = useState<AgentAccount | null>(null)
   const [name, setName] = useState("")
-  const [home, setHome] = useState("")
   const [removing, setRemoving] = useState<AgentAccount | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [loginAccount, setLoginAccount] = useState<AgentAccount | null>(null)
-  const [loginCommand, setLoginCommand] = useState<string | null>(null)
-  const [loginMethod, setLoginMethod] =
-    useState<AntigravityAuthMethod>("oauth-personal")
-
-  async function signIn(account: AgentAccount) {
-    setLoginAccount(account)
-    setLoginCommand(null)
-    setError(null)
-    if (capability?.loginKind === "browser") return
-    setBusy(true)
-    try {
-      const result = await loginAgentAccount(account.id)
-      if (result.launched)
-        toast.success(
-          agentText("customAgentSignInLaunched", { home: result.home })
-        )
-      else setLoginCommand(result.command)
-    } catch (err) {
-      setError(toErrorMessage(err))
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  async function save() {
-    setBusy(true)
-    setError(null)
-    try {
-      if (editing === "new") await createAgentAccount(agentType, name, home)
-      else if (editing) await renameAgentAccount(editing.id, name)
-      setEditing(null)
-      await refresh()
-    } catch (err) {
-      setError(toErrorMessage(err))
-    } finally {
-      setBusy(false)
-    }
-  }
+  const available = accounts.filter((account) => !account.removed)
+  const names = new Set(available.map((account) => account.name.toLowerCase()))
+  let number = 1
+  while (names.has(t("suggestedName", { number }).toLowerCase())) number++
+  const suggestedName = t("suggestedName", { number })
 
   if (loading)
     return (
@@ -137,11 +88,9 @@ export function AgentAccounts({ agentType }: { agentType: AgentType }) {
             <Button
               size="sm"
               variant="outline"
-              disabled={busy || editing !== null}
+              disabled={busy || setup !== null || renaming !== null}
               onClick={() => {
-                setEditing("new")
-                setName("")
-                setHome("")
+                setSetup("new")
                 setError(null)
               }}
             >
@@ -152,131 +101,102 @@ export function AgentAccounts({ agentType }: { agentType: AgentType }) {
         />
         <SettingRow
           title={t("default")}
-          description={t("defaultDescription")}
+          description={t("defaultSetupDescription")}
         />
         {capability.isolatesToolSettings && (
-          <p className="px-4 pb-3 text-xs text-muted-foreground">
+          <p className="px-3 pb-3 text-xs text-muted-foreground">
             {t("toolSettingsHint")}
           </p>
         )}
-        {accounts
-          .filter((account) => !account.removed)
-          .map((account) => (
-            <SettingRow
-              key={account.id}
-              title={account.name}
-              description={<span className="break-all">{account.homeDir}</span>}
-              control={
-                <div className="flex gap-1">
-                  <Button
-                    variant="ghost"
-                    size="icon-sm"
-                    disabled={busy}
-                    aria-label={`${t("signIn")}: ${account.name}`}
-                    onClick={() => void signIn(account)}
-                  >
-                    <LogIn className="size-3.5" />
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="icon-sm"
-                    disabled={busy || editing !== null}
-                    aria-label={t("rename", { name: account.name })}
-                    onClick={() => {
-                      setEditing(account)
-                      setName(account.name)
-                      setError(null)
-                    }}
-                  >
-                    <Pencil className="size-3.5" />
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="icon-sm"
-                    disabled={busy}
-                    aria-label={t("remove", { name: account.name })}
-                    onClick={() => setRemoving(account)}
-                  >
-                    <Trash2 className="size-3.5" />
-                  </Button>
-                </div>
-              }
-            />
-          ))}
-        {loginAccount &&
-          (loginCommand || capability?.loginKind === "browser") && (
-            <div className="min-w-0 space-y-3 p-3">
-              <p className="text-sm font-medium">{loginAccount.name}</p>
-              {capability?.loginKind === "browser" ? (
-                <>
-                  <Select
-                    value={loginMethod}
-                    onValueChange={(value) =>
-                      setLoginMethod(value as AntigravityAuthMethod)
-                    }
-                  >
-                    <SelectTrigger aria-label={t("signIn")}>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {(["oauth-personal", "oauth-business"] as const).map(
-                        (method) => (
-                          <SelectItem key={method} value={method}>
-                            {agentText(`antigravity.methods.${method}`)}
-                          </SelectItem>
-                        )
-                      )}
-                    </SelectContent>
-                  </Select>
-                  <HeadlessSignIn
-                    key={loginAccount.id}
-                    method={loginMethod}
-                    accountId={loginAccount.id}
-                    disabled={busy}
-                    needsSave={false}
-                  />
-                </>
-              ) : (
-                <>
-                  <pre className="whitespace-pre-wrap break-all text-xs">
-                    {agentText("customAgentSignInCommand", {
-                      command: loginCommand ?? "",
-                    })}
-                  </pre>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={async () => {
-                      if (
-                        loginCommand &&
-                        (await copyTextToClipboard(loginCommand))
-                      )
-                        toast.success(t("copied"))
-                    }}
-                  >
-                    <Copy className="size-3.5" />
-                    {t("copyCommand")}
-                  </Button>
-                </>
-              )}
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => {
-                  setLoginAccount(null)
-                  setLoginCommand(null)
-                }}
-              >
-                {t("cancel")}
-              </Button>
-            </div>
-          )}
-        {editing && (
+        {available.length === 0 && setup === null && (
+          <p className="px-3 pb-3 text-xs text-muted-foreground">
+            {t("emptyHint")}
+          </p>
+        )}
+        {available.map((account) => (
+          <SettingRow
+            key={account.id}
+            title={<span className="break-all">{account.name}</span>}
+            description={t("accountDescription")}
+            control={
+              <div className="flex items-center gap-1">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={busy || setup !== null || renaming !== null}
+                  aria-label={`${t("connect")}: ${account.name}`}
+                  onClick={() => {
+                    setSetup(account)
+                    setError(null)
+                  }}
+                >
+                  <LogIn className="size-3.5" />
+                  {t("connect")}
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  disabled={busy || setup !== null || renaming !== null}
+                  aria-label={t("rename", { name: account.name })}
+                  onClick={() => {
+                    setRenaming(account)
+                    setName(account.name)
+                    setError(null)
+                  }}
+                >
+                  <Pencil className="size-3.5" />
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  disabled={busy || setup !== null || renaming !== null}
+                  aria-label={t("remove", { name: account.name })}
+                  onClick={() => {
+                    setRemoving(account)
+                    setError(null)
+                  }}
+                >
+                  <Trash2 className="size-3.5" />
+                </Button>
+              </div>
+            }
+          >
+            <details className="text-xs text-muted-foreground">
+              <summary className="cursor-pointer py-1">
+                {t("accountDetails")}
+              </summary>
+              <p className="break-all py-1">{account.homeDir}</p>
+            </details>
+          </SettingRow>
+        ))}
+        {setup && (
+          <AccountSetup
+            key={setup === "new" ? "new" : setup.id}
+            agentType={agentType}
+            capability={capability}
+            account={setup === "new" ? undefined : setup}
+            suggestedName={suggestedName}
+            onCreated={refresh}
+            onClose={() => setSetup(null)}
+          />
+        )}
+        {renaming && (
           <form
             className="space-y-3 p-3"
-            onSubmit={(event) => {
+            onSubmit={async (event) => {
               event.preventDefault()
-              void save()
+              if (busy) return
+              setBusy(true)
+              setError(null)
+              try {
+                await renameAgentAccount(renaming.id, name)
+                setRenaming(null)
+                await refresh()
+              } catch (err) {
+                setError(toErrorMessage(err))
+              } finally {
+                setBusy(false)
+              }
             }}
           >
             <div className="space-y-1.5">
@@ -290,27 +210,6 @@ export function AgentAccounts({ agentType }: { agentType: AgentType }) {
                 autoFocus
               />
             </div>
-            {editing === "new" && (
-              <div className="space-y-1.5">
-                <Label htmlFor={`account-home-${agentType}`}>{t("home")}</Label>
-                <Input
-                  id={`account-home-${agentType}`}
-                  value={home}
-                  disabled={busy}
-                  onChange={(event) => setHome(event.target.value)}
-                  aria-describedby={`account-home-hint-${agentType}`}
-                />
-                <p
-                  id={`account-home-hint-${agentType}`}
-                  className="text-xs text-muted-foreground"
-                >
-                  {t("homeHint")}
-                  {capability.configSubdir
-                    ? ` ${t("homeLayout", { path: capability.configSubdir })}`
-                    : ""}
-                </p>
-              </div>
-            )}
             <div className="flex gap-2">
               <Button type="submit" size="sm" disabled={busy || !name.trim()}>
                 {t("save")}
@@ -320,14 +219,19 @@ export function AgentAccounts({ agentType }: { agentType: AgentType }) {
                 size="sm"
                 variant="outline"
                 disabled={busy}
-                onClick={() => setEditing(null)}
+                onClick={() => setRenaming(null)}
               >
                 {t("cancel")}
               </Button>
             </div>
           </form>
         )}
-        {error && (
+        {capability.isolatesToolSettings && (
+          <p className="px-3 pb-3 text-xs text-muted-foreground">
+            {t("toolSettingsHint")}
+          </p>
+        )}
+        {error && !removing && (
           <p role="alert" className="p-3 text-sm text-destructive">
             {error}
           </p>
@@ -340,11 +244,6 @@ export function AgentAccounts({ agentType }: { agentType: AgentType }) {
         }}
       >
         <AlertDialogContent>
-          {error && (
-            <p role="alert" className="text-sm text-destructive">
-              {error}
-            </p>
-          )}
           <AlertDialogHeader>
             <AlertDialogTitle>
               {t("removeTitle", { name: removing?.name ?? "" })}
@@ -353,13 +252,18 @@ export function AgentAccounts({ agentType }: { agentType: AgentType }) {
               {t("removeDescription", { path: removing?.homeDir ?? "" })}
             </AlertDialogDescription>
           </AlertDialogHeader>
+          {error && (
+            <p role="alert" className="text-sm text-destructive">
+              {error}
+            </p>
+          )}
           <AlertDialogFooter>
             <AlertDialogCancel disabled={busy}>{t("cancel")}</AlertDialogCancel>
             <AlertDialogAction
               disabled={busy}
               onClick={async (event) => {
                 event.preventDefault()
-                if (!removing) return
+                if (!removing || busy) return
                 setBusy(true)
                 setError(null)
                 try {

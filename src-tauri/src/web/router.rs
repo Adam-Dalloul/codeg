@@ -1183,6 +1183,8 @@ pub fn build_router(
         .route("/acp_rename_agent_account", post(handlers::agent_accounts::rename))
         .route("/acp_remove_agent_account", post(handlers::agent_accounts::remove))
         .route("/acp_login_agent_account", post(handlers::agent_accounts::login))
+        .route("/acp_set_agent_account_api_key", post(handlers::agent_accounts::set_api_key))
+        .route("/acp_check_agent_account_auth", post(handlers::agent_accounts::check_auth))
         .route("/acp_switch_conversation_account", post(handlers::agent_accounts::switch_conversation))
         .route(
             "/acp_login_extra_agent",
