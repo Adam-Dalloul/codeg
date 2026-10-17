@@ -29132,10 +29132,13 @@ mod tests {
                     )
                     .connect_with(agent_end, async move |cx: ConnectionTo<Client>| {
                         cx.incoming_closed().await;
-                        let _ = closed_tx.send(());
                         Ok(())
                     })
                     .await;
+                // Transport shutdown can finish connect_with before its main
+                // callback observes incoming_closed. Report completion outside
+                // that callback so either shutdown path wakes the test.
+                let _ = closed_tx.send(());
             });
             Self {
                 seen,
