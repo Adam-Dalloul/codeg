@@ -8534,7 +8534,9 @@ mod tests {
         let mgr = ConnectionManager::new();
         let source = tempfile::tempdir().unwrap();
         let target = tempfile::tempdir().unwrap();
-        insert_fake_connection(&mgr, "remote-switch", AgentType::ClaudeCode, None, EventEmitter::Noop).await;
+        let mut commands = mgr
+            .insert_test_connection_live("remote-switch", AgentType::ClaudeCode, None, EventEmitter::Noop)
+            .await;
         let state = mgr.get_state("remote-switch").await.unwrap();
         {
             let mut state = state.write().await;
@@ -8553,12 +8555,21 @@ mod tests {
         assert!(error.to_string().contains("Turn off Remote Control"));
         assert!(mgr.get_state("remote-switch").await.is_some());
         assert!(state.read().await.remote_control.is_some());
+        assert!(matches!(commands.try_recv(), Err(mpsc::error::TryRecvError::Empty)));
         state.write().await.apply_event(&crate::acp::types::AcpEvent::RemoteControl {
             remote_control: None,
+        });
+        let stopped = tokio::spawn({
+            let state = state.clone();
+            async move {
+                assert!(matches!(commands.recv().await, Some(ConnectionCommand::Disconnect)));
+                state.write().await.status = ConnectionStatus::Disconnected;
+            }
         });
         mgr.quiesce_account_session(&barrier, source.path(), target.path(), "remote-session")
             .await
             .unwrap();
+        stopped.await.unwrap();
         assert!(mgr.get_state("remote-switch").await.is_none());
     }
 
