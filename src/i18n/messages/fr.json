@@ -1129,6 +1129,19 @@
       "tempReclaimConfirmAction": "Supprimer",
       "tempReclaimCancel": "Annuler"
     },
+    "kiro": {
+      "configManagement": "Configuration",
+      "configDescription": "Kiro CLI conserve sa connexion, ses agents et ses serveurs MCP dans ~/.kiro. Le modèle, l'agent, la réflexion et l'effort ne sont pas ici : Kiro les signale via ACP, donc les sélecteurs de la zone de saisie les gèrent par session.",
+      "permissionsTitle": "Autorisations",
+      "permissionModeLabel": "Mode d'autorisation",
+      "permissionModeAsk": "Demander avant d'exécuter les outils (par défaut)",
+      "permissionModeTrustAll": "Faire confiance à tous les outils (--trust-all-tools)",
+      "permissionModeAskHint": "Kiro vous soumet d'abord chaque appel qui demande une approbation (commandes, écriture de fichiers, …). Les outils en lecture seule s'exécutent sans demander.",
+      "permissionModeTrustAllHint": "Les sessions démarrent avec --trust-all-tools : chaque appel d'outil s'exécute sans confirmation, y compris les commandes et l'écriture de fichiers. S'applique aux nouvelles sessions.",
+      "apiKeyLabel": "Clé d'API (facultative)",
+      "apiKeyHint": "Transmise à la CLI en tant que KIRO_API_KEY. Laissez vide pour utiliser le compte connecté via kiro-cli login ; nécessaire seulement là où la connexion par navigateur est impossible (serveurs, Docker).",
+      "saveConfig": "Enregistrer la configuration Kiro"
+    },
     "deepseek": {
       "configManagement": "Configuration de DeepSeek Harness",
       "configDescription": "Le point de terminaison et la clé sont des variables d'environnement que deepseek-acp lit au démarrage. Le modèle et le niveau de raisonnement sont des sélecteurs par session : ils se choisissent dans le champ de saisie.",
@@ -1626,6 +1639,9 @@
       "saveKiroFailed": "Impossible d'enregistrer la configuration Kiro",
       "systemAgentAlreadyLatest": "{name} est déjà à jour ({version})"
     },
+    "distribution": {
+      "system": "installateur officiel"
+    },
     "version": {
       "statusLabel": "Statut de version",
       "notInstalled": "Non installé",
@@ -1820,22 +1836,6 @@
     "customAgentRemoved": "{name} supprimé",
     "customAgentBadge": "Personnalisé",
     "customAgentNotLaunchable": "Cet agent ne peut pas démarrer ici : {reason}",
-    "kiro": {
-      "configManagement": "Configuration",
-      "configDescription": "Kiro CLI conserve sa connexion, ses agents et ses serveurs MCP dans ~/.kiro. Le modèle, l'agent, la réflexion et l'effort ne sont pas ici : Kiro les signale via ACP, donc les sélecteurs de la zone de saisie les gèrent par session.",
-      "permissionsTitle": "Autorisations",
-      "permissionModeLabel": "Mode d'autorisation",
-      "permissionModeAsk": "Demander avant d'exécuter les outils (par défaut)",
-      "permissionModeTrustAll": "Faire confiance à tous les outils (--trust-all-tools)",
-      "permissionModeAskHint": "Kiro vous soumet d'abord chaque appel qui demande une approbation (commandes, écriture de fichiers, …). Les outils en lecture seule s'exécutent sans demander.",
-      "permissionModeTrustAllHint": "Les sessions démarrent avec --trust-all-tools : chaque appel d'outil s'exécute sans confirmation, y compris les commandes et l'écriture de fichiers. S'applique aux nouvelles sessions.",
-      "apiKeyLabel": "Clé d'API (facultative)",
-      "apiKeyHint": "Transmise à la CLI en tant que KIRO_API_KEY. Laissez vide pour utiliser le compte connecté via kiro-cli login ; nécessaire seulement là où la connexion par navigateur est impossible (serveurs, Docker).",
-      "saveConfig": "Enregistrer la configuration Kiro"
-    },
-    "distribution": {
-      "system": "installateur officiel"
-    },
     "zcode": {
       "adapterInfo": "Codeg exécute {adapterPackage} comme passerelle ACP. Installez ZCode et connectez-vous d’abord ; son environnement et sa configuration existants sont utilisés.",
       "runtimeHint": "Installez ZCode et connectez-vous d’abord. Codeg installe uniquement la passerelle ACP. Si la détection échoue, indiquez l’entrée CLI avec ZCODE_BIN et Node.js avec ZCODE_NODE. Gérez modèles et identifiants dans ZCode."
@@ -1921,6 +1921,15 @@
     "restartNow": "Redémarrer maintenant",
     "restartFailed": "Échec du redémarrage : {message}",
     "loadFailed": "Échec du chargement : {message}"
+  },
+  "MentionPanelSettings": {
+    "title": "Panneau de mentions",
+    "description": "Choisissez les onglets qu'affiche le panneau @ de la zone de saisie et faites-les glisser dans l'ordre voulu. Le panneau s'ouvre sur le premier onglet qui contient des résultats. L'onglet Fichiers est toujours affiché.",
+    "tabsLabel": "Onglets du panneau de mentions",
+    "reset": "Réinitialiser",
+    "alwaysShown": "Toujours affiché",
+    "moveTab": "Déplacer « {name} » : faites glisser ou appuyez sur les flèches haut et bas",
+    "showTab": "Afficher l'onglet « {name} »"
   },
   "CollaborationSettings": {
     "sectionTitle": "Collaboration",
@@ -5416,6 +5425,19 @@
     "eventBackgroundTask": "Tâche en arrière-plan",
     "eventWorkTask": "Tâche de travail"
   },
+  "WindowAttentionSettings": {
+    "title": "Alertes de la barre des tâches et du Dock",
+    "descriptionMac": "Fait rebondir l'icône du Dock quand un agent a besoin de vous pendant que vous êtes dans une autre app.",
+    "descriptionWindows": "Fait clignoter le bouton de la fenêtre dans la barre des tâches quand un agent a besoin de vous et que la fenêtre n'est pas active.",
+    "descriptionLinux": "Marque la fenêtre comme urgente quand un agent a besoin de vous et qu'elle n'est pas active. Le rendu dépend de votre environnement de bureau.",
+    "eventsTitle": "Événements",
+    "eventsHintMac": "« Brièvement » fait rebondir l'icône une fois. « Jusqu'à votre retour » la fait rebondir jusqu'à ce que vous reveniez dans Codeg. Les demandes d'autorisation incluent les validations de plan.",
+    "eventsHintWindows": "« Brièvement » fait clignoter le bouton quelques fois puis le laisse en surbrillance. « Jusqu'à votre retour » le fait clignoter jusqu'à ce que vous reveniez à la fenêtre. Les demandes d'autorisation incluent les validations de plan.",
+    "eventsHintLinux": "Linux n'a qu'une seule marque d'urgence : aux deux niveaux, la fenêtre reste marquée jusqu'à ce que vous y reveniez. Les demandes d'autorisation incluent les validations de plan.",
+    "levelOff": "Désactivé",
+    "levelInformational": "Brièvement",
+    "levelCritical": "Jusqu'à votre retour"
+  },
   "NotificationSoundSettings": {
     "title": "Sons de notification",
     "description": "Joue un son bref lorsqu’un événement d’agent se produit. Ce sont les mêmes événements que ceux envoyés aux canaux de discussion ; ce réglage ne s’applique qu’à cet appareil.",
@@ -7291,27 +7313,5 @@
         "probeFailed": "Le navigateur intégré n'a pas pu confirmer qu'il atteint l'hôte distant par le tunnel. Réessayez dans un instant."
       }
     }
-  },
-  "MentionPanelSettings": {
-    "title": "Panneau de mentions",
-    "description": "Choisissez les onglets qu'affiche le panneau @ de la zone de saisie et faites-les glisser dans l'ordre voulu. Le panneau s'ouvre sur le premier onglet qui contient des résultats. L'onglet Fichiers est toujours affiché.",
-    "tabsLabel": "Onglets du panneau de mentions",
-    "reset": "Réinitialiser",
-    "alwaysShown": "Toujours affiché",
-    "moveTab": "Déplacer « {name} » : faites glisser ou appuyez sur les flèches haut et bas",
-    "showTab": "Afficher l'onglet « {name} »"
-  },
-  "WindowAttentionSettings": {
-    "title": "Alertes de la barre des tâches et du Dock",
-    "descriptionMac": "Fait rebondir l'icône du Dock quand un agent a besoin de vous pendant que vous êtes dans une autre app.",
-    "descriptionWindows": "Fait clignoter le bouton de la fenêtre dans la barre des tâches quand un agent a besoin de vous et que la fenêtre n'est pas active.",
-    "descriptionLinux": "Marque la fenêtre comme urgente quand un agent a besoin de vous et qu'elle n'est pas active. Le rendu dépend de votre environnement de bureau.",
-    "eventsTitle": "Événements",
-    "eventsHintMac": "« Brièvement » fait rebondir l'icône une fois. « Jusqu'à votre retour » la fait rebondir jusqu'à ce que vous reveniez dans Codeg. Les demandes d'autorisation incluent les validations de plan.",
-    "eventsHintWindows": "« Brièvement » fait clignoter le bouton quelques fois puis le laisse en surbrillance. « Jusqu'à votre retour » le fait clignoter jusqu'à ce que vous reveniez à la fenêtre. Les demandes d'autorisation incluent les validations de plan.",
-    "eventsHintLinux": "Linux n'a qu'une seule marque d'urgence : aux deux niveaux, la fenêtre reste marquée jusqu'à ce que vous y reveniez. Les demandes d'autorisation incluent les validations de plan.",
-    "levelOff": "Désactivé",
-    "levelInformational": "Brièvement",
-    "levelCritical": "Jusqu'à votre retour"
   }
 }

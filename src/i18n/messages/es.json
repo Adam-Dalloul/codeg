@@ -1129,6 +1129,19 @@
       "tempReclaimConfirmAction": "Eliminar",
       "tempReclaimCancel": "Cancelar"
     },
+    "kiro": {
+      "configManagement": "Configuración",
+      "configDescription": "Kiro CLI guarda su inicio de sesión, sus agentes y sus servidores MCP en ~/.kiro. El modelo, el agente, el razonamiento y el esfuerzo no están aquí: Kiro los informa por ACP, así que los selectores del compositor los gestionan por sesión.",
+      "permissionsTitle": "Permisos",
+      "permissionModeLabel": "Modo de permisos",
+      "permissionModeAsk": "Preguntar antes de ejecutar herramientas (predeterminado)",
+      "permissionModeTrustAll": "Confiar en todas las herramientas (--trust-all-tools)",
+      "permissionModeAskHint": "Kiro te envía primero cada llamada que requiere aprobación (comandos, escritura de archivos, …). Las herramientas de solo lectura se ejecutan sin preguntar.",
+      "permissionModeTrustAllHint": "Las sesiones se inician con --trust-all-tools: todas las llamadas se ejecutan sin confirmación, incluidos comandos y escritura de archivos. Se aplica a las sesiones nuevas.",
+      "apiKeyLabel": "Clave de API (opcional)",
+      "apiKeyHint": "Se pasa a la CLI como KIRO_API_KEY. Déjala vacía para usar la cuenta con la que iniciaste sesión mediante kiro-cli login; solo hace falta donde no se puede iniciar sesión con el navegador (servidores, Docker).",
+      "saveConfig": "Guardar configuración de Kiro"
+    },
     "deepseek": {
       "configManagement": "Configuración de DeepSeek Harness",
       "configDescription": "El endpoint y la clave son variables de entorno que deepseek-acp lee al arrancar. El modelo y el esfuerzo de razonamiento son selectores por sesión: se eligen en el campo de mensaje.",
@@ -1626,6 +1639,9 @@
       "saveKiroFailed": "No se pudo guardar la configuración de Kiro",
       "systemAgentAlreadyLatest": "{name} ya está al día ({version})"
     },
+    "distribution": {
+      "system": "instalador oficial"
+    },
     "version": {
       "statusLabel": "Estado de versión",
       "notInstalled": "No instalado",
@@ -1820,22 +1836,6 @@
     "customAgentRemoved": "{name} eliminado",
     "customAgentBadge": "Personalizado",
     "customAgentNotLaunchable": "Este agente no puede iniciarse aquí: {reason}",
-    "kiro": {
-      "configManagement": "Configuración",
-      "configDescription": "Kiro CLI guarda su inicio de sesión, sus agentes y sus servidores MCP en ~/.kiro. El modelo, el agente, el razonamiento y el esfuerzo no están aquí: Kiro los informa por ACP, así que los selectores del compositor los gestionan por sesión.",
-      "permissionsTitle": "Permisos",
-      "permissionModeLabel": "Modo de permisos",
-      "permissionModeAsk": "Preguntar antes de ejecutar herramientas (predeterminado)",
-      "permissionModeTrustAll": "Confiar en todas las herramientas (--trust-all-tools)",
-      "permissionModeAskHint": "Kiro te envía primero cada llamada que requiere aprobación (comandos, escritura de archivos, …). Las herramientas de solo lectura se ejecutan sin preguntar.",
-      "permissionModeTrustAllHint": "Las sesiones se inician con --trust-all-tools: todas las llamadas se ejecutan sin confirmación, incluidos comandos y escritura de archivos. Se aplica a las sesiones nuevas.",
-      "apiKeyLabel": "Clave de API (opcional)",
-      "apiKeyHint": "Se pasa a la CLI como KIRO_API_KEY. Déjala vacía para usar la cuenta con la que iniciaste sesión mediante kiro-cli login; solo hace falta donde no se puede iniciar sesión con el navegador (servidores, Docker).",
-      "saveConfig": "Guardar configuración de Kiro"
-    },
-    "distribution": {
-      "system": "instalador oficial"
-    },
     "zcode": {
       "adapterInfo": "Codeg ejecuta {adapterPackage} como puente ACP. Instala ZCode e inicia sesión primero; utiliza su entorno y configuración existentes.",
       "runtimeHint": "Instala ZCode e inicia sesión primero. Codeg solo instala el puente ACP. Si falla la detección, indica la entrada CLI con ZCODE_BIN y Node.js con ZCODE_NODE. Gestiona modelos y credenciales en ZCode."
@@ -1921,6 +1921,15 @@
     "restartNow": "Reiniciar ahora",
     "restartFailed": "No se pudo reiniciar: {message}",
     "loadFailed": "Error al cargar: {message}"
+  },
+  "MentionPanelSettings": {
+    "title": "Panel de menciones",
+    "description": "Elige qué pestañas muestra el panel @ del cuadro de entrada y arrástralas en el orden que quieras. El panel se abre en la primera pestaña con coincidencias. La pestaña Archivos siempre se muestra.",
+    "tabsLabel": "Pestañas del panel de menciones",
+    "reset": "Restablecer",
+    "alwaysShown": "Siempre visible",
+    "moveTab": "Mover «{name}»: arrastra o pulsa las flechas arriba y abajo",
+    "showTab": "Mostrar la pestaña «{name}»"
   },
   "CollaborationSettings": {
     "sectionTitle": "Colaboración",
@@ -5416,6 +5425,19 @@
     "eventBackgroundTask": "Tarea en segundo plano",
     "eventWorkTask": "Tarea de trabajo"
   },
+  "WindowAttentionSettings": {
+    "title": "Avisos en la barra de tareas y el Dock",
+    "descriptionMac": "Hace rebotar el icono del Dock cuando un agente te necesita mientras estás en otra app.",
+    "descriptionWindows": "Hace parpadear el botón de la ventana en la barra de tareas cuando un agente te necesita y la ventana no tiene el foco.",
+    "descriptionLinux": "Marca la ventana como urgente cuando un agente te necesita y la ventana no tiene el foco. Cómo se ve depende de tu entorno de escritorio.",
+    "eventsTitle": "Eventos",
+    "eventsHintMac": "“Brevemente” hace rebotar el icono una vez. “Hasta que vuelvas” lo mantiene rebotando hasta que regreses a Codeg. Las solicitudes de permiso incluyen las aprobaciones de planes.",
+    "eventsHintWindows": "“Brevemente” hace parpadear el botón unas veces y lo deja resaltado. “Hasta que vuelvas” lo mantiene parpadeando hasta que regreses a la ventana. Las solicitudes de permiso incluyen las aprobaciones de planes.",
+    "eventsHintLinux": "Linux tiene una sola marca de urgencia, así que ambos niveles mantienen la ventana marcada hasta que vuelvas a ella. Las solicitudes de permiso incluyen las aprobaciones de planes.",
+    "levelOff": "Desactivado",
+    "levelInformational": "Brevemente",
+    "levelCritical": "Hasta que vuelvas"
+  },
   "NotificationSoundSettings": {
     "title": "Sonidos de notificación",
     "description": "Reproduce un sonido breve cuando se produce un evento del agente. Son los mismos eventos que se envían a los canales de chat; esta configuración solo se aplica a este dispositivo.",
@@ -7291,27 +7313,5 @@
         "probeFailed": "El navegador integrado no pudo confirmar que llega al host remoto a través del túnel. Vuelve a intentarlo en un momento."
       }
     }
-  },
-  "MentionPanelSettings": {
-    "title": "Panel de menciones",
-    "description": "Elige qué pestañas muestra el panel @ del cuadro de entrada y arrástralas en el orden que quieras. El panel se abre en la primera pestaña con coincidencias. La pestaña Archivos siempre se muestra.",
-    "tabsLabel": "Pestañas del panel de menciones",
-    "reset": "Restablecer",
-    "alwaysShown": "Siempre visible",
-    "moveTab": "Mover «{name}»: arrastra o pulsa las flechas arriba y abajo",
-    "showTab": "Mostrar la pestaña «{name}»"
-  },
-  "WindowAttentionSettings": {
-    "title": "Avisos en la barra de tareas y el Dock",
-    "descriptionMac": "Hace rebotar el icono del Dock cuando un agente te necesita mientras estás en otra app.",
-    "descriptionWindows": "Hace parpadear el botón de la ventana en la barra de tareas cuando un agente te necesita y la ventana no tiene el foco.",
-    "descriptionLinux": "Marca la ventana como urgente cuando un agente te necesita y la ventana no tiene el foco. Cómo se ve depende de tu entorno de escritorio.",
-    "eventsTitle": "Eventos",
-    "eventsHintMac": "“Brevemente” hace rebotar el icono una vez. “Hasta que vuelvas” lo mantiene rebotando hasta que regreses a Codeg. Las solicitudes de permiso incluyen las aprobaciones de planes.",
-    "eventsHintWindows": "“Brevemente” hace parpadear el botón unas veces y lo deja resaltado. “Hasta que vuelvas” lo mantiene parpadeando hasta que regreses a la ventana. Las solicitudes de permiso incluyen las aprobaciones de planes.",
-    "eventsHintLinux": "Linux tiene una sola marca de urgencia, así que ambos niveles mantienen la ventana marcada hasta que vuelvas a ella. Las solicitudes de permiso incluyen las aprobaciones de planes.",
-    "levelOff": "Desactivado",
-    "levelInformational": "Brevemente",
-    "levelCritical": "Hasta que vuelvas"
   }
 }
