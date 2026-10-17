@@ -44,7 +44,6 @@ export function AgentHandoffDialog({
   open,
   onOpenChange,
   conversationId,
-  folderId,
   sourceAgentType,
   title,
   initialAccountId,
@@ -84,6 +83,7 @@ export function AgentHandoffDialog({
         if (
           !destinationChosen.current &&
           target === sourceAgentType &&
+          next.sourceAgentType === target &&
           next.sourceAccountId !== account
         ) {
           setAccount(next.sourceAccountId)
@@ -209,7 +209,7 @@ export function AgentHandoffDialog({
           result.toAgentType,
           title ?? tab.title,
           tab.runtimeConversationId,
-          folderId,
+          result.folderId,
           result.workingDir
         )
       }
@@ -249,6 +249,14 @@ export function AgentHandoffDialog({
           <DialogHeader>
             <DialogTitle>{t("dialogTitle")}</DialogTitle>
             <DialogDescription>{t("dialogDescription")}</DialogDescription>
+            {title && (
+              <p
+                className="truncate text-xs text-muted-foreground"
+                title={title}
+              >
+                {title}
+              </p>
+            )}
           </DialogHeader>
           <div className="flex flex-col gap-4">
             <div className="flex flex-col gap-2">

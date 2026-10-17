@@ -67,6 +67,11 @@ vi.mock("@/stores/conversation-runtime-store", () => ({
 vi.mock("./session-details-dialog", () => ({
   SessionDetailsDialog: () => null,
 }))
+vi.mock("./agent-handoff-dialog", () => ({
+  AgentHandoffDialog: ({ conversationId }: { conversationId: number }) => (
+    <span data-testid="handoff-conversation">{conversationId}</span>
+  ),
+}))
 // The header now embeds the folder picker (self-contained, store-driven); stub
 // it so these tests exercise only the header's own menu/dialog logic.
 vi.mock("@/components/chat/conversation-context-bar", () => ({
@@ -165,6 +170,19 @@ describe("ConversationDetailHeader dialog target snapshot", () => {
     }
     view.rerender(withIntl(<ConversationDetailHeader {...A} title="Updated" />))
     expect(view.getByTestId("quota-account")).toHaveTextContent("default")
+  })
+
+  it("keeps the handoff on the conversation selected when its dialog opened", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 })
+    const view = render(withIntl(<ConversationDetailHeader {...A} />))
+    await user.click(view.getByLabelText("More actions"))
+    await user.click(
+      view.getByRole("menuitem", {
+        name: enMessages.Folder.chat.agentHandoff.menuLabel,
+      })
+    )
+    view.rerender(withIntl(<ConversationDetailHeader {...B} />))
+    expect(view.getByTestId("handoff-conversation")).toHaveTextContent("1")
   })
 
   it("deletes the conversation the dialog was opened for, even after the active tab switches", async () => {

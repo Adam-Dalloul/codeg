@@ -60,6 +60,9 @@ vi.mock("@/stores/conversation-runtime-store", () => ({
 vi.mock("./session-details-dialog", () => ({
   SessionDetailsDialog: () => null,
 }))
+vi.mock("./agent-handoff-dialog", () => ({
+  AgentHandoffDialog: () => null,
+}))
 vi.mock("@/components/chat/conversation-context-bar", () => ({
   ConversationHeaderFolderPicker: () => null,
 }))

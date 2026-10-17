@@ -204,7 +204,12 @@ export const ConversationDetailHeader = memo(function ConversationDetailHeader({
     title: string
   } | null>(null)
   const [renameValue, setRenameValue] = useState("")
-  const [handoffOpen, setHandoffOpen] = useState(false)
+  const [handoffTarget, setHandoffTarget] = useState<{
+    id: number
+    folderId: number
+    agentType: AgentType
+    title: string
+  } | null>(null)
   const tabAgentType = agentType ?? null
   const [deleteTarget, setDeleteTarget] = useState<{
     id: number
@@ -391,7 +396,15 @@ export const ConversationDetailHeader = memo(function ConversationDetailHeader({
             </DropdownMenuItem>
             <DropdownMenuItem
               disabled={!persisted || tabAgentType == null}
-              onSelect={() => setHandoffOpen(true)}
+              onSelect={() => {
+                if (conversationId != null && tabAgentType != null)
+                  setHandoffTarget({
+                    id: conversationId,
+                    folderId,
+                    agentType: tabAgentType,
+                    title,
+                  })
+              }}
             >
               <ArrowRightLeft className="h-4 w-4" />
               {tHandoff("menuLabel")}
@@ -480,14 +493,16 @@ export const ConversationDetailHeader = memo(function ConversationDetailHeader({
         </AlertDialogContent>
       </AlertDialog>
 
-      {handoffOpen && conversationId != null && tabAgentType != null && (
+      {handoffTarget && (
         <AgentHandoffDialog
           open
-          onOpenChange={setHandoffOpen}
-          conversationId={conversationId}
-          folderId={folderId}
-          sourceAgentType={tabAgentType}
-          title={title}
+          onOpenChange={(open) => {
+            if (!open) setHandoffTarget(null)
+          }}
+          conversationId={handoffTarget.id}
+          folderId={handoffTarget.folderId}
+          sourceAgentType={handoffTarget.agentType}
+          title={handoffTarget.title}
         />
       )}
 
