@@ -594,6 +594,17 @@ const ConversationTabView = memo(function ConversationTabView({
       ? undefined
       : s.conversations.find((c) => c.id === dbConversationId)?.updated_at
   )
+  const listedParentId = useAppWorkspaceStore((s) => {
+    const row = s.conversations.find((c) => c.id === dbConversationId)
+    return row ? (row.parent_id ?? null) : undefined
+  })
+  const savedParentId =
+    listedParentId !== undefined
+      ? listedParentId
+      : detail
+        ? (detail.summary.parent_id ?? null)
+        : undefined
+  const isTopLevelConversation = savedParentId === null
   const detailAccountId = detail
     ? (detail.summary.agent_account_id ?? null)
     : undefined
@@ -2523,28 +2534,38 @@ const ConversationTabView = memo(function ConversationTabView({
       getSentHistory={getSentHistory}
       topBanner={
         <>
-          {dbConversationId != null && (
-            <div className="px-4 py-1.5">
-              <AgentAccountSelector
-                accounts={accountState.accounts}
-                value={selectedAccountId}
-                onChange={handleSwitchAccount}
-                persisted
-                canSwitch={accountState.capability?.canSwitchConversation}
-                switching={accountSwitching}
-                remoteControlActive={
-                  !connIsForOtherAgent && conn.remoteControl != null
-                }
-                disabled={
-                  awaitingAccountBinding ||
-                  isConnecting ||
-                  connStatus === "prompting" ||
-                  msgQueue.length > 0 ||
-                  !externalId
-                }
-              />
-            </div>
-          )}
+          {dbConversationId != null &&
+            (selectedAccountId !== null ||
+              accountState.accounts.some((account) => !account.removed)) && (
+              <div className="px-4 py-1.5">
+                <div className="mx-auto w-full chat-content-w">
+                  <AgentAccountSelector
+                    accounts={accountState.accounts}
+                    value={selectedAccountId}
+                    onChange={handleSwitchAccount}
+                    persisted
+                    canSwitch={
+                      accountState.capability?.canSwitchConversation &&
+                      isTopLevelConversation
+                    }
+                    switching={accountSwitching}
+                    remoteControlActive={
+                      !connIsForOtherAgent && conn.remoteControl != null
+                    }
+                    loading={accountState.loading}
+                    loadError={accountState.error}
+                    onRetry={accountState.refresh}
+                    disabled={
+                      awaitingAccountBinding ||
+                      isConnecting ||
+                      connStatus === "prompting" ||
+                      msgQueue.length > 0 ||
+                      !externalId
+                    }
+                  />
+                </div>
+              </div>
+            )}
           <SessionConfigStaleBanner contextKey={tabId} />
           <PiProjectTrustBanner
             contextKey={tabId}
