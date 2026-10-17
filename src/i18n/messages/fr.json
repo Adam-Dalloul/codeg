@@ -11,6 +11,7 @@
     "title": "Comptes",
     "default": "Par défaut",
     "defaultDescription": "Utilise votre connexion actuelle à l’agent.",
+    "toolSettingsHint": "Certains outils en ligne de commande nécessitent de configurer leurs paramètres ou leur connexion séparément pour chaque compte.",
     "add": "Ajouter un compte",
     "name": "Nom du compte",
     "home": "Dossier de compte existant (facultatif)",
@@ -5077,7 +5078,7 @@
     "export": {
       "description": "Empaquette les données codeg de cette machine (base de données et fichiers importés) dans une seule archive.",
       "includeExternal": "Inclure le contenu des conversations",
-      "includeExternalHint": "Archive aussi les transcriptions des CLI (Claude, Codex, Gemini, …). Augmente la taille.",
+      "includeExternalHint": "Inclut les conversations des dossiers par défaut des CLI. Les dossiers des comptes nommés ne sont pas inclus. Sauvegardez-les séparément.",
       "passphrase": "Phrase secrète (facultatif)",
       "passphrasePlaceholder": "Laissez vide pour une archive non chiffrée",
       "passphraseConfirm": "Confirmer la phrase secrète",

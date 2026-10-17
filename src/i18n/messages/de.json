@@ -11,6 +11,7 @@
     "title": "Konten",
     "default": "Standard",
     "defaultDescription": "Verwendet deine bestehende Agent-Anmeldung.",
+    "toolSettingsHint": "Bei einigen Befehlszeilentools müssen Einstellungen oder Anmeldung für jedes Konto separat eingerichtet werden.",
     "add": "Konto hinzufügen",
     "name": "Kontoname",
     "home": "Vorhandener Kontoordner (optional)",
@@ -5077,7 +5078,7 @@
     "export": {
       "description": "Packt die codeg-Daten dieses Geräts – Datenbank und hochgeladene Dateien – in ein Archiv.",
       "includeExternal": "Gesprächsinhalte einschließen",
-      "includeExternalHint": "Archiviert auch die CLI-Transkripte (Claude, Codex, Gemini, …). Erhöht die Größe.",
+      "includeExternalHint": "Enthält Gesprächsverläufe aus den Standardordnern der CLIs. Ordner benannter Konten sind nicht enthalten. Sichere diese separat.",
       "passphrase": "Passphrase (optional)",
       "passphrasePlaceholder": "Leer lassen für ein unverschlüsseltes Archiv",
       "passphraseConfirm": "Passphrase bestätigen",

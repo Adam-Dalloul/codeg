@@ -11,6 +11,7 @@
     "title": "Accounts",
     "default": "Default",
     "defaultDescription": "Uses your existing agent sign-in.",
+    "toolSettingsHint": "Some command-line tools need their settings or sign-in configured separately for each account.",
     "add": "Add account",
     "name": "Account name",
     "home": "Existing account folder (optional)",
@@ -5077,7 +5078,7 @@
     "export": {
       "description": "Packs this machine's codeg data — the database and uploaded files — into one archive.",
       "includeExternal": "Include conversation content",
-      "includeExternalHint": "Also archive agent CLI transcripts (Claude, Codex, Gemini, …). Increases size.",
+      "includeExternalHint": "Includes transcripts from default CLI folders. Named-account folders are not included. Back them up separately.",
       "passphrase": "Passphrase (optional)",
       "passphrasePlaceholder": "Leave empty for an unencrypted archive",
       "passphraseConfirm": "Confirm passphrase",

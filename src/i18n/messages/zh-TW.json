@@ -11,6 +11,7 @@
     "title": "帳戶",
     "default": "預設",
     "defaultDescription": "使用現有的代理程式登入。",
+    "toolSettingsHint": "部分命令列工具需要為每個帳戶個別設定或登入。",
     "add": "新增帳戶",
     "name": "帳戶名稱",
     "home": "現有帳戶資料夾（選填）",
@@ -5077,7 +5078,7 @@
     "export": {
       "description": "把這台裝置的 codeg 資料（資料庫與上傳檔案）打包成一個封存檔。",
       "includeExternal": "包含對話內容",
-      "includeExternalHint": "一併打包各 CLI 的對話記錄（Claude、Codex、Gemini 等），體積更大。",
+      "includeExternalHint": "包含預設 CLI 資料夾中的對話記錄，不包含具名帳號資料夾。請另外備份這些帳號資料夾。",
       "passphrase": "通行碼（選填）",
       "passphrasePlaceholder": "留空則產生未加密的封存檔",
       "passphraseConfirm": "確認通行碼",

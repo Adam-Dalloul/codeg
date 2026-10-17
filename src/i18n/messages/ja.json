@@ -11,6 +11,7 @@
     "title": "アカウント",
     "default": "デフォルト",
     "defaultDescription": "現在のエージェントのログインを使用します。",
+    "toolSettingsHint": "一部のコマンドラインツールは、アカウントごとに設定やサインインを個別に行う必要があります。",
     "add": "アカウントを追加",
     "name": "アカウント名",
     "home": "既存のアカウントフォルダー（任意）",
@@ -5077,7 +5078,7 @@
     "export": {
       "description": "このマシンの codeg データ（データベースとアップロードしたファイル）を 1 つのアーカイブにまとめます。",
       "includeExternal": "会話内容を含める",
-      "includeExternalHint": "各 CLI の会話履歴（Claude、Codex、Gemini など）も保存します。サイズが増えます。",
+      "includeExternalHint": "CLI のデフォルトフォルダー内の会話記録を含めます。名前付きアカウントのフォルダーは含まれません。別途バックアップしてください。",
       "passphrase": "パスフレーズ（任意）",
       "passphrasePlaceholder": "空欄の場合は暗号化されません",
       "passphraseConfirm": "パスフレーズの確認",

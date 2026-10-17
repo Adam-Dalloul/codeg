@@ -11,6 +11,7 @@
     "title": "계정",
     "default": "기본값",
     "defaultDescription": "기존 에이전트 로그인을 사용합니다.",
+    "toolSettingsHint": "일부 명령줄 도구는 계정마다 설정이나 로그인을 별도로 구성해야 합니다.",
     "add": "계정 추가",
     "name": "계정 이름",
     "home": "기존 계정 폴더 (선택 사항)",
@@ -5077,7 +5078,7 @@
     "export": {
       "description": "이 기기의 codeg 데이터(데이터베이스와 업로드한 파일)를 하나의 아카이브로 묶습니다.",
       "includeExternal": "대화 내용 포함",
-      "includeExternalHint": "각 CLI의 대화 기록(Claude, Codex, Gemini 등)도 함께 보관합니다. 용량이 커집니다.",
+      "includeExternalHint": "CLI 기본 폴더의 대화 기록을 포함합니다. 이름이 지정된 계정 폴더는 포함되지 않습니다. 해당 폴더는 별도로 백업하세요.",
       "passphrase": "암호문 (선택)",
       "passphrasePlaceholder": "비워 두면 암호화하지 않습니다",
       "passphraseConfirm": "암호문 확인",

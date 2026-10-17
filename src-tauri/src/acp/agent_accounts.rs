@@ -77,6 +77,22 @@ pub struct AccountCapability {
     pub login_kind: Option<&'static str>,
     pub config_subdir: Option<&'static str>,
     pub can_switch_conversation: bool,
+    pub isolates_tool_settings: bool,
+}
+
+/// Keep storage layouts available for reading older conversations even when
+/// this platform cannot safely launch a new named-account session.
+pub fn unsupported_reason(agent: AgentType) -> Option<&'static str> {
+    match agent {
+        AgentType::OpenClaw => Some("Sessions use the configured OpenClaw gateway's account."),
+        AgentType::Cursor if cfg!(target_os = "macos") => Some(
+            "Named Cursor accounts are not supported on macOS. Use the default Cursor account.",
+        ),
+        _ if layout(agent).is_none() => {
+            Some("Named accounts are not yet supported for this agent.")
+        }
+        _ => None,
+    }
 }
 
 pub fn capabilities() -> Vec<AccountCapability> {
@@ -85,25 +101,20 @@ pub fn capabilities() -> Vec<AccountCapability> {
         .map(|&agent_type| AccountCapability {
             agent_type,
             can_switch_conversation: agent_type == AgentType::ClaudeCode,
-            supported: layout(agent_type).is_some(),
+            isolates_tool_settings: matches!(agent_type, AgentType::OpenCode | AgentType::Cursor),
+            supported: unsupported_reason(agent_type).is_none(),
             config_subdir: layout(agent_type)
                 .and_then(|spec| (!spec.config_suffix.is_empty()).then_some(spec.config_suffix)),
-            login_kind: layout(agent_type).map(|spec| {
-                if spec.login.is_empty() {
-                    "browser"
-                } else {
-                    "terminal"
-                }
-            }),
-            reason: match agent_type {
-                AgentType::OpenClaw => {
-                    Some("Sessions use the configured OpenClaw gateway's account.")
-                }
-                AgentType::Kiro | AgentType::ZCode => {
-                    Some("Named accounts are not yet supported for this agent.")
-                }
-                _ => None,
-            },
+            login_kind: layout(agent_type)
+                .filter(|_| unsupported_reason(agent_type).is_none())
+                .map(|spec| {
+                    if spec.login.is_empty() {
+                        "browser"
+                    } else {
+                        "terminal"
+                    }
+                }),
+            reason: unsupported_reason(agent_type),
         })
         .collect()
 }
@@ -154,11 +165,17 @@ pub fn credential_env_keys(agent: AgentType) -> Vec<&'static str> {
         _ => &[],
     };
     let (base_url, credential, model) = crate::commands::acp::agent_env_keys(agent);
+    let account_overrides: &[&str] = if agent == AgentType::OpenCode {
+        &["OPENCODE_AUTH_CONTENT", "OPENCODE_DB"]
+    } else {
+        &[]
+    };
     // Follow the same provider keys as the settings writer, including less
     // obvious names such as KIMI_MODEL_API_KEY. The native account may restore
     // its own values after this inherited/default-account scrub.
     extra
         .iter()
+        .chain(account_overrides.iter())
         .copied()
         .chain([base_url, credential, model])
         .collect()
@@ -174,6 +191,17 @@ impl AccountLayout {
 }
 
 pub fn isolation_env(agent: AgentType, home: &Path) -> Result<BTreeMap<String, String>, String> {
+    isolation_env_with_base(agent, home, &BTreeMap::new())
+}
+
+pub fn isolation_env_with_base(
+    agent: AgentType,
+    home: &Path,
+    base: &BTreeMap<String, String>,
+) -> Result<BTreeMap<String, String>, String> {
+    if let Some(reason) = unsupported_reason(agent) {
+        return Err(reason.into());
+    }
     let layout =
         layout(agent).ok_or_else(|| format!("{agent} does not support isolated accounts"))?;
     if !home.is_absolute() {
@@ -193,11 +221,14 @@ pub fn isolation_env(agent: AgentType, home: &Path) -> Result<BTreeMap<String, S
         ] {
             env.insert(key.into(), home.join(suffix).to_string_lossy().into_owned());
         }
-        env.insert("HOME".into(), home.to_string_lossy().into_owned());
-        env.insert("USERPROFILE".into(), home.to_string_lossy().into_owned());
+        // XDG roots isolate OpenCode's auth, state and config. Keep the user's
+        // home for shell tools such as git, cargo and npm launched by the agent.
         env.insert("OPENCODE_CONFIG".into(), String::new());
         env.insert("OPENCODE_CONFIG_CONTENT".into(), String::new());
         env.insert("OPENCODE_MODELS_PATH".into(), String::new());
+        // A blank launch value removes the inherited variable at spawn.
+        env.insert("OPENCODE_AUTH_CONTENT".into(), String::new());
+        env.insert("OPENCODE_DB".into(), String::new());
     }
     if agent == AgentType::Cline {
         env.insert(
@@ -224,10 +255,9 @@ pub fn isolation_env(agent: AgentType, home: &Path) -> Result<BTreeMap<String, S
     }
     if agent == AgentType::Cursor {
         // CURSOR_CONFIG_DIR moves chats/config, but not credentials. Cursor's
-        // file credential store uses APPDATA on Windows, HOME on macOS and
-        // XDG_CONFIG_HOME on Linux. Force the file backend so macOS cannot
-        // fall back to a shared keychain item. These rules are from the
-        // pinned CLI's cli-credentials module, independently of its ACP layer.
+        // file credential store uses APPDATA on Windows and XDG_CONFIG_HOME
+        // on Linux. macOS requires replacing HOME, so named-account launches
+        // are refused above; changing HOME would also redirect terminal tools.
         env.insert(
             "CURSOR_CONFIG_DIR".into(),
             home.join(".cursor").to_string_lossy().into_owned(),
@@ -238,8 +268,6 @@ pub fn isolation_env(agent: AgentType, home: &Path) -> Result<BTreeMap<String, S
                 "APPDATA".into(),
                 home.join("appdata").to_string_lossy().into_owned(),
             );
-        } else if cfg!(target_os = "macos") {
-            env.insert("HOME".into(), home.to_string_lossy().into_owned());
         } else {
             env.insert(
                 "XDG_CONFIG_HOME".into(),
@@ -247,7 +275,29 @@ pub fn isolation_env(agent: AgentType, home: &Path) -> Result<BTreeMap<String, S
             );
         }
     }
+    if matches!(agent, AgentType::OpenCode | AgentType::Cursor) {
+        // gh follows XDG_CONFIG_HOME before APPDATA/HOME. Pin the folder it
+        // would have used before changing the agent's roots, honoring both
+        // saved launch settings and an explicit GH_CONFIG_DIR. No files move.
+        if let Some(path) = github_config_dir(base) {
+            env.insert("GH_CONFIG_DIR".into(), path.to_string_lossy().into_owned());
+        }
+    }
     Ok(env)
+}
+
+fn github_config_dir(env: &BTreeMap<String, String>) -> Option<PathBuf> {
+    env_path(env, "GH_CONFIG_DIR")
+        .or_else(|| env_path(env, "XDG_CONFIG_HOME").map(|path| path.join("gh")))
+        .or_else(|| {
+            cfg!(windows)
+                .then(|| env_path(env, "APPDATA").map(|path| path.join("GitHub CLI")))
+                .flatten()
+        })
+        .or_else(|| {
+            crate::acp::file_system_runtime::child_home_dir(env)
+                .map(|home| home.join(".config/gh"))
+        })
 }
 
 /// Native choices in this account outrank the family's default launch choices.
@@ -383,6 +433,9 @@ mod tests {
     fn accounts_keep_the_native_type_and_separate_homes() {
         let dir = tempfile::tempdir().unwrap();
         for &agent in BUILTIN_AGENT_TYPES {
+            if unsupported_reason(agent).is_some() {
+                continue;
+            }
             let Some(layout) = layout(agent) else {
                 continue;
             };
@@ -401,6 +454,10 @@ mod tests {
     fn opencode_isolates_credentials_as_well_as_configuration() {
         let dir = tempfile::tempdir().unwrap();
         let env = isolation_env(AgentType::OpenCode, dir.path()).unwrap();
+        assert!(!env.contains_key("HOME"));
+        assert!(!env.contains_key("USERPROFILE"));
+        assert_eq!(env.get("OPENCODE_AUTH_CONTENT").map(String::as_str), Some(""));
+        assert_eq!(env.get("OPENCODE_DB").map(String::as_str), Some(""));
         assert_eq!(
             PathBuf::from(&env["XDG_DATA_HOME"]),
             dir.path().join("data")
@@ -412,9 +469,43 @@ mod tests {
     }
 
     #[test]
+    fn account_isolation_keeps_the_original_github_cli_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let inherited = dir.path().join("original-xdg");
+        let explicit = dir.path().join("explicit-gh");
+        let mut base = BTreeMap::from([
+            ("GH_CONFIG_DIR".into(), String::new()),
+            ("XDG_CONFIG_HOME".into(), inherited.to_string_lossy().into_owned()),
+        ]);
+        for agent in [AgentType::OpenCode, AgentType::Cursor] {
+            if unsupported_reason(agent).is_some() { continue; }
+            let isolated = isolation_env_with_base(agent, &dir.path().join("account"), &base).unwrap();
+            assert_eq!(PathBuf::from(&isolated["GH_CONFIG_DIR"]), inherited.join("gh"));
+        }
+        base.insert("GH_CONFIG_DIR".into(), explicit.to_string_lossy().into_owned());
+        let isolated = isolation_env_with_base(AgentType::OpenCode, dir.path(), &base).unwrap();
+        assert_eq!(PathBuf::from(&isolated["GH_CONFIG_DIR"]), explicit);
+    }
+
+    #[test]
     fn cursor_relocates_its_credential_store_not_only_its_config() {
         let dir = tempfile::tempdir().unwrap();
+        if cfg!(target_os = "macos") {
+            let error = isolation_env(AgentType::Cursor, dir.path()).unwrap_err();
+            assert!(error.contains("default Cursor account"));
+            let capability = capabilities()
+                .into_iter()
+                .find(|row| row.agent_type == AgentType::Cursor)
+                .unwrap();
+            assert!(!capability.supported);
+            assert!(capability.login_kind.is_none());
+            // Existing account transcripts remain readable on every platform.
+            assert!(layout(AgentType::Cursor).is_some());
+            return;
+        }
         let env = isolation_env(AgentType::Cursor, dir.path()).unwrap();
+        assert!(!env.contains_key("HOME"));
+        assert!(!env.contains_key("USERPROFILE"));
         assert_eq!(env["AGENT_CLI_CREDENTIAL_STORE"], "file");
         assert_eq!(
             PathBuf::from(&env["CURSOR_CONFIG_DIR"]),
@@ -422,8 +513,6 @@ mod tests {
         );
         let key = if cfg!(windows) {
             "APPDATA"
-        } else if cfg!(target_os = "macos") {
-            "HOME"
         } else {
             "XDG_CONFIG_HOME"
         };

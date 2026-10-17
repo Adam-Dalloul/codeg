@@ -11,6 +11,7 @@
     "title": "账户",
     "default": "默认",
     "defaultDescription": "使用现有的智能体登录。",
+    "toolSettingsHint": "部分命令行工具需要为每个账户单独配置设置或登录。",
     "add": "添加账户",
     "name": "账户名称",
     "home": "现有账户文件夹（可选）",
@@ -5077,7 +5078,7 @@
     "export": {
       "description": "把这台设备的 codeg 数据（数据库与上传文件）打包成一个归档文件。",
       "includeExternal": "包含会话内容",
-      "includeExternalHint": "同时打包各 CLI 的会话记录（Claude、Codex、Gemini 等），体积更大。",
+      "includeExternalHint": "包含默认 CLI 文件夹中的会话记录，不包含命名账号文件夹。请单独备份这些账号文件夹。",
       "passphrase": "口令（可选）",
       "passphrasePlaceholder": "留空则生成未加密的归档",
       "passphraseConfirm": "确认口令",

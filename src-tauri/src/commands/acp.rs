@@ -11164,13 +11164,18 @@ async fn account_runtime_env(
     let account = crate::db::service::agent_account_service::resolve(&db.conn, agent_type, id)
         .await.map_err(|e| AcpError::protocol(e.to_string()))?;
     let home = Path::new(&account.home_dir);
+    if let Some(reason) = crate::acp::agent_accounts::unsupported_reason(agent_type) {
+        return Err(AcpError::protocol(reason));
+    }
     if sync_home {
         crate::commands::mcp::sync_native_account_mcp(agent_type, home)
             .map_err(|e| AcpError::protocol(e.to_string()))?;
         crate::acp::account_skills::sync(agent_type, home).map_err(AcpError::protocol)?;
     }
     let mut env = build_runtime_env_for_agent(db, agent_type, session_id, data_dir, false, Some(home)).await?;
-    env.extend(crate::acp::agent_accounts::isolation_env(agent_type, home).map_err(AcpError::protocol)?);
+    let isolation = crate::acp::agent_accounts::isolation_env_with_base(agent_type, home, &env)
+        .map_err(AcpError::protocol)?;
+    env.extend(isolation);
     env.insert(crate::acp::agent_accounts::ACCOUNT_ENV.into(), account.id);
     env.insert(crate::acp::agent_accounts::ACCOUNT_HOME_ENV.into(), account.home_dir);
     Ok(env)
@@ -11228,6 +11233,7 @@ mod native_account_launch_tests {
         let db = crate::db::test_helpers::fresh_in_memory_db().await;
         let dir = tempfile::tempdir().unwrap();
         for &agent in crate::models::agent::BUILTIN_AGENT_TYPES {
+            if crate::acp::agent_accounts::unsupported_reason(agent).is_some() { continue; }
             let Some(layout) = crate::acp::agent_accounts::layout(agent) else { continue; };
             let home = dir.path().join(agent.as_wire().as_ref());
             std::fs::create_dir_all(layout.config_dir(&home)).unwrap();

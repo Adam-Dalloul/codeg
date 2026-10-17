@@ -68,9 +68,10 @@ pub async fn resolve(
         )));
     }
     if !Path::new(&account.home_dir).is_dir() {
-        return Err(DbError::Validation(
-            "The account folder is missing. Restore it before resuming this conversation.".into(),
-        ));
+        return Err(DbError::Validation(format!(
+            "The account folder {} is missing. Restore it before resuming this conversation.",
+            account.home_dir
+        )));
     }
     Ok(account)
 }
@@ -123,6 +124,9 @@ pub async fn create(
     name: &str,
     existing_home: Option<&str>,
 ) -> Result<agent_account::Model, DbError> {
+    if let Some(reason) = crate::acp::agent_accounts::unsupported_reason(agent) {
+        return Err(DbError::Validation(reason.into()));
+    }
     let spec = layout(agent).ok_or_else(|| {
         DbError::Validation("This agent does not support isolated accounts.".into())
     })?;
@@ -275,6 +279,43 @@ mod tests {
     use crate::db::test_helpers::fresh_in_memory_db;
 
     #[tokio::test]
+    async fn unsupported_accounts_are_refused_before_creating_folders_or_rows() {
+        let db = fresh_in_memory_db().await;
+        let dir = tempfile::tempdir().unwrap();
+        for capability in crate::acp::agent_accounts::capabilities() {
+            if capability.supported {
+                continue;
+            }
+            let error = create(&db.conn, dir.path(), capability.agent_type, "Work", None)
+                .await
+                .unwrap_err();
+            assert!(error.to_string().contains(capability.reason.unwrap()));
+            assert!(!dir.path().join("agent-accounts").exists());
+            assert!(list(&db.conn, capability.agent_type).await.unwrap().is_empty());
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn existing_cursor_account_records_and_folders_remain_available() {
+        let db = fresh_in_memory_db().await;
+        let dir = tempfile::tempdir().unwrap();
+        let account = create(&db.conn, dir.path(), AgentType::Codex, "Existing", None)
+            .await
+            .unwrap();
+        let mut existing = account.clone().into_active_model();
+        existing.agent_type = Set(AgentType::Cursor.as_wire().into_owned());
+        existing.update(&db.conn).await.unwrap();
+        let resolved = resolve(&db.conn, AgentType::Cursor, &account.id).await.unwrap();
+        assert_eq!(resolved.home_dir, account.home_dir);
+        assert!(Path::new(&resolved.home_dir).is_dir());
+        assert!(crate::acp::agent_accounts::isolation_env(
+            AgentType::Cursor, Path::new(&resolved.home_dir)
+        ).is_err());
+        assert_eq!(list(&db.conn, AgentType::Cursor).await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
     async fn crud_keeps_homes_and_refuses_removed_or_wrong_family_accounts() {
         let db = fresh_in_memory_db().await;
         let dir = tempfile::tempdir().unwrap();
@@ -399,9 +440,8 @@ mod tests {
             .await
             .unwrap();
         std::fs::remove_dir(&account.home_dir).unwrap();
-        assert!(resolve(&db.conn, AgentType::Codex, &account.id)
-            .await
-            .is_err());
+        let missing = resolve(&db.conn, AgentType::Codex, &account.id).await.unwrap_err();
+        assert!(missing.to_string().contains(&account.home_dir));
     }
 
     #[tokio::test]

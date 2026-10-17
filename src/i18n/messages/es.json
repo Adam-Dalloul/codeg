@@ -11,6 +11,7 @@
     "title": "Cuentas",
     "default": "Predeterminada",
     "defaultDescription": "Usa tu sesión actual del agente.",
+    "toolSettingsHint": "Algunas herramientas de línea de comandos requieren configurar sus ajustes o inicio de sesión por separado para cada cuenta.",
     "add": "Añadir cuenta",
     "name": "Nombre de la cuenta",
     "home": "Carpeta de cuenta existente (opcional)",
@@ -5077,7 +5078,7 @@
     "export": {
       "description": "Empaqueta los datos de codeg de este equipo —base de datos y archivos subidos— en un solo archivo.",
       "includeExternal": "Incluir el contenido de las conversaciones",
-      "includeExternalHint": "También archiva las transcripciones de las CLI (Claude, Codex, Gemini, …). Aumenta el tamaño.",
+      "includeExternalHint": "Incluye las conversaciones de las carpetas predeterminadas de las CLI. Las carpetas de cuentas con nombre no se incluyen. Haz una copia de ellas por separado.",
       "passphrase": "Frase de contraseña (opcional)",
       "passphrasePlaceholder": "Déjala vacía para un archivo sin cifrar",
       "passphraseConfirm": "Confirmar la frase de contraseña",

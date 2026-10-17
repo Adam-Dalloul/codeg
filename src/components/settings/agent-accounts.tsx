@@ -154,6 +154,11 @@ export function AgentAccounts({ agentType }: { agentType: AgentType }) {
           title={t("default")}
           description={t("defaultDescription")}
         />
+        {capability.isolatesToolSettings && (
+          <p className="px-4 pb-3 text-xs text-muted-foreground">
+            {t("toolSettingsHint")}
+          </p>
+        )}
         {accounts
           .filter((account) => !account.removed)
           .map((account) => (
