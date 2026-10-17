@@ -2538,10 +2538,9 @@ const ConversationTabView = memo(function ConversationTabView({
                 disabled={
                   awaitingAccountBinding ||
                   isConnecting ||
-                  connStatus === "prompting" ||
-                  msgQueue.length > 0 ||
-                  conn.isViewer ||
-                  !externalId
+                      connStatus === "prompting" ||
+                      msgQueue.length > 0 ||
+                      !externalId
                 }
               />
             </div>
