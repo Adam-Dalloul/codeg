@@ -65,8 +65,7 @@
     "done": "Listo",
     "signedInWith": "Inicio de sesión encontrado: {method}",
     "accountAuth": "Cuenta de {provider}",
-    "nativeAuth": "Inicio de sesión nativo",
-    "loading": "Cargando cuentas..."
+    "nativeAuth": "Inicio de sesión nativo"
   },
   "Language": {
     "followSystem": "Seguir el sistema",

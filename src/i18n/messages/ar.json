@@ -65,8 +65,7 @@
     "done": "تم",
     "signedInWith": "تم العثور على تسجيل دخول: {method}",
     "accountAuth": "حساب {provider}",
-    "nativeAuth": "تسجيل الدخول الأصلي",
-    "loading": "جارٍ تحميل الحسابات..."
+    "nativeAuth": "تسجيل الدخول الأصلي"
   },
   "Language": {
     "followSystem": "اتباع النظام",

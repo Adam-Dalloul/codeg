@@ -65,8 +65,7 @@
     "done": "Terminé",
     "signedInWith": "Connexion détectée : {method}",
     "accountAuth": "Compte {provider}",
-    "nativeAuth": "Connexion native",
-    "loading": "Chargement des comptes..."
+    "nativeAuth": "Connexion native"
   },
   "Language": {
     "followSystem": "Suivre le système",

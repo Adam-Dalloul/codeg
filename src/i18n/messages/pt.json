@@ -65,8 +65,7 @@
     "done": "Concluído",
     "signedInWith": "Acesso encontrado: {method}",
     "accountAuth": "Conta {provider}",
-    "nativeAuth": "Acesso nativo",
-    "loading": "Carregando contas..."
+    "nativeAuth": "Acesso nativo"
   },
   "Language": {
     "followSystem": "Seguir o sistema",

@@ -65,8 +65,7 @@
     "done": "完成",
     "signedInWith": "已偵測到登入：{method}",
     "accountAuth": "{provider} 帳號",
-    "nativeAuth": "原生登入",
-    "loading": "正在載入帳戶..."
+    "nativeAuth": "原生登入"
   },
   "Language": {
     "followSystem": "跟隨系統",
