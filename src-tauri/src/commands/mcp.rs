@@ -76,6 +76,10 @@ pub enum McpAppType {
     Kiro,
     #[serde(rename = "zcode")]
     ZCode,
+    /// Serializes as `trae`, matching `AgentType::as_wire`.
+    Trae,
+    /// Serializes as `command_code`, matching `AgentType::as_wire`.
+    CommandCode,
     /// Serializes as `pi`, matching `AgentType::as_wire`. Scan-only: codeg
     /// reads and round-trips the pi MCP EXTENSION's config, but pi is not an
     /// assignable target and gets no MCP over the ACP wire. See the pi section
@@ -93,7 +97,7 @@ pub enum McpAppType {
 /// server come back on the next refresh. Both used to keep their own hand-typed
 /// copy of this list; one shared constant plus [`tests::all_mcp_apps_is_exhaustive`]
 /// (which fails to compile when a variant is added) is what keeps them honest.
-const ALL_MCP_APPS: [McpAppType; 17] = [
+const ALL_MCP_APPS: [McpAppType; 19] = [
     McpAppType::ClaudeCode,
     McpAppType::Codex,
     McpAppType::Gemini,
@@ -111,6 +115,8 @@ const ALL_MCP_APPS: [McpAppType; 17] = [
     McpAppType::Kiro,
     McpAppType::Pi,
     McpAppType::ZCode,
+    McpAppType::Trae,
+    McpAppType::CommandCode,
 ];
 
 #[derive(Debug, Clone, Serialize)]
@@ -635,9 +641,11 @@ fn normalize_apps(apps: Vec<McpAppType>) -> Vec<McpAppType> {
 /// SSE server — writing one would persist a url-only entry that Codex loads as HTTP
 /// and codeg then reads back as `http`, silently reclassifying the shared canonical
 /// spec. Kiro is the same case (its config knows `stdio`/`http`/`registry` and its
-/// client speaks only streamable HTTP). Write paths preflight-exclude such (app,
-/// spec) pairs instead of writing a misrepresented entry or aborting the whole
-/// multi-agent operation. See issue #325.
+/// client speaks only streamable HTTP), and so is TRAE CLI, whose `traecli.toml`
+/// is Codex's schema, and Command Code, whose `mcp.json` knows only `stdio` and
+/// `http`. Write paths preflight-exclude such (app, spec) pairs instead of
+/// writing a misrepresented entry or aborting the whole multi-agent operation.
+/// See issue #325.
 fn app_can_host_spec(app: McpAppType, canonical_spec: &Value) -> bool {
     // ZCode's first integration validates stdio only. Do not offer remote
     // transports merely because the bridge advertises them.
@@ -645,7 +653,14 @@ fn app_can_host_spec(app: McpAppType, canonical_spec: &Value) -> bool {
         return canonical_spec.get("type").and_then(Value::as_str) == Some("stdio");
     }
     let is_sse = canonical_spec.get("type").and_then(Value::as_str) == Some("sse");
-    !(matches!(app, McpAppType::Codex | McpAppType::DeepSeek | McpAppType::Kiro) && is_sse)
+    !(matches!(
+        app,
+        McpAppType::Codex
+            | McpAppType::DeepSeek
+            | McpAppType::Kiro
+            | McpAppType::Trae
+            | McpAppType::CommandCode
+    ) && is_sse)
 }
 
 #[derive(Debug, Clone)]
@@ -3216,7 +3231,7 @@ impl LocalMcpReader {
     }
 }
 
-fn local_mcp_readers() -> [LocalMcpReader; 17] {
+fn local_mcp_readers() -> [LocalMcpReader; 19] {
     [
         LocalMcpReader::new("Claude Code", McpAppType::ClaudeCode, read_claude_servers),
         LocalMcpReader::new("Codex", McpAppType::Codex, read_codex_servers),
@@ -3238,6 +3253,12 @@ fn local_mcp_readers() -> [LocalMcpReader; 17] {
         LocalMcpReader::new("Qoder", McpAppType::Qoder, read_qoder_servers),
         LocalMcpReader::new("Kiro CLI", McpAppType::Kiro, read_kiro_servers),
         LocalMcpReader::new("ZCode", McpAppType::ZCode, read_zcode_servers),
+        LocalMcpReader::new("TRAE CLI", McpAppType::Trae, read_trae_servers),
+        LocalMcpReader::new(
+            "Command Code",
+            McpAppType::CommandCode,
+            read_command_code_servers,
+        ),
         // Scan-only, so it reads last: the merge below is first-writer-wins,
         // and a pi entry that won would decide the transport every save of
         // that id is checked against — dropping an assignable agent that
@@ -3629,6 +3650,8 @@ fn upsert_server_for_app(app: McpAppType, id: &str, spec: &Value) -> Result<(), 
         McpAppType::Kiro => upsert_kiro_server(id, spec),
         McpAppType::Pi => upsert_pi_server(id, spec),
         McpAppType::ZCode => upsert_deepseek_server_at(&zcode_mcp_json_path(), id, spec),
+        McpAppType::Trae => upsert_trae_server(id, spec),
+        McpAppType::CommandCode => upsert_command_code_server(id, spec),
     }?;
     fanout_live_extra_homes(app, id, Some(spec))
 }
@@ -3671,6 +3694,12 @@ pub fn read_servers_for_agent_type(
         // Kiro loads `<KIRO_HOME>/settings/mcp.json` natively — see the Kiro
         // section below for why it rides the forward skip list.
         AgentType::Kiro => read_kiro_servers(),
+        // TRAE CLI loads `<TRAE_HOME>/traecli.toml` natively — see the TRAE
+        // CLI section below for why it rides the forward skip list.
+        AgentType::Trae => read_trae_servers(),
+        // Command Code loads `~/.commandcode/mcp.json` natively — see the
+        // Command Code section below for why it rides the forward skip list.
+        AgentType::CommandCode => read_command_code_servers(),
         // Custom agents get MCP purely over the ACP wire (`session/new`'s
         // `mcpServers`); codeg deliberately knows nothing about their native
         // config files, so there is no per-agent store to read back here.
@@ -4342,6 +4371,296 @@ fn remove_grok_server_at(path: &Path, id: &str) -> Result<bool, AppCommandError>
     }
     if removed {
         write_grok_root_toml_at(path, &root)?;
+    }
+    Ok(removed)
+}
+
+// ---------------------------------------------------------------------------
+// TRAE CLI  (<TRAE_HOME>/traecli.toml  →  `[mcp_servers.<name>]`)
+//
+// TRAE CLI is a Codex fork and keeps Codex's MCP table verbatim: `traecli mcp
+// add` writes `command`/`args`/`[….env]` for stdio and `url`/
+// `bearer_token_env_var` for streamable HTTP, with no `type` key, and `traecli
+// mcp list --json` reads `cwd`, `enabled` and `[….http_headers]` back
+// (verified against 0.209.1). So the Codex converters are reused unchanged,
+// pointed at TRAE's file, and the transport rules are Codex's too: no SSE (see
+// `app_can_host_spec`). The read/write itself is the path-generic TOML pair
+// from the Grok section: read/modify/write the whole document, touching only
+// `[mcp_servers]`.
+//
+// `traecli acp serve` loads this file itself (a server declared only here
+// reaches the model as `mcp__<name>__*`), so `Trae` is on the ACP forward skip
+// list in `connection.rs`; the codeg-mcp companion still arrives over
+// `session/new`.
+// ---------------------------------------------------------------------------
+
+fn read_trae_servers() -> Result<BTreeMap<String, Value>, AppCommandError> {
+    read_trae_servers_at(&crate::acp::trae::trae_config_toml_path())
+}
+
+fn read_trae_servers_at(path: &Path) -> Result<BTreeMap<String, Value>, AppCommandError> {
+    let root = read_grok_root_toml_at(path)?;
+    let mut out = BTreeMap::new();
+    let Some(servers) = root
+        .as_table()
+        .and_then(|table| table.get("mcp_servers"))
+        .and_then(toml::Value::as_table)
+    else {
+        return Ok(out);
+    };
+    for (id, spec) in servers {
+        match codex_entry_to_canonical(id, spec) {
+            Ok(normalized) => {
+                out.insert(id.to_string(), normalized);
+            }
+            Err(err) => {
+                tracing::warn!("[MCP] skip invalid TRAE CLI mcp_servers entry id={id}: {err}");
+            }
+        }
+    }
+    Ok(out)
+}
+
+fn upsert_trae_server(id: &str, spec: &Value) -> Result<(), AppCommandError> {
+    upsert_trae_server_at(&crate::acp::trae::trae_config_toml_path(), id, spec)
+}
+
+fn upsert_trae_server_at(path: &Path, id: &str, spec: &Value) -> Result<(), AppCommandError> {
+    let mut root = read_grok_root_toml_at(path)?;
+    let table = root
+        .as_table_mut()
+        .ok_or_else(|| mcp_configuration_invalid("TRAE CLI root TOML must be a table"))?;
+
+    let entry = canonical_to_codex_entry(spec)?;
+    if !table
+        .get("mcp_servers")
+        .map(toml::Value::is_table)
+        .unwrap_or(false)
+    {
+        table.insert(
+            "mcp_servers".to_string(),
+            toml::Value::Table(toml::map::Map::new()),
+        );
+    }
+    let mcp_servers = table
+        .get_mut("mcp_servers")
+        .and_then(toml::Value::as_table_mut)
+        .ok_or_else(|| mcp_configuration_invalid("TRAE CLI mcp_servers must be a TOML table"))?;
+    mcp_servers.insert(id.to_string(), entry);
+
+    write_grok_root_toml_at(path, &root)
+}
+
+fn remove_trae_server(id: &str) -> Result<bool, AppCommandError> {
+    remove_trae_server_at(&crate::acp::trae::trae_config_toml_path(), id)
+}
+
+fn remove_trae_server_at(path: &Path, id: &str) -> Result<bool, AppCommandError> {
+    if !path.exists() {
+        return Ok(false);
+    }
+    let mut root = read_grok_root_toml_at(path)?;
+    let Some(table) = root.as_table_mut() else {
+        return Ok(false);
+    };
+    let mut removed = false;
+    if let Some(mcp_servers) = table
+        .get_mut("mcp_servers")
+        .and_then(toml::Value::as_table_mut)
+    {
+        removed |= mcp_servers.remove(id).is_some();
+        if mcp_servers.is_empty() {
+            table.remove("mcp_servers");
+        }
+    }
+    if removed {
+        write_grok_root_toml_at(path, &root)?;
+    }
+    Ok(removed)
+}
+
+// ---------------------------------------------------------------------------
+// Command Code  (~/.commandcode/mcp.json  →  top-level `mcpServers`)
+//
+// `command-code mcp add --scope user` writes Claude-shaped entries keyed on a
+// `transport` discriminant — `{transport: "stdio", enabled, command, args,
+// env}` or `{transport: "http", enabled, url, headers}`, plus an `oauth` block
+// for a server that signs in. Its loader (`parseStoredMcpServer`, read against
+// 1.84.0) takes `transport` first, then `type` as an alias, and otherwise
+// infers stdio from `command` and http from `url`. It models no `cwd`, and an
+// entry with any other transport (`sse` included) or a non-boolean `enabled`
+// fails and is dropped while the rest of the file still loads. codeg reads
+// entries the same way and writes only what that loader models.
+//
+// `command-code acp` loads this file itself, so `CommandCode` is on the ACP
+// forward skip list in `connection.rs`; the codeg-mcp companion still arrives
+// over `session/new`.
+// ---------------------------------------------------------------------------
+
+fn read_command_code_servers() -> Result<BTreeMap<String, Value>, AppCommandError> {
+    read_command_code_servers_at(&crate::acp::command_code::command_code_mcp_json_path())
+}
+
+/// Convert one Command Code `mcpServers` entry into codeg's canonical spec,
+/// classified the way the CLI's own loader classifies it (see the section
+/// notes). `transport` / `type` become the canonical `type` and are dropped
+/// so they cannot leak into another agent's config on a cross-agent sync; a
+/// `cwd` is dropped because Command Code never applies one.
+fn command_code_entry_to_canonical(spec: &Value, id: &str) -> Result<Value, AppCommandError> {
+    let source = format!("Command Code config '{id}'");
+    let Some(obj) = spec.as_object() else {
+        return canonicalize_spec(spec, &source);
+    };
+    let mut obj = obj.clone();
+    let transport = obj.remove("transport");
+    let alias = obj.remove("type");
+    if let Some(declared) = transport.or(alias) {
+        match declared.as_str() {
+            Some(kind @ ("stdio" | "http")) => {
+                obj.insert("type".to_string(), Value::String(kind.to_string()));
+            }
+            other => {
+                return Err(mcp_invalid_input(format!(
+                    "{source}: unsupported transport '{}' (Command Code accepts only \"stdio\" or \"http\")",
+                    other.unwrap_or("<non-string>")
+                )));
+            }
+        }
+    }
+    if obj
+        .get("enabled")
+        .is_some_and(|enabled| !enabled.is_boolean())
+    {
+        return Err(mcp_invalid_input(format!(
+            "{source}: `enabled` must be a boolean"
+        )));
+    }
+    obj.remove("cwd");
+    canonicalize_spec(&Value::Object(obj), &source)
+}
+
+fn read_command_code_servers_at(path: &Path) -> Result<BTreeMap<String, Value>, AppCommandError> {
+    let root = read_json_file(path)?;
+    let mut out = BTreeMap::new();
+
+    let Some(servers) = root.get("mcpServers").and_then(Value::as_object) else {
+        return Ok(out);
+    };
+
+    for (id, spec) in servers {
+        match command_code_entry_to_canonical(spec, id) {
+            Ok(normalized) => {
+                out.insert(id.to_string(), normalized);
+            }
+            Err(err) => {
+                tracing::warn!("[MCP] skip invalid Command Code MCP entry id={id}: {err}");
+            }
+        }
+    }
+
+    Ok(out)
+}
+
+/// Convert codeg's canonical spec into a Command Code `mcpServers` entry: the
+/// shape `command-code mcp add` writes, with `transport` spelled out. Only the
+/// keys its loader models are kept — `enabled` and an http server's `oauth`
+/// block included, so a server the user set up in Command Code survives a save
+/// from codeg — and `cwd` and foreign keys stay off disk. SSE has no
+/// representation and is refused rather than degraded to HTTP (the batch
+/// paths never send one here; see `app_can_host_spec`).
+fn canonical_to_command_code_entry(spec: &Value) -> Result<Value, AppCommandError> {
+    let canonical = canonicalize_spec(spec, "Command Code write")?;
+    let obj = canonical
+        .as_object()
+        .ok_or_else(|| mcp_invalid_input("Command Code write: canonical spec must be an object"))?;
+    let transport = match obj.get("type").and_then(Value::as_str) {
+        Some(kind @ ("stdio" | "http")) => kind,
+        other => {
+            return Err(mcp_invalid_input(format!(
+                "Command Code write: unsupported MCP type '{}'; Command Code accepts only stdio and http",
+                other.unwrap_or("<missing>")
+            )));
+        }
+    };
+    let stdio = transport == "stdio";
+    let mut out = Map::new();
+    out.insert(
+        "transport".to_string(),
+        Value::String(transport.to_string()),
+    );
+    for (key, value) in obj {
+        let keep = match key.as_str() {
+            "command" | "args" | "env" => stdio,
+            "url" | "headers" => !stdio,
+            "enabled" => value.is_boolean(),
+            "oauth" => !stdio && value.is_object(),
+            _ => false,
+        };
+        if keep {
+            out.insert(key.clone(), value.clone());
+        }
+    }
+    Ok(Value::Object(out))
+}
+
+fn upsert_command_code_server(id: &str, spec: &Value) -> Result<(), AppCommandError> {
+    upsert_command_code_server_at(
+        &crate::acp::command_code::command_code_mcp_json_path(),
+        id,
+        spec,
+    )
+}
+
+fn upsert_command_code_server_at(
+    path: &Path,
+    id: &str,
+    spec: &Value,
+) -> Result<(), AppCommandError> {
+    let mut root = read_json_file(path)?;
+    if !root.is_object() {
+        root = json!({});
+    }
+
+    let entry = canonical_to_command_code_entry(spec)?;
+
+    let obj = root.as_object_mut().ok_or_else(|| {
+        mcp_configuration_invalid(format!("invalid JSON root in {}", path.display()))
+    })?;
+    if !obj.get("mcpServers").map(Value::is_object).unwrap_or(false) {
+        obj.insert("mcpServers".to_string(), Value::Object(Map::new()));
+    }
+
+    let map = obj
+        .get_mut("mcpServers")
+        .and_then(Value::as_object_mut)
+        .ok_or_else(|| {
+            mcp_configuration_invalid(format!("invalid mcpServers in {}", path.display()))
+        })?;
+    map.insert(id.to_string(), entry);
+
+    write_json_file(path, &root)
+}
+
+fn remove_command_code_server(id: &str) -> Result<bool, AppCommandError> {
+    remove_command_code_server_at(&crate::acp::command_code::command_code_mcp_json_path(), id)
+}
+
+fn remove_command_code_server_at(path: &Path, id: &str) -> Result<bool, AppCommandError> {
+    if !path.exists() {
+        return Ok(false);
+    }
+
+    let mut root = read_json_file(path)?;
+    let Some(obj) = root.as_object_mut() else {
+        return Ok(false);
+    };
+    let Some(servers) = obj.get_mut("mcpServers").and_then(Value::as_object_mut) else {
+        return Ok(false);
+    };
+
+    let removed = servers.remove(id).is_some();
+    if removed {
+        write_json_file(path, &root)?;
     }
     Ok(removed)
 }
@@ -5046,6 +5365,8 @@ fn remove_server_for_app(app: McpAppType, id: &str) -> Result<bool, AppCommandEr
         McpAppType::Kiro => remove_kiro_server(id),
         McpAppType::Pi => remove_pi_server(id),
         McpAppType::ZCode => remove_deepseek_server_at(&zcode_mcp_json_path(), id),
+        McpAppType::Trae => remove_trae_server(id),
+        McpAppType::CommandCode => remove_command_code_server(id),
     }?;
     // Always fan out the remove so a stale extra-home entry cannot outlive
     // the family-row uncheck, even if the default home had nothing to drop.
@@ -8213,7 +8534,9 @@ mod tests {
                 | McpAppType::Antigravity
                 | McpAppType::Kiro
                 | McpAppType::Pi
-                | McpAppType::ZCode => {}
+                | McpAppType::ZCode
+                | McpAppType::Trae
+                | McpAppType::CommandCode => {}
             }
         }
 
@@ -8270,6 +8593,8 @@ mod tests {
             (McpAppType::Kiro, AgentType::Kiro),
             (McpAppType::Pi, AgentType::Pi),
             (McpAppType::ZCode, AgentType::ZCode),
+            (McpAppType::Trae, AgentType::Trae),
+            (McpAppType::CommandCode, AgentType::CommandCode),
         ] {
             let wire = serde_json::to_value(app).expect("serialize app type");
             assert_eq!(
@@ -8388,6 +8713,220 @@ mod tests {
         let raw2 = std::fs::read_to_string(&path).expect("read file 2");
         let root2: toml::Value = raw2.parse().expect("parse toml 2");
         assert!(root2.as_table().expect("t").contains_key("cli"));
+    }
+
+    #[test]
+    fn trae_config_toml_round_trips_in_codex_schema_and_keeps_its_settings() {
+        // TRAE CLI reads `<TRAE_HOME>/traecli.toml` `[mcp_servers.<name>]` in
+        // Codex's schema: no `type` key, `http_headers` (not Grok's
+        // `headers`), and no SSE. The rest of the file is TRAE's own config
+        // (model, approval policy, project trust), which must survive.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("traecli.toml");
+        std::fs::write(
+            &path,
+            concat!(
+                "model = \"gpt-5.5\"\n",
+                "approval_policy = \"on-request\"\n\n",
+                "[projects.\"/work/repo\"]\n",
+                "trust_level = \"trusted\"\n\n",
+                // What `traecli mcp add http-one --url … --bearer-token-env-var
+                // MY_TOKEN` writes: a key codeg does not model, which must
+                // still be readable.
+                "[mcp_servers.http-one]\n",
+                "url = \"https://example.com/mcp\"\n",
+                "bearer_token_env_var = \"MY_TOKEN\"\n",
+            ),
+        )
+        .expect("seed config");
+
+        let seeded = read_trae_servers_at(&path).expect("read seed");
+        assert_eq!(seeded.len(), 1);
+        assert_eq!(
+            seeded["http-one"].get("type").and_then(Value::as_str),
+            Some("http")
+        );
+        assert!(!remove_trae_server_at(&path, "fs").expect("remove missing"));
+
+        let stdio = json!({
+            "type": "stdio",
+            "command": "npx",
+            "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
+            "env": { "TOKEN": "sk-abc" },
+            "cwd": "/work/dir",
+        });
+        upsert_trae_server_at(&path, "fs", &stdio).expect("upsert stdio");
+        let http = json!({
+            "type": "http",
+            "url": "https://mcp.example.com/mcp",
+            "headers": { "Authorization": "Bearer xyz" },
+        });
+        upsert_trae_server_at(&path, "remote", &http).expect("upsert http");
+        // SSE has no Codex-schema representation; the batch paths never send
+        // one here, and a direct call is refused rather than degraded to HTTP.
+        let sse = json!({ "type": "sse", "url": "https://mcp.linear.app/sse" });
+        assert!(upsert_trae_server_at(&path, "linear", &sse).is_err());
+        assert!(!app_can_host_spec(McpAppType::Trae, &sse));
+        assert!(app_can_host_spec(McpAppType::Trae, &stdio));
+        assert!(app_can_host_spec(McpAppType::Trae, &http));
+
+        let servers = read_trae_servers_at(&path).expect("read back");
+        assert_eq!(servers.len(), 3);
+        let fs = servers.get("fs").expect("fs present");
+        assert_eq!(fs.get("type").and_then(Value::as_str), Some("stdio"));
+        assert_eq!(fs.get("cwd").and_then(Value::as_str), Some("/work/dir"));
+        assert_eq!(
+            fs.pointer("/env/TOKEN").and_then(Value::as_str),
+            Some("sk-abc")
+        );
+        let remote = servers.get("remote").expect("remote present");
+        assert_eq!(remote.get("type").and_then(Value::as_str), Some("http"));
+        assert_eq!(
+            remote
+                .pointer("/headers/Authorization")
+                .and_then(Value::as_str),
+            Some("Bearer xyz")
+        );
+
+        // On disk: Codex's spelling, no `type`, TRAE's own settings intact.
+        let raw = std::fs::read_to_string(&path).expect("read file");
+        let root: toml::Value = raw.parse().expect("parse toml");
+        let table = root.as_table().expect("root table");
+        assert_eq!(
+            table.get("model").and_then(toml::Value::as_str),
+            Some("gpt-5.5")
+        );
+        assert!(table.contains_key("projects"), "[projects] preserved");
+        let servers_table = table
+            .get("mcp_servers")
+            .and_then(toml::Value::as_table)
+            .expect("mcp_servers");
+        let fs_entry = servers_table
+            .get("fs")
+            .and_then(toml::Value::as_table)
+            .expect("mcp_servers.fs");
+        assert!(!fs_entry.contains_key("type"), "Codex schema has no `type`");
+        let remote_entry = servers_table
+            .get("remote")
+            .and_then(toml::Value::as_table)
+            .expect("mcp_servers.remote");
+        assert!(remote_entry.contains_key("http_headers"));
+        assert!(!remote_entry.contains_key("headers"));
+        assert!(!remote_entry.contains_key("type"));
+
+        assert!(remove_trae_server_at(&path, "fs").expect("remove fs"));
+        let after = read_trae_servers_at(&path).expect("read after remove");
+        assert_eq!(after.len(), 2);
+        assert!(after.contains_key("remote") && after.contains_key("http-one"));
+    }
+
+    #[test]
+    fn command_code_mcp_json_round_trips_in_its_transport_schema() {
+        // Seeded with what `command-code mcp add --scope user` writes (1.84.0),
+        // a `type`-only and an inferred entry its loader also accepts, two it
+        // drops (`sse`, a non-boolean `enabled`), and a top-level key of its own.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("mcp.json");
+        std::fs::write(
+            &path,
+            serde_json::to_string_pretty(&json!({
+                "mcpServers": {
+                    "my-tool": {
+                        "transport": "stdio",
+                        "enabled": true,
+                        "command": "npx",
+                        "args": ["-y", "@my-org/mcp-server"],
+                        "env": { "API_KEY": "sk-1" }
+                    },
+                    "remote": {
+                        "transport": "http",
+                        "enabled": false,
+                        "url": "https://mcp.example.com/mcp",
+                        "headers": { "Authorization": "Bearer xyz" },
+                        "oauth": { "clientId": "my-client" }
+                    },
+                    "typed": { "type": "http", "url": "https://t.example.com/mcp" },
+                    "bare": { "command": "node", "args": ["b.js"], "cwd": "/work/dir" },
+                    "sse-one": { "transport": "sse", "url": "https://s.example.com/sse" },
+                    "bad-enabled": { "transport": "stdio", "command": "node", "enabled": "no" }
+                },
+                "other": { "kept": true }
+            }))
+            .unwrap(),
+        )
+        .expect("seed config");
+
+        let seeded = read_command_code_servers_at(&path).expect("read seed");
+        assert_eq!(
+            seeded.keys().map(String::as_str).collect::<Vec<_>>(),
+            vec!["bare", "my-tool", "remote", "typed"],
+            "the entries Command Code itself drops are skipped"
+        );
+        assert_eq!(seeded["my-tool"]["type"], "stdio");
+        assert_eq!(seeded["my-tool"]["env"]["API_KEY"], "sk-1");
+        assert!(seeded["my-tool"].get("transport").is_none());
+        assert_eq!(seeded["remote"]["type"], "http");
+        assert_eq!(seeded["remote"]["enabled"], false);
+        assert_eq!(seeded["remote"]["oauth"]["clientId"], "my-client");
+        assert_eq!(seeded["typed"]["type"], "http");
+        assert_eq!(seeded["bare"]["type"], "stdio");
+        assert!(
+            seeded["bare"].get("cwd").is_none(),
+            "Command Code applies no cwd"
+        );
+
+        // A save from codeg: Command Code's own fields come back, `cwd` and a
+        // foreign key do not, and the transport is spelled out.
+        let stdio = json!({
+            "type": "stdio",
+            "command": "npx",
+            "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
+            "env": { "TOKEN": "sk-abc" },
+            "cwd": "/work/dir",
+            "startup_timeout_sec": 10,
+        });
+        upsert_command_code_server_at(&path, "fs", &stdio).expect("upsert stdio");
+        upsert_command_code_server_at(&path, "remote", &seeded["remote"]).expect("re-save remote");
+        let sse = json!({ "type": "sse", "url": "https://mcp.linear.app/sse" });
+        assert!(upsert_command_code_server_at(&path, "linear", &sse).is_err());
+        assert!(!app_can_host_spec(McpAppType::CommandCode, &sse));
+        assert!(app_can_host_spec(McpAppType::CommandCode, &stdio));
+        assert!(app_can_host_spec(
+            McpAppType::CommandCode,
+            &seeded["remote"]
+        ));
+
+        let root: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(root["other"]["kept"], true, "the rest of the file survives");
+        assert_eq!(
+            root["mcpServers"]["fs"],
+            json!({
+                "transport": "stdio",
+                "command": "npx",
+                "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
+                "env": { "TOKEN": "sk-abc" },
+            })
+        );
+        assert_eq!(
+            root["mcpServers"]["remote"],
+            json!({
+                "transport": "http",
+                "enabled": false,
+                "url": "https://mcp.example.com/mcp",
+                "headers": { "Authorization": "Bearer xyz" },
+                "oauth": { "clientId": "my-client" },
+            })
+        );
+        // Entries codeg skipped on read are left exactly as they were.
+        assert_eq!(root["mcpServers"]["sse-one"]["transport"], "sse");
+
+        assert!(remove_command_code_server_at(&path, "fs").expect("remove fs"));
+        assert!(!remove_command_code_server_at(&path, "fs").expect("remove again"));
+        let after = read_command_code_servers_at(&path).expect("read after remove");
+        assert!(!after.contains_key("fs"));
+        assert!(after.contains_key("remote") && after.contains_key("my-tool"));
+        // Nothing to remove from a file that does not exist.
+        assert!(!remove_command_code_server_at(&dir.path().join("none.json"), "x").unwrap());
     }
 
     fn codex_entry(toml_src: &str) -> toml::Value {

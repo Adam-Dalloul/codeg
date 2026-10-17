@@ -58,7 +58,12 @@ pub fn layout(agent: AgentType) -> Option<AccountLayout> {
             ".cursor/chats",
             &["cursor-agent", "login"],
         ),
-        AgentType::OpenClaw | AgentType::Kiro | AgentType::ZCode | AgentType::Custom(_) => return None,
+        AgentType::OpenClaw
+        | AgentType::Kiro
+        | AgentType::ZCode
+        | AgentType::Trae
+        | AgentType::CommandCode
+        | AgentType::Custom(_) => return None,
     };
     Some(AccountLayout {
         env_key,
