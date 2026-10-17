@@ -31,6 +31,7 @@
     "copyCommand": "ログインコマンドをコピー",
     "copied": "ログインコマンドをコピーしました",
     "choose": "続行するアカウントを選択してください。",
+    "loading": "アカウントを読み込み中...",
     "suggestedName": "アカウント {number}",
     "defaultSetupDescription": "既存のログインです。下の接続設定はデフォルトアカウントに適用されます。",
     "emptyHint": "別のアカウントを追加すると、ログインとチャットを分けて管理できます。",
@@ -64,8 +65,7 @@
     "done": "完了",
     "signedInWith": "ログイン情報：{method}",
     "accountAuth": "{provider} アカウント",
-    "nativeAuth": "標準のログイン",
-    "loading": "アカウントを読み込み中..."
+    "nativeAuth": "標準のログイン"
   },
   "Language": {
     "followSystem": "システムに従う",

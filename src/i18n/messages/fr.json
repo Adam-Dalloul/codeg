@@ -31,6 +31,7 @@
     "copyCommand": "Copier la commande de connexion",
     "copied": "Commande de connexion copiée",
     "choose": "Choisissez un compte pour continuer.",
+    "loading": "Chargement des comptes...",
     "suggestedName": "Compte {number}",
     "defaultSetupDescription": "Votre connexion actuelle. Les réglages de connexion ci-dessous configurent le compte par défaut.",
     "emptyHint": "Ajoutez un compte pour séparer sa connexion et ses discussions.",
@@ -64,8 +65,7 @@
     "done": "Terminé",
     "signedInWith": "Connexion détectée : {method}",
     "accountAuth": "Compte {provider}",
-    "nativeAuth": "Connexion native",
-    "loading": "Chargement des comptes..."
+    "nativeAuth": "Connexion native"
   },
   "Language": {
     "followSystem": "Suivre le système",

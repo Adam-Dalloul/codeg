@@ -31,6 +31,7 @@
     "copyCommand": "複製登入指令",
     "copied": "登入指令已複製",
     "choose": "請選擇帳戶以繼續。",
+    "loading": "正在載入帳戶...",
     "suggestedName": "帳號 {number}",
     "defaultSetupDescription": "你現有的登入。下方連線設定用於設定預設帳號。",
     "emptyHint": "新增其他帳號，分別管理各自的登入和聊天。",
@@ -64,8 +65,7 @@
     "done": "完成",
     "signedInWith": "已偵測到登入：{method}",
     "accountAuth": "{provider} 帳號",
-    "nativeAuth": "原生登入",
-    "loading": "正在載入帳戶..."
+    "nativeAuth": "原生登入"
   },
   "Language": {
     "followSystem": "跟隨系統",

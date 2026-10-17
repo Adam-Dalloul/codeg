@@ -31,6 +31,7 @@
     "copyCommand": "复制登录命令",
     "copied": "登录命令已复制",
     "choose": "请选择一个账户以继续。",
+    "loading": "正在加载账户...",
     "suggestedName": "账号 {number}",
     "defaultSetupDescription": "你现有的登录。下方连接设置用于配置默认账号。",
     "emptyHint": "添加其他账号，分别管理各自的登录和聊天。",
@@ -64,8 +65,7 @@
     "done": "完成",
     "signedInWith": "已检测到登录：{method}",
     "accountAuth": "{provider} 账号",
-    "nativeAuth": "原生登录",
-    "loading": "正在加载账户..."
+    "nativeAuth": "原生登录"
   },
   "Language": {
     "followSystem": "跟随系统",

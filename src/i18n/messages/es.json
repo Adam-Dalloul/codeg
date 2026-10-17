@@ -31,6 +31,7 @@
     "copyCommand": "Copiar comando de inicio de sesión",
     "copied": "Comando de inicio de sesión copiado",
     "choose": "Elige una cuenta para continuar.",
+    "loading": "Cargando cuentas...",
     "suggestedName": "Cuenta {number}",
     "defaultSetupDescription": "Tu inicio de sesión actual. Los ajustes de conexión de abajo configuran Predeterminada.",
     "emptyHint": "Añade otra cuenta para mantener separados su inicio de sesión y sus chats.",
@@ -64,8 +65,7 @@
     "done": "Listo",
     "signedInWith": "Inicio de sesión encontrado: {method}",
     "accountAuth": "Cuenta de {provider}",
-    "nativeAuth": "Inicio de sesión nativo",
-    "loading": "Cargando cuentas..."
+    "nativeAuth": "Inicio de sesión nativo"
   },
   "Language": {
     "followSystem": "Seguir el sistema",
