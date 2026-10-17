@@ -49,6 +49,15 @@ Claude Code conversations can switch accounts from their account picker when
 no turn or background task is running. The conversation and transcript are
 retained. The current model and mode carry over unless the target account has
 its own saved choices. Turn off Claude Remote Control before switching accounts.
+An unavailable requested model cancels the switch. The selected account's own
+settings, permissions and project memory apply.
+
+Session task lists and legacy todos move with a native Claude session, including
+updates and deletions. Replaced task files remain in the target account's
+`.codeg-account-switch/` recovery folder. A custom task-list id can be shared
+with other sessions, so native switching refuses it instead of replacing the
+shared list.
+
 Other agents keep their original account.
 
 ## Backups and moving computers

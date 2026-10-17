@@ -1,7 +1,7 @@
 {
   "AgentAccounts": {
     "switchAccount": "切换账号",
-    "switchHint": "使用另一个 Claude 账号继续此对话，保留完整历史记录。",
+    "switchHint": "保留此对话及其原生记录。将应用所选账户的设置和记忆。",
     "remoteControlHint": "切换账号前，请先关闭远程控制。",
     "switching": "正在切换账号…",
     "switched": "账号已切换，对话历史已保留。",

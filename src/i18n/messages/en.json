@@ -1,7 +1,7 @@
 {
   "AgentAccounts": {
     "switchAccount": "Switch account",
-    "switchHint": "Continue this conversation with another Claude account. Full history is kept.",
+    "switchHint": "Keeps this conversation and its native transcript. The selected account’s settings and memory apply.",
     "remoteControlHint": "Turn off Remote Control before switching accounts.",
     "switching": "Switching account…",
     "switched": "Account switched. Conversation history kept.",
