@@ -539,10 +539,13 @@ async fn handoff_inner(
     )
     .await;
     if let Err(error) = committed {
-        manager
+        if manager
             .disconnect_and_wait_for_account_switch(&connection_id)
             .await
-            .map_err(failure)?;
+            .is_err()
+        {
+            tracing::warn!("[handoff] target shutdown was delayed; checking writers before rollback");
+        }
         rollback(
             manager,
             transfer.as_ref(),

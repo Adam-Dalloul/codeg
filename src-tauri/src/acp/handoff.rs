@@ -538,7 +538,10 @@ mod tests {
         ];
         let out = splice_handoffs(&[link(false, 1)], vec![segment], current);
         let ids: Vec<&str> = out.iter().map(|t| t.id.as_str()).collect();
-        assert_eq!(ids, vec!["s1", "s2", "handoff-0", "c2", "c3"]);
+        assert_eq!(
+            ids,
+            vec!["handoff-0:s1", "handoff-0:s2", "handoff-0", "c2", "c3"]
+        );
         assert_eq!(count_user_turns(&out), 2);
     }
 
@@ -588,8 +591,8 @@ mod tests {
         assert_eq!(
             ids,
             vec![
-                "a-u1",
-                "a-a1",
+                "handoff-0:a-u1",
+                "handoff-0:a-a1",
                 "handoff-0",
                 "b-u1",
                 "b-a1",
@@ -597,6 +600,34 @@ mod tests {
                 "b2-u1",
                 "b2-a1"
             ]
+        );
+    }
+
+    #[test]
+    fn repeated_native_turn_ids_stay_unique_across_segments() {
+        let a = text_turn("turn-0", TurnRole::User, "first agent");
+        let b = text_turn("turn-0", TurnRole::User, "second agent");
+        let c = text_turn("turn-0", TurnRole::User, "current agent");
+        let out = splice_handoffs(
+            &[link(false, 1), link(false, 2)],
+            vec![vec![a], vec![b]],
+            vec![c],
+        );
+        let ids: std::collections::HashSet<_> = out.iter().map(|t| &t.id).collect();
+        assert_eq!(ids.len(), out.len());
+        assert_eq!(count_user_turns(&out), 3);
+    }
+
+    #[test]
+    fn retry_frame_keeps_the_real_user_prompt_when_whitespace_changes() {
+        let mut record = link(false, 1);
+        record.context_id = Some("context-id".into());
+        record.briefing = Some("original unnormalized seed".into());
+        let input = text_turn("u",TurnRole::User,&format!("Keep my instruction. {BRIEFING_MARKER} [codeg-context:context-id] normalized context [/codeg-context:context-id]"));
+        let out = clean_seeded_turns(vec![input], &[record]);
+        assert_eq!(out.len(), 1);
+        assert!(
+            matches!(&out[0].blocks[0],ContentBlock::Text { text } if text == "Keep my instruction.")
         );
     }
 
