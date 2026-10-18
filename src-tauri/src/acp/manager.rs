@@ -6420,6 +6420,7 @@ mod tests {
             .spawn_for_resume(
                 "parent",
                 AgentType::ClaudeCode,
+                None,
                 Some(wd.to_string_lossy().into_owned()),
                 "child-session",
                 None,
@@ -6434,6 +6435,29 @@ mod tests {
                 reused: true,
             }
         );
+        assert_eq!(cli_run_of(&mgr, "users-child").await, None);
+
+        let account = crate::db::service::agent_account_service::create(
+            &spawner.db.conn,
+            data_dir.path(),
+            AgentType::ClaudeCode,
+            "Work",
+            None,
+        ).await.unwrap();
+        mgr.insert_test_connection("users-named", AgentType::ClaudeCode, Some(wd.clone()), EventEmitter::Noop).await;
+        {
+            let named = state_of(&mgr, "users-named").await;
+            let mut named = named.write().await;
+            named.external_id = Some("child-session".into());
+            named.agent_account_id = Some(account.id.clone());
+        }
+        let resumed = spawner.spawn_for_resume(
+            "parent", AgentType::ClaudeCode, Some(account.id),
+            Some(wd.to_string_lossy().into_owned()), "child-session", None, BTreeMap::new(),
+        ).await.expect("the named-account connection is reused");
+        assert_eq!(resumed.connection_id, "users-named");
+        assert!(resumed.reused);
+        assert_eq!(cli_run_of(&mgr, "users-named").await, None);
         assert_eq!(cli_run_of(&mgr, "users-child").await, None);
     }
 
