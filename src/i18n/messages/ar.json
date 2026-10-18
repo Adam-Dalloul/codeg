@@ -317,6 +317,21 @@
     "autostartDescription": "يبدأ التشغيل تلقائيًا بعد تسجيل الدخول إلى هذا الجهاز.",
     "autostartSaveFailed": "فشل حفظ إعدادات التشغيل عند تسجيل الدخول: {message}",
     "autostartUnavailable": "تعذّر قراءة إدخال بدء التشغيل على هذا الجهاز: {message}",
+    "cliAccessTitle": "الوصول عبر سطر الأوامر",
+    "cliAccessDescription": "يتيح لأمر codeg-cli على هذا الكمبيوتر تشغيل المطالبات عبر Codeg من السكربتات أو مهام CI أو طرفيات Codeg نفسها. لا يمكن الاتصال إلا من هذا الكمبيوتر، بمفتاح محفوظ في ملف خاص.",
+    "cliAccessEndpointFile": "ملف الاتصال:",
+    "cliAccessExample": "مثال:",
+    "cliAccessOff": "متوقف: لا يستطيع codeg-cli على هذا الكمبيوتر الوصول إلى Codeg.",
+    "cliAccessUnavailable": "تعذّر بدء الوصول عبر سطر الأوامر: {message}",
+    "cliAccessSaveFailed": "تعذّر تغيير الوصول عبر سطر الأوامر: {message}",
+    "cliToolInstall": "تثبيت أداة سطر الأوامر",
+    "cliToolInstalled": "{command} موجود في PATH لديك:",
+    "cliToolPackage": "{command} مرفق مع الحزمة وموجود في PATH لديك:",
+    "cliToolNotInstalled": "ضع {command} في PATH لديك حتى تجده الطرفيات خارج Codeg.",
+    "cliToolConflict": "تُرك كما هو: {message}",
+    "cliToolNote": "ملاحظة: {message}",
+    "cliToolInstalledToast": "أصبح {command} في PATH لديك. افتح طرفية جديدة لاستخدامه.",
+    "cliToolInstallFailed": "تعذّر تثبيت أداة سطر الأوامر: {message}",
     "proxyTitle": "وكيل الشبكة",
     "proxyDescription": "عند التفعيل، ستُفضَّل إعدادات هذا الوكيل في طلبات الشبكة اللاحقة (بما في ذلك دردشة ACP وتثبيت الوكلاء وعمليات Git البعيدة).",
     "loadFailed": "فشل التحميل: {message}",
@@ -2184,6 +2199,7 @@
       "runningCountBadge": "{count} جلسة قيد التشغيل",
       "statusCancelledBadge": "ملغى",
       "worktreeRemovedBadge": "تمت إزالة شجرة العمل الأصلية",
+      "cliBadge": "بدأت من سطر الأوامر",
       "conversationCountUnit": "{count} محادثة",
       "emptyFolderHint": "لا توجد محادثات",
       "noMatchingConversations": "لا توجد محادثات مطابقة",
@@ -2264,9 +2280,11 @@
         "dropToUngroup": "أفلِت هنا لإزالته من المجموعة"
       },
       "recentFilterAll": "الكل",
+      "recentFilterCli": "سطر الأوامر",
       "recentFilterTitle": "عرض في الأحدث: {filter}",
       "noRecentChats": "لا توجد محادثات دردشة حديثة",
       "noRecentFolders": "لا توجد محادثات مجلدات حديثة",
+      "noRecentCli": "لا توجد محادثات حديثة من سطر الأوامر",
       "recentFilterMenuLabel": "عرض في الأحدث"
     },
     "conversation": {
@@ -4031,13 +4049,16 @@
       },
       "messageNav": {
         "title": "تنقل الرسائل",
-        "collapse": "طي تنقل الرسائل",
         "loadingEarlier": "جارٍ تحميل الرسائل السابقة…",
         "loadEarlier": "تحميل الرسائل السابقة",
-        "collapsedSummary": "الرسائل {count}",
         "fileCount": "{count, plural, one {# ملف} other {# ملفات}}",
-        "remove": "إزالة",
-        "noDiffDataAvailable": "لا توجد بيانات diff متاحة لـ {filePath}"
+        "subAgentCount": "{count, plural, one {# وكيل فرعي} other {# وكلاء فرعيين}}",
+        "showDiff": "إظهار تغييرات {filePath}",
+        "hideDiff": "إخفاء تغييرات {filePath}",
+        "openFile": "فتح {filePath}",
+        "collapse": "طي",
+        "currentMessage": "الرسالة الحالية",
+        "scrollToCurrent": "التمرير إلى الرسالة الحالية (#{ordinal})"
       },
       "replyArtifacts": {
         "title": "الملفات المتغيرة",
@@ -4095,6 +4116,9 @@
         "resumeDelegation": "استئناف المهمة {task}",
         "resumeDelegationNoId": "استئناف مهمة مفوضة",
         "promptLabel": "التعليمات",
+        "ackRecorded": "سُجِّل في مهمة العمل",
+        "ackNotRecorded": "لم يُسجَّل في مهمة العمل",
+        "ackNotRecordedWithReason": "لم يُسجَّل في مهمة العمل: {reason}",
         "verdict": {
           "success": "ناجحة",
           "needs_review": "بحاجة إلى مراجعة",
@@ -5395,7 +5419,10 @@
     "reconnectNow": "إعادة الاتصال الآن",
     "sessionExpiredTitle": "انتهت الجلسة",
     "sessionExpiredDescription": "لم تعد جلستك صالحة. يُرجى تسجيل الدخول مرة أخرى للمتابعة.",
-    "goToLogin": "الانتقال إلى تسجيل الدخول"
+    "goToLogin": "الانتقال إلى تسجيل الدخول",
+    "versionChangedTitle": "يعمل الخادم الآن بإصدار Codeg {version}",
+    "versionChangedDescription": "لا تزال هذه الصفحة على الإصدار {version}. أعد تحميلها لاستخدام إصدار الخادم.",
+    "reloadPage": "إعادة التحميل"
   },
   "LiveFeedback": {
     "placeholder": "أرسل ملاحظة إلى {agent} أثناء عمله…",
