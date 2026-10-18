@@ -3155,6 +3155,7 @@ mod tests {
             delegation_call_id: Some("call-1".into()),
             origin_cwd: None,
             assistant_id: None,
+            source: None,
             assistant_name: None,
             tag_ids: Vec::new(),
         }
@@ -7176,6 +7177,7 @@ mod tests {
                 delegation_call_id: None,
                 origin_cwd: None,
                 assistant_id: None,
+                source: None,
                 assistant_name: None,
                 tag_ids: Vec::new(),
             },

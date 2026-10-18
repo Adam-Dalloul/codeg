@@ -595,17 +595,17 @@ mod tests {
 
         // A backup records only the last registered migration, and a release
         // restores any backup whose last migration it knows. If this migration
-        // came before one that v0.36.0 shipped, v0.36.0 would restore this
+        // came before one that v0.38.0 shipped, v0.38.0 would restore this
         // build's backups and then fail to start: it has no file for it.
         let names: Vec<String> = Migrator::migrations()
             .iter()
             .map(|migration| migration.name().to_string())
             .collect();
         let position = |name: &str| names.iter().position(|n| n == name).expect(name);
-        // The newest migration in v0.36.0.
+        // The newest migration in v0.38.0.
         assert!(
             position("m20261017_000001_agent_account")
-                > position("m20261016_000002_conversation_assistant")
+                > position("m20261017_000002_conversation_source")
         );
     }
 
@@ -615,7 +615,7 @@ mod tests {
         use sea_orm::{Database, DbBackend, Statement};
         use sea_orm_migration::{MigrationTrait, MigratorTrait, SchemaManager};
 
-        // A released app already has the newer assistant columns, but has
+        // A released app already has the assistant and source columns, but has
         // never applied the account migration from this pending PR.
         struct ReleasedSchema;
         #[async_trait::async_trait]
@@ -638,6 +638,7 @@ mod tests {
         Migrator::up(&conn, None).await.unwrap();
         let schema = SchemaManager::new(&conn);
         assert!(schema.has_column("conversation", "assistant_id").await.unwrap());
+        assert!(schema.has_column("conversation", "source").await.unwrap());
         assert!(schema.has_column("conversation", "agent_account_id").await.unwrap());
         let saved = crate::db::entities::conversation::Entity::find()
             .one(&conn).await.unwrap().unwrap();
