@@ -320,6 +320,21 @@
     "autostartDescription": "Startet automatisch, nachdem Sie sich an diesem Computer angemeldet haben.",
     "autostartSaveFailed": "Autostart-Einstellungen konnten nicht gespeichert werden: {message}",
     "autostartUnavailable": "Der Autostart-Eintrag dieses Computers konnte nicht gelesen werden: {message}",
+    "cliAccessTitle": "Befehlszeilenzugriff",
+    "cliAccessDescription": "Erlaubt dem Befehl codeg-cli auf diesem Computer, Prompts über Codeg auszuführen – aus Skripten, CI-Jobs oder Codegs eigenen Terminals. Nur dieser Computer kann sich verbinden, mit einem Schlüssel in einer privaten Datei.",
+    "cliAccessEndpointFile": "Endpunktdatei:",
+    "cliAccessExample": "Beispiel:",
+    "cliAccessOff": "Aus: codeg-cli auf diesem Computer kann Codeg nicht erreichen.",
+    "cliAccessUnavailable": "Der Befehlszeilenzugriff konnte nicht starten: {message}",
+    "cliAccessSaveFailed": "Der Befehlszeilenzugriff konnte nicht geändert werden: {message}",
+    "cliToolInstall": "Kommandozeilenwerkzeug installieren",
+    "cliToolInstalled": "{command} ist in deinem PATH:",
+    "cliToolPackage": "{command} kam mit dem Paket und ist in deinem PATH:",
+    "cliToolNotInstalled": "Lege {command} in deinen PATH, damit ein Terminal außerhalb von Codeg es findet.",
+    "cliToolConflict": "Unverändert gelassen: {message}",
+    "cliToolNote": "Hinweis: {message}",
+    "cliToolInstalledToast": "{command} ist in deinem PATH. Öffne ein neues Terminal, um es zu nutzen.",
+    "cliToolInstallFailed": "Das Kommandozeilenwerkzeug konnte nicht installiert werden: {message}",
     "proxyTitle": "Netzwerk-Proxy",
     "proxyDescription": "Wenn aktiviert, werden nachfolgende Netzwerkanfragen bevorzugt über diesen Proxy ausgeführt (einschließlich ACP-Chat, Agent-Installation und Git-Remote-Operationen).",
     "loadFailed": "Laden fehlgeschlagen: {message}",
@@ -2187,6 +2202,7 @@
       "runningCountBadge": "{count, plural, one {# laufende Sitzung} other {# laufende Sitzungen}}",
       "statusCancelledBadge": "Abgebrochen",
       "worktreeRemovedBadge": "Quell-Worktree entfernt",
+      "cliBadge": "Über die Kommandozeile gestartet",
       "conversationCountUnit": "{count, plural, one {# Konversation} other {# Konversationen}}",
       "emptyFolderHint": "Keine Konversationen",
       "noMatchingConversations": "Keine passenden Konversationen",
@@ -2267,9 +2283,11 @@
         "dropToUngroup": "Hier ablegen, um aus der Gruppe zu entfernen"
       },
       "recentFilterAll": "Alle",
+      "recentFilterCli": "Kommandozeile",
       "recentFilterTitle": "In „Zuletzt“ anzeigen: {filter}",
       "noRecentChats": "Keine letzten Chats",
       "noRecentFolders": "Keine letzten Ordner-Unterhaltungen",
+      "noRecentCli": "Keine letzten Unterhaltungen von der Kommandozeile",
       "recentFilterMenuLabel": "In „Zuletzt“ anzeigen"
     },
     "conversation": {
@@ -4034,13 +4052,16 @@
       },
       "messageNav": {
         "title": "Nachrichtennavigation",
-        "collapse": "Nachrichtennavigation ausblenden",
         "loadingEarlier": "Frühere Nachrichten werden geladen…",
         "loadEarlier": "Frühere Nachrichten laden",
-        "collapsedSummary": "Nachrichten {count}",
         "fileCount": "{count, plural, one {# Datei} other {# Dateien}}",
-        "remove": "Entfernen",
-        "noDiffDataAvailable": "Keine Diff-Daten verfügbar für {filePath}"
+        "subAgentCount": "{count, plural, one {# Subagent} other {# Subagenten}}",
+        "showDiff": "Änderungen an {filePath} anzeigen",
+        "hideDiff": "Änderungen an {filePath} ausblenden",
+        "openFile": "{filePath} öffnen",
+        "collapse": "Einklappen",
+        "currentMessage": "Aktuelle Nachricht",
+        "scrollToCurrent": "Zur aktuellen Nachricht (#{ordinal}) scrollen"
       },
       "replyArtifacts": {
         "title": "Geänderte Dateien",
@@ -4098,6 +4119,9 @@
         "resumeDelegation": "Aufgabe {task} wird fortgesetzt",
         "resumeDelegationNoId": "Delegierte Aufgabe wird fortgesetzt",
         "promptLabel": "Anweisung",
+        "ackRecorded": "In der Arbeitsaufgabe erfasst",
+        "ackNotRecorded": "Nicht in der Arbeitsaufgabe erfasst",
+        "ackNotRecordedWithReason": "Nicht in der Arbeitsaufgabe erfasst: {reason}",
         "verdict": {
           "success": "erfolgreich",
           "needs_review": "Prüfung nötig",
@@ -5440,7 +5464,10 @@
     "reconnectNow": "Jetzt neu verbinden",
     "sessionExpiredTitle": "Sitzung abgelaufen",
     "sessionExpiredDescription": "Deine Sitzung ist nicht mehr gültig. Bitte melde dich erneut an, um fortzufahren.",
-    "goToLogin": "Zur Anmeldung"
+    "goToLogin": "Zur Anmeldung",
+    "versionChangedTitle": "Auf dem Server läuft jetzt Codeg {version}",
+    "versionChangedDescription": "Diese Seite läuft noch mit {version}. Lade sie neu, um die Version des Servers zu verwenden.",
+    "reloadPage": "Neu laden"
   },
   "LiveFeedback": {
     "placeholder": "Sende {agent} eine Notiz, während er arbeitet…",

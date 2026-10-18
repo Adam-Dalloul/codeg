@@ -10452,7 +10452,8 @@ pub(crate) fn agent_env_keys(agent_type: AgentType) -> (&'static str, &'static s
         // `auth.type = "gemini-api-key"` reads (the server says so in its own
         // `auth_required` message). `AGY_ACP_DEFAULT_MODEL` is real — it is
         // the env the server's `get_default_model_id` consults before falling
-        // back to `gemini-3.8-flash-high`. There is NO endpoint override, so
+        // back to `gemini-3.8-flash-high` (`gemini-4-argon-high` for an Agent
+        // Platform session since 1.4.1). There is NO endpoint override, so
         // the base-url slot stays an inert `AGY_BASE_URL` placeholder for the
         // same reason `CURSOR_MODEL`/`QODER_BASE_URL` above are: it keeps the
         // generic cascade off the `OPENAI_*` keys.
@@ -11448,10 +11449,13 @@ pub(crate) async fn build_runtime_env_for_agent(
 /// Per-launch env keys that vary by session/run but don't represent user
 /// config, so they're excluded from the config fingerprint. Without this, a
 /// session-id-derived value would flip the fingerprint the moment a real
-/// session id is assigned and make every session look "stale". Currently only
-/// OpenClaw's reset flag (set iff `session_id` is None at spawn).
+/// session id is assigned and make every session look "stale". OpenClaw's
+/// reset flag (set iff `session_id` is None at spawn), and the connection's own
+/// id in `CODEG_CLI_CALLER` — different for every connection, and absent from
+/// the env a settings save recomputes, so counting it would mark every session
+/// stale on the first save, for good.
 fn is_volatile_fingerprint_key(key: &str) -> bool {
-    matches!(key, "OPENCLAW_RESET_SESSION" | crate::acp::agent_accounts::ACCOUNT_ENV | crate::acp::agent_accounts::ACCOUNT_HOME_ENV)
+    matches!(key, "OPENCLAW_RESET_SESSION" | crate::acp::agent_accounts::ACCOUNT_ENV | crate::acp::agent_accounts::ACCOUNT_HOME_ENV) || key == crate::cli_run::CLI_CALLER_ENV
 }
 
 /// Fingerprint the effective config a spawned agent process is locked to: the
@@ -18187,6 +18191,15 @@ wire_api = "chat"
             let mut env_volatile = env.clone();
             env_volatile.insert("OPENCLAW_RESET_SESSION".to_string(), "1".to_string());
             assert_eq!(fp1, fingerprint_config(agent, &env_volatile));
+
+            // Nor the connection's own id, which every spawn adds and no
+            // settings save recomputes.
+            let mut env_caller = env.clone();
+            env_caller.insert(
+                crate::cli_run::CLI_CALLER_ENV.to_string(),
+                "6f1c0e1e-connection".to_string(),
+            );
+            assert_eq!(fp1, fingerprint_config(agent, &env_caller));
         });
     }
 

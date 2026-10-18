@@ -320,6 +320,21 @@
     "autostartDescription": "Abre automaticamente depois de você entrar neste computador.",
     "autostartSaveFailed": "Falha ao salvar as configurações de início automático: {message}",
     "autostartUnavailable": "Não foi possível ler o registro de inicialização deste computador: {message}",
+    "cliAccessTitle": "Acesso por linha de comando",
+    "cliAccessDescription": "Permite que o comando codeg-cli deste computador execute prompts pelo Codeg: em scripts, jobs de CI ou nos terminais do próprio Codeg. Só este computador pode se conectar, com uma chave guardada em um arquivo privado.",
+    "cliAccessEndpointFile": "Arquivo de conexão:",
+    "cliAccessExample": "Exemplo:",
+    "cliAccessOff": "Desativado: o codeg-cli deste computador não consegue acessar o Codeg.",
+    "cliAccessUnavailable": "Não foi possível iniciar o acesso por linha de comando: {message}",
+    "cliAccessSaveFailed": "Não foi possível alterar o acesso por linha de comando: {message}",
+    "cliToolInstall": "Instalar a ferramenta de linha de comando",
+    "cliToolInstalled": "{command} está no seu PATH:",
+    "cliToolPackage": "{command} veio com o pacote e está no seu PATH:",
+    "cliToolNotInstalled": "Coloque {command} no seu PATH para que um terminal fora do Codeg o encontre.",
+    "cliToolConflict": "Deixado como estava: {message}",
+    "cliToolNote": "Observação: {message}",
+    "cliToolInstalledToast": "{command} está no seu PATH. Abra um novo terminal para usá-lo.",
+    "cliToolInstallFailed": "Não foi possível instalar a ferramenta de linha de comando: {message}",
     "proxyTitle": "Proxy de rede",
     "proxyDescription": "Quando ativado, as solicitações de rede seguintes priorizam este proxy (incluindo chat ACP, instalação de agentes e operações remotas do Git).",
     "loadFailed": "Falha ao carregar: {message}",
@@ -2187,6 +2202,7 @@
       "runningCountBadge": "{count, plural, one {# sessão em execução} other {# sessões em execução}}",
       "statusCancelledBadge": "Cancelado",
       "worktreeRemovedBadge": "Worktree de origem removida",
+      "cliBadge": "Iniciada pela linha de comando",
       "conversationCountUnit": "{count, plural, one {# conversa} other {# conversas}}",
       "emptyFolderHint": "Sem conversas",
       "noMatchingConversations": "Nenhuma conversa correspondente",
@@ -2267,9 +2283,11 @@
         "dropToUngroup": "Solte aqui para remover do grupo"
       },
       "recentFilterAll": "Tudo",
+      "recentFilterCli": "Linha de comando",
       "recentFilterTitle": "Mostrar em Recentes: {filter}",
       "noRecentChats": "Nenhum chat recente",
       "noRecentFolders": "Nenhuma conversa de pasta recente",
+      "noRecentCli": "Nenhuma conversa recente da linha de comando",
       "recentFilterMenuLabel": "Mostrar em Recentes"
     },
     "conversation": {
@@ -4034,13 +4052,16 @@
       },
       "messageNav": {
         "title": "Navegação de mensagens",
-        "collapse": "Recolher navegação de mensagens",
         "loadingEarlier": "Carregando mensagens anteriores…",
         "loadEarlier": "Carregar mensagens anteriores",
-        "collapsedSummary": "Mensagens {count}",
         "fileCount": "{count, plural, one {# arquivo} other {# arquivos}}",
-        "remove": "Remover",
-        "noDiffDataAvailable": "Nenhum dado de diff disponível para {filePath}"
+        "subAgentCount": "{count, plural, one {# subagente} other {# subagentes}}",
+        "showDiff": "Mostrar as alterações de {filePath}",
+        "hideDiff": "Ocultar as alterações de {filePath}",
+        "openFile": "Abrir {filePath}",
+        "collapse": "Recolher",
+        "currentMessage": "Mensagem atual",
+        "scrollToCurrent": "Rolar até a mensagem atual (#{ordinal})"
       },
       "replyArtifacts": {
         "title": "Arquivos alterados",
@@ -4098,6 +4119,9 @@
         "resumeDelegation": "Retomando a tarefa {task}",
         "resumeDelegationNoId": "Retomando uma tarefa delegada",
         "promptLabel": "Instrução",
+        "ackRecorded": "Registrado na tarefa de trabalho",
+        "ackNotRecorded": "Não registrado na tarefa de trabalho",
+        "ackNotRecordedWithReason": "Não registrado na tarefa de trabalho: {reason}",
         "verdict": {
           "success": "sucesso",
           "needs_review": "requer revisão",
@@ -5440,7 +5464,10 @@
     "reconnectNow": "Reconectar agora",
     "sessionExpiredTitle": "Sessão expirada",
     "sessionExpiredDescription": "Sua sessão não é mais válida. Faça login novamente para continuar.",
-    "goToLogin": "Ir para o login"
+    "goToLogin": "Ir para o login",
+    "versionChangedTitle": "O servidor agora executa o Codeg {version}",
+    "versionChangedDescription": "Esta página ainda está na versão {version}. Recarregue-a para usar a versão do servidor.",
+    "reloadPage": "Recarregar"
   },
   "LiveFeedback": {
     "placeholder": "Envie uma nota para {agent} enquanto ele trabalha…",

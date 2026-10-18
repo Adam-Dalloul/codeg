@@ -56,7 +56,7 @@ mod m20261016_000002_conversation_assistant;
 mod m20261017_000001_agent_account;
 mod m20261017_000002_handoff_context;
 mod m20261017_000003_handoff_usage;
-
+mod m20261017_000002_conversation_source;
 pub struct Migrator;
 
 #[async_trait::async_trait]
@@ -116,6 +116,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20261015_000001_work_task_deferred_at::Migration),
             Box::new(m20261016_000001_assistant::Migration),
             Box::new(m20261016_000002_conversation_assistant::Migration),
+            Box::new(m20261017_000002_conversation_source::Migration),
             Box::new(m20261017_000001_agent_account::Migration),
             Box::new(m20261017_000002_handoff_context::Migration),
             Box::new(m20261017_000003_handoff_usage::Migration),
