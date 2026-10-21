@@ -278,6 +278,25 @@ mod tests {
     use super::*;
     use crate::db::test_helpers::fresh_in_memory_db;
 
+    fn migrations_from_fixture(names: &str) -> Vec<Box<dyn sea_orm_migration::MigrationTrait>> {
+        use sea_orm_migration::MigratorTrait;
+
+        let expected: std::collections::HashSet<_> = names
+            .lines()
+            .filter(|line| !line.is_empty() && !line.starts_with('#'))
+            .collect();
+        let selected: Vec<_> = crate::db::migration::Migrator::migrations()
+            .into_iter()
+            .filter(|migration| expected.contains(migration.name()))
+            .collect();
+        assert_eq!(
+            selected.len(),
+            expected.len(),
+            "a prior migration ID was removed"
+        );
+        selected
+    }
+
     #[tokio::test]
     async fn unsupported_accounts_are_refused_before_creating_folders_or_rows() {
         let db = fresh_in_memory_db().await;
@@ -291,7 +310,10 @@ mod tests {
                 .unwrap_err();
             assert!(error.to_string().contains(capability.reason.unwrap()));
             assert!(!dir.path().join("agent-accounts").exists());
-            assert!(list(&db.conn, capability.agent_type).await.unwrap().is_empty());
+            assert!(list(&db.conn, capability.agent_type)
+                .await
+                .unwrap()
+                .is_empty());
         }
     }
 
@@ -306,12 +328,16 @@ mod tests {
         let mut existing = account.clone().into_active_model();
         existing.agent_type = Set(AgentType::Cursor.as_wire().into_owned());
         existing.update(&db.conn).await.unwrap();
-        let resolved = resolve(&db.conn, AgentType::Cursor, &account.id).await.unwrap();
+        let resolved = resolve(&db.conn, AgentType::Cursor, &account.id)
+            .await
+            .unwrap();
         assert_eq!(resolved.home_dir, account.home_dir);
         assert!(Path::new(&resolved.home_dir).is_dir());
         assert!(crate::acp::agent_accounts::isolation_env(
-            AgentType::Cursor, Path::new(&resolved.home_dir)
-        ).is_err());
+            AgentType::Cursor,
+            Path::new(&resolved.home_dir)
+        )
+        .is_err());
         assert_eq!(list(&db.conn, AgentType::Cursor).await.unwrap().len(), 1);
     }
 
@@ -440,7 +466,9 @@ mod tests {
             .await
             .unwrap();
         std::fs::remove_dir(&account.home_dir).unwrap();
-        let missing = resolve(&db.conn, AgentType::Codex, &account.id).await.unwrap_err();
+        let missing = resolve(&db.conn, AgentType::Codex, &account.id)
+            .await
+            .unwrap_err();
         assert!(missing.to_string().contains(&account.home_dir));
     }
 
@@ -518,9 +546,10 @@ mod tests {
         use sea_orm_migration::{MigratorTrait, SchemaManager};
         let conn = Database::connect("sqlite::memory:").await.unwrap();
         let migrations = Migrator::migrations();
-        let account_migration = migrations.iter().position(|migration| {
-            migration.name() == "m20261017_000001_agent_account"
-        }).expect("native account migration is registered");
+        let account_migration = migrations
+            .iter()
+            .position(|migration| migration.name() == "m20261017_000001_agent_account")
+            .expect("native account migration is registered");
         Migrator::up(&conn, Some(account_migration as u32))
             .await
             .unwrap();
@@ -589,24 +618,23 @@ mod tests {
     }
 
     #[test]
-    fn account_migration_runs_after_every_released_migration() {
+    fn account_backup_marker_follows_released_migrations() {
         use crate::db::migration::Migrator;
         use sea_orm_migration::MigratorTrait;
 
-        // A backup records only the last registered migration, and a release
-        // restores any backup whose last migration it knows. If this migration
-        // came before one that v0.38.0 shipped, v0.38.0 would restore this
-        // build's backups and then fail to start: it has no file for it.
+        // Keep the original account migration ID for existing PR databases.
+        // The later marker makes v0.39 refuse this schema's backups. The
+        // registry's feature_schema_marker_is_last test also guards its tail.
         let names: Vec<String> = Migrator::migrations()
             .iter()
             .map(|migration| migration.name().to_string())
             .collect();
         let position = |name: &str| names.iter().position(|n| n == name).expect(name);
-        // The newest migration in v0.38.0.
         assert!(
-            position("m20261017_000001_agent_account")
-                > position("m20261017_000002_conversation_source")
+            position("m20261021_000001_agent_account_compatibility")
+                > position("m20261020_000001_folder_command_run_local")
         );
+        position("m20261017_000001_agent_account");
     }
 
     #[tokio::test]
@@ -615,34 +643,136 @@ mod tests {
         use sea_orm::{Database, DbBackend, Statement};
         use sea_orm_migration::{MigrationTrait, MigratorTrait, SchemaManager};
 
-        // A released app already has the assistant and source columns, but has
-        // never applied the account migration from this pending PR.
+        // The immutable release fixture excludes all pending PR migrations,
+        // including handoff tables and markers when this test runs in that stack.
         struct ReleasedSchema;
         #[async_trait::async_trait]
         impl MigratorTrait for ReleasedSchema {
             fn migrations() -> Vec<Box<dyn MigrationTrait>> {
-                Migrator::migrations().into_iter().filter(|migration| {
-                    migration.name() != "m20261017_000001_agent_account"
-                }).collect()
+                migrations_from_fixture(include_str!("../../../tests/fixtures/v039-migrations.txt"))
             }
         }
 
         let conn = Database::connect("sqlite::memory:").await.unwrap();
         ReleasedSchema::up(&conn, None).await.unwrap();
         let folder = crate::db::service::folder_service::add_folder(&conn, "/released-project")
-            .await.unwrap();
+            .await
+            .unwrap();
         conn.execute(Statement::from_sql_and_values(DbBackend::Sqlite,
             "INSERT INTO conversation (folder_id, agent_type, status, kind, title_locked, external_id, message_count, created_at, updated_at) VALUES (?, 'codex', 'pending_review', 'regular', 0, 'released-session', 0, '2026-10-16T00:00:00Z', '2026-10-16T00:00:00Z')",
             [folder.id.into()])).await.unwrap();
 
         Migrator::up(&conn, None).await.unwrap();
         let schema = SchemaManager::new(&conn);
-        assert!(schema.has_column("conversation", "assistant_id").await.unwrap());
+        assert!(schema
+            .has_column("conversation", "assistant_id")
+            .await
+            .unwrap());
         assert!(schema.has_column("conversation", "source").await.unwrap());
-        assert!(schema.has_column("conversation", "agent_account_id").await.unwrap());
+        assert!(schema
+            .has_column("folder_command", "run_local")
+            .await
+            .unwrap());
+        assert!(schema
+            .has_column("conversation", "agent_account_id")
+            .await
+            .unwrap());
         let saved = crate::db::entities::conversation::Entity::find()
-            .one(&conn).await.unwrap().unwrap();
+            .one(&conn)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(saved.external_id.as_deref(), Some("released-session"));
         assert!(saved.agent_account_id.is_none());
+    }
+
+    #[tokio::test]
+    async fn previous_account_schema_upgrades_without_renaming_or_losing_bindings() {
+        use crate::db::entities::conversation;
+        use crate::db::migration::Migrator;
+        use crate::db::service::{conversation_service, folder_service};
+        use sea_orm::{Database, DbBackend, Statement};
+        use sea_orm_migration::{MigrationTrait, MigratorTrait};
+
+        struct PreviousSchema;
+        #[async_trait::async_trait]
+        impl MigratorTrait for PreviousSchema {
+            fn migrations() -> Vec<Box<dyn MigrationTrait>> {
+                migrations_from_fixture(include_str!(
+                    "../../../tests/fixtures/native-account-migrations-20261018.txt"
+                ))
+            }
+        }
+
+        let conn = Database::connect("sqlite::memory:").await.unwrap();
+        PreviousSchema::up(&conn, None).await.unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let folder = folder_service::add_folder(&conn, "/previous-project")
+            .await
+            .unwrap();
+        let account = create(&conn, dir.path(), AgentType::Codex, "Work", None)
+            .await
+            .unwrap();
+        let named = conversation_service::create_inner(
+            &conn,
+            folder.id,
+            AgentType::Codex,
+            None,
+            None,
+            None,
+            conversation::ConversationKind::Regular,
+            Some(account.id.clone()),
+        )
+        .await
+        .unwrap();
+        conversation_service::bind_external_id(&conn, named.id, "previous-session", &[])
+            .await
+            .unwrap();
+        conn.execute(Statement::from_sql_and_values(
+            DbBackend::Sqlite,
+            "INSERT INTO folder_command (folder_id, name, command, created_at, updated_at) VALUES (?, 'Existing command', 'echo fixture', '2026-10-18T00:00:00Z', '2026-10-18T00:00:00Z')",
+            [folder.id.into()],
+        )).await.unwrap();
+
+        Migrator::up(&conn, None).await.unwrap();
+        let saved = conversation::Entity::find_by_id(named.id)
+            .one(&conn)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(saved.agent_account_id.as_deref(), Some(account.id.as_str()));
+        assert_eq!(saved.external_id.as_deref(), Some("previous-session"));
+        let saved_account = get(&conn, &account.id).await.unwrap();
+        assert_eq!(saved_account.home_dir, account.home_dir);
+        assert_eq!(saved_account.name, account.name);
+        let command = conn
+            .query_one(Statement::from_string(
+                DbBackend::Sqlite,
+                "SELECT command, run_local FROM folder_command".to_owned(),
+            ))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            command.try_get::<String>("", "command").unwrap(),
+            "echo fixture"
+        );
+        assert_eq!(command.try_get::<i32>("", "run_local").unwrap(), 0);
+        let applied: Vec<String> = conn
+            .query_all(Statement::from_string(
+                DbBackend::Sqlite,
+                "SELECT version FROM seaql_migrations".to_owned(),
+            ))
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|row| row.try_get("", "version").unwrap())
+            .collect();
+        for previous in PreviousSchema::migrations() {
+            assert!(applied.iter().any(|name| name == previous.name()));
+        }
+        assert!(applied
+            .iter()
+            .any(|name| name == "m20261021_000001_agent_account_compatibility"));
     }
 }
