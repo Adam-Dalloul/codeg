@@ -48,6 +48,10 @@ pub mod forge;
 pub mod handoff;
 /// The `ui-render` skill and the agents it is enabled for (Skill Packs > UI).
 pub mod generative_ui;
+/// Folder commands set to run on the desktop's own machine ("Run on this
+/// computer"), even from a remote-desktop window. Desktop-only by design.
+#[cfg(feature = "tauri-runtime")]
+pub mod local_command;
 pub mod logging;
 pub mod mcp;
 pub mod mcp_service;

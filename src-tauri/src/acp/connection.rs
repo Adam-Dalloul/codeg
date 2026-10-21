@@ -1867,6 +1867,7 @@ async fn record_turn_end(
     stop_reason: &str,
     started_at_ms: u64,
     model: Option<String>,
+    metrics: Option<&crate::acp::zcode_turn::TurnMetrics>,
 ) {
     let Some(dir) = transcript_dir_for(agent_type) else {
         return;
@@ -1876,6 +1877,9 @@ async fn record_turn_end(
         "stopReason": stop_reason,
         "durationMs": now.saturating_sub(started_at_ms),
     });
+    if let Some(metrics) = metrics {
+        metrics.apply_to(&mut payload);
+    }
     // ACP puts no model on the prompt response, so the session's model selector
     // is the only honest answer at turn end — and it is the same value the
     // composer showed while the turn ran. Recorded per turn rather than once in
@@ -6182,11 +6186,11 @@ fn effective_prompt_capabilities(
     capabilities: &agent_client_protocol::schema::v1::PromptCapabilities,
 ) -> PromptCapabilitiesInfo {
     PromptCapabilitiesInfo {
-        // ZCode attachments are outside the validated first integration.
-        image: agent_type != AgentType::ZCode
-            && (capabilities.image || agent_type == AgentType::Grok),
+        image: capabilities.image || agent_type == AgentType::Grok,
+        // The ZCode bridge rejects audio blocks (it has no transcription), so
+        // audio stays off for it even if a release starts advertising it.
         audio: agent_type != AgentType::ZCode && capabilities.audio,
-        embedded_context: agent_type != AgentType::ZCode && capabilities.embedded_context,
+        embedded_context: capabilities.embedded_context,
     }
 }
 
@@ -6338,7 +6342,7 @@ fn build_client_capabilities(
     // it denies `AskUserQuestion` for the session, so the model never gets the
     // tool. Verified on the real 1.1.67 wire, MCP tool-call approvals staying
     // on `session/request_permission`; the same form and answer handling ship
-    // in every release from 1.1.23 through 1.1.73, which matters because codeg
+    // in every release from 1.1.23 through 1.1.75, which matters because codeg
     // launches a `qoder` found on PATH ahead of the pinned package). Agents
     // without the bit fall back to their own `request_permission` button path.
     if matches!(
@@ -6977,9 +6981,9 @@ fn load_mcp_servers_for_agent(agent_type: AgentType) -> Vec<McpServer> {
     //
     // Command Code joins it for the same reason: `command-code acp` loads
     // `~/.commandcode/mcp.json` and starts what `session/new` carries as well
-    // (verified against 1.84.0, a server from each source in one session's
-    // tool list), and its docs say a name on both sides keeps the file's copy.
-    // codeg's MCP settings UI manages that file.
+    // (verified against 1.84.0 and 1.86.3, a server from each source in one
+    // session's tool list), and its docs say a name on both sides keeps the
+    // file's copy. codeg's MCP settings UI manages that file.
     if agent_reads_own_mcp_config(agent_type) {
         return Vec::new();
     }
@@ -10976,7 +10980,7 @@ async fn set_session_config_option_inner(
 ) -> Result<Vec<SessionConfigOption>, agent_client_protocol::Error> {
     // Of the two ACP mode requests, only session/set_mode refreshes the
     // bridge's plan-enabled mirror; set_config_option("mode") keeps reporting
-    // "plan" while that mirror is set (bridge 0.69.2 through 0.72.0). Send
+    // "plan" while that mirror is set (bridge 0.69.2 through 0.76.2). Send
     // set_mode first for mode changes, then read the config response; the
     // initial-mode gate still requires an exact confirmation before prompt.
     if agent_type == AgentType::ZCode && config_id == "mode" {
@@ -12468,6 +12472,21 @@ fn classify_session_load_failure(
     if message.contains("already has an active writer") {
         return Some("session_busy");
     }
+    // Kimi Code 2.3.0 hands a session to one process at a time. The holder
+    // writes `<KIMI_CODE_HOME>/locks/sessions/<id>.lock` (pid, host, start
+    // time) when it opens the session or starts a turn, and gives it up 3 s
+    // after it goes idle; a lock whose process is gone is taken over. Opening
+    // the session from another process meanwhile, by `session/load` or
+    // `session/resume`, answers -32603 with Kimi's sentence in
+    // `data.details`: "This session is in use by another Kimi Code process.
+    // Stop the session in that process or exit it, then try again." The
+    // holder is another Kimi process on the same home, such as the user's
+    // `kimi` or `kimi web`, or another codeg. Busy for the same reason as
+    // codex's writer lock: the session is intact, and the `session/new`
+    // fallback would rebind the row to an empty one.
+    if message.contains("is in use by another Kimi Code process") {
+        return Some("session_busy");
+    }
     if SESSION_GONE_MARKERS.iter().any(|s| message.contains(s)) {
         return Some("session_unavailable");
     }
@@ -12584,9 +12603,13 @@ const SESSION_GONE_MARKERS: &[&str] =
 /// #659). Tearing the agent down for those is pure self-harm — the user waits
 /// out a full respawn for a turn that merely failed.
 ///
-/// Only four families stay terminal:
+/// Only five families stay terminal:
 ///  - `ResourceNotFound` — the agent has no record of the session id codeg
 ///    just prompted on, so the handle this connection holds is void.
+///  - [`kimi_session_stale`] — Kimi Code's word that another process wrote the
+///    session after this connection opened it. Every later prompt here fails
+///    the same way, and the remedy Kimi names ("Close and reopen the
+///    session") takes a new connection.
 ///  - [`SESSION_GONE_MARKERS`] — the agent answered to say its session or
 ///    process is gone. Keeping the connection would leave an entry whose every
 ///    future prompt fails the same way.
@@ -12612,6 +12635,9 @@ fn prompt_rejection_is_terminal(e: &agent_client_protocol::Error) -> bool {
     if matches!(e.code, agent_client_protocol::schema::v1::ErrorCode::ResourceNotFound) {
         return true;
     }
+    if kimi_session_stale(e) {
+        return true;
+    }
     if codex_app_server_lost(e) == Some(false) {
         return true;
     }
@@ -12620,6 +12646,26 @@ fn prompt_rejection_is_terminal(e: &agent_client_protocol::Error) -> bool {
     }
     let text = e.to_string();
     SESSION_GONE_MARKERS.iter().any(|s| text.contains(s))
+}
+
+/// Kimi Code 2.3.0's refusal of a prompt on a session another process wrote
+/// since this connection opened it: -32600 with `data.code: "session.stale"`
+/// and "Session was updated by another client. Close and reopen the session,
+/// then retry." Its error table marks the code not retryable, and every later
+/// prompt on the connection answers the same, while a new process loads the
+/// session with the other process's turns and prompts normally. The writer is
+/// whoever held the session lock in between (see
+/// [`classify_session_load_failure`]). Read from the structured code, which is
+/// Kimi's own error vocabulary, rather than from the sentence.
+///
+/// The lock's other prompt-time refusal, `session.occupied` (the other process
+/// holds the session right now), is retryable and stays turn-scoped.
+fn kimi_session_stale(e: &agent_client_protocol::Error) -> bool {
+    e.data
+        .as_ref()
+        .and_then(|data| data.get("code"))
+        .and_then(serde_json::Value::as_str)
+        == Some("session.stale")
 }
 
 /// Whether `e` is the runtime saying no answer can arrive on this connection
@@ -13467,6 +13513,7 @@ async fn run_conversation_loop(
                 // of a confusing `PendingReview` on a blank conversation — and
                 // the probe's other fields say *why* it looked empty.
                 let mut probe = TurnOutputProbe::new(stderr_mark);
+                let mut zcode_turn = crate::acp::zcode_turn::TurnTracker::default();
                 // A CodeBuddy native sub-agent's full lifecycle (Agent tool call
                 // open → completed) happens within one turn, so reset the
                 // suppression window at each turn start. This bounds the tracking
@@ -13556,6 +13603,26 @@ async fn run_conversation_loop(
                             let runtime = terminal_runtime.clone();
                             let session_id = sid.clone();
                             let cwd_opt = Some(cwd);
+                            // ZCode's billing reports are per busy window,
+                            // unlike the standard context-occupancy
+                            // usage_update channel, and this prompt's windows
+                            // add up (see `zcode_turn`). Observe only this
+                            // prompt's drain: load replay and idle
+                            // notifications cannot seed the next turn.
+                            if agent_type == AgentType::ZCode {
+                                if let Dispatch::Notification(notification) = &dispatch {
+                                    if crate::acp::zcode_turn::is_turn_state_method(
+                                        notification.method(),
+                                    ) {
+                                        zcode_turn.observe(
+                                            notification.method(),
+                                            notification.params(),
+                                            &sid.0,
+                                        );
+                                        continue;
+                                    }
+                                }
+                            }
                             // grok reports `/compact` results on ext methods
                             // that bypass the typed pipeline below and emit a
                             // compaction card/error from `.otherwise`. Count
@@ -13808,6 +13875,7 @@ async fn run_conversation_loop(
                                         reason_str,
                                         turn_started_at_ms,
                                         current_session_model_id(state).await,
+                                        zcode_turn.metrics(),
                                     )
                                     .await;
                                     // Same wedge guard as the normal turn exit
@@ -13923,6 +13991,7 @@ async fn run_conversation_loop(
                                 reason_str,
                                 turn_started_at_ms,
                                 current_session_model_id(state).await,
+                                zcode_turn.metrics(),
                             )
                             .await;
                             // The turn is over, so any card still parked here
@@ -14231,6 +14300,16 @@ async fn run_conversation_loop(
                                         .release_all_for_session(sid.0.as_ref())
                                         .await;
                                     tracked_terminal_tool_calls.clear();
+                                    // No turn end is recorded here, for ZCode
+                                    // as for every agent whose history is
+                                    // codeg's transcript: the agent's last
+                                    // frames are still on their way and land
+                                    // on the idle loop, and a turn end ahead of
+                                    // them would make the history parser read
+                                    // them as a reply of their own. This
+                                    // prompt's `zcode_turn` goes with the
+                                    // drain, so a late report never bills the
+                                    // next prompt either.
                                     // Also cancel any pending permission requests
                                     // (queued ones included), clearing the card
                                     // that was on screen, and immediately emit
@@ -25393,6 +25472,32 @@ mod tests {
         assert_eq!(classify_session_load_error(&unclassified), None);
     }
 
+    /// Kimi Code 2.3.0's session lock, the body captured live: two `kimi acp`
+    /// processes on one `KIMI_CODE_HOME`, the second `session/load`ing a
+    /// session the first had just opened. 2.2.0 let the second load through,
+    /// so nothing classified this error and it took the `session/new`
+    /// fallback, rebinding the row to an empty session.
+    #[test]
+    fn classify_load_error_names_a_kimi_session_another_process_holds() {
+        let kimi_2_3_0: agent_client_protocol::Error = serde_json::from_value(serde_json::json!({
+            "code": -32603,
+            "message": "Internal error",
+            "data": {
+                "details": "This session is in use by another Kimi Code process. Stop the \
+                    session in that process or exit it, then try again."
+            }
+        }))
+        .expect("an ACP error body");
+        assert_eq!(
+            classify_session_load_error(&kimi_2_3_0),
+            Some("session_busy")
+        );
+        assert!(!recovers_load_failure_locally(
+            AgentType::KimiCode,
+            Some("session_busy")
+        ));
+    }
+
     /// codex-acp 2.2 answers an open the app-server died under with code 1001
     /// (bodies captured live off 2.2.1, the app-server SIGKILLed). Neither form
     /// may fall through to `session/new`, which 2.2 now lets succeed on the
@@ -29898,6 +30003,38 @@ mod tests {
             "data": { "exitCode": null, "signal": null, "restartable": true }
         }));
         assert!(!prompt_rejection_is_terminal(&restarting));
+    }
+
+    /// Kimi Code 2.3.0 refuses a prompt on a session another process wrote
+    /// since this connection opened it. The body is captured live (a second
+    /// `kimi acp` loaded the session and ran a turn while the first sat idle),
+    /// and the first process answered every later prompt the same way, retries
+    /// included, while a fresh process loaded the session and prompted
+    /// normally. So it ends the connection. The other process merely holding
+    /// the session is a different code (body as 2.3.0's ACP mapping builds it),
+    /// which clears once that process goes idle, so it costs the turn only.
+    #[test]
+    fn a_stale_kimi_session_ends_the_connection_but_a_held_one_costs_the_turn() {
+        let error = |body: serde_json::Value| -> agent_client_protocol::Error {
+            serde_json::from_value(body).expect("an ACP error body")
+        };
+        let stale = error(serde_json::json!({
+            "code": -32600,
+            "message": "Invalid request: Session was updated by another client. Close and \
+                reopen the session, then retry.",
+            "data": { "code": "session.stale" }
+        }));
+        assert!(kimi_session_stale(&stale));
+        assert!(prompt_rejection_is_terminal(&stale));
+
+        let occupied = error(serde_json::json!({
+            "code": -32600,
+            "message": "Invalid request: This session is in use by another Kimi Code \
+                process. Stop the session in that process or exit it, then try again.",
+            "data": { "code": "session.occupied" }
+        }));
+        assert!(!kimi_session_stale(&occupied));
+        assert!(!prompt_rejection_is_terminal(&occupied));
     }
 
     /// Plays an agent over the raw pipe: waits for codeg's first frame (the
@@ -40577,9 +40714,12 @@ mod tests {
 
     impl CustomLoop {
         async fn start(turns: Vec<Vec<GrokFrame>>) -> Self {
-            use agent_client_protocol::schema::v1::PromptResponse;
-
             let agent_type = AgentType::custom(IDLE_PROBE_AGENT).expect("a valid custom id");
+            Self::start_for(agent_type, turns).await
+        }
+
+        async fn start_for(agent_type: AgentType, turns: Vec<Vec<GrokFrame>>) -> Self {
+            use agent_client_protocol::schema::v1::PromptResponse;
             let turns = Arc::new(std::sync::Mutex::new(VecDeque::from(turns)));
             let respond = Arc::new(tokio::sync::Notify::new());
             let agent_respond = Arc::clone(&respond);
@@ -40791,6 +40931,196 @@ mod tests {
             let _ = tokio::time::timeout(std::time::Duration::from_secs(5), self.client).await;
             self.agent.abort();
         }
+    }
+
+    #[tokio::test]
+    async fn zcode_terminal_metrics_reach_history_once_before_turn_complete() {
+        use crate::parsers::AgentParser as _;
+        let home = tempfile::tempdir().unwrap();
+        let home_str = home.path().to_string_lossy().into_owned();
+        temp_env::async_with_vars([("CODEG_HOME", Some(home_str.as_str()))], async {
+            let start = || ("_zcode/turnState", serde_json::json!({"sessionId":"s1","running":true}));
+            let end = |input: u64, ms: u64| serde_json::json!({
+                "sessionId":"s1","running":false,"turnMs":ms,
+                "usage":{"inputTokens":input,"outputTokens":350,"cachedReadTokens":900,"cachedWriteTokens":120,"totalTokens":input+1370}
+            });
+            let mut lp = CustomLoop::start_for(AgentType::ZCode, vec![
+                vec![start(),
+                    custom_update(serde_json::json!({"sessionUpdate":"usage_update","used":9999,"size":131072})),
+                    ("_zcode/turnState",end(180,4200)),
+                    ("$/zcode/turnState",end(9999,9999)),
+                    ("_zcode/turnState",end(9999,9999)), custom_text("first")],
+                vec![start(), ("_zcode/turnState",end(12,1700)), custom_text("second")],
+                // A late prior-turn end and idle/replay data have no opening
+                // marker in this prompt, so they cannot seed its metadata.
+                vec![("_zcode/turnState",end(9999,9999)),custom_text("third")],
+            ]).await;
+            lp.agent_sends(vec![start(),("_zcode/turnState",end(9999,9999)),grok_barrier()]);
+            lp.until_barrier().await;
+            let parser = || crate::parsers::acp_native::AcpNativeParser::new_in(
+                AgentType::ZCode, crate::paths::codeg_acp_transcripts_root(),
+            );
+            lp.run_turn("one", "first").await;
+            // TurnComplete is the refetch trigger: its footer must already be
+            // durable and readable, without a test-only flush after the event.
+            let first = parser().get_conversation("s1").unwrap();
+            let usage = first.turns[1].usage.as_ref().unwrap();
+            assert_eq!((usage.input_tokens,usage.output_tokens,usage.cache_read_input_tokens,usage.cache_creation_input_tokens),(180,350,900,120));
+            assert_eq!(first.turns[1].duration_ms,Some(4200));
+            let stats = first.session_stats.unwrap();
+            assert_eq!(stats.total_tokens,Some(1550));
+            assert_eq!(stats.context_window_used_tokens,Some(9999));
+            assert_eq!(stats.total_duration_ms,4200);
+            lp.run_turn("two", "second").await;
+            lp.run_turn("three", "third").await;
+            let cold = parser().get_conversation("s1").unwrap();
+            assert_eq!(cold.turns.len(),6);
+            assert_eq!(cold.turns[3].usage.as_ref().unwrap().input_tokens,12);
+            assert_eq!(cold.turns[3].duration_ms,Some(1700));
+            assert!(cold.turns[5].usage.is_none());
+            let raw = crate::acp_transcript::read_transcript("codeg-zcode-acp","s1");
+            assert_eq!(raw.entries.iter().filter(|e| e.k==crate::acp_transcript::EntryKind::TurnEnd).count(),3);
+            assert!(raw.entries.iter().rev().find(|e| e.k==crate::acp_transcript::EntryKind::TurnEnd).unwrap().p.get("usage").is_none());
+            lp.shutdown().await;
+        }).await;
+    }
+
+    /// A local cancel lets go of the prompt without waiting for the agent, so
+    /// the cancelled reply's last frames land on the idle loop. No turn end is
+    /// recorded ahead of them (as for every agent whose history is codeg's
+    /// transcript): the late chunk stays part of the reply it ends, and the
+    /// bridge's late report for the cancelled work bills no other prompt.
+    #[tokio::test]
+    async fn zcode_cancel_keeps_the_late_tail_in_its_reply_and_bills_no_other_prompt() {
+        use crate::parsers::AgentParser as _;
+        let home = tempfile::tempdir().unwrap();
+        let home_str = home.path().to_string_lossy().into_owned();
+        temp_env::async_with_vars([("CODEG_HOME", Some(home_str.as_str()))], async {
+            let turn_state = |body: serde_json::Value| ("_zcode/turnState", body);
+            let start = || turn_state(serde_json::json!({"sessionId": "s1", "running": true}));
+            let end = |input: u64| {
+                turn_state(serde_json::json!({
+                    "sessionId": "s1", "running": false, "turnMs": 42,
+                    "usage": {"inputTokens": input, "outputTokens": 12}
+                }))
+            };
+            let mut lp = CustomLoop::start_for(
+                AgentType::ZCode,
+                vec![
+                    vec![start(), end(30), custom_text("first")],
+                    vec![start(), custom_text("working, ")],
+                    vec![start(), end(5), custom_text("third")],
+                ],
+            )
+            .await;
+            lp.run_turn("one", "first").await;
+            lp.open_turn("two", "working, ").await;
+            lp.cmd_tx.send(ConnectionCommand::Cancel).await.unwrap();
+            lp.until("cancelled", |e| {
+                matches!(e, AcpEvent::TurnComplete { stop_reason, .. } if stop_reason == "cancelled")
+            })
+            .await;
+            lp.agent_sends(vec![custom_text("late tail"), end(777), grok_barrier()]);
+            lp.until_barrier().await;
+            // The cancelled prompt's own response, which nothing waits on.
+            lp.respond.notify_one();
+            lp.run_turn("three", "third").await;
+
+            let raw = crate::acp_transcript::read_transcript("codeg-zcode-acp", "s1");
+            let ends: Vec<_> = raw
+                .entries
+                .iter()
+                .filter(|e| e.k == crate::acp_transcript::EntryKind::TurnEnd)
+                .collect();
+            assert_eq!(ends.len(), 2, "a local cancel records no turn end");
+            assert_eq!(ends[0].p["usage"]["inputTokens"], 30);
+            assert_eq!(ends[1].p["usage"]["inputTokens"], 5);
+            let history = crate::parsers::acp_native::AcpNativeParser::new_in(
+                AgentType::ZCode,
+                crate::paths::codeg_acp_transcripts_root(),
+            )
+            .get_conversation("s1")
+            .unwrap();
+            assert_eq!(
+                turn_shape(&history.turns),
+                [
+                    "User: text \"one\"",
+                    "Assistant: text \"first\"",
+                    "User: text \"two\"",
+                    "Assistant: text \"working, late tail\"",
+                    "User: text \"three\"",
+                    "Assistant: text \"third\"",
+                ]
+            );
+            assert!(history.turns[3].usage.is_none());
+            lp.shutdown().await;
+        })
+        .await;
+    }
+
+    /// One prompt can hold several busy windows: a compaction it waited
+    /// behind (reported bare), then the rounds of an `/auto` loop. Each round
+    /// reports its own usage, so the reply carries their total; its duration
+    /// is codeg's own measurement of the prompt, not any round's clock.
+    #[tokio::test]
+    async fn zcode_a_prompt_held_over_several_windows_totals_them_on_codegs_clock() {
+        use crate::parsers::AgentParser as _;
+        let home = tempfile::tempdir().unwrap();
+        let home_str = home.path().to_string_lossy().into_owned();
+        temp_env::async_with_vars([("CODEG_HOME", Some(home_str.as_str()))], async {
+            let turn_state = |body: serde_json::Value| ("_zcode/turnState", body);
+            let start = || turn_state(serde_json::json!({"sessionId": "s1", "running": true}));
+            let end = |input: u64, ms: u64| {
+                turn_state(serde_json::json!({
+                    "sessionId": "s1", "running": false, "turnMs": ms,
+                    "usage": {"inputTokens": input, "outputTokens": 10, "cachedReadTokens": 100}
+                }))
+            };
+            let mut lp = CustomLoop::start_for(
+                AgentType::ZCode,
+                vec![vec![
+                    start(),
+                    turn_state(serde_json::json!({"sessionId": "s1", "running": false})),
+                    start(),
+                    custom_text("round one, "),
+                    end(40, 3_600_000),
+                    start(),
+                    end(2, 1_800_000),
+                    custom_text("round two"),
+                ]],
+            )
+            .await;
+            lp.run_turn("/auto ship it", "round two").await;
+
+            let history = crate::parsers::acp_native::AcpNativeParser::new_in(
+                AgentType::ZCode,
+                crate::paths::codeg_acp_transcripts_root(),
+            )
+            .get_conversation("s1")
+            .unwrap();
+            assert_eq!(
+                turn_shape(&history.turns),
+                [
+                    "User: text \"/auto ship it\"",
+                    "Assistant: text \"round one, round two\"",
+                ]
+            );
+            let reply = &history.turns[1];
+            let usage = reply.usage.as_ref().unwrap();
+            assert_eq!(
+                (
+                    usage.input_tokens,
+                    usage.output_tokens,
+                    usage.cache_read_input_tokens,
+                    usage.cache_creation_input_tokens
+                ),
+                (42, 20, 200, 0)
+            );
+            let duration = reply.duration_ms.unwrap();
+            assert!(duration < 1_800_000, "codeg's clock, got {duration}");
+            lp.shutdown().await;
+        })
+        .await;
     }
 
     /// A setter sent with a reply is answered from the agent's own response to
@@ -42016,13 +42346,19 @@ mod zcode_mode_tests {
     }
 
     #[test]
-    fn zcode_does_not_offer_unvalidated_attachments() {
+    fn zcode_negotiates_images_and_resources_but_not_audio() {
         let advertised = agent_client_protocol::schema::v1::PromptCapabilities::default()
             .image(true)
             .audio(true)
             .embedded_context(true);
         let zcode = effective_prompt_capabilities(AgentType::ZCode, &advertised);
-        assert!(!zcode.image && !zcode.audio && !zcode.embedded_context);
+        assert!(zcode.image && zcode.embedded_context);
+        assert!(!zcode.audio);
+        let absent = effective_prompt_capabilities(
+            AgentType::ZCode,
+            &agent_client_protocol::schema::v1::PromptCapabilities::default(),
+        );
+        assert!(!absent.image && !absent.audio && !absent.embedded_context);
         let other = effective_prompt_capabilities(AgentType::KimiCode, &advertised);
         assert!(other.image && other.audio && other.embedded_context);
     }

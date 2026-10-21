@@ -2062,6 +2062,9 @@ export interface ForgeSourceMeta {
   head_repo?: string | null
   /** URL of the PR created by the delivery acceptance path (P1). */
   result_pr?: string | null
+  /** PR head the task's last push-back went onto (where the PR ended below
+   *  the task's own work); absent until a push-back. */
+  pushed_onto?: string | null
   /** The trigger dialog's write-back answer, frozen at trigger time. Absent on
    *  rows minted before the choice lived here — those stay silent. */
   writeback?: boolean | null
@@ -3165,8 +3168,9 @@ export type AcpEvent =
        * The first three mean the session is gone. `"session_busy"` does not —
        * another live holder has it open (another Codex client — the app, the
        * CLI or an IDE extension — or, for about a minute after a fork, the
-       * forking session, until codex unloads the parent it closed), and it
-       * clears when that one lets go.
+       * forking session, until codex unloads the parent it closed; for Kimi
+       * Code, another Kimi process on the same home until it has been idle
+       * for 3 s), and it clears when that one lets go.
        */
       code: string
     }
@@ -4651,6 +4655,10 @@ export interface FolderCommand {
   name: string
   command: string
   sort_order: number
+  /** Run by the desktop app on its own machine, detached, instead of in a
+   *  terminal on the folder's host. Absent from older servers' rows (then
+   *  treated as `false`). */
+  run_local?: boolean
   created_at: string
   updated_at: string
 }

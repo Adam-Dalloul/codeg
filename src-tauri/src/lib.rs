@@ -8,8 +8,10 @@
 #![recursion_limit = "256"]
 // The unoptimized lib test binary trips the same harmless macOS
 // "__eh_frame section too large" linker warning as the `codeg` binary; see the
-// note at the top of `main.rs`.
-#![cfg_attr(debug_assertions, allow(linker_messages))]
+// note at the top of `main.rs`. Only under `cfg(test)`: elsewhere the crate is
+// built as an rlib only, which is not the root of any link, so rustc flags the
+// allow there as an unused attribute (an error under clippy's -D warnings).
+#![cfg_attr(all(test, debug_assertions), allow(linker_messages))]
 
 pub mod acp;
 pub mod acp_transcript;
@@ -111,7 +113,8 @@ mod tauri_app {
         custom_skills as custom_skills_commands,
         deepseek_settings as deepseek_settings_commands, delegation as delegation_commands,
         experts as experts_commands, feedback as feedback_commands, file_io, folder_commands,
-        folder_links, handoff as handoff_commands, office_tools as office_tools_commands, open_in,
+        folder_links, handoff as handoff_commands, local_command,
+        office_tools as office_tools_commands, open_in,
         folders, logging as logging_commands, mcp as mcp_commands,
         model_provider as model_provider_commands, notification, pet as pet_commands, project_boot,
         question as question_commands, quick_messages as quick_messages_commands,
@@ -538,7 +541,6 @@ mod tauri_app {
         unsafe { std::env::remove_var(RENDERING_OVERRIDE_OWNED_ENV) };
     }
 
-    #[cfg_attr(mobile, tauri::mobile_entry_point)]
     pub fn run() {
         // Ahead of the logging init, which is otherwise the first statement
         // here: `init_desktop` builds a `tracing_appender::non_blocking` file
@@ -2263,6 +2265,7 @@ mod tauri_app {
                 folder_commands::delete_folder_command,
                 folder_commands::reorder_folder_commands,
                 folder_commands::bootstrap_folder_commands_from_package_json,
+                local_command::run_local_command,
                 quick_messages_commands::quick_messages_list,
                 quick_messages_commands::quick_messages_create,
                 quick_messages_commands::quick_messages_update,

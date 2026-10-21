@@ -2820,6 +2820,7 @@ const ToolCallPart = memo(function ToolCallPart({
     return (
       <DelegationStatusCard
         kind="status"
+        toolCallId={part.toolCallId}
         input={part.input ?? null}
         output={part.output ?? null}
         errorText={part.errorText ?? null}
