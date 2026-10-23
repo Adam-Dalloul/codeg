@@ -568,7 +568,7 @@ describe("opencode code-mode execute payloads", () => {
         code: `const s = "tools[\\"codeg-mcp\\"].delegate_to_agent("`,
       }),
       JSON.stringify({
-        code: "const t = `tools[\"codeg-mcp\"].delegate_to_agent()`",
+        code: 'const t = `tools["codeg-mcp"].delegate_to_agent()`',
       }),
       JSON.stringify({
         code: `// tools["codeg-mcp"].delegate_to_agent({ agent_type: "zcode" })`,

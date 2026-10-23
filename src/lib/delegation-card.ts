@@ -828,8 +828,7 @@ function parseCodeModeInput(parsed: unknown): ParsedInput | null {
         ? coerceAssistantId(readAssistantIdValue(code, assistantAt))
         : null,
     task: taskAt !== null ? objectTaskValue(code, taskAt) : null,
-    workingDir:
-      workingAt !== null ? objectStringValue(code, workingAt) : null,
+    workingDir: workingAt !== null ? objectStringValue(code, workingAt) : null,
   }
 }
 
