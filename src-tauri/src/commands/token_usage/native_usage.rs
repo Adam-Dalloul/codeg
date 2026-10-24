@@ -24,7 +24,7 @@ pub(crate) enum NativeUsage {
     KeepRecorded(Vec<UsageFact>),
 }
 
-fn key_prefix(session_id: &str) -> String {
+pub(crate) fn key_prefix(session_id: &str) -> String {
     format!(
         "{NATIVE_PREFIX}{:x}:",
         Sha256::digest(session_id.as_bytes())

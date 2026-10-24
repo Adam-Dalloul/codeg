@@ -30,7 +30,7 @@ describe("AgentHandoffCard", () => {
               toolName: "agent_handoff",
               toolCallId: "handoff-0",
               state: "output-available",
-              input: {},
+              input: "{}",
               output: "",
               meta: {
                 "codeg.handoff": {

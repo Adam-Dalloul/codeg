@@ -89,6 +89,18 @@ struct Prepared {
     target_env: BTreeMap<String, String>,
     turns: Vec<MessageTurn>,
     source_stats: Option<crate::models::SessionStats>,
+    source_usage_facts: Option<Vec<crate::db::service::token_usage_service::UsageFact>>,
+}
+
+fn encode_source_stats(
+    stats: Option<&crate::models::SessionStats>,
+    facts: Option<&[crate::db::service::token_usage_service::UsageFact]>,
+) -> Result<Option<String>, AppCommandError> {
+    let facts = facts.filter(|facts| !facts.is_empty());
+    if stats.is_none() && facts.is_none() { return Ok(None); }
+    let mut value = stats.map(|stats| serde_json::json!(stats)).unwrap_or_else(|| serde_json::json!({}));
+    if let Some(facts) = facts { value["usageFacts"] = serde_json::json!(facts); }
+    serde_json::to_string(&value).map(Some).map_err(failure)
 }
 
 async fn prepare(
@@ -222,6 +234,7 @@ async fn prepare(
         target_env,
         turns,
         source_stats,
+        source_usage_facts: None,
     })
 }
 
@@ -343,6 +356,24 @@ async fn handoff_inner(
     let stopped = get_folder_conversation_core(&db.conn, request.conversation_id)
         .await?
         .0;
+    // Snapshot the usage of this source session before changing its binding.
+    // Its native counters may cover history that the ACP transcript predates.
+    // Preserve per-model facts rather than relabeling their sum as one model.
+    use crate::commands::token_usage::native_usage::{self, NativeUsage};
+    let recovered = match native_usage::read(&db.conn, &stopped.summary).await {
+        Ok(NativeUsage::Facts(facts) | NativeUsage::KeepRecorded(facts)) => facts,
+        Ok(NativeUsage::Unavailable) => Vec::new(),
+        Err(error) => {
+            tracing::warn!(conversation_id = request.conversation_id, error = %error, "handoff: retaining saved usage after a source read failed");
+            match stopped.summary.external_id.as_deref() {
+                Some(id) => crate::db::service::token_usage_service::facts_with_key_prefix(
+                    &db.conn, request.conversation_id, &native_usage::key_prefix(id),
+                ).await.map_err(AppCommandError::from)?,
+                None => Vec::new(),
+            }
+        }
+    };
+    if !recovered.is_empty() { prepared.source_usage_facts = Some(recovered); }
     prepared.turns = stopped.turns;
     prepared.source_stats = stopped.session_stats;
     prepared.summary.model = stopped.summary.model;
@@ -528,12 +559,7 @@ async fn handoff_inner(
                 .and_then(|a| a.directory.file_name())
                 .map(|s| s.to_string_lossy().into_owned()),
             context_pending: !native || note.is_some(),
-            source_stats_json: prepared
-                .source_stats
-                .as_ref()
-                .map(serde_json::to_string)
-                .transpose()
-                .map_err(failure)?,
+            source_stats_json: encode_source_stats(prepared.source_stats.as_ref(), prepared.source_usage_facts.as_deref())?,
             source_model: prepared.summary.model.clone(),
         },
     )
@@ -699,4 +725,22 @@ pub async fn acp_handoff(
         },
     )
     .await
+}
+
+#[cfg(test)]
+mod usage_snapshot_tests {
+    use super::*;
+    use crate::db::service::token_usage_service::UsageFact;
+
+    #[test]
+    fn source_snapshot_retains_per_model_usage_without_changing_legacy_stats() {
+        let fact = UsageFact { turn_key: "native-claude:source:turn".into(), occurred_at: chrono::Utc::now(), model: Some("model-a".into()), input_tokens: 100, output_tokens: 20, cache_creation_tokens: 5, cache_read_tokens: 50, duration_ms: 40 };
+        let raw = encode_source_stats(None, Some(&[fact])).unwrap().unwrap();
+        let value: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        let facts: Vec<UsageFact> = serde_json::from_value(value["usageFacts"].clone()).unwrap();
+        assert_eq!(facts[0].model.as_deref(), Some("model-a"));
+        assert_eq!(facts[0].total_tokens(), 175);
+        assert!(encode_source_stats(None, None).unwrap().is_none());
+        assert!(encode_source_stats(None, Some(&[])).unwrap().is_none());
+    }
 }

@@ -279,6 +279,14 @@ pub(crate) fn facts_from_detail(
     detail: &DbConversationDetail,
     fallback_at: DateTime<Utc>,
 ) -> Vec<UsageFact> {
+    facts_from_detail_with_current(detail, fallback_at, None)
+}
+
+fn facts_from_detail_with_current(
+    detail: &DbConversationDetail,
+    fallback_at: DateTime<Utc>,
+    current: Option<Vec<UsageFact>>,
+) -> Vec<UsageFact> {
     let mut facts = Vec::new();
     let mut start = 0;
     for (index, turn) in detail.turns.iter().enumerate() {
@@ -289,14 +297,18 @@ pub(crate) fn facts_from_detail(
         let Some(marker) = marker.filter(|m| m.get("carried").and_then(|v| v.as_bool()) == Some(false)) else { continue; };
         let stats = marker.get("sourceStats").cloned().and_then(|v| serde_json::from_value::<crate::models::SessionStats>(v).ok());
         let model = marker.get("sourceModel").and_then(|v| v.as_str());
-        let mut segment = facts_from_segment(&detail.turns[start..index], model, stats.as_ref(), turn.timestamp);
+        let snapshot = marker.get("sourceStats").and_then(|stats| stats.get("usageFacts"))
+            .cloned().and_then(|value| serde_json::from_value::<Vec<UsageFact>>(value).ok())
+            .filter(|facts| !facts.is_empty());
+        let recovered = snapshot.is_some();
+        let mut segment = snapshot.unwrap_or_else(|| facts_from_segment(&detail.turns[start..index], model, stats.as_ref(), turn.timestamp));
         for fact in &mut segment {
-            if fact.turn_key == SESSION_TOTAL_TURN_KEY { fact.turn_key = format!("handoff-usage-{index}:{}", fact.turn_key); }
+            if recovered || fact.turn_key == SESSION_TOTAL_TURN_KEY { fact.turn_key = format!("handoff-usage-{index}:{}", fact.turn_key); }
         }
         facts.extend(segment);
         start = index + 1;
     }
-    facts.extend(facts_from_segment(&detail.turns[start..], detail.summary.model.as_deref(), detail.session_stats.as_ref(), fallback_at));
+    facts.extend(current.unwrap_or_else(|| facts_from_segment(&detail.turns[start..], detail.summary.model.as_deref(), detail.session_stats.as_ref(), fallback_at)));
     facts
 }
 
@@ -1116,7 +1128,7 @@ pub async fn token_usage_sync_core(
             }
             Ok((detail, native)) => {
                 let facts = match native {
-                    native_usage::NativeUsage::Facts(facts) => facts,
+                    native_usage::NativeUsage::Facts(facts) => facts_from_detail_with_current(&detail, candidate.updated_at, Some(facts)),
                     _ => facts_from_detail(&detail, candidate.updated_at),
                 };
                 match usage_service::replace_conversation_facts(
@@ -1475,6 +1487,33 @@ mod tests {
         assert_eq!(facts[0].model.as_deref(),Some("original-model"));
         assert_eq!(facts[1].model.as_deref(),Some("claude-opus-5"));
         assert_ne!(facts[0].turn_key,facts[1].turn_key);
+    }
+
+    #[test]
+    fn recovered_source_facts_and_current_native_usage_survive_handoff_without_overlap() {
+        use crate::acp::handoff::{divider_turn, HandoffLink, HandoffPath};
+        use crate::models::AgentType;
+        let snapshot = vec![
+            UsageFact { turn_key: "native-claude:old:a".into(), occurred_at: ts("2026-08-01T10:00:00Z"), model: Some("model-a".into()), input_tokens: 100, output_tokens: 10, cache_creation_tokens: 5, cache_read_tokens: 20, duration_ms: 10 },
+            UsageFact { turn_key: "native-claude:old:b".into(), occurred_at: ts("2026-08-01T10:01:00Z"), model: Some("model-b".into()), input_tokens: 200, output_tokens: 20, cache_creation_tokens: 10, cache_read_tokens: 40, duration_ms: 20 },
+        ];
+        let boundary = divider_turn(&HandoffLink {
+            from_agent_type: AgentType::Custom("claude-code-2"), from_external_id: Some("old".into()),
+            to_agent_type: AgentType::Custom("claude-code-3"), to_external_id: "new".into(),
+            path: HandoffPath::Context, carried: false, user_turns_before: 1,
+            note: None, briefing: None, truncated: false, at: ts("2026-08-01T10:30:00Z"),
+            context_id: None, source_stats: Some(serde_json::json!({"usageFacts":snapshot})),
+            source_model: Some("wrong-fallback-model".into()),
+        },0);
+        let old = turn("old", Some(usage(9999,9999,0,0)), "2026-08-01T10:00:00Z");
+        let new = turn("new", Some(usage(9999,9999,0,0)), "2026-08-01T11:00:00Z");
+        let current = UsageFact { turn_key: "native-claude:new:a".into(), occurred_at: ts("2026-08-01T11:00:00Z"), model: Some("model-c".into()), input_tokens: 50, output_tokens: 5, cache_creation_tokens: 0, cache_read_tokens: 10, duration_ms: 5 };
+        let facts = facts_from_detail_with_current(&detail(vec![old,boundary,new],None),ts("2026-08-01T12:00:00Z"),Some(vec![current]));
+        assert_eq!(facts.len(),3);
+        assert_eq!(facts.iter().map(UsageFact::total_tokens).sum::<i64>(),470);
+        assert_eq!(facts.iter().map(|f| f.model.as_deref().unwrap()).collect::<Vec<_>>(),vec!["model-a","model-b","model-c"]);
+        assert!(facts[0].turn_key.starts_with("handoff-usage-"));
+        assert!(facts[2].turn_key.starts_with("native-claude:new:"));
     }
 
     #[test]
