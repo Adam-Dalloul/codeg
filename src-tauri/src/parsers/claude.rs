@@ -1247,8 +1247,8 @@ impl ClaudeParser {
         }
     }
 
-    /// Explicit-root constructor for an account or fixture
-    /// directory instead of `~/.claude/projects`.
+    /// Use an explicitly resolved projects directory, including isolated
+    /// account usage recovery and fixtures, without consulting Default.
     pub fn with_base_dir(base_dir: PathBuf) -> Self {
         Self { base_dir }
     }
