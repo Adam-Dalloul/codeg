@@ -103,6 +103,16 @@ fn encode_source_stats(
     serde_json::to_string(&value).map(Some).map_err(failure)
 }
 
+fn path_for_saved_history(path: HandoffPath, source: AgentType, session_id: Option<&str>) -> HandoffPath {
+    if path == HandoffPath::Native
+        && session_id.is_some_and(|id| !crate::acp::continued_session_ids(source, id).is_empty())
+    {
+        // Copying the current native file alone cannot carry Codeg's older
+        // continuation segments. Use the complete saved-history transfer.
+        HandoffPath::Context
+    } else { path }
+}
+
 async fn prepare(
     db: &AppDatabase,
     data_dir: &Path,
@@ -123,7 +133,7 @@ async fn prepare(
         source_external_id: summary.external_id.clone(),
         target_agent_type: target,
         target_account_id: target_account.map(str::to_string),
-        path: handoff::plan_path(summary.agent_type, target),
+        path: path_for_saved_history(handoff::plan_path(summary.agent_type, target), summary.agent_type, summary.external_id.as_deref()),
         native_reason: None,
         blocked: None,
         blocked_message: None,
@@ -360,18 +370,9 @@ async fn handoff_inner(
     // Its native counters may cover history that the ACP transcript predates.
     // Preserve per-model facts rather than relabeling their sum as one model.
     use crate::commands::token_usage::native_usage::{self, NativeUsage};
-    let recovered = match native_usage::read(&db.conn, &stopped.summary).await {
-        Ok(NativeUsage::Facts(facts) | NativeUsage::KeepRecorded(facts)) => facts,
-        Ok(NativeUsage::Unavailable) => Vec::new(),
-        Err(error) => {
-            tracing::warn!(conversation_id = request.conversation_id, error = %error, "handoff: retaining saved usage after a source read failed");
-            match stopped.summary.external_id.as_deref() {
-                Some(id) => crate::db::service::token_usage_service::facts_with_key_prefix(
-                    &db.conn, request.conversation_id, &native_usage::key_prefix(id),
-                ).await.map_err(AppCommandError::from)?,
-                None => Vec::new(),
-            }
-        }
+    let recovered = match native_usage::read(&db.conn, &stopped.summary).await? {
+        NativeUsage::Facts(facts) | NativeUsage::KeepRecorded(facts) => facts,
+        NativeUsage::Unavailable => Vec::new(),
     };
     if !recovered.is_empty() { prepared.source_usage_facts = Some(recovered); }
     prepared.turns = stopped.turns;
@@ -731,6 +732,21 @@ pub async fn acp_handoff(
 mod usage_snapshot_tests {
     use super::*;
     use crate::db::service::token_usage_service::UsageFact;
+
+    #[test]
+    fn a_recorded_continuation_uses_the_complete_saved_history_path() {
+        let root = tempfile::tempdir().unwrap();
+        temp_env::with_var("CODEG_HOME", Some(root.path().as_os_str()), || {
+            let dir = crate::paths::codeg_acp_transcripts_root().join("continued-claude");
+            std::fs::create_dir_all(&dir).unwrap();
+            let header = crate::acp_transcript::TranscriptHeader::new("custom:continued-claude", "s2", "/fixture", 1).continuing("s1");
+            std::fs::write(dir.join("s2.jsonl"), format!("{}\n", serde_json::to_string(&header).unwrap())).unwrap();
+            let source = AgentType::Custom("continued-claude");
+            assert_eq!(path_for_saved_history(HandoffPath::Native, source, Some("s2")), HandoffPath::Context);
+            assert_eq!(path_for_saved_history(HandoffPath::Native, source, Some("s1")), HandoffPath::Native);
+            assert_eq!(path_for_saved_history(HandoffPath::Native, AgentType::ClaudeCode, Some("s2")), HandoffPath::Native);
+        });
+    }
 
     #[test]
     fn source_snapshot_retains_per_model_usage_without_changing_legacy_stats() {
