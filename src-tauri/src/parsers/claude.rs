@@ -2856,7 +2856,7 @@ impl ClaudeRecordAccumulator {
 }
 
 impl ClaudeParser {
-    fn parse_conversation_detail(
+    pub(crate) fn parse_conversation_detail(
         &self,
         path: &PathBuf,
         conversation_id: &str,

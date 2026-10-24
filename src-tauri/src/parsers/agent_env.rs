@@ -83,7 +83,7 @@ impl AgentEnv {
     /// the `CLAUDE_CONFIG_DIR` the child reads — and when several spellings
     /// are present the spawn applies them in map order, so the last one wins
     /// (the rule `commands::acp::launch_env_value` follows).
-    fn override_for(&self, key: &str) -> Option<&str> {
+    pub(crate) fn override_for(&self, key: &str) -> Option<&str> {
         if cfg!(windows) {
             self.overrides
                 .iter()
