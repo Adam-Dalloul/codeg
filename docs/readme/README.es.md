@@ -101,7 +101,7 @@
 
 ### Una interfaz para todos los agentes
 
-19 agentes y cualquier agente ACP, con tarjetas de herramientas, diffs y respuestas interactivas.
+20 agentes y cualquier agente ACP, con tarjetas de herramientas, diffs y respuestas interactivas.
 
 [Documentación →](https://docs.codeg.app/guide/supported-agents) · [Agentes personalizados →](https://docs.codeg.app/guide/custom-agents) · [Renderizado de UI →](https://docs.codeg.app/guide/skills#cards-tables-and-charts-in-replies)
 
@@ -273,7 +273,7 @@ git diff | codeg-cli -a codex \
 
 ## 🤖 Agentes compatibles
 
-Codeg se comunica con cada agente mediante el [Agent Client Protocol](https://agentclientprotocol.com), así que todos reciben la misma interfaz estructurada. Diecinueve vienen integrados, y Codeg instala, fija la versión y actualiza la mayoría de ellos por ti:
+Codeg se comunica con cada agente mediante el [Agent Client Protocol](https://agentclientprotocol.com), así que todos reciben la misma interfaz estructurada. Veinte vienen integrados, y Codeg instala, fija la versión y actualiza la mayoría de ellos por ti:
 
 <p>
   <a href="https://www.anthropic.com/claude-code"><kbd><img src="../images/agents/claude-code.svg" alt="" width="16" valign="middle" /> Claude Code</kbd></a> &nbsp;
