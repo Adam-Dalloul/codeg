@@ -90,63 +90,105 @@ pub(crate) async fn read(
     let Some(external_id) = summary.external_id.as_ref().filter(|id| !id.is_empty()) else {
         return Ok(NativeUsage::Unavailable);
     };
-    let prefix = key_prefix(external_id);
-    let retained = token_usage_service::facts_with_key_prefix(conn, summary.id, &prefix)
+    let retained = token_usage_service::facts_with_key_prefix(conn, summary.id, NATIVE_PREFIX)
         .await
         .map_err(AppCommandError::from)?;
-    let unavailable = || {
-        if retained.is_empty() {
-            NativeUsage::Unavailable
-        } else {
-            NativeUsage::KeepRecorded(retained.clone())
-        }
-    };
-    let Some(def) = custom_agent_service::get(conn, id)
+    let def = custom_agent_service::get(conn, id)
         .await
         .map_err(AppCommandError::from)?
         .as_ref()
-        .and_then(custom_agent_service::def_from_model)
-    else {
-        return Ok(unavailable());
+        .and_then(custom_agent_service::def_from_model);
+    let home = if let Some(def) = def {
+        let runtime = agent_setting_service::load_agent_env(conn, summary.agent_type).await;
+        let builtin = agent_setting_service::load_agent_env(conn, AgentType::ClaudeCode).await;
+        let default = dirs::home_dir().map(|home| home.join(".claude"));
+        isolated_home(
+            &def,
+            &runtime,
+            &resolve_claude_config_dir_for_env(&builtin),
+            default.as_deref(),
+        )
+    } else {
+        None
     };
-    let runtime = agent_setting_service::load_agent_env(conn, summary.agent_type).await;
-    let builtin = agent_setting_service::load_agent_env(conn, AgentType::ClaudeCode).await;
-    let default = dirs::home_dir().map(|home| home.join(".claude"));
-    let Some(home) = isolated_home(
-        &def,
-        &runtime,
-        &resolve_claude_config_dir_for_env(&builtin),
-        default.as_deref(),
-    ) else {
-        return Ok(unavailable());
-    };
-    let external_id = external_id.clone();
-    let facts = tokio::task::spawn_blocking(move || {
-        let base = home.join("projects");
-        let Some(path) = find_session_file_in(&base, &external_id) else {
-            return Ok(Vec::new());
-        };
-        // get_conversation follows /clear rollovers. This reader deliberately
-        // accepts only the exact saved id and never rewrites external_id.
-        let detail = ClaudeParser::with_base_dir(base)
-            .parse_conversation_detail(&path, &external_id)
-            .map_err(|error| AppCommandError::io_error(error.to_string()))?;
-        if detail.summary.id != external_id {
-            return Ok(Vec::new());
+    if home.is_none() && retained.is_empty() {
+        return Ok(NativeUsage::Unavailable);
+    }
+    let current_id = external_id.clone();
+    let current_model = summary.model.clone();
+    tokio::task::spawn_blocking(move || {
+        // These are explicit links written by Codeg, with cycle/depth guards.
+        // Never discover unrelated sessions or follow Claude /clear rollovers.
+        let mut ids = crate::acp_transcript::continuation_ancestors(id, &current_id);
+        ids.reverse();
+        ids.push(current_id.clone());
+        let mut facts = Vec::new();
+        let mut native_source = false;
+        let mut fresh_source = false;
+        for session_id in ids {
+            let prefix = key_prefix(&session_id);
+            let saved: Vec<_> = retained
+                .iter()
+                .filter(|fact| fact.turn_key.starts_with(&prefix))
+                .cloned()
+                .collect();
+            let native = match home.as_ref().map(|home| home.join("projects")) {
+                Some(base) => match find_session_file_in(&base, &session_id) {
+                    Some(path) => match ClaudeParser::with_base_dir(base)
+                        .parse_conversation_detail(&path, &session_id)
+                    {
+                        Ok(detail) if detail.summary.id == session_id => {
+                            super::facts_from_turns(&detail.turns, detail.summary.model.as_deref())
+                        }
+                        Ok(_) => Vec::new(),
+                        Err(error) if saved.is_empty() => {
+                            return Err(AppCommandError::io_error(error.to_string()))
+                        }
+                        Err(_) => Vec::new(),
+                    },
+                    None => Vec::new(),
+                },
+                None => Vec::new(),
+            };
+            if !native.is_empty() {
+                native_source = true;
+                fresh_source = true;
+                facts.extend(native.into_iter().map(|mut fact| {
+                    fact.turn_key = format!("{prefix}{}", fact.turn_key);
+                    fact
+                }));
+            } else if !saved.is_empty() {
+                native_source = true;
+                facts.extend(saved);
+            } else {
+                // Only this session's ACP records, never the concatenated
+                // chain: another link may already be covered by native facts.
+                let transcript = crate::acp_transcript::read_transcript(id, &session_id);
+                let turns = crate::parsers::acp_native::project_turns(&transcript.entries);
+                let model = if session_id == current_id {
+                    current_model.as_deref()
+                } else {
+                    None
+                };
+                let mut acp = super::facts_from_turns(&turns, model);
+                fresh_source |= !acp.is_empty();
+                let acp_prefix = prefix.replacen(NATIVE_PREFIX, "acp-usage:", 1);
+                for fact in &mut acp {
+                    fact.turn_key = format!("{acp_prefix}{}", fact.turn_key);
+                }
+                facts.extend(acp);
+            }
         }
-        let mut facts = super::facts_from_turns(&detail.turns, detail.summary.model.as_deref());
-        for fact in &mut facts {
-            fact.turn_key = format!("{prefix}{}", fact.turn_key);
-        }
-        Ok::<_, AppCommandError>(facts)
+        Ok(if !native_source {
+            NativeUsage::Unavailable
+        } else if fresh_source {
+            NativeUsage::Facts(facts)
+        } else {
+            NativeUsage::KeepRecorded(facts)
+        })
     })
     .await
-    .map_err(|error| AppCommandError::io_error(error.to_string()))??;
-    Ok(if facts.is_empty() {
-        unavailable()
-    } else {
-        NativeUsage::Facts(facts)
-    })
+    .map_err(|error| AppCommandError::io_error(error.to_string()))?
 }
 
 #[cfg(test)]
@@ -317,7 +359,37 @@ mod tests {
             another_session.external_id = Some("different-session".into());
             assert!(matches!(read(&db.conn, &another_session).await.unwrap(), NativeUsage::Unavailable));
             assert_eq!(token_usage_report_core(&db.conn, TokenUsageFilter::default()).await.unwrap().totals.total_tokens, 200);
-            assert_eq!(app_metadata_service::get_value(&db.conn, "token_usage_fact_schema_version").await.unwrap().as_deref(), Some("7"));
+            // Rebind the SAME row through Codeg's recorded continuation link.
+            // The old native file is still absent, and the new session has only
+            // ACP usage at first. Neither old native totals nor new spend may vanish.
+            let acp_next = crate::paths::codeg_acp_transcripts_root().join("usage-history-fixture/s2.jsonl");
+            write_jsonl(&acp_next, &[
+                json!({"v":1,"kind":"header","agent":"custom:usage-history-fixture","session_id":"s2","continues_from":"s1","cwd":"/fixture-project","started_at_ms":1792837000000u64}),
+                json!({"t":1792837000000u64,"k":"prompt","p":[{"type":"text","text":"continued prompt"}]}),
+                json!({"t":1792837000100u64,"k":"update","p":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"continued reply"}}}),
+                json!({"t":1792837000200u64,"k":"turn_end","p":{"stopReason":"end_turn","model":"acp-second","usage":{"inputTokens":30,"outputTokens":5,"totalTokens":35}}}),
+            ]);
+            conversation_service::bind_external_id(&db.conn, id, "s2", &["s1".to_string()]).await.unwrap();
+            let continued = token_usage_sync_core(&db.conn, &EventEmitter::Noop, TokenUsageSyncMode::Full).await.unwrap();
+            assert_eq!(continued.failed,0);
+            let report = token_usage_report_core(&db.conn, TokenUsageFilter::default()).await.unwrap();
+            assert_eq!(report.totals.total_tokens,235);
+            assert_eq!(report.totals.conversation_count,1);
+            let native_next = home.join("projects/project/s2.jsonl");
+            write_jsonl(&native_next, &[
+                json!({"type":"user","sessionId":"s2","cwd":"/fixture-project","timestamp":"2026-10-24T10:20:00Z","uuid":"u2","message":{"role":"user","content":"native continued prompt"}}),
+                json!({"type":"assistant","sessionId":"s2","timestamp":"2026-10-24T10:20:01Z","uuid":"a3","parentUuid":"u2","message":{"id":"request-2","role":"assistant","model":"native-second","content":[{"type":"text","text":"native continued reply"}],"usage":{"input_tokens":50,"output_tokens":10,"cache_read_input_tokens":20}}}),
+            ]);
+            token_usage_sync_core(&db.conn, &EventEmitter::Noop, TokenUsageSyncMode::Full).await.unwrap();
+            let report = token_usage_report_core(&db.conn, TokenUsageFilter::default()).await.unwrap();
+            assert_eq!(report.totals.total_tokens,280);
+            assert!(report.by_model.iter().any(|row| row.key == "native-second" && row.total_tokens == 80));
+            assert!(!report.by_model.iter().any(|row| row.key == "acp-second"));
+            std::fs::remove_file(native_next).unwrap();
+            let kept = token_usage_sync_core(&db.conn, &EventEmitter::Noop, TokenUsageSyncMode::Full).await.unwrap();
+            assert_eq!(kept.lost,1);
+            assert_eq!(token_usage_report_core(&db.conn, TokenUsageFilter::default()).await.unwrap().totals.total_tokens,280);
+            assert_eq!(app_metadata_service::get_value(&db.conn, "token_usage_fact_schema_version").await.unwrap().as_deref(), Some("8"));
         }).await;
     }
 }
