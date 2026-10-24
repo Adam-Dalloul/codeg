@@ -56,6 +56,8 @@ mod m20261017_000001_agent_account;
 mod m20261017_000002_conversation_source;
 mod m20261020_000001_folder_command_run_local;
 mod m20261021_000001_agent_account_compatibility;
+mod m20261022_000001_tool_approval;
+mod m20261024_000001_agent_account_compatibility;
 pub struct Migrator;
 
 #[async_trait::async_trait]
@@ -118,6 +120,8 @@ impl MigratorTrait for Migrator {
             Box::new(m20261017_000002_conversation_source::Migration),
             Box::new(m20261020_000001_folder_command_run_local::Migration),
             Box::new(m20261021_000001_agent_account_compatibility::Migration),
+            Box::new(m20261022_000001_tool_approval::Migration),
+            Box::new(m20261024_000001_agent_account_compatibility::Migration),
         ]
     }
 }
@@ -154,7 +158,7 @@ mod tests {
         // marker and keep this one for databases that already applied it.
         assert_eq!(
             Migrator::migrations().last().unwrap().name(),
-            "m20261021_000001_agent_account_compatibility"
+            "m20261024_000001_agent_account_compatibility"
         );
     }
 }

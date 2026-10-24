@@ -741,6 +741,7 @@ impl GeminiParser {
                     is_error,
                     agent_stats: None,
                     images: Vec::new(),
+                    exit_code: None,
                 });
             }
         }
