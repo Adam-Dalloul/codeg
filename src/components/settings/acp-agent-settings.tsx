@@ -5124,7 +5124,7 @@ export function AcpAgentSettings() {
     )
     if (!selected) return
     selected.scrollIntoView({ block: "nearest", behavior: "smooth" })
-  }, [selectedAgentType, sortedAgents])
+  }, [selectedAgentType])
 
   useEffect(() => {
     if (sortedAgents.length === 0) {
