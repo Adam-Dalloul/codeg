@@ -623,7 +623,7 @@ mod tests {
         use sea_orm_migration::MigratorTrait;
 
         // Keep the original account migration ID for existing PR databases.
-        // The later marker makes v0.39 refuse this schema's backups. The
+        // The later marker makes v0.40 refuse this schema's backups. The
         // registry's feature_schema_marker_is_last test also guards its tail.
         let names: Vec<String> = Migrator::migrations()
             .iter()
@@ -631,8 +631,8 @@ mod tests {
             .collect();
         let position = |name: &str| names.iter().position(|n| n == name).expect(name);
         assert!(
-            position("m20261021_000001_agent_account_compatibility")
-                > position("m20261020_000001_folder_command_run_local")
+            position("m20261024_000001_agent_account_compatibility")
+                > position("m20261022_000001_tool_approval")
         );
         position("m20261017_000001_agent_account");
     }
@@ -649,7 +649,7 @@ mod tests {
         #[async_trait::async_trait]
         impl MigratorTrait for ReleasedSchema {
             fn migrations() -> Vec<Box<dyn MigrationTrait>> {
-                migrations_from_fixture(include_str!("../../../tests/fixtures/v039-migrations.txt"))
+                migrations_from_fixture(include_str!("../../../tests/fixtures/v040-migrations.txt"))
             }
         }
 
@@ -669,6 +669,7 @@ mod tests {
             .await
             .unwrap());
         assert!(schema.has_column("conversation", "source").await.unwrap());
+        assert!(schema.has_table("tool_approval").await.unwrap());
         assert!(schema
             .has_column("folder_command", "run_local")
             .await
@@ -686,26 +687,15 @@ mod tests {
         assert!(saved.agent_account_id.is_none());
     }
 
-    #[tokio::test]
-    async fn previous_account_schema_upgrades_without_renaming_or_losing_bindings() {
+    async fn verify_previous_account_schema<M: sea_orm_migration::MigratorTrait>() {
         use crate::db::entities::conversation;
         use crate::db::migration::Migrator;
         use crate::db::service::{conversation_service, folder_service};
         use sea_orm::{Database, DbBackend, Statement};
-        use sea_orm_migration::{MigrationTrait, MigratorTrait};
-
-        struct PreviousSchema;
-        #[async_trait::async_trait]
-        impl MigratorTrait for PreviousSchema {
-            fn migrations() -> Vec<Box<dyn MigrationTrait>> {
-                migrations_from_fixture(include_str!(
-                    "../../../tests/fixtures/native-account-migrations-20261018.txt"
-                ))
-            }
-        }
+        use sea_orm_migration::MigratorTrait;
 
         let conn = Database::connect("sqlite::memory:").await.unwrap();
-        PreviousSchema::up(&conn, None).await.unwrap();
+        M::up(&conn, None).await.unwrap();
         let dir = tempfile::tempdir().unwrap();
         let folder = folder_service::add_folder(&conn, "/previous-project")
             .await
@@ -768,11 +758,41 @@ mod tests {
             .into_iter()
             .map(|row| row.try_get("", "version").unwrap())
             .collect();
-        for previous in PreviousSchema::migrations() {
+        for previous in M::migrations() {
             assert!(applied.iter().any(|name| name == previous.name()));
         }
         assert!(applied
             .iter()
-            .any(|name| name == "m20261021_000001_agent_account_compatibility"));
+            .any(|name| name == "m20261024_000001_agent_account_compatibility"));
+    }
+
+    #[tokio::test]
+    async fn previous_account_schema_upgrades_without_renaming_or_losing_bindings() {
+        use sea_orm_migration::{MigrationTrait, MigratorTrait};
+        struct PreviousSchema;
+        #[async_trait::async_trait]
+        impl MigratorTrait for PreviousSchema {
+            fn migrations() -> Vec<Box<dyn MigrationTrait>> {
+                migrations_from_fixture(include_str!(
+                    "../../../tests/fixtures/native-account-migrations-20261018.txt"
+                ))
+            }
+        }
+        verify_previous_account_schema::<PreviousSchema>().await;
+    }
+
+    #[tokio::test]
+    async fn previous_compatibility_marker_schema_upgrades_without_renaming_or_losing_bindings() {
+        use sea_orm_migration::{MigrationTrait, MigratorTrait};
+        struct PreviousSchema;
+        #[async_trait::async_trait]
+        impl MigratorTrait for PreviousSchema {
+            fn migrations() -> Vec<Box<dyn MigrationTrait>> {
+                migrations_from_fixture(include_str!(
+                    "../../../tests/fixtures/native-account-migrations-20261021.txt"
+                ))
+            }
+        }
+        verify_previous_account_schema::<PreviousSchema>().await;
     }
 }
