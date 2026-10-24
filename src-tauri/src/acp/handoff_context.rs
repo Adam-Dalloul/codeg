@@ -132,10 +132,14 @@ pub fn write_archive(
                         tool_use_id,
                         is_error,
                         agent_stats,
+                        exit_code,
                     } => {
                         history.push_str("Recorded tool result:\n");
                         if let Some(text) = output_preview {
                             history.push_str(text);
+                        }
+                        if let Some(code) = exit_code {
+                            history.push_str(&format!("\nExit code: {code}\n"));
                         }
                         history.push_str(&format!("\nResult record: {}\n", serde_json::to_string(&serde_json::json!({"id":tool_use_id,"isError":is_error,"agentStats":agent_stats}))?));
                         for img in images {

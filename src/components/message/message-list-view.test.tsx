@@ -19,7 +19,10 @@ import {
   type ResolvedMessageGroup,
   type ThreadRenderItem,
 } from "./message-list-view"
-import type { AdaptedContentPart } from "@/lib/adapters/ai-elements-adapter"
+import type {
+  AdaptedContentPart,
+  AdaptedToolCallPart,
+} from "@/lib/adapters/ai-elements-adapter"
 import { buildDelegationStatusIndex } from "@/lib/delegation-status-index"
 import type { MessageTurn } from "@/lib/types"
 
@@ -605,7 +608,7 @@ describe("extractDelegationSources", () => {
     toolCallId: string,
     toolName: string,
     input?: string | null
-  ): AdaptedContentPart {
+  ): AdaptedToolCallPart {
     return {
       type: "tool-call",
       toolCallId,
@@ -663,14 +666,17 @@ describe("extractDelegationSources", () => {
     expect(sources[0]).toMatchObject({ parentToolUseId: "tu-b" })
   })
 
-  it("finds delegations nested inside tool-groups and goal-runs", () => {
+  it("finds delegations nested inside goal runs", () => {
     const sources = extractDelegationSources([
       {
-        type: "tool-group",
+        type: "goal-run",
+        start: toolCall("tu-goal", "create_goal", "{}"),
+        end: null,
+        isRunning: true,
         items: [
           toolCall("tu-resume", "resume_delegation", '{"task_id":"t-1"}'),
         ],
-      } as AdaptedContentPart,
+      },
     ])
     expect(sources).toHaveLength(1)
     expect(sources[0].taskIdHint).toBe("t-1")

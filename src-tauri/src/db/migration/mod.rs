@@ -60,6 +60,9 @@ mod m20261017_000003_handoff_usage;
 mod m20261020_000001_folder_command_run_local;
 mod m20261021_000001_agent_account_compatibility;
 mod m20261021_000002_handoff_compatibility;
+mod m20261022_000001_tool_approval;
+mod m20261024_000001_agent_account_compatibility;
+mod m20261024_000002_handoff_compatibility;
 pub struct Migrator;
 
 #[async_trait::async_trait]
@@ -126,6 +129,9 @@ impl MigratorTrait for Migrator {
             Box::new(m20261020_000001_folder_command_run_local::Migration),
             Box::new(m20261021_000001_agent_account_compatibility::Migration),
             Box::new(m20261021_000002_handoff_compatibility::Migration),
+            Box::new(m20261022_000001_tool_approval::Migration),
+            Box::new(m20261024_000001_agent_account_compatibility::Migration),
+            Box::new(m20261024_000002_handoff_compatibility::Migration),
         ]
     }
 }
@@ -162,7 +168,7 @@ mod tests {
         // marker and keep this one for databases that already applied it.
         assert_eq!(
             Migrator::migrations().last().unwrap().name(),
-            "m20261021_000002_handoff_compatibility"
+            "m20261024_000002_handoff_compatibility"
         );
     }
 }

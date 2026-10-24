@@ -7,6 +7,7 @@ import { describe, expect, it, vi } from "vitest"
 vi.mock("@/components/agent-icon", () => ({ AgentIcon: () => null }))
 
 import { AgentHandoffCard } from "./agent-handoff-card"
+import { ContentPartsRenderer } from "./content-parts-renderer"
 import enMessages from "@/i18n/messages/en.json"
 
 function renderCard(meta: Record<string, unknown> | null) {
@@ -18,6 +19,43 @@ function renderCard(meta: Record<string, unknown> | null) {
 }
 
 describe("AgentHandoffCard", () => {
+  it("renders a saved handoff through the v0.40 message renderer", () => {
+    render(
+      <NextIntlClientProvider locale="en" messages={enMessages}>
+        <ContentPartsRenderer
+          role="system"
+          parts={[
+            {
+              type: "tool-call",
+              toolName: "agent_handoff",
+              toolCallId: "handoff-0",
+              state: "output-available",
+              input: {},
+              output: "",
+              meta: {
+                "codeg.handoff": {
+                  version: 1,
+                  from: "claude_code",
+                  to: "codex",
+                  path: "context",
+                  carried: false,
+                  truncated: false,
+                },
+              },
+            },
+          ]}
+        />
+      </NextIntlClientProvider>
+    )
+    expect(
+      screen.getByText("Handed off from Claude Code to Codex")
+    ).toBeInTheDocument()
+    expect(
+      document.querySelector('[data-slot="agent-handoff-card"]')
+    ).not.toBeNull()
+    expect(screen.queryByText("agent_handoff")).not.toBeInTheDocument()
+  })
+
   it("names both agents and says the context moved natively", () => {
     renderCard({
       "codeg.handoff": {

@@ -1117,6 +1117,7 @@ fn parse_session_events(text: &str, attachments: Option<&Path>) -> SessionParse 
                     is_error,
                     agent_stats: None,
                     images: Vec::new(),
+                    exit_code: None,
                 });
             }
             // ── Context compaction (0.6.0) ───────────────────────────────
@@ -1228,6 +1229,7 @@ fn parse_session_events(text: &str, attachments: Option<&Path>) -> SessionParse 
                     is_error: error.is_some(),
                     agent_stats: None,
                     images: Vec::new(),
+                    exit_code: None,
                 });
             }
             // `agent/inbox/spliced` (queue bookkeeping), `step/start`/`step/end`
