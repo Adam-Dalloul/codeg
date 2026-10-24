@@ -153,7 +153,9 @@ const TOP_CONVERSATIONS: usize = 8;
 /// codeg launched.
 // Version 7 recovers usage for official custom Claude adapters from their
 // explicitly isolated native stores, including previously zero-stamped chats.
-const FACT_SCHEMA_VERSION: &str = "7";
+// Version 8 reads each Codeg-recorded continuation separately and retains
+// recovered usage when a chat resumes under a new session id.
+const FACT_SCHEMA_VERSION: &str = "8";
 
 const FACT_SCHEMA_VERSION_KEY: &str = "token_usage_fact_schema_version";
 
