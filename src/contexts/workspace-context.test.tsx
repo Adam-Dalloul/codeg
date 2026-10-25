@@ -3,6 +3,19 @@ import { useEffect } from "react"
 import type { Monaco } from "@monaco-editor/react"
 import { useTrackMonacoModel } from "@/contexts/monaco-model-context"
 import { buildMonacoModelPath } from "@/lib/monaco-model-path"
+import { MobileWorkspacePanes } from "@/components/layout/mobile-workspace-panes"
+import { useOverlayHostHidden } from "@/components/ui/overlay-host-hidden"
+import {
+  AcpConnectionsProvider,
+  useAcpActions,
+  useConnectionStore,
+} from "@/contexts/acp-connections-context"
+import {
+  ConversationRuntimeProvider,
+  resetConversationRuntimeStore,
+  useConversationRuntimeActions,
+  useConversationRuntimeStore,
+} from "@/contexts/conversation-runtime-context"
 import {
   afterEach,
   beforeEach,
@@ -145,6 +158,12 @@ beforeEach(() => {
 })
 
 vi.mock("@/lib/api", () => ({
+  acpGetAgentStatus: vi.fn(),
+  acpFindConnectionForConversation: vi.fn(),
+  acpConnect: vi.fn(),
+  acpDisconnect: vi.fn(),
+  acpGetSessionSnapshot: vi.fn(),
+  acpTouchConnection: vi.fn(),
   getHomeDirectory: vi.fn(),
   listDirectoryWithFiles: vi.fn(),
   readFileForEdit: vi.fn(),
@@ -157,6 +176,14 @@ vi.mock("@/lib/api", () => ({
   gitShowDiff: vi.fn(),
   saveFileContent: vi.fn(),
   saveFileCopy: vi.fn(),
+}))
+
+vi.mock(import("@/lib/platform"), async (importOriginal) => ({
+  ...(await importOriginal()),
+  subscribe: vi.fn(async () => () => {}),
+  getEventStream: () => ({
+    attach: () => ({ subscriptionId: "mobile-stream", detach: () => {} }),
+  }),
 }))
 
 // Controllable workspace-state store: WorkspaceProvider subscribes to its
@@ -5286,6 +5313,141 @@ function WorkbenchProbe() {
   )
 }
 
+it("retains mobile conversation identity, connection and runtime through A(files) → B → A → B", async () => {
+  resetConversationRuntimeStore()
+  vi.mocked(api.acpGetAgentStatus).mockResolvedValue({
+    agent_type: "claude_code",
+    enabled: true,
+    available: true,
+    installed_version: "1.0.0",
+    host_tools_agent_mode: false,
+    is_acp_adapter: true,
+  } as never)
+  vi.mocked(api.acpFindConnectionForConversation).mockResolvedValue(null)
+  vi.mocked(api.acpConnect).mockResolvedValue("mobile-connection")
+  vi.mocked(api.acpGetSessionSnapshot).mockResolvedValue(null)
+  vi.mocked(api.acpDisconnect).mockReset().mockResolvedValue(undefined)
+  const mounted = vi.fn()
+  const unmounted = vi.fn()
+  const filesUnmounted = vi.fn()
+  let connections!: ReturnType<typeof useConnectionStore>
+  let connecting!: Promise<void>
+  function Conversation() {
+    const actions = useAcpActions()
+    const store = useConnectionStore()
+    const runtime = useConversationRuntimeActions()
+    const hidden = useOverlayHostHidden()
+    useEffect(() => {
+      connections = store
+      mounted()
+      runtime.setExternalId(42, "mobile-session")
+      connecting = actions.connect(
+        "mobile-tab",
+        "claude_code",
+        "/repo2",
+        "mobile-session",
+        42
+      )
+      return () => {
+        unmounted()
+        void actions.disconnectIfIdle("mobile-tab")
+        runtime.removeConversation(42)
+      }
+    }, [actions, store, runtime])
+    return (
+      <div data-testid="mobile-conversation" data-overlay-hidden={hidden} />
+    )
+  }
+  function Files() {
+    useEffect(
+      () => () => {
+        filesUnmounted()
+      },
+      []
+    )
+    return <div data-testid="mobile-files" />
+  }
+  function Mobile() {
+    const { mode, activePane } = useWorkspaceView()
+    return (
+      <MobileWorkspacePanes
+        showConversation={
+          mode === "conversation" || activePane === "conversation"
+        }
+        files={<Files />}
+      >
+        <Conversation />
+      </MobileWorkspacePanes>
+    )
+  }
+  useAppWorkspaceStore.setState({ activeFolderId: 1 })
+  useWorkbenchStore.getState().setEnabled(true)
+  useWorkbenchStore.getState().activateScope(1)
+  const view = render(
+    <AcpConnectionsProvider>
+      <ConversationRuntimeProvider>
+        <WorkspaceProvider>
+          <WorkbenchProbe />
+          <Mobile />
+        </WorkspaceProvider>
+      </ConversationRuntimeProvider>
+    </AcpConnectionsProvider>
+  )
+  await act(async () => {
+    await connecting
+  })
+  act(() => workbenchWorkspace.openSessionFileDiff("a.ts", "diff", "A"))
+  const node = screen.getByTestId("mobile-conversation")
+  const connection = connections.getConnection("mobile-tab")
+  const session = useConversationRuntimeStore
+    .getState()
+    .byConversationId.get(42)
+  expect(connection?.connectionId).toBe("mobile-connection")
+  expect(session?.externalId).toBe("mobile-session")
+  for (const scope of [2, 1, 2]) {
+    act(() => useWorkbenchStore.getState().activateScope(scope))
+    expect(screen.getByTestId("mobile-conversation")).toBe(node)
+    expect(node).toHaveAttribute("data-overlay-hidden", String(scope === 1))
+    expect(node.closest("section")).toHaveAttribute(
+      "aria-hidden",
+      String(scope === 1)
+    )
+    if (scope === 1) {
+      expect(node.closest("section")).toHaveAttribute("inert")
+      expect(node.closest("section")).toHaveClass(
+        "conversation-tab-hidden",
+        "invisible"
+      )
+      expect(screen.getByTestId("mobile-files").closest("section")).toHaveClass(
+        "absolute",
+        "inset-0"
+      )
+    } else {
+      expect(node.closest("section")).not.toHaveAttribute("inert")
+      expect(screen.queryByTestId("mobile-files")).not.toBeInTheDocument()
+    }
+    expect(connections.getConnection("mobile-tab")).toBe(connection)
+    expect(
+      useConversationRuntimeStore.getState().byConversationId.get(42)
+    ).toBe(session)
+  }
+  expect(mounted).toHaveBeenCalledOnce()
+  expect(unmounted).not.toHaveBeenCalled()
+  expect(api.acpConnect).toHaveBeenCalledOnce()
+  expect(api.acpDisconnect).not.toHaveBeenCalled()
+  expect(filesUnmounted).toHaveBeenCalledTimes(2)
+  // A real teardown still releases both resources after the retained view closes.
+  await act(async () => {
+    view.unmount()
+  })
+  expect(unmounted).toHaveBeenCalledOnce()
+  expect(api.acpDisconnect).toHaveBeenCalledWith("mobile-connection")
+  expect(useConversationRuntimeStore.getState().byConversationId.has(42)).toBe(
+    false
+  )
+  resetConversationRuntimeStore()
+})
+
 describe("mobile Monaco model cleanup ownership", () => {
   it.each(["final close in file pane", "final close after pane unmount"])(
     "disposes the last buffer on %s and retains open hidden buffers",
@@ -5449,6 +5611,46 @@ describe("Workbench shared file buffers and selections", () => {
     act(() => useWorkbenchStore.getState().activateScope(1))
     expect(workbenchWorkspace.activeFileTab?.content).toBe("shared unsaved")
     expect(workbenchWorkspace.activeFileTab).toMatchObject({ isDirty: true })
+  })
+
+  it("explicitly selects a live shared dirty buffer from canvas or drawer handoffs without IO", async () => {
+    vi.mocked(api.saveFileContent).mockClear()
+    await act(async () => {
+      await workbenchWorkspace.openFilePreview("/repo/shared.ts")
+    })
+    act(() => workbenchWorkspace.updateActiveFileContent("unsaved shared"))
+    const shared = workbenchWorkspace.activeFileTab!
+    act(() => useWorkbenchStore.getState().activateScope(2))
+    expect(workbenchWorkspace.fileTabs).toEqual([])
+
+    // Canvas and file drawers resolve their id from allFileTabs and share
+    // this explicit action, rather than running the asynchronous opener.
+    act(() => workbenchWorkspace.switchFileTab(shared.id))
+    expect(workbenchWorkspace.activeFileTab).toBe(shared)
+    expect(workbenchWorkspace.activeFileTab).toMatchObject({
+      content: "unsaved shared",
+      isDirty: true,
+    })
+    expect(workbenchWorkspace.activePane).toBe("files")
+    expect(useWorkbenchStore.getState().fileRefs[2]).toEqual([shared.id])
+    expect(useWorkbenchStore.getState().fileRefs[1]).toEqual([shared.id])
+    expect(workbenchWorkspace.allFileTabs).toHaveLength(1)
+    expect(api.readFileForEdit).toHaveBeenCalledTimes(1)
+    expect(api.saveFileContent).not.toHaveBeenCalled()
+  })
+
+  it("acquires live browser drawer handoffs but ignores identities that have closed", () => {
+    act(() => workbenchWorkspace.openBrowserTab("https://example.com"))
+    const browser = workbenchWorkspace.activeFileTab!
+    act(() => useWorkbenchStore.getState().activateScope(2))
+    act(() => workbenchWorkspace.switchFileTab(browser.id))
+    expect(workbenchWorkspace.activeFileTab).toBe(browser)
+    expect(workbenchWorkspace.allFileTabs).toHaveLength(1)
+    expect(useWorkbenchStore.getState().fileRefs[2]).toEqual([browser.id])
+    act(() => workbenchWorkspace.closeFileTab(browser.id, { allScopes: true }))
+    act(() => workbenchWorkspace.switchFileTab(browser.id))
+    expect(workbenchWorkspace.activeFileTabId).toBeNull()
+    expect(useWorkbenchStore.getState().fileRefs[2]).toEqual([])
   })
 
   it("captures the original worktree before asynchronous home-path resolution", async () => {

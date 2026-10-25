@@ -80,6 +80,7 @@ import { ChromeReserve } from "@/components/layout/chrome-reserve"
 import { LeftEdgeChrome } from "@/components/layout/left-edge-chrome"
 import { RightEdgeChrome } from "@/components/layout/right-edge-chrome"
 import { WorkspaceChromeController } from "@/components/layout/workspace-chrome-controller"
+import { MobileWorkspacePanes } from "@/components/layout/mobile-workspace-panes"
 import { WindowControls } from "@/components/layout/window-controls"
 import { FileWorkspaceTabBar } from "@/components/files/file-workspace-tab-bar"
 import { FileWorkspaceHeader } from "@/components/files/file-workspace-header"
@@ -641,31 +642,19 @@ function MobileWorkspaceContent({ children }: { children: React.ReactNode }) {
   return (
     <div className="relative h-full min-h-0 overflow-hidden">
       <KeptMountedSurface hidden={!isConversations}>
-        {showConversation ? (
-          // Mobile mirrors the desktop chrome: no tab strip — the conversation
-          // detail header (folder › title) renders inside {children}, and tabs
-          // are navigated from the sidebar (single active conversation at a time).
-          <section
-            className="flex h-full min-h-0 flex-col overflow-hidden"
-            data-workspace-pane="conversation"
-          >
-            <div className="relative flex-1 min-h-0 overflow-hidden">
-              {children}
-            </div>
-          </section>
-        ) : (
-          // File view: the shared FileWorkspaceHeader (folder › file breadcrumb)
-          // replaces the file tab strip, matching the desktop file column.
-          <section
-            className="flex h-full min-h-0 flex-col overflow-hidden"
-            data-workspace-pane="files"
-          >
-            <FileWorkspaceHeader />
-            <div className="flex-1 min-h-0 overflow-hidden">
-              <FileWorkspacePanel />
-            </div>
-          </section>
-        )}
+        <MobileWorkspacePanes
+          showConversation={showConversation}
+          files={
+            <>
+              <FileWorkspaceHeader />
+              <div className="flex-1 min-h-0 overflow-hidden">
+                <FileWorkspacePanel />
+              </div>
+            </>
+          }
+        >
+          {children}
+        </MobileWorkspacePanes>
       </KeptMountedSurface>
       {!isConversations ? (
         // Same canvas as the desktop overlay: conversation-identical background

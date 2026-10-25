@@ -1705,14 +1705,18 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
     }
 
     // Drag drop: land at `index` within the target group. Splice the tab out,
-    // then insert it before the target group's k-th member (after its last
-    // member when k = member count) — a partition insert, so every OTHER
-    // group's relative order is untouched. rawTabs order changes, which
+    // then insert it before the target group's k-th visible member (after
+    // its last visible member when k = member count). Hidden members do not
+    // have drop slots. This partition insert preserves every OTHER
+    // group's relative order. rawTabs order changes, which
     // syncs like any user reorder.
     const without = st.rawTabs.filter((t) => t.id !== tabId)
     const memberSlots: number[] = []
     without.forEach((t, i) => {
-      if (groupOfTab(st.groupOf, st.groupLayout, t.id) === targetGroupId) {
+      if (
+        groupOfTab(st.groupOf, st.groupLayout, t.id) === targetGroupId &&
+        isTabInWorkbench(t)
+      ) {
         memberSlots.push(i)
       }
     })

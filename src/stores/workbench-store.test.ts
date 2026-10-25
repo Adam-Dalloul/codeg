@@ -49,6 +49,60 @@ function visibleIds() {
 }
 
 describe("Workbench conversation scope", () => {
+  it.each([0, 1, 2, 99])(
+    "maps a cross-group drop at visible index %s without counting hidden members",
+    (index) => {
+      const a1 = open(1, 11)
+      const b1 = open(2, 21)
+      const a2 = open(1, 12)
+      const b2 = open(2, 22)
+      const a3 = open(1, 13)
+      const b0 = open(2, 20)
+      const sourceSibling = open(2, 23)
+      useTabStore.setState({
+        groupLayout: {
+          type: "split",
+          id: "split",
+          orientation: "horizontal",
+          ratios: [0.5, 0.5],
+          children: [
+            { type: "group", id: "source" },
+            { type: "group", id: "target" },
+          ],
+        },
+        groupOf: {
+          [a1]: "target",
+          [b1]: "target",
+          [a2]: "target",
+          [b2]: "target",
+          [a3]: "target",
+          [b0]: "source",
+          [sourceSibling]: "source",
+        },
+      })
+      useWorkbenchStore.getState().setEnabled(true)
+      useWorkbenchStore.getState().activateScope(2)
+      useTabStore.getState().moveTabToGroup(b0, "target", { index })
+      const state = useTabStore.getState()
+      const target = state.rawTabs.filter(
+        (tab) => state.groupOf[tab.id] === "target"
+      )
+      const visible = [b1, b2]
+      visible.splice(Math.min(index, 2), 0, b0)
+      expect(
+        target.filter((tab) => tab.folderId === 2).map((tab) => tab.id)
+      ).toEqual(visible)
+      expect(
+        target.filter((tab) => tab.folderId === 1).map((tab) => tab.id)
+      ).toEqual([a1, a2, a3])
+      expect(
+        state.rawTabs
+          .filter((tab) => state.groupOf[tab.id] === "source")
+          .map((tab) => tab.id)
+      ).toEqual([sourceSibling])
+    }
+  )
+
   it("restores A → B → A selection, including an empty folder, and exposes all tabs on disable", () => {
     const a1 = open(1, 11)
     const a2 = open(1, 12)

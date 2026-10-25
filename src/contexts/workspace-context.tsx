@@ -3154,6 +3154,10 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
 
   const switchFileTab = useCallback(
     (tabId: string) => {
+      // Explicit handoffs (canvas and drawers) may own a shared buffer that
+      // this scope has not referenced yet. Never acquire a closed/stale id.
+      if (!fileTabsRef.current.some((tab) => tab.id === tabId)) return
+      useWorkbenchStore.getState().addFile(tabId, openingScope())
       const activeId = activeFileTabIdRef.current
       if (activeId && activeId !== tabId) {
         void saveFileTab(activeId)
