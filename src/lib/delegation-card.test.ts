@@ -10,6 +10,7 @@ import {
   parseDelegationMeta,
   parseInput,
   parseToolOutput,
+  resolveDelegationStatus,
 } from "./delegation-card"
 
 describe("parseInput wrapper peeling", () => {
@@ -861,5 +862,49 @@ describe("opencode code-mode execute payloads", () => {
       code: 'tools["codeg-mcp"].delegate_to_agent({ // pick\u2028 agent_type: "codex", task: `t` })',
     })
     expect(parseInput(ls).task).toBe("t")
+  })
+})
+
+describe("resolveDelegationStatus and a later check", () => {
+  const ack = parseToolOutput(
+    JSON.stringify({ task_id: "t1", status: "started" })
+  )
+  const base = {
+    binding: undefined,
+    parsedMeta: null,
+    toolOutput: ack,
+    state: "output-available" as const,
+    errorText: null,
+    childAwaitingUser: false,
+  }
+
+  it("lets a check that came after the ack say how the task ended", () => {
+    expect(resolveDelegationStatus(base)).toBe("running")
+    expect(resolveDelegationStatus({ ...base, ended: { status: "ok" } })).toBe(
+      "ok"
+    )
+    expect(resolveDelegationStatus({ ...base, ended: { status: "err" } })).toBe(
+      "err"
+    )
+  })
+
+  it("keeps the live binding and the stored meta ahead of any check", () => {
+    const meta = parseDelegationMeta({
+      "codeg.delegation": { status: "running", child_conversation_id: 7 },
+    })
+    expect(
+      resolveDelegationStatus({
+        ...base,
+        parsedMeta: meta,
+        ended: { status: "ok" },
+      })
+    ).toBe("running")
+    expect(
+      resolveDelegationStatus({
+        ...base,
+        childAwaitingUser: true,
+        ended: { status: "ok" },
+      })
+    ).toBe("waiting")
   })
 })
