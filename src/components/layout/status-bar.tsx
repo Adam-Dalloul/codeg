@@ -1,5 +1,7 @@
 "use client"
 
+import { useTranslations } from "next-intl"
+import { useWorkbenchStore } from "@/stores/workbench-store"
 import { StatusBarStats } from "@/components/layout/status-bar-stats"
 import { StatusBarTasks } from "@/components/layout/status-bar-tasks"
 import { StatusBarAlerts } from "@/components/layout/status-bar-alerts"
@@ -9,6 +11,33 @@ import { StatusBarUpdate } from "@/components/layout/status-bar-update"
 import { CommandDropdown } from "@/components/layout/command-dropdown"
 import { QuickActionsDropdown } from "@/components/layout/quick-actions-dropdown"
 import { useIsMobile } from "@/hooks/use-mobile"
+
+function WorkbenchSwitch() {
+  const t = useTranslations("Workbench")
+  const enabled = useWorkbenchStore((s) => s.enabled)
+  const setEnabled = useWorkbenchStore((s) => s.setEnabled)
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={enabled}
+      aria-label={t("label")}
+      title={enabled ? t("disable") : t("enable")}
+      onClick={() => setEnabled(!enabled)}
+      className="inline-flex h-6 items-center gap-1.5 rounded px-1.5 hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+    >
+      <span
+        aria-hidden
+        className={
+          enabled
+            ? "size-2 rounded-full bg-primary"
+            : "size-2 rounded-full bg-muted-foreground/40"
+        }
+      />
+      {t("label")}
+    </button>
+  )
+}
 
 export function StatusBar() {
   const isMobile = useIsMobile()
@@ -23,6 +52,7 @@ export function StatusBar() {
         <div className="flex items-center gap-3">
           <QuickActionsDropdown />
           <StatusBarStats />
+          <WorkbenchSwitch />
         </div>
         <div className="flex items-center gap-3">
           <StatusBarUpdate />
@@ -58,6 +88,7 @@ export function StatusBar() {
       <div className="flex items-center gap-3">
         <QuickActionsDropdown />
         <StatusBarStats />
+        <WorkbenchSwitch />
       </div>
       <div className="flex items-center gap-4">
         <StatusBarUpdate />

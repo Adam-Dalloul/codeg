@@ -1,3 +1,9 @@
+import { useMemo } from "react"
+import {
+  folderScope,
+  useWorkbenchStore,
+  type WorkbenchScope,
+} from "@/stores/workbench-store"
 import { create } from "zustand"
 import { useShallow } from "zustand/react/shallow"
 import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
@@ -937,6 +943,49 @@ function shallowRecordEqual(
   return ak.every((k) => a[k] === (b as Record<string, unknown>)[k])
 }
 
+/** View filtering is deliberately separate from rawTabs and the CAS payload. */
+export function isTabInWorkbench(tab: Pick<TabItem, "folderId">) {
+  const state = useWorkbenchStore.getState()
+  return !state.enabled || folderScope(tab.folderId) === state.scope
+}
+
+export function useVisibleConversationTabs() {
+  const enabled = useWorkbenchStore((s) => s.enabled)
+  const scope = useWorkbenchStore((s) => s.scope)
+  return useTabStore(
+    useShallow((s) =>
+      enabled
+        ? s.tabs.filter((tab) => folderScope(tab.folderId) === scope)
+        : s.tabs
+    )
+  )
+}
+
+export function useVisibleConversationLayout() {
+  const enabled = useWorkbenchStore((s) => s.enabled)
+  const tabs = useVisibleConversationTabs()
+  const layout = useTabStore((s) => s.groupLayout)
+  const groupOf = useTabStore((s) => s.groupOf)
+  return useMemo(
+    () =>
+      enabled
+        ? normalizeTree(
+            layout,
+            new Set(tabs.map((tab) => groupOfTab(groupOf, layout, tab.id)))
+          )
+        : layout,
+    [enabled, tabs, groupOf, layout]
+  )
+}
+
+const workbenchSelections = new Map<
+  WorkbenchScope,
+  {
+    active: string | null
+    groups: Record<string, string>
+  }
+>()
+
 /**
  * Re-establish the group invariants after any tab/group write:
  *   1. assignments only for open tabs, pointing at live leaves;
@@ -952,6 +1001,16 @@ function shallowRecordEqual(
  */
 function applyGroupInvariants() {
   const st = useTabStore.getState()
+  const visibleTabs = st.rawTabs.filter(isTabInWorkbench)
+  if (
+    useWorkbenchStore.getState().enabled &&
+    st.activeTabId != null &&
+    !visibleTabs.some((t) => t.id === st.activeTabId)
+  ) {
+    useTabStore.setState({ activeTabId: visibleTabs[0]?.id ?? null })
+    applyGroupInvariants()
+    return
+  }
   const openIds = new Set(st.rawTabs.map((t) => t.id))
   const tabSetKnown = st.tabsHydrated && tabsSnapshotLoaded
 
@@ -999,7 +1058,7 @@ function applyGroupInvariants() {
 
   const selection: Record<string, string> = {}
   for (const groupId of leaves) {
-    const members = st.rawTabs.filter(
+    const members = visibleTabs.filter(
       (t) => groupOfTab(groupOf, layout, t.id) === groupId
     )
     if (members.length === 0) {
@@ -1201,6 +1260,7 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
   ...initialTabState(),
 
   openTab: (folderId, conversationId, agentType, pin = false, title, opts) => {
+    useWorkbenchStore.getState().activateScope(folderScope(folderId))
     const prevState = get()
     const existingIndex = findTabIndexForConversation(
       prevState.rawTabs,
@@ -1270,6 +1330,7 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
     const previewIndex = prevState.rawTabs.findIndex(
       (t) =>
         !t.isPinned &&
+        isTabInWorkbench(t) &&
         groupOfTab(prevState.groupOf, prevState.groupLayout, t.id) ===
           targetGroup
     )
@@ -1326,7 +1387,12 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
 
       let draftKeyHandedOver = false
 
-      if (next.length === 0) {
+      if (
+        useWorkbenchStore.getState().enabled &&
+        !next.some(isTabInWorkbench)
+      ) {
+        set({ rawTabs: next, activeTabId: null })
+      } else if (next.length === 0) {
         if (useAppWorkspaceStore.getState().folders.length === 0) {
           set({ rawTabs: [], activeTabId: null })
         } else {
@@ -1404,10 +1470,13 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
     const targetGroup = groupOfTab(groupOf, groupLayout, tabId)
     const keep =
       groupLayout.type === "group"
-        ? [target]
+        ? prevState.rawTabs.filter(
+            (tab) => tab.id === tabId || !isTabInWorkbench(tab)
+          )
         : prevState.rawTabs.filter(
             (tab) =>
               tab.id === tabId ||
+              !isTabInWorkbench(tab) ||
               groupOfTab(groupOf, groupLayout, tab.id) !== targetGroup
           )
     if (keep.length === prevState.rawTabs.length) {
@@ -1428,6 +1497,18 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
   },
 
   closeAllTabs: () => {
+    if (useWorkbenchStore.getState().enabled) {
+      const st = get()
+      for (const [tab, slot] of batchCloseSlots(st.rawTabs, isTabInWorkbench)) {
+        pushClosedTab(snapshotConversationTab(tab, slot))
+      }
+      set({
+        rawTabs: st.rawTabs.filter((tab) => !isTabInWorkbench(tab)),
+        activeTabId: null,
+      })
+      recomputeTabs()
+      return
+    }
     if (useAppWorkspaceStore.getState().folders.length === 0) {
       const prevState = get()
       if (prevState.rawTabs.length === 0 && prevState.activeTabId == null) {
@@ -1476,6 +1557,8 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
 
   switchTab: (tabId) => {
     if (!get().rawTabs.some((t) => t.id === tabId)) return
+    const tab = get().rawTabs.find((t) => t.id === tabId)!
+    useWorkbenchStore.getState().activateScope(folderScope(tab.folderId))
     focusTab(tabId)
     runtime.activateConversationPane()
   },
@@ -1713,7 +1796,10 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
     const raw = st.rawTabs
     const slots: number[] = []
     raw.forEach((tab, i) => {
-      if (groupOfTab(st.groupOf, st.groupLayout, tab.id) === groupId) {
+      if (
+        isTabInWorkbench(tab) &&
+        groupOfTab(st.groupOf, st.groupLayout, tab.id) === groupId
+      ) {
         slots.push(i)
       }
     })
@@ -1744,7 +1830,7 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
     const raw = get().rawTabs
     const next = permuteSlots(
       raw,
-      raw.map((_, i) => i),
+      raw.flatMap((tab, i) => (isTabInWorkbench(tab) ? [i] : [])),
       reorderedTabs
     )
     if (!next) return
@@ -1770,6 +1856,7 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
           : {}),
       })
     }
+    useWorkbenchStore.getState().activateScope(folderScope(folderId))
     const inheritFromActive = options?.inheritFromActive === true
     let inherit: AgentType | null = null
     if (inheritFromActive) {
@@ -1799,6 +1886,7 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
     const existingTab = prevState.rawTabs.find(
       (t) =>
         t.conversationId == null &&
+        isTabInWorkbench(t) &&
         groupOfTab(prevState.groupOf, prevState.groupLayout, t.id) ===
           targetGroup
     )
@@ -1882,6 +1970,7 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
   },
 
   openChatModeTab: (options) => {
+    useWorkbenchStore.getState().activateScope("global")
     const st = get()
     // Inherit the agent like openNewConversationTab's inherit path.
     const activeTab = st.rawTabs.find((x) => x.id === st.activeTabId)
@@ -1904,7 +1993,7 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
     const inTargetGroup = (t: TabItemInternal) =>
       groupOfTab(st.groupOf, st.groupLayout, t.id) === targetGroup
     const existingDraft = st.rawTabs.find(
-      (t) => t.conversationId == null && inTargetGroup(t)
+      (t) => t.conversationId == null && isTabInWorkbench(t) && inTargetGroup(t)
     )
     const needsDisconnect =
       existingDraft != null &&
@@ -1913,7 +2002,7 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
     const tabId = makeNewConversationTabId()
     const prevState = get()
     const existingTab = prevState.rawTabs.find(
-      (t) => t.conversationId == null && inTargetGroup(t)
+      (t) => t.conversationId == null && isTabInWorkbench(t) && inTargetGroup(t)
     )
 
     if (!existingTab) {
@@ -2678,6 +2767,15 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
 
   syncActiveFolderId: () => {
     const st = get()
+    const workbench = useWorkbenchStore.getState()
+    if (workbench.enabled) {
+      useAppWorkspaceStore
+        .getState()
+        .setActiveFolderId(
+          workbench.scope === "global" ? null : workbench.scope
+        )
+      return
+    }
     const activeTab = st.rawTabs.find((t) => t.id === st.activeTabId) ?? null
     useAppWorkspaceStore
       .getState()
@@ -2727,7 +2825,7 @@ export function runCorrectionOnce() {
 }
 
 export function runRecoveryOnce() {
-  if (recoveryRan) return
+  if (recoveryRan || useWorkbenchStore.getState().enabled) return
   recoveryRan = true
   useTabStore.getState().recoverActiveContext()
 }
@@ -2831,6 +2929,7 @@ export function resetTabStore() {
     clearTimeout(groupPersistTimer)
     groupPersistTimer = null
   }
+  workbenchSelections.clear()
   version = 0
   applyingRemote = false
   remoteActivationPending = false
@@ -2977,7 +3076,7 @@ function applyRemoteSnapshot(change: TabsChanged) {
 
   // Never leave the workspace blank: synthesize a draft when empty.
   if (nextTabs.length === 0) {
-    if (folders.length === 0) {
+    if (folders.length === 0 || useWorkbenchStore.getState().enabled) {
       lastSavedPayload = diverged ? null : JSON.stringify([])
       useTabStore.setState({ rawTabs: [], activeTabId: null })
       recomputeTabs()
@@ -3031,6 +3130,15 @@ function applyRemoteSnapshot(change: TabsChanged) {
     nextActiveId = nextTabs[0].id
   }
 
+  if (useWorkbenchStore.getState().enabled) {
+    // Remote clients synchronize open membership, but cannot move this client's
+    // explicit worktree scope or steal its current local selection.
+    const visible = nextTabs.filter(isTabInWorkbench)
+    nextActiveId = visible.some((tab) => tab.id === prev.activeTabId)
+      ? prev.activeTabId
+      : (visible[0]?.id ?? null)
+  }
+
   // A focus change driven by the remote snapshot must not trip the route-sync
   // chokepoint into the conversations route.
   if (nextActiveId !== prev.activeTabId) {
@@ -3047,3 +3155,35 @@ function applyRemoteSnapshot(change: TabsChanged) {
   useTabStore.setState({ rawTabs: nextTabs, activeTabId: nextActiveId })
   recomputeTabs()
 }
+
+// Scope changes repair only view selections. Membership and server persistence
+// always retain the complete tab set, including live background sessions.
+useWorkbenchStore.subscribe((next, previous) => {
+  if (next.scope === previous.scope && next.enabled === previous.enabled) return
+  const st = useTabStore.getState()
+  if (previous.enabled) {
+    workbenchSelections.set(previous.scope, {
+      active: st.activeTabId,
+      groups: st.groupSelection,
+    })
+  }
+  if (next.enabled) {
+    const visible = st.rawTabs.filter(isTabInWorkbench)
+    const saved = workbenchSelections.get(next.scope)
+    const active = saved?.active ?? st.activeTabId
+    useTabStore.setState({
+      activeTabId: visible.some((t) => t.id === active)
+        ? active
+        : (visible[0]?.id ?? null),
+      groupSelection: saved?.groups ?? {},
+      tabDrag: null,
+    })
+    applyGroupInvariants()
+  } else {
+    if (!st.rawTabs.some((tab) => tab.id === st.activeTabId)) {
+      useTabStore.setState({ activeTabId: st.rawTabs[0]?.id ?? null })
+    }
+    applyGroupInvariants()
+  }
+  useTabStore.getState().syncActiveFolderId()
+})

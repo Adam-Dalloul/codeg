@@ -1,4 +1,10 @@
 {
+  "Workbench": {
+    "label": "工作台",
+    "enable": "按 Worktree 切换标签页",
+    "disable": "显示所有 Worktree 的标签页",
+    "toggleFolder": "展开或收起文件夹"
+  },
   "Language": {
     "followSystem": "跟随系统",
     "english": "英语",

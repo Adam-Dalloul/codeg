@@ -202,9 +202,7 @@ describe("ConversationDetailPanel new conversation layout", () => {
       "<OverlayHostHiddenProvider hidden={filesMaximized}>"
     )
     // A backgrounded conversation tab behind the selected one.
-    expect(source).toContain(
-      "<OverlayHostHiddenProvider hidden={!canTileG && !visible}>"
-    )
+    expect(source).toContain("<OverlayHostHiddenProvider hidden={!visible}>")
   })
 
   it("does not render a decorative welcome backdrop", () => {
@@ -319,7 +317,7 @@ describe("ConversationDetailPanel split-group render model", () => {
     expect(source).not.toContain("<RenderGroupShell")
     expect(source).not.toContain("<RenderTabWrapper")
     expect(source).toContain("key={groupId}")
-    expect(source).toContain("computeRects(groupLayout)")
+    expect(source).toContain("computeRects(visibleLayout)")
   })
 
   // TileScrollContainer ignores mutations strictly inside a marked tile — that
@@ -667,4 +665,14 @@ describe("ConversationDetailPanel session-load failure surface", () => {
       "detail?.summary.external_id ?? runtimeExternalId ?? undefined"
     )
   })
+})
+
+it("gates the no-tab draft creation effect on Workbench mode", () => {
+  const start = source.indexOf("// Ensure no-tab state")
+  const end = source.indexOf("// Split-group render model", start)
+  const effect = source.slice(start, end)
+  expect(effect).toContain(
+    "shouldSeedConversation(useWorkbenchStore.getState().enabled, hasNoTabs)"
+  )
+  expect(effect).toContain("openNewConversationTab(")
 })

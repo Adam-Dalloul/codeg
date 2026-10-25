@@ -1,5 +1,6 @@
 "use client"
 
+import { useWorkbenchStore } from "@/stores/workbench-store"
 import {
   memo,
   useCallback,
@@ -348,6 +349,9 @@ const FolderHeader = memo(function FolderHeader({
   // returns a fresh `t` on every parent render, so passing it down would defeat
   // this component's memo and re-render every header on each status event.
   const t = useTranslations("Folder.sidebar")
+  const workbenchEnabled = useWorkbenchStore((s) => s.enabled)
+  const workbenchScope = useWorkbenchStore((s) => s.scope)
+  const tWorkbench = useTranslations("Workbench")
   const tTags = useTranslations("ConversationTags")
   const ime = useImeGuard()
   // Only flag a stale default once the live list is known; before fresh,
@@ -419,7 +423,16 @@ const FolderHeader = memo(function FolderHeader({
             >
               <button
                 data-folder-id={folderId}
-                onClick={() => onToggle(folderId)}
+                onClick={() => {
+                  if (workbenchEnabled) {
+                    useWorkbenchStore.getState().activateScope(folderId)
+                  } else onToggle(folderId)
+                }}
+                aria-current={
+                  workbenchEnabled && workbenchScope === folderId
+                    ? "true"
+                    : undefined
+                }
                 title={folderPath}
                 aria-expanded={expanded}
                 className={cn(
@@ -531,29 +544,26 @@ const FolderHeader = memo(function FolderHeader({
                       </span>
                     </span>
                   )}
-                  {/* Disclosure chevron mirrors the section headers: hover-revealed,
-                    rotates on expand. The persistent open/closed state still reads
-                    from the folder icon on the left, which is why the chevron can
-                    stay hidden at rest in BOTH states (collapsed included) — it is
-                    a redundant affordance, not the only one. Touch keeps it pinned
-                    on, since there is no hover to reveal it there.
-                    NOTE: `group-focus-within` (not `group-focus-visible` like the
-                    section header) is intentional — here the `group` is the outer
-                    row wrapper and focus lands on a child (the toggle button or the
-                    sibling ⋯ menu button), so the reveal must react to focus
-                    anywhere inside the row. The section header's `group` IS its
-                    button, so it uses `group-focus-visible`. Don't "normalize". */}
-                  <ChevronRight
-                    aria-hidden
-                    className={cn(
-                      "h-3 w-3 shrink-0 text-muted-foreground/60",
-                      "transition-[transform,opacity] duration-200 ease-out",
-                      "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100",
-                      "[@media(hover:none)]:opacity-100",
-                      expanded && "rotate-90"
-                    )}
-                  />
                 </div>
+              </button>
+              <button
+                type="button"
+                aria-label={tWorkbench("toggleFolder")}
+                aria-expanded={expanded}
+                onPointerDown={(event) => event.stopPropagation()}
+                onClick={() => onToggle(folderId)}
+                className="flex size-6 shrink-0 items-center justify-center rounded-full focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                <ChevronRight
+                  aria-hidden
+                  className={cn(
+                    "h-3 w-3 shrink-0 text-muted-foreground/60",
+                    "transition-[transform,opacity] duration-200 ease-out",
+                    "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100",
+                    "[@media(hover:none)]:opacity-100",
+                    expanded && "rotate-90"
+                  )}
+                />
               </button>
               <button
                 type="button"

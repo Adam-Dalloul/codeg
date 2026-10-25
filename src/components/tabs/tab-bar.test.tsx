@@ -16,6 +16,8 @@ const h = vi.hoisted(() => ({
   isMobile: false,
   toggleConversationMaximized: vi.fn(),
   tabs: [] as TabItemData[],
+  groupOf: {} as Record<string, string>,
+  toggleGroupTile: vi.fn(),
   allFolders: [] as never[],
   branches: new Map<number, string>(),
 }))
@@ -71,7 +73,11 @@ vi.mock("@/stores/app-workspace-store", () => ({
   ) => selector({ allFolders: h.allFolders, branches: h.branches }),
 }))
 // One group holds every tab: the unsplit layout.
-vi.mock("@/stores/tab-store", () => ({ groupOfTab: () => "g-main" }))
+vi.mock("@/stores/tab-store", () => ({
+  groupOfTab: (_groups: unknown, _layout: unknown, tabId: string) =>
+    h.groupOf[tabId] ?? "g-main",
+  useVisibleConversationTabs: () => h.tabs,
+}))
 vi.mock("@/contexts/tab-context", () => {
   const store = {
     activeTabId: "conv-1",
@@ -88,7 +94,7 @@ vi.mock("@/contexts/tab-context", () => {
       closeOtherTabs: vi.fn(),
       closeAllTabs: vi.fn(),
       pinTab: vi.fn(),
-      toggleGroupTile: vi.fn(),
+      toggleGroupTile: h.toggleGroupTile,
       splitTab: vi.fn(),
       moveTabToGroup: vi.fn(),
       toggleGroupOrientation: vi.fn(),
@@ -107,8 +113,17 @@ vi.mock("@/contexts/tab-context", () => {
 })
 // The tab itself is not what these tests are about.
 vi.mock("./tab-item", () => ({
-  TabItem: ({ tab }: { tab: TabItemData }) => (
-    <div data-tab-id={tab.id}>{tab.title}</div>
+  TabItem: ({
+    tab,
+    onToggleTile,
+  }: {
+    tab: TabItemData
+    onToggleTile: () => void
+  }) => (
+    <div data-tab-id={tab.id}>
+      {tab.title}
+      <button onClick={onToggleTile}>Tile</button>
+    </div>
   ),
 }))
 
@@ -145,6 +160,8 @@ beforeEach(() => {
     conversationMaximized: false,
   }
   h.isMobile = false
+  h.groupOf = {}
+  h.toggleGroupTile.mockClear()
   h.tabs = [conversationTab("conv-1")]
   h.toggleConversationMaximized.mockClear()
 })
@@ -211,4 +228,11 @@ describe("TabBar — maximize/restore", () => {
       screen.getByRole("button", { name: "New Conversation" })
     )
   })
+})
+
+it("targets the actual visible group when the projected strip is unsplit", () => {
+  h.groupOf = { "conv-1": "g-second" }
+  renderStrip()
+  fireEvent.click(screen.getByRole("button", { name: "Tile" }))
+  expect(h.toggleGroupTile).toHaveBeenCalledWith("g-second")
 })

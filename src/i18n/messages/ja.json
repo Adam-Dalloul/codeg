@@ -1,4 +1,10 @@
 {
+  "Workbench": {
+    "label": "ワークベンチ",
+    "enable": "ワークツリーごとにタブを切り替える",
+    "disable": "すべてのワークツリーのタブを表示",
+    "toggleFolder": "フォルダーを展開・折りたたむ"
+  },
   "Language": {
     "followSystem": "システムに従う",
     "english": "英語",

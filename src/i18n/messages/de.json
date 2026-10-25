@@ -1,4 +1,10 @@
 {
+  "Workbench": {
+    "label": "Workbench",
+    "enable": "Tabs nach Worktree wechseln",
+    "disable": "Tabs aller Worktrees anzeigen",
+    "toggleFolder": "Ordner auf- oder zuklappen"
+  },
   "Language": {
     "followSystem": "Systemsprache verwenden",
     "english": "Englisch",

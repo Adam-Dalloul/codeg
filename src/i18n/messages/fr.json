@@ -1,4 +1,10 @@
 {
+  "Workbench": {
+    "label": "Workbench",
+    "enable": "Changer les onglets par arbre de travail",
+    "disable": "Afficher les onglets de tous les arbres de travail",
+    "toggleFolder": "Développer ou réduire le dossier"
+  },
   "Language": {
     "followSystem": "Suivre le système",
     "english": "Anglais",

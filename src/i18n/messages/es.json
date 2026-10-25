@@ -1,4 +1,10 @@
 {
+  "Workbench": {
+    "label": "Workbench",
+    "enable": "Cambiar pestañas por árbol de trabajo",
+    "disable": "Mostrar pestañas de todos los árboles de trabajo",
+    "toggleFolder": "Expandir o contraer carpeta"
+  },
   "Language": {
     "followSystem": "Seguir el sistema",
     "english": "Inglés",

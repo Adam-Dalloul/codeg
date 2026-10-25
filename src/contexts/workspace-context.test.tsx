@@ -1,5 +1,8 @@
 import { act, render, screen } from "@testing-library/react"
 import { useEffect } from "react"
+import type { Monaco } from "@monaco-editor/react"
+import { useTrackMonacoModel } from "@/contexts/monaco-model-context"
+import { buildMonacoModelPath } from "@/lib/monaco-model-path"
 import {
   afterEach,
   beforeEach,
@@ -37,6 +40,10 @@ import {
   popClosedTab,
   resetClosedTabStackForTests,
 } from "@/lib/closed-tab-stack"
+import {
+  resetWorkbenchStore,
+  useWorkbenchStore,
+} from "@/stores/workbench-store"
 import { resetHomeDirCacheForTests } from "@/lib/file-open-target"
 import {
   resetAppWorkspaceStore,
@@ -122,6 +129,7 @@ vi.mock("@/contexts/active-folder-context", async () => {
 })
 
 beforeEach(() => {
+  resetWorkbenchStore()
   foldersMock.reset()
   // The provider reads workspace folders from the real zustand store: restore
   // pristine state, then seed the same default folders the active-folder mock
@@ -5262,5 +5270,271 @@ describe("PDF file tabs", () => {
       saveState: "idle",
       loading: false,
     })
+  })
+})
+
+let workbenchWorkspace: ReturnType<typeof useWorkspaceContext>
+function WorkbenchProbe() {
+  const workspace = useWorkspaceContext()
+  useEffect(() => {
+    workbenchWorkspace = workspace
+  }, [workspace])
+  return (
+    <output data-testid="workbench-files">
+      {workspace.fileTabs.map((tab) => tab.id).join(",")}
+    </output>
+  )
+}
+
+describe("mobile Monaco model cleanup ownership", () => {
+  it.each(["final close in file pane", "final close after pane unmount"])(
+    "disposes the last buffer on %s and retains open hidden buffers",
+    async (scenario) => {
+      useAppWorkspaceStore.setState({ activeFolderId: 1 })
+      vi.mocked(api.readFileForEdit).mockResolvedValue({
+        path: "a.ts",
+        content: "disk",
+        etag: "e1",
+        mtime_ms: 1,
+        readonly: false,
+        line_ending: "lf",
+      })
+      vi.mocked(api.gitIsTracked).mockResolvedValue(false)
+      let attached = false
+      const history = ["saved", "unsaved"]
+      const model = {
+        isAttachedToEditor: () => attached,
+        dispose: vi.fn(() => {
+          history.length = 0
+        }),
+      }
+      const monaco = {
+        Uri: { parse: (path: string) => path },
+        editor: { getModel: () => model },
+      } as unknown as Monaco
+      function EditorPanel({ tab }: { tab: FileWorkspaceTab }) {
+        const track = useTrackMonacoModel()
+        useEffect(() => {
+          attached = true
+          track(buildMonacoModelPath(tab.path, tab.id), monaco)
+          return () => {
+            attached = false
+          }
+        }, [tab.id, tab.path, track])
+        return <div data-testid="mobile-editor" />
+      }
+      function MobilePane() {
+        const { mode, activePane } = useWorkspaceView()
+        const { activeFileTab } = useWorkspaceFileTabs()
+        return mode !== "conversation" &&
+          activePane === "files" &&
+          activeFileTab ? (
+          <EditorPanel tab={activeFileTab} />
+        ) : null
+      }
+      render(
+        <WorkspaceProvider>
+          <WorkbenchProbe />
+          <MobilePane />
+        </WorkspaceProvider>
+      )
+      await act(async () => {
+        await workbenchWorkspace.openFilePreview("/repo/a.ts")
+      })
+      const id = workbenchWorkspace.activeFileTabId!
+      expect(screen.getByTestId("mobile-editor")).toBeInTheDocument()
+      act(() => {
+        useWorkbenchStore.getState().setEnabled(true)
+        useWorkbenchStore.getState().activateScope(2)
+      })
+      expect(screen.queryByTestId("mobile-editor")).not.toBeInTheDocument()
+      expect(model.dispose).not.toHaveBeenCalled()
+      expect(history).toEqual(["saved", "unsaved"])
+      act(() => useWorkbenchStore.getState().activateScope(1))
+      expect(screen.getByTestId("mobile-editor")).toBeInTheDocument()
+      if (scenario === "final close after pane unmount") {
+        act(() => workbenchWorkspace.activateConversationPane())
+        expect(screen.queryByTestId("mobile-editor")).not.toBeInTheDocument()
+        expect(model.dispose).not.toHaveBeenCalled()
+      }
+      act(() => workbenchWorkspace.closeFileTab(id))
+      expect(workbenchWorkspace.allFileTabs).toEqual([])
+      expect(workbenchWorkspace.activePane).toBe("conversation")
+      expect(screen.queryByTestId("mobile-editor")).not.toBeInTheDocument()
+      expect(model.dispose).toHaveBeenCalledOnce()
+      expect(history).toEqual([])
+    }
+  )
+})
+
+describe("Workbench shared file buffers and selections", () => {
+  beforeEach(() => {
+    vi.mocked(api.readFileForEdit).mockReset().mockResolvedValue({
+      path: "file.ts",
+      content: "disk",
+      etag: "e1",
+      mtime_ms: 1,
+      readonly: false,
+      line_ending: "lf",
+    })
+    vi.mocked(api.gitIsTracked).mockResolvedValue(false)
+    resetHomeDirCacheForTests()
+    useAppWorkspaceStore.setState({ activeFolderId: 1 })
+    useWorkbenchStore.getState().setEnabled(true)
+    useWorkbenchStore.getState().activateScope(1)
+    render(
+      <WorkspaceProvider>
+        <WorkbenchProbe />
+      </WorkspaceProvider>
+    )
+  })
+
+  it("restores per-worktree editor selection and dirty content through A → B → A and disabling", async () => {
+    await act(async () => {
+      await workbenchWorkspace.openFilePreview("/repo/a.ts")
+    })
+    act(() => {
+      workbenchWorkspace.updateActiveFileContent("unsaved A")
+    })
+    const a = workbenchWorkspace.activeFileTabId!
+    await act(async () => {
+      await workbenchWorkspace.openFilePreview("/repo/second.ts")
+    })
+    const second = workbenchWorkspace.activeFileTabId!
+    act(() => useWorkbenchStore.getState().activateScope(2))
+    expect(workbenchWorkspace.fileTabs).toHaveLength(0)
+    await act(async () => {
+      await workbenchWorkspace.openFilePreview("/repo2/b.ts")
+    })
+    const b = workbenchWorkspace.activeFileTabId!
+    act(() => useWorkbenchStore.getState().activateScope(1))
+    expect(workbenchWorkspace.activeFileTabId).toBe(second)
+    expect(
+      workbenchWorkspace.fileTabs.find((tab) => tab.id === a)?.content
+    ).toBe("unsaved A")
+    expect(
+      workbenchWorkspace.fileTabs.find((tab) => tab.id === a)
+    ).toMatchObject({ isDirty: true })
+    act(() => useWorkbenchStore.getState().activateScope(2))
+    expect(workbenchWorkspace.activeFileTabId).toBe(b)
+    act(() => useWorkbenchStore.getState().setEnabled(false))
+    expect(workbenchWorkspace.fileTabs).toHaveLength(3)
+    act(() => useWorkbenchStore.getState().setEnabled(true))
+    act(() => useWorkbenchStore.getState().activateScope(1))
+    expect(workbenchWorkspace.activeFileTabId).toBe(second)
+    expect(
+      workbenchWorkspace.fileTabs.find((tab) => tab.id === a)?.content
+    ).toBe("unsaved A")
+  })
+
+  it("shares one normalized buffer and closes only the current worktree's references", async () => {
+    await act(async () => {
+      await workbenchWorkspace.openFilePreview("/repo/shared.ts")
+    })
+    const shared = workbenchWorkspace.activeFileTabId!
+    act(() => {
+      workbenchWorkspace.updateActiveFileContent("shared unsaved")
+    })
+    act(() => useWorkbenchStore.getState().activateScope(2))
+    await act(async () => {
+      await workbenchWorkspace.openFilePreview("/repo/./shared.ts")
+    })
+    expect(workbenchWorkspace.activeFileTabId).toBe(shared)
+    expect(workbenchWorkspace.activeFileTab?.content).toBe("shared unsaved")
+    expect(api.readFileForEdit).toHaveBeenCalledTimes(1)
+    act(() => {
+      workbenchWorkspace.closeAllFileTabs()
+    })
+    expect(workbenchWorkspace.fileTabs).toHaveLength(0)
+    act(() => useWorkbenchStore.getState().activateScope(1))
+    expect(workbenchWorkspace.activeFileTab?.content).toBe("shared unsaved")
+    expect(workbenchWorkspace.activeFileTab).toMatchObject({ isDirty: true })
+  })
+
+  it("captures the original worktree before asynchronous home-path resolution", async () => {
+    let resolveHome!: (path: string) => void
+    vi.mocked(api.getHomeDirectory).mockReturnValue(
+      new Promise<string>((resolve) => {
+        resolveHome = resolve
+      })
+    )
+    let opening!: Promise<string | null>
+    act(() => {
+      opening = workbenchWorkspace.openFilePreview("~/late.ts")
+    })
+    act(() => useWorkbenchStore.getState().activateScope(2))
+    await act(async () => {
+      resolveHome("/repo")
+      await opening
+    })
+    expect(workbenchWorkspace.fileTabs).toHaveLength(0)
+    expect(workbenchWorkspace.activeFileTabId).toBeNull()
+    act(() => useWorkbenchStore.getState().activateScope(1))
+    expect(workbenchWorkspace.fileTabs).toHaveLength(1)
+    expect(workbenchWorkspace.activeFileTab?.path).toBe("/repo/late.ts")
+    expect(useWorkbenchStore.getState().fileRefs[2] ?? []).toHaveLength(0)
+  })
+
+  it("keeps delayed browser popups with their opener and removes closed entities from every scope", () => {
+    let browser!: string
+    act(() => {
+      browser = workbenchWorkspace.openBrowserTab("https://example.com")!
+    })
+    act(() => useWorkbenchStore.getState().activateScope(2))
+    act(() => {
+      workbenchWorkspace.adoptBrowserTab({
+        backendTabId: "late-popup",
+        url: "https://example.com/popup",
+        openerBackendTabId: browser.slice("browser:".length),
+      })
+    })
+    expect(workbenchWorkspace.fileTabs).toHaveLength(0)
+    act(() => useWorkbenchStore.getState().activateScope(1))
+    expect(workbenchWorkspace.activeFileTabId).toBe("browser:late-popup")
+    act(() => useWorkbenchStore.getState().activateScope(2))
+    act(() => {
+      workbenchWorkspace.openBrowserTab("https://example.com")
+    })
+    expect(workbenchWorkspace.activeFileTabId).toBe(browser)
+    act(() => {
+      workbenchWorkspace.closeFileTab(browser, { allScopes: true })
+    })
+    expect(workbenchWorkspace.fileTabs).toHaveLength(0)
+    act(() => useWorkbenchStore.getState().activateScope(1))
+    expect(workbenchWorkspace.fileTabs.map((tab) => tab.id)).toEqual([
+      "browser:late-popup",
+    ])
+  })
+
+  it("scopes browser and diff tabs and preserves inactive tabs on reorder and close", async () => {
+    act(() => {
+      workbenchWorkspace.openSessionFileDiff("src/a.ts", "diff A", "A", {
+        folderId: 1,
+      })
+    })
+    const diff = workbenchWorkspace.activeFileTabId!
+    act(() => useWorkbenchStore.getState().activateScope(2))
+    act(() => {
+      workbenchWorkspace.openBrowserTab("https://example.com")
+    })
+    const browser = workbenchWorkspace.activeFileTabId!
+    await act(async () => {
+      await workbenchWorkspace.openFilePreview("/repo2/b.ts")
+    })
+    act(() => {
+      workbenchWorkspace.reorderFileTabs(
+        [...workbenchWorkspace.fileTabs].reverse()
+      )
+    })
+    expect(workbenchWorkspace.fileTabs[1].id).toBe(browser)
+    act(() => {
+      workbenchWorkspace.closeOtherFileTabs(browser)
+    })
+    expect(workbenchWorkspace.fileTabs.map((tab) => tab.id)).toEqual([browser])
+    act(() => useWorkbenchStore.getState().activateScope(1))
+    expect(workbenchWorkspace.activeFileTabId).toBe(diff)
+    expect(workbenchWorkspace.activeFileTab?.content).toBe("diff A")
+    act(() => useWorkbenchStore.getState().setEnabled(false))
+    expect(workbenchWorkspace.fileTabs).toHaveLength(2)
   })
 })

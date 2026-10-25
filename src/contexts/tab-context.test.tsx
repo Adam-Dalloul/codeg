@@ -24,6 +24,10 @@ import {
   useTabStore,
   type OpenedDraftTarget,
 } from "@/stores/tab-store"
+import {
+  resetWorkbenchStore,
+  useWorkbenchStore,
+} from "@/stores/workbench-store"
 import { leafIds } from "@/lib/tab-group-layout"
 import {
   buildNewConversationDraftStorageKey,
@@ -189,6 +193,7 @@ const defaultConversationsMock: DbConversationSummary[] = [
 // slices via `useAppWorkspaceStore.setState` (e.g. an empty root list for the
 // loaded-but-empty case).
 function seedWorkspaceStore() {
+  resetWorkbenchStore()
   resetAppWorkspaceStore()
   useAppWorkspaceStore.setState({
     conversations: defaultConversationsMock,
@@ -2869,4 +2874,65 @@ describe("TabProvider tab groups", () => {
       expect(isReparentUnmount(store(), "conv-1-codex-1", home)).toBe(false)
     })
   })
+})
+
+describe("Workbench preference hydration", () => {
+  it("waits for the restored active conversation before choosing the initial scope", async () => {
+    seedWorkspaceStore()
+    useAppWorkspaceStore.setState({ foldersHydrated: false })
+    setActiveFolderIdMock.mockImplementation((id: number | null) => {
+      useAppWorkspaceStore.setState({ activeFolderId: id })
+    })
+    localStorage.setItem("workspace:workbench:local", "true")
+    let resolveSnapshot!: (value: unknown) => void
+    listOpenedTabsMock.mockReturnValue(
+      new Promise((resolve) => {
+        resolveSnapshot = resolve
+      })
+    )
+    renderTabs()
+    expect(useWorkbenchStore.getState().enabled).toBe(false)
+    await act(async () => {
+      resolveSnapshot({
+        version: 1,
+        items: [
+          {
+            folder_id: 2,
+            conversation_id: 21,
+            agent_type: "codex",
+            is_pinned: true,
+            is_active: true,
+            position: 0,
+          },
+        ],
+      })
+    })
+    expect(useWorkbenchStore.getState().enabled).toBe(false)
+    act(() => useAppWorkspaceStore.setState({ foldersHydrated: true }))
+    await waitFor(() => expect(useWorkbenchStore.getState().enabled).toBe(true))
+    expect(useWorkbenchStore.getState().scope).toBe(2)
+    expect(useTabStore.getState().activeTabId).toBe("conv-2-codex-21")
+    expect(useAppWorkspaceStore.getState().activeFolderId).toBe(2)
+    resetWorkbenchStore()
+    setActiveFolderIdMock.mockReset()
+  })
+})
+
+it("leaves an empty Workbench scope empty after the final tab closes", async () => {
+  seedWorkspaceStore()
+  listOpenedTabsMock.mockReturnValue(new Promise(() => {}))
+  renderTabs()
+  act(() => {
+    useTabStore.getState().openTab(1, 11, "codex", true)
+    useTabStore.setState({ tabsHydrated: true })
+    useWorkbenchStore.getState().setEnabled(true)
+    useWorkbenchStore.getState().activateScope(1)
+  })
+  await act(async () => {
+    useTabStore.getState().closeAllTabs()
+  })
+  expect(useTabStore.getState().rawTabs).toEqual([])
+  act(() => useWorkbenchStore.getState().activateScope(2))
+  expect(useTabStore.getState().rawTabs).toEqual([])
+  expect(useTabStore.getState().activeTabId).toBeNull()
 })

@@ -1,8 +1,12 @@
 "use client"
 
-import { useCallback, useEffect, type ReactNode } from "react"
+import { useCallback, useEffect, useRef, type ReactNode } from "react"
 import { useTranslations } from "next-intl"
 import { useShallow } from "zustand/react/shallow"
+import {
+  useWorkbenchStore,
+  shouldSeedConversation,
+} from "@/stores/workbench-store"
 import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
 import { useAcpActions } from "@/contexts/acp-connections-context"
 import { useWorkspaceActions } from "@/contexts/workspace-context"
@@ -64,6 +68,7 @@ export function TabProvider({ children }: TabProviderProps) {
 
   // Tab-store slices used only as effect dependencies (this component renders
   // nothing, so subscribing here doesn't cascade to any consumer).
+  const workbenchEnabled = useWorkbenchStore((s) => s.enabled)
   const rawTabs = useTabStore((s) => s.rawTabs)
   const activeTabId = useTabStore((s) => s.activeTabId)
   const previewReplacedTabIds = useTabStore((s) => s.previewReplacedTabIds)
@@ -71,6 +76,14 @@ export function TabProvider({ children }: TabProviderProps) {
   const tabsHydrated = useTabStore((s) => s.tabsHydrated)
   const saveReconcileTick = useTabStore((s) => s.saveReconcileTick)
   const reseedTick = useTabStore((s) => s.reseedTick)
+
+  const preferenceHydrated = useRef(false)
+  useEffect(() => {
+    if (!tabsHydrated || !foldersHydrated || preferenceHydrated.current) return
+    preferenceHydrated.current = true
+    useTabStore.getState().syncActiveFolderId()
+    useWorkbenchStore.getState().hydratePreference()
+  }, [tabsHydrated, foldersHydrated])
 
   // ── Runtime dependency injection ─────────────────────────────────────────────
   // Labels first (declared before hydrate) so seed titles are translated before
@@ -195,9 +208,15 @@ export function TabProvider({ children }: TabProviderProps) {
   useEffect(() => {
     if (!tabsHydrated || !foldersHydrated) return
     pruneOrphanDraftsOnce()
-    if (useTabStore.getState().rawTabs.length > 0) return
+    if (
+      !shouldSeedConversation(
+        useWorkbenchStore.getState().enabled,
+        useTabStore.getState().rawTabs.length === 0
+      )
+    )
+      return
     runRecoveryOnce()
-  }, [tabsHydrated, foldersHydrated, rawTabs])
+  }, [tabsHydrated, foldersHydrated, rawTabs, workbenchEnabled])
 
   // Persist the active draft's context for the next cold start.
   useEffect(() => {

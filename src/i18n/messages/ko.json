@@ -1,4 +1,10 @@
 {
+  "Workbench": {
+    "label": "워크벤치",
+    "enable": "워크트리별로 탭 전환",
+    "disable": "모든 워크트리의 탭 표시",
+    "toggleFolder": "폴더 펼치기 또는 접기"
+  },
   "Language": {
     "followSystem": "시스템 설정 따름",
     "english": "영어",

@@ -15,7 +15,7 @@ import {
   useWorkspaceView,
 } from "@/contexts/workspace-context"
 import { useIsMobile } from "@/hooks/use-mobile"
-import { groupOfTab } from "@/stores/tab-store"
+import { groupOfTab, useVisibleConversationTabs } from "@/stores/tab-store"
 import {
   firstLeafId,
   leafIds,
@@ -54,7 +54,7 @@ export function TabBar({ groupId, maximizeControl = false }: TabBarProps) {
   // there is one (fusion) — the file strip's own button follows the same rule.
   // Mobile shows one pane at a time and has nothing to cover.
   const showMaximize = maximizeControl && mode === "fusion" && !isMobile
-  const tabs = useTabStore((s) => s.tabs)
+  const tabs = useVisibleConversationTabs()
   const activeTabId = useTabStore((s) => s.activeTabId)
   const groupOf = useTabStore((s) => s.groupOf)
   const groupLayout = useTabStore((s) => s.groupLayout)
@@ -87,7 +87,11 @@ export function TabBar({ groupId, maximizeControl = false }: TabBarProps) {
   // The group this strip represents (unsplit strip = the single first leaf),
   // its tabs, and its displayed "active" tab: the GROUP's selected tab — for
   // the focused group (and the unsplit strip) that IS the global active tab.
-  const stripGroupId = groupId ?? firstLeafId(groupLayout)
+  const stripGroupId =
+    groupId ??
+    (tabs[0]
+      ? groupOfTab(groupOf, groupLayout, tabs[0].id)
+      : firstLeafId(groupLayout))
   const groupTabs = useMemo(
     () =>
       groupId == null

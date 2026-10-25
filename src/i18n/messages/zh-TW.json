@@ -1,4 +1,10 @@
 {
+  "Workbench": {
+    "label": "工作台",
+    "enable": "依 Worktree 切換分頁",
+    "disable": "顯示所有 Worktree 的分頁",
+    "toggleFolder": "展開或收合資料夾"
+  },
   "Language": {
     "followSystem": "跟隨系統",
     "english": "英文",

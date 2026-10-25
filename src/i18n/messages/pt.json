@@ -1,4 +1,10 @@
 {
+  "Workbench": {
+    "label": "Workbench",
+    "enable": "Alternar abas por árvore de trabalho",
+    "disable": "Mostrar abas de todas as árvores de trabalho",
+    "toggleFolder": "Expandir ou recolher pasta"
+  },
   "Language": {
     "followSystem": "Seguir o sistema",
     "english": "Inglês",

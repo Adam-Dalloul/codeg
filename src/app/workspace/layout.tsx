@@ -1,5 +1,10 @@
 "use client"
 
+import {
+  useVisibleConversationLayout,
+  useVisibleConversationTabs,
+} from "@/stores/tab-store"
+import { leafIds } from "@/lib/tab-group-layout"
 import { BrowserEvalConfirm } from "@/components/browser/browser-eval-confirm"
 import { BrowserEventsBridge } from "@/components/browser/browser-events-bridge"
 import { BrowserScreenshotMarkupHost } from "@/components/browser/browser-screenshot-markup"
@@ -36,7 +41,6 @@ import {
 import { DelegationProvider } from "@/contexts/delegation-context"
 import { ConversationRuntimeProvider } from "@/contexts/conversation-runtime-context"
 import { TabProvider, useTabStore, useTabActions } from "@/contexts/tab-context"
-import { selectIsSplit } from "@/stores/tab-store"
 import { SidebarProvider, useSidebarContext } from "@/contexts/sidebar-context"
 import { SearchDialogProvider } from "@/contexts/search-dialog-context"
 import { AutomationsViewProvider } from "@/contexts/automations-view-context"
@@ -344,8 +348,8 @@ function WorkspaceContent({ children }: { children: React.ReactNode }) {
   const { isOpen: auxOpen } = useAuxPanelContext()
   const { isMac, isWindows, isLinux } = usePlatform()
   const { zoomLevel } = useZoomLevel()
-  const hasConvTabs = useTabStore((s) => s.tabs.length > 0)
-  const isConvSplit = useTabStore(selectIsSplit)
+  const hasConvTabs = useVisibleConversationTabs().length > 0
+  const isConvSplit = leafIds(useVisibleConversationLayout()).length > 1
   const winLinuxControls = isDesktop() && (isWindows || isLinux)
   // The window chrome (toggle/search left, terminal/aux/settings right) now
   // lives in fixed corner overlays (see FolderLayoutShell) that never move on
