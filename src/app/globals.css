@@ -988,19 +988,23 @@
 /* ===========================================================================
    Activity timeline tokens（会话消息「执行过程」时间线）
    语义色只在这里定义一份（亮/暗各一），不进 12 套主题预设：预设只换中性色和主色，
-   这些令牌与主色解耦 —— red / rose 预设的 --primary 色相（25° / 16°）几乎等于
-   --destructive（27°），所以「运行中」从不用主色表达（靠转动的虚线圆环），失败
-   独占红色。中性部分（轨道、圆环）从 --foreground 混色，跟随每套预设的明暗反转。
+   成败的颜色与主色解耦，失败独占红色。主色只落在「在动」的地方 —— 运行中圆环转动
+   的那段弧、运行中标题的流光 —— 和 MCP 徽标上（--activity-accent，见下方按预设的
+   一段）。red / rose 预设的主色色相（25° / 16°）几乎等于 --destructive（27°）：
+   那里的弧和失败同色，靠转动和只有一小段跟整圈红环分开。中性部分（轨道、圆环）从
+   --foreground 混色，跟随每套预设的明暗反转。
    混色一律在 oklab（直角坐标）里做：在 oklch 里和 transparent / 白色这类无色相的
    颜色混，旧内核会把缺失的色相当 0°（红）插值，绿色的 diff 底会混成粉色。
-   对比度按 12 套预设 × 明暗实测：文字 ≥ 4.5:1，圆环和图标 ≥ 3:1。亮色下绿 / 琥珀 /
-   MCP 青压得比直觉深，是为了在自己的 10% 底色上仍过 4.5；圆环 45% 是过 3:1 的下限。
+   对比度按 12 套预设 × 明暗实测：文字 ≥ 4.5:1，圆环和图标 ≥ 3:1。亮色下绿 / 琥珀
+   压得比直觉深，是为了在自己的 10% 底色上仍过 4.5；圆环 45% 是过 3:1 的下限。
    ========================================================================= */
 :root {
   --activity-rail: color-mix(in oklab, var(--foreground) 12%, transparent);
   --activity-ring: color-mix(in oklab, var(--foreground) 45%, transparent);
   --activity-ring-done: color-mix(in oklab, var(--foreground) 22%, transparent);
-  --activity-ring-live: color-mix(in oklab, var(--foreground) 72%, transparent);
+  --activity-ring-live: var(--activity-accent);
+  /* 没有 data-theme 时的兜底；各预设的值在 .dark 之后那段。 */
+  --activity-accent: var(--primary);
   --activity-surface: var(--muted);
   /* --muted-foreground 在 --muted 底上只有约 4.3:1：详情框和灰底小标签里的次要文字
      改用它（向前景色略收），见下方 .activity-detail-box。 */
@@ -1026,7 +1030,6 @@
     var(--background)
   );
   --tone-warning: oklch(0.53 0.12 65);
-  --tone-mcp: oklch(0.5 0.085 190);
   --tone-info: oklch(0.58 0.13 255);
   --diff-added-bg: color-mix(in oklab, var(--tone-success) 10%, transparent);
   --diff-deleted-bg: color-mix(in oklab, var(--tone-danger) 10%, transparent);
@@ -1053,11 +1056,90 @@
     var(--background)
   );
   --tone-warning: oklch(0.8 0.14 80);
-  --tone-mcp: oklch(0.74 0.1 190);
   --tone-info: oklch(0.74 0.12 255);
   --diff-added-bg: color-mix(in oklab, var(--tone-success) 14%, transparent);
   --diff-deleted-bg: color-mix(in oklab, var(--tone-danger) 14%, transparent);
   --diff-modified-bg: color-mix(in oklab, var(--tone-info) 14%, transparent);
+}
+
+/* 时间线里的主题色（--activity-accent）：运行中圆环转动的那段弧、运行中标题的流光、
+   MCP 徽标。不直接用 --primary —— 黄 / 绿 / 橙的亮色主色在白底上不到 3:1。取侧边栏
+   文件夹标题同一张表（theme-presets.ts 的 THEME_COLOR_TITLE：亮色明度压到 0.5、暗色
+   抬到 0.8，彩度收在 sRGB 里；灰阶五套就是主色本身），两处一起改，
+   globals-activity-accent.test.ts 逐值对账。实测在底上 ≥ 5.5:1，MCP 徽标自己 10%
+   的底色上 ≥ 4.8:1。自定义样式里设了主色时，appearance-provider 按同一规则
+   （readable-accent.ts）算出它的那份写到 <html> 行内，盖过这里。 */
+[data-theme="neutral"] {
+  --activity-accent: oklch(0.205 0 0);
+}
+[data-theme="neutral"].dark {
+  --activity-accent: oklch(0.87 0 0);
+}
+[data-theme="zinc"] {
+  --activity-accent: oklch(0.21 0.006 285.885);
+}
+[data-theme="zinc"].dark {
+  --activity-accent: oklch(0.92 0.004 286.32);
+}
+[data-theme="slate"] {
+  --activity-accent: oklch(0.208 0.042 265.755);
+}
+[data-theme="slate"].dark {
+  --activity-accent: oklch(0.929 0.013 255.508);
+}
+[data-theme="stone"] {
+  --activity-accent: oklch(0.216 0.006 56.043);
+}
+[data-theme="stone"].dark {
+  --activity-accent: oklch(0.923 0.003 48.717);
+}
+[data-theme="gray"] {
+  --activity-accent: oklch(0.21 0.034 264.665);
+}
+[data-theme="gray"].dark {
+  --activity-accent: oklch(0.928 0.006 264.531);
+}
+[data-theme="red"] {
+  --activity-accent: oklch(0.5 0.203 25.331);
+}
+[data-theme="red"].dark {
+  --activity-accent: oklch(0.8 0.114 25.331);
+}
+[data-theme="rose"] {
+  --activity-accent: oklch(0.5 0.2 16.439);
+}
+[data-theme="rose"].dark {
+  --activity-accent: oklch(0.8 0.115 16.439);
+}
+[data-theme="orange"] {
+  --activity-accent: oklch(0.5 0.137 47.604);
+}
+[data-theme="orange"].dark {
+  --activity-accent: oklch(0.8 0.119 41.116);
+}
+[data-theme="green"] {
+  --activity-accent: oklch(0.5 0.139 149.579);
+}
+[data-theme="green"].dark {
+  --activity-accent: oklch(0.8 0.17 162.48);
+}
+[data-theme="blue"] {
+  --activity-accent: oklch(0.5 0.245 262.881);
+}
+[data-theme="blue"].dark {
+  --activity-accent: oklch(0.8 0.1 259.815);
+}
+[data-theme="yellow"] {
+  --activity-accent: oklch(0.5 0.102 86.047);
+}
+[data-theme="yellow"].dark {
+  --activity-accent: oklch(0.8 0.163 86.047);
+}
+[data-theme="violet"] {
+  --activity-accent: oklch(0.5 0.25 292.717);
+}
+[data-theme="violet"].dark {
+  --activity-accent: oklch(0.8 0.111 293.009);
 }
 
 @theme inline {
@@ -1066,6 +1148,7 @@
   --color-activity-ring: var(--activity-ring);
   --color-activity-ring-done: var(--activity-ring-done);
   --color-activity-ring-live: var(--activity-ring-live);
+  --color-activity-accent: var(--activity-accent);
   --color-activity-surface: var(--activity-surface);
   --color-activity-muted-strong: var(--activity-muted-strong);
   --color-activity-capsule: var(--activity-capsule);
@@ -1074,7 +1157,6 @@
   --color-tone-danger: var(--tone-danger);
   --color-tone-danger-surface: var(--tone-danger-surface);
   --color-tone-warning: var(--tone-warning);
-  --color-tone-mcp: var(--tone-mcp);
   --color-tone-info: var(--tone-info);
   --color-diff-added: var(--diff-added-bg);
   --color-diff-deleted: var(--diff-deleted-bg);
@@ -2366,15 +2448,14 @@
   font-family: var(--font-sans);
 }
 
-/* Muted text with a foreground highlight sweeping across it, for the live
-   label of a running step. The highlight is mixed from the foreground, never
-   the primary: on the red and rose presets the primary reads as failure. */
+/* Muted text with a highlight in the theme's colour sweeping across it, for
+   the live label of a running step. */
 .activity-shimmer {
   background-image: linear-gradient(
     90deg,
     var(--muted-foreground) 0%,
     var(--muted-foreground) 40%,
-    color-mix(in oklab, var(--foreground) 90%, transparent) 50%,
+    var(--activity-accent) 50%,
     var(--muted-foreground) 60%,
     var(--muted-foreground) 100%
   );

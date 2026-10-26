@@ -38,9 +38,10 @@ function glyphViewBox(icon: ActivityIcon, size: "md" | "sm"): string {
  * Ring colour by status, quiet by default: a finished step fades back to a
  * faint grey divider (`--activity-ring-done`), and only a failure (red) or
  * something waiting on the user (amber) takes a colour. A running step is
- * told apart by MOTION — a solid arc turning on a light track — never by the
- * primary colour, which on the red and rose presets is the failure hue. A
- * pending step keeps a dashed ring that turns slowly.
+ * told apart by MOTION — an arc in the theme's colour turning on a light
+ * track; on the red and rose presets that colour is the failure hue, and
+ * only the turning arc against a whole red ring tells them apart. A pending
+ * step keeps a dashed ring that turns slowly.
  */
 const RING_CLASS: Record<StepStatus, string> = {
   succeeded: "border-activity-ring-done",
@@ -143,13 +144,13 @@ export function RailIcon({
 
 /**
  * The turning mark of an agent at work: a ring like a step's with a quarter of
- * it turning dark — at the foot of a live list's rail, or under a reply whose
- * list is not in view. Sized and placed by `className`. Like a running ring
- * it keeps turning with chat animations off and stops under reduced motion;
- * the header says "Working" in words either way. Two plain elements, the
- * turning one childless: a turning element is restyled every frame, its
- * children with it, and an SVG's turn also lays the page out every frame —
- * for as long as the reply streams.
+ * it turning in the theme's colour — at the foot of a live list's rail, or
+ * under a reply whose list is not in view. Sized and placed by `className`.
+ * Like a running ring it keeps turning with chat animations off and stops
+ * under reduced motion; the header says "Working" in words either way. Two
+ * plain elements, the turning one childless: a turning element is restyled
+ * every frame, its children with it, and an SVG's turn also lays the page
+ * out every frame — for as long as the reply streams.
  */
 export function TurningRing({ className }: { className?: string }) {
   return (
