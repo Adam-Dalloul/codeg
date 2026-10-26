@@ -7803,6 +7803,23 @@ async fn run_connection(
                         Ok(()) => return Ok(()),
                         Err(responder) => responder,
                     };
+                    // Antigravity / Gemini asks the user a question through native
+                    // `ask_question` / `default_api:ask_question` (#1024). Route it
+                    // to the interactive question card instead of an approval card.
+                    let responder = match try_bridge_antigravity_ask(
+                        &perm_ask_access,
+                        &perm_conn_id,
+                        &state_inner,
+                        &emitter_inner,
+                        &perms,
+                        &req,
+                        responder,
+                    )
+                    .await
+                    {
+                        Ok(()) => return Ok(()),
+                        Err(responder) => responder,
+                    };
                     handle_permission_request(
                         &cx,
                         &state_inner,
@@ -9700,6 +9717,131 @@ async fn try_bridge_pi_select_ask(
             }
         }
     });
+    Ok(())
+}
+
+/// Bridge Google Antigravity / Gemini native `ask_question` tool calls into codeg's
+/// interactive question card (#1024).
+///
+/// When Google Antigravity or Gemini CLI calls its native `ask_question` tool,
+/// the agent process initiates a `session/request_permission` before executing it.
+/// Because it lacks the `codeg-mcp` prefix, it was previously treated as an approval
+/// card ("Allow Once / Allow Always / Deny"). This bridge recognizes the native ask
+/// tool, registers the question payload into [`crate::acp::question::SessionQuestionAccess`],
+/// renders the in-stream answered capsule upon completion, and replies to the
+/// permission request with `allow_once` (or `cancelled` if declined/aborted).
+#[allow(clippy::result_large_err)]
+async fn try_bridge_antigravity_ask(
+    access: &Option<(
+        Arc<dyn crate::acp::question::SessionQuestionAccess>,
+        crate::acp::question::QuestionRuntimeConfig,
+    )>,
+    connection_id: &str,
+    state: &Arc<RwLock<SessionState>>,
+    emitter: &EventEmitter,
+    perms: &PendingPermissions,
+    req: &RequestPermissionRequest,
+    responder: Responder<RequestPermissionResponse>,
+) -> Result<(), Responder<RequestPermissionResponse>> {
+    let title = [
+        req.tool_call.fields.title.as_deref(),
+        crate::acp::air_contract::permission_record(req.meta.as_ref())
+            .and_then(|p| p.get("title"))
+            .and_then(serde_json::Value::as_str),
+    ]
+    .into_iter()
+    .flatten()
+    .next()
+    .unwrap_or_default();
+
+    if !crate::acp::question::is_antigravity_ask_tool_name(title) {
+        return Err(responder);
+    }
+
+    let Some((questions, ask_cfg)) = access else {
+        return Err(responder);
+    };
+    if !ask_cfg.is_enabled().await {
+        return Err(responder);
+    }
+
+    let tool_call = serde_json::to_value(&req.tool_call).unwrap_or_default();
+    let Some(ask) = crate::acp::question::parse_antigravity_ask(&tool_call) else {
+        return Err(responder);
+    };
+
+    let allow_option_id = req
+        .options
+        .iter()
+        .find(|opt| opt.kind == PermissionOptionKind::AllowOnce)
+        .map(|opt| opt.option_id.to_string())
+        .or_else(|| req.options.first().map(|opt| opt.option_id.to_string()));
+
+    let (abort_tx, abort_rx) = oneshot::channel();
+    perms.lock().await.park_detached(abort_tx);
+
+    let Some(registered) = questions
+        .register_question(connection_id, ask.specs.clone())
+        .await
+    else {
+        return Err(responder);
+    };
+
+    let state = Arc::clone(state);
+    let emitter = emitter.clone();
+    let questions = Arc::clone(questions);
+    let connection_id = connection_id.to_string();
+    let question_id = registered.question_id;
+    let tool_call_id = req.tool_call.tool_call_id.to_string();
+
+    tokio::spawn(async move {
+        let answer = tokio::select! {
+            biased;
+            answered = registered.answer_rx => answered.ok(),
+            _ = abort_rx => None,
+        };
+        match answer {
+            Some(outcome) => {
+                emit_with_state(
+                    &state,
+                    &emitter,
+                    AcpEvent::ToolCall {
+                        tool_call_id,
+                        title: "ask_user_question".to_string(),
+                        kind: "other".to_string(),
+                        status: "completed".to_string(),
+                        content: None,
+                        raw_input: Some(
+                            crate::acp::question::grok_result_card_input(&ask.specs).to_string(),
+                        ),
+                        raw_output: Some(
+                            crate::acp::question::grok_result_card_output(&outcome).to_string(),
+                        ),
+                        locations: None,
+                        meta: None,
+                        images: None,
+                    },
+                )
+                .await;
+
+                let response_outcome = if outcome.declined {
+                    RequestPermissionOutcome::Cancelled
+                } else if let Some(opt_id) = allow_option_id {
+                    RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(opt_id))
+                } else {
+                    RequestPermissionOutcome::Cancelled
+                };
+                let _ = responder.respond(RequestPermissionResponse::new(response_outcome));
+            }
+            None => {
+                questions.cancel_question(&connection_id, &question_id).await;
+                let _ = responder.respond(RequestPermissionResponse::new(
+                    RequestPermissionOutcome::Cancelled,
+                ));
+            }
+        }
+    });
+
     Ok(())
 }
 

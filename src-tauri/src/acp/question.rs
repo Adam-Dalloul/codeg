@@ -701,6 +701,175 @@ pub fn is_codeg_ask_tool_name(name: &str) -> bool {
     crate::acp::delegation::is_codeg_mcp_tool(name, "ask_user_question")
 }
 
+/// True when a host's name for a tool is Google Antigravity or Gemini CLI's
+/// native `ask_question` tool (`ask_question`, `default_api:ask_question`,
+/// `default_api/ask_question`, `default_api__ask_question`, etc.).
+pub fn is_antigravity_ask_tool_name(name: &str) -> bool {
+    let name = name.trim().to_ascii_lowercase();
+    if name == "ask_question" {
+        return true;
+    }
+    const PREFIXES: [&str; 9] = [
+        "default_api:",
+        "default_api::",
+        "default_api/",
+        "default_api__",
+        "default_api.",
+        "antigravity:",
+        "antigravity/",
+        "antigravity__",
+        "gemini:",
+    ];
+    for prefix in PREFIXES {
+        if let Some(rest) = name.strip_prefix(prefix) {
+            if rest.trim() == "ask_question" {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AntigravityAsk {
+    pub specs: Vec<QuestionSpec>,
+}
+
+/// Parse Google Antigravity / Gemini native `ask_question` tool call arguments into
+/// interactive [`QuestionSpec`]s.
+pub fn parse_antigravity_ask(tool_call: &Value) -> Option<AntigravityAsk> {
+    if let Some(title) = tool_call
+        .get("title")
+        .and_then(|v| v.as_str())
+        .or_else(|| {
+            tool_call
+                .get("fields")
+                .and_then(|f| f.get("title"))
+                .and_then(|v| v.as_str())
+        })
+    {
+        if !is_antigravity_ask_tool_name(title) {
+            return None;
+        }
+    }
+
+    let raw_input = tool_call
+        .get("rawInput")
+        .or_else(|| tool_call.get("raw_input"))
+        .or_else(|| tool_call.get("arguments"))
+        .or_else(|| tool_call.get("args"))
+        .or_else(|| {
+            tool_call
+                .get("fields")
+                .and_then(|f| f.get("rawInput").or_else(|| f.get("raw_input")))
+        })?;
+
+    let input_value: Value = if let Some(s) = raw_input.as_str() {
+        serde_json::from_str(s).ok()?
+    } else {
+        raw_input.clone()
+    };
+
+    let target_obj = if let Some(args) = input_value.get("arguments").and_then(|v| v.as_object()) {
+        args
+    } else if let Some(obj) = input_value.as_object() {
+        obj
+    } else {
+        return None;
+    };
+
+    let questions_val = target_obj.get("questions")?;
+    let questions_arr: Vec<Value> = if let Some(arr) = questions_val.as_array() {
+        arr.clone()
+    } else if let Some(s) = questions_val.as_str() {
+        serde_json::from_str(s).ok()?
+    } else {
+        return None;
+    };
+
+    if !(1..=MAX_QUESTIONS).contains(&questions_arr.len()) {
+        return None;
+    }
+
+    let mut specs = Vec::with_capacity(questions_arr.len());
+    for q in &questions_arr {
+        let question_text = q
+            .get("question")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())?;
+        if question_text.chars().count() > MAX_QUESTION_TEXT_CHARS {
+            return None;
+        }
+
+        let header = q
+            .get("header")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .filter(|s| s.chars().count() <= MAX_HEADER_CHARS)
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| synthesize_header(question_text));
+
+        let multi_select = q
+            .get("is_multi_select")
+            .or_else(|| q.get("isMultiSelect"))
+            .or_else(|| q.get("multi_select"))
+            .or_else(|| q.get("multiSelect"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
+        let opts = q.get("options").and_then(|v| v.as_array())?;
+        if !(MIN_OPTIONS..=MAX_OPTIONS).contains(&opts.len()) {
+            return None;
+        }
+
+        let mut options = Vec::with_capacity(opts.len());
+        let mut seen = std::collections::HashSet::new();
+        for opt in opts {
+            let label = if let Some(s) = opt.as_str() {
+                s.trim()
+            } else if let Some(label_str) = opt.get("label").and_then(|v| v.as_str()) {
+                label_str.trim()
+            } else if let Some(text_str) = opt.get("text").and_then(|v| v.as_str()) {
+                text_str.trim()
+            } else {
+                return None;
+            };
+
+            if label.is_empty() || label.chars().count() > MAX_QUESTION_TEXT_CHARS {
+                return None;
+            }
+            if !seen.insert(label) {
+                return None;
+            }
+
+            let description = opt
+                .get("description")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim()
+                .to_string();
+
+            options.push(QuestionOption {
+                label: label.to_string(),
+                description,
+            });
+        }
+
+        specs.push(QuestionSpec {
+            id: uuid::Uuid::new_v4().to_string(),
+            question: question_text.to_string(),
+            header,
+            multi_select,
+            options,
+            is_secret: false,
+        });
+    }
+
+    Some(AntigravityAsk { specs })
+}
+
 /// Serialize a resolved [`QuestionOutcome`] into grok's `AskUserQuestionExtResponse`
 /// — the reply to a `_x.ai/ask_user_question` ext request. Verified against grok
 /// 0.2.101 on a real run: the response is internally tagged by `outcome`; the
@@ -3614,5 +3783,126 @@ mod tests {
         let output = grok_result_card_output(&outcome);
         assert_eq!(input["questions"][0]["question"], output["answers"][0]["question"]);
         assert_eq!(output["answers"][0]["header"], "");
+    }
+    #[test]
+    fn is_antigravity_ask_tool_name_accepts_valid_names() {
+        for valid in [
+            "ask_question",
+            "default_api:ask_question",
+            "default_api::ask_question",
+            "default_api/ask_question",
+            "default_api__ask_question",
+            "default_api.ask_question",
+            "default_api: ask_question",
+            "antigravity:ask_question",
+            "antigravity/ask_question",
+            "gemini:ask_question",
+            "  DEFAULT_API:ASK_QUESTION  ",
+            "ASK_QUESTION",
+        ] {
+            assert!(
+                is_antigravity_ask_tool_name(valid),
+                "{valid} must be recognized as antigravity ask tool"
+            );
+        }
+    }
+
+    #[test]
+    fn is_antigravity_ask_tool_name_rejects_other_tools() {
+        for other in [
+            "mcp__codeg-mcp__ask_user_question",
+            "ask_user_question",
+            "default_api:run_command",
+            "default_api:view_file",
+            "other_api:ask_question",
+            "ask_question_extra",
+            "",
+        ] {
+            assert!(
+                !is_antigravity_ask_tool_name(other),
+                "{other} must NOT be recognized as antigravity ask tool"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_antigravity_ask_maps_native_payload() {
+        let tool_call = json!({
+            "title": "default_api:ask_question",
+            "rawInput": {
+                "questions": [
+                    {
+                        "question": "Which architecture pattern do you prefer?",
+                        "options": ["Option A (Clean)", "Option B (Layered)"],
+                        "is_multi_select": false
+                    }
+                ]
+            }
+        });
+        let ask = parse_antigravity_ask(&tool_call).expect("should parse");
+        assert_eq!(ask.specs.len(), 1);
+        assert_eq!(ask.specs[0].question, "Which architecture pattern do you prefer?");
+        assert!(!ask.specs[0].multi_select);
+        assert_eq!(ask.specs[0].options.len(), 2);
+        assert_eq!(ask.specs[0].options[0].label, "Option A (Clean)");
+        assert_eq!(ask.specs[0].options[1].label, "Option B (Layered)");
+        assert!(!ask.specs[0].header.is_empty());
+    }
+
+    #[test]
+    fn parse_antigravity_ask_handles_serialized_questions_string() {
+        let questions_json_str = serde_json::to_string(&json!([
+            {
+                "question": "Select target environments:",
+                "options": [
+                    {"label": "Staging", "description": "Pre-prod"},
+                    {"label": "Production", "description": "Live"}
+                ],
+                "is_multi_select": true
+            }
+        ])).unwrap();
+
+        let tool_call = json!({
+            "title": "ask_question",
+            "rawInput": {
+                "arguments": {
+                    "questions": questions_json_str
+                }
+            }
+        });
+        let ask = parse_antigravity_ask(&tool_call).expect("should parse nested string");
+        assert_eq!(ask.specs.len(), 1);
+        assert_eq!(ask.specs[0].question, "Select target environments:");
+        assert!(ask.specs[0].multi_select);
+        assert_eq!(ask.specs[0].options[0].label, "Staging");
+        assert_eq!(ask.specs[0].options[0].description, "Pre-prod");
+        assert_eq!(ask.specs[0].options[1].label, "Production");
+    }
+
+    #[test]
+    fn parse_antigravity_ask_declines_invalid_shapes() {
+        // Less than MIN_OPTIONS
+        assert!(parse_antigravity_ask(&json!({
+            "title": "ask_question",
+            "rawInput": {
+                "questions": [{ "question": "Q?", "options": ["Only one"] }]
+            }
+        })).is_none());
+
+        // Empty question text
+        assert!(parse_antigravity_ask(&json!({
+            "title": "ask_question",
+            "rawInput": {
+                "questions": [{ "question": "  ", "options": ["A", "B"] }]
+            }
+        })).is_none());
+
+        // Duplicate options
+        assert!(parse_antigravity_ask(&json!({
+            "title": "ask_question",
+            "rawInput": {
+                "questions": [{ "question": "Q?", "options": ["Same", "Same"] }]
+            }
+        })).is_none());
     }
 }
