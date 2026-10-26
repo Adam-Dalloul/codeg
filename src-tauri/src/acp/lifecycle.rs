@@ -857,50 +857,198 @@ fn extract_args_match_key(raw_input: Option<&str>) -> Option<DelegationMatchKey>
 /// (interpolation, an unknown escape, an ESCAPED quoted `task`, a value that
 /// continues past its literal (`"a" + b`, `` `a`.trim() ``), a present but
 /// unreadable `working_dir`, an `assistant_id` in any spelling (quoted,
-/// computed, spread-in), spread or computed-key syntax, unbalanced syntax)
-/// degrades to NO key — the pre-existing unkeyed path (post-budget FIFO
-/// claim) — rather than a WRONG keyed one. Template values are read as the
-/// runtime would cook them (escapes decoded, bare CR/CRLF TV-normalized
-/// to LF, U+2028/U+2029 preserved verbatim), so the key matches what the
-/// MCP listener receives.
+/// computed, spread-in), spread or computed-key syntax, a conditional, a
+/// shorthand or Unicode-escaped argument key, non-ASCII code between the
+/// properties, an argument that is not exactly one object literal,
+/// unbalanced syntax) degrades to NO key — the pre-existing unkeyed path
+/// (post-budget FIFO claim) — rather than a WRONG keyed one. Template values
+/// are read as the runtime would cook them (escapes decoded, bare CR/CRLF
+/// TV-normalized to LF, U+2028/U+2029 preserved verbatim), so the key
+/// matches what the MCP listener receives.
 /// An escape-free quoted `task` is accepted: with no backslash present, the
 /// evaluated value is exactly the source text (reviewed deviation from plan
 /// v2's blanket "quoted task → no key").
-/// `(open, close)` byte offsets of the `(` … `)` wrapping the arguments of
-/// the first `delegate_to_agent(` call reached via a `tools` accessor in real
-/// (non-string, non-comment) JS. `None` when the code exceeds the scan cap,
-/// is structurally unbalanced, or names no such call.
-fn code_mode_call_span(code: &str) -> Option<(usize, usize)> {
-    // A heuristic scan cap, measured in UTF-8 bytes; the TS mirror caps
-    // UTF-16 code units. The unit mismatch only shows on megabyte-scale
-    // non-ASCII payloads (backend declines, frontend may still classify) —
-    // recorded as a known boundary, not worth a TextEncoder pass per call.
+///
+/// Only the FIRST call site is read, and one `execute` owns one tool-call id,
+/// so a script that delegates several times binds at most one child to its
+/// card; the others fall back to synthetic ids. Keying that first site is only
+/// right when it is the call that runs, so a script with several sites is
+/// keyed only when its first one provably runs first (see
+/// [`CodeModeCallSite::readable`]); otherwise — and whenever the first call
+/// can't be keyed (a loop over a variable task, say) — which of several
+/// CONCURRENT calls claims the id is first-come, the same unkeyed FIFO every
+/// other host's unparseable call gets.
+///
+/// The first `delegate_to_agent(` call reached via a `tools` accessor in real
+/// (non-string, non-comment) JS.
+struct CodeModeCallSite {
+    /// Byte offset of the `(` opening the call's arguments.
+    open: usize,
+    /// Byte offset of the matching `)`.
+    close: usize,
+    /// Whether this call's arguments may be read as the delegation's: it is
+    /// the only call site in a scan that reached the end of the script, or it
+    /// provably runs before any other — at brace depth 0, outside any
+    /// parameter list or destructuring pattern, with nothing before it that
+    /// branches, defers or hides code (`if`/`else`/`switch`/`for`/`while`/
+    /// `do`/`catch`/`yield`/`function`, `?`, `&&`, `||`, `=>`, a `${…}`). A
+    /// first site in a dead or conditional branch (`if (false) { …decoy… }
+    /// …real…`) is otherwise read while a later one runs, minting a key no
+    /// round-trip claims; a call inside a `${…}` after it is one the count
+    /// cannot see.
+    readable: bool,
+}
+
+/// Locate the first code-mode delegate call in `code`. `None` when the code
+/// exceeds the scan cap, is structurally unbalanced before the call, names no
+/// such call, or holds a `/` that is neither a comment nor inside a string
+/// BEFORE the call: a regex literal is indistinguishable from division to
+/// this scanner, and its body can carry the quote, backtick or `//` that
+/// desynchronizes everything after it (`/'/` opens a "string" that skips the
+/// real call and closes in a later comment, which then reads as code).
+fn code_mode_call_site(code: &str) -> Option<CodeModeCallSite> {
+    // A heuristic scan cap in UTF-8 bytes — the TS mirror measures the same.
     const MAX_CODE_BYTES: usize = 1 << 20;
     if code.len() > MAX_CODE_BYTES {
         return None;
     }
     let b = code.as_bytes();
     let mut i = 0usize;
+    let mut depth: i32 = 0;
+    // The `(` / `[` groups open at `i`, innermost last.
+    let mut groups: Vec<u8> = Vec::new();
+    let mut branched = false;
+    let mut first: Option<(usize, usize)> = None;
+    let mut runs_first = false;
+    // How many groups enclosing the first site have yet to close. Each must
+    // close as a call, a grouping or an array — not as an arrow's parameter
+    // list (`(x = …call…) => x`) or a destructuring pattern (`[a = …call…] =
+    // xs`), whose defaults run only when a value is missing.
+    let mut enclosing = 0usize;
+    let mut sites = 0usize;
+    // Whether the scan for further call sites reached the end of the script.
+    let mut counted = true;
     while i < b.len() {
         match b[i] {
-            b'\'' | b'"' => i = skip_js_string(code, i)?,
-            b'`' => i = skip_js_template(code, i)?,
-            b'/' => match b.get(i + 1) {
-                Some(b'/') | Some(b'*') => i = skip_js_ws_and_comments(code, i),
-                _ => i += 1,
-            },
-            _ if is_js_word_at(b, i, b"tools") => {
-                if let Some(open) = code_mode_tools_call_open(code, i) {
-                    let close = matching_paren(code, open)?;
-                    return Some((open, close));
+            quote @ (b'\'' | b'"' | b'`') => {
+                let end = if quote == b'`' {
+                    skip_js_template(code, i)
+                } else {
+                    skip_js_string(code, i)
+                };
+                // Unbalanced: before the first site no call can be found
+                // (`first?` gives up); after it, only the count is lost.
+                let Some(end) = end else {
+                    first?;
+                    counted = false;
+                    break;
+                };
+                // A `${…}` runs code the scan skips: a call in it is one the
+                // count cannot see, and before the first site it may run first.
+                if quote == b'`' && code[i..end].contains("${") {
+                    counted = false;
+                    if first.is_none() {
+                        branched = true;
+                    }
                 }
+                i = end;
+            }
+            b'/' if matches!(b.get(i + 1), Some(b'/') | Some(b'*')) => {
+                i = skip_js_ws_and_comments(code, i);
+            }
+            // Division or a regex: before the first site it may have
+            // desynchronized the search itself; after it, only the count.
+            b'/' => {
+                first?;
+                counted = false;
+                break;
+            }
+            b'{' => {
+                depth += 1;
                 i += 1;
+            }
+            b'}' => {
+                depth -= 1;
+                i += 1;
+            }
+            b'(' | b'[' => {
+                groups.push(b[i]);
+                i += 1;
+            }
+            close @ (b')' | b']') => {
+                groups.pop();
+                i += 1;
+                if enclosing > groups.len() {
+                    enclosing = groups.len();
+                    let next = skip_js_ws_and_comments(code, i);
+                    let after = (b.get(next).copied(), b.get(next + 1).copied());
+                    let parameters = close == b')' && after == (Some(b'='), Some(b'>'));
+                    let pattern = close == b']'
+                        && after.0 == Some(b'=')
+                        && !matches!(after.1, Some(b'=') | Some(b'>'));
+                    if parameters || pattern {
+                        runs_first = false;
+                    }
+                }
+            }
+            b'?' => {
+                branched = true;
+                i += 1;
+            }
+            b'&' | b'|' if b.get(i + 1) == Some(&b[i]) => {
+                branched = true;
+                i += 2;
+            }
+            b'=' if b.get(i + 1) == Some(&b'>') => {
+                branched = true;
+                i += 2;
+            }
+            _ if CODE_MODE_BRANCH_KEYWORDS
+                .iter()
+                .any(|k| is_js_word_at(b, i, k)) =>
+            {
+                branched = true;
+                i += 1;
+            }
+            _ if is_js_word_at(b, i, b"tools") => {
+                let Some(open) = code_mode_tools_call_open(code, i) else {
+                    i += 1;
+                    continue;
+                };
+                let Some(close) = matching_paren(code, open) else {
+                    // As for an unbalanced string above.
+                    first?;
+                    counted = false;
+                    break;
+                };
+                sites += 1;
+                if first.is_none() {
+                    first = Some((open, close));
+                    runs_first = depth == 0 && !branched;
+                    enclosing = groups.len();
+                }
+                i = close + 1;
             }
             _ => i += 1,
         }
     }
-    None
+    let (open, close) = first?;
+    // A group around the first site that never closed in the scan could
+    // still be a parameter list or a pattern.
+    let runs_first = runs_first && enclosing == 0;
+    Some(CodeModeCallSite {
+        open,
+        close,
+        readable: runs_first || (sites == 1 && counted),
+    })
 }
+
+/// Keywords that make what follows them conditional, repeated or deferred
+/// (see [`CodeModeCallSite::readable`]); `function` defers its body and its
+/// parameter defaults alike.
+const CODE_MODE_BRANCH_KEYWORDS: [&[u8]; 9] = [
+    b"if", b"else", b"switch", b"for", b"while", b"do", b"catch", b"yield", b"function",
+];
 
 /// Byte offset of the `(` that opens the argument list of the
 /// `delegate_to_agent` call whose `tools` token sits at `tools_at`. Two
@@ -964,6 +1112,12 @@ fn code_mode_tools_call_open(code: &str, tools_at: usize) -> Option<usize> {
 /// templates, and comments so a `)` inside them can't close the call early.
 /// `None` on unbalanced input.
 fn matching_paren(code: &str, open: usize) -> Option<usize> {
+    matching_close(code, open, b'(', b')')
+}
+
+/// Byte offset of the `close` matching the `open_byte` at `open`, skipping
+/// strings, templates, and comments. `None` on unbalanced input.
+fn matching_close(code: &str, open: usize, open_byte: u8, close: u8) -> Option<usize> {
     let b = code.as_bytes();
     let mut depth: i32 = 0;
     let mut i = open;
@@ -975,11 +1129,11 @@ fn matching_paren(code: &str, open: usize) -> Option<usize> {
                 Some(b'/') | Some(b'*') => i = skip_js_ws_and_comments(code, i),
                 _ => i += 1,
             },
-            b'(' => {
+            c if c == open_byte => {
                 depth += 1;
                 i += 1;
             }
-            b')' => {
+            c if c == close => {
                 depth -= 1;
                 if depth == 0 {
                     return Some(i);
@@ -1148,7 +1302,7 @@ fn code_mode_delegation_code(raw_input: &str) -> bool {
     parsed
         .get("code")
         .and_then(|v| v.as_str())
-        .is_some_and(|code| code_mode_call_span(code).is_some())
+        .is_some_and(|code| code_mode_call_site(code).is_some())
 }
 
 /// Build the broker key from a code-mode `execute` payload: locate the
@@ -1165,11 +1319,20 @@ fn extract_code_mode_match_key(raw_input: Option<&str>) -> Option<DelegationMatc
     }
     let parsed: serde_json::Value = serde_json::from_str(raw).ok()?;
     let code = parsed.get("code")?.as_str()?;
-    let (open, close) = code_mode_call_span(code)?;
+    let site = code_mode_call_site(code)?;
+    if !site.readable {
+        return None;
+    }
+    let (open, close) = (site.open, site.close);
     let region = (open + 1, close);
+    // Only an argument list holding exactly one object literal passes that
+    // literal to the listener — see [`code_mode_single_object_argument`].
+    if !code_mode_single_object_argument(code, open, close) {
+        return None;
+    }
     // Syntax whose contribution the scanner cannot evaluate (spread, computed
-    // keys, escaped quoted keys) could hide an `assistant_id` or change any
-    // value — the whole extraction degrades to unkeyed, see
+    // keys, escaped quoted keys, conditionals) could hide an `assistant_id` or
+    // change any value — the whole extraction degrades to unkeyed, see
     // [`code_mode_args_transparent`].
     if !code_mode_args_transparent(code, region) {
         return None;
@@ -1205,6 +1368,36 @@ fn extract_code_mode_match_key(raw_input: Option<&str>) -> Option<DelegationMatc
     })
 }
 
+/// True when the call's argument list `(open, close)` holds exactly ONE
+/// object literal (a trailing comma aside): its first token is `{` and the
+/// matching `}` is followed only by whitespace/comments before the call's
+/// `)`. Any other shape passes something the literal alone does not
+/// determine — `c ? {…} : {…}` and `x || {…}` evaluate to whichever operand
+/// wins at runtime, `{…}.y` to a property of it, a bare variable to its
+/// runtime value — and opencode rejects a second argument object outright
+/// ("expects at most one input object") before any MCP call.
+fn code_mode_single_object_argument(code: &str, open: usize, close: usize) -> bool {
+    let b = code.as_bytes();
+    let start = skip_js_ws_and_comments(code, open + 1);
+    if b.get(start) != Some(&b'{') {
+        return false;
+    }
+    let Some(object_close) = matching_close(code, start, b'{', b'}') else {
+        return false;
+    };
+    let mut after = skip_js_ws_and_comments(code, object_close + 1);
+    if b.get(after) == Some(&b',') {
+        after = skip_js_ws_and_comments(code, after + 1);
+    }
+    after == close
+}
+
+/// The argument keys the scanner reads. A bare one not followed by `:` is a
+/// SHORTHAND property (or a variable in value position): its value is the
+/// variable's runtime value, and a shorthand AFTER an explicit spelling
+/// overrides it.
+const CODE_MODE_ARG_KEYS: [&[u8]; 4] = [b"agent_type", b"task", b"working_dir", b"assistant_id"];
+
 /// Conservative pre-pass over the argument region: `false` when the region
 /// contains syntax whose effect the scanner cannot evaluate. Spread
 /// (`...base`) may carry an `assistant_id`; a `[` covers computed keys
@@ -1212,14 +1405,19 @@ fn extract_code_mode_match_key(raw_input: Option<&str>) -> Option<DelegationMatc
 /// backslash evaluates to an unknowable spelling (it could BE the key being
 /// searched for); a `(`/`)` or a non-comment `/` is a call/parenthesized/
 /// division/regex expression the scanner cannot evaluate (and a regex body
-/// could feed quotes or braces to the string/template arms); a bare
-/// `working_dir` / `assistant_id` identifier is a SHORTHAND property whose
-/// value is the variable's runtime value. Each degrades to the unkeyed path.
+/// could feed quotes or braces to the string/template arms); a `?` is a
+/// conditional, optional chain or `??` (a ternary also puts a value string in
+/// front of a `:`, where it reads as a key); a `\` outside a string is a
+/// Unicode-escaped identifier (`\u0074ask` IS `task`); a non-ASCII byte
+/// outside a string is a Unicode identifier or whitespace (`U+00A0`,
+/// `U+FEFF`, `U+2028`) the ASCII word matcher cannot delimit; a bare argument
+/// key is a SHORTHAND property whose value is the variable's runtime value.
+/// Each degrades to the unkeyed path.
 fn code_mode_args_transparent(code: &str, region: (usize, usize)) -> bool {
     let b = code.as_bytes();
     let (start, end) = region;
     let mut i = start;
-    while i < end {
+    'scan: while i < end {
         match b[i] {
             b'\'' | b'"' => {
                 let Some(str_end) = skip_js_string(code, i) else {
@@ -1242,23 +1440,23 @@ fn code_mode_args_transparent(code: &str, region: (usize, usize)) -> bool {
             }
             b'/' => return false,
             b'(' | b')' => return false,
-            b'[' => return false,
+            b'[' | b'?' | b'\\' => return false,
+            0x80..=0xFF => return false,
             b'.' if b.get(i + 1) == Some(&b'.') && b.get(i + 2) == Some(&b'.') => return false,
-            _ if is_js_word_at(b, i, b"working_dir") => {
-                let after = skip_js_ws_and_comments(code, i + b"working_dir".len());
-                if b.get(after) != Some(&b':') {
-                    return false;
+            _ => {
+                for key in CODE_MODE_ARG_KEYS {
+                    if !is_js_word_at(b, i, key) {
+                        continue;
+                    }
+                    let after = skip_js_ws_and_comments(code, i + key.len());
+                    if b.get(after) != Some(&b':') {
+                        return false;
+                    }
+                    i += key.len();
+                    continue 'scan;
                 }
-                i += b"working_dir".len();
+                i += 1;
             }
-            _ if is_js_word_at(b, i, b"assistant_id") => {
-                let after = skip_js_ws_and_comments(code, i + b"assistant_id".len());
-                if b.get(after) != Some(&b':') {
-                    return false;
-                }
-                i += b"assistant_id".len();
-            }
-            _ => i += 1,
         }
     }
     true
@@ -2097,18 +2295,32 @@ mod delegation_title_tests {
     }
 
     #[test]
-    fn code_mode_key_stops_at_the_argument_object_close() {
-        // A second object after the first's closing brace is a different
-        // argument, not part of the flat args; its keys must not win
-        // (last-wins applies within ONE object only).
-        let code = r#"tools["codeg-mcp"].delegate_to_agent({ agent_type: "codex", task: `t` }, { agent_type: "goose", task: `u` })"#;
-        let raw = serde_json::json!({ "code": code }).to_string();
-        let key = extract_delegation_match_key(Some(&raw)).expect("first object keys");
+    fn code_mode_key_needs_exactly_one_object_literal_argument() {
+        // What runs is whatever the argument evaluates to, which the first
+        // literal in it does not determine; a second argument object makes
+        // opencode throw "expects at most one input object" before any MCP
+        // call. Each stays a recognized (unkeyed) delegation.
+        let cases = [
+            r#"tools["codeg-mcp"].delegate_to_agent(c ? { agent_type: "codex", task: `a` } : { agent_type: "codex", task: `b` })"#,
+            r#"tools["codeg-mcp"].delegate_to_agent(x || { agent_type: "codex", task: `decoy` })"#,
+            r#"tools["codeg-mcp"].delegate_to_agent(x ?? { agent_type: "codex", task: `decoy` })"#,
+            r#"tools["codeg-mcp"].delegate_to_agent({ agent_type: "codex", task: `t` }.y)"#,
+            r#"tools["codeg-mcp"].delegate_to_agent({ agent_type: "codex", task: `t` }, { agent_type: "goose", task: `u` })"#,
+            r#"tools["codeg-mcp"].delegate_to_agent(args)"#,
+        ];
+        for code in cases {
+            let raw = serde_json::json!({ "code": code }).to_string();
+            assert!(
+                extract_delegation_match_key(Some(&raw)).is_none(),
+                "expected unkeyed for {code}"
+            );
+            assert!(is_delegation_invocation("execute", Some(&raw)));
+        }
+        // A trailing comma still leaves exactly one argument.
+        let trailing = r#"tools["codeg-mcp"].delegate_to_agent({ agent_type: "codex", task: `t` }, /* end */ )"#;
+        let raw = serde_json::json!({ "code": trailing }).to_string();
+        let key = extract_delegation_match_key(Some(&raw)).expect("trailing comma keys");
         assert_eq!(key.task, "t");
-        assert_eq!(
-            key.target,
-            crate::acp::delegation::types::DelegationTarget::Agent(AgentType::Codex)
-        );
     }
 
     #[test]
@@ -2128,6 +2340,117 @@ mod delegation_title_tests {
     }
 
     #[test]
+    fn code_mode_declines_a_script_with_a_slash_before_the_call() {
+        // A regex is indistinguishable from division to the scanner, and
+        // `/'/` opens a "string" that skips the real call and closes in a
+        // later comment, which then reads as a call site.
+        let code = "const re = /'/;\nawait tools[\"codeg-mcp\"].delegate_to_agent({agent_type:\"codex\",task:\"real\"});\n// here's an example: tools[\"codeg-mcp\"].delegate_to_agent({agent_type:\"codex\",task:\"decoy\"})";
+        let raw = serde_json::json!({ "code": code }).to_string();
+        assert!(extract_delegation_match_key(Some(&raw)).is_none());
+        assert!(!is_delegation_invocation("execute", Some(&raw)));
+
+        // After a call that runs first, a slash changes nothing.
+        let after = r#"const r = await tools["codeg-mcp"].delegate_to_agent({ agent_type: "codex", task: "t" }); return r.ms / 1000"#;
+        let raw = serde_json::json!({ "code": after }).to_string();
+        assert_eq!(extract_delegation_match_key(Some(&raw)).expect("keys").task, "t");
+
+        // After a call that may not run, it hides whether another site exists.
+        let unsure = r#"if (bad) { await tools["codeg-mcp"].delegate_to_agent({ agent_type: "codex", task: "t" }) } const n = 4 / 2"#;
+        let raw = serde_json::json!({ "code": unsure }).to_string();
+        assert!(extract_delegation_match_key(Some(&raw)).is_none());
+        assert!(is_delegation_invocation("execute", Some(&raw)));
+    }
+
+    #[test]
+    fn code_mode_keys_the_first_of_several_calls_only_when_it_runs_first() {
+        let key_task = |code: &str| {
+            let raw = serde_json::json!({ "code": code }).to_string();
+            assert!(is_delegation_invocation("execute", Some(&raw)), "{code}");
+            extract_delegation_match_key(Some(&raw)).map(|k| k.task)
+        };
+        // Runs first: in order, or eagerly side by side.
+        assert_eq!(
+            key_task(r#"await tools["codeg-mcp"].delegate_to_agent({ agent_type: "codex", task: "A" }); await tools["codeg-mcp"].delegate_to_agent({ agent_type: "zcode", task: "B" })"#).as_deref(),
+            Some("A")
+        );
+        assert_eq!(
+            key_task(r#"const [a, b] = await Promise.allSettled([tools["codeg-mcp"].delegate_to_agent({ agent_type: "codex", task: "A" }), tools["codeg-mcp"].delegate_to_agent({ agent_type: "zcode", task: "B" })])"#).as_deref(),
+            Some("A")
+        );
+        // A lone call keys wherever it sits: if it runs, it is the call.
+        assert_eq!(
+            key_task(r#"if (failed) { await tools["codeg-mcp"].delegate_to_agent({ agent_type: "codex", task: "fix" }) }"#).as_deref(),
+            Some("fix")
+        );
+        assert_eq!(
+            key_task(r#"const r = await tools["codeg-mcp"].delegate_to_agent({ agent_type: "codex", task: "A" }); await tools["codeg-mcp"].delegate_to_agent({ agent_type: "zcode", task: "B" }); return `${r.task_id}`"#).as_deref(),
+            Some("A")
+        );
+        assert_eq!(
+            key_task(r#"await Promise.allSettled([tools["codeg-mcp"].delegate_to_agent({ agent_type: "codex", task: "A" }), tools["codeg-mcp"].delegate_to_agent({ agent_type: "zcode", task: "B" })]).then(rs => rs)"#).as_deref(),
+            Some("A")
+        );
+        assert_eq!(
+            key_task(r#"return await tools["codeg-mcp"].delegate_to_agent({ agent_type: "codex", task: "A" })"#).as_deref(),
+            Some("A")
+        );
+        // The first site may not run while a later one does: a branch, a
+        // deferred function or parameter default, a destructuring default, or
+        // a `${…}` the count cannot see; one case per construct.
+        for code in [
+            r#"const later = (x = tools["codeg-mcp"].delegate_to_agent({ agent_type: "codex", task: "decoy" })) => x; await tools["codeg-mcp"].delegate_to_agent({ agent_type: "codex", task: "real" })"#,
+            r#"const later = async (x = tools["codeg-mcp"].delegate_to_agent({ agent_type: "codex", task: "decoy" })) => x; await tools["codeg-mcp"].delegate_to_agent({ agent_type: "codex", task: "real" })"#,
+            r#"function later(x = tools["codeg-mcp"].delegate_to_agent({ agent_type: "codex", task: "decoy" })) { return x } await tools["codeg-mcp"].delegate_to_agent({ agent_type: "codex", task: "real" })"#,
+            r#"const [a = tools["codeg-mcp"].delegate_to_agent({ agent_type: "codex", task: "decoy" })] = [1]; await tools["codeg-mcp"].delegate_to_agent({ agent_type: "codex", task: "real" })"#,
+            r#"if (false) { await tools["codeg-mcp"].delegate_to_agent({ agent_type: "codex", task: "decoy" }) } const text = `${await tools["codeg-mcp"].delegate_to_agent({ agent_type: "codex", task: "real" })}`"#,
+            r#"const text = `${await tools["codeg-mcp"].delegate_to_agent({ agent_type: "codex", task: "real" })}`; if (c) { await tools["codeg-mcp"].delegate_to_agent({ agent_type: "codex", task: "decoy" }) }"#,
+            r#"c && await tools["codeg-mcp"].delegate_to_agent({ agent_type: "codex", task: "A" }); await tools["codeg-mcp"].delegate_to_agent({ agent_type: "zcode", task: "B" })"#,
+            r#"c || await tools["codeg-mcp"].delegate_to_agent({ agent_type: "codex", task: "A" }); await tools["codeg-mcp"].delegate_to_agent({ agent_type: "zcode", task: "B" })"#,
+            r#"switch (c) {} await tools["codeg-mcp"].delegate_to_agent({ agent_type: "codex", task: "A" }); await tools["codeg-mcp"].delegate_to_agent({ agent_type: "zcode", task: "B" })"#,
+            r#"for (const x of xs) {} await tools["codeg-mcp"].delegate_to_agent({ agent_type: "codex", task: "A" }); await tools["codeg-mcp"].delegate_to_agent({ agent_type: "zcode", task: "B" })"#,
+            r#"while (false) {} await tools["codeg-mcp"].delegate_to_agent({ agent_type: "codex", task: "A" }); await tools["codeg-mcp"].delegate_to_agent({ agent_type: "zcode", task: "B" })"#,
+            r#"do {} while (false); await tools["codeg-mcp"].delegate_to_agent({ agent_type: "codex", task: "A" }); await tools["codeg-mcp"].delegate_to_agent({ agent_type: "zcode", task: "B" })"#,
+            r#"try {} catch (e) {} await tools["codeg-mcp"].delegate_to_agent({ agent_type: "codex", task: "A" }); await tools["codeg-mcp"].delegate_to_agent({ agent_type: "zcode", task: "B" })"#,
+            r#"const t = `${await tools["codeg-mcp"].delegate_to_agent({ agent_type: "codex", task: "real" })}`; return t; await tools["codeg-mcp"].delegate_to_agent({ agent_type: "codex", task: "A" }); await tools["codeg-mcp"].delegate_to_agent({ agent_type: "zcode", task: "B" })"#,
+            r#"const f = (x = tools["codeg-mcp"].delegate_to_agent({ agent_type: "codex", task: "decoy" }), y = 1 / 2) => x; await tools["codeg-mcp"].delegate_to_agent({ agent_type: "codex", task: "real" })"#,
+            r#"if (false) { await tools["codeg-mcp"].delegate_to_agent({ agent_type: "codex", task: "decoy" }) } await tools["codeg-mcp"].delegate_to_agent({ agent_type: "codex", task: "real" })"#,
+            r#"c ? tools["codeg-mcp"].delegate_to_agent({ agent_type: "codex", task: "A" }) : tools["codeg-mcp"].delegate_to_agent({ agent_type: "zcode", task: "B" })"#,
+            r#"if (c) await tools["codeg-mcp"].delegate_to_agent({ agent_type: "codex", task: "A" }); else await tools["codeg-mcp"].delegate_to_agent({ agent_type: "zcode", task: "B" })"#,
+            r#"const later = () => tools["codeg-mcp"].delegate_to_agent({ agent_type: "codex", task: "A" }); await tools["codeg-mcp"].delegate_to_agent({ agent_type: "zcode", task: "B" })"#,
+            r#"async function go() { await tools["codeg-mcp"].delegate_to_agent({ agent_type: "codex", task: "A" }) } await tools["codeg-mcp"].delegate_to_agent({ agent_type: "zcode", task: "B" })"#,
+        ] {
+            assert_eq!(key_task(code), None, "{code}");
+        }
+    }
+
+    #[test]
+    fn code_mode_key_bails_when_later_syntax_can_override_or_hide_a_key() {
+        // Each passes a different `task`/`agent_type` at runtime than an
+        // earlier explicit spelling: a later shorthand, a Unicode-escaped key
+        // (`\u0074ask` IS `task`), a ternary (whose string reads like a key
+        // before its `:`), an optional chain, and a duplicate key behind
+        // non-ASCII whitespace the word matcher cannot see.
+        let cases = [
+            r#"tools["codeg-mcp"].delegate_to_agent({ agent_type: "codex", task: "decoy", task })"#,
+            r#"tools["codeg-mcp"].delegate_to_agent({ agent_type: "codex", task: "t", agent_type })"#,
+            r#"tools["codeg-mcp"].delegate_to_agent({ agent_type: "codex", task: "decoy", \u0074ask: "real" })"#,
+            r#"tools["codeg-mcp"].delegate_to_agent({ agent_type: "codex", task: c ? "task" : "real" })"#,
+            r#"tools["codeg-mcp"].delegate_to_agent({ agent_type: c ? "agent_type" : "codex", task: "t" })"#,
+            r#"tools["codeg-mcp"].delegate_to_agent({ agent_type: "codex", task: obj?.task })"#,
+            "tools[\"codeg-mcp\"].delegate_to_agent({ agent_type: \"codex\", task: \"decoy\",\u{a0}task: \"real\" })",
+            "tools[\"codeg-mcp\"].delegate_to_agent({ agent_type: \"codex\", task: \"decoy\",\u{feff}task: \"real\" })",
+        ];
+        for code in cases {
+            let raw = serde_json::json!({ "code": code }).to_string();
+            assert!(
+                extract_delegation_match_key(Some(&raw)).is_none(),
+                "expected unkeyed for {code}"
+            );
+            assert!(is_delegation_invocation("execute", Some(&raw)));
+        }
+    }
+
+    #[test]
     fn code_mode_line_comments_end_at_every_js_line_terminator() {
         // ECMA-262 line comments end at CR, LF, U+2028 and U+2029; a scanner
         // stopping only at LF would swallow the real code after the others.
@@ -2136,10 +2459,17 @@ mod delegation_title_tests {
         let key = extract_delegation_match_key(Some(&raw)).expect("CR comment ends");
         assert_eq!(key.task, "t");
 
-        let ls = "tools[\"codeg-mcp\"].delegate_to_agent({ // pick\u{2028} agent_type: \"codex\", task: `t` })";
+        let ls = "// delegate\u{2028}await tools[\"codeg-mcp\"].delegate_to_agent({ agent_type: \"codex\", task: `t` })";
         let raw = serde_json::json!({ "code": ls }).to_string();
         let key = extract_delegation_match_key(Some(&raw)).expect("LS comment ends");
         assert_eq!(key.task, "t");
+
+        // Inside the argument object the terminator is non-ASCII code the word
+        // matcher cannot delimit, so the key degrades rather than guesses.
+        let ls_in_args = "tools[\"codeg-mcp\"].delegate_to_agent({ // pick\u{2028} agent_type: \"codex\", task: `t` })";
+        let raw = serde_json::json!({ "code": ls_in_args }).to_string();
+        assert!(extract_delegation_match_key(Some(&raw)).is_none());
+        assert!(is_delegation_invocation("execute", Some(&raw)));
     }
 
     #[test]

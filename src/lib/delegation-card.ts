@@ -250,7 +250,9 @@ function findDelegationArgs(
 // TV-normalized to LF).
 // ---------------------------------------------------------------------------
 
-const CODE_MODE_MAX_CODE_LENGTH = 1 << 20
+// Scan cap in UTF-8 bytes, the unit the backend measures (`code.len()`), so
+// the two sides recognize the same payloads.
+const CODE_MODE_MAX_CODE_BYTES = 1 << 20
 const CODE_MODE_MAX_TEMPLATE_FRAMES = 16
 
 type JsTemplateFrame =
@@ -384,36 +386,158 @@ function skipJsWsAndComments(code: string, i: number): number {
   }
 }
 
-/** `(open, close)` of the `(` … `)` wrapping the first `delegate_to_agent(`
- *  call reached via a `tools` accessor, or `null`. */
-function codeModeCallSpan(code: string): [number, number] | null {
-  if (code.length > CODE_MODE_MAX_CODE_LENGTH) return null
+/** Whether `code` is longer than `cap` UTF-8 bytes, counted without
+ *  encoding it: a UTF-16 unit is 1–3 bytes (a surrogate pair is 4 for two). */
+function utf8LengthExceeds(code: string, cap: number): boolean {
+  if (code.length > cap) return true
+  if (code.length * 3 <= cap) return false
+  let bytes = 0
+  for (let i = 0; i < code.length; i += 1) {
+    const c = code.charCodeAt(i)
+    bytes += c < 0x80 ? 1 : c < 0x800 || (c >= 0xd800 && c <= 0xdfff) ? 2 : 3
+    if (bytes > cap) return true
+  }
+  return false
+}
+
+/** Keywords that make what follows them conditional, repeated or deferred;
+ *  `function` defers its body and its parameter defaults alike. Mirrors
+ *  `CODE_MODE_BRANCH_KEYWORDS` in `acp/lifecycle.rs`. */
+const CODE_MODE_BRANCH_KEYWORDS = [
+  "if",
+  "else",
+  "switch",
+  "for",
+  "while",
+  "do",
+  "catch",
+  "yield",
+  "function",
+]
+
+/** The first `delegate_to_agent(` call reached via a `tools` accessor: the
+ *  `(open, close)` of its argument list, and whether those arguments may be
+ *  read as the delegation's — it is the only call site in a scan that
+ *  reached the end of the script, or it provably runs before any other (at
+ *  brace depth 0, outside any parameter list or destructuring pattern, with
+ *  nothing before it that branches, defers or hides code in a `${…}`).
+ *  `null` past the scan cap, on unbalanced input before the call, with no
+ *  such call, or when a `/` that is no comment precedes the call: a regex
+ *  literal is indistinguishable from division here, and its body can carry
+ *  the quote or backtick that desynchronizes everything after it. Mirrors
+ *  `code_mode_call_site` in `acp/lifecycle.rs`. */
+function codeModeCallSite(
+  code: string
+): { open: number; close: number; readable: boolean } | null {
+  if (utf8LengthExceeds(code, CODE_MODE_MAX_CODE_BYTES)) return null
   let i = 0
-  while (i < code.length) {
+  let depth = 0
+  // The `(` / `[` groups open at `i`, innermost last.
+  const groups: string[] = []
+  let branched = false
+  let first: { open: number; close: number } | null = null
+  let runsFirst = false
+  // How many groups enclosing the first site have yet to close; each must
+  // close as a call, a grouping or an array — not as an arrow's parameter
+  // list or a destructuring pattern, whose defaults run only when a value is
+  // missing.
+  let enclosing = 0
+  let sites = 0
+  let counted = true
+  scan: while (i < code.length) {
     const c = code[i]
-    if (c === "'" || c === '"') {
-      const end = skipJsString(code, i)
-      if (end === null) return null
-      i = end
-    } else if (c === "`") {
-      const end = skipJsTemplate(code, i)
-      if (end === null) return null
+    if (c === "'" || c === '"' || c === "`") {
+      const end = c === "`" ? skipJsTemplate(code, i) : skipJsString(code, i)
+      if (end === null) {
+        if (first === null) return null
+        counted = false
+        break
+      }
+      // A `${…}` runs code the scan skips: a call in it is one the count
+      // cannot see, and before the first site it may run first.
+      if (c === "`" && code.slice(i, end).includes("${")) {
+        counted = false
+        if (first === null) branched = true
+      }
       i = end
     } else if (c === "/" && (code[i + 1] === "/" || code[i + 1] === "*")) {
       i = skipJsWsAndComments(code, i)
-    } else if (isJsWordAt(code, i, "tools")) {
-      const open = codeModeToolsCallOpen(code, i)
-      if (open !== null) {
-        const close = matchingParen(code, open)
-        if (close === null) return null
-        return [open, close]
-      }
+    } else if (c === "/") {
+      if (first === null) return null
+      counted = false
+      break
+    } else if (c === "{") {
+      depth += 1
       i += 1
+    } else if (c === "}") {
+      depth -= 1
+      i += 1
+    } else if (c === "(" || c === "[") {
+      groups.push(c)
+      i += 1
+    } else if (c === ")" || c === "]") {
+      groups.pop()
+      i += 1
+      if (enclosing > groups.length) {
+        enclosing = groups.length
+        const next = skipJsWsAndComments(code, i)
+        const parameters =
+          c === ")" && code[next] === "=" && code[next + 1] === ">"
+        const pattern =
+          c === "]" &&
+          code[next] === "=" &&
+          code[next + 1] !== "=" &&
+          code[next + 1] !== ">"
+        if (parameters || pattern) runsFirst = false
+      }
+    } else if (c === "?") {
+      branched = true
+      i += 1
+    } else if ((c === "&" || c === "|") && code[i + 1] === c) {
+      branched = true
+      i += 2
+    } else if (c === "=" && code[i + 1] === ">") {
+      branched = true
+      i += 2
     } else {
+      for (const keyword of CODE_MODE_BRANCH_KEYWORDS) {
+        if (isJsWordAt(code, i, keyword)) {
+          branched = true
+          i += 1
+          continue scan
+        }
+      }
+      if (isJsWordAt(code, i, "tools")) {
+        const open = codeModeToolsCallOpen(code, i)
+        if (open !== null) {
+          const close = matchingParen(code, open)
+          if (close === null) {
+            if (first === null) return null
+            counted = false
+            break
+          }
+          sites += 1
+          if (first === null) {
+            first = { open, close }
+            runsFirst = depth === 0 && !branched
+            enclosing = groups.length
+          }
+          i = close + 1
+          continue
+        }
+      }
       i += 1
     }
   }
-  return null
+  if (first === null) return null
+  // A group around the first site that never closed in the scan could still
+  // be a parameter list or a pattern.
+  const provable = runsFirst && enclosing === 0
+  return {
+    open: first.open,
+    close: first.close,
+    readable: provable || (sites === 1 && counted),
+  }
 }
 
 function codeModeToolsCallOpen(code: string, toolsAt: number): number | null {
@@ -448,6 +572,18 @@ function codeModeToolsCallOpen(code: string, toolsAt: number): number | null {
 }
 
 function matchingParen(code: string, open: number): number | null {
+  return matchingClose(code, open, "(", ")")
+}
+
+/** Offset of the `closeCh` matching the `openCh` at `open`, skipping
+ *  strings, templates, and comments. Mirrors `matching_close` in
+ *  `acp/lifecycle.rs`. */
+function matchingClose(
+  code: string,
+  open: number,
+  openCh: string,
+  closeCh: string
+): number | null {
   let depth = 0
   let i = open
   while (i < code.length) {
@@ -462,10 +598,10 @@ function matchingParen(code: string, open: number): number | null {
       i = end
     } else if (c === "/" && (code[i + 1] === "/" || code[i + 1] === "*")) {
       i = skipJsWsAndComments(code, i)
-    } else if (c === "(") {
+    } else if (c === openCh) {
       depth += 1
       i += 1
-    } else if (c === ")") {
+    } else if (c === closeCh) {
       depth -= 1
       if (depth === 0) return i
       i += 1
@@ -474,6 +610,26 @@ function matchingParen(code: string, open: number): number | null {
     }
   }
   return null
+}
+
+/** Whether the call's argument list `(open, close)` holds exactly ONE object
+ *  literal (a trailing comma aside): its first token is `{` and the matching
+ *  `}` is followed only by whitespace/comments before the call's `)`. Any
+ *  other shape — `c ? {…} : {…}`, `x || {…}`, `{…}.y`, a variable — passes
+ *  something the literal alone does not determine. Mirrors
+ *  `code_mode_single_object_argument` in `acp/lifecycle.rs`. */
+function codeModeSingleObjectArgument(
+  code: string,
+  open: number,
+  close: number
+): boolean {
+  const start = skipJsWsAndComments(code, open + 1)
+  if (code[start] !== "{") return false
+  const objectClose = matchingClose(code, start, "{", "}")
+  if (objectClose === null) return false
+  let after = skipJsWsAndComments(code, objectClose + 1)
+  if (code[after] === ",") after = skipJsWsAndComments(code, after + 1)
+  return after === close
 }
 
 /** Unit offset of the VALUE of a top-level `key:` inside `[start, end)`,
@@ -714,21 +870,28 @@ function templateLiteralTextEnd(
   return null
 }
 
-/** The `code` source and its call span for a recognized code-mode delegation
- *  payload, or `null`. The exact frontend mirror of `code_mode_delegation_code`
- *  in `acp/lifecycle.rs`: same predicate, so a card renders exactly when the
- *  backend registers the call. */
-function codeModeCallOf(
-  parsed: unknown
-): { code: string; span: [number, number] } | null {
+/** The `code` source and its first call site for a recognized code-mode
+ *  delegation payload, or `null`. The frontend mirror of
+ *  `code_mode_delegation_code` in `acp/lifecycle.rs`: same predicate, so a
+ *  card renders exactly when the backend registers the call. */
+function codeModeCallOf(parsed: unknown): {
+  code: string
+  site: { open: number; close: number; readable: boolean }
+} | null {
   if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
     return null
   }
   const code = (parsed as Record<string, unknown>).code
   if (typeof code !== "string") return null
-  const span = codeModeCallSpan(code)
-  return span === null ? null : { code, span }
+  const site = codeModeCallSite(code)
+  return site === null ? null : { code, site }
 }
+
+/** The argument keys the scanner reads; a bare one not followed by `:` is a
+ *  SHORTHAND property (or a variable in value position) — either way its
+ *  value is a runtime value, and a shorthand after an explicit spelling
+ *  overrides it. */
+const CODE_MODE_ARG_KEYS = ["agent_type", "task", "working_dir", "assistant_id"]
 
 /** Conservative pre-pass over the argument region: `false` when the region
  *  contains syntax whose effect the scanner cannot evaluate. Spread
@@ -736,9 +899,13 @@ function codeModeCallOf(
  *  (`["assistant_id"]: 3`) and array values; a quoted KEY containing a
  *  backslash evaluates to an unknowable spelling; a `(`/`)` or a non-comment
  *  `/` is a call/parenthesized/division/regex expression the scanner cannot
- *  evaluate; a bare `working_dir` / `assistant_id` identifier is a SHORTHAND
- *  property whose value is the variable's runtime value. Each degrades the
- *  parse to `null`. Mirrors `code_mode_args_transparent` in
+ *  evaluate; a `?` is a conditional, optional chain or `??` (a ternary would
+ *  also put a value string in front of a `:`, where it reads as a key); a
+ *  `\` outside a string is a Unicode-escaped identifier (`\u0074ask` IS
+ *  `task`); a non-ASCII character outside a string is a Unicode identifier
+ *  or whitespace the ASCII word matcher cannot delimit; a bare argument key
+ *  is a SHORTHAND property whose value is the variable's runtime value. Each
+ *  degrades the parse to unreadable. Mirrors `code_mode_args_transparent` in
  *  `acp/lifecycle.rs`. */
 function codeModeArgsTransparent(
   code: string,
@@ -746,7 +913,7 @@ function codeModeArgsTransparent(
   end: number
 ): boolean {
   let i = start
-  while (i < end) {
+  scan: while (i < end) {
     const c = code[i]
     if (c === "'" || c === '"') {
       const s = skipJsString(code, i)
@@ -764,19 +931,20 @@ function codeModeArgsTransparent(
       i = skipJsWsAndComments(code, i)
     } else if (c === "/" || c === "(" || c === ")") {
       return false
-    } else if (c === "[") {
+    } else if (c === "[" || c === "?" || c === "\\") {
+      return false
+    } else if (code.charCodeAt(i) >= 0x80) {
       return false
     } else if (c === "." && code[i + 1] === "." && code[i + 2] === ".") {
       return false
-    } else if (isJsWordAt(code, i, "working_dir")) {
-      const after = skipJsWsAndComments(code, i + "working_dir".length)
-      if (code[after] !== ":") return false
-      i += "working_dir".length
-    } else if (isJsWordAt(code, i, "assistant_id")) {
-      const after = skipJsWsAndComments(code, i + "assistant_id".length)
-      if (code[after] !== ":") return false
-      i += "assistant_id".length
     } else {
+      for (const key of CODE_MODE_ARG_KEYS) {
+        if (!isJsWordAt(code, i, key)) continue
+        const after = skipJsWsAndComments(code, i + key.length)
+        if (code[after] !== ":") return false
+        i += key.length
+        continue scan
+      }
       i += 1
     }
   }
@@ -799,21 +967,32 @@ function readAssistantIdValue(code: string, at: number): string | null {
   return code.slice(at, i)
 }
 
-/** Parse a code-mode payload's arguments out of the JS source. The region is
- *  first screened by [`codeModeArgsTransparent`]: syntax the scanner cannot
- *  evaluate (spread, computed keys, escaped quoted keys) could hide an
- *  `assistant_id` or change any value, so the whole parse degrades to `null`
- *  and the card renders the generic task row — correlation goes through the
- *  tool_call id binding, not these values, so unlike the backend key there is
- *  nothing to mint wrong. Readable values become card content; unreadable
- *  ones (interpolation, unknown escapes) stay `null` per field. */
+/** Parse a code-mode payload's arguments out of the JS source; `null` when the
+ *  payload is no code-mode delegation call at all. The argument must be one
+ *  object literal ([`codeModeSingleObjectArgument`]) and its region is
+ *  screened by [`codeModeArgsTransparent`]: syntax the scanner cannot
+ *  evaluate (spread, computed keys, escaped quoted keys, conditionals) could
+ *  hide an `assistant_id` or change any value, so every field reads as
+ *  unknown and the card renders the generic task row — correlation goes
+ *  through the tool_call id binding, not these values, so unlike the backend
+ *  key there is nothing to mint wrong. Readable values become card content;
+ *  unreadable ones (interpolation, unknown escapes) stay `null` per field. */
 function parseCodeModeInput(parsed: unknown): ParsedInput | null {
   const call = codeModeCallOf(parsed)
   if (call === null) return null
-  const { code, span } = call
-  const [open, close] = span
+  const { code, site } = call
+  const { open, close } = site
   const start = open + 1
-  if (!codeModeArgsTransparent(code, start, close)) return null
+  // A recognized call whose arguments can't be read is an expected shape,
+  // not an unknown wrapper: answer "nothing readable" here so `parseInput`
+  // doesn't log its unknown-shape breadcrumb on every render.
+  if (
+    !site.readable ||
+    !codeModeSingleObjectArgument(code, open, close) ||
+    !codeModeArgsTransparent(code, start, close)
+  ) {
+    return EMPTY_PARSED_INPUT
+  }
   const assistantAt = codeModeFindKey(code, start, close, "assistant_id")
   const agentAt = codeModeFindKey(code, start, close, "agent_type")
   const workingAt = codeModeFindKey(code, start, close, "working_dir")
