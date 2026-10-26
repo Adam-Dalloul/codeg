@@ -772,19 +772,16 @@ pub fn parse_antigravity_ask(tool_call: &Value) -> Option<AntigravityAsk> {
 
     let target_obj = if let Some(args) = input_value.get("arguments").and_then(|v| v.as_object()) {
         args
-    } else if let Some(obj) = input_value.as_object() {
-        obj
     } else {
-        return None;
+        input_value.as_object()?
     };
 
     let questions_val = target_obj.get("questions")?;
     let questions_arr: Vec<Value> = if let Some(arr) = questions_val.as_array() {
         arr.clone()
-    } else if let Some(s) = questions_val.as_str() {
-        serde_json::from_str(s).ok()?
     } else {
-        return None;
+        let s = questions_val.as_str()?;
+        serde_json::from_str(s).ok()?
     };
 
     if !(1..=MAX_QUESTIONS).contains(&questions_arr.len()) {
@@ -831,10 +828,9 @@ pub fn parse_antigravity_ask(tool_call: &Value) -> Option<AntigravityAsk> {
                 s.trim()
             } else if let Some(label_str) = opt.get("label").and_then(|v| v.as_str()) {
                 label_str.trim()
-            } else if let Some(text_str) = opt.get("text").and_then(|v| v.as_str()) {
-                text_str.trim()
             } else {
-                return None;
+                let text_str = opt.get("text").and_then(|v| v.as_str())?;
+                text_str.trim()
             };
 
             if label.is_empty() || label.chars().count() > MAX_QUESTION_TEXT_CHARS {
