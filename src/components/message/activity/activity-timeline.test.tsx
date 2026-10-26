@@ -597,11 +597,30 @@ describe("activity timeline: failures", () => {
     vi.restoreAllMocks()
   })
 
-  it("opens a failure nobody redid and says so in red in the header", () => {
+  it("leaves a failed command folded, its failure in red on its row and in the header", () => {
+    // A command that exits non-zero is routine — a test run mid-fix, a grep
+    // with no match — and opening its output by itself pushed the reply about.
+    // The red `exit 2` and the header's count say it failed; the output is a
+    // click away.
     renderSettled(partsOf(FAILURE))
     expect(screen.getByText("1 failed")).toBeTruthy()
     const row = rowOf("pnpm build")
     expect(within(row).getByText("exit 2")).toBeTruthy()
+    const header = within(row).getByRole("button")
+    expect(header).toHaveAttribute("aria-expanded", "false")
+    expect(within(row).queryByText(/Type error/)).toBeNull()
+    fireEvent.click(header)
+    expect(within(row).getByText(/Type error/)).toBeTruthy()
+  })
+
+  it("opens the failed command from the header's red count", () => {
+    renderSettled(partsOf(FAILURE))
+    fireEvent.click(screen.getByRole("button", { name: "1 failed" }))
+    const row = rowOf("pnpm build")
+    expect(within(row).getAllByRole("button")[0]).toHaveAttribute(
+      "aria-expanded",
+      "true"
+    )
     expect(within(row).getByText(/Type error/)).toBeTruthy()
   })
 
@@ -1070,7 +1089,8 @@ describe("activity timeline: codex scripts", () => {
   ): HTMLElement {
     renderSettled(partsOf(scriptTurn(output, failed, title)))
     const row = rowOf("Script")
-    if (!failed) fireEvent.click(within(row).getAllByRole("button")[0]!)
+    // Folded however it ended: the reader opens it.
+    fireEvent.click(within(row).getAllByRole("button")[0]!)
     return row.querySelector(".activity-detail-box") as HTMLElement
   }
 

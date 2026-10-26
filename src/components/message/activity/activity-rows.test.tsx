@@ -729,6 +729,86 @@ describe("a command group in a reply being written", () => {
   })
 })
 
+describe("a failed command", () => {
+  const live = (blocks: ContentBlock[]): MessageTurn => ({
+    id: "t-failed",
+    role: "assistant",
+    timestamp: "2026-10-23T10:00:00Z",
+    blocks,
+  })
+  const FAILED = [
+    toolUse("c1", "Bash", { command: "pnpm lint" }),
+    toolResult("c1", "ok"),
+    toolUse("c2", "Bash", { command: "pnpm test" }),
+    toolResult(
+      "c2",
+      "1 failed, 47 passed\n[terminal exited: exit code: 1]",
+      true
+    ),
+  ]
+  const READ = toolUse("r1", "Read", { file_path: "/r/a.ts" })
+  const group = () =>
+    screen.getByRole("button", { name: /^(Ran|Running) 2 commands/ })
+
+  it("stays folded on its own while the reply is written, and once it is done", () => {
+    const LONE = [
+      toolUse("c1", "Bash", { command: "pnpm build" }),
+      toolResult("c1", "Type error\n[terminal exited: exit code: 2]", true),
+    ]
+    const view = renderUi(
+      <Round
+        parts={parts(live([...LONE, READ]), true, ["r1"])}
+        completed={false}
+      />
+    )
+    const row = rowOf("pnpm build")
+    expect(row.getAttribute("data-status")).toBe("failed")
+    expect(within(row).getByText("exit 2")).toBeTruthy()
+    expect(within(row).getByRole("button")).toHaveAttribute(
+      "aria-expanded",
+      "false"
+    )
+    expect(screen.queryByText(/Type error/)).toBeNull()
+    view.rerender(withProviders(<Round parts={parts(turn([...LONE, READ]))} />))
+    expect(within(rowOf("pnpm build")).getByRole("button")).toHaveAttribute(
+      "aria-expanded",
+      "false"
+    )
+    expect(screen.queryByText(/Type error/)).toBeNull()
+  })
+
+  it("keeps its group open no longer than a passing one while the reply is written", () => {
+    const view = renderUi(
+      <Round parts={parts(live(FAILED), true)} completed={false} />
+    )
+    // Still the reply's last row: listed, the failed member folded in it.
+    expect(group()).toHaveAttribute("aria-expanded", "true")
+    expect(within(rowOf("pnpm test")).getByText("exit 1")).toBeTruthy()
+    expect(screen.queryByText(/1 failed, 47 passed/)).toBeNull()
+    // The reply moves past it: it folds, failure and all.
+    view.rerender(
+      withProviders(
+        <Round
+          parts={parts(live([...FAILED, READ]), true, ["r1"])}
+          completed={false}
+        />
+      )
+    )
+    expect(group()).toHaveAttribute("aria-expanded", "false")
+    expect(screen.queryByText("pnpm test")).toBeNull()
+    // Its header still counts the failure, in red.
+    expect(within(group()).getByText("1 failed")).toHaveClass(
+      "text-tone-danger"
+    )
+  })
+
+  it("leaves its group folded in a reply read back from history", () => {
+    renderUi(<Round parts={parts(turn(FAILED))} />)
+    expect(group()).toHaveAttribute("aria-expanded", "false")
+    expect(screen.queryByText("pnpm test")).toBeNull()
+  })
+})
+
 describe("a reply's rail while it is written", () => {
   const live = (blocks: ContentBlock[]): MessageTurn => ({
     id: "t-rail",
