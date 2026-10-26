@@ -2143,7 +2143,7 @@ export function MessageListView({
           )}
         </MessageThread>
         {liveMessage && connStatus === "prompting" && (
-          <LiveTurnStats message={liveMessage} agentType={agentType} />
+          <LiveTurnStats message={liveMessage} />
         )}
         {/* Overlay stack pinned to the inline-start edge (top-left in LTR,
         top-right in RTL) — only where the plan and sub-agents have no side

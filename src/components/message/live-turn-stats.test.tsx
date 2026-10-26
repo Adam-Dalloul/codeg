@@ -112,11 +112,11 @@ describe("LiveTurnStats", () => {
     vi.useRealTimers()
   })
 
-  // What the turn is doing — thinking, running a step, writing — is the
-  // transcript's to say: its header reads "Working", the step shimmers and a
-  // capsule turns at the foot of its rail. The row above the composer keeps
-  // only its figures.
-  it("follows the agent's mark with the time, with no word for what it is doing", () => {
+  // That the agent is at work, and at what — thinking, running a step,
+  // writing — is the transcript's to say: its header reads "Working", the step
+  // shimmers and a ring turns at the foot of its rail. The row above the
+  // composer keeps only its figures: no word, and no pulsing agent mark.
+  it("opens on the time, with no mark or word for what the agent is doing", () => {
     vi.useFakeTimers()
     vi.setSystemTime(65_000)
     for (const content of [
@@ -125,15 +125,17 @@ describe("LiveTurnStats", () => {
     ]) {
       const view = render(
         <NextIntlClientProvider locale="en" messages={enMessages}>
-          <LiveTurnStats message={msg(content)} agentType="claude_code" />
+          <LiveTurnStats message={msg(content)} />
         </NextIntlClientProvider>
       )
       const row = view.container.firstElementChild!.firstElementChild!
-      const [mark, time] = [...row.children]
-      expect(mark!.getAttribute("class")).toMatch(/\banimate-pulse\b/)
-      expect(time!.querySelector("svg.lucide-timer")).toBeTruthy()
-      // Past the mark (an icon, titled with the agent's name), only the time.
-      expect(row.textContent!.slice(mark!.textContent!.length)).toBe("1m 5s")
+      expect(row.children).toHaveLength(1)
+      expect(
+        row.firstElementChild!.querySelector("svg.lucide-timer")
+      ).toBeTruthy()
+      expect(row.querySelectorAll("svg")).toHaveLength(1)
+      expect(row.querySelector(".animate-pulse")).toBeNull()
+      expect(row.textContent).toBe("1m 5s")
       view.unmount()
     }
   })
