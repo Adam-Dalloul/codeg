@@ -41,9 +41,11 @@ import {
   type CommandExit,
   extractDisplayCommandFromToolInput,
   extractWallTimeMs,
+  normalizeCommandOutput,
   simplifyShellCommand,
 } from "./command"
 import { describeEditFiles } from "./edit"
+import { isExitAnswer, readCommandExit, signalOfExitCode } from "./exit-meaning"
 import {
   readLineCount,
   searchResultText,
@@ -256,6 +258,7 @@ function emptyDescriptor(
     notes: [],
     metric: null,
     exit: null,
+    exitMeaning: null,
     command: null,
     files: null,
     mcp: null,
@@ -345,17 +348,35 @@ function describeCommand(
     : toolCallMovedToBackground(part.meta) && isUnsettledToolCall(part)
       ? { taskId: null }
       : null
-  const exit =
+  const reported =
     base.status === "failed"
       ? (structuredExit(part) ?? extractCommandExit(payload.output))
       : null
+  // A non-zero exit on a call that still reports success is the program's
+  // own text, not its status; only a failure gets an exit badge.
+  const exit =
+    reported && (reported.code !== 0 || reported.signal)
+      ? {
+          code: reported.code,
+          signal: reported.signal ?? signalOfExitCode(reported.code),
+        }
+      : null
+  const exitMeaning = exit
+    ? readCommandExit(
+        display,
+        exit,
+        payload.output ? normalizeCommandOutput(payload.output) : ""
+      )
+    : null
   return {
     ...base,
+    // An exit that answers the command's question — a search that matched
+    // nothing — is no failure.
+    status: isExitAnswer(exitMeaning) ? "succeeded" : base.status,
     command,
     background,
-    // A non-zero exit on a call that still reports success is the program's
-    // own text, not its status; only a failure gets an exit badge.
-    exit: exit && (exit.code !== 0 || exit.signal) ? exit : null,
+    exit,
+    exitMeaning,
   }
 }
 

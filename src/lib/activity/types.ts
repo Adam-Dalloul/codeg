@@ -8,6 +8,7 @@ import type {
 import type { ToolApproval } from "./approval"
 import type { CommandExit, HeredocCommand } from "./command"
 import type { EditFileChange } from "./edit"
+import type { ExitMeaning } from "./exit-meaning"
 import type { McpIdentity } from "./mcp"
 import type { StepStatus } from "./status"
 
@@ -124,8 +125,13 @@ export interface ToolDescriptor {
   detail: string | null
   notes: ToolNote[]
   metric: ToolMetric | null
-  /** A failed command's exit status, when the result reported one. */
+  /** A command's non-zero exit status, when the result reported one: a
+   *  failure's, or one that answers the command's question (`exitMeaning`). */
   exit: CommandExit | null
+  /** What that exit says: an answer — a search that matched nothing, a test
+   *  that came out false; the command succeeded — or a failure the code
+   *  names (`exit-meaning.ts`). */
+  exitMeaning: ExitMeaning | null
   command: CommandInfo | null
   files: EditFileChange[] | null
   mcp: McpIdentity | null

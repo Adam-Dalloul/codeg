@@ -1034,6 +1034,47 @@ describe("command row", () => {
   })
 })
 
+describe("a command's exit", () => {
+  const EXITS = [
+    toolUse("n1", "Bash", { command: "rg -n source_bindings web/lib" }),
+    toolResult("n1", "Exit code 1", true),
+    { type: "text", text: "Nothing reads it there." },
+    toolUse("n2", "Bash", { command: "pyhton x.py" }),
+    toolResult(
+      "n2",
+      "Exit code 127\n(eval):1: command not found: pyhton",
+      true
+    ),
+    { type: "text", text: "Wrong name." },
+    toolUse("n3", "Bash", { command: "node crawl.js" }),
+    toolResult("n3", "Exit code 137", true),
+    { type: "text", text: "It was killed." },
+  ] satisfies ContentBlock[]
+
+  it("settles one that answered the command as done, saying the answer", () => {
+    renderUi(<Round parts={parts(turn(EXITS))} />)
+    const row = rowOf("rg -n source_bindings web/lib")
+    expect(row).toHaveAttribute("data-status", "succeeded")
+    const figure = within(row).getByText("no matches")
+    expect(figure).toHaveAttribute("title", "exit 1")
+    expect(figure).not.toHaveClass("text-tone-danger")
+    // Not counted with the failures in the reply's header.
+    expect(screen.getByText("2 failed")).toBeTruthy()
+  })
+
+  it("says a failure in the words its code stands for, the code on hover", () => {
+    renderUi(<Round parts={parts(turn(EXITS))} />)
+    const missing = rowOf("pyhton x.py")
+    expect(missing).toHaveAttribute("data-status", "failed")
+    const word = within(missing).getByText("command not found")
+    expect(word).toHaveClass("text-tone-danger")
+    expect(word).toHaveAttribute("title", "exit 127")
+    expect(
+      within(rowOf("node crawl.js")).getByText("killed · SIGKILL")
+    ).toHaveAttribute("title", "exit 137")
+  })
+})
+
 describe("a row's figure", () => {
   it("takes the room past the label, which does not grow", () => {
     renderUi(
