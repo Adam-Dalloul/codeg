@@ -101,7 +101,7 @@ describe("CompletedTurnContent with nothing left to show", () => {
     // now — but with no toggle that could hide the reply.
     expect(screen.getByText("Activity")).toBeInTheDocument()
     // The time follows the step count on the same line.
-    const header = document.querySelector(".ws-msg-chip")!
+    const header = document.querySelector("div.activity-capsule")!
     expect(header.textContent).toMatch(/5s$/)
     expect(queryToggle()).toBeNull()
     expect(screen.getByText("Wrapping up.")).toBeInTheDocument()
@@ -161,7 +161,7 @@ describe("CompletedTurnContent", () => {
       />
     )
 
-    expect(document.querySelector(".ws-msg-chip")!.textContent).toMatch(
+    expect(document.querySelector("div.activity-capsule")!.textContent).toMatch(
       /1m 9s$/
     )
     const trigger = toggle()

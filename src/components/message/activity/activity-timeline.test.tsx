@@ -34,6 +34,7 @@ import {
 } from "@/lib/activity/__fixtures__/mockup-turn"
 import type { MessageTurn } from "@/lib/types"
 import { mockTruncateLayout } from "@/test-layout"
+import { Message, MessageContent } from "@/components/ai-elements/message"
 import { CompletedTurnContent } from "../completed-turn-content"
 import { resetDisclosureStore } from "./disclosure-store"
 
@@ -114,7 +115,7 @@ const foldControl = (label = "Activity") =>
 
 /** The capsule itself — the line the label, the figures and the time share. */
 const activityHeader = () =>
-  document.querySelector<HTMLElement>(".ws-msg-chip")!
+  document.querySelector<HTMLElement>("div.activity-capsule")!
 
 /** The timeline row whose header contains `text`. */
 function rowOf(text: string | RegExp): HTMLElement {
@@ -417,7 +418,6 @@ describe("activity timeline: the reference turn", () => {
     renderSettled(partsOf(MOCKUP_ASSISTANT_TURN))
     const header = activityHeader()
     expect(header.className).toMatch(/\brounded-full\b/)
-    expect(header.className).toMatch(/\bws-msg-chip\b/)
     const classes = header.className.split(/\s+/)
     expect(classes).toContain("w-fit")
     // `max-w-full` is not `w-full`: the capsule caps at the column, it does
@@ -425,6 +425,71 @@ describe("activity timeline: the reference turn", () => {
     expect(classes).not.toContain("w-full")
     expect(header.querySelector(".h-px")).toBeNull()
     expect(header.querySelector("span[aria-hidden='true'].flex-1")).toBeNull()
+  })
+
+  it("fills the header like the user's message bubble, its figures in the ink that reads on it", () => {
+    // `--muted` at 60% all but vanished on the page. The capsule takes the
+    // bubble's fill — opaque, and over a background image the same
+    // translucent tint and ring — with the summary and the time in the
+    // stronger muted ink, which keeps 4.5:1 on it.
+    renderSettled(partsOf(MOCKUP_ASSISTANT_TURN))
+    const header = activityHeader()
+    const classes = header.className.split(/\s+/)
+    expect(classes).toContain("bg-activity-capsule")
+    expect(classes).toContain("hover:bg-activity-capsule-hover")
+    expect(classes.filter((name) => /bg-muted/.test(name))).toEqual([])
+    for (const figure of header.querySelectorAll(".activity-mono")) {
+      expect(figure).toHaveClass("text-activity-muted-strong")
+      expect(figure).not.toHaveClass("text-muted-foreground")
+    }
+    // The bubble's fill.
+    const bubble = render(
+      <Message from="user">
+        <MessageContent>hello</MessageContent>
+      </Message>
+    ).getByText("hello")
+    expect(bubble.className).toContain("group-[.is-user]:bg-secondary")
+    // The tokens, outside the fallback for engines without color-mix.
+    const flat = (value: string | undefined) =>
+      (value ?? "")
+        .replace(/\s+/g, " ")
+        .replace(/\( /g, "(")
+        .replace(/ \)/g, ")")
+    const css = postcss.parse(
+      readFileSync(resolve(process.cwd(), "src/app/globals.css"), "utf8")
+    )
+    const tokens = new Map<string, string>()
+    css.walkRules((rule) => {
+      if (rule.parent?.type !== "root") return
+      rule.walkDecls(/^--activity-capsule/, (decl) => {
+        tokens.set(`${rule.selector} ${decl.prop}`, flat(decl.value))
+      })
+    })
+    expect(tokens.get(":root --activity-capsule")).toBe("var(--secondary)")
+    // Over a background image, the bubble's translucent fill, word for word.
+    expect(tokens.get('[data-workspace-bg="on"] --activity-capsule')).toBe(
+      flat(
+        globalsDecl(
+          '[data-workspace-bg="on"] .is-user .ws-msg-secondary',
+          "background-color"
+        )
+      )
+    )
+    expect(
+      globalsDecl('[data-workspace-bg="on"] .activity-capsule', "box-shadow")
+    ).toBe(
+      globalsDecl(
+        '[data-workspace-bg="on"] .is-user .ws-msg-secondary',
+        "box-shadow"
+      )
+    )
+    // Hovered, a step deeper in either: set through the tokens, so the hover
+    // utility keeps working over the image too.
+    for (const scope of [":root", '[data-workspace-bg="on"]']) {
+      const hover = tokens.get(`${scope} --activity-capsule-hover`)
+      expect(hover).toMatch(/^color-mix\(/)
+      expect(hover).not.toBe(tokens.get(`${scope} --activity-capsule`))
+    }
   })
 
   it("makes the header a block 2rem tall", () => {
