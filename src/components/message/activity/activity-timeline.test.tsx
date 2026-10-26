@@ -888,7 +888,11 @@ describe("activity timeline: where the rail ends", () => {
     )!
     expect(classes(ring)).toEqual(classes(stepRing))
     const chevron = mark.querySelector("svg.lucide-chevron-up")!
-    expect(chevron.getAttribute("class")).toMatch(/\bsize-3\b/)
+    const stepGlyph = stepMark.querySelector("svg")!
+    expect(chevron.getAttribute("viewBox")).toBe(
+      stepGlyph.getAttribute("viewBox")
+    )
+    expect(chevron).toHaveClass("absolute", "inset-0", "size-full")
     // The words beside it say what it does: the ring is no image of its own.
     expect(mark.querySelector('[role="img"]')).toBeNull()
   })

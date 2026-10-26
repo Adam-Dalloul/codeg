@@ -1,11 +1,38 @@
 "use client"
 
 import type { ComponentType, ReactNode, SVGProps } from "react"
+import { CalendarClockIcon, FilePenLineIcon, ListTodoIcon } from "lucide-react"
 
 import type { StepStatus } from "@/lib/activity/types"
 import { cn } from "@/lib/utils"
 
 export type ActivityIcon = ComponentType<SVGProps<SVGSVGElement>>
+
+/**
+ * A glyph is drawn over the whole ring, its 24-unit drawing scaled to the
+ * middle by the viewBox: 12px of a 20px ring, 10px of a 16px one. Drawn in a
+ * box of its own, the glyph and the ring each snapped to the device pixels
+ * on their own — at 90% or 110% zoom a glyph sat half a pixel off its ring.
+ */
+const GLYPH_PAD = { md: 8, sm: 7.2 } as const
+
+/**
+ * Glyphs whose drawing is off the middle of its 24-unit box, by how far (the
+ * paths' bounding box): the viewBox moves with it, so the drawing — not the
+ * box — sits in the middle of the ring.
+ */
+const GLYPH_OFFSET = new Map<ActivityIcon, readonly [number, number]>([
+  [FilePenLineIcon, [1, 0]],
+  [CalendarClockIcon, [0.5, 0]],
+  [ListTodoIcon, [0, -0.5]],
+])
+
+function glyphViewBox(icon: ActivityIcon, size: "md" | "sm"): string {
+  const pad = GLYPH_PAD[size]
+  const [dx, dy] = GLYPH_OFFSET.get(icon) ?? [0, 0]
+  const side = 24 + pad * 2
+  return `${dx - pad} ${dy - pad} ${side} ${side}`
+}
 
 /**
  * Ring colour by status, quiet by default: a finished step fades back to a
@@ -102,8 +129,9 @@ export function RailIcon({
         (Icon ? (
           <Icon
             aria-hidden="true"
+            viewBox={glyphViewBox(Icon, size)}
             className={cn(
-              size === "md" ? "size-3" : "size-2.5",
+              "absolute inset-0 size-full",
               ICON_CLASS[status],
               iconClassName
             )}
