@@ -701,169 +701,94 @@ pub fn is_codeg_ask_tool_name(name: &str) -> bool {
     crate::acp::delegation::is_codeg_mcp_tool(name, "ask_user_question")
 }
 
-/// True when a host's name for a tool is Google Antigravity or Gemini CLI's
-/// native `ask_question` tool (`ask_question`, `default_api:ask_question`,
-/// `default_api/ask_question`, `default_api__ask_question`, etc.).
-pub fn is_antigravity_ask_tool_name(name: &str) -> bool {
-    let name = name.trim().to_ascii_lowercase();
-    if name == "ask_question" {
-        return true;
-    }
-    const PREFIXES: [&str; 9] = [
-        "default_api:",
-        "default_api::",
-        "default_api/",
-        "default_api__",
-        "default_api.",
-        "antigravity:",
-        "antigravity/",
-        "antigravity__",
-        "gemini:",
-    ];
-    for prefix in PREFIXES {
-        if let Some(rest) = name.strip_prefix(prefix) {
-            if rest.trim() == "ask_question" {
-                return true;
-            }
-        }
-    }
-    false
-}
-
+/// Antigravity 原生交互通过权限选项承载答案，保留文字到 optionId 的映射。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AntigravityAsk {
-    pub specs: Vec<QuestionSpec>,
+    pub spec: QuestionSpec,
+    pub option_ids: Vec<(String, String)>,
 }
 
-/// Parse Google Antigravity / Gemini native `ask_question` tool call arguments into
-/// interactive [`QuestionSpec`]s.
-pub fn parse_antigravity_ask(tool_call: &Value) -> Option<AntigravityAsk> {
-    if let Some(title) = tool_call
-        .get("title")
-        .and_then(|v| v.as_str())
-        .or_else(|| {
-            tool_call
-                .get("fields")
-                .and_then(|f| f.get("title"))
-                .and_then(|v| v.as_str())
-        })
+/// 识别 antigravity-acp 1.4.1 的交互请求，而非模型调用 ask_question 的参数。
+/// 实测 title 是问题正文、rawInput 为空，选项位于请求外层。
+/// 调用方还必须校验 AgentType::Antigravity，避免接管其他代理的权限请求。
+pub fn parse_antigravity_ask(
+    tool_call: &Value,
+    options: &[(String, String)],
+) -> Option<AntigravityAsk> {
+    let id = tool_call.get("toolCallId")?.as_str()?;
+    if id.strip_prefix("interaction_")?.is_empty()
+        || !(MIN_OPTIONS..=MAX_OPTIONS).contains(&options.len())
     {
-        if !is_antigravity_ask_tool_name(title) {
-            return None;
-        }
-    }
-
-    let raw_input = tool_call
-        .get("rawInput")
-        .or_else(|| tool_call.get("raw_input"))
-        .or_else(|| tool_call.get("arguments"))
-        .or_else(|| tool_call.get("args"))
-        .or_else(|| {
-            tool_call
-                .get("fields")
-                .and_then(|f| f.get("rawInput").or_else(|| f.get("raw_input")))
-        })?;
-
-    let input_value: Value = if let Some(s) = raw_input.as_str() {
-        serde_json::from_str(s).ok()?
-    } else {
-        raw_input.clone()
-    };
-
-    let target_obj = if let Some(args) = input_value.get("arguments").and_then(|v| v.as_object()) {
-        args
-    } else {
-        input_value.as_object()?
-    };
-
-    let questions_val = target_obj.get("questions")?;
-    let questions_arr: Vec<Value> = if let Some(arr) = questions_val.as_array() {
-        arr.clone()
-    } else {
-        let s = questions_val.as_str()?;
-        serde_json::from_str(s).ok()?
-    };
-
-    if !(1..=MAX_QUESTIONS).contains(&questions_arr.len()) {
         return None;
     }
-
-    let mut specs = Vec::with_capacity(questions_arr.len());
-    for q in &questions_arr {
-        let question_text = q
-            .get("question")
-            .and_then(|v| v.as_str())
-            .map(str::trim)
-            .filter(|s| !s.is_empty())?;
-        if question_text.chars().count() > MAX_QUESTION_TEXT_CHARS {
+    if let Some(kind) = tool_call.get("kind").and_then(Value::as_str) {
+        if kind != "other" {
             return None;
         }
-
-        let header = q
-            .get("header")
-            .and_then(|v| v.as_str())
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .filter(|s| s.chars().count() <= MAX_HEADER_CHARS)
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| synthesize_header(question_text));
-
-        let multi_select = q
-            .get("is_multi_select")
-            .or_else(|| q.get("isMultiSelect"))
-            .or_else(|| q.get("multi_select"))
-            .or_else(|| q.get("multiSelect"))
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
-
-        let opts = q.get("options").and_then(|v| v.as_array())?;
-        if !(MIN_OPTIONS..=MAX_OPTIONS).contains(&opts.len()) {
-            return None;
-        }
-
-        let mut options = Vec::with_capacity(opts.len());
-        let mut seen = std::collections::HashSet::new();
-        for opt in opts {
-            let label = if let Some(s) = opt.as_str() {
-                s.trim()
-            } else if let Some(label_str) = opt.get("label").and_then(|v| v.as_str()) {
-                label_str.trim()
-            } else {
-                let text_str = opt.get("text").and_then(|v| v.as_str())?;
-                text_str.trim()
-            };
-
-            if label.is_empty() || label.chars().count() > MAX_QUESTION_TEXT_CHARS {
-                return None;
-            }
-            if !seen.insert(label) {
-                return None;
-            }
-
-            let description = opt
-                .get("description")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .trim()
-                .to_string();
-
-            options.push(QuestionOption {
-                label: label.to_string(),
-                description,
-            });
-        }
-
-        specs.push(QuestionSpec {
-            id: uuid::Uuid::new_v4().to_string(),
-            question: question_text.to_string(),
-            header,
-            multi_select,
-            options,
-            is_secret: false,
-        });
     }
+    if let Some(status) = tool_call.get("status").and_then(Value::as_str) {
+        if status != "pending" {
+            return None;
+        }
+    }
+    if let Some(raw_input) = tool_call.get("rawInput") {
+        let is_empty_or_null = raw_input.is_null()
+            || raw_input.as_object().is_some_and(serde_json::Map::is_empty);
+        if !is_empty_or_null {
+            return None;
+        }
+    }
+    let question = tool_call.get("title")?.as_str()?.trim();
+    if question.is_empty() || question.chars().count() > MAX_QUESTION_TEXT_CHARS {
+        return None;
+    }
+    let mut choices = Vec::with_capacity(options.len());
+    let mut option_ids = Vec::with_capacity(options.len());
+    let mut labels = std::collections::HashSet::new();
+    let mut ids = std::collections::HashSet::new();
+    for (id, name) in options {
+        let label = name.trim();
+        if id.trim().is_empty()
+            || label.is_empty()
+            || label.chars().count() > MAX_QUESTION_TEXT_CHARS
+            || !labels.insert(label)
+            || !ids.insert(id)
+        {
+            return None;
+        }
+        choices.push(QuestionOption {
+            label: label.to_string(),
+            description: String::new(),
+        });
+        option_ids.push((label.to_string(), id.clone()));
+    }
+    Some(AntigravityAsk {
+        spec: QuestionSpec {
+            id: uuid::Uuid::new_v4().to_string(),
+            question: question.to_string(),
+            header: synthesize_header(question),
+            // ACP 权限响应只接受一个 optionId，原生代理逐题发送交互请求。
+            multi_select: false,
+            options: choices,
+            is_secret: false,
+        },
+        option_ids,
+    })
+}
 
-    Some(AntigravityAsk { specs })
+/// 只回传本题的一个原生选项；取消或无法表达的自由文本不伪装为首项。
+pub fn antigravity_option_id(outcome: &QuestionOutcome, ask: &AntigravityAsk) -> Option<String> {
+    if outcome.declined || outcome.answers.len() != 1 {
+        return None;
+    }
+    let answer = &outcome.answers[0];
+    if answer.question != ask.spec.question || answer.selected.len() != 1 {
+        return None;
+    }
+    ask.option_ids
+        .iter()
+        .find(|(label, _)| label == &answer.selected[0])
+        .map(|(_, id)| id.clone())
 }
 
 /// Serialize a resolved [`QuestionOutcome`] into grok's `AskUserQuestionExtResponse`
@@ -3780,125 +3705,95 @@ mod tests {
         assert_eq!(input["questions"][0]["question"], output["answers"][0]["question"]);
         assert_eq!(output["answers"][0]["header"], "");
     }
+    fn antigravity_interaction() -> Value {
+        json!({
+            "toolCallId": "interaction_396e46cc",
+            "status": "pending",
+            "title": "关于接下来的开发工作，您希望优先聚焦于哪个核心方向？",
+            "rawInput": {},
+            "kind": "other"
+        })
+    }
+
+    fn antigravity_choices() -> Vec<(String, String)> {
+        vec![
+            ("opaque-first".into(), "后端开发".into()),
+            ("opaque-second".into(), "前端开发".into()),
+        ]
+    }
+
     #[test]
-    fn is_antigravity_ask_tool_name_accepts_valid_names() {
-        for valid in [
-            "ask_question",
-            "default_api:ask_question",
-            "default_api::ask_question",
-            "default_api/ask_question",
-            "default_api__ask_question",
-            "default_api.ask_question",
-            "default_api: ask_question",
-            "antigravity:ask_question",
-            "antigravity/ask_question",
-            "gemini:ask_question",
-            "  DEFAULT_API:ASK_QUESTION  ",
-            "ASK_QUESTION",
+    fn antigravity_live_interaction_is_recognized() {
+        let ask = parse_antigravity_ask(&antigravity_interaction(), &antigravity_choices())
+            .expect("实测交互格式应转换为问题卡片");
+        assert_eq!(ask.spec.options[1].label, "前端开发");
+        assert!(!ask.spec.multi_select);
+        assert_eq!(ask.option_ids[1].1, "opaque-second");
+
+        let mut no_kind = antigravity_interaction();
+        no_kind.as_object_mut().unwrap().remove("kind");
+        let ask_no_kind = parse_antigravity_ask(&no_kind, &antigravity_choices())
+            .expect("实测 antigravity-acp 1.4.1 省略 kind 字段亦应正确识别为问题卡片");
+        assert_eq!(ask_no_kind.spec.options[1].label, "前端开发");
+    }
+
+    #[test]
+    fn antigravity_answer_preserves_second_option_and_decline() {
+        let ask =
+            parse_antigravity_ask(&antigravity_interaction(), &antigravity_choices()).unwrap();
+        let mut outcome = QuestionOutcome {
+            answers: vec![QuestionAnsweredItem {
+                question: ask.spec.question.clone(),
+                header: ask.spec.header.clone(),
+                multi_select: false,
+                selected: vec!["前端开发".into()],
+            }],
+            declined: false,
+        };
+        assert_eq!(
+            antigravity_option_id(&outcome, &ask).as_deref(),
+            Some("opaque-second")
+        );
+        outcome.declined = true;
+        assert_eq!(antigravity_option_id(&outcome, &ask), None);
+        outcome.declined = false;
+        outcome.answers[0].selected = vec!["自由文本".into()];
+        assert_eq!(antigravity_option_id(&outcome, &ask), None);
+        outcome.answers[0].selected = vec!["后端开发".into(), "前端开发".into()];
+        assert_eq!(antigravity_option_id(&outcome, &ask), None);
+        outcome.answers.clear();
+        assert_eq!(antigravity_option_id(&outcome, &ask), None);
+    }
+
+    #[test]
+    fn antigravity_parser_preserves_ordinary_permissions_and_invalid_choices() {
+        for (field, value) in [
+            ("toolCallId", json!("tool-1")),
+            ("toolCallId", json!("interaction_")),
+            ("title", json!(" ")),
+            ("kind", json!("execute")),
+            ("status", json!("completed")),
+            ("rawInput", json!({"command":"cargo build"})),
         ] {
+            let mut call = antigravity_interaction();
+            call[field] = value;
             assert!(
-                is_antigravity_ask_tool_name(valid),
-                "{valid} must be recognized as antigravity ask tool"
+                parse_antigravity_ask(&call, &antigravity_choices()).is_none(),
+                "{call}"
             );
         }
-    }
-
-    #[test]
-    fn is_antigravity_ask_tool_name_rejects_other_tools() {
-        for other in [
-            "mcp__codeg-mcp__ask_user_question",
-            "ask_user_question",
-            "default_api:run_command",
-            "default_api:view_file",
-            "other_api:ask_question",
-            "ask_question_extra",
-            "",
+        for choices in [
+            vec![],
+            vec![("1".into(), "仅一项".into())],
+            vec![("1".into(), "重复".into()), ("2".into(), "重复".into())],
+            vec![("1".into(), "A".into()), ("1".into(), "B".into())],
+            vec![("".into(), "A".into()), ("2".into(), "B".into())],
+            vec![("1".into(), " ".into()), ("2".into(), "B".into())],
+            (0..5)
+                .map(|i| (i.to_string(), format!("选项{i}")))
+                .collect(),
         ] {
-            assert!(
-                !is_antigravity_ask_tool_name(other),
-                "{other} must NOT be recognized as antigravity ask tool"
-            );
+            assert!(parse_antigravity_ask(&antigravity_interaction(), &choices).is_none());
         }
-    }
-
-    #[test]
-    fn parse_antigravity_ask_maps_native_payload() {
-        let tool_call = json!({
-            "title": "default_api:ask_question",
-            "rawInput": {
-                "questions": [
-                    {
-                        "question": "Which architecture pattern do you prefer?",
-                        "options": ["Option A (Clean)", "Option B (Layered)"],
-                        "is_multi_select": false
-                    }
-                ]
-            }
-        });
-        let ask = parse_antigravity_ask(&tool_call).expect("should parse");
-        assert_eq!(ask.specs.len(), 1);
-        assert_eq!(ask.specs[0].question, "Which architecture pattern do you prefer?");
-        assert!(!ask.specs[0].multi_select);
-        assert_eq!(ask.specs[0].options.len(), 2);
-        assert_eq!(ask.specs[0].options[0].label, "Option A (Clean)");
-        assert_eq!(ask.specs[0].options[1].label, "Option B (Layered)");
-        assert!(!ask.specs[0].header.is_empty());
-    }
-
-    #[test]
-    fn parse_antigravity_ask_handles_serialized_questions_string() {
-        let questions_json_str = serde_json::to_string(&json!([
-            {
-                "question": "Select target environments:",
-                "options": [
-                    {"label": "Staging", "description": "Pre-prod"},
-                    {"label": "Production", "description": "Live"}
-                ],
-                "is_multi_select": true
-            }
-        ])).unwrap();
-
-        let tool_call = json!({
-            "title": "ask_question",
-            "rawInput": {
-                "arguments": {
-                    "questions": questions_json_str
-                }
-            }
-        });
-        let ask = parse_antigravity_ask(&tool_call).expect("should parse nested string");
-        assert_eq!(ask.specs.len(), 1);
-        assert_eq!(ask.specs[0].question, "Select target environments:");
-        assert!(ask.specs[0].multi_select);
-        assert_eq!(ask.specs[0].options[0].label, "Staging");
-        assert_eq!(ask.specs[0].options[0].description, "Pre-prod");
-        assert_eq!(ask.specs[0].options[1].label, "Production");
-    }
-
-    #[test]
-    fn parse_antigravity_ask_declines_invalid_shapes() {
-        // Less than MIN_OPTIONS
-        assert!(parse_antigravity_ask(&json!({
-            "title": "ask_question",
-            "rawInput": {
-                "questions": [{ "question": "Q?", "options": ["Only one"] }]
-            }
-        })).is_none());
-
-        // Empty question text
-        assert!(parse_antigravity_ask(&json!({
-            "title": "ask_question",
-            "rawInput": {
-                "questions": [{ "question": "  ", "options": ["A", "B"] }]
-            }
-        })).is_none());
-
-        // Duplicate options
-        assert!(parse_antigravity_ask(&json!({
-            "title": "ask_question",
-            "rawInput": {
-                "questions": [{ "question": "Q?", "options": ["Same", "Same"] }]
-            }
-        })).is_none());
     }
 }

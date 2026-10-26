@@ -9720,16 +9720,7 @@ async fn try_bridge_pi_select_ask(
     Ok(())
 }
 
-/// Bridge Google Antigravity / Gemini native `ask_question` tool calls into codeg's
-/// interactive question card (#1024).
-///
-/// When Google Antigravity or Gemini CLI calls its native `ask_question` tool,
-/// the agent process initiates a `session/request_permission` before executing it.
-/// Because it lacks the `codeg-mcp` prefix, it was previously treated as an approval
-/// card ("Allow Once / Allow Always / Deny"). This bridge recognizes the native ask
-/// tool, registers the question payload into [`crate::acp::question::SessionQuestionAccess`],
-/// renders the in-stream answered capsule upon completion, and replies to the
-/// permission request with `allow_once` (or `cancelled` if declined/aborted).
+/// 将 Antigravity 原生 interaction_* 问答接入共享卡片，回传选中的原始 optionId。
 #[allow(clippy::result_large_err)]
 async fn try_bridge_antigravity_ask(
     access: &Option<(
@@ -9743,56 +9734,102 @@ async fn try_bridge_antigravity_ask(
     req: &RequestPermissionRequest,
     responder: Responder<RequestPermissionResponse>,
 ) -> Result<(), Responder<RequestPermissionResponse>> {
-    let title = [
-        req.tool_call.fields.title.as_deref(),
-        crate::acp::air_contract::permission_record(req.meta.as_ref())
-            .and_then(|p| p.get("title"))
-            .and_then(serde_json::Value::as_str),
-    ]
-    .into_iter()
-    .flatten()
-    .next()
-    .unwrap_or_default();
-
-    if !crate::acp::question::is_antigravity_ask_tool_name(title) {
+    if state.read().await.agent_type != AgentType::Antigravity {
         return Err(responder);
     }
 
-    let Some((questions, ask_cfg)) = access else {
-        return Err(responder);
-    };
-    if !ask_cfg.is_enabled().await {
-        return Err(responder);
-    }
-
+    let tool_call_id = req.tool_call.tool_call_id.to_string();
     let tool_call = serde_json::to_value(&req.tool_call).unwrap_or_default();
-    let Some(ask) = crate::acp::question::parse_antigravity_ask(&tool_call) else {
-        return Err(responder);
-    };
-
-    let allow_option_id = req
+    let options: Vec<_> = req
         .options
         .iter()
-        .find(|opt| opt.kind == PermissionOptionKind::AllowOnce)
-        .map(|opt| opt.option_id.to_string())
-        .or_else(|| req.options.first().map(|opt| opt.option_id.to_string()));
+        .map(|opt| (opt.option_id.to_string(), opt.name.clone()))
+        .collect();
+    let Some((questions, _ask_cfg)) = access else {
+        if tool_call_id.starts_with("interaction_") {
+            tracing::warn!(
+                "[ACP] Antigravity interaction bridge has no question access conn={} tool_call_id={}",
+                connection_id,
+                tool_call_id
+            );
+        }
+        return Err(responder);
+    };
+
+    let Some(ask) = crate::acp::question::parse_antigravity_ask(&tool_call, &options) else {
+        let id_matches = tool_call
+            .get("toolCallId")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|id| id.starts_with("interaction_") && id.len() > 12);
+        if id_matches {
+            let title_present = tool_call
+                .get("title")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|title| !title.trim().is_empty());
+            let kind = tool_call
+                .get("kind")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("missing");
+            let status = tool_call
+                .get("status")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("missing");
+            let raw_input_empty_object = tool_call
+                .get("rawInput")
+                .and_then(serde_json::Value::as_object)
+                .is_some_and(serde_json::Map::is_empty);
+            let mut seen_ids = std::collections::HashSet::new();
+            let mut seen_names = std::collections::HashSet::new();
+            let options_valid = options.iter().all(|(id, name)| {
+                !id.trim().is_empty()
+                    && !name.trim().is_empty()
+                    && name.chars().count() <= crate::acp::question::MAX_QUESTION_TEXT_CHARS
+                    && seen_ids.insert(id)
+                    && seen_names.insert(name.trim())
+            });
+            tracing::warn!(
+                "[ACP] Antigravity interaction bridge rejected request conn={} tool_call_id={} id_matches={} title_present={} kind={} status={} raw_input_empty_object={} option_count={} options_valid={}",
+                connection_id,
+                tool_call_id,
+                id_matches,
+                title_present,
+                kind,
+                status,
+                raw_input_empty_object,
+                options.len(),
+                options_valid
+            );
+        }
+        return Err(responder);
+    };
 
     let (abort_tx, abort_rx) = oneshot::channel();
     perms.lock().await.park_detached(abort_tx);
 
     let Some(registered) = questions
-        .register_question(connection_id, ask.specs.clone())
+        .register_question(connection_id, vec![ask.spec.clone()])
         .await
     else {
+        tracing::warn!(
+            "[ACP] Antigravity interaction bridge could not register question conn={} tool_call_id={}",
+            connection_id,
+            tool_call_id
+        );
         return Err(responder);
     };
+
+    tracing::info!(
+        "[ACP] Antigravity interaction bridged conn={} tool_call_id={} option_count={}",
+        connection_id,
+        tool_call_id,
+        ask.spec.options.len()
+    );
 
     let state = Arc::clone(state);
     let emitter = emitter.clone();
     let questions = Arc::clone(questions);
     let connection_id = connection_id.to_string();
     let question_id = registered.question_id;
-    let tool_call_id = req.tool_call.tool_call_id.to_string();
 
     tokio::spawn(async move {
         let answer = tokio::select! {
@@ -9802,6 +9839,15 @@ async fn try_bridge_antigravity_ask(
         };
         match answer {
             Some(outcome) => {
+                let option_id = crate::acp::question::antigravity_option_id(&outcome, &ask);
+                let recorded = if option_id.is_some() {
+                    outcome
+                } else {
+                    crate::acp::question::QuestionOutcome {
+                        answers: Vec::new(),
+                        declined: true,
+                    }
+                };
                 emit_with_state(
                     &state,
                     &emitter,
@@ -9812,10 +9858,13 @@ async fn try_bridge_antigravity_ask(
                         status: "completed".to_string(),
                         content: None,
                         raw_input: Some(
-                            crate::acp::question::grok_result_card_input(&ask.specs).to_string(),
+                            crate::acp::question::grok_result_card_input(std::slice::from_ref(
+                                &ask.spec,
+                            ))
+                            .to_string(),
                         ),
                         raw_output: Some(
-                            crate::acp::question::grok_result_card_output(&outcome).to_string(),
+                            crate::acp::question::grok_result_card_output(&recorded).to_string(),
                         ),
                         locations: None,
                         meta: None,
@@ -9824,17 +9873,18 @@ async fn try_bridge_antigravity_ask(
                 )
                 .await;
 
-                let response_outcome = if outcome.declined {
-                    RequestPermissionOutcome::Cancelled
-                } else if let Some(opt_id) = allow_option_id {
-                    RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(opt_id))
-                } else {
-                    RequestPermissionOutcome::Cancelled
+                let response_outcome = match option_id {
+                    Some(id) => {
+                        RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(id))
+                    }
+                    None => RequestPermissionOutcome::Cancelled,
                 };
                 let _ = responder.respond(RequestPermissionResponse::new(response_outcome));
             }
             None => {
-                questions.cancel_question(&connection_id, &question_id).await;
+                questions
+                    .cancel_question(&connection_id, &question_id)
+                    .await;
                 let _ = responder.respond(RequestPermissionResponse::new(
                     RequestPermissionOutcome::Cancelled,
                 ));
@@ -41749,6 +41799,157 @@ mod tests {
             steers[0]["p"],
             serde_json::json!([{"type": "text", "text": "make it blue"}])
         );
+    }
+
+    struct AntigravityTestAnswer {
+        decline: bool,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::acp::question::SessionQuestionAccess for AntigravityTestAnswer {
+        async fn register_question(
+            &self,
+            _connection_id: &str,
+            specs: Vec<crate::acp::question::QuestionSpec>,
+        ) -> Option<crate::acp::question::RegisteredQuestion> {
+            assert_eq!(specs.len(), 1);
+            let q = &specs[0];
+            let (tx, rx) = oneshot::channel();
+            let _ = tx.send(crate::acp::question::QuestionOutcome {
+                declined: self.decline,
+                answers: vec![crate::acp::question::QuestionAnsweredItem {
+                    question: q.question.clone(),
+                    header: q.header.clone(),
+                    multi_select: false,
+                    selected: vec![q.options[1].label.clone()],
+                }],
+            });
+            Some(crate::acp::question::RegisteredQuestion {
+                question_id: q.id.clone(),
+                answer_rx: rx,
+            })
+        }
+        async fn cancel_question(&self, _connection_id: &str, _question_id: &str) {}
+        async fn cancel_questions_by_parent(&self, _connection_id: &str) {}
+    }
+
+    #[tokio::test]
+    async fn antigravity_interaction_round_trip_preserves_choice_and_gates() {
+        use agent_client_protocol::Channel;
+        for (agent_type, enabled, decline, bridged) in [
+            (AgentType::Antigravity, true, false, true),
+            (AgentType::Antigravity, true, true, true),
+            (AgentType::Antigravity, false, false, true),
+            (AgentType::Codex, true, false, false),
+        ] {
+            let (client_end, agent_end) = Channel::duplex();
+            let state = Arc::new(RwLock::new(SessionState::new(
+                "conn-test".into(),
+                agent_type,
+                None,
+                "win".into(),
+                None,
+            )));
+            let config = crate::acp::question::QuestionRuntimeConfig::new();
+            config
+                .set(crate::acp::question::QuestionConfig { enabled })
+                .await;
+            let access: Option<(Arc<dyn crate::acp::question::SessionQuestionAccess>, _)> =
+                Some((Arc::new(AntigravityTestAnswer { decline }), config));
+            let agent = tokio::spawn(Agent.builder().connect_with(
+                agent_end,
+                async move |cx: ConnectionTo<Client>| {
+                    // Two native questions arrive separately on the same connection.
+                    for i in 0..2 {
+                        let mut tool_call_json = serde_json::json!({
+                            "toolCallId": format!("interaction_{i}"),
+                            "title": format!("Question {i}?"),
+                            "status": "pending",
+                            "rawInput": {},
+                        });
+                        if i == 1 {
+                            tool_call_json["kind"] = serde_json::json!("other");
+                        }
+                        let request: RequestPermissionRequest = serde_json::from_value(
+                            serde_json::json!({
+                                "sessionId": "s1",
+                                "toolCall": tool_call_json,
+                                "options": [
+                                    {"optionId": "opaque-first", "name": "Backend", "kind": "allow_once"},
+                                    {"optionId": "opaque-second", "name": "Frontend", "kind": "allow_once"},
+                                ],
+                            })
+                        ).unwrap();
+                        let reply = cx.send_request_to(Client, request).block_task().await?;
+                        if bridged && !decline {
+                            assert!(matches!(reply.outcome,
+                                RequestPermissionOutcome::Selected(ref selected)
+                                    if selected.option_id.to_string() == "opaque-second"));
+                        } else {
+                            assert!(matches!(reply.outcome, RequestPermissionOutcome::Cancelled));
+                        }
+                    }
+                    Ok::<(), agent_client_protocol::Error>(())
+                },
+            ));
+            let client = tokio::spawn({
+                let state = Arc::clone(&state);
+                let perms = PendingPermissions::default();
+                Client
+                    .builder()
+                    .on_receive_request(
+                        async move |req: RequestPermissionRequest,
+                                    responder: Responder<RequestPermissionResponse>,
+                                    _cx: ConnectionTo<Agent>| {
+                            if let Err(responder) = try_bridge_antigravity_ask(
+                                &access,
+                                "conn-test",
+                                &state,
+                                &EventEmitter::Noop,
+                                &perms,
+                                &req,
+                                responder,
+                            )
+                            .await
+                            {
+                                assert!(!bridged, "native interaction unexpectedly fell through");
+                                responder.respond(RequestPermissionResponse::new(
+                                    RequestPermissionOutcome::Cancelled,
+                                ))?;
+                            } else {
+                                assert!(bridged, "ordinary permission unexpectedly bridged");
+                            }
+                            Ok(())
+                        },
+                        on_receive_request!(),
+                    )
+                    .connect_with(client_end, async |_cx: ConnectionTo<Agent>| {
+                        std::future::pending::<Result<(), agent_client_protocol::Error>>().await
+                    })
+            });
+            tokio::time::timeout(std::time::Duration::from_secs(5), agent)
+                .await
+                .expect("native request must receive its answer")
+                .unwrap()
+                .unwrap();
+            client.abort();
+            let state = state.read().await;
+            let events = state.recent_events_after(0).unwrap_or_default();
+            let cards: Vec<_> = events
+                .iter()
+                .filter_map(|event| match &event.payload {
+                    AcpEvent::ToolCall {
+                        title, raw_output, ..
+                    } if title == "ask_user_question" => Some(raw_output.as_ref().unwrap()),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(cards.len(), if bridged { 2 } else { 0 });
+            for card in cards {
+                let output: serde_json::Value = serde_json::from_str(card).unwrap();
+                assert_eq!(output["declined"], decline);
+            }
+        }
     }
 
     /// Answers every question with its first option the moment it is asked.

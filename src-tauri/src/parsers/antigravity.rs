@@ -420,6 +420,30 @@ struct ErrorDetails {
 }
 
 #[derive(Clone, PartialEq, ::prost::Message)]
+struct AntigravityAskOption {
+    #[prost(string, tag = "1")]
+    id: String,
+    #[prost(string, tag = "2")]
+    text: String,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message)]
+struct AntigravityAskItem {
+    #[prost(string, tag = "1")]
+    question: String,
+    #[prost(message, repeated, tag = "2")]
+    options: Vec<AntigravityAskOption>,
+    #[prost(string, repeated, tag = "4")]
+    chosen_ids: Vec<String>,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message)]
+struct AntigravityAskQuestions {
+    #[prost(message, repeated, tag = "1")]
+    items: Vec<AntigravityAskItem>,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message)]
 struct ErrorMessageStep {
     #[prost(message, optional, tag = "3")]
     error: Option<ErrorDetails>,
@@ -465,6 +489,8 @@ struct Step {
     file_change: Option<FileChange>,
     #[prost(message, optional, tag = "116")]
     agency_tool_call: Option<AgencyToolCall>,
+    #[prost(message, optional, tag = "154")]
+    ask_question: Option<AntigravityAskQuestions>,
 }
 
 /// `CortexStepStatus.CORTEX_STEP_STATUS_ERROR`. The other eleven values are not
@@ -1316,6 +1342,40 @@ fn step_outcome(step: &Step) -> Option<StepOutcome> {
         });
     }
 
+    if let Some(ask) = step.ask_question.as_ref() {
+        let answers: Vec<serde_json::Value> = ask
+            .items
+            .iter()
+            .map(|item| {
+                let selected: Vec<String> = item
+                    .chosen_ids
+                    .iter()
+                    .map(|id| {
+                        item.options
+                            .iter()
+                            .find(|opt| &opt.id == id)
+                            .map(|opt| opt.text.clone())
+                            .unwrap_or_else(|| id.clone())
+                    })
+                    .collect();
+                serde_json::json!({
+                    "header": "",
+                    "question": item.question,
+                    "multi_select": selected.len() > 1,
+                    "selected": selected,
+                })
+            })
+            .collect();
+        let payload = serde_json::json!({
+            "answers": answers,
+            "declined": false,
+        });
+        return Some(StepOutcome {
+            output: serde_json::to_string(&payload).ok().and_then(non_empty_capped),
+            is_error: status_error,
+        });
+    }
+
     if let Some(err) = step.error_message.as_ref() {
         let message = err
             .error
@@ -2105,5 +2165,79 @@ mod tests {
                 .join("antigravity-acp")
                 .join("conversations")
         );
+    }
+
+    #[test]
+    fn antigravity_ask_question_step_outcome_generates_json_envelope() {
+        let dir = tempfile::tempdir().unwrap();
+        let step = Step {
+            status: 3,
+            metadata: Some(StepMetadata {
+                created_at: ts(1_700_000_000),
+                tool_call: Some(ChatToolCall {
+                    id: "call_1".into(),
+                    name: "ask_question".into(),
+                    arguments_json: "{}".into(),
+                }),
+                ..Default::default()
+            }),
+            ask_question: Some(AntigravityAskQuestions {
+                items: vec![
+                    AntigravityAskItem {
+                        question: "您希望接下来优先开展哪一类开发任务？".into(),
+                        options: vec![
+                            AntigravityAskOption {
+                                id: "1".into(),
+                                text: "(Recommended) 核心业务功能的新增与实现".into(),
+                            },
+                            AntigravityAskOption {
+                                id: "2".into(),
+                                text: "现有功能的优化与缺陷修复".into(),
+                            },
+                        ],
+                        chosen_ids: vec!["1".into()],
+                    },
+                    AntigravityAskItem {
+                        question: "在开发交付与流程配合上，您倾向于哪种模式？".into(),
+                        options: vec![
+                            AntigravityAskOption {
+                                id: "1".into(),
+                                text: "(Recommended) 快速迭代交付，先实现最小可行版本（MVP）供确认".into(),
+                            },
+                            AntigravityAskOption {
+                                id: "2".into(),
+                                text: "阶段性里程碑交付，按完整模块验收".into(),
+                            },
+                        ],
+                        chosen_ids: vec!["1".into()],
+                    },
+                ],
+            }),
+            ..Default::default()
+        };
+
+        write_steps(dir.path(), "test-session", &[step]);
+        let steps = read_steps(&dir.path().join("test-session.db"));
+        let parsed = project_steps(&steps);
+        let blocks = &parsed.turns[0].blocks;
+        let mut found_result = false;
+        for block in blocks {
+            if let ContentBlock::ToolResult { output_preview: Some(out), .. } = block {
+                found_result = true;
+                let val: serde_json::Value = serde_json::from_str(out).unwrap();
+                assert_eq!(val["declined"], false);
+                let answers = val["answers"].as_array().unwrap();
+                assert_eq!(answers.len(), 2);
+                assert_eq!(
+                    answers[0]["selected"].as_array().unwrap()[0].as_str().unwrap(),
+                    "(Recommended) 核心业务功能的新增与实现"
+                );
+                assert_eq!(
+                    answers[1]["selected"].as_array().unwrap()[0].as_str().unwrap(),
+                    "(Recommended) 快速迭代交付，先实现最小可行版本（MVP）供确认"
+                );
+            }
+        }
+        assert!(found_result, "must find ToolResult containing user chosen answers");
     }
 }

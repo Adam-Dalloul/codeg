@@ -160,6 +160,8 @@ const EXACT_TOOL_NAME_ALIASES: Record<string, string> = {
   question: "question",
   ask_user_question: "question",
   askuserquestion: "question",
+  ask_question: "question",
+  askquestion: "question",
   // codeg-mcp ask-user-question companion tool (server prefix varies by host;
   // the suffix rule in `normalizeToolName` covers the other separators)
   "mcp__codeg-mcp__ask_user_question": "question",
@@ -623,6 +625,7 @@ function normalizeUncached(toolName: string): string {
   // catches the unprefixed form, so collapse every separator here. Note the
   // freeform matcher below intentionally does NOT catch the underscore form.
   if (/[^a-z0-9]ask_user_question$/.test(canonical)) return "question"
+  if (/[^a-z0-9]ask_question$/.test(canonical)) return "question"
 
   // codeg-mcp live-feedback poll. Same host-prefix story as the delegation tools
   // (`mcp__<server>__check_user_feedback`, `<server>/check_user_feedback`, …) —
