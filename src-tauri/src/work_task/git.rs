@@ -4,7 +4,9 @@
 //! per-folder git mutex.
 
 use crate::app_error::{AppCommandError, AppErrorCode};
-use crate::commands::folders::{detect_conflicts, git_command_error};
+use crate::commands::folders::{
+    detect_conflicts, git_command_error, numstat_rename_sides, to_git_literal_pathspec,
+};
 use crate::models::WorkTaskChangedFile;
 
 async fn run_git(path: &str, args: &[&str]) -> Result<std::process::Output, AppCommandError> {
@@ -353,14 +355,7 @@ pub async fn diff_numstat_between(
 ) -> Result<Vec<WorkTaskChangedFile>, AppCommandError> {
     let out = run_git(
         path,
-        &[
-            "-c",
-            "core.quotePath=false",
-            "diff",
-            "--numstat",
-            from,
-            to,
-        ],
+        &["-c", "core.quotePath=false", "diff", "--numstat", from, to],
     )
     .await?;
     if !out.status.success() {
@@ -531,25 +526,92 @@ pub async fn diff_numstat_with_untracked(
 /// The patch behind [`diff_numstat_with_untracked`] — whole change set, or one
 /// file. An uncommitted new file renders as a normal `new file mode` hunk
 /// rather than as an empty diff nobody can explain.
+///
+/// `file` is a name as that list gives it, and a renamed file is listed in
+/// numstat's notation (`docs/{sub => }/moved.txt`, `old.txt => new.txt`),
+/// which names no path. When the name itself finds nothing, both sides of the
+/// rename are asked for instead, so git pairs them into the rename the list
+/// counted.
 pub async fn diff_patch_with_untracked(
     path: &str,
     anchor: &str,
     file: Option<&str>,
 ) -> Result<String, AppCommandError> {
     let scratch = ScratchIndex::build(path, anchor).await?;
-    let literal = file.map(|f| format!(":(literal){f}"));
+    let patch = diff_patch_against(path, &scratch, anchor, file.as_slice()).await?;
+    if patch.trim().is_empty() {
+        if let Some((old, new)) = file.and_then(numstat_rename_sides) {
+            return diff_patch_against(path, &scratch, anchor, &[&old, &new]).await;
+        }
+    }
+    Ok(patch)
+}
+
+/// `git diff <anchor>` against `scratch`: the whole change set, or only the
+/// sections about `files` (see [`sections_about`]).
+async fn diff_patch_against(
+    path: &str,
+    scratch: &ScratchIndex,
+    anchor: &str,
+    files: &[&str],
+) -> Result<String, AppCommandError> {
+    let literals: Vec<String> = files.iter().map(|f| to_git_literal_pathspec(f)).collect();
     // Unquoted like the file list, so the preview names a non-ASCII file as
-    // itself rather than by its octal escapes.
-    let mut args = vec!["-c", "core.quotePath=false", "diff", "--no-color", anchor];
-    if let Some(ref f) = literal {
+    // itself rather than by its octal escapes. Git's own patch with fixed
+    // prefixes and a submodule as its gitlink, whatever the user's diff
+    // config says, so each section is told apart by its header.
+    let mut args = vec![
+        "-c",
+        "core.quotePath=false",
+        "diff",
+        "--no-color",
+        "--no-ext-diff",
+        "--submodule=short",
+        "--src-prefix=a/",
+        "--dst-prefix=b/",
+        anchor,
+    ];
+    if !literals.is_empty() {
         args.push("--");
-        args.push(f);
+        args.extend(literals.iter().map(String::as_str));
     }
     let out = run_git_with_index(path, &scratch.path, &args).await?;
     if !out.status.success() {
         return Err(git_command_error("diff", &out.stderr));
     }
-    Ok(String::from_utf8_lossy(&out.stdout).to_string())
+    let patch = String::from_utf8_lossy(&out.stdout);
+    Ok(if files.is_empty() {
+        patch.into_owned()
+    } else {
+        sections_about(&patch, files)
+    })
+}
+
+/// The sections of `patch` whose `diff --git` header has one of `files` on
+/// either side. A pathspec also matches everything below a directory of its
+/// name, so asking for `old.txt` brings along `old.txt/child.txt` when the
+/// worktree has a directory where the anchor had that file. (Excluding
+/// `old.txt/` from the pathspec instead would hide a file moved into a
+/// directory of its own name, `tool => tool/main`, and a submodule, whose
+/// gitlink a trailing `/` matches as well.)
+fn sections_about(patch: &str, files: &[&str]) -> String {
+    let about = |header: &str| {
+        files.iter().any(|f| {
+            header.starts_with(&format!("diff --git a/{f} b/"))
+                || header.ends_with(&format!(" b/{f}"))
+        })
+    };
+    let mut kept = String::with_capacity(patch.len());
+    let mut keep = true;
+    for line in patch.split_inclusive('\n') {
+        if line.starts_with("diff --git ") {
+            keep = about(line.trim_end_matches('\n'));
+        }
+        if keep {
+            kept.push_str(line);
+        }
+    }
+    kept
 }
 
 /// Tip commit of a LOCAL branch (`refs/heads/<name>`), or `None` when no such
@@ -1155,8 +1217,128 @@ mod tests {
             .await
             .expect("commit diff");
         assert_eq!(
-            committed.iter().map(|f| f.file.as_str()).collect::<Vec<_>>(),
+            committed
+                .iter()
+                .map(|f| f.file.as_str())
+                .collect::<Vec<_>>(),
             ["新文件.txt", "需求.md"]
+        );
+    }
+
+    /// A renamed file is listed in numstat's notation, which names no path:
+    /// asked for by that name, its patch came back empty and the drawer said
+    /// "No changes vs the base yet" for a file it had just listed. A move the
+    /// agent never ran `git mv` for is listed the same way (the scratch index
+    /// pairs the deleted path with the intent-to-add one).
+    ///
+    /// Each file's patch holds that file alone, also where the worktree has a
+    /// directory named like a path the anchor had as a file (a pathspec
+    /// matches everything below a directory of its name), including a file
+    /// moved into a directory of its own name, and a submodule.
+    #[tokio::test]
+    async fn a_renamed_file_is_diffed_by_the_name_the_list_gives_it() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        let path = root.to_str().expect("utf-8 path");
+        git_run(root, &["init", "-q", "-b", "main"]);
+        // Git's default, repo-local so a developer's global config cannot
+        // turn rename detection off for the code under test.
+        git_run(root, &["config", "diff.renames", "true"]);
+        // Not git's defaults: what a user may configure — other prefixes
+        // (`c/`, `w/`), a submodule shown as its own files' diffs — must not
+        // change which sections a file's patch keeps.
+        git_run(root, &["config", "diff.mnemonicPrefix", "true"]);
+        git_run(root, &["config", "diff.submodule", "diff"]);
+        // Distinct contents, so each rename has exactly one possible pairing.
+        std::fs::create_dir_all(root.join("docs").join("sub")).expect("mkdir");
+        std::fs::write(root.join("docs/sub/moved.txt"), "a\nb\nc\nd\ne\n").expect("write");
+        std::fs::write(root.join("old.txt"), "1\n2\n3\n4\n5\n").expect("write");
+        std::fs::write(root.join("tool"), "t1\nt2\nt3\nt4\nt5\n").expect("write");
+        std::fs::write(root.join("gone"), "x\n").expect("write");
+        let module = root.join("module");
+        std::fs::create_dir(&module).expect("mkdir");
+        git_run(&module, &["init", "-q", "-b", "main"]);
+        std::fs::write(module.join("inside.txt"), "m\n").expect("write");
+        git_run(&module, &["add", "-A"]);
+        git_run(&module, &["commit", "-q", "-m", "m1"]);
+        git_run(root, &["add", "-A"]);
+        git_run(root, &["commit", "-q", "-m", "base"]);
+        let base = rev_parse(path, "HEAD").await.expect("base sha");
+
+        // Committed: a move up a directory, with an edit.
+        git_run(root, &["mv", "docs/sub/moved.txt", "docs/moved.txt"]);
+        std::fs::write(root.join("docs/moved.txt"), "a\nb\nc\nd\ne\nf\n").expect("write");
+        git_run(root, &["commit", "-q", "-am", "move"]);
+        // Uncommitted, and never `git mv`ed — then a directory where the file
+        // was. Likewise a deleted file with a directory in its place, and a
+        // file moved into a directory of its own name next to a new file.
+        std::fs::rename(root.join("old.txt"), root.join("new.txt")).expect("rename");
+        std::fs::create_dir(root.join("old.txt")).expect("mkdir");
+        std::fs::write(root.join("old.txt/child.txt"), "c\n").expect("write");
+        std::fs::remove_file(root.join("gone")).expect("remove");
+        std::fs::create_dir(root.join("gone")).expect("mkdir");
+        std::fs::write(root.join("gone/inner.txt"), "d\n").expect("write");
+        std::fs::rename(root.join("tool"), root.join("tool.tmp")).expect("rename");
+        std::fs::create_dir(root.join("tool")).expect("mkdir");
+        std::fs::rename(root.join("tool.tmp"), root.join("tool/main")).expect("rename");
+        std::fs::write(root.join("tool/other"), "o\n").expect("write");
+        // The submodule moves on to a new commit.
+        std::fs::write(module.join("inside.txt"), "m\nm2\n").expect("write");
+        git_run(&module, &["commit", "-q", "-am", "m2"]);
+
+        let mut listed: Vec<String> = diff_numstat_with_untracked(path, &base)
+            .await
+            .expect("list")
+            .into_iter()
+            .map(|f| f.file)
+            .collect();
+        listed.sort();
+        assert_eq!(
+            listed,
+            [
+                "docs/{sub => }/moved.txt",
+                "gone",
+                "gone/inner.txt",
+                "module",
+                "old.txt => new.txt",
+                "old.txt/child.txt",
+                "tool => tool/main",
+                "tool/other",
+            ]
+        );
+
+        let gone = diff_patch_with_untracked(path, &base, Some("gone"))
+            .await
+            .expect("patch");
+        assert!(gone.contains("deleted file mode"), "{gone}");
+        assert_eq!(gone.matches("diff --git ").count(), 1, "{gone}");
+        let module = diff_patch_with_untracked(path, &base, Some("module"))
+            .await
+            .expect("patch");
+        assert!(module.contains("+Subproject commit "), "{module}");
+        assert_eq!(module.matches("diff --git ").count(), 1, "{module}");
+        for (name, from, to) in [
+            (
+                "docs/{sub => }/moved.txt",
+                "docs/sub/moved.txt",
+                "docs/moved.txt",
+            ),
+            ("old.txt => new.txt", "old.txt", "new.txt"),
+            ("tool => tool/main", "tool", "tool/main"),
+        ] {
+            let patch = diff_patch_with_untracked(path, &base, Some(name))
+                .await
+                .expect("patch");
+            assert!(patch.contains(&format!("rename from {from}\n")), "{patch}");
+            assert!(patch.contains(&format!("rename to {to}\n")), "{patch}");
+            assert_eq!(patch.matches("diff --git ").count(), 1, "{patch}");
+        }
+        let moved = diff_patch_with_untracked(path, &base, Some("docs/{sub => }/moved.txt"))
+            .await
+            .expect("patch");
+        assert!(
+            moved.contains("\n+f\n"),
+            "the move's edit is in it: {moved}"
         );
     }
 

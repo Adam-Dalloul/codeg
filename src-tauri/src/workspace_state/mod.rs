@@ -786,34 +786,14 @@ fn normalize_git_status_path(path: &str) -> String {
     normalized.trim_end_matches('/').to_string()
 }
 
+/// The path `git status` gives the file numstat counted: for a rename, its new
+/// side (see [`folders::numstat_rename_sides`]).
 fn normalize_numstat_path(path: &str) -> String {
     let trimmed = path.trim().replace('\\', "/");
-
-    if let (Some(open), Some(close)) = (trimmed.find('{'), trimmed.rfind('}')) {
-        if open < close {
-            let prefix = &trimmed[..open];
-            let suffix = &trimmed[close + 1..];
-            let inner = &trimmed[open + 1..close];
-            if let Some(idx) = inner.find(" => ") {
-                let right = &inner[idx + 4..];
-                // A move up a directory leaves the new side empty
-                // (`src/{sub => }/main.rs`), and the `/` ending the prefix and
-                // the one starting the suffix would both be kept.
-                let suffix = if right.is_empty() {
-                    suffix.strip_prefix('/').unwrap_or(suffix)
-                } else {
-                    suffix
-                };
-                return format!("{prefix}{right}{suffix}");
-            }
-        }
+    match folders::numstat_rename_sides(&trimmed) {
+        Some((_, new)) => new,
+        None => trimmed,
     }
-
-    if let Some(index) = trimmed.rfind(" => ") {
-        return trimmed[index + 4..].to_string();
-    }
-
-    trimmed
 }
 
 fn parse_numstat_value(raw: &str) -> i32 {
@@ -2318,6 +2298,60 @@ mod tests {
         assert_eq!(
             entries,
             vec![modified("docs/需求.md"), modified("plain.txt")]
+        );
+    }
+
+    /// A staged rename is counted under its new path, which `git status` and
+    /// numstat each write their own way: status quotes a side with a space in
+    /// it (`"d/old name.txt" -> "d/new name.txt"`), numstat factors the shared
+    /// part out into braces (`d/{old name.txt => new name.txt}`) and keeps both
+    /// slashes around a side a move up a directory empties
+    /// (`docs/{sub => }/moved.txt`), and by default both octal-escape a
+    /// non-ASCII name.
+    #[tokio::test]
+    async fn collect_git_snapshot_counts_a_staged_rename() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        let path = root.to_str().expect("utf-8 path");
+        git_run(root, &["init", "-q", "-b", "main"]);
+        // Git's defaults, repo-local so the git the code under test runs reads
+        // them too, whatever the developer's global config says.
+        git_run(root, &["config", "core.quotePath", "true"]);
+        git_run(root, &["config", "diff.renames", "true"]);
+        git_run(root, &["config", "status.renames", "true"]);
+        std::fs::create_dir_all(root.join("docs").join("sub")).expect("mkdir");
+        std::fs::create_dir(root.join("d")).expect("mkdir");
+        let five = "1\n2\n3\n4\n5\n";
+        std::fs::write(root.join("docs/sub/moved.txt"), five).expect("write");
+        std::fs::write(root.join("d/old name.txt"), five).expect("write");
+        std::fs::write(root.join("d/旧.txt"), five).expect("write");
+        git_run(root, &["add", "-A"]);
+        git_run(root, &["commit", "-q", "-m", "base"]);
+
+        for (from, to) in [
+            ("docs/sub/moved.txt", "docs/moved.txt"),
+            ("d/old name.txt", "d/new name.txt"),
+            ("d/旧.txt", "d/新.txt"),
+        ] {
+            git_run(root, &["mv", from, to]);
+            std::fs::write(root.join(to), format!("{five}6\n")).expect("write");
+        }
+        git_run(root, &["add", "-A"]);
+
+        let entries = collect_git_snapshot(path).await.expect("git snapshot");
+        let renamed = |file: &str| WorkspaceGitEntry {
+            path: file.to_string(),
+            status: "R".to_string(),
+            additions: 1,
+            deletions: 0,
+        };
+        assert_eq!(
+            entries,
+            vec![
+                renamed("d/new name.txt"),
+                renamed("d/新.txt"),
+                renamed("docs/moved.txt"),
+            ]
         );
     }
 }
