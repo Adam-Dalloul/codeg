@@ -349,7 +349,7 @@ export const AgentRow = memo(function AgentRow({ step }: { step: ToolStep }) {
           )}
           {m.agentId ? (
             <span
-              className="shrink-0 font-mono text-[0.8125rem] text-muted-foreground"
+              className="shrink-0 font-mono text-[0.8125rem] text-activity-secondary"
               dir="ltr"
             >
               #{shortAgentId(m.agentId)}
@@ -359,7 +359,7 @@ export const AgentRow = memo(function AgentRow({ step }: { step: ToolStep }) {
             <span
               ref={promptRef}
               dir="auto"
-              className="min-w-0 flex-1 truncate text-muted-foreground"
+              className="min-w-0 flex-1 truncate text-activity-secondary"
             >
               {promptLine}
             </span>

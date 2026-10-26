@@ -592,7 +592,7 @@ describe("activity timeline: the reference turn", () => {
     }
   })
 
-  it("sets a row's verb, a group's title and the file it acts on in the light ink", () => {
+  it("sets a row's verb and a group's title in the light ink, the file it acts on a step lighter", () => {
     renderSettled(partsOf(MOCKUP_ASSISTANT_TURN))
     for (const label of ["Explored", "Ran 2 commands", "Edited"]) {
       expect(screen.getAllByText(label)[0]).toHaveClass("text-muted-foreground")
@@ -600,11 +600,11 @@ describe("activity timeline: the reference turn", () => {
     // The edited file: its folder and its name alike.
     const name = screen.getByText("query_tasks.py")
     expect(name).not.toHaveClass("text-foreground")
-    expect(name.closest(".text-muted-foreground")).toBe(name.parentElement)
+    expect(name.closest(".text-activity-secondary")).toBe(name.parentElement)
     // A file an explore group read.
     fireEvent.click(within(rowOf("Explored")).getAllByRole("button")[0]!)
     const read = within(rowOf(/\/Makefile$/)).getByText(/\/Makefile$/)
-    expect(read).toHaveClass("text-muted-foreground")
+    expect(read).toHaveClass("text-activity-secondary")
   })
 
   it("spaces a group's members like the rows around the group", () => {
@@ -771,7 +771,7 @@ describe("activity timeline: a live turn", () => {
     // Its label shimmers while it runs, as a running row's verb does.
     expect(within(row).getByText("Command")).toHaveClass("activity-shimmer")
     expect(within(row).getByText("Run web unit tests")).toHaveClass(
-      "text-muted-foreground"
+      "text-activity-secondary"
     )
   })
 })
@@ -1322,7 +1322,7 @@ describe("activity timeline: commands", () => {
     )
     expect(
       within(header).getByText("Install and run the web tests")
-    ).toHaveClass("text-muted-foreground")
+    ).toHaveClass("text-activity-secondary")
     expect(header).toHaveAttribute("title", "Install and run the web tests")
     fireEvent.click(header)
     const panel = row.querySelector(".activity-detail") as HTMLElement

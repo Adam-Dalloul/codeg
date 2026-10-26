@@ -95,7 +95,9 @@ export function TimelineFoot({
         {/* The gap lays the words out; the space between them keeps them
             apart in the name a screen reader reads. */}
         <span className="shrink-0 font-medium">{t("foot.fold")}</span>{" "}
-        <span className="min-w-0 truncate">{what}</span>
+        <span className="min-w-0 truncate text-activity-secondary group-hover/foot:text-foreground group-focus-visible/foot:text-foreground">
+          {what}
+        </span>
       </button>
     </li>
   )

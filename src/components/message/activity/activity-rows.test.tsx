@@ -969,7 +969,7 @@ describe("a reply's rail while it is written", () => {
 })
 
 describe("file rows", () => {
-  it("draw the file they read, write or edit in the label's light ink", () => {
+  it("draw the file they read, write or edit a step lighter than their verb", () => {
     renderUi(
       <Round
         parts={parts(
@@ -995,18 +995,18 @@ describe("file rows", () => {
     )
 
     expect(screen.getByText("/repo/src/read.ts")).toHaveClass(
-      "text-muted-foreground"
+      "text-activity-secondary"
     )
     for (const name of ["made.ts", "changed.ts"]) {
       const label = screen.getByText(name)
       expect(label).not.toHaveClass("text-foreground")
-      expect(label.parentElement).toHaveClass("text-muted-foreground")
+      expect(label.parentElement).toHaveClass("text-activity-secondary")
     }
   })
 })
 
 describe("command row", () => {
-  it("draws its command line in the label's light ink, like a description", () => {
+  it("draws its command line a step lighter than its label, like a description", () => {
     renderUi(
       <Round
         parts={parts(
@@ -1024,9 +1024,12 @@ describe("command row", () => {
       />
     )
 
-    expect(screen.getByText("pnpm lint")).toHaveClass("text-muted-foreground")
+    expect(screen.getByText("pnpm lint")).toHaveClass("text-activity-secondary")
     expect(screen.getByText("Run the tests")).toHaveClass(
-      "text-muted-foreground"
+      "text-activity-secondary"
     )
+    for (const label of screen.getAllByText("Command")) {
+      expect(label).toHaveClass("text-muted-foreground")
+    }
   })
 })

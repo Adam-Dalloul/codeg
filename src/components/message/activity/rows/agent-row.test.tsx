@@ -328,7 +328,7 @@ describe("sub-agent row: the prompt it was handed", () => {
     const line = within(header()).getByText(
       "Find every consumer of source_bindings. Report which ones assume inactive bindings are present."
     )
-    expect(line).toHaveClass("truncate", "text-muted-foreground")
+    expect(line).toHaveClass("truncate", "text-activity-secondary")
     expect(line).toHaveAttribute("dir", "auto")
     // It takes only the room the title leaves, and nothing runs past the
     // line's end.

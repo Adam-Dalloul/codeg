@@ -192,7 +192,7 @@ export const ExploreGroupRow = memo(function ExploreGroupRow({
         >
           {live || awaited ? t("row.exploring") : t("row.explored")}
         </span>
-        <span className="min-w-0 truncate text-muted-foreground">
+        <span className="min-w-0 truncate text-activity-secondary">
           {summary}
         </span>
       </span>
@@ -309,7 +309,7 @@ export const ExploreChildRow = memo(function ExploreChildRow({
         ) : null}
         <span
           className={cn(
-            "min-w-0 truncate font-mono text-muted-foreground",
+            "min-w-0 truncate font-mono text-activity-secondary",
             standalone && "text-[0.8125rem]"
           )}
           dir="ltr"
@@ -317,7 +317,7 @@ export const ExploreChildRow = memo(function ExploreChildRow({
           {targetText}
         </span>
         {tool.detail ? (
-          <span className="min-w-0 shrink truncate font-sans text-muted-foreground">
+          <span className="min-w-0 shrink truncate font-sans text-activity-secondary">
             {tool.detail}
           </span>
         ) : null}

@@ -243,7 +243,7 @@ export function ToolNotes({ notes }: { notes: ToolNote[] }) {
     })
     .join(" · ")
   return (
-    <span className="min-w-0 shrink truncate font-sans text-muted-foreground">
+    <span className="min-w-0 shrink truncate font-sans text-activity-secondary">
       {text}
     </span>
   )

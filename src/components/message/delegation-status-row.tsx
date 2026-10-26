@@ -244,7 +244,7 @@ export const DelegationStatusRow = memo(function DelegationStatusRow({
             {label}
           </span>
           {results.length > 1 && (
-            <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
+            <span className="shrink-0 text-xs tabular-nums text-activity-secondary">
               ×{results.length}
             </span>
           )}

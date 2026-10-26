@@ -307,7 +307,7 @@ export function ActivityMembers({
 /** A row header's end column: its figure, status word, time. */
 export function RowFigure({ children }: { children: ReactNode }) {
   return (
-    <span className="activity-mono ms-auto flex shrink-0 items-center gap-3 ps-3 text-xs leading-6 text-muted-foreground">
+    <span className="activity-mono ms-auto flex shrink-0 items-center gap-3 ps-3 text-xs leading-6 text-activity-secondary">
       {children}
     </span>
   )

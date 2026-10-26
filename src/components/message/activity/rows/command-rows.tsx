@@ -143,7 +143,7 @@ function CommandLabel({
           {verb}
         </span>
         <span
-          className="min-w-0 truncate font-mono text-[0.8125rem] text-muted-foreground"
+          className="min-w-0 truncate font-mono text-[0.8125rem] text-activity-secondary"
           dir="ltr"
         >
           {target}
@@ -160,14 +160,14 @@ function CommandLabel({
         </span>
         {command.display ? (
           <span
-            className="min-w-0 truncate font-mono text-[0.8125rem] text-muted-foreground"
+            className="min-w-0 truncate font-mono text-[0.8125rem] text-activity-secondary"
             dir="ltr"
           >
             {command.display}
           </span>
         ) : null}
         {command.lineCount > 0 ? (
-          <span className="shrink-0 text-muted-foreground">
+          <span className="shrink-0 text-activity-secondary">
             {t("row.script", { count: command.lineCount })}
           </span>
         ) : null}
@@ -194,24 +194,24 @@ function CommandLabel({
         {t("row.command")}
       </span>
       {command.description ? (
-        <span dir="auto" className="min-w-0 truncate text-muted-foreground">
+        <span dir="auto" className="min-w-0 truncate text-activity-secondary">
           {command.description}
         </span>
       ) : (
         <>
           <span
             ref={commandRef}
-            className="min-w-0 truncate font-mono text-[0.8125rem] text-muted-foreground"
+            className="min-w-0 truncate font-mono text-[0.8125rem] text-activity-secondary"
             dir="ltr"
           >
             {firstLine}
           </span>
           {heredoc ? (
-            <span className="shrink-0 text-muted-foreground">
+            <span className="shrink-0 text-activity-secondary">
               {t("row.script", { count: heredoc.bodyLines })}
             </span>
           ) : extraLines > 0 ? (
-            <span className="shrink-0 text-muted-foreground">
+            <span className="shrink-0 text-activity-secondary">
               {t("row.moreLines", { count: extraLines })}
             </span>
           ) : null}
@@ -223,7 +223,7 @@ function CommandLabel({
         </span>
       ) : null}
       {command.announcedSession ? (
-        <span className="shrink-0 font-mono text-xs text-muted-foreground">
+        <span className="shrink-0 font-mono text-xs text-activity-secondary">
           {tParts("shellSession", { id: command.announcedSession })}
         </span>
       ) : null}

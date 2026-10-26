@@ -115,7 +115,7 @@ export const McpRow = memo(function McpRow({ step }: { step: ToolStep }) {
           {tool.target?.text ?? tool.toolName}
         </span>
         {tool.detail ? (
-          <span className="min-w-0 truncate text-muted-foreground" dir="auto">
+          <span className="min-w-0 truncate text-activity-secondary" dir="auto">
             {tool.detail}
           </span>
         ) : null}
