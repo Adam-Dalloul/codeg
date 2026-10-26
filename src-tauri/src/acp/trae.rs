@@ -9,7 +9,7 @@
 //! `<TRAE_HOME>/cli/sessions/YYYY/MM/DD/rollout-*.jsonl`, plus SQLite state
 //! beside them) that no public contract describes, so message history comes
 //! from codeg's own ACP transcript (`parsers::acp_native`), like ZCode and
-//! custom agents. The stable `token_usage_record` rows in those rollouts are
+//! custom agents. The flat `token_usage_record` rows in those rollouts are
 //! read separately by `parsers::trae_usage` to enrich that history with exact
 //! usage.
 //!
@@ -20,6 +20,11 @@
 //!   tree: `traecli.toml`, `skills/`, and the `cli/` runtime dir (sessions,
 //!   SQLite state, logs). The value is taken verbatim — `TRAE_HOME=~/x` is NOT
 //!   expanded, and a path that does not exist is a startup error.
+//!   `TRAECLI_HOME` relocates the `cli/` runtime dir alone.
+//! * A rollout's thread id is the ACP session id. Every model request writes
+//!   one `token_usage_record` row; a sub-agent's rows go to its own rollout,
+//!   named by its own thread id. The prompt response's `usage` covers the
+//!   session's own requests only, not its sub-agents'.
 //! * MCP servers live in `traecli.toml` as Codex's `[mcp_servers.<name>]`
 //!   tables, and `traecli acp serve` loads them itself. Servers sent over ACP
 //!   `session/new` are loaded too (both reach the model as `mcp__<server>__*`),

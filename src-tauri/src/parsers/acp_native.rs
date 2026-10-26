@@ -139,12 +139,6 @@ impl AgentParser for AcpNativeParser {
 
     fn get_conversation(&self, conversation_id: &str) -> Result<ConversationDetail, ParseError> {
         let dir = self.agent_dir();
-        let mut native_session_ids = vec![conversation_id.to_string()];
-        native_session_ids.extend(acp_transcript::continuation_ancestors_in(
-            &self.root,
-            dir,
-            conversation_id,
-        ));
         // Reads the whole continuation chain: when the agent had forgotten the
         // session and codeg started a fresh one, the earlier turns still live
         // under the previous session id.
@@ -154,6 +148,13 @@ impl AgentParser for AcpNativeParser {
         }
         let mut turns = project_turns(&transcript.entries);
         let native_usage = self.trae_sessions.as_deref().and_then(|sessions| {
+            // Every session of the chain spent tokens under its own id.
+            let mut native_session_ids = vec![conversation_id.to_string()];
+            native_session_ids.extend(acp_transcript::continuation_ancestors_in(
+                &self.root,
+                dir,
+                conversation_id,
+            ));
             super::trae_usage::enrich_turns(sessions, &native_session_ids, &mut turns)
         });
         let (used, size) = latest_context_window(&transcript.entries);
