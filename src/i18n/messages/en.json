@@ -6202,6 +6202,8 @@
     "notifyReviewRedacted": "A task is ready for review",
     "notifyFailedRedacted": "A task failed",
     "createFromMessage": "Create task from message",
+    "createFromMessageDone": "Task created: {title}",
+    "createFromMessageView": "View",
     "detailTokens": "Total tokens",
     "editorTitleNew": "New task",
     "editorTitleEdit": "Edit task",

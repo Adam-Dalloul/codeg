@@ -6202,6 +6202,8 @@
     "notifyReviewRedacted": "有任務等待驗收",
     "notifyFailedRedacted": "有任務失敗",
     "createFromMessage": "由此訊息建立任務",
+    "createFromMessageDone": "已建立任務：{title}",
+    "createFromMessageView": "檢視",
     "detailTokens": "總 token 用量",
     "editorTitleNew": "新增任務",
     "editorTitleEdit": "編輯任務",

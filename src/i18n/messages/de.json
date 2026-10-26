@@ -6202,6 +6202,8 @@
     "notifyReviewRedacted": "Eine Aufgabe wartet auf die Abnahme",
     "notifyFailedRedacted": "Eine Aufgabe ist fehlgeschlagen",
     "createFromMessage": "Aufgabe aus Nachricht erstellen",
+    "createFromMessageDone": "Aufgabe erstellt: {title}",
+    "createFromMessageView": "Ansehen",
     "detailTokens": "Token insgesamt",
     "editorTitleNew": "Neue Aufgabe",
     "editorTitleEdit": "Aufgabe bearbeiten",

@@ -6202,6 +6202,8 @@
     "notifyReviewRedacted": "Une tâche attend d'être relue",
     "notifyFailedRedacted": "Une tâche a échoué",
     "createFromMessage": "Créer une tâche depuis le message",
+    "createFromMessageDone": "Tâche créée : {title}",
+    "createFromMessageView": "Voir",
     "detailTokens": "Total de tokens",
     "editorTitleNew": "Nouvelle tâche",
     "editorTitleEdit": "Modifier la tâche",

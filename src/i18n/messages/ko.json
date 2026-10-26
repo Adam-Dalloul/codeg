@@ -6202,6 +6202,8 @@
     "notifyReviewRedacted": "검토를 기다리는 작업이 있습니다",
     "notifyFailedRedacted": "작업이 실패했습니다",
     "createFromMessage": "이 메시지로 작업 만들기",
+    "createFromMessageDone": "작업을 만들었습니다: {title}",
+    "createFromMessageView": "보기",
     "detailTokens": "총 토큰",
     "editorTitleNew": "새 작업",
     "editorTitleEdit": "작업 편집",

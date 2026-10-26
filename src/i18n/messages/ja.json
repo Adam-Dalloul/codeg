@@ -6202,6 +6202,8 @@
     "notifyReviewRedacted": "レビュー待ちのタスクがあります",
     "notifyFailedRedacted": "タスクが失敗しました",
     "createFromMessage": "このメッセージからタスクを作成",
+    "createFromMessageDone": "タスクを作成しました: {title}",
+    "createFromMessageView": "表示",
     "detailTokens": "合計トークン",
     "editorTitleNew": "新規タスク",
     "editorTitleEdit": "タスクを編集",

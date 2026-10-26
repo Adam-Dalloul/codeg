@@ -6202,6 +6202,8 @@
     "notifyReviewRedacted": "有任务等待验收",
     "notifyFailedRedacted": "有任务失败",
     "createFromMessage": "由此消息创建任务",
+    "createFromMessageDone": "已创建任务：{title}",
+    "createFromMessageView": "查看",
     "detailTokens": "总 token 用量",
     "editorTitleNew": "新建任务",
     "editorTitleEdit": "编辑任务",

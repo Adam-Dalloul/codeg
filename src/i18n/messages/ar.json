@@ -6202,6 +6202,8 @@
     "notifyReviewRedacted": "هناك مهمة جاهزة للمراجعة",
     "notifyFailedRedacted": "فشلت إحدى المهمات",
     "createFromMessage": "إنشاء مهمة من الرسالة",
+    "createFromMessageDone": "تم إنشاء المهمة: {title}",
+    "createFromMessageView": "عرض",
     "detailTokens": "إجمالي الرموز",
     "editorTitleNew": "مهمة جديدة",
     "editorTitleEdit": "تحرير المهمة",

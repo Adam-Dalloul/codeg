@@ -6202,6 +6202,8 @@
     "notifyReviewRedacted": "Há uma tarefa pronta para revisão",
     "notifyFailedRedacted": "Uma tarefa falhou",
     "createFromMessage": "Criar tarefa a partir da mensagem",
+    "createFromMessageDone": "Tarefa criada: {title}",
+    "createFromMessageView": "Ver",
     "detailTokens": "Total de tokens",
     "editorTitleNew": "Nova tarefa",
     "editorTitleEdit": "Editar tarefa",

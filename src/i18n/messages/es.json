@@ -6202,6 +6202,8 @@
     "notifyReviewRedacted": "Hay una tarea lista para revisar",
     "notifyFailedRedacted": "Una tarea falló",
     "createFromMessage": "Crear tarea desde el mensaje",
+    "createFromMessageDone": "Tarea creada: {title}",
+    "createFromMessageView": "Ver",
     "detailTokens": "Tokens totales",
     "editorTitleNew": "Nueva tarea",
     "editorTitleEdit": "Editar tarea",
