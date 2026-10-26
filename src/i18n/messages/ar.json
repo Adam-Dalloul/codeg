@@ -2,7 +2,13 @@
   "HtmlCodePreview": {
     "code": "الكود",
     "preview": "معاينة",
-    "title": "معاينة HTML"
+    "title": "معاينة HTML",
+    "generating": "جارٍ إنشاء HTML…",
+    "expand": "عرض الكل",
+    "collapse": "طي",
+    "settingsTitle": "عرض HTML في المحادثة",
+    "settingsDescription": "عرض بطاقات ومخططات HTML/CSS مكتفية ذاتياً ضمن ردود الذكاء الاصطناعي. تُحظر نصوص النموذج والموارد الخارجية.",
+    "settingsEnable": "تفعيل عرض HTML المنسق"
   },
   "Language": {
     "followSystem": "اتباع النظام",

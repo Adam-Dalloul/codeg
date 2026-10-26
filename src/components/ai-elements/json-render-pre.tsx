@@ -20,6 +20,7 @@
 
 import {
   Component,
+  cloneElement,
   createContext,
   isValidElement,
   lazy,
@@ -30,13 +31,18 @@ import {
 import type { Components } from "streamdown"
 
 import { MermaidAwarePre } from "./mermaid-block"
-import { HtmlCodePreview } from "./html-code-preview"
+import { HtmlCodePending, HtmlCodePreview } from "./html-code-preview"
+import { useChatHtmlEnabled } from "@/lib/chat-html-prefs"
 
 const JsonRenderBlock = lazy(
   () => import("@/components/message/json-render-block")
 )
 
 const AssistantReplyContext = createContext(false)
+
+export function useAssistantReply(): boolean {
+  return useContext(AssistantReplyContext)
+}
 
 /** Marks the Markdown below it as an assistant reply's text — the one place
  *  a spec fence becomes a card, as in json-render's own chat examples. */
@@ -121,16 +127,32 @@ function SpecFence({
 
 function JsonRenderAwarePre({ children }: { children?: ReactNode }) {
   const inReply = useContext(AssistantReplyContext)
+  const htmlEnabled = useChatHtmlEnabled()
   if (
     inReply &&
+    htmlEnabled &&
     isValidElement<{ className?: string; children?: unknown }>(children) &&
-    /(?:^|\s)language-html?(?:\s|$)/i.test(children.props.className ?? "") &&
+    /(?:^|\s)language-(?:html?|codeg-html(?:-pending|-source)?)(?:\s|$)/i.test(
+      children.props.className ?? ""
+    ) &&
     typeof children.props.children === "string"
   ) {
+    if (children.props.className?.includes("language-codeg-html-pending"))
+      return <HtmlCodePending />
+    const code = (
+      <MermaidAwarePre>
+        {cloneElement(children, {
+          className: children.props.className?.replace(
+            /language-(?:html?|codeg-html(?:-source)?)(?=\s|$)/i,
+            "language-html"
+          ),
+        })}
+      </MermaidAwarePre>
+    )
+    if (children.props.className?.includes("language-codeg-html-source"))
+      return code
     return (
-      <HtmlCodePreview source={children.props.children}>
-        <MermaidAwarePre>{children}</MermaidAwarePre>
-      </HtmlCodePreview>
+      <HtmlCodePreview source={children.props.children}>{code}</HtmlCodePreview>
     )
   }
   const source = specSourceFromPre(children)

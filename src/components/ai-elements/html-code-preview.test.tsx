@@ -1,7 +1,7 @@
-import { fireEvent, render, screen } from "@testing-library/react"
+import { fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { NextIntlClientProvider } from "next-intl"
 import type { ComponentType, ReactNode } from "react"
-import { describe, expect, it } from "vitest"
+import { beforeEach, describe, expect, it } from "vitest"
 import enMessages from "@/i18n/messages/en.json"
 import { messageBlockComponents, JsonRenderScope } from "./json-render-pre"
 import { MessageResponse } from "./message"
@@ -9,6 +9,11 @@ import { MessageResponse } from "./message"
 const Pre = messageBlockComponents.pre as ComponentType<{
   children?: ReactNode
 }>
+
+beforeEach(() => {
+  localStorage.clear()
+  localStorage.setItem("workspace:chat-html-rendering", "true")
+})
 
 function reply(source: string, language = "html") {
   return (
@@ -23,7 +28,7 @@ function reply(source: string, language = "html") {
 }
 
 describe("HTML code preview", () => {
-  it("offers preview for an HTML fence rendered by Streamdown", () => {
+  it("offers preview for an HTML fence rendered by Streamdown", async () => {
     render(
       <NextIntlClientProvider locale="en" messages={enMessages}>
         <JsonRenderScope>
@@ -31,18 +36,14 @@ describe("HTML code preview", () => {
         </JsonRenderScope>
       </NextIntlClientProvider>
     )
-    fireEvent.click(screen.getByRole("button", { name: "Preview" }))
-    expect(screen.getByTitle("HTML preview").getAttribute("srcdoc")).toContain(
-      "<h1>Hello</h1>"
-    )
+    expect(
+      (await screen.findByTitle("HTML preview")).getAttribute("srcdoc")
+    ).toContain("<h1>Hello</h1>")
   })
 
-  it("keeps code visible until preview is requested and unmounts the frame on return", () => {
+  it("shows preview by default and unmounts the frame when returning to code", async () => {
     const { container } = render(reply("<h1>Hello</h1>"))
-    expect(container.querySelector("iframe")).toBeNull()
-    expect(screen.getByText("<h1>Hello</h1>")).toBeInTheDocument()
-    fireEvent.click(screen.getByRole("button", { name: "Preview" }))
-    const frame = screen.getByTitle("HTML preview")
+    const frame = await screen.findByTitle("HTML preview")
     expect(frame).toHaveAttribute("sandbox", "allow-scripts")
     expect(frame.getAttribute("srcdoc")).toContain("<h1>Hello</h1>")
     expect(frame.getAttribute("srcdoc")).toContain("Content-Security-Policy")
@@ -52,12 +53,14 @@ describe("HTML code preview", () => {
     expect(screen.getByText("<h1>Hello</h1>")).toBeInTheDocument()
   })
 
-  it("updates the open preview when streamed source changes", () => {
+  it("updates the open preview when its source changes", async () => {
     const { rerender } = render(reply("<p>First</p>"))
-    fireEvent.click(screen.getByRole("button", { name: "Preview" }))
+    await screen.findByTitle("HTML preview")
     rerender(reply("<p>Second</p>"))
-    expect(screen.getByTitle("HTML preview").getAttribute("srcdoc")).toContain(
-      "<p>Second</p>"
+    await waitFor(() =>
+      expect(
+        screen.getByTitle("HTML preview").getAttribute("srcdoc")
+      ).toContain("<p>Second</p>")
     )
   })
 
