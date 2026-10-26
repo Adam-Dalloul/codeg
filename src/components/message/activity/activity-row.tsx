@@ -134,7 +134,7 @@ export function ActivityRow({
 
   const header = (
     <>
-      <span className="flex min-w-0 flex-1 items-start gap-1">
+      <span className="flex min-w-0 items-start gap-1">
         <span className="min-w-0">{children}</span>
         {expandable ? <RowChevron open={open} /> : null}
       </span>
@@ -304,10 +304,16 @@ export function ActivityMembers({
   )
 }
 
-/** A row header's end column: its figure, status word, time. */
+/**
+ * A row header's end column: its figure, status word, time. It takes the
+ * line's room past the label, a faint dashed line running across it up to
+ * the figure (`.activity-figure` in globals.css), so a figure at the far end
+ * of a wide row still reads as the label's. The label beside it must not
+ * grow.
+ */
 export function RowFigure({ children }: { children: ReactNode }) {
   return (
-    <span className="activity-mono ms-auto flex shrink-0 items-center gap-3 ps-3 text-xs leading-6 text-activity-secondary">
+    <span className="activity-mono activity-figure flex shrink-0 grow items-center justify-end gap-3 ps-3 text-xs leading-6 text-activity-secondary">
       {children}
     </span>
   )

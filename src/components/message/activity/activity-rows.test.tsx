@@ -1033,3 +1033,34 @@ describe("command row", () => {
     }
   })
 })
+
+describe("a row's figure", () => {
+  it("takes the room past the label, which does not grow", () => {
+    renderUi(
+      <Round
+        parts={parts(
+          turn([
+            toolUse("e1", "Edit", {
+              file_path: "/repo/src/changed.ts",
+              old_string: "a",
+              new_string: "b\nc",
+            }),
+            toolResult("e1", "ok"),
+            { type: "text", text: "Then the lint." },
+            toolUse("c1", "Bash", { command: "pnpm lint" }),
+            toolResult("c1", "ok"),
+          ])
+        )}
+      />
+    )
+    // The dashed line to the figure is the figure's own (globals.css), so
+    // it is drawn only where there is a figure to reach.
+    const edit = within(rowOf("changed.ts")).getAllByRole("button")[0]!
+    const figure = edit.querySelector(".activity-figure")!
+    expect(figure).toHaveClass("grow", "justify-end")
+    expect(figure.previousElementSibling).not.toHaveClass("flex-1")
+    // A command with nothing to count leaves its figure empty: no line.
+    const command = within(rowOf("pnpm lint")).getAllByRole("button")[0]!
+    expect(command.querySelector(".activity-figure")).toBeEmptyDOMElement()
+  })
+})

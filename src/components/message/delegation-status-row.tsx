@@ -232,7 +232,7 @@ export const DelegationStatusRow = memo(function DelegationStatusRow({
   // reads `done · 42s`.
   const row = (
     <>
-      <span className="flex min-w-0 flex-1 items-start gap-1">
+      <span className="flex min-w-0 items-start gap-1">
         <span className="flex min-w-0 items-baseline gap-2">
           <span
             className={cn(

@@ -2457,6 +2457,28 @@
   font-family: var(--font-sans);
 }
 
+/* A row's figure (`RowFigure`) takes the line's room past the label and runs a
+   faint dashed line across it, up to the figure, so a figure at the far end
+   of a wide row still reads as its label's. None when the figure shows
+   nothing: empty (a step with nothing to count), or only the running word,
+   which shows only under reduced motion (`hidden motion-reduce:inline`). */
+.activity-figure::before {
+  content: "";
+  flex: 1 1 0;
+  min-width: 0;
+  border-top: 1px dashed var(--activity-rail);
+}
+
+.activity-figure:empty::before {
+  display: none;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .activity-figure:has(> .hidden:only-child)::before {
+    display: none;
+  }
+}
+
 /* Muted text with a highlight in the theme's colour sweeping across it, for
    the live label of a running step. */
 .activity-shimmer {
