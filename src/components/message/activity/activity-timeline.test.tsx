@@ -645,6 +645,40 @@ describe("activity timeline: the reference turn", () => {
     expect(child.className).toMatch(/\bpy-0\.5\b/)
     expect(explored.className).toMatch(/\bpy-0\.5\b/)
   })
+
+  it("starts a group's words as far past its rings as the timeline's", () => {
+    // A member's ring is smaller, so its column is narrower by as much: the
+    // words start the same 0.75rem past the ring in every list — a reply's,
+    // a sub-agent's, a group's.
+    const stylesheet = postcss.parse(
+      readFileSync(resolve(process.cwd(), "src/app/globals.css"), "utf8")
+    )
+    const column = (selector: string) => {
+      let value = Number.NaN
+      stylesheet.walkRules((rule) => {
+        if (rule.selector !== selector) return
+        rule.walkDecls("padding-inline-start", (decl) => {
+          value = Number.parseFloat(decl.value)
+        })
+      })
+      return value
+    }
+    renderSettled(partsOf(MOCKUP_ASSISTANT_TURN))
+    const group = screen.getAllByText("Ran 2 commands")[0]!.closest("li")!
+    fireEvent.click(within(group).getAllByRole("button")[0]!)
+    // Tailwind's size-N is N quarter-rems.
+    const ring = (marker: Element) =>
+      Number(marker.className.match(/\bsize-(\d+)\b/)![1]) / 4
+    const list = document.querySelector(".activity-timeline")!
+    const mainRing = list.querySelector(
+      ':scope > li[data-marker="ring"] > span'
+    )!
+    const memberRing = list.querySelector(
+      'li.activity-child[data-marker="ring"] > span'
+    )!
+    expect(column(".activity-item") - ring(mainRing)).toBe(0.75)
+    expect(column(".activity-child") - ring(memberRing)).toBe(0.75)
+  })
 })
 
 describe("activity timeline: failures", () => {

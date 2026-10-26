@@ -75,7 +75,7 @@ export function TimelineFoot({
           "group/foot flex w-fit min-w-0 cursor-pointer items-baseline gap-2 rounded-sm py-0.5 text-start text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
           main
             ? "-ms-8 max-w-[calc(100%+2rem)] ps-8 text-sm leading-6"
-            : "-ms-6 max-w-[calc(100%+1.5rem)] ps-6 text-[0.8125rem] leading-6"
+            : "-ms-7 max-w-[calc(100%+1.75rem)] ps-7 text-[0.8125rem] leading-6"
         )}
         onClick={(event) => onFold(event.currentTarget)}
       >
