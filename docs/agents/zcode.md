@@ -27,20 +27,30 @@ The bridge accepts up to 100 content blocks and 50 MiB of decoded content per pr
 
 Codeg's Skills settings can list, read, create, edit, delete and import ZCode
 directory bundles (`<id>/SKILL.md`). ZCode also appears in the custom, expert,
-science and Office skill installation matrices.
+science, Office and UI Render skill installation matrices.
 
-Global discovery checks the native ZCode data home's `skills/` first, then the
-OS home directory's `.agents/skills/`. New global skills and Codeg installation
-links go into the native store, keeping installs separate from the shared
-store. Project skills use `<session cwd>/.agents/skills/`, including when that
-directory is below a Git root. Flat `.md` files are not ZCode skill bundles.
+Codeg uses the folders the official ZCode runtime loads skills from. Global
+skills live in `~/.zcode/skills/` and then the shared `~/.agents/skills/`, both
+in your home directory. New global skills and Codeg installation links go into
+`~/.zcode/skills/`, which keeps them separate from the shared store. Flat `.md`
+files are not ZCode skill bundles.
 
-The native data home follows the bridge: `ZCODE_HOME`, otherwise
-`$HOME/.zcode` (or `$USERPROFILE/.zcode` when HOME is unset). To relocate the
-managed store, set an absolute `ZCODE_HOME` before starting Codeg. The shared
-file manager uses Codeg's process environment, not per-agent environment
-overrides; keep the bridge on that same data home. A relative `ZCODE_HOME`
-cannot identify one global store, so Skills management is unavailable for it.
+Project skills are created in `<session cwd>/.zcode/skills/`, where ZCode's
+own settings create them. Codeg also lists and edits the skills in
+`<session cwd>/.agents/skills/`. When both folders contain the same skill
+folder, ZCode uses the `.zcode` copy, and that is the copy Codeg lists and
+edits. The runtime loads project skills from both folders, but the bridge's
+command list includes only the `.agents` ones. ZCode also loads project skills
+from parent folders up to the Git root, which Codeg does not list.
+
+`ZCODE_HOME` does not move these folders. The runtime's global skill folders
+always hang off the home directory, and its project folders off the session
+cwd. The bridge's command list reads `$ZCODE_HOME/skills/` instead of
+`~/.zcode/skills/`. With `ZCODE_HOME` pointing elsewhere, it can therefore
+offer commands for skills the runtime cannot load, and leave out skills Codeg
+installed. Extra folders added with ZCode's `skills.roots` setting are not
+listed. Codeg resolves the home directory from its own process environment,
+not from the agent's environment overrides.
 
 Codeg manages user-owned files and installation links; the bridge continues to
 decide which skills appear as commands. Native per-path disable flags in

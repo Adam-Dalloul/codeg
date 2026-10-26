@@ -834,16 +834,28 @@ mod tests {
         assert!(agents.iter().all(|a| skill_storage_spec(*a).is_some()));
     }
 
+    /// ZCode's runtime loads user skills from `<os home>/.zcode/skills` whatever
+    /// `ZCODE_HOME` says, so a matrix link must land there and not follow it.
+    /// The expected path comes from the same `dirs::home_dir()` production
+    /// uses, so it holds on Windows too, where that call ignores `$HOME`.
     #[test]
-    fn zcode_joins_the_custom_skill_matrix_at_its_native_store() {
+    fn zcode_joins_the_custom_skill_matrix_at_its_os_home_store() {
         let tmp = tempfile::tempdir().unwrap();
-        temp_env::with_var("ZCODE_HOME", Some(tmp.path()), || {
-            assert!(supported_agents().contains(&AgentType::ZCode));
-            assert_eq!(
-                agent_link_path(AgentType::ZCode, "example").unwrap(),
-                tmp.path().join("skills/example")
-            );
-        });
+        let (home, relocated) = (tmp.path().join("home"), tmp.path().join("relocated"));
+        temp_env::with_vars(
+            [("HOME", Some(&home)), ("ZCODE_HOME", Some(&relocated))],
+            || {
+                assert!(supported_agents().contains(&AgentType::ZCode));
+                assert_eq!(
+                    agent_link_path(AgentType::ZCode, "example").unwrap(),
+                    dirs::home_dir()
+                        .unwrap()
+                        .join(".zcode")
+                        .join("skills")
+                        .join("example")
+                );
+            },
+        );
     }
 
     #[test]
@@ -1120,13 +1132,15 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn fs_zcode_import_and_matrix_links_use_its_native_store() {
+    async fn fs_zcode_import_and_matrix_links_use_its_os_home_store() {
         let tmp = tempfile::tempdir().unwrap();
-        let native = tmp.path().join("native data");
+        // The runtime's user store; a relocated `ZCODE_HOME` must not move it.
+        let native = tmp.path().join(".zcode");
+        let relocated = tmp.path().join("relocated");
         temp_env::async_with_vars(
             [
                 ("HOME", Some(tmp.path())),
-                ("ZCODE_HOME", Some(native.as_path())),
+                ("ZCODE_HOME", Some(relocated.as_path())),
             ],
             async {
                 assert!(central_experts_dir().starts_with(tmp.path()));
@@ -1187,6 +1201,7 @@ mod tests {
                 assert!(!link.exists() && !path_is_symlink(&link));
                 assert!(central_experts_dir().join(id).join("SKILL.md").is_file());
                 assert!(source.join("references/proof.txt").is_file());
+                assert!(!relocated.exists(), "nothing is written under ZCODE_HOME");
             },
         )
         .await;

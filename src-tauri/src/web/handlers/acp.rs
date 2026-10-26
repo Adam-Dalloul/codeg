@@ -1513,34 +1513,34 @@ mod tests {
 
     use crate::acp::agent_mentions::append_agent_routes;
 
+    /// The editor reopens what it just saved from this response, so the web
+    /// endpoint must return the saved item as the desktop command does.
     #[tokio::test]
-    async fn zcode_skill_save_returns_the_item_the_web_editor_needs() {
+    async fn skill_save_returns_the_item_the_web_editor_needs() {
         let tmp = tempfile::tempdir().unwrap();
-        temp_env::async_with_vars([("ZCODE_HOME", Some(tmp.path()))], async {
-            let params = serde_json::from_value(serde_json::json!({
-                "agentType": "zcode",
-                "scope": "project",
-                "skillId": "web-skill",
-                "content": "---\nname: web-skill\ndescription: Test\n---\nbody",
-                "workspacePath": tmp.path().to_string_lossy(),
-                "layout": "markdown_file"
-            }))
-            .unwrap();
-            let response = acp_save_agent_skill(Json(params)).await.unwrap();
-            let value = serde_json::to_value(response.0).unwrap();
-            assert_eq!(value["id"], "web-skill");
-            assert_eq!(value["scope"], "project");
-            assert_eq!(value["layout"], "skill_directory");
-            let directory = tmp.path().join(".agents/skills/web-skill");
-            assert_eq!(
-                std::path::Path::new(value["path"].as_str().unwrap()),
-                directory
-            );
-            assert!(std::fs::read_to_string(directory.join("SKILL.md"))
-                .unwrap()
-                .ends_with("body"));
-        })
-        .await;
+        let params = serde_json::from_value(serde_json::json!({
+            "agentType": "zcode",
+            "scope": "project",
+            "skillId": "web-skill",
+            "content": "---\nname: web-skill\ndescription: Test\n---\nbody",
+            "workspacePath": tmp.path().to_string_lossy(),
+            "layout": "markdown_file"
+        }))
+        .unwrap();
+        let response = acp_save_agent_skill(Json(params)).await.unwrap();
+        let value = serde_json::to_value(response.0).unwrap();
+        assert_eq!(value["id"], "web-skill");
+        assert_eq!(value["scope"], "project");
+        assert_eq!(value["layout"], "skill_directory");
+        assert_eq!(value["description"], "Test");
+        let directory = tmp.path().join(".zcode/skills/web-skill");
+        assert_eq!(
+            std::path::Path::new(value["path"].as_str().unwrap()),
+            directory
+        );
+        assert!(std::fs::read_to_string(directory.join("SKILL.md"))
+            .unwrap()
+            .ends_with("body"));
     }
 
     #[test]
