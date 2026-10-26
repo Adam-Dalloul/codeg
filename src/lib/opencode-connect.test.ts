@@ -10,6 +10,7 @@ import {
   formatContextWindow,
   migrateSecretsToAuth,
   modelReferencesProvider,
+  openCodeModelsProtocol,
   setProviderApiKey,
   setProviderEnabled,
 } from "./opencode-connect"
@@ -635,5 +636,22 @@ describe("customProviderIdIssue", () => {
     expect(
       customProviderIdIssue({ ...base, catalogIds: [], id: "openai" })
     ).toBeNull()
+  })
+})
+
+describe("openCodeModelsProtocol", () => {
+  it("asks each AI SDK package's provider the way that package talks to it", () => {
+    expect(openCodeModelsProtocol(DEFAULT_OPENAI_COMPATIBLE_NPM)).toBe("openai")
+    expect(openCodeModelsProtocol("@ai-sdk/openai")).toBe("openai")
+    expect(openCodeModelsProtocol(" @ai-sdk/anthropic ")).toBe("anthropic")
+    expect(openCodeModelsProtocol("@ai-sdk/google")).toBe("gemini")
+    // Signed requests or deployments: no list to ask for with a key.
+    for (const npm of [
+      "@ai-sdk/azure",
+      "@ai-sdk/amazon-bedrock",
+      "@ai-sdk/google-vertex",
+    ]) {
+      expect(openCodeModelsProtocol(npm)).toBeNull()
+    }
   })
 })

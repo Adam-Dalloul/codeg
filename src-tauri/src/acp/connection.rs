@@ -173,6 +173,16 @@ pub fn set_force_command_color(enabled: bool) {
     FORCE_COMMAND_COLOR.store(enabled, Ordering::Relaxed);
 }
 
+/// Runtime-env keys that carry a launch setting codeg itself acts on (such as
+/// [`crate::acp::claude_model_picker::LAUNCH_KEY`]) rather than a variable for
+/// the agent: in the env so a change to them counts as a config change, kept
+/// out of the child's.
+const LAUNCH_ONLY_PREFIX: &str = "CODEG_LAUNCH_";
+
+pub(crate) fn is_launch_only_key(key: &str) -> bool {
+    key.starts_with(LAUNCH_ONLY_PREFIX)
+}
+
 /// `scratch` is the per-launch temp directory from
 /// [`crate::acp::scratch_dir`], or `None` when isolation is off or the
 /// directory could not be created (then the child inherits the ambient temp
@@ -211,6 +221,9 @@ fn merge_agent_env_with_color(
     }
 
     for (key, value) in runtime_env {
+        if is_launch_only_key(key) {
+            continue;
+        }
         merged.insert(key.clone(), value.clone());
     }
 
@@ -1328,8 +1341,8 @@ pub enum SetterOutcome {
     /// selector transport does), or a mode the agent acknowledged.
     Confirmed { current: String },
     /// The agent took the request, but its answer does not say what took
-    /// effect: Grok's `session/set_model`, Kiro's model / effort / thinking
-    /// channels, or a standard answer that leaves the option out.
+    /// effect: Grok's and Hermes' `session/set_model`, Kiro's model / effort /
+    /// thinking channels, or a standard answer that leaves the option out.
     Accepted,
     /// Nothing was sent: Grok's effort with no model known yet, an option the
     /// agent's channel routes nowhere, or Kiro's `default` thinking value.
@@ -2593,6 +2606,12 @@ pub async fn spawn_agent_connection(
         env_pinned_config_option_ids(agent_type, &runtime_env);
     initial_state.trae_pat_sign_in =
         agent_type == AgentType::Trae && crate::acp::trae::pat_sign_in_requested(&runtime_env);
+    // The `/model` picker rows codeg adds for this Claude, named by every
+    // session request of the connection.
+    if agent_type == AgentType::ClaudeCode {
+        initial_state.claude_settings =
+            crate::acp::claude_model_picker::launch_settings(&runtime_env);
+    }
     // A `codeg-cli` run's root: marked before anything can look, the codeg-mcp
     // injection below included.
     if let Some(seed) = cli_root {
@@ -2620,6 +2639,11 @@ pub async fn spawn_agent_connection(
     // same endpoint as the main conversation. Best-effort; never blocks launch.
     if agent_type == AgentType::Hermes {
         crate::commands::acp::reconcile_hermes_runtime_env(&runtime_env);
+    }
+    // A codex that has not loaded the catalog codeg published (an upgrade, a
+    // second install) checks it first, offline, waiting a few seconds at most.
+    if agent_type == AgentType::Codex {
+        crate::acp::codex_catalog_refresh::before_launch().await;
     }
 
     // Shared cell that receives the agent process's OS pid the instant it
@@ -4882,6 +4906,16 @@ const KIRO_MODEL_OPTION_ID: &str = MODEL_CONFIG_OPTION_ID;
 fn synthesize_kiro_model_option(
     models: Option<&serde_json::Value>,
 ) -> Option<SessionConfigOptionInfo> {
+    session_model_state_option(models)
+}
+
+/// A session reply's legacy `models` (`{"currentModelId", "availableModels":
+/// [{"modelId", "name", "description"}, …]}`) as the composer's model selector,
+/// under the shared `model` id. See [`synthesize_kiro_model_option`] for when
+/// it is `None` and which model it starts on.
+fn session_model_state_option(
+    models: Option<&serde_json::Value>,
+) -> Option<SessionConfigOptionInfo> {
     let models = models?;
     let mut seen = HashSet::new();
     let options: Vec<SessionConfigSelectOptionInfo> = models
@@ -4917,7 +4951,7 @@ fn synthesize_kiro_model_option(
         .map(str::to_string)
         .unwrap_or(first);
     Some(SessionConfigOptionInfo {
-        id: KIRO_MODEL_OPTION_ID.to_string(),
+        id: MODEL_CONFIG_OPTION_ID.to_string(),
         name: "Model".to_string(),
         description: None,
         category: Some("model".to_string()),
@@ -4930,10 +4964,12 @@ fn synthesize_kiro_model_option(
     })
 }
 
-/// Switch Kiro's model with `session/set_model {sessionId, modelId}` — listed in
-/// Kiro's own ACP method table and answered `{}` by 2.24.1. Untyped for the same
-/// reason as [`set_grok_model`]: the stable schema no longer carries the method.
-async fn set_kiro_model(
+/// Switch the model with `session/set_model {sessionId, modelId}`, for the
+/// agents that list their models in the legacy `models`: Kiro (in its own ACP
+/// method table, answered `{}` by 2.24.1) and Hermes (answered `{}` once the
+/// session runs on the new model). Untyped for the same reason as
+/// [`set_grok_model`]: the stable schema no longer carries the method.
+async fn set_legacy_session_model(
     cx: &ConnectionTo<Agent>,
     session_id: &SessionId,
     model_id: &str,
@@ -4976,6 +5012,16 @@ const KIRO_SYNTHESIZED_OPTION_IDS: &[&str] = &[
 /// Kiro's ACP modes (its agent configs: `kiro_default`, `kiro_planner`,
 /// `kiro_guide`, plus the user's own under `~/.kiro/agents`) as a selector.
 fn kiro_mode_option(modes: &SessionModeState) -> Option<SessionConfigOptionInfo> {
+    mode_state_option(modes, KIRO_MODE_OPTION_ID, "Agent")
+}
+
+/// An agent's ACP modes as a selector named `name`, on the mode it is in (the
+/// first one when it names none of them). `None` when it lists no mode.
+fn mode_state_option(
+    modes: &SessionModeState,
+    id: &str,
+    name: &str,
+) -> Option<SessionConfigOptionInfo> {
     let options: Vec<SessionConfigSelectOptionInfo> = modes
         .available_modes
         .iter()
@@ -4995,8 +5041,8 @@ fn kiro_mode_option(modes: &SessionModeState) -> Option<SessionConfigOptionInfo>
         options[0].value.clone()
     };
     Some(SessionConfigOptionInfo {
-        id: KIRO_MODE_OPTION_ID.to_string(),
-        name: "Agent".to_string(),
+        id: id.to_string(),
+        name: name.to_string(),
         description: None,
         category: Some("mode".to_string()),
         kind: SessionConfigKindInfo::Select(SessionConfigSelectInfo {
@@ -5164,8 +5210,10 @@ async fn execute_kiro_command(
     Ok(())
 }
 
-/// Switch Kiro's agent config with the standard `session/set_mode`.
-async fn set_kiro_mode(
+/// Switch the mode with the standard `session/set_mode`, the request alone:
+/// Kiro's agent config, or Hermes' edit-approval mode. The caller keeps the
+/// selectors and the session's mode up to date.
+async fn send_set_session_mode(
     cx: &ConnectionTo<Agent>,
     session_id: &SessionId,
     mode_id: &str,
@@ -5293,7 +5341,7 @@ async fn apply_kiro_preferred_options(
     let mut model_switched = false;
     if let Some(pref) = preferred_config_values.get(KIRO_MODEL_OPTION_ID) {
         if wanted(KIRO_MODEL_OPTION_ID, pref, opts) {
-            match set_kiro_model(cx, session_id, pref).await {
+            match set_legacy_session_model(cx, session_id, pref).await {
                 Ok(()) => {
                     set_select_current(opts, KIRO_MODEL_OPTION_ID, pref);
                     model_switched = true;
@@ -5304,7 +5352,7 @@ async fn apply_kiro_preferred_options(
     }
     if let Some(pref) = preferred_mode {
         if wanted(KIRO_MODE_OPTION_ID, pref, opts) {
-            match set_kiro_mode(cx, session_id, pref).await {
+            match send_set_session_mode(cx, session_id, pref).await {
                 Ok(()) => {
                     set_select_current(opts, KIRO_MODE_OPTION_ID, pref);
                     emit_with_state(
@@ -5446,6 +5494,9 @@ async fn set_config_option_for_agent(
         AgentType::Kiro => {
             set_kiro_config_option(cx, session_id, state, emitter, config_id, value_id).await
         }
+        AgentType::Hermes => {
+            set_hermes_config_option(cx, session_id, state, emitter, config_id, value_id).await
+        }
         _ => set_session_config_option(cx, session_id, state, emitter, config_id, value_id).await,
     }
 }
@@ -5464,13 +5515,13 @@ async fn set_kiro_config_option(
     let outcome = match config_id.as_str() {
         // Kiro answers a model switch with an empty object.
         KIRO_MODEL_OPTION_ID => {
-            set_kiro_model(cx, session_id, &value_id).await?;
+            set_legacy_session_model(cx, session_id, &value_id).await?;
             SetterOutcome::Accepted
         }
         // A standard `session/set_mode`: the acknowledgement is the
         // confirmation, as for every other agent's mode.
         KIRO_MODE_OPTION_ID => {
-            set_kiro_mode(cx, session_id, &value_id).await?;
+            send_set_session_mode(cx, session_id, &value_id).await?;
             emit_with_state(
                 state,
                 emitter,
@@ -5503,6 +5554,217 @@ async fn set_kiro_config_option(
                 r.thinking = Some(enabled);
             }
             SetterOutcome::Accepted
+        }
+        _ => {
+            return set_session_config_option(cx, session_id, state, emitter, config_id, value_id)
+                .await
+        }
+    };
+    update_emitted_option(state, emitter, &config_id, &value_id).await;
+    Ok(outcome)
+}
+
+/// Hermes' model selector id — the shared `model` id, like Kiro's.
+const HERMES_MODEL_OPTION_ID: &str = MODEL_CONFIG_OPTION_ID;
+
+/// Hermes' mode selector id: the id the composer already treats as the
+/// session mode.
+const HERMES_MODE_OPTION_ID: &str = "mode";
+
+/// The selectors codeg builds for Hermes itself; neither is a Hermes config
+/// option.
+const HERMES_SYNTHESIZED_OPTION_IDS: &[&str] = &[HERMES_MODEL_OPTION_ID, HERMES_MODE_OPTION_ID];
+
+/// Hermes lists its models only in the session reply's legacy `models`
+/// (verified against 0.21.6; its ACP adapter is the same through the pinned
+/// 0.22.2): every signed-in provider's models and every named endpoint's
+/// (`providers:` in config.yaml, codeg's own `custom:codeg` among them), with
+/// `provider:model` ids — `openrouter:anthropic/claude-opus-5.5`,
+/// `custom:codeg:glm-5.2`. It sends no `configOptions`, and takes a switch
+/// only as `session/set_model`: its `session/set_config_option` stores
+/// whatever it is sent and answers an empty list.
+///
+/// The rows are grouped by provider under the label Hermes gives it, as in
+/// its own `/model` picker. The label comes off each row's name (`OpenRouter ·
+/// anthropic/…`) and out of its description (`Provider: OpenRouter`), and so
+/// does the `current` mark there: it names the model the session started on,
+/// and goes stale at the first switch.
+fn synthesize_hermes_model_option(
+    models: Option<&serde_json::Value>,
+) -> Option<SessionConfigOptionInfo> {
+    let mut option = session_model_state_option(models)?;
+    let SessionConfigKindInfo::Select(select) = &mut option.kind else {
+        return Some(option);
+    };
+    let mut keys = Vec::with_capacity(select.options.len());
+    for row in &mut select.options {
+        let (label, notes) = row
+            .description
+            .as_deref()
+            .map(split_hermes_model_description)
+            .unwrap_or_default();
+        row.description = notes;
+        if let Some(model) = label
+            .as_deref()
+            .and_then(|label| row.name.strip_prefix(&format!("{label} · ")))
+        {
+            row.name = model.to_string();
+        }
+        // By label where Hermes gives one: a model id may hold colons of its
+        // own (`custom:ollama:llama3:8b`), a label is the provider's name.
+        let key = label
+            .clone()
+            .or_else(|| hermes_choice_provider(&row.value).map(str::to_string));
+        keys.push(key.map(|key| (key.clone(), label.unwrap_or(key))));
+    }
+    // A row without a provider would need a group without a name: such a
+    // list stays flat.
+    let mut groups: Vec<SessionConfigSelectGroupInfo> = Vec::new();
+    for (row, key) in select.options.iter().zip(keys) {
+        let Some((key, name)) = key else {
+            groups.clear();
+            break;
+        };
+        match groups.iter_mut().find(|g| g.group == key) {
+            Some(group) => group.options.push(row.clone()),
+            None => groups.push(SessionConfigSelectGroupInfo {
+                group: key,
+                name,
+                options: vec![row.clone()],
+            }),
+        }
+    }
+    select.groups = groups;
+    Some(option)
+}
+
+/// Split a Hermes model description — `Provider: <label>`, then ` • `-joined
+/// notes, `current` among them on the model the session started on — into
+/// the label and the other notes.
+fn split_hermes_model_description(description: &str) -> (Option<String>, Option<String>) {
+    let mut label = None;
+    let mut notes = Vec::new();
+    for (index, part) in description.split(" • ").map(str::trim).enumerate() {
+        match part.strip_prefix("Provider:") {
+            Some(name) if index == 0 => {
+                label = Some(name.trim().to_string()).filter(|name| !name.is_empty());
+            }
+            _ if part.is_empty() || part == "current" => {}
+            _ => notes.push(part),
+        }
+    }
+    (label, (!notes.is_empty()).then(|| notes.join(" • ")))
+}
+
+/// The provider part of a Hermes model id (`provider:model`): `custom:<name>`
+/// for a named endpoint, else the first segment. `None` when there is none.
+fn hermes_choice_provider(id: &str) -> Option<&str> {
+    let (first, rest) = id.split_once(':')?;
+    if first.is_empty() || rest.is_empty() {
+        return None;
+    }
+    if first == "custom" {
+        // `custom:<name>:<model>`; a bare `custom:<model>` is the unnamed one.
+        if let Some((name, model)) = rest.split_once(':') {
+            if !name.is_empty() && !model.is_empty() {
+                return Some(&id[..first.len() + 1 + name.len()]);
+            }
+        }
+    }
+    Some(first)
+}
+
+/// Hermes' ACP modes — its edit-approval policies (`default`, `accept_edits`,
+/// `dont_ask`) — as a selector.
+fn hermes_mode_option(modes: &SessionModeState) -> Option<SessionConfigOptionInfo> {
+    mode_state_option(modes, HERMES_MODE_OPTION_ID, "Mode")
+}
+
+/// Whether `value` is one of the selector `id`'s values and not the one it is
+/// on: a saved pick worth restoring.
+fn select_offers_other(opts: &[SessionConfigOptionInfo], id: &str, value: &str) -> bool {
+    opts.iter().find(|o| o.id == id).is_some_and(|o| {
+        let SessionConfigKindInfo::Select(sel) = &o.kind else {
+            return false;
+        };
+        sel.current_value != value && sel.options.iter().any(|x| x.value == value)
+    })
+}
+
+/// On connect, re-apply the model and mode the user last picked for Hermes
+/// (saved per agent by the composer), each only when it differs from what the
+/// session already runs and is still offered, on the channel Hermes takes it
+/// on — the shared pipeline would send a `session/set_config_option` Hermes
+/// stores and ignores. A failure leaves the session on what it started on.
+async fn apply_hermes_preferred_options(
+    cx: &ConnectionTo<Agent>,
+    session_id: &SessionId,
+    state: &Arc<RwLock<SessionState>>,
+    emitter: &EventEmitter,
+    opts: &mut [SessionConfigOptionInfo],
+    preferred_model: Option<&str>,
+    preferred_mode: Option<&str>,
+) {
+    if let Some(pref) =
+        preferred_model.filter(|pref| select_offers_other(opts, HERMES_MODEL_OPTION_ID, pref))
+    {
+        match set_legacy_session_model(cx, session_id, pref).await {
+            Ok(()) => set_select_current(opts, HERMES_MODEL_OPTION_ID, pref),
+            Err(e) => tracing::error!("[ACP] failed to apply preferred hermes model '{pref}': {e}"),
+        }
+    }
+    if let Some(pref) =
+        preferred_mode.filter(|pref| select_offers_other(opts, HERMES_MODE_OPTION_ID, pref))
+    {
+        match send_set_session_mode(cx, session_id, pref).await {
+            Ok(()) => {
+                set_select_current(opts, HERMES_MODE_OPTION_ID, pref);
+                emit_with_state(
+                    state,
+                    emitter,
+                    AcpEvent::ModeChanged {
+                        mode_id: pref.to_string(),
+                    },
+                )
+                .await;
+            }
+            Err(e) => tracing::error!("[ACP] failed to apply preferred hermes mode '{pref}': {e}"),
+        }
+    }
+}
+
+/// Apply a composer selector change for Hermes: the model and mode on the
+/// channels Hermes takes them on, anything else (none today) on the shared
+/// path.
+async fn set_hermes_config_option(
+    cx: &ConnectionTo<Agent>,
+    session_id: &SessionId,
+    state: &Arc<RwLock<SessionState>>,
+    emitter: &EventEmitter,
+    config_id: String,
+    value_id: String,
+) -> Result<SetterOutcome, agent_client_protocol::Error> {
+    let outcome = match config_id.as_str() {
+        // Hermes answers `{}` once the session runs on the new model, without
+        // naming it; a turn in progress, or a model no provider serves, is an
+        // error instead.
+        HERMES_MODEL_OPTION_ID => {
+            set_legacy_session_model(cx, session_id, &value_id).await?;
+            SetterOutcome::Accepted
+        }
+        HERMES_MODE_OPTION_ID => {
+            send_set_session_mode(cx, session_id, &value_id).await?;
+            emit_with_state(
+                state,
+                emitter,
+                AcpEvent::ModeChanged {
+                    mode_id: value_id.clone(),
+                },
+            )
+            .await;
+            SetterOutcome::Confirmed {
+                current: value_id.clone(),
+            }
         }
         _ => {
             return set_session_config_option(cx, session_id, state, emitter, config_id, value_id)
@@ -6137,6 +6399,75 @@ async fn apply_and_emit_session_config_options(
         // No `models` in the reply: the standard path, which is what an older
         // or future Kiro that speaks config options would want anyway.
     }
+    if agent_type == AgentType::Hermes {
+        if let Some(model) = synthesize_hermes_model_option(session_models) {
+            // As for Kiro: once Hermes has a model selector its modes have to
+            // be a config option too, or the composer drops them. Neither is a
+            // Hermes config option on the wire, so their saved values go out
+            // on their own channels, and only the rest through the shared
+            // pipeline.
+            let standard_prefs: BTreeMap<String, String> = preferred_config_values
+                .iter()
+                .filter(|(id, _)| !HERMES_SYNTHESIZED_OPTION_IDS.contains(&id.as_str()))
+                .map(|(id, value)| (id.clone(), value.clone()))
+                .collect();
+            // What the agent picked on its own, read before either replay
+            // below rewrites it (see `SessionState::agent_chosen_config_values`).
+            let mut agent_chosen =
+                current_config_option_values(&map_session_config_options(&initial_config_options));
+            let updated = apply_preferred_session_options(
+                cx,
+                session,
+                state,
+                emitter,
+                None,
+                &standard_prefs,
+                session_models,
+                initial_config_options,
+            )
+            .await;
+            let session_id = session.session_id().clone();
+            let mut synthesized = vec![model];
+            if let Some(mode) = session.modes().as_ref().and_then(hermes_mode_option) {
+                synthesized.push(mode);
+            }
+            agent_chosen.extend(current_config_option_values(&synthesized));
+            state.write().await.agent_chosen_config_values = agent_chosen;
+            // A mode saved before Hermes had a mode selector was saved as the
+            // legacy mode.
+            let preferred_mode = preferred_config_values
+                .get(HERMES_MODE_OPTION_ID)
+                .map(String::as_str)
+                .or(preferred_mode_id);
+            apply_hermes_preferred_options(
+                cx,
+                &session_id,
+                state,
+                emitter,
+                &mut synthesized,
+                preferred_config_values
+                    .get(HERMES_MODEL_OPTION_ID)
+                    .map(String::as_str),
+                preferred_mode,
+            )
+            .await;
+            let pinned = state.read().await.env_pinned_config_option_ids.clone();
+            let mut infos = map_session_config_options(&visible_config_options(&pinned, updated));
+            infos.retain(|o| !HERMES_SYNTHESIZED_OPTION_IDS.contains(&o.id.as_str()));
+            synthesized.extend(infos);
+            emit_with_state(
+                state,
+                emitter,
+                AcpEvent::SessionConfigOptions {
+                    config_options: synthesized,
+                },
+            )
+            .await;
+            return;
+        }
+        // No model listed at all: the standard path, legacy mode selector
+        // included.
+    }
     // What the agent picked on its own, read before the replay below rewrites
     // any of it (see `SessionState::agent_chosen_config_values`).
     state.write().await.agent_chosen_config_values =
@@ -6218,9 +6549,32 @@ fn resolve_working_dir(working_dir: Option<&str>) -> PathBuf {
     }
 }
 
+/// What every Claude session request of one connection names in
+/// `_meta.claudeCode` (see [`claude_raw_sdk_session_meta`]). Fixed for the
+/// connection.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ClaudeSessionOptions {
+    /// Whether the session predicts the user's next prompt
+    /// (`SessionState.wants_prompt_suggestions`).
+    pub prompt_suggestions: bool,
+    /// Settings for the CLI's `--settings` tier: the `/model` picker rows
+    /// codeg adds ([`crate::acp::claude_model_picker`]).
+    pub settings: Option<serde_json::Value>,
+}
+
+impl ClaudeSessionOptions {
+    pub(crate) fn new(prompt_suggestions: bool) -> Self {
+        Self {
+            prompt_suggestions,
+            settings: None,
+        }
+    }
+}
+
 /// The `_meta.claudeCode` object every Claude session request names
-/// (`session/new`, `load`, `resume`, `fork`): the raw SDK message stream, and,
-/// when `prompt_suggestions` is false, `options.promptSuggestions: false`.
+/// (`session/new`, `load`, `resume`, `fork`): the raw SDK message stream;
+/// when `prompt_suggestions` is false, `options.promptSuggestions: false`;
+/// and the launch's `options.settings`, if any.
 ///
 /// claude-agent-acp 0.92.0 turns the SDK's `promptSuggestions` on for every
 /// session it serves an AIR client: after each turn Claude Code sends one more
@@ -6229,13 +6583,13 @@ fn resolve_working_dir(working_dir: Option<&str>) -> PathBuf {
 /// one after every turn past the first on 0.92.0; never written to the
 /// transcript). The composer offers the prediction (`AcpEvent::PromptSuggestion`),
 /// so a session someone types into keeps it. A session nobody composes in asks
-/// for none (see `SessionState.wants_prompt_suggestions`). The flag is fixed
+/// for none (see `SessionState.wants_prompt_suggestions`). Both are fixed
 /// for a connection, and every request of it must name the same object: the
 /// adapter restarts a session whose resume names other settings than it was
 /// started with (see `crate::acp::fork::build_fork_request`).
 pub(crate) fn claude_raw_sdk_session_meta(
     agent_type: AgentType,
-    prompt_suggestions: bool,
+    claude: &ClaudeSessionOptions,
 ) -> Option<serde_json::Map<String, serde_json::Value>> {
     if agent_type != AgentType::ClaudeCode {
         return None;
@@ -6246,11 +6600,18 @@ pub(crate) fn claude_raw_sdk_session_meta(
         "emitRawSDKMessages".to_string(),
         serde_json::Value::Bool(true),
     );
-    if !prompt_suggestions {
-        claude_code.insert(
-            "options".to_string(),
-            serde_json::json!({ "promptSuggestions": false }),
+    let mut options = serde_json::Map::new();
+    if !claude.prompt_suggestions {
+        options.insert(
+            "promptSuggestions".to_string(),
+            serde_json::Value::Bool(false),
         );
+    }
+    if let Some(settings) = &claude.settings {
+        options.insert("settings".to_string(), settings.clone());
+    }
+    if !options.is_empty() {
+        claude_code.insert("options".to_string(), serde_json::Value::Object(options));
     }
 
     let mut meta = serde_json::Map::new();
@@ -6680,10 +7041,10 @@ fn build_new_session_request(
     agent_type: AgentType,
     cwd: &Path,
     mcp_servers: Vec<McpServer>,
-    prompt_suggestions: bool,
+    claude: &ClaudeSessionOptions,
 ) -> NewSessionRequest {
     let mut req = NewSessionRequest::new(cwd.to_path_buf());
-    if let Some(meta) = claude_raw_sdk_session_meta(agent_type, prompt_suggestions) {
+    if let Some(meta) = claude_raw_sdk_session_meta(agent_type, claude) {
         req = req.meta(meta);
     }
     if !mcp_servers.is_empty() {
@@ -6700,10 +7061,10 @@ fn new_session_request_for(
     agent_type: AgentType,
     cwd: &Path,
     mcp_servers: Vec<McpServer>,
-    prompt_suggestions: bool,
+    claude: &ClaudeSessionOptions,
     one_shot: bool,
 ) -> NewSessionRequest {
-    let req = build_new_session_request(agent_type, cwd, mcp_servers, prompt_suggestions);
+    let req = build_new_session_request(agent_type, cwd, mcp_servers, claude);
     match one_shot
         .then(|| crate::acp::one_shot::session_meta(agent_type))
         .flatten()
@@ -6718,10 +7079,10 @@ fn build_load_session_request(
     session_id: SessionId,
     cwd: &Path,
     mcp_servers: Vec<McpServer>,
-    prompt_suggestions: bool,
+    claude: &ClaudeSessionOptions,
 ) -> LoadSessionRequest {
     let mut req = LoadSessionRequest::new(session_id, cwd.to_path_buf());
-    if let Some(meta) = claude_raw_sdk_session_meta(agent_type, prompt_suggestions) {
+    if let Some(meta) = claude_raw_sdk_session_meta(agent_type, claude) {
         req = req.meta(meta);
     }
     if !mcp_servers.is_empty() {
@@ -6740,10 +7101,10 @@ pub(crate) fn build_resume_session_request(
     session_id: SessionId,
     cwd: &Path,
     mcp_servers: Vec<McpServer>,
-    prompt_suggestions: bool,
+    claude: &ClaudeSessionOptions,
 ) -> ResumeSessionRequest {
     let mut req = ResumeSessionRequest::new(session_id, cwd.to_path_buf());
-    if let Some(meta) = claude_raw_sdk_session_meta(agent_type, prompt_suggestions) {
+    if let Some(meta) = claude_raw_sdk_session_meta(agent_type, claude) {
         req = req.meta(meta);
     }
     if !mcp_servers.is_empty() {
@@ -6756,21 +7117,22 @@ pub(crate) fn build_resume_session_request(
 /// typed response, handing back the raw top-level `models` alongside it.
 ///
 /// That field is the one reason these requests are untyped: grok puts its
-/// per-model reasoning-effort data there, Kiro its whole model catalog, and the
-/// typed responses have no field for it (the stable schema carries no
-/// session-model API), so it has to be read off the raw JSON before the typed
-/// parse drops it. Everything else is exactly the typed exchange —
+/// per-model reasoning-effort data there, Kiro and Hermes their whole model
+/// catalogs, and the typed responses have no field for it (the stable schema
+/// carries no session-model API), so it has to be read off the raw JSON before
+/// the typed parse drops it. Everything else is exactly the typed exchange —
 /// `UntypedMessage::new` serializes the very same request, the reply goes
 /// through the same serde impl (whose `configOptions` already skips an option
 /// kind this build does not know, one entry at a time), and a JSON-RPC error
 /// comes back as the same `Err(agent_client_protocol::Error)` with `.code` /
-/// `.to_string()` intact. `session/load` goes through here for Kiro only; every
-/// other agent's load is a plain typed send.
+/// `.to_string()` intact. `session/load` goes through here for Kiro and Hermes
+/// only; every other agent's load is a plain typed send.
 ///
 /// `models` is `None` when the reply carries none. Other agents can send one too
-/// (codex-acp reports its model state there), but only three readers use it,
-/// and each checks the agent first: grok's effort data, Kiro's model catalog
-/// (`synthesize_kiro_model_option`), and Antigravity's flat model list
+/// (codex-acp reports its model state there), but only four readers use it,
+/// and each checks the agent first: grok's effort data, Kiro's and Hermes'
+/// model catalogs (`synthesize_kiro_model_option`,
+/// `synthesize_hermes_model_option`), and Antigravity's flat model list
 /// (`session_model_list_offers`).
 pub(crate) async fn send_capturing_models<Resp: serde::de::DeserializeOwned>(
     cx: &ConnectionTo<Agent>,
@@ -8475,7 +8837,7 @@ async fn run_connection(
 
             // Fixed for the connection, so every session request below names
             // the same Claude settings (see `claude_raw_sdk_session_meta`).
-            let prompt_suggestions = state.read().await.wants_prompt_suggestions;
+            let claude = state.read().await.claude_session_options();
 
             if let Some(sid) = session_id {
                 // Prefer session/resume when the agent advertises the
@@ -8491,7 +8853,7 @@ async fn run_connection(
                         SessionId::new(sid.clone()),
                         &cwd,
                         mcp_servers.clone(),
-                        prompt_suggestions,
+                        &claude,
                     );
                     match unless_cancelled(&handshake, send_resume_session(&cx, resume_req)).await? {
                         Ok((resume_resp, models_raw)) => {
@@ -8625,10 +8987,10 @@ async fn run_connection(
                 // "Method not found" are real, so the whole error ladder below
                 // stays exactly as it was.
                 let attempted_load = init_resp.agent_capabilities.load_session;
-                // Kiro reports its model catalog only in the reply's top-level
-                // `models` (see `synthesize_kiro_model_option`), which the typed
-                // response drops — so its load goes out untyped and keeps it.
-                // Every other agent keeps the plain typed send.
+                // Kiro and Hermes report their model catalogs only in the reply's
+                // top-level `models` (see `synthesize_kiro_model_option`), which
+                // the typed response drops — so their loads go out untyped and
+                // keep it. Every other agent keeps the plain typed send.
                 let mut load_models_raw: Option<serde_json::Value> = None;
                 let load_result = if attempted_load {
                     let load_req = build_load_session_request(
@@ -8636,9 +8998,9 @@ async fn run_connection(
                         SessionId::new(sid.clone()),
                         &cwd,
                         mcp_servers.clone(),
-                        prompt_suggestions,
+                        &claude,
                     );
-                    if agent_type == AgentType::Kiro {
+                    if matches!(agent_type, AgentType::Kiro | AgentType::Hermes) {
                         unless_cancelled(
                             &handshake,
                             send_capturing_models::<LoadSessionResponse>(
@@ -8996,7 +9358,7 @@ async fn run_connection(
                                     agent_type,
                                     &cwd,
                                     mcp_servers.clone(),
-                                    prompt_suggestions,
+                                    &claude,
                                     one_shot,
                                 ),
                             ),
@@ -9121,7 +9483,7 @@ async fn run_connection(
                             agent_type,
                             &cwd,
                             mcp_servers.clone(),
-                            prompt_suggestions,
+                            &claude,
                             one_shot,
                         ),
                     ),
@@ -10424,9 +10786,28 @@ async fn set_session_mode(
         .block_task()
         .await?;
 
+    sync_synthesized_mode_option(state, emitter, &mode_id).await;
     emit_with_state(state, emitter, AcpEvent::ModeChanged { mode_id }).await;
 
     Ok(())
+}
+
+/// Keep the mode selector codeg builds from Kiro's or Hermes' legacy modes on
+/// the mode a plain `session/set_mode` (`codeg-cli run --mode`, say) or the
+/// agent itself just switched to. Every other agent's mode selectors are its
+/// own and report themselves.
+async fn sync_synthesized_mode_option(
+    state: &Arc<RwLock<SessionState>>,
+    emitter: &EventEmitter,
+    mode_id: &str,
+) {
+    let agent_type = state.read().await.agent_type;
+    let id = match agent_type {
+        AgentType::Kiro => KIRO_MODE_OPTION_ID,
+        AgentType::Hermes => HERMES_MODE_OPTION_ID,
+        _ => return,
+    };
+    update_emitted_option(state, emitter, id, mode_id).await;
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -12165,13 +12546,13 @@ async fn handle_fork_or_exit(
     // fork response exactly as before. Neither is worse off than it was before
     // this call existed.
     let resumed = if supports_resume {
-        let prompt_suggestions = state.read().await.wants_prompt_suggestions;
+        let claude = state.read().await.claude_session_options();
         let resume_req = build_resume_session_request(
             agent_type,
             SessionId::new(new_sid.clone()),
             cwd,
             mcp_servers.to_vec(),
-            prompt_suggestions,
+            &claude,
         );
         match send_resume_session(&cx, resume_req).await {
             Ok(pair) => Some(pair),
@@ -14073,6 +14454,8 @@ async fn run_conversation_loop(
                                     let req = SetSessionModeRequest::new(sid.clone(), mode_id.clone());
                                     let outcome = match cx.send_request_to(Agent, req).block_task().await {
                                         Ok(_) => {
+                                            sync_synthesized_mode_option(state, emitter, &mode_id)
+                                                .await;
                                             emit_with_state(
                                                 state,
                                                 emitter,
@@ -14623,14 +15006,14 @@ async fn run_conversation_loop(
                 // brought; only one landing from now on can be newer than that
                 // handshake (see `SessionState::grok_catalog_broadcast`).
                 state.write().await.grok_catalog_broadcast = None;
-                let prompt_suggestions = state.read().await.wants_prompt_suggestions;
+                let claude = state.read().await.claude_session_options();
                 let result = crate::acp::fork::fork_session(
                     &cx,
                     &sid,
                     agent_type,
                     cwd,
                     mcp_servers,
-                    prompt_suggestions,
+                    &claude,
                     fork_point.as_ref(),
                 )
                 .await;
@@ -20000,6 +20383,551 @@ mod kiro_ext_tests {
     }
 }
 
+#[cfg(test)]
+mod hermes_selector_tests {
+    use super::*;
+    use agent_client_protocol::Channel;
+
+    // Shape of `session/new`'s `models` from Hermes 0.21.6: an inventory
+    // provider's rows, then codeg's named endpoint's, then an Ollama tag.
+    fn hermes_models() -> serde_json::Value {
+        serde_json::json!({
+            "currentModelId": "custom:codeg:glm-5.2",
+            "availableModels": [
+                {"modelId": "openrouter:anthropic/claude-opus-5.5",
+                 "name": "OpenRouter · anthropic/claude-opus-5.5",
+                 "description": "Provider: OpenRouter"},
+                {"modelId": "custom:codeg:glm-5.2", "name": "glm-5.2",
+                 "description": "Provider: codeg • current"},
+                {"modelId": "custom:codeg:kimi-k3", "name": "kimi-k3",
+                 "description": "Provider: codeg"},
+                {"modelId": "openrouter:openai/gpt-6",
+                 "name": "OpenRouter · openai/gpt-6",
+                 "description": "Provider: OpenRouter"},
+                {"modelId": "custom:ollama:llama3:8b", "name": "llama3:8b",
+                 "description": "Provider: Ollama • 8k context"}
+            ]
+        })
+    }
+
+    fn hermes_modes() -> SessionModeState {
+        serde_json::from_value(serde_json::json!({
+            "currentModeId": "default",
+            "availableModes": [
+                {"id": "default", "name": "Default", "description": "Ask before edits."},
+                {"id": "accept_edits", "name": "Accept Edits"},
+                {"id": "dont_ask", "name": "Don't Ask"}
+            ]
+        }))
+        .expect("modes")
+    }
+
+    fn select(option: &SessionConfigOptionInfo) -> &SessionConfigSelectInfo {
+        match &option.kind {
+            SessionConfigKindInfo::Select(sel) => sel,
+            other => panic!("select expected, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn hermes_models_become_a_model_selector_grouped_by_provider() {
+        let option = synthesize_hermes_model_option(Some(&hermes_models())).expect("selector");
+        assert_eq!(option.id, "model");
+        assert_eq!(option.category.as_deref(), Some("model"));
+        let sel = select(&option);
+        assert_eq!(sel.current_value, "custom:codeg:glm-5.2");
+        let groups: Vec<(&str, &str, Vec<&str>)> = sel
+            .groups
+            .iter()
+            .map(|g| {
+                (
+                    g.group.as_str(),
+                    g.name.as_str(),
+                    g.options.iter().map(|o| o.name.as_str()).collect(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            groups,
+            [
+                (
+                    "OpenRouter",
+                    "OpenRouter",
+                    vec!["anthropic/claude-opus-5.5", "openai/gpt-6"]
+                ),
+                ("codeg", "codeg", vec!["glm-5.2", "kimi-k3"]),
+                ("Ollama", "Ollama", vec!["llama3:8b"]),
+            ]
+        );
+        // The flat list is the same rows, in Hermes' order, values untouched.
+        let values: Vec<_> = sel.options.iter().map(|o| o.value.as_str()).collect();
+        assert_eq!(
+            values,
+            [
+                "openrouter:anthropic/claude-opus-5.5",
+                "custom:codeg:glm-5.2",
+                "custom:codeg:kimi-k3",
+                "openrouter:openai/gpt-6",
+                "custom:ollama:llama3:8b",
+            ]
+        );
+        assert_eq!(sel.options[0].name, "anthropic/claude-opus-5.5");
+        // The provider and the stale `current` mark leave the descriptions;
+        // any other note stays.
+        let notes: Vec<_> = sel
+            .options
+            .iter()
+            .map(|o| o.description.as_deref())
+            .collect();
+        assert_eq!(notes, [None, None, None, None, Some("8k context")]);
+    }
+
+    #[test]
+    fn hermes_rows_without_a_label_group_by_their_provider_id() {
+        let models = serde_json::json!({
+            "currentModelId": "custom:ollama:llama3:8b",
+            "availableModels": [
+                {"modelId": "custom:ollama:llama3:8b", "name": "llama3:8b"},
+                {"modelId": "custom:ollama:qwen:7b", "name": "qwen:7b"},
+                {"modelId": "custom:glm-5.2", "name": "glm-5.2"},
+                {"modelId": "anthropic:claude-opus-5.5", "name": "claude-opus-5.5"}
+            ]
+        });
+        let option = synthesize_hermes_model_option(Some(&models)).unwrap();
+        let keys: Vec<_> = select(&option)
+            .groups
+            .iter()
+            .map(|g| (g.group.as_str(), g.options.len()))
+            .collect();
+        assert_eq!(
+            keys,
+            [("custom:ollama", 2), ("custom", 1), ("anthropic", 1)]
+        );
+    }
+
+    #[test]
+    fn a_hermes_row_naming_no_provider_leaves_the_list_flat() {
+        let models = serde_json::json!({
+            "currentModelId": "glm-5.2",
+            "availableModels": [
+                {"modelId": "custom:codeg:kimi-k3", "name": "kimi-k3",
+                 "description": "Provider: codeg"},
+                {"modelId": "glm-5.2", "name": "glm-5.2"}
+            ]
+        });
+        let option = synthesize_hermes_model_option(Some(&models)).unwrap();
+        let sel = select(&option);
+        assert!(sel.groups.is_empty());
+        assert_eq!(sel.options.len(), 2);
+        assert_eq!(sel.current_value, "glm-5.2");
+        assert_eq!(sel.options[0].description, None);
+    }
+
+    #[test]
+    fn hermes_lists_without_models_make_no_selector() {
+        assert!(synthesize_hermes_model_option(None).is_none());
+        let empty = serde_json::json!({"currentModelId": "", "availableModels": []});
+        assert!(synthesize_hermes_model_option(Some(&empty)).is_none());
+    }
+
+    #[test]
+    fn a_hermes_model_id_names_its_provider() {
+        assert_eq!(
+            hermes_choice_provider("custom:codeg:glm-5.2"),
+            Some("custom:codeg")
+        );
+        assert_eq!(
+            hermes_choice_provider("custom:ollama:llama3:8b"),
+            Some("custom:ollama")
+        );
+        assert_eq!(hermes_choice_provider("custom:glm-5.2"), Some("custom"));
+        assert_eq!(
+            hermes_choice_provider("openrouter:anthropic/claude-opus-5.5"),
+            Some("openrouter")
+        );
+        assert_eq!(hermes_choice_provider("glm-5.2"), None);
+        assert_eq!(hermes_choice_provider(":glm"), None);
+        assert_eq!(hermes_choice_provider("openrouter:"), None);
+    }
+
+    #[test]
+    fn hermes_modes_become_the_mode_selector() {
+        let option = hermes_mode_option(&hermes_modes()).expect("selector");
+        assert_eq!(option.id, "mode");
+        assert_eq!(option.name, "Mode");
+        assert_eq!(option.category.as_deref(), Some("mode"));
+        let sel = select(&option);
+        assert_eq!(sel.current_value, "default");
+        let values: Vec<_> = sel.options.iter().map(|o| o.value.as_str()).collect();
+        assert_eq!(values, ["default", "accept_edits", "dont_ask"]);
+    }
+
+    /// The two requests Hermes' selectors go out on, as the agent side of a
+    /// test pipe receives them.
+    #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, JsonRpcRequest)]
+    #[request(method = "session/set_model", response = serde_json::Value)]
+    #[serde(transparent)]
+    struct FakeHermesSetModel(serde_json::Value);
+
+    #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, JsonRpcRequest)]
+    #[request(method = "session/set_mode", response = serde_json::Value)]
+    #[serde(transparent)]
+    struct FakeHermesSetMode(serde_json::Value);
+
+    #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, JsonRpcRequest)]
+    #[request(method = "session/set_config_option", response = serde_json::Value)]
+    #[serde(transparent)]
+    struct FakeHermesSetConfigOption(serde_json::Value);
+
+    type Log = Arc<std::sync::Mutex<Vec<(&'static str, serde_json::Value)>>>;
+
+    /// A fake Hermes on the agent end of `agent_end` that logs what it is
+    /// sent and answers `{}` — or, for a model switch while `busy`, Hermes'
+    /// own refusal.
+    fn fake_hermes(
+        agent_end: Channel,
+        log: &Log,
+        busy: bool,
+    ) -> tokio::task::JoinHandle<Result<(), agent_client_protocol::Error>> {
+        let (model_log, mode_log, option_log) = (Arc::clone(log), Arc::clone(log), Arc::clone(log));
+        tokio::spawn(
+            Agent
+                .builder()
+                .on_receive_request(
+                    async move |req: FakeHermesSetModel,
+                                responder: Responder<serde_json::Value>,
+                                _cx: ConnectionTo<Client>| {
+                        model_log.lock().unwrap().push(("set_model", req.0));
+                        if busy {
+                            return responder.respond_with_error(
+                                agent_client_protocol::util::internal_error(
+                                    "Session is busy; switch models while the session is idle",
+                                ),
+                            );
+                        }
+                        responder.respond(serde_json::json!({}))
+                    },
+                    on_receive_request!(),
+                )
+                .on_receive_request(
+                    async move |req: FakeHermesSetMode,
+                                responder: Responder<serde_json::Value>,
+                                _cx: ConnectionTo<Client>| {
+                        mode_log.lock().unwrap().push(("set_mode", req.0));
+                        responder.respond(serde_json::json!({}))
+                    },
+                    on_receive_request!(),
+                )
+                .on_receive_request(
+                    async move |req: FakeHermesSetConfigOption,
+                                responder: Responder<serde_json::Value>,
+                                _cx: ConnectionTo<Client>| {
+                        option_log
+                            .lock()
+                            .unwrap()
+                            .push(("set_config_option", req.0));
+                        responder.respond(serde_json::json!({"configOptions": []}))
+                    },
+                    on_receive_request!(),
+                )
+                .connect_with(agent_end, async |_cx: ConnectionTo<Client>| {
+                    std::future::pending::<Result<(), agent_client_protocol::Error>>().await
+                }),
+        )
+    }
+
+    fn hermes_state() -> Arc<RwLock<SessionState>> {
+        Arc::new(RwLock::new(SessionState::new(
+            "conn-hermes".to_string(),
+            AgentType::Hermes,
+            None,
+            "win".to_string(),
+            None,
+        )))
+    }
+
+    /// Open a session on a fake Hermes with `prefs` saved (and `legacy_mode`
+    /// as the composer's saved legacy mode), and return what Hermes was sent
+    /// with the session state afterwards.
+    async fn establish(
+        prefs: BTreeMap<String, String>,
+        legacy_mode: Option<&str>,
+    ) -> (
+        Vec<(&'static str, serde_json::Value)>,
+        Arc<RwLock<SessionState>>,
+    ) {
+        let log: Log = Arc::default();
+        let (client_end, agent_end) = Channel::duplex();
+        let agent = fake_hermes(agent_end, &log, false);
+        let state = hermes_state();
+        let establishment_state = Arc::clone(&state);
+        let legacy_mode = legacy_mode.map(str::to_string);
+        Client
+            .builder()
+            .connect_with(client_end, async move |cx: ConnectionTo<Agent>| {
+                let response = NewSessionResponse::new(SessionId::new("s1")).modes(hermes_modes());
+                let mut session = AgentSession::attach(&cx, response)?;
+                apply_and_emit_session_config_options(
+                    &cx,
+                    &mut session,
+                    &establishment_state,
+                    &EventEmitter::Noop,
+                    AgentType::Hermes,
+                    None,
+                    None,
+                    Some(&hermes_models()),
+                    legacy_mode.as_deref(),
+                    &prefs,
+                    Vec::new(),
+                )
+                .await;
+                Ok(())
+            })
+            .await
+            .expect("the establishment runs");
+        agent.abort();
+        let sent = log.lock().unwrap().clone();
+        (sent, state)
+    }
+
+    fn current(state: &SessionState) -> BTreeMap<String, String> {
+        current_config_option_values(state.config_options.as_deref().unwrap_or_default())
+    }
+
+    #[tokio::test]
+    async fn a_hermes_session_restores_the_saved_model_and_mode_on_hermes_channels() {
+        let (sent, state) = establish(
+            BTreeMap::from([
+                ("model".to_string(), "custom:codeg:kimi-k3".to_string()),
+                ("mode".to_string(), "accept_edits".to_string()),
+            ]),
+            None,
+        )
+        .await;
+        assert_eq!(
+            sent,
+            [
+                (
+                    "set_model",
+                    serde_json::json!({"sessionId": "s1", "modelId": "custom:codeg:kimi-k3"})
+                ),
+                (
+                    "set_mode",
+                    serde_json::json!({"sessionId": "s1", "modeId": "accept_edits"})
+                ),
+            ],
+            "never a session/set_config_option, which Hermes stores and ignores"
+        );
+        let state = state.read().await;
+        let ids: Vec<_> = state
+            .config_options
+            .as_deref()
+            .unwrap_or_default()
+            .iter()
+            .map(|o| o.id.as_str())
+            .collect();
+        assert_eq!(ids, ["model", "mode"]);
+        assert_eq!(
+            current(&state),
+            BTreeMap::from([
+                ("mode".to_string(), "accept_edits".to_string()),
+                ("model".to_string(), "custom:codeg:kimi-k3".to_string()),
+            ])
+        );
+        assert_eq!(
+            state.agent_chosen_config_values,
+            BTreeMap::from([
+                ("mode".to_string(), "default".to_string()),
+                ("model".to_string(), "custom:codeg:glm-5.2".to_string()),
+            ]),
+            "Hermes' own picks, from before the replay"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_hermes_session_restores_nothing_it_already_runs_or_no_longer_offers() {
+        let (sent, state) = establish(
+            BTreeMap::from([
+                ("model".to_string(), "custom:codeg:glm-5.2".to_string()),
+                ("mode".to_string(), "retired_mode".to_string()),
+            ]),
+            None,
+        )
+        .await;
+        assert!(sent.is_empty(), "{sent:?}");
+        assert_eq!(
+            current(&*state.read().await)
+                .get("model")
+                .map(String::as_str),
+            Some("custom:codeg:glm-5.2")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_mode_saved_on_the_legacy_selector_is_restored() {
+        let (sent, state) = establish(BTreeMap::new(), Some("dont_ask")).await;
+        assert_eq!(
+            sent,
+            [(
+                "set_mode",
+                serde_json::json!({"sessionId": "s1", "modeId": "dont_ask"})
+            )]
+        );
+        assert_eq!(
+            current(&*state.read().await)
+                .get("mode")
+                .map(String::as_str),
+            Some("dont_ask")
+        );
+    }
+
+    /// Run `set_config_option_for_agent` for Hermes over a pipe, on a session
+    /// whose selectors were built from `hermes_models()`.
+    async fn pick(
+        config_id: &str,
+        value: &str,
+        busy: bool,
+    ) -> (
+        Result<SetterOutcome, String>,
+        Vec<(&'static str, serde_json::Value)>,
+        BTreeMap<String, String>,
+    ) {
+        let log: Log = Arc::default();
+        let (client_end, agent_end) = Channel::duplex();
+        let agent = fake_hermes(agent_end, &log, busy);
+        let state = hermes_state();
+        let opts = vec![
+            synthesize_hermes_model_option(Some(&hermes_models())).unwrap(),
+            hermes_mode_option(&hermes_modes()).unwrap(),
+        ];
+        emit_with_state(
+            &state,
+            &EventEmitter::Noop,
+            AcpEvent::SessionConfigOptions {
+                config_options: opts,
+            },
+        )
+        .await;
+        let setter_state = Arc::clone(&state);
+        let (config_id, value) = (config_id.to_string(), value.to_string());
+        let outcome = Client
+            .builder()
+            .connect_with(client_end, async move |cx: ConnectionTo<Agent>| {
+                Ok(set_config_option_for_agent(
+                    AgentType::Hermes,
+                    &cx,
+                    &SessionId::new("s1"),
+                    &setter_state,
+                    &EventEmitter::Noop,
+                    config_id,
+                    value,
+                )
+                .await
+                .map_err(|e| e.to_string()))
+            })
+            .await
+            .expect("client connection");
+        agent.abort();
+        let sent = log.lock().unwrap().clone();
+        let current = current(&*state.read().await);
+        (outcome, sent, current)
+    }
+
+    #[tokio::test]
+    async fn picking_a_hermes_model_switches_it_with_set_model() {
+        let (outcome, sent, current) = pick("model", "openrouter:openai/gpt-6", false).await;
+        assert_eq!(outcome, Ok(SetterOutcome::Accepted));
+        assert_eq!(
+            sent,
+            [(
+                "set_model",
+                serde_json::json!({"sessionId": "s1", "modelId": "openrouter:openai/gpt-6"})
+            )]
+        );
+        assert_eq!(
+            current.get("model").map(String::as_str),
+            Some("openrouter:openai/gpt-6")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_model_switch_hermes_refuses_leaves_the_selector_as_it_was() {
+        let (outcome, _, current) = pick("model", "openrouter:openai/gpt-6", true).await;
+        assert!(
+            outcome
+                .as_ref()
+                .is_err_and(|e| e.contains("Session is busy")),
+            "{outcome:?}"
+        );
+        assert_eq!(
+            current.get("model").map(String::as_str),
+            Some("custom:codeg:glm-5.2")
+        );
+    }
+
+    /// A plain `session/set_mode` (`codeg-cli run --mode`) or the agent's own
+    /// switch moves the selector codeg built from Hermes' modes; an agent's
+    /// own mode selector is left to report itself.
+    #[tokio::test]
+    async fn a_legacy_mode_switch_moves_the_synthesized_mode_selector() {
+        let hermes = hermes_state();
+        let mut claude = SessionState::new(
+            "conn-claude".to_string(),
+            AgentType::ClaudeCode,
+            None,
+            "win".to_string(),
+            None,
+        );
+        claude.config_options = Some(vec![hermes_mode_option(&hermes_modes()).unwrap()]);
+        let claude = Arc::new(RwLock::new(claude));
+        emit_with_state(
+            &hermes,
+            &EventEmitter::Noop,
+            AcpEvent::SessionConfigOptions {
+                config_options: vec![hermes_mode_option(&hermes_modes()).unwrap()],
+            },
+        )
+        .await;
+        for state in [&hermes, &claude] {
+            sync_synthesized_mode_option(state, &EventEmitter::Noop, "dont_ask").await;
+        }
+        assert_eq!(
+            current(&*hermes.read().await)
+                .get("mode")
+                .map(String::as_str),
+            Some("dont_ask")
+        );
+        assert_eq!(
+            current(&*claude.read().await)
+                .get("mode")
+                .map(String::as_str),
+            Some("default")
+        );
+    }
+
+    #[tokio::test]
+    async fn picking_a_hermes_mode_switches_it_with_set_mode() {
+        let (outcome, sent, current) = pick("mode", "accept_edits", false).await;
+        assert_eq!(
+            outcome,
+            Ok(SetterOutcome::Confirmed {
+                current: "accept_edits".to_string()
+            })
+        );
+        assert_eq!(
+            sent,
+            [(
+                "set_mode",
+                serde_json::json!({"sessionId": "s1", "modeId": "accept_edits"})
+            )]
+        );
+        assert_eq!(
+            current.get("mode").map(String::as_str),
+            Some("accept_edits")
+        );
+    }
+}
+
 /// Claim `_auth/status_update` and drop it, loudly enough to be greppable.
 ///
 /// Two agents push it, both unconditionally. codex-acp 1.9.0: once right after
@@ -21923,14 +22851,9 @@ async fn emit_conversation_update(
             .await;
         }
         SessionUpdate::CurrentModeUpdate(update) => {
-            emit_with_state(
-                state,
-                emitter,
-                AcpEvent::ModeChanged {
-                    mode_id: update.current_mode_id.to_string(),
-                },
-            )
-            .await;
+            let mode_id = update.current_mode_id.to_string();
+            sync_synthesized_mode_option(state, emitter, &mode_id).await;
+            emit_with_state(state, emitter, AcpEvent::ModeChanged { mode_id }).await;
         }
         SessionUpdate::Plan(plan) => {
             emit_with_state(
@@ -27321,8 +28244,9 @@ mod tests {
 
     #[test]
     fn claude_raw_sdk_meta_enabled_only_for_claude() {
-        let claude_meta = claude_raw_sdk_session_meta(AgentType::ClaudeCode, true)
-            .expect("Claude must have raw SDK meta");
+        let claude_meta =
+            claude_raw_sdk_session_meta(AgentType::ClaudeCode, &ClaudeSessionOptions::new(true))
+                .expect("Claude must have raw SDK meta");
         assert_eq!(
             claude_meta
                 .get("claudeCode")
@@ -27331,8 +28255,14 @@ mod tests {
             Some(true)
         );
 
-        assert!(claude_raw_sdk_session_meta(AgentType::Codex, true).is_none());
-        assert!(claude_raw_sdk_session_meta(AgentType::Codex, false).is_none());
+        assert!(
+            claude_raw_sdk_session_meta(AgentType::Codex, &ClaudeSessionOptions::new(true))
+                .is_none()
+        );
+        assert!(
+            claude_raw_sdk_session_meta(AgentType::Codex, &ClaudeSessionOptions::new(false))
+                .is_none()
+        );
         // A session that asks for predicted prompts names nothing else: the
         // adapter turns them on itself.
         assert_eq!(
@@ -27347,8 +28277,9 @@ mod tests {
     /// turn (measured against a fake API: no prediction request at all).
     #[test]
     fn claude_session_meta_turns_prompt_suggestions_off_when_asked() {
-        let meta = claude_raw_sdk_session_meta(AgentType::ClaudeCode, false)
-            .expect("Claude must have raw SDK meta");
+        let meta =
+            claude_raw_sdk_session_meta(AgentType::ClaudeCode, &ClaudeSessionOptions::new(false))
+                .expect("Claude must have raw SDK meta");
         assert_eq!(
             serde_json::Value::Object(meta),
             serde_json::json!({"claudeCode": {
@@ -27358,23 +28289,90 @@ mod tests {
         );
         // Every request of the connection names the same object.
         let cwd = std::path::PathBuf::from("/tmp/codeg");
-        let new_req = build_new_session_request(AgentType::ClaudeCode, &cwd, Vec::new(), false);
+        let new_req = build_new_session_request(
+            AgentType::ClaudeCode,
+            &cwd,
+            Vec::new(),
+            &ClaudeSessionOptions::new(false),
+        );
         let load_req = build_load_session_request(
             AgentType::ClaudeCode,
             SessionId::new("abc".to_string()),
             &cwd,
             Vec::new(),
-            false,
+            &ClaudeSessionOptions::new(false),
         );
         let resume_req = build_resume_session_request(
             AgentType::ClaudeCode,
             SessionId::new("abc".to_string()),
             &cwd,
             Vec::new(),
-            false,
+            &ClaudeSessionOptions::new(false),
         );
         assert_eq!(new_req.meta, load_req.meta);
         assert_eq!(new_req.meta, resume_req.meta);
+    }
+
+    /// The picker rows codeg adds reach claude-agent-acp as the SDK's
+    /// `settings` (the `--settings` tier), named alike by every request of
+    /// the connection so the adapter never restarts the CLI over them.
+    #[test]
+    fn claude_session_meta_carries_the_launch_settings_on_every_request() {
+        let claude = ClaudeSessionOptions {
+            prompt_suggestions: false,
+            settings: Some(serde_json::json!({
+                "modelPicker": {"options": [{"model": "glm-5.2"}]}
+            })),
+        };
+        let meta = claude_raw_sdk_session_meta(AgentType::ClaudeCode, &claude).unwrap();
+        assert_eq!(
+            serde_json::Value::Object(meta),
+            serde_json::json!({"claudeCode": {
+                "emitRawSDKMessages": true,
+                "options": {
+                    "promptSuggestions": false,
+                    "settings": {"modelPicker": {"options": [{"model": "glm-5.2"}]}},
+                },
+            }})
+        );
+        let cwd = std::path::PathBuf::from("/tmp/codeg");
+        let sid = || SessionId::new("abc".to_string());
+        let new_req = build_new_session_request(AgentType::ClaudeCode, &cwd, Vec::new(), &claude);
+        let load_req =
+            build_load_session_request(AgentType::ClaudeCode, sid(), &cwd, Vec::new(), &claude);
+        let resume_req =
+            build_resume_session_request(AgentType::ClaudeCode, sid(), &cwd, Vec::new(), &claude);
+        assert_eq!(new_req.meta, load_req.meta);
+        assert_eq!(new_req.meta, resume_req.meta);
+        // Settings alone, with predictions on.
+        let only_settings = ClaudeSessionOptions {
+            prompt_suggestions: true,
+            ..claude.clone()
+        };
+        let meta = claude_raw_sdk_session_meta(AgentType::ClaudeCode, &only_settings).unwrap();
+        assert!(meta["claudeCode"]["options"]
+            .get("promptSuggestions")
+            .is_none());
+        assert!(meta["claudeCode"]["options"].get("settings").is_some());
+    }
+
+    #[test]
+    fn a_launch_only_key_never_reaches_the_agent() {
+        let mut runtime_env = BTreeMap::new();
+        runtime_env.insert(
+            crate::acp::claude_model_picker::LAUNCH_KEY.to_string(),
+            "[\"glm-5.2\"]".to_string(),
+        );
+        runtime_env.insert(
+            "ANTHROPIC_BASE_URL".to_string(),
+            "https://relay".to_string(),
+        );
+        let merged = merge_agent_env_with_color(false, &[], &runtime_env, None);
+        assert!(merged.iter().any(|(k, _)| k == "ANTHROPIC_BASE_URL"));
+        assert!(
+            !merged.iter().any(|(k, _)| k.starts_with("CODEG_LAUNCH_")),
+            "{merged:?}"
+        );
     }
 
     #[test]
@@ -29930,7 +30928,12 @@ mod tests {
     #[test]
     fn build_new_session_request_sets_claude_raw_meta() {
         let cwd = std::path::PathBuf::from("/tmp/codeg");
-        let req = build_new_session_request(AgentType::ClaudeCode, &cwd, Vec::new(), true);
+        let req = build_new_session_request(
+            AgentType::ClaudeCode,
+            &cwd,
+            Vec::new(),
+            &ClaudeSessionOptions::new(true),
+        );
 
         assert_eq!(
             req.meta
@@ -29945,7 +30948,13 @@ mod tests {
     #[test]
     fn a_one_shot_session_new_carries_the_one_shot_meta_for_claude_only() {
         let cwd = std::path::PathBuf::from("/tmp/codeg");
-        let req = new_session_request_for(AgentType::ClaudeCode, &cwd, Vec::new(), false, true);
+        let req = new_session_request_for(
+            AgentType::ClaudeCode,
+            &cwd,
+            Vec::new(),
+            &ClaudeSessionOptions::new(false),
+            true,
+        );
         let meta = req.meta.expect("claude gets a meta");
         assert_eq!(
             meta["claudeCode"]["options"]["tools"],
@@ -29954,13 +30963,25 @@ mod tests {
         assert!(meta.contains_key("systemPrompt"));
 
         // A connection that is not one-shot keeps the usual meta.
-        let req = new_session_request_for(AgentType::ClaudeCode, &cwd, Vec::new(), true, false);
+        let req = new_session_request_for(
+            AgentType::ClaudeCode,
+            &cwd,
+            Vec::new(),
+            &ClaudeSessionOptions::new(true),
+            false,
+        );
         let meta = req.meta.expect("claude gets a meta");
         assert!(!meta.contains_key("systemPrompt"));
         assert!(meta["claudeCode"].get("options").is_none());
 
         // Other agents take no meta either way.
-        let req = new_session_request_for(AgentType::Codex, &cwd, Vec::new(), false, true);
+        let req = new_session_request_for(
+            AgentType::Codex,
+            &cwd,
+            Vec::new(),
+            &ClaudeSessionOptions::new(false),
+            true,
+        );
         assert!(req.meta.is_none());
     }
 
@@ -30853,7 +31874,7 @@ mod tests {
             SessionId::new("abc".to_string()),
             &cwd,
             Vec::new(),
-            true,
+            &ClaudeSessionOptions::new(true),
         );
 
         assert!(req.meta.is_none());
@@ -30872,7 +31893,12 @@ mod tests {
     fn openclaw_session_requests_carry_no_mcp_servers() {
         let cwd = std::path::PathBuf::from("/tmp/codeg");
 
-        let new_req = build_new_session_request(AgentType::OpenClaw, &cwd, Vec::new(), true);
+        let new_req = build_new_session_request(
+            AgentType::OpenClaw,
+            &cwd,
+            Vec::new(),
+            &ClaudeSessionOptions::new(true),
+        );
         assert!(
             new_req.mcp_servers.is_empty(),
             "OpenClaw session/new must carry no MCP servers"
@@ -30889,7 +31915,7 @@ mod tests {
             SessionId::new("openclaw-session".to_string()),
             &cwd,
             Vec::new(),
-            true,
+            &ClaudeSessionOptions::new(true),
         );
         assert!(
             load_req.mcp_servers.is_empty(),
@@ -31035,7 +32061,7 @@ mod tests {
             SessionId::new("abc".to_string()),
             &cwd,
             Vec::new(),
-            true,
+            &ClaudeSessionOptions::new(true),
         );
 
         assert_eq!(
@@ -31056,7 +32082,7 @@ mod tests {
             SessionId::new("abc".to_string()),
             &cwd,
             Vec::new(),
-            true,
+            &ClaudeSessionOptions::new(true),
         );
 
         assert!(req.meta.is_none());
@@ -31078,7 +32104,7 @@ mod tests {
             SessionId::new("openclaw-session".to_string()),
             &cwd,
             Vec::new(),
-            true,
+            &ClaudeSessionOptions::new(true),
         );
         assert!(
             req.mcp_servers.is_empty(),
@@ -37473,7 +38499,12 @@ mod tests {
     #[test]
     fn untyped_new_session_carries_the_typed_request_payload() {
         let cwd = std::path::PathBuf::from("/tmp/codeg");
-        let req = build_new_session_request(AgentType::Cline, &cwd, Vec::new(), true);
+        let req = build_new_session_request(
+            AgentType::Cline,
+            &cwd,
+            Vec::new(),
+            &ClaudeSessionOptions::new(true),
+        );
         let expected = serde_json::to_value(&req).unwrap();
 
         let untyped = UntypedMessage::new(AGENT_METHOD_NAMES.session_new, req).expect("builds");

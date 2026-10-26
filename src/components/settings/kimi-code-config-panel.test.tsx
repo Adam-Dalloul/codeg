@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react"
+import { fireEvent, render, screen, within } from "@testing-library/react"
 import { NextIntlClientProvider } from "next-intl"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
@@ -19,14 +19,19 @@ import {
   validateKimiDraft,
   type KimiDraft,
 } from "./kimi-code-config-panel"
-import { acpFetchKimiModels, acpUpdateKimiCodeConfig } from "@/lib/api"
+import { acpUpdateKimiCodeConfig, listProviderModels } from "@/lib/api"
 import enMessages from "@/i18n/messages/en.json"
 import type { AcpAgentInfo } from "@/lib/types"
 
 vi.mock("@/lib/api", () => ({
   acpUpdateKimiCodeConfig: vi.fn(),
-  acpFetchKimiModels: vi.fn(),
+  listProviderModels: vi.fn(),
 }))
+
+/** What `listProviderModels` answers for these ids. */
+function listed(...ids: string[]) {
+  return { url: "https://x/models", models: ids.map((id) => ({ id })) }
+}
 
 vi.mock("sonner", () => ({
   toast: { success: vi.fn(), error: vi.fn() },
@@ -485,7 +490,7 @@ const label = (text: string) => new RegExp(`^${text}`)
 describe("KimiCodeConfigPanel", () => {
   beforeEach(() => {
     vi.mocked(acpUpdateKimiCodeConfig).mockReset().mockResolvedValue(0)
-    vi.mocked(acpFetchKimiModels).mockReset().mockResolvedValue([])
+    vi.mocked(listProviderModels).mockReset().mockResolvedValue(listed())
     vi.mocked(toast.success).mockReset()
     vi.mocked(toast.error).mockReset()
   })
@@ -607,7 +612,7 @@ describe("KimiCodeConfigPanel", () => {
   })
 
   it("drops the 'key works' verdict once the credentials it measured change", async () => {
-    vi.mocked(acpFetchKimiModels).mockResolvedValue(["kimi-k2.7-code"])
+    vi.mocked(listProviderModels).mockResolvedValue(listed("kimi-k2.7-code"))
     renderPanel(makeAgent(null))
 
     fireEvent.change(screen.getByLabelText(label(kimi.apiKeyLabel)), {
@@ -628,8 +633,116 @@ describe("KimiCodeConfigPanel", () => {
     expect(screen.queryByText(/Key works/)).not.toBeInTheDocument()
   })
 
+  it("tests each interface's key the way its SDK would send it", async () => {
+    const cases = [
+      {
+        interfaceType: "kimi",
+        protocol: "openai",
+        baseUrl: "https://api.moonshot.ai/v1",
+      },
+      // A blank URL is the SDK's own default.
+      {
+        interfaceType: "anthropic",
+        protocol: "anthropic",
+        baseUrl: "https://api.anthropic.com",
+      },
+      {
+        interfaceType: "google-genai",
+        protocol: "gemini",
+        baseUrl: "https://generativelanguage.googleapis.com",
+      },
+    ]
+    for (const { interfaceType, protocol, baseUrl } of cases) {
+      vi.mocked(listProviderModels).mockClear()
+      const view = render(
+        <NextIntlClientProvider locale="en" messages={enMessages}>
+          <KimiCodeConfigPanel
+            agent={makeAgent(
+              JSON.stringify({
+                hasManagedBlock: true,
+                interfaceType,
+                key: "sk-test",
+                modelId: "m",
+              })
+            )}
+            onSaved={vi.fn()}
+          />
+        </NextIntlClientProvider>
+      )
+      fireEvent.click(
+        screen.getByRole("button", { name: new RegExp(kimi.fetchModels) })
+      )
+      await vi.waitFor(() =>
+        expect(listProviderModels).toHaveBeenCalledWith({
+          protocol,
+          baseUrl,
+          keySource: { kind: "inline", apiKey: "sk-test" },
+          keyHeader: null,
+        })
+      )
+      view.unmount()
+    }
+  })
+
+  it("says why the test failed, in the user's language", async () => {
+    vi.mocked(listProviderModels).mockRejectedValue({
+      code: "authentication_failed",
+      message: "the key was rejected (HTTP 401)",
+      i18n_key: "providerModels.unauthorized",
+      i18n_params: { status: "401" },
+    })
+    renderPanel(makeAgent(null))
+    fireEvent.change(screen.getByLabelText(label(kimi.apiKeyLabel)), {
+      target: { value: "sk-bad" },
+    })
+    fireEvent.click(
+      screen.getByRole("button", { name: new RegExp(kimi.fetchModels) })
+    )
+    expect(
+      await screen.findByText(
+        /The key is invalid or has no permission \(HTTP 401\)\./
+      )
+    ).toBeInTheDocument()
+  })
+
+  it("asks for a key before testing one", () => {
+    renderPanel(makeAgent(null))
+    fireEvent.click(
+      screen.getByRole("button", { name: new RegExp(kimi.fetchModels) })
+    )
+    expect(screen.getByText(new RegExp(kimi.fetchModelsNeedsKey))).toBeVisible()
+    expect(listProviderModels).not.toHaveBeenCalled()
+  })
+
+  it("fills the model, and its context window, from the listed models", async () => {
+    vi.mocked(listProviderModels).mockResolvedValue({
+      url: "https://x/models",
+      models: [{ id: "kimi-k3-long", contextWindow: 524288 }],
+    })
+    renderPanel(makeAgent(null))
+    fireEvent.change(screen.getByLabelText(label(kimi.apiKeyLabel)), {
+      target: { value: "sk-good" },
+    })
+    fireEvent.click(
+      screen.getByRole("button", { name: new RegExp(kimi.fetchModels) })
+    )
+    fireEvent.click(
+      await screen.findByRole("button", {
+        name: enMessages.ProviderModels.choose,
+      })
+    )
+    const option = await screen.findByRole("option", { name: /kimi-k3-long/ })
+    fireEvent.click(within(option).getByText("kimi-k3-long"))
+    expect(screen.getByLabelText(label(kimi.modelLabel))).toHaveValue(
+      "kimi-k3-long"
+    )
+    expect(screen.getByLabelText(label(kimi.maxContextLabel))).toHaveValue(
+      "524288"
+    )
+  })
+
   it("warns when the chosen model is absent from the key's model list", async () => {
-    vi.mocked(acpFetchKimiModels).mockResolvedValue(["only-this-one"])
+    vi.mocked(listProviderModels).mockResolvedValue(listed("only-this-one"))
     renderPanel(makeAgent(null))
 
     fireEvent.change(screen.getByLabelText(label(kimi.apiKeyLabel)), {

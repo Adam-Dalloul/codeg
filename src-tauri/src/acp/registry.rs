@@ -453,6 +453,12 @@ const ACP_ADAPTER_DOCS_URL: &str = "https://docs.codeg.app/guide/supported-agent
 /// `src/lib/pi-config.ts`, held equal by a test).
 pub const PI_MIN_RUNTIME_VERSION: &str = "0.81.0";
 
+/// The `@openai/codex` the pinned codex-acp drives (`AgentType::Codex` below),
+/// for when the installed copy's own package.json cannot be read. A runtime
+/// resolved to this value is marked unconfirmed (`codex_runtime`), so it never
+/// counts as the version a catalog was checked against. Move it with the pin.
+pub const CODEX_NESTED_VERSION_FALLBACK: &str = "0.160.1";
+
 /// The npm package the built-in Claude Code entry runs — and the name the
 /// adapter reports as `agentInfo.name` at `initialize`, which is its
 /// `packageJson.name` (read from the 0.58.1 to 0.94.0 sources). A custom agent

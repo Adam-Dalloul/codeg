@@ -20,9 +20,29 @@
  * can treat "" as "no file".
  */
 
-import type { OpenCodeCatalogProvider } from "./types"
+import type { OpenCodeCatalogProvider, ProviderModelsProtocol } from "./types"
 
 export const DEFAULT_OPENAI_COMPATIBLE_NPM = "@ai-sdk/openai-compatible"
+
+/** How a provider built on the AI SDK package `npm` lists its models, or
+ *  `null` for one that lists none with a key (Azure deployments, Bedrock and
+ *  Vertex sign their own requests). */
+export function openCodeModelsProtocol(
+  npm: string
+): ProviderModelsProtocol | null {
+  switch (npm.trim()) {
+    case "@ai-sdk/anthropic":
+      return "anthropic"
+    case "@ai-sdk/google":
+      return "gemini"
+    case "@ai-sdk/azure":
+    case "@ai-sdk/amazon-bedrock":
+    case "@ai-sdk/google-vertex":
+      return null
+    default:
+      return "openai"
+  }
+}
 
 const PROVIDER_ID_PATTERN = /^[A-Za-z0-9_.-]+$/
 
