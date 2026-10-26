@@ -3738,8 +3738,6 @@
         "resizeWidth": "Drag to resize the chat width · double-click to reset"
       },
       "liveTurnStats": {
-        "thinking": "Thinking...",
-        "streaming": "Streaming",
         "elapsedHours": "{value}h",
         "elapsedMinutes": "{value}m",
         "elapsedSeconds": "{value}s",

@@ -3738,8 +3738,6 @@
         "resizeWidth": "드래그하여 채팅 너비 조정 · 더블 클릭하여 초기화"
       },
       "liveTurnStats": {
-        "thinking": "생각 중...",
-        "streaming": "스트리밍 중",
         "elapsedHours": "{value}시간",
         "elapsedMinutes": "{value}분",
         "elapsedSeconds": "{value}초",

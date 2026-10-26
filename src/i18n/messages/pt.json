@@ -3738,8 +3738,6 @@
         "resizeWidth": "Arraste para ajustar a largura do chat · clique duas vezes para redefinir"
       },
       "liveTurnStats": {
-        "thinking": "Pensando...",
-        "streaming": "Transmitindo",
         "elapsedHours": "{value} h",
         "elapsedMinutes": "{value} min",
         "elapsedSeconds": "{value} s",

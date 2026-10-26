@@ -3738,8 +3738,6 @@
         "resizeWidth": "Faites glisser pour ajuster la largeur du chat · double-clic pour réinitialiser"
       },
       "liveTurnStats": {
-        "thinking": "Réflexion...",
-        "streaming": "Diffusion",
         "elapsedHours": "{value} h",
         "elapsedMinutes": "{value} min",
         "elapsedSeconds": "{value} s",

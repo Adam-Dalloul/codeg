@@ -1,6 +1,9 @@
-import { describe, expect, it } from "vitest"
+import { render } from "@testing-library/react"
+import { NextIntlClientProvider } from "next-intl"
+import { afterEach, describe, expect, it, vi } from "vitest"
 
-import { extractLiveEditStats } from "./live-turn-stats"
+import enMessages from "@/i18n/messages/en.json"
+import { extractLiveEditStats, LiveTurnStats } from "./live-turn-stats"
 import type {
   LiveContentBlock,
   LiveMessage,
@@ -101,5 +104,37 @@ describe("extractLiveEditStats", () => {
     const added = toolBlock(writeInput("p\nq", "z.ts"))
     const after = extractLiveEditStats(msg([shared, added]))
     expect(after).toEqual({ files: 2, additions: 5, deletions: 0 })
+  })
+})
+
+describe("LiveTurnStats", () => {
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  // What the turn is doing — thinking, running a step, writing — is the
+  // transcript's to say: its header reads "Working", the step shimmers and a
+  // capsule turns at the foot of its rail. The row above the composer keeps
+  // only its figures.
+  it("follows the agent's mark with the time, with no word for what it is doing", () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(65_000)
+    for (const content of [
+      [{ type: "thinking", text: "Checking the logs" } as LiveContentBlock],
+      [textBlock("Writing the fix")],
+    ]) {
+      const view = render(
+        <NextIntlClientProvider locale="en" messages={enMessages}>
+          <LiveTurnStats message={msg(content)} agentType="claude_code" />
+        </NextIntlClientProvider>
+      )
+      const row = view.container.firstElementChild!.firstElementChild!
+      const [mark, time] = [...row.children]
+      expect(mark!.getAttribute("class")).toMatch(/\banimate-pulse\b/)
+      expect(time!.querySelector("svg.lucide-timer")).toBeTruthy()
+      // Past the mark (an icon, titled with the agent's name), only the time.
+      expect(row.textContent!.slice(mark!.textContent!.length)).toBe("1m 5s")
+      view.unmount()
+    }
   })
 })

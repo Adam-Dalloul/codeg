@@ -3738,8 +3738,6 @@
         "resizeWidth": "拖曳調整聊天區域寬度 · 雙擊恢復預設"
       },
       "liveTurnStats": {
-        "thinking": "思考中...",
-        "streaming": "生成中",
         "elapsedHours": "{value} 小時",
         "elapsedMinutes": "{value} 分鐘",
         "elapsedSeconds": "{value} 秒",

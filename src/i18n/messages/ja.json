@@ -3738,8 +3738,6 @@
         "resizeWidth": "ドラッグでチャット幅を調整 · ダブルクリックで元に戻す"
       },
       "liveTurnStats": {
-        "thinking": "考え中...",
-        "streaming": "ストリーミング中",
         "elapsedHours": "{value}時間",
         "elapsedMinutes": "{value}分",
         "elapsedSeconds": "{value}秒",

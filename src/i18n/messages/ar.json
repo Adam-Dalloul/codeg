@@ -3738,8 +3738,6 @@
         "resizeWidth": "اسحب لتغيير عرض المحادثة · انقر مرتين للإعادة"
       },
       "liveTurnStats": {
-        "thinking": "جارٍ التفكير...",
-        "streaming": "جارٍ البث",
         "elapsedHours": "{value}س",
         "elapsedMinutes": "{value}د",
         "elapsedSeconds": "{value}ث",
