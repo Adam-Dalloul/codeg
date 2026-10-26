@@ -1,13 +1,14 @@
 "use client"
 
 /**
- * The `pre` override `MessageResponse` installs: Mermaid's, plus json-render.
+ * `MessageResponse` 的代码块分发入口：图表、json-render 和 HTML 预览。
  *
  * A ```spec fence in an assistant reply renders as a json-render card
  * (`components/message/json-render-block.tsx`, loaded the first time one
  * appears). No switch gates it: an agent writes the fence once it has the
  * `ui-render` skill, which is what the user enables per agent (Settings >
- * Skill Packs > UI), and a card it drew stays a card after that. Every other
+ * Skill Packs > UI), and a card it drew stays a card after that. HTML fences
+ * in assistant replies offer an explicit code/preview switch. Every other
  * fence — and a spec fence anywhere else: a user message, a tool's output —
  * goes on to `MermaidAwarePre` exactly as before.
  *
@@ -29,6 +30,7 @@ import {
 import type { Components } from "streamdown"
 
 import { MermaidAwarePre } from "./mermaid-block"
+import { HtmlCodePreview } from "./html-code-preview"
 
 const JsonRenderBlock = lazy(
   () => import("@/components/message/json-render-block")
@@ -118,6 +120,19 @@ function SpecFence({
 }
 
 function JsonRenderAwarePre({ children }: { children?: ReactNode }) {
+  const inReply = useContext(AssistantReplyContext)
+  if (
+    inReply &&
+    isValidElement<{ className?: string; children?: unknown }>(children) &&
+    /(?:^|\s)language-html?(?:\s|$)/i.test(children.props.className ?? "") &&
+    typeof children.props.children === "string"
+  ) {
+    return (
+      <HtmlCodePreview source={children.props.children}>
+        <MermaidAwarePre>{children}</MermaidAwarePre>
+      </HtmlCodePreview>
+    )
+  }
   const source = specSourceFromPre(children)
   if (source === null) return <MermaidAwarePre>{children}</MermaidAwarePre>
   return <SpecFence source={source}>{children}</SpecFence>

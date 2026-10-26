@@ -1,4 +1,9 @@
 {
+  "HtmlCodePreview": {
+    "code": "程式碼",
+    "preview": "預覽",
+    "title": "HTML 預覽"
+  },
   "Language": {
     "followSystem": "跟隨系統",
     "english": "英文",

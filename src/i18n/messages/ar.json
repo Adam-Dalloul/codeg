@@ -1,4 +1,9 @@
 {
+  "HtmlCodePreview": {
+    "code": "الكود",
+    "preview": "معاينة",
+    "title": "معاينة HTML"
+  },
   "Language": {
     "followSystem": "اتباع النظام",
     "english": "الإنجليزية",

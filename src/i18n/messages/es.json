@@ -1,4 +1,9 @@
 {
+  "HtmlCodePreview": {
+    "code": "Código",
+    "preview": "Vista previa",
+    "title": "Vista previa de HTML"
+  },
   "Language": {
     "followSystem": "Seguir el sistema",
     "english": "Inglés",
