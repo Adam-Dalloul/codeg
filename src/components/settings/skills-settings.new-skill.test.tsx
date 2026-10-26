@@ -3,17 +3,22 @@ import userEvent from "@testing-library/user-event"
 import { NextIntlClientProvider } from "next-intl"
 import type { ReactNode } from "react"
 import { toast } from "sonner"
-import { describe, expect, it, vi } from "vitest"
+import { beforeEach, describe, expect, it, vi } from "vitest"
 
 import enMessages from "@/i18n/messages/en.json"
 import { acpSaveAgentSkill } from "@/lib/api"
+import type { AgentType } from "@/lib/types"
 import { SkillsSettings } from "./skills-settings"
+
+const LOCATION = "C:\\Agent Home\\skills"
+
+const state = vi.hoisted(() => ({ agentType: "zcode" as string }))
 
 vi.mock("@/lib/api", () => ({
   acpListAgents: async () => [
     {
-      agent_type: "zcode",
-      name: "ZCode",
+      agent_type: state.agentType,
+      name: "Agent",
       enabled: true,
       skills_capable: true,
       env: {},
@@ -24,9 +29,7 @@ vi.mock("@/lib/api", () => ({
   acpListAgentSkills: async () => ({
     supported: true,
     message: null,
-    locations: [
-      { scope: "global", path: "C:\\Native ZCode\\skills", exists: false },
-    ],
+    locations: [{ scope: "global", path: LOCATION, exists: false }],
     skills: [],
   }),
   acpSaveAgentSkill: vi.fn(async () => ({
@@ -34,7 +37,7 @@ vi.mock("@/lib/api", () => ({
     name: "new-skill",
     scope: "global",
     layout: "skill_directory",
-    path: "C:\\Native ZCode\\skills\\new-skill",
+    path: `${LOCATION}\\new-skill`,
     read_only: false,
     description: null,
   })),
@@ -44,7 +47,7 @@ vi.mock("@/lib/api", () => ({
       name: "new-skill",
       scope: "global",
       layout: "skill_directory",
-      path: "C:\\Native ZCode\\skills\\new-skill",
+      path: `${LOCATION}\\new-skill`,
       read_only: false,
       description: null,
     },
@@ -65,25 +68,36 @@ vi.mock("@/components/ui/resizable", () => ({
   ResizableHandle: () => null,
 }))
 
-describe("ZCode Skills authoring", () => {
-  it("previews and saves a directory bundle rather than an unused flat file", async () => {
-    const user = userEvent.setup()
-    const t = enMessages.SkillsSettings
-    render(
-      <NextIntlClientProvider locale="en" messages={enMessages}>
-        <SkillsSettings />
-      </NextIntlClientProvider>
-    )
-    const create = await screen.findByRole("button", {
-      name: t.actions.newSkill,
-    })
-    await user.click(create)
-    await user.type(
-      screen.getByPlaceholderText(t.skillIdPlaceholder),
-      "new-skill"
-    )
+const t = enMessages.SkillsSettings
+
+async function draftNewSkill(agentType: AgentType) {
+  state.agentType = agentType
+  const user = userEvent.setup()
+  render(
+    <NextIntlClientProvider locale="en" messages={enMessages}>
+      <SkillsSettings />
+    </NextIntlClientProvider>
+  )
+  const create = await screen.findByRole("button", {
+    name: t.actions.newSkill,
+  })
+  await user.click(create)
+  await user.type(
+    screen.getByPlaceholderText(t.skillIdPlaceholder),
+    "new-skill"
+  )
+  return user
+}
+
+describe("new skill authoring", () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it("previews and saves a ZCode directory bundle rather than an unused flat file", async () => {
+    const user = await draftNewSkill("zcode")
     expect(
-      await screen.findByText(/C:\\Native ZCode\\skills\\new-skill\\SKILL\.md/)
+      await screen.findByText(/C:\\Agent Home\\skills\\new-skill\\SKILL\.md/)
     ).toBeInTheDocument()
     await user.click(screen.getByRole("button", { name: t.actions.save }))
     await waitFor(() => {
@@ -98,5 +112,24 @@ describe("ZCode Skills authoring", () => {
       expect(toast.success).toHaveBeenCalledWith(t.toasts.created)
     })
     expect(toast.error).not.toHaveBeenCalled()
+  })
+
+  // These stores take only `<id>/SKILL.md` bundles, so the backend writes one
+  // whatever layout is sent; the preview has to name that same file.
+  it.each(["trae", "kimi_code", "command_code", "custom:my-agent"] as const)(
+    "previews the bundle %s actually gets",
+    async (agentType) => {
+      await draftNewSkill(agentType)
+      expect(
+        await screen.findByText(/C:\\Agent Home\\skills\\new-skill\\SKILL\.md/)
+      ).toBeInTheDocument()
+    }
+  )
+
+  it("keeps pi's flat-file default", async () => {
+    await draftNewSkill("pi")
+    expect(
+      await screen.findByText(/C:\\Agent Home\\skills\\new-skill\.md/)
+    ).toBeInTheDocument()
   })
 })
