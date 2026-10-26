@@ -1101,11 +1101,16 @@ fn session_stats(turns: &[MessageTurn]) -> Option<SessionStats> {
 /// Preserve native usage from a TRAE turn that produced no renderable
 /// assistant message. Normally `trae_usage::enrich_turns` attaches every
 /// native turn to an ACP turn and the regular aggregation above wins.
+///
+/// Without native usage the stats stand as they are: most ACP agents report
+/// no tokens, and their footer still has the turns' durations to show.
 fn session_stats_with_native_usage(
     stats: Option<SessionStats>,
     native_usage: Option<TurnUsage>,
 ) -> Option<SessionStats> {
-    let usage = native_usage?;
+    let Some(usage) = native_usage else {
+        return stats;
+    };
     let total_tokens = usage
         .input_tokens
         .saturating_add(usage.output_tokens)
@@ -2550,6 +2555,69 @@ mod tests {
         assert_eq!(stats.total_tokens, Some(20_584));
         assert_eq!(stats.context_window_used_tokens, Some(20_584));
         assert_eq!(stats.context_window_max_tokens, Some(760_000));
+    }
+
+    /// A turn end that reports a duration but no tokens — what most ACP agents
+    /// send — keeps its duration in the session footer, whether or not the
+    /// agent has a native store to read usage from.
+    #[tokio::test]
+    async fn a_duration_only_turn_keeps_its_session_stats() {
+        async fn record_duration_only_turn(root: &Path, agent: AgentType, session_id: &str) {
+            let agent_dir = crate::acp::registry::registry_id_for(agent);
+            let header =
+                TranscriptHeader::new(&agent.as_wire(), session_id, "/workspace", 1_791_914_922_197);
+            acp_transcript::record_header_in(root, agent_dir, &header)
+                .await
+                .unwrap();
+            for (kind, payload) in [
+                (
+                    EntryKind::Prompt,
+                    serde_json::json!([{"type":"text","text":"hello"}]),
+                ),
+                (
+                    EntryKind::Update,
+                    serde_json::json!({
+                        "sessionUpdate":"agent_message_chunk",
+                        "content":{"type":"text","text":"done"}
+                    }),
+                ),
+                (
+                    EntryKind::TurnEnd,
+                    serde_json::json!({"stopReason":"end_turn","durationMs":3_000}),
+                ),
+            ] {
+                acp_transcript::record_entry_in(root, agent_dir, session_id, kind, payload)
+                    .await
+                    .unwrap();
+            }
+        }
+
+        let session_id = "01a13673-cfd5-7c23-bc00-ce5be75fd42c";
+        let plain = AgentType::custom("plain-agent").unwrap();
+        let traecli = AgentType::custom("traecli").unwrap();
+        let transcripts = tempfile::tempdir().unwrap();
+        // TRAE's native store, holding no rollout for this session.
+        let native = tempfile::tempdir().unwrap();
+        record_duration_only_turn(transcripts.path(), plain, session_id).await;
+        record_duration_only_turn(transcripts.path(), traecli, session_id).await;
+
+        for parser in [
+            AcpNativeParser::new_in(plain, transcripts.path().to_path_buf()),
+            AcpNativeParser::new_in_with_trae_sessions(
+                traecli,
+                transcripts.path().to_path_buf(),
+                native.path().to_path_buf(),
+            ),
+        ] {
+            let stats = parser
+                .get_conversation(session_id)
+                .unwrap()
+                .session_stats
+                .expect("a duration-only turn still has session stats");
+            assert_eq!(stats.total_duration_ms, 3_000);
+            assert!(stats.total_usage.is_none());
+            assert_eq!(stats.total_tokens, None);
+        }
     }
 
     #[test]
