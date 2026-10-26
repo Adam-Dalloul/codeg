@@ -3903,6 +3903,9 @@
           "separator": " · ",
           "jumpToFailure": "Voir l’étape en échec"
         },
+        "foot": {
+          "fold": "Réduire"
+        },
         "row": {
           "thought": "Réflexion",
           "thinking": "Réflexion",

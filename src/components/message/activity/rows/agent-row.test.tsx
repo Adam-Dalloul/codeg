@@ -667,6 +667,55 @@ describe("sub-agent row: its own steps", () => {
       child.compareDocumentPosition(after) & Node.DOCUMENT_POSITION_FOLLOWING
     ).toBeTruthy()
   })
+
+  it("ends its steps on the turning ring while it runs, then a row that folds it", () => {
+    const steps: NonNullable<ToolCallPart["agentTranscript"]> = [
+      { type: "text", text: "scanning the tree" },
+    ]
+    const view = renderRow(withTranscript(steps))
+    open()
+    const foot = () =>
+      row().querySelector(".activity-detail .activity-timeline")!
+        .lastElementChild as HTMLElement
+    // Still running: its steps end on the turning ring.
+    expect(foot()).toHaveAttribute("data-marker", "working")
+    expect(foot().querySelector(".animate-spin")).toBeTruthy()
+
+    // Done: on the row that folds it — no step it counts, so by its kind.
+    view.rerender(
+      <NextIntlClientProvider locale="en" messages={enMessages}>
+        <StaticConnectionStoreProvider store={STORE}>
+          <StaticDelegationProvider value={DELEGATION}>
+            <ContentPartsRenderer
+              parts={[
+                agent(
+                  JSON.stringify({
+                    subagent_type: "Explore",
+                    description: "scan",
+                  }),
+                  "output-available",
+                  { agentTranscript: steps, output: "three matches" }
+                ),
+              ]}
+              role="assistant"
+            />
+          </StaticDelegationProvider>
+        </StaticConnectionStoreProvider>
+      </NextIntlClientProvider>
+    )
+    expect(foot()).toHaveAttribute("data-marker", "foot")
+    const fold = within(foot()).getByRole("button", {
+      name: "Collapse Sub-agent",
+    })
+    expect(fold.querySelector("svg.lucide-chevron-up")).toBeTruthy()
+
+    // Folded from it, the row's header takes the focus the foot had.
+    fold.focus()
+    fireEvent.click(fold)
+    expect(header()).toHaveAttribute("aria-expanded", "false")
+    expect(row().querySelector(".activity-detail")).toBeNull()
+    expect(document.activeElement).toBe(header())
+  })
 })
 
 describe("sub-agent row: errors", () => {

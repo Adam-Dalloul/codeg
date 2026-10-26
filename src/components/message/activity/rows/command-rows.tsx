@@ -20,7 +20,7 @@ import type { StepStatus } from "@/lib/activity/types"
 import { describeStdinChars } from "@/lib/shell-session-tool"
 import { cn } from "@/lib/utils"
 import { useActivityRender } from "../activity-context"
-import { ActivityMembers, ActivityRow } from "../activity-row"
+import { ActivityMembers, ActivityRow, useGroupGoing } from "../activity-row"
 import { CopyAction, DetailBox, DetailScroll } from "../detail-box"
 import { useDisclosure } from "../disclosure-store"
 import { RailIcon } from "../rail-icon"
@@ -540,8 +540,10 @@ export const CommandRow = memo(function CommandRow({
  * or the answer follows, so no command joins it now) and none of its commands
  * is still going. A reply that is done folds them all. A failed member keeps
  * it open no more than a passing one does — the header counts the failures in
- * red — and what the reader chose stands. Folded while live, the member
- * waiting on the user or running shows under the header.
+ * red — and what the reader chose stands. Open, its commands end on a foot
+ * that turns while the group is still going, then folds it (`Collapse 3
+ * commands`). Folded while live, the member waiting on the user or running
+ * shows under the header.
  */
 export const CommandGroupRow = memo(function CommandGroupRow({
   groupKey,
@@ -565,6 +567,7 @@ export const CommandGroupRow = memo(function CommandGroupRow({
   const status = awaited ? "awaiting" : given
   const live = status === "running" || status === "pending"
   const ended = followed && !live && !awaited
+  const going = useGroupGoing(live, followed)
   const [open, setOpen] = useDisclosure(`group:${groupKey}`, {
     defaultOpen: isStreaming && !ended,
   })
@@ -614,7 +617,14 @@ export const CommandGroupRow = memo(function CommandGroupRow({
         ) : null
       }
       detail={() => (
-        <ActivityMembers end={live || awaited ? "pending" : "reached"}>
+        <ActivityMembers
+          foot={{
+            working: going,
+            after: "ring",
+            what: t("header.commands", { count: steps.length }),
+            onFold: () => setOpen(false),
+          }}
+        >
           {steps.map((step) => (
             <CommandRow key={step.key} step={step} inGroup />
           ))}

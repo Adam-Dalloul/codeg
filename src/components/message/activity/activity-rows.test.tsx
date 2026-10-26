@@ -531,7 +531,7 @@ describe("a command group in a reply being written", () => {
       <Round parts={parts(LIVE, true, ["c3"])} completed={false} />
     )
     const group = rowOf("Running 3 commands")
-    const members = group.querySelectorAll(".activity-child")
+    const members = group.querySelectorAll(".activity-child[data-step-key]")
     expect([...members].map((m) => m.getAttribute("data-step-key"))).toEqual([
       "tool:c1",
       "tool:c2",
@@ -575,7 +575,9 @@ describe("a command group in a reply being written", () => {
       toolResult("c2", "ok"),
     ]
     const READ = toolUse("r1", "Read", { file_path: "/r/a.ts" })
-    const header = () => screen.getByRole("button", { name: /2 commands/ })
+    // The group's own header, not the row at the foot of its members.
+    const header = () =>
+      screen.getByRole("button", { name: /^(Ran|Running) 2 commands/ })
 
     it("folds by itself when the next step comes", () => {
       const view = renderUi(
@@ -655,6 +657,33 @@ describe("a command group in a reply being written", () => {
       )
       expect(header()).toHaveAttribute("aria-expanded", "true")
       expect(screen.getByText("pnpm lint")).toBeTruthy()
+      // Ended, its members end on the row that folds it.
+      expect(
+        screen.getByRole("button", { name: "Collapse 2 commands" })
+      ).toBeTruthy()
+    })
+
+    it("turns at the foot of its commands until the reply moves past it", () => {
+      // Its commands done but the group still the reply's last row: the next
+      // command may join it, so its foot keeps turning rather than flicking
+      // to the fold row and back between commands.
+      const footOf = () =>
+        document.querySelector<HTMLElement>(
+          '.activity-children > li[data-marker="working"], .activity-children > li[data-marker="foot"]'
+        )
+      const view = renderUi(
+        <Round parts={parts(live(DONE), true)} completed={false} />
+      )
+      expect(footOf()).toHaveAttribute("data-marker", "working")
+      // Waiting on the user — a question elsewhere — nothing is at work: the
+      // fold row instead.
+      view.rerender(
+        withProviders(
+          <Round parts={parts(live(DONE), true)} completed={false} />,
+          "question-elsewhere"
+        )
+      )
+      expect(footOf()).toHaveAttribute("data-marker", "foot")
     })
 
     it("slides its members shut, and lets them go once the slide has run", () => {
@@ -809,6 +838,53 @@ describe("a failed command", () => {
   })
 })
 
+describe("the foot of a live reply", () => {
+  const LIVE = turn([
+    toolUse("c1", "Bash", { command: "pnpm lint" }),
+    toolResult("c1", "ok"),
+    toolUse("r1", "Read", { file_path: "/r/a.ts" }),
+  ])
+  const footOf = () =>
+    document.querySelector<HTMLElement>(".activity-timeline")!
+      .lastElementChild as HTMLElement
+  const working = () => document.querySelectorAll('[data-marker="working"]')
+
+  it("turns at the foot of the steps the answer is being written beneath, the reply's one turning mark", () => {
+    // The answer has started under the steps: the ring at their foot still
+    // turns, and nothing turns under the answer.
+    renderUi(<Round parts={parts(LIVE, true, ["r1"])} completed={false} />)
+    expect(screen.getByText("Done.")).toBeTruthy()
+    expect(footOf()).toHaveAttribute("data-marker", "working")
+    expect(footOf().querySelector(".animate-spin")).toBeTruthy()
+    expect(working()).toHaveLength(1)
+  })
+
+  it("rests on the fold row while the agent waits on the user", () => {
+    renderUi(
+      <Round parts={parts(LIVE, true, ["r1"])} completed={false} />,
+      "r1"
+    )
+    expect(footOf()).toHaveAttribute("data-marker", "foot")
+    console.log("FOOTTEXT", JSON.stringify(footOf().textContent))
+    expect(
+      within(footOf()).getByRole("button", { name: "Collapse 2 steps" })
+    ).toBeTruthy()
+    expect(working()).toHaveLength(0)
+  })
+
+  it("gives way to the turning mark under the reply once the steps fold", () => {
+    renderUi(<Round parts={parts(LIVE, true, ["r1"])} completed={false} />)
+    fireEvent.click(screen.getByRole("button", { name: "Working" }))
+    expect(document.querySelector(".activity-timeline > li")).toBeNull()
+    expect(working()).toHaveLength(1)
+    expect(working()[0]!.querySelector(".animate-spin")).toBeTruthy()
+    // Unfolded, the foot of the rail takes it back.
+    fireEvent.click(screen.getByRole("button", { name: "Working" }))
+    expect(footOf()).toHaveAttribute("data-marker", "working")
+    expect(working()).toHaveLength(1)
+  })
+})
+
 describe("a reply's rail while it is written", () => {
   const live = (blocks: ContentBlock[]): MessageTurn => ({
     id: "t-rail",
@@ -842,7 +918,8 @@ describe("a reply's rail while it is written", () => {
     const group = rowOf("Ran 2 commands")
     expect(marked(group)).toBe("")
 
-    // A member joins the open group: its rail runs on from the last member.
+    // A member joins the open group, above the foot its members end on: its
+    // rail runs down to the foot, the member before keeps its own.
     view.rerender(
       withProviders(
         <Round
@@ -852,11 +929,16 @@ describe("a reply's rail while it is written", () => {
       )
     )
     await act(async () => {})
-    expect(marked(rowOf("pnpm test"))).toBe("extend")
+    expect(marked(rowOf("pnpm test"))).toBe("")
     expect(marked(rowOf("pnpm build"))).toBe("enter")
     expect(marked(rowOf("pnpm lint"))).toBe("")
+    const members = rowOf("pnpm build").parentElement!
+    expect(members.lastElementChild).toHaveAttribute("data-marker", "working")
+    expect(rowOf("pnpm build").nextElementSibling).toBe(
+      members.lastElementChild
+    )
 
-    // A step joins the reply, above the turning mark the rail runs down to.
+    // A step joins the reply, above the turning ring the rail runs down to.
     view.rerender(
       withProviders(
         <Round

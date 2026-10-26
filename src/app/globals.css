@@ -2081,8 +2081,12 @@
    rather than one line behind opaque rings, so nothing has to paint a backdrop
    — the rail stays transparent over a workspace background image. Pure CSS,
    no measuring: the last row has a segment only beside a body under its line
-   (`data-body`, set by the row), ending — once the list is done (`data-end`,
-   set by the list) — on an end mark level with that body's last line.
+   (`data-body`, set by the row). A list that folds away — a reply's open
+   steps, an open group's members — ends on a foot (timeline-foot.tsx): the
+   turning ring while its steps go on (`data-marker="working"`), then a row
+   that folds it (`data-marker="foot"`). Its last step, then, is no longer
+   last, and that step's segment runs down to the foot as to a ring: the
+   foot's ring sits where a ring of the list would.
 
    Geometry (rem, so it follows the app zoom): the column is 2rem wide and the
    ring — 1.25rem across, the widest mark — starts flush with its left edge, so
@@ -2183,39 +2187,14 @@
   height: calc(var(--activity-gap) + 0.875rem);
 }
 
-/* Once the list is done (`data-end="reached"`: the reply, or the sub-agent,
-   has finished) that segment ends on the end mark, a 0.5rem ring around a dot
-   level with the last line beside it. The list measures where that line is
-   (`--activity-end-line`, use-end-mark-line.ts: a card or a panel with no
-   footer ends higher); unmeasured, the mark takes a panel footer's, a group
-   member's or a line of prose's — 0.875rem above the row's bottom edge. The
-   mark is drawn in the segment's own box (at its bottom, the line above it
-   stopping 0.125rem short), so a row with no body under its line — or a
-   one-line note, whose dot already sits on that line — shows neither. */
-.activity-timeline[data-end="reached"] > .activity-item:last-child::before {
-  bottom: calc(var(--activity-end-line, 0.875rem) - 0.25rem);
-  inset-inline-start: calc(0.625rem - 0.25rem);
-  width: 0.5rem;
-  background:
-    radial-gradient(
-        circle,
-        var(--activity-ring) 1px,
-        transparent 1.5px 2.5px,
-        var(--activity-ring) 3px 3.5px,
-        transparent 4px
-      )
-      50% 100% / 0.5rem 0.5rem no-repeat,
-    linear-gradient(var(--activity-rail), var(--activity-rail)) 50% 0 / 1px
-      calc(100% - 0.625rem) no-repeat;
-}
-
 /* Rows inside an expanded group: indented into the content column, with a
    1rem marker column of their own on a dashed sub-rail, and spaced like the
    rows around the group — the same gap, the same 0.125rem above and below the
    line (centre 0.875rem). A child ring is 1rem (0.375rem–1.375rem), a child
    dot 0.375rem (0.6875rem–1.0625rem). Like the main rail, a segment stops
-   0.125rem short of the next marker, and the last child has one only beside
-   its open panel, ending on a smaller end mark once the group is done. */
+   0.125rem short of the next marker — the group's foot included — and the
+   last row of a list with no foot (a folded group's live member) has one only
+   beside its open panel. */
 .activity-children {
   position: relative;
   margin-top: 0.125rem;
@@ -2229,6 +2208,14 @@
 
 .activity-child:not(:first-child) {
   margin-top: var(--activity-gap);
+}
+
+/* A group's foot after dot members (an explore group's reads): a dot's
+   segment reaches 0.3125rem further into the next row than a ring member's,
+   so the foot starts that much lower, its ring as far under the segment as a
+   ring member's. */
+.activity-child[data-after="dot"]:not(:first-child) {
+  margin-top: calc(var(--activity-gap) + 0.3125rem);
 }
 
 .activity-child::before {
@@ -2260,42 +2247,18 @@
   content: none;
 }
 
-/* A finished group's mark sits level with its last member's last line, the
-   same way: measured, else a panel footer's 0.875rem above the bottom. */
-.activity-children[data-end="reached"] > .activity-child:last-child::before {
-  bottom: calc(var(--activity-end-line, 0.875rem) + 0.3125rem);
-}
-
-.activity-children[data-end="reached"]
-  > .activity-child:last-child[data-body]::after {
-  content: "";
-  position: absolute;
-  bottom: calc(var(--activity-end-line, 0.875rem) - 0.1875rem);
-  inset-inline-start: calc(0.5rem - 0.1875rem);
-  width: 0.375rem;
-  height: 0.375rem;
-  border: 1px solid var(--activity-ring);
-  border-radius: 9999px;
-  background: radial-gradient(
-    circle,
-    var(--activity-ring) 0 1px,
-    transparent 1.5px
-  );
-}
-
 /* A live list's rail grows down to the steps that join it rather than
    appearing at once. `use-rail-growth.ts` marks, while the list is live, a row
    that joined (`data-rail-enter`) and the row that was last before it
    (`data-rail-extend`), and clears the marks once they have run. A new
-   row's segment — down to the next row, or to the turning mark at the foot of
-   a reply's rail — and a dot's incoming one grow from the top, and so does the
-   segment the last row gains once a row follows it. A last row with a body
-   already had a segment beside it (`data-rail-body`, noted as the rows join):
-   only the part past its line grows, the clip let out from where the segment
-   stopped. The rows one join touched take
-   their turn top to bottom (the hook holds each one's growth back a little
-   longer), so the rail draws down through them, and the turning mark fades in
-   as it arrives. The rail up to the header stands as it is: a first row that
+   row's segment — down to the next row, or to the foot of the list — and a
+   dot's incoming one grow from the top, and so does the segment
+   the last row gains once a row follows it. A last row with a body already
+   had a segment beside it (`data-rail-body`, noted as the rows join): only
+   the part past its line grows, the clip let out from where the segment
+   stopped. The rows one join touched take their turn top to bottom (the hook
+   holds each one's growth back a little longer), so the rail draws down
+   through them. The rail up to the header stands as it is: a first row that
    joins takes over the one already drawn. Transform and clip only, so no row
    changes size under the virtual list. */
 @keyframes activity-rail-grow {
@@ -2349,18 +2312,6 @@
   }
   .activity-child[data-rail-extend][data-marker="dot"]::before {
     --activity-rail-extension: calc(var(--activity-gap) + 1.1875rem);
-  }
-  /* A done group's last member stopped at the end mark, a line higher (its
-     measured offset is gone by now: the mark's default stands in). */
-  .activity-child[data-rail-extend="reached"]::before {
-    --activity-rail-extension: calc(var(--activity-gap) + 1.4375rem);
-  }
-  .activity-child[data-rail-extend="reached"][data-marker="dot"]::before {
-    --activity-rail-extension: calc(var(--activity-gap) + 1.75rem);
-  }
-
-  .activity-item[data-marker="working"][data-rail-enter] {
-    animation: tool-content-fade 0.2s ease-out 0.12s both;
   }
 }
 

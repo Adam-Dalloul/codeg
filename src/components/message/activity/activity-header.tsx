@@ -1,6 +1,6 @@
 "use client"
 
-import { memo, useMemo, type MouseEvent } from "react"
+import { memo, useMemo, type MouseEvent, type Ref } from "react"
 import { useTranslations } from "next-intl"
 
 import type { ActivitySummary } from "@/lib/activity/types"
@@ -45,6 +45,7 @@ const CATEGORY_KEY = {
  * that opens the turn at that step.
  */
 export const ActivityHeader = memo(function ActivityHeader({
+  ref,
   summary,
   completed,
   hasSteps,
@@ -52,6 +53,8 @@ export const ActivityHeader = memo(function ActivityHeader({
   toggle,
   onJumpToFailure,
 }: {
+  /** The capsule, for the turn to bring back into view as it folds. */
+  ref?: Ref<HTMLDivElement>
   summary: ActivitySummary | null
   completed: boolean
   hasSteps: boolean
@@ -125,6 +128,7 @@ export const ActivityHeader = memo(function ActivityHeader({
 
   return (
     <div
+      ref={ref}
       // `activity-capsule`: filled like the user's message bubble, over a
       // workspace background image too — translucent there, with its ring
       // (globals.css). A block, not inline: no line box around it adds room

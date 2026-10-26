@@ -3903,6 +3903,9 @@
           "separator": " · ",
           "jumpToFailure": "查看失败的步骤"
         },
+        "foot": {
+          "fold": "收起"
+        },
         "row": {
           "thought": "思考",
           "thinking": "正在思考",

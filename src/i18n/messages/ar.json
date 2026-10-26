@@ -3903,6 +3903,9 @@
           "separator": " · ",
           "jumpToFailure": "عرض الخطوة الفاشلة"
         },
+        "foot": {
+          "fold": "طي"
+        },
         "row": {
           "thought": "تفكير",
           "thinking": "جارٍ التفكير",

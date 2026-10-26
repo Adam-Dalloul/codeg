@@ -3903,6 +3903,9 @@
           "separator": " · ",
           "jumpToFailure": "失敗したステップを表示"
         },
+        "foot": {
+          "fold": "折りたたむ"
+        },
         "row": {
           "thought": "思考",
           "thinking": "考え中",

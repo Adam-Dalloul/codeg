@@ -3903,6 +3903,9 @@
           "separator": " · ",
           "jumpToFailure": "실패한 단계 보기"
         },
+        "foot": {
+          "fold": "접기"
+        },
         "row": {
           "thought": "생각",
           "thinking": "생각 중",

@@ -20,7 +20,9 @@ import { ChatAnimationsContext } from "@/components/appearance-provider"
 function renderStats(ui: ReactNode, modelLabel?: ModelLabelResolver) {
   const tree = (
     <NextIntlClientProvider locale="en" messages={enMessages}>
-      <MessageScrollProvider value={{ scrollToIndex: vi.fn() }}>
+      <MessageScrollProvider
+        value={{ scrollToIndex: vi.fn(), revealFromAbove: vi.fn() }}
+      >
         {ui}
       </MessageScrollProvider>
     </NextIntlClientProvider>
@@ -70,7 +72,9 @@ describe("TurnStats jump-to-previous-user scrolling", () => {
     const scrollToIndex = vi.fn()
     const stats = (
       <NextIntlClientProvider locale="en" messages={enMessages}>
-        <MessageScrollProvider value={{ scrollToIndex }}>
+        <MessageScrollProvider
+          value={{ scrollToIndex, revealFromAbove: vi.fn() }}
+        >
           <TurnStats
             copyText="hello"
             duration_ms={42_000}

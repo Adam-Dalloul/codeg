@@ -7,8 +7,10 @@ import type { ToolApproval } from "@/lib/activity/approval"
 import type { StepStatus } from "@/lib/activity/types"
 import { cn } from "@/lib/utils"
 import { useActivityRender } from "./activity-context"
+import { useActivityLive } from "./activity-live-context"
 import { ApprovalChip, showsApproval } from "./approval-chip"
-import { useEndMarkLine } from "./use-end-mark-line"
+import { useFoldRow } from "./fold-back"
+import { TimelineFoot } from "./timeline-foot"
 import { useRailGrowth } from "./use-rail-growth"
 
 const MARKER_POSITION = {
@@ -244,27 +246,60 @@ export function RowChevron({
 }
 
 /**
- * An open group's members, on their own dashed rail. `end` says whether the
- * group is done (`reached`: the members end on their mark, level with the
- * last member's last line) or still going; a folded group's live member
- * under its header has neither. While the reply is written, the rail grows
- * down to each member that joins — a group whose members are all done can
- * still gain one, and only turns live again in the commit that adds it.
+ * Whether a group is still going, for its foot: a member runs, or the reply
+ * is still being written with the group its last row, where the next step may
+ * join it — the foot turns from the group's first command to its last rather
+ * than flickering between commands. Not while the agent waits on the user.
+ */
+export function useGroupGoing(live: boolean, followed: boolean): boolean {
+  const { isStreaming } = useActivityRender()
+  const { awaitingUser } = useActivityLive()
+  return !awaitingUser && (live || (isStreaming && !followed))
+}
+
+/** The foot an open group's members end on (see `TimelineFoot`). */
+export interface MembersFoot {
+  /** The group is still going: a member runs, or more may join it. */
+  working: boolean
+  /** The members' own marker, which sets how far down the foot sits. */
+  after: "ring" | "dot"
+  /** What the group holds, said after "Collapse": `3 commands`. */
+  what: string
+  /** Folds the group. */
+  onFold: () => void
+}
+
+/**
+ * An open group's members, on their own dashed rail, ending on a foot
+ * (`foot`): the turning ring while the group is still going, then a row that
+ * folds it; a folded group's live member under its header has none. Folded
+ * from its foot, the group's header comes back into view and takes the focus
+ * the foot had. While the reply is written, the rail grows down to each
+ * member that joins.
  */
 export function ActivityMembers({
-  end,
+  foot,
   children,
 }: {
-  end?: "pending" | "reached"
+  foot?: MembersFoot
   children: ReactNode
 }) {
   const { isStreaming } = useActivityRender()
   const listRef = useRef<HTMLUListElement>(null)
-  useEndMarkLine(listRef, end === "reached")
-  useRailGrowth(listRef, end !== undefined && isStreaming)
+  const foldRow = useFoldRow()
+  useRailGrowth(listRef, foot !== undefined && isStreaming)
   return (
-    <ul ref={listRef} role="list" className="activity-children" data-end={end}>
+    <ul ref={listRef} role="list" className="activity-children">
       {children}
+      {foot ? (
+        <TimelineFoot
+          variant="child"
+          after={foot.after}
+          working={foot.working}
+          what={foot.what}
+          onFold={(control) => foldRow(control, foot.onFold)}
+        />
+      ) : null}
     </ul>
   )
 }

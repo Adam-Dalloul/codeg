@@ -3903,6 +3903,9 @@
           "separator": " · ",
           "jumpToFailure": "Ver el paso que falló"
         },
+        "foot": {
+          "fold": "Contraer"
+        },
         "row": {
           "thought": "Pensamiento",
           "thinking": "Pensando",
