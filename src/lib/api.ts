@@ -4153,30 +4153,37 @@ export async function workTaskMerge(
   })
 }
 
-/** Accept a reviewed forge-sourced task by pushing it back: an issue's task
- *  publishes its branch and opens (or adopts) a pull request, a pull request's
- *  task pushes onto that pull request's own branch (where `title`/`draft` are
- *  ignored — nothing is created). Resolves with the pull request URL.
+/** Accept a reviewed task by delivering it to a forge: an issue's task — or a
+ *  task with no forge provenance, on its project's `origin` — publishes its
+ *  branch and opens (or adopts) a pull request; a pull request's task pushes
+ *  onto that pull request's own branch, and so does a task whose earlier
+ *  delivery opened one it stayed in review after (`title`/`draft` are ignored
+ *  there — nothing is created). Resolves with the pull request URL.
  *
  *  Unlike the merge dispatch this awaits the WHOLE operation — no agent runs,
  *  just a push and two REST calls — so a rejection is the real reason and the
  *  task is already back in review by the time it surfaces.
  *
- *  `deleteWorktree` takes the checkout along once the delivery lands — the
- *  same offer the merge and complete acceptances make. It rides on the
- *  delivery: a removal that fails leaves a retryable cleanup mark on the card
- *  and this call still resolves with the URL. */
+ *  `markDone` finishes the task; `false` keeps it in review with the pull
+ *  request recorded, for another round on the same branch.
+ *
+ *  `deleteWorktree` takes the checkout along once a delivery that finishes
+ *  the task lands — the same offer the merge and complete acceptances make.
+ *  It rides on the delivery: a removal that fails leaves a retryable cleanup
+ *  mark on the card and this call still resolves with the URL. */
 export async function workTaskDeliverPr(
   id: number,
   prTitle: string | null,
   draft: boolean,
-  deleteWorktree: boolean
+  deleteWorktree: boolean,
+  markDone: boolean
 ): Promise<string> {
   return getTransport().call("work_task_deliver_pr", {
     id,
     prTitle,
     draft,
     deleteWorktree,
+    markDone,
   })
 }
 

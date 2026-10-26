@@ -2049,6 +2049,11 @@ export interface WorkTask {
   source_key?: string | null
   /** Source snapshot (url, title, numbers …); shape mirrors ForgeSourceMeta. */
   source_meta?: ForgeSourceMeta | null
+  /** Where a task WITHOUT forge provenance delivered its work, and the pull
+   *  request it opened there (mirrors Rust WorkTaskDelivery). Absent until such
+   *  a task is first delivered, and always on a forge-sourced task — that
+   *  one's pull request is `source_meta.result_pr`. */
+  delivery?: WorkTaskDelivery | null
   /** Latest agent_progress milestone OF THIS GENERATION — present on live
    *  (preparing/running/awaiting/merging) rows only. Scoped by run_seq, so a
    *  merge in flight never narrates the work round it is landing. */
@@ -2081,14 +2086,31 @@ export interface ForgeSourceMeta {
   head_ref?: string | null
   head_sha?: string | null
   head_repo?: string | null
-  /** URL of the PR created by the delivery acceptance path (P1). */
+  /** URL of the PR the latest delivery reached — on a `done` task the one it
+   *  finished in, on a task still in review the one its next delivery pushes
+   *  into. */
   result_pr?: string | null
+  /** Number of `result_pr`, recorded with it (absent on older rows). */
+  result_pr_number?: number | null
   /** PR head the task's last push-back went onto (where the PR ended below
    *  the task's own work); absent until a push-back. */
   pushed_onto?: string | null
   /** The trigger dialog's write-back answer, frozen at trigger time. Absent on
    *  rows minted before the choice lived here — those stay silent. */
   writeback?: boolean | null
+}
+
+/** Where a task without forge provenance delivered its work: the repository
+ *  and account its first delivery resolved from the project's `origin`
+ *  (pinned from then on), and the pull request it reached there. Mirrors Rust
+ *  `forge::WorkTaskDelivery`. */
+export interface WorkTaskDelivery {
+  provider: ForgeProviderId
+  server_host: string
+  account_id: string
+  owner_repo: string
+  pr_url: string
+  pr_number: number
 }
 
 export type ForgeTab = "issues" | "prs"
