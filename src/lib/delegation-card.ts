@@ -834,10 +834,8 @@ function parseCodeModeInput(parsed: unknown): ParsedInput | null {
 
 /**
  * Whether a raw tool input is an opencode code-mode `execute` payload whose
- * `code` source announces a `delegate_to_agent` call — the frontend half of
- * the backend's code-mode registration branch. Classification gates OR this
- * in next to `isDelegateToAgentToolName` so the `execute` call renders as a
- * delegation card.
+ * `code` source announces a `delegate_to_agent` call. Shape only — classify a
+ * tool call with [`isCodeModeDelegationCall`], which also checks the tool.
  */
 export function isCodeModeDelegationInput(
   raw: string | null | undefined
@@ -854,6 +852,23 @@ export function isCodeModeDelegationInput(
     return false
   }
   return codeModeCallOf(parsed) !== null
+}
+
+/**
+ * Whether a tool call is opencode's code-mode `execute` running a
+ * `delegate_to_agent` call — the frontend half of the backend's code-mode
+ * registration branch (`is_delegation_invocation`, gated on the `execute`
+ * title), so the call renders as a delegation card exactly when the backend
+ * registers it. Takes the NORMALIZED tool name: `execute` normalizes to
+ * `bash`, live (before and after the opening frame's name stamp) and in
+ * history. The tool gate keeps another tool's `code` argument — a Playwright
+ * `browser_run_code` script that mocks the call, say — from passing as one.
+ */
+export function isCodeModeDelegationCall(
+  normalizedToolName: string,
+  raw: string | null | undefined
+): boolean {
+  return normalizedToolName === "bash" && isCodeModeDelegationInput(raw)
 }
 
 /**

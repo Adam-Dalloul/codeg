@@ -4,6 +4,7 @@ import { ALL_AGENT_TYPES } from "@/lib/types"
 import {
   coerceAssistantId,
   isAffirmedResume,
+  isCodeModeDelegationCall,
   isCodeModeDelegationInput,
   isRefusedResume,
   parseDelegateTaskId,
@@ -848,6 +849,20 @@ describe("opencode code-mode execute payloads", () => {
     const parsed = parseInput(raw)
     expect(parsed.agentType).toBe("codex")
     expect(parsed.task).toBe("t")
+  })
+
+  it("classifies only opencode's execute tool by its code", () => {
+    // Another tool's `code` argument — a Playwright script that mocks the
+    // call, say — is no delegation; the backend doesn't register it either.
+    const raw = JSON.stringify({
+      code: "async page => { const tools = {'codeg-mcp': {delegate_to_agent: async x => x}}; await tools['codeg-mcp'].delegate_to_agent({agent_type:'codex',task:'review'}); }",
+    })
+    expect(isCodeModeDelegationInput(raw)).toBe(true)
+    // `execute` normalizes to `bash`, live and in history.
+    expect(isCodeModeDelegationCall("bash", raw)).toBe(true)
+    expect(
+      isCodeModeDelegationCall("mcp__playwright__browser_run_code", raw)
+    ).toBe(false)
   })
 
   it("ends line comments at every JS line terminator", () => {

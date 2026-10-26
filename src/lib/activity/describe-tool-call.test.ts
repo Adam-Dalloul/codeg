@@ -64,6 +64,14 @@ describe("toolStepKind", () => {
     // A code-mode `execute` that is not a delegation call keeps its own row:
     // `execute` normalizes to `bash`, so it stays a command.
     ["execute", { code: "return 1 + 1" }, "command"],
+    // Another tool's `code` argument shaped like the call is no delegation.
+    [
+      "mcp__playwright__browser_run_code",
+      {
+        code: 'await tools["codeg-mcp"].delegate_to_agent({ agent_type: "codex", task: `t` })',
+      },
+      "mcp",
+    ],
     [
       "mcp__codeg-mcp__get_delegation_status",
       { task_ids: [] },

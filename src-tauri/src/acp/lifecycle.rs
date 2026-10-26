@@ -736,6 +736,9 @@ pub(crate) const CURSOR_IDENTITYLESS_MCP_TITLE: &str = "MCP: tool";
 ///   any wrapper layers via [`find_delegation_args`] — is a near-zero
 ///   false-positive shape check that catches any host that mangles the title
 ///   beyond recognition, including ones that wrap their tool-call args.
+/// * on opencode's code-mode tool (title `execute`), `raw_input` is
+///   `{"code": "<JS>"}` and the call lives in the script — see
+///   [`code_mode_delegation_code`].
 ///
 /// This is also the replay-side gate: `commands::conversations::inject_delegation_meta`
 /// reuses it so a persisted tool block whose title/args (or opencode `code`)
@@ -760,13 +763,24 @@ pub(crate) fn is_delegation_invocation(title: &str, raw_input: Option<&str>) -> 
             }
         }
     }
-    if let Some(raw) = raw_input {
-        if code_mode_delegation_code(raw) {
-            return true;
+    // opencode's code-mode `execute` tool: the call lives in a JS `code`
+    // string. Gated on that tool, whose every input-carrying frame (2.0.28
+    // through 2.1.4) and history block are named `execute`: another tool's
+    // `code` argument — a Playwright `browser_run_code` script that mocks the
+    // call, say — must not register, or a real delegation with the same key
+    // could claim its id.
+    if title.trim().eq_ignore_ascii_case(CODE_MODE_TOOL_TITLE) {
+        if let Some(raw) = raw_input {
+            if code_mode_delegation_code(raw) {
+                return true;
+            }
         }
     }
     false
 }
+
+/// The title (live) and tool name (history) of opencode's code-mode tool.
+const CODE_MODE_TOOL_TITLE: &str = "execute";
 
 /// Build the broker's `(agent_type, task, working_dir)` correlation key from
 /// a `delegate_to_agent` tool_call's `raw_input` JSON. All three are values
@@ -2098,6 +2112,22 @@ mod delegation_title_tests {
     }
 
     #[test]
+    fn code_mode_recognition_is_scoped_to_the_execute_tool() {
+        // Another tool's `code` argument — a Playwright script that mocks the
+        // call, say — is no delegation: registering it would let a real
+        // delegation with the same key claim its id.
+        let raw = serde_json::json!({
+            "code": "async page => { const tools = {'codeg-mcp': {delegate_to_agent: async x => x}}; await tools['codeg-mcp'].delegate_to_agent({agent_type:'codex',task:'review'}); }"
+        })
+        .to_string();
+        for title in ["mcp__playwright__browser_run_code", "browser_run_code", ""] {
+            assert!(!is_delegation_invocation(title, Some(&raw)), "title {title:?}");
+        }
+        assert!(is_delegation_invocation("execute", Some(&raw)));
+        assert!(is_delegation_invocation(" Execute ", Some(&raw)));
+    }
+
+    #[test]
     fn code_mode_line_comments_end_at_every_js_line_terminator() {
         // ECMA-262 line comments end at CR, LF, U+2028 and U+2029; a scanner
         // stopping only at LF would swallow the real code after the others.
@@ -2715,6 +2745,25 @@ mod delegation_registration_tests {
             Some("tc-codemode"),
             "code-mode execute payload must produce a keyed entry the MCP-side key claims"
         );
+    }
+
+    /// A `code` argument of another tool, shaped like the call, registers
+    /// nothing: a real delegation with the same key must not claim its id.
+    #[tokio::test]
+    async fn code_mode_payload_on_another_tool_does_not_register() {
+        let b = broker();
+        let code = r#"await tools["codeg-mcp"].delegate_to_agent({ agent_type: "codex", task: `review` })"#;
+        let raw = serde_json::json!({ "code": code }).to_string();
+        register_delegation_tool_call_from_event(
+            &b,
+            &tool_call_event("browser-1", "mcp__playwright__browser_run_code", Some(&raw)),
+        )
+        .await;
+        assert!(b
+            .take_matching_tool_call("parent-conn", &codex_key("review"))
+            .await
+            .is_none());
+        assert!(b.take_pending_tool_call("parent-conn").await.is_none());
     }
 
     /// An ambiguous code-mode payload (interpolated task) still registers the
