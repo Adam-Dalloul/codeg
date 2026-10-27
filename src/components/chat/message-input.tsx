@@ -1,6 +1,6 @@
 "use client"
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react"
 import { useTranslations } from "next-intl"
 import { isImeCompositionKey } from "@/lib/ime-composition"
 import { Button } from "@/components/ui/button"
@@ -87,6 +87,7 @@ import {
   clearMessageInputDraftV2,
   loadMessageInputDraftV2,
   saveMessageInputDraftV2,
+  setLiveComposerContent,
 } from "@/lib/message-input-draft"
 import { rankByTextMatch } from "@/lib/fuzzy-text-match"
 import {
@@ -929,6 +930,20 @@ export function MessageInput({
   const imageAttachments = attach.imageAttachments
   const hasAttachments = attachments.length > 0
   const hasSendableContent = !composerEmpty || hasAttachments
+  // What this composer holds that its saved draft may not show yet (typing
+  // inside the save debounce, image attachments, which are never saved): the
+  // tab store reads it before tidying a "blank" draft tab away.
+  const composerId = useId()
+  useEffect(() => {
+    if (!effectiveDraftStorageKey) return
+    setLiveComposerContent(
+      effectiveDraftStorageKey,
+      composerId,
+      hasSendableContent
+    )
+    return () =>
+      setLiveComposerContent(effectiveDraftStorageKey, composerId, false)
+  }, [composerId, effectiveDraftStorageKey, hasSendableContent])
 
   // ── Slash command autocomplete ──
   //

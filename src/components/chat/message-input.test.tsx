@@ -21,6 +21,7 @@ import {
 } from "./composer/to-prompt-blocks"
 import {
   clearMessageInputDraftV2,
+  hasLiveComposerContent,
   loadMessageInputDraftV2,
   saveMessageInputDraftV2,
 } from "@/lib/message-input-draft"
@@ -3201,5 +3202,63 @@ describe("MessageInput predicted follow-up prompt", () => {
       expect(composerHandle.current!.isEmpty()).toBe(true)
       unmount()
     }
+  })
+})
+
+// The tab store closes a draft tab only when it holds nothing. What a saved
+// draft cannot show — typing still inside the save debounce, an image
+// attachment (never saved) — the mounted composer reports itself.
+describe("MessageInput live content for draft tidying", () => {
+  const draftKey = "draft:live-content"
+  afterEach(() => {
+    cleanup()
+    composerHandle.current = null
+    clearMessageInputDraftV2(draftKey)
+  })
+
+  function tree(props: Partial<React.ComponentProps<typeof MessageInput>>) {
+    return (
+      <NextIntlClientProvider locale="en" messages={enMessages}>
+        <MessageInput
+          onSend={vi.fn()}
+          promptCapabilities={CAPS}
+          draftStorageKey={draftKey}
+          {...props}
+        />
+      </NextIntlClientProvider>
+    )
+  }
+
+  it("reports typed text and image attachments until the composer goes", async () => {
+    const view = render(tree({}))
+    await waitFor(
+      () => expect(composerHandle.current?.getEditor()).toBeTruthy(),
+      { timeout: 5000 }
+    )
+    const editor = composerHandle.current!.getEditor()!
+    expect(hasLiveComposerContent(draftKey)).toBe(false)
+
+    act(() => {
+      editor.commands.insertContent("half a thought")
+    })
+    await waitFor(() => expect(hasLiveComposerContent(draftKey)).toBe(true))
+    act(() => {
+      editor.commands.clearContent(true)
+    })
+    await waitFor(() => expect(hasLiveComposerContent(draftKey)).toBe(false))
+
+    // An image alone, no text.
+    view.rerender(
+      tree({
+        injectContent: {
+          handBack: [{ type: "image", data: "aGk=", mime_type: "image/png" }],
+        },
+      })
+    )
+    expect(await screen.findByAltText("image.png")).toBeInTheDocument()
+    expect(hasLiveComposerContent(draftKey)).toBe(true)
+
+    view.unmount()
+    expect(hasLiveComposerContent(draftKey)).toBe(false)
   })
 })

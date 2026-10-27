@@ -14,6 +14,7 @@ import { leafIds, type SplitNode } from "@/lib/tab-group-layout"
 import {
   buildNewConversationDraftStorageKey,
   saveMessageInputDraftV2,
+  setLiveComposerContent,
 } from "@/lib/message-input-draft"
 import {
   resetAppWorkspaceStore,
@@ -610,6 +611,36 @@ describe("Folder-tabs scope repairs", () => {
     expect(draftIds().sort()).toEqual([draftA, draftB].sort())
   })
 
+  // Typing still inside the composer's save debounce, or an image attachment
+  // (never saved), is content the saved draft does not show yet.
+  it("keeps the target folder's own draft while its composer holds unsaved content", async () => {
+    const live = (draftId: string) =>
+      buildNewConversationDraftStorageKey(draftId)
+    let liveKey = ""
+    try {
+      const { draftA, draftB } = await moveDraftIntoFolder2((draft) => {
+        liveKey = live(draft)
+        setLiveComposerContent(liveKey, "composer", true)
+      })
+      expect(draftIds().sort()).toEqual([draftA, draftB].sort())
+    } finally {
+      setLiveComposerContent(liveKey, "composer", false)
+    }
+  })
+
+  it("keeps the target folder's draft the user switched to while the move was pending", async () => {
+    let target = ""
+    const { draftA, draftB } = await moveDraftIntoFolder2(
+      (draft) => {
+        target = draft
+      },
+      () => useTabStore.getState().switchTab(target)
+    )
+    expect(useFolderTabsStore.getState().scope).toBe(2)
+    expect(useTabStore.getState().activeTabId).toBe(draftB)
+    expect(draftIds().sort()).toEqual([draftA, draftB].sort())
+  })
+
   it("closes the target folder's blank draft even when the user moved on", async () => {
     const { draftA } = await moveDraftIntoFolder2(
       () => {},
@@ -639,6 +670,28 @@ describe("Folder-tabs scope repairs", () => {
     useFolderTabsStore.getState().setEnabled(false)
     expect(draftIds().sort()).toEqual([draftA, draftB].sort())
     expect(useTabStore.getState().activeTabId).toBe(draftA)
+  })
+
+  it("turning the mode off tidies each group on its own", () => {
+    // Normal mode: a conversation, and a split whose new group got a draft.
+    const a1 = open(1, 11)
+    useTabStore.getState().splitTab(a1, "right", { move: false })
+    const splitDraft = useTabStore.getState().activeTabId!
+    useFolderTabsStore.getState().setEnabled(true)
+    useFolderTabsStore.getState().activateScope(2)
+    const draft2 = useTabStore
+      .getState()
+      .openNewConversationTab(2, "/repo2").tabId
+    useFolderTabsStore.getState().activateScope(3)
+    const draft3 = useTabStore
+      .getState()
+      .openNewConversationTab(3, "/repo3").tabId
+
+    useFolderTabsStore.getState().setEnabled(false)
+    // Both new drafts land in the first group, which keeps the active one;
+    // the split group's own draft is alone in its group and stays.
+    expect(draftIds().sort()).toEqual([splitDraft, draft3].sort())
+    expect(draftIds()).not.toContain(draft2)
   })
 })
 
@@ -827,6 +880,53 @@ describe("Folder-tabs split layouts per folder", () => {
     useFolderTabsStore.getState().activateScope(1)
     expect(layout()).toEqual(folderA)
     expect(shellOf(a2)).toBe(leafIds(folderA)[1])
+  })
+
+  // The first snapshot failed: the tab set is unknown when the stored mode
+  // comes back on, and the conversations the blob arranges arrive later.
+  it("keeps a folder's split for conversations that load after the mode came on", async () => {
+    localStorage.setItem(
+      "workspace:tab-groups:v1",
+      JSON.stringify({
+        layout: {
+          type: "split",
+          id: "s",
+          orientation: "horizontal",
+          ratios: [0.5, 0.5],
+          children: [
+            { type: "group", id: "g-main" },
+            { type: "group", id: "g-two" },
+          ],
+        },
+        assignments: {
+          "conv-1-claude_code-11": "g-main",
+          "conv-1-claude_code-12": "g-two",
+        },
+        selection: {},
+        tileByGroup: {},
+        drafts: [],
+        activeDraft: null,
+      })
+    )
+    resetTabStore()
+    useTabStore.setState({ tabsHydrated: true })
+    useFolderTabsStore.getState().setEnabled(true)
+    useFolderTabsStore.getState().activateScope(1)
+
+    vi.mocked(api.listOpenedTabs).mockResolvedValue({
+      version: 1,
+      items: [11, 12].map((conversationId, position) => ({
+        folder_id: 1,
+        conversation_id: conversationId,
+        agent_type: "claude_code",
+        is_pinned: true,
+        is_active: position === 0,
+        position,
+      })),
+    } as never)
+    await useTabStore.getState().refetchTabs()
+    expect(leaves()).toEqual(["g-main", "g-two"])
+    expect(shellOf("conv-1-claude_code-12")).toBe("g-two")
   })
 
   it("drops the last session's folder views when the stored mode comes back off", async () => {

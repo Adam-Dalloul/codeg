@@ -38,6 +38,7 @@ import {
 import {
   buildNewConversationDraftStorageKey,
   clearMessageInputDraftV2,
+  hasLiveComposerContent,
   loadMessageInputDraftV2,
   moveMessageInputDraft,
   sweepOrphanDraftKeys,
@@ -1133,14 +1134,16 @@ export function shellGroupOfTab(
 /**
  * A folder's first view: the normal-mode arrangement narrowed to the folder's
  * tabs, keeping the group ids, so turning the mode on moves no tab. Until the
- * tab set is known nothing is narrowed (an empty set then means no data yet);
- * the invariant pass narrows it once the set arrives.
+ * tab set is known nothing is narrowed — the conversations not loaded yet
+ * still need their assignments — and the invariant pass narrows the copy once
+ * the set arrives.
  */
 function projectGroupView(
   base: GroupView,
   tabs: TabItemInternal[],
   tabSetKnown: boolean
 ): GroupView {
+  if (!tabSetKnown) return { ...base, active: null }
   const groupOf: Record<string, string> = {}
   const live = new Set<string>()
   for (const tab of tabs) {
@@ -1148,7 +1151,7 @@ function projectGroupView(
     live.add(group)
     if (base.groupOf[tab.id] === group) groupOf[tab.id] = group
   }
-  const layout = tabSetKnown ? normalizeTree(base.layout, live) : base.layout
+  const layout = normalizeTree(base.layout, live)
   const leaves = new Set(leafIds(layout))
   const selection: Record<string, string> = {}
   for (const [groupId, tabId] of Object.entries(base.selection)) {
@@ -1296,12 +1299,12 @@ function focusTab(tabId: string) {
   applyGroupInvariants()
 }
 
-/** A draft whose composer holds no saved text — closing it loses nothing. */
+/** A draft holding nothing to lose: no saved text, and its composer reports
+ *  no unsaved typing or image attachment either. */
 function isBlankDraft(tab: TabItemInternal): boolean {
-  return (
-    tab.conversationId == null &&
-    loadMessageInputDraftV2(buildNewConversationDraftStorageKey(tab.id)) == null
-  )
+  if (tab.conversationId != null) return false
+  const key = buildNewConversationDraftStorageKey(tab.id)
+  return loadMessageInputDraftV2(key) == null && !hasLiveComposerContent(key)
 }
 
 /**
@@ -1309,7 +1312,8 @@ function isBlankDraft(tab: TabItemInternal): boolean {
  * `keepId` in its own folder view (parked or on screen). While tabs follow
  * the folder, a draft moved into a folder can land beside that folder's own
  * draft; the moved one is what the user is typing in, so it stays. A draft
- * with text in it is kept too — two drafts beat a lost prompt.
+ * with content is kept too — two drafts beat a lost prompt — and so is the
+ * one on screen, which the user may have just switched to.
  */
 function closeBlankDraftsBeside(keepId: string) {
   const st = useTabStore.getState()
@@ -1320,6 +1324,7 @@ function closeBlankDraftsBeside(keepId: string) {
   for (const tab of st.rawTabs) {
     if (
       tab.id !== keepId &&
+      tab.id !== st.activeTabId &&
       isBlankDraft(tab) &&
       folderScope(tab.folderId) === scope &&
       shellGroupOfTab(st, tab.id) === group
@@ -1332,7 +1337,8 @@ function closeBlankDraftsBeside(keepId: string) {
 /**
  * Turning the mode off puts every folder's drafts back in one layout, where a
  * group carries one draft: per group keep the active draft, else one with
- * text, else the first, and close the other blank ones (never one with text).
+ * content, else the first, and close the other blank ones (never one with
+ * content).
  */
 function closeBlankDraftsPerGroup() {
   const st = useTabStore.getState()
