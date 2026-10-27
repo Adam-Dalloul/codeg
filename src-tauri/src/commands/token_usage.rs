@@ -65,8 +65,6 @@ use crate::web::event_bridge::{emit_event, EventEmitter, TOKEN_USAGE_SYNC_PROGRE
 
 use sea_orm::EntityTrait;
 
-pub(crate) mod native_usage;
-
 /// Hard ceiling on fact rows pulled into memory for one report. At ~90 bytes a
 /// row this is well under 50 MB, and it is roughly a decade of continuous heavy
 /// use — a range that reaches it is pathological, not routine. Rows are read
@@ -137,6 +135,15 @@ const TOP_CONVERSATIONS: usize = 8;
 ///   them again. Forks are on by default in the terminal since CLI 2.1.232
 ///   and in every Agent SDK session since 2.1.302, so unchanged transcripts
 ///   read differently now. See `parsers::claude::is_fork_directive_record`.
+/// * `7` — TRAE CLI usage counted from its native `token_usage_record` rows.
+///   TRAE's ACP `usage_update` is only context occupancy, and codeg records
+///   none of the counters its prompt response carries (which leave out
+///   sub-agents anyway), so both the built-in and pre-integration custom
+///   `traecli` sessions previously wrote no facts. Rollout `thread_id` is the
+///   ACP session id, which makes the native counters an exact enrichment of
+///   codeg's ACP-projected history; each sub-agent's own rollout is read too,
+///   and its spend lands on the turn that launched it. See
+///   `parsers::trae_usage`.
 ///
 /// Only the accounting stored in `token_usage_turn` counts: the four token
 /// counters, the duration and the timestamp. A conversation's context WINDOW is
@@ -151,11 +158,7 @@ const TOP_CONVERSATIONS: usize = 8;
 /// counters predate it, since a custom/BYO model has always exposed them and
 /// the parser reads every session under `~/.qoder/projects`, not just the ones
 /// codeg launched.
-// Version 7 recovers usage for official custom Claude adapters from their
-// explicitly isolated native stores, including previously zero-stamped chats.
-// Version 8 reads each Codeg-recorded continuation separately and retains
-// recovered usage when a chat resumes under a new session id.
-const FACT_SCHEMA_VERSION: &str = "8";
+const FACT_SCHEMA_VERSION: &str = "7";
 
 const FACT_SCHEMA_VERSION_KEY: &str = "token_usage_fact_schema_version";
 
@@ -908,19 +911,10 @@ pub async fn token_usage_status_core(
     let counts = usage_service::sync_counts(conn)
         .await
         .map_err(AppCommandError::from)?;
-    let schema = app_metadata_service::get_value(conn, FACT_SCHEMA_VERSION_KEY)
-        .await
-        .map_err(AppCommandError::from)?;
     Ok(TokenUsageSyncStatus {
         total_conversations: counts.total_conversations,
         synced_conversations: counts.synced_conversations,
-        // Opening the page starts an incremental sync when this is nonzero.
-        // A schema upgrade must reach chats whose timestamps never changed.
-        stale_conversations: if schema.as_deref() != Some(FACT_SCHEMA_VERSION) {
-            counts.total_conversations
-        } else {
-            counts.stale_conversations
-        },
+        stale_conversations: counts.stale_conversations,
         fact_rows: counts.fact_rows,
         last_synced_at: counts.last_synced_at,
         running: SYNC_RUNNING.load(std::sync::atomic::Ordering::Relaxed),
@@ -1043,12 +1037,7 @@ pub async fn token_usage_sync_core(
     // Parse concurrently (each `get_folder_conversation_core` hands the file
     // read to the blocking pool), consume in order, write sequentially.
     let mut parsed = stream::iter(stale.into_iter().map(|candidate| async move {
-        let detail = async {
-            let (detail, _) = get_folder_conversation_core(conn, candidate.id).await?;
-            let native = native_usage::read(conn, &detail.summary).await?;
-            Ok::<_, AppCommandError>((detail, native))
-        }
-        .await;
+        let detail = get_folder_conversation_core(conn, candidate.id).await;
         (candidate, detail)
     }))
     .buffered(PARSE_CONCURRENCY);
@@ -1056,11 +1045,7 @@ pub async fn token_usage_sync_core(
     while let Some((candidate, detail)) = parsed.next().await {
         done += 1;
         match detail {
-            Ok((detail, native))
-                if matches!(&native, native_usage::NativeUsage::KeepRecorded(facts) if !facts.is_empty())
-                    || (matches!(&native, native_usage::NativeUsage::Unavailable)
-                        && parse_lost_a_readable_source(&detail, &candidate)) =>
-            {
+            Ok((detail, _)) if parse_lost_a_readable_source(&detail, &candidate) => {
                 // `get_folder_conversation_core` reports a transcript it can no
                 // longer find as a *successful* parse with zero turns (see its
                 // `ConversationNotFound` arm). Writing that through would delete
@@ -1099,11 +1084,8 @@ pub async fn token_usage_sync_core(
                     }
                 }
             }
-            Ok((detail, native)) => {
-                let facts = match native {
-                    native_usage::NativeUsage::Facts(facts) => facts,
-                    _ => facts_from_detail(&detail, candidate.updated_at),
-                };
+            Ok((detail, _)) => {
+                let facts = facts_from_detail(&detail, candidate.updated_at);
                 match usage_service::replace_conversation_facts(
                     conn,
                     candidate.id,
@@ -1816,7 +1798,7 @@ mod tests {
 
     /// `token_usage_sync_core` serializes on a process-global `try_lock`, so two
     /// tests calling it at once would make one fail with "already running".
-    pub(super) static SYNC_TESTS_SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    static SYNC_TESTS_SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
     #[tokio::test]
     async fn a_changed_fact_schema_reparses_conversations_a_stamp_calls_current() {

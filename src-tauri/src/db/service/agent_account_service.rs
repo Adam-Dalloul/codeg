@@ -631,10 +631,11 @@ mod tests {
             .collect();
         let position = |name: &str| names.iter().position(|n| n == name).expect(name);
         assert!(
-            position("m20261024_000001_agent_account_compatibility")
-                > position("m20261022_000001_tool_approval")
+            position("m20261027_000001_agent_account_compatibility")
+                > position("m20261022_000001_work_task_delivery")
         );
         position("m20261017_000001_agent_account");
+        position("m20261024_000001_agent_account_compatibility");
     }
 
     #[tokio::test]
@@ -764,6 +765,9 @@ mod tests {
         assert!(applied
             .iter()
             .any(|name| name == "m20261024_000001_agent_account_compatibility"));
+        assert!(applied
+            .iter()
+            .any(|name| name == "m20261027_000001_agent_account_compatibility"));
     }
 
     #[tokio::test]
@@ -790,6 +794,21 @@ mod tests {
             fn migrations() -> Vec<Box<dyn MigrationTrait>> {
                 migrations_from_fixture(include_str!(
                     "../../../tests/fixtures/native-account-migrations-20261021.txt"
+                ))
+            }
+        }
+        verify_previous_account_schema::<PreviousSchema>().await;
+    }
+
+    #[tokio::test]
+    async fn october_24_account_schema_keeps_bindings_and_old_migration_ids() {
+        use sea_orm_migration::{MigrationTrait, MigratorTrait};
+        struct PreviousSchema;
+        #[async_trait::async_trait]
+        impl MigratorTrait for PreviousSchema {
+            fn migrations() -> Vec<Box<dyn MigrationTrait>> {
+                migrations_from_fixture(include_str!(
+                    "../../../tests/fixtures/native-account-migrations-20261024.txt"
                 ))
             }
         }

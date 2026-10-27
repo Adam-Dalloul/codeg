@@ -1050,6 +1050,16 @@ mod tauri_app {
                     });
                 }
 
+                // Keeps the Codex model list codeg published current (a provider
+                // list past its age, a codex upgraded outside codeg) and clears
+                // what a release left behind. One per process; mirrored in
+                // `bin/codeg_server.rs`.
+                if let Some(scheduler) = crate::acp::codex_catalog_refresh::build(
+                    web::event_bridge::EventEmitter::Tauri(app.handle().clone()),
+                ) {
+                    tauri::async_runtime::spawn(crate::acp::codex_catalog_refresh::run(scheduler));
+                }
+
                 // Label worktree folders registered before aliases were seeded at
                 // creation with the branch they have checked out, so the sidebar
                 // names them by branch rather than by their (long, derived)
@@ -2163,8 +2173,8 @@ mod tauri_app {
                 acp_commands::acp_update_agent_env,
                 acp_commands::acp_update_agent_config,
                 acp_commands::acp_update_hermes_config,
+                acp_commands::acp_update_claude_model_picker,
                 acp_commands::acp_update_kimi_code_config,
-                acp_commands::acp_fetch_kimi_models,
                 deepseek_settings_commands::acp_load_deepseek_model_catalog,
                 deepseek_settings_commands::acp_update_deepseek_model_catalog,
                 acp_commands::acp_update_pi_config,
@@ -2207,6 +2217,12 @@ mod tauri_app {
                 acp_commands::opencode_list_plugins,
                 acp_commands::opencode_provider_catalog,
                 acp_commands::codex_bundled_catalog,
+                crate::commands::codex_catalog::codex_catalog_plan_preview,
+                crate::commands::codex_catalog::codex_fetch_endpoint_catalog,
+                crate::commands::codex_catalog::codex_endpoint_catalog_published,
+                crate::commands::codex_catalog::codex_endpoint_catalog_cached,
+                crate::commands::codex_catalog::codex_endpoint_catalog_status,
+                crate::commands::codex_catalog::codex_refresh_endpoint_catalog,
                 acp_commands::opencode_install_plugins,
                 acp_commands::opencode_uninstall_plugin,
                 acp_commands::codex_request_device_code,
@@ -2407,6 +2423,7 @@ mod tauri_app {
                 model_provider_commands::create_model_provider,
                 model_provider_commands::update_model_provider,
                 model_provider_commands::delete_model_provider,
+                model_provider_commands::list_provider_models,
                 web::start_web_server,
                 web::stop_web_server,
                 web::get_web_server_status,

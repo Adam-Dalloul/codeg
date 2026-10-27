@@ -194,7 +194,8 @@ pub struct AsyncTaskRecord {
     pub name: String,
     /// Already FRIENDLY, not the SDK's raw type: claude maps
     /// `local_bash`→`"shell"`, `local_workflow`→`"workflow"`,
-    /// `local_monitor`/`mcp`→`"monitor"`, and anything else to `"task"`; codex
+    /// `local_monitor`/`mcp`→`"monitor"`, and anything else to `"task"`, and
+    /// from 0.97.0 names a turn Claude Code started on its own `"turn"`; codex
     /// publishes `"shell"` for every background terminal. Kept a plain string so
     /// an unmapped future type renders as itself instead of failing to
     /// deserialize.
@@ -1764,6 +1765,10 @@ pub struct AcpAgentInfo {
     /// permission mode is a launch flag, not a config key). Only populated
     /// for `AgentType::Cursor`. Derived from `cursor_cli_config_json`.
     pub cursor_settings: Option<CursorSettings>,
+    /// The `/model` picker ids codeg adds for codeg's Claude sessions when no
+    /// model provider is bound (`acp::claude_model_picker`). Only populated
+    /// for `AgentType::ClaudeCode`.
+    pub claude_model_picker: Option<Vec<String>>,
     pub model_provider_id: Option<i32>,
     /// Display icon for a custom ACP agent — normally an inlined
     /// `data:image/…;base64,…` URL (see
@@ -1959,6 +1964,11 @@ pub struct GrokSettings {
     /// so the composer offers no effort selector for it.
     #[serde(default)]
     pub custom_reasoning_efforts: Vec<String>,
+    /// The endpoint's other models codeg added beside the managed one, in file
+    /// order: the `[model.<id>]` tables naming `model_provider = "codeg"`,
+    /// whose `[model_providers.codeg]` carries the managed endpoint and key.
+    #[serde(default)]
+    pub custom_extra_models: Vec<String>,
     /// `[session].auto_compact_threshold_percent` — auto-compact trigger, 0–100
     /// (Grok's default is 85).
     pub auto_compact_threshold_percent: Option<i64>,
@@ -1993,6 +2003,12 @@ pub struct GrokStructuredConfig {
     /// client that predates the field may undo that. `Some(empty)` removes the
     /// key; a non-empty list writes it.
     pub custom_reasoning_efforts: Option<Vec<String>>,
+    /// The endpoint's other models to offer beside the managed one, each a
+    /// `[model.<id>]` on codeg's `[model_providers.codeg]`. `None` keeps the
+    /// ones codeg added (following the endpoint's URL, key and backend); a list
+    /// makes them exactly those. Ignored without `custom_model_id`.
+    #[serde(default)]
+    pub custom_extra_models: Option<Vec<String>>,
     pub auto_compact_threshold_percent: Option<i64>,
 }
 

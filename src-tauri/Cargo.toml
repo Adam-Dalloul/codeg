@@ -179,14 +179,14 @@ ignore = "0.4"
 # The official ACP runtime (the `sacp` crate was upstreamed into it and renamed).
 # Stable protocol v1 only: `unstable_protocol_v2` is deliberately left off, so
 # `initialize` goes out as codeg writes it, at protocol version 1, and the
-# runtime refuses an answer that names any other version. The unstable
-# features are the surfaces codeg consumes beyond the stable schema:
+# runtime refuses an answer that names any other version. The one unstable
+# feature is the surface codeg consumes beyond the stable schema:
 # `session/fork` (the Session Notices and Session Compaction RFDs are stable
-# since schema 1.11), and end-turn usage for agents whose history is recorded
-# in codeg's ACP transcripts. Agents with native stores keep their own accounting.
-# No default features: codeg runs an agent through its own transport
+# since schema 1.11). (`unstable_end_turn_token_usage` stays off: codeg's token
+# accounting reads the agents' own transcripts, not the prompt response's
+# `usage`.) No default features: codeg runs an agent through its own transport
 # (`acp/agent_process.rs`), not the crate's `process`/`stdio` ones.
-agent-client-protocol = { version = "3.4.0", features = ["unstable_session_fork", "unstable_end_turn_token_usage"] }
+agent-client-protocol = { version = "3.4.0", features = ["unstable_session_fork"] }
 tokio = { version = "1", features = ["process", "io-util", "sync", "macros", "rt", "net", "rt-multi-thread"] }
 uuid = { version = "1", features = ["v4"] }
 # Version-5 UUIDs (browser profile data-store identifiers) by hand: uuid's
@@ -357,3 +357,4 @@ temp-env = { version = "0.3", features = ["async_closure"] }
 tokio = { version = "1", features = ["test-util", "macros", "rt", "sync", "time"] }
 insta = { version = "1", features = ["json", "redactions"] }
 axum-test = { version = "17", features = ["ws"] }
+

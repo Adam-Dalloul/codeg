@@ -42,7 +42,7 @@ function PathLabel({ path }: { path: string }) {
   const { dir, name } = splitPathForDisplay(path)
   return (
     <span
-      className="flex min-w-0 items-baseline font-mono text-[0.8125rem] text-muted-foreground"
+      className="flex min-w-0 items-baseline font-mono text-[0.8125rem] text-activity-secondary"
       dir="ltr"
     >
       {dir ? <span className="min-w-0 truncate">{dir}</span> : null}
@@ -141,7 +141,7 @@ export const EditRow = memo(function EditRow({ step }: { step: ToolStep }) {
             <PathLabel path={displayPath ?? single.path} />
             {single.lineRange && !live ? (
               <span
-                className="shrink-0 font-mono text-[0.8125rem] text-muted-foreground"
+                className="shrink-0 font-mono text-[0.8125rem] text-activity-secondary"
                 dir="ltr"
               >
                 {single.lineRange.start === single.lineRange.end
