@@ -50,51 +50,6 @@ cargo insta review
 INSTA_UPDATE=auto cargo test --features test-utils     # 自动写新 .snap
 ```
 
-## 常见构建问题与避坑指南 (Troubleshooting)
-
-### 1. Windows MSVC 4GB `.rlib` 链接器限制 (LNK4003 / LNK2019 / LNK1120)
-
-- **现象**：
-  在 Windows MSVC 环境下构建或测试（如 `cargo build --bin codeg`）时报错：
-  ```text
-  warning: LNK4003: 无效的库格式；已忽略库 '...\\libcodeg_lib-xxx.rlib'
-  error: linking with `link.exe` failed: exit code: 1120
-  ...
-  libcodeg_lib-xxx.rlib : error LNK2019: 无法解析的外部符号 ...
-  ```
-- **根本原因**：
-  Rust 默认开发配置使用 `debug = 2` 生成完整 AST 和变量调试信息。项目依赖较多时，核心库 `libcodeg_lib.rlib` 体积会膨胀超过 4GB（例如 4.27 GB）。MSVC 的 COFF/PE 归档格式使用 32 位偏移寻址，超出 4GB 限制导致归档损坏，`link.exe` 判定格式无效而跳过链接，引发连锁未解析符号错误。
-- **解决方案（推荐方案）**：
-  将 `debuginfo` 级别设为 1（保留文件名与行号，保持完整 panic 堆栈回溯，但不内嵌庞大的 AST 符号信息）：
-  ```powershell
-  # 1. 设置环境变量（当前终端生效）
-  $env:RUSTFLAGS = "-C debuginfo=1"
-
-  # 2. 删除已经损坏超过 4GB 的产物
-  Remove-Item "src-tauri\target\debug\deps\*codeg_lib*" -Force -ErrorAction SilentlyContinue
-
-  # 3. 重新构建
-  cargo build --bin codeg
-  ```
-  设置 `debuginfo=1` 后，`libcodeg_lib.rlib` 体积会从 4.2GB+ 骤降至 200~300MB，链接顺利通过。
-  持久化方案亦可在 `src-tauri/.cargo/config.toml` 中配置：
-  ```toml
-  [profile.dev]
-  debug = 1
-  ```
-
-### 2. Git Worktree 与多 Agent 工作区隔离规范
-
-- 为避免并行任务互相干扰，在多工作区（如 `worktree`）工作时：
-  1. 必须始终在指定的物理工作目录执行文件读写与终端命令（禁止跨越至其他目录）。
-  2. 禁止在独立工作区切换共享分支或破坏其他工作区的构建缓存。
-  3. 若新建工作区缺少静态资源输出目录，Tauri 构建脚本可能检查 `..\out`，需确保 `out/` 占位目录存在。
-
-### 3. Agent Client Protocol (ACP) 提问工具桥接
-
-- Antigravity / Gemini CLI 原生提问工具（`ask_question` / `default_api:ask_question`）与标准 MCP 权限请求不同。
-- `src-tauri/src/acp/` 模块中提供了 `try_bridge_antigravity_ask` 机制，将其转化为交互式问题卡片并在前端呈现，而不是误当作普通工具执行权限请求拦截。后续扩展智能体原生交互协议时需遵循此桥接流程。
-
 ## 架构
 
 ### 双模式运行
