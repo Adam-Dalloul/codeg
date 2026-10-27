@@ -85,6 +85,7 @@ pub fn layout(agent: AgentType) -> Option<AccountLayout> {
         | AgentType::ZCode
         | AgentType::Trae
         | AgentType::CommandCode
+        | AgentType::MiniMaxCode
         | AgentType::Custom(_) => return None,
     };
     Some(AccountLayout {
