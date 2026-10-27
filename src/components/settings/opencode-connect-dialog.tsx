@@ -25,10 +25,7 @@ import {
 import { Textarea } from "@/components/ui/textarea"
 import { Badge } from "@/components/ui/badge"
 import { cn } from "@/lib/utils"
-import {
-  FetchedModelPicker,
-  ProviderModelsStatus,
-} from "@/components/settings/provider-models"
+import { FetchedModelPicker } from "@/components/settings/provider-models"
 import { useProviderModels } from "@/hooks/use-provider-models"
 import {
   DEFAULT_OPENAI_COMPATIBLE_NPM,
@@ -570,7 +567,6 @@ export function OpenCodeCustomProviderDialog({
               placeholder={"gpt-6-astra\nclaude-sonnet-5-5"}
               className="min-h-20 font-mono text-xs"
             />
-            {modelsProtocol && <ProviderModelsStatus state={providerModels} />}
             <p className="text-3xs text-muted-foreground">
               {t("openCode.connect.modelsHint")}
             </p>

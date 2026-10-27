@@ -619,7 +619,7 @@ describe("KimiCodeConfigPanel", () => {
       target: { value: "sk-good" },
     })
     fireEvent.click(
-      screen.getByRole("button", { name: new RegExp(kimi.fetchModels) })
+      screen.getByRole("button", { name: enMessages.ProviderModels.choose })
     )
     await vi.waitFor(() => {
       expect(screen.getByText(/Key works/)).toBeInTheDocument()
@@ -670,7 +670,7 @@ describe("KimiCodeConfigPanel", () => {
         </NextIntlClientProvider>
       )
       fireEvent.click(
-        screen.getByRole("button", { name: new RegExp(kimi.fetchModels) })
+        screen.getByRole("button", { name: enMessages.ProviderModels.choose })
       )
       await vi.waitFor(() =>
         expect(listProviderModels).toHaveBeenCalledWith({
@@ -696,21 +696,28 @@ describe("KimiCodeConfigPanel", () => {
       target: { value: "sk-bad" },
     })
     fireEvent.click(
-      screen.getByRole("button", { name: new RegExp(kimi.fetchModels) })
+      screen.getByRole("button", { name: enMessages.ProviderModels.choose })
     )
+    // In the status card's verdict, and in the list that was asked for.
+    const reasons = await screen.findAllByText(
+      /The key is invalid or has no permission \(HTTP 401\)\./
+    )
+    expect(reasons).toHaveLength(2)
     expect(
-      await screen.findByText(
-        /The key is invalid or has no permission \(HTTP 401\)\./
+      reasons.some((el) =>
+        el.textContent?.startsWith(`${kimi.fetchModelsFailed}:`)
       )
-    ).toBeInTheDocument()
+    ).toBe(true)
   })
 
-  it("asks for a key before testing one", () => {
+  it("asks for a key before testing one", async () => {
     renderPanel(makeAgent(null))
     fireEvent.click(
-      screen.getByRole("button", { name: new RegExp(kimi.fetchModels) })
+      screen.getByRole("button", { name: enMessages.ProviderModels.choose })
     )
-    expect(screen.getByText(new RegExp(kimi.fetchModelsNeedsKey))).toBeVisible()
+    expect(
+      await screen.findByText(enMessages.ProviderModels.needKey)
+    ).toBeVisible()
     expect(listProviderModels).not.toHaveBeenCalled()
   })
 
@@ -723,13 +730,9 @@ describe("KimiCodeConfigPanel", () => {
     fireEvent.change(screen.getByLabelText(label(kimi.apiKeyLabel)), {
       target: { value: "sk-good" },
     })
+    // Opening the model's list asks the provider.
     fireEvent.click(
-      screen.getByRole("button", { name: new RegExp(kimi.fetchModels) })
-    )
-    fireEvent.click(
-      await screen.findByRole("button", {
-        name: enMessages.ProviderModels.choose,
-      })
+      screen.getByRole("button", { name: enMessages.ProviderModels.choose })
     )
     const option = await screen.findByRole("option", { name: /kimi-k3-long/ })
     fireEvent.click(within(option).getByText("kimi-k3-long"))
@@ -752,7 +755,7 @@ describe("KimiCodeConfigPanel", () => {
       target: { value: "kimi-k2.7-code" },
     })
     fireEvent.click(
-      screen.getByRole("button", { name: new RegExp(kimi.fetchModels) })
+      screen.getByRole("button", { name: enMessages.ProviderModels.choose })
     )
 
     await vi.waitFor(() => {

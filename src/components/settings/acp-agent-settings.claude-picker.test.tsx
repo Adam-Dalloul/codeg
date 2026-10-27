@@ -136,7 +136,16 @@ describe("AcpAgentSettings — a Claude gateway's models", () => {
     await openPanel(claudeAgent({ claude_model_picker: ["mine"] }))
     expect(screen.getByText("mine")).toBeVisible()
 
-    await user.click(screen.getByRole("button", { name: "Fetch models" }))
+    // Nothing is asked until a list of the gateway's models is opened.
+    expect(listProviderModels).not.toHaveBeenCalled()
+
+    // A model field picks from the list, which opening it fetches.
+    const haiku = screen.getByText("Default Haiku Model", { selector: "label" })
+    await user.click(
+      within(haiku.parentElement as HTMLElement).getByRole("button", {
+        name: "Choose from the provider's models",
+      })
+    )
     await waitFor(() =>
       expect(listProviderModels).toHaveBeenCalledWith({
         protocol: "anthropic",
@@ -145,19 +154,19 @@ describe("AcpAgentSettings — a Claude gateway's models", () => {
         keyHeader: "bearer",
       })
     )
-    expect(
-      await screen.findByText("The provider lists 3 models.")
-    ).toBeVisible()
-
-    // A model field picks from the list.
-    const haiku = screen.getByText("Default Haiku Model", { selector: "label" })
+    expect(await screen.findByText("3 models · gateway.test")).toBeVisible()
+    await user.click(await screen.findByRole("option", { name: /qwen-4/ }))
+    expect(nativeConfigEnv().ANTHROPIC_DEFAULT_HAIKU_MODEL).toBe("qwen-4")
+    // The other fields share that list: opening one asks nothing again.
+    const opus = screen.getByText("Default Opus Model", { selector: "label" })
     await user.click(
-      within(haiku.parentElement as HTMLElement).getByRole("button", {
+      within(opus.parentElement as HTMLElement).getByRole("button", {
         name: "Choose from the provider's models",
       })
     )
-    await user.click(await screen.findByRole("option", { name: /qwen-4/ }))
-    expect(nativeConfigEnv().ANTHROPIC_DEFAULT_HAIKU_MODEL).toBe("qwen-4")
+    expect(await screen.findByRole("option", { name: /glm-5.2/ })).toBeVisible()
+    expect(listProviderModels).toHaveBeenCalledTimes(1)
+    await user.keyboard("{Escape}")
 
     // The extra /model rows: picked, the unlisted one kept.
     await user.click(screen.getByRole("button", { name: "Choose models…" }))

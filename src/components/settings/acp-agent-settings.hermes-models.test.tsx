@@ -93,8 +93,11 @@ describe("AcpAgentSettings — a custom Hermes endpoint's models", () => {
         <AcpAgentSettings />
       </NextIntlClientProvider>
     )
+    // Opening the model field's list asks the endpoint.
     await user.click(
-      await screen.findByRole("button", { name: "Fetch models" })
+      await screen.findByRole("button", {
+        name: "Choose from the provider's models",
+      })
     )
     await waitFor(() =>
       expect(listProviderModels).toHaveBeenCalledWith({
@@ -102,11 +105,6 @@ describe("AcpAgentSettings — a custom Hermes endpoint's models", () => {
         baseUrl: "https://gw.test/v1",
         keySource: { kind: "inline", apiKey: "sk-gw" },
         keyHeader: null,
-      })
-    )
-    await user.click(
-      await screen.findByRole("button", {
-        name: "Choose from the provider's models",
       })
     )
     await user.click(await screen.findByRole("option", { name: /kimi-k3/ }))

@@ -171,9 +171,7 @@ import { ClaudePickerModelsField } from "@/components/settings/claude-model-fiel
 import {
   ModelIdInputWithFetch,
   ModelIdListField,
-  ProviderModelsFetchButton,
   ProviderModelsPicker,
-  ProviderModelsStatus,
 } from "@/components/settings/provider-models"
 import { OpencodePluginsModal } from "./opencode-plugins-modal"
 import {
@@ -9861,18 +9859,9 @@ base_url = "https://api.openai.com/v1"`}
                     )}
 
                     <div className="space-y-1.5">
-                      <div className="flex items-center justify-between gap-2">
-                        <label className="text-2xs text-muted-foreground">
-                          Model
-                        </label>
-                        {(selectedDraft.geminiAuthMode === "custom" ||
-                          selectedDraft.geminiAuthMode ===
-                            "gemini_api_key") && (
-                          <ProviderModelsFetchButton
-                            state={geminiProviderModels}
-                          />
-                        )}
-                      </div>
+                      <label className="text-2xs text-muted-foreground">
+                        Model
+                      </label>
                       <ModelIdInputWithFetch
                         value={selectedDraft.model}
                         readOnly={
@@ -9881,13 +9870,9 @@ base_url = "https://api.openai.com/v1"`}
                         onChange={(value) => {
                           handleGeminiFieldChange("model", value)
                         }}
-                        models={geminiProviderModels.models}
+                        state={geminiProviderModels}
                         placeholder="gemini-3-pro-preview"
                       />
-                      {(selectedDraft.geminiAuthMode === "custom" ||
-                        selectedDraft.geminiAuthMode === "gemini_api_key") && (
-                        <ProviderModelsStatus state={geminiProviderModels} />
-                      )}
                       <p className="text-2xs text-muted-foreground">
                         {t("modelHintDefault")}
                       </p>
@@ -11129,29 +11114,17 @@ base_url = "https://api.openai.com/v1"`}
                     )}
 
                     <div className="space-y-1.5">
-                      <div className="flex items-center justify-between gap-2">
-                        <label className="text-2xs text-muted-foreground">
-                          Model
-                        </label>
-                        {selectedDraft.clineProvider ===
-                          CLINE_CUSTOM_MODEL_PROVIDER && (
-                          <ProviderModelsFetchButton
-                            state={clineProviderModels}
-                          />
-                        )}
-                      </div>
+                      <label className="text-2xs text-muted-foreground">
+                        Model
+                      </label>
                       <ModelIdInputWithFetch
                         value={selectedDraft.clineModel}
                         onChange={(value) => {
                           handleClineFieldChange("clineModel", value)
                         }}
-                        models={clineProviderModels.models}
+                        state={clineProviderModels}
                         placeholder="claude-sonnet-5-5"
                       />
-                      {selectedDraft.clineProvider ===
-                        CLINE_CUSTOM_MODEL_PROVIDER && (
-                        <ProviderModelsStatus state={clineProviderModels} />
-                      )}
                     </div>
 
                     {/* Endpoint, like the key, is cline's own for a sign-in
@@ -11542,29 +11515,18 @@ base_url = "https://api.openai.com/v1"`}
                     )}
 
                     <div className="space-y-1.5">
-                      <div className="flex items-center justify-between gap-2">
-                        <label className="text-2xs text-muted-foreground">
-                          {t("hermes.modelName")}
-                        </label>
-                        {selectedDraft.hermesProvider === "custom" && (
-                          <ProviderModelsFetchButton
-                            state={hermesProviderModels}
-                            disabled={selectedIsSavingConfig}
-                          />
-                        )}
-                      </div>
+                      <label className="text-2xs text-muted-foreground">
+                        {t("hermes.modelName")}
+                      </label>
                       <ModelIdInputWithFetch
                         value={selectedDraft.model}
                         onChange={(value) =>
                           handleHermesFieldChange("model", value)
                         }
-                        models={hermesProviderModels.models}
+                        state={hermesProviderModels}
                         placeholder="moonshotai/kimi-k2"
                         disabled={selectedIsSavingConfig}
                       />
-                      {selectedDraft.hermesProvider === "custom" && (
-                        <ProviderModelsStatus state={hermesProviderModels} />
-                      )}
                     </div>
 
                     {selectedHermesProviderOption?.kind === "oauth" && (
@@ -12178,15 +12140,9 @@ base_url = "https://api.openai.com/v1"`}
                         </div>
 
                         <div className="space-y-1.5">
-                          <div className="flex items-center justify-between gap-2">
-                            <label className="text-2xs text-muted-foreground">
-                              {t("grok.customModelIdLabel")}
-                            </label>
-                            <ProviderModelsFetchButton
-                              state={grokProviderModels}
-                              disabled={grokSaving}
-                            />
-                          </div>
+                          <label className="text-2xs text-muted-foreground">
+                            {t("grok.customModelIdLabel")}
+                          </label>
                           <ModelIdInputWithFetch
                             value={selectedDraft.grokCustomModelId}
                             onChange={(value) =>
@@ -12195,12 +12151,11 @@ base_url = "https://api.openai.com/v1"`}
                                 grokCustomModelId: value,
                               }))
                             }
-                            models={grokProviderModels.models}
+                            state={grokProviderModels}
                             placeholder={t("grok.customModelIdPlaceholder")}
                             aria-label={t("grok.customModelIdLabel")}
                             disabled={grokSaving}
                           />
-                          <ProviderModelsStatus state={grokProviderModels} />
                           <p className="text-2xs text-muted-foreground">
                             {t("grok.customModelIdHint")}
                           </p>
@@ -12848,17 +12803,6 @@ base_url = "https://api.openai.com/v1"`}
 
                     {selectedAgent.agent_type === "claude_code" ? (
                       <div className="space-y-2">
-                        {selectedDraft.claudeAuthMode === "custom" && (
-                          <div className="flex items-center justify-between gap-2">
-                            <ProviderModelsStatus
-                              state={claudeProviderModels}
-                            />
-                            <ProviderModelsFetchButton
-                              state={claudeProviderModels}
-                              className="ml-auto"
-                            />
-                          </div>
-                        )}
                         <div className="grid gap-3 md:grid-cols-2">
                           <div className="space-y-1.5">
                             <label className="text-2xs text-muted-foreground">
@@ -12876,7 +12820,7 @@ base_url = "https://api.openai.com/v1"`}
                                   value
                                 )
                               }}
-                              models={claudeProviderModels.models}
+                              state={claudeProviderModels}
                               placeholder="claude-sonnet-5-5"
                             />
                           </div>
@@ -12896,7 +12840,7 @@ base_url = "https://api.openai.com/v1"`}
                                   value
                                 )
                               }}
-                              models={claudeProviderModels.models}
+                              state={claudeProviderModels}
                               placeholder="claude-opus-5-5"
                             />
                           </div>
@@ -12916,7 +12860,7 @@ base_url = "https://api.openai.com/v1"`}
                                   value
                                 )
                               }}
-                              models={claudeProviderModels.models}
+                              state={claudeProviderModels}
                               placeholder="claude-haiku-5-5"
                             />
                           </div>
@@ -12936,7 +12880,7 @@ base_url = "https://api.openai.com/v1"`}
                                   value
                                 )
                               }}
-                              models={claudeProviderModels.models}
+                              state={claudeProviderModels}
                               placeholder="claude-sonnet-5-5"
                             />
                           </div>
@@ -12956,7 +12900,7 @@ base_url = "https://api.openai.com/v1"`}
                                   value
                                 )
                               }}
-                              models={claudeProviderModels.models}
+                              state={claudeProviderModels}
                               placeholder="claude-opus-5-5"
                             />
                           </div>
@@ -12976,7 +12920,7 @@ base_url = "https://api.openai.com/v1"`}
                                   value
                                 )
                               }}
-                              models={claudeProviderModels.models}
+                              state={claudeProviderModels}
                               placeholder="claude-fable-5-1"
                             />
                           </div>
@@ -13002,7 +12946,7 @@ base_url = "https://api.openai.com/v1"`}
                                     value
                                   )
                                 }}
-                                models={claudeProviderModels.models}
+                                state={claudeProviderModels}
                                 placeholder="my-gateway/claude-opus-5-5"
                               />
                             </div>
