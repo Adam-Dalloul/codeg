@@ -16,16 +16,27 @@ pub(crate) fn mcp_json_path() -> PathBuf {
 mod tests {
     use super::*;
 
+    // Every read happens under temp_env's lock, CODEG_HOME pinned: the path
+    // follows CODEG_HOME / CODEG_DATA_DIR, which other tests set in parallel.
     #[test]
     fn minimax_mcp_overlay_is_independent_of_native_profile_overrides() {
-        let expected = mcp_json_path();
-        assert!(expected.ends_with("mcp/minimax_code.json"));
+        let home = tempfile::tempdir().unwrap();
         temp_env::with_vars(
             [
-                ("MINIMAX_DATA_DIR", Some("/native/primary")),
-                ("MAVIS_DATA_DIR", Some("/native/legacy")),
+                ("CODEG_HOME", Some(home.path().as_os_str())),
+                ("CODEG_DATA_DIR", None),
             ],
-            || assert_eq!(mcp_json_path(), expected),
+            || {
+                let expected = home.path().join("mcp").join("minimax_code.json");
+                assert_eq!(mcp_json_path(), expected);
+                temp_env::with_vars(
+                    [
+                        ("MINIMAX_DATA_DIR", Some("/native/primary")),
+                        ("MAVIS_DATA_DIR", Some("/native/legacy")),
+                    ],
+                    || assert_eq!(mcp_json_path(), expected),
+                );
+            },
         );
     }
 }
