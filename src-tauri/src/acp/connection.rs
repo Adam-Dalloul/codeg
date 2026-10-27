@@ -6564,7 +6564,7 @@ async fn apply_and_emit_session_config_options(
     emit_session_config_options_values(state, emitter, updated).await;
 }
 
-/// Grok's initialize still advertises `image: false` — the coding model
+/// Grok's initialize long advertised `image: false` — the coding model
 /// cannot see pixels. Native ACP `image` blocks nevertheless run its
 /// image-describe sidecar. An image-mime `resource` blob does not: grok dumps
 /// it as `<file_contents type="binary">` and the model only gets a path.
@@ -6573,12 +6573,13 @@ async fn apply_and_emit_session_config_options(
 /// Measured live against 0.2.112, 1.0.0 and 1.0.3: every one of them still
 /// advertises `image: false`, accepts a native `image` block anyway, and answers
 /// correctly about the pixels — while the same bytes as a resource blob make the
-/// model invent an answer. The advertisement has simply been wrong for as long
-/// as codeg has supported grok, across every version tested, so this is
-/// deliberately NOT version-gated (and stays correct if grok ever starts
-/// advertising the truth: `image` is already true then). Deliberately no pinned
-/// version named here either — `registry.rs` moves on its own schedule, and a
-/// claim about "the pinned version" rots at the next bump.
+/// model invent an answer. The advertisement was wrong for as long as codeg had
+/// supported grok, so this is deliberately NOT version-gated, and it stays
+/// correct now that grok advertises the truth (1.0.70 answers `image: true`,
+/// where 1.0.62 still answered `false`): an older grok on the user's PATH still
+/// needs it. Deliberately no pinned version named here either — `registry.rs`
+/// moves on its own schedule, and a claim about "the pinned version" rots at
+/// the next bump.
 ///
 /// This bit says only that grok takes image blocks AT ALL — it decodes just some
 /// formats, which is a per-mime question a single capability cannot answer, so
@@ -7275,7 +7276,7 @@ async fn send_new_session_capturing_models(
 /// state and never reads them back: the config it starts each session with
 /// carries no MCP servers, and the SDK connects only the servers in cline's own
 /// `cline_mcp_settings.json` and its plugins. Checked in the source of every
-/// release from 3.0.55 through 3.0.73, and live on 3.0.71 through 3.0.73: a
+/// release from 3.0.55 through 3.0.74, and live on 3.0.71 through 3.0.74: a
 /// stdio server sent on `session/new` is never started, while one in the settings
 /// file is, and its tools reach the model. User servers still reach Cline,
 /// through that file (see [`agent_reads_own_mcp_config`]); the codeg-mcp
@@ -7425,9 +7426,10 @@ fn load_mcp_servers_for_agent(agent_type: AgentType) -> Vec<McpServer> {
     //
     // Command Code joins it for the same reason: `command-code acp` loads
     // `~/.commandcode/mcp.json` and starts what `session/new` carries as well
-    // (verified against 1.84.0 and 1.86.3, a server from each source in one
-    // session's tool list), and its docs say a name on both sides keeps the
-    // file's copy. codeg's MCP settings UI manages that file.
+    // (verified against 1.84.0, 1.86.3 and 1.88.0, a server from each source
+    // in one session's tool list), and a name on both sides keeps the file's
+    // copy, as its docs say and 1.88.0 showed live. codeg's MCP settings UI
+    // manages that file.
     if agent_reads_own_mcp_config(agent_type) {
         return Vec::new();
     }
@@ -11688,7 +11690,7 @@ async fn set_session_config_option_inner(
 ) -> Result<Vec<SessionConfigOption>, agent_client_protocol::Error> {
     // Of the two ACP mode requests, only session/set_mode refreshes the
     // bridge's plan-enabled mirror; set_config_option("mode") keeps reporting
-    // "plan" while that mirror is set (bridge 0.69.2 through 0.76.2). Send
+    // "plan" while that mirror is set (bridge 0.69.2 through 0.76.3). Send
     // set_mode first for mode changes, then read the config response; the
     // initial-mode gate still requires an exact confirmation before prompt.
     if agent_type == AgentType::ZCode && config_id == "mode" {
@@ -13187,13 +13189,21 @@ fn classify_session_load_failure(
     // after it goes idle; a lock whose process is gone is taken over. Opening
     // the session from another process meanwhile, by `session/load` or
     // `session/resume`, answers -32603 with Kimi's sentence in
-    // `data.details`: "This session is in use by another Kimi Code process.
-    // Stop the session in that process or exit it, then try again." The
-    // holder is another Kimi process on the same home, such as the user's
+    // `data.details`. 2.3.0 says "This session is in use by another Kimi Code
+    // process. Stop the session in that process or exit it, then try again."
+    // From 2.3.1 the holder also records its client's name in the lock file,
+    // and the sentence names it: "This session is in use by another Kimi Code
+    // CLI instance. Stop the session in that instance or exit it, then try
+    // again." (`kimi acp` and the TUI say "Kimi Code CLI", `kimi web` "Kimi
+    // Code Web", the desktop and VS Code clients their own names); a holder
+    // that records no name still gets the 2.3.0 sentence. So the match is the
+    // stem both share. codex's own busy sentence ("This Codex session is in
+    // use by another Codex client") does not contain it and is caught above.
+    // The holder is another Kimi process on the same home, such as the user's
     // `kimi` or `kimi web`, or another codeg. Busy for the same reason as
     // codex's writer lock: the session is intact, and the `session/new`
     // fallback would rebind the row to an empty one.
-    if message.contains("is in use by another Kimi Code process") {
+    if message.contains("This session is in use by another") {
         return Some("session_busy");
     }
     if SESSION_GONE_MARKERS.iter().any(|s| message.contains(s)) {
@@ -13360,12 +13370,12 @@ fn prompt_rejection_is_terminal(e: &agent_client_protocol::Error) -> bool {
 /// Kimi Code 2.3.0's refusal of a prompt on a session another process wrote
 /// since this connection opened it: -32600 with `data.code: "session.stale"`
 /// and "Session was updated by another client. Close and reopen the session,
-/// then retry." Its error table marks the code not retryable, and every later
-/// prompt on the connection answers the same, while a new process loads the
-/// session with the other process's turns and prompts normally. The writer is
-/// whoever held the session lock in between (see
-/// [`classify_session_load_failure`]). Read from the structured code, which is
-/// Kimi's own error vocabulary, rather than from the sentence.
+/// then retry." (the same body through 2.3.3). Its error table marks the code
+/// not retryable, and every later prompt on the connection answers the same,
+/// while a new process loads the session with the other process's turns and
+/// prompts normally. The writer is whoever held the session lock in between
+/// (see [`classify_session_load_failure`]). Read from the structured code,
+/// which is Kimi's own error vocabulary, rather than from the sentence.
 ///
 /// The lock's other prompt-time refusal, `session.occupied` (the other process
 /// holds the session right now), is retryable and stays turn-scoped.
@@ -18733,12 +18743,12 @@ fn grok_meta_marks_ask_user(
 /// answered card the bridge recorded, and so must be dropped. Consumes the
 /// record.
 ///
-/// Measured against antigravity-acp 1.4.1: each question opens a `tool_call`
-/// (`interaction_<hex>`, titled with the question, `rawInput: {}`, `pending`),
-/// is asked through `session/request_permission` under the same id, and is
-/// closed by a `tool_call_update` carrying only `status` and a fixed `rawOutput`
-/// ("Response received" / "Interaction cancelled"). The server emits no frame
-/// for the model's `ask_question` call itself.
+/// Measured against antigravity-acp 1.4.1 and 1.4.3: each question opens a
+/// `tool_call` (`interaction_<hex>`, titled with the question, `rawInput: {}`,
+/// `pending`), is asked through `session/request_permission` under the same id,
+/// and is closed by a `tool_call_update` carrying only `status` and a fixed
+/// `rawOutput` ("Response received" / "Interaction cancelled"). The server
+/// emits no frame for the model's `ask_question` call itself.
 ///
 /// The opening frame is kept: it is the row the answered card lands on, and the
 /// row an approval card's answer settles. The closing frame is dropped only
@@ -27245,11 +27255,13 @@ mod tests {
         assert_eq!(classify_session_load_error(&unclassified), None);
     }
 
-    /// Kimi Code 2.3.0's session lock, the body captured live: two `kimi acp`
-    /// processes on one `KIMI_CODE_HOME`, the second `session/load`ing a
-    /// session the first had just opened. 2.2.0 let the second load through,
-    /// so nothing classified this error and it took the `session/new`
-    /// fallback, rebinding the row to an empty session.
+    /// Kimi Code's session lock, the bodies captured live off 2.3.0 and 2.3.3:
+    /// two `kimi acp` processes on one `KIMI_CODE_HOME`, the second
+    /// `session/load`ing a session the first had just opened. 2.2.0 let the
+    /// second load through, so nothing classified this error and it took the
+    /// `session/new` fallback, rebinding the row to an empty session. 2.3.1
+    /// reworded the sentence, which an exact 2.3.0 match would miss the same
+    /// way.
     #[test]
     fn classify_load_error_names_a_kimi_session_another_process_holds() {
         let kimi_2_3_0: agent_client_protocol::Error = serde_json::from_value(serde_json::json!({
@@ -27263,6 +27275,21 @@ mod tests {
         .expect("an ACP error body");
         assert_eq!(
             classify_session_load_error(&kimi_2_3_0),
+            Some("session_busy")
+        );
+        // 2.3.1+ names the holder's client; this body is 2.3.3's, captured
+        // live with another `kimi acp` holding the session.
+        let kimi_2_3_3: agent_client_protocol::Error = serde_json::from_value(serde_json::json!({
+            "code": -32603,
+            "message": "Internal error",
+            "data": {
+                "details": "This session is in use by another Kimi Code CLI instance. Stop the \
+                    session in that instance or exit it, then try again."
+            }
+        }))
+        .expect("an ACP error body");
+        assert_eq!(
+            classify_session_load_error(&kimi_2_3_3),
             Some("session_busy")
         );
         assert!(!recovers_load_failure_locally(

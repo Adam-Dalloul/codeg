@@ -3944,8 +3944,8 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             description: "Autonomous coding agent CLI",
             // 3.0.66 moved cline's build from Bun 1.3.13 to 1.4.2, and from
             // then on its darwin-arm64 binary passes `codesign --verify
-            // --strict` (3.0.73's still does, still on Bun 1.4.2). Its
-            // darwin-x64 binary fails that check from 3.0.66 through 3.0.73: it
+            // --strict` (3.0.74's still does, still on Bun 1.4.2). Its
+            // darwin-x64 binary fails that check from 3.0.66 through 3.0.74: it
             // keeps the Developer ID signature of Bun's own runtime over a file
             // that no longer matches it; whether macOS kills it was not tested.
             // The earlier pins checked (3.0.55, 3.0.60–3.0.65) all shipped
@@ -3955,10 +3955,18 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             // `cline --version` exited 137, and ACP sessions died within a
             // second of `initialize`.
             //
-            // The ACP surface is unchanged in 3.0.73: nothing under
-            // `apps/cli/src` changed, and `initialize`, `session/new`,
+            // 3.0.74 changes one thing on the ACP surface: the `provider`
+            // selector's `category` moves from `model` to `_provider` (the
+            // Account selector's from `account` to `_account`), so `model` is
+            // now the only `category: "model"` option. Before, on a sign-in
+            // launch, where codeg leaves the provider selector visible, the
+            // provider came first under that category, so the model codeg
+            // records for each turn (`current_model_id_from_opts`) was the
+            // provider id (`cline`); it is now the model. codeg's own handling of
+            // `provider` goes by its id, which did not change.
+            // Otherwise `initialize` (`protocolVersion: 1`), `session/new`,
             // `session/load` and prompt turns (text, a `read_files` call with
-            // its permission request, failed turns) match 3.0.72 but for the
+            // its permission request, failed turns) match 3.0.73 but for the
             // version, as do the session files those turns write. A session
             // still gets thinking only from an explicit `--thinking` (3.0.71
             // made the flag count there, not reasoning saved in cline's
@@ -3967,16 +3975,25 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             // `enableAgentTeams: false`, and the SDK still scans a workspace's
             // `.claude/skills`, which codeg's skill spec for Cline lists.
             //
-            // What 3.0.73 changes reaches codeg through its SDK (0.0.95), in
-            // what a session asks the provider for. A request whose model id
-            // names gpt-6 through gpt-9 (`gpt-6-sol`, `gpt-6.1-sol`) now sends
-            // its token limit as `max_completion_tokens`, which gpt-5 ids
-            // already did, on the `cline` and `cline-pass` providers and the
-            // OpenAI-compatible ones. Only catalog models carry a limit, so a
-            // model id outside the provider's catalog sends neither field, as
-            // before. And the `cline` provider's bundled default (used when
-            // `CLINE_MODEL` is unset) is back to `anthropic/claude-sonnet-5.5`,
-            // which 3.0.72 had moved to `google/gemini-4-argon`.
+            // What else 3.0.74 changes reaches codeg through its SDK, which went
+            // from 0.0.95 to 0.2.0 only so that `@cline/ui` can share its
+            // version. A request that fails with a retryable HTTP error is now
+            // retried 3 times instead of 5 (live, an HTTP 500 failed the prompt
+            // after 4 attempts and about 14 s, where 3.0.73 made 6 attempts over
+            // about 62 s). A turn whose connection drops after the model has
+            // streamed only reasoning is now retried instead of failing the
+            // prompt: codeg keeps the reasoning it already received and then
+            // gets the retry's, while cline stores only the retry's. The model
+            // catalog changed: the `cline` provider drops 17 ids and adds 8, and
+            // `cline-pass` drops 4, adds 6 and now defaults to
+            // `cline-pass/kimi-k3.1-pro`; a saved pick of a dropped id is no
+            // longer offered. The `cline` provider's bundled default (used when
+            // `CLINE_MODEL` is unset) is still `anthropic/claude-sonnet-5.5`.
+            // Since 3.0.73 a request whose model id names gpt-6 through gpt-9
+            // (`gpt-6-sol`, `gpt-6.1-sol`) sends its token limit as
+            // `max_completion_tokens`, which gpt-5 ids already did, on the
+            // `cline` and `cline-pass` providers and the OpenAI-compatible ones
+            // (seen live again on an OpenAI-compatible model on 3.0.74).
             //
             // Since 3.0.72 a provider error that arrives after a reply has
             // started streaming is retried up to 3 times, back to back, and
@@ -3987,8 +4004,8 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             // partial text repeats once per attempt. A provider's HTTP error
             // ends its message with "(Request ID: <x-request-id>)", in the
             // `session/prompt` error and in the display-only error record
-            // alike. A 3.0.73 `cline --acp` loads and continues the sessions
-            // 3.0.72 wrote.
+            // alike. A 3.0.74 `cline --acp` loads and continues the sessions
+            // 3.0.73 wrote.
             //
             // codeg runs each Cline session inside the `cline --acp` process it
             // spawned (`CLINE_SESSION_BACKEND_MODE=local` below, unless a
@@ -4003,17 +4020,19 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             // `config_option_update` report the new model while every request
             // keeps the old one, and a reopened session never takes the model
             // codeg re-applies. The in-process runtime applies the switch to
-            // the next request. Both seen live on 3.0.72 and 3.0.73. In local
-            // mode, with the updater below off, cline neither looks for a hub
-            // nor starts one, so codeg leaves no hub daemon behind and never
-            // replaces one the user's own cline is running (live, a 3.0.72 hub
-            // kept its pid while 3.0.73 sessions ran). A `plan`/`act` mode
-            // switch after the first prompt is still lost on either runtime:
-            // the ACP agent only records it, and a mode reaches the model's
-            // prompt and tools only when the session is built. Since each
-            // session now lives and dies with its own process, the next Cline
-            // launch closes it for that dead process (`status: "failed"`,
-            // `ended_at` = the launch), and `parsers::cline` keeps the
+            // the next request. Both seen live on 3.0.72 and 3.0.73; on 3.0.74
+            // the in-process switch was seen live again, and the hub runtime
+            // still has no `updateSessionModel`. In local mode, with the updater
+            // below off, cline neither looks for a hub nor starts one (live on
+            // 3.0.74, nothing connected to the hub port), so codeg leaves no hub
+            // daemon behind and never replaces one the user's own cline is
+            // running (live, a 3.0.72 hub kept its pid while 3.0.73 sessions
+            // ran). A `plan`/`act` mode switch after the first prompt is still
+            // lost on either runtime: the ACP agent only records it, and a mode
+            // reaches the model's prompt and tools only when the session is
+            // built. Since each session now lives and dies with its own process,
+            // the next Cline launch closes it for that dead process (`status:
+            // "failed"`, `ended_at` = the launch), and `parsers::cline` keeps the
             // transcript's last write as its end.
             //
             // Every `cline` process, `--acp` included, also asks npm for a newer
@@ -4031,14 +4050,14 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             // MCP reaches cline only through its own settings file. Its ACP
             // agent keeps the `mcpServers` of `session/new` and `session/load`
             // and never connects them (the same in every release from 3.0.55
-            // through 3.0.73; live on 3.0.71 through 3.0.73, a stdio server sent
+            // through 3.0.74; live on 3.0.71 through 3.0.74, a stdio server sent
             // there is never started), so codeg forwards none and injects no
             // codeg-mcp companion (see `agent_delivers_wire_mcp`). The servers
             // codeg's MCP settings write to
             // `~/.cline/data/settings/cline_mcp_settings.json` are started, and
             // their tools reach the model. Their connect budget has been 10 s
             // since 3.0.69 (`DEFAULT_MCP_CONNECT_TIMEOUT_MS`, still 10 s in
-            // 3.0.73).
+            // 3.0.74).
             //
             // Earlier releases moved what reaches codeg through the SDK. Since
             // 3.0.69 a reply whose finish reason the AI SDK does not recognise
@@ -4050,8 +4069,8 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             // halves arrive as one message. What moved in 3.0.66 is token
             // accounting; see `outputTokens` in `parsers::cline`.
             distribution: AgentDistribution::Npx {
-                version: "3.0.73",
-                package: "cline@3.0.73",
+                version: "3.0.74",
+                package: "cline@3.0.74",
                 cmd: "cline",
                 args: &["--acp"],
                 // In-process runtime, not the hub, and no self-update: see
@@ -4234,6 +4253,18 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             // trust store before any outbound call, and `agentInfo.version`
             // comes from the pinned tag ("0.22.2").
             //
+            // Held at 0.22.2. From 0.22.3 `hermes acp` is a viewer: sessions,
+            // turns and MCP servers run in a shared `gateway run --idle-exit`
+            // daemon, which the first viewer for a `HERMES_HOME` starts with its
+            // own environment and later viewers share. Measured on 0.22.5,
+            // codeg's process-tree stop takes the daemon down with the viewer
+            // that started it, so the other Hermes conversations lose it too
+            // (their next prompt starts a new one). And in a session that also
+            // got MCP servers over the wire, as every session with codeg-mcp
+            // injected does, each call to a config.yaml `mcp_servers` entry
+            // fails with "MCP server '<name>' is not connected" (upstream issue
+            // #143502, open as of 0.22.5). Re-check both before moving the pin.
+            //
             // Launch preference: `resolve_npx_command("hermes")` checks PATH,
             // then `~/.local/bin` (the official installer's target), then the
             // npm global prefix. Whatever is on the app's PATH wins first; past
@@ -4403,9 +4434,43 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             // waits from 1 s doubling to 32 s (longer when the server's
             // `Retry-After` asks). Nothing new reaches the wire while it waits,
             // and stopping the turn ends the wait.
+            //
+            // 2.177.0 (after 2.172.1, 2.173.0, 2.174.0, 2.175.0 and 2.176.0;
+            // 2.172.0 was never published) changes `bin/codebuddy` only by a
+            // `daemon status` shortcut behind `CODEBUDDY_DAEMON_STATUS_BRIEF=1`;
+            // `--acp` still runs `dist/codebuddy-headless.js`. Its inlined ACP
+            // SDK is now 1.9.0 with the same transport, so the 33 MiB line still
+            // stalls stdin and `$/cancel_request` still leaves a prompt running
+            // until `session/cancel`. One SDK change is stricter: a
+            // `session/new` or `session/load` whose `mcpServers` holds an entry
+            // that fails the schema is now refused whole (-32602) where 2.171.0
+            // dropped that entry. codeg's typed entries always pass, and a stdio
+            // server handed over on `session/new` still starts and reaches the
+            // model. `initialize` still answers `protocolVersion: 1` (adding
+            // `codeModeSupport`), no `sessionUpdate` kind or `session/*` method
+            // came or went, and an install without optional dependencies still
+            // runs whole turns. `delegate` left the modes and the `mode` option
+            // (`session/set_mode` to it now fails; codeg skips a saved mode the
+            // session no longer lists), `/delegate` joined the commands, and a
+            // `codeMode` option (`off` by default, `all` for PTC) joined the
+            // selectors; it locks after the first reply. With `all`, the calls
+            // the REPL makes arrive as tool calls of their own, without their
+            // input and linked to the REPL call only by
+            // `_meta["codebuddy.ai"].toolMetaData.replOrigin.containerToolCallId`.
+            // codeg nests a CodeBuddy tool call only under a sub-agent's Agent
+            // call (`codebuddy.ai/parentToolCallId`), so they show as cards of
+            // their own. Models, `thought_level`, `sandbox` and `multitask` keep
+            // their values. Otherwise the recorded turns match 2.171.0 frame for
+            // frame apart from usage numbers, a `timestamp` in a cancelled
+            // prompt's `_meta`, and a sandboxed Bash's `tool_executing` phase
+            // update arriving when the command starts. Transcripts gain
+            // `session-meta` records with a `contextWindow` and, in Code Mode, a
+            // `replPresentation` in the REPL result; the parser reads neither.
+            // The headless bundle still has no auto-update scheduler, and a
+            // retry now waits 90–110% (was 75–100%) of 1 s doubling to 32 s.
             distribution: AgentDistribution::Npx {
-                version: "2.171.0",
-                package: "@tencent-ai/codebuddy-code@2.171.0",
+                version: "2.177.0",
+                package: "@tencent-ai/codebuddy-code@2.177.0",
                 cmd: "codebuddy",
                 args: &["--acp"],
                 env: &[],
@@ -4769,9 +4834,43 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             // that opened it earlier answers `session.stale`, so codeg drops
             // that connection and the next one loads the other process's turns
             // (`kimi_session_stale`).
+            //
+            // 2.3.3 (with 2.3.1 and 2.3.2 in between) passes the mandated check
+            // verbatim, and `engines.node` (>=22.19.0), the runtime dependencies
+            // and `bin` are unmoved. All 25 `packages/acp-server` regions are
+            // byte-identical to 2.3.0, and so are the sources of the rest of what
+            // codeg mirrors: config.toml's provider and model schemas,
+            // `KIMI_MODEL_*`, the skill roots, the auth gate, the `mcp.json`
+            // schema, the prompt projection and title rule, the output cap and
+            // the `wire.jsonl` writer. The bundled models.dev catalog adds
+            // `kimi-k3.1-pro` and `kimi-k3.1-pro-highspeed` at 1048576 under
+            // `moonshotai` and leaves the existing rows alone; the `kimi-k3`
+            // prefix in `infer_context_window_max_tokens` already covers them. A
+            // live A/B against 2.3.0 matched on `initialize` (`protocolVersion:
+            // 1`), `session/new` (the model, thinking and mode values, the slash
+            // commands), text, Bash and MCP turns, and the `wire.jsonl` record
+            // and loop-event types; neither version sends `max_tokens` to an
+            // `openai` provider, and 2.3.3 resumes and loads a session 2.3.0
+            // wrote.
+            //
+            // What reaches codeg is the wording of the session lock. From 2.3.1
+            // the holder writes its client's name into the lock file, and opening
+            // a held session from another process answers "This session is in
+            // use by another Kimi Code CLI instance. Stop the session in that
+            // instance or exit it, then try again." (`kimi acp` and the TUI say
+            // "Kimi Code CLI"); only a holder that records no name still gets the
+            // 2.3.0 sentence, and `classify_session_load_failure` matches the
+            // stem both share. The error codes, the 3 s idle release,
+            // `session.occupied` and `session.stale` are unchanged. New and
+            // unused by codeg: `KIMI_CODE_SESSION_LOCK=0` turns the lock off, the
+            // TUI and `kimi web` can take over a lock another process holds, and
+            // a zombie holder no longer keeps its lock. Since 2.3.2 the model
+            // cannot start an `AgentSwarm` by itself: the tool stays in the list
+            // but returns an error until the user turns swarm mode on, and ACP
+            // offers no command for that.
             distribution: AgentDistribution::Npx {
-                version: "2.3.0",
-                package: "@moonshot-ai/kimi-code@2.3.0",
+                version: "2.3.3",
+                package: "@moonshot-ai/kimi-code@2.3.3",
                 cmd: "kimi",
                 args: &["acp"],
                 env: &[],
@@ -4818,11 +4917,11 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             // `bin/grok` trampoline does so on first run if that never happened.
             // Public mirrors (e.g. registry.npmmirror.com, a common CN default)
             // lag behind this package and are incomplete: re-checked for the
-            // 1.0.62 bump, its `latest` there is still 0.1.4, which predates the
-            // `grok agent stdio` ACP subcommand, and although it lists most
-            // 1.0.x releases up to 1.0.59, 1.0.52, 1.0.55, 1.0.57 and
-            // 1.0.60–1.0.62 answer 404 there — so the pinned version isn't
-            // resolvable there.
+            // 1.0.70 bump, its `latest` there is still 0.1.4, which predates the
+            // `grok agent stdio` ACP subcommand. It now lists the 1.0.x releases
+            // up to 1.0.70 except 1.0.69 (404 there, as is the 1.0.71 alpha), so
+            // the pin resolves there, but an unpinned install there still gets
+            // 0.1.4.
             //
             // Both concerns are handled by codeg's shared `npm install -g` path
             // (`install_npm_global_package_streaming` in commands/acp.rs), which
@@ -4843,14 +4942,17 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             // `models` that the composer's selectors and context ring read, and
             // prompting straight after it works. It also skips `session/load`'s
             // history replay, which codeg only drained to discard. The 1.0.1–
-            // 1.0.62 patches add nothing further here: re-probed live against
-            // the 1.0.62 binary (with 1.0.60 as the A/B; both refuse
+            // 1.0.70 patches add nothing further here: re-probed live against
+            // the 1.0.70 binary (with 1.0.62 as the A/B; both refuse
             // `session/new` and `session/resume` without a credential, so those
             // ran with a placeholder `XAI_API_KEY`, and the turns ran on a local
             // `[model.<id>]` endpoint), `initialize` still answers
             // `sessionCapabilities: {list, resume, close}` plus the same
             // `promptCapabilities.embeddedContext` (and `mcpCapabilities`
-            // http+sse, `loadSession: true`), and `session/resume` from a fresh
+            // http+sse, `loadSession: true`; 1.0.70 also advertises `image:
+            // true`, where 1.0.62 said `false`, which changes nothing because
+            // codeg already treats Grok as image-capable), and `session/resume`
+            // from a fresh
             // process still restores the conversation without replaying it and
             // carries `x.ai/sessionConfig` and the per-model `models`, so the
             // resume rung stands. Every scenario probed (turns with foreground
@@ -4859,7 +4961,10 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             // the same frames on both once ids, timing, the number of
             // terminal-output polls, the order of `terminal/create`'s env
             // entries and the interleaving of grok's asynchronous notifications
-            // are normalized. That includes the turn grok starts by itself
+            // are normalized, except that 1.0.70's answered ask-question result
+            // also carries a structured `rawOutput.UserAnswered.answers` list
+            // beside its `message`, which codeg does not read. That includes the
+            // turn grok starts by itself
             // over ACP a few seconds after a background command finishes,
             // which is why 1.0.62's fix for headless `grok -p` (it now waits
             // for that turn before exiting) does not reach codeg. The `_meta`
@@ -4867,10 +4972,11 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             // `x.ai/memoryNotesWritable` in those replies (1.0.51, in place of
             // `x.ai/memoryMode`), and from 1.0.52 `requestTrimmedTokens` beside
             // `totalTokens` on `session/update` and `x.ai/requestingSessionId`
-            // on a permission request's tool call; no probe of 1.0.53–1.0.62
-            // saw another (1.0.62's binary also knows an `x.ai/hostInitiated` key
-            // beside `x.ai/requestingSessionId`, which no probe produced, not
-            // even a permission request inside that self-started turn). Nor
+            // on a permission request's tool call; no probe of 1.0.53–1.0.70
+            // saw another (the binary also knows an `x.ai/hostInitiated` key
+            // beside `x.ai/requestingSessionId`, which no probe of 1.0.62 or
+            // 1.0.70 produced, not even a permission request inside that
+            // self-started turn). Nor
             // does codeg map the two status updates 1.0.50 added on
             // `_x.ai/session/update`, `login_refused` (with a `remedy` text)
             // and `backend_responsive`, any more than grok's other status
@@ -4879,19 +4985,26 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             // the directory also holds a `usage.json.lock` beside `usage.json`,
             // neither of which codeg reads. All six
             // `@xai-official/grok-<os>-<arch>` optional deps are published at
-            // 1.0.62 — they are OPTIONAL, so a platform that lags would fail
+            // 1.0.70 — they are OPTIONAL, so a platform that lags would fail
             // only for that platform's users, at run time, in the trampoline.
             // The pin tracks `dist-tags.latest`, NOT the highest version
-            // number, since `alpha` often runs ahead of it; 1.0.62 is both
-            // `latest` and `alpha`.
+            // number, since `alpha` often runs ahead of it; 1.0.70 is `latest`
+            // and `alpha` is 1.0.71.
+            //
+            // Since 1.0.64 a `[model.<id>]` table without a `context_window`
+            // takes the window of another table that sends the same model,
+            // where it used to get 200,000; `parsers::grok` reads `config.toml`
+            // the same way for a history view's ring (seen live on 1.0.70, see
+            // `grok_context_window_from_config_toml`), while a live ring reads
+            // the window grok reports on the wire.
             //
             // One tool input codeg renders did change after 1.0.41:
             // `run_terminal_command` dropped `background` and `timeout` for
             // `block_until_ms` (how long to wait before backgrounding the
             // command: 30000 by default, 0 at once), so a grok shell card no
-            // longer has a timeout to show; 1.0.62 still takes it. A background
+            // longer has a timeout to show; 1.0.70 still takes it. A background
             // launch answers with the text "Background task <id> started"
-            // (seen live through 1.0.62), which is what codeg's launch matcher
+            // (seen live through 1.0.70), which is what codeg's launch matcher
             // (`parseBackgroundLaunch`) reads. Since 1.0.52 a background task's
             // `command` (its poll card title, result and completion snapshot)
             // is the command the model wrote rather than the `/bin/bash -lc
@@ -4908,28 +5021,29 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             // frame and it would sit in the retry queue for the connection's
             // life. `ClaimNullSessionIds` in connection.rs claims
             // those frames before they can be parked, so this bump is safe only
-            // together with that guard. 1.0.62 still sends exactly those five
-            // (`auth` … `mcp_merge`), also ahead of a `session/new` it then
+            // together with that guard. 1.0.70 still sends exactly those five
+            // (`auth`, `resolve_workspace`, `folder_trust`, `plugin_registry`,
+            // `mcp_merge`), also ahead of a `session/new` it then
             // refuses for want of a credential; every later phase, from
             // `persistence_init` on (`agent_build` among them), carries the id.
             // `_x.ai/mcp/servers_updated` has no `sessionId` field at all, and
             // it follows the MCP servers' own startup rather than those phases,
-            // so where it lands is a race: on 1.0.60 and 1.0.62 it mostly came
-            // right after `persistence_init`, sometimes ahead of the phases
-            // (straight after the `initialize` answer), and when no session was
+            // so where it lands is a race: on 1.0.62 and 1.0.70 it came either
+            // right after `persistence_init` or ahead of the phases (straight
+            // after the `initialize` answer), and when no session was
             // being created, after `initialize` or once `session/resume` or
             // `session/load` was sent (those two narrate no phases). codeg does
             // not read it, and a frame without the field is never parked, so
             // where it lands changes nothing.
             distribution: AgentDistribution::Npx {
-                version: "1.0.62",
-                package: "@xai-official/grok@1.0.62",
+                version: "1.0.70",
+                package: "@xai-official/grok@1.0.70",
                 cmd: "grok",
                 // Only the ACP subcommand lives here. Grok's ROOT-level launch
                 // flags (`--no-auto-update` always, `--permission-mode <value>`
                 // only for a non-default permission mode) MUST precede this
                 // subcommand — `grok agent stdio` itself rejects them (re-verified
-                // against 1.0.62: it still only accepts --debug/--debug-file/
+                // against 1.0.70: it still only accepts --debug/--debug-file/
                 // --leader-socket) — so `build_agent` inserts them ahead of these
                 // args rather than appending after. Since 1.0.3 `grok --help` no
                 // longer LISTS `--no-auto-update`, but it is still accepted:
@@ -4940,7 +5054,7 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
                 // auto/dontAsk/bypassPermissions/plan).
                 args: &["agent", "stdio"],
                 env: &[],
-                // `@xai-official/grok@1.0.62` declares `engines.node: ">=20"`;
+                // `@xai-official/grok@1.0.70` declares `engines.node: ">=20"`;
                 // surface that in preflight so Node 18 isn't silently accepted.
                 node_required: Some("20.0.0"),
             },
@@ -5060,41 +5174,66 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             // the bridge refuses it because that team denies the user cloud
             // agents.
             //
+            // 2026.10.22-27dcf5f, checked against 6bbf2c4 in all six archives,
+            // is a larger build: 242 modules differ once minified names, build
+            // paths and chunk numbers are normalized. `initialize` and the
+            // unauthenticated `session/new` answer are still identical
+            // (`protocolVersion: 1`), and the ACP SDK is still 0.14.1. Seven ACP
+            // modules changed, the same seven in every archive, and they now
+            // read their inputs through shared type guards; the tool titles and
+            // kinds, the `session/update` kinds and the `cursor/*` extension
+            // methods are unchanged, an MCP call announced before its arguments
+            // is still titled `MCP: tool`, and the `mcpServers` of `session/new`
+            // and `session/load` convert to server configs exactly as before. The
+            // one new setting: the terminal executor now runs PowerShell with a
+            // UTF-8 console and child environment. The MCP SDK no longer ships as
+            // its own package (its code is in the MCP executor module), and
+            // signed out, `cursor-agent mcp list-tools` sends a stdio server from
+            // `~/.cursor/mcp.json` the same `initialize` (protocol 2025-11-25),
+            // `notifications/initialized` and `tools/list` on both builds; the
+            // `mcp.json` loader and entry schema and the `cli-config.json` schema
+            // are unchanged. The `agent.v1` protobufs drop the `pi_*` tools
+            // (`ToolCall` fields 61–67) and add `update_tracked_task_tags`,
+            // `stop_project_updates` and `start_project_updates` (91, 93, 94); no
+            // other `ToolCall` field moved, and `parsers::cursor` names every
+            // variant this build declares. The rest (computer use, canvas, WSL
+            // support, the private worker) is outside the ACP layer.
+            //
             // Every pin still has to be triaged in `cursor_acp_retry_compat`.
             distribution: AgentDistribution::Binary {
-                version: "2026.10.19-6bbf2c4",
+                version: "2026.10.22-27dcf5f",
                 cmd: "cursor-agent",
                 args: &["acp"],
                 env: &[],
                 platforms: &[
                     PlatformBinary {
                         platform: "darwin-aarch64",
-                        url: "https://downloads.cursor.com/lab/2026.10.19-6bbf2c4/darwin/arm64/agent-cli-package.tar.gz",
+                        url: "https://downloads.cursor.com/lab/2026.10.22-27dcf5f/darwin/arm64/agent-cli-package.tar.gz",
                         sha256: None,
                     },
                     PlatformBinary {
                         platform: "darwin-x86_64",
-                        url: "https://downloads.cursor.com/lab/2026.10.19-6bbf2c4/darwin/x64/agent-cli-package.tar.gz",
+                        url: "https://downloads.cursor.com/lab/2026.10.22-27dcf5f/darwin/x64/agent-cli-package.tar.gz",
                         sha256: None,
                     },
                     PlatformBinary {
                         platform: "linux-aarch64",
-                        url: "https://downloads.cursor.com/lab/2026.10.19-6bbf2c4/linux/arm64/agent-cli-package.tar.gz",
+                        url: "https://downloads.cursor.com/lab/2026.10.22-27dcf5f/linux/arm64/agent-cli-package.tar.gz",
                         sha256: None,
                     },
                     PlatformBinary {
                         platform: "linux-x86_64",
-                        url: "https://downloads.cursor.com/lab/2026.10.19-6bbf2c4/linux/x64/agent-cli-package.tar.gz",
+                        url: "https://downloads.cursor.com/lab/2026.10.22-27dcf5f/linux/x64/agent-cli-package.tar.gz",
                         sha256: None,
                     },
                     PlatformBinary {
                         platform: "windows-aarch64",
-                        url: "https://downloads.cursor.com/lab/2026.10.19-6bbf2c4/windows/arm64/agent-cli-package.zip",
+                        url: "https://downloads.cursor.com/lab/2026.10.22-27dcf5f/windows/arm64/agent-cli-package.zip",
                         sha256: None,
                     },
                     PlatformBinary {
                         platform: "windows-x86_64",
-                        url: "https://downloads.cursor.com/lab/2026.10.19-6bbf2c4/windows/x64/agent-cli-package.zip",
+                        url: "https://downloads.cursor.com/lab/2026.10.22-27dcf5f/windows/x64/agent-cli-package.zip",
                         sha256: None,
                     },
                 ],
@@ -5177,9 +5316,28 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             // heartbeat) runs only in the separate hub process or in the remote
             // endpoint, which codeg's launch turns off with `ZCODE_ACP_REMOTE=0`
             // unless the user's own bridge config turns it back on.
+            //
+            // Bridge 0.76.3 changes what one backend request carries, and the
+            // client side not at all. `package.json` changes only its version,
+            // and against the stand-in backend `initialize` (`protocolVersion:
+            // 1`), `session/new`, the mode gate (the plan mirror still needs
+            // `set_mode` first) and stdio MCP forwarding give the client the same
+            // frames as 0.76.2. The backend's `session/create`
+            // and `session/resume` now carry the bridge's tool denylist as
+            // `toolDenylist`: by the bridge's account the backend's `app-server`
+            // parses the `--disallowed-tools` flag it was launched with but never
+            // applies it, and upstream ZCode's `session/create` turns the key into
+            // the session's tool disallow list. codeg sets neither
+            // `ZCODE_DISALLOWED_TOOLS` nor `ZCODE_ENABLE_AUTOMATION_TOOLS`, so the
+            // list is the bridge's default, `CronCreate`, `CronList`, `CronUpdate`
+            // and `CronDelete`, and a ZCode session codeg starts no longer offers
+            // the model those four tools. A backend too old for the key gets the
+            // request again without it, and the bridge warns once on stderr. The
+            // other change keeps the remote endpoint from advertising a
+            // conversation again after a remote close.
             distribution: AgentDistribution::Npx {
-                version: "0.76.2",
-                package: "zcode-acp-server@0.76.2",
+                version: "0.76.3",
+                package: "zcode-acp-server@0.76.3",
                 cmd: "zcode-acp-server",
                 args: &["server"],
                 env: &[],
@@ -5492,6 +5650,17 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             // A stdio MCP server sent in `session/new` still starts with the
             // session.
             //
+            // Held at 1.1.75. The bundle's ACP agent is a rewrite from 1.1.76,
+            // and in 1.1.80 Bypass Permissions cannot be selected:
+            // `session/set_mode` and the `mode` config option answer -32603
+            // "unknown permission_mode: yolo" and the session keeps its
+            // previous mode, so a saved Bypass Permissions preference does not
+            // apply either. `setSessionMode` maps the `bypassPermissions` alias
+            // to `yolo` before it checks the advertised modes, then hands `yolo`
+            // to a permission manager that accepts only `bypassPermissions`; no
+            // value codeg could send passes both. Re-check this before moving
+            // the pin.
+            //
             // `QODER_EXPOSE_TOKEN_USAGE` turns OFF qoder's own token-count
             // redaction, and without it every qoder session reports zero tokens
             // everywhere codeg can see. The CLI passes each response's usage
@@ -5645,8 +5814,39 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             // the models the plan marks disabled, and the Windows server, still
             // the PyInstaller onefile, embeds Python 3.14 where it embedded
             // 3.10.
+            //
+            // 1.4.3, checked against 1.4.1 (1.4.2 came out four hours earlier
+            // the same day, was never listed by the ACP registry, and differs
+            // from 1.4.3 in the server's own Python only by the version string):
+            // every archive is still flat with the same two executables and
+            // modes, and the ACP registry now lists a `sha256` per archive.
+            // `main.py`, `config_options.py`, `model_selection.py`, `paths.py`,
+            // `settings.py`, `oauth/`, `hooks.py` and the MCP modules are
+            // byte-identical, `server.py::_ask_user_handler` is unchanged, and so
+            // are the protobuf fields the history parser reads, Step 154
+            // included. `initialize` (`protocolVersion: 1`), `session/new` with
+            // its `model`, `thinking_level` and `mode` values and flat `models`
+            // list, the slash commands, a model then thinking-level switch, a
+            // saved 1.3.0 variant id, a gateway turn that calls a tool on a wire
+            // MCP server, `session/load` replay and the native question frames
+            // (answered and cancelled) all answer as 1.4.1 does. What moved: a
+            // `usage_update` with `used: 0` now follows `session/new` and each
+            // model change, and prompt answers carry a `usage` breakdown that
+            // codeg does not record for this agent (`PromptUsageMode`). An
+            // auto-approved MCP call now gets the same MCP title, `rawInput` and
+            // `_meta` as a permission-gated one. The skill directories are no
+            // longer passed to the harness as workspaces, so the system prompt
+            // names the session folder as the command directory, the server no
+            // longer creates empty `.gemini/skills` and `.agents/skills` folders
+            // in the project, and a read-only folder no longer fails
+            // `session/new`. Instead the harness writes its built-in
+            // `run-workflow` skill to `<cwd>/skills/system/run-workflow/SKILL.md`
+            // at every `session/new` and leaves it there (it is skipped for a
+            // read-only folder, and a run with `run_workflow` disabled through
+            // `_meta.antigravity.disabledTools` did not write it). The Windows
+            // x86_64 server is still the PyInstaller onefile with Python 3.14.
             distribution: AgentDistribution::Binary {
-                version: "1.4.1",
+                version: "1.4.3",
                 // Never resolvable on PATH (there is no standalone CLI by
                 // this name); it exists because `Binary` requires one, and
                 // for dir-tree agents `installed_binary_path` ignores it in
@@ -5663,32 +5863,32 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
                 platforms: &[
                     PlatformBinary {
                         platform: "darwin-aarch64",
-                        url: "https://dl.google.com/agy-extensions/releases/macos/agy-acp-server-1.4.1-darwin-arm64.zip",
+                        url: "https://dl.google.com/agy-extensions/releases/macos/agy-acp-server-1.4.3-darwin-arm64.zip",
                         sha256: None,
                     },
                     PlatformBinary {
                         platform: "darwin-x86_64",
-                        url: "https://dl.google.com/agy-extensions/releases/macos/agy-acp-server-1.4.1-darwin-x86_64.zip",
+                        url: "https://dl.google.com/agy-extensions/releases/macos/agy-acp-server-1.4.3-darwin-x86_64.zip",
                         sha256: None,
                     },
                     PlatformBinary {
                         platform: "linux-aarch64",
-                        url: "https://dl.google.com/agy-extensions/releases/linux/agy-acp-server-1.4.1-linux-arm64.zip",
+                        url: "https://dl.google.com/agy-extensions/releases/linux/agy-acp-server-1.4.3-linux-arm64.zip",
                         sha256: None,
                     },
                     PlatformBinary {
                         platform: "linux-x86_64",
-                        url: "https://dl.google.com/agy-extensions/releases/linux/agy-acp-server-1.4.1-linux-x86_64.zip",
+                        url: "https://dl.google.com/agy-extensions/releases/linux/agy-acp-server-1.4.3-linux-x86_64.zip",
                         sha256: None,
                     },
                     PlatformBinary {
                         platform: "windows-aarch64",
-                        url: "https://dl.google.com/agy-extensions/releases/windows/agy-acp-server-1.4.1-windows-arm64.zip",
+                        url: "https://dl.google.com/agy-extensions/releases/windows/agy-acp-server-1.4.3-windows-arm64.zip",
                         sha256: None,
                     },
                     PlatformBinary {
                         platform: "windows-x86_64",
-                        url: "https://dl.google.com/agy-extensions/releases/windows/agy-acp-server-1.4.1-windows-x86_64.zip",
+                        url: "https://dl.google.com/agy-extensions/releases/windows/agy-acp-server-1.4.3-windows-x86_64.zip",
                         sha256: None,
                     },
                 ],
@@ -5871,31 +6071,38 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             // codeg's MCP settings manage, so codeg does not forward the same
             // servers over `session/new` (see `load_mcp_servers_for_agent`).
             //
-            // 1.86.3, after 1.85.0, 1.85.1 and 1.86.0–1.86.2, changes only its
-            // version in `package.json` (the same engines, bins and
-            // dependencies, still no install scripts), and `acp` is still on
-            // the updater's skip list. `initialize` and the signed-out
-            // `session/new` answer as 1.84.0 did apart from the version
-            // (`protocolVersion: 1`). Zero-cost turns (text, Shell behind a
-            // permission, Read and Edit, a question, MCP calls, the title and
-            // usage, a `session/load` replay in a new process) match 1.84.0
-            // frame for frame, still without a single `fs/*` or `terminal/*`
-            // request, and so do the MCP sources, skill roots and session
-            // store. One thing codeg sees is new: since 1.85.1 the `model`
-            // option, and `models.availableModels`, also list the user's
-            // own-key models from `providers.json` (as `<provider>/<model>`, or
-            // `<catalog id>@byok-<provider>` for a catalog model served that
-            // way), and selecting one over ACP works; the composer's generic
-            // model selector lists them like any other. 1.86.0's artifact
-            // tools, which publish a workspace HTML file to Command Code's
-            // service, load in every session that is not local-only unless
-            // `artifactsEnabled: false` turns them off, and would reach codeg as
-            // ordinary tool calls. The rest (new catalog models, IDE extension
-            // installs, two certificate authorities distrusted in its own TLS,
-            // terminal key bindings) is outside what codeg drives.
+            // 1.88.0, after 1.87.0–1.87.3, changes only its version and two
+            // dev-only `@byokkit` provider pins in `package.json` (the same
+            // engines, bins and dependencies, still no install scripts), and
+            // `acp` is still on the updater's skip list. `initialize` and the
+            // signed-out `session/new` answer as 1.86.3 did apart from the
+            // version (`protocolVersion: 1`). Zero-cost turns (text, Shell behind
+            // a permission, Read and Edit, a question, MCP calls, the title and
+            // usage, a `session/load` replay in a new process) match 1.86.3 frame
+            // for frame, still without a single `fs/*` or `terminal/*` request,
+            // and so do the modes, the `effort` values, the MCP sources, the
+            // skill roots and the session store. The one difference is in the
+            // `model` option: the bundled catalog drops `xiaomi/mimo-v2.5-pro`
+            // and `xiaomi/mimo-v2.5`, selecting either now fails with "Unknown
+            // model", and a saved pick of one is skipped like any value the list
+            // no longer offers. Since 1.85.1 the `model` option, and
+            // `models.availableModels`, also list the user's own-key models from
+            // `providers.json` (as `<provider>/<model>`, or `<catalog
+            // id>@byok-<provider>` for a catalog model served that way), and
+            // selecting one over ACP works; the composer's generic model selector
+            // lists them like any other. 1.86.0's artifact tools, which publish a
+            // workspace HTML file to Command Code's service, load in every session
+            // that is not local-only unless `artifactsEnabled: false` turns them
+            // off, and would reach codeg as ordinary tool calls. `command-code
+            // acp` also takes the global `--mod` / `--safe-mode` /
+            // `--mod-option` flags since 1.87.2; codeg passes none of them. The
+            // rest (`/btw`, Claude Code's permission-mode names for
+            // `--permission-mode` while `session/set_mode` still takes only the
+            // advertised ids, background tasks on a free session model, provider
+            // error text, updater messages) is outside what codeg drives.
             distribution: AgentDistribution::Npx {
-                version: "1.86.3",
-                package: "command-code@1.86.3",
+                version: "1.88.0",
+                package: "command-code@1.88.0",
                 cmd: "command-code",
                 args: &["acp"],
                 env: &[],
@@ -6006,7 +6213,7 @@ mod tests {
                 dir_entry,
                 ..
             } => {
-                assert_eq!(version, "1.4.1");
+                assert_eq!(version, "1.4.3");
                 assert_eq!(cmd, "agy_acp_server");
                 let entry = dir_entry.expect("antigravity must use dir-tree extraction");
                 assert_eq!(entry.unix, "agy_acp_server.par");
@@ -6016,7 +6223,7 @@ mod tests {
                 assert!(platforms.iter().any(|p| p.platform == "darwin-x86_64"));
                 for platform in platforms {
                     assert!(
-                        platform.url.contains("/agy-acp-server-1.4.1-"),
+                        platform.url.contains("/agy-acp-server-1.4.3-"),
                         "{} URL lost the release name: {}",
                         platform.platform,
                         platform.url
@@ -6131,8 +6338,8 @@ mod tests {
         let meta = get_agent_meta(AgentType::Cursor);
         assert_binary_version(
             AgentType::Cursor,
-            "2026.10.19-6bbf2c4",
-            "/lab/2026.10.19-6bbf2c4/",
+            "2026.10.22-27dcf5f",
+            "/lab/2026.10.22-27dcf5f/",
         );
         match meta.distribution {
             AgentDistribution::Binary {
@@ -6424,22 +6631,22 @@ mod tests {
         );
         assert_npx_version(
             AgentType::Cline,
-            "3.0.73",
-            "cline@3.0.73",
+            "3.0.74",
+            "cline@3.0.74",
             Some("22.0.0"),
         );
         assert_npx_version(
             AgentType::CodeBuddy,
-            "2.171.0",
-            "@tencent-ai/codebuddy-code@2.171.0",
+            "2.177.0",
+            "@tencent-ai/codebuddy-code@2.177.0",
             Some("22.0.0"),
         );
         // Kimi Code must never land on 0.37.0–0.38.0: every session in that
         // range dies on the codeg-mcp stdio entry (see the registry entry).
         assert_npx_version(
             AgentType::KimiCode,
-            "2.3.0",
-            "@moonshot-ai/kimi-code@2.3.0",
+            "2.3.3",
+            "@moonshot-ai/kimi-code@2.3.3",
             Some("22.19.0"),
         );
         assert_npx_version(
@@ -6451,8 +6658,8 @@ mod tests {
         assert_npx_version(AgentType::Pi, "0.0.34", "pi-acp@0.0.34", Some("22.0.0"));
         assert_npx_version(
             AgentType::Grok,
-            "1.0.62",
-            "@xai-official/grok@1.0.62",
+            "1.0.70",
+            "@xai-official/grok@1.0.70",
             Some("20.0.0"),
         );
         assert_npx_version(
@@ -6469,8 +6676,8 @@ mod tests {
         );
         assert_npx_version(
             AgentType::CommandCode,
-            "1.86.3",
-            "command-code@1.86.3",
+            "1.88.0",
+            "command-code@1.88.0",
             Some("22.0.0"),
         );
         assert_binary_version(AgentType::OpenCode, "1.19.3", "/releases/download/v1.19.3/");

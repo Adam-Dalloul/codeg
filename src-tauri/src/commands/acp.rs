@@ -2376,6 +2376,29 @@ const NPM_FOREGROUND_SCRIPTS: &str = "--foreground-scripts";
 /// user's global script policy.
 const NPM_RUN_SCRIPTS_OVERRIDE: &str = "--ignore-scripts=false";
 
+/// The flags that let `package`'s own install scripts run, for the packages
+/// whose install is those scripts ([`npm_package_requires_scripts`]); none for
+/// any other package.
+///
+/// [`NPM_RUN_SCRIPTS_OVERRIDE`] stopped being enough with npm 12, which runs no
+/// install script it was not told to: npm 12.2.1 skipped hermes-agent's
+/// postinstall under `--ignore-scripts=false` ("install scripts blocked
+/// because they are not covered by allowScripts"). A global install or an
+/// `npx` run has no project `package.json` to hold an `allowScripts` policy,
+/// so npm takes `--allow-scripts=<name>` for those, matched against the
+/// package's resolved registry identity: it covers the package being
+/// installed and none of its dependencies. npm 9.6.7, 10.2.4, 10.8.2 and
+/// 11.17.0 accept the flag without a warning and run the script as before.
+fn npm_run_scripts_args(package: &str) -> Vec<String> {
+    if !npm_package_requires_scripts(package) {
+        return Vec::new();
+    }
+    vec![
+        NPM_RUN_SCRIPTS_OVERRIDE.to_string(),
+        format!("--allow-scripts={}", package_name_from_spec(package)),
+    ]
+}
+
 /// Env var that makes Node's own `fetch` read `HTTP_PROXY`/`HTTPS_PROXY`/
 /// `NO_PROXY` (Node ≥24; earlier runtimes ignore an unknown variable).
 ///
@@ -2549,7 +2572,7 @@ async fn install_npm_global_package_streaming_inner(
     emitter: &EventEmitter,
 ) -> Result<(), AcpError> {
     let registry_arg = format!("--registry={NPM_OFFICIAL_REGISTRY}");
-    let run_scripts = npm_package_requires_scripts(package);
+    let script_args = npm_run_scripts_args(package);
 
     emit_agent_install_event(
         emitter,
@@ -2559,9 +2582,7 @@ async fn install_npm_global_package_streaming_inner(
     );
 
     let mut args = vec!["install", "-g", NPM_INCLUDE_OPTIONAL, NPM_FOREGROUND_SCRIPTS];
-    if run_scripts {
-        args.push(NPM_RUN_SCRIPTS_OVERRIDE);
-    }
+    args.extend(script_args.iter().map(String::as_str));
     args.push(&registry_arg);
     args.push(package);
     let (success, stderr) = run_npm_streaming(&args, task_id, emitter).await?;
@@ -2595,9 +2616,7 @@ async fn install_npm_global_package_streaming_inner(
                 NPM_INCLUDE_OPTIONAL,
                 NPM_FOREGROUND_SCRIPTS,
             ];
-            if run_scripts {
-                retry_args.push(NPM_RUN_SCRIPTS_OVERRIDE);
-            }
+            retry_args.extend(script_args.iter().map(String::as_str));
             retry_args.push(&registry_arg);
             retry_args.push(package);
             let (retry_success, retry_stderr) =
@@ -2665,7 +2684,7 @@ async fn install_npm_to_user_prefix_streaming(
     })?;
 
     let prefix_arg = format!("--prefix={}", prefix.display());
-    let run_scripts = npm_package_requires_scripts(package);
+    let script_args = npm_run_scripts_args(package);
 
     emit_agent_install_event(
         emitter,
@@ -2678,9 +2697,7 @@ async fn install_npm_to_user_prefix_streaming(
     );
 
     let mut args = vec!["install", "-g", NPM_INCLUDE_OPTIONAL, NPM_FOREGROUND_SCRIPTS];
-    if run_scripts {
-        args.push(NPM_RUN_SCRIPTS_OVERRIDE);
-    }
+    args.extend(script_args.iter().map(String::as_str));
     args.push(&prefix_arg);
     args.push(registry_arg);
     args.push(package);
@@ -2703,9 +2720,7 @@ async fn install_npm_to_user_prefix_streaming(
                 NPM_INCLUDE_OPTIONAL,
                 NPM_FOREGROUND_SCRIPTS,
             ];
-            if run_scripts {
-                force_args.push(NPM_RUN_SCRIPTS_OVERRIDE);
-            }
+            force_args.extend(script_args.iter().map(String::as_str));
             force_args.push(&prefix_arg);
             force_args.push(registry_arg);
             force_args.push(package);
@@ -4311,8 +4326,9 @@ fn parse_grok_settings(raw_toml: &str) -> GrokSettings {
 /// (Grok's config reference: "Allowed reasoning-effort values for this model.
 /// When omitted, the menu comes from the endpoint's `/v1/models` row"). That
 /// endpoint is Grok's model catalog (xAI's, or `[endpoints].models_base_url`),
-/// matched by model id: grok 1.0.62 never fetches the list of a model's own
-/// `base_url`, so a custom model the catalog lacks has levels only from here.
+/// matched by model id: grok 1.0.62 and 1.0.70 never fetch the list of a
+/// model's own `base_url`, so a custom model the catalog lacks has levels only
+/// from here.
 const GROK_REASONING_EFFORTS_KEY: &str = "reasoning_efforts";
 
 /// One `reasoning_efforts` level as the panel compares it: trimmed and
@@ -8549,22 +8565,28 @@ async fn hermes_setup_argvs() -> (Vec<String>, Vec<String>) {
         // change can't resurrect a stale recipe.
         _ => "hermes-agent@0.22.2",
     };
-    let build = |tail: &[&str]| -> Vec<String> {
-        let mut argv = vec![
-            "npx".to_string(),
-            "-y".to_string(),
-            // The wrapper's postinstall bootstrap IS the install; without this
-            // a user-level ignore-scripts=true yields a shim that exits
-            // "runtime is not ready" (npx accepts npm config flags).
-            NPM_RUN_SCRIPTS_OVERRIDE.to_string(),
-            "--package".to_string(),
-            package.to_string(),
-            "hermes".to_string(),
-        ];
-        argv.extend(tail.iter().map(|s| s.to_string()));
-        argv
-    };
-    (build(&["acp", "--setup"]), build(&["model"]))
+    (
+        hermes_npx_argv(package, &["acp", "--setup"]),
+        hermes_npx_argv(package, &["model"]),
+    )
+}
+
+/// `npx -y <script flags> --package <spec> hermes <tail…>`: a Hermes command
+/// for a machine where no `hermes` resolves. The wrapper's postinstall
+/// bootstrap IS the install, so the npx run gets the same script flags as an
+/// install ([`npm_run_scripts_args`]); without them a user-level
+/// `ignore-scripts=true`, or npm 12's default block on install scripts, skips
+/// the bootstrap (npx accepts npm config flags).
+fn hermes_npx_argv(package: &str, tail: &[&str]) -> Vec<String> {
+    let mut argv = vec!["npx".to_string(), "-y".to_string()];
+    argv.extend(npm_run_scripts_args(package));
+    argv.extend([
+        "--package".to_string(),
+        package.to_string(),
+        "hermes".to_string(),
+    ]);
+    argv.extend(tail.iter().map(|s| s.to_string()));
+    argv
 }
 
 /// Build the displayed/runnable `(setup, model)` shell commands for the Hermes
@@ -9641,12 +9663,13 @@ pub(crate) fn skill_storage_spec(agent_type: AgentType) -> Option<SkillStorageSp
         // Command Code loads `<id>/SKILL.md` bundles — found recursively, never
         // a flat `<id>.md` — from `~/.commandcode/skills` and the shared
         // `~/.agents/skills` store, plus `.commandcode/skills` and
-        // `.agents/skills` in the project. Verified against 1.84.0 and 1.86.3
-        // by planting one skill in each candidate directory: exactly those four
-        // reached the session's commands, while `.claude/skills` (project and
-        // user) and the flat file were ignored. The Command Code directory
-        // leads so linking targets it without touching the shared store (the
-        // TRAE CLI ordering); on a name clash Command Code prefers it too.
+        // `.agents/skills` in the project. Verified against 1.84.0, 1.86.3 and
+        // 1.88.0 by planting one skill in each candidate directory: exactly
+        // those four reached the session's commands, while `.claude/skills`
+        // (project and user) and the flat file were ignored. The Command Code
+        // directory leads so linking targets it without touching the shared
+        // store (the TRAE CLI ordering); on a name clash Command Code prefers
+        // it too.
         AgentType::CommandCode => Some(SkillStorageSpec {
             kind: SkillStorageKind::SkillDirectoryOnly,
             global_dirs: vec![
@@ -16914,8 +16937,9 @@ mod tests {
             },
         )
         .unwrap();
-        // The shape verified against grok 1.0.62: bare levels make it advertise
-        // `supportsReasoningEffort` with exactly these `reasoningEfforts`.
+        // The shape verified against grok 1.0.62 and 1.0.70: bare levels make
+        // it advertise `supportsReasoningEffort` with exactly these
+        // `reasoningEfforts`.
         assert_eq!(
             grok_efforts_text(&merged, "grok-4.7").as_deref(),
             Some("[\"low\", \"medium\", \"high\", \"xhigh\"]")
@@ -21634,6 +21658,42 @@ wire_api = "chat"
             assert_eq!(shell_quote_arg_for("3.13", windows), "3.13");
             assert_eq!(shell_quote_arg_for("hermes-acp", windows), "hermes-acp");
         }
+    }
+
+    /// The script flags reach exactly the packages whose install is their
+    /// scripts, and name the package, which npm 12 needs before it runs a
+    /// script of a global install or an `npx` run.
+    #[test]
+    fn hermes_installs_name_the_package_whose_scripts_npm_must_run() {
+        for spec in ["hermes-agent@0.22.2", "hermes-agent@0.23.0", "hermes-agent"] {
+            assert_eq!(
+                npm_run_scripts_args(spec),
+                ["--ignore-scripts=false", "--allow-scripts=hermes-agent"],
+                "{spec}"
+            );
+        }
+        // Every other agent keeps the user's own script policy.
+        for spec in [
+            "cline@3.0.74",
+            "@xai-official/grok@1.0.70",
+            "hermes-agent-npm@1.0.0",
+        ] {
+            assert!(npm_run_scripts_args(spec).is_empty(), "{spec}");
+        }
+        assert_eq!(
+            hermes_npx_argv("hermes-agent@0.22.2", &["acp", "--setup"]),
+            [
+                "npx",
+                "-y",
+                "--ignore-scripts=false",
+                "--allow-scripts=hermes-agent",
+                "--package",
+                "hermes-agent@0.22.2",
+                "hermes",
+                "acp",
+                "--setup",
+            ]
+        );
     }
 
     #[tokio::test]
