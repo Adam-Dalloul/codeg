@@ -6246,6 +6246,26 @@ fn account_home_dir() -> Option<PathBuf> {
     dirs::home_dir()
 }
 
+/// What `os.homedir()` answers in a Node child that inherits codeg's own
+/// environment: `HOME` (`USERPROFILE` on Windows) when it is set, otherwise the
+/// account's home. `dirs::home_dir()` gives the same answer on unix, but on
+/// Windows it asks the OS for the profile folder and never reads `USERPROFILE`,
+/// so a codeg started with `USERPROFILE` pointing elsewhere would name another
+/// home than its Node children use.
+fn inherited_node_home_dir() -> PathBuf {
+    node_home_from(std::env::var_os(CHILD_HOME_KEY))
+}
+
+/// [`inherited_node_home_dir`] with codeg's home variable handed in. An empty
+/// value counts as unset: it names no folder codeg could manage.
+fn node_home_from(variable: Option<std::ffi::OsString>) -> PathBuf {
+    variable
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .or_else(account_home_dir)
+        .unwrap_or_else(home_dir_or_default)
+}
+
 /// Read the launch's agent-directory `enabledModels` preference. Missing,
 /// malformed or empty settings leave the model selector unrestricted.
 ///
@@ -9524,10 +9544,13 @@ pub(crate) fn skill_storage_spec(agent_type: AgentType) -> Option<SkillStorageSp
         // every directory from the cwd up to the Git worktree root,
         // `<dir>/.zcode/skills` then `<dir>/.agents/skills`, plus enabled
         // plugin caches, which stay ZCode's. Bundles only (`<id>/SKILL.md`).
+        // [`project_skill_bases`] walks the same project folders.
         //
-        // The user roots hang off the OS home, never `ZCODE_HOME`: no runtime
-        // caller passes a home directory to that function, and the bridge
-        // hands `ZCODE_HOME` to the runtime only as its data root
+        // The OS home is what Node's `os.homedir()` answers, which on Windows
+        // is `USERPROFILE`, not the profile folder `dirs::home_dir()` asks the
+        // OS for ([`inherited_node_home_dir`]). It is never `ZCODE_HOME`: no
+        // runtime caller passes a home directory to that function, and the
+        // bridge hands `ZCODE_HOME` to the runtime only as its data root
         // (`ZCODE_DATA_BASE_DIR`, and only when the path ends in `.zcode`),
         // which the skill roots do not use. The bridge's command list reads
         // `$ZCODE_HOME/skills` instead, so with `ZCODE_HOME` pointing anywhere
@@ -9538,20 +9561,22 @@ pub(crate) fn skill_storage_spec(agent_type: AgentType) -> Option<SkillStorageSp
         // create skills, global and project alike; the runtime prefers it over
         // `.agents/skills` in the same folder, so with a copy in each, the one
         // listed and edited here is the one ZCode uses; and installing there
-        // leaves the shared store, which other agents read, alone. The
-        // bridge's command list reads a project's `.agents/skills` but not its
-        // `.zcode/skills`, so project skills created here are not offered as
-        // commands, though the runtime loads them. Parent folders up to the
-        // Git root are not listed. Codeg runs the agent in the session cwd,
-        // which is what both the bridge and the runtime scan from.
-        AgentType::ZCode => Some(SkillStorageSpec {
-            kind: SkillStorageKind::SkillDirectoryOnly,
-            global_dirs: vec![
-                home_dir_or_default().join(".zcode").join("skills"),
-                home_dir_or_default().join(".agents").join("skills"),
-            ],
-            project_rel_dirs: vec![".zcode/skills", ".agents/skills"],
-        }),
+        // leaves the shared store, which other agents read, alone. Of the
+        // project folders, the bridge's command list reads only the cwd's
+        // `.agents/skills`, so project skills created here are not offered as
+        // commands, though the runtime loads them. Codeg runs the agent in the
+        // session cwd, which is what both the bridge and the runtime scan from.
+        AgentType::ZCode => {
+            let home = inherited_node_home_dir();
+            Some(SkillStorageSpec {
+                kind: SkillStorageKind::SkillDirectoryOnly,
+                global_dirs: vec![
+                    home.join(".zcode").join("skills"),
+                    home.join(".agents").join("skills"),
+                ],
+                project_rel_dirs: vec![".zcode/skills", ".agents/skills"],
+            })
+        }
         // codeg cannot detect where an arbitrary ACP agent loads skills from,
         // so custom agents are gated on the user's own declaration: that the
         // agent reads the shared `.agents/skills` store (the cross-agent
@@ -9648,49 +9673,79 @@ pub(crate) fn scoped_skill_dirs(
                 .ok_or_else(|| {
                     AcpError::protocol("workspace_path is required for project scoped skills")
                 })?;
-            let base = project_skill_base(agent_type, workspace);
-            Ok(spec
-                .project_rel_dirs
-                .iter()
-                .map(|relative| base.join(relative))
-                .collect())
+            Ok(project_skill_dirs(agent_type, &spec, workspace))
         }
     }
 }
 
-/// The directory an agent's PROJECT-relative skill dirs hang off.
+/// Every directory an agent's PROJECT-scoped skills are read from, in the
+/// order it reads them: its `project_rel_dirs`, in their declared order, under
+/// each base [`project_skill_bases`] names, nearest base first. The first one
+/// is where a new project skill goes.
+fn project_skill_dirs(
+    agent_type: AgentType,
+    spec: &SkillStorageSpec,
+    workspace: &str,
+) -> Vec<PathBuf> {
+    project_skill_bases(agent_type, workspace)
+        .iter()
+        .flat_map(|base| {
+            spec.project_rel_dirs
+                .iter()
+                .map(move |relative| base.join(relative))
+        })
+        .collect()
+}
+
+/// The directories an agent's PROJECT-relative skill dirs hang off, nearest
+/// first.
 ///
-/// Normally the workspace itself. DeepSeek and Kimi Code are the exceptions:
-/// both walk up from the session cwd to the nearest ancestor containing `.git`
-/// before joining their project-relative skill dirs, falling back to the cwd
-/// when they reach the filesystem root — DeepSeek in `dsh-skill-filesystem`'s
-/// `findProjectRoot`, Kimi in `features/skill/catalog/skillRoots.ts`'s
-/// `projectRoots` → `findUpwardRoot(workDir, ".git", exists)`. Opening a
-/// subdirectory of a repo as the workspace would otherwise make codeg create
-/// and list `<subdir>/.dsh/skills` / `<subdir>/.kimi-code/skills` — a directory
-/// the agent never scans, so the skill would simply never load, with nothing on
-/// screen saying so.
+/// Normally just the workspace itself. DeepSeek and Kimi Code use one other
+/// directory instead: both walk up from the session cwd to the nearest ancestor
+/// containing `.git` before joining their project-relative skill dirs, falling
+/// back to the cwd when they reach the filesystem root — DeepSeek in
+/// `dsh-skill-filesystem`'s `findProjectRoot`, Kimi in
+/// `features/skill/catalog/skillRoots.ts`'s `projectRoots` →
+/// `findUpwardRoot(workDir, ".git", exists)`. Opening a subdirectory of a repo
+/// as the workspace would otherwise make codeg create and list
+/// `<subdir>/.dsh/skills` / `<subdir>/.kimi-code/skills` — a directory the agent
+/// never scans, so the skill would simply never load, with nothing on screen
+/// saying so.
 ///
 /// Kimi's half was confirmed live: `kimi acp` launched with `cwd` at
 /// `<repo>/sub` advertised the skills under `<repo>/.kimi-code/skills` and
 /// `<repo>/.agents/skills` and ignored the ones under `<repo>/sub/...`.
 ///
+/// ZCode scans every directory on that walk: `resolveProjectSkillDirectories`
+/// in its runtime's `skills/roots.ts` returns each one from the cwd up to the
+/// nearest ancestor containing `.git`, the cwd first, and the cwd alone when no
+/// ancestor has one. A skill it loads from a parent folder is then listed and
+/// edited where it is, and the copy listed for an id is the one it uses.
+///
 /// `.git` is matched as a plain path, file or directory: in a linked worktree
-/// (which codeg creates routinely) it is a FILE, and both upstreams' existence
-/// probes (`pathExists` / `stat`) accept that too.
-fn project_skill_base(agent_type: AgentType, workspace: &str) -> PathBuf {
+/// (which codeg creates routinely) it is a FILE, and all three upstreams'
+/// existence probes (`pathExists` / `stat`) accept that too.
+fn project_skill_bases(agent_type: AgentType, workspace: &str) -> Vec<PathBuf> {
     let workspace = PathBuf::from(workspace);
-    if !matches!(agent_type, AgentType::DeepSeek | AgentType::KimiCode) {
-        return workspace;
-    }
+    let every_level = match agent_type {
+        AgentType::DeepSeek | AgentType::KimiCode => false,
+        AgentType::ZCode => true,
+        _ => return vec![workspace],
+    };
+    let mut walked = Vec::new();
     let mut current = workspace.as_path();
     loop {
+        walked.push(current.to_path_buf());
         if current.join(".git").exists() {
-            return current.to_path_buf();
+            return if every_level {
+                walked
+            } else {
+                vec![current.to_path_buf()]
+            };
         }
         match current.parent() {
             Some(parent) if parent != current => current = parent,
-            _ => return workspace.clone(),
+            _ => return vec![workspace.clone()],
         }
     }
 }
@@ -14506,14 +14561,13 @@ pub async fn acp_list_agent_skills(
 
     if let Some(workspace) = workspace_path.as_deref().map(str::trim) {
         if !workspace.is_empty() {
-            // Same base the WRITE path resolves through `scoped_skill_dirs` —
-            // for DeepSeek and Kimi Code that is the repo root, not the
-            // workspace. Joining onto the workspace here instead would make a
-            // skill saved from a nested workspace vanish from the list that is
-            // meant to show it.
-            let base = project_skill_base(agent_type, workspace);
-            for relative in &spec.project_rel_dirs {
-                let project_dir = base.join(relative);
+            // The same directories, in the same order, that the WRITE path
+            // resolves through `scoped_skill_dirs` — for DeepSeek and Kimi Code
+            // under the repo root, not the workspace, and for ZCode under every
+            // folder up to it. Listing the workspace's own dirs instead would
+            // make a skill saved from a nested workspace vanish from the list
+            // that is meant to show it.
+            for project_dir in project_skill_dirs(agent_type, &spec, workspace) {
                 locations.push(AgentSkillLocation {
                     scope: AgentSkillScope::Project,
                     path: project_dir.to_string_lossy().to_string(),
@@ -14978,25 +15032,28 @@ mod zcode_skills_tests {
         fs::write(root.join(id).join("SKILL.md"), body).unwrap();
     }
 
-    /// The ZCode runtime reads user skills from the OS home and ignores
-    /// `ZCODE_HOME`, so the managed stores must not move with it. Expected
-    /// paths come from the same `home_dir_or_default()` production uses, so
-    /// this holds on Windows too, where `dirs::home_dir()` ignores `$HOME`.
+    /// The ZCode runtime reads user skills from the home Node's `os.homedir()`
+    /// names, `HOME` or on Windows `USERPROFILE`, and ignores `ZCODE_HOME`, so
+    /// the managed stores follow that variable and not `ZCODE_HOME`. On
+    /// Windows this also proves `USERPROFILE` wins over the profile folder
+    /// `dirs::home_dir()` would have named.
     #[test]
     fn zcode_skill_roots_hang_off_the_os_home_not_zcode_home() {
         let tmp = tempfile::tempdir().unwrap();
         let (home, relocated) = (tmp.path().join("home"), tmp.path().join("relocated"));
         temp_env::with_vars(
-            [("HOME", Some(&home)), ("ZCODE_HOME", Some(&relocated))],
+            [
+                (CHILD_HOME_KEY, Some(&home)),
+                ("ZCODE_HOME", Some(&relocated)),
+            ],
             || {
                 let spec = skill_storage_spec(AgentType::ZCode).expect("ZCode declares a store");
-                let os_home = home_dir_or_default();
                 assert_eq!(spec.kind, SkillStorageKind::SkillDirectoryOnly);
                 assert_eq!(
                     spec.global_dirs,
                     vec![
-                        os_home.join(".zcode").join("skills"),
-                        os_home.join(".agents").join("skills"),
+                        home.join(".zcode").join("skills"),
+                        home.join(".agents").join("skills"),
                     ]
                 );
                 assert_eq!(
@@ -15007,7 +15064,17 @@ mod zcode_skills_tests {
         );
     }
 
-    #[cfg(unix)]
+    /// Node falls back to the account's home only when the variable is unset;
+    /// an empty one is treated the same, since it names no folder to manage.
+    #[test]
+    fn zcode_home_is_the_home_variable_or_the_account_home() {
+        let account = account_home_dir().unwrap_or_else(home_dir_or_default);
+        assert_eq!(node_home_from(None), account);
+        assert_eq!(node_home_from(Some("".into())), account);
+        let pinned = std::env::temp_dir().join("codeg-zcode-home");
+        assert_eq!(node_home_from(Some(pinned.clone().into())), pinned);
+    }
+
     #[tokio::test]
     async fn zcode_skills_manage_directory_bundles_in_native_then_shared_order() {
         let tmp = tempfile::tempdir().unwrap();
@@ -15015,16 +15082,11 @@ mod zcode_skills_tests {
         let relocated = tmp.path().join("relocated");
         temp_env::async_with_vars(
             [
-                ("HOME", Some(tmp.path())),
+                (CHILD_HOME_KEY, Some(tmp.path())),
                 ("ZCODE_HOME", Some(relocated.as_path())),
             ],
             async {
-                let os_home = home_dir_or_default();
-                assert!(
-                    os_home.starts_with(tmp.path()),
-                    "fixture must isolate OS home"
-                );
-                let shared = os_home.join(".agents/skills");
+                let shared = tmp.path().join(".agents/skills");
                 let native_skills = native.join("skills");
                 write_skill(&native_skills, "duplicate", "native");
                 write_skill(&shared, "duplicate", "shared");
@@ -15120,7 +15182,6 @@ mod zcode_skills_tests {
         .await;
     }
 
-    #[cfg(unix)]
     #[tokio::test]
     async fn zcode_native_skill_crud_does_not_rewrite_cli_policy() {
         let tmp = tempfile::tempdir().unwrap();
@@ -15128,7 +15189,7 @@ mod zcode_skills_tests {
         fs::create_dir_all(native.join("cli")).unwrap();
         let config = r#"{"skills":{"keep-disabled":{"enable":false}}}"#;
         fs::write(native.join("cli/config.json"), config).unwrap();
-        temp_env::async_with_vars([("HOME", Some(tmp.path()))], async {
+        temp_env::async_with_vars([(CHILD_HOME_KEY, Some(tmp.path()))], async {
             let id = "codeg-zcode-crud-fixture";
             // An existing bundle is saved in place, whatever layout is asked for.
             write_skill(&native.join("skills"), id, "before");
@@ -15192,7 +15253,7 @@ mod zcode_skills_tests {
         write_skill(&shared, "shared-only", "shared");
         write_skill(&native, "both", "native copy");
         write_skill(&shared, "both", "shared copy");
-        temp_env::async_with_vars([("HOME", Some(tmp.path().join("home")))], async {
+        temp_env::async_with_vars([(CHILD_HOME_KEY, Some(tmp.path().join("home")))], async {
             let workspace_arg = Some(workspace.to_string_lossy().into_owned());
             let save = |id: &'static str, body: &'static str| {
                 acp_save_agent_skill(
@@ -15278,10 +15339,131 @@ mod zcode_skills_tests {
         .await;
     }
 
+    /// The runtime scans `.zcode/skills` then `.agents/skills` in every folder
+    /// from the cwd up to the nearest `.git`, nearest first, and in the cwd
+    /// alone without one. A parent folder's skill is listed and edited where
+    /// it is, an id lists its nearest copy, and new skills still go to the cwd.
+    #[tokio::test]
+    async fn zcode_project_skills_reach_every_folder_up_to_the_git_root() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        let pkg = repo.join("pkg");
+        let workspace = pkg.join("app");
+        fs::create_dir_all(&workspace).unwrap();
+        // A linked worktree's `.git` is a file, which the runtime's `stat`
+        // accepts too.
+        fs::write(repo.join(".git"), "gitdir: /elsewhere\n").unwrap();
+        write_skill(&tmp.path().join(".zcode/skills"), "above-root", "outside");
+        write_skill(&repo.join(".agents/skills"), "root-shared", "root");
+        write_skill(&repo.join(".zcode/skills"), "near", "root copy");
+        write_skill(&pkg.join(".zcode/skills"), "level", "pkg native");
+        write_skill(&pkg.join(".agents/skills"), "level", "pkg shared");
+        write_skill(&pkg.join(".agents/skills"), "near", "pkg copy");
+        write_skill(&workspace.join(".agents/skills"), "near", "cwd copy");
+        temp_env::async_with_vars([(CHILD_HOME_KEY, Some(tmp.path().join("home")))], async {
+            let workspace_arg = Some(workspace.to_string_lossy().into_owned());
+            let expected: Vec<PathBuf> = [&workspace, &pkg, &repo]
+                .iter()
+                .flat_map(|base| [base.join(".zcode/skills"), base.join(".agents/skills")])
+                .collect();
+            let dirs = scoped_skill_dirs(
+                AgentType::ZCode,
+                AgentSkillScope::Project,
+                workspace_arg.as_deref(),
+            )
+            .unwrap();
+            assert_eq!(dirs, expected);
+
+            let listed = acp_list_agent_skills(AgentType::ZCode, workspace_arg.clone())
+                .await
+                .unwrap();
+            let locations: Vec<PathBuf> = listed
+                .locations
+                .iter()
+                .filter(|l| l.scope == AgentSkillScope::Project)
+                .map(|l| PathBuf::from(&l.path))
+                .collect();
+            assert_eq!(locations, expected);
+            let project: BTreeMap<&str, PathBuf> = listed
+                .skills
+                .iter()
+                .filter(|s| s.scope == AgentSkillScope::Project)
+                .map(|s| (s.id.as_str(), PathBuf::from(&s.path)))
+                .collect();
+            assert_eq!(
+                project,
+                BTreeMap::from([
+                    ("level", pkg.join(".zcode/skills/level")),
+                    ("near", workspace.join(".agents/skills/near")),
+                    ("root-shared", repo.join(".agents/skills/root-shared")),
+                ]),
+                "nearest folder first, `.zcode` before `.agents`, nothing above the repo"
+            );
+
+            let save = |id: &'static str, body: &'static str| {
+                acp_save_agent_skill(
+                    AgentType::ZCode,
+                    AgentSkillScope::Project,
+                    id.into(),
+                    body.into(),
+                    workspace_arg.clone(),
+                    None,
+                )
+            };
+            save("root-shared", "edited").await.unwrap();
+            assert_eq!(
+                fs::read_to_string(repo.join(".agents/skills/root-shared/SKILL.md")).unwrap(),
+                "edited"
+            );
+            assert!(!workspace.join(".zcode/skills/root-shared").exists());
+            let created = save("fresh", "new").await.unwrap();
+            assert_eq!(
+                Path::new(&created.path),
+                workspace.join(".zcode/skills/fresh")
+            );
+
+            // Deleting the copy in use uncovers the next one, as in the runtime.
+            acp_delete_agent_skill(
+                AgentType::ZCode,
+                AgentSkillScope::Project,
+                "level".into(),
+                workspace_arg.clone(),
+            )
+            .await
+            .unwrap();
+            assert!(!pkg.join(".zcode/skills/level").exists());
+            let read = acp_read_agent_skill(
+                AgentType::ZCode,
+                AgentSkillScope::Project,
+                "level".into(),
+                workspace_arg.clone(),
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                Path::new(&read.skill.path),
+                pkg.join(".agents/skills/level")
+            );
+            assert_eq!(read.content, "pkg shared");
+
+            let bare = tmp.path().join("bare/ws");
+            fs::create_dir_all(&bare).unwrap();
+            write_skill(&tmp.path().join("bare/.zcode/skills"), "parent", "no repo");
+            let dirs = scoped_skill_dirs(AgentType::ZCode, AgentSkillScope::Project, bare.to_str())
+                .unwrap();
+            assert_eq!(
+                dirs,
+                vec![bare.join(".zcode/skills"), bare.join(".agents/skills")],
+                "without a `.git` above, only the cwd counts"
+            );
+        })
+        .await;
+    }
+
     #[tokio::test]
     async fn zcode_has_authoritative_rows_in_every_bundled_skill_matrix() {
         let tmp = tempfile::tempdir().unwrap();
-        temp_env::async_with_vars([("HOME", Some(tmp.path()))], async {
+        temp_env::async_with_vars([(CHILD_HOME_KEY, Some(tmp.path()))], async {
             let rows = crate::commands::experts::experts_list_all_install_statuses()
                 .await
                 .unwrap();

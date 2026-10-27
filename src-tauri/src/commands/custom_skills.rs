@@ -836,23 +836,23 @@ mod tests {
 
     /// ZCode's runtime loads user skills from `<os home>/.zcode/skills` whatever
     /// `ZCODE_HOME` says, so a matrix link must land there and not follow it.
-    /// The expected path comes from the same `dirs::home_dir()` production
-    /// uses, so it holds on Windows too, where that call ignores `$HOME`.
+    /// Its home is the one Node reads, `HOME` or on Windows `USERPROFILE`;
+    /// both are pinned so the link lands in the fixture on every platform.
     #[test]
     fn zcode_joins_the_custom_skill_matrix_at_its_os_home_store() {
         let tmp = tempfile::tempdir().unwrap();
         let (home, relocated) = (tmp.path().join("home"), tmp.path().join("relocated"));
         temp_env::with_vars(
-            [("HOME", Some(&home)), ("ZCODE_HOME", Some(&relocated))],
+            [
+                ("HOME", Some(&home)),
+                ("USERPROFILE", Some(&home)),
+                ("ZCODE_HOME", Some(&relocated)),
+            ],
             || {
                 assert!(supported_agents().contains(&AgentType::ZCode));
                 assert_eq!(
                     agent_link_path(AgentType::ZCode, "example").unwrap(),
-                    dirs::home_dir()
-                        .unwrap()
-                        .join(".zcode")
-                        .join("skills")
-                        .join("example")
+                    home.join(".zcode").join("skills").join("example")
                 );
             },
         );

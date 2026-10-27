@@ -36,12 +36,14 @@ in your home directory. New global skills and Codeg installation links go into
 files are not ZCode skill bundles.
 
 Project skills are created in `<session cwd>/.zcode/skills/`, where ZCode's
-own settings create them. Codeg also lists and edits the skills in
-`<session cwd>/.agents/skills/`. When both folders contain the same skill
-folder, ZCode uses the `.zcode` copy, and that is the copy Codeg lists and
-edits. The runtime loads project skills from both folders, but the bridge's
-command list includes only the `.agents` ones. ZCode also loads project skills
-from parent folders up to the Git root, which Codeg does not list.
+own settings create them. Codeg also lists and edits the other project skills
+ZCode loads: those in `<session cwd>/.agents/skills/` and, when the session cwd
+is inside a Git repository, those in both folders of every parent folder up to
+the repository root. A skill from a parent folder is edited where it is. When
+several of these folders contain the same skill folder, Codeg lists and edits
+the copy ZCode uses: the one nearest the session cwd, and within one folder the
+`.zcode` copy. Of these project folders, the bridge's command list includes only
+`<session cwd>/.agents/skills/`; ZCode loads skills from all of them.
 
 `ZCODE_HOME` does not move these folders. The runtime's global skill folders
 always hang off the home directory, and its project folders off the session
@@ -49,8 +51,9 @@ cwd. The bridge's command list reads `$ZCODE_HOME/skills/` instead of
 `~/.zcode/skills/`. With `ZCODE_HOME` pointing elsewhere, it can therefore
 offer commands for skills the runtime cannot load, and leave out skills Codeg
 installed. Extra folders added with ZCode's `skills.roots` setting are not
-listed. Codeg resolves the home directory from its own process environment,
-not from the agent's environment overrides.
+listed. Codeg finds the home directory the way ZCode's Node runtime does, from
+`HOME`, or `USERPROFILE` on Windows, in Codeg's own process environment. It does
+not read the agent's environment overrides.
 
 Codeg manages user-owned files and installation links; the bridge continues to
 decide which skills appear as commands. Native per-path disable flags in
