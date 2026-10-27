@@ -6503,7 +6503,7 @@ mod tests {
             item.1.title = Some(title.into());
             let mut key = key_of(AgentType::Codex, "same-native-id");
             key.agent_account_id = account.map(String::from);
-            let result = import_selected_from_account_summaries(&db.conn, &EventEmitter::Noop, vec![item], vec![key], account).await.unwrap();
+            let result = import_selected_from_account_summaries(&db.conn, &EventEmitter::Noop, vec![item], vec![key], account, no_transcripts()).await.unwrap();
             assert_eq!(result.imported, 1, "{title}");
         }
         let rows = conversation::Entity::find().all(&db.conn).await.unwrap();
