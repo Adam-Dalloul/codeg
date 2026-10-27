@@ -208,6 +208,21 @@ const EMPTY_CHILD_TO_PARENT: ReadonlyMap<number, number> = new Map()
 const EMPTY_CONTAINER_CHILDREN: ReadonlyMap<number, readonly number[]> =
   new Map()
 
+function FolderDisclosureChevron({ expanded }: { expanded: boolean }) {
+  return (
+    <ChevronRight
+      aria-hidden
+      className={cn(
+        "h-3 w-3 shrink-0 text-muted-foreground/60",
+        "transition-[transform,opacity] duration-200 ease-out",
+        "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100",
+        "[@media(hover:none)]:opacity-100",
+        expanded && "rotate-90"
+      )}
+    />
+  )
+}
+
 const FolderHeader = memo(function FolderHeader({
   folderId,
   folderName,
@@ -434,7 +449,9 @@ const FolderHeader = memo(function FolderHeader({
                     : undefined
                 }
                 title={folderPath}
-                aria-expanded={expanded}
+                // In Workbench mode this button selects the worktree; the
+                // separate chevron button below is the disclosure control.
+                aria-expanded={workbenchEnabled ? undefined : expanded}
                 className={cn(
                   "relative flex h-full min-w-0 flex-1 items-center pr-[0.5rem] outline-none",
                   "rounded-full focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
@@ -544,27 +561,37 @@ const FolderHeader = memo(function FolderHeader({
                       </span>
                     </span>
                   )}
+                  {/* Disclosure chevron mirrors the section headers: hover-revealed,
+                    rotates on expand. The persistent open/closed state still reads
+                    from the folder icon on the left, which is why the chevron can
+                    stay hidden at rest in BOTH states (collapsed included) — it is
+                    a redundant affordance, not the only one. Touch keeps it pinned
+                    on, since there is no hover to reveal it there.
+                    NOTE: `group-focus-within` (not `group-focus-visible` like the
+                    section header) is intentional — here the `group` is the outer
+                    row wrapper and focus lands on a child (the toggle button or the
+                    sibling ⋯ menu button), so the reveal must react to focus
+                    anywhere inside the row. The section header's `group` IS its
+                    button, so it uses `group-focus-visible`. Don't "normalize".
+                    In Workbench mode the row button selects the worktree, so the
+                    chevron becomes its own disclosure button after it. */}
+                  {!workbenchEnabled && (
+                    <FolderDisclosureChevron expanded={expanded} />
+                  )}
                 </div>
               </button>
-              <button
-                type="button"
-                aria-label={tWorkbench("toggleFolder")}
-                aria-expanded={expanded}
-                onPointerDown={(event) => event.stopPropagation()}
-                onClick={() => onToggle(folderId)}
-                className="flex size-6 shrink-0 items-center justify-center rounded-full focus-visible:ring-2 focus-visible:ring-ring"
-              >
-                <ChevronRight
-                  aria-hidden
-                  className={cn(
-                    "h-3 w-3 shrink-0 text-muted-foreground/60",
-                    "transition-[transform,opacity] duration-200 ease-out",
-                    "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100",
-                    "[@media(hover:none)]:opacity-100",
-                    expanded && "rotate-90"
-                  )}
-                />
-              </button>
+              {workbenchEnabled && (
+                <button
+                  type="button"
+                  aria-label={tWorkbench("toggleFolder")}
+                  aria-expanded={expanded}
+                  onPointerDown={(event) => event.stopPropagation()}
+                  onClick={() => onToggle(folderId)}
+                  className="flex size-6 shrink-0 items-center justify-center rounded-full outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                >
+                  <FolderDisclosureChevron expanded={expanded} />
+                </button>
+              )}
               <button
                 type="button"
                 onClick={(e) => {

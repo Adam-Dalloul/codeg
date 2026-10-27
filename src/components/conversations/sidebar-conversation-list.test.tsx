@@ -30,6 +30,10 @@ import {
   useAppWorkspaceStore,
 } from "@/stores/app-workspace-store"
 import enMessages from "@/i18n/messages/en.json"
+import {
+  resetWorkbenchStore,
+  useWorkbenchStore,
+} from "@/stores/workbench-store"
 
 // ── Probes ────────────────────────────────────────────────────────────────
 // AgentIcon renders once per card body → counts card re-renders. The Folder /
@@ -2166,5 +2170,69 @@ describe("SidebarConversationList — tag filter", () => {
     })
     expect(probes.card).toBe(1)
     expect(probes.folder).toBe(0)
+  })
+})
+
+describe("SidebarConversationList — folder header and Workbench mode", () => {
+  beforeEach(() => {
+    const folders = [folder(1, "Folder 1"), folder(2, "Folder 2")]
+    useAppWorkspaceStore.setState({
+      folders,
+      allFolders: folders,
+      conversations: [conv(11, 1), conv(21, 2)],
+    })
+    store.activeTabId = null
+    store.tabSpec = []
+    resetWorkbenchStore()
+  })
+  afterEach(() => resetWorkbenchStore())
+
+  const header = (folderId: number) =>
+    document.querySelector(`[data-folder-id="${folderId}"]`) as HTMLElement
+  const disclosureButtons = () =>
+    document.querySelectorAll('[aria-label="Expand or collapse folder"]')
+
+  it("normal mode keeps the row button as the disclosure, with no extra button", () => {
+    render(tree())
+    const before = header(1).getAttribute("aria-expanded")
+    expect(before === "true" || before === "false").toBe(true)
+    expect(header(1)).not.toHaveAttribute("aria-current")
+    expect(disclosureButtons()).toHaveLength(0)
+    act(() => {
+      fireEvent.click(header(1))
+    })
+    expect(header(1)).toHaveAttribute(
+      "aria-expanded",
+      before === "true" ? "false" : "true"
+    )
+    expect(useWorkbenchStore.getState().scope).toBe("global")
+  })
+
+  it("Workbench mode: the row selects the worktree, a separate chevron button toggles it", () => {
+    act(() => {
+      useWorkbenchStore.setState({ enabled: true, scope: 2 })
+    })
+    render(tree())
+    expect(header(1)).not.toHaveAttribute("aria-expanded")
+    expect(header(2)).toHaveAttribute("aria-current", "true")
+    act(() => {
+      fireEvent.click(header(1))
+    })
+    expect(useWorkbenchStore.getState().scope).toBe(1)
+    expect(header(1)).toHaveAttribute("aria-current", "true")
+    // The row's own disclosure button sits right after the row button.
+    const toggle = () => header(1).nextElementSibling as HTMLElement
+    expect(toggle()).toHaveAttribute("aria-label", "Expand or collapse folder")
+    expect(disclosureButtons()).toHaveLength(2)
+    const before = toggle().getAttribute("aria-expanded")
+    expect(before === "true" || before === "false").toBe(true)
+    act(() => {
+      fireEvent.click(toggle())
+    })
+    expect(toggle()).toHaveAttribute(
+      "aria-expanded",
+      before === "true" ? "false" : "true"
+    )
+    expect(useWorkbenchStore.getState().scope).toBe(1)
   })
 })
