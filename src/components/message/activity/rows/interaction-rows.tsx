@@ -90,7 +90,7 @@ export const PlanModeRow = memo(function PlanModeRow({
           {markerLabel}
         </span>
         {title ? (
-          <span className="min-w-0 truncate text-muted-foreground" dir="auto">
+          <span className="min-w-0 truncate text-activity-secondary" dir="auto">
             {title}
           </span>
         ) : null}
@@ -189,7 +189,7 @@ export const FeedbackRow = memo(function FeedbackRow({
             {part.errorText?.trim()}
           </span>
         ) : entries[0] ? (
-          <span className="min-w-0 truncate text-muted-foreground" dir="auto">
+          <span className="min-w-0 truncate text-activity-secondary" dir="auto">
             {entries[0].text}
           </span>
         ) : null}

@@ -272,6 +272,20 @@ function tryParseInputObject(rawInput: string | null | undefined) {
   }
 }
 
+/** The title (live) and tool name (history) of OpenCode's code-mode tool. */
+const CODE_MODE_TOOL_TITLE = "execute"
+
+/** A frame of OpenCode's code-mode tool: titled `execute`, with a `{code}`
+ *  script for input. */
+function isCodeModeExecuteFrame(
+  title: string | null | undefined,
+  rawInput: string | null | undefined
+): boolean {
+  if ((title ?? "").trim().toLowerCase() !== CODE_MODE_TOOL_TITLE) return false
+  if (!rawInput || !rawInput.includes('"code"')) return false
+  return typeof tryParseInputObject(rawInput)?.code === "string"
+}
+
 function hasAnyKey(obj: Record<string, unknown>, keys: string[]): boolean {
   return keys.some(
     (key) => key in obj && obj[key] !== null && obj[key] !== undefined
@@ -780,6 +794,17 @@ export function inferLiveToolName(params: {
   // placement, and reason, as OpenCode's above.
   const kiroToolName = extractKiroToolName(params.meta)
   if (kiroToolName) return normalizeToolName(kiroToolName)
+
+  // OpenCode 2.x code mode: the `execute` tool's input is `{code: "<JS>"}`, a
+  // script that can say anything — a delegated task quoting a patch reads as
+  // `apply_patch` to the input heuristics below. OpenCode titles a non-shell
+  // tool by its name on every frame, and the backend registers code-mode
+  // delegations on that title (`is_delegation_invocation`), so take it here.
+  // Live frames carry the stamped name above; a `session/load` replay opens
+  // with the input already present, so it is never stamped.
+  if (isCodeModeExecuteFrame(params.title, params.rawInput)) {
+    return normalizeToolName(CODE_MODE_TOOL_TITLE)
+  }
 
   // Input-shape detection runs FIRST so cross-agent heuristics (Claude Code
   // `Task` tool routed via `subagent_type`, OpenCode sub-agent calls, etc.)

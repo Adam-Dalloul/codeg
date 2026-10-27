@@ -137,6 +137,15 @@ const TOP_CONVERSATIONS: usize = 8;
 ///   them again. Forks are on by default in the terminal since CLI 2.1.232
 ///   and in every Agent SDK session since 2.1.302, so unchanged transcripts
 ///   read differently now. See `parsers::claude::is_fork_directive_record`.
+/// * `7` — TRAE CLI usage counted from its native `token_usage_record` rows.
+///   TRAE's ACP `usage_update` is only context occupancy, and codeg records
+///   none of the counters its prompt response carries (which leave out
+///   sub-agents anyway), so both the built-in and pre-integration custom
+///   `traecli` sessions previously wrote no facts. Rollout `thread_id` is the
+///   ACP session id, which makes the native counters an exact enrichment of
+///   codeg's ACP-projected history; each sub-agent's own rollout is read too,
+///   and its spend lands on the turn that launched it. See
+///   `parsers::trae_usage`.
 ///
 /// Only the accounting stored in `token_usage_turn` counts: the four token
 /// counters, the duration and the timestamp. A conversation's context WINDOW is

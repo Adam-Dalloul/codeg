@@ -90,6 +90,13 @@ import type {
   CursorModelsResult,
   QoderAuthStatus,
   CodexModelInfo,
+  CodexCatalogLookup,
+  CodexCatalogRequest,
+  CodexPlanPreview,
+  ProviderModelList,
+  ProviderModelsRequest,
+  CodexCatalogStatus,
+  CodexEndpointCatalogView,
   AgentSkillScope,
   AgentSkillLayout,
   AgentSkillItem,
@@ -688,9 +695,13 @@ export async function acpUpdateAgentConfig(
     opencode_auth_json?: string | null
     codex_auth_json?: string | null
     codex_config_toml?: string | null
-    /** Compact structured codex model list; backend regenerates the
-     * `model_catalog_json` catalog files from it (config.toml keys are patched
-     * into `codex_config_toml` text by the caller). */
+    /** The config.toml text the draft was loaded from: a key codeg manages
+     * (`model_catalog_json`, root `model` while a catalog is published) that
+     * differs from it was edited by hand, and the save is refused. */
+    codex_config_toml_baseline?: string | null
+    /** Compact structured codex model list. The backend publishes what it
+     * makes (catalog file, `model_catalog_json`, root `model`) through one
+     * commit; callers send config.toml without patching those keys. */
     codex_model_catalog?: string | null
     /** Codex sandbox / approval controls; merged onto the on-disk config.toml
      * server-side. Governs the turns codex starts itself (/goal, /review,
@@ -713,6 +724,7 @@ export async function acpUpdateAgentConfig(
     opencodeAuthJson: params.opencode_auth_json ?? null,
     codexAuthJson: params.codex_auth_json ?? null,
     codexConfigToml: params.codex_config_toml ?? null,
+    codexConfigTomlBaseline: params.codex_config_toml_baseline ?? null,
     codexModelCatalog: params.codex_model_catalog ?? null,
     codexSandbox: params.codex_sandbox ?? null,
     grokConfigToml: params.grok_config_toml ?? null,
@@ -822,21 +834,6 @@ export async function acpUpdateKimiCodeConfig(params: {
 }
 
 /**
- * List the models an API key + endpoint can access (GET `<baseUrl>/models`).
- * Validates the key and powers the Kimi settings model picker; throws with the
- * provider's error message on failure.
- */
-export async function acpFetchKimiModels(params: {
-  baseUrl: string
-  apiKey: string
-}): Promise<string[]> {
-  return getTransport().call("acp_fetch_kimi_models", {
-    baseUrl: params.baseUrl,
-    apiKey: params.apiKey,
-  })
-}
-
-/**
  * Apply a structured Pi config update. Merge-writes pi's native
  * `~/.pi/agent/settings.json` (`defaultProvider` / `defaultModel` /
  * `defaultThinkingLevel`) and, when an API key is supplied,
@@ -859,6 +856,9 @@ export async function acpUpdatePiConfig(params: {
     reasoning: boolean
     thinkingLevelMap: Record<string, string | null>
   }
+  /** The custom provider's whole model list (the chosen model always kept);
+   * omit to add the model to whatever the list holds. */
+  customModels?: string[]
 }): Promise<void> {
   return getTransport().call("acp_update_pi_config", {
     provider: params.provider,
@@ -868,6 +868,7 @@ export async function acpUpdatePiConfig(params: {
     customBaseUrl: params.customBaseUrl ?? null,
     customApi: params.customApi ?? null,
     modelReasoning: params.modelReasoning ?? null,
+    customModels: params.customModels ?? null,
   })
 }
 
@@ -1534,6 +1535,50 @@ export async function codexBundledCatalog(
   return getTransport().call("codex_bundled_catalog", {
     forceRefresh: forceRefresh ?? null,
   })
+}
+
+/** Fetch a provider's model list for the settings page, without publishing
+ *  it (the next save does). A native catalog is checked by the codex that
+ *  would run; the answer is cached for that save. */
+export async function codexFetchEndpointCatalog(
+  params: CodexCatalogRequest
+): Promise<CodexEndpointCatalogView> {
+  return getTransport().call("codex_fetch_endpoint_catalog", { params })
+}
+
+/** What saving this Codex draft would make of the keys codeg manages. Never
+ *  fetches, checks or writes. */
+export async function codexCatalogPlanPreview(params: {
+  configToml: string
+  authJson?: string | null
+  modelList?: string | null
+}): Promise<CodexPlanPreview> {
+  return getTransport().call("codex_catalog_plan_preview", { params })
+}
+
+/** The published provider list, when it answers this request. */
+export async function codexEndpointCatalogPublished(
+  params: CodexCatalogRequest
+): Promise<CodexCatalogLookup> {
+  return getTransport().call("codex_endpoint_catalog_published", { params })
+}
+
+/** The cached answer to exactly this request. Never fetches. */
+export async function codexEndpointCatalogCached(
+  params: CodexCatalogRequest
+): Promise<CodexCatalogLookup> {
+  return getTransport().call("codex_endpoint_catalog_cached", { params })
+}
+
+/** What is published under codeg's CODEX_HOME, and how refreshing it goes. */
+export async function codexEndpointCatalogStatus(): Promise<CodexCatalogStatus> {
+  return getTransport().call("codex_endpoint_catalog_status", {})
+}
+
+/** "Refresh now": fetch the provider list whatever its age and publish what
+ *  the current settings make of it. */
+export async function codexRefreshEndpointCatalog(): Promise<CodexCatalogStatus> {
+  return getTransport().call("codex_refresh_endpoint_catalog", {})
 }
 
 export async function opencodeInstallPlugins(
@@ -4199,30 +4244,37 @@ export async function workTaskMerge(
   })
 }
 
-/** Accept a reviewed forge-sourced task by pushing it back: an issue's task
- *  publishes its branch and opens (or adopts) a pull request, a pull request's
- *  task pushes onto that pull request's own branch (where `title`/`draft` are
- *  ignored — nothing is created). Resolves with the pull request URL.
+/** Accept a reviewed task by delivering it to a forge: an issue's task — or a
+ *  task with no forge provenance, on its project's `origin` — publishes its
+ *  branch and opens (or adopts) a pull request; a pull request's task pushes
+ *  onto that pull request's own branch, and so does a task whose earlier
+ *  delivery opened one it stayed in review after (`title`/`draft` are ignored
+ *  there — nothing is created). Resolves with the pull request URL.
  *
  *  Unlike the merge dispatch this awaits the WHOLE operation — no agent runs,
  *  just a push and two REST calls — so a rejection is the real reason and the
  *  task is already back in review by the time it surfaces.
  *
- *  `deleteWorktree` takes the checkout along once the delivery lands — the
- *  same offer the merge and complete acceptances make. It rides on the
- *  delivery: a removal that fails leaves a retryable cleanup mark on the card
- *  and this call still resolves with the URL. */
+ *  `markDone` finishes the task; `false` keeps it in review with the pull
+ *  request recorded, for another round on the same branch.
+ *
+ *  `deleteWorktree` takes the checkout along once a delivery that finishes
+ *  the task lands — the same offer the merge and complete acceptances make.
+ *  It rides on the delivery: a removal that fails leaves a retryable cleanup
+ *  mark on the card and this call still resolves with the URL. */
 export async function workTaskDeliverPr(
   id: number,
   prTitle: string | null,
   draft: boolean,
-  deleteWorktree: boolean
+  deleteWorktree: boolean,
+  markDone: boolean
 ): Promise<string> {
   return getTransport().call("work_task_deliver_pr", {
     id,
     prTitle,
     draft,
     deleteWorktree,
+    markDone,
   })
 }
 
@@ -5504,6 +5556,22 @@ export async function updateModelProvider(params: {
 
 export async function deleteModelProvider(id: number): Promise<void> {
   return getTransport().call("delete_model_provider", { id })
+}
+
+/** Keep the /model picker ids codeg adds for an unbound Claude agent; returns
+ *  how many running sessions now need a restart. */
+export async function acpUpdateClaudeModelPicker(
+  models: string[]
+): Promise<number> {
+  return getTransport().call("acp_update_claude_model_picker", { models })
+}
+
+/** The models a provider lists, asked the way the agent itself would ask.
+ *  Fails with a `providerModels.<code>` i18n key. */
+export async function listProviderModels(
+  params: ProviderModelsRequest
+): Promise<ProviderModelList> {
+  return getTransport().call("list_provider_models", { params })
 }
 
 // ─── Delegation settings ───────────────────────────────────────────────
