@@ -158,7 +158,7 @@ pub fn capabilities() -> Vec<AccountCapability> {
 pub fn credential_env_keys(agent: AgentType) -> Vec<&'static str> {
     let extra: &[&str] = match agent {
         AgentType::ClaudeCode => CLAUDE_AUTH_ENV_KEYS,
-        AgentType::Codex => &["OPENAI_API_KEY", "OPENAI_BASE_URL", "CODEX_API_KEY"],
+        AgentType::Codex => &["OPENAI_API_KEY", "OPENAI_BASE_URL", "CODEX_API_KEY", "CODEX_CONFIG"],
         AgentType::Grok => &["XAI_API_KEY", "XAI_BASE_URL", "GROK_API_KEY"],
         AgentType::Gemini => &[
             "GEMINI_API_KEY",

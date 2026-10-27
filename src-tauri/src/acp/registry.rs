@@ -465,7 +465,7 @@ pub const PI_MIN_RUNTIME_VERSION: &str = "0.81.0";
 /// for when the installed copy's own package.json cannot be read. A runtime
 /// resolved to this value is marked unconfirmed (`codex_runtime`), so it never
 /// counts as the version a catalog was checked against. Move it with the pin.
-pub const CODEX_NESTED_VERSION_FALLBACK: &str = "0.160.1";
+pub const CODEX_NESTED_VERSION_FALLBACK: &str = "0.164.0";
 
 /// The npm package the built-in Claude Code entry runs — and the name the
 /// adapter reports as `agentInfo.name` at `initialize`, which is its
@@ -3673,9 +3673,151 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             // now goes through the adapter's own title function
             // (`codex_acp_session_title`, cut included) and then the live
             // path's (`codex_thread_title`).
+            //
+            // 2.3.0 moves `@openai/codex` ^0.160.1 → **^0.164.0** (a fresh
+            // install resolves 0.164.0) and `@agentclientprotocol/sdk`
+            // ^1.5.0 → ~2.0.2, the SDK claude-agent-acp 0.97.0 already runs.
+            // `engines` is still absent, and the published bundle is a build of
+            // the tag. The 20.3.0 floor stands: the new Node APIs (`URL.canParse`,
+            // `AbortSignal.timeout`, `structuredClone`, `fetch`, `Object.hasOwn`)
+            // are all in 20.3, and live on 20.3.0 a session opens, runs a plain
+            // and a shell turn and compacts, while on 20.2.0 every prompt still
+            // fails on `AbortSignal.any`. ACP v2 is back (#620, with #650–#652
+            // and #622), but a v1 `initialize` is still answered with
+            // `protocolVersion: 1` and the v1 handlers are the same thirty.
+            // Under codeg's exact `clientCapabilities` the adapter's
+            // 33-scenario harness differs between the tags only by
+            // `sessionCapabilities.systemPrompt: {}` in `initialize`
+            // (`connection::tests::codex_230_initialize_response_parses_past_
+            // its_new_capabilities`). Live runs against a scripted Responses
+            // server show the rest, below.
+            //
+            // (jj) **#667 turns Codex's Visualize skill off for every client.**
+            // The adapter appends `{name: "visualize:visualize", enabled:
+            // false}` last to `skills.config` in the config of every thread it
+            // starts, resumes or forks, and drops the skill from `skills/list`.
+            // Nothing gates it, and config.toml cannot turn it back on: codex
+            // applies the rules layer by layer, and that thread config is the
+            // last layer (measured, by name and by path). codeg renders the
+            // skill's `visualize{…}` references inline
+            // (`codex-visualize-card.tsx`), so codex replies in codeg no longer
+            // carry them. History still renders them, and an HTML file a reply
+            // names still gets its on-demand preview. A user skill of another
+            // name survives (measured with a plain `visualize`), so a skill
+            // that teaches the same reference would bring them back; that is a
+            // product decision, not taken here.
+            //
+            // (kk) #668: an `invalid_encrypted_content` error — codex resends
+            // earlier turns' encrypted reasoning, which only the provider or
+            // account that encrypted it can read, so a thread whose provider
+            // changed fails every turn — gets a sentence for its
+            // `sessionFailure` title instead of the provider's JSON, in all
+            // three shapes (bare, in codex's envelope, inside a gateway's
+            // `metadata`). Only the title: a failed compaction's `error` and
+            // the rollout keep the JSON, so `acp::service_error` ports the
+            // rule, and the reloaded failure line and the compaction card read
+            // the sentence the banner does.
+            //
+            // (ll) What #620 changed for a v1 client on the way, unannounced,
+            // all measured live:
+            //   * Every `session/resume` and `session/load` (and the reopen
+            //     after an app-server crash) is followed by a
+            //     `session_info_update` carrying `_meta.codex.threadStatus`
+            //     and a `usage_update` with the restored context use, so the
+            //     ring is right before the first turn. `threadStatus` also
+            //     marks each turn's start and end; codeg reads none of it
+            //     (see the idle loop's note on `codex_context_readings`).
+            //   * A goal still active when its session is reopened is resumed
+            //     by codex on both tags; 2.2.2 forwarded none of that turn,
+            //     2.3.0 streams it with no prompt in flight, which codeg's idle
+            //     loop shows like any `/goal` continuation.
+            //   * `/compact` (#654) answers its prompt after
+            //     `compaction_update` completes and the thread goes idle;
+            //     2.2.2 answered first and let both land in the next prompt.
+            //   * `session/cancel` withdraws the open permission requests
+            //     (`$/cancel_request`), even one already answered, which the
+            //     card's watcher then finds settled.
+            //   * A plan review stopped with `cancelled` ends the prompt
+            //     `cancelled` (was `end_turn`); that first turn then gets no
+            //     generated title.
+            //   * A second prompt during a turn is queued (2.2.2 never
+            //     answered the first); codeg sends one at a time.
+            //   * `/review-branch` outside a git repository fails at once with
+            //     a `sessionFailure` instead of hanging the prompt.
+            //   * A config-load error carries `data: {details}` (was a
+            //     string); codeg shows the error as sent.
+            //   * New skill files republish `available_commands_update`
+            //     within half a second while idle (#643).
+            //
+            // (mm) codex 0.161–0.164 (#666), as codeg meets it:
+            //   * A thread stays loaded **30 minutes** after its last subscriber
+            //     leaves (`thread_unload_delay_secs`, 60 s up to 0.163), so a
+            //     forked parent's row met `session_busy` for half an hour after
+            //     `close_forked_parent`. codeg asks for 60 s through
+            //     `CODEX_CONFIG` (`connection::apply_codex_env_policy`), which
+            //     codex reads per thread from 0.164. Measured: the parent
+            //     still locked 65 s after the close without it, open with it.
+            //   * The rollout swaps an MCP result over 64 KiB for one text
+            //     block holding the result's JSON, cut in the middle, so a
+            //     reloaded code-mode script showed 65,000 characters of JSON
+            //     (escaped base64 for an image). `parsers::codex` reads the
+            //     stand-in back (`codex_truncated_mcp_result_preview`):
+            //     measured on a 0.164.0 rollout, the text result reads as its
+            //     text up to the cut, the image one is capped at 4,000
+            //     characters as on 0.160.1.
+            //   * The bundled catalog is 0.160.1's minus
+            //     `model_messages.instructions_variables`, which 0.164 no
+            //     longer reads; the offline snapshot is regenerated
+            //     (`codex_model_catalog.rs` has the re-probe), and
+            //     `CODEX_NESTED_VERSION_FALLBACK` moves with it.
+            //   * The "Heads up: Long threads and multiple compactions…"
+            //     warning is gone, and with it the notice codeg filtered
+            //     (`isCompactionEchoNotice` keeps the filter for older pins).
+            //   * `features.instant_interrupt` is on by default, which (v)
+            //     said stays off: pending input — a sub-agent's mailbox
+            //     message — now preempts a streaming response. codeg sends
+            //     codex no input mid-turn.
+            //   * Since 0.162 a Responses request for a model without
+            //     Responses-Lite (codeg's OpenAI-compatible preset among them)
+            //     carries the base instructions as its first `developer`
+            //     message instead of `instructions`, which a gateway that maps
+            //     `developer` to a user turn will notice.
+            //   * A thread named before its first turn (the Codex TUI or app;
+            //     codex-acp names after the first prompt) leaves a header-only
+            //     rollout, which codeg lists with its name and no messages.
+            //   * `approval_policy = "untrusted"` is refused outright ("no
+            //     longer supported; remove this setting") — on 0.160.1 as
+            //     well — so no Codex session starts with it, in codeg or the
+            //     CLI. The Codex panel offered it: it no longer does, and it
+            //     flags one config.toml already has
+            //     (`commands::acp::CODEX_RETIRED_APPROVAL_POLICY`).
+            //   * Not read by codeg: an incomplete response is no longer
+            //     retried, and its error drops the "stream disconnected before
+            //     completion:" prefix; usage now counts it.
+            //
+            // (nn) Inert or not adopted. #653 accepts a
+            // `systemPrompt: {mode: "append", content: [text…]}` on v1
+            // `session/new`, `load`, `resume` and `fork` (-32602 for
+            // `override` or a non-text block), persisted as the thread's first
+            // developer message and lost after a compaction unless resent on
+            // every open; codeg sends none (it would also need the schema
+            // crate's `unstable_session_system_prompt`). #627 narrows models to
+            // what a `providers/set` gateway lists; codeg binds its provider
+            // through config.toml and never sends `providers/set`. #678, #634
+            // and #632 need `subagents`, AIR `nativeSubagentSessions` or
+            // `agentFileChangeReport`, none of which codeg advertises. #631,
+            // #639, #642 and the session index (#622) shape `session/list`,
+            // which codeg does not send. #589 is the `_auth/status_update`
+            // codeg drops, for a `wire` provider codeg does not have. #626
+            // explains a config that cannot load because the working directory
+            // was deleted, which codex 0.164 now tolerates. The SDK 2.0 move
+            // (#649) converts errors as before, and every request shape codeg
+            // sends parses identically under both SDKs' v1 schemas; 2.0 is
+            // stricter only about a null or missing `mcpServers` and a bad
+            // `additionalDirectories`, which codeg never sends.
             distribution: AgentDistribution::Npx {
-                version: "2.2.2",
-                package: "@agentclientprotocol/codex-acp@2.2.2",
+                version: "2.3.0",
+                package: "@agentclientprotocol/codex-acp@2.3.0",
                 cmd: "codex-acp",
                 args: &[],
                 env: &[],
@@ -6302,8 +6444,8 @@ mod tests {
         );
         assert_npx_version(
             AgentType::Codex,
-            "2.2.2",
-            "@agentclientprotocol/codex-acp@2.2.2",
+            "2.3.0",
+            "@agentclientprotocol/codex-acp@2.3.0",
             Some("20.3.0"),
         );
         assert_npx_version(AgentType::Pi, "0.0.34", "pi-acp@0.0.34", Some("22.0.0"));
