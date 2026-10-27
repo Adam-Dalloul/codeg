@@ -5740,3 +5740,193 @@ describe("Workbench shared file buffers and selections", () => {
     expect(workbenchWorkspace.fileTabs).toHaveLength(2)
   })
 })
+
+// A sibling subscribed to the workbench store: React reports a store write
+// made while WorkspaceProvider renders (inside a state updater) against it.
+function WorkbenchRefsProbe() {
+  const refs = useWorkbenchStore((s) => s.fileRefs)
+  return <output data-testid="workbench-refs">{JSON.stringify(refs)}</output>
+}
+
+const activeFileTrail: Array<string | null> = []
+function ActiveFileTrail() {
+  const { activeFileTabId } = useWorkspaceFileTabs()
+  if (activeFileTrail[activeFileTrail.length - 1] !== activeFileTabId) {
+    activeFileTrail.push(activeFileTabId)
+  }
+  return null
+}
+
+describe("Workbench file closes, restores and selection", () => {
+  let consoleError: ReturnType<typeof vi.spyOn>
+  beforeEach(() => {
+    vi.mocked(api.readFileForEdit).mockReset().mockResolvedValue({
+      path: "file.ts",
+      content: "disk",
+      etag: "e1",
+      mtime_ms: 1,
+      readonly: false,
+      line_ending: "lf",
+    })
+    vi.mocked(api.gitIsTracked).mockResolvedValue(false)
+    resetHomeDirCacheForTests()
+    activeFileTrail.length = 0
+    consoleError = vi.spyOn(console, "error")
+    useAppWorkspaceStore.setState({ activeFolderId: 1 })
+    useWorkbenchStore.getState().setEnabled(true)
+    useWorkbenchStore.getState().activateScope(1)
+    render(
+      <WorkspaceProvider>
+        <WorkbenchProbe />
+        <WorkbenchRefsProbe />
+        <ActiveFileTrail />
+      </WorkspaceProvider>
+    )
+  })
+  afterEach(() => {
+    consoleError.mockRestore()
+  })
+
+  const renderPhaseWrites = () =>
+    consoleError.mock.calls.filter((call: unknown[]) =>
+      String(call[0]).includes("Cannot update a component")
+    ).length
+
+  async function openDirty(path: string, dirty = true) {
+    await act(async () => {
+      await workbenchWorkspace.openFilePreview(path)
+    })
+    if (dirty)
+      act(() => workbenchWorkspace.updateActiveFileContent(`edited ${path}`))
+    return workbenchWorkspace.activeFileTabId!
+  }
+
+  it("close all asks once for the scope's unsaved buffers; cancelling closes nothing", async () => {
+    const a = await openDirty("/repo/a.ts")
+    const b = await openDirty("/repo/b.ts")
+    const c = await openDirty("/repo/c.ts", false)
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false)
+    act(() => workbenchWorkspace.closeAllFileTabs())
+    expect(confirm).toHaveBeenCalledTimes(1)
+    expect(workbenchWorkspace.fileTabs.map((tab) => tab.id)).toEqual([a, b, c])
+    expect(useWorkbenchStore.getState().fileRefs[1]).toEqual([a, b, c])
+
+    confirm.mockReturnValue(true)
+    act(() => workbenchWorkspace.closeAllFileTabs())
+    expect(confirm).toHaveBeenCalledTimes(2)
+    expect(workbenchWorkspace.allFileTabs).toEqual([])
+    expect(useWorkbenchStore.getState().fileRefs[1]).toEqual([])
+    expect(workbenchWorkspace.activePane).toBe("conversation")
+    expect(renderPhaseWrites()).toBe(0)
+    confirm.mockRestore()
+  })
+
+  it("close others only releases this worktree's hold on a shared buffer, without asking for it", async () => {
+    const shared = await openDirty("/repo/shared.ts")
+    act(() => useWorkbenchStore.getState().activateScope(2))
+    act(() => workbenchWorkspace.switchFileTab(shared))
+    const b = await openDirty("/repo2/b.ts")
+    const c = await openDirty("/repo2/c.ts", false)
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true)
+    act(() => workbenchWorkspace.closeOtherFileTabs(c))
+    // b is dirty and closes for good: one question. The shared buffer stays
+    // open in the other worktree, so losing it here costs nothing.
+    expect(confirm).toHaveBeenCalledTimes(1)
+    expect(workbenchWorkspace.fileTabs.map((tab) => tab.id)).toEqual([c])
+    expect(workbenchWorkspace.activeFileTabId).toBe(c)
+    expect(workbenchWorkspace.allFileTabs?.map((tab) => tab.id)).toEqual([
+      shared,
+      c,
+    ])
+    expect(useWorkbenchStore.getState().fileRefs[1]).toEqual([shared])
+    expect(b).not.toBe(c)
+    act(() => useWorkbenchStore.getState().activateScope(1))
+    expect(workbenchWorkspace.activeFileTab).toMatchObject({
+      id: shared,
+      isDirty: true,
+    })
+    expect(renderPhaseWrites()).toBe(0)
+    confirm.mockRestore()
+  })
+
+  it("closing the selected buffer moves straight to its neighbour in the scope's order", async () => {
+    const a = await openDirty("/repo/a.ts", false)
+    const b = await openDirty("/repo/b.ts", false)
+    const c = await openDirty("/repo/c.ts", false)
+    act(() => workbenchWorkspace.switchFileTab(b))
+    activeFileTrail.length = 0
+    act(() => workbenchWorkspace.closeFileTab(b))
+    // Never through the scope's first tab while the closed one's references
+    // are dropped after the commit.
+    expect(activeFileTrail).toEqual([c])
+    expect(useWorkbenchStore.getState().fileRefs[1]).toEqual([a, c])
+    expect(useWorkbenchStore.getState().fileSelection[1]).toBe(c)
+    expect(renderPhaseWrites()).toBe(0)
+  })
+
+  it("turning the mode on keeps the file the user is looking at", async () => {
+    act(() => useWorkbenchStore.getState().setEnabled(false))
+    // No conversation tab here, so nothing else names the active folder.
+    act(() => useAppWorkspaceStore.setState({ activeFolderId: 1 }))
+    const a = await openDirty("/repo/a.ts", false)
+    const b = await openDirty("/repo/b.ts", false)
+    act(() => workbenchWorkspace.switchFileTab(a))
+    // What this worktree selected the last time the mode was on.
+    act(() => useWorkbenchStore.setState({ fileSelection: { 1: b } }))
+    act(() => useWorkbenchStore.getState().setEnabled(true))
+    expect(useWorkbenchStore.getState().scope).toBe(1)
+    expect(workbenchWorkspace.activeFileTabId).toBe(a)
+  })
+
+  it("an open aimed at another worktree does not take this scope's selection through a shared tab", async () => {
+    let page!: string
+    act(() => {
+      page = workbenchWorkspace.openBrowserTab("https://example.com/")!
+    })
+    act(() => useWorkbenchStore.getState().activateScope(2))
+    act(() => workbenchWorkspace.switchFileTab(page))
+    const own = await openDirty("/repo2/own.ts", false)
+    expect(workbenchWorkspace.activeFileTabId).toBe(own)
+    act(() => {
+      workbenchWorkspace.openBrowserTab("https://example.com/", {
+        folderId: 1,
+        activate: "tab",
+      })
+    })
+    expect(workbenchWorkspace.activeFileTabId).toBe(own)
+    expect(useWorkbenchStore.getState().fileSelection[1]).toBe(page)
+  })
+
+  it("restored pages join their worktrees without store writes during render", async () => {
+    await openDirty("/repo/a.ts", false)
+    act(() => {
+      workbenchWorkspace.restoreBrowserTabs([
+        {
+          url: "https://restored.example/two",
+          title: "Two",
+          folderId: 2,
+          profile: "default",
+        },
+      ])
+    })
+    // A queued update is pending, so the restore updater runs while
+    // WorkspaceProvider renders.
+    act(() => {
+      workbenchWorkspace.updateActiveFileContent("typing")
+      workbenchWorkspace.restoreBrowserTabs([
+        {
+          url: "https://restored.example/three",
+          title: "Three",
+          folderId: 2,
+          profile: "default",
+        },
+      ])
+    })
+    act(() => useWorkbenchStore.getState().activateScope(2))
+    expect(workbenchWorkspace.fileTabs.map((tab) => tab.title)).toEqual([
+      "Two",
+      "Three",
+    ])
+    expect(renderPhaseWrites()).toBe(0)
+  })
+})
