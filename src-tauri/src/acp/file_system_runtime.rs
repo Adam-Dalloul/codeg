@@ -790,8 +790,13 @@ fn agent_root_slots(agent_type: AgentType) -> &'static [RootSlot] {
         // 0.209.1), so its `~/.trae` never needs to be a write root either.
         // Command Code is the same case: codeg's transcript is its history,
         // and its tools never go through `fs/*` (verified against 1.84.0 and
-        // 1.86.3).
-        AgentType::Custom(_) | AgentType::ZCode | AgentType::Trae | AgentType::CommandCode => &[],
+        // 1.86.3). So is MiniMax Code: its tools run in-process and it sends
+        // codeg no `fs/*` or `terminal/*` request (verified against 0.7.0).
+        AgentType::Custom(_)
+        | AgentType::ZCode
+        | AgentType::Trae
+        | AgentType::CommandCode
+        | AgentType::MiniMaxCode => &[],
     }
 }
 
