@@ -214,7 +214,11 @@ export const ConversationHeaderFolderPicker = memo(
         isChatMode={isChatMode}
         onSelectChatMode={() => {
           try {
-            openChatModeTab()
+            openChatModeTab(
+              ownTab.conversationId == null
+                ? { retargetTabId: ownTab.id }
+                : undefined
+            )
             toast.success(t("toasts.switchedToChatMode"))
           } catch (err) {
             console.error(
@@ -381,7 +385,13 @@ export const ConversationFolderBranchPicker = memo(
               return
             }
             try {
-              openChatModeTab()
+              // Like the folder switch: this draft itself moves (see
+              // `retargetTabId`), whatever the global scope already holds.
+              openChatModeTab(
+                ownTab!.conversationId == null
+                  ? { retargetTabId: ownTab!.id }
+                  : undefined
+              )
               toast.success(t("toasts.switchedToChatMode"))
             } catch (err) {
               console.error(

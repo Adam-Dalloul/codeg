@@ -286,6 +286,8 @@ export interface TabStoreState {
     targetGroup?: string
     /** See `openNewConversationTab`'s `forceAgent`. */
     forceAgent?: AgentType
+    /** See `openNewConversationTab`'s `retargetTabId`. */
+    retargetTabId?: string
   }) => OpenedDraftTarget
   setChatDraftWorkingDir: (tabId: string, workingDir: string) => void
   confirmDraftAgent: (tabId: string, agentType: AgentType) => void
@@ -2011,15 +2013,27 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
   },
 
   openChatModeTab: (options) => {
-    useWorkbenchStore.getState().activateScope("global")
-    const st = get()
-    // Inherit the agent like openNewConversationTab's inherit path.
-    const activeTab = st.rawTabs.find((x) => x.id === st.activeTabId)
+    // Inherit the agent like openNewConversationTab's inherit path — read
+    // before the Workbench switch to the global scope, from the tab the user
+    // is on.
+    const before = get()
+    const activeTab = before.rawTabs.find((x) => x.id === before.activeTabId)
     const inherit =
       activeTab &&
       (activeTab.conversationId != null || !activeTab.agentTypeProvisional)
         ? activeTab.agentType
         : null
+    // A draft MOVED into chat mode (the composer's picker) stays the same tab,
+    // prompt and all. It is flipped synchronously below, so the global scope
+    // shows it straight away.
+    const movingDraft =
+      options?.retargetTabId != null
+        ? before.rawTabs.find(
+            (t) => t.id === options.retargetTabId && t.conversationId == null
+          )
+        : undefined
+    useWorkbenchStore.getState().activateScope("global")
+    const st = get()
     // Same short-circuit as openNewConversationTab: an explicitly forced agent
     // is caller intent and skips resolution.
     const { agentType: targetAgent, provisional } =
@@ -2030,21 +2044,23 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
     // Per-group draft singleton — all draft handling below is scoped to the
     // target group. Capture its existing draft (if any) up front so a stale
     // ACP session can be torn down after we flip it to chat mode.
-    const targetGroup = resolveTargetGroup(st, options?.targetGroup)
+    const targetGroup = movingDraft
+      ? groupOfTab(st.groupOf, st.groupLayout, movingDraft.id)
+      : resolveTargetGroup(st, options?.targetGroup)
     const inTargetGroup = (t: TabItemInternal) =>
       groupOfTab(st.groupOf, st.groupLayout, t.id) === targetGroup
-    const existingDraft = st.rawTabs.find(
-      (t) => t.conversationId == null && isTabInWorkbench(t) && inTargetGroup(t)
-    )
+    const isTargetDraft = (t: TabItemInternal) =>
+      movingDraft
+        ? t.id === movingDraft.id
+        : t.conversationId == null && isTabInWorkbench(t) && inTargetGroup(t)
+    const existingDraft = st.rawTabs.find(isTargetDraft)
     const needsDisconnect =
       existingDraft != null &&
       !(existingDraft.isChat && existingDraft.folderId === 0)
 
     const tabId = makeNewConversationTabId()
     const prevState = get()
-    const existingTab = prevState.rawTabs.find(
-      (t) => t.conversationId == null && isTabInWorkbench(t) && inTargetGroup(t)
-    )
+    const existingTab = prevState.rawTabs.find(isTargetDraft)
 
     if (!existingTab) {
       const newTab: TabItemInternal = {

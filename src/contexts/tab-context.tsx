@@ -267,6 +267,8 @@ export interface TabContextValue {
   openChatModeTab: (options?: {
     targetGroup?: string
     forceAgent?: TabItem["agentType"]
+    /** See the tab store's `openNewConversationTab`. */
+    retargetTabId?: string
   }) => OpenedDraftTarget
   setChatDraftWorkingDir: (tabId: string, workingDir: string) => void
   confirmDraftAgent: (tabId: string, agentType: TabItem["agentType"]) => void

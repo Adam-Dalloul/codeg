@@ -468,6 +468,39 @@ describe("Workbench scope repairs", () => {
     expect(draft.agentType).toBe("codex")
   })
 
+  it("switching a draft to chat mode moves that draft into the global scope", () => {
+    useWorkbenchStore.getState().setEnabled(true)
+    useWorkbenchStore.getState().activateScope("global")
+    const globalDraft = useTabStore.getState().openChatModeTab().tabId
+    useWorkbenchStore.getState().activateScope(1)
+    const draftA = useTabStore
+      .getState()
+      .openNewConversationTab(1, "/repo1").tabId
+    expect(draftA).not.toBe(globalDraft)
+
+    const moved = useTabStore
+      .getState()
+      .openChatModeTab({ retargetTabId: draftA })
+    expect(moved.tabId).toBe(draftA)
+    expect(useWorkbenchStore.getState().scope).toBe("global")
+    expect(useTabStore.getState().activeTabId).toBe(draftA)
+    expect(
+      useTabStore.getState().rawTabs.find((tab) => tab.id === draftA)
+    ).toMatchObject({ isChat: true, folderId: 0 })
+    expect(
+      useTabStore.getState().rawTabs.some((tab) => tab.id === globalDraft)
+    ).toBe(true)
+  })
+
+  it("a new chat inherits the agent of the tab the user is on", () => {
+    useTabStore.getState().openTab(1, 11, "open_code", true)
+    useWorkbenchStore.getState().setEnabled(true)
+    useWorkbenchStore.getState().activateScope(1)
+    const chat = useTabStore.getState().openChatModeTab()
+    expect(useWorkbenchStore.getState().scope).toBe("global")
+    expect(chat.agentType).toBe("open_code")
+  })
+
   it("the folder picker moves its own draft, and the scope follows it", async () => {
     useWorkbenchStore.getState().setEnabled(true)
     useWorkbenchStore.getState().activateScope(2)
