@@ -1006,7 +1006,7 @@ describe("file rows", () => {
 })
 
 describe("command row", () => {
-  it("draws its command line a step lighter than its label, like a description", () => {
+  it("draws its label and its command line in one ink, like a description", () => {
     renderUi(
       <Round
         parts={parts(
@@ -1029,7 +1029,33 @@ describe("command row", () => {
       "text-activity-secondary"
     )
     for (const label of screen.getAllByText("Command")) {
-      expect(label).toHaveClass("text-muted-foreground")
+      expect(label).toHaveClass("text-activity-secondary", "font-medium")
+    }
+  })
+})
+
+describe("skill and to-do rows", () => {
+  it("set the label and what follows it in one ink", () => {
+    renderUi(
+      <Round
+        parts={parts(
+          turn([
+            toolUse("s1", "Skill", { skill: "brainstorming" }),
+            toolResult("s1", "ok"),
+            { type: "text", text: "Now the plan." },
+            toolUse("k1", "TaskCreate", { subject: "Fix the login form" }),
+            toolResult("k1", "ok"),
+          ])
+        )}
+      />
+    )
+    for (const text of [
+      "Skill",
+      "brainstorming",
+      "Updated todos",
+      "Fix the login form",
+    ]) {
+      expect(screen.getByText(text)).toHaveClass("text-activity-secondary")
     }
   })
 })

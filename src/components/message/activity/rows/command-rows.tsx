@@ -139,7 +139,7 @@ function CommandLabel({
           : "")
     return (
       <span className="flex min-w-0 items-baseline gap-2">
-        <span className="shrink-0 font-medium text-muted-foreground">
+        <span className="shrink-0 font-medium text-activity-secondary">
           {verb}
         </span>
         <span
@@ -155,7 +155,7 @@ function CommandLabel({
   if (step.tool.kind === "script") {
     return (
       <span className="flex min-w-0 items-baseline gap-2">
-        <span className="shrink-0 font-medium text-muted-foreground">
+        <span className="shrink-0 font-medium text-activity-secondary">
           {t("row.codexScript")}
         </span>
         {command.display ? (
@@ -188,7 +188,7 @@ function CommandLabel({
       <span
         className={cn(
           "shrink-0 font-medium",
-          live ? "activity-shimmer" : "text-muted-foreground"
+          live ? "activity-shimmer" : "text-activity-secondary"
         )}
       >
         {t("row.command")}
@@ -634,7 +634,7 @@ export const CommandGroupRow = memo(function CommandGroupRow({
       <span
         className={cn(
           "font-medium",
-          live ? "activity-shimmer" : "text-muted-foreground"
+          live ? "activity-shimmer" : "text-activity-secondary"
         )}
       >
         {live || awaited

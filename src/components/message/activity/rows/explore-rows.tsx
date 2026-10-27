@@ -187,7 +187,7 @@ export const ExploreGroupRow = memo(function ExploreGroupRow({
         <span
           className={cn(
             "shrink-0 font-medium",
-            live ? "activity-shimmer" : "text-muted-foreground"
+            live ? "activity-shimmer" : "text-activity-secondary"
           )}
         >
           {live || awaited ? t("row.exploring") : t("row.explored")}
@@ -298,11 +298,11 @@ export const ExploreChildRow = memo(function ExploreChildRow({
       >
         {known ? (
           standalone ? (
-            <span className="shrink-0 font-medium text-muted-foreground">
+            <span className="shrink-0 font-medium text-activity-secondary">
               {t(STEP_VERB_KEY[tool.kind as keyof typeof STEP_VERB_KEY])}
             </span>
           ) : (
-            <span className="activity-mono w-14 shrink-0 text-muted-foreground">
+            <span className="activity-mono w-14 shrink-0 text-activity-secondary">
               {t(VERB_KEY[tool.kind as keyof typeof VERB_KEY])}
             </span>
           )

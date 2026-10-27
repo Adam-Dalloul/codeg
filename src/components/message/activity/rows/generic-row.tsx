@@ -84,11 +84,11 @@ export const GenericRow = memo(function GenericRow({
       case "skill":
         return (
           <>
-            <span className="shrink-0 font-medium text-muted-foreground">
+            <span className="shrink-0 font-medium text-activity-secondary">
               {t("row.skill")}
             </span>
             {tool.target ? (
-              <span className="min-w-0 truncate font-mono text-[0.8125rem]">
+              <span className="min-w-0 truncate font-mono text-[0.8125rem] text-activity-secondary">
                 {tool.target.text}
               </span>
             ) : null}
@@ -97,11 +97,14 @@ export const GenericRow = memo(function GenericRow({
       case "todo":
         return (
           <>
-            <span className="shrink-0 font-medium text-muted-foreground">
+            <span className="shrink-0 font-medium text-activity-secondary">
               {t("row.todos")}
             </span>
             {tool.target ? (
-              <span className="min-w-0 truncate" dir="auto">
+              <span
+                className="min-w-0 truncate text-activity-secondary"
+                dir="auto"
+              >
                 {tool.target.text}
               </span>
             ) : null}
@@ -115,7 +118,7 @@ export const GenericRow = memo(function GenericRow({
       case "completion":
         return (
           <>
-            <span className="shrink-0 font-medium text-muted-foreground">
+            <span className="shrink-0 font-medium text-activity-secondary">
               {t("row.completion")}
             </span>
             {tool.target ? (
@@ -249,7 +252,7 @@ export const ToolResultRow = memo(function ToolResultRow({
         </DetailBox>
       )}
     >
-      <span className="font-medium text-muted-foreground">
+      <span className="font-medium text-activity-secondary">
         {t("row.toolResult")}
       </span>
     </ActivityRow>

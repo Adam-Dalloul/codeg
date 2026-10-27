@@ -237,7 +237,7 @@ export const DelegationStatusRow = memo(function DelegationStatusRow({
           <span
             className={cn(
               "min-w-0 truncate font-medium",
-              isRunning ? "activity-shimmer" : "text-muted-foreground"
+              isRunning ? "activity-shimmer" : "text-activity-secondary"
             )}
             title={taskId ?? undefined}
           >
