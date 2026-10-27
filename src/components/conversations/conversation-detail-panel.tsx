@@ -32,6 +32,7 @@ import { ActivityLiveProvider } from "@/components/message/activity/activity-liv
 import { useAcpAgents } from "@/hooks/use-acp-agents"
 import { useActiveFolder } from "@/contexts/active-folder-context"
 import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
+import { FolderTabsEmptyState } from "@/components/conversations/folder-tabs-empty-state"
 import { useTabActions, useTabStore } from "@/contexts/tab-context"
 import {
   groupOfTab,
@@ -2963,7 +2964,7 @@ export function ConversationDetailPanel() {
   }, [tabs])
 
   if (hasNoTabs) {
-    return null
+    return tabsFollowFolder ? <FolderTabsEmptyState /> : null
   }
 
   const renderTabWrapper = (
@@ -3194,6 +3195,13 @@ export function ConversationDetailPanel() {
                     onResize={resizeGroupSplit}
                   />
                 ))}
+              {/* The selected folder has nothing open: every shell above is
+                  hidden, other folders' live tabs included. */}
+              {tabsFollowFolder && visibleTabs.length === 0 && (
+                <div className="absolute inset-0">
+                  <FolderTabsEmptyState />
+                </div>
+              )}
             </div>
           </ContextMenuTrigger>
           <ContextMenuContent>

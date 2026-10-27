@@ -330,6 +330,22 @@ describe("ConversationDetailPanel split-group render model", () => {
     expect(source).toContain("[...tabsByGroup.keys()].sort()")
   })
 
+  // A selected folder with nothing open is not a blank column: the panel says
+  // so and offers a first conversation, whether or not other folders have
+  // tabs, and the workspace keeps the strip (and its "+") up for it.
+  it("shows the empty-folder state instead of a blank column", () => {
+    expect(source).toContain(
+      "return tabsFollowFolder ? <FolderTabsEmptyState /> : null"
+    )
+    expect(source).toContain(
+      "{tabsFollowFolder && visibleTabs.length === 0 && ("
+    )
+    expect(workspaceLayoutSource).toContain(
+      "const showConvStrip = hasConvTabs || tabsFollowFolder"
+    )
+    expect(workspaceLayoutSource).toContain("{showConvStrip ? (")
+  })
+
   // TileScrollContainer ignores mutations strictly inside a marked tile — that
   // is what keeps a tiled group's streaming off its forced-layout path — which
   // is only sound while the tile clips its content at a content-independent

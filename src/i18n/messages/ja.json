@@ -2299,6 +2299,8 @@
       "reload": "再読み込み",
       "activeConversationIndicator": "アクティブな会話",
       "newConversation": "新しい会話",
+      "emptyFolderScope": "{name} で開いている会話はありません",
+      "emptyChatScope": "開いているチャットはありません",
       "closeConversation": "会話を閉じる",
       "forkSession": "セッションをフォーク",
       "forkSessionSuccess": "セッションのフォークに成功しました",

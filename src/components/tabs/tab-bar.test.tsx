@@ -1,6 +1,6 @@
-import { fireEvent, render, screen } from "@testing-library/react"
+import { act, fireEvent, render, screen } from "@testing-library/react"
 import { NextIntlClientProvider } from "next-intl"
-import { beforeEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { ReactNode } from "react"
 
 import enMessages from "@/i18n/messages/en.json"
@@ -139,6 +139,10 @@ vi.mock("./tab-item", () => ({
 }))
 
 import { TabBar } from "./tab-bar"
+import {
+  resetFolderTabsStore,
+  useFolderTabsStore,
+} from "@/stores/folder-tabs-store"
 
 function conversationTab(id: string): TabItemData {
   return {
@@ -288,4 +292,29 @@ it("lists every on-screen group while the visible layout is split", () => {
   const tab = document.querySelector('[data-tab-id="conv-1"]')!
   expect(tab).toHaveAttribute("data-split", "true")
   expect(tab).toHaveAttribute("data-move-targets", "g-second")
+})
+
+describe("TabBar — tabs follow the folder", () => {
+  afterEach(() => resetFolderTabsStore())
+  const newConversation = () =>
+    screen.queryByRole("button", { name: "New Conversation" })
+
+  it("keeps the unsplit strip and its new-conversation button for a folder with nothing open", () => {
+    h.tabs = []
+    act(() => useFolderTabsStore.setState({ enabled: true, scope: 1 }))
+    renderStrip({ maximizeControl: true })
+    expect(newConversation()).not.toBeNull()
+    // Nothing on screen to maximize over the file column.
+    expect(maximizeButton()).toBeNull()
+  })
+
+  it("still renders nothing for an empty strip in normal mode, or an empty split group", () => {
+    h.tabs = []
+    const normal = renderStrip()
+    expect(newConversation()).toBeNull()
+    normal.unmount()
+    act(() => useFolderTabsStore.setState({ enabled: true, scope: 1 }))
+    renderStrip({ groupId: "g-main" })
+    expect(newConversation()).toBeNull()
+  })
 })

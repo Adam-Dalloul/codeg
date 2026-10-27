@@ -2299,6 +2299,8 @@
       "reload": "Neu laden",
       "activeConversationIndicator": "Aktive Konversation",
       "newConversation": "Neue Konversation",
+      "emptyFolderScope": "Keine offenen Konversationen in {name}",
+      "emptyChatScope": "Keine offenen Chats",
       "closeConversation": "Konversation schließen",
       "forkSession": "Sitzung forken",
       "forkSessionSuccess": "Sitzung erfolgreich geforkt",

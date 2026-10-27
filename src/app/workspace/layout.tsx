@@ -5,6 +5,7 @@ import {
   useVisibleConversationTabs,
 } from "@/stores/tab-store"
 import { leafIds } from "@/lib/tab-group-layout"
+import { useFolderTabsStore } from "@/stores/folder-tabs-store"
 import { BrowserEvalConfirm } from "@/components/browser/browser-eval-confirm"
 import { BrowserEventsBridge } from "@/components/browser/browser-events-bridge"
 import { BrowserScreenshotMarkupHost } from "@/components/browser/browser-screenshot-markup"
@@ -351,6 +352,9 @@ function WorkspaceContent({ children }: { children: React.ReactNode }) {
   const { isMac, isWindows, isLinux } = usePlatform()
   const { zoomLevel } = useZoomLevel()
   const hasConvTabs = useVisibleConversationTabs().length > 0
+  // Tabs following the folder keep the strip (and its "+") for an empty one.
+  const tabsFollowFolder = useFolderTabsStore((s) => s.enabled)
+  const showConvStrip = hasConvTabs || tabsFollowFolder
   const isConvSplit = leafIds(useVisibleConversationLayout()).length > 1
   const winLinuxControls = isDesktop() && (isWindows || isLinux)
   // The window chrome (toggle/search left, terminal/aux/settings right) now
@@ -448,7 +452,7 @@ function WorkspaceContent({ children }: { children: React.ReactNode }) {
                   <div className="flex h-10 shrink-0 items-stretch bg-muted ws-transparent-bg">
                     <ChromeReserve width={leftCornerWidth} />
                     <div className="flex min-w-0 flex-1 items-stretch">
-                      {hasConvTabs ? (
+                      {showConvStrip ? (
                         // The unsplit strip IS the column's top-right strip,
                         // so it carries the maximize/restore button.
                         <TabBar maximizeControl />

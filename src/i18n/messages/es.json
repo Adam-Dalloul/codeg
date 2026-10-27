@@ -2299,6 +2299,8 @@
       "reload": "Recargar",
       "activeConversationIndicator": "Conversación activa",
       "newConversation": "Nueva conversación",
+      "emptyFolderScope": "No hay conversaciones abiertas en {name}",
+      "emptyChatScope": "No hay chats abiertos",
       "closeConversation": "Cerrar conversación",
       "forkSession": "Bifurcar sesión",
       "forkSessionSuccess": "Sesión bifurcada exitosamente",

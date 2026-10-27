@@ -2299,6 +2299,8 @@
       "reload": "重新加载",
       "activeConversationIndicator": "当前激活会话",
       "newConversation": "新建会话",
+      "emptyFolderScope": "{name} 中没有打开的会话",
+      "emptyChatScope": "没有打开的聊天",
       "closeConversation": "关闭会话",
       "forkSession": "分叉会话",
       "forkSessionSuccess": "会话分叉成功",

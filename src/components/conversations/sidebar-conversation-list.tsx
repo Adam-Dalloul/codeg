@@ -365,7 +365,9 @@ const FolderHeader = memo(function FolderHeader({
   // this component's memo and re-render every header on each status event.
   const t = useTranslations("Folder.sidebar")
   const tabsFollowFolder = useFolderTabsStore((s) => s.enabled)
-  const tabScope = useFolderTabsStore((s) => s.scope)
+  const scopeSelected = useFolderTabsStore(
+    (s) => s.enabled && s.scope === folderId
+  )
   const tTags = useTranslations("ConversationTags")
   const ime = useImeGuard()
   // Only flag a stale default once the live list is known; before fresh,
@@ -426,13 +428,18 @@ const FolderHeader = memo(function FolderHeader({
           >
             <div
               onPointerDown={(e) => onGripPointerDown?.(folderId, e)}
+              // While tabs follow the folder, the folder on screen wears the
+              // selected-row tint the conversation cards use.
+              data-scope-selected={scopeSelected || undefined}
               className={cn(
                 "group flex h-[1.9375rem] w-full items-center",
                 "rounded-full",
                 "transition-colors duration-150",
-                isDragging
-                  ? "cursor-grabbing"
-                  : "cursor-grab hover:bg-[color-mix(in_oklab,var(--sidebar-accent),var(--sidebar-foreground)_2%)]"
+                isDragging ? "cursor-grabbing" : "cursor-grab",
+                scopeSelected
+                  ? "bg-sidebar-primary/8"
+                  : !isDragging &&
+                      "hover:bg-[color-mix(in_oklab,var(--sidebar-accent),var(--sidebar-foreground)_2%)]"
               )}
             >
               <button
@@ -442,9 +449,7 @@ const FolderHeader = memo(function FolderHeader({
                     useFolderTabsStore.getState().activateScope(folderId)
                   } else onToggle(folderId)
                 }}
-                aria-current={
-                  tabsFollowFolder && tabScope === folderId ? "true" : undefined
-                }
+                aria-current={scopeSelected ? "true" : undefined}
                 title={folderPath}
                 // While tabs follow the folder this button selects the folder;
                 // the separate chevron button below is the disclosure control.

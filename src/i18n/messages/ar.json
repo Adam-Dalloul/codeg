@@ -2299,6 +2299,8 @@
       "reload": "إعادة تحميل",
       "activeConversationIndicator": "المحادثة النشطة",
       "newConversation": "محادثة جديدة",
+      "emptyFolderScope": "لا توجد محادثات مفتوحة في {name}",
+      "emptyChatScope": "لا توجد محادثات دردشة مفتوحة",
       "closeConversation": "إغلاق المحادثة",
       "forkSession": "تفريع الجلسة",
       "forkSessionSuccess": "تم تفريع الجلسة بنجاح",

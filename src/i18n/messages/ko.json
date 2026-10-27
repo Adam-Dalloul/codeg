@@ -2299,6 +2299,8 @@
       "reload": "다시 불러오기",
       "activeConversationIndicator": "활성 대화",
       "newConversation": "새 대화",
+      "emptyFolderScope": "{name}에 열린 대화가 없습니다",
+      "emptyChatScope": "열린 채팅이 없습니다",
       "closeConversation": "대화 닫기",
       "forkSession": "세션 포크",
       "forkSessionSuccess": "세션 포크 성공",

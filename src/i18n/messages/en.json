@@ -2299,6 +2299,8 @@
       "reload": "Reload",
       "activeConversationIndicator": "Active conversation",
       "newConversation": "New Conversation",
+      "emptyFolderScope": "No open conversations in {name}",
+      "emptyChatScope": "No open chats",
       "closeConversation": "Close Conversation",
       "forkSession": "Fork Session",
       "forkSessionSuccess": "Session forked successfully",

@@ -15,6 +15,7 @@ import {
   useWorkspaceView,
 } from "@/contexts/workspace-context"
 import { useIsMobile } from "@/hooks/use-mobile"
+import { useFolderTabsStore } from "@/stores/folder-tabs-store"
 import {
   groupOfTab,
   useVisibleConversationLayout,
@@ -58,6 +59,7 @@ export function TabBar({ groupId, maximizeControl = false }: TabBarProps) {
   // there is one (fusion) — the file strip's own button follows the same rule.
   // Mobile shows one pane at a time and has nothing to cover.
   const showMaximize = maximizeControl && mode === "fusion" && !isMobile
+  const tabsFollowFolder = useFolderTabsStore((s) => s.enabled)
   const tabs = useVisibleConversationTabs()
   const activeTabId = useTabStore((s) => s.activeTabId)
   const groupOf = useTabStore((s) => s.groupOf)
@@ -307,7 +309,11 @@ export function TabBar({ groupId, maximizeControl = false }: TabBarProps) {
     []
   )
 
-  if (groupTabs.length === 0) return null
+  // While tabs follow the folder, the unsplit strip stays up for a folder with
+  // nothing open: its "+" is how that folder gets its first conversation.
+  if (groupTabs.length === 0 && (groupId != null || !tabsFollowFolder)) {
+    return null
+  }
 
   const activeIndex = groupTabs.findIndex((tab) => tab.id === displayActiveId)
   // When the LAST tab is active, the trailing new-conversation wrapper is its
@@ -453,7 +459,7 @@ export function TabBar({ groupId, maximizeControl = false }: TabBarProps) {
             conversation column over the whole middle area with the file column
             hidden under it, and back. `mr-1.5` gives it the 6px inset from the
             strip's right edge it has above and below. */}
-        {showMaximize && (
+        {showMaximize && groupTabs.length > 0 && (
           <button
             type="button"
             onClick={toggleConversationMaximized}

@@ -2197,6 +2197,7 @@ describe("SidebarConversationList — folder header and folder-tabs mode", () =>
     const before = header(1).getAttribute("aria-expanded")
     expect(before === "true" || before === "false").toBe(true)
     expect(header(1)).not.toHaveAttribute("aria-current")
+    expect(header(1).parentElement).not.toHaveAttribute("data-scope-selected")
     expect(disclosureButtons()).toHaveLength(0)
     act(() => {
       fireEvent.click(header(1))
@@ -2215,11 +2216,19 @@ describe("SidebarConversationList — folder header and folder-tabs mode", () =>
     render(tree())
     expect(header(1)).not.toHaveAttribute("aria-expanded")
     expect(header(2)).toHaveAttribute("aria-current", "true")
+    // The folder on screen wears the selected-row tint, not only the ARIA.
+    const row = (folderId: number) => header(folderId).parentElement!
+    expect(row(2)).toHaveAttribute("data-scope-selected", "true")
+    expect(row(2).className).toContain("bg-sidebar-primary/8")
+    expect(row(1)).not.toHaveAttribute("data-scope-selected")
+    expect(row(1).className).not.toContain("bg-sidebar-primary/8")
     act(() => {
       fireEvent.click(header(1))
     })
     expect(useFolderTabsStore.getState().scope).toBe(1)
     expect(header(1)).toHaveAttribute("aria-current", "true")
+    expect(row(1)).toHaveAttribute("data-scope-selected", "true")
+    expect(row(2)).not.toHaveAttribute("data-scope-selected")
     // The row's own disclosure button sits right after the row button.
     const toggle = () => header(1).nextElementSibling as HTMLElement
     expect(toggle()).toHaveAttribute("aria-label", "Expand or collapse folder")
