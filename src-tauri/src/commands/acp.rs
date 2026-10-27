@@ -9720,7 +9720,9 @@ fn project_skill_dirs(
 /// in its runtime's `skills/roots.ts` returns each one from the cwd up to the
 /// nearest ancestor containing `.git`, the cwd first, and the cwd alone when no
 /// ancestor has one. A skill it loads from a parent folder is then listed and
-/// edited where it is, and the copy listed for an id is the one it uses.
+/// edited where it is, and the copy listed for an id is the one the runtime
+/// ranks first among its project folders. It loads a skill by its declared
+/// `name`, though, and ranks user skills above project ones.
 ///
 /// `.git` is matched as a plain path, file or directory: in a linked worktree
 /// (which codeg creates routinely) it is a FILE, and all three upstreams'

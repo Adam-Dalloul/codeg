@@ -41,8 +41,10 @@ ZCode loads: those in `<session cwd>/.agents/skills/` and, when the session cwd
 is inside a Git repository, those in both folders of every parent folder up to
 the repository root. A skill from a parent folder is edited where it is. When
 several of these folders contain the same skill folder, Codeg lists and edits
-the copy ZCode uses: the one nearest the session cwd, and within one folder the
-`.zcode` copy. Of these project folders, the bridge's command list includes only
+only the first: the one nearest the session cwd, and within one folder the
+`.zcode` copy. ZCode ranks these folders in the same order, but it picks a skill
+by the `name` in its `SKILL.md`, and prefers a global skill with the same name.
+Of these project folders, the bridge's command list includes only
 `<session cwd>/.agents/skills/`; ZCode loads skills from all of them.
 
 `ZCODE_HOME` does not move these folders. The runtime's global skill folders
