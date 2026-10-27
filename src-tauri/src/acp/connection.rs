@@ -1824,6 +1824,7 @@ async fn record_turn_end(
     stop_reason: &str,
     started_at_ms: u64,
     model: Option<String>,
+    usage: Option<&agent_client_protocol::schema::v1::Usage>,
     metrics: Option<&crate::acp::zcode_turn::TurnMetrics>,
 ) {
     let Some(dir) = transcript_dir_for(agent_type) else {
@@ -1834,6 +1835,9 @@ async fn record_turn_end(
         "stopReason": stop_reason,
         "durationMs": now.saturating_sub(started_at_ms),
     });
+    if let Some(usage) = usage.and_then(|usage| serde_json::to_value(usage).ok()) {
+        payload["usage"] = usage;
+    }
     if let Some(metrics) = metrics {
         metrics.apply_to(&mut payload);
     }
@@ -2029,7 +2033,7 @@ async fn build_agent(
     cwd: &Path,
     stderr_tail: &Arc<StderrTail>,
     scratch: Option<&Path>,
-) -> Result<AcpAgent, AcpError> {
+) -> Result<(AcpAgent, crate::acp::reported_usage::PromptUsageMode), AcpError> {
     // A conversation can outlive the custom-agent definition it was started
     // with (the user deleted it in settings). `get_agent_meta` cannot report
     // that — it is infallible — so it hands back a placeholder with an empty
@@ -2044,6 +2048,10 @@ async fn build_agent(
     }
     let meta = registry::get_agent_meta(agent_type);
     debug_assert_eq!(meta.agent_type, agent_type);
+    let prompt_usage_mode = crate::acp::reported_usage::PromptUsageMode::for_distribution(
+        agent_type,
+        &meta.distribution,
+    );
 
     let agent = match meta.distribution {
         AgentDistribution::Npx { cmd, args, env, .. } => {
@@ -2534,11 +2542,12 @@ async fn build_agent(
     // alignment (process cwd == session cwd). Guard on an existing directory
     // so a not-yet-created working_dir (e.g. a worktree path) can't make the
     // spawn fail.
-    Ok(if cwd.is_dir() {
+    let agent = if cwd.is_dir() {
         agent.with_current_dir(cwd)
     } else {
         agent
-    })
+    };
+    Ok((agent, prompt_usage_mode))
 }
 
 /// Stack size for the dedicated OS thread that drives each ACP connection's
@@ -2664,7 +2673,7 @@ pub async fn spawn_agent_connection(
     // `None` (isolation off, or the directory could not be created) means the
     // child inherits the ambient temp dir exactly as it did before.
     let scratch = crate::acp::scratch_dir::create();
-    let agent = match build_agent(
+    let (agent, prompt_usage_mode) = match build_agent(
         agent_type,
         &runtime_env,
         &launch_cwd,
@@ -2683,6 +2692,7 @@ pub async fn spawn_agent_connection(
             return Err(e);
         }
     };
+    session_state.write().await.prompt_usage_mode = prompt_usage_mode;
     let agent = agent
         .on_spawn({
             let child_pid = Arc::clone(&child_pid);
@@ -14352,6 +14362,7 @@ async fn run_conversation_loop(
                                         reason_str,
                                         turn_started_at_ms,
                                         current_session_model_id(state).await,
+                                        None,
                                         zcode_turn.metrics(),
                                     )
                                     .await;
@@ -14462,12 +14473,18 @@ async fn run_conversation_loop(
                             // streamed chunks this one is bound-awaited: a
                             // conversation reopened right after a turn must not
                             // miss its tail.
+                            let prompt_usage_mode = state.read().await.prompt_usage_mode;
+                            let model = match prompt_usage_mode.reported_model(response.meta.as_ref()) {
+                                Some(model) => Some(model),
+                                None => current_session_model_id(state).await,
+                            };
                             record_turn_end(
                                 agent_type,
                                 &sid.0,
                                 reason_str,
                                 turn_started_at_ms,
-                                current_session_model_id(state).await,
+                                model,
+                                prompt_usage_mode.select(response.usage.as_ref()),
                                 zcode_turn.metrics(),
                             )
                             .await;
@@ -42385,8 +42402,37 @@ mod tests {
         }
 
         async fn start_for(agent_type: AgentType, turns: Vec<Vec<GrokFrame>>) -> Self {
+            Self::start_with_usages(agent_type, turns, Vec::new()).await
+        }
+
+        async fn start_with_usages(
+            agent_type: AgentType,
+            turns: Vec<Vec<GrokFrame>>,
+            usages: Vec<Option<agent_client_protocol::schema::v1::Usage>>,
+        ) -> Self {
+            let responses = usages
+                .into_iter()
+                .map(|usage| {
+                    let mut response = agent_client_protocol::schema::v1::PromptResponse::new(
+                        StopReason::EndTurn,
+                    );
+                    response.usage = usage;
+                    response
+                })
+                .collect();
+            Self::start_with_responses(agent_type, turns, responses).await
+        }
+
+        /// Each prompt is answered with the next of `responses`, or with a bare
+        /// `end_turn` once they run out.
+        async fn start_with_responses(
+            agent_type: AgentType,
+            turns: Vec<Vec<GrokFrame>>,
+            responses: Vec<agent_client_protocol::schema::v1::PromptResponse>,
+        ) -> Self {
             use agent_client_protocol::schema::v1::PromptResponse;
             let turns = Arc::new(std::sync::Mutex::new(VecDeque::from(turns)));
+            let responses = Arc::new(std::sync::Mutex::new(VecDeque::from(responses)));
             let respond = Arc::new(tokio::sync::Notify::new());
             let agent_respond = Arc::clone(&respond);
             let steer_outcomes = Arc::new(std::sync::Mutex::new(VecDeque::new()));
@@ -42411,13 +42457,18 @@ mod tests {
                                     responder: Responder<PromptResponse>,
                                     cx: ConnectionTo<Client>| {
                             let frames = turns.lock().unwrap().pop_front().unwrap_or_default();
+                            let response = responses
+                                .lock()
+                                .unwrap()
+                                .pop_front()
+                                .unwrap_or_else(|| PromptResponse::new(StopReason::EndTurn));
                             send_grok_frames(&cx, &frames)?;
                             let respond = Arc::clone(&agent_respond);
                             // Off the handler, so a held response doesn't hold
                             // up the agent's other incoming messages.
                             tokio::spawn(async move {
                                 respond.notified().await;
-                                responder.respond(PromptResponse::new(StopReason::EndTurn))
+                                responder.respond(response)
                             });
                             Ok(())
                         },
@@ -42600,6 +42651,148 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn custom_prompt_response_usage_reaches_history_without_counting_context_occupancy() {
+        use crate::parsers::AgentParser as _;
+        let home = tempfile::tempdir().unwrap();
+        let home_str = home.path().to_string_lossy().into_owned();
+        temp_env::async_with_vars([("CODEG_HOME", Some(home_str.as_str()))], async {
+            let agent_type = AgentType::custom("usage-fixture").unwrap();
+            let usage = serde_json::from_value(serde_json::json!({
+                "inputTokens":11,"outputTokens":7,"cachedReadTokens":101,
+                "cachedWriteTokens":17,"thoughtTokens":5,"totalTokens":136
+            })).unwrap();
+            let mut lp = CustomLoop::start_with_usages(agent_type, vec![
+                vec![custom_update(serde_json::json!({"sessionUpdate":"usage_update","used":9000,"size":131072})), custom_text("first")],
+                vec![custom_text("without counters")],
+            ], vec![Some(usage), None]).await;
+            let source = AgentDistribution::Npx {
+                version: "0.97.0",
+                package: "@agentclientprotocol/claude-agent-acp",
+                cmd: "claude-agent-acp",
+                args: &[], env: &[], node_required: None,
+            };
+            lp.state.write().await.prompt_usage_mode =
+                crate::acp::reported_usage::PromptUsageMode::for_distribution(agent_type, &source);
+            lp.run_turn("one", "first").await;
+            let parser = || crate::parsers::acp_native::AcpNativeParser::new_in(
+                agent_type, crate::paths::codeg_acp_transcripts_root(),
+            );
+            let first = parser().get_conversation("s1").unwrap();
+            let usage = first.turns[1].usage.as_ref().unwrap();
+            assert_eq!((usage.input_tokens, usage.output_tokens, usage.cache_read_input_tokens, usage.cache_creation_input_tokens), (11, 7, 101, 17));
+            assert_eq!(first.session_stats.as_ref().unwrap().total_tokens, Some(136));
+            assert_eq!(first.session_stats.as_ref().unwrap().context_window_used_tokens, Some(9000));
+            lp.run_turn("two", "without counters").await;
+            let second = parser().get_conversation("s1").unwrap();
+            assert!(second.turns[3].usage.is_none());
+            assert_eq!(second.session_stats.unwrap().total_tokens, Some(136));
+            lp.shutdown().await;
+        }).await;
+    }
+
+    /// claude-agent-acp's model selector values are aliases (`opus`). A turn
+    /// whose response attributes all of its counters to one model id is named
+    /// by that id; when the response lists several, the selector value stands.
+    #[tokio::test]
+    async fn a_recorded_turn_is_named_by_the_one_model_its_response_reports() {
+        use crate::parsers::AgentParser as _;
+        let home = tempfile::tempdir().unwrap();
+        let home_str = home.path().to_string_lossy().into_owned();
+        temp_env::async_with_vars([("CODEG_HOME", Some(home_str.as_str()))], async {
+            let agent_type = AgentType::custom("model-fixture").unwrap();
+            let response = |models: &[&str]| {
+                let mut response =
+                    agent_client_protocol::schema::v1::PromptResponse::new(StopReason::EndTurn);
+                response.usage = Some(
+                    serde_json::from_value(serde_json::json!({
+                        "inputTokens": 40, "outputTokens": 10, "totalTokens": 50
+                    }))
+                    .unwrap(),
+                );
+                let rows: Vec<_> = models
+                    .iter()
+                    .map(|model| {
+                        serde_json::json!({"model": model, "token_count": {"totalTokens": 50}})
+                    })
+                    .collect();
+                response.meta = Some(
+                    serde_json::from_value(serde_json::json!({"quota": {"model_usage": rows}}))
+                        .unwrap(),
+                );
+                response
+            };
+            let mut lp = CustomLoop::start_with_responses(
+                agent_type,
+                vec![vec![custom_text("first")], vec![custom_text("second")]],
+                vec![
+                    response(&["claude-opus-5-5"]),
+                    response(&["claude-opus-5-5", "claude-haiku-5-5"]),
+                ],
+            )
+            .await;
+            {
+                let mut st = lp.state.write().await;
+                st.prompt_usage_mode =
+                    crate::acp::reported_usage::PromptUsageMode::PerPromptCacheExclusive;
+                st.config_options = Some(vec![SessionConfigOptionInfo {
+                    id: "model".to_string(),
+                    name: "Model".to_string(),
+                    description: None,
+                    category: Some("model".to_string()),
+                    kind: SessionConfigKindInfo::Select(SessionConfigSelectInfo {
+                        current_value: "opus".to_string(),
+                        options: vec![SessionConfigSelectOptionInfo {
+                            value: "opus".to_string(),
+                            name: "Opus".to_string(),
+                            description: None,
+                        }],
+                        groups: Vec::new(),
+                    }),
+                    recommended_value: None,
+                }]);
+            }
+            lp.run_turn("one", "first").await;
+            lp.run_turn("two", "second").await;
+            let detail = crate::parsers::acp_native::AcpNativeParser::new_in(
+                agent_type,
+                crate::paths::codeg_acp_transcripts_root(),
+            )
+            .get_conversation("s1")
+            .unwrap();
+            assert_eq!(detail.turns[1].model.as_deref(), Some("claude-opus-5-5"));
+            assert_eq!(detail.turns[1].usage.as_ref().map(|u| u.input_tokens), Some(40));
+            assert_eq!(detail.turns[3].model.as_deref(), Some("opus"));
+            lp.shutdown().await;
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn unsupported_prompt_response_usage_is_not_recorded_as_per_turn_spend() {
+        let home = tempfile::tempdir().unwrap();
+        let home_str = home.path().to_string_lossy().into_owned();
+        temp_env::async_with_vars([("CODEG_HOME", Some(home_str.as_str()))], async {
+            for agent_type in [AgentType::CommandCode, AgentType::Trae, AgentType::Custom("unknown-usage")]
+            {
+                let usage = |tokens| serde_json::from_value(serde_json::json!({
+                    "inputTokens":tokens,"outputTokens":0,"cachedReadTokens":100,"totalTokens":tokens,
+                })).unwrap();
+                let mut lp = CustomLoop::start_with_usages(agent_type, vec![
+                    vec![custom_text("first")], vec![custom_text("second")], vec![custom_text("third")],
+                ], vec![Some(usage(1000)), Some(usage(2000)), Some(usage(3000))]).await;
+                lp.run_turn("one", "first").await;
+                lp.run_turn("two", "second").await;
+                lp.run_turn("three", "third").await;
+                let raw = crate::acp_transcript::read_transcript(registry::registry_id_for(agent_type), "s1");
+                let ends: Vec<_> = raw.entries.iter().filter(|e| e.k == crate::acp_transcript::EntryKind::TurnEnd).collect();
+                assert_eq!(ends.len(), 3, "{agent_type}");
+                assert!(ends.iter().all(|e| e.p.get("usage").is_none()), "{agent_type}");
+                lp.shutdown().await;
+            }
+        }).await;
+    }
+
+    #[tokio::test]
     async fn zcode_terminal_metrics_reach_history_once_before_turn_complete() {
         use crate::parsers::AgentParser as _;
         let home = tempfile::tempdir().unwrap();
@@ -42610,7 +42803,7 @@ mod tests {
                 "sessionId":"s1","running":false,"turnMs":ms,
                 "usage":{"inputTokens":input,"outputTokens":350,"cachedReadTokens":900,"cachedWriteTokens":120,"totalTokens":input+1370}
             });
-            let mut lp = CustomLoop::start_for(AgentType::ZCode, vec![
+            let mut lp = CustomLoop::start_with_usages(AgentType::ZCode, vec![
                 vec![start(),
                     custom_update(serde_json::json!({"sessionUpdate":"usage_update","used":9999,"size":131072})),
                     ("_zcode/turnState",end(180,4200)),
@@ -42620,7 +42813,9 @@ mod tests {
                 // A late prior-turn end and idle/replay data have no opening
                 // marker in this prompt, so they cannot seed its metadata.
                 vec![("_zcode/turnState",end(9999,9999)),custom_text("third")],
-            ]).await;
+            ], vec![Some(serde_json::from_value(serde_json::json!({
+                "inputTokens":9999,"outputTokens":1,"totalTokens":10000
+            })).unwrap()), None, None]).await;
             lp.agent_sends(vec![start(),("_zcode/turnState",end(9999,9999)),grok_barrier()]);
             lp.until_barrier().await;
             let parser = || crate::parsers::acp_native::AcpNativeParser::new_in(
