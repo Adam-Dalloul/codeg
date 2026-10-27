@@ -383,10 +383,18 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn two_processes_taking_numbers_never_share_one() {
         const EACH: u64 = 25;
+        // `take_seq`, but waiting on the other process for `PATIENCE`, as the
+        // marks do, rather than `LOCK_WAIT`. A waiter only polls the lock, so
+        // while the other takes its numbers back to back it may wait out that
+        // whole run, which a slow runner can stretch past `LOCK_WAIT`.
+        async fn take_one(home: &Path) -> u64 {
+            let guard = acquire(home, PATIENCE).await.unwrap();
+            next_seq(&guard).unwrap()
+        }
         let take = |home: PathBuf| async move {
             let mut taken = Vec::new();
             for _ in 0..EACH {
-                taken.push(take_seq(&home).await.unwrap());
+                taken.push(take_one(&home).await);
             }
             taken
         };
@@ -421,7 +429,7 @@ pub(crate) mod tests {
         );
         wait_for_mark(&marks, "held", Some(&mut other));
         std::fs::write(marks.join("waiting"), "").unwrap();
-        let after_theirs = take_seq(&home).await.unwrap();
+        let after_theirs = take_one(&home).await;
         let under_lock: u64 = std::fs::read_to_string(marks.join("under-lock"))
             .unwrap()
             .parse()
