@@ -316,7 +316,7 @@ async fn roll_back_target(
     sid: &str,
 ) -> Result<(), AcpError> {
     manager
-        .wait_for_account_session_writers(target, sid)
+        .wait_for_account_session_writers(target, sid, None)
         .await?;
     transfer.rollback().map_err(failure)?;
     transfer.discard_staging();
