@@ -37,6 +37,7 @@ import {
   groupOfTab,
   useVisibleConversationTabs,
   useVisibleConversationLayout,
+  shellGroupOfTab,
   isReparentUnmount,
   reparentedViewRuntimeConversationId,
   trackConversationView,
@@ -2620,6 +2621,7 @@ export function ConversationDetailPanel() {
   const activeTabId = useTabStore((s) => s.activeTabId)
   const groupLayout = useTabStore((s) => s.groupLayout)
   const groupOf = useTabStore((s) => s.groupOf)
+  const groupViews = useTabStore((s) => s.groupViews)
   const groupSelection = useTabStore((s) => s.groupSelection)
   const tileByGroup = useTabStore((s) => s.tileByGroup)
   // Narrow: only the drop-TARGET group id (for the shell highlight ring) — the
@@ -2890,13 +2892,20 @@ export function ConversationDetailPanel() {
     () => computeRects(visibleLayout),
     [visibleLayout]
   )
-  const orderedGroupIds = useMemo(() => leafIds(groupLayout), [groupLayout])
   const isSplit = leafIds(visibleLayout).length > 1
+  // Every tab sits in its own view's group shell (`shellGroupOfTab`): the
+  // folder views not on screen keep their shells, hidden, so a folder switch
+  // reparents nothing. Shells come in id order — a fixed order whatever view
+  // is on screen, so a switch never moves one (a moved node resets every
+  // transcript inside it); new shells only ever insert.
   const tabsByGroup = useMemo(() => {
     const byGroup = new Map<string, typeof tabs>()
-    for (const groupId of orderedGroupIds) byGroup.set(groupId, [])
+    for (const groupId of leafIds(groupLayout)) byGroup.set(groupId, [])
+    const state = { rawTabs: tabs, groupOf, groupLayout, groupViews }
     for (const tab of tabs) {
-      const groupId = groupOfTab(groupOf, groupLayout, tab.id)
+      const groupId = visibleTabIds.has(tab.id)
+        ? groupOfTab(groupOf, groupLayout, tab.id)
+        : shellGroupOfTab(state, tab.id)
       const bucket = byGroup.get(groupId)
       if (bucket) {
         bucket.push(tab)
@@ -2905,7 +2914,11 @@ export function ConversationDetailPanel() {
       }
     }
     return byGroup
-  }, [tabs, groupOf, groupLayout, orderedGroupIds])
+  }, [tabs, groupOf, groupLayout, groupViews, visibleTabIds])
+  const orderedGroupIds = useMemo(
+    () => [...tabsByGroup.keys()].sort(),
+    [tabsByGroup]
+  )
 
   const tileTabRefs = useRef<Map<string, HTMLDivElement | null>>(new Map())
   const groupContainerRef = useRef<HTMLDivElement | null>(null)
@@ -2919,12 +2932,14 @@ export function ConversationDetailPanel() {
         .filter(
           (groupId) =>
             tileByGroup[groupId] &&
-            (tabsByGroup.get(groupId)?.length ?? 0) > 1 &&
+            (tabsByGroup.get(groupId) ?? []).filter((tab) =>
+              visibleTabIds.has(tab.id)
+            ).length > 1 &&
             groupSelection[groupId] != null
         )
         .map((groupId) => groupSelection[groupId])
         .join("|"),
-    [orderedGroupIds, tileByGroup, tabsByGroup, groupSelection]
+    [orderedGroupIds, tileByGroup, tabsByGroup, groupSelection, visibleTabIds]
   )
   useEffect(() => {
     if (!tiledSelectionKey) return
@@ -3166,6 +3181,9 @@ export function ConversationDetailPanel() {
                   sibling tabs remount and a live streaming response is torn
                   down. */}
               {orderedGroupIds.map((groupId) => renderGroupShell(groupId))}
+              {/* The handles resize the on-screen view's own layout (a
+                  folder's, while tabs follow the folder), which the visible
+                  one only differs from before the tab set is known. */}
               {isSplit &&
                 visibleLayout === groupLayout &&
                 groupHandles.map((handle) => (

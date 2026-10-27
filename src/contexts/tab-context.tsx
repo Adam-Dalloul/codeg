@@ -14,6 +14,7 @@ import { useWorkspaceActions } from "@/contexts/workspace-context"
 import { useSortedAvailableAgents } from "@/hooks/use-sorted-available-agents"
 import { onTransportReconnect, subscribe } from "@/lib/platform"
 import {
+  dropParkedFolderGroupViews,
   pruneOrphanDraftsOnce,
   runCorrectionOnce,
   runRecoveryOnce,
@@ -84,6 +85,7 @@ export function TabProvider({ children }: TabProviderProps) {
     preferenceHydrated.current = true
     useTabStore.getState().syncActiveFolderId()
     useFolderTabsStore.getState().hydratePreference()
+    dropParkedFolderGroupViews()
   }, [tabsHydrated, foldersHydrated])
   // From then on, a switch made in another window applies here too.
   useEffect(() => {

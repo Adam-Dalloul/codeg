@@ -174,6 +174,14 @@ export interface TabStoreState {
   groupSelection: Record<string, string>
   tileByGroup: Record<string, boolean>
   /**
+   * The group state of every tab view not on screen, by view key. While tabs
+   * follow the folder each folder has its own view — its own split layout,
+   * assignments, selection and tile flags — and the normal-mode view waits
+   * here under "all"; the fields above always belong to the view on screen.
+   * Device-local and persisted with them (see `persistGroupState`).
+   */
+  groupViews: Record<string, GroupView>
+  /**
    * Transient cross-group tab drag (never persisted): the dragged tab, the
    * live pointer position, and the FOREIGN group currently under the pointer
    * (null while over the tab's own strip / no valid target). Drives the
@@ -624,16 +632,16 @@ export function selectIsSplit(s: TabStoreState): boolean {
  * (mobile conversation→file pane switch, workbench route overlay), and those
  * must still disconnect — the idle sweep skips viewers, so a viewer left
  * attached leaks its subscription. Since group shells are flat siblings keyed
- * by group id, a surviving tab leaves its shell if and only if its group
- * assignment changed, which is exactly what this compares.
+ * by group id, a surviving tab leaves its shell if and only if its shell group
+ * (`shellGroupOfTab`) changed, which is exactly what this compares.
  */
 export function isReparentUnmount(
-  state: Pick<TabStoreState, "rawTabs" | "groupOf" | "groupLayout">,
+  state: GroupResolutionState,
   tabId: string,
   renderedGroupId: string
 ): boolean {
   if (!state.rawTabs.some((tab) => tab.id === tabId)) return false
-  return groupOfTab(state.groupOf, state.groupLayout, tabId) !== renderedGroupId
+  return shellGroupOfTab(state, tabId) !== renderedGroupId
 }
 
 /** The conversation view each tab has mounted: the group it rendered under and
@@ -677,7 +685,7 @@ export function trackConversationView(
  * fetches.
  */
 export function reparentedViewRuntimeConversationId(
-  state: Pick<TabStoreState, "rawTabs" | "groupOf" | "groupLayout">,
+  state: GroupResolutionState,
   tabId: string
 ): number | null {
   const predecessor = mountedConversationViews.get(tabId)
@@ -715,6 +723,27 @@ function sanitizeBoolRecord(value: unknown): Record<string, boolean> {
   if (typeof value !== "object" || value === null) return out
   for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
     if (typeof v === "boolean") out[k] = v
+  }
+  return out
+}
+
+/** The blob's folder views (written while tabs follow the folder), parked
+ *  until the mode is restored — or dropped if it comes back off. */
+function sanitizeGroupViews(value: unknown): Record<string, GroupView> {
+  const out: Record<string, GroupView> = {}
+  if (typeof value !== "object" || value === null) return out
+  for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
+    if (!key.startsWith(FOLDER_GROUP_VIEW_PREFIX)) continue
+    if (typeof raw !== "object" || raw === null) continue
+    const view = raw as Record<string, unknown>
+    if (!isLayoutNode(view.layout)) continue
+    out[key] = {
+      layout: view.layout,
+      groupOf: sanitizeStringRecord(view.assignments),
+      selection: sanitizeStringRecord(view.selection),
+      tileByGroup: sanitizeBoolRecord(view.tileByGroup),
+      active: null,
+    }
   }
   return out
 }
@@ -783,6 +812,7 @@ function readPersistedGroupState(): {
   groupOf: Record<string, string>
   groupSelection: Record<string, string>
   tileByGroup: Record<string, boolean>
+  groupViews: Record<string, GroupView>
 } {
   pendingRestoreDrafts = []
   pendingRestoreActiveDraft = null
@@ -791,6 +821,7 @@ function readPersistedGroupState(): {
     groupOf: {} as Record<string, string>,
     groupSelection: {} as Record<string, string>,
     tileByGroup: {} as Record<string, boolean>,
+    groupViews: {} as Record<string, GroupView>,
   })
   if (typeof window === "undefined") return fallback()
   try {
@@ -807,6 +838,7 @@ function readPersistedGroupState(): {
           groupOf: sanitizeStringRecord(parsed.assignments),
           groupSelection: sanitizeStringRecord(parsed.selection),
           tileByGroup: sanitizeBoolRecord(parsed.tileByGroup),
+          groupViews: sanitizeGroupViews(parsed.views),
         }
       }
     }
@@ -832,14 +864,32 @@ function persistGroupState() {
   // hydration it is missing every conversation tab — writing either would
   // replace the good blob with a collapsed layout.
   if (!st.tabsHydrated || !tabsSnapshotLoaded) return
+  // The top level is always the normal-mode view, as a session with the mode
+  // off reads it; folder views (while tabs follow the folder, or parked from
+  // the last session until the stored mode is known) ride in `views`.
+  const views: Record<string, GroupView> = {
+    ...st.groupViews,
+    [groupViewKey(useFolderTabsStore.getState())]: groupViewOnScreen(st),
+  }
+  const normal = views[ALL_GROUP_VIEW] ?? groupViewOnScreen(st)
+  const canonicalId = (tab: TabItemInternal) =>
+    tab.conversationId != null
+      ? makeConversationTabId(tab.folderId, tab.agentType, tab.conversationId)
+      : tab.id
+  const canonicalSelection = (selection: Record<string, string>) => {
+    const out: Record<string, string> = {}
+    for (const [groupId, tabId] of Object.entries(selection)) {
+      const tab = st.rawTabs.find((t) => t.id === tabId)
+      if (tab) out[groupId] = canonicalId(tab)
+    }
+    return out
+  }
   const assignments: Record<string, string> = {}
   const drafts: PersistedDraft[] = []
   st.rawTabs.forEach((tab, index) => {
-    const group = groupOfTab(st.groupOf, st.groupLayout, tab.id)
+    const group = groupOfTab(normal.groupOf, normal.layout, tab.id)
     if (tab.conversationId != null) {
-      assignments[
-        makeConversationTabId(tab.folderId, tab.agentType, tab.conversationId)
-      ] = group
+      assignments[canonicalId(tab)] = group
       return
     }
     drafts.push({
@@ -856,26 +906,41 @@ function persistGroupState() {
       ...(tab.agentTypeProvisional ? {} : { agentType: tab.agentType }),
     })
   })
-  const selection: Record<string, string> = {}
-  for (const [groupId, tabId] of Object.entries(st.groupSelection)) {
-    const tab = st.rawTabs.find((t) => t.id === tabId)
-    if (!tab) continue
-    selection[groupId] =
-      tab.conversationId != null
-        ? makeConversationTabId(tab.folderId, tab.agentType, tab.conversationId)
-        : tab.id
+  // Each folder view lists only its own folder's tabs (drafts by their own
+  // ids — the draft entries above carry the normal-mode group). A folder with
+  // no tabs left has nothing to restore: it starts afresh like any new one.
+  const folderViews: Record<string, unknown> = {}
+  for (const [key, view] of Object.entries(views)) {
+    if (key === ALL_GROUP_VIEW) continue
+    const viewAssignments: Record<string, string> = {}
+    for (const tab of st.rawTabs) {
+      if (folderGroupViewKey(tab) !== key) continue
+      viewAssignments[canonicalId(tab)] = groupOfTab(
+        view.groupOf,
+        view.layout,
+        tab.id
+      )
+    }
+    if (Object.keys(viewAssignments).length === 0) continue
+    folderViews[key] = {
+      layout: view.layout,
+      assignments: viewAssignments,
+      selection: canonicalSelection(view.selection),
+      tileByGroup: view.tileByGroup,
+    }
   }
   const activeTab = st.rawTabs.find((t) => t.id === st.activeTabId)
   const blob = JSON.stringify({
-    layout: st.groupLayout,
+    layout: normal.layout,
     assignments,
-    selection,
-    tileByGroup: st.tileByGroup,
+    selection: canonicalSelection(normal.selection),
+    tileByGroup: normal.tileByGroup,
     drafts,
     // Only a DRAFT focus needs restoring here; conversation focus rides the
     // synced `opened_tabs.is_active`.
     activeDraft:
       activeTab && activeTab.conversationId == null ? activeTab.id : null,
+    ...(Object.keys(folderViews).length > 0 ? { views: folderViews } : {}),
   })
   if (blob === lastGroupBlob) return
   lastGroupBlob = blob
@@ -968,6 +1033,9 @@ export function useVisibleConversationTabs() {
   )
 }
 
+/** The on-screen view's layout. While tabs follow the folder that is the
+ *  folder's own layout, already narrowed to its tabs once the tab set is
+ *  known; narrowing here as well covers the moments before that. */
 export function useVisibleConversationLayout() {
   const enabled = useFolderTabsStore((s) => s.enabled)
   const tabs = useVisibleConversationTabs()
@@ -985,17 +1053,117 @@ export function useVisibleConversationLayout() {
   )
 }
 
-const scopeSelections = new Map<
-  TabScope,
-  {
-    active: string | null
-    groups: Record<string, string>
+/**
+ * Split-group state of a tab view that is not on screen. A view is the tabs
+ * one layout arranges: every tab in normal mode, or one folder's while tabs
+ * follow the folder — so splitting, resizing or unsplitting in one folder
+ * leaves every other folder's layout alone. The view on screen lives in the
+ * store's own group fields; a switch parks it here and loads the next one.
+ */
+export interface GroupView {
+  layout: LayoutNode
+  groupOf: Record<string, string>
+  selection: Record<string, string>
+  tileByGroup: Record<string, boolean>
+  /** Its active tab when it was left, offered back on a folder switch. */
+  active: string | null
+}
+
+/** Key of the normal-mode view (parked while tabs follow the folder). */
+const ALL_GROUP_VIEW = "all"
+const FOLDER_GROUP_VIEW_PREFIX = "scope:"
+
+function groupViewKey(state: { enabled: boolean; scope: TabScope }): string {
+  return state.enabled
+    ? `${FOLDER_GROUP_VIEW_PREFIX}${state.scope}`
+    : ALL_GROUP_VIEW
+}
+
+/** The folder view a tab belongs to while tabs follow the folder. */
+function folderGroupViewKey(tab: Pick<TabItem, "folderId">): string {
+  return `${FOLDER_GROUP_VIEW_PREFIX}${folderScope(tab.folderId)}`
+}
+
+function groupViewOnScreen(st: TabStoreState): GroupView {
+  return {
+    layout: st.groupLayout,
+    groupOf: st.groupOf,
+    selection: st.groupSelection,
+    tileByGroup: st.tileByGroup,
+    active: st.activeTabId,
   }
->()
+}
+
+type GroupResolutionState = Pick<
+  TabStoreState,
+  "rawTabs" | "groupOf" | "groupLayout"
+> &
+  Partial<Pick<TabStoreState, "groupViews">>
+
+/** What a tab's group resolves against: the view on screen for a tab it
+ *  shows, else the tab's own folder view — parked, or not built yet and so
+ *  still the normal-mode one it will be narrowed from. */
+function groupViewOfTab(
+  state: GroupResolutionState,
+  tab: Pick<TabItem, "folderId">
+): Pick<GroupView, "groupOf" | "layout"> {
+  const onScreen = { groupOf: state.groupOf, layout: state.groupLayout }
+  if (isTabInScope(tab)) return onScreen
+  const views = state.groupViews ?? {}
+  return views[folderGroupViewKey(tab)] ?? views[ALL_GROUP_VIEW] ?? onScreen
+}
 
 /**
- * Re-establish the group invariants after any tab/group write:
- *   1. assignments only for open tabs, pointing at live leaves;
+ * The group shell a tab's conversation view renders in, whichever view is on
+ * screen. A hidden tab stays in its own view's group, so switching folders
+ * never moves a live conversation to another shell (which would remount it).
+ */
+export function shellGroupOfTab(
+  state: GroupResolutionState,
+  tabId: string
+): string {
+  const tab = state.rawTabs.find((t) => t.id === tabId)
+  const view = tab
+    ? groupViewOfTab(state, tab)
+    : { groupOf: state.groupOf, layout: state.groupLayout }
+  return groupOfTab(view.groupOf, view.layout, tabId)
+}
+
+/**
+ * A folder's first view: the normal-mode arrangement narrowed to the folder's
+ * tabs, keeping the group ids, so turning the mode on moves no tab. Until the
+ * tab set is known nothing is narrowed (an empty set then means no data yet);
+ * the invariant pass narrows it once the set arrives.
+ */
+function projectGroupView(
+  base: GroupView,
+  tabs: TabItemInternal[],
+  tabSetKnown: boolean
+): GroupView {
+  const groupOf: Record<string, string> = {}
+  const live = new Set<string>()
+  for (const tab of tabs) {
+    const group = groupOfTab(base.groupOf, base.layout, tab.id)
+    live.add(group)
+    if (base.groupOf[tab.id] === group) groupOf[tab.id] = group
+  }
+  const layout = tabSetKnown ? normalizeTree(base.layout, live) : base.layout
+  const leaves = new Set(leafIds(layout))
+  const selection: Record<string, string> = {}
+  for (const [groupId, tabId] of Object.entries(base.selection)) {
+    if (leaves.has(groupId)) selection[groupId] = tabId
+  }
+  const tileByGroup: Record<string, boolean> = {}
+  for (const [groupId, tiled] of Object.entries(base.tileByGroup)) {
+    if (leaves.has(groupId)) tileByGroup[groupId] = tiled
+  }
+  return { layout, groupOf, selection, tileByGroup, active: null }
+}
+
+/**
+ * Re-establish the group invariants of the view on screen after any tab/group
+ * write (parked views are repaired when they are loaded):
+ *   1. assignments only for the view's open tabs, pointing at live leaves;
  *   2. every leaf has ≥ 1 tab (normalizeTree collapses the rest);
  *   3. each group's selection is one of its members, and the focused group's
  *      selection IS the active tab;
@@ -1019,6 +1187,8 @@ function applyGroupInvariants() {
     return
   }
   const openIds = new Set(st.rawTabs.map((t) => t.id))
+  // The view's own tabs: all of them in normal mode, the folder's otherwise.
+  const viewIds = new Set(visibleTabs.map((t) => t.id))
   const tabSetKnown = st.tabsHydrated && tabsSnapshotLoaded
 
   let groupOf = st.groupOf
@@ -1028,7 +1198,7 @@ function applyGroupInvariants() {
     let pruned: Record<string, string> | null = null
     const layoutLeaves = new Set(leafIds(layout))
     for (const [tabId, groupId] of Object.entries(groupOf)) {
-      if (!openIds.has(tabId) || !layoutLeaves.has(groupId)) {
+      if (!viewIds.has(tabId) || !layoutLeaves.has(groupId)) {
         pruned = pruned ?? { ...groupOf }
         delete pruned[tabId]
       }
@@ -1037,7 +1207,7 @@ function applyGroupInvariants() {
 
     const firstLeaf = firstLeafId(layout)
     const liveGroups = new Set<string>()
-    for (const tab of st.rawTabs) {
+    for (const tab of visibleTabs) {
       liveGroups.add(groupOf[tab.id] ?? firstLeaf)
     }
     layout = normalizeTree(layout, liveGroups)
@@ -1413,8 +1583,10 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
       } else if (tabId === prevState.activeTabId) {
         // Pick the neighbor within the closed tab's group; when the group
         // emptied, fall to the neighboring group's selected tab. While tabs
-        // follow the folder only the scope's tabs and groups count: a hidden neighbor
-        // would be replaced by the scope's first tab.
+        // follow the folder only the folder's tabs and groups count: a hidden
+        // neighbor would be replaced by the folder's first tab. (The layout is
+        // the folder's own, narrowed to its tabs once the tab set is known —
+        // narrowed here too for the moments before.)
         const { groupOf, groupLayout, groupSelection } = prevState
         const followsFolder = useFolderTabsStore.getState().enabled
         const closedGroup = groupOfTab(groupOf, groupLayout, tabId)
@@ -1613,7 +1785,9 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
       if (tab.conversationId == null) return
       // Moving the group's only tab would just shift the group — pointless.
       const groupSize = st.rawTabs.filter(
-        (t) => groupOfTab(st.groupOf, st.groupLayout, t.id) === sourceGroup
+        (t) =>
+          isTabInScope(t) &&
+          groupOfTab(st.groupOf, st.groupLayout, t.id) === sourceGroup
       ).length
       if (groupSize < 2) return
       const newGroupId = makeGroupId()
@@ -1793,7 +1967,10 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
     if (!target) return
     const groupOf = { ...st.groupOf }
     for (const tab of st.rawTabs) {
-      if (groupOfTab(st.groupOf, st.groupLayout, tab.id) === groupId) {
+      if (
+        isTabInScope(tab) &&
+        groupOfTab(st.groupOf, st.groupLayout, tab.id) === groupId
+      ) {
         groupOf[tab.id] = target
       }
     }
@@ -1805,7 +1982,8 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
     const st = get()
     if (st.groupLayout.type === "group") return
     // Everyone falls back to the (kept) first leaf; rawTabs order is already
-    // the merged display order, so the synced payload doesn't change.
+    // the merged display order, so the synced payload doesn't change. Only
+    // the view on screen unsplits: its assignments are its own.
     set({
       groupLayout: singleGroupLayout(firstLeafId(st.groupLayout)),
       groupOf: {},
@@ -3001,7 +3179,6 @@ export function resetTabStore() {
     clearTimeout(groupPersistTimer)
     groupPersistTimer = null
   }
-  scopeSelections.clear()
   version = 0
   applyingRemote = false
   remoteActivationPending = false
@@ -3228,44 +3405,74 @@ function applyRemoteSnapshot(change: TabsChanged) {
   recomputeTabs()
 }
 
-// Scope changes repair only view selections. Membership and server persistence
-// always retain the complete tab set, including live background sessions.
+// A scope change swaps the view on screen: the leaving view's group state is
+// parked, the arriving one's loaded, and the selection repaired. Membership and
+// server persistence always keep the complete tab set, including live
+// background sessions.
 useFolderTabsStore.subscribe((next, previous) => {
   if (next.scope === previous.scope && next.enabled === previous.enabled) return
   const st = useTabStore.getState()
-  if (previous.enabled && next.enabled) {
-    scopeSelections.set(previous.scope, {
-      active: st.activeTabId,
-      groups: st.groupSelection,
+  const leavingKey = groupViewKey(previous)
+  const arrivingKey = groupViewKey(next)
+  // Only a folder SWITCH offers the folder's last tab back. Turning the mode on
+  // starts from the tab (and per-group picks) the user is looking at.
+  let remembered: string | null = null
+  if (leavingKey !== arrivingKey) {
+    const leaving = groupViewOnScreen(st)
+    let views: Record<string, GroupView>
+    let arriving: GroupView
+    if (next.enabled) {
+      views = { ...st.groupViews, [leavingKey]: leaving }
+      arriving =
+        views[arrivingKey] ??
+        projectGroupView(
+          views[ALL_GROUP_VIEW] ?? leaving,
+          st.rawTabs.filter(isTabInScope),
+          st.tabsHydrated && tabsSnapshotLoaded
+        )
+      delete views[arrivingKey]
+      if (previous.enabled) remembered = arriving.active
+    } else {
+      // One layout for every tab again: the normal-mode one as it was left.
+      // Folder views go with the mode; next time each starts from that one.
+      arriving = st.groupViews[ALL_GROUP_VIEW] ?? leaving
+      views = {}
+    }
+    useTabStore.setState({
+      groupLayout: arriving.layout,
+      groupOf: arriving.groupOf,
+      groupSelection: arriving.selection,
+      tileByGroup: arriving.tileByGroup,
+      groupViews: views,
+      tabDrag: null,
     })
   }
+  const after = useTabStore.getState()
   if (next.enabled) {
-    const visible = st.rawTabs.filter(isTabInScope)
-    // Only a scope SWITCH restores a remembered selection. Turning the mode on
-    // starts from the tab (and per-group picks) the user is looking at.
-    const saved = previous.enabled ? scopeSelections.get(next.scope) : undefined
-    const active = saved?.active ?? st.activeTabId
+    const visible = after.rawTabs.filter(isTabInScope)
+    const active = remembered ?? after.activeTabId
     useTabStore.setState({
       activeTabId: visible.some((t) => t.id === active)
         ? active
         : (visible[0]?.id ?? null),
-      // Picks that are not visible in this scope are replaced by the
-      // invariant pass below; visible ones are kept.
-      groupSelection: saved?.groups ?? st.groupSelection,
-      tabDrag: null,
     })
-    applyGroupInvariants()
-  } else {
-    // Normal mode moves the selection freely, so what was remembered for
-    // each scope is stale by the time the mode comes back on.
-    scopeSelections.clear()
-    if (!st.rawTabs.some((tab) => tab.id === st.activeTabId)) {
-      useTabStore.setState({ activeTabId: st.rawTabs[0]?.id ?? null })
-    }
-    applyGroupInvariants()
+  } else if (!after.rawTabs.some((tab) => tab.id === after.activeTabId)) {
+    useTabStore.setState({ activeTabId: after.rawTabs[0]?.id ?? null })
   }
+  applyGroupInvariants()
   useTabStore.getState().syncActiveFolderId()
 })
+
+/** The stored mode came back off at hydration: folder views parked from the
+ *  last session's blob are stale by now, so they go (turning the mode on later
+ *  starts every folder from the normal-mode layout). */
+export function dropParkedFolderGroupViews() {
+  const st = useTabStore.getState()
+  if (useFolderTabsStore.getState().enabled) return
+  if (Object.keys(st.groupViews).length === 0) return
+  useTabStore.setState({ groupViews: {} })
+  persistGroupState()
+}
 
 // A scope whose folder left the workspace (its worktree was deleted, or the
 // folder was removed from the sidebar) would keep the folder chrome — file

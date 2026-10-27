@@ -113,10 +113,10 @@ export function TabBar({ groupId, maximizeControl = false }: TabBarProps) {
     [toggleGroupTile, stripGroupId]
   )
 
-  // Split-group context-menu wiring, shared by every tab in this strip. Only
-  // groups shown in this view are split targets: while tabs follow the
-  // folder, a group holding just other folders' tabs is not on screen (group
-  // assignment still resolves against the full layout).
+  // Split-group context-menu wiring, shared by every tab in this strip: the
+  // groups on screen are the split targets. While tabs follow the folder that
+  // is the folder's own layout, which the visible one narrows to its tabs
+  // before the tab set is known.
   const visibleLayout = useVisibleConversationLayout()
   const orderedLeaves = useMemo(() => leafIds(visibleLayout), [visibleLayout])
   const isSplit = orderedLeaves.length > 1

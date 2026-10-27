@@ -4,7 +4,13 @@ import {
   resetFolderTabsStore,
   shouldSeedConversation,
 } from "./folder-tabs-store"
-import { resetTabStore, useTabStore } from "./tab-store"
+import {
+  dropParkedFolderGroupViews,
+  resetTabStore,
+  shellGroupOfTab,
+  useTabStore,
+} from "./tab-store"
+import { leafIds, type SplitNode } from "@/lib/tab-group-layout"
 import {
   resetAppWorkspaceStore,
   useAppWorkspaceStore,
@@ -84,8 +90,9 @@ describe("Folder-tabs conversation scope", () => {
       useFolderTabsStore.getState().activateScope(2)
       useTabStore.getState().moveTabToGroup(b0, "target", { index })
       const state = useTabStore.getState()
+      // Hidden tabs keep their group in their own (here: normal-mode) view.
       const target = state.rawTabs.filter(
-        (tab) => state.groupOf[tab.id] === "target"
+        (tab) => shellGroupOfTab(state, tab.id) === "target"
       )
       const visible = [b1, b2]
       visible.splice(Math.min(index, 2), 0, b0)
@@ -538,5 +545,209 @@ describe("Folder-tabs scope repairs", () => {
     expect(
       useTabStore.getState().rawTabs.some((tab) => tab.id === draftB)
     ).toBe(true)
+  })
+})
+
+describe("Folder-tabs split layouts per folder", () => {
+  /** The tab set the server reports, so the invariant pass trusts it. */
+  async function markTabSetKnown() {
+    const st = useTabStore.getState()
+    useTabStore.setState({ tabsHydrated: true })
+    vi.mocked(api.listOpenedTabs).mockResolvedValue({
+      version: 1,
+      items: st.rawTabs.flatMap((tab, position) =>
+        tab.conversationId == null
+          ? []
+          : [
+              {
+                folder_id: tab.folderId,
+                conversation_id: tab.conversationId,
+                agent_type: tab.agentType,
+                is_pinned: true,
+                is_active: tab.id === st.activeTabId,
+                position,
+              },
+            ]
+      ),
+    } as never)
+    await useTabStore.getState().refetchTabs()
+  }
+  const layout = () => useTabStore.getState().groupLayout
+  const leaves = () => leafIds(layout())
+  const shellOf = (tabId: string) =>
+    shellGroupOfTab(useTabStore.getState(), tabId)
+
+  async function twoFolders() {
+    const a1 = open(1, 11)
+    const a2 = open(1, 12)
+    const b1 = open(2, 21)
+    const b2 = open(2, 22)
+    await markTabSetKnown()
+    // TabProvider keeps the active folder in step with the active tab.
+    useTabStore.getState().syncActiveFolderId()
+    useFolderTabsStore.getState().setEnabled(true)
+    return { a1, a2, b1, b2 }
+  }
+
+  /** A fresh start: both stores rebuilt from storage, the mode still off. */
+  function restart() {
+    const blob = localStorage.getItem("workspace:tab-groups:v1")!
+    resetFolderTabsStore()
+    localStorage.setItem("workspace:tab-groups:v1", blob)
+    resetTabStore()
+  }
+
+  it("splits, resizes and unsplits one folder without touching another's layout", async () => {
+    const { a2, b2 } = await twoFolders()
+    useFolderTabsStore.getState().activateScope(1)
+    useTabStore.getState().splitTab(a2, "right", { move: true })
+    const folderA = layout()
+    expect(leaves()).toHaveLength(2)
+
+    // Folder B was never split, so it shows one group — not A's pair.
+    useFolderTabsStore.getState().activateScope(2)
+    expect(leaves()).toHaveLength(1)
+    useTabStore.getState().splitTab(b2, "down", { move: true })
+    const split = layout() as SplitNode
+    expect(split.orientation).toBe("vertical")
+    useTabStore.getState().resizeGroupSplit(split.id, 0, 0.7)
+    expect((layout() as SplitNode).ratios[0]).toBeCloseTo(0.7)
+
+    useFolderTabsStore.getState().activateScope(1)
+    expect(layout()).toEqual(folderA)
+    useTabStore.getState().unsplitAll()
+    expect(leaves()).toHaveLength(1)
+
+    useFolderTabsStore.getState().activateScope(2)
+    expect(leaves()).toHaveLength(2)
+    expect((layout() as SplitNode).orientation).toBe("vertical")
+    expect((layout() as SplitNode).ratios[0]).toBeCloseTo(0.7)
+  })
+
+  it("flips orientation and dissolves groups inside the folder on screen only", async () => {
+    const { a2, b2 } = await twoFolders()
+    useFolderTabsStore.getState().activateScope(1)
+    useTabStore.getState().splitTab(a2, "right", { move: true })
+    useFolderTabsStore.getState().activateScope(2)
+    useTabStore.getState().splitTab(b2, "right", { move: true })
+    const bGroup = leaves()[1]
+
+    useTabStore.getState().toggleGroupOrientation(bGroup)
+    expect((layout() as SplitNode).orientation).toBe("vertical")
+    useFolderTabsStore.getState().activateScope(1)
+    expect((layout() as SplitNode).orientation).toBe("horizontal")
+
+    useFolderTabsStore.getState().activateScope(2)
+    useTabStore.getState().dissolveGroup(bGroup)
+    expect(leaves()).toHaveLength(1)
+    useFolderTabsStore.getState().activateScope(1)
+    expect(leaves()).toHaveLength(2)
+  })
+
+  it("closes a folder's emptied first group while other folders still have tabs", async () => {
+    const { a1, a2 } = await twoFolders()
+    useFolderTabsStore.getState().activateScope(1)
+    useTabStore.getState().splitTab(a2, "right", { move: true })
+    useTabStore.getState().closeTab(a1)
+    expect(leaves()).toEqual([shellOf(a2)])
+  })
+
+  it("counts only the folder's own tabs before moving one into a split", async () => {
+    const a1 = open(1, 11)
+    open(2, 21)
+    open(2, 22)
+    await markTabSetKnown()
+    useFolderTabsStore.getState().setEnabled(true)
+    useFolderTabsStore.getState().activateScope(1)
+    const before = layout()
+    // Folder 1 has one tab; folder 2's two in the same group do not count.
+    useTabStore.getState().splitTab(a1, "right", { move: true })
+    expect(layout()).toBe(before)
+    expect(shellOf(a1)).toBe(leafIds(before)[0])
+  })
+
+  it("keeps every hidden tab in its own group shell across folder switches", async () => {
+    const { a1, a2, b1, b2 } = await twoFolders()
+    useFolderTabsStore.getState().activateScope(1)
+    useTabStore.getState().splitTab(a2, "right", { move: true })
+    const shells = () => [a1, a2, b1, b2].map(shellOf)
+    const before = shells()
+    expect(before[0]).not.toBe(before[1])
+
+    useFolderTabsStore.getState().activateScope(2)
+    expect(shells()).toEqual(before)
+    useTabStore.getState().splitTab(b2, "down", { move: true })
+    const afterSplitB = shells()
+    useFolderTabsStore.getState().activateScope(1)
+    expect(shells()).toEqual(afterSplitB)
+  })
+
+  it("turning the mode on narrows the normal layout under the same group ids; off restores it", async () => {
+    const a1 = open(1, 11)
+    const b1 = open(2, 21)
+    const b2 = open(2, 22)
+    await markTabSetKnown()
+    useTabStore.getState().splitTab(b2, "right", { move: true })
+    const normal = layout()
+    const shells = () => [a1, b1, b2].map(shellOf)
+    const before = shells()
+
+    useTabStore.getState().syncActiveFolderId()
+    useFolderTabsStore.getState().setEnabled(true)
+    expect(useFolderTabsStore.getState().scope).toBe(2)
+    // B's tabs sit in both normal-mode groups: the same layout, no tab moved.
+    expect(leaves()).toEqual(leafIds(normal))
+    expect(shells()).toEqual(before)
+
+    // A's only tab sits in the first group, so A is unsplit.
+    useFolderTabsStore.getState().activateScope(1)
+    expect(leaves()).toEqual([leafIds(normal)[0]])
+    useTabStore.getState().splitTab(a1, "down", { move: false })
+    expect(leaves()).toHaveLength(2)
+
+    useFolderTabsStore.getState().setEnabled(false)
+    expect(layout()).toEqual(normal)
+    expect(useTabStore.getState().groupViews).toEqual({})
+  })
+
+  it("brings each folder's layout back after a restart with the mode on", async () => {
+    const { a2 } = await twoFolders()
+    useFolderTabsStore.getState().activateScope(1)
+    useTabStore.getState().splitTab(a2, "right", { move: true })
+    const folderA = layout()
+    useFolderTabsStore.getState().activateScope(2)
+    const blob = JSON.parse(localStorage.getItem("workspace:tab-groups:v1")!)
+    expect(Object.keys(blob.views).sort()).toEqual(["scope:1", "scope:2"])
+    // The top level stays the normal-mode layout, unsplit.
+    expect(blob.layout.type).toBe("group")
+
+    // Restart: the stores start over from storage and the server's tab set.
+    restart()
+    expect(Object.keys(useTabStore.getState().groupViews).sort()).toEqual([
+      "scope:1",
+      "scope:2",
+    ])
+    useTabStore.setState({ tabsHydrated: true })
+    await useTabStore.getState().refetchTabs()
+    useFolderTabsStore.getState().setEnabled(true)
+    useFolderTabsStore.getState().activateScope(1)
+    expect(layout()).toEqual(folderA)
+    expect(shellOf(a2)).toBe(leafIds(folderA)[1])
+  })
+
+  it("drops the last session's folder views when the stored mode comes back off", async () => {
+    const { a2 } = await twoFolders()
+    useFolderTabsStore.getState().activateScope(1)
+    useTabStore.getState().splitTab(a2, "right", { move: true })
+    restart()
+    expect(Object.keys(useTabStore.getState().groupViews)).not.toHaveLength(0)
+    useTabStore.setState({ tabsHydrated: true })
+    await useTabStore.getState().refetchTabs()
+    dropParkedFolderGroupViews()
+    expect(useTabStore.getState().groupViews).toEqual({})
+    // Turned on later, folder 1 starts from the (unsplit) normal layout.
+    useFolderTabsStore.getState().setEnabled(true)
+    useFolderTabsStore.getState().activateScope(1)
+    expect(leaves()).toHaveLength(1)
   })
 })

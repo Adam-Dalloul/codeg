@@ -250,9 +250,11 @@ it("targets the actual visible group when the projected strip is unsplit", () =>
   expect(h.toggleGroupTile).toHaveBeenCalledWith("g-second")
 })
 
-// Tabs follow the folder: the full layout may be split by another folder's
-// tabs while this folder's tabs all sit in one group. Groups that are not on screen
-// are no move targets, and the strip offers no split-only actions.
+// Tabs follow the folder: the strip takes its groups from the on-screen view
+// (`useVisibleConversationLayout`), not the store's raw layout, which can still
+// hold another folder's groups before the tab set is known. Groups that are
+// not on screen are no move targets, and the strip offers no split-only
+// actions.
 it("offers only on-screen groups as split targets", () => {
   h.groupLayout = {
     type: "split",
