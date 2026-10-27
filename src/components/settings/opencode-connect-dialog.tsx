@@ -26,7 +26,13 @@ import { Textarea } from "@/components/ui/textarea"
 import { Badge } from "@/components/ui/badge"
 import { cn } from "@/lib/utils"
 import {
+  FetchedModelPicker,
+  ProviderModelsStatus,
+} from "@/components/settings/provider-models"
+import { useProviderModels } from "@/hooks/use-provider-models"
+import {
   DEFAULT_OPENAI_COMPATIBLE_NPM,
+  openCodeModelsProtocol,
   applyApiKeyConnect,
   customProviderIdIssue,
 } from "@/lib/opencode-connect"
@@ -405,6 +411,14 @@ export function OpenCodeCustomProviderDialog({
     [customModels]
   )
 
+  // The provider's own models, asked the way its AI SDK package talks to it.
+  const modelsProtocol = openCodeModelsProtocol(customNpm)
+  const providerModels = useProviderModels(
+    modelsProtocol
+      ? { protocol: modelsProtocol, baseUrl: customBaseUrl, apiKey }
+      : null
+  )
+
   const customIdIssue = useMemo(
     () =>
       customProviderIdIssue({ id: customId, existingProviderIds, catalogIds }),
@@ -538,15 +552,25 @@ export function OpenCodeCustomProviderDialog({
             />
           </div>
           <div className="space-y-1.5 md:col-span-2">
-            <label className="text-2xs text-muted-foreground">
-              {t("openCode.connect.modelsList")}
-            </label>
+            <div className="flex items-center justify-between gap-2">
+              <label className="text-2xs text-muted-foreground">
+                {t("openCode.connect.modelsList")}
+              </label>
+              {modelsProtocol && (
+                <FetchedModelPicker
+                  state={providerModels}
+                  configured={customModelIds}
+                  onConfirm={(ids) => setCustomModels(ids.join("\n"))}
+                />
+              )}
+            </div>
             <Textarea
               value={customModels}
               onChange={(e) => setCustomModels(e.target.value)}
               placeholder={"gpt-6-astra\nclaude-sonnet-5-5"}
               className="min-h-20 font-mono text-xs"
             />
+            {modelsProtocol && <ProviderModelsStatus state={providerModels} />}
             <p className="text-3xs text-muted-foreground">
               {t("openCode.connect.modelsHint")}
             </p>

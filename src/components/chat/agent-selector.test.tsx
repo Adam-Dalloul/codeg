@@ -396,7 +396,7 @@ describe("AgentSelector", () => {
   it("keeps custom accounts reachable by name in the overflow menu", async () => {
     stubLayout()
     const custom = [2, 3, 4, 5].map((slot) =>
-      agent(`custom:claude-code-${slot}`, { name: `Claude Code ${slot}` })
+      agent(`custom:claude-code-${slot}`, { name: `Review seat ${slot}` })
     )
     setCustomAgentDisplay(
       custom.map((a) => ({ agentType: a.agent_type, name: a.name }))
@@ -425,7 +425,7 @@ describe("AgentSelector", () => {
     }
     const option = Array.from(
       document.querySelectorAll('[data-slot="agent-option"]')
-    ).find((el) => el.textContent?.includes("Claude Code 5"))!
+    ).find((el) => el.textContent?.includes("Review seat 5"))!
     fireEvent.click(option)
     expect(onSelect).toHaveBeenCalledWith("custom:claude-code-5")
     setCustomAgentDisplay([])

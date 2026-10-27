@@ -715,6 +715,8 @@ pub struct AcpUpdateAgentConfigParams {
     pub opencode_auth_json: Option<String>,
     pub codex_auth_json: Option<String>,
     pub codex_config_toml: Option<String>,
+    #[serde(default)]
+    pub codex_config_toml_baseline: Option<String>,
     pub codex_model_catalog: Option<String>,
     pub codex_sandbox: Option<crate::acp::types::CodexSandboxStructuredConfig>,
     pub grok_config_toml: Option<String>,
@@ -734,6 +736,7 @@ pub async fn acp_update_agent_config(
         params.opencode_auth_json,
         params.codex_auth_json,
         params.codex_config_toml,
+        params.codex_config_toml_baseline,
         params.codex_model_catalog,
         params.codex_sandbox,
         params.grok_config_toml,
@@ -858,6 +861,26 @@ pub struct AcpUpdateKimiCodeConfigParams {
     pub default_effort: Option<String>,
 }
 
+#[derive(Deserialize)]
+pub struct AcpUpdateClaudeModelPickerParams {
+    pub models: Vec<String>,
+}
+
+pub async fn acp_update_claude_model_picker(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(params): Json<AcpUpdateClaudeModelPickerParams>,
+) -> Result<Json<usize>, AppCommandError> {
+    let affected = acp_commands::acp_update_claude_model_picker_core(
+        params.models,
+        &state.db,
+        &state.connection_manager,
+        &state.data_dir,
+    )
+    .await
+    .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+    Ok(Json(affected))
+}
+
 pub async fn acp_update_kimi_code_config(
     Extension(state): Extension<Arc<AppState>>,
     Json(params): Json<AcpUpdateKimiCodeConfigParams>,
@@ -892,22 +915,6 @@ pub async fn acp_update_kimi_code_config(
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct AcpFetchKimiModelsParams {
-    pub base_url: String,
-    pub api_key: String,
-}
-
-pub async fn acp_fetch_kimi_models(
-    Json(params): Json<AcpFetchKimiModelsParams>,
-) -> Result<Json<Vec<String>>, AppCommandError> {
-    let models = acp_commands::acp_fetch_kimi_models_core(&params.base_url, &params.api_key)
-        .await
-        .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
-    Ok(Json(models))
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct AcpUpdatePiConfigParams {
     pub provider: String,
     pub model: String,
@@ -921,6 +928,8 @@ pub struct AcpUpdatePiConfigParams {
     pub custom_api: Option<String>,
     #[serde(default)]
     pub model_reasoning: Option<acp_commands::PiModelReasoningSpec>,
+    #[serde(default)]
+    pub custom_models: Option<Vec<String>>,
 }
 
 pub async fn acp_update_pi_config(
@@ -937,6 +946,7 @@ pub async fn acp_update_pi_config(
             custom_base_url: params.custom_base_url,
             custom_api: params.custom_api,
             model_reasoning: params.model_reasoning,
+            custom_models: params.custom_models,
         },
         &state.db,
         &emitter,
@@ -1352,6 +1362,69 @@ pub async fn codex_bundled_catalog(
     Ok(Json(
         acp_commands::codex_bundled_catalog_core(params.force_refresh.unwrap_or(false)).await,
     ))
+}
+
+/// Wrapper matching the Tauri commands' single `params` argument.
+#[derive(Deserialize)]
+pub struct CodexCatalogRequestBody {
+    pub params: crate::commands::codex_catalog::CodexCatalogRequestParams,
+}
+
+#[derive(Deserialize)]
+pub struct CodexPlanPreviewBody {
+    pub params: crate::commands::codex_catalog::CodexPlanPreviewParams,
+}
+
+pub async fn codex_catalog_plan_preview(
+    Json(body): Json<CodexPlanPreviewBody>,
+) -> Result<Json<crate::acp::codex_catalog_commit::PlanPreview>, AppCommandError> {
+    crate::commands::codex_catalog::codex_catalog_plan_preview_core(body.params)
+        .await
+        .map(Json)
+}
+
+pub async fn codex_fetch_endpoint_catalog(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(body): Json<CodexCatalogRequestBody>,
+) -> Result<Json<crate::commands::codex_catalog::CodexEndpointCatalogView>, AppCommandError> {
+    crate::commands::codex_catalog::codex_fetch_endpoint_catalog_core(&state.db, body.params)
+        .await
+        .map(Json)
+}
+
+pub async fn codex_endpoint_catalog_published(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(body): Json<CodexCatalogRequestBody>,
+) -> Result<Json<crate::commands::codex_catalog::CatalogLookup>, AppCommandError> {
+    crate::commands::codex_catalog::codex_endpoint_catalog_published_core(&state.db, body.params)
+        .await
+        .map(Json)
+}
+
+pub async fn codex_endpoint_catalog_cached(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(body): Json<CodexCatalogRequestBody>,
+) -> Result<Json<crate::commands::codex_catalog::CatalogLookup>, AppCommandError> {
+    crate::commands::codex_catalog::codex_endpoint_catalog_cached_core(&state.db, body.params)
+        .await
+        .map(Json)
+}
+
+pub async fn codex_endpoint_catalog_status(
+    Extension(state): Extension<Arc<AppState>>,
+) -> Result<Json<crate::commands::codex_catalog::CodexCatalogStatus>, AppCommandError> {
+    crate::commands::codex_catalog::codex_endpoint_catalog_status_core(&state.db)
+        .await
+        .map(Json)
+}
+
+pub async fn codex_refresh_endpoint_catalog(
+    Extension(state): Extension<Arc<AppState>>,
+) -> Result<Json<crate::commands::codex_catalog::CodexCatalogStatus>, AppCommandError> {
+    let emitter = state.emitter.clone();
+    crate::commands::codex_catalog::codex_refresh_endpoint_catalog_core(&state.db, &emitter)
+        .await
+        .map(Json)
 }
 
 #[derive(Deserialize)]

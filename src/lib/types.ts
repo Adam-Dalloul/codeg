@@ -2049,6 +2049,11 @@ export interface WorkTask {
   source_key?: string | null
   /** Source snapshot (url, title, numbers …); shape mirrors ForgeSourceMeta. */
   source_meta?: ForgeSourceMeta | null
+  /** Where a task WITHOUT forge provenance delivered its work, and the pull
+   *  request it opened there (mirrors Rust WorkTaskDelivery). Absent until such
+   *  a task is first delivered, and always on a forge-sourced task — that
+   *  one's pull request is `source_meta.result_pr`. */
+  delivery?: WorkTaskDelivery | null
   /** Latest agent_progress milestone OF THIS GENERATION — present on live
    *  (preparing/running/awaiting/merging) rows only. Scoped by run_seq, so a
    *  merge in flight never narrates the work round it is landing. */
@@ -2081,14 +2086,31 @@ export interface ForgeSourceMeta {
   head_ref?: string | null
   head_sha?: string | null
   head_repo?: string | null
-  /** URL of the PR created by the delivery acceptance path (P1). */
+  /** URL of the PR the latest delivery reached — on a `done` task the one it
+   *  finished in, on a task still in review the one its next delivery pushes
+   *  into. */
   result_pr?: string | null
+  /** Number of `result_pr`, recorded with it (absent on older rows). */
+  result_pr_number?: number | null
   /** PR head the task's last push-back went onto (where the PR ended below
    *  the task's own work); absent until a push-back. */
   pushed_onto?: string | null
   /** The trigger dialog's write-back answer, frozen at trigger time. Absent on
    *  rows minted before the choice lived here — those stay silent. */
   writeback?: boolean | null
+}
+
+/** Where a task without forge provenance delivered its work: the repository
+ *  and account its first delivery resolved from the project's `origin`
+ *  (pinned from then on), and the pull request it reached there. Mirrors Rust
+ *  `forge::WorkTaskDelivery`. */
+export interface WorkTaskDelivery {
+  provider: ForgeProviderId
+  server_host: string
+  account_id: string
+  owner_repo: string
+  pr_url: string
+  pr_number: number
 }
 
 export type ForgeTab = "issues" | "prs"
@@ -3665,7 +3687,9 @@ export interface AsyncTaskRecord {
   name: string
   /** Already friendly: `shell` | `workflow` | `monitor` | `task`, or an
    *  unmapped future value rendered as itself. NOT the SDK's raw type.
-   *  codex publishes `shell` for every background terminal. */
+   *  codex publishes `shell` for every background terminal. claude 0.97.0+
+   *  publishes `turn` for a turn Claude Code started on its own
+   *  (`AUTONOMOUS_TURN_TASK_TYPE`). */
   task_type: string
   description: string
   /** Whether the task earns its own transcript card upstream. The strip renders
@@ -3909,6 +3933,10 @@ export interface AcpAgentInfo {
    * (sandbox / permission rules; the Run Everything permission mode is a
    * launch flag, not a config key). Cursor agent only. */
   cursor_settings: CursorSettings | null
+  /** The /model picker ids codeg adds for its Claude sessions while no model
+   *  provider is bound (a bound provider keeps its own in its model JSON).
+   *  Claude Code only. */
+  claude_model_picker?: string[] | null
   model_provider_id: number | null
   /** Display icon for a custom ACP agent — normally an inlined
    *  `data:image/…;base64,…` URL. Always null for built-ins, which ship
@@ -4017,6 +4045,9 @@ export interface GrokSettings {
    * Empty when absent: Grok then only has its own model catalog's levels for
    * this id (never the custom base_url's model list). */
   custom_reasoning_efforts: string[]
+  /** The endpoint's other models codeg added beside the managed one: the
+   * [model.<id>] tables on codeg's [model_providers.codeg]. */
+  custom_extra_models?: string[]
   /** [session].auto_compact_threshold_percent — 0–100 (Grok default 85). */
   auto_compact_threshold_percent: number | null
 }
@@ -4039,6 +4070,9 @@ export interface GrokStructuredConfig {
    * moved, so a list typed into the raw editor survives); an empty list
    * removes it. */
   customReasoningEfforts: string[] | null
+  /** The endpoint's other models to offer beside the managed one; null keeps
+   * the ones codeg added, a list makes them exactly those. */
+  customExtraModels?: string[] | null
   autoCompactThresholdPercent: number | null
 }
 
@@ -5322,9 +5356,13 @@ export interface ModelProviderInfo {
   agent_type: AgentType
   /**
    * Model value, interpretation depends on agent_type:
-   * - claude_code: JSON string of {main, reasoning, haiku, sonnet, opus,
-   *   fable} plus the custom model option trio
-   * - codex / gemini / others: plain model name string
+   * - claude_code: JSON `ClaudeProviderModel` — {main, reasoning, haiku,
+   *   sonnet, opus, fable}, the custom model option trio and `pickerModels`
+   *   (`parseClaudeProviderModel`)
+   * - codex: JSON `CodexModelConfig` — {customs, excludedOfficials?,
+   *   default?, catalog?} (`parseCodexModelConfig`, which also reads a legacy
+   *   bare slug)
+   * - gemini / others: plain model name string
    */
   model: string | null
   created_at: string
@@ -5354,6 +5392,22 @@ export interface ClaudeProviderModel {
   customOptionName?: string
   /** ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION — description for that entry. */
   customOptionDescription?: string
+  /** Extra /model picker rows codeg adds for codeg's own Claude sessions
+   *  (src-tauri/src/acp/claude_model_picker.rs). */
+  pickerModels?: string[]
+}
+
+/** Trimmed ids, each once, in order. */
+export function normalizeModelIds(ids: readonly string[]): string[] {
+  const seen = new Set<string>()
+  const out: string[] = []
+  for (const raw of ids) {
+    const id = raw.trim()
+    if (!id || seen.has(id)) continue
+    seen.add(id)
+    out.push(id)
+  }
+  return out
 }
 
 export function parseClaudeProviderModel(
@@ -5364,7 +5418,7 @@ export function parseClaudeProviderModel(
     const parsed = JSON.parse(raw)
     if (!parsed || typeof parsed !== "object") return {}
     const out: ClaudeProviderModel = {}
-    const keys: (keyof ClaudeProviderModel)[] = [
+    const keys: Exclude<keyof ClaudeProviderModel, "pickerModels">[] = [
       "main",
       "reasoning",
       "haiku",
@@ -5378,6 +5432,13 @@ export function parseClaudeProviderModel(
     for (const k of keys) {
       const v = (parsed as Record<string, unknown>)[k]
       if (typeof v === "string" && v.trim()) out[k] = v.trim()
+    }
+    const picker = (parsed as Record<string, unknown>).pickerModels
+    if (Array.isArray(picker)) {
+      const ids = normalizeModelIds(
+        picker.filter((id): id is string => typeof id === "string")
+      )
+      if (ids.length > 0) out.pickerModels = ids
     }
     return out
   } catch {
@@ -5400,6 +5461,8 @@ export function serializeClaudeProviderModel(
     cleaned.customOptionName = obj.customOptionName.trim()
   if (obj.customOptionDescription?.trim())
     cleaned.customOptionDescription = obj.customOptionDescription.trim()
+  const picker = normalizeModelIds(obj.pickerModels ?? [])
+  if (picker.length > 0) cleaned.pickerModels = picker
   return Object.keys(cleaned).length === 0 ? null : JSON.stringify(cleaned)
 }
 
@@ -5435,14 +5498,62 @@ export interface CodexCustomEntry {
   overrides?: Record<string, unknown>
 }
 
+/** The shape a provider's model list came in: codex's own catalog
+ *  (`{models:[{slug,…}]}`) or an OpenAI-style id list (`{data:[{id}]}`). */
+export type CodexCatalogFormat = "native" | "openai_list"
+
+/** Where the officials come from when they are the provider's — fetched
+ *  from `base_url + "/models"` with the key, and published as a snapshot.
+ *  Mirrors the Rust `CodexCatalogIntent`. */
+export interface CodexCatalogSource {
+  /** The list URL; omitted ⇒ derived from the base URL. */
+  url?: string
+  /** The shape the provider answered with when the list was applied. */
+  format?: CodexCatalogFormat
+  /** OpenAI list only: the ids the user picked (an allowlist, in order). */
+  selected?: string[]
+}
+
 /** The compact codex model config stored in a provider's `model` column / the
  *  codex agent's catalog source sidecar. Mirrors the Rust `CodexModelConfig`.
- *  Official models are auto-included from the live catalog, so only the user's
- *  deviations (custom additions + removed officials) are persisted. */
+ *  Official models are auto-included from the live catalog (or, with
+ *  `catalog`, from the provider's list), so only the user's deviations
+ *  (custom additions + removed officials) and the source are persisted. */
 export interface CodexModelConfig {
   customs: CodexCustomEntry[]
   excludedOfficials?: string[]
   default?: string
+  /** Present ⇒ the officials come from the provider. */
+  catalog?: CodexCatalogSource
+}
+
+function parseCatalogSource(raw: unknown): CodexCatalogSource | undefined {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined
+  const obj = raw as Record<string, unknown>
+  const source: CodexCatalogSource = {}
+  if (typeof obj.url === "string" && obj.url.trim()) source.url = obj.url.trim()
+  if (obj.format === "native" || obj.format === "openai_list")
+    source.format = obj.format
+  if (Array.isArray(obj.selected)) {
+    const selected = uniqueIds(obj.selected)
+    if (selected.length) source.selected = selected
+  }
+  return source
+}
+
+/** Trimmed, non-empty, first occurrence kept: the user's order is the
+ *  picker's order. */
+function uniqueIds(ids: unknown[]): string[] {
+  const out: string[] = []
+  const seen = new Set<string>()
+  for (const id of ids) {
+    if (typeof id !== "string") continue
+    const trimmed = id.trim()
+    if (!trimmed || seen.has(trimmed)) continue
+    seen.add(trimmed)
+    out.push(trimmed)
+  }
+  return out
 }
 
 /** Recursively sort object keys so serialized `overrides` are byte-stable (the
@@ -5529,13 +5640,16 @@ export function parseCodexModelConfig(raw: string | null): CodexModelConfig {
   }
   if (typeof obj.default === "string" && obj.default)
     result.default = obj.default
+  const catalog = parseCatalogSource(obj.catalog)
+  if (catalog) result.catalog = catalog
   return result
 }
 
 /** Serialize the compact codex model config to canonical JSON (fixed key order,
  *  sorted `overrides` + `excludedOfficials`), or `null` when the user has made
- *  no deviations (no customs, no removed officials). `serialize(parse(x)) === x`
- *  for any canonical `x`, so an unedited form never reports a spurious change. */
+ *  no deviations (no customs, no removed officials, codex's own list as the
+ *  source). `serialize(parse(x)) === x` for any canonical `x`, so an unedited
+ *  form never reports a spurious change. */
 export function serializeCodexModelConfig(
   obj: CodexModelConfig
 ): string | null {
@@ -5561,15 +5675,220 @@ export function serializeCodexModelConfig(
         .map((s) => s.trim())
     )
   ).sort()
+  const catalog = obj.catalog ? serializeCatalogSource(obj.catalog) : null
   // No deviations from codex's own catalog → feature off.
-  if (customs.length === 0 && excluded.length === 0) return null
+  if (customs.length === 0 && excluded.length === 0 && !catalog) return null
   const out: Record<string, unknown> = { customs }
   if (excluded.length) out.excludedOfficials = excluded
   // Preserve the user's `default` verbatim (it may name an official the
   // serializer can't see); the backend validates it against the live catalog at
   // expand time and falls back if it names no listed model.
   if (obj.default && obj.default.trim()) out.default = obj.default.trim()
+  if (catalog) out.catalog = catalog
   return JSON.stringify(out)
+}
+
+function serializeCatalogSource(
+  source: CodexCatalogSource
+): Record<string, unknown> {
+  const out: Record<string, unknown> = {}
+  if (source.url?.trim()) out.url = source.url.trim()
+  if (source.format) out.format = source.format
+  const selected = uniqueIds(source.selected ?? [])
+  if (selected.length) out.selected = selected
+  return out
+}
+
+// ── Codex: the provider's model list ──
+//
+// Mirrors `src-tauri/src/commands/codex_catalog.rs` (the commands) and
+// `src-tauri/src/acp/codex_catalog_commit` (what is published).
+
+/** A failed fetch or check. `code` is stable and localized as
+ *  `CodexModelEditor.catalogSource.codexCatalog.<code>`. */
+export interface CodexCatalogError {
+  code: string
+  message: string
+  params?: Record<string, string>
+}
+
+/** Where the key for a fetch comes from. A bound provider's list is always
+ *  fetched with the provider's key (the backend refuses `codexAuth` then). */
+/** A provider's wire protocol, for listing its models. Mirrors
+ *  `ModelsProtocol` in src-tauri/src/acp/provider_models.rs. */
+export type ProviderModelsProtocol = "openai" | "anthropic" | "gemini"
+
+/** How the key travels, when not the protocol's usual way (`KeyHeader`). */
+export type ProviderModelsKeyHeader = "bearer" | "x_api_key" | "x_goog_api_key"
+
+export type ProviderModelsKeySource =
+  | { kind: "inline"; apiKey: string }
+  | { kind: "provider"; providerId: number; apiKey?: string | null }
+  /** The key pi keeps for one of its providers (its auth.json). */
+  | { kind: "piAuth"; provider: string }
+
+export interface ProviderModelsRequest {
+  protocol: ProviderModelsProtocol
+  baseUrl: string
+  keySource: ProviderModelsKeySource
+  keyHeader?: ProviderModelsKeyHeader | null
+}
+
+/** One model a provider lists (`ListedModel`). */
+export interface ListedProviderModel {
+  id: string
+  displayName?: string
+  contextWindow?: number
+}
+
+/** A provider's list (`ModelList`): the URL that answered, and the models in
+ *  the provider's order. */
+export interface ProviderModelList {
+  url: string
+  models: ListedProviderModel[]
+}
+
+export type CodexKeySource =
+  | { kind: "inline"; apiKey: string }
+  | { kind: "provider"; providerId: number; apiKey?: string }
+  | { kind: "codexAuth" }
+
+export interface CodexCatalogRequest {
+  baseUrl: string
+  catalogUrl?: string | null
+  keySource: CodexKeySource
+  /** The draft config.toml (its provider `query_params` / `http_headers`). */
+  configToml?: string | null
+  /** Only a list in this shape counts. */
+  format?: CodexCatalogFormat | null
+}
+
+/** Which metadata an OpenAI-list id is built from. */
+export interface CodexSynthTemplate {
+  kind: "official" | "prefix" | "compat"
+  slug: string
+}
+
+export interface CodexOpenAiIdView {
+  id: string
+  contextWindow: number | null
+  template: CodexSynthTemplate | null
+}
+
+export interface CodexCatalogCounts {
+  total: number
+  listed: number
+  usable: number
+}
+
+export interface CodexCatalogDiff {
+  added: string[]
+  removed: string[]
+}
+
+/** One fetched (or published, or cached) provider list. */
+export interface CodexEndpointCatalogView {
+  url: string
+  host: string
+  format: CodexCatalogFormat
+  models: CodexModelInfo[] | null
+  ids: CodexOpenAiIdView[] | null
+  /** Picked ids the provider no longer returns, as last seen. */
+  missing: CodexOpenAiIdView[]
+  counts: CodexCatalogCounts
+  bytes: number
+  elapsedMs: number
+  clientVersion: string
+  clientVersionConfirmed: boolean
+  requestSeq: number
+  requestStartedAt: string
+  fetchedAt: string
+  diff: CodexCatalogDiff
+  keyDigest: string
+  warnings: string[]
+}
+
+export interface CodexCatalogLookup {
+  catalog: CodexEndpointCatalogView | null
+  /** Why there is none: nothing there, another request, another shape. */
+  mismatch: "none" | "request" | "format" | null
+}
+
+export interface CodexValidatedRuntime {
+  version: string
+  codexJs: string
+}
+
+/** Provenance of what codeg published (`codeg-model-catalog.meta.json`). */
+export interface CodexCatalogMeta {
+  version: number
+  intentHash: string
+  binding: string
+  snapshotId?: string | null
+  validatedBy: CodexValidatedRuntime[]
+  conflict?: CodexValidatedRuntime[]
+  officialsVersion?: string
+  defaultModel?: string
+  counts: CodexCatalogCounts
+  url?: string
+  format?: CodexCatalogFormat
+  clientVersion?: string
+  clientVersionConfirmed?: boolean
+  requestSeq?: number
+  requestStartedAt?: string
+  fetchedAt?: string
+  /** The last time the provider confirmed its list. */
+  checkedAt?: string
+  bytes?: number
+  /** Why the published list is a stand-in, when it is one. */
+  degraded?: string
+  /** The list came from another key, parameters or codex version. */
+  stale: boolean
+  diff: CodexCatalogDiff
+  /** A refresh answered in the other shape; not published until re-picked. */
+  pendingFormat?: CodexCatalogFormat
+}
+
+export interface CodexRefreshStatus {
+  inProgress: boolean
+  lastAttemptAt: string | null
+  lastError: CodexCatalogError | null
+  lastErrorAt: string | null
+  consecutiveFailures: number
+  nextRefreshAt: string | null
+  paused: string | null
+  scheduled: boolean
+}
+
+/** The configuration published under codeg's CODEX_HOME. */
+/** What saving a Codex draft would make of the keys codeg manages
+ *  (`PlanPreview`). */
+export interface CodexPlanPreview {
+  finalToml: string
+  managesCatalog: boolean
+  defaultModel: string | null
+  counts: CodexCatalogCounts | null
+  warnings: string[]
+}
+
+export interface CodexCatalogStatus {
+  meta: CodexCatalogMeta | null
+  source: CodexCatalogSource | null
+  publishesCatalog: boolean
+  refresh: CodexRefreshStatus
+  refreshHours: number | null
+  pendingLocalChanges: boolean
+  catalogUrlHint: boolean
+  foreignProvider: string | null
+  missingSelected: string[]
+  newIds: string[]
+  runtime: {
+    version: string
+    confirmed: boolean
+    adapterVersion: string | null
+  }
+  /** "Refresh now" only: why the provider could not be asked. */
+  fetchError: CodexCatalogError | null
 }
 
 /** Whether a catalog entry is offered in codex's model picker. Codex flips
@@ -5614,7 +5933,7 @@ export function hasCodexCustomization(
   config: CodexModelConfig,
   officials: CodexModelInfo[]
 ): boolean {
-  if (config.customs.length > 0) return true
+  if (config.customs.length > 0 || config.catalog) return true
   return (
     (pruneCodexGhostExclusions(config, officials).excludedOfficials ?? [])
       .length > 0

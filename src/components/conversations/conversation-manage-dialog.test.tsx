@@ -224,6 +224,11 @@ describe("ConversationManageDialog", () => {
     await user.click(screen.getByRole("option", { name: "Retired Reviewer" }))
 
     await waitFor(() =>
+      expect(h.listAll).toHaveBeenLastCalledWith(
+        expect.objectContaining({ agent_type: "custom:retired-reviewer" })
+      )
+    )
+    await waitFor(() =>
       expect(screen.queryByText("old custom chat")).toBeNull()
     )
     const selected = screen.getAllByRole("combobox")[0]
