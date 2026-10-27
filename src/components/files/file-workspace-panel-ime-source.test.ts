@@ -65,7 +65,7 @@ it("retains scoped-out models and their undo stacks until their buffers close", 
   expect(workspaceSource).toContain("<MonacoModelProvider fileTabs={fileTabs}>")
 })
 
-it("retains the first ordinary-mode model when enabling Workbench then hiding its editor", async () => {
+it("retains the first ordinary-mode model when tabs start following the folder and its editor hides", async () => {
   const tab = { id: "a", path: "/repo/a.ts" }
   const path = buildMonacoModelPath(tab.path, tab.id)
   const history = ["saved", "unsaved edit"]
@@ -107,20 +107,20 @@ it("retains the first ordinary-mode model when enabling Workbench then hiding it
       },
     } as unknown as Monaco,
   })
-  function TrackedEditor({ workbenchEnabled }: { workbenchEnabled: boolean }) {
+  function TrackedEditor({ tabsFollowFolder }: { tabsFollowFolder: boolean }) {
     const track = useTrackMonacoModel()
     return createElement(MonacoEditor, {
       path,
       keepCurrentModel: true,
       onMount: (_, monaco) => track(path, monaco),
-      wrapperProps: { "data-mode": workbenchEnabled ? "scoped" : "normal" },
+      wrapperProps: { "data-mode": tabsFollowFolder ? "scoped" : "normal" },
     })
   }
-  const view = (workbenchEnabled: boolean, visible = true, fileTabs = [tab]) =>
+  const view = (tabsFollowFolder: boolean, visible = true, fileTabs = [tab]) =>
     createElement(
       MonacoModelProvider,
       { fileTabs },
-      visible ? createElement(TrackedEditor, { workbenchEnabled }) : null
+      visible ? createElement(TrackedEditor, { tabsFollowFolder }) : null
     )
   const mounted = render(view(false))
   await waitFor(() => expect(create).toHaveBeenCalledOnce())

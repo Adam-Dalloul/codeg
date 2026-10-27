@@ -1,9 +1,9 @@
 import { useMemo } from "react"
 import {
   folderScope,
-  useWorkbenchStore,
-  type WorkbenchScope,
-} from "@/stores/workbench-store"
+  useFolderTabsStore,
+  type TabScope,
+} from "@/stores/folder-tabs-store"
 import { create } from "zustand"
 import { useShallow } from "zustand/react/shallow"
 import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
@@ -277,8 +277,9 @@ export interface TabStoreState {
        *  instead of a new tab, that draft is moved to the slot. */
       index?: number
       /** Move THIS unbound draft to the folder (the composer's folder picker)
-       *  rather than resolving the target group's draft. Matters in Workbench
-       *  mode, where the target worktree may have a draft of its own. */
+       *  rather than resolving the target group's draft. Matters while tabs
+       *  follow the folder, where the target folder may have a draft of its
+       *  own. */
       retargetTabId?: string
     }
   ) => OpenedDraftTarget
@@ -950,14 +951,14 @@ function shallowRecordEqual(
 }
 
 /** View filtering is deliberately separate from rawTabs and the CAS payload. */
-export function isTabInWorkbench(tab: Pick<TabItem, "folderId">) {
-  const state = useWorkbenchStore.getState()
+export function isTabInScope(tab: Pick<TabItem, "folderId">) {
+  const state = useFolderTabsStore.getState()
   return !state.enabled || folderScope(tab.folderId) === state.scope
 }
 
 export function useVisibleConversationTabs() {
-  const enabled = useWorkbenchStore((s) => s.enabled)
-  const scope = useWorkbenchStore((s) => s.scope)
+  const enabled = useFolderTabsStore((s) => s.enabled)
+  const scope = useFolderTabsStore((s) => s.scope)
   return useTabStore(
     useShallow((s) =>
       enabled
@@ -968,7 +969,7 @@ export function useVisibleConversationTabs() {
 }
 
 export function useVisibleConversationLayout() {
-  const enabled = useWorkbenchStore((s) => s.enabled)
+  const enabled = useFolderTabsStore((s) => s.enabled)
   const tabs = useVisibleConversationTabs()
   const layout = useTabStore((s) => s.groupLayout)
   const groupOf = useTabStore((s) => s.groupOf)
@@ -984,8 +985,8 @@ export function useVisibleConversationLayout() {
   )
 }
 
-const workbenchSelections = new Map<
-  WorkbenchScope,
+const scopeSelections = new Map<
+  TabScope,
   {
     active: string | null
     groups: Record<string, string>
@@ -1007,9 +1008,9 @@ const workbenchSelections = new Map<
  */
 function applyGroupInvariants() {
   const st = useTabStore.getState()
-  const visibleTabs = st.rawTabs.filter(isTabInWorkbench)
+  const visibleTabs = st.rawTabs.filter(isTabInScope)
   if (
-    useWorkbenchStore.getState().enabled &&
+    useFolderTabsStore.getState().enabled &&
     st.activeTabId != null &&
     !visibleTabs.some((t) => t.id === st.activeTabId)
   ) {
@@ -1266,7 +1267,7 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
   ...initialTabState(),
 
   openTab: (folderId, conversationId, agentType, pin = false, title, opts) => {
-    useWorkbenchStore.getState().activateScope(folderScope(folderId))
+    useFolderTabsStore.getState().activateScope(folderScope(folderId))
     const prevState = get()
     const existingIndex = findTabIndexForConversation(
       prevState.rawTabs,
@@ -1336,7 +1337,7 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
     const previewIndex = prevState.rawTabs.findIndex(
       (t) =>
         !t.isPinned &&
-        isTabInWorkbench(t) &&
+        isTabInScope(t) &&
         groupOfTab(prevState.groupOf, prevState.groupLayout, t.id) ===
           targetGroup
     )
@@ -1393,10 +1394,7 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
 
       let draftKeyHandedOver = false
 
-      if (
-        useWorkbenchStore.getState().enabled &&
-        !next.some(isTabInWorkbench)
-      ) {
+      if (useFolderTabsStore.getState().enabled && !next.some(isTabInScope)) {
         set({ rawTabs: next, activeTabId: null })
       } else if (next.length === 0) {
         if (useAppWorkspaceStore.getState().folders.length === 0) {
@@ -1414,14 +1412,14 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
         }
       } else if (tabId === prevState.activeTabId) {
         // Pick the neighbor within the closed tab's group; when the group
-        // emptied, fall to the neighboring group's selected tab. In Workbench
-        // mode only the scope's tabs and groups count: a hidden neighbor
+        // emptied, fall to the neighboring group's selected tab. While tabs
+        // follow the folder only the scope's tabs and groups count: a hidden neighbor
         // would be replaced by the scope's first tab.
         const { groupOf, groupLayout, groupSelection } = prevState
-        const workbenchOn = useWorkbenchStore.getState().enabled
+        const followsFolder = useFolderTabsStore.getState().enabled
         const closedGroup = groupOfTab(groupOf, groupLayout, tabId)
         const inGroup = (t: TabItemInternal) =>
-          isTabInWorkbench(t) &&
+          isTabInScope(t) &&
           groupOfTab(groupOf, groupLayout, t.id) === closedGroup
         const indexInGroup = prevState.rawTabs
           .filter(inGroup)
@@ -1432,12 +1430,12 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
           newActiveId =
             groupAfter[Math.min(indexInGroup, groupAfter.length - 1)].id
         } else {
-          const layout = workbenchOn
+          const layout = followsFolder
             ? normalizeTree(
                 groupLayout,
                 new Set(
                   prevState.rawTabs
-                    .filter(isTabInWorkbench)
+                    .filter(isTabInScope)
                     .map((t) => groupOfTab(groupOf, groupLayout, t.id))
                 )
               )
@@ -1448,9 +1446,9 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
             : undefined
           newActiveId =
             neighborSelection != null &&
-            next.some((t) => t.id === neighborSelection && isTabInWorkbench(t))
+            next.some((t) => t.id === neighborSelection && isTabInScope(t))
               ? neighborSelection
-              : (next.find(isTabInWorkbench) ?? next[0]).id
+              : (next.find(isTabInScope) ?? next[0]).id
         }
         set({ rawTabs: next, activeTabId: newActiveId })
       } else {
@@ -1491,12 +1489,12 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
     const keep =
       groupLayout.type === "group"
         ? prevState.rawTabs.filter(
-            (tab) => tab.id === tabId || !isTabInWorkbench(tab)
+            (tab) => tab.id === tabId || !isTabInScope(tab)
           )
         : prevState.rawTabs.filter(
             (tab) =>
               tab.id === tabId ||
-              !isTabInWorkbench(tab) ||
+              !isTabInScope(tab) ||
               groupOfTab(groupOf, groupLayout, tab.id) !== targetGroup
           )
     if (keep.length === prevState.rawTabs.length) {
@@ -1517,13 +1515,13 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
   },
 
   closeAllTabs: () => {
-    if (useWorkbenchStore.getState().enabled) {
+    if (useFolderTabsStore.getState().enabled) {
       const st = get()
-      for (const [tab, slot] of batchCloseSlots(st.rawTabs, isTabInWorkbench)) {
+      for (const [tab, slot] of batchCloseSlots(st.rawTabs, isTabInScope)) {
         pushClosedTab(snapshotConversationTab(tab, slot))
       }
       set({
-        rawTabs: st.rawTabs.filter((tab) => !isTabInWorkbench(tab)),
+        rawTabs: st.rawTabs.filter((tab) => !isTabInScope(tab)),
         activeTabId: null,
       })
       recomputeTabs()
@@ -1578,7 +1576,7 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
   switchTab: (tabId) => {
     if (!get().rawTabs.some((t) => t.id === tabId)) return
     const tab = get().rawTabs.find((t) => t.id === tabId)!
-    useWorkbenchStore.getState().activateScope(folderScope(tab.folderId))
+    useFolderTabsStore.getState().activateScope(folderScope(tab.folderId))
     focusTab(tabId)
     runtime.activateConversationPane()
   },
@@ -1735,7 +1733,7 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
     without.forEach((t, i) => {
       if (
         groupOfTab(st.groupOf, st.groupLayout, t.id) === targetGroupId &&
-        isTabInWorkbench(t)
+        isTabInScope(t)
       ) {
         memberSlots.push(i)
       }
@@ -1821,7 +1819,7 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
     const slots: number[] = []
     raw.forEach((tab, i) => {
       if (
-        isTabInWorkbench(tab) &&
+        isTabInScope(tab) &&
         groupOfTab(st.groupOf, st.groupLayout, tab.id) === groupId
       ) {
         slots.push(i)
@@ -1854,7 +1852,7 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
     const raw = get().rawTabs
     const next = permuteSlots(
       raw,
-      raw.flatMap((tab, i) => (isTabInWorkbench(tab) ? [i] : [])),
+      raw.flatMap((tab, i) => (isTabInScope(tab) ? [i] : [])),
       reorderedTabs
     )
     if (!next) return
@@ -1880,8 +1878,8 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
           : {}),
       })
     }
-    // Read before any Workbench scope switch: "inherit from active" means the
-    // tab the user is on, not whatever the target worktree had selected.
+    // Read before any folder scope switch: "inherit from active" means the
+    // tab the user is on, not whatever the target folder had selected.
     const inheritFromActive = options?.inheritFromActive === true
     let inherit: AgentType | null = null
     if (inheritFromActive) {
@@ -1895,10 +1893,10 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
       }
     }
     // A draft MOVED to this folder (the composer's folder picker) stays the
-    // same tab, so its composer and typed prompt come along. In Workbench
-    // mode it keeps its scope until the queued retarget lands and the scope
-    // follows it (`consumeDraftRetargets`); switching first would hide it and
-    // hand the user the target worktree's own draft instead.
+    // same tab, so its composer and typed prompt come along. While tabs
+    // follow the folder it keeps its scope until the queued retarget lands
+    // and the scope follows it (`consumeDraftRetargets`); switching first
+    // would hide it and hand the user the target folder's own draft instead.
     const movingDraft =
       options?.retargetTabId != null
         ? get().rawTabs.find(
@@ -1906,7 +1904,7 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
           )
         : undefined
     if (!movingDraft) {
-      useWorkbenchStore.getState().activateScope(folderScope(folderId))
+      useFolderTabsStore.getState().activateScope(folderScope(folderId))
     }
     // A forced agent short-circuits resolution entirely (it outranks the folder
     // default, which `inherit` would lose to) and is never provisional — it is
@@ -1929,7 +1927,7 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
       prevState.rawTabs.find(
         (t) =>
           t.conversationId == null &&
-          isTabInWorkbench(t) &&
+          isTabInScope(t) &&
           groupOfTab(prevState.groupOf, prevState.groupLayout, t.id) ===
             targetGroup
       )
@@ -2014,7 +2012,7 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
 
   openChatModeTab: (options) => {
     // Inherit the agent like openNewConversationTab's inherit path — read
-    // before the Workbench switch to the global scope, from the tab the user
+    // before the folder-tabs switch to the global scope, from the tab the user
     // is on.
     const before = get()
     const activeTab = before.rawTabs.find((x) => x.id === before.activeTabId)
@@ -2032,7 +2030,7 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
             (t) => t.id === options.retargetTabId && t.conversationId == null
           )
         : undefined
-    useWorkbenchStore.getState().activateScope("global")
+    useFolderTabsStore.getState().activateScope("global")
     const st = get()
     // Same short-circuit as openNewConversationTab: an explicitly forced agent
     // is caller intent and skips resolution.
@@ -2052,7 +2050,7 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
     const isTargetDraft = (t: TabItemInternal) =>
       movingDraft
         ? t.id === movingDraft.id
-        : t.conversationId == null && isTabInWorkbench(t) && inTargetGroup(t)
+        : t.conversationId == null && isTabInScope(t) && inTargetGroup(t)
     const existingDraft = st.rawTabs.find(isTargetDraft)
     const needsDisconnect =
       existingDraft != null &&
@@ -2803,10 +2801,11 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
         ) {
           return
         }
-        // Workbench: a draft the user is still on carries the view into its
-        // new worktree, instead of vanishing from the scope it leaves.
+        // Tabs follow the folder: a draft the user is still on carries the
+        // view into its new folder, instead of vanishing from the scope it
+        // leaves.
         const followScope =
-          useWorkbenchStore.getState().enabled &&
+          useFolderTabsStore.getState().enabled &&
           get().activeTabId === request.tabId &&
           folderScope(request.folderId) !== folderScope(target.folderId)
         set({
@@ -2825,7 +2824,7 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
         })
         recomputeTabs()
         if (followScope) {
-          useWorkbenchStore
+          useFolderTabsStore
             .getState()
             .activateScope(folderScope(request.folderId))
           focusTab(request.tabId)
@@ -2836,17 +2835,14 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
 
   syncActiveFolderId: () => {
     const st = get()
-    const workbench = useWorkbenchStore.getState()
+    const folderTabs = useFolderTabsStore.getState()
     const activeTab = st.rawTabs.find((t) => t.id === st.activeTabId) ?? null
-    if (
-      workbench.enabled &&
-      (activeTab == null || !isTabInWorkbench(activeTab))
-    ) {
+    if (folderTabs.enabled && (activeTab == null || !isTabInScope(activeTab))) {
       // An empty scope still owns the folder chrome (file tree, terminal).
       useAppWorkspaceStore
         .getState()
         .setActiveFolderId(
-          workbench.scope === "global" ? null : workbench.scope
+          folderTabs.scope === "global" ? null : folderTabs.scope
         )
       return
     }
@@ -2901,7 +2897,7 @@ export function runCorrectionOnce() {
 }
 
 export function runRecoveryOnce() {
-  if (recoveryRan || useWorkbenchStore.getState().enabled) return
+  if (recoveryRan || useFolderTabsStore.getState().enabled) return
   recoveryRan = true
   useTabStore.getState().recoverActiveContext()
 }
@@ -3005,7 +3001,7 @@ export function resetTabStore() {
     clearTimeout(groupPersistTimer)
     groupPersistTimer = null
   }
-  workbenchSelections.clear()
+  scopeSelections.clear()
   version = 0
   applyingRemote = false
   remoteActivationPending = false
@@ -3152,7 +3148,7 @@ function applyRemoteSnapshot(change: TabsChanged) {
 
   // Never leave the workspace blank: synthesize a draft when empty.
   if (nextTabs.length === 0) {
-    if (folders.length === 0 || useWorkbenchStore.getState().enabled) {
+    if (folders.length === 0 || useFolderTabsStore.getState().enabled) {
       lastSavedPayload = diverged ? null : JSON.stringify([])
       useTabStore.setState({ rawTabs: [], activeTabId: null })
       recomputeTabs()
@@ -3206,10 +3202,10 @@ function applyRemoteSnapshot(change: TabsChanged) {
     nextActiveId = nextTabs[0].id
   }
 
-  if (useWorkbenchStore.getState().enabled) {
+  if (useFolderTabsStore.getState().enabled) {
     // Remote clients synchronize open membership, but cannot move this client's
-    // explicit worktree scope or steal its current local selection.
-    const visible = nextTabs.filter(isTabInWorkbench)
+    // explicit folder scope or steal its current local selection.
+    const visible = nextTabs.filter(isTabInScope)
     nextActiveId = visible.some((tab) => tab.id === prev.activeTabId)
       ? prev.activeTabId
       : (visible[0]?.id ?? null)
@@ -3234,22 +3230,20 @@ function applyRemoteSnapshot(change: TabsChanged) {
 
 // Scope changes repair only view selections. Membership and server persistence
 // always retain the complete tab set, including live background sessions.
-useWorkbenchStore.subscribe((next, previous) => {
+useFolderTabsStore.subscribe((next, previous) => {
   if (next.scope === previous.scope && next.enabled === previous.enabled) return
   const st = useTabStore.getState()
   if (previous.enabled && next.enabled) {
-    workbenchSelections.set(previous.scope, {
+    scopeSelections.set(previous.scope, {
       active: st.activeTabId,
       groups: st.groupSelection,
     })
   }
   if (next.enabled) {
-    const visible = st.rawTabs.filter(isTabInWorkbench)
+    const visible = st.rawTabs.filter(isTabInScope)
     // Only a scope SWITCH restores a remembered selection. Turning the mode on
     // starts from the tab (and per-group picks) the user is looking at.
-    const saved = previous.enabled
-      ? workbenchSelections.get(next.scope)
-      : undefined
+    const saved = previous.enabled ? scopeSelections.get(next.scope) : undefined
     const active = saved?.active ?? st.activeTabId
     useTabStore.setState({
       activeTabId: visible.some((t) => t.id === active)
@@ -3264,7 +3258,7 @@ useWorkbenchStore.subscribe((next, previous) => {
   } else {
     // Normal mode moves the selection freely, so what was remembered for
     // each scope is stale by the time the mode comes back on.
-    workbenchSelections.clear()
+    scopeSelections.clear()
     if (!st.rawTabs.some((tab) => tab.id === st.activeTabId)) {
       useTabStore.setState({ activeTabId: st.rawTabs[0]?.id ?? null })
     }
@@ -3286,9 +3280,9 @@ useAppWorkspaceStore.subscribe((next, previous) => {
   ) {
     return
   }
-  const workbench = useWorkbenchStore.getState()
-  const scope = workbench.scope
-  if (!workbench.enabled || scope === "global" || !next.foldersHydrated) return
+  const folderTabs = useFolderTabsStore.getState()
+  const scope = folderTabs.scope
+  if (!folderTabs.enabled || scope === "global" || !next.foldersHydrated) return
   const isOpen = (id: number | null | undefined) =>
     id != null && next.folders.some((f) => f.id === id)
   if (isOpen(scope)) return
@@ -3300,9 +3294,9 @@ useAppWorkspaceStore.subscribe((next, previous) => {
     .getState()
     .rawTabs.map((tab) => folderScope(tab.folderId))
     .find((s) => s !== scope && (s === "global" || isOpen(s)))
-  const target: WorkbenchScope =
+  const target: TabScope =
     parentId != null && isOpen(parentId)
       ? parentId
       : (fromTabs ?? next.folders[0]?.id ?? "global")
-  workbench.activateScope(target)
+  folderTabs.activateScope(target)
 })

@@ -3,9 +3,9 @@
 import {
   openingScope,
   fileOpeningScope,
-  useWorkbenchStore,
-  type WorkbenchScope,
-} from "@/stores/workbench-store"
+  useFolderTabsStore,
+  type TabScope,
+} from "@/stores/folder-tabs-store"
 
 import {
   createContext,
@@ -23,7 +23,7 @@ import { useTranslations } from "next-intl"
 import { useActiveFolder } from "@/contexts/active-folder-context"
 import { MonacoModelProvider } from "@/contexts/monaco-model-context"
 import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
-import { useTabStore, isTabInWorkbench } from "@/stores/tab-store"
+import { useTabStore, isTabInScope } from "@/stores/tab-store"
 import { browserTabBackendId, buildFileTabId } from "@/lib/file-tab-id"
 import {
   gitDiff,
@@ -486,7 +486,7 @@ function fileName(path: string): string {
 }
 
 /**
- * The Workbench scope's selected buffer. While a just-closed selection is
+ * The folder scope's selected buffer. While a just-closed selection is
  * still referenced (its references are dropped after the close commits), the
  * buffer `removeFile` will pick — the next open one in the scope's order, else
  * the previous — so the editor does not flash the scope's first tab.
@@ -641,22 +641,22 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
   const [normalActiveFileTabId, setNormalActiveFileTabId] = useState<
     string | null
   >(null)
-  const workbenchEnabled = useWorkbenchStore((s) => s.enabled)
-  const workbenchScope = useWorkbenchStore((s) => s.scope)
-  const workbenchRefs = useWorkbenchStore((s) => s.fileRefs)
-  const workbenchSelection = useWorkbenchStore((s) => s.fileSelection)
+  const tabsFollowFolder = useFolderTabsStore((s) => s.enabled)
+  const tabScope = useFolderTabsStore((s) => s.scope)
+  const scopeFileRefs = useFolderTabsStore((s) => s.fileRefs)
+  const scopeFileSelection = useFolderTabsStore((s) => s.fileSelection)
   const visibleFileTabs = useMemo(() => {
-    if (!workbenchEnabled) return fileTabs
+    if (!tabsFollowFolder) return fileTabs
     const byId = new Map(fileTabs.map((tab) => [tab.id, tab]))
-    return (workbenchRefs[workbenchScope] ?? []).flatMap((id) => {
+    return (scopeFileRefs[tabScope] ?? []).flatMap((id) => {
       const tab = byId.get(id)
       return tab ? [tab] : []
     })
-  }, [fileTabs, workbenchEnabled, workbenchScope, workbenchRefs])
-  const activeFileTabId = workbenchEnabled
+  }, [fileTabs, tabsFollowFolder, tabScope, scopeFileRefs])
+  const activeFileTabId = tabsFollowFolder
     ? pickScopeSelection(
-        workbenchRefs[workbenchScope] ?? [],
-        workbenchSelection[workbenchScope] ?? null,
+        scopeFileRefs[tabScope] ?? [],
+        scopeFileSelection[tabScope] ?? null,
         visibleFileTabs
       )
     : normalActiveFileTabId == null
@@ -674,7 +674,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
         typeof update === "function"
           ? update(selectedFileIdRef.current)
           : update
-      const state = useWorkbenchStore.getState()
+      const state = useFolderTabsStore.getState()
       // Async opens in another scope can finish without stealing this selection.
       if (
         state.enabled &&
@@ -683,7 +683,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
       )
         return
       selectedFileIdRef.current = id
-      // Only Workbench mode reads the per-scope selection; normal mode never
+      // Only folder-tabs mode reads the per-scope selection; normal mode never
       // writes it, so this stays safe to call from the updaters below.
       if (state.enabled) state.selectFile(id)
       setNormalActiveFileTabId(id)
@@ -694,7 +694,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
   // removal has committed. A `setFileTabs` updater must not write the store
   // itself: React may run it during render, or again — and a replayed
   // dirty-close confirm answered "cancel" would leave a buffer that no scope
-  // references, invisible in Workbench mode.
+  // references, invisible while tabs follow the folder.
   const pendingForgetRef = useRef<Set<string>>(new Set())
   const committedMembershipRef = useRef("")
   useLayoutEffect(() => {
@@ -708,29 +708,29 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
     for (const id of [...pending]) {
       if (live.has(id)) continue
       pending.delete(id)
-      useWorkbenchStore.getState().forgetFile(id)
+      useFolderTabsStore.getState().forgetFile(id)
     }
     // A committed buffer no scope references would be invisible, and
-    // unclosable, in Workbench mode. Every opener registers its scope in the
+    // unclosable, while tabs follow the folder. Every opener registers its scope in the
     // same tick as its insert; restored pages join their folder's scope here,
     // once the merge has committed — deciding earlier could skip a page whose
     // duplicate a queued close is about to remove.
     const referenced = new Set(
-      Object.values(useWorkbenchStore.getState().fileRefs).flat()
+      Object.values(useFolderTabsStore.getState().fileRefs).flat()
     )
     for (const tab of fileTabs) {
       if (referenced.has(tab.id)) continue
-      useWorkbenchStore
+      useFolderTabsStore
         .getState()
         .addFile(tab.id, openingScope(tab.folderId), false)
     }
   }, [fileTabs])
-  // Turning Workbench on keeps the file the user is looking at, when the new
+  // Turning folder tabs on keeps the file the user is looking at, when the new
   // scope references it, instead of whatever that scope selected last; turning
   // it off keeps the scope's file rather than normal mode's last pick.
   useEffect(
     () =>
-      useWorkbenchStore.subscribe((next, previous) => {
+      useFolderTabsStore.subscribe((next, previous) => {
         if (next.enabled === previous.enabled) return
         const current = selectedFileIdRef.current
         if (!next.enabled) {
@@ -738,7 +738,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
           return
         }
         if (current != null && next.fileRefs[next.scope]?.includes(current)) {
-          useWorkbenchStore.getState().selectFile(current)
+          useFolderTabsStore.getState().selectFile(current)
         }
       }),
     []
@@ -917,7 +917,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
     visibleFileTabs.length > 0 ? "fusion" : "conversation"
   // Low-frequency: flips only when the conversation strip empties or refills.
   const hasConversationTabs = useTabStore((s) =>
-    s.tabs.some((tab) => !workbenchEnabled || isTabInWorkbench(tab))
+    s.tabs.some((tab) => !tabsFollowFolder || isTabInScope(tab))
   )
   const effectiveFilesMaximized = mode === "fusion" && maximizedPane === "files"
   const effectiveConversationMaximized =
@@ -995,10 +995,10 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
   // but none is active" never becomes reachable.
   const activateTab = useCallback(
     (tabId: string, background = false, scope = openingScope()) => {
-      useWorkbenchStore.getState().addFile(tabId, scope, !background)
+      useFolderTabsStore.getState().addFile(tabId, scope, !background)
       if (
-        useWorkbenchStore.getState().enabled &&
-        scope !== useWorkbenchStore.getState().scope
+        useFolderTabsStore.getState().enabled &&
+        scope !== useFolderTabsStore.getState().scope
       )
         return
       if (background) {
@@ -1021,7 +1021,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
       index?: number,
       scope = openingScope(nextTab.folderId)
     ) => {
-      useWorkbenchStore.getState().addFile(nextTab.id, scope, !background)
+      useFolderTabsStore.getState().addFile(nextTab.id, scope, !background)
       setFileTabs((prev) => {
         if (prev.some((tab) => tab.id === nextTab.id)) return prev
         const at =
@@ -1032,8 +1032,8 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
       })
       if (
         background ||
-        (useWorkbenchStore.getState().enabled &&
-          scope !== useWorkbenchStore.getState().scope)
+        (useFolderTabsStore.getState().enabled &&
+          scope !== useFolderTabsStore.getState().scope)
       ) {
         if (scope === openingScope())
           setActiveFileTabId((prev) => prev ?? nextTab.id)
@@ -1122,7 +1122,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
       const opener = options?.openerTabId
         ? fileTabsRef.current.find((tab) => tab.id === options.openerTabId)
         : undefined
-      const state = useWorkbenchStore.getState()
+      const state = useFolderTabsStore.getState()
       const targetScope =
         options?.folderId != null
           ? openingScope(options.folderId)
@@ -1181,13 +1181,13 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
                 normalizeUrlForDedupe(tab.browser.initialUrl) === normalized
             )
       if (existing) {
-        useWorkbenchStore
+        useFolderTabsStore
           .getState()
           .addFile(existing.id, targetScope, activate !== false)
         if (activate === "tab") {
           // Selected in its target scope by `addFile` above. A tab shared with
           // the current scope must not also take over the current selection
-          // for an open aimed at another worktree.
+          // for an open aimed at another folder.
           if (!state.enabled || targetScope === state.scope) {
             setActiveFileTabId(existing.id)
           }
@@ -1204,7 +1204,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
         remote,
         options?.device
       )
-      useWorkbenchStore
+      useFolderTabsStore
         .getState()
         .addFile(record.id, targetScope, activate !== false)
       const insert = (prev: FileWorkspaceTab[]) => {
@@ -1295,11 +1295,11 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
       })
       // A popup is what the user just clicked for: show it, like a browser
       // would, and the opener stays one tab to the left.
-      useWorkbenchStore.getState().addFile(record.id, targetScope)
+      useFolderTabsStore.getState().addFile(record.id, targetScope)
       setActiveFileTabId(record.id)
       if (
-        !useWorkbenchStore.getState().enabled ||
-        targetScope === useWorkbenchStore.getState().scope
+        !useFolderTabsStore.getState().enabled ||
+        targetScope === useFolderTabsStore.getState().scope
       )
         activateFilePane()
       return record.id
@@ -1461,9 +1461,9 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
       // the neighbouring survivor the way `closeFileTab` does — a suspended
       // tab is off screen, but the file pane may be hidden with it selected.
       const normalized = normalizeUrlForDedupe(url)
-      // Workbench selection is per scope and derived from its references
+      // Folder-tabs selection is per scope and derived from its references
       // until the committed removal drops them (see `pendingForgetRef`).
-      const workbenchOn = useWorkbenchStore.getState().enabled
+      const followsFolder = useFolderTabsStore.getState().enabled
       setFileTabs((prev) => {
         const duplicate =
           profile !== tab.browser.profile &&
@@ -1489,7 +1489,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
         const idx = prev.findIndex((t) => t.id === tabId)
         const next = prev.filter((t) => t.id !== tabId)
         pendingForgetRef.current.add(tabId)
-        if (!workbenchOn) {
+        if (!followsFolder) {
           setActiveFileTabId((current) => {
             if (current !== tabId) return current
             if (next.length === 0) return null
@@ -1579,7 +1579,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
   // the final content.
   const replaceTabContent = useCallback(
     (nextTab: FileWorkspaceTab) => {
-      useWorkbenchStore
+      useFolderTabsStore
         .getState()
         .addFile(nextTab.id, openingScope(nextTab.folderId))
       setFileTabs((prev) => {
@@ -1612,7 +1612,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
       reload: boolean,
       background = false,
       index?: number,
-      scope: WorkbenchScope = openingScope(seed.folderId)
+      scope: TabScope = openingScope(seed.folderId)
     ): LoadDecision => {
       // Dedup synchronously. inFlightLoadsRef is updated immediately on
       // generation start, so rapid re-clicks within a single event loop
@@ -2088,8 +2088,8 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
       await (async () => {
         const background =
           options?.background === true ||
-          (useWorkbenchStore.getState().enabled &&
-            useWorkbenchStore.getState().scope !== targetScope)
+          (useFolderTabsStore.getState().enabled &&
+            useFolderTabsStore.getState().scope !== targetScope)
         const requestedLine =
           typeof options?.line === "number" && Number.isFinite(options.line)
             ? Math.max(1, Math.floor(options.line))
@@ -2122,7 +2122,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
           binary ?? (office ? "office" : languageFromPath(absPath))
         )
 
-        useWorkbenchStore
+        useFolderTabsStore
           .getState()
           .addFile(tabId, targetScope, options?.background !== true)
         const decision = decideLoad(
@@ -3257,7 +3257,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
       // Explicit handoffs (canvas and drawers) may own a shared buffer that
       // this scope has not referenced yet. Never acquire a closed/stale id.
       if (!fileTabsRef.current.some((tab) => tab.id === tabId)) return
-      useWorkbenchStore.getState().addFile(tabId, openingScope())
+      useFolderTabsStore.getState().addFile(tabId, openingScope())
       const activeId = activeFileTabIdRef.current
       if (activeId && activeId !== tabId) {
         void saveFileTab(activeId)
@@ -3270,26 +3270,26 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
 
   const closeFileTab = useCallback(
     (tabId: string, options?: { allScopes?: boolean }) => {
-      const workbench = useWorkbenchStore.getState()
+      const folderTabs = useFolderTabsStore.getState()
       if (
-        workbench.enabled &&
+        folderTabs.enabled &&
         !options?.allScopes &&
-        workbench.fileRefs[workbench.scope]?.includes(tabId)
+        folderTabs.fileRefs[folderTabs.scope]?.includes(tabId)
       ) {
-        const shared = Object.entries(workbench.fileRefs).some(
+        const shared = Object.entries(folderTabs.fileRefs).some(
           ([scope, ids]) =>
-            scope !== String(workbench.scope) && ids.includes(tabId)
+            scope !== String(folderTabs.scope) && ids.includes(tabId)
         )
         if (shared) {
-          workbench.removeFile(tabId, workbench.scope)
+          folderTabs.removeFile(tabId, folderTabs.scope)
           return
         }
       }
-      // Workbench selection is per scope and lives in the store, which the
+      // Folder-tabs selection is per scope and lives in the store, which the
       // updater below must not write: it is derived from the scope's
       // references until the committed close drops them (`pendingForgetRef`).
-      const scopeRefs = workbench.enabled
-        ? (workbench.fileRefs[workbench.scope] ?? [])
+      const scopeRefs = folderTabs.enabled
+        ? (folderTabs.fileRefs[folderTabs.scope] ?? [])
         : null
       setFileTabs((prev) => {
         const idx = prev.findIndex((tab) => tab.id === tabId)
@@ -3366,21 +3366,21 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
     [setActiveFileTabId, activateConversationPane, activateFilePane, t]
   )
 
-  // Workbench "close others" / "close all": ONE operation over the active
+  // Folder-tabs "close others" / "close all": ONE operation over the active
   // scope's references, decided before any state changes. A buffer another
-  // worktree still references only leaves this scope (nothing is lost, so it
+  // folder still references only leaves this scope (nothing is lost, so it
   // asks nothing); the rest close behind a single confirmation when any of
   // them has unsaved edits — cancelling closes nothing, as in normal mode.
   const closeScopeFileTabs = useCallback(
     (keepId: string | null) => {
-      const workbench = useWorkbenchStore.getState()
-      const scope = workbench.scope
-      const ids = (workbench.fileRefs[scope] ?? []).filter(
+      const folderTabs = useFolderTabsStore.getState()
+      const scope = folderTabs.scope
+      const ids = (folderTabs.fileRefs[scope] ?? []).filter(
         (id) => id !== keepId
       )
       if (ids.length === 0) return
       const elsewhere = (id: string) =>
-        Object.entries(workbench.fileRefs).some(
+        Object.entries(folderTabs.fileRefs).some(
           ([other, refs]) => other !== String(scope) && refs.includes(id)
         )
       const closing = new Set(ids.filter((id) => !elsewhere(id)))
@@ -3399,12 +3399,12 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
         return
       }
       for (const id of ids) {
-        if (!closing.has(id)) workbench.removeFile(id, scope)
+        if (!closing.has(id)) folderTabs.removeFile(id, scope)
       }
       if (keepId == null) {
         activateConversationPane()
       } else {
-        useWorkbenchStore.getState().selectFile(keepId)
+        useFolderTabsStore.getState().selectFile(keepId)
         activateFilePane()
       }
       if (closing.size === 0) return
@@ -3438,7 +3438,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
 
   const closeOtherFileTabs = useCallback(
     (tabId: string) => {
-      if (useWorkbenchStore.getState().enabled) {
+      if (useFolderTabsStore.getState().enabled) {
         closeScopeFileTabs(tabId)
         return
       }
@@ -3475,7 +3475,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
   )
 
   const closeAllFileTabs = useCallback(() => {
-    if (useWorkbenchStore.getState().enabled) {
+    if (useFolderTabsStore.getState().enabled) {
       closeScopeFileTabs(null)
       return
     }
@@ -3504,9 +3504,9 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
   }, [setActiveFileTabId, activateConversationPane, closeScopeFileTabs, t])
 
   const reorderFileTabs = useCallback((tabs: FileWorkspaceTab[]) => {
-    const workbench = useWorkbenchStore.getState()
-    if (workbench.enabled) {
-      workbench.reorderFiles(tabs.map((tab) => tab.id))
+    const folderTabs = useFolderTabsStore.getState()
+    if (folderTabs.enabled) {
+      folderTabs.reorderFiles(tabs.map((tab) => tab.id))
       return
     }
     setFileTabs(tabs)

@@ -31,9 +31,9 @@ import {
 } from "@/stores/app-workspace-store"
 import enMessages from "@/i18n/messages/en.json"
 import {
-  resetWorkbenchStore,
-  useWorkbenchStore,
-} from "@/stores/workbench-store"
+  resetFolderTabsStore,
+  useFolderTabsStore,
+} from "@/stores/folder-tabs-store"
 
 // ── Probes ────────────────────────────────────────────────────────────────
 // AgentIcon renders once per card body → counts card re-renders. The Folder /
@@ -2173,7 +2173,7 @@ describe("SidebarConversationList — tag filter", () => {
   })
 })
 
-describe("SidebarConversationList — folder header and Workbench mode", () => {
+describe("SidebarConversationList — folder header and folder-tabs mode", () => {
   beforeEach(() => {
     const folders = [folder(1, "Folder 1"), folder(2, "Folder 2")]
     useAppWorkspaceStore.setState({
@@ -2183,9 +2183,9 @@ describe("SidebarConversationList — folder header and Workbench mode", () => {
     })
     store.activeTabId = null
     store.tabSpec = []
-    resetWorkbenchStore()
+    resetFolderTabsStore()
   })
-  afterEach(() => resetWorkbenchStore())
+  afterEach(() => resetFolderTabsStore())
 
   const header = (folderId: number) =>
     document.querySelector(`[data-folder-id="${folderId}"]`) as HTMLElement
@@ -2205,12 +2205,12 @@ describe("SidebarConversationList — folder header and Workbench mode", () => {
       "aria-expanded",
       before === "true" ? "false" : "true"
     )
-    expect(useWorkbenchStore.getState().scope).toBe("global")
+    expect(useFolderTabsStore.getState().scope).toBe("global")
   })
 
-  it("Workbench mode: the row selects the worktree, a separate chevron button toggles it", () => {
+  it("folder-tabs mode: the row selects the folder, a separate chevron button toggles it", () => {
     act(() => {
-      useWorkbenchStore.setState({ enabled: true, scope: 2 })
+      useFolderTabsStore.setState({ enabled: true, scope: 2 })
     })
     render(tree())
     expect(header(1)).not.toHaveAttribute("aria-expanded")
@@ -2218,7 +2218,7 @@ describe("SidebarConversationList — folder header and Workbench mode", () => {
     act(() => {
       fireEvent.click(header(1))
     })
-    expect(useWorkbenchStore.getState().scope).toBe(1)
+    expect(useFolderTabsStore.getState().scope).toBe(1)
     expect(header(1)).toHaveAttribute("aria-current", "true")
     // The row's own disclosure button sits right after the row button.
     const toggle = () => header(1).nextElementSibling as HTMLElement
@@ -2233,6 +2233,6 @@ describe("SidebarConversationList — folder header and Workbench mode", () => {
       "aria-expanded",
       before === "true" ? "false" : "true"
     )
-    expect(useWorkbenchStore.getState().scope).toBe(1)
+    expect(useFolderTabsStore.getState().scope).toBe(1)
   })
 })

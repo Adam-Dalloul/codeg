@@ -250,8 +250,8 @@ it("targets the actual visible group when the projected strip is unsplit", () =>
   expect(h.toggleGroupTile).toHaveBeenCalledWith("g-second")
 })
 
-// Workbench: the full layout may be split by another worktree's tabs while
-// this worktree's tabs all sit in one group. Groups that are not on screen
+// Tabs follow the folder: the full layout may be split by another folder's
+// tabs while this folder's tabs all sit in one group. Groups that are not on screen
 // are no move targets, and the strip offers no split-only actions.
 it("offers only on-screen groups as split targets", () => {
   h.groupLayout = {

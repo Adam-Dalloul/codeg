@@ -4,9 +4,9 @@ import { useCallback, useEffect, useRef, type ReactNode } from "react"
 import { useTranslations } from "next-intl"
 import { useShallow } from "zustand/react/shallow"
 import {
-  useWorkbenchStore,
+  useFolderTabsStore,
   shouldSeedConversation,
-} from "@/stores/workbench-store"
+} from "@/stores/folder-tabs-store"
 import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
 import { useAcpActions } from "@/contexts/acp-connections-context"
 import { useWorkspaceActions } from "@/contexts/workspace-context"
@@ -68,7 +68,7 @@ export function TabProvider({ children }: TabProviderProps) {
 
   // Tab-store slices used only as effect dependencies (this component renders
   // nothing, so subscribing here doesn't cascade to any consumer).
-  const workbenchEnabled = useWorkbenchStore((s) => s.enabled)
+  const tabsFollowFolder = useFolderTabsStore((s) => s.enabled)
   const rawTabs = useTabStore((s) => s.rawTabs)
   const activeTabId = useTabStore((s) => s.activeTabId)
   const previewReplacedTabIds = useTabStore((s) => s.previewReplacedTabIds)
@@ -82,7 +82,7 @@ export function TabProvider({ children }: TabProviderProps) {
     if (!tabsHydrated || !foldersHydrated || preferenceHydrated.current) return
     preferenceHydrated.current = true
     useTabStore.getState().syncActiveFolderId()
-    useWorkbenchStore.getState().hydratePreference()
+    useFolderTabsStore.getState().hydratePreference()
   }, [tabsHydrated, foldersHydrated])
 
   // ── Runtime dependency injection ─────────────────────────────────────────────
@@ -210,13 +210,13 @@ export function TabProvider({ children }: TabProviderProps) {
     pruneOrphanDraftsOnce()
     if (
       !shouldSeedConversation(
-        useWorkbenchStore.getState().enabled,
+        useFolderTabsStore.getState().enabled,
         useTabStore.getState().rawTabs.length === 0
       )
     )
       return
     runRecoveryOnce()
-  }, [tabsHydrated, foldersHydrated, rawTabs, workbenchEnabled])
+  }, [tabsHydrated, foldersHydrated, rawTabs, tabsFollowFolder])
 
   // Persist the active draft's context for the next cold start.
   useEffect(() => {

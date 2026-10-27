@@ -65,7 +65,7 @@ describe("collectLiveModelPaths", () => {
   })
 })
 
-describe("Workbench Monaco model lifetime", () => {
+describe("Folder-tabs Monaco model lifetime", () => {
   it("keeps model identity and undo while scopes switch, disposing only after a real close", () => {
     const a = { id: "a", path: "/repo/a.ts" }
     const b = { id: "b", path: "/other/b.ts" }

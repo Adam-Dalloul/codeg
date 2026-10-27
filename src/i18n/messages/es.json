@@ -10,12 +10,6 @@
     "settingsDescription": "Muestra tarjetas y diagramas HTML/CSS autocontenidos en las respuestas de la IA. Se bloquean los scripts del modelo y los recursos externos.",
     "settingsEnable": "Activar renderizado HTML enriquecido"
   },
-  "Workbench": {
-    "label": "Workbench",
-    "enable": "Cambiar pestañas por árbol de trabajo",
-    "disable": "Mostrar pestañas de todos los árboles de trabajo",
-    "toggleFolder": "Expandir o contraer carpeta"
-  },
   "Language": {
     "followSystem": "Seguir el sistema",
     "english": "Inglés",
@@ -2195,6 +2189,9 @@
       "showCompleted": "Mostrar conversaciones completadas",
       "showWorktrees": "Mostrar ramas de worktree",
       "showRecent": "Mostrar grupo Recientes",
+      "tabsFollowFolder": "Pestañas según la carpeta",
+      "tabsFollowFolderHint": "Muestra solo las pestañas de conversaciones y archivos de la carpeta seleccionada. Haz clic en una carpeta para cambiar.",
+      "toggleFolderExpanded": "Expandir o contraer carpeta",
       "navigationItems": "Elementos de navegación",
       "moreOptions": "Más opciones",
       "sortBy": "Ordenar por",

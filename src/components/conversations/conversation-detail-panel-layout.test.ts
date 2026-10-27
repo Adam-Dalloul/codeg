@@ -667,12 +667,12 @@ describe("ConversationDetailPanel session-load failure surface", () => {
   })
 })
 
-it("gates the no-tab draft creation effect on Workbench mode", () => {
+it("gates the no-tab draft creation effect on folder-tabs mode", () => {
   const start = source.indexOf("// Ensure no-tab state")
   const end = source.indexOf("// Split-group render model", start)
   const effect = source.slice(start, end)
   expect(effect).toContain(
-    "shouldSeedConversation(useWorkbenchStore.getState().enabled, hasNoTabs)"
+    "shouldSeedConversation(useFolderTabsStore.getState().enabled, hasNoTabs)"
   )
   expect(effect).toContain("openNewConversationTab(")
 })

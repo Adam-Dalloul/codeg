@@ -10,12 +10,6 @@
     "settingsDescription": "Afficher des cartes et diagrammes HTML/CSS autonomes dans les réponses de l’IA. Les scripts du modèle et les ressources externes sont bloqués.",
     "settingsEnable": "Activer le rendu HTML enrichi"
   },
-  "Workbench": {
-    "label": "Workbench",
-    "enable": "Changer les onglets par arbre de travail",
-    "disable": "Afficher les onglets de tous les arbres de travail",
-    "toggleFolder": "Développer ou réduire le dossier"
-  },
   "Language": {
     "followSystem": "Suivre le système",
     "english": "Anglais",
@@ -2195,6 +2189,9 @@
       "showCompleted": "Afficher les conversations terminées",
       "showWorktrees": "Afficher les branches de worktree",
       "showRecent": "Afficher le groupe Récents",
+      "tabsFollowFolder": "Les onglets suivent le dossier",
+      "tabsFollowFolderHint": "N'affiche que les onglets de conversation et de fichier du dossier sélectionné. Cliquez sur un dossier pour changer.",
+      "toggleFolderExpanded": "Développer ou réduire le dossier",
       "navigationItems": "Éléments de navigation",
       "moreOptions": "Plus d'options",
       "sortBy": "Trier par",

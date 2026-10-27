@@ -10,12 +10,6 @@
     "settingsDescription": "Mostra cartões e diagramas HTML/CSS autocontidos nas respostas da IA. Scripts do modelo e recursos externos são bloqueados.",
     "settingsEnable": "Ativar renderização HTML avançada"
   },
-  "Workbench": {
-    "label": "Workbench",
-    "enable": "Alternar abas por árvore de trabalho",
-    "disable": "Mostrar abas de todas as árvores de trabalho",
-    "toggleFolder": "Expandir ou recolher pasta"
-  },
   "Language": {
     "followSystem": "Seguir o sistema",
     "english": "Inglês",
@@ -2195,6 +2189,9 @@
       "showCompleted": "Mostrar conversas concluídas",
       "showWorktrees": "Mostrar branches de worktree",
       "showRecent": "Mostrar grupo Recentes",
+      "tabsFollowFolder": "Abas acompanham a pasta",
+      "tabsFollowFolderHint": "Mostra apenas as abas de conversas e arquivos da pasta selecionada. Clique em uma pasta para alternar.",
+      "toggleFolderExpanded": "Expandir ou recolher pasta",
       "navigationItems": "Itens de navegação",
       "moreOptions": "Mais opções",
       "sortBy": "Ordenar por",

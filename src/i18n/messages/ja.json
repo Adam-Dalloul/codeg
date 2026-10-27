@@ -10,12 +10,6 @@
     "settingsDescription": "AI の返信内に自己完結した HTML/CSS カードや図を表示します。モデルのスクリプトと外部リソースはブロックされます。",
     "settingsEnable": "リッチ HTML 表示を有効化"
   },
-  "Workbench": {
-    "label": "ワークベンチ",
-    "enable": "ワークツリーごとにタブを切り替える",
-    "disable": "すべてのワークツリーのタブを表示",
-    "toggleFolder": "フォルダーを展開・折りたたむ"
-  },
   "Language": {
     "followSystem": "システムに従う",
     "english": "英語",
@@ -2195,6 +2189,9 @@
       "showCompleted": "完了した会話を表示",
       "showWorktrees": "ワークツリーブランチを表示",
       "showRecent": "「最近」グループを表示",
+      "tabsFollowFolder": "タブをフォルダーに追従",
+      "tabsFollowFolderHint": "選択したフォルダーの会話タブとファイルタブだけを表示します。フォルダーをクリックすると切り替わります。",
+      "toggleFolderExpanded": "フォルダーを展開・折りたたむ",
       "navigationItems": "ナビゲーション項目",
       "moreOptions": "その他のオプション",
       "sortBy": "並び替え",

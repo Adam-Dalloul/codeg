@@ -1,6 +1,6 @@
 "use client"
 
-import { useWorkbenchStore } from "@/stores/workbench-store"
+import { useFolderTabsStore } from "@/stores/folder-tabs-store"
 import {
   memo,
   useCallback,
@@ -364,9 +364,8 @@ const FolderHeader = memo(function FolderHeader({
   // returns a fresh `t` on every parent render, so passing it down would defeat
   // this component's memo and re-render every header on each status event.
   const t = useTranslations("Folder.sidebar")
-  const workbenchEnabled = useWorkbenchStore((s) => s.enabled)
-  const workbenchScope = useWorkbenchStore((s) => s.scope)
-  const tWorkbench = useTranslations("Workbench")
+  const tabsFollowFolder = useFolderTabsStore((s) => s.enabled)
+  const tabScope = useFolderTabsStore((s) => s.scope)
   const tTags = useTranslations("ConversationTags")
   const ime = useImeGuard()
   // Only flag a stale default once the live list is known; before fresh,
@@ -439,19 +438,17 @@ const FolderHeader = memo(function FolderHeader({
               <button
                 data-folder-id={folderId}
                 onClick={() => {
-                  if (workbenchEnabled) {
-                    useWorkbenchStore.getState().activateScope(folderId)
+                  if (tabsFollowFolder) {
+                    useFolderTabsStore.getState().activateScope(folderId)
                   } else onToggle(folderId)
                 }}
                 aria-current={
-                  workbenchEnabled && workbenchScope === folderId
-                    ? "true"
-                    : undefined
+                  tabsFollowFolder && tabScope === folderId ? "true" : undefined
                 }
                 title={folderPath}
-                // In Workbench mode this button selects the worktree; the
-                // separate chevron button below is the disclosure control.
-                aria-expanded={workbenchEnabled ? undefined : expanded}
+                // While tabs follow the folder this button selects the folder;
+                // the separate chevron button below is the disclosure control.
+                aria-expanded={tabsFollowFolder ? undefined : expanded}
                 className={cn(
                   "relative flex h-full min-w-0 flex-1 items-center pr-[0.5rem] outline-none",
                   "rounded-full focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
@@ -573,17 +570,18 @@ const FolderHeader = memo(function FolderHeader({
                     sibling ⋯ menu button), so the reveal must react to focus
                     anywhere inside the row. The section header's `group` IS its
                     button, so it uses `group-focus-visible`. Don't "normalize".
-                    In Workbench mode the row button selects the worktree, so the
-                    chevron becomes its own disclosure button after it. */}
-                  {!workbenchEnabled && (
+                    While tabs follow the folder the row button selects the
+                    folder, so the chevron becomes its own disclosure button
+                    after it. */}
+                  {!tabsFollowFolder && (
                     <FolderDisclosureChevron expanded={expanded} />
                   )}
                 </div>
               </button>
-              {workbenchEnabled && (
+              {tabsFollowFolder && (
                 <button
                   type="button"
-                  aria-label={tWorkbench("toggleFolder")}
+                  aria-label={t("toggleFolderExpanded")}
                   aria-expanded={expanded}
                   onPointerDown={(event) => event.stopPropagation()}
                   onClick={() => onToggle(folderId)}

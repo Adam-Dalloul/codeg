@@ -10,12 +10,6 @@
     "settingsDescription": "AI 응답에 자체 포함된 HTML/CSS 카드와 도표를 표시합니다. 모델 스크립트와 외부 리소스는 차단됩니다.",
     "settingsEnable": "리치 HTML 렌더링 사용"
   },
-  "Workbench": {
-    "label": "워크벤치",
-    "enable": "워크트리별로 탭 전환",
-    "disable": "모든 워크트리의 탭 표시",
-    "toggleFolder": "폴더 펼치기 또는 접기"
-  },
   "Language": {
     "followSystem": "시스템 설정 따름",
     "english": "영어",
@@ -2195,6 +2189,9 @@
       "showCompleted": "완료된 대화 표시",
       "showWorktrees": "워크트리 브랜치 표시",
       "showRecent": "'최근' 그룹 표시",
+      "tabsFollowFolder": "폴더에 따라 탭 전환",
+      "tabsFollowFolderHint": "선택한 폴더의 대화 탭과 파일 탭만 표시합니다. 폴더를 클릭하면 전환됩니다.",
+      "toggleFolderExpanded": "폴더 펼치기 또는 접기",
       "navigationItems": "탐색 항목",
       "moreOptions": "더 많은 옵션",
       "sortBy": "정렬 기준",

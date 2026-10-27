@@ -5,9 +5,9 @@ import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
 import { registerBackendScopedStoreReset } from "@/stores/backend-scoped-store-reset"
 import { getActiveRemoteConnectionId } from "@/lib/transport"
 
-export type WorkbenchScope = number | "global"
+export type TabScope = number | "global"
 
-export function folderScope(folderId?: number | null): WorkbenchScope {
+export function folderScope(folderId?: number | null): TabScope {
   if (!folderId) return "global"
   return useAppWorkspaceStore
     .getState()
@@ -16,36 +16,36 @@ export function folderScope(folderId?: number | null): WorkbenchScope {
     : folderId
 }
 
-/** Empty scopes are intentional in Workbench mode. */
+/** Empty scopes are intentional while tabs follow the folder. */
 export function shouldSeedConversation(enabled: boolean, hasNoTabs: boolean) {
   return !enabled && hasNoTabs
 }
 
-interface WorkbenchState {
+interface FolderTabsState {
   enabled: boolean
-  scope: WorkbenchScope
+  scope: TabScope
   // References own view membership; the workspace provider still owns ONE
   // buffer per normalized absolute path, including when several scopes use it.
   fileRefs: Record<string, string[]>
   fileSelection: Record<string, string | null>
   hydratePreference: () => void
   setEnabled: (enabled: boolean) => void
-  activateScope: (scope: WorkbenchScope) => void
-  addFile: (id: string, scope: WorkbenchScope, select?: boolean) => void
+  activateScope: (scope: TabScope) => void
+  addFile: (id: string, scope: TabScope, select?: boolean) => void
   selectFile: (id: string | null) => void
-  removeFile: (id: string, scope: WorkbenchScope) => boolean
+  removeFile: (id: string, scope: TabScope) => boolean
   forgetFile: (id: string) => void
   reorderFiles: (ids: string[]) => void
 }
 
 function preferenceKey() {
   const remoteId = getActiveRemoteConnectionId()
-  return `workspace:workbench:${remoteId ? `remote-${remoteId}` : "local"}`
+  return `workspace:tabs-follow-folder:${remoteId ? `remote-${remoteId}` : "local"}`
 }
 
-export function openingScope(folderId?: number | null): WorkbenchScope {
+export function openingScope(folderId?: number | null): TabScope {
   if (folderId != null) return folderScope(folderId)
-  const state = useWorkbenchStore.getState()
+  const state = useFolderTabsStore.getState()
   return state.enabled
     ? state.scope
     : folderScope(useAppWorkspaceStore.getState().activeFolderId)
@@ -55,8 +55,8 @@ export function openingScope(folderId?: number | null): WorkbenchScope {
 export function fileOpeningScope(
   tabId: string,
   fallback = openingScope()
-): WorkbenchScope {
-  const state = useWorkbenchStore.getState()
+): TabScope {
+  const state = useFolderTabsStore.getState()
   const scopes = Object.entries(state.fileRefs)
     .filter(([, ids]) => ids.includes(tabId))
     .map(([scope]) =>
@@ -67,12 +67,12 @@ export function fileOpeningScope(
 
 const initialState = () => ({
   enabled: false,
-  scope: "global" as WorkbenchScope,
+  scope: "global" as TabScope,
   fileRefs: {} as Record<string, string[]>,
   fileSelection: {} as Record<string, string | null>,
 })
 
-export const useWorkbenchStore = create<WorkbenchState>()((set, get) => ({
+export const useFolderTabsStore = create<FolderTabsState>()((set, get) => ({
   ...initialState(),
   hydratePreference: () => {
     try {
@@ -156,7 +156,7 @@ export const useWorkbenchStore = create<WorkbenchState>()((set, get) => ({
   },
 }))
 
-export function resetWorkbenchStore() {
-  useWorkbenchStore.setState(initialState())
+export function resetFolderTabsStore() {
+  useFolderTabsStore.setState(initialState())
 }
-registerBackendScopedStoreReset(resetWorkbenchStore)
+registerBackendScopedStoreReset(resetFolderTabsStore)

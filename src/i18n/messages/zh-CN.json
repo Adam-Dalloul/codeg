@@ -10,12 +10,6 @@
     "settingsDescription": "在 AI 回复正文中直接展示自包含的 HTML/CSS 卡片和图表，不运行模型脚本或加载外部资源。",
     "settingsEnable": "启用富 HTML 渲染"
   },
-  "Workbench": {
-    "label": "工作台",
-    "enable": "按 Worktree 切换标签页",
-    "disable": "显示所有 Worktree 的标签页",
-    "toggleFolder": "展开或收起文件夹"
-  },
   "Language": {
     "followSystem": "跟随系统",
     "english": "英语",
@@ -2195,6 +2189,9 @@
       "showCompleted": "显示已完成会话",
       "showWorktrees": "显示工作树分支",
       "showRecent": "显示「最近」分组",
+      "tabsFollowFolder": "标签页跟随文件夹",
+      "tabsFollowFolderHint": "只显示所选文件夹的会话和文件标签页，点击文件夹即可切换。",
+      "toggleFolderExpanded": "展开或收起文件夹",
       "navigationItems": "菜单导航项",
       "moreOptions": "更多选项",
       "sortBy": "排序方式",

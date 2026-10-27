@@ -1,9 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import {
-  useWorkbenchStore,
-  resetWorkbenchStore,
+  useFolderTabsStore,
+  resetFolderTabsStore,
   shouldSeedConversation,
-} from "./workbench-store"
+} from "./folder-tabs-store"
 import { resetTabStore, useTabStore } from "./tab-store"
 import {
   resetAppWorkspaceStore,
@@ -19,7 +19,7 @@ vi.mock("@/lib/api", () => ({
 }))
 
 beforeEach(() => {
-  resetWorkbenchStore()
+  resetFolderTabsStore()
   resetTabStore()
   resetAppWorkspaceStore()
   localStorage.clear()
@@ -41,14 +41,14 @@ function open(folderId: number, id: number, pin = true) {
 }
 
 function visibleIds() {
-  const { enabled, scope } = useWorkbenchStore.getState()
+  const { enabled, scope } = useFolderTabsStore.getState()
   return useTabStore
     .getState()
     .rawTabs.filter((tab) => !enabled || tab.folderId === scope)
     .map((tab) => tab.id)
 }
 
-describe("Workbench conversation scope", () => {
+describe("Folder-tabs conversation scope", () => {
   it.each([0, 1, 2, 99])(
     "maps a cross-group drop at visible index %s without counting hidden members",
     (index) => {
@@ -80,8 +80,8 @@ describe("Workbench conversation scope", () => {
           [sourceSibling]: "source",
         },
       })
-      useWorkbenchStore.getState().setEnabled(true)
-      useWorkbenchStore.getState().activateScope(2)
+      useFolderTabsStore.getState().setEnabled(true)
+      useFolderTabsStore.getState().activateScope(2)
       useTabStore.getState().moveTabToGroup(b0, "target", { index })
       const state = useTabStore.getState()
       const target = state.rawTabs.filter(
@@ -107,24 +107,24 @@ describe("Workbench conversation scope", () => {
     const a1 = open(1, 11)
     const a2 = open(1, 12)
     const b1 = open(2, 21)
-    useWorkbenchStore.getState().setEnabled(true)
-    useWorkbenchStore.getState().activateScope(1)
+    useFolderTabsStore.getState().setEnabled(true)
+    useFolderTabsStore.getState().activateScope(1)
     useTabStore.getState().switchTab(a2)
-    useWorkbenchStore.getState().activateScope(2)
+    useFolderTabsStore.getState().activateScope(2)
     expect(useTabStore.getState().activeTabId).toBe(b1)
-    useWorkbenchStore.getState().activateScope(3)
+    useFolderTabsStore.getState().activateScope(3)
     expect(useTabStore.getState().activeTabId).toBeNull()
     expect(useAppWorkspaceStore.getState().activeFolderId).toBe(3)
     expect(useTabStore.getState().rawTabs).toHaveLength(3)
-    useWorkbenchStore.getState().activateScope(1)
+    useFolderTabsStore.getState().activateScope(1)
     expect(useTabStore.getState().activeTabId).toBe(a2)
     expect(visibleIds()).toEqual([a1, a2])
-    useWorkbenchStore.getState().setEnabled(false)
+    useFolderTabsStore.getState().setEnabled(false)
     expect(visibleIds()).toEqual([a1, a2, b1])
   })
 
   it("keeps inactive previews and drafts when opening, reordering and closing visible tabs", () => {
-    useWorkbenchStore.getState().setEnabled(true)
+    useFolderTabsStore.getState().setEnabled(true)
     const a = open(1, 11, false)
     const draftA = useTabStore.getState().openNewConversationTab(1, "/repo1")
     const b = open(2, 21, false)
@@ -159,24 +159,24 @@ describe("Workbench conversation scope", () => {
       draftA.tabId,
     ])
     expect(useTabStore.getState().activeTabId).toBeNull()
-    expect(useWorkbenchStore.getState().scope).toBe(2)
+    expect(useFolderTabsStore.getState().scope).toBe(2)
   })
 
   it("opening or focusing a session activates its own worktree", () => {
     const a = open(1, 11)
-    useWorkbenchStore.getState().setEnabled(true)
+    useFolderTabsStore.getState().setEnabled(true)
     open(2, 21)
-    expect(useWorkbenchStore.getState().scope).toBe(2)
+    expect(useFolderTabsStore.getState().scope).toBe(2)
     useTabStore.getState().switchTab(a)
-    expect(useWorkbenchStore.getState().scope).toBe(1)
+    expect(useFolderTabsStore.getState().scope).toBe(1)
     expect(useAppWorkspaceStore.getState().activeFolderId).toBe(1)
   })
 
   it("preserves local scope and selection while reconciling complete server snapshots", async () => {
     const a = open(1, 11)
     open(2, 21)
-    useWorkbenchStore.getState().setEnabled(true)
-    useWorkbenchStore.getState().activateScope(1)
+    useFolderTabsStore.getState().setEnabled(true)
+    useFolderTabsStore.getState().activateScope(1)
     const items = [
       {
         folder_id: 1,
@@ -209,7 +209,7 @@ describe("Workbench conversation scope", () => {
       items,
     } as never)
     await useTabStore.getState().refetchTabs()
-    expect(useWorkbenchStore.getState().scope).toBe(1)
+    expect(useFolderTabsStore.getState().scope).toBe(1)
     expect(useTabStore.getState().activeTabId).toBe(a)
     expect(useTabStore.getState().rawTabs).toHaveLength(3)
     // A subsequent remote activation must also leave this client's scope alone.
@@ -225,8 +225,8 @@ describe("Workbench conversation scope", () => {
     try {
       open(1, 11)
       open(2, 21)
-      useWorkbenchStore.getState().setEnabled(true)
-      useWorkbenchStore.getState().activateScope(1)
+      useFolderTabsStore.getState().setEnabled(true)
+      useFolderTabsStore.getState().activateScope(1)
       useTabStore.setState({ tabsHydrated: true })
       vi.mocked(api.saveOpenedTabs).mockResolvedValue({
         accepted: true,
@@ -249,10 +249,10 @@ describe("Workbench conversation scope", () => {
   it("keeps an empty selected worktree empty through remote snapshots and refetch", async () => {
     open(1, 11)
     useTabStore.setState({ tabsHydrated: true })
-    useWorkbenchStore.getState().setEnabled(true)
-    useWorkbenchStore.getState().activateScope(1)
+    useFolderTabsStore.getState().setEnabled(true)
+    useFolderTabsStore.getState().activateScope(1)
     useTabStore.getState().closeAllTabs()
-    useWorkbenchStore.getState().activateScope(3)
+    useFolderTabsStore.getState().activateScope(3)
     useTabStore
       .getState()
       .handleTabsChanged({ version: 1, origin: "remote", tabs: [] })
@@ -272,7 +272,7 @@ describe("Workbench conversation scope", () => {
   })
 
   it("defaults off and tolerates denied preference storage", () => {
-    expect(useWorkbenchStore.getState().enabled).toBe(false)
+    expect(useFolderTabsStore.getState().enabled).toBe(false)
     const get = vi
       .spyOn(Storage.prototype, "getItem")
       .mockImplementation(() => {
@@ -283,15 +283,17 @@ describe("Workbench conversation scope", () => {
       .mockImplementation(() => {
         throw new Error("denied")
       })
-    expect(() => useWorkbenchStore.getState().hydratePreference()).not.toThrow()
-    expect(() => useWorkbenchStore.getState().setEnabled(true)).not.toThrow()
-    expect(useWorkbenchStore.getState().enabled).toBe(true)
+    expect(() =>
+      useFolderTabsStore.getState().hydratePreference()
+    ).not.toThrow()
+    expect(() => useFolderTabsStore.getState().setEnabled(true)).not.toThrow()
+    expect(useFolderTabsStore.getState().enabled).toBe(true)
     get.mockRestore()
     set.mockRestore()
   })
 })
 
-describe("Workbench scope repairs", () => {
+describe("Folder-tabs scope repairs", () => {
   function setFolders(
     list: Array<{ id: number; parent_id?: number; kind?: string }>
   ) {
@@ -319,13 +321,13 @@ describe("Workbench scope repairs", () => {
     open(2, 21)
     useTabStore.getState().switchTab(a1)
     sync()
-    useWorkbenchStore.getState().setEnabled(true)
-    useWorkbenchStore.getState().activateScope(2)
-    useWorkbenchStore.getState().setEnabled(false)
+    useFolderTabsStore.getState().setEnabled(true)
+    useFolderTabsStore.getState().activateScope(2)
+    useFolderTabsStore.getState().setEnabled(false)
     useTabStore.getState().switchTab(a2)
     sync()
-    useWorkbenchStore.getState().setEnabled(true)
-    expect(useWorkbenchStore.getState().scope).toBe(1)
+    useFolderTabsStore.getState().setEnabled(true)
+    expect(useFolderTabsStore.getState().scope).toBe(1)
     expect(useTabStore.getState().activeTabId).toBe(a2)
   })
 
@@ -349,7 +351,7 @@ describe("Workbench scope repairs", () => {
       activeTabId: a1,
     })
     sync()
-    useWorkbenchStore.getState().setEnabled(true)
+    useFolderTabsStore.getState().setEnabled(true)
     expect(useTabStore.getState().activeTabId).toBe(a1)
     expect(useTabStore.getState().groupSelection).toEqual({ g1: a1, g2: a3 })
   })
@@ -357,23 +359,23 @@ describe("Workbench scope repairs", () => {
   it("keeps a chat conversation's hidden chat folder active in the global scope", () => {
     setFolders([{ id: 1 }, { id: 9, kind: "chat" }])
     open(1, 11)
-    useWorkbenchStore.getState().setEnabled(true)
+    useFolderTabsStore.getState().setEnabled(true)
     open(9, 91)
     sync()
-    expect(useWorkbenchStore.getState().scope).toBe("global")
+    expect(useFolderTabsStore.getState().scope).toBe("global")
     expect(useAppWorkspaceStore.getState().activeFolderId).toBe(9)
     // Re-selecting the already-active chat changes no tab, so nothing would
     // re-sync a wrong value: the scope switch itself must not clear it.
     open(9, 91)
     expect(useAppWorkspaceStore.getState().activeFolderId).toBe(9)
-    useWorkbenchStore.getState().activateScope(1)
+    useFolderTabsStore.getState().activateScope(1)
     expect(useAppWorkspaceStore.getState().activeFolderId).toBe(1)
   })
 
   it("an empty scope still owns the folder chrome", () => {
     open(1, 11)
-    useWorkbenchStore.getState().setEnabled(true)
-    useWorkbenchStore.getState().activateScope(2)
+    useFolderTabsStore.getState().setEnabled(true)
+    useFolderTabsStore.getState().activateScope(2)
     expect(useTabStore.getState().activeTabId).toBeNull()
     expect(useAppWorkspaceStore.getState().activeFolderId).toBe(2)
   })
@@ -384,8 +386,8 @@ describe("Workbench scope repairs", () => {
     const a2 = open(1, 12)
     open(2, 22)
     const a3 = open(1, 13)
-    useWorkbenchStore.getState().setEnabled(true)
-    useWorkbenchStore.getState().activateScope(1)
+    useFolderTabsStore.getState().setEnabled(true)
+    useFolderTabsStore.getState().activateScope(1)
     useTabStore.getState().switchTab(a3)
     useTabStore.getState().closeTab(a3)
     expect(useTabStore.getState().activeTabId).toBe(a2)
@@ -412,8 +414,8 @@ describe("Workbench scope repairs", () => {
       groupSelection: { g1: a2, g2: b1, g3: a3 },
       activeTabId: a3,
     })
-    useWorkbenchStore.getState().setEnabled(true)
-    useWorkbenchStore.getState().activateScope(1)
+    useFolderTabsStore.getState().setEnabled(true)
+    useFolderTabsStore.getState().activateScope(1)
     useTabStore.getState().switchTab(a2)
     useTabStore.getState().switchTab(a3)
     expect(useTabStore.getState().groupSelection.g1).toBe(a2)
@@ -426,53 +428,53 @@ describe("Workbench scope repairs", () => {
     setFolders([{ id: 1 }, { id: 2 }, { id: 3, parent_id: 1 }])
     open(2, 21)
     open(3, 31)
-    useWorkbenchStore.getState().setEnabled(true)
-    useWorkbenchStore.getState().activateScope(3)
+    useFolderTabsStore.getState().setEnabled(true)
+    useFolderTabsStore.getState().activateScope(3)
     useTabStore.getState().closeTabsByFolder(3)
     useAppWorkspaceStore.getState().applyFolderRemove(3)
-    expect(useWorkbenchStore.getState().scope).toBe(1)
+    expect(useFolderTabsStore.getState().scope).toBe(1)
     expect(useAppWorkspaceStore.getState().activeFolderId).toBe(1)
   })
 
   it("removing a scoped folder without tabs or parent moves to a remaining tab's scope", () => {
     setFolders([{ id: 1 }, { id: 2 }, { id: 3 }])
     const b1 = open(2, 21)
-    useWorkbenchStore.getState().setEnabled(true)
-    useWorkbenchStore.getState().activateScope(3)
+    useFolderTabsStore.getState().setEnabled(true)
+    useFolderTabsStore.getState().activateScope(3)
     useAppWorkspaceStore.setState({
       folders: useAppWorkspaceStore
         .getState()
         .folders.filter((folder) => folder.id !== 3),
     })
-    expect(useWorkbenchStore.getState().scope).toBe(2)
+    expect(useFolderTabsStore.getState().scope).toBe(2)
     expect(useTabStore.getState().activeTabId).toBe(b1)
   })
 
   it("falls back to the first open folder when no tab is left", () => {
     setFolders([{ id: 1 }, { id: 2 }])
-    useWorkbenchStore.getState().setEnabled(true)
-    useWorkbenchStore.getState().activateScope(2)
+    useFolderTabsStore.getState().setEnabled(true)
+    useFolderTabsStore.getState().activateScope(2)
     useAppWorkspaceStore.getState().applyFolderRemove(2)
-    expect(useWorkbenchStore.getState().scope).toBe(1)
+    expect(useFolderTabsStore.getState().scope).toBe(1)
   })
 
   it("inherits the agent of the tab the user is on, not the target scope's", () => {
     useTabStore.getState().openTab(2, 21, "claude_code", true)
     useTabStore.getState().openTab(1, 11, "codex", true)
-    useWorkbenchStore.getState().setEnabled(true)
-    useWorkbenchStore.getState().activateScope(1)
+    useFolderTabsStore.getState().setEnabled(true)
+    useFolderTabsStore.getState().activateScope(1)
     const draft = useTabStore
       .getState()
       .openNewConversationTab(2, "/repo2", { inheritFromActive: true })
-    expect(useWorkbenchStore.getState().scope).toBe(2)
+    expect(useFolderTabsStore.getState().scope).toBe(2)
     expect(draft.agentType).toBe("codex")
   })
 
   it("switching a draft to chat mode moves that draft into the global scope", () => {
-    useWorkbenchStore.getState().setEnabled(true)
-    useWorkbenchStore.getState().activateScope("global")
+    useFolderTabsStore.getState().setEnabled(true)
+    useFolderTabsStore.getState().activateScope("global")
     const globalDraft = useTabStore.getState().openChatModeTab().tabId
-    useWorkbenchStore.getState().activateScope(1)
+    useFolderTabsStore.getState().activateScope(1)
     const draftA = useTabStore
       .getState()
       .openNewConversationTab(1, "/repo1").tabId
@@ -482,7 +484,7 @@ describe("Workbench scope repairs", () => {
       .getState()
       .openChatModeTab({ retargetTabId: draftA })
     expect(moved.tabId).toBe(draftA)
-    expect(useWorkbenchStore.getState().scope).toBe("global")
+    expect(useFolderTabsStore.getState().scope).toBe("global")
     expect(useTabStore.getState().activeTabId).toBe(draftA)
     expect(
       useTabStore.getState().rawTabs.find((tab) => tab.id === draftA)
@@ -494,20 +496,20 @@ describe("Workbench scope repairs", () => {
 
   it("a new chat inherits the agent of the tab the user is on", () => {
     useTabStore.getState().openTab(1, 11, "open_code", true)
-    useWorkbenchStore.getState().setEnabled(true)
-    useWorkbenchStore.getState().activateScope(1)
+    useFolderTabsStore.getState().setEnabled(true)
+    useFolderTabsStore.getState().activateScope(1)
     const chat = useTabStore.getState().openChatModeTab()
-    expect(useWorkbenchStore.getState().scope).toBe("global")
+    expect(useFolderTabsStore.getState().scope).toBe("global")
     expect(chat.agentType).toBe("open_code")
   })
 
   it("the folder picker moves its own draft, and the scope follows it", async () => {
-    useWorkbenchStore.getState().setEnabled(true)
-    useWorkbenchStore.getState().activateScope(2)
+    useFolderTabsStore.getState().setEnabled(true)
+    useFolderTabsStore.getState().activateScope(2)
     const draftB = useTabStore
       .getState()
       .openNewConversationTab(2, "/repo2").tabId
-    useWorkbenchStore.getState().activateScope(1)
+    useFolderTabsStore.getState().activateScope(1)
     const draftA = useTabStore
       .getState()
       .openNewConversationTab(1, "/repo1").tabId
@@ -518,7 +520,7 @@ describe("Workbench scope repairs", () => {
       retargetTabId: draftA,
     })
     // Still on screen in its own worktree while the retarget is queued.
-    expect(useWorkbenchStore.getState().scope).toBe(1)
+    expect(useFolderTabsStore.getState().scope).toBe(1)
     expect(useTabStore.getState().activeTabId).toBe(draftA)
     expect(useTabStore.getState().draftRetargetRequests).toMatchObject([
       { tabId: draftA, folderId: 2 },
@@ -531,7 +533,7 @@ describe("Workbench scope repairs", () => {
           ?.folderId
       ).toBe(2)
     )
-    expect(useWorkbenchStore.getState().scope).toBe(2)
+    expect(useFolderTabsStore.getState().scope).toBe(2)
     expect(useTabStore.getState().activeTabId).toBe(draftA)
     expect(
       useTabStore.getState().rawTabs.some((tab) => tab.id === draftB)

@@ -10,12 +10,6 @@
     "settingsDescription": "عرض بطاقات ومخططات HTML/CSS مكتفية ذاتياً ضمن ردود الذكاء الاصطناعي. تُحظر نصوص النموذج والموارد الخارجية.",
     "settingsEnable": "تفعيل عرض HTML المنسق"
   },
-  "Workbench": {
-    "label": "مساحة العمل",
-    "enable": "تبديل علامات التبويب حسب شجرة العمل",
-    "disable": "إظهار علامات تبويب جميع أشجار العمل",
-    "toggleFolder": "توسيع المجلد أو طيه"
-  },
   "Language": {
     "followSystem": "اتباع النظام",
     "english": "الإنجليزية",
@@ -2195,6 +2189,9 @@
       "showCompleted": "عرض المحادثات المكتملة",
       "showWorktrees": "عرض فروع worktree",
       "showRecent": "عرض مجموعة الأحدث",
+      "tabsFollowFolder": "علامات التبويب تتبع المجلد",
+      "tabsFollowFolderHint": "إظهار علامات تبويب المحادثات والملفات للمجلد المحدد فقط. انقر على مجلد للتبديل.",
+      "toggleFolderExpanded": "توسيع المجلد أو طيه",
       "navigationItems": "عناصر التنقل",
       "moreOptions": "المزيد من الخيارات",
       "sortBy": "الترتيب حسب",

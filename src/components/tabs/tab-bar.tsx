@@ -114,9 +114,9 @@ export function TabBar({ groupId, maximizeControl = false }: TabBarProps) {
   )
 
   // Split-group context-menu wiring, shared by every tab in this strip. Only
-  // groups shown in this view are split targets: in Workbench mode a group
-  // holding just other worktrees' tabs is not on screen (group assignment
-  // still resolves against the full layout).
+  // groups shown in this view are split targets: while tabs follow the
+  // folder, a group holding just other folders' tabs is not on screen (group
+  // assignment still resolves against the full layout).
   const visibleLayout = useVisibleConversationLayout()
   const orderedLeaves = useMemo(() => leafIds(visibleLayout), [visibleLayout])
   const isSplit = orderedLeaves.length > 1

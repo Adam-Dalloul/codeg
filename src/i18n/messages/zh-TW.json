@@ -10,12 +10,6 @@
     "settingsDescription": "在 AI 回覆中直接顯示自包含的 HTML/CSS 卡片與圖表，不執行模型腳本或載入外部資源。",
     "settingsEnable": "啟用豐富 HTML 算繪"
   },
-  "Workbench": {
-    "label": "工作台",
-    "enable": "依 Worktree 切換分頁",
-    "disable": "顯示所有 Worktree 的分頁",
-    "toggleFolder": "展開或收合資料夾"
-  },
   "Language": {
     "followSystem": "跟隨系統",
     "english": "英文",
@@ -2195,6 +2189,9 @@
       "showCompleted": "顯示已完成對話",
       "showWorktrees": "顯示工作樹分支",
       "showRecent": "顯示「最近」分組",
+      "tabsFollowFolder": "分頁跟隨資料夾",
+      "tabsFollowFolderHint": "只顯示所選資料夾的會話與檔案分頁，點擊資料夾即可切換。",
+      "toggleFolderExpanded": "展開或收合資料夾",
       "navigationItems": "選單導覽項目",
       "moreOptions": "更多選項",
       "sortBy": "排序方式",

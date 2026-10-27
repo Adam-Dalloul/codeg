@@ -2,8 +2,8 @@
 
 import {
   shouldSeedConversation,
-  useWorkbenchStore,
-} from "@/stores/workbench-store"
+  useFolderTabsStore,
+} from "@/stores/folder-tabs-store"
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   AlertCircle,
@@ -2610,7 +2610,7 @@ export function ConversationDetailPanel() {
   const conversations = useAppWorkspaceStore((s) => s.conversations)
   const allFolders = useAppWorkspaceStore((s) => s.allFolders)
   const tabs = useTabStore((s) => s.tabs)
-  const workbenchEnabled = useWorkbenchStore((s) => s.enabled)
+  const tabsFollowFolder = useFolderTabsStore((s) => s.enabled)
   const visibleTabs = useVisibleConversationTabs()
   const visibleLayout = useVisibleConversationLayout()
   const visibleTabIds = useMemo(
@@ -2866,7 +2866,7 @@ export function ConversationDetailPanel() {
     if (!folder) return
 
     if (
-      shouldSeedConversation(useWorkbenchStore.getState().enabled, hasNoTabs)
+      shouldSeedConversation(useFolderTabsStore.getState().enabled, hasNoTabs)
     ) {
       openNewConversationTab(
         folder.id,
@@ -2878,7 +2878,7 @@ export function ConversationDetailPanel() {
     hasNoTabs,
     newConversation?.workingDir,
     openNewConversationTab,
-    workbenchEnabled,
+    tabsFollowFolder,
   ])
 
   // Split-group render model: the layout tree only ever produces PERCENTAGE
